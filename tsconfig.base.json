@@ -18,6 +18,8 @@
     "noFallthroughCasesInSwitch": true,
     "forceConsistentCasingInFileNames": true,
     "exactOptionalPropertyTypes": true,
+    "erasableSyntaxOnly": true,
+    "moduleDetection": "force",
     "skipLibCheck": true,
     "composite": true,
     "resolvePackageJsonExports": true,
