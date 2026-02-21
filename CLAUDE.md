@@ -34,6 +34,48 @@ All flags are on. Do not weaken them.
 - Use `bun add --cwd packages/foo <dep>` for workspace-targeted installs
 - No `ts-node`, no `tsx`, no build step for dev — Bun runs .ts natively
 
+## Architecture — Four-Layer System
+
+Koi uses a strict layered architecture. Layer violations are build errors.
+
+```
+L0  @koi/core       Types only. Zero implementations. Zero dependencies.
+L1  @koi/engine      Kernel runtime. Depends on L0 only.
+L2  @koi/*           Feature packages. Depend on L0 only (never L1 peers).
+L3  Meta-packages    Convenience bundles of L0 + L1 + selected L2.
+```
+
+### Layer Rules (anti-leak)
+
+- **L0 is types only** — no runtime code, no classes, no function bodies, no side effects
+- **L0 has zero dependencies** — not even other @koi packages
+- **L1 depends on L0 only** — never on L2 packages
+- **L2 packages depend on L0 only** — never on L1 or other L2 packages
+- **No framework-isms leak into L0** — no LangGraph, no OpenAI, no vendor concepts in core types
+- **No direct entity-to-entity communication** — agents interact through infrastructure (World Services), never peer-to-peer
+
+### Core Contracts (L0)
+
+L0 defines the plugs, not the things that plug in:
+
+1. **Middleware** — sole interposition layer (ONE way to intercept model/tool calls)
+2. **Message** — data format for inbound/outbound
+3. **Channel** — I/O interface (`send()` + `onMessage()`)
+4. **Resolver** — discovery (`discover()` + `load()`)
+5. **Assembly** — what an agent IS (manifest)
+6. **Engine** — swappable agent loop (`stream()` is the only required method)
+
+### Anti-Leak Checklist
+
+When adding or modifying code, verify:
+
+- [ ] No implementation logic in `@koi/core` (types and interfaces only)
+- [ ] No vendor/framework types crossing package boundaries
+- [ ] Engine adapter contains zero framework-specific concepts
+- [ ] `custom` event type is observable-only (telemetry/UI), never required for correctness
+- [ ] Middleware wraps engine from outside — adapter never needs its own hooks
+- [ ] All interface properties are `readonly`
+
 ## Code Principles
 
 ### Immutability (default)
@@ -43,6 +85,14 @@ All flags are on. Do not weaken them.
 - Use `as const` for literal config objects
 - Return new objects — never mutate parameters
 - `const` always; `let` requires justification
+
+### Design Principles (from Templar)
+
+- **Interface-first kernel** — core defines contracts, not implementations
+- **Minimal-surface contracts** — few required methods, all operations optional with sane defaults
+- **Middleware = sole interposition layer** — one way to intercept, not two
+- **Manifest-driven assembly** — declarative agent definition (YAML IS the agent)
+- **ECS composition** — Agent = entity, Tool = component, Middleware = system
 
 ### Simplicity (KISS)
 
