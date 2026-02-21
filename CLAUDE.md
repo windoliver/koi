@@ -65,9 +65,10 @@ L3  Meta-packages    Convenience bundles (e.g., @koi/starter = L0 + L1 + selecte
 **When creating or editing `@koi/core` (L0):**
 - ONLY `type`, `interface`, and `readonly` const type definitions
 - NO function bodies, NO classes, NO side effects, NO runtime code
+  - Exception: branded type constructors (identity casts for `SubsystemToken<T>`) are permitted in L0 as they are zero-logic operations that exist purely for type safety
 - NO `import` from any `@koi/*` package or external dependency
 - This package must compile with zero dependencies in `package.json`
-- Target: ~30 types across 6 contracts, ~500 LOC
+- Target: ~45 types across 6 contracts + ECS layer, ~500 LOC
 - Think of it as the Linux syscall table — it defines the plugs, not the things that plug in
 
 **When creating or editing `@koi/engine` (L1):**
