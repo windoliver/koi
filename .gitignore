@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.turbo/
+coverage/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+test-results.json
+.DS_Store

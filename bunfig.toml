@@ -1,0 +1,24 @@
+[install]
+# Use isolated linker (pnpm-style strict deps, prevents phantom dependencies)
+linker = "isolated"
+
+# Use exact versions for reproducibility
+exact = true
+
+# Generate text-based lockfile (git-friendly, replaces binary bun.lockb since Bun 1.2)
+saveTextLockfile = true
+
+[test]
+# Coverage enabled by default
+coverage = true
+coverageSkipTestFiles = true
+coverageReporter = ["text", "lcov"]
+coverageDir = "coverage"
+coverageThreshold = { lines = 0.8, functions = 0.8, statements = 0.8 }
+
+# Exclude dist and node_modules from coverage
+coveragePathIgnorePatterns = ["dist/**", "node_modules/**", "*.config.ts"]
+
+[run]
+# Use bun shell for scripts (faster than system shell)
+shell = "bun"
