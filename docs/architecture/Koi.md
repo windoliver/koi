@@ -176,6 +176,9 @@ Infrastructure backends      L3      Pluggable (Nexus, SQLite, custom)
 | **Dependencies** | Zero | @koi/core only | @koi/core only | L0 + L1 + selected L2 |
 | **Breakage scope** | All packages | Engine only | Own package only | None |
 | **Can be swapped?** | Never | No (it IS the runtime) | Yes (per package) | Yes |
+| **Analogy** | Kernel headers | Kernel runtime (`__schedule()`) | Kernel modules (ext4, tcp) | Distro packages |
+
+Engine *adapters* (LangGraph, OpenAI, custom) are swappable L2 packages. The engine *runtime* (guards, governance) is not — it IS the kernel runtime.
 
 ---
 
@@ -296,7 +299,49 @@ interface ComponentProvider {
 }
 ```
 
+### Singleton Components (one per agent)
+
+```typescript
+interface MemoryComponent {
+  query(params: MemoryQuery): Promise<readonly MemoryEntry[]>;
+  store(entry: MemoryEntry): Promise<void>;
+}
+interface GovernanceComponent {
+  usage(): GovernanceUsage;
+  checkSpawn(depth: number): SpawnCheck;
+}
+interface CredentialComponent {
+  check(action: CredentialAction): Promise<CredentialResult>;
+}
+interface EventComponent {
+  emit(event: string, data: unknown): Promise<EventResult>;
+}
+```
+
+### Well-Known Tokens
+
+```typescript
+const MEMORY = token<MemoryComponent>("memory");
+const GOVERNANCE = token<GovernanceComponent>("governance");
+const CREDENTIALS = token<CredentialComponent>("credentials");
+const EVENTS = token<EventComponent>("events");
+
+function toolToken(name: string): SubsystemToken<Tool>;           // "tool:calculator"
+function channelToken(name: string): SubsystemToken<ChannelAdapter>; // "channel:telegram"
+function skillToken(name: string): SubsystemToken<Skill>;          // "skill:refund-policy"
+```
+
 **Namespace convention**: No colon = singleton (`"memory"`), with colon = namespaced (`"tool:calculator"`). `query("tool:")` returns all tool components.
+
+### Other Kernel Types
+
+Additional types in `@koi/core`: `KoiConfig`, `ModelConfig`, `PermissionConfig`, `EngineOutput`, `EngineState`, `EngineMetrics`, `EngineStopReason`.
+
+```typescript
+type EngineStopReason = "completed" | "max_turns" | "interrupted" | "error";
+```
+
+Subsystem-specific config types live in their owning packages (e.g., `ExecutionLimitsConfig` in `@koi/engine`).
 
 ---
 
@@ -338,6 +383,38 @@ interface ComponentProvider {
 
 **Decision**: The `EngineAdapter` interface enables swapping the agent execution model without rewriting middleware. Only the adapter package imports the underlying framework. All other packages depend on `@koi/core` interfaces.
 
+| Adapter | Underlying Framework | Use Case |
+|---|---|---|
+| `@koi/engine-deepagents` | DeepAgents.js (on LangGraph) | Planning, context mgmt, sub-agents |
+| `@koi/engine-langgraph` | Raw LangGraph.js | Custom graph workflows |
+| `@koi/engine-loop` | None (pure TS) | Simple ReAct loop, lightweight agents |
+| `@koi/engine-custom` | Bring your own | Any execution model |
+
+```yaml
+# koi.yaml — engine selection
+engine: deepagents    # or "langgraph", "loop", "custom"
+```
+
+**Engine interposition (one layer, not two):**
+```
+User input → Middleware stack (wrapModelCall, wrapToolCall)
+           → Engine runtime (guards, validation, adapter dispatch)
+           → EngineAdapter.stream(input)  ← swappable
+```
+
+**Features by layer** — what survives an engine swap:
+
+| Feature | Source | Shared across adapters? |
+|---------|--------|:-:|
+| Iteration/timeout guards | Engine runtime (L1) | Yes |
+| Loop detection (FNV-1a) | Engine runtime (L1) | Yes |
+| Spawn governance | Engine runtime (L1) | Yes |
+| Memory, Pay, Permissions, Audit | Koi middleware (L2) | Yes |
+| Forge, Context Hydrator | Koi middleware (L2) | Yes |
+| Planning, context offloading | Engine adapter | No — adapter-specific |
+| Sub-agent spawning | Engine adapter | No — adapter-specific |
+| HITL (interrupt + resume) | Engine adapter | No — adapter-specific |
+
 **Anti-leak rules**:
 - Zero framework concepts in `EngineAdapter` (no graphs, channels, checkpointers)
 - One interposition layer (`KoiMiddleware`), not two
@@ -375,6 +452,33 @@ permissions:
 ### Monorepo with Meta-Packages
 
 **Decision**: Monorepo with meta-packages (`@koi/starter`) for monolith-like DX. Install only what you need.
+
+---
+
+## Agent Types
+
+| Aspect | Copilot | Worker |
+|--------|---------|--------|
+| **Lifecycle** | Persistent (days/weeks) | Ephemeral (minutes/hours) |
+| **Trust Level** | High (user's permissions) | Low (minimal permissions) |
+| **API Key** | Long-lived | Short TTL |
+| **Use Case** | Personal assistant, user-facing | Task execution, background jobs |
+
+---
+
+## Agent Capability Boundary
+
+Agents can freely:
+- Create tools, skills, and child agents via Forge
+- Discover and compose existing bricks
+
+Agents CANNOT (without HITL):
+- Create middleware or world services
+- Modify governance or credentials
+- Touch other agents' components (process isolation is absolute)
+- Promote bricks beyond `agent` scope
+
+**Why no direct agent-to-agent communication**: If Agent A could write to Agent B's components, it would break process isolation. A compromised agent could modify another agent's tools, memory, or governance. All cross-agent interaction goes through audited infrastructure.
 
 ---
 
@@ -445,6 +549,28 @@ permissions:
 
 Engine-specific middleware (planning, context offloading, sub-agents) is provided by the engine adapter, not by Koi core.
 
+### Middleware Composition (wrapToolCall onion)
+
+Every tool invocation passes through the full middleware onion:
+
+```
+Governance → Permissions → Pay → Audit → TERMINAL (tool.execute())
+```
+
+The sandbox profile is inside the terminal. No "stale authorization" — middleware re-checks on every call.
+
+### Baked vs Per-Call Checks
+
+| Concern | When Checked | Why |
+|---------|-------------|-----|
+| **Sandbox profile** (restrictive/permissive) | Baked at forge/assembly time | Static execution environment doesn't change mid-session |
+| **Resource limits** (CPU/mem/time) | Baked at forge/assembly time | Physical constraints set once |
+| **Permissions** (ReBAC + patterns) | Per tool call (middleware) | Can change mid-session (revocation, HITL toggle) |
+| **Budget / pay** | Per tool call (middleware) | Balance can be reached mid-turn |
+| **Audit / redaction** | Per tool call (middleware) | Compliance requirements are always-on |
+| **Rate limiting / anomaly** | Per tool call (middleware) | Dynamic detection |
+| **Tool deprecation / quarantine** | Per tool call (middleware) | Forged tool can be revoked mid-session |
+
 ---
 
 ## Security Model
@@ -480,6 +606,33 @@ permissions:
 
 **Security invariant**: In-process execution is `promoted` tier only. Community and agent-forged extensions always run in OS-level sandbox.
 
+### Adversarial Agent Behavior Detection
+
+Layer 7 defense — against the agent itself acting against user interests during long autonomous runs:
+
+| Check | Mechanism | Trigger |
+|-------|-----------|---------|
+| **Goal drift** | Compare actions against declared task objectives per turn | Action diverges from manifest goals |
+| **Financial anomaly** | Flag unusual spending patterns | Pay middleware threshold |
+| **Deception signals** | Detect agent hiding actions, modifying logs, bypassing approvals | PostToolUse pattern matching |
+| **Autonomy escalation** | Alert when agent repeatedly requests broader permissions | Spawn governance + approval limits |
+| **Human escalation** | Auto-pause agent and notify user when any check fires | HITL interrupt |
+
+### Error Taxonomy
+
+8-type error model used across all packages:
+
+| Type | Retryable | Example |
+|------|-----------|---------|
+| Validation | No | Invalid manifest, bad input |
+| NotFound | No | Missing resource, unknown agent |
+| Permission | No | Unauthorized action |
+| Conflict | Yes (with merge) | Concurrent modification |
+| RateLimit | Yes (with backoff) | API rate limit hit |
+| Timeout | Yes (with backoff) | Operation exceeded deadline |
+| External | Depends | Third-party service failure |
+| Internal | No | Bug, unexpected state |
+
 ---
 
 ## Forge — Self-Extension
@@ -504,6 +657,40 @@ Name + syntax check     Timeout, memory limit    Pluggable verifiers     sandbox
 Size limits             No network access
 ```
 
+### Brick Taxonomy
+
+No universal `Brick` interface in `@koi/core`. Bricks are typed by which core interface they implement.
+
+| Brick Kind | Core Interface | Forgeable? | Min Trust |
+|------------|---------------|------------|-----------|
+| **Tool** | JSON Schema + function | Yes | `sandbox` |
+| **Skill** | `SkillMetadata` | Yes | `sandbox` |
+| **Agent** | `AgentManifest` | Yes | `sandbox` |
+| **Composite** | Depends on composition | Yes | `sandbox` |
+| **Middleware** | `KoiMiddleware` | Yes | `promoted` + HITL |
+| **Channel** | `ChannelAdapter` | Yes | `promoted` + HITL |
+
+### Brick Lifecycle
+
+```
+DRAFT → VERIFYING → ACTIVE → DEPRECATED
+                      ↓
+                    FAILED
+```
+
+### Storage & Discovery
+
+Forged bricks stored as artifacts with tag convention:
+
+```
+forge:kind:tool              forge:scope:agent          forge:trust:sandbox
+forge:created-by:<agentId>   forge:version:0.1.0        forge:usage-count:N
+```
+
+Discovery via `search_forge` → `ArtifactClient.search()` with tag filtering. Resolver chain: `LocalResolver → ForgeResolver:agent → ForgeResolver:zone → ForgeResolver:global` (first-wins).
+
+Scope promotion rules: minimum `verified` for zone, minimum `promoted` for global.
+
 ### Forge Governance
 
 | Depth | Forge Allowed | Scope Promotion |
@@ -511,6 +698,91 @@ Size limits             No network access
 | 0 (root) | All 6 primordial tools | agent → zone → global |
 | 1 (sub-agent) | forge_tool, forge_skill, search_forge, promote_forge | agent → zone (with HITL) |
 | 2+ (deeper) | search_forge only | None (read-only) |
+
+```yaml
+# koi.yaml — forge governance
+forge:
+  enabled: true
+  maxForgeDepth: 1
+  maxForgesPerSession: 5
+  defaultScope: agent
+  trustTier: sandbox
+  scopePromotion:
+    requireHumanApproval: true
+    minTrustForZone: verified
+    minTrustForGlobal: promoted
+```
+
+### Crystallization (auto-forge from observation)
+
+Agents observe behavior patterns and crystallize repeated tool sequences into forged tools:
+
+```
+Session ends → ForgeCrystallizationMiddleware.onSessionEnd()
+  → Extract repeated tool sequences from trajectories
+  → Score: occurrences × success_rate × complexity_reduction
+  → Auto-forge (if confidence ≥ 0.9) or suggest via hook event
+```
+
+The forged tool IS cached functionality — executes instantly without LLM tokens. Capabilities compound across sessions.
+
+---
+
+## External Triggers
+
+External triggers are Gateway-layer concerns — they are NOT agent components.
+
+| Trigger | Flow |
+|---------|------|
+| **Cron schedule** | Scheduler (World Service) → Gateway → `createKoi()` → Agent |
+| **Webhook** | HTTP endpoint → Gateway → dispatch to existing Agent or create new |
+| **Channel message** | Telegram/Slack/etc → `ChannelAdapter.onMessage()` → Gateway → Agent |
+| **MCP notification** | MCP server → tool component event → middleware chain |
+| **Manual invoke** | CLI / API → Gateway → Agent |
+
+```yaml
+# koi.yaml — scheduling is manifest config, not a component
+schedule: "0 9 * * *"
+webhooks:
+  - path: "/hook/deploy"
+    events: ["push"]
+```
+
+The agent never sees the trigger mechanism — it just wakes up with an inbound message.
+
+---
+
+## Agent Patterns
+
+### Context Management (3-phase)
+
+| Phase | Trigger | Action |
+|-------|---------|--------|
+| 1. File offloading | 85% context window | Truncate tool responses >20K tokens, replace with filesystem pointers |
+| 2. Truncation | Offloading insufficient | Keep first 5 + last 20 messages, prune middle |
+| 3. Auto-summary | Still over budget | LLM generates structured summary (intent, artifacts, next steps) |
+
+### Error Recovery
+
+| Category | Strategy |
+|----------|----------|
+| Auth failure | Rotate API key |
+| Rate limit | Backoff + rotate key |
+| Context overflow | Compact + retry |
+| Timeout | Retry with backoff |
+| Model error | Fallback chain via ModelRouter |
+| Thinking failure | Downgrade to standard mode |
+
+### Multi-Agent Orchestration
+
+These are engine adapter primitives, not Koi core code:
+
+| Pattern | Use Case |
+|---------|----------|
+| **Supervisor** | Central coordinator routes to specialized agents |
+| **Swarm** | Decentralized peer-to-peer handoffs |
+| **Map-Reduce** | Fan-out parallel work, fan-in results |
+| **Sub-graphs** | Nested agents with isolated state |
 
 ---
 
@@ -553,3 +825,29 @@ channels:
 | `ErrorOccurred` | Unhandled error |
 | `MessageBefore` | Pre-process (can block/modify) |
 | `PreCompact` | Before context compaction |
+
+---
+
+## Deployment Topology
+
+### Deployment Scenarios
+
+| Scenario | Backend Mode | Runtime | Communication |
+|----------|-------------|---------|---------------|
+| **Cloud** | Server (HTTP) | Bun on server | HTTP REST |
+| **Desktop** | Embedded | Bun local | HTTP localhost |
+| **Edge device** | Embedded (lite) | Bun | HTTP localhost, minimal features |
+| **Browser** | None (remote) | Browser JS | HTTP to cloud backend |
+
+### Gateway / Node Split
+
+```
+Gateway (cloud)                          Node (desktop/edge)
+├── WebSocket control plane              ├── Local agent execution
+├── Channel registry                     ├── Local tools (filesystem, shell)
+├── Session management                   ├── Sandbox profiles
+├── Agent routing (session → pid)        ├── Bonjour/mDNS discovery
+└── Scheduler, webhooks, relay           └── Connects to Gateway via WebSocket
+```
+
+Multiple Nodes can connect to a single Gateway. Middleware handles missing backend features gracefully — falls back to reduced capability rather than failing.
