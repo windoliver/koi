@@ -3,8 +3,30 @@
  */
 
 import type { GatewayAuthenticator } from "../auth.js";
-import type { Transport, TransportConnection, TransportHandler } from "../transport.js";
+import type { Transport, TransportConnection, TransportHandler, TransportSendResult } from "../transport.js";
 import type { AuthResult, ConnectFrame, GatewayFrame, Session } from "../types.js";
+
+// ---------------------------------------------------------------------------
+// waitForCondition
+// ---------------------------------------------------------------------------
+
+/**
+ * Poll a predicate until it returns true, or throw after timeout.
+ * Replaces raw `setTimeout` sleeps in tests with deterministic waits.
+ */
+export async function waitForCondition(
+  predicate: () => boolean,
+  timeoutMs = 2000,
+  intervalMs = 10,
+): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`waitForCondition timed out after ${timeoutMs}ms`);
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Mock Transport
@@ -19,7 +41,9 @@ export interface MockConnection extends TransportConnection {
 
 export interface MockTransport extends Transport {
   /** Simulate a new connection opening. */
-  readonly simulateOpen: (conn?: Partial<TransportConnection>) => MockConnection;
+  readonly simulateOpen: (conn?: Partial<TransportConnection> & {
+    readonly sendResult?: TransportSendResult;
+  }) => MockConnection;
   /** Simulate receiving a message on a connection. */
   readonly simulateMessage: (connId: string, data: string) => void;
   /** Simulate a connection closing. */
@@ -34,11 +58,14 @@ export function createMockTransport(): MockTransport {
   let handler: TransportHandler | undefined;
   const connections = new Map<string, MockConnection>();
 
-  function createMockConnection(overrides?: Partial<TransportConnection>): MockConnection {
+  function createMockConnection(overrides?: Partial<TransportConnection> & {
+    readonly sendResult?: TransportSendResult;
+  }): MockConnection {
     const sentMessages: string[] = [];
     let isClosed = false;
     let cCode: number | undefined;
     let cReason: string | undefined;
+    const fixedSendResult = overrides?.sendResult;
 
     const conn: MockConnection = {
       id: overrides?.id ?? crypto.randomUUID(),
@@ -46,6 +73,7 @@ export function createMockTransport(): MockTransport {
       send(data: string) {
         if (isClosed) return 0;
         sentMessages.push(data);
+        if (fixedSendResult !== undefined) return fixedSendResult;
         return data.length;
       },
       close(code?: number, reason?: string) {
@@ -84,7 +112,9 @@ export function createMockTransport(): MockTransport {
       return connections.size;
     },
 
-    simulateOpen(overrides?: Partial<TransportConnection>): MockConnection {
+    simulateOpen(overrides?: Partial<TransportConnection> & {
+      readonly sendResult?: TransportSendResult;
+    }): MockConnection {
       const conn = createMockConnection(overrides);
       connections.set(conn.id, conn);
       handler?.onOpen(conn);
@@ -152,6 +182,7 @@ export function createTestSession(overrides?: Partial<Session>): Session {
     seq: overrides?.seq ?? 0,
     remoteSeq: overrides?.remoteSeq ?? 0,
     metadata: overrides?.metadata ?? {},
+    ...(overrides?.routing !== undefined ? { routing: overrides.routing } : {}),
   };
 }
 
@@ -184,16 +215,29 @@ export function createTestAuthenticator(
 // Connect frame builder
 // ---------------------------------------------------------------------------
 
-/** Build a JSON-encoded connect frame string for tests. */
+/** Build a JSON-encoded connect frame string for tests (range format). */
 export function createConnectMessage(
   token = "test-token",
   overrides?: Partial<Omit<ConnectFrame, "type">>,
 ): string {
   const frame: ConnectFrame = {
     type: "connect",
-    protocol: overrides?.protocol ?? 1,
+    minProtocol: overrides?.minProtocol ?? 1,
+    maxProtocol: overrides?.maxProtocol ?? 1,
     auth: overrides?.auth ?? { token },
     ...(overrides?.client !== undefined ? { client: overrides.client } : {}),
   };
   return JSON.stringify(frame);
+}
+
+/** Build a JSON-encoded connect frame string in legacy format (single protocol field). */
+export function createLegacyConnectMessage(
+  token = "test-token",
+  protocol = 1,
+): string {
+  return JSON.stringify({
+    type: "connect",
+    protocol,
+    auth: { token },
+  });
 }

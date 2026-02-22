@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createBackpressureMonitor } from "../backpressure.js";
 
 const DEFAULT_CONFIG = {
-  maxBufferPerConnection: 100,
+  maxBufferBytesPerConnection: 100,
   backpressureHighWatermark: 0.8,
   globalBufferLimitBytes: 10_000,
 } as const;

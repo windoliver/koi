@@ -8,8 +8,8 @@ import type { Gateway } from "../gateway.js";
 import { createGateway } from "../gateway.js";
 import type { BunTransport } from "../transport.js";
 import { createBunTransport } from "../transport.js";
-import type { ConnectFrame, GatewayFrame } from "../types.js";
-import { createConnectMessage, createTestAuthenticator } from "./test-utils.js";
+import type { ConnectFrame, GatewayFrame, Session } from "../types.js";
+import { createConnectMessage, createLegacyConnectMessage, createTestAuthenticator } from "./test-utils.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -92,6 +92,14 @@ describe("Gateway e2e (real WebSocket)", () => {
     expect(authAck.kind).toBe("ack");
     expect(authAck.payload.sessionId).toBe("e2e-session");
     expect(authAck.payload.protocol).toBe(1);
+    expect(authAck.payload.capabilities).toEqual({
+      compression: false,
+      resumption: false,
+      maxFrameBytes: 1_048_576,
+    });
+    expect(authAck.payload.snapshot).toBeDefined();
+    expect(typeof authAck.payload.snapshot.serverTime).toBe("number");
+    expect(typeof authAck.payload.snapshot.activeConnections).toBe("number");
 
     // 2. Send a request frame
     const requestFrame = JSON.stringify({
@@ -485,7 +493,7 @@ describe("Gateway e2e (real WebSocket)", () => {
     });
     // Tiny buffer: 50 bytes max per connection, low watermark
     gateway = createGateway(
-      { maxBufferPerConnection: 50, backpressureHighWatermark: 0.5 },
+      { maxBufferBytesPerConnection: 50, backpressureHighWatermark: 0.5 },
       { transport, auth },
     );
     await gateway.start(0);
@@ -535,6 +543,65 @@ describe("Gateway e2e (real WebSocket)", () => {
     ws.close();
   });
 
+  test("version negotiation: client range vs server range", async () => {
+    transport = createBunTransport();
+    const auth = createTestAuthenticator({
+      ok: true,
+      sessionId: "e2e-negotiate",
+      agentId: "a",
+      metadata: {},
+    });
+    // Server supports protocol versions 1-3
+    gateway = createGateway(
+      { minProtocolVersion: 1, maxProtocolVersion: 3 },
+      { transport, auth },
+    );
+    await gateway.start(0);
+
+    const { ws, messages, opened } = await connectClient(transport.port());
+    await opened;
+
+    // Client supports protocol versions 2-5 → negotiated = 3
+    ws.send(createConnectMessage("tok", { minProtocol: 2, maxProtocol: 5 }));
+    await waitForMessages(messages, 1);
+
+    const ack = JSON.parse(messages[0] as string);
+    expect(ack.kind).toBe("ack");
+    expect(ack.payload.protocol).toBe(3);
+
+    ws.close();
+  });
+
+  test("version mismatch closes with 4010", async () => {
+    transport = createBunTransport();
+    const auth = createTestAuthenticator({
+      ok: true,
+      sessionId: "e2e-mismatch",
+      agentId: "a",
+      metadata: {},
+    });
+    // Server only supports protocol versions 3-5
+    gateway = createGateway(
+      { minProtocolVersion: 3, maxProtocolVersion: 5 },
+      { transport, auth },
+    );
+    await gateway.start(0);
+
+    const { ws, messages, opened, closed } = await connectClient(transport.port());
+    await opened;
+
+    // Client only speaks protocol 1
+    ws.send(createConnectMessage("tok", { minProtocol: 1, maxProtocol: 2 }));
+
+    await waitForMessages(messages, 1);
+    const errFrame = JSON.parse(messages[0] as string);
+    expect(errFrame.kind).toBe("error");
+    expect(errFrame.payload.code).toBe("PROTOCOL_MISMATCH");
+
+    const closeEvt = await closed;
+    expect(closeEvt.code).toBe(4010);
+  });
+
   test("auth timeout when client never sends token", async () => {
     transport = createBunTransport();
     const auth = createTestAuthenticator({
@@ -554,5 +621,131 @@ describe("Gateway e2e (real WebSocket)", () => {
     expect(closeEvt.code).toBe(4001);
 
     ws.close();
+  });
+
+  test("webhook POST dispatches through gateway onFrame pipeline", async () => {
+    transport = createBunTransport();
+    const auth = createTestAuthenticator({
+      ok: true,
+      sessionId: "s-wh",
+      agentId: "a",
+      metadata: {},
+    });
+
+    gateway = createGateway({ webhookPort: 0 }, { transport, auth });
+    await gateway.start(0);
+
+    const received: Array<{ session: Session; frame: GatewayFrame }> = [];
+    gateway.onFrame((session, frame) => {
+      received.push({ session, frame });
+    });
+
+    const whPort = gateway.webhookPort();
+    expect(whPort).toBeDefined();
+
+    // Real HTTP POST to the webhook server
+    const res = await fetch(`http://localhost:${whPort}/webhook/slack/acme`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Webhook-Peer": "ext-service",
+      },
+      body: JSON.stringify({ event: "message.created", text: "hello from webhook" }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; frameId: string };
+    expect(body.ok).toBe(true);
+
+    // Frame should have been dispatched through the gateway onFrame pipeline
+    expect(received).toHaveLength(1);
+    expect(received[0]!.session.routing?.channel).toBe("slack");
+    expect(received[0]!.session.routing?.account).toBe("acme");
+    expect(received[0]!.session.routing?.peer).toBe("ext-service");
+    expect(received[0]!.frame.kind).toBe("event");
+    expect(received[0]!.frame.payload).toEqual({
+      event: "message.created",
+      text: "hello from webhook",
+    });
+  });
+
+  test("webhook with routing config resolves agentId from bindings", async () => {
+    transport = createBunTransport();
+    const auth = createTestAuthenticator({
+      ok: true,
+      sessionId: "s-wh-route",
+      agentId: "a",
+      metadata: {},
+    });
+
+    gateway = createGateway(
+      {
+        webhookPort: 0,
+        routing: {
+          scopingMode: "per-channel-peer",
+          bindings: [
+            { pattern: "slack:*", agentId: "slack-handler" },
+          ],
+        },
+      },
+      { transport, auth },
+    );
+    await gateway.start(0);
+
+    const received: Array<{ session: Session; frame: GatewayFrame }> = [];
+    gateway.onFrame((session, frame) => {
+      received.push({ session, frame });
+    });
+
+    const whPort = gateway.webhookPort();
+
+    const res = await fetch(`http://localhost:${whPort}/webhook/slack`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event: "routed" }),
+    });
+    expect(res.status).toBe(200);
+
+    expect(received).toHaveLength(1);
+    // Routing should have resolved agentId to "slack-handler"
+    expect(received[0]!.session.agentId).toBe("slack-handler");
+  });
+
+  test("scheduler fires frames received by onFrame", async () => {
+    transport = createBunTransport();
+    const auth = createTestAuthenticator({
+      ok: true,
+      sessionId: "s-sched",
+      agentId: "a",
+      metadata: {},
+    });
+
+    const dispatched: Array<{ session: Session; frame: GatewayFrame }> = [];
+
+    gateway = createGateway(
+      {
+        schedulers: [
+          { id: "test-tick", intervalMs: 100, agentId: "ticker-agent" },
+        ],
+      },
+      { transport, auth },
+    );
+    await gateway.start(0);
+
+    gateway.onFrame((session, frame) => {
+      dispatched.push({ session, frame });
+    });
+
+    // Wait for at least one tick
+    await new Promise((r) => setTimeout(r, 250));
+
+    expect(dispatched.length).toBeGreaterThanOrEqual(1);
+    expect(dispatched[0]!.session.agentId).toBe("ticker-agent");
+    expect(dispatched[0]!.session.metadata).toEqual({ schedulerId: "test-tick" });
+    expect(dispatched[0]!.frame.kind).toBe("event");
+    expect(dispatched[0]!.frame.payload).toEqual({
+      schedulerId: "test-tick",
+      type: "tick",
+    });
   });
 });

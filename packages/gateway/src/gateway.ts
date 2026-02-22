@@ -4,16 +4,21 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
-import type { GatewayAuthenticator } from "./auth.js";
+import type { GatewayAuthenticator, HandshakeOptions } from "./auth.js";
 import { handleHandshake, startHeartbeatSweep } from "./auth.js";
 import { createBackpressureMonitor } from "./backpressure.js";
-import { encodeFrame, parseFrame } from "./protocol.js";
+import { buildAckFrame, buildErrorFrame, encodeFrame, parseFrame } from "./protocol.js";
 import { createSequenceTracker } from "./sequence-tracker.js";
 import type { SessionStore } from "./session-store.js";
 import { createInMemorySessionStore } from "./session-store.js";
+import { resolveRoute } from "./routing.js";
+import type { GatewayScheduler } from "./scheduler.js";
+import { createScheduler } from "./scheduler.js";
 import type { Transport, TransportConnection } from "./transport.js";
 import type { GatewayConfig, GatewayFrame, Session } from "./types.js";
 import { DEFAULT_GATEWAY_CONFIG } from "./types.js";
+import type { WebhookAuthenticator, WebhookServer } from "./webhook.js";
+import { createWebhookServer } from "./webhook.js";
 
 // ---------------------------------------------------------------------------
 // Gateway interface
@@ -25,6 +30,10 @@ export interface Gateway {
   readonly sessions: () => SessionStore;
   readonly onFrame: (handler: (session: Session, frame: GatewayFrame) => void) => () => void;
   readonly send: (sessionId: string, frame: GatewayFrame) => Result<number, KoiError>;
+  /** Inject a frame into the dispatch pipeline with route resolution. */
+  readonly dispatch: (session: Session, frame: GatewayFrame) => void;
+  /** Returns the webhook server port, or undefined if webhook is not configured. */
+  readonly webhookPort: () => number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -35,6 +44,7 @@ export interface GatewayDeps {
   readonly transport: Transport;
   readonly auth: GatewayAuthenticator;
   readonly store?: SessionStore;
+  readonly webhookAuth?: WebhookAuthenticator;
 }
 
 export function createGateway(configOverrides: Partial<GatewayConfig>, deps: GatewayDeps): Gateway {
@@ -51,6 +61,8 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
 
   const frameHandlers = new Set<(session: Session, frame: GatewayFrame) => void>();
   let stopSweep: (() => void) | undefined;
+  let webhookServer: WebhookServer | undefined;
+  let scheduler: GatewayScheduler | undefined;
 
   function closeConnection(connId: string, code: number, reason: string): void {
     const conn = connMap.get(connId);
@@ -69,12 +81,89 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
     if (sessionId !== undefined) {
       connBySession.delete(sessionId);
       trackers.delete(sessionId);
+      store.delete(sessionId);
     }
   }
 
   function dispatchFrame(session: Session, frame: GatewayFrame): void {
     for (const handler of frameHandlers) {
-      handler(session, frame);
+      try {
+        handler(session, frame);
+      } catch (_err: unknown) {
+        // Isolate handler exceptions so one bad handler doesn't break others
+      }
+    }
+  }
+
+  function handlePostHandshake(conn: TransportConnection, data: string): void {
+    const sessionId = sessionByConn.get(conn.id);
+    if (sessionId === undefined) {
+      conn.close(4007, "No session");
+      cleanup(conn.id);
+      return;
+    }
+
+    const session = store.get(sessionId);
+    if (session === undefined) {
+      conn.close(4008, "Session not found");
+      cleanup(conn.id);
+      return;
+    }
+
+    // Check backpressure before processing
+    const bpState = bp.state(conn.id);
+    if (bpState === "critical") {
+      const criticalAt = bp.criticalSince(conn.id);
+      if (criticalAt !== undefined && Date.now() - criticalAt > config.backpressureCriticalTimeoutMs) {
+        closeConnection(conn.id, 4009, "Backpressure timeout");
+        return;
+      }
+      // Drop frame while in critical state
+      return;
+    }
+
+    const result = parseFrame(data);
+    if (!result.ok) {
+      conn.send(buildErrorFrame(session.seq, result.error.code, result.error.message));
+      return;
+    }
+
+    const frame = result.value;
+
+    // Track buffer usage
+    bp.record(conn.id, data.length);
+
+    // Sequence tracking
+    const tracker = trackers.get(sessionId);
+    if (tracker === undefined) return;
+
+    const acceptance = tracker.accept(frame);
+
+    if (acceptance.result === "duplicate") {
+      // Send ack for duplicate (idempotent)
+      conn.send(buildAckFrame(session.seq, frame.id));
+      return;
+    }
+
+    if (acceptance.result === "out_of_window") {
+      conn.send(buildErrorFrame(session.seq, "VALIDATION", "Sequence out of window"));
+      return;
+    }
+
+    // Resolve route once per batch — routing context doesn't change within a batch
+    const resolved = resolveRoute(config.routing, session.routing, session.agentId);
+    const baseAgentId = resolved.agentId;
+
+    // Process all ready frames (in order) with immutable session updates
+    let currentSession = session;
+    for (const readyFrame of acceptance.ready) {
+      const routedSession = baseAgentId !== currentSession.agentId
+        ? { ...currentSession, agentId: baseAgentId, remoteSeq: readyFrame.seq, lastHeartbeat: Date.now() }
+        : { ...currentSession, remoteSeq: readyFrame.seq, lastHeartbeat: Date.now() };
+      currentSession = routedSession;
+      store.set(currentSession);
+      dispatchFrame(currentSession, readyFrame);
+      conn.send(buildAckFrame(currentSession.seq, readyFrame.id));
     }
   }
 
@@ -107,12 +196,27 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
 
           connMap.set(conn.id, conn);
 
+          // Build handshake options from config + runtime state
+          const handshakeOptions: HandshakeOptions = {
+            minProtocolVersion: config.minProtocolVersion,
+            maxProtocolVersion: config.maxProtocolVersion,
+            capabilities: config.capabilities,
+            ...(config.includeSnapshot
+              ? {
+                  snapshot: {
+                    serverTime: Date.now(),
+                    activeConnections: deps.transport.connections(),
+                  },
+                }
+              : {}),
+          };
+
           // Start auth handshake
           void handleHandshake(
             conn,
             deps.auth,
             config.authTimeoutMs,
-            config.protocolVersion,
+            handshakeOptions,
             (handler) => {
               pendingHandshakes.set(conn.id, handler);
             },
@@ -132,106 +236,12 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
         },
 
         onMessage(conn: TransportConnection, data: string): void {
-          // If still in handshake phase, forward to handshake handler
           const handshakeHandler = pendingHandshakes.get(conn.id);
           if (handshakeHandler !== undefined) {
             handshakeHandler(data);
             return;
           }
-
-          const sessionId = sessionByConn.get(conn.id);
-          if (sessionId === undefined) {
-            conn.close(4007, "No session");
-            cleanup(conn.id);
-            return;
-          }
-
-          const session = store.get(sessionId);
-          if (session === undefined) {
-            conn.close(4008, "Session not found");
-            cleanup(conn.id);
-            return;
-          }
-
-          // Check backpressure before processing
-          const bpState = bp.state(conn.id);
-          if (bpState === "critical") {
-            const criticalAt = bp.criticalSince(conn.id);
-            if (criticalAt !== undefined && Date.now() - criticalAt > 30_000) {
-              closeConnection(conn.id, 4009, "Backpressure timeout");
-              return;
-            }
-            // Drop frame while in critical state
-            return;
-          }
-
-          const result = parseFrame(data);
-          if (!result.ok) {
-            const errorFrame = encodeFrame({
-              kind: "error",
-              id: crypto.randomUUID(),
-              seq: session.seq,
-              timestamp: Date.now(),
-              payload: { code: result.error.code, message: result.error.message },
-            });
-            conn.send(errorFrame);
-            return;
-          }
-
-          const frame = result.value;
-
-          // Track buffer usage
-          bp.record(conn.id, data.length);
-
-          // Sequence tracking
-          const tracker = trackers.get(sessionId);
-          if (tracker === undefined) return;
-
-          const acceptance = tracker.accept(frame);
-
-          if (acceptance.result === "duplicate") {
-            // Send ack for duplicate (idempotent)
-            const ackFrame = encodeFrame({
-              kind: "ack",
-              id: crypto.randomUUID(),
-              seq: session.seq,
-              ref: frame.id,
-              timestamp: Date.now(),
-              payload: null,
-            });
-            conn.send(ackFrame);
-            return;
-          }
-
-          if (acceptance.result === "out_of_window") {
-            const errorFrame = encodeFrame({
-              kind: "error",
-              id: crypto.randomUUID(),
-              seq: session.seq,
-              timestamp: Date.now(),
-              payload: { code: "VALIDATION", message: "Sequence out of window" },
-            });
-            conn.send(errorFrame);
-            return;
-          }
-
-          // Process all ready frames (in order)
-          for (const readyFrame of acceptance.ready) {
-            // Update session's remoteSeq
-            store.set({ ...session, remoteSeq: readyFrame.seq, lastHeartbeat: Date.now() });
-            dispatchFrame(session, readyFrame);
-
-            // Send ack
-            const ackFrame = encodeFrame({
-              kind: "ack",
-              id: crypto.randomUUID(),
-              seq: session.seq,
-              ref: readyFrame.id,
-              timestamp: Date.now(),
-              payload: null,
-            });
-            conn.send(ackFrame);
-          }
+          handlePostHandshake(conn, data);
         },
 
         onClose(conn: TransportConnection): void {
@@ -239,13 +249,43 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
         },
 
         onDrain(conn: TransportConnection): void {
-          bp.drain(conn.id, config.maxBufferPerConnection);
+          bp.drain(conn.id, config.maxBufferBytesPerConnection);
         },
       });
+
+      // Start webhook server if configured
+      if (config.webhookPort !== undefined) {
+        webhookServer = createWebhookServer(
+          { port: config.webhookPort, pathPrefix: config.webhookPath ?? "/webhook" },
+          (session, frame) => {
+            const resolved = resolveRoute(config.routing, session.routing, session.agentId);
+            const routedSession = resolved.agentId !== session.agentId
+              ? { ...session, agentId: resolved.agentId }
+              : session;
+            dispatchFrame(routedSession, frame);
+          },
+          deps.webhookAuth,
+        );
+        await webhookServer.start();
+      }
+
+      // Start schedulers if configured
+      if (config.schedulers !== undefined && config.schedulers.length > 0) {
+        scheduler = createScheduler(config.schedulers, (session, frame) => {
+          dispatchFrame(session, frame);
+        });
+        scheduler.start();
+      }
     },
 
     async stop(): Promise<void> {
+      scheduler?.stop();
+      webhookServer?.stop();
       stopSweep?.();
+      // Best-effort graceful close
+      for (const conn of connMap.values()) {
+        conn.close(1001, "Server shutting down");
+      }
       deps.transport.close();
       connMap.clear();
       sessionByConn.clear();
@@ -301,6 +341,18 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
       }
 
       return { ok: true, value: sendResult };
+    },
+
+    dispatch(session: Session, frame: GatewayFrame): void {
+      const resolved = resolveRoute(config.routing, session.routing, session.agentId);
+      const routedSession = resolved.agentId !== session.agentId
+        ? { ...session, agentId: resolved.agentId }
+        : session;
+      dispatchFrame(routedSession, frame);
+    },
+
+    webhookPort(): number | undefined {
+      return webhookServer?.port();
     },
   };
 }
