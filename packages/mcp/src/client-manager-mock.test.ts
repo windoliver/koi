@@ -9,10 +9,7 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import {
-  createMcpClientManager,
-  type ClientManagerDeps,
-} from "./client-manager.js";
+import { type ClientManagerDeps, createMcpClientManager } from "./client-manager.js";
 import type { ResolvedMcpServerConfig } from "./config.js";
 
 // ---------------------------------------------------------------------------
@@ -73,10 +70,7 @@ function createMockDeps(): ClientManagerDeps {
       async listTools() {
         return mockListToolsResult;
       },
-      async callTool(params: {
-        name: string;
-        arguments: Record<string, unknown>;
-      }) {
+      async callTool(params: { name: string; arguments: Record<string, unknown> }) {
         callToolCalls.push(params);
         if (mockCallToolShouldThrow) {
           throw new Error("Tool execution error");
@@ -125,7 +119,12 @@ describe("createMcpClientManager (mocked SDK)", () => {
 
   test("connect returns error on failure and stays disconnected", async () => {
     mockConnectBehavior = "fail";
-    const manager = createMcpClientManager(createTestConfig("bad-server"), 10_000, 0, createMockDeps());
+    const manager = createMcpClientManager(
+      createTestConfig("bad-server"),
+      10_000,
+      0,
+      createMockDeps(),
+    );
 
     const result = await manager.connect();
     expect(result.ok).toBe(false);
@@ -137,7 +136,12 @@ describe("createMcpClientManager (mocked SDK)", () => {
 
   test("connect times out and returns TIMEOUT error", async () => {
     mockConnectBehavior = "hang";
-    const manager = createMcpClientManager(createTestConfig("slow-server"), 100, 0, createMockDeps());
+    const manager = createMcpClientManager(
+      createTestConfig("slow-server"),
+      100,
+      0,
+      createMockDeps(),
+    );
 
     const result = await manager.connect();
     expect(result.ok).toBe(false);
@@ -387,7 +391,12 @@ describe("createMcpClientManager (mocked SDK)", () => {
     // The timeout path throws a KoiError (connectionTimeoutError) which
     // is detected by isKoiError() and returned directly without wrapping.
     mockConnectBehavior = "hang";
-    const manager = createMcpClientManager(createTestConfig("timeout-server"), 50, 0, createMockDeps());
+    const manager = createMcpClientManager(
+      createTestConfig("timeout-server"),
+      50,
+      0,
+      createMockDeps(),
+    );
 
     const result = await manager.connect();
     expect(result.ok).toBe(false);

@@ -14,10 +14,7 @@ import { toolToken } from "@koi/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { McpClientManager, McpToolInfo } from "../client-manager.js";
 import { createMcpComponentProviderAsync } from "../component-provider.js";
 import type { ResolvedMcpServerConfig } from "../config.js";
@@ -99,8 +96,7 @@ async function createTestServerPair(): Promise<TestServerPair> {
     }
   });
 
-  const [clientTransport, serverTransport] =
-    InMemoryTransport.createLinkedPair();
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
   await server.connect(serverTransport);
 
@@ -119,10 +115,7 @@ async function createTestServerPair(): Promise<TestServerPair> {
  * Wraps a real MCP SDK Client as an McpClientManager.
  * Used to bridge the E2E client with the Koi adapter layers.
  */
-function wrapClientAsManager(
-  sdkClient: Client,
-  name: string,
-): McpClientManager {
+function wrapClientAsManager(sdkClient: Client, name: string): McpClientManager {
   let connected = true;
 
   return {
@@ -370,18 +363,14 @@ describe("E2E: Koi adapter layers with real MCP server", () => {
     expect(components.size).toBe(3);
 
     // Execute echo tool through the component
-    const echoTool = components.get(
-      toolToken("mcp/e2e-test/echo") as string,
-    ) as Tool;
+    const echoTool = components.get(toolToken("mcp/e2e-test/echo") as string) as Tool;
     expect(echoTool).toBeDefined();
 
     const echoResult = await echoTool.execute({ message: "Real E2E!" });
     expect(echoResult).toEqual([{ type: "text", text: "Real E2E!" }]);
 
     // Execute add tool through the component
-    const addTool = components.get(
-      toolToken("mcp/e2e-test/add") as string,
-    ) as Tool;
+    const addTool = components.get(toolToken("mcp/e2e-test/add") as string) as Tool;
     const addResult = await addTool.execute({ a: 100, b: 23 });
     expect(addResult).toEqual([{ type: "text", text: "123" }]);
   });
