@@ -3,8 +3,9 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
+import { zodToKoiError } from "@koi/validation";
 import { interpolateEnv } from "./env.js";
-import { rawManifestSchema, zodToKoiError } from "./schema.js";
+import { rawManifestSchema } from "./schema.js";
 import { transformToLoadedManifest } from "./transform.js";
 import type { LoadResult } from "./types.js";
 import { detectUnknownFields } from "./warnings.js";
@@ -94,7 +95,7 @@ export function loadManifestFromString(
   // Validate with Zod
   const validation = rawManifestSchema.safeParse(parsed);
   if (!validation.success) {
-    return { ok: false, error: zodToKoiError(validation.error) };
+    return { ok: false, error: zodToKoiError(validation.error, "Manifest validation failed") };
   }
 
   // Detect unknown fields (warnings, not errors)

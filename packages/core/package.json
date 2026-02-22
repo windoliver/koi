@@ -44,6 +44,10 @@
       "types": "./dist/middleware.d.ts",
       "import": "./dist/middleware.js"
     },
+    "./model-provider": {
+      "types": "./dist/model-provider.d.ts",
+      "import": "./dist/model-provider.js"
+    },
     "./resolver": {
       "types": "./dist/resolver.d.ts",
       "import": "./dist/resolver.js"

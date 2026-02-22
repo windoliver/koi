@@ -6,7 +6,6 @@
  * 2. Transform layer (transform.ts) normalizes shorthand → L0 types
  */
 
-import type { KoiError } from "@koi/core";
 import { z } from "zod";
 
 // ── Raw manifest type (explicit for isolatedDeclarations) ──
@@ -113,22 +112,6 @@ export const rawManifestSchema: z.ZodType<RawManifest> = z
   })
   .passthrough();
 
-// ── Error conversion ──
+// ── Error conversion (delegated to @koi/validation) ──
 
-/**
- * Converts a Zod validation error into a `KoiError` with code `VALIDATION`.
- */
-export function zodToKoiError(zodError: z.ZodError): KoiError {
-  const issues = zodError.issues.map((issue) => ({
-    path: issue.path.join("."),
-    message: issue.message,
-    code: issue.code,
-  }));
-
-  return {
-    code: "VALIDATION",
-    message: `Manifest validation failed: ${issues.map((i) => `${i.path || "root"}: ${i.message}`).join("; ")}`,
-    retryable: false,
-    context: { issues },
-  };
-}
+export { zodToKoiError } from "@koi/validation";

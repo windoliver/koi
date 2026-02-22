@@ -1,5 +1,5 @@
 {
-  "name": "@koi/mcp",
+  "name": "@koi/model-router",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -18,7 +18,6 @@
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/validation": "workspace:*",
-    "@modelcontextprotocol/sdk": "1.12.1",
     "zod": "4.3.6"
   }
 }

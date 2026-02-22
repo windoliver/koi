@@ -8,6 +8,8 @@ import type { DelegationConfig } from "./delegation.js";
 export interface ModelConfig {
   readonly name: string;
   readonly options?: JsonObject;
+  /** Fallback model names for routing. Tried in order on primary failure. */
+  readonly fallbacks?: readonly string[];
 }
 
 export interface ToolConfig {

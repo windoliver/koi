@@ -99,6 +99,8 @@ export type {
   ToolResponse,
   TurnContext,
 } from "./middleware.js";
+// model provider
+export type { ModelCapabilities, ModelProvider, ModelTarget } from "./model-provider.js";
 // resolver
 export type { Resolver } from "./resolver.js";
 // search contracts
