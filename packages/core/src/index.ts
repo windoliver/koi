@@ -73,6 +73,17 @@ export type {
   EngineState,
   EngineStopReason,
 } from "./engine.js";
+// error factories — pure data constructors for KoiError objects
+export {
+  conflict,
+  external,
+  internal,
+  notFound,
+  permission,
+  rateLimit,
+  timeout,
+  validation,
+} from "./error-factories.js";
 // errors — types
 export type { KoiError, KoiErrorCode, Result } from "./errors.js";
 // errors — runtime values

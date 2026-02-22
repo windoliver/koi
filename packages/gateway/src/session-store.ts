@@ -1,8 +1,14 @@
 /**
  * SessionStore: pluggable session persistence.
  * Default in-memory implementation provided.
+ *
+ * All mutating/querying methods return `Result<T, KoiError>` (or a Promise
+ * thereof) so implementations can be sync (in-memory) or async (network)
+ * without interface changes.
  */
 
+import type { KoiError, Result } from "@koi/core";
+import { notFound } from "@koi/core";
 import type { Session } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -10,10 +16,10 @@ import type { Session } from "./types.js";
 // ---------------------------------------------------------------------------
 
 export interface SessionStore {
-  readonly get: (id: string) => Session | undefined;
-  readonly set: (session: Session) => void;
-  readonly delete: (id: string) => boolean;
-  readonly has: (id: string) => boolean;
+  readonly get: (id: string) => Result<Session, KoiError> | Promise<Result<Session, KoiError>>;
+  readonly set: (session: Session) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+  readonly delete: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
+  readonly has: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
   readonly size: () => number;
   readonly entries: () => IterableIterator<readonly [string, Session]>;
 }
@@ -26,20 +32,25 @@ export function createInMemorySessionStore(): SessionStore {
   const map = new Map<string, Session>();
 
   return {
-    get(id: string): Session | undefined {
-      return map.get(id);
+    get(id: string): Result<Session, KoiError> {
+      const session = map.get(id);
+      if (session === undefined) {
+        return { ok: false, error: notFound(id, `Session not found: ${id}`) };
+      }
+      return { ok: true, value: session };
     },
 
-    set(session: Session): void {
+    set(session: Session): Result<void, KoiError> {
       map.set(session.id, session);
+      return { ok: true, value: undefined };
     },
 
-    delete(id: string): boolean {
-      return map.delete(id);
+    delete(id: string): Result<boolean, KoiError> {
+      return { ok: true, value: map.delete(id) };
     },
 
-    has(id: string): boolean {
-      return map.has(id);
+    has(id: string): Result<boolean, KoiError> {
+      return { ok: true, value: map.has(id) };
     },
 
     size(): number {

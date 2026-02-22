@@ -1,5 +1,5 @@
 {
-  "name": "@koi/node",
+  "name": "@koi/session-store",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,19 +9,13 @@
       "import": "./dist/index.js"
     }
   },
-  "dependencies": {
-    "@koi/core": "workspace:*",
-    "zod": "4.3.6"
-  },
-  "devDependencies": {
-    "@koi/gateway": "workspace:*",
-    "@koi/session-store": "workspace:*",
-    "@koi/test-utils": "workspace:*"
-  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*"
   }
 }

@@ -8,6 +8,7 @@ import {
   createLegacyConnectMessage,
   createTestAuthenticator,
   createTestSession,
+  storeGet,
   waitForCondition,
 } from "./test-utils.js";
 
@@ -408,7 +409,9 @@ describe("startHeartbeatSweep", () => {
     await waitForCondition(() => expiredIds.includes("s1"), 2000);
 
     expect(expiredIds).toContain("s1");
-    expect(store.has("s1")).toBe(false);
+    const hasResult = await store.has("s1");
+    expect(hasResult.ok).toBe(true);
+    if (hasResult.ok) expect(hasResult.value).toBe(false);
   });
 
   test("keeps valid session alive", async () => {
@@ -431,13 +434,16 @@ describe("startHeartbeatSweep", () => {
 
     // Wait for enough sweeps to cover all shards
     await waitForCondition(() => {
-      const updated = store.get("s1");
+      const updated = storeGet(store, "s1");
       return updated !== undefined && updated.lastHeartbeat > activeSession.lastHeartbeat;
     }, 2000);
 
     expect(expiredIds).toHaveLength(0);
-    expect(store.has("s1")).toBe(true);
-    const updated = store.get("s1");
+    const hasResult = await store.has("s1");
+    expect(hasResult.ok).toBe(true);
+    if (hasResult.ok) expect(hasResult.value).toBe(true);
+    const updated = storeGet(store, "s1");
+    expect(updated).toBeDefined();
     expect(updated?.lastHeartbeat).toBeGreaterThan(activeSession.lastHeartbeat);
   });
 
@@ -514,7 +520,9 @@ describe("startHeartbeatSweep", () => {
     await new Promise((r) => setTimeout(r, 300));
 
     // Session should still be in the store (fail-open: error → keep session)
-    expect(store.has("s-fail-open")).toBe(true);
+    const hasResult2 = await store.has("s-fail-open");
+    expect(hasResult2.ok).toBe(true);
+    if (hasResult2.ok) expect(hasResult2.value).toBe(true);
     expect(expiredIds).toHaveLength(0);
   });
 
@@ -552,7 +560,9 @@ describe("startHeartbeatSweep", () => {
     expect(errors[0]?.sessionId).toBe("s-err-cb");
     expect(errors[0]?.cause).toBe(authError);
     // Session still alive (fail-open)
-    expect(store.has("s-err-cb")).toBe(true);
+    const hasResult3 = await store.has("s-err-cb");
+    expect(hasResult3.ok).toBe(true);
+    if (hasResult3.ok) expect(hasResult3.value).toBe(true);
   });
 
   test("partial failure: valid sessions evicted, errored sessions kept", async () => {
@@ -592,10 +602,14 @@ describe("startHeartbeatSweep", () => {
 
     // s-invalid was evicted (validation returned false)
     expect(expiredIds).toContain("s-invalid");
-    expect(store.has("s-invalid")).toBe(false);
+    const hasInvalid = await store.has("s-invalid");
+    expect(hasInvalid.ok).toBe(true);
+    if (hasInvalid.ok) expect(hasInvalid.value).toBe(false);
 
     // s-errored kept alive (fail-open on auth error)
-    expect(store.has("s-errored")).toBe(true);
+    const hasErrored = await store.has("s-errored");
+    expect(hasErrored.ok).toBe(true);
+    if (hasErrored.ok) expect(hasErrored.value).toBe(true);
     expect(errors.some((e) => e.sessionId === "s-errored")).toBe(true);
   });
 });
