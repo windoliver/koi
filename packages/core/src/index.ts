@@ -18,6 +18,8 @@ export type {
 export type { ChannelAdapter, ChannelCapabilities, MessageHandler } from "./channel.js";
 // common
 export type { JsonObject } from "./common.js";
+// context
+export type { CompactionResult, ContextCompactor, TokenEstimator } from "./context.js";
 // delegation
 export type {
   DelegationComponent,
@@ -34,16 +36,21 @@ export type {
 export type {
   Agent,
   AgentId,
+  ChildHandle,
+  ChildLifecycleEvent,
   ComponentProvider,
   CredentialComponent,
   EventComponent,
   GovernanceComponent,
   GovernanceUsage,
   MemoryComponent,
+  MemoryResult,
+  ProcessAccounter,
   ProcessId,
   ProcessState,
   SkillMetadata,
   SpawnCheck,
+  SpawnLedger,
   SubsystemToken,
   Tool,
   ToolDescriptor,
@@ -95,8 +102,8 @@ export type {
   EvictionReason,
   EvictionResult,
 } from "./eviction.js";
-// forge types
-export type { BrickKind, BrickLifecycle, ForgeScope } from "./forge-types.js";
+// hash
+export { fnv1a } from "./hash.js";
 // health
 export type {
   HealthMonitor,
@@ -147,35 +154,25 @@ export type {
   ToolResponse,
   TurnContext,
 } from "./middleware.js";
+// model provider
+export type { ModelCapabilities, ModelProvider, ModelTarget } from "./model-provider.js";
 // resolver
 export type { Resolver } from "./resolver.js";
-// search contracts
-export type { Embedder, Indexer, Retriever } from "./retriever.js";
-// sandbox
+// scheduler — types
 export type {
-  FilesystemPolicy,
-  NetworkPolicy,
-  ResourceLimits,
-  SandboxAdapter,
-  SandboxExecOptions,
-  SandboxInstance,
-  SandboxProfile,
-  SandboxResult,
-  SandboxTier,
-} from "./sandbox.js";
-// search value types
-export type {
-  FusionFunction,
-  FusionStrategy,
-  IndexDocument,
-  ScoreNormalizer,
-  SearchErr,
-  SearchError,
-  SearchFilter,
-  SearchOk,
-  SearchOutcome,
-  SearchPage,
-  SearchQuery,
-  SearchResult,
-  SearchScore,
-} from "./search.js";
+  CronSchedule,
+  ScheduledTask,
+  ScheduleId,
+  SchedulerConfig,
+  SchedulerEvent,
+  SchedulerStats,
+  ScheduleStore,
+  TaskFilter,
+  TaskId,
+  TaskOptions,
+  TaskScheduler,
+  TaskStatus,
+  TaskStore,
+} from "./scheduler.js";
+// scheduler — runtime values (branded constructors + defaults)
+export { DEFAULT_SCHEDULER_CONFIG, scheduleId, taskId } from "./scheduler.js";

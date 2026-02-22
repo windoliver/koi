@@ -6,6 +6,7 @@
  */
 
 import type { KoiError } from "@koi/core";
+import { zodToKoiError } from "@koi/validation";
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
@@ -101,23 +102,8 @@ const mcpProviderConfigSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Zod → KoiError conversion (mirrors manifest/schema.ts pattern)
+// Zod → KoiError conversion (delegated to @koi/validation)
 // ---------------------------------------------------------------------------
-
-function zodToKoiError(zodError: z.ZodError): KoiError {
-  const issues = zodError.issues.map((issue) => ({
-    path: issue.path.join("."),
-    message: issue.message,
-    code: issue.code,
-  }));
-
-  return {
-    code: "VALIDATION",
-    message: `MCP config validation failed: ${issues.map((i) => `${i.path || "root"}: ${i.message}`).join("; ")}`,
-    retryable: false,
-    context: { issues },
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -127,7 +113,7 @@ function zodToKoiError(zodError: z.ZodError): KoiError {
 export function validateMcpProviderConfig(raw: unknown): McpProviderConfig {
   const result = mcpProviderConfigSchema.safeParse(raw);
   if (!result.success) {
-    throw zodToKoiError(result.error);
+    throw zodToKoiError(result.error, "MCP config validation failed");
   }
   return result.data as McpProviderConfig;
 }
@@ -136,7 +122,7 @@ export function validateMcpProviderConfig(raw: unknown): McpProviderConfig {
 export function validateMcpServerConfig(raw: unknown): McpServerConfig {
   const result = mcpServerConfigSchema.safeParse(raw);
   if (!result.success) {
-    throw zodToKoiError(result.error);
+    throw zodToKoiError(result.error, "MCP server config validation failed");
   }
   return result.data as McpServerConfig;
 }

@@ -132,14 +132,23 @@ export interface ComponentProvider {
 // Singleton component types (sub-types deferred to L2)
 // ---------------------------------------------------------------------------
 
+/** A single memory recall result with content and optional metadata. */
+export interface MemoryResult {
+  readonly content: string;
+  readonly score?: number;
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
 export interface MemoryComponent {
-  readonly recall: (query: string) => Promise<readonly unknown[]>;
-  readonly store: (content: unknown) => Promise<void>;
+  readonly recall: (query: string) => Promise<readonly MemoryResult[]>;
+  readonly store: (content: string) => Promise<void>;
 }
 
 export interface GovernanceUsage {
   readonly turns: number;
   readonly spawns: number;
+  /** Extensible counters for L2-defined metrics (e.g., tokens, tool calls). */
+  readonly counters?: Readonly<Record<string, number>>;
 }
 
 export type SpawnCheck =
@@ -151,6 +160,54 @@ export interface GovernanceComponent {
   readonly checkSpawn: (depth: number) => SpawnCheck;
 }
 
+// ---------------------------------------------------------------------------
+// Spawn ledger (tree-wide spawn accounting)
+// ---------------------------------------------------------------------------
+
+/**
+ * SpawnLedger — tree-wide spawn accounting for concurrency governance.
+ *
+ * Tracks active agent processes across an entire spawn tree.
+ * The root agent creates a ledger and passes it down to children via
+ * engine options. All agents in the tree share the same ledger instance.
+ *
+ * Implementations range from in-memory counters (single-Node) to
+ * distributed backends (multi-Node via EventComponent, Redis, etc.).
+ *
+ * acquire/release support `T | Promise<T>` return types so that
+ * implementations can be sync (in-memory) or async (network) without
+ * interface changes. Callers must always `await` the result.
+ */
+export interface SpawnLedger {
+  /**
+   * Attempt to reserve a spawn slot.
+   * Returns `true` if a slot was acquired, `false` if at capacity.
+   *
+   * Callers MUST call `release()` if the spawn subsequently fails,
+   * to avoid permanently leaking slots (optimistic locking pattern).
+   */
+  readonly acquire: () => boolean | Promise<boolean>;
+
+  /**
+   * Release a previously acquired spawn slot.
+   * Called when a child agent terminates or when a spawn fails
+   * after a successful `acquire()`.
+   */
+  readonly release: () => void | Promise<void>;
+
+  /**
+   * Current number of active (acquired but not released) slots.
+   * Sync — distributed implementations should cache locally.
+   */
+  readonly activeCount: () => number;
+
+  /**
+   * Maximum number of slots (total capacity).
+   * Immutable after creation.
+   */
+  readonly capacity: () => number;
+}
+
 export interface CredentialComponent {
   readonly get: (key: string) => Promise<string | undefined>;
 }
@@ -158,6 +215,38 @@ export interface CredentialComponent {
 export interface EventComponent {
   readonly emit: (type: string, data: unknown) => Promise<void>;
   readonly on: (type: string, handler: (data: unknown) => void) => () => void;
+}
+
+// ---------------------------------------------------------------------------
+// Process accounting
+// ---------------------------------------------------------------------------
+
+/** Shared process accounter for cross-agent spawn accounting. */
+export interface ProcessAccounter {
+  /** Current number of active processes. */
+  readonly activeCount: () => number;
+  /** Manually increment the active count (e.g., on successful spawn). */
+  readonly increment: () => void;
+  /** Manually decrement the active count (e.g., on agent termination). */
+  readonly decrement: () => void;
+}
+
+// ---------------------------------------------------------------------------
+// Child lifecycle
+// ---------------------------------------------------------------------------
+
+/** Lifecycle event for a child agent. */
+export type ChildLifecycleEvent =
+  | { readonly kind: "started"; readonly childId: AgentId }
+  | { readonly kind: "completed"; readonly childId: AgentId }
+  | { readonly kind: "error"; readonly childId: AgentId; readonly cause?: unknown }
+  | { readonly kind: "terminated"; readonly childId: AgentId };
+
+/** Handle for monitoring a child agent's lifecycle. */
+export interface ChildHandle {
+  readonly childId: AgentId;
+  readonly name: string;
+  readonly onEvent: (listener: (event: ChildLifecycleEvent) => void) => () => void;
 }
 
 // ---------------------------------------------------------------------------

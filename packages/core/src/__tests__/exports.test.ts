@@ -13,14 +13,13 @@ import type {
   AgentManifest,
   AgentRegistry,
   AgentStatus,
-  // forge types
-  BrickKind,
-  BrickLifecycle,
   ButtonBlock,
   ChannelAdapter,
   // channel
   ChannelCapabilities,
   ChannelConfig,
+  ChildHandle,
+  ChildLifecycleEvent,
   ComponentProvider,
   ContentBlock,
   CredentialComponent,
@@ -31,7 +30,6 @@ import type {
   EngineMetrics,
   EngineOutput,
   EngineState,
-  // engine
   EngineStopReason,
   EventComponent,
   // eviction
@@ -40,9 +38,6 @@ import type {
   EvictionReason,
   EvictionResult,
   FileBlock,
-  // sandbox
-  FilesystemPolicy,
-  ForgeScope,
   GovernanceComponent,
   GovernanceUsage,
   // health
@@ -60,6 +55,7 @@ import type {
   KoiErrorCode,
   KoiMiddleware,
   MemoryComponent,
+  MemoryResult,
   MessageHandler,
   MiddlewareConfig,
   // assembly
@@ -67,9 +63,9 @@ import type {
   ModelHandler,
   ModelRequest,
   ModelResponse,
-  NetworkPolicy,
   OutboundMessage,
   PermissionConfig,
+  ProcessAccounter,
   ProcessId,
   ProcessState,
   RegistryEntry,
@@ -77,14 +73,7 @@ import type {
   RegistryFilter,
   // resolver
   Resolver,
-  ResourceLimits,
   Result,
-  SandboxAdapter,
-  SandboxExecOptions,
-  SandboxInstance,
-  SandboxProfile,
-  SandboxResult,
-  SandboxTier,
   // delegation
   ScopeChecker,
   // middleware
@@ -125,9 +114,6 @@ import {
 type AssertDefined<T> = T extends undefined ? never : T;
 type _TypeGuard =
   | AssertDefined<JsonObject>
-  | AssertDefined<BrickKind>
-  | AssertDefined<BrickLifecycle>
-  | AssertDefined<ForgeScope>
   | AssertDefined<TrustTier>
   | AssertDefined<KoiErrorCode>
   | AssertDefined<KoiError>
@@ -176,20 +162,15 @@ type _TypeGuard =
   | AssertDefined<SkillMetadata>
   | AssertDefined<ComponentProvider>
   | AssertDefined<MemoryComponent>
+  | AssertDefined<MemoryResult>
   | AssertDefined<GovernanceComponent>
   | AssertDefined<GovernanceUsage>
   | AssertDefined<SpawnCheck>
   | AssertDefined<CredentialComponent>
   | AssertDefined<EventComponent>
-  | AssertDefined<SandboxTier>
-  | AssertDefined<FilesystemPolicy>
-  | AssertDefined<NetworkPolicy>
-  | AssertDefined<ResourceLimits>
-  | AssertDefined<SandboxAdapter>
-  | AssertDefined<SandboxExecOptions>
-  | AssertDefined<SandboxInstance>
-  | AssertDefined<SandboxProfile>
-  | AssertDefined<SandboxResult>
+  | AssertDefined<ProcessAccounter>
+  | AssertDefined<ChildHandle>
+  | AssertDefined<ChildLifecycleEvent>
   | AssertDefined<ScopeChecker>
   // lifecycle
   | AssertDefined<AgentId>

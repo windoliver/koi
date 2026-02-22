@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { Embedder } from "@koi/core";
+import type { Embedder } from "./contracts.js";
 import { createCachedEmbedder } from "./embedder-cache.js";
 
 function makeMockEmbedder(): Embedder & { readonly callCount: () => number } {

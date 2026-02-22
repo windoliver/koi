@@ -1,14 +1,15 @@
 /**
- * @koi/core — Search contracts (Layer 0)
+ * @koi/search — Search contracts (Layer 2)
  *
  * Interfaces only — no runtime code.
  */
 
-import type { IndexDocument, SearchOutcome, SearchPage, SearchQuery } from "./search.js";
+import type { KoiError, Result } from "@koi/core";
+import type { IndexDocument, SearchPage, SearchQuery } from "./types.js";
 
 /** Contract 1: Retriever (read path) */
 export interface Retriever<T = unknown> {
-  readonly retrieve: (query: SearchQuery) => Promise<SearchOutcome<SearchPage<T>>>;
+  readonly retrieve: (query: SearchQuery) => Promise<Result<SearchPage<T>, KoiError>>;
 }
 
 /** Contract 2: Embedder (embedding generation) */
@@ -20,6 +21,6 @@ export interface Embedder {
 
 /** Contract 3: Indexer (write path) */
 export interface Indexer<T = unknown> {
-  readonly index: (documents: readonly IndexDocument<T>[]) => Promise<SearchOutcome<void>>;
-  readonly remove: (ids: readonly string[]) => Promise<SearchOutcome<void>>;
+  readonly index: (documents: readonly IndexDocument<T>[]) => Promise<Result<void, KoiError>>;
+  readonly remove: (ids: readonly string[]) => Promise<Result<void, KoiError>>;
 }

@@ -7,7 +7,7 @@
 
 import { basename } from "node:path";
 import * as p from "@clack/prompts";
-import type { CliFlags } from "../args.js";
+import type { InitFlags } from "../args.js";
 import {
   CHANNELS,
   type ChannelName,
@@ -28,7 +28,7 @@ export function isValidName(name: string): boolean {
   return name.length > 0 && name.length <= 214 && VALID_NAME_RE.test(name);
 }
 
-export async function selectTemplate(state: WizardState, flags: CliFlags): Promise<StepResult> {
+export async function selectTemplate(state: WizardState, flags: InitFlags): Promise<StepResult> {
   if (flags.template) {
     if (!(TEMPLATES as readonly string[]).includes(flags.template)) {
       p.cancel(`Unknown template: "${flags.template}". Available: ${TEMPLATES.join(", ")}`);
@@ -53,7 +53,7 @@ export async function selectTemplate(state: WizardState, flags: CliFlags): Promi
   return { ...state, template: value as TemplateName };
 }
 
-export async function enterName(state: WizardState, flags: CliFlags): Promise<StepResult> {
+export async function enterName(state: WizardState, flags: InitFlags): Promise<StepResult> {
   if (flags.name) {
     if (!isValidName(flags.name)) {
       p.cancel(
@@ -90,7 +90,7 @@ export async function enterName(state: WizardState, flags: CliFlags): Promise<St
   return { ...state, name: value };
 }
 
-export async function enterDescription(state: WizardState, flags: CliFlags): Promise<StepResult> {
+export async function enterDescription(state: WizardState, flags: InitFlags): Promise<StepResult> {
   if (flags.yes) {
     return state;
   }
@@ -109,7 +109,7 @@ export async function enterDescription(state: WizardState, flags: CliFlags): Pro
   return { ...state, description: value };
 }
 
-export async function selectModel(state: WizardState, flags: CliFlags): Promise<StepResult> {
+export async function selectModel(state: WizardState, flags: InitFlags): Promise<StepResult> {
   if (flags.model) {
     if (!(MODELS as readonly string[]).includes(flags.model)) {
       p.cancel(`Unknown model: "${flags.model}". Available: ${MODELS.join(", ")}`);
@@ -134,7 +134,7 @@ export async function selectModel(state: WizardState, flags: CliFlags): Promise<
   return { ...state, model: value as string };
 }
 
-export async function selectEngine(state: WizardState, flags: CliFlags): Promise<StepResult> {
+export async function selectEngine(state: WizardState, flags: InitFlags): Promise<StepResult> {
   if (flags.engine) {
     if (!(ENGINES as readonly string[]).includes(flags.engine)) {
       p.cancel(`Unknown engine: "${flags.engine}". Available: ${ENGINES.join(", ")}`);
@@ -159,7 +159,7 @@ export async function selectEngine(state: WizardState, flags: CliFlags): Promise
   return { ...state, engine: value as EngineName };
 }
 
-export async function selectChannels(state: WizardState, flags: CliFlags): Promise<StepResult> {
+export async function selectChannels(state: WizardState, flags: InitFlags): Promise<StepResult> {
   // Only prompt for channels with the copilot template
   if (state.template !== "copilot") {
     return { ...state, channels: ["cli"] };

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { InitFlags, StartFlags } from "./args.js";
 import { parseArgs } from "./args.js";
 
 describe("parseArgs", () => {
@@ -19,37 +20,37 @@ describe("parseArgs", () => {
   });
 
   test("parses --yes flag", () => {
-    const result = parseArgs(["init", "--yes"]);
+    const result = parseArgs(["init", "--yes"]) as InitFlags;
     expect(result.yes).toBe(true);
   });
 
   test("parses -y shorthand for --yes", () => {
-    const result = parseArgs(["init", "-y"]);
+    const result = parseArgs(["init", "-y"]) as InitFlags;
     expect(result.yes).toBe(true);
   });
 
   test("defaults yes to false when not provided", () => {
-    const result = parseArgs(["init"]);
+    const result = parseArgs(["init"]) as InitFlags;
     expect(result.yes).toBe(false);
   });
 
   test("parses --name flag with value", () => {
-    const result = parseArgs(["init", "--name", "my-agent"]);
+    const result = parseArgs(["init", "--name", "my-agent"]) as InitFlags;
     expect(result.name).toBe("my-agent");
   });
 
   test("parses --template flag with value", () => {
-    const result = parseArgs(["init", "--template", "copilot"]);
+    const result = parseArgs(["init", "--template", "copilot"]) as InitFlags;
     expect(result.template).toBe("copilot");
   });
 
   test("parses --model flag with value", () => {
-    const result = parseArgs(["init", "--model", "openai:gpt-4o"]);
+    const result = parseArgs(["init", "--model", "openai:gpt-4o"]) as InitFlags;
     expect(result.model).toBe("openai:gpt-4o");
   });
 
   test("parses --engine flag with value", () => {
-    const result = parseArgs(["init", "--engine", "deepagents"]);
+    const result = parseArgs(["init", "--engine", "deepagents"]) as InitFlags;
     expect(result.engine).toBe("deepagents");
   });
 
@@ -66,7 +67,7 @@ describe("parseArgs", () => {
       "anthropic:claude-sonnet-4-5-20250929",
       "--engine",
       "loop",
-    ]);
+    ]) as InitFlags;
     expect(result.command).toBe("init");
     expect(result.directory).toBe("my-project");
     expect(result.yes).toBe(true);
@@ -77,7 +78,7 @@ describe("parseArgs", () => {
   });
 
   test("flags before directory still work", () => {
-    const result = parseArgs(["init", "--yes", "--name", "agent", "my-dir"]);
+    const result = parseArgs(["init", "--yes", "--name", "agent", "my-dir"]) as InitFlags;
     expect(result.command).toBe("init");
     expect(result.directory).toBe("my-dir");
     expect(result.yes).toBe(true);
@@ -90,7 +91,86 @@ describe("parseArgs", () => {
   });
 
   test("handles = syntax for flags", () => {
-    const result = parseArgs(["init", "--name=my-agent"]);
+    const result = parseArgs(["init", "--name=my-agent"]) as InitFlags;
     expect(result.name).toBe("my-agent");
+  });
+});
+
+describe("parseArgs — start command", () => {
+  test("parses start command", () => {
+    const result = parseArgs(["start"]) as StartFlags;
+    expect(result.command).toBe("start");
+  });
+
+  test("parses --manifest flag", () => {
+    const result = parseArgs(["start", "--manifest", "custom.yaml"]) as StartFlags;
+    expect(result.manifest).toBe("custom.yaml");
+  });
+
+  test("parses --verbose flag", () => {
+    const result = parseArgs(["start", "--verbose"]) as StartFlags;
+    expect(result.verbose).toBe(true);
+  });
+
+  test("parses -v shorthand for --verbose", () => {
+    const result = parseArgs(["start", "-v"]) as StartFlags;
+    expect(result.verbose).toBe(true);
+  });
+
+  test("parses --dry-run flag", () => {
+    const result = parseArgs(["start", "--dry-run"]) as StartFlags;
+    expect(result.dryRun).toBe(true);
+  });
+
+  test("parses positional manifest path", () => {
+    const result = parseArgs(["start", "my-agent.yaml"]) as StartFlags;
+    expect(result.manifest).toBe("my-agent.yaml");
+    expect(result.directory).toBe("my-agent.yaml");
+  });
+
+  test("--manifest flag takes precedence over positional", () => {
+    const result = parseArgs(["start", "positional.yaml", "--manifest", "flag.yaml"]) as StartFlags;
+    expect(result.manifest).toBe("flag.yaml");
+  });
+
+  test("defaults verbose and dryRun to false", () => {
+    const result = parseArgs(["start"]) as StartFlags;
+    expect(result.verbose).toBe(false);
+    expect(result.dryRun).toBe(false);
+  });
+
+  test("defaults manifest to undefined when not provided", () => {
+    const result = parseArgs(["start"]) as StartFlags;
+    expect(result.manifest).toBeUndefined();
+  });
+
+  test("parses all start flags together", () => {
+    const result = parseArgs([
+      "start",
+      "--manifest",
+      "agent.yaml",
+      "--verbose",
+      "--dry-run",
+    ]) as StartFlags;
+    expect(result.command).toBe("start");
+    expect(result.manifest).toBe("agent.yaml");
+    expect(result.verbose).toBe(true);
+    expect(result.dryRun).toBe(true);
+  });
+});
+
+describe("parseArgs — unknown command", () => {
+  test("returns unknown command as-is", () => {
+    const result = parseArgs(["deploy"]);
+    expect(result.command).toBe("deploy");
+    expect(result.directory).toBeUndefined();
+  });
+
+  test("returns BaseFlags for unknown command", () => {
+    const result = parseArgs(["unknown"]);
+    expect(result.command).toBe("unknown");
+    // Should not have init or start specific fields
+    expect("yes" in result).toBe(false);
+    expect("manifest" in result).toBe(false);
   });
 });

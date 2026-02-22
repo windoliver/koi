@@ -3,8 +3,10 @@ import type {
   KoiMiddleware,
   ModelHandler,
   ModelRequest,
+  ModelResponse,
   ToolHandler,
   ToolRequest,
+  ToolResponse,
   TurnContext,
 } from "@koi/core";
 import { createAuditMiddleware, createInMemoryAuditSink } from "@koi/middleware-audit";
@@ -24,45 +26,46 @@ import {
   createSpyToolHandler,
 } from "@koi/test-utils";
 
-/**
- * Compose middleware into an onion-style chain for a given hook.
- * Sorts by priority (ascending = outer layer first).
- */
-function composeModelChain(
-  middlewares: readonly KoiMiddleware[],
-  ctx: TurnContext,
-  innerHandler: ModelHandler,
-): ModelHandler {
-  const sorted = [...middlewares]
-    .filter((mw) => mw.wrapModelCall)
-    .sort((a, b) => (a.priority ?? 500) - (b.priority ?? 500));
+// ---------------------------------------------------------------------------
+// Inline compose helpers — avoids L2 → L1 import of @koi/engine
+// ---------------------------------------------------------------------------
 
-  // Build onion from inside out
-  let handler = innerHandler;
-  for (let i = sorted.length - 1; i >= 0; i--) {
-    const mw = sorted[i]!;
-    const nextHandler = handler;
-    handler = (req: ModelRequest) => mw.wrapModelCall?.(ctx, req, nextHandler);
-  }
-  return handler;
+function composeModelChain(
+  middleware: readonly KoiMiddleware[],
+  terminal: ModelHandler,
+): (ctx: TurnContext, request: ModelRequest) => Promise<ModelResponse> {
+  const hooks = middleware.filter((mw) => mw.wrapModelCall !== undefined);
+  return (ctx, request) => {
+    const dispatch = (i: number, req: ModelRequest): Promise<ModelResponse> => {
+      const mw = hooks[i];
+      if (mw?.wrapModelCall === undefined) return terminal(req);
+      return mw.wrapModelCall(ctx, req, (r) => dispatch(i + 1, r));
+    };
+    return dispatch(0, request);
+  };
 }
 
 function composeToolChain(
-  middlewares: readonly KoiMiddleware[],
-  ctx: TurnContext,
-  innerHandler: ToolHandler,
-): ToolHandler {
-  const sorted = [...middlewares]
-    .filter((mw) => mw.wrapToolCall)
-    .sort((a, b) => (a.priority ?? 500) - (b.priority ?? 500));
+  middleware: readonly KoiMiddleware[],
+  terminal: ToolHandler,
+): (ctx: TurnContext, request: ToolRequest) => Promise<ToolResponse> {
+  const hooks = middleware.filter((mw) => mw.wrapToolCall !== undefined);
+  return (ctx, request) => {
+    const dispatch = (i: number, req: ToolRequest): Promise<ToolResponse> => {
+      const mw = hooks[i];
+      if (mw?.wrapToolCall === undefined) return terminal(req);
+      return mw.wrapToolCall(ctx, req, (r) => dispatch(i + 1, r));
+    };
+    return dispatch(0, request);
+  };
+}
 
-  let handler = innerHandler;
-  for (let i = sorted.length - 1; i >= 0; i--) {
-    const mw = sorted[i]!;
-    const nextHandler = handler;
-    handler = (req: ToolRequest) => mw.wrapToolCall?.(ctx, req, nextHandler);
-  }
-  return handler;
+/**
+ * Sort middleware by priority (ascending = outermost first).
+ * Mirrors the engine's sortByPriority in koi.ts.
+ */
+function sortByPriority(middleware: readonly KoiMiddleware[]): readonly KoiMiddleware[] {
+  return [...middleware].sort((a, b) => (a.priority ?? 500) - (b.priority ?? 500));
 }
 
 describe("Middleware composition — execution order", () => {
@@ -112,8 +115,9 @@ describe("Middleware composition — execution order", () => {
 
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();
-    const chain = composeModelChain([mwB, mwA], ctx, spy.handler); // Intentionally unsorted
-    await chain({ messages: [] });
+    const sorted = sortByPriority([mwB, mwA]); // Intentionally unsorted input
+    const chain = composeModelChain(sorted, spy.handler);
+    await chain(ctx, { messages: [] });
 
     expect(order).toEqual(["outer-enter", "inner-enter", "inner-exit", "outer-exit"]);
   });
@@ -133,12 +137,12 @@ describe("Middleware composition — execution order", () => {
       },
     });
 
-    const middlewares = [makeMw("C", 300), makeMw("A", 100), makeMw("B", 200)];
+    const middlewares = sortByPriority([makeMw("C", 300), makeMw("A", 100), makeMw("B", 200)]);
 
     const ctx = createMockTurnContext();
     const spy = createSpyToolHandler();
-    const chain = composeToolChain(middlewares, ctx, spy.handler);
-    await chain({ toolId: "test", input: {} });
+    const chain = composeToolChain(middlewares, spy.handler);
+    await chain(ctx, { toolId: "test", input: {} });
 
     expect(enters).toEqual(["A", "B", "C"]);
     expect(exits).toEqual(["C", "B", "A"]);
@@ -160,10 +164,11 @@ describe("Middleware composition — error propagation", () => {
 
     const ctx = createMockTurnContext();
     const spy = createSpyToolHandler();
-    const chain = composeToolChain([perm, pay], ctx, spy.handler);
+    const sorted = sortByPriority([perm, pay]);
+    const chain = composeToolChain(sorted, spy.handler);
 
     try {
-      await chain({ toolId: "blocked-tool", input: {} });
+      await chain(ctx, { toolId: "blocked-tool", input: {} });
       expect.unreachable("should have thrown");
     } catch (e) {
       const err = e as { readonly code: string };
@@ -185,19 +190,17 @@ describe("Middleware composition — error propagation", () => {
 
     const ctx = createMockTurnContext();
     const spy = createSpyToolHandler();
-    const chain = composeToolChain([perm, audit], ctx, spy.handler);
+    const sorted = sortByPriority([perm, audit]);
+    const chain = composeToolChain(sorted, spy.handler);
 
     try {
-      await chain({ toolId: "blocked", input: {} });
+      await chain(ctx, { toolId: "blocked", input: {} });
     } catch {
       // expected
     }
-    // Audit wraps permissions (audit priority 300 > perm priority 100 in sorting,
-    // but audit is outermost if we compose in priority order)
-    // Actually: perm=100 is outermost, audit=300 is inner, so audit won't see the error
-    // Let's verify: perm throws before reaching audit
+    // perm=100 is outermost, audit=300 is inner, so audit won't see the error
+    // perm throws before reaching audit
     await new Promise((r) => setTimeout(r, 10));
-    // Audit is inner to permissions, so it never gets called when perm denies
     expect(spy.calls).toHaveLength(0);
   });
 
@@ -218,10 +221,10 @@ describe("Middleware composition — error propagation", () => {
 
     const ctx = createMockTurnContext();
     const spy = createSpyToolHandler();
-    const chain = composeToolChain([pay], ctx, spy.handler);
+    const chain = composeToolChain([pay], spy.handler);
 
     try {
-      await chain({ toolId: "expensive", input: {} });
+      await chain(ctx, { toolId: "expensive", input: {} });
       expect.unreachable("should have thrown");
     } catch (e) {
       const err = e as { readonly code: string };
@@ -255,10 +258,11 @@ describe("Middleware composition — error propagation", () => {
 
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();
-    const chain = composeModelChain([outer, inner], ctx, spy.handler);
+    const sorted = sortByPriority([outer, inner]);
+    const chain = composeModelChain(sorted, spy.handler);
 
     try {
-      await chain({ messages: [] });
+      await chain(ctx, { messages: [] });
     } catch {
       // expected
     }
@@ -278,8 +282,8 @@ describe("Middleware composition — no-op middleware", () => {
 
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();
-    const chain = composeModelChain([toolOnly], ctx, spy.handler);
-    const response = await chain({ messages: [] });
+    const chain = composeModelChain([toolOnly], spy.handler);
+    const response = await chain(ctx, { messages: [] });
     expect(response.content).toBe("mock response");
     expect(spy.calls).toHaveLength(1);
   });
@@ -295,8 +299,8 @@ describe("Middleware composition — no-op middleware", () => {
 
     const ctx = createMockTurnContext();
     const spy = createSpyToolHandler();
-    const chain = composeToolChain([modelOnly], ctx, spy.handler);
-    const response = await chain({ toolId: "test", input: {} });
+    const chain = composeToolChain([modelOnly], spy.handler);
+    const response = await chain(ctx, { toolId: "test", input: {} });
     expect(response.output).toEqual({ result: "mock" });
   });
 
@@ -304,8 +308,8 @@ describe("Middleware composition — no-op middleware", () => {
     const noop: KoiMiddleware = { name: "noop" };
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();
-    const chain = composeModelChain([noop], ctx, spy.handler);
-    const response = await chain({ messages: [] });
+    const chain = composeModelChain([noop], spy.handler);
+    const response = await chain(ctx, { messages: [] });
     expect(response.content).toBe("mock response");
   });
 });

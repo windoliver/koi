@@ -14,7 +14,6 @@ function makeRegistry(): RevocationRegistry & { readonly _revoked: Set<Delegatio
     revoke: (id) => {
       revoked.add(id);
     },
-    revokedIds: () => revoked,
   };
 }
 

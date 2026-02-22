@@ -22,6 +22,12 @@ export class AgentEntity implements Agent {
 
   private _lifecycle: AgentLifecycle;
   private _components: ReadonlyMap<string, unknown> = new Map();
+  /**
+   * Prefix query cache. Safe because components are immutable after assembly.
+   * If runtime component modification is added (e.g., Forge), this cache
+   * needs a version counter or invalidation mechanism.
+   */
+  private _queryCache = new Map<string, ReadonlyMap<string, unknown>>();
 
   constructor(pid: ProcessId, manifest: AgentManifest) {
     this.pid = pid;
@@ -50,12 +56,17 @@ export class AgentEntity implements Agent {
   }
 
   query<T>(prefix: string): ReadonlyMap<SubsystemToken<T>, T> {
+    const cached = this._queryCache.get(prefix);
+    if (cached !== undefined) {
+      return cached as ReadonlyMap<SubsystemToken<T>, T>;
+    }
     const result = new Map<SubsystemToken<T>, T>();
     for (const [key, value] of this._components) {
       if (key.startsWith(prefix)) {
         result.set(key as SubsystemToken<T>, value as T);
       }
     }
+    this._queryCache.set(prefix, result as ReadonlyMap<string, unknown>);
     return result;
   }
 
@@ -97,6 +108,7 @@ export class AgentEntity implements Agent {
     }
 
     agent._components = merged;
+    agent._queryCache.clear();
     return agent;
   }
 }

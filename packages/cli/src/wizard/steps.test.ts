@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import type { CliFlags } from "../args.js";
+import type { InitFlags } from "../args.js";
 import { DEFAULT_STATE, MODELS, type WizardState } from "./state.js";
 
 // Mock @clack/prompts before importing steps
@@ -34,7 +34,7 @@ const {
   isValidName,
 } = await import("./steps.js");
 
-const NO_FLAGS: CliFlags = {
+const NO_FLAGS: InitFlags = {
   command: "init",
   directory: undefined,
   yes: false,
@@ -44,7 +44,7 @@ const NO_FLAGS: CliFlags = {
   engine: undefined,
 };
 
-const YES_FLAGS: CliFlags = {
+const YES_FLAGS: InitFlags = {
   ...NO_FLAGS,
   yes: true,
 };
@@ -66,14 +66,14 @@ describe("selectTemplate", () => {
   });
 
   test("uses flag value when --template provided", async () => {
-    const flags: CliFlags = { ...NO_FLAGS, template: "copilot" };
+    const flags: InitFlags = { ...NO_FLAGS, template: "copilot" };
     const result = await selectTemplate(DEFAULT_STATE, flags);
     expect(result?.template).toBe("copilot");
     expect(mockSelect).not.toHaveBeenCalled();
   });
 
   test("rejects unknown --template flag value", async () => {
-    const flags: CliFlags = { ...NO_FLAGS, template: "unknown-template" };
+    const flags: InitFlags = { ...NO_FLAGS, template: "unknown-template" };
     const result = await selectTemplate(DEFAULT_STATE, flags);
     expect(result).toBeNull();
     expect(mockCancel).toHaveBeenCalledTimes(1);
@@ -102,28 +102,28 @@ describe("enterName", () => {
   });
 
   test("uses flag value when --name provided", async () => {
-    const flags: CliFlags = { ...NO_FLAGS, name: "flag-agent" };
+    const flags: InitFlags = { ...NO_FLAGS, name: "flag-agent" };
     const result = await enterName(DEFAULT_STATE, flags);
     expect(result?.name).toBe("flag-agent");
     expect(mockText).not.toHaveBeenCalled();
   });
 
   test("rejects invalid --name flag with uppercase", async () => {
-    const flags: CliFlags = { ...NO_FLAGS, name: "MyAgent" };
+    const flags: InitFlags = { ...NO_FLAGS, name: "MyAgent" };
     const result = await enterName(DEFAULT_STATE, flags);
     expect(result).toBeNull();
     expect(mockCancel).toHaveBeenCalledTimes(1);
   });
 
   test("rejects invalid --name flag with spaces", async () => {
-    const flags: CliFlags = { ...NO_FLAGS, name: "my agent" };
+    const flags: InitFlags = { ...NO_FLAGS, name: "my agent" };
     const result = await enterName(DEFAULT_STATE, flags);
     expect(result).toBeNull();
     expect(mockCancel).toHaveBeenCalledTimes(1);
   });
 
   test("accepts valid --name with dots and underscores", async () => {
-    const flags: CliFlags = { ...NO_FLAGS, name: "my_agent.v2" };
+    const flags: InitFlags = { ...NO_FLAGS, name: "my_agent.v2" };
     const result = await enterName(DEFAULT_STATE, flags);
     expect(result?.name).toBe("my_agent.v2");
   });
@@ -171,14 +171,14 @@ describe("selectModel", () => {
   });
 
   test("uses flag value when --model provided", async () => {
-    const flags: CliFlags = { ...NO_FLAGS, model: "openai:gpt-4o" };
+    const flags: InitFlags = { ...NO_FLAGS, model: "openai:gpt-4o" };
     const result = await selectModel(DEFAULT_STATE, flags);
     expect(result?.model).toBe("openai:gpt-4o");
     expect(mockSelect).not.toHaveBeenCalled();
   });
 
   test("rejects unknown --model flag value", async () => {
-    const flags: CliFlags = { ...NO_FLAGS, model: "fake:model-9000" };
+    const flags: InitFlags = { ...NO_FLAGS, model: "fake:model-9000" };
     const result = await selectModel(DEFAULT_STATE, flags);
     expect(result).toBeNull();
     expect(mockCancel).toHaveBeenCalledTimes(1);
@@ -198,14 +198,14 @@ describe("selectEngine", () => {
   });
 
   test("uses flag value when --engine provided", async () => {
-    const flags: CliFlags = { ...NO_FLAGS, engine: "langgraph" };
+    const flags: InitFlags = { ...NO_FLAGS, engine: "langgraph" };
     const result = await selectEngine(DEFAULT_STATE, flags);
     expect(result?.engine).toBe("langgraph");
     expect(mockSelect).not.toHaveBeenCalled();
   });
 
   test("rejects unknown --engine flag value", async () => {
-    const flags: CliFlags = { ...NO_FLAGS, engine: "unknown-engine" };
+    const flags: InitFlags = { ...NO_FLAGS, engine: "unknown-engine" };
     const result = await selectEngine(DEFAULT_STATE, flags);
     expect(result).toBeNull();
     expect(mockCancel).toHaveBeenCalledTimes(1);

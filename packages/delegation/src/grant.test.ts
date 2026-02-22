@@ -89,7 +89,6 @@ describe("attenuateGrant", () => {
       scope: {
         permissions: { allow: ["read_file", "write_file"], deny: ["delete_file"] },
         resources: ["read_file:/workspace/**", "write_file:/workspace/src/**"],
-        maxBudget: 100,
       },
       maxChainDepth: 3,
       ttlMs: 3600000,
@@ -106,7 +105,6 @@ describe("attenuateGrant", () => {
         scope: {
           permissions: { allow: ["read_file"], deny: ["delete_file"] },
           resources: ["read_file:/workspace/**"],
-          maxBudget: 50,
         },
       },
       SECRET,
@@ -152,7 +150,6 @@ describe("attenuateGrant", () => {
         delegateeId: "agent-3",
         scope: {
           permissions: { allow: ["read_file"], deny: ["delete_file"] },
-          maxBudget: 50,
         },
         ttlMs: 1800000, // 30 minutes — less than parent's 1 hour
       },
@@ -173,7 +170,6 @@ describe("attenuateGrant", () => {
         delegateeId: "agent-3",
         scope: {
           permissions: { allow: ["read_file"], deny: ["delete_file"] },
-          maxBudget: 50,
         },
         ttlMs: 7200000, // 2 hours — exceeds parent's 1 hour
       },
@@ -224,47 +220,6 @@ describe("attenuateGrant", () => {
         expect(grandchild.error.code).toBe("PERMISSION");
         expect(grandchild.error.message).toContain("chain depth");
       }
-    }
-  });
-
-  test("attenuate with lower budget succeeds", () => {
-    const parent = makeParent();
-    const result = attenuateGrant(
-      parent,
-      {
-        delegateeId: "agent-3",
-        scope: {
-          permissions: { allow: ["read_file"], deny: ["delete_file"] },
-          maxBudget: 50,
-        },
-      },
-      SECRET,
-    );
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.scope.maxBudget).toBe(50);
-    }
-  });
-
-  test("attenuate with higher budget is rejected", () => {
-    const parent = makeParent();
-    const result = attenuateGrant(
-      parent,
-      {
-        delegateeId: "agent-3",
-        scope: {
-          permissions: { allow: ["read_file"], deny: ["delete_file"] },
-          maxBudget: 200,
-        },
-      },
-      SECRET,
-    );
-
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe("PERMISSION");
-      expect(result.error.message).toContain("budget");
     }
   });
 

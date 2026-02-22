@@ -1,5 +1,7 @@
 import { Database } from "bun:sqlite";
-import type { Embedder, IndexDocument, Indexer, SearchOutcome } from "@koi/core";
+import type { KoiError, Result } from "@koi/core";
+import type { Embedder, Indexer } from "../contracts.js";
+import type { IndexDocument } from "../types.js";
 import type { ChunkerConfig } from "./chunker.js";
 import { chunk } from "./chunker.js";
 
@@ -70,7 +72,9 @@ export function createSqliteIndexer(
     return new Uint8Array(floats.buffer);
   }
 
-  async function indexDocuments(documents: readonly IndexDocument[]): Promise<SearchOutcome<void>> {
+  async function indexDocuments(
+    documents: readonly IndexDocument[],
+  ): Promise<Result<void, KoiError>> {
     try {
       for (const doc of documents) {
         // Chunk the document
@@ -112,15 +116,17 @@ export function createSqliteIndexer(
       return {
         ok: false,
         error: {
-          kind: "backend_unavailable",
-          backend: "sqlite-indexer",
+          code: "EXTERNAL",
+          message: "SQLite indexer failed to index documents",
+          retryable: true,
           cause: err,
+          context: { backend: "sqlite-indexer" },
         },
       };
     }
   }
 
-  async function removeDocuments(ids: readonly string[]): Promise<SearchOutcome<void>> {
+  async function removeDocuments(ids: readonly string[]): Promise<Result<void, KoiError>> {
     try {
       db.transaction(() => {
         for (const id of ids) {
@@ -134,9 +140,11 @@ export function createSqliteIndexer(
       return {
         ok: false,
         error: {
-          kind: "backend_unavailable",
-          backend: "sqlite-indexer",
+          code: "EXTERNAL",
+          message: "SQLite indexer failed to remove documents",
+          retryable: true,
           cause: err,
+          context: { backend: "sqlite-indexer" },
         },
       };
     }

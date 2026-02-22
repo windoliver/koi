@@ -2,8 +2,6 @@ import { describe, expect, test } from "bun:test";
 import type {
   Agent,
   AgentManifest,
-  BrickKind,
-  BrickLifecycle,
   ChannelAdapter,
   ChannelCapabilities,
   ContentBlock,
@@ -18,22 +16,20 @@ import type {
   EngineEvent,
   EngineInput,
   EngineStopReason,
-  FilesystemPolicy,
-  ForgeScope,
   GovernanceUsage,
   KoiError,
   KoiErrorCode,
   KoiMiddleware,
+  MemoryResult,
+  ModelCapabilities,
+  ModelConfig,
+  ModelProvider,
+  ModelTarget,
   PermissionConfig,
   ProcessId,
   Resolver,
   Result,
   RevocationRegistry,
-  SandboxAdapter,
-  SandboxInstance,
-  SandboxProfile,
-  SandboxResult,
-  SandboxTier,
   ScopeChecker,
   SpawnCheck,
   SubsystemToken,
@@ -142,11 +138,17 @@ describe("EngineEvent discriminant", () => {
     }
   });
 
-  test("narrows to tool_call_start with toolName and callId", () => {
-    const event: EngineEvent = { kind: "tool_call_start", toolName: "calc", callId: "c1" };
+  test("narrows to tool_call_start with toolName, callId, and args", () => {
+    const event: EngineEvent = {
+      kind: "tool_call_start",
+      toolName: "calc",
+      callId: "c1",
+      args: { x: 1, y: 2 },
+    };
     if (event.kind === "tool_call_start") {
       expect(event.toolName).toBe("calc");
       expect(event.callId).toBe("c1");
+      expect(event.args).toEqual({ x: 1, y: 2 });
     }
   });
 
@@ -277,7 +279,7 @@ describe("well-known token type narrowing", () => {
     };
     const mem = agentLike.component(MEMORY);
     if (mem) {
-      const _: Promise<readonly unknown[]> = mem.recall("test");
+      const _: Promise<readonly MemoryResult[]> = mem.recall("test");
       void _;
     }
     expect(mem).toBeUndefined();
@@ -619,161 +621,6 @@ describe("Result with custom error type", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Sandbox types
-// ---------------------------------------------------------------------------
-
-describe("SandboxTier", () => {
-  test("accepts valid tier literals", () => {
-    const tiers: readonly SandboxTier[] = ["sandbox", "verified", "promoted"];
-    expect(tiers).toHaveLength(3);
-  });
-
-  test("rejects invalid tier literal", () => {
-    // @ts-expect-error — "untrusted" is not a valid SandboxTier
-    const _t: SandboxTier = "untrusted";
-    void _t;
-  });
-});
-
-describe("SandboxProfile readonly enforcement", () => {
-  test("tier is readonly", () => {
-    const profile: SandboxProfile = {
-      tier: "sandbox",
-      filesystem: {},
-      network: { allow: false },
-      resources: {},
-    };
-    // @ts-expect-error — cannot assign to readonly property
-    profile.tier = "promoted";
-  });
-
-  test("network is readonly", () => {
-    const profile: SandboxProfile = {
-      tier: "sandbox",
-      filesystem: {},
-      network: { allow: false },
-      resources: {},
-    };
-    // @ts-expect-error — cannot assign to readonly property
-    profile.network = { allow: true };
-  });
-});
-
-describe("SandboxResult", () => {
-  test("properties are accessible", () => {
-    const result: SandboxResult = {
-      exitCode: 0,
-      stdout: "hello",
-      stderr: "",
-      durationMs: 100,
-      timedOut: false,
-      oomKilled: false,
-    };
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe("hello");
-    expect(result.timedOut).toBe(false);
-  });
-
-  test("signal is optional", () => {
-    const result: SandboxResult = {
-      exitCode: 137,
-      stdout: "",
-      stderr: "",
-      signal: "SIGKILL",
-      durationMs: 5000,
-      timedOut: false,
-      oomKilled: true,
-    };
-    expect(result.signal).toBe("SIGKILL");
-  });
-});
-
-describe("FilesystemPolicy optional properties", () => {
-  test("all properties are optional", () => {
-    const empty: FilesystemPolicy = {};
-    expect(empty.allowRead).toBeUndefined();
-    expect(empty.denyRead).toBeUndefined();
-    expect(empty.allowWrite).toBeUndefined();
-    expect(empty.denyWrite).toBeUndefined();
-  });
-
-  test("accepts populated policy", () => {
-    const policy: FilesystemPolicy = {
-      allowRead: ["/usr", "/bin"],
-      denyRead: ["~/.ssh"],
-      allowWrite: ["/tmp"],
-    };
-    expect(policy.allowRead).toHaveLength(2);
-    expect(policy.denyRead).toHaveLength(1);
-  });
-});
-
-describe("SandboxAdapter contract", () => {
-  test("adapter has name and create method", () => {
-    const adapter: SandboxAdapter = {
-      name: "test",
-      create: async (_profile: SandboxProfile): Promise<SandboxInstance> => {
-        return {
-          exec: async () => ({
-            exitCode: 0,
-            stdout: "",
-            stderr: "",
-            durationMs: 0,
-            timedOut: false,
-            oomKilled: false,
-          }),
-          readFile: async () => new Uint8Array(),
-          writeFile: async () => {},
-          destroy: async () => {},
-        };
-      },
-    };
-    expect(adapter.name).toBe("test");
-    expect(typeof adapter.create).toBe("function");
-  });
-
-  test("instance exec returns SandboxResult", async () => {
-    const instance: SandboxInstance = {
-      exec: async () => ({
-        exitCode: 0,
-        stdout: "ok",
-        stderr: "",
-        durationMs: 10,
-        timedOut: false,
-        oomKilled: false,
-      }),
-      readFile: async () => new Uint8Array(),
-      writeFile: async () => {},
-      destroy: async () => {},
-    };
-    const result = await instance.exec("/bin/echo", ["hello"]);
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe("ok");
-  });
-
-  test("adapter name is readonly", () => {
-    const adapter: SandboxAdapter = {
-      name: "test",
-      create: async () => ({
-        exec: async () => ({
-          exitCode: 0,
-          stdout: "",
-          stderr: "",
-          durationMs: 0,
-          timedOut: false,
-          oomKilled: false,
-        }),
-        readFile: async () => new Uint8Array(),
-        writeFile: async () => {},
-        destroy: async () => {},
-      }),
-    };
-    // @ts-expect-error — cannot assign to readonly property
-    adapter.name = "other";
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Resolver type tests
 // ---------------------------------------------------------------------------
 
@@ -922,18 +769,15 @@ describe("DelegationGrant readonly enforcement", () => {
 });
 
 describe("DelegationScope", () => {
-  test("permissions is required, resources and maxBudget are optional", () => {
+  test("permissions is required, resources is optional", () => {
     const minimal: DelegationScope = { permissions: { allow: ["*"] } };
     expect(minimal.resources).toBeUndefined();
-    expect(minimal.maxBudget).toBeUndefined();
 
     const full: DelegationScope = {
       permissions: { allow: ["read_file"], deny: ["write_file"] },
       resources: ["read_file:/workspace/**"],
-      maxBudget: 100,
     };
     expect(full.resources).toHaveLength(1);
-    expect(full.maxBudget).toBe(100);
   });
 
   test("resources array is readonly", () => {
@@ -1039,16 +883,26 @@ describe("ScopeChecker interface", () => {
 });
 
 describe("RevocationRegistry interface", () => {
-  test("satisfies with minimal implementation", () => {
+  test("satisfies with minimal sync implementation", () => {
     const revoked = new Set<DelegationId>();
     const registry: RevocationRegistry = {
       isRevoked: (id) => revoked.has(id),
-      revoke: (id) => {
+      revoke: (id, _cascade) => {
         revoked.add(id);
       },
-      revokedIds: () => revoked,
     };
     expect(registry.isRevoked("test" as DelegationId)).toBe(false);
+  });
+
+  test("satisfies with async implementation", () => {
+    const revoked = new Set<DelegationId>();
+    const registry: RevocationRegistry = {
+      isRevoked: async (id) => revoked.has(id),
+      revoke: async (id, _cascade) => {
+        revoked.add(id);
+      },
+    };
+    expect(registry.isRevoked("test" as DelegationId)).toBeInstanceOf(Promise);
   });
 });
 
@@ -1058,8 +912,6 @@ describe("DelegationConfig", () => {
     const _partial: DelegationConfig = {
       maxChainDepth: 3,
       defaultTtlMs: 3600000,
-      maxEntries: 10000,
-      cleanupIntervalMs: 60000,
     };
     void _partial;
   });
@@ -1069,8 +921,6 @@ describe("DelegationConfig", () => {
       enabled: true,
       maxChainDepth: 3,
       defaultTtlMs: 3600000,
-      maxEntries: 10000,
-      cleanupIntervalMs: 60000,
     };
     // @ts-expect-error — cannot assign to readonly property
     config.enabled = false;
@@ -1110,8 +960,6 @@ describe("AgentManifest delegation config", () => {
         enabled: true,
         maxChainDepth: 3,
         defaultTtlMs: 3600000,
-        maxEntries: 10000,
-        cleanupIntervalMs: 60000,
       },
     };
     expect(withDelegation.delegation?.enabled).toBe(true);
@@ -1119,35 +967,141 @@ describe("AgentManifest delegation config", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Forge type aliases
+// Model provider types
 // ---------------------------------------------------------------------------
 
-describe("Forge type aliases", () => {
-  test("ForgeScope accepts valid literals", () => {
-    const scopes: readonly ForgeScope[] = ["agent", "zone", "global"];
-    expect(scopes).toHaveLength(3);
+describe("ModelCapabilities", () => {
+  test("all properties are required", () => {
+    const caps: ModelCapabilities = {
+      streaming: true,
+      functionCalling: true,
+      vision: false,
+      jsonMode: true,
+      maxContextTokens: 128_000,
+      maxOutputTokens: 4096,
+    };
+    expect(caps.streaming).toBe(true);
+    expect(caps.maxContextTokens).toBe(128_000);
   });
 
-  test("BrickLifecycle accepts valid literals", () => {
-    const states: readonly BrickLifecycle[] = [
-      "draft",
-      "verifying",
-      "active",
-      "failed",
-      "deprecated",
-    ];
-    expect(states).toHaveLength(5);
+  test("properties are readonly", () => {
+    const caps: ModelCapabilities = {
+      streaming: true,
+      functionCalling: true,
+      vision: false,
+      jsonMode: true,
+      maxContextTokens: 128_000,
+      maxOutputTokens: 4096,
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    caps.streaming = false;
+  });
+});
+
+describe("ModelProvider", () => {
+  test("satisfies with full properties", () => {
+    const provider: ModelProvider = {
+      id: "openai",
+      name: "OpenAI",
+      capabilities: {
+        streaming: true,
+        functionCalling: true,
+        vision: true,
+        jsonMode: true,
+        maxContextTokens: 128_000,
+        maxOutputTokens: 16_384,
+      },
+    };
+    expect(provider.id).toBe("openai");
+    expect(provider.capabilities.vision).toBe(true);
   });
 
-  test("BrickKind accepts valid literals", () => {
-    const kinds: readonly BrickKind[] = [
-      "tool",
-      "skill",
-      "agent",
-      "composite",
-      "middleware",
-      "channel",
-    ];
-    expect(kinds).toHaveLength(6);
+  test("id is required", () => {
+    // @ts-expect-error — id is required on ModelProvider
+    const _p: ModelProvider = {
+      name: "Test",
+      capabilities: {
+        streaming: false,
+        functionCalling: false,
+        vision: false,
+        jsonMode: false,
+        maxContextTokens: 0,
+        maxOutputTokens: 0,
+      },
+    };
+    void _p;
+  });
+
+  test("properties are readonly", () => {
+    const provider: ModelProvider = {
+      id: "openai",
+      name: "OpenAI",
+      capabilities: {
+        streaming: true,
+        functionCalling: true,
+        vision: true,
+        jsonMode: true,
+        maxContextTokens: 128_000,
+        maxOutputTokens: 16_384,
+      },
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    provider.id = "other";
+  });
+});
+
+describe("ModelTarget", () => {
+  test("minimal target with required fields only", () => {
+    const target: ModelTarget = {
+      provider: "openai",
+      model: "gpt-4o",
+    };
+    expect(target.weight).toBeUndefined();
+    expect(target.enabled).toBeUndefined();
+  });
+
+  test("full target with optional fields", () => {
+    const target: ModelTarget = {
+      provider: "anthropic",
+      model: "claude-sonnet-4-5-20250929",
+      weight: 0.8,
+      enabled: true,
+    };
+    expect(target.weight).toBe(0.8);
+    expect(target.enabled).toBe(true);
+  });
+
+  test("properties are readonly", () => {
+    const target: ModelTarget = {
+      provider: "openai",
+      model: "gpt-4o",
+      weight: 1,
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    target.provider = "other";
+  });
+});
+
+describe("ModelConfig fallbacks", () => {
+  test("fallbacks is optional", () => {
+    const config: ModelConfig = { name: "gpt-4o" };
+    expect(config.fallbacks).toBeUndefined();
+  });
+
+  test("fallbacks accepts readonly string array", () => {
+    const config: ModelConfig = {
+      name: "gpt-4o",
+      fallbacks: ["claude-sonnet-4-5-20250929", "gemini-pro"],
+    };
+    expect(config.fallbacks).toHaveLength(2);
+  });
+
+  test("fallbacks array is readonly", () => {
+    const config: ModelConfig = {
+      name: "gpt-4o",
+      fallbacks: ["claude-sonnet-4-5-20250929"],
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    config.fallbacks = [];
   });
 });

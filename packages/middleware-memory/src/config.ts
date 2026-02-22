@@ -11,6 +11,8 @@ export interface MemoryMiddlewareConfig {
   readonly maxRecallTokens?: number;
   readonly recallStrategy?: "recent" | "relevant" | "hybrid";
   readonly storeResponses?: boolean;
+  /** Called when storing a response fails. If not provided, store errors are silently ignored. */
+  readonly onStoreError?: (error: unknown) => void;
 }
 
 export function validateConfig(config: unknown): Result<MemoryMiddlewareConfig, KoiError> {

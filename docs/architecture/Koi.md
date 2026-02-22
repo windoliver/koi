@@ -191,13 +191,33 @@ Engine *adapters* (LangGraph, OpenAI, custom) are swappable L2 packages. The eng
 ```typescript
 interface KoiMiddleware {
   readonly name: string;
-  onSessionStart?(context: SessionContext): Promise<void>;
-  onBeforeTurn?(context: TurnContext): Promise<void>;
-  onAfterTurn?(context: TurnContext): Promise<void>;
-  onSessionEnd?(context: SessionContext): Promise<void>;
-  wrapModelCall?(req: ModelRequest, next: ModelHandler): Promise<ModelResponse>;
-  wrapToolCall?(req: ToolRequest, next: ToolHandler): Promise<ToolResponse>;
+  readonly priority?: number; // Lower = outer onion layer (runs first). Default: 500
+  readonly onSessionStart?: (ctx: SessionContext) => Promise<void>;
+  readonly onSessionEnd?: (ctx: SessionContext) => Promise<void>;
+  readonly onBeforeTurn?: (ctx: TurnContext) => Promise<void>;
+  readonly onAfterTurn?: (ctx: TurnContext) => Promise<void>;
+  readonly wrapModelCall?: (ctx: TurnContext, request: ModelRequest, next: ModelHandler) => Promise<ModelResponse>;
+  readonly wrapModelStream?: (ctx: TurnContext, request: ModelRequest, next: ModelStreamHandler) => AsyncIterable<ModelChunk>;
+  readonly wrapToolCall?: (ctx: TurnContext, request: ToolRequest, next: ToolHandler) => Promise<ToolResponse>;
 }
+
+type ModelChunk =
+  | { readonly kind: "text_delta"; readonly delta: string }
+  | { readonly kind: "thinking_delta"; readonly delta: string }
+  | { readonly kind: "tool_call_start"; readonly toolName: string; readonly callId: string }
+  | { readonly kind: "tool_call_delta"; readonly callId: string; readonly delta: string }
+  | { readonly kind: "tool_call_end"; readonly callId: string }
+  | { readonly kind: "usage"; readonly inputTokens: number; readonly outputTokens: number }
+  | { readonly kind: "done"; readonly response: ModelResponse };
+
+type ModelStreamHandler = (request: ModelRequest) => AsyncIterable<ModelChunk>;
+
+// HITL approval — available via TurnContext.requestApproval
+type ApprovalHandler = (request: ApprovalRequest) => Promise<ApprovalDecision>;
+type ApprovalDecision =
+  | { readonly kind: "allow" }
+  | { readonly kind: "modify"; readonly updatedInput: JsonObject }
+  | { readonly kind: "deny"; readonly reason: string };
 ```
 
 ### 2. Message Contract
@@ -238,12 +258,14 @@ interface Resolver<Meta, Full> {
 interface AgentManifest {
   readonly name: string;
   readonly version: string;
-  readonly description: string;
-  readonly model?: ModelConfig;
+  readonly description?: string;
+  readonly model: ModelConfig;
   readonly tools?: readonly ToolConfig[];
   readonly channels?: readonly ChannelConfig[];
   readonly middleware?: readonly MiddlewareConfig[];
   readonly permissions?: PermissionConfig;
+  readonly delegation?: DelegationConfig;
+  readonly metadata?: JsonObject;
 }
 ```
 
@@ -252,20 +274,32 @@ interface AgentManifest {
 ```typescript
 interface EngineAdapter {
   readonly engineId: string;
-  stream(input: EngineInput): AsyncGenerator<EngineEvent>;  // ONLY required method
-  saveState?(): Promise<EngineState>;
-  loadState?(state: EngineState): Promise<void>;
-  dispose?(): Promise<void>;
+  readonly terminals?: {
+    readonly modelCall: ModelHandler;
+    readonly modelStream?: ModelStreamHandler;
+    readonly toolCall?: ToolHandler;
+  };
+  readonly stream: (input: EngineInput) => AsyncIterable<EngineEvent>;  // ONLY required method
+  readonly saveState?: () => Promise<EngineState>;
+  readonly loadState?: (state: EngineState) => Promise<void>;
+  readonly dispose?: () => Promise<void>;
+}
+
+// ComposedCallHandlers — middleware-wrapped terminals passed back via EngineInput
+interface ComposedCallHandlers {
+  readonly modelCall: (request: ModelRequest) => Promise<ModelResponse>;
+  readonly modelStream?: (request: ModelRequest) => AsyncIterable<ModelChunk>;
+  readonly toolCall: (request: ToolRequest) => Promise<ToolResponse>;
 }
 
 type EngineInput =
-  | { readonly kind: "text"; readonly text: string }
-  | { readonly kind: "messages"; readonly messages: readonly Message[] }
-  | { readonly kind: "resume"; readonly state: EngineState };
+  | { readonly kind: "text"; readonly text: string; readonly callHandlers?: ComposedCallHandlers }
+  | { readonly kind: "messages"; readonly messages: readonly InboundMessage[]; readonly callHandlers?: ComposedCallHandlers }
+  | { readonly kind: "resume"; readonly state: EngineState; readonly callHandlers?: ComposedCallHandlers };
 
 type EngineEvent =
   | { readonly kind: "text_delta"; readonly delta: string }
-  | { readonly kind: "tool_call_start"; readonly toolName: string; readonly callId: string }
+  | { readonly kind: "tool_call_start"; readonly toolName: string; readonly callId: string; readonly args: JsonObject }
   | { readonly kind: "tool_call_end"; readonly callId: string; readonly result: unknown }
   | { readonly kind: "turn_end"; readonly turnIndex: number }
   | { readonly kind: "done"; readonly output: EngineOutput }
@@ -279,23 +313,25 @@ type SubsystemToken<T> = string & { readonly __brand: T };
 
 interface Agent {
   readonly pid: ProcessId;
+  readonly manifest: AgentManifest;
   readonly state: ProcessState;
-  component<T>(token: SubsystemToken<T>): T | undefined;
-  has(token: SubsystemToken<unknown>): boolean;
-  query<T>(prefix: string): ReadonlyMap<SubsystemToken<T>, T>;
-  components(): readonly string[];
+  readonly component: <T>(token: SubsystemToken<T>) => T | undefined;
+  readonly has: (token: SubsystemToken<unknown>) => boolean;
+  readonly hasAll: (...tokens: readonly SubsystemToken<unknown>[]) => boolean;
+  readonly query: <T>(prefix: string) => ReadonlyMap<SubsystemToken<T>, T>;
+  readonly components: () => ReadonlyMap<string, unknown>;
 }
 
 interface Tool {
   readonly descriptor: ToolDescriptor;
-  readonly trustTier: "sandbox" | "verified" | "promoted";
-  execute(args: Readonly<Record<string, unknown>>): Promise<unknown>;
+  readonly trustTier: TrustTier; // "sandbox" | "verified" | "promoted"
+  readonly execute: (args: JsonObject) => Promise<unknown>;
 }
 
 interface ComponentProvider {
   readonly name: string;
-  attach(process: Agent, manifest: AgentManifest): Promise<void>;
-  detach?(process: Agent): Promise<void>;
+  readonly attach: (agent: Agent) => Promise<ReadonlyMap<string, unknown>>;
+  readonly detach?: (agent: Agent) => Promise<void>;
 }
 ```
 
@@ -303,18 +339,19 @@ interface ComponentProvider {
 
 ```typescript
 interface MemoryComponent {
-  query(params: MemoryQuery): Promise<readonly MemoryEntry[]>;
-  store(entry: MemoryEntry): Promise<void>;
+  readonly recall: (query: string) => Promise<readonly unknown[]>;
+  readonly store: (content: unknown) => Promise<void>;
 }
 interface GovernanceComponent {
-  usage(): GovernanceUsage;
-  checkSpawn(depth: number): SpawnCheck;
+  readonly usage: () => GovernanceUsage;
+  readonly checkSpawn: (depth: number) => SpawnCheck;
 }
 interface CredentialComponent {
-  check(action: CredentialAction): Promise<CredentialResult>;
+  readonly get: (key: string) => Promise<string | undefined>;
 }
 interface EventComponent {
-  emit(event: string, data: unknown): Promise<EventResult>;
+  readonly emit: (type: string, data: unknown) => Promise<void>;
+  readonly on: (type: string, handler: (data: unknown) => void) => () => void;
 }
 ```
 
@@ -353,7 +390,7 @@ Subsystem-specific config types live in their owning packages (e.g., `ExecutionL
 |---|-----------|-------------|
 | 0 | **KISS** | Core vocabulary <= 10 concepts. Code over configuration. No framework reinvention |
 | 1 | **Interface-first kernel** | `@koi/core` = types only. Zero implementations. The kernel defines the plugs, not the things that plug in |
-| 2 | **Minimal-surface contracts** | Channel: `send()` + `onMessage()`. Middleware: 6 optional hooks. Engine: `stream()` only required method |
+| 2 | **Minimal-surface contracts** | Channel: `send()` + `onMessage()`. Middleware: 7 optional hooks + priority. Engine: `stream()` only required method |
 | 3 | **Middleware = sole interposition layer** | ONE way to intercept model/tool calls. No separate `EngineHooks` |
 | 4 | **Manifest-driven assembly** | `koi.yaml` IS the agent. Static for 80%, runtime assembly via Forge for 20% |
 
@@ -809,22 +846,21 @@ channels:
 
 ---
 
-## Lifecycle Hooks
+## Middleware Hooks
 
-15 events with priority ordering:
+7 optional hooks on `KoiMiddleware`, ordered by `priority` (lower = outer):
 
-| Event | Phase |
-|-------|-------|
-| `SessionStart/End` | Session lifecycle |
-| `PreToolUse/PostToolUse` | Tool execution (can block/modify) |
-| `PreLLMCall/PostLLMCall` | LLM API call |
-| `SubagentStart/End` | Sub-agent lifecycle |
-| `MessageReceived/Sent` | Channel I/O |
-| `PreModelSelect` | Override model selection |
-| `BudgetWarning` | Budget threshold reached |
-| `ErrorOccurred` | Unhandled error |
-| `MessageBefore` | Pre-process (can block/modify) |
-| `PreCompact` | Before context compaction |
+| Hook | Phase | Signature |
+|------|-------|-----------|
+| `onSessionStart` | Session lifecycle | `(ctx: SessionContext) => Promise<void>` |
+| `onSessionEnd` | Session lifecycle | `(ctx: SessionContext) => Promise<void>` |
+| `onBeforeTurn` | Turn lifecycle | `(ctx: TurnContext) => Promise<void>` |
+| `onAfterTurn` | Turn lifecycle | `(ctx: TurnContext) => Promise<void>` |
+| `wrapModelCall` | Onion interposition | `(ctx, req, next) => Promise<ModelResponse>` |
+| `wrapModelStream` | Onion interposition | `(ctx, req, next) => AsyncIterable<ModelChunk>` |
+| `wrapToolCall` | Onion interposition | `(ctx, req, next) => Promise<ToolResponse>` |
+
+Lifecycle hooks (`onSession*`, `onBefore/AfterTurn`) run sequentially. Onion hooks (`wrap*`) compose as nested middleware chains with double-call detection.
 
 ---
 

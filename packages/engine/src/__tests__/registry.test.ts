@@ -133,6 +133,17 @@ describe("InMemoryRegistry", () => {
     expect(healthy[0]?.agentId).toBe(agentId("a1"));
   });
 
+  test("list filters by parentId", () => {
+    registry.register(entry("root"));
+    registry.register({ ...entry("child-1"), parentId: agentId("root") });
+    registry.register({ ...entry("child-2"), parentId: agentId("root") });
+    registry.register({ ...entry("other"), parentId: agentId("other-root") });
+
+    const children = registry.list({ parentId: agentId("root") });
+    expect(children).toHaveLength(2);
+    expect(children.every((e) => e.parentId === agentId("root"))).toBe(true);
+  });
+
   // --- Transition (CAS) ---
 
   test("transition with correct generation succeeds", () => {
@@ -173,9 +184,9 @@ describe("InMemoryRegistry", () => {
     registry.register(entry("a1", "created", 0));
     const result = registry.transition(
       agentId("a1"),
-      "terminated", // created → terminated is not allowed
+      "waiting", // created → waiting is not allowed
       0,
-      { kind: "completed" },
+      { kind: "awaiting_response" },
     );
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -254,8 +265,8 @@ describe("InMemoryRegistry", () => {
     const events: RegistryEvent[] = [];
     registry.watch((event) => events.push(event));
 
-    // Invalid transition
-    registry.transition(agentId("a1"), "terminated", 0, { kind: "completed" });
+    // Invalid transition (created → waiting is not allowed)
+    registry.transition(agentId("a1"), "waiting", 0, { kind: "awaiting_response" });
 
     expect(events).toHaveLength(0);
   });
