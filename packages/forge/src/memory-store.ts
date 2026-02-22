@@ -39,6 +39,16 @@ function matchesQuery(brick: BrickArtifact, query: ForgeQuery): boolean {
       }
     }
   }
+  // Case-insensitive substring match against name + description
+  if (query.text !== undefined && query.text.length > 0) {
+    const lower = query.text.toLowerCase();
+    if (
+      !brick.name.toLowerCase().includes(lower) &&
+      !brick.description.toLowerCase().includes(lower)
+    ) {
+      return false;
+    }
+  }
   return true;
 }
 

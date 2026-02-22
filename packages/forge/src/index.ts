@@ -26,10 +26,18 @@ export {
   staticError,
   storeError,
   trustError,
+  typeError,
 } from "./errors.js";
 // runtime values — component provider
-export type { ForgeComponentProviderConfig } from "./forge-component-provider.js";
-export { brickToTool, createForgeComponentProviderAsync } from "./forge-component-provider.js";
+export type {
+  ForgeComponentProviderConfig,
+  ForgeComponentProviderInstance,
+} from "./forge-component-provider.js";
+export {
+  brickToTool,
+  createForgeComponentProvider,
+  createForgeComponentProviderAsync,
+} from "./forge-component-provider.js";
 export { createForgeResolver } from "./forge-resolver.js";
 export type { GovernanceResult } from "./governance.js";
 // runtime values — governance
@@ -49,7 +57,10 @@ export type { ForgeDeps, ForgeToolConfig } from "./tools/shared.js";
 export { createForgeTool } from "./tools/shared.js";
 // types
 export type {
+  AgentArtifact,
   BrickArtifact,
+  BrickArtifactBase,
+  CompositeArtifact,
   ForgeAgentInput,
   ForgeCompositeInput,
   ForgeContext,
@@ -60,12 +71,18 @@ export type {
   ForgeSkillInput,
   ForgeToolInput,
   ForgeVerifier,
+  ManifestParseResult,
+  ManifestParser,
+  PromoteChange,
+  PromoteResult,
   SandboxError,
   SandboxErrorCode,
   SandboxExecutor,
   SandboxResult,
+  SkillArtifact,
   StageReport,
   TestCase,
+  ToolArtifact,
   TrustStageReport,
   VerificationReport,
   VerificationStage,

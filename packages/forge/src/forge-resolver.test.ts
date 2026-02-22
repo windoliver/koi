@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { createForgeResolver } from "./forge-resolver.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
-import type { BrickArtifact } from "./types.js";
+import type { ToolArtifact } from "./types.js";
 
-function createBrick(overrides?: Partial<BrickArtifact>): BrickArtifact {
+function createBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
     id: `brick_${Math.random().toString(36).slice(2, 10)}`,
     kind: "tool",
@@ -17,7 +17,9 @@ function createBrick(overrides?: Partial<BrickArtifact>): BrickArtifact {
     version: "0.0.1",
     tags: [],
     usageCount: 0,
+    contentHash: "test-hash",
     implementation: "return 1;",
+    inputSchema: { type: "object" },
     ...overrides,
   };
 }
@@ -60,5 +62,29 @@ describe("createForgeResolver", () => {
     if (!result.ok) {
       expect(result.error.code).toBe("NOT_FOUND");
     }
+  });
+
+  test("discover throws when store search fails", async () => {
+    const failingStore = {
+      save: async () => ({ ok: true as const, value: undefined }),
+      load: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "store down", retryable: false },
+      }),
+      search: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "store down", retryable: false },
+      }),
+      remove: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "store down", retryable: false },
+      }),
+      update: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "store down", retryable: false },
+      }),
+    };
+    const resolver = createForgeResolver(failingStore);
+    await expect(resolver.discover()).rejects.toThrow("store down");
   });
 });

@@ -153,10 +153,10 @@ export interface ForgeContext {
 }
 
 // ---------------------------------------------------------------------------
-// Brick artifact (stored representation)
+// Brick artifact (stored representation) — discriminated union on `kind`
 // ---------------------------------------------------------------------------
 
-export interface BrickArtifact {
+export interface BrickArtifactBase {
   readonly id: string;
   readonly kind: BrickKind;
   readonly name: string;
@@ -169,10 +169,65 @@ export interface BrickArtifact {
   readonly version: string;
   readonly tags: readonly string[];
   readonly usageCount: number;
-  readonly implementation?: string;
-  readonly content?: string;
-  readonly inputSchema?: Readonly<Record<string, unknown>>;
+  /** SHA-256 hex digest of the brick's primary content for integrity verification. */
+  readonly contentHash: string;
+}
+
+export interface ToolArtifact extends BrickArtifactBase {
+  readonly kind: "tool";
+  readonly implementation: string;
+  readonly inputSchema: Readonly<Record<string, unknown>>;
   readonly testCases?: readonly TestCase[];
+}
+
+export interface SkillArtifact extends BrickArtifactBase {
+  readonly kind: "skill";
+  readonly content: string;
+}
+
+export interface AgentArtifact extends BrickArtifactBase {
+  readonly kind: "agent";
+  readonly manifestYaml: string;
+}
+
+export interface CompositeArtifact extends BrickArtifactBase {
+  readonly kind: "composite";
+  readonly brickIds: readonly string[];
+}
+
+export type BrickArtifact = ToolArtifact | SkillArtifact | AgentArtifact | CompositeArtifact;
+
+// ---------------------------------------------------------------------------
+// Promote result (returned by promote_forge)
+// ---------------------------------------------------------------------------
+
+export interface PromoteChange<T> {
+  readonly from: T;
+  readonly to: T;
+}
+
+export interface PromoteResult {
+  readonly brickId: string;
+  readonly applied: boolean;
+  readonly requiresHumanApproval: boolean;
+  readonly changes: {
+    readonly scope?: PromoteChange<ForgeScope>;
+    readonly trustTier?: PromoteChange<TrustTier>;
+    readonly lifecycle?: PromoteChange<BrickLifecycle>;
+  };
+  readonly message?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Manifest parser (injected dependency — avoids L2 peer import of @koi/manifest)
+// ---------------------------------------------------------------------------
+
+export type ManifestParseResult =
+  | { readonly ok: true; readonly warnings: readonly string[] }
+  | { readonly ok: false; readonly error: string };
+
+export interface ManifestParser {
+  readonly parse: (yaml: string) => ManifestParseResult | Promise<ManifestParseResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -186,5 +241,7 @@ export interface ForgeQuery {
   readonly lifecycle?: BrickLifecycle;
   readonly tags?: readonly string[];
   readonly createdBy?: string;
+  /** Case-insensitive substring match against brick name and description. */
+  readonly text?: string;
   readonly limit?: number;
 }

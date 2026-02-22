@@ -9,7 +9,13 @@ import { checkGovernance } from "../governance.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import { createForgeToolTool } from "../tools/forge-tool.js";
 import type { ForgeDeps } from "../tools/shared.js";
-import type { BrickArtifact, ForgeContext, ForgeInput, SandboxExecutor } from "../types.js";
+import type {
+  BrickArtifact,
+  ForgeContext,
+  ForgeInput,
+  SandboxExecutor,
+  ToolArtifact,
+} from "../types.js";
 import { verify } from "../verify.js";
 import { verifyStatic } from "../verify-static.js";
 
@@ -176,7 +182,7 @@ describe("Edge case 6: Scope promotion without HITL when required", () => {
 describe("Edge case 7: Concurrent forge attempts — no shared state corruption", () => {
   test("concurrent saves to same store do not corrupt data", async () => {
     const store = createInMemoryForgeStore();
-    const bricks: BrickArtifact[] = Array.from({ length: 10 }, (_, i) => ({
+    const bricks: readonly ToolArtifact[] = Array.from({ length: 10 }, (_, i) => ({
       id: `brick_${i}`,
       kind: "tool" as const,
       name: `tool-${i}`,
@@ -189,7 +195,9 @@ describe("Edge case 7: Concurrent forge attempts — no shared state corruption"
       version: "0.0.1",
       tags: [],
       usageCount: 0,
+      contentHash: "test-hash",
       implementation: `return ${i};`,
+      inputSchema: { type: "object" },
     }));
 
     // Save all concurrently
@@ -207,7 +215,7 @@ describe("Edge case 7: Concurrent forge attempts — no shared state corruption"
 describe("Edge case 8: Duplicate brick name in same scope", () => {
   test("second save overwrites first (store allows by id)", async () => {
     const store = createInMemoryForgeStore();
-    const brick1: BrickArtifact = {
+    const brick1: ToolArtifact = {
       id: "same-id",
       kind: "tool",
       name: "duplicate",
@@ -220,8 +228,11 @@ describe("Edge case 8: Duplicate brick name in same scope", () => {
       version: "0.0.1",
       tags: [],
       usageCount: 0,
+      contentHash: "test-hash",
+      implementation: "return 1;",
+      inputSchema: { type: "object" },
     };
-    const brick2: BrickArtifact = {
+    const brick2: ToolArtifact = {
       ...brick1,
       description: "Second",
     };
@@ -318,7 +329,7 @@ describe("Edge case 11: ForgeStore.save() failure after verification", () => {
 describe("Edge case 12: Only valid BrickLifecycle transitions", () => {
   test("store update changes lifecycle from active to deprecated", async () => {
     const store = createInMemoryForgeStore();
-    const brick: BrickArtifact = {
+    const brick: ToolArtifact = {
       id: "b1",
       kind: "tool",
       name: "myTool",
@@ -331,6 +342,9 @@ describe("Edge case 12: Only valid BrickLifecycle transitions", () => {
       version: "0.0.1",
       tags: [],
       usageCount: 0,
+      contentHash: "test-hash",
+      implementation: "return 1;",
+      inputSchema: { type: "object" },
     };
     await store.save(brick);
 
@@ -344,7 +358,7 @@ describe("Edge case 12: Only valid BrickLifecycle transitions", () => {
 
   test("store update changes lifecycle from draft to verifying", async () => {
     const store = createInMemoryForgeStore();
-    const brick: BrickArtifact = {
+    const brick: ToolArtifact = {
       id: "b1",
       kind: "tool",
       name: "myTool",
@@ -357,6 +371,9 @@ describe("Edge case 12: Only valid BrickLifecycle transitions", () => {
       version: "0.0.1",
       tags: [],
       usageCount: 0,
+      contentHash: "test-hash",
+      implementation: "return 1;",
+      inputSchema: { type: "object" },
     };
     await store.save(brick);
 

@@ -20,6 +20,7 @@ export interface VerificationConfig {
   readonly selfTestTimeoutMs: number;
   readonly totalTimeoutMs: number;
   readonly maxBrickSizeBytes: number;
+  readonly failFast: boolean;
 }
 
 export interface ForgeConfig {
@@ -48,6 +49,7 @@ const DEFAULT_VERIFICATION: VerificationConfig = {
   selfTestTimeoutMs: 10_000,
   totalTimeoutMs: 30_000,
   maxBrickSizeBytes: 50_000,
+  failFast: true,
 } as const;
 
 const DEFAULT_CONFIG: ForgeConfig = {
