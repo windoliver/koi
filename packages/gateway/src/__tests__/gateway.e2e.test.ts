@@ -332,6 +332,208 @@ describe("Gateway e2e (real WebSocket)", () => {
     }
   });
 
+  test("out-of-window seq returns error frame", async () => {
+    transport = createBunTransport();
+    const auth = createTestAuthenticator({
+      ok: true,
+      sessionId: "s-window",
+      agentId: "a",
+      metadata: {},
+    });
+    // Small dedup window of 4
+    gateway = createGateway({ dedupWindowSize: 4 }, { transport, auth });
+    await gateway.start(0);
+
+    const { ws, messages, opened } = await connectClient(transport.port());
+    await opened;
+
+    ws.send("token");
+    await waitForMessages(messages, 1); // auth ack
+
+    // Send seq 10 — far beyond window [0..3]
+    ws.send(
+      JSON.stringify({
+        kind: "request",
+        id: "far-seq",
+        seq: 10,
+        timestamp: Date.now(),
+        payload: null,
+      }),
+    );
+    await waitForMessages(messages, 2);
+
+    const errFrame = JSON.parse(messages[1] as string);
+    expect(errFrame.kind).toBe("error");
+    expect(errFrame.payload.message).toContain("out of window");
+
+    ws.close();
+  });
+
+  test("heartbeat sweep closes session when validation fails", async () => {
+    transport = createBunTransport();
+
+    let shouldValidate = true;
+    const auth = {
+      async authenticate(_token: string) {
+        return {
+          ok: true as const,
+          sessionId: "s-heartbeat",
+          agentId: "a",
+          metadata: {},
+        };
+      },
+      async validate(_sessionId: string) {
+        return shouldValidate;
+      },
+    };
+
+    // Short heartbeat and sweep intervals for fast test
+    gateway = createGateway({ heartbeatIntervalMs: 50, sweepIntervalMs: 50 }, { transport, auth });
+    await gateway.start(0);
+
+    const { ws, messages, opened, closed } = await connectClient(transport.port());
+    await opened;
+
+    ws.send("token");
+    await waitForMessages(messages, 1); // auth ack
+
+    // Session is established
+    expect(gateway.sessions().has("s-heartbeat")).toBe(true);
+
+    // Revoke the session — next sweep should close it
+    shouldValidate = false;
+
+    // Wait for sweep to run and close the connection
+    const closeEvt = await closed;
+    expect(closeEvt.code).toBe(4004);
+    expect(gateway.sessions().has("s-heartbeat")).toBe(false);
+  });
+
+  test("reconnection: new client resumes after disconnect", async () => {
+    transport = createBunTransport();
+
+    let sessionCounter = 0;
+    const auth = {
+      async authenticate(_token: string) {
+        sessionCounter++;
+        return {
+          ok: true as const,
+          sessionId: `reconnect-${sessionCounter}`,
+          agentId: "a",
+          metadata: {},
+        };
+      },
+      async validate() {
+        return true;
+      },
+    };
+
+    gateway = createGateway({}, { transport, auth });
+    await gateway.start(0);
+    const port = transport.port();
+
+    const dispatched: GatewayFrame[] = [];
+    gateway.onFrame((_session, frame) => {
+      dispatched.push(frame);
+    });
+
+    // First connection — send seq 0, 1
+    const client1 = await connectClient(port);
+    await client1.opened;
+    client1.ws.send("token");
+    await waitForMessages(client1.messages, 1);
+
+    client1.ws.send(
+      JSON.stringify({ kind: "request", id: "r0", seq: 0, timestamp: Date.now(), payload: null }),
+    );
+    client1.ws.send(
+      JSON.stringify({ kind: "request", id: "r1", seq: 1, timestamp: Date.now(), payload: null }),
+    );
+    await waitForMessages(client1.messages, 3);
+    expect(dispatched).toHaveLength(2);
+
+    // Disconnect
+    client1.ws.close();
+    await client1.closed;
+
+    // Reconnect as a new session — sends from seq 0 again (new tracker)
+    const client2 = await connectClient(port);
+    await client2.opened;
+    client2.ws.send("token");
+    await waitForMessages(client2.messages, 1);
+
+    client2.ws.send(
+      JSON.stringify({ kind: "request", id: "r2", seq: 0, timestamp: Date.now(), payload: null }),
+    );
+    await waitForMessages(client2.messages, 2);
+
+    // Total dispatched: 2 from first connection + 1 from second
+    expect(dispatched).toHaveLength(3);
+    expect(dispatched[2]?.id).toBe("r2");
+
+    client2.ws.close();
+  });
+
+  test("backpressure: frames dropped when buffer is critical", async () => {
+    transport = createBunTransport();
+    const auth = createTestAuthenticator({
+      ok: true,
+      sessionId: "s-bp",
+      agentId: "a",
+      metadata: {},
+    });
+    // Tiny buffer: 50 bytes max per connection, low watermark
+    gateway = createGateway(
+      { maxBufferPerConnection: 50, backpressureHighWatermark: 0.5 },
+      { transport, auth },
+    );
+    await gateway.start(0);
+
+    const dispatched: GatewayFrame[] = [];
+    gateway.onFrame((_session, frame) => {
+      dispatched.push(frame);
+    });
+
+    const { ws, messages, opened } = await connectClient(transport.port());
+    await opened;
+
+    ws.send("token");
+    await waitForMessages(messages, 1);
+
+    // First frame will be recorded against the buffer (~80 bytes of JSON > 50 limit → critical)
+    ws.send(
+      JSON.stringify({
+        kind: "request",
+        id: "bp-0",
+        seq: 0,
+        timestamp: Date.now(),
+        payload: { data: "fill" },
+      }),
+    );
+    await waitForMessages(messages, 2); // ack for first frame
+
+    // First frame should have been dispatched (it gets accepted before bp is recorded)
+    expect(dispatched).toHaveLength(1);
+
+    // Second frame arrives while buffer is in critical state — should be dropped
+    ws.send(
+      JSON.stringify({
+        kind: "request",
+        id: "bp-1",
+        seq: 1,
+        timestamp: Date.now(),
+        payload: { data: "dropped" },
+      }),
+    );
+    // Give time for processing
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Second frame should NOT have been dispatched (dropped due to critical backpressure)
+    expect(dispatched).toHaveLength(1);
+
+    ws.close();
+  });
+
   test("auth timeout when client never sends token", async () => {
     transport = createBunTransport();
     const auth = createTestAuthenticator({
