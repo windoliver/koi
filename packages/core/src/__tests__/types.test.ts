@@ -9,15 +9,21 @@ import type {
   EngineEvent,
   EngineInput,
   EngineStopReason,
+  GovernanceUsage,
   KoiError,
+  KoiErrorCode,
   KoiMiddleware,
   PermissionConfig,
+  ProcessId,
   Resolver,
   Result,
+  SpawnCheck,
   SubsystemToken,
   Tool,
+  ToolDescriptor,
+  TrustTier,
 } from "../index.js";
-import { token } from "../index.js";
+import { CREDENTIALS, EVENTS, GOVERNANCE, MEMORY, token } from "../index.js";
 
 /**
  * Type-level tests using @ts-expect-error.
@@ -118,14 +124,19 @@ describe("EngineEvent discriminant", () => {
     }
   });
 
-  test("narrows to tool_call_start", () => {
-    const event: EngineEvent = {
-      kind: "tool_call_start",
-      toolId: "calc",
-      input: {},
-    };
+  test("narrows to tool_call_start with toolName and callId", () => {
+    const event: EngineEvent = { kind: "tool_call_start", toolName: "calc", callId: "c1" };
     if (event.kind === "tool_call_start") {
-      expect(event.toolId).toBe("calc");
+      expect(event.toolName).toBe("calc");
+      expect(event.callId).toBe("c1");
+    }
+  });
+
+  test("narrows to tool_call_end with callId and result", () => {
+    const event: EngineEvent = { kind: "tool_call_end", callId: "c1", result: 42 };
+    if (event.kind === "tool_call_end") {
+      expect(event.callId).toBe("c1");
+      expect(event.result).toBe(42);
     }
   });
 
@@ -201,34 +212,106 @@ describe("readonly enforcement", () => {
     // @ts-expect-error — cannot assign to readonly property
     block.kind = "file";
   });
+
+  test("ProcessId properties are readonly", () => {
+    const pid: ProcessId = { id: "1", name: "test", type: "copilot", depth: 0 };
+    // @ts-expect-error — cannot assign to readonly property
+    pid.id = "2";
+  });
+
+  test("ToolDescriptor properties are readonly", () => {
+    const td: ToolDescriptor = { name: "calc", description: "Calculator", inputSchema: {} };
+    // @ts-expect-error — cannot assign to readonly property
+    td.name = "other";
+  });
+
+  test("AgentManifest properties are readonly", () => {
+    const m: AgentManifest = { name: "test", version: "0.0.0", model: { name: "gpt-4" } };
+    // @ts-expect-error — cannot assign to readonly property
+    m.name = "other";
+  });
 });
 
 describe("Agent component typing", () => {
   test("component returns T | undefined for typed token", () => {
-    // Verify the type signature compiles correctly
     const agentLike: Pick<Agent, "component"> = {
       component: <T>(_token: SubsystemToken<T>): T | undefined => undefined,
     };
     const result = agentLike.component(token<{ readonly val: number }>("test"));
-    // result is { readonly val: number } | undefined
     expect(result).toBeUndefined();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Negative type tests for all 6 contracts (#9)
+// Well-known token type narrowing (from main)
+// ---------------------------------------------------------------------------
+
+describe("well-known token type narrowing", () => {
+  test("MEMORY token narrows component to MemoryComponent", () => {
+    const agentLike: Pick<Agent, "component"> = {
+      component: <T>(_token: SubsystemToken<T>): T | undefined => undefined,
+    };
+    const mem = agentLike.component(MEMORY);
+    if (mem) {
+      const _: Promise<readonly unknown[]> = mem.recall("test");
+      void _;
+    }
+    expect(mem).toBeUndefined();
+  });
+
+  test("GOVERNANCE token narrows component to GovernanceComponent", () => {
+    const agentLike: Pick<Agent, "component"> = {
+      component: <T>(_token: SubsystemToken<T>): T | undefined => undefined,
+    };
+    const gov = agentLike.component(GOVERNANCE);
+    if (gov) {
+      const _usage: GovernanceUsage = gov.usage();
+      const _check: SpawnCheck = gov.checkSpawn(0);
+      void _usage;
+      void _check;
+    }
+    expect(gov).toBeUndefined();
+  });
+
+  test("CREDENTIALS token narrows component to CredentialComponent", () => {
+    const agentLike: Pick<Agent, "component"> = {
+      component: <T>(_token: SubsystemToken<T>): T | undefined => undefined,
+    };
+    const cred = agentLike.component(CREDENTIALS);
+    if (cred) {
+      const _: Promise<string | undefined> = cred.get("api_key");
+      void _;
+    }
+    expect(cred).toBeUndefined();
+  });
+
+  test("EVENTS token narrows component to EventComponent", () => {
+    const agentLike: Pick<Agent, "component"> = {
+      component: <T>(_token: SubsystemToken<T>): T | undefined => undefined,
+    };
+    const events = agentLike.component(EVENTS);
+    if (events) {
+      const _: Promise<void> = events.emit("test", {});
+      void _;
+    }
+    expect(events).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Negative type tests for all 6 contracts
 // ---------------------------------------------------------------------------
 
 describe("AgentManifest negative types", () => {
   test("model is required", () => {
     // @ts-expect-error — model is required on AgentManifest
-    const _m: AgentManifest = { name: "test" };
+    const _m: AgentManifest = { name: "test", version: "0.0.0" };
     void _m;
   });
 
   test("name is required", () => {
     // @ts-expect-error — name is required on AgentManifest
-    const _m: AgentManifest = { model: { name: "gpt-4" } };
+    const _m: AgentManifest = { version: "0.0.0", model: { name: "gpt-4" } };
     void _m;
   });
 });
@@ -278,6 +361,15 @@ describe("KoiMiddleware negative types", () => {
     // @ts-expect-error — name is required on KoiMiddleware
     const _mw: KoiMiddleware = {};
     void _mw;
+  });
+
+  test("middleware with session hooks is valid", () => {
+    const mw: KoiMiddleware = {
+      name: "session-only",
+      onSessionStart: async () => {},
+      onSessionEnd: async () => {},
+    };
+    expect(mw.name).toBe("session-only");
   });
 });
 
@@ -359,7 +451,135 @@ describe("PermissionConfig negative types", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Resolver type tests (#12)
+// TrustTier and SpawnCheck (from main)
+// ---------------------------------------------------------------------------
+
+describe("TrustTier", () => {
+  test("accepts valid trust tier literals", () => {
+    const tiers: readonly TrustTier[] = ["sandbox", "verified", "promoted"];
+    expect(tiers).toHaveLength(3);
+  });
+});
+
+describe("SpawnCheck discriminant", () => {
+  test("narrows to allowed branch", () => {
+    const check: SpawnCheck = { allowed: true };
+    if (check.allowed) {
+      expect(check.allowed).toBe(true);
+    }
+  });
+
+  test("narrows to denied branch with reason", () => {
+    const check: SpawnCheck = { allowed: false, reason: "max depth exceeded" };
+    if (!check.allowed) {
+      expect(check.reason).toBe("max depth exceeded");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// KoiErrorCode and KoiError extended fields (from main)
+// ---------------------------------------------------------------------------
+
+describe("KoiErrorCode", () => {
+  test("accepts all 8 valid error codes", () => {
+    const codes: readonly KoiErrorCode[] = [
+      "VALIDATION",
+      "NOT_FOUND",
+      "PERMISSION",
+      "CONFLICT",
+      "RATE_LIMIT",
+      "TIMEOUT",
+      "EXTERNAL",
+      "INTERNAL",
+    ];
+    expect(codes).toHaveLength(8);
+  });
+
+  test("rejects invalid error codes", () => {
+    // @ts-expect-error — "UNKNOWN" is not a valid KoiErrorCode
+    const _invalid: KoiErrorCode = "UNKNOWN";
+    void _invalid;
+  });
+});
+
+describe("KoiError new fields", () => {
+  test("context is optional and accepts JsonObject", () => {
+    const withContext: KoiError = {
+      code: "NOT_FOUND",
+      message: "missing",
+      retryable: false,
+      context: { resourceId: "abc-123" },
+    };
+    expect(withContext.context).toEqual({ resourceId: "abc-123" });
+  });
+
+  test("retryAfterMs is optional and accepts number", () => {
+    const withRetry: KoiError = {
+      code: "RATE_LIMIT",
+      message: "too fast",
+      retryable: true,
+      retryAfterMs: 5000,
+    };
+    expect(withRetry.retryAfterMs).toBe(5000);
+  });
+
+  test("KoiError without new fields is still valid", () => {
+    const minimal: KoiError = {
+      code: "INTERNAL",
+      message: "fail",
+      retryable: false,
+    };
+    expect(minimal.context).toBeUndefined();
+    expect(minimal.retryAfterMs).toBeUndefined();
+  });
+
+  test("context is readonly", () => {
+    const err: KoiError = {
+      code: "VALIDATION",
+      message: "bad",
+      retryable: false,
+      context: { field: "email" },
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    err.context = {};
+  });
+
+  test("retryAfterMs is readonly", () => {
+    const err: KoiError = {
+      code: "TIMEOUT",
+      message: "slow",
+      retryable: true,
+      retryAfterMs: 1000,
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    err.retryAfterMs = 2000;
+  });
+});
+
+describe("Result with custom error type", () => {
+  test("narrows with string error type", () => {
+    const result: Result<number, string> = { ok: false, error: "boom" };
+    if (!result.ok) {
+      const e: string = result.error;
+      expect(e).toBe("boom");
+    }
+  });
+
+  test("narrows with custom error object", () => {
+    type CustomError = { readonly kind: string; readonly detail: string };
+    const result: Result<number, CustomError> = {
+      ok: false,
+      error: { kind: "auth", detail: "expired token" },
+    };
+    if (!result.ok) {
+      expect(result.error.kind).toBe("auth");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Resolver type tests
 // ---------------------------------------------------------------------------
 
 describe("Resolver type tests", () => {
@@ -371,6 +591,7 @@ describe("Resolver type tests", () => {
         ok: true,
         value: {
           descriptor: { name: "t", description: "d", inputSchema: {} },
+          trustTier: "sandbox",
           execute: async () => ({}),
         },
       }),
@@ -403,6 +624,7 @@ describe("Resolver type tests", () => {
         ok: true,
         value: {
           descriptor: { name: "t", description: "d", inputSchema: {} },
+          trustTier: "sandbox",
           execute: async () => ({}),
         },
       }),
@@ -412,20 +634,20 @@ describe("Resolver type tests", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tool input narrowing test (#7)
+// Tool input typing
 // ---------------------------------------------------------------------------
 
 describe("Tool input typing", () => {
-  test("Tool.execute accepts Record<string, unknown>", () => {
+  test("Tool.execute accepts JsonObject args", () => {
     const tool: Tool = {
       descriptor: {
         name: "calc",
         description: "calculator",
         inputSchema: {},
       },
-      execute: async (input) => {
-        // input is Readonly<Record<string, unknown>>
-        return { result: input.a };
+      trustTier: "sandbox",
+      execute: async (args) => {
+        return { result: args.a };
       },
     };
     expect(tool.descriptor.name).toBe("calc");

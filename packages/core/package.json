@@ -16,6 +16,10 @@
       "types": "./dist/channel.d.ts",
       "import": "./dist/channel.js"
     },
+    "./common": {
+      "types": "./dist/common.d.ts",
+      "import": "./dist/common.js"
+    },
     "./ecs": {
       "types": "./dist/ecs.d.ts",
       "import": "./dist/ecs.js"

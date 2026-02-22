@@ -28,8 +28,11 @@ import type {
   EventComponent,
   FileBlock,
   GovernanceComponent,
+  GovernanceUsage,
   ImageBlock,
   InboundMessage,
+  // common
+  JsonObject,
   KoiError,
   // errors
   KoiErrorCode,
@@ -52,6 +55,7 @@ import type {
   // middleware
   SessionContext,
   SkillMetadata,
+  SpawnCheck,
   // ecs
   SubsystemToken,
   // message
@@ -62,6 +66,7 @@ import type {
   ToolHandler,
   ToolRequest,
   ToolResponse,
+  TrustTier,
   TurnContext,
 } from "../index.js";
 
@@ -71,6 +76,7 @@ import {
   EVENTS,
   GOVERNANCE,
   MEMORY,
+  RETRYABLE_DEFAULTS,
   skillToken,
   token,
   toolToken,
@@ -79,6 +85,7 @@ import {
 // Prevent type imports from being optimized away
 type AssertDefined<T> = T extends undefined ? never : T;
 type _TypeGuard =
+  | AssertDefined<JsonObject>
   | AssertDefined<KoiErrorCode>
   | AssertDefined<KoiError>
   | AssertDefined<Result<unknown>>
@@ -122,10 +129,13 @@ type _TypeGuard =
   | AssertDefined<Agent>
   | AssertDefined<ToolDescriptor>
   | AssertDefined<Tool>
+  | AssertDefined<TrustTier>
   | AssertDefined<SkillMetadata>
   | AssertDefined<ComponentProvider>
   | AssertDefined<MemoryComponent>
   | AssertDefined<GovernanceComponent>
+  | AssertDefined<GovernanceUsage>
+  | AssertDefined<SpawnCheck>
   | AssertDefined<CredentialComponent>
   | AssertDefined<EventComponent>;
 
@@ -139,9 +149,10 @@ describe("export inventory", () => {
     expect(GOVERNANCE).toBeDefined();
     expect(CREDENTIALS).toBeDefined();
     expect(EVENTS).toBeDefined();
+    expect(RETRYABLE_DEFAULTS).toBeDefined();
   });
 
-  test("runtime values are functions or strings", () => {
+  test("runtime values are functions, strings, or objects", () => {
     expect(typeof token).toBe("function");
     expect(typeof toolToken).toBe("function");
     expect(typeof channelToken).toBe("function");
@@ -150,5 +161,6 @@ describe("export inventory", () => {
     expect(typeof GOVERNANCE).toBe("string");
     expect(typeof CREDENTIALS).toBe("string");
     expect(typeof EVENTS).toBe("string");
+    expect(typeof RETRYABLE_DEFAULTS).toBe("object");
   });
 });

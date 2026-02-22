@@ -29,7 +29,7 @@ describe("token()", () => {
     expect(str(token("a"))).not.toBe(str(token("b")));
   });
 
-  test("empty string produces empty token", () => {
+  test("empty string returns empty string", () => {
     expect(str(token(""))).toBe("");
   });
 });
@@ -43,12 +43,12 @@ describe("toolToken()", () => {
     expect(str(toolToken("search"))).toContain(":");
   });
 
-  test("empty string produces 'tool:'", () => {
+  test("empty name produces tool: prefix only", () => {
     expect(str(toolToken(""))).toBe("tool:");
   });
 
-  test("colon in name produces double colon", () => {
-    expect(str(toolToken("foo:bar"))).toBe("tool:foo:bar");
+  test("name with colon produces double colon", () => {
+    expect(str(toolToken("search:v2"))).toBe("tool:search:v2");
   });
 });
 
@@ -59,6 +59,10 @@ describe("channelToken()", () => {
 
   test("contains namespace separator", () => {
     expect(str(channelToken("slack"))).toContain(":");
+  });
+
+  test("empty name produces channel: prefix only", () => {
+    expect(str(channelToken(""))).toBe("channel:");
   });
 
   test("unicode name is preserved", () => {
@@ -73,6 +77,10 @@ describe("skillToken()", () => {
 
   test("contains namespace separator", () => {
     expect(str(skillToken("summarize"))).toContain(":");
+  });
+
+  test("empty name produces skill: prefix only", () => {
+    expect(str(skillToken(""))).toBe("skill:");
   });
 });
 

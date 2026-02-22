@@ -9,6 +9,7 @@
 
 import type { AgentManifest } from "./assembly.js";
 import type { ChannelAdapter } from "./channel.js";
+import type { JsonObject } from "./common.js";
 
 // ---------------------------------------------------------------------------
 // Branded token
@@ -28,8 +29,8 @@ export function token<T>(name: string): SubsystemToken<T> {
   return name as SubsystemToken<T>;
 }
 
-export function toolToken(name: string): SubsystemToken<ToolDescriptor> {
-  return `tool:${name}` as SubsystemToken<ToolDescriptor>;
+export function toolToken(name: string): SubsystemToken<Tool> {
+  return `tool:${name}` as SubsystemToken<Tool>;
 }
 
 export function channelToken(name: string): SubsystemToken<ChannelAdapter> {
@@ -76,18 +77,25 @@ export interface Agent {
 }
 
 // ---------------------------------------------------------------------------
+// Trust tiers
+// ---------------------------------------------------------------------------
+
+export type TrustTier = "sandbox" | "verified" | "promoted";
+
+// ---------------------------------------------------------------------------
 // Tool & Skill
 // ---------------------------------------------------------------------------
 
 export interface ToolDescriptor {
   readonly name: string;
   readonly description: string;
-  readonly inputSchema: Readonly<Record<string, unknown>>;
+  readonly inputSchema: JsonObject;
 }
 
 export interface Tool {
   readonly descriptor: ToolDescriptor;
-  readonly execute: (input: Readonly<Record<string, unknown>>) => Promise<unknown>;
+  readonly trustTier: TrustTier;
+  readonly execute: (args: JsonObject) => Promise<unknown>;
 }
 
 export interface SkillMetadata {
@@ -114,8 +122,18 @@ export interface MemoryComponent {
   readonly store: (content: unknown) => Promise<void>;
 }
 
+export interface GovernanceUsage {
+  readonly turns: number;
+  readonly spawns: number;
+}
+
+export type SpawnCheck =
+  | { readonly allowed: true }
+  | { readonly allowed: false; readonly reason: string };
+
 export interface GovernanceComponent {
-  readonly check: (action: string) => Promise<boolean>;
+  readonly usage: () => GovernanceUsage;
+  readonly checkSpawn: (depth: number) => SpawnCheck;
 }
 
 export interface CredentialComponent {
@@ -123,7 +141,7 @@ export interface CredentialComponent {
 }
 
 export interface EventComponent {
-  readonly emit: (type: string, data: unknown) => void;
+  readonly emit: (type: string, data: unknown) => Promise<void>;
   readonly on: (type: string, handler: (data: unknown) => void) => () => void;
 }
 

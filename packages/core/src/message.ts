@@ -2,6 +2,8 @@
  * Content block union and message types.
  */
 
+import type { JsonObject } from "./common.js";
+
 export interface TextBlock {
   readonly kind: "text";
   readonly text: string;
@@ -38,7 +40,7 @@ export type ContentBlock = TextBlock | FileBlock | ImageBlock | ButtonBlock | Cu
 export interface OutboundMessage {
   readonly content: readonly ContentBlock[];
   readonly threadId?: string;
-  readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly metadata?: JsonObject;
 }
 
 export interface InboundMessage {
@@ -46,5 +48,5 @@ export interface InboundMessage {
   readonly senderId: string;
   readonly threadId?: string;
   readonly timestamp: number;
-  readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly metadata?: JsonObject;
 }
