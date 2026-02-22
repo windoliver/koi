@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Agent, Tool } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { agentId, toolToken } from "@koi/core";
 import type { McpClientManager } from "./client-manager.js";
 import { createMcpComponentProviderAsync } from "./component-provider.js";
 import type { McpProviderConfig, ResolvedMcpServerConfig } from "./config.js";
@@ -18,7 +18,7 @@ import type { McpProviderConfig, ResolvedMcpServerConfig } from "./config.js";
 
 function createMockAgent(): Agent {
   return {
-    pid: { id: "test-1", name: "test", type: "worker", depth: 0 },
+    pid: { id: agentId("test-1"), name: "test", type: "worker", depth: 0 },
     manifest: {
       name: "test-agent",
       version: "1.0.0",
