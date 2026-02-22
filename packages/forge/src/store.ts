@@ -2,8 +2,8 @@
  * ForgeStore interface — Repository pattern for brick persistence.
  */
 
-import type { BrickLifecycle, ForgeScope, KoiError, Result, TrustTier } from "@koi/core";
-import type { BrickArtifact, ForgeQuery } from "./types.js";
+import type { KoiError, Result, TrustTier } from "@koi/core";
+import type { BrickArtifact, BrickLifecycle, ForgeQuery, ForgeScope } from "./types.js";
 
 export type { BrickArtifact, ForgeQuery };
 

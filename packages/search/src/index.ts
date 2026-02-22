@@ -5,10 +5,10 @@
  * Wraps local SQLite by default; swap to Nexus via manifest config.
  */
 
-import type { Embedder, FusionStrategy, Indexer, Retriever } from "@koi/core";
 import type { BM25Config } from "./bm25/bm25-index.js";
 import { createBm25Index, defaultTokenize } from "./bm25/bm25-index.js";
 import { createBm25Retriever } from "./bm25/bm25-retriever.js";
+import type { Embedder, Indexer, Retriever } from "./contracts.js";
 import type { EmbedderCacheConfig } from "./embedder-cache.js";
 import { createCachedEmbedder } from "./embedder-cache.js";
 import { createHybridRetriever } from "./hybrid/hybrid-retriever.js";
@@ -17,6 +17,7 @@ import type { TemporalDecayConfig } from "./hybrid/temporal-decay.js";
 import type { ChunkerConfig } from "./indexer/chunker.js";
 import { createSqliteIndexer } from "./indexer/sqlite-indexer.js";
 import type { QueryExpansionConfig } from "./query/expand.js";
+import type { FusionStrategy } from "./types.js";
 import { createVectorStore } from "./vector/sqlite-vec.js";
 import { createVectorRetriever } from "./vector/vector-retriever.js";
 

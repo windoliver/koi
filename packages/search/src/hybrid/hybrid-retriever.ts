@@ -1,11 +1,11 @@
+import type { Retriever } from "../contracts.js";
 import type {
   FusionStrategy,
-  Retriever,
   SearchOutcome,
   SearchPage,
   SearchQuery,
   SearchResult,
-} from "@koi/core";
+} from "../types.js";
 import { applyFusion } from "./fusion.js";
 import type { MmrConfig } from "./mmr.js";
 import { applyMmr } from "./mmr.js";

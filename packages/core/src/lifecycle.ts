@@ -56,17 +56,17 @@ export type TransitionReason =
  * L2 packages can import this to check transitions without importing L1.
  *
  * Transitions:
- *   created → running
+ *   created → running, terminated
  *   running → waiting, suspended, terminated
- *   waiting → running, terminated
+ *   waiting → running, suspended, terminated
  *   suspended → running, terminated
  *   terminated → (none)
  */
 export const VALID_TRANSITIONS: Readonly<Record<ProcessState, readonly ProcessState[]>> =
   Object.freeze({
-    created: ["running"] as const,
+    created: ["running", "terminated"] as const,
     running: ["waiting", "suspended", "terminated"] as const,
-    waiting: ["running", "terminated"] as const,
+    waiting: ["running", "suspended", "terminated"] as const,
     suspended: ["running", "terminated"] as const,
     terminated: [] as const,
   });
@@ -103,6 +103,8 @@ export interface RegistryEntry {
   readonly metadata: Readonly<Record<string, unknown>>;
   /** Unix timestamp ms when the agent was registered. */
   readonly registeredAt: number;
+  /** Parent agent ID (undefined for root agents). */
+  readonly parentId?: AgentId;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +132,8 @@ export interface RegistryFilter {
   readonly phase?: ProcessState;
   readonly agentType?: "copilot" | "worker";
   readonly condition?: AgentCondition;
+  /** Filter by parent agent ID. */
+  readonly parentId?: AgentId;
 }
 
 // ---------------------------------------------------------------------------

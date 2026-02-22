@@ -102,6 +102,7 @@
       "version": "0.0.0",
       "devDependencies": {
         "@koi/core": "workspace:*",
+        "@koi/engine": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
         "@koi/middleware-memory": "workspace:*",
         "@koi/middleware-pay": "workspace:*",
@@ -124,6 +125,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -134,6 +136,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",

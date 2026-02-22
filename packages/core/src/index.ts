@@ -34,12 +34,15 @@ export type {
 export type {
   Agent,
   AgentId,
+  ChildHandle,
+  ChildLifecycleEvent,
   ComponentProvider,
   CredentialComponent,
   EventComponent,
   GovernanceComponent,
   GovernanceUsage,
   MemoryComponent,
+  ProcessAccounter,
   ProcessId,
   ProcessState,
   SkillMetadata,
@@ -84,8 +87,8 @@ export type {
   EvictionReason,
   EvictionResult,
 } from "./eviction.js";
-// forge types
-export type { BrickKind, BrickLifecycle, ForgeScope } from "./forge-types.js";
+// hash
+export { fnv1a } from "./hash.js";
 // health
 export type {
   HealthMonitor,
@@ -138,33 +141,3 @@ export type {
 } from "./middleware.js";
 // resolver
 export type { Resolver } from "./resolver.js";
-// search contracts
-export type { Embedder, Indexer, Retriever } from "./retriever.js";
-// sandbox
-export type {
-  FilesystemPolicy,
-  NetworkPolicy,
-  ResourceLimits,
-  SandboxAdapter,
-  SandboxExecOptions,
-  SandboxInstance,
-  SandboxProfile,
-  SandboxResult,
-  SandboxTier,
-} from "./sandbox.js";
-// search value types
-export type {
-  FusionFunction,
-  FusionStrategy,
-  IndexDocument,
-  ScoreNormalizer,
-  SearchErr,
-  SearchError,
-  SearchFilter,
-  SearchOk,
-  SearchOutcome,
-  SearchPage,
-  SearchQuery,
-  SearchResult,
-  SearchScore,
-} from "./search.js";

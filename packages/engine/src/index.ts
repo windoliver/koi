@@ -8,6 +8,10 @@
 
 // agent entity
 export { AgentEntity } from "./agent-entity.js";
+// swarm
+export type { CascadingTermination } from "./cascading-termination.js";
+export { createCascadingTermination } from "./cascading-termination.js";
+export { createChildHandle } from "./child-handle.js";
 export type { TerminalHandlers } from "./compose.js";
 // composition
 export {
@@ -30,6 +34,7 @@ export {
   createIterationGuard,
   createLoopDetector,
   createSpawnGuard,
+  detectRepeatingPattern,
 } from "./guards.js";
 // health monitor
 export type { InMemoryHealthMonitor } from "./health-monitor.js";
@@ -39,6 +44,10 @@ export { createKoi } from "./koi.js";
 // lifecycle
 export type { AgentLifecycle, LifecycleEvent } from "./lifecycle.js";
 export { transition } from "./lifecycle.js";
+export type { SharedProcessAccounter } from "./process-accounter.js";
+export { createProcessAccounter } from "./process-accounter.js";
+export type { ProcessTree } from "./process-tree.js";
+export { createProcessTree } from "./process-tree.js";
 // registry
 export type { InMemoryRegistry } from "./registry.js";
 export { createInMemoryRegistry } from "./registry.js";
@@ -54,6 +63,7 @@ export type {
   IterationLimits,
   KoiRuntime,
   LoopDetectionConfig,
+  LoopDetectionKind,
   LoopWarningInfo,
   SpawnPolicy,
 } from "./types.js";

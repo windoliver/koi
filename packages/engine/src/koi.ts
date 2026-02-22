@@ -29,6 +29,11 @@ function generatePid(manifest: CreateKoiOptions["manifest"]): ProcessId {
   };
 }
 
+/** Sort middleware by priority (ascending). Guards get low numbers, L2 middleware gets higher. */
+function sortByPriority(middleware: readonly KoiMiddleware[]): readonly KoiMiddleware[] {
+  return [...middleware].sort((a, b) => (a.priority ?? 500) - (b.priority ?? 500));
+}
+
 export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> {
   const { manifest, adapter, middleware = [], providers = [] } = options;
 
@@ -45,10 +50,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     );
   }
 
-  guards.push(createSpawnGuard(options.spawn, pid.depth));
+  guards.push(createSpawnGuard(options.spawn, pid.depth, options.processAccounter));
 
-  // --- 3. Compose middleware chain: guards first, then user middleware ---
-  const allMiddleware: readonly KoiMiddleware[] = [...guards, ...middleware];
+  // --- 3. Compose middleware chain: guards + user middleware, sorted by priority ---
+  const allMiddleware: readonly KoiMiddleware[] = sortByPriority([...guards, ...middleware]);
 
   // --- 4. Default tool terminal (looks up tools from agent components via O(1) token) ---
   const defaultToolTerminal = async (request: ToolRequest): Promise<ToolResponse> => {
@@ -62,155 +67,26 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     return request.metadata !== undefined ? { output, metadata: request.metadata } : { output };
   };
 
-  // --- 5. Track disposal ---
+  // --- 5. Track disposal and concurrency ---
   let disposed = false;
+  let running = false;
 
   // --- 6. Build runtime ---
   const runtime: KoiRuntime = {
     agent,
 
-    run: (input: EngineInput): AsyncIterable<EngineEvent> => {
+    run(input: EngineInput): AsyncIterable<EngineEvent> {
+      // Guard concurrent run() calls
+      if (running) {
+        throw KoiEngineError.from("VALIDATION", "Agent is already running");
+      }
+
       return {
         [Symbol.asyncIterator](): AsyncIterator<EngineEvent> {
-          let iterator: AsyncIterator<EngineEvent> | undefined;
-          let sessionStarted = false;
-          let done = false;
-          let currentTurnIndex = 0; // let justified: updated on turn_end events
-          const sessionStartedAt = Date.now();
-
-          const sessionCtx = {
-            agentId: pid.id,
-            sessionId: crypto.randomUUID(),
-            metadata: {},
-          };
-
+          const gen = runGenerator(input);
           return {
-            async next(): Promise<IteratorResult<EngineEvent>> {
-              if (done) return { done: true, value: undefined };
-
-              try {
-                // Start session on first call
-                if (!sessionStarted) {
-                  sessionStarted = true;
-                  agent.transition({ kind: "start" });
-                  await runSessionHooks(allMiddleware, "onSessionStart", sessionCtx);
-
-                  // Wire terminals → middleware → callHandlers if adapter is cooperating
-                  let effectiveInput = input;
-                  if (adapter.terminals) {
-                    const inputMessages = input.kind === "messages" ? input.messages : [];
-                    const getTurnContext = () => {
-                      const base = {
-                        session: sessionCtx,
-                        turnIndex: currentTurnIndex,
-                        messages: inputMessages,
-                        metadata: {},
-                      };
-                      return options.approvalHandler !== undefined
-                        ? { ...base, requestApproval: options.approvalHandler }
-                        : base;
-                    };
-                    const rawModelTerminal = adapter.terminals.modelCall;
-                    const rawToolTerminal = adapter.terminals.toolCall ?? defaultToolTerminal;
-                    const rawModelStreamTerminal = adapter.terminals.modelStream;
-                    const callHandlers = createComposedCallHandlers(
-                      allMiddleware,
-                      getTurnContext,
-                      agent,
-                      rawModelTerminal,
-                      rawToolTerminal,
-                      rawModelStreamTerminal,
-                    );
-                    effectiveInput = { ...input, callHandlers };
-                  }
-
-                  iterator = adapter.stream(effectiveInput)[Symbol.asyncIterator]();
-                }
-
-                if (!iterator) {
-                  done = true;
-                  return { done: true, value: undefined };
-                }
-
-                const result = await iterator.next();
-
-                if (result.done) {
-                  done = true;
-                  agent.transition({ kind: "complete", stopReason: "completed" });
-                  await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
-                  return { done: true, value: undefined };
-                }
-
-                const event = result.value;
-
-                // Process turn_end events
-                if (event.kind === "turn_end") {
-                  currentTurnIndex = event.turnIndex + 1;
-                  const turnCtx = {
-                    session: sessionCtx,
-                    turnIndex: event.turnIndex,
-                    messages: [],
-                    metadata: {},
-                    ...(options.approvalHandler !== undefined
-                      ? { requestApproval: options.approvalHandler }
-                      : {}),
-                  };
-                  await runTurnHooks(allMiddleware, "onAfterTurn", turnCtx);
-                }
-
-                // Process done events
-                if (event.kind === "done") {
-                  done = true;
-                  agent.transition({
-                    kind: "complete",
-                    stopReason: event.output.stopReason,
-                    metrics: event.output.metrics,
-                  });
-                  await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
-                }
-
-                return { done: false, value: event };
-              } catch (error: unknown) {
-                done = true;
-
-                // If it's a guard error, convert to a done event
-                if (error instanceof KoiEngineError) {
-                  const stopReason = error.code === "TIMEOUT" ? "max_turns" : "error";
-                  agent.transition({ kind: "complete", stopReason });
-                  await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
-                  const doneEvent: EngineEvent = {
-                    kind: "done",
-                    output: {
-                      content: [],
-                      stopReason,
-                      metrics: {
-                        totalTokens: 0,
-                        inputTokens: 0,
-                        outputTokens: 0,
-                        turns: 0,
-                        durationMs: Date.now() - sessionStartedAt,
-                      },
-                    },
-                  };
-                  return { done: false, value: doneEvent };
-                }
-
-                // Re-throw unexpected errors
-                agent.transition({ kind: "error", error });
-                await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
-                throw error;
-              }
-            },
-
-            async return(): Promise<IteratorResult<EngineEvent>> {
-              done = true;
-              if (iterator?.return) {
-                await iterator.return();
-              }
-              agent.transition({ kind: "complete", stopReason: "interrupted" });
-              await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
-              return { done: true, value: undefined };
-            },
+            next: () => gen.next(),
+            return: (value?: unknown) => gen.return(value as EngineEvent),
           };
         },
       };
@@ -222,6 +98,153 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       await adapter.dispose?.();
     },
   };
+
+  async function* runGenerator(input: EngineInput): AsyncGenerator<EngineEvent> {
+    running = true;
+    let completed = false; // let justified: tracks whether generator completed or was interrupted
+    const sessionStartedAt = Date.now();
+    let currentTurnIndex = 0; // let justified: updated on turn_end events
+
+    const sessionCtx = {
+      agentId: pid.id,
+      sessionId: crypto.randomUUID(),
+      metadata: {},
+    };
+
+    agent.transition({ kind: "start" });
+    await runSessionHooks(allMiddleware, "onSessionStart", sessionCtx);
+
+    // Wire terminals → middleware → callHandlers if adapter is cooperating
+    let effectiveInput = input;
+    if (adapter.terminals) {
+      const inputMessages = input.kind === "messages" ? input.messages : [];
+      const getTurnContext = () => {
+        const base = {
+          session: sessionCtx,
+          turnIndex: currentTurnIndex,
+          messages: inputMessages,
+          metadata: {},
+        };
+        return options.approvalHandler !== undefined
+          ? { ...base, requestApproval: options.approvalHandler }
+          : base;
+      };
+      const rawModelTerminal = adapter.terminals.modelCall;
+      const rawToolTerminal = adapter.terminals.toolCall ?? defaultToolTerminal;
+      const rawModelStreamTerminal = adapter.terminals.modelStream;
+      const callHandlers = createComposedCallHandlers(
+        allMiddleware,
+        getTurnContext,
+        agent,
+        rawModelTerminal,
+        rawToolTerminal,
+        rawModelStreamTerminal,
+      );
+      effectiveInput = { ...input, callHandlers };
+    }
+
+    // Fire onBeforeTurn for turn 0
+    await runTurnHooks(allMiddleware, "onBeforeTurn", {
+      session: sessionCtx,
+      turnIndex: currentTurnIndex,
+      messages: [],
+      metadata: {},
+      ...(options.approvalHandler !== undefined
+        ? { requestApproval: options.approvalHandler }
+        : {}),
+    });
+
+    try {
+      for await (const event of adapter.stream(effectiveInput)) {
+        // Process turn_end events
+        if (event.kind === "turn_end") {
+          currentTurnIndex = event.turnIndex + 1;
+          const turnCtx = {
+            session: sessionCtx,
+            turnIndex: event.turnIndex,
+            messages: [],
+            metadata: {},
+            ...(options.approvalHandler !== undefined
+              ? { requestApproval: options.approvalHandler }
+              : {}),
+          };
+          await runTurnHooks(allMiddleware, "onAfterTurn", turnCtx);
+
+          yield event;
+
+          // Fire onBeforeTurn for the next turn
+          await runTurnHooks(allMiddleware, "onBeforeTurn", {
+            session: sessionCtx,
+            turnIndex: currentTurnIndex,
+            messages: [],
+            metadata: {},
+            ...(options.approvalHandler !== undefined
+              ? { requestApproval: options.approvalHandler }
+              : {}),
+          });
+
+          continue;
+        }
+
+        // Process done events
+        if (event.kind === "done") {
+          agent.transition({
+            kind: "complete",
+            stopReason: event.output.stopReason,
+            metrics: event.output.metrics,
+          });
+          completed = true;
+          yield event;
+          return;
+        }
+
+        yield event;
+      }
+
+      // Stream ended without done event
+      agent.transition({ kind: "complete", stopReason: "completed" });
+      completed = true;
+    } catch (error: unknown) {
+      completed = true;
+
+      // If it's a guard error, convert to a done event
+      if (error instanceof KoiEngineError) {
+        const stopReason = error.code === "TIMEOUT" ? "max_turns" : "error";
+        agent.transition({ kind: "complete", stopReason });
+        yield {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason,
+            metrics: {
+              totalTokens: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              turns: 0,
+              durationMs: Date.now() - sessionStartedAt,
+            },
+          },
+        };
+        return;
+      }
+
+      // Re-throw unexpected errors
+      agent.transition({ kind: "error", error });
+      throw error;
+    } finally {
+      // If generator was interrupted (break/return from consumer), transition to terminated
+      if (!completed) {
+        agent.transition({ kind: "complete", stopReason: "interrupted" });
+      }
+
+      try {
+        await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+      } catch {
+        // Don't mask original error — onSessionEnd failure must not override thrown error
+      }
+      running = false;
+    }
+  }
 
   return runtime;
 }

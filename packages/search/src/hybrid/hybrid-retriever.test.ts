@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { Retriever, SearchOutcome, SearchPage, SearchQuery, SearchResult } from "@koi/core";
+import type { Retriever } from "../contracts.js";
+import type { SearchOutcome, SearchPage, SearchQuery, SearchResult } from "../types.js";
 import { createHybridRetriever } from "./hybrid-retriever.js";
 
 function makeResult(id: string, score: number, source: string): SearchResult {

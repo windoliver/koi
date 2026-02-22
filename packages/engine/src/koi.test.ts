@@ -931,3 +931,200 @@ describe("createKoi early return", () => {
     expect(onSessionEnd).toHaveBeenCalledTimes(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// createKoi — onBeforeTurn (#9A)
+// ---------------------------------------------------------------------------
+
+describe("createKoi onBeforeTurn", () => {
+  test("calls onBeforeTurn before the first turn", async () => {
+    const onBeforeTurn = mock(() => Promise.resolve());
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "test-mw", onBeforeTurn }],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    expect(onBeforeTurn).toHaveBeenCalledTimes(1);
+  });
+
+  test("calls onBeforeTurn before each subsequent turn", async () => {
+    const onBeforeTurn = mock(() => Promise.resolve());
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([
+        { kind: "text_delta", delta: "Hello" },
+        { kind: "turn_end", turnIndex: 0 },
+        { kind: "text_delta", delta: "World" },
+        { kind: "turn_end", turnIndex: 1 },
+        { kind: "done", output: doneOutput() },
+      ]),
+      middleware: [{ name: "test-mw", onBeforeTurn }],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    // turn 0 (initial) + turn 1 (after turn_end 0) + turn 2 (after turn_end 1) = 3
+    expect(onBeforeTurn).toHaveBeenCalledTimes(3);
+  });
+
+  test("onBeforeTurn receives correct turnIndex", async () => {
+    const turnIndices: number[] = [];
+    const onBeforeTurn = mock(async (ctx: TurnContext) => {
+      turnIndices.push(ctx.turnIndex);
+    });
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([
+        { kind: "turn_end", turnIndex: 0 },
+        { kind: "done", output: doneOutput() },
+      ]),
+      middleware: [{ name: "test-mw", onBeforeTurn }],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    expect(turnIndices).toEqual([0, 1]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createKoi — concurrent run() guard (#12A)
+// ---------------------------------------------------------------------------
+
+describe("createKoi concurrent run guard", () => {
+  test("second run() call throws while first is active", async () => {
+    const adapter: EngineAdapter = {
+      engineId: "slow-adapter",
+      stream: () => ({
+        async *[Symbol.asyncIterator]() {
+          await new Promise((r) => setTimeout(r, 50));
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+    });
+
+    // Start first run (don't await)
+    const iter = runtime.run({ kind: "text", text: "first" })[Symbol.asyncIterator]();
+    const firstNext = iter.next(); // starts the generator
+
+    // Second run should throw immediately
+    try {
+      runtime.run({ kind: "text", text: "second" });
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      const { KoiEngineError: KoiErr } = await import("./errors.js");
+      expect(e).toBeInstanceOf(KoiErr);
+      if (e instanceof KoiErr) {
+        expect(e.code).toBe("VALIDATION");
+        expect(e.message).toContain("already running");
+      }
+    }
+
+    // Complete first run
+    await firstNext;
+    await iter.next(); // drain
+  });
+
+  test("run() works again after first run completes", async () => {
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+    // Second run should work
+    const events = await collectEvents(runtime.run({ kind: "text", text: "second" }));
+    expect(events).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createKoi — onSessionEnd error preservation (#11A)
+// ---------------------------------------------------------------------------
+
+describe("createKoi onSessionEnd error preservation", () => {
+  test("original error preserved when onSessionEnd throws", async () => {
+    const onSessionEnd = mock(() => {
+      throw new Error("onSessionEnd crash");
+    });
+    const adapter: EngineAdapter = {
+      engineId: "crash-adapter",
+      stream: () => ({
+        [Symbol.asyncIterator]() {
+          return {
+            async next(): Promise<IteratorResult<EngineEvent>> {
+              throw new Error("original error");
+            },
+          };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [{ name: "test-mw", onSessionEnd }],
+      loopDetection: false,
+    });
+
+    await expect(collectEvents(runtime.run({ kind: "text", text: "test" }))).rejects.toThrow(
+      "original error",
+    );
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createKoi — priority-based middleware sorting (#4A)
+// ---------------------------------------------------------------------------
+
+describe("createKoi middleware priority sorting", () => {
+  test("guards (priority 0-2) run before L2 middleware (100+)", async () => {
+    const order: string[] = [];
+
+    const trackingMw: KoiMiddleware = {
+      name: "tracker",
+      priority: 100,
+      async wrapModelCall(_ctx, req, next) {
+        order.push("tracker-enter");
+        const resp = await next(req);
+        order.push("tracker-exit");
+        return resp;
+      },
+    };
+
+    const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
+
+    // Adapter that triggers model call through callHandlers
+    const adapter: EngineAdapter = {
+      engineId: "priority-adapter",
+      terminals: { modelCall: modelTerminal },
+      stream: (input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          if (input.callHandlers) {
+            await input.callHandlers.modelCall({ messages: [] });
+          }
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [trackingMw],
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    // Guard (iteration-guard, priority 0) wraps outside tracker (priority 100)
+    expect(order).toContain("tracker-enter");
+  });
+});

@@ -1,12 +1,11 @@
+import type { Embedder, Retriever } from "../contracts.js";
 import type {
-  Embedder,
-  Retriever,
   SearchFilter,
   SearchOutcome,
   SearchPage,
   SearchQuery,
   SearchResult,
-} from "@koi/core";
+} from "../types.js";
 import type { VectorStore } from "./sqlite-vec.js";
 
 export interface VectorRetrieverConfig {

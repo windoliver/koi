@@ -1,5 +1,5 @@
-import type { FusionStrategy, ScoreNormalizer, SearchResult } from "@koi/core";
 import { normalize } from "../normalize.js";
+import type { FusionStrategy, ScoreNormalizer, SearchResult } from "../types.js";
 
 const DEFAULT_RRF_K = 60;
 

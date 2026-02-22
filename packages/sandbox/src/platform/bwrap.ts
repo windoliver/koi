@@ -3,7 +3,7 @@
  * Pure functions — no side effects.
  */
 
-import type { SandboxProfile } from "@koi/core";
+import type { SandboxProfile } from "../types.js";
 
 /**
  * Build the full command-line args for bubblewrap.

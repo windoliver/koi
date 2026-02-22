@@ -1,4 +1,4 @@
-import type { Embedder } from "@koi/core";
+import type { Embedder } from "./contracts.js";
 
 export interface CacheStats {
   readonly hits: number;

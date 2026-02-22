@@ -2,7 +2,16 @@
  * Core types for the @koi/forge self-extension system.
  */
 
-import type { BrickKind, BrickLifecycle, ForgeScope, ToolDescriptor, TrustTier } from "@koi/core";
+import type { ToolDescriptor, TrustTier } from "@koi/core";
+
+/** Visibility scope of a forged brick. */
+export type ForgeScope = "agent" | "zone" | "global";
+
+/** Lifecycle state of a forged brick artifact. */
+export type BrickLifecycle = "draft" | "verifying" | "active" | "failed" | "deprecated";
+
+/** Kind of forged brick (tool, skill, agent, composite, middleware, channel). */
+export type BrickKind = "tool" | "skill" | "agent" | "composite" | "middleware" | "channel";
 
 // ---------------------------------------------------------------------------
 // Forge result (pure data — L1 handles mutation)

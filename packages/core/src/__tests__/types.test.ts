@@ -2,8 +2,6 @@ import { describe, expect, test } from "bun:test";
 import type {
   Agent,
   AgentManifest,
-  BrickKind,
-  BrickLifecycle,
   ChannelAdapter,
   ChannelCapabilities,
   ContentBlock,
@@ -18,8 +16,6 @@ import type {
   EngineEvent,
   EngineInput,
   EngineStopReason,
-  FilesystemPolicy,
-  ForgeScope,
   GovernanceUsage,
   KoiError,
   KoiErrorCode,
@@ -29,11 +25,6 @@ import type {
   Resolver,
   Result,
   RevocationRegistry,
-  SandboxAdapter,
-  SandboxInstance,
-  SandboxProfile,
-  SandboxResult,
-  SandboxTier,
   ScopeChecker,
   SpawnCheck,
   SubsystemToken,
@@ -625,161 +616,6 @@ describe("Result with custom error type", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Sandbox types
-// ---------------------------------------------------------------------------
-
-describe("SandboxTier", () => {
-  test("accepts valid tier literals", () => {
-    const tiers: readonly SandboxTier[] = ["sandbox", "verified", "promoted"];
-    expect(tiers).toHaveLength(3);
-  });
-
-  test("rejects invalid tier literal", () => {
-    // @ts-expect-error — "untrusted" is not a valid SandboxTier
-    const _t: SandboxTier = "untrusted";
-    void _t;
-  });
-});
-
-describe("SandboxProfile readonly enforcement", () => {
-  test("tier is readonly", () => {
-    const profile: SandboxProfile = {
-      tier: "sandbox",
-      filesystem: {},
-      network: { allow: false },
-      resources: {},
-    };
-    // @ts-expect-error — cannot assign to readonly property
-    profile.tier = "promoted";
-  });
-
-  test("network is readonly", () => {
-    const profile: SandboxProfile = {
-      tier: "sandbox",
-      filesystem: {},
-      network: { allow: false },
-      resources: {},
-    };
-    // @ts-expect-error — cannot assign to readonly property
-    profile.network = { allow: true };
-  });
-});
-
-describe("SandboxResult", () => {
-  test("properties are accessible", () => {
-    const result: SandboxResult = {
-      exitCode: 0,
-      stdout: "hello",
-      stderr: "",
-      durationMs: 100,
-      timedOut: false,
-      oomKilled: false,
-    };
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe("hello");
-    expect(result.timedOut).toBe(false);
-  });
-
-  test("signal is optional", () => {
-    const result: SandboxResult = {
-      exitCode: 137,
-      stdout: "",
-      stderr: "",
-      signal: "SIGKILL",
-      durationMs: 5000,
-      timedOut: false,
-      oomKilled: true,
-    };
-    expect(result.signal).toBe("SIGKILL");
-  });
-});
-
-describe("FilesystemPolicy optional properties", () => {
-  test("all properties are optional", () => {
-    const empty: FilesystemPolicy = {};
-    expect(empty.allowRead).toBeUndefined();
-    expect(empty.denyRead).toBeUndefined();
-    expect(empty.allowWrite).toBeUndefined();
-    expect(empty.denyWrite).toBeUndefined();
-  });
-
-  test("accepts populated policy", () => {
-    const policy: FilesystemPolicy = {
-      allowRead: ["/usr", "/bin"],
-      denyRead: ["~/.ssh"],
-      allowWrite: ["/tmp"],
-    };
-    expect(policy.allowRead).toHaveLength(2);
-    expect(policy.denyRead).toHaveLength(1);
-  });
-});
-
-describe("SandboxAdapter contract", () => {
-  test("adapter has name and create method", () => {
-    const adapter: SandboxAdapter = {
-      name: "test",
-      create: async (_profile: SandboxProfile): Promise<SandboxInstance> => {
-        return {
-          exec: async () => ({
-            exitCode: 0,
-            stdout: "",
-            stderr: "",
-            durationMs: 0,
-            timedOut: false,
-            oomKilled: false,
-          }),
-          readFile: async () => new Uint8Array(),
-          writeFile: async () => {},
-          destroy: async () => {},
-        };
-      },
-    };
-    expect(adapter.name).toBe("test");
-    expect(typeof adapter.create).toBe("function");
-  });
-
-  test("instance exec returns SandboxResult", async () => {
-    const instance: SandboxInstance = {
-      exec: async () => ({
-        exitCode: 0,
-        stdout: "ok",
-        stderr: "",
-        durationMs: 10,
-        timedOut: false,
-        oomKilled: false,
-      }),
-      readFile: async () => new Uint8Array(),
-      writeFile: async () => {},
-      destroy: async () => {},
-    };
-    const result = await instance.exec("/bin/echo", ["hello"]);
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toBe("ok");
-  });
-
-  test("adapter name is readonly", () => {
-    const adapter: SandboxAdapter = {
-      name: "test",
-      create: async () => ({
-        exec: async () => ({
-          exitCode: 0,
-          stdout: "",
-          stderr: "",
-          durationMs: 0,
-          timedOut: false,
-          oomKilled: false,
-        }),
-        readFile: async () => new Uint8Array(),
-        writeFile: async () => {},
-        destroy: async () => {},
-      }),
-    };
-    // @ts-expect-error — cannot assign to readonly property
-    adapter.name = "other";
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Resolver type tests
 // ---------------------------------------------------------------------------
 
@@ -1121,39 +957,5 @@ describe("AgentManifest delegation config", () => {
       },
     };
     expect(withDelegation.delegation?.enabled).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Forge type aliases
-// ---------------------------------------------------------------------------
-
-describe("Forge type aliases", () => {
-  test("ForgeScope accepts valid literals", () => {
-    const scopes: readonly ForgeScope[] = ["agent", "zone", "global"];
-    expect(scopes).toHaveLength(3);
-  });
-
-  test("BrickLifecycle accepts valid literals", () => {
-    const states: readonly BrickLifecycle[] = [
-      "draft",
-      "verifying",
-      "active",
-      "failed",
-      "deprecated",
-    ];
-    expect(states).toHaveLength(5);
-  });
-
-  test("BrickKind accepts valid literals", () => {
-    const kinds: readonly BrickKind[] = [
-      "tool",
-      "skill",
-      "agent",
-      "composite",
-      "middleware",
-      "channel",
-    ];
-    expect(kinds).toHaveLength(6);
   });
 });

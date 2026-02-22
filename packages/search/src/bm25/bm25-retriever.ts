@@ -1,13 +1,13 @@
+import type { Retriever } from "../contracts.js";
+import type { QueryExpansionConfig } from "../query/expand.js";
+import { expandQuery } from "../query/expand.js";
 import type {
-  Retriever,
   SearchFilter,
   SearchOutcome,
   SearchPage,
   SearchQuery,
   SearchResult,
-} from "@koi/core";
-import type { QueryExpansionConfig } from "../query/expand.js";
-import { expandQuery } from "../query/expand.js";
+} from "../types.js";
 import type { BM25Index } from "./bm25-index.js";
 import { defaultTokenize } from "./bm25-index.js";
 

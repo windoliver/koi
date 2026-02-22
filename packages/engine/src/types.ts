@@ -8,6 +8,7 @@ import type {
   ComponentProvider,
   EngineAdapter,
   KoiMiddleware,
+  ProcessAccounter,
 } from "@koi/core";
 
 // ---------------------------------------------------------------------------
@@ -23,12 +24,15 @@ export interface IterationLimits {
   readonly maxTokens: number;
 }
 
+export type LoopDetectionKind = "repeat" | "ping_pong" | "no_progress";
+
 export interface LoopWarningInfo {
   readonly toolId: string;
   readonly repeatCount: number;
   readonly windowSize: number;
   readonly warningThreshold: number;
   readonly threshold: number;
+  readonly detectionKind?: LoopDetectionKind;
 }
 
 export interface LoopDetectionConfig {
@@ -40,6 +44,18 @@ export interface LoopDetectionConfig {
   readonly warningThreshold?: number;
   /** Callback fired when warningThreshold is reached. Requires warningThreshold to be set. */
   readonly onWarning?: (info: LoopWarningInfo) => void;
+  /** Max number of keys in tool input before falling back to toolId-only fingerprinting. Default: 20. */
+  readonly maxInputKeys?: number;
+  /** Enable ping-pong (alternating pattern) detection. Default: true. */
+  readonly pingPongEnabled?: boolean;
+  /** Minimum pattern length for ping-pong detection. Default: 2. */
+  readonly pingPongMinPatternLength?: number;
+  /** Number of full repetitions required to trigger ping-pong detection. Default: 2. */
+  readonly pingPongRepetitions?: number;
+  /** Enable no-progress (identical output) detection. Default: true. */
+  readonly noProgressEnabled?: boolean;
+  /** Number of consecutive identical outputs from the same tool before triggering. Default: 3. */
+  readonly noProgressThreshold?: number;
 }
 
 export interface SpawnPolicy {
@@ -64,6 +80,11 @@ export const DEFAULT_ITERATION_LIMITS: IterationLimits = Object.freeze({
 export const DEFAULT_LOOP_DETECTION: LoopDetectionConfig = Object.freeze({
   windowSize: 8,
   threshold: 3,
+  pingPongEnabled: true,
+  pingPongMinPatternLength: 2,
+  pingPongRepetitions: 2,
+  noProgressEnabled: true,
+  noProgressThreshold: 3,
 });
 
 export const DEFAULT_SPAWN_POLICY: SpawnPolicy = Object.freeze({
@@ -93,6 +114,8 @@ export interface CreateKoiOptions {
   readonly spawn?: Partial<SpawnPolicy>;
   /** Optional approval handler for HITL permission gating. */
   readonly approvalHandler?: ApprovalHandler;
+  /** Optional shared process accounter for cross-agent spawn accounting. */
+  readonly processAccounter?: ProcessAccounter;
 }
 
 import type { Agent, EngineEvent, EngineInput } from "@koi/core";
