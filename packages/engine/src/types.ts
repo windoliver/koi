@@ -23,11 +23,23 @@ export interface IterationLimits {
   readonly maxTokens: number;
 }
 
+export interface LoopWarningInfo {
+  readonly toolId: string;
+  readonly repeatCount: number;
+  readonly windowSize: number;
+  readonly warningThreshold: number;
+  readonly threshold: number;
+}
+
 export interface LoopDetectionConfig {
   /** Number of recent turn hashes to track. */
   readonly windowSize: number;
   /** Number of repeated hashes within the window to trigger loop detection. */
   readonly threshold: number;
+  /** Optional count at which to fire a warning before the hard threshold. Must be < threshold. */
+  readonly warningThreshold?: number;
+  /** Callback fired when warningThreshold is reached. Requires warningThreshold to be set. */
+  readonly onWarning?: (info: LoopWarningInfo) => void;
 }
 
 export interface SpawnPolicy {

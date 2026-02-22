@@ -15,7 +15,8 @@ export {
   composeToolChain,
   createComposedCallHandlers,
   createTerminalHandlers,
-  runHooks,
+  runSessionHooks,
+  runTurnHooks,
 } from "./compose.js";
 // errors
 export { KoiEngineError } from "./errors.js";
@@ -39,5 +40,6 @@ export type {
   IterationLimits,
   KoiRuntime,
   LoopDetectionConfig,
+  LoopWarningInfo,
   SpawnPolicy,
 } from "./types.js";
