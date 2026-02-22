@@ -1,0 +1,7 @@
+name: "typo-agent"
+version: "1.0.0"
+modle: "anthropic:claude-sonnet-4-5-20250929"
+model: "anthropic:claude-sonnet-4-5-20250929"
+tols:
+  - name: filesystem
+scedule: "0 9 * * *"
