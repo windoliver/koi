@@ -5,6 +5,13 @@ import type {
   ChannelAdapter,
   ChannelCapabilities,
   ContentBlock,
+  DelegationComponent,
+  DelegationConfig,
+  DelegationDenyReason,
+  DelegationGrant,
+  DelegationId,
+  DelegationScope,
+  DelegationVerifyResult,
   EngineAdapter,
   EngineEvent,
   EngineInput,
@@ -18,18 +25,20 @@ import type {
   ProcessId,
   Resolver,
   Result,
+  RevocationRegistry,
   SandboxAdapter,
   SandboxInstance,
   SandboxProfile,
   SandboxResult,
   SandboxTier,
+  ScopeChecker,
   SpawnCheck,
   SubsystemToken,
   Tool,
   ToolDescriptor,
   TrustTier,
 } from "../index.js";
-import { CREDENTIALS, EVENTS, GOVERNANCE, MEMORY, token } from "../index.js";
+import { CREDENTIALS, DELEGATION, EVENTS, GOVERNANCE, MEMORY, token } from "../index.js";
 
 /**
  * Type-level tests using @ts-expect-error.
@@ -808,5 +817,274 @@ describe("Tool input typing", () => {
       },
     };
     expect(tool.descriptor.name).toBe("calc");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Delegation type tests
+// ---------------------------------------------------------------------------
+
+describe("DelegationId branding", () => {
+  test("plain string is not assignable to DelegationId", () => {
+    // @ts-expect-error — plain string is not assignable to DelegationId
+    const _id: DelegationId = "plain-string";
+    void _id;
+  });
+
+  test("DelegationId is assignable to string", () => {
+    const id = "test" as DelegationId;
+    const _s: string = id;
+    void _s;
+    expect(id).toBe("test" as DelegationId);
+  });
+});
+
+describe("DelegationGrant readonly enforcement", () => {
+  test("all properties are readonly", () => {
+    const grant: DelegationGrant = {
+      id: "g1" as DelegationId,
+      issuerId: "agent-1",
+      delegateeId: "agent-2",
+      scope: { permissions: { allow: ["read_file"] } },
+      chainDepth: 0,
+      maxChainDepth: 3,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 3600000,
+      signature: "abc",
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    grant.id = "g2" as DelegationId;
+    // @ts-expect-error — cannot assign to readonly property
+    grant.issuerId = "other";
+    // @ts-expect-error — cannot assign to readonly property
+    grant.scope = { permissions: {} };
+    // @ts-expect-error — cannot assign to readonly property
+    grant.signature = "tampered";
+  });
+
+  test("parentId is optional", () => {
+    const root: DelegationGrant = {
+      id: "g1" as DelegationId,
+      issuerId: "a1",
+      delegateeId: "a2",
+      scope: { permissions: {} },
+      chainDepth: 0,
+      maxChainDepth: 3,
+      createdAt: 0,
+      expiresAt: 1,
+      signature: "sig",
+    };
+    expect(root.parentId).toBeUndefined();
+
+    const child: DelegationGrant = {
+      id: "g2" as DelegationId,
+      issuerId: "a2",
+      delegateeId: "a3",
+      scope: { permissions: {} },
+      parentId: "g1" as DelegationId,
+      chainDepth: 1,
+      maxChainDepth: 3,
+      createdAt: 0,
+      expiresAt: 1,
+      signature: "sig",
+    };
+    expect(child.parentId).toBe("g1" as DelegationId);
+  });
+});
+
+describe("DelegationScope", () => {
+  test("permissions is required, resources and maxBudget are optional", () => {
+    const minimal: DelegationScope = { permissions: { allow: ["*"] } };
+    expect(minimal.resources).toBeUndefined();
+    expect(minimal.maxBudget).toBeUndefined();
+
+    const full: DelegationScope = {
+      permissions: { allow: ["read_file"], deny: ["write_file"] },
+      resources: ["read_file:/workspace/**"],
+      maxBudget: 100,
+    };
+    expect(full.resources).toHaveLength(1);
+    expect(full.maxBudget).toBe(100);
+  });
+
+  test("resources array is readonly", () => {
+    const scope: DelegationScope = {
+      permissions: {},
+      resources: ["a", "b"],
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    scope.resources = [];
+  });
+});
+
+describe("DelegationVerifyResult narrowing", () => {
+  test("narrows to grant on ok: true", () => {
+    const result: DelegationVerifyResult = {
+      ok: true,
+      grant: {
+        id: "g1" as DelegationId,
+        issuerId: "a1",
+        delegateeId: "a2",
+        scope: { permissions: {} },
+        chainDepth: 0,
+        maxChainDepth: 3,
+        createdAt: 0,
+        expiresAt: 1,
+        signature: "sig",
+      },
+    };
+    if (result.ok) {
+      const _g: DelegationGrant = result.grant;
+      void _g;
+    }
+  });
+
+  test("narrows to reason on ok: false", () => {
+    const result: DelegationVerifyResult = { ok: false, reason: "expired" };
+    if (!result.ok) {
+      const _r: DelegationDenyReason = result.reason;
+      expect(_r).toBe("expired");
+    }
+  });
+
+  test("reason is not accessible when ok: true", () => {
+    const result: DelegationVerifyResult = {
+      ok: true,
+      grant: {
+        id: "g1" as DelegationId,
+        issuerId: "a1",
+        delegateeId: "a2",
+        scope: { permissions: {} },
+        chainDepth: 0,
+        maxChainDepth: 3,
+        createdAt: 0,
+        expiresAt: 1,
+        signature: "sig",
+      },
+    };
+    if (result.ok) {
+      // @ts-expect-error — reason does not exist on success branch
+      const _r: string = result.reason;
+      void _r;
+    }
+  });
+});
+
+describe("DelegationDenyReason", () => {
+  test("accepts all 6 valid reasons", () => {
+    const reasons: readonly DelegationDenyReason[] = [
+      "expired",
+      "revoked",
+      "scope_exceeded",
+      "chain_depth_exceeded",
+      "invalid_signature",
+      "unknown_grant",
+    ];
+    expect(reasons).toHaveLength(6);
+  });
+});
+
+describe("ScopeChecker interface", () => {
+  test("satisfies with minimal implementation", () => {
+    const checker: ScopeChecker = {
+      isAllowed: (_toolId, _scope) => true,
+    };
+    expect(checker.isAllowed("read_file", { permissions: { allow: ["*"] } })).toBe(true);
+  });
+
+  test("can deny based on custom logic", () => {
+    const checker: ScopeChecker = {
+      isAllowed: (toolId) => toolId !== "exec",
+    };
+    expect(checker.isAllowed("read_file", { permissions: {} })).toBe(true);
+    expect(checker.isAllowed("exec", { permissions: {} })).toBe(false);
+  });
+
+  test("isAllowed is readonly", () => {
+    const checker: ScopeChecker = {
+      isAllowed: () => true,
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    checker.isAllowed = () => false;
+  });
+});
+
+describe("RevocationRegistry interface", () => {
+  test("satisfies with minimal implementation", () => {
+    const revoked = new Set<DelegationId>();
+    const registry: RevocationRegistry = {
+      isRevoked: (id) => revoked.has(id),
+      revoke: (id) => {
+        revoked.add(id);
+      },
+      revokedIds: () => revoked,
+    };
+    expect(registry.isRevoked("test" as DelegationId)).toBe(false);
+  });
+});
+
+describe("DelegationConfig", () => {
+  test("all fields are required", () => {
+    // @ts-expect-error — enabled is required
+    const _partial: DelegationConfig = {
+      maxChainDepth: 3,
+      defaultTtlMs: 3600000,
+      maxEntries: 10000,
+      cleanupIntervalMs: 60000,
+    };
+    void _partial;
+  });
+
+  test("all properties are readonly", () => {
+    const config: DelegationConfig = {
+      enabled: true,
+      maxChainDepth: 3,
+      defaultTtlMs: 3600000,
+      maxEntries: 10000,
+      cleanupIntervalMs: 60000,
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    config.enabled = false;
+    // @ts-expect-error — cannot assign to readonly property
+    config.maxChainDepth = 5;
+  });
+});
+
+describe("DELEGATION well-known token", () => {
+  test("narrows component to DelegationComponent", () => {
+    const agentLike: Pick<Agent, "component"> = {
+      component: <T>(_token: SubsystemToken<T>): T | undefined => undefined,
+    };
+    const deleg = agentLike.component(DELEGATION);
+    if (deleg) {
+      const _: DelegationComponent = deleg;
+      void _;
+    }
+    expect(deleg).toBeUndefined();
+  });
+});
+
+describe("AgentManifest delegation config", () => {
+  test("delegation is optional on AgentManifest", () => {
+    const withoutDelegation: AgentManifest = {
+      name: "test",
+      version: "0.0.0",
+      model: { name: "gpt-4" },
+    };
+    expect(withoutDelegation.delegation).toBeUndefined();
+
+    const withDelegation: AgentManifest = {
+      name: "test",
+      version: "0.0.0",
+      model: { name: "gpt-4" },
+      delegation: {
+        enabled: true,
+        maxChainDepth: 3,
+        defaultTtlMs: 3600000,
+        maxEntries: 10000,
+        cleanupIntervalMs: 60000,
+      },
+    };
+    expect(withDelegation.delegation?.enabled).toBe(true);
   });
 });
