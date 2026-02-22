@@ -8,8 +8,20 @@
 import type { AgentManifest } from "@koi/core";
 
 /**
+ * Typed deploy configuration after validation and defaults.
+ */
+export interface DeployConfig {
+  readonly port: number;
+  readonly restart: "on-failure" | "always" | "no";
+  readonly restartDelaySec: number;
+  readonly envFile?: string | undefined;
+  readonly logDir?: string | undefined;
+  readonly system: boolean;
+}
+
+/**
  * Extension fields that exist in koi.yaml but are outside L0 core contracts.
- * All values are `unknown` — consumers must validate/narrow at their layer.
+ * All values are validated by the schema layer.
  */
 export interface ManifestExtensions {
   readonly engine?: unknown;
@@ -17,6 +29,7 @@ export interface ManifestExtensions {
   readonly webhooks?: unknown;
   readonly forge?: unknown;
   readonly context?: unknown;
+  readonly deploy?: DeployConfig | undefined;
 }
 
 /**

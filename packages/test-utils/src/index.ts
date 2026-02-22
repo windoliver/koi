@@ -17,6 +17,8 @@ export {
   createMockEngineAdapter,
   createMockStatefulEngine,
 } from "./agents.js";
+export type { CapturedOutput } from "./capture-output.js";
+export { captureOutput } from "./capture-output.js";
 export type { ChannelContractOptions } from "./channel-contract.js";
 export { testChannelAdapter } from "./channel-contract.js";
 export type { MockMemoryComponentOptions } from "./components.js";
@@ -32,3 +34,4 @@ export {
   createSpyModelHandler,
   createSpyToolHandler,
 } from "./handlers.js";
+export { createManifestFile, makeTempDir, withTempDir } from "./temp-dir.js";

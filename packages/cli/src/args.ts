@@ -2,7 +2,7 @@
  * CLI argument parser — subcommand-aware design using node:util parseArgs.
  *
  * Extracts the command name first, then dispatches to command-specific
- * flag parsing for `init` and `start` subcommands.
+ * flag parsing via the command registry.
  */
 
 import { parseArgs as nodeParseArgs } from "node:util";
@@ -32,7 +32,53 @@ export interface StartFlags extends BaseFlags {
   readonly dryRun: boolean;
 }
 
-export type CliFlags = InitFlags | StartFlags | BaseFlags;
+export interface ServeFlags extends BaseFlags {
+  readonly command: "serve";
+  readonly manifest: string | undefined;
+  readonly port: number | undefined;
+  readonly verbose: boolean;
+}
+
+export interface DeployFlags extends BaseFlags {
+  readonly command: "deploy";
+  readonly manifest: string | undefined;
+  readonly system: boolean;
+  readonly uninstall: boolean;
+  readonly port: number | undefined;
+}
+
+export interface StatusFlags extends BaseFlags {
+  readonly command: "status";
+  readonly manifest: string | undefined;
+}
+
+export interface StopFlags extends BaseFlags {
+  readonly command: "stop";
+  readonly manifest: string | undefined;
+}
+
+export interface LogsFlags extends BaseFlags {
+  readonly command: "logs";
+  readonly manifest: string | undefined;
+  readonly follow: boolean;
+  readonly lines: number;
+}
+
+export interface DoctorFlags extends BaseFlags {
+  readonly command: "doctor";
+  readonly manifest: string | undefined;
+}
+
+export type CliFlags =
+  | InitFlags
+  | StartFlags
+  | ServeFlags
+  | DeployFlags
+  | StatusFlags
+  | StopFlags
+  | LogsFlags
+  | DoctorFlags
+  | BaseFlags;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -59,7 +105,7 @@ function extractCommand(argv: readonly string[]): {
 // Command-specific parsers
 // ---------------------------------------------------------------------------
 
-function parseInitFlags(rest: readonly string[]): InitFlags {
+export function parseInitFlags(rest: readonly string[]): InitFlags {
   const { values, positionals } = nodeParseArgs({
     args: rest as string[],
     options: {
@@ -84,7 +130,7 @@ function parseInitFlags(rest: readonly string[]): InitFlags {
   };
 }
 
-function parseStartFlags(rest: readonly string[]): StartFlags {
+export function parseStartFlags(rest: readonly string[]): StartFlags {
   const { values, positionals } = nodeParseArgs({
     args: rest as string[],
     options: {
@@ -108,6 +154,137 @@ function parseStartFlags(rest: readonly string[]): StartFlags {
   };
 }
 
+export function parseServeFlags(rest: readonly string[]): ServeFlags {
+  const { values, positionals } = nodeParseArgs({
+    args: rest as string[],
+    options: {
+      manifest: { type: "string" },
+      port: { type: "string", short: "p" },
+      verbose: { type: "boolean", short: "v", default: false },
+    },
+    strict: false,
+    allowPositionals: true,
+  });
+
+  const positionalManifest = positionals[0] as string | undefined;
+  const portStr = values.port as string | undefined;
+
+  return {
+    command: "serve" as const,
+    directory: positionalManifest,
+    manifest: (values.manifest as string | undefined) ?? positionalManifest,
+    port: portStr !== undefined ? Number.parseInt(portStr, 10) : undefined,
+    verbose: (values.verbose as boolean | undefined) ?? false,
+  };
+}
+
+export function parseDeployFlags(rest: readonly string[]): DeployFlags {
+  const { values, positionals } = nodeParseArgs({
+    args: rest as string[],
+    options: {
+      manifest: { type: "string" },
+      system: { type: "boolean", default: false },
+      uninstall: { type: "boolean", default: false },
+      port: { type: "string", short: "p" },
+    },
+    strict: false,
+    allowPositionals: true,
+  });
+
+  const positionalManifest = positionals[0] as string | undefined;
+  const portStr = values.port as string | undefined;
+
+  return {
+    command: "deploy" as const,
+    directory: positionalManifest,
+    manifest: (values.manifest as string | undefined) ?? positionalManifest,
+    system: (values.system as boolean | undefined) ?? false,
+    uninstall: (values.uninstall as boolean | undefined) ?? false,
+    port: portStr !== undefined ? Number.parseInt(portStr, 10) : undefined,
+  };
+}
+
+export function parseStatusFlags(rest: readonly string[]): StatusFlags {
+  const { values, positionals } = nodeParseArgs({
+    args: rest as string[],
+    options: {
+      manifest: { type: "string" },
+    },
+    strict: false,
+    allowPositionals: true,
+  });
+
+  const positionalManifest = positionals[0] as string | undefined;
+
+  return {
+    command: "status" as const,
+    directory: positionalManifest,
+    manifest: (values.manifest as string | undefined) ?? positionalManifest,
+  };
+}
+
+export function parseStopFlags(rest: readonly string[]): StopFlags {
+  const { values, positionals } = nodeParseArgs({
+    args: rest as string[],
+    options: {
+      manifest: { type: "string" },
+    },
+    strict: false,
+    allowPositionals: true,
+  });
+
+  const positionalManifest = positionals[0] as string | undefined;
+
+  return {
+    command: "stop" as const,
+    directory: positionalManifest,
+    manifest: (values.manifest as string | undefined) ?? positionalManifest,
+  };
+}
+
+export function parseLogsFlags(rest: readonly string[]): LogsFlags {
+  const { values, positionals } = nodeParseArgs({
+    args: rest as string[],
+    options: {
+      manifest: { type: "string" },
+      follow: { type: "boolean", short: "f", default: false },
+      lines: { type: "string", short: "n" },
+    },
+    strict: false,
+    allowPositionals: true,
+  });
+
+  const positionalManifest = positionals[0] as string | undefined;
+  const linesStr = values.lines as string | undefined;
+
+  return {
+    command: "logs" as const,
+    directory: positionalManifest,
+    manifest: (values.manifest as string | undefined) ?? positionalManifest,
+    follow: (values.follow as boolean | undefined) ?? false,
+    lines: linesStr !== undefined ? Number.parseInt(linesStr, 10) : 50,
+  };
+}
+
+export function parseDoctorFlags(rest: readonly string[]): DoctorFlags {
+  const { values, positionals } = nodeParseArgs({
+    args: rest as string[],
+    options: {
+      manifest: { type: "string" },
+    },
+    strict: false,
+    allowPositionals: true,
+  });
+
+  const positionalManifest = positionals[0] as string | undefined;
+
+  return {
+    command: "doctor" as const,
+    directory: positionalManifest,
+    manifest: (values.manifest as string | undefined) ?? positionalManifest,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Type guards
 // ---------------------------------------------------------------------------
@@ -119,6 +296,46 @@ export function isInitFlags(flags: CliFlags): flags is InitFlags {
 export function isStartFlags(flags: CliFlags): flags is StartFlags {
   return flags.command === "start";
 }
+
+export function isServeFlags(flags: CliFlags): flags is ServeFlags {
+  return flags.command === "serve";
+}
+
+export function isDeployFlags(flags: CliFlags): flags is DeployFlags {
+  return flags.command === "deploy";
+}
+
+export function isStatusFlags(flags: CliFlags): flags is StatusFlags {
+  return flags.command === "status";
+}
+
+export function isStopFlags(flags: CliFlags): flags is StopFlags {
+  return flags.command === "stop";
+}
+
+export function isLogsFlags(flags: CliFlags): flags is LogsFlags {
+  return flags.command === "logs";
+}
+
+export function isDoctorFlags(flags: CliFlags): flags is DoctorFlags {
+  return flags.command === "doctor";
+}
+
+// ---------------------------------------------------------------------------
+// Command registry
+// ---------------------------------------------------------------------------
+
+/** Maps command names to their parsers. */
+const COMMAND_PARSERS: Readonly<Record<string, (rest: readonly string[]) => CliFlags>> = {
+  init: parseInitFlags,
+  start: parseStartFlags,
+  serve: parseServeFlags,
+  deploy: parseDeployFlags,
+  status: parseStatusFlags,
+  stop: parseStopFlags,
+  logs: parseLogsFlags,
+  doctor: parseDoctorFlags,
+};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -133,12 +350,12 @@ export function isStartFlags(flags: CliFlags): flags is StartFlags {
 export function parseArgs(argv: readonly string[]): CliFlags {
   const { command, rest } = extractCommand(argv);
 
-  switch (command) {
-    case "init":
-      return parseInitFlags(rest);
-    case "start":
-      return parseStartFlags(rest);
-    default:
-      return { command, directory: undefined };
+  if (command !== undefined) {
+    const parser = COMMAND_PARSERS[command];
+    if (parser !== undefined) {
+      return parser(rest);
+    }
   }
+
+  return { command, directory: undefined };
 }

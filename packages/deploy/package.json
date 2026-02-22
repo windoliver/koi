@@ -1,5 +1,5 @@
 {
-  "name": "@koi/node",
+  "name": "@koi/deploy",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -8,16 +8,6 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
-  },
-  "dependencies": {
-    "@koi/core": "workspace:*",
-    "@koi/shutdown": "workspace:*",
-    "zod": "4.3.6"
-  },
-  "devDependencies": {
-    "@koi/gateway": "workspace:*",
-    "@koi/session-store": "workspace:*",
-    "@koi/test-utils": "workspace:*"
   },
   "scripts": {
     "build": "tsup",

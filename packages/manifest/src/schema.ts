@@ -23,6 +23,40 @@ interface RawPermissions {
   readonly ask?: readonly string[] | undefined;
 }
 
+/** Scope promotion config in forge section. */
+interface RawScopePromotion {
+  readonly requireHumanApproval?: boolean | undefined;
+  readonly minTrustForZone?: "sandbox" | "verified" | "promoted" | undefined;
+  readonly minTrustForGlobal?: "sandbox" | "verified" | "promoted" | undefined;
+}
+
+/** Forge governance config in the manifest. */
+interface RawForge {
+  readonly enabled?: boolean | undefined;
+  readonly maxForgeDepth?: number | undefined;
+  readonly maxForgesPerSession?: number | undefined;
+  readonly defaultScope?: "agent" | "zone" | "global" | undefined;
+  readonly trustTier?: "sandbox" | "verified" | "promoted" | undefined;
+  readonly scopePromotion?: RawScopePromotion | undefined;
+}
+
+/** Webhook config in the manifest. */
+interface RawWebhook {
+  readonly path: string;
+  readonly events?: readonly string[] | undefined;
+  readonly secret?: string | undefined;
+}
+
+/** Deploy config in the manifest. */
+interface RawDeploy {
+  readonly port?: number | undefined;
+  readonly restart?: "on-failure" | "always" | "no" | undefined;
+  readonly restartDelaySec?: number | undefined;
+  readonly envFile?: string | undefined;
+  readonly logDir?: string | undefined;
+  readonly system?: boolean | undefined;
+}
+
 /** The raw parsed YAML structure before transformation. */
 export interface RawManifest {
   readonly name: string;
@@ -37,11 +71,12 @@ export interface RawManifest {
   readonly middleware?: readonly Record<string, unknown>[] | undefined;
   readonly permissions?: RawPermissions | undefined;
   readonly metadata?: Readonly<Record<string, unknown>> | undefined;
-  readonly engine?: unknown;
-  readonly schedule?: unknown;
-  readonly webhooks?: unknown;
-  readonly forge?: unknown;
+  readonly engine?: string | NamedConfig | undefined;
+  readonly schedule?: string | undefined;
+  readonly webhooks?: readonly RawWebhook[] | undefined;
+  readonly forge?: RawForge | undefined;
   readonly context?: unknown;
+  readonly deploy?: RawDeploy | undefined;
   readonly [key: string]: unknown;
 }
 
@@ -88,6 +123,59 @@ const permissionsSchema = z.object({
   ask: z.array(z.string()).optional(),
 });
 
+// ── Extension field schemas (Decision #6: validate all) ──
+
+/** Engine: string shorthand or object config. */
+const engineSchema = z.union([
+  z.string(),
+  z.object({
+    name: z.string(),
+    options: jsonObjectSchema.optional(),
+  }),
+]);
+
+/** Schedule: cron expression string. */
+const scheduleSchema = z.string();
+
+/** Single webhook config. */
+const webhookSchema = z.object({
+  path: z.string().startsWith("/"),
+  events: z.array(z.string()).optional(),
+  secret: z.string().optional(),
+});
+
+/** Array of webhook configs. */
+const webhooksSchema = z.array(webhookSchema);
+
+/** Trust tier values used in forge config. */
+const trustTierSchema = z.enum(["sandbox", "verified", "promoted"]);
+
+/** Forge governance config. */
+const forgeSchema = z.object({
+  enabled: z.boolean().default(true),
+  maxForgeDepth: z.number().int().nonnegative().default(1),
+  maxForgesPerSession: z.number().int().positive().default(5),
+  defaultScope: z.enum(["agent", "zone", "global"]).default("agent"),
+  trustTier: trustTierSchema.default("sandbox"),
+  scopePromotion: z
+    .object({
+      requireHumanApproval: z.boolean().default(true),
+      minTrustForZone: trustTierSchema.default("verified"),
+      minTrustForGlobal: trustTierSchema.default("promoted"),
+    })
+    .optional(),
+});
+
+/** Deploy configuration for background service management. */
+const deploySchema = z.object({
+  port: z.number().int().min(1).max(65535).default(9100),
+  restart: z.enum(["on-failure", "always", "no"]).default("on-failure"),
+  restartDelaySec: z.number().nonnegative().default(5),
+  envFile: z.string().optional(),
+  logDir: z.string().optional(),
+  system: z.boolean().default(false),
+});
+
 // ── Raw manifest schema ──
 
 /**
@@ -105,12 +193,13 @@ export const rawManifestSchema: z.ZodType<RawManifest> = z
     middleware: z.array(namedConfigSchema).optional(),
     permissions: permissionsSchema.optional(),
     metadata: jsonObjectSchema.optional(),
-    // Extension fields (passthrough to LoadedManifest)
-    engine: z.unknown().optional(),
-    schedule: z.unknown().optional(),
-    webhooks: z.unknown().optional(),
-    forge: z.unknown().optional(),
+    // Extension fields — typed schemas instead of z.unknown()
+    engine: engineSchema.optional(),
+    schedule: scheduleSchema.optional(),
+    webhooks: webhooksSchema.optional(),
+    forge: forgeSchema.optional(),
     context: z.unknown().optional(),
+    deploy: deploySchema.optional(),
   })
   .passthrough();
 
