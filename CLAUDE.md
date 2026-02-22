@@ -120,6 +120,7 @@ These rules prevent vendor/framework concepts from contaminating core interfaces
 - [ ] L2 packages only import from `@koi/core`, never from `@koi/engine` or peer L2
 - [ ] All interface properties are `readonly`
 - [ ] Engine adapter exposes zero framework-specific concepts in its public API
+- [ ] Interfaces that may be backed by I/O return `T | Promise<T>`, not just `T`
 
 ## Code Principles
 
@@ -131,6 +132,15 @@ These rules prevent vendor/framework concepts from contaminating core interfaces
 - **Manifest-driven assembly** — declarative agent definition (YAML IS the agent)
 - **ECS composition** — Agent = entity, Tool = component, Middleware = system
 - **Vocabulary <= 10 concepts** — Agent, Channel, Tool, Skill, Middleware, Manifest, Engine, Resolver, Gateway, Node
+
+### Async by Default for I/O-Bound Interfaces
+
+When defining L0 interfaces or L2 contracts that may be backed by I/O (HTTP, database, filesystem, IPC):
+
+- Return `T | Promise<T>` so implementations can be sync (in-memory) or async (network) without interface changes
+- Callers must always `await` the result — `await` on a non-Promise value is a no-op
+- Order cheap sync checks (cache lookups, expiry, validation) before the async call to fail fast
+- Example: `ScopeChecker.isAllowed` returns `boolean | Promise<boolean>` — local glob matching is sync, Nexus ReBAC over HTTP is async, same interface for both
 
 ### Immutability (default)
 

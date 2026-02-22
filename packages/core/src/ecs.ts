@@ -10,6 +10,7 @@
 import type { AgentManifest } from "./assembly.js";
 import type { ChannelAdapter } from "./channel.js";
 import type { JsonObject } from "./common.js";
+import type { DelegationComponent } from "./delegation.js";
 
 // ---------------------------------------------------------------------------
 // Branded token
@@ -155,3 +156,5 @@ export const GOVERNANCE: SubsystemToken<GovernanceComponent> =
 export const CREDENTIALS: SubsystemToken<CredentialComponent> =
   token<CredentialComponent>("credentials");
 export const EVENTS: SubsystemToken<EventComponent> = token<EventComponent>("events");
+export const DELEGATION: SubsystemToken<DelegationComponent> =
+  token<DelegationComponent>("delegation");

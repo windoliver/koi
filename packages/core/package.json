@@ -20,6 +20,10 @@
       "types": "./dist/common.d.ts",
       "import": "./dist/common.js"
     },
+    "./delegation": {
+      "types": "./dist/delegation.d.ts",
+      "import": "./dist/delegation.js"
+    },
     "./ecs": {
       "types": "./dist/ecs.d.ts",
       "import": "./dist/ecs.js"

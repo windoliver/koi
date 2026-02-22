@@ -18,6 +18,18 @@ export type {
 export type { ChannelAdapter, ChannelCapabilities, MessageHandler } from "./channel.js";
 // common
 export type { JsonObject } from "./common.js";
+// delegation
+export type {
+  DelegationComponent,
+  DelegationConfig,
+  DelegationDenyReason,
+  DelegationGrant,
+  DelegationId,
+  DelegationScope,
+  DelegationVerifyResult,
+  RevocationRegistry,
+  ScopeChecker,
+} from "./delegation.js";
 // ecs — types
 export type {
   Agent,
@@ -40,6 +52,7 @@ export type {
 export {
   CREDENTIALS,
   channelToken,
+  DELEGATION,
   EVENTS,
   GOVERNANCE,
   MEMORY,

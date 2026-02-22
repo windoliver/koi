@@ -66,6 +66,8 @@ import type {
   SandboxProfile,
   SandboxResult,
   SandboxTier,
+  // delegation
+  ScopeChecker,
   // middleware
   SessionContext,
   SkillMetadata,
@@ -164,7 +166,8 @@ type _TypeGuard =
   | AssertDefined<SandboxExecOptions>
   | AssertDefined<SandboxInstance>
   | AssertDefined<SandboxProfile>
-  | AssertDefined<SandboxResult>;
+  | AssertDefined<SandboxResult>
+  | AssertDefined<ScopeChecker>;
 
 describe("export inventory", () => {
   test("all runtime values are defined", () => {

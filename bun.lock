@@ -35,6 +35,13 @@
       "name": "@koi/core",
       "version": "0.0.0",
     },
+    "packages/delegation": {
+      "name": "@koi/delegation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/forge": {
       "name": "@koi/forge",
       "version": "0.0.0",
@@ -222,6 +229,8 @@
     "@koi/cli": ["@koi/cli@workspace:packages/cli"],
 
     "@koi/core": ["@koi/core@workspace:packages/core"],
+
+    "@koi/delegation": ["@koi/delegation@workspace:packages/delegation"],
 
     "@koi/forge": ["@koi/forge@workspace:packages/forge"],
 
