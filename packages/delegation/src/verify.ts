@@ -29,15 +29,19 @@ export const defaultScopeChecker: ScopeChecker = {
  *
  * Accepts an optional ScopeChecker for pluggable permission engines.
  * Falls back to the built-in glob-style matcher when not provided.
+ *
+ * Async to support external scope checkers (e.g., Nexus ReBAC over HTTP).
+ * Cheap checks (signature, expiry, revocation, chain depth) run first
+ * to fail fast before hitting the potentially async scope check.
  */
-export function verifyGrant(
+export async function verifyGrant(
   grant: DelegationGrant,
   toolId: string,
   registry: RevocationRegistry,
   secret: string,
   now?: number,
   scopeChecker?: ScopeChecker,
-): DelegationVerifyResult {
+): Promise<DelegationVerifyResult> {
   const currentTime = now ?? Date.now();
   const checker = scopeChecker ?? defaultScopeChecker;
 
@@ -61,8 +65,9 @@ export function verifyGrant(
     return { ok: false, reason: "chain_depth_exceeded" };
   }
 
-  // 5. Match scope (pluggable)
-  if (!checker.isAllowed(toolId, grant.scope)) {
+  // 5. Match scope (pluggable — may be async for external services)
+  const allowed = await checker.isAllowed(toolId, grant.scope);
+  if (!allowed) {
     return { ok: false, reason: "scope_exceeded" };
   }
 

@@ -57,7 +57,7 @@ export function createDelegationMiddleware(config: DelegationMiddlewareConfig): 
       }
 
       // Full verification (with optional pluggable scope checker)
-      const result = verifyGrant(
+      const result = await verifyGrant(
         grant,
         request.toolId,
         config.registry,

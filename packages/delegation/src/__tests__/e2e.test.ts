@@ -82,7 +82,7 @@ function isPermissionError(result: ToolResponse): boolean {
 // ---------------------------------------------------------------------------
 
 describe("e2e: three-agent delegation chain lifecycle", () => {
-  test("create → attenuate → verify → revoke → deny", () => {
+  test("create → attenuate → verify → revoke → deny", async () => {
     const registry = createInMemoryRegistry();
     const index = createGrantIndex();
     const grantStore = new Map<DelegationId, DelegationGrant>();
@@ -106,7 +106,7 @@ describe("e2e: three-agent delegation chain lifecycle", () => {
     index.addGrant(rootGrant);
 
     // Root grant is valid
-    const rootVerify = verifyGrant(rootGrant, "read_file", registry, SECRET);
+    const rootVerify = await verifyGrant(rootGrant, "read_file", registry, SECRET);
     expect(rootVerify.ok).toBe(true);
 
     // ------------------------------------------------------------------
@@ -139,7 +139,7 @@ describe("e2e: three-agent delegation chain lifecycle", () => {
     expect(childGrant.expiresAt).toBeLessThanOrEqual(rootGrant.expiresAt);
 
     // Child grant is valid for allowed tool + resource
-    const childVerify = verifyGrant(
+    const childVerify = await verifyGrant(
       childGrant,
       "read_file:/workspace/src/foo.ts",
       registry,
@@ -148,7 +148,7 @@ describe("e2e: three-agent delegation chain lifecycle", () => {
     expect(childVerify.ok).toBe(true);
 
     // Child grant is denied for tool outside its scope
-    const childDenied = verifyGrant(childGrant, "write_file", registry, SECRET);
+    const childDenied = await verifyGrant(childGrant, "write_file", registry, SECRET);
     expect(childDenied.ok).toBe(false);
     if (!childDenied.ok) {
       expect(childDenied.reason).toBe("scope_exceeded");
@@ -193,13 +193,13 @@ describe("e2e: three-agent delegation chain lifecycle", () => {
     // ------------------------------------------------------------------
     // Step 5: All grants are now denied
     // ------------------------------------------------------------------
-    const rootAfterRevoke = verifyGrant(rootGrant, "read_file", registry, SECRET);
+    const rootAfterRevoke = await verifyGrant(rootGrant, "read_file", registry, SECRET);
     expect(rootAfterRevoke.ok).toBe(false);
     if (!rootAfterRevoke.ok) {
       expect(rootAfterRevoke.reason).toBe("revoked");
     }
 
-    const childAfterRevoke = verifyGrant(
+    const childAfterRevoke = await verifyGrant(
       childGrant,
       "read_file:/workspace/src/foo.ts",
       registry,

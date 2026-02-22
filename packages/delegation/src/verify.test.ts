@@ -61,10 +61,10 @@ function makeGrant(
 
 describe("verifyGrant — 12-case matrix", () => {
   // Case 1: Valid grant, matching tool
-  test("case 1: valid grant with matching tool returns ok: true", () => {
+  test("case 1: valid grant with matching tool returns ok: true", async () => {
     const grant = makeGrant();
     const registry = makeRegistry();
-    const result = verifyGrant(grant, "read_file", registry, SECRET);
+    const result = await verifyGrant(grant, "read_file", registry, SECRET);
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -73,10 +73,10 @@ describe("verifyGrant — 12-case matrix", () => {
   });
 
   // Case 2: Expired grant
-  test("case 2: expired grant returns reason: expired", () => {
+  test("case 2: expired grant returns reason: expired", async () => {
     const grant = makeGrant({ expiresAt: Date.now() - 1000 });
     const registry = makeRegistry();
-    const result = verifyGrant(grant, "read_file", registry, SECRET);
+    const result = await verifyGrant(grant, "read_file", registry, SECRET);
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -85,11 +85,11 @@ describe("verifyGrant — 12-case matrix", () => {
   });
 
   // Case 3: Revoked grant
-  test("case 3: revoked grant returns reason: revoked", () => {
+  test("case 3: revoked grant returns reason: revoked", async () => {
     const grant = makeGrant();
     const revoked = new Set<DelegationId>([grant.id]);
     const registry = makeRegistry(revoked);
-    const result = verifyGrant(grant, "read_file", registry, SECRET);
+    const result = await verifyGrant(grant, "read_file", registry, SECRET);
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -98,7 +98,7 @@ describe("verifyGrant — 12-case matrix", () => {
   });
 
   // Case 4: Cascading revocation (parent revoked — grant itself in revoked set)
-  test("case 4: cascaded revocation returns reason: revoked", () => {
+  test("case 4: cascaded revocation returns reason: revoked", async () => {
     const parent = makeGrant();
     const childResult = attenuateGrant(
       parent,
@@ -114,7 +114,7 @@ describe("verifyGrant — 12-case matrix", () => {
     // After eager cascade, child is in revoked set too
     const revoked = new Set<DelegationId>([parent.id, childResult.value.id]);
     const registry = makeRegistry(revoked);
-    const result = verifyGrant(childResult.value, "read_file", registry, SECRET);
+    const result = await verifyGrant(childResult.value, "read_file", registry, SECRET);
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -123,12 +123,12 @@ describe("verifyGrant — 12-case matrix", () => {
   });
 
   // Case 5: Scope violation (tool not in allow list)
-  test("case 5: tool outside scope returns reason: scope_exceeded", () => {
+  test("case 5: tool outside scope returns reason: scope_exceeded", async () => {
     const grant = makeGrant({
       scope: { permissions: { allow: ["read_file"] } },
     });
     const registry = makeRegistry();
-    const result = verifyGrant(grant, "execute_command", registry, SECRET);
+    const result = await verifyGrant(grant, "execute_command", registry, SECRET);
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -137,7 +137,7 @@ describe("verifyGrant — 12-case matrix", () => {
   });
 
   // Case 6: Chain depth exceeded (fabricated grant beyond max)
-  test("case 6: chain depth exceeded returns reason: chain_depth_exceeded", () => {
+  test("case 6: chain depth exceeded returns reason: chain_depth_exceeded", async () => {
     // Fabricate a grant with chainDepth > maxChainDepth
     const unsigned = {
       id: "fabricated" as DelegationId,
@@ -153,7 +153,7 @@ describe("verifyGrant — 12-case matrix", () => {
     const grant: DelegationGrant = { ...unsigned, signature };
     const registry = makeRegistry();
 
-    const result = verifyGrant(grant, "read_file", registry, SECRET);
+    const result = await verifyGrant(grant, "read_file", registry, SECRET);
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -162,7 +162,7 @@ describe("verifyGrant — 12-case matrix", () => {
   });
 
   // Case 7: Self-delegation (agent → itself) — valid, just unusual
-  test("case 7: self-delegation returns ok: true", () => {
+  test("case 7: self-delegation returns ok: true", async () => {
     const grant = createGrant({
       issuerId: "agent-1",
       delegateeId: "agent-1",
@@ -172,18 +172,18 @@ describe("verifyGrant — 12-case matrix", () => {
       secret: SECRET,
     });
     const registry = makeRegistry();
-    const result = verifyGrant(grant, "read_file", registry, SECRET);
+    const result = await verifyGrant(grant, "read_file", registry, SECRET);
 
     expect(result.ok).toBe(true);
   });
 
   // Case 8: Empty scope delegation — any tool should be denied
-  test("case 8: empty scope returns reason: scope_exceeded for any tool", () => {
+  test("case 8: empty scope returns reason: scope_exceeded for any tool", async () => {
     const grant = makeGrant({
       scope: { permissions: {} },
     });
     const registry = makeRegistry();
-    const result = verifyGrant(grant, "read_file", registry, SECRET);
+    const result = await verifyGrant(grant, "read_file", registry, SECRET);
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -192,14 +192,14 @@ describe("verifyGrant — 12-case matrix", () => {
   });
 
   // Case 9: Invalid/tampered signature
-  test("case 9: tampered signature returns reason: invalid_signature", () => {
+  test("case 9: tampered signature returns reason: invalid_signature", async () => {
     const grant = makeGrant();
     const tampered: DelegationGrant = {
       ...grant,
       signature: "0".repeat(64),
     };
     const registry = makeRegistry();
-    const result = verifyGrant(tampered, "read_file", registry, SECRET);
+    const result = await verifyGrant(tampered, "read_file", registry, SECRET);
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -208,7 +208,7 @@ describe("verifyGrant — 12-case matrix", () => {
   });
 
   // Case 10: Unknown grant — verifyGrant is stateless, so this tests signature
-  test("case 10: grant with empty signature returns reason: invalid_signature", () => {
+  test("case 10: grant with empty signature returns reason: invalid_signature", async () => {
     const unsigned = {
       id: "unknown-1" as DelegationId,
       issuerId: "agent-1",
@@ -221,7 +221,7 @@ describe("verifyGrant — 12-case matrix", () => {
       signature: "",
     };
     const registry = makeRegistry();
-    const result = verifyGrant(unsigned, "read_file", registry, SECRET);
+    const result = await verifyGrant(unsigned, "read_file", registry, SECRET);
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -230,7 +230,7 @@ describe("verifyGrant — 12-case matrix", () => {
   });
 
   // Case 11: Re-delegation of revoked grant (attenuate then revoke)
-  test("case 11: attenuating from a revoked parent — handled at revoke time", () => {
+  test("case 11: attenuating from a revoked parent — handled at revoke time", async () => {
     // This tests that after revoking parent, the child is also revoked
     const parent = makeGrant();
     const childResult = attenuateGrant(
@@ -247,7 +247,7 @@ describe("verifyGrant — 12-case matrix", () => {
     // Revoke parent (cascade adds child too)
     const revoked = new Set<DelegationId>([parent.id, childResult.value.id]);
     const registry = makeRegistry(revoked);
-    const result = verifyGrant(childResult.value, "read_file", registry, SECRET);
+    const result = await verifyGrant(childResult.value, "read_file", registry, SECRET);
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -256,7 +256,7 @@ describe("verifyGrant — 12-case matrix", () => {
   });
 
   // Case 12: Delegation to non-existent agent — verification is stateless
-  test("case 12: delegation to non-existent agent returns ok: true", () => {
+  test("case 12: delegation to non-existent agent returns ok: true", async () => {
     const grant = createGrant({
       issuerId: "agent-1",
       delegateeId: "non-existent-agent",
@@ -266,7 +266,7 @@ describe("verifyGrant — 12-case matrix", () => {
       secret: SECRET,
     });
     const registry = makeRegistry();
-    const result = verifyGrant(grant, "read_file", registry, SECRET);
+    const result = await verifyGrant(grant, "read_file", registry, SECRET);
 
     expect(result.ok).toBe(true);
   });
@@ -350,7 +350,7 @@ describe("ScopeChecker pluggability", () => {
     expect(defaultScopeChecker.isAllowed("exec", scope)).toBe(false);
   });
 
-  test("verifyGrant uses custom ScopeChecker when provided", () => {
+  test("verifyGrant uses custom ScopeChecker when provided", async () => {
     const grant = makeGrant({
       scope: { permissions: { allow: ["read_file"] } },
     });
@@ -358,7 +358,7 @@ describe("ScopeChecker pluggability", () => {
 
     // Custom checker that denies everything
     const denyAll: ScopeChecker = { isAllowed: () => false };
-    const result = verifyGrant(grant, "read_file", registry, SECRET, undefined, denyAll);
+    const result = await verifyGrant(grant, "read_file", registry, SECRET, undefined, denyAll);
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -366,7 +366,7 @@ describe("ScopeChecker pluggability", () => {
     }
   });
 
-  test("verifyGrant uses custom ScopeChecker that allows everything", () => {
+  test("verifyGrant uses custom ScopeChecker that allows everything", async () => {
     const grant = makeGrant({
       scope: { permissions: {} }, // empty scope — default checker would deny
     });
@@ -374,23 +374,23 @@ describe("ScopeChecker pluggability", () => {
 
     // Custom checker that allows everything
     const allowAll: ScopeChecker = { isAllowed: () => true };
-    const result = verifyGrant(grant, "exec", registry, SECRET, undefined, allowAll);
+    const result = await verifyGrant(grant, "exec", registry, SECRET, undefined, allowAll);
 
     expect(result.ok).toBe(true);
   });
 
-  test("verifyGrant falls back to default when no ScopeChecker provided", () => {
+  test("verifyGrant falls back to default when no ScopeChecker provided", async () => {
     const grant = makeGrant({
       scope: { permissions: { allow: ["read_file"] } },
     });
     const registry = makeRegistry();
 
     // No scopeChecker → uses default
-    const result = verifyGrant(grant, "read_file", registry, SECRET);
+    const result = await verifyGrant(grant, "read_file", registry, SECRET);
     expect(result.ok).toBe(true);
   });
 
-  test("custom ScopeChecker receives correct toolId and scope", () => {
+  test("custom ScopeChecker receives correct toolId and scope", async () => {
     const grant = makeGrant({
       scope: { permissions: { allow: ["read_file"] }, resources: ["read_file:/src/**"] },
     });
@@ -406,7 +406,7 @@ describe("ScopeChecker pluggability", () => {
       },
     };
 
-    verifyGrant(grant, "read_file:/src/foo.ts", registry, SECRET, undefined, spy);
+    await verifyGrant(grant, "read_file:/src/foo.ts", registry, SECRET, undefined, spy);
 
     expect(receivedToolId).toBe("read_file:/src/foo.ts");
     expect(receivedScope).toEqual(grant.scope);

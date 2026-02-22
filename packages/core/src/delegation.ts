@@ -91,9 +91,12 @@ export type DelegationVerifyResult =
 /**
  * Pluggable scope resolution. Default implementation uses glob-style matching (L2).
  * Swap in ReBAC, policy engines, or external services (e.g., Nexus) as needed.
+ *
+ * Returns boolean for sync checkers (local glob matching) or Promise<boolean>
+ * for async checkers (HTTP-based services like Nexus ReBAC).
  */
 export interface ScopeChecker {
-  readonly isAllowed: (toolId: string, scope: DelegationScope) => boolean;
+  readonly isAllowed: (toolId: string, scope: DelegationScope) => boolean | Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
