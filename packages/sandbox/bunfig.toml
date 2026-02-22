@@ -1,0 +1,20 @@
+[test]
+# Coverage enabled
+coverage = true
+coverageSkipTestFiles = true
+coverageReporter = ["text", "lcov"]
+coverageDir = "coverage"
+coverageThreshold = { lines = 0.8, functions = 0.8, statements = 0.8 }
+
+# Platform-specific code cannot reach 80% on any single OS:
+# - detect.ts: Linux branch unreachable on macOS and vice versa
+# - execute.ts, spawn.ts, adapter.ts: only testable with SANDBOX_INTEGRATION=1
+coveragePathIgnorePatterns = [
+  "dist/**",
+  "node_modules/**",
+  "*.config.ts",
+  "src/adapter.ts",
+  "src/execute.ts",
+  "src/spawn.ts",
+  "src/detect.ts",
+]
