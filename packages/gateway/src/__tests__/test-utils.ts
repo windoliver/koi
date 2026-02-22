@@ -3,7 +3,12 @@
  */
 
 import type { GatewayAuthenticator } from "../auth.js";
-import type { Transport, TransportConnection, TransportHandler, TransportSendResult } from "../transport.js";
+import type {
+  Transport,
+  TransportConnection,
+  TransportHandler,
+  TransportSendResult,
+} from "../transport.js";
 import type { AuthResult, ConnectFrame, GatewayFrame, Session } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -41,9 +46,11 @@ export interface MockConnection extends TransportConnection {
 
 export interface MockTransport extends Transport {
   /** Simulate a new connection opening. */
-  readonly simulateOpen: (conn?: Partial<TransportConnection> & {
-    readonly sendResult?: TransportSendResult;
-  }) => MockConnection;
+  readonly simulateOpen: (
+    conn?: Partial<TransportConnection> & {
+      readonly sendResult?: TransportSendResult;
+    },
+  ) => MockConnection;
   /** Simulate receiving a message on a connection. */
   readonly simulateMessage: (connId: string, data: string) => void;
   /** Simulate a connection closing. */
@@ -58,9 +65,11 @@ export function createMockTransport(): MockTransport {
   let handler: TransportHandler | undefined;
   const connections = new Map<string, MockConnection>();
 
-  function createMockConnection(overrides?: Partial<TransportConnection> & {
-    readonly sendResult?: TransportSendResult;
-  }): MockConnection {
+  function createMockConnection(
+    overrides?: Partial<TransportConnection> & {
+      readonly sendResult?: TransportSendResult;
+    },
+  ): MockConnection {
     const sentMessages: string[] = [];
     let isClosed = false;
     let cCode: number | undefined;
@@ -112,9 +121,11 @@ export function createMockTransport(): MockTransport {
       return connections.size;
     },
 
-    simulateOpen(overrides?: Partial<TransportConnection> & {
-      readonly sendResult?: TransportSendResult;
-    }): MockConnection {
+    simulateOpen(
+      overrides?: Partial<TransportConnection> & {
+        readonly sendResult?: TransportSendResult;
+      },
+    ): MockConnection {
       const conn = createMockConnection(overrides);
       connections.set(conn.id, conn);
       handler?.onOpen(conn);
@@ -231,10 +242,7 @@ export function createConnectMessage(
 }
 
 /** Build a JSON-encoded connect frame string in legacy format (single protocol field). */
-export function createLegacyConnectMessage(
-  token = "test-token",
-  protocol = 1,
-): string {
+export function createLegacyConnectMessage(token = "test-token", protocol = 1): string {
   return JSON.stringify({
     type: "connect",
     protocol,

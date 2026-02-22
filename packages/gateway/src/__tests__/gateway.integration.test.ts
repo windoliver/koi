@@ -340,7 +340,7 @@ describe("Gateway integration", () => {
     transport.simulateClose(conn2.id);
 
     // Create a third connection, wait for handshake to timeout, then send a message
-    const conn3 = transport.simulateOpen();
+    const _conn3 = transport.simulateOpen();
     // Wait for auth timeout (short)
     // Actually, let's set a very short auth timeout
     await gateway.stop();
@@ -584,16 +584,14 @@ describe("Gateway integration", () => {
     gateway.dispatch(session, frame);
 
     expect(receivedFrames).toHaveLength(1);
-    expect(receivedFrames[0]!.session.agentId).toBe("injected-agent");
-    expect(receivedFrames[0]!.frame.payload).toEqual({ injected: true });
+    expect(receivedFrames[0]?.session.agentId).toBe("injected-agent");
+    expect(receivedFrames[0]?.frame.payload).toEqual({ injected: true });
   });
 
   test("routing resolves agentId from bindings during WebSocket frame dispatch", async () => {
     const routingConfig: RoutingConfig = {
       scopingMode: "per-channel-peer",
-      bindings: [
-        { pattern: "slack:*", agentId: "slack-bot" },
-      ],
+      bindings: [{ pattern: "slack:*", agentId: "slack-bot" }],
     };
 
     const auth = createTestAuthenticator({
@@ -627,15 +625,13 @@ describe("Gateway integration", () => {
     );
 
     await waitForCondition(() => receivedSessions.length >= 1);
-    expect(receivedSessions[0]!.agentId).toBe("slack-bot");
+    expect(receivedSessions[0]?.agentId).toBe("slack-bot");
   });
 
   test("routing falls back to auth agentId when no binding matches", async () => {
     const routingConfig: RoutingConfig = {
       scopingMode: "per-channel-peer",
-      bindings: [
-        { pattern: "discord:*", agentId: "discord-bot" },
-      ],
+      bindings: [{ pattern: "discord:*", agentId: "discord-bot" }],
     };
 
     const auth = createTestAuthenticator({
@@ -669,7 +665,7 @@ describe("Gateway integration", () => {
     );
 
     await waitForCondition(() => receivedSessions.length >= 1);
-    expect(receivedSessions[0]!.agentId).toBe("default-agent");
+    expect(receivedSessions[0]?.agentId).toBe("default-agent");
   });
 
   test("no routing config = backward compatible (auth agentId used)", async () => {
@@ -703,6 +699,6 @@ describe("Gateway integration", () => {
     );
 
     await waitForCondition(() => receivedSessions.length >= 1);
-    expect(receivedSessions[0]!.agentId).toBe("original-agent");
+    expect(receivedSessions[0]?.agentId).toBe("original-agent");
   });
 });

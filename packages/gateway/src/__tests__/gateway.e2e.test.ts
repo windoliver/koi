@@ -9,7 +9,7 @@ import { createGateway } from "../gateway.js";
 import type { BunTransport } from "../transport.js";
 import { createBunTransport } from "../transport.js";
 import type { ConnectFrame, GatewayFrame, Session } from "../types.js";
-import { createConnectMessage, createLegacyConnectMessage, createTestAuthenticator } from "./test-utils.js";
+import { createConnectMessage, createTestAuthenticator } from "./test-utils.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -552,10 +552,7 @@ describe("Gateway e2e (real WebSocket)", () => {
       metadata: {},
     });
     // Server supports protocol versions 1-3
-    gateway = createGateway(
-      { minProtocolVersion: 1, maxProtocolVersion: 3 },
-      { transport, auth },
-    );
+    gateway = createGateway({ minProtocolVersion: 1, maxProtocolVersion: 3 }, { transport, auth });
     await gateway.start(0);
 
     const { ws, messages, opened } = await connectClient(transport.port());
@@ -581,10 +578,7 @@ describe("Gateway e2e (real WebSocket)", () => {
       metadata: {},
     });
     // Server only supports protocol versions 3-5
-    gateway = createGateway(
-      { minProtocolVersion: 3, maxProtocolVersion: 5 },
-      { transport, auth },
-    );
+    gateway = createGateway({ minProtocolVersion: 3, maxProtocolVersion: 5 }, { transport, auth });
     await gateway.start(0);
 
     const { ws, messages, opened, closed } = await connectClient(transport.port());
@@ -659,11 +653,11 @@ describe("Gateway e2e (real WebSocket)", () => {
 
     // Frame should have been dispatched through the gateway onFrame pipeline
     expect(received).toHaveLength(1);
-    expect(received[0]!.session.routing?.channel).toBe("slack");
-    expect(received[0]!.session.routing?.account).toBe("acme");
-    expect(received[0]!.session.routing?.peer).toBe("ext-service");
-    expect(received[0]!.frame.kind).toBe("event");
-    expect(received[0]!.frame.payload).toEqual({
+    expect(received[0]?.session.routing?.channel).toBe("slack");
+    expect(received[0]?.session.routing?.account).toBe("acme");
+    expect(received[0]?.session.routing?.peer).toBe("ext-service");
+    expect(received[0]?.frame.kind).toBe("event");
+    expect(received[0]?.frame.payload).toEqual({
       event: "message.created",
       text: "hello from webhook",
     });
@@ -683,9 +677,7 @@ describe("Gateway e2e (real WebSocket)", () => {
         webhookPort: 0,
         routing: {
           scopingMode: "per-channel-peer",
-          bindings: [
-            { pattern: "slack:*", agentId: "slack-handler" },
-          ],
+          bindings: [{ pattern: "slack:*", agentId: "slack-handler" }],
         },
       },
       { transport, auth },
@@ -708,7 +700,7 @@ describe("Gateway e2e (real WebSocket)", () => {
 
     expect(received).toHaveLength(1);
     // Routing should have resolved agentId to "slack-handler"
-    expect(received[0]!.session.agentId).toBe("slack-handler");
+    expect(received[0]?.session.agentId).toBe("slack-handler");
   });
 
   test("scheduler fires frames received by onFrame", async () => {
@@ -724,9 +716,7 @@ describe("Gateway e2e (real WebSocket)", () => {
 
     gateway = createGateway(
       {
-        schedulers: [
-          { id: "test-tick", intervalMs: 100, agentId: "ticker-agent" },
-        ],
+        schedulers: [{ id: "test-tick", intervalMs: 100, agentId: "ticker-agent" }],
       },
       { transport, auth },
     );
@@ -740,10 +730,10 @@ describe("Gateway e2e (real WebSocket)", () => {
     await new Promise((r) => setTimeout(r, 250));
 
     expect(dispatched.length).toBeGreaterThanOrEqual(1);
-    expect(dispatched[0]!.session.agentId).toBe("ticker-agent");
-    expect(dispatched[0]!.session.metadata).toEqual({ schedulerId: "test-tick" });
-    expect(dispatched[0]!.frame.kind).toBe("event");
-    expect(dispatched[0]!.frame.payload).toEqual({
+    expect(dispatched[0]?.session.agentId).toBe("ticker-agent");
+    expect(dispatched[0]?.session.metadata).toEqual({ schedulerId: "test-tick" });
+    expect(dispatched[0]?.frame.kind).toBe("event");
+    expect(dispatched[0]?.frame.payload).toEqual({
       schedulerId: "test-tick",
       type: "tick",
     });

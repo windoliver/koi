@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { computeDispatchKey, resolveBinding, resolveRoute, validateBindingPattern } from "../routing.js";
+import {
+  computeDispatchKey,
+  resolveBinding,
+  resolveRoute,
+  validateBindingPattern,
+} from "../routing.js";
 import type { RouteBinding, RoutingConfig, RoutingContext } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -23,7 +28,9 @@ describe("computeDispatchKey", () => {
   });
 
   test("per-channel-peer returns channel:peer", () => {
-    expect(computeDispatchKey("per-channel-peer", { channel: "slack", peer: "u1" })).toBe("slack:u1");
+    expect(computeDispatchKey("per-channel-peer", { channel: "slack", peer: "u1" })).toBe(
+      "slack:u1",
+    );
   });
 
   test("per-channel-peer defaults missing segments to '_'", () => {
@@ -45,9 +52,7 @@ describe("computeDispatchKey", () => {
   test("per-account-channel-peer defaults missing segments to '_'", () => {
     expect(computeDispatchKey("per-account-channel-peer")).toBe("_:_:_");
     expect(computeDispatchKey("per-account-channel-peer", { peer: "u1" })).toBe("_:_:u1");
-    expect(
-      computeDispatchKey("per-account-channel-peer", { account: "acme" }),
-    ).toBe("acme:_:_");
+    expect(computeDispatchKey("per-account-channel-peer", { account: "acme" })).toBe("acme:_:_");
   });
 });
 
@@ -105,35 +110,25 @@ describe("resolveBinding", () => {
   });
 
   test("** at start matches everything", () => {
-    const catchAll: readonly RouteBinding[] = [
-      { pattern: "**", agentId: "catch-all" },
-    ];
+    const catchAll: readonly RouteBinding[] = [{ pattern: "**", agentId: "catch-all" }];
     expect(resolveBinding("anything", catchAll)).toBe("catch-all");
     expect(resolveBinding("a:b:c", catchAll)).toBe("catch-all");
   });
 
   test("pattern longer than key does not match", () => {
-    const longPattern: readonly RouteBinding[] = [
-      { pattern: "a:b:c", agentId: "long" },
-    ];
+    const longPattern: readonly RouteBinding[] = [{ pattern: "a:b:c", agentId: "long" }];
     expect(resolveBinding("a:b", longPattern)).toBeUndefined();
     expect(resolveBinding("a", longPattern)).toBeUndefined();
   });
 
   test("key longer than pattern without ** does not match", () => {
-    const shortPattern: readonly RouteBinding[] = [
-      { pattern: "a:b", agentId: "short" },
-    ];
+    const shortPattern: readonly RouteBinding[] = [{ pattern: "a:b", agentId: "short" }];
     expect(resolveBinding("a:b:c", shortPattern)).toBeUndefined();
   });
 
   test("** in non-terminal position throws", () => {
-    const badBindings: readonly RouteBinding[] = [
-      { pattern: "**:billing", agentId: "bad" },
-    ];
-    expect(() => resolveBinding("a:billing", badBindings)).toThrow(
-      /must be the last segment/,
-    );
+    const badBindings: readonly RouteBinding[] = [{ pattern: "**:billing", agentId: "bad" }];
+    expect(() => resolveBinding("a:billing", badBindings)).toThrow(/must be the last segment/);
   });
 });
 
@@ -170,9 +165,7 @@ describe("resolveRoute", () => {
   test("binding match overrides fallback agentId", () => {
     const config: RoutingConfig = {
       scopingMode: "per-channel-peer",
-      bindings: [
-        { pattern: "slack:*", agentId: "slack-agent" },
-      ],
+      bindings: [{ pattern: "slack:*", agentId: "slack-agent" }],
     };
     const routing: RoutingContext = { channel: "slack", peer: "u1" };
     const result = resolveRoute(config, routing, "fallback-agent");
@@ -183,9 +176,7 @@ describe("resolveRoute", () => {
   test("no binding match falls back to fallback agentId", () => {
     const config: RoutingConfig = {
       scopingMode: "per-channel-peer",
-      bindings: [
-        { pattern: "slack:*", agentId: "slack-agent" },
-      ],
+      bindings: [{ pattern: "slack:*", agentId: "slack-agent" }],
     };
     const routing: RoutingContext = { channel: "discord", peer: "u1" };
     const result = resolveRoute(config, routing, "fallback-agent");
@@ -212,9 +203,7 @@ describe("resolveRoute", () => {
   test("main scoping mode with bindings still matches against 'main' key", () => {
     const config: RoutingConfig = {
       scopingMode: "main",
-      bindings: [
-        { pattern: "main", agentId: "main-agent" },
-      ],
+      bindings: [{ pattern: "main", agentId: "main-agent" }],
     };
     const result = resolveRoute(config, { peer: "u1" }, "fallback-agent");
     expect(result.agentId).toBe("main-agent");
@@ -224,9 +213,7 @@ describe("resolveRoute", () => {
   test("undefined routing uses default segments", () => {
     const config: RoutingConfig = {
       scopingMode: "per-account-channel-peer",
-      bindings: [
-        { pattern: "_:_:_", agentId: "default-agent" },
-      ],
+      bindings: [{ pattern: "_:_:_", agentId: "default-agent" }],
     };
     const result = resolveRoute(config, undefined, "fallback-agent");
     expect(result.agentId).toBe("default-agent");

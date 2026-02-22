@@ -51,13 +51,11 @@ describe("GatewayScheduler", () => {
     await new Promise((r) => setTimeout(r, 150));
 
     expect(dispatched.length).toBeGreaterThanOrEqual(1);
-    expect(dispatched[0]!.frame.payload).toEqual(customPayload);
+    expect(dispatched[0]?.frame.payload).toEqual(customPayload);
   });
 
   test("default payload includes schedulerId and type:tick", async () => {
-    const defs: readonly SchedulerDef[] = [
-      { id: "tick-test", intervalMs: 100, agentId: "ticker" },
-    ];
+    const defs: readonly SchedulerDef[] = [{ id: "tick-test", intervalMs: 100, agentId: "ticker" }];
 
     scheduler = createScheduler(defs, dispatcher);
     scheduler.start();
@@ -65,7 +63,7 @@ describe("GatewayScheduler", () => {
     await new Promise((r) => setTimeout(r, 150));
 
     expect(dispatched.length).toBeGreaterThanOrEqual(1);
-    expect(dispatched[0]!.frame.payload).toEqual({
+    expect(dispatched[0]?.frame.payload).toEqual({
       schedulerId: "tick-test",
       type: "tick",
     });
@@ -130,9 +128,7 @@ describe("GatewayScheduler", () => {
   });
 
   test("session id includes scheduler id", async () => {
-    const defs: readonly SchedulerDef[] = [
-      { id: "my-sched", intervalMs: 100, agentId: "agent" },
-    ];
+    const defs: readonly SchedulerDef[] = [{ id: "my-sched", intervalMs: 100, agentId: "agent" }];
 
     scheduler = createScheduler(defs, dispatcher);
     scheduler.start();
@@ -140,13 +136,11 @@ describe("GatewayScheduler", () => {
     await new Promise((r) => setTimeout(r, 150));
 
     expect(dispatched.length).toBeGreaterThanOrEqual(1);
-    expect(dispatched[0]!.session.id).toBe("scheduler-my-sched");
+    expect(dispatched[0]?.session.id).toBe("scheduler-my-sched");
   });
 
   test("each frame has unique id", async () => {
-    const defs: readonly SchedulerDef[] = [
-      { id: "uniq", intervalMs: 100, agentId: "agent" },
-    ];
+    const defs: readonly SchedulerDef[] = [{ id: "uniq", intervalMs: 100, agentId: "agent" }];
 
     scheduler = createScheduler(defs, dispatcher);
     scheduler.start();
@@ -159,9 +153,7 @@ describe("GatewayScheduler", () => {
   });
 
   test("double start() does not create duplicate timers", async () => {
-    const defs: readonly SchedulerDef[] = [
-      { id: "double", intervalMs: 100, agentId: "agent" },
-    ];
+    const defs: readonly SchedulerDef[] = [{ id: "double", intervalMs: 100, agentId: "agent" }];
 
     scheduler = createScheduler(defs, dispatcher);
     scheduler.start();
@@ -177,9 +169,7 @@ describe("GatewayScheduler", () => {
   });
 
   test("connectedAt is stable across ticks", async () => {
-    const defs: readonly SchedulerDef[] = [
-      { id: "stable", intervalMs: 100, agentId: "agent" },
-    ];
+    const defs: readonly SchedulerDef[] = [{ id: "stable", intervalMs: 100, agentId: "agent" }];
 
     scheduler = createScheduler(defs, dispatcher);
     scheduler.start();
@@ -187,16 +177,14 @@ describe("GatewayScheduler", () => {
     await new Promise((r) => setTimeout(r, 350));
 
     expect(dispatched.length).toBeGreaterThanOrEqual(2);
-    const firstConnectedAt = dispatched[0]!.session.connectedAt;
+    const firstConnectedAt = dispatched[0]?.session.connectedAt;
     for (const { session } of dispatched) {
       expect(session.connectedAt).toBe(firstConnectedAt);
     }
   });
 
   test("throws when intervalMs is below minimum", () => {
-    const defs: readonly SchedulerDef[] = [
-      { id: "too-fast", intervalMs: 10, agentId: "agent" },
-    ];
+    const defs: readonly SchedulerDef[] = [{ id: "too-fast", intervalMs: 10, agentId: "agent" }];
 
     expect(() => createScheduler(defs, dispatcher)).toThrow(/below minimum/);
   });

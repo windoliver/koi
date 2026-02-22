@@ -430,13 +430,10 @@ describe("startHeartbeatSweep", () => {
     });
 
     // Wait for enough sweeps to cover all shards
-    await waitForCondition(
-      () => {
-        const updated = store.get("s1");
-        return updated !== undefined && updated.lastHeartbeat > activeSession.lastHeartbeat;
-      },
-      2000,
-    );
+    await waitForCondition(() => {
+      const updated = store.get("s1");
+      return updated !== undefined && updated.lastHeartbeat > activeSession.lastHeartbeat;
+    }, 2000);
 
     expect(expiredIds).toHaveLength(0);
     expect(store.has("s1")).toBe(true);
@@ -498,7 +495,12 @@ describe("startHeartbeatSweep", () => {
 
     const expiredIds: string[] = [];
     const auth: GatewayAuthenticator = {
-      authenticate: async () => ({ ok: true, sessionId: "s-fail-open", agentId: "a", metadata: {} }),
+      authenticate: async () => ({
+        ok: true,
+        sessionId: "s-fail-open",
+        agentId: "a",
+        metadata: {},
+      }),
       validate: async () => {
         throw new Error("Auth service down");
       },

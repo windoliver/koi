@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import type { GatewayFrame, Session } from "../types.js";
 import type { WebhookAuthenticator, WebhookServer } from "../webhook.js";
 import { createWebhookServer } from "../webhook.js";
-import type { GatewayFrame, Session } from "../types.js";
 
 describe("WebhookServer", () => {
   let server: WebhookServer;
@@ -38,12 +38,12 @@ describe("WebhookServer", () => {
     expect(typeof body.frameId).toBe("string");
 
     expect(dispatched).toHaveLength(1);
-    const { session, frame } = dispatched[0]!;
-    expect(session.routing?.channel).toBe("slack");
-    expect(session.routing?.account).toBe("acme");
-    expect(session.routing?.peer).toBe("bot-user");
-    expect(frame.kind).toBe("event");
-    expect(frame.payload).toEqual({ event: "message", text: "hello" });
+    const entry = dispatched[0];
+    expect(entry?.session.routing?.channel).toBe("slack");
+    expect(entry?.session.routing?.account).toBe("acme");
+    expect(entry?.session.routing?.peer).toBe("bot-user");
+    expect(entry?.frame.kind).toBe("event");
+    expect(entry?.frame.payload).toEqual({ event: "message", text: "hello" });
   });
 
   test("non-POST returns 405", async () => {
@@ -105,10 +105,7 @@ describe("WebhookServer", () => {
   });
 
   test("payload exceeding maxBodyBytes returns 413", async () => {
-    server = createWebhookServer(
-      { port: 0, pathPrefix: "/webhook", maxBodyBytes: 50 },
-      dispatcher,
-    );
+    server = createWebhookServer({ port: 0, pathPrefix: "/webhook", maxBodyBytes: 50 }, dispatcher);
     await server.start();
 
     const largePayload = JSON.stringify({ data: "x".repeat(100) });
@@ -186,7 +183,7 @@ describe("WebhookServer", () => {
     expect(res.status).toBe(200);
     expect(receivedBody).toBe(payload);
     expect(dispatched).toHaveLength(1);
-    expect(dispatched[0]!.session.agentId).toBe("hmac-agent");
+    expect(dispatched[0]?.session.agentId).toBe("hmac-agent");
   });
 
   test("authenticated request uses provided agentId", async () => {
@@ -210,11 +207,11 @@ describe("WebhookServer", () => {
 
     expect(res.status).toBe(200);
     expect(dispatched).toHaveLength(1);
-    const { session } = dispatched[0]!;
-    expect(session.agentId).toBe("custom-agent");
-    expect(session.routing?.channel).toBe("custom-channel");
-    expect(session.routing?.peer).toBe("custom-peer");
-    expect(session.metadata).toEqual({ source: "test" });
+    const dispatched0 = dispatched[0];
+    expect(dispatched0?.session.agentId).toBe("custom-agent");
+    expect(dispatched0?.session.routing?.channel).toBe("custom-channel");
+    expect(dispatched0?.session.routing?.peer).toBe("custom-peer");
+    expect(dispatched0?.session.metadata).toEqual({ source: "test" });
   });
 
   test("empty body dispatches with null payload", async () => {
@@ -227,7 +224,7 @@ describe("WebhookServer", () => {
 
     expect(res.status).toBe(200);
     expect(dispatched).toHaveLength(1);
-    expect(dispatched[0]!.frame.payload).toBeNull();
+    expect(dispatched[0]?.frame.payload).toBeNull();
   });
 
   test("default peer is 'webhook' when header not set", async () => {
@@ -242,7 +239,7 @@ describe("WebhookServer", () => {
 
     expect(res.status).toBe(200);
     expect(dispatched).toHaveLength(1);
-    expect(dispatched[0]!.session.routing?.peer).toBe("webhook");
+    expect(dispatched[0]?.session.routing?.peer).toBe("webhook");
   });
 
   test("path prefix with trailing slash works", async () => {
@@ -271,7 +268,7 @@ describe("WebhookServer", () => {
 
     expect(res.status).toBe(200);
     expect(dispatched).toHaveLength(1);
-    expect(dispatched[0]!.session.routing?.channel).toBeUndefined();
-    expect(dispatched[0]!.session.routing?.account).toBeUndefined();
+    expect(dispatched[0]?.session.routing?.channel).toBeUndefined();
+    expect(dispatched[0]?.session.routing?.account).toBeUndefined();
   });
 });

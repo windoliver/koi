@@ -109,10 +109,7 @@ export function resolveBinding(
   return undefined;
 }
 
-function matchSegments(
-  key: readonly string[],
-  pattern: readonly string[],
-): boolean {
+function matchSegments(key: readonly string[], pattern: readonly string[]): boolean {
   for (let i = 0; i < pattern.length; i++) {
     const p = pattern[i] as string;
 

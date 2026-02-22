@@ -182,7 +182,12 @@ describe("parseConnectFrame", () => {
   });
 
   test("rejects non-connect type", () => {
-    const raw = JSON.stringify({ type: "request", minProtocol: 1, maxProtocol: 1, auth: { token: "t" } });
+    const raw = JSON.stringify({
+      type: "request",
+      minProtocol: 1,
+      maxProtocol: 1,
+      auth: { token: "t" },
+    });
     const result = parseConnectFrame(raw);
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -259,7 +264,12 @@ describe("parseConnectFrame", () => {
   });
 
   test("rejects empty token", () => {
-    const raw = JSON.stringify({ type: "connect", minProtocol: 1, maxProtocol: 1, auth: { token: "" } });
+    const raw = JSON.stringify({
+      type: "connect",
+      minProtocol: 1,
+      maxProtocol: 1,
+      auth: { token: "" },
+    });
     expect(parseConnectFrame(raw).ok).toBe(false);
   });
 

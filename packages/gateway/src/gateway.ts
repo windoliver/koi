@@ -8,12 +8,12 @@ import type { GatewayAuthenticator, HandshakeOptions } from "./auth.js";
 import { handleHandshake, startHeartbeatSweep } from "./auth.js";
 import { createBackpressureMonitor } from "./backpressure.js";
 import { buildAckFrame, buildErrorFrame, encodeFrame, parseFrame } from "./protocol.js";
-import { createSequenceTracker } from "./sequence-tracker.js";
-import type { SessionStore } from "./session-store.js";
-import { createInMemorySessionStore } from "./session-store.js";
 import { resolveRoute } from "./routing.js";
 import type { GatewayScheduler } from "./scheduler.js";
 import { createScheduler } from "./scheduler.js";
+import { createSequenceTracker } from "./sequence-tracker.js";
+import type { SessionStore } from "./session-store.js";
+import { createInMemorySessionStore } from "./session-store.js";
 import type { Transport, TransportConnection } from "./transport.js";
 import type { GatewayConfig, GatewayFrame, Session } from "./types.js";
 import { DEFAULT_GATEWAY_CONFIG } from "./types.js";
@@ -114,7 +114,10 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
     const bpState = bp.state(conn.id);
     if (bpState === "critical") {
       const criticalAt = bp.criticalSince(conn.id);
-      if (criticalAt !== undefined && Date.now() - criticalAt > config.backpressureCriticalTimeoutMs) {
+      if (
+        criticalAt !== undefined &&
+        Date.now() - criticalAt > config.backpressureCriticalTimeoutMs
+      ) {
         closeConnection(conn.id, 4009, "Backpressure timeout");
         return;
       }
@@ -157,9 +160,15 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
     // Process all ready frames (in order) with immutable session updates
     let currentSession = session;
     for (const readyFrame of acceptance.ready) {
-      const routedSession = baseAgentId !== currentSession.agentId
-        ? { ...currentSession, agentId: baseAgentId, remoteSeq: readyFrame.seq, lastHeartbeat: Date.now() }
-        : { ...currentSession, remoteSeq: readyFrame.seq, lastHeartbeat: Date.now() };
+      const routedSession =
+        baseAgentId !== currentSession.agentId
+          ? {
+              ...currentSession,
+              agentId: baseAgentId,
+              remoteSeq: readyFrame.seq,
+              lastHeartbeat: Date.now(),
+            }
+          : { ...currentSession, remoteSeq: readyFrame.seq, lastHeartbeat: Date.now() };
       currentSession = routedSession;
       store.set(currentSession);
       dispatchFrame(currentSession, readyFrame);
@@ -259,9 +268,10 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
           { port: config.webhookPort, pathPrefix: config.webhookPath ?? "/webhook" },
           (session, frame) => {
             const resolved = resolveRoute(config.routing, session.routing, session.agentId);
-            const routedSession = resolved.agentId !== session.agentId
-              ? { ...session, agentId: resolved.agentId }
-              : session;
+            const routedSession =
+              resolved.agentId !== session.agentId
+                ? { ...session, agentId: resolved.agentId }
+                : session;
             dispatchFrame(routedSession, frame);
           },
           deps.webhookAuth,
@@ -345,9 +355,8 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
 
     dispatch(session: Session, frame: GatewayFrame): void {
       const resolved = resolveRoute(config.routing, session.routing, session.agentId);
-      const routedSession = resolved.agentId !== session.agentId
-        ? { ...session, agentId: resolved.agentId }
-        : session;
+      const routedSession =
+        resolved.agentId !== session.agentId ? { ...session, agentId: resolved.agentId } : session;
       dispatchFrame(routedSession, frame);
     },
 

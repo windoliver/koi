@@ -26,7 +26,12 @@ export {
 } from "./protocol.js";
 // routing
 export type { ResolvedRoute } from "./routing.js";
-export { computeDispatchKey, resolveBinding, resolveRoute, validateBindingPattern } from "./routing.js";
+export {
+  computeDispatchKey,
+  resolveBinding,
+  resolveRoute,
+  validateBindingPattern,
+} from "./routing.js";
 // scheduler
 export type { GatewayScheduler, SchedulerDispatcher } from "./scheduler.js";
 export { createScheduler } from "./scheduler.js";

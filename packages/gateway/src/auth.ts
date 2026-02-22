@@ -2,7 +2,12 @@
  * Authentication: handshake + periodic heartbeat re-validation.
  */
 
-import { buildAckFrame, buildErrorFrame, negotiateProtocol, parseConnectFrame } from "./protocol.js";
+import {
+  buildAckFrame,
+  buildErrorFrame,
+  negotiateProtocol,
+  parseConnectFrame,
+} from "./protocol.js";
 import type { SessionStore } from "./session-store.js";
 import type { TransportConnection } from "./transport.js";
 import type {
