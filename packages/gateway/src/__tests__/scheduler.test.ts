@@ -177,7 +177,9 @@ describe("GatewayScheduler", () => {
     await new Promise((r) => setTimeout(r, 350));
 
     expect(dispatched.length).toBeGreaterThanOrEqual(2);
-    const firstConnectedAt = dispatched[0]?.session.connectedAt;
+    const first = dispatched[0];
+    expect(first).toBeDefined();
+    const firstConnectedAt = first?.session.connectedAt ?? 0;
     for (const { session } of dispatched) {
       expect(session.connectedAt).toBe(firstConnectedAt);
     }
