@@ -200,7 +200,7 @@ describe("createMcpComponentProviderAsync (with mock factory)", () => {
     expect(result.clients).toHaveLength(1);
 
     const agent = createMockAgent();
-    const components = result.provider.attach(agent);
+    const components = await result.provider.attach(agent);
     expect(components.size).toBe(2);
     expect(components.has(toolToken("mcp/filesystem/read_file") as string)).toBe(true);
     expect(components.has(toolToken("mcp/filesystem/write_file") as string)).toBe(true);
@@ -230,7 +230,7 @@ describe("createMcpComponentProviderAsync (with mock factory)", () => {
 
     const result = await createMcpComponentProviderAsync(config, createMockFactory(registry));
     const agent = createMockAgent();
-    const components = result.provider.attach(agent);
+    const components = await result.provider.attach(agent);
 
     const tool = components.get(toolToken("mcp/fs/read") as string) as Tool;
     expect(tool).toBeDefined();
@@ -276,7 +276,7 @@ describe("createMcpComponentProviderAsync (with mock factory)", () => {
     expect(result.clients).toHaveLength(1);
 
     const agent = createMockAgent();
-    const components = result.provider.attach(agent);
+    const components = await result.provider.attach(agent);
     expect(components.size).toBe(2);
     expect(components.has(toolToken("mcp/api/mcp_search") as string)).toBe(true);
     expect(components.has(toolToken("mcp/api/mcp_execute") as string)).toBe(true);
@@ -380,7 +380,7 @@ describe("createMcpComponentProviderAsync (with mock factory)", () => {
     expect(result.failures[0]?.serverName).toBe("broken");
 
     const agent = createMockAgent();
-    const components = result.provider.attach(agent);
+    const components = await result.provider.attach(agent);
     expect(components.size).toBe(1);
     expect(components.has(toolToken("mcp/healthy/ping") as string)).toBe(true);
   });
@@ -393,7 +393,7 @@ describe("createMcpComponentProviderAsync (with mock factory)", () => {
     expect(result.failures).toHaveLength(0);
 
     const agent = createMockAgent();
-    const components = result.provider.attach(agent);
+    const components = await result.provider.attach(agent);
     expect(components.size).toBe(0);
   });
 
@@ -438,7 +438,7 @@ describe("createMcpComponentProviderAsync (with mock factory)", () => {
     expect(result.failures).toHaveLength(0);
 
     const agent = createMockAgent();
-    const components = result.provider.attach(agent);
+    const components = await result.provider.attach(agent);
     expect(components.size).toBe(3);
   });
 });
