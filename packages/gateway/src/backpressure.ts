@@ -33,8 +33,8 @@ export interface BackpressureMonitor {
 // ---------------------------------------------------------------------------
 
 interface ConnState {
-  buffered: number;
-  criticalAt: number | undefined;
+  readonly buffered: number;
+  readonly criticalAt: number | undefined;
 }
 
 export function createBackpressureMonitor(
@@ -50,12 +50,11 @@ export function createBackpressureMonitor(
   const warningThreshold = Math.floor(maxBytesPerConn * config.backpressureHighWatermark);
 
   function getOrCreate(connId: string): ConnState {
-    let s = conns.get(connId);
-    if (s === undefined) {
-      s = { buffered: 0, criticalAt: undefined };
-      conns.set(connId, s);
-    }
-    return s;
+    const existing = conns.get(connId);
+    if (existing !== undefined) return existing;
+    const fresh: ConnState = { buffered: 0, criticalAt: undefined };
+    conns.set(connId, fresh);
+    return fresh;
   }
 
   function computeState(s: ConnState): BackpressureState {
@@ -64,32 +63,34 @@ export function createBackpressureMonitor(
     return "normal";
   }
 
-  function updateCriticalTimestamp(s: ConnState, state: BackpressureState): void {
-    if (state === "critical" && s.criticalAt === undefined) {
-      s.criticalAt = Date.now();
-    } else if (state !== "critical") {
-      s.criticalAt = undefined;
-    }
+  function withCriticalTimestamp(s: ConnState, state: BackpressureState): ConnState {
+    const criticalAt =
+      state === "critical" && s.criticalAt === undefined
+        ? Date.now()
+        : state !== "critical"
+          ? undefined
+          : s.criticalAt;
+    return criticalAt === s.criticalAt ? s : { buffered: s.buffered, criticalAt };
   }
 
   return {
     record(connId: string, bytes: number): BackpressureState {
-      const s = getOrCreate(connId);
-      s.buffered += bytes;
+      const prev = getOrCreate(connId);
+      const updated: ConnState = { buffered: prev.buffered + bytes, criticalAt: prev.criticalAt };
       globalBytes += bytes;
-      const st = computeState(s);
-      updateCriticalTimestamp(s, st);
+      const st = computeState(updated);
+      conns.set(connId, withCriticalTimestamp(updated, st));
       return st;
     },
 
     drain(connId: string, bytes: number): BackpressureState {
-      const s = conns.get(connId);
-      if (s === undefined) return "normal";
-      const drained = Math.min(bytes, s.buffered);
-      s.buffered -= drained;
+      const prev = conns.get(connId);
+      if (prev === undefined) return "normal";
+      const drained = Math.min(bytes, prev.buffered);
+      const updated: ConnState = { buffered: prev.buffered - drained, criticalAt: prev.criticalAt };
       globalBytes = Math.max(0, globalBytes - drained);
-      const st = computeState(s);
-      updateCriticalTimestamp(s, st);
+      const st = computeState(updated);
+      conns.set(connId, withCriticalTimestamp(updated, st));
       return st;
     },
 

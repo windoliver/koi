@@ -91,8 +91,6 @@ export type {
   EvictionReason,
   EvictionResult,
 } from "./eviction.js";
-// hash
-export { fnv1a } from "./hash.js";
 // health
 export type {
   HealthMonitor,

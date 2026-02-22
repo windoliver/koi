@@ -8,8 +8,8 @@
 
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import type { JsonObject, KoiError, Result } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core";
 import type { ArtifactClient } from "./client.js";
+import { conflictError, internalError, notFoundError, validationError } from "./errors.js";
 import { computeContentHash } from "./hash.js";
 import type {
   Artifact,
@@ -28,45 +28,6 @@ import { artifactId, contentHash } from "./types.js";
 export interface SqliteStoreConfig {
   /** Database file path, or ":memory:" for in-memory. */
   readonly dbPath: string;
-}
-
-// ---------------------------------------------------------------------------
-// Error helpers
-// ---------------------------------------------------------------------------
-
-function notFoundError(id: string): KoiError {
-  return {
-    code: "NOT_FOUND",
-    message: `Artifact not found: ${id}`,
-    retryable: RETRYABLE_DEFAULTS.NOT_FOUND,
-    context: { resourceId: id },
-  };
-}
-
-function conflictError(id: string): KoiError {
-  return {
-    code: "CONFLICT",
-    message: `Artifact already exists: ${id}`,
-    retryable: RETRYABLE_DEFAULTS.CONFLICT,
-    context: { resourceId: id },
-  };
-}
-
-function validationError(message: string): KoiError {
-  return {
-    code: "VALIDATION",
-    message,
-    retryable: RETRYABLE_DEFAULTS.VALIDATION,
-  };
-}
-
-function internalError(message: string, cause?: unknown): KoiError {
-  return {
-    code: "INTERNAL",
-    message,
-    retryable: RETRYABLE_DEFAULTS.INTERNAL,
-    cause,
-  };
 }
 
 // ---------------------------------------------------------------------------

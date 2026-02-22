@@ -45,10 +45,25 @@ describe("RETRYABLE_DEFAULTS", () => {
     }
   });
 
-  test("satisfies Record<KoiErrorCode, boolean> at type level", () => {
-    // This assignment verifies the type at compile time
+  test("keys match every KoiErrorCode", () => {
+    // Runtime: verify keys match the expected set
+    const expectedCodes: readonly KoiErrorCode[] = [
+      "VALIDATION",
+      "NOT_FOUND",
+      "PERMISSION",
+      "CONFLICT",
+      "RATE_LIMIT",
+      "TIMEOUT",
+      "EXTERNAL",
+      "INTERNAL",
+    ];
+    const actualKeys = Object.keys(RETRYABLE_DEFAULTS).sort();
+    const expectedKeys = [...expectedCodes].sort();
+    expect(actualKeys).toEqual(expectedKeys);
+
+    // Compile-time: verify RETRYABLE_DEFAULTS satisfies Record<KoiErrorCode, boolean>
     const _typeCheck: Readonly<Record<KoiErrorCode, boolean>> = RETRYABLE_DEFAULTS;
-    expect(_typeCheck).toBe(RETRYABLE_DEFAULTS);
+    void _typeCheck;
   });
 
   test("is frozen at runtime", () => {

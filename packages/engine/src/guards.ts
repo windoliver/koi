@@ -7,7 +7,8 @@
  */
 
 import type { Agent, GovernanceComponent, KoiMiddleware, SpawnLedger } from "@koi/core";
-import { fnv1a, GOVERNANCE } from "@koi/core";
+import { GOVERNANCE } from "@koi/core";
+import { fnv1a } from "@koi/hash";
 import { KoiEngineError } from "./errors.js";
 import { createInMemorySpawnLedger } from "./spawn-ledger.js";
 import type {
@@ -212,11 +213,19 @@ export function detectRepeatingPattern(
 /** Check for ping-pong (alternating/repeating pattern) and throw if detected. */
 function checkPingPong(
   toolId: string,
-  recentHashes: readonly number[],
+  buf: readonly number[],
+  cursor: number,
+  filled: number,
   minPatternLength: number,
   requiredRepetitions: number,
 ): void {
-  const patLen = detectRepeatingPattern(recentHashes, minPatternLength, requiredRepetitions);
+  const patLen = detectRepeatingPatternInRing(
+    buf,
+    cursor,
+    filled,
+    minPatternLength,
+    requiredRepetitions,
+  );
   if (patLen > 0) {
     throw KoiEngineError.from(
       "VALIDATION",
@@ -263,12 +272,58 @@ function checkNoProgress(
   }
 }
 
-/** Extract ordered sequence from circular buffer (oldest → newest). */
-function ringBufferSnapshot(buf: readonly number[], cur: number, count: number): readonly number[] {
-  if (count < buf.length) {
-    return buf.slice(0, count);
+/**
+ * Access ring buffer by logical index (0 = oldest, count-1 = newest).
+ * Zero allocation — translates logical index to physical position.
+ */
+function ringAt(
+  buf: readonly number[],
+  cursor: number,
+  filled: number,
+  logicalIndex: number,
+): number {
+  const start = filled < buf.length ? 0 : cursor;
+  // biome-ignore lint/style/noNonNullAssertion: index is always within bounds (modular arithmetic over buf.length)
+  return buf[(start + logicalIndex) % buf.length]!;
+}
+
+/**
+ * Detect repeating pattern directly in ring buffer without snapshot allocation.
+ * Same algorithm as detectRepeatingPattern but reads via ring buffer accessor.
+ */
+function detectRepeatingPatternInRing(
+  buf: readonly number[],
+  cursor: number,
+  filled: number,
+  minPatternLength: number,
+  requiredRepetitions: number,
+): number {
+  const len = filled;
+  const maxPatternLength = Math.floor(len / requiredRepetitions);
+
+  for (let patLen = minPatternLength; patLen <= maxPatternLength; patLen++) {
+    const needed = patLen * requiredRepetitions;
+    if (needed > len) continue;
+
+    const start = len - needed;
+    let matches = true;
+
+    for (let rep = 1; rep < requiredRepetitions && matches; rep++) {
+      for (let i = 0; i < patLen; i++) {
+        if (
+          ringAt(buf, cursor, filled, start + i) !==
+          ringAt(buf, cursor, filled, start + rep * patLen + i)
+        ) {
+          matches = false;
+          break;
+        }
+      }
+    }
+
+    if (matches) return patLen;
   }
-  return [...buf.slice(cur), ...buf.slice(0, cur)];
+
+  return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -366,8 +421,14 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
       checkRepeatLoop(request.toolId, newCount, detection.threshold, detection.windowSize);
 
       if (pingPongEnabled) {
-        const ordered = ringBufferSnapshot(ringBuffer, cursor, filled);
-        checkPingPong(request.toolId, ordered, pingPongMinPatternLength, pingPongRepetitions);
+        checkPingPong(
+          request.toolId,
+          ringBuffer,
+          cursor,
+          filled,
+          pingPongMinPatternLength,
+          pingPongRepetitions,
+        );
       }
 
       // Execute the tool call

@@ -1,5 +1,5 @@
 {
-  "name": "@koi/engine",
+  "name": "@koi/hash",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -8,10 +8,6 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
-  },
-  "dependencies": {
-    "@koi/core": "workspace:*",
-    "@koi/hash": "workspace:*"
   },
   "scripts": {
     "build": "tsup",

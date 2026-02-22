@@ -40,10 +40,6 @@
       "types": "./dist/errors.d.ts",
       "import": "./dist/errors.js"
     },
-    "./hash": {
-      "types": "./dist/hash.d.ts",
-      "import": "./dist/hash.js"
-    },
     "./message": {
       "types": "./dist/message.d.ts",
       "import": "./dist/message.js"

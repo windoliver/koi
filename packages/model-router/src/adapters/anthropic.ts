@@ -5,7 +5,8 @@
  * Uses raw fetch — no SDK dependency.
  */
 
-import type { KoiError, ModelRequest, ModelResponse, TextBlock } from "@koi/core";
+import type { KoiError, ModelRequest, ModelResponse } from "@koi/core";
+import { normalizeToPlainText } from "../normalize.js";
 import type { ProviderAdapter, ProviderAdapterConfig, StreamChunk } from "../provider-adapter.js";
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
@@ -44,10 +45,7 @@ interface AnthropicResponse {
 export function toAnthropicRequest(request: ModelRequest): AnthropicRequest {
   const messages: AnthropicMessage[] = request.messages.map((m) => ({
     role: "user" as const,
-    content: m.content
-      .filter((b): b is TextBlock => b.kind === "text")
-      .map((b) => b.text)
-      .join(""),
+    content: normalizeToPlainText(m.content),
   }));
 
   return {
