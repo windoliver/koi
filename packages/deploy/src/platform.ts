@@ -2,8 +2,9 @@
  * Platform detection and path resolution for service deployment.
  */
 
+import { accessSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -31,6 +32,47 @@ export function detectBunPath(): string {
     if (found !== null) return found;
   }
   return process.execPath;
+}
+
+/**
+ * Finds the path to the `koi` CLI entry point.
+ *
+ * Resolution order:
+ * 1. Bun.which("koi") — globally installed or in PATH
+ * 2. node_modules/.bin/koi relative to workDir — npm/bun linked binary
+ * 3. @koi/cli dist/bin.js relative to workDir — monorepo dev layout
+ *
+ * Throws if no koi binary can be found.
+ */
+export function detectKoiPath(workDir: string): string {
+  // 1. Check PATH
+  if (typeof Bun !== "undefined" && typeof Bun.which === "function") {
+    const found = Bun.which("koi");
+    if (found !== null) return found;
+  }
+
+  // 2. Check node_modules/.bin/koi (standard install)
+  const nmBin = resolve(workDir, "node_modules/.bin/koi");
+  if (fileExists(nmBin)) return nmBin;
+
+  // 3. Check monorepo layout: @koi/cli package dist
+  const monorepoPath = resolve(workDir, "packages/cli/dist/bin.js");
+  if (fileExists(monorepoPath)) return monorepoPath;
+
+  // 4. Check relative to this package (e.g., ../../cli/dist/bin.js)
+  const relativePath = resolve(workDir, "node_modules/@koi/cli/dist/bin.js");
+  if (fileExists(relativePath)) return relativePath;
+
+  throw new Error("Could not find koi CLI. Ensure @koi/cli is installed or koi is in PATH.");
+}
+
+function fileExists(path: string): boolean {
+  try {
+    accessSync(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------

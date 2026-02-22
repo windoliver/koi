@@ -10,6 +10,7 @@ import { createSystemdManager } from "./managers/systemd.js";
 import type { ServiceManager } from "./managers/types.js";
 import {
   detectBunPath,
+  detectKoiPath,
   detectPlatform,
   type Platform,
   resolveLaunchdLabel,
@@ -49,8 +50,7 @@ export async function installService(config: InstallConfig): Promise<InstallResu
   const manifestPath = resolve(config.manifestPath);
   const workDir = config.workDir ?? process.cwd();
 
-  // Resolve the koi CLI path (assume it's in the same location as bun)
-  const koiPath = resolve(workDir, "node_modules/.bin/koi");
+  const koiPath = detectKoiPath(workDir);
 
   const { port, restart, restartDelaySec, envFile, system } = config.deploy;
   const logDir = config.deploy.logDir ?? resolveLogDir(platform, serviceName);

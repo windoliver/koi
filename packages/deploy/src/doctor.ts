@@ -12,6 +12,7 @@ import { createSystemdManager, isLingerEnabled } from "./managers/systemd.js";
 import type { ServiceManager } from "./managers/types.js";
 import {
   detectBunPath,
+  detectKoiPath,
   detectPlatform,
   type Platform,
   resolveLaunchdLabel,
@@ -180,6 +181,20 @@ function checkBunPath(): DiagnosticCheck {
   }
 }
 
+function checkKoiPath(): DiagnosticCheck {
+  try {
+    const path = detectKoiPath(process.cwd());
+    return { name: "Koi CLI", status: "pass", message: `Found at ${path}` };
+  } catch {
+    return {
+      name: "Koi CLI",
+      status: "fail",
+      message: "koi binary not found",
+      fix: "Ensure @koi/cli is installed or koi is in PATH",
+    };
+  }
+}
+
 async function checkLingerEnabled(): Promise<DiagnosticCheck> {
   const enabled = await isLingerEnabled();
   if (enabled) {
@@ -217,6 +232,7 @@ export async function runDiagnostics(config: DoctorConfig): Promise<DiagnosticRe
 
   const checks: readonly DiagnosticCheck[] = [
     checkBunPath(),
+    checkKoiPath(),
     serviceFile,
     serviceStatus,
     health,

@@ -26,6 +26,7 @@ export type { LogOptions, ServiceManager, ServiceStatus } from "./managers/types
 export type { Platform } from "./platform.js";
 export {
   detectBunPath,
+  detectKoiPath,
   detectPlatform,
   resolveLaunchdLabel,
   resolveLogDir,
