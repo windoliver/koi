@@ -58,7 +58,7 @@ export interface KoiNode {
     manifest: AgentManifest,
     engine: EngineAdapter,
     providers?: readonly ComponentProvider[],
-  ) => Result<Agent, KoiError>;
+  ) => Promise<Result<Agent, KoiError>>;
   /** Terminate an agent by ID. */
   readonly terminate: (agentId: string) => Result<void, KoiError>;
   /** Get an agent by ID. */
@@ -257,7 +257,7 @@ export function createNode(rawConfig: unknown): Result<KoiNode, KoiError> {
       }
     },
 
-    dispatch(pid, manifest, engine, providers = []) {
+    async dispatch(pid, manifest, engine, providers = []) {
       if (currentState !== "connected") {
         return {
           ok: false,

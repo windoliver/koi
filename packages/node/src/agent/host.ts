@@ -7,6 +7,7 @@
 
 import type {
   Agent,
+  AgentId,
   AgentManifest,
   ComponentProvider,
   EngineAdapter,
@@ -43,11 +44,11 @@ export interface AgentHost {
     manifest: AgentManifest,
     engine: EngineAdapter,
     providers: readonly ComponentProvider[],
-  ) => Result<Agent, KoiError>;
+  ) => Promise<Result<Agent, KoiError>>;
   /** Terminate an agent by ID. */
-  readonly terminate: (agentId: string) => Result<void, KoiError>;
+  readonly terminate: (agentId: AgentId | string) => Result<void, KoiError>;
   /** Get an agent by ID. */
-  readonly get: (agentId: string) => Agent | undefined;
+  readonly get: (agentId: AgentId | string) => Agent | undefined;
   /** List all hosted agents. */
   readonly list: () => readonly Agent[];
   /** Iterate agents without allocating a snapshot array. */
@@ -122,7 +123,7 @@ export function createAgentHost(config: ResourcesConfig): AgentHost {
   }
 
   return {
-    dispatch(pid, manifest, engine, providers) {
+    async dispatch(pid, manifest, engine, providers) {
       if (agents.size >= config.maxAgents) {
         return {
           ok: false,
@@ -157,10 +158,10 @@ export function createAgentHost(config: ResourcesConfig): AgentHost {
         components: new Map(),
       };
 
-      // Attach components from providers
+      // Attach components from providers (async — providers may perform I/O)
       const snapshot = toAgentSnapshot(managed);
       for (const provider of providers) {
-        const provided = provider.attach(snapshot);
+        const provided = await provider.attach(snapshot);
         for (const [key, value] of provided) {
           managed.components.set(key, value);
         }

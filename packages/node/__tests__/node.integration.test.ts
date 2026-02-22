@@ -11,6 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import type { AgentManifest, EngineAdapter, ProcessId } from "@koi/core";
+import { agentId } from "@koi/core";
 import { createNode } from "../src/node.js";
 import type { NodeEvent } from "../src/types.js";
 import type { MockGateway } from "./helpers/mock-gateway.js";
@@ -22,7 +23,7 @@ import { waitForCondition } from "./helpers/wait.js";
 // ---------------------------------------------------------------------------
 
 function makePid(id: string): ProcessId {
-  return { id, name: `Agent ${id}`, type: "worker", depth: 0 };
+  return { id: agentId(id), name: `Agent ${id}`, type: "worker", depth: 0 };
 }
 
 const testManifest: AgentManifest = {
@@ -99,12 +100,12 @@ describe("KoiNode integration", () => {
     expect(node.state()).toBe("stopped");
   });
 
-  it("rejects dispatch before start", () => {
+  it("rejects dispatch before start", async () => {
     const result = createNode({ gateway: { url: gateway.url } });
     if (!result.ok) return;
 
     const node = result.value;
-    const dispatchResult = node.dispatch(makePid("a1"), testManifest, makeEngine());
+    const dispatchResult = await node.dispatch(makePid("a1"), testManifest, makeEngine());
     expect(dispatchResult.ok).toBe(false);
     if (!dispatchResult.ok) {
       expect(dispatchResult.error.code).toBe("VALIDATION");
@@ -120,10 +121,10 @@ describe("KoiNode integration", () => {
     await node.start();
 
     // Dispatch
-    const d1 = node.dispatch(makePid("a1"), testManifest, makeEngine());
+    const d1 = await node.dispatch(makePid("a1"), testManifest, makeEngine());
     expect(d1.ok).toBe(true);
     if (d1.ok) {
-      expect(d1.value.pid.id).toBe("a1");
+      expect(d1.value.pid.id).toBe(agentId("a1"));
       expect(d1.value.state).toBe("running");
     }
 
@@ -139,7 +140,7 @@ describe("KoiNode integration", () => {
     await node.stop();
   });
 
-  it("reports capacity correctly", async () => {
+  it("reports capacity correctly after dispatch", async () => {
     const result = createNode({
       gateway: { url: gateway.url },
       resources: { maxAgents: 3 },
@@ -151,8 +152,8 @@ describe("KoiNode integration", () => {
 
     expect(node.capacity()).toEqual({ current: 0, max: 3, available: 3 });
 
-    node.dispatch(makePid("a1"), testManifest, makeEngine());
-    node.dispatch(makePid("a2"), testManifest, makeEngine());
+    await node.dispatch(makePid("a1"), testManifest, makeEngine());
+    await node.dispatch(makePid("a2"), testManifest, makeEngine());
     expect(node.capacity()).toEqual({ current: 2, max: 3, available: 1 });
 
     node.terminate("a1");
@@ -172,7 +173,7 @@ describe("KoiNode integration", () => {
     await node.start();
 
     // Dispatch and terminate to generate events
-    node.dispatch(makePid("a1"), testManifest, makeEngine());
+    await node.dispatch(makePid("a1"), testManifest, makeEngine());
     node.terminate("a1");
 
     await node.stop();
@@ -197,7 +198,7 @@ describe("KoiNode integration", () => {
     const countAfterStart = events.length;
 
     unsub();
-    node.dispatch(makePid("a1"), testManifest, makeEngine());
+    await node.dispatch(makePid("a1"), testManifest, makeEngine());
 
     // No new events after unsub
     expect(events.length).toBe(countAfterStart);
@@ -213,10 +214,10 @@ describe("KoiNode integration", () => {
 
     expect(node.getAgent("nonexistent")).toBeUndefined();
 
-    node.dispatch(makePid("a1"), testManifest, makeEngine());
+    await node.dispatch(makePid("a1"), testManifest, makeEngine());
     const agent = node.getAgent("a1");
     expect(agent).toBeDefined();
-    expect(agent?.pid.id).toBe("a1");
+    expect(agent?.pid.id).toBe(agentId("a1"));
 
     await node.stop();
   });
@@ -228,7 +229,7 @@ describe("KoiNode integration", () => {
     const node = result.value;
     await node.start();
 
-    node.dispatch(makePid("a1"), testManifest, makeEngine());
+    await node.dispatch(makePid("a1"), testManifest, makeEngine());
     expect(node.getAgent("a1")).toBeDefined();
 
     // Gateway sends terminate frame

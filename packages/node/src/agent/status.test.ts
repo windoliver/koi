@@ -1,5 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
 import type { AgentManifest, EngineAdapter, ProcessId } from "@koi/core";
+import { agentId } from "@koi/core";
 import type { NodeFrame } from "../types.js";
 import { createAgentHost } from "./host.js";
 import { createStatusReporter } from "./status.js";
@@ -9,7 +10,7 @@ import { createStatusReporter } from "./status.js";
 // ---------------------------------------------------------------------------
 
 function makePid(id: string): ProcessId {
-  return { id, name: `Agent ${id}`, type: "worker", depth: 0 };
+  return { id: agentId(id), name: `Agent ${id}`, type: "worker", depth: 0 };
 }
 
 const testManifest: AgentManifest = {
@@ -56,10 +57,10 @@ describe("StatusReporter", () => {
       expect(statuses).toEqual([]);
     });
 
-    it("collects status for all agents", () => {
+    it("collects status for all agents", async () => {
       const host = createAgentHost(hostConfig);
-      host.dispatch(makePid("a1"), testManifest, makeEngine(), []);
-      host.dispatch(makePid("a2"), testManifest, makeEngine(), []);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), []);
+      await host.dispatch(makePid("a2"), testManifest, makeEngine(), []);
 
       const reporter = createStatusReporter("node-1", host, mock());
       const statuses = reporter.collect();
@@ -70,9 +71,9 @@ describe("StatusReporter", () => {
       expect(ids).toContain("a2");
     });
 
-    it("reports running state", () => {
+    it("reports running state", async () => {
       const host = createAgentHost(hostConfig);
-      host.dispatch(makePid("a1"), testManifest, makeEngine(), []);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), []);
 
       const reporter = createStatusReporter("node-1", host, mock());
       const statuses = reporter.collect();
@@ -80,10 +81,10 @@ describe("StatusReporter", () => {
       expect(statuses[0]?.state).toBe("running");
     });
 
-    it("reflects terminated agents (not collected)", () => {
+    it("reflects terminated agents (not collected)", async () => {
       const host = createAgentHost(hostConfig);
-      host.dispatch(makePid("a1"), testManifest, makeEngine(), []);
-      host.dispatch(makePid("a2"), testManifest, makeEngine(), []);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), []);
+      await host.dispatch(makePid("a2"), testManifest, makeEngine(), []);
       host.terminate("a1");
 
       const reporter = createStatusReporter("node-1", host, mock());
@@ -97,7 +98,7 @@ describe("StatusReporter", () => {
   describe("periodic reporting", () => {
     it("sends batched frame on interval", async () => {
       const host = createAgentHost(hostConfig);
-      host.dispatch(makePid("a1"), testManifest, makeEngine(), []);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), []);
 
       const sentFrames: NodeFrame[] = [];
       const sendFrame = mock((frame: NodeFrame) => {

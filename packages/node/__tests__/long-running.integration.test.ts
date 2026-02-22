@@ -10,6 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import type { AgentManifest, EngineAdapter, ProcessId } from "@koi/core";
+import { agentId } from "@koi/core";
 import type { KoiNode } from "../src/node.js";
 import { createNode } from "../src/node.js";
 import type { NodeEvent } from "../src/types.js";
@@ -21,7 +22,7 @@ import { createMockGateway } from "./helpers/mock-gateway.js";
 // ---------------------------------------------------------------------------
 
 function makePid(id: string): ProcessId {
-  return { id, name: `LR Agent ${id}`, type: "worker", depth: 0 };
+  return { id: agentId(id), name: `LR Agent ${id}`, type: "worker", depth: 0 };
 }
 
 const testManifest: AgentManifest = {
@@ -104,8 +105,8 @@ describe("Long-running jobs", () => {
   });
 
   it("agents persist across time", async () => {
-    node.dispatch(makePid("long-1"), testManifest, makeEngine());
-    node.dispatch(makePid("long-2"), testManifest, makeEngine());
+    await node.dispatch(makePid("long-1"), testManifest, makeEngine());
+    await node.dispatch(makePid("long-2"), testManifest, makeEngine());
 
     // Simulate passage of time
     await new Promise((r) => setTimeout(r, 100));
@@ -116,11 +117,11 @@ describe("Long-running jobs", () => {
     expect(node.listAgents().length).toBe(2);
   });
 
-  it("multiple agents coexist without interference", () => {
+  it("multiple agents coexist without interference", async () => {
     const agents: string[] = [];
     for (let i = 0; i < 10; i++) {
       const id = `coexist-${i}`;
-      const result = node.dispatch(makePid(id), testManifest, makeEngine());
+      const result = await node.dispatch(makePid(id), testManifest, makeEngine());
       expect(result.ok).toBe(true);
       agents.push(id);
     }
@@ -132,15 +133,15 @@ describe("Long-running jobs", () => {
     for (const id of agents) {
       const agent = node.getAgent(id);
       expect(agent).toBeDefined();
-      expect(agent?.pid.id).toBe(id);
+      expect(agent?.pid.id).toBe(agentId(id));
       expect(agent?.state).toBe("running");
     }
   });
 
   it("graceful stop terminates all agents", async () => {
-    node.dispatch(makePid("lr-1"), testManifest, makeEngine());
-    node.dispatch(makePid("lr-2"), testManifest, makeEngine());
-    node.dispatch(makePid("lr-3"), testManifest, makeEngine());
+    await node.dispatch(makePid("lr-1"), testManifest, makeEngine());
+    await node.dispatch(makePid("lr-2"), testManifest, makeEngine());
+    await node.dispatch(makePid("lr-3"), testManifest, makeEngine());
 
     const events: NodeEvent[] = [];
     node.onEvent((e) => events.push(e));
@@ -157,11 +158,11 @@ describe("Long-running jobs", () => {
     expect(types).toContain("shutdown_complete");
   });
 
-  it("selective termination during operation", () => {
-    node.dispatch(makePid("keep-1"), testManifest, makeEngine());
-    node.dispatch(makePid("remove-1"), testManifest, makeEngine());
-    node.dispatch(makePid("keep-2"), testManifest, makeEngine());
-    node.dispatch(makePid("remove-2"), testManifest, makeEngine());
+  it("selective termination during operation", async () => {
+    await node.dispatch(makePid("keep-1"), testManifest, makeEngine());
+    await node.dispatch(makePid("remove-1"), testManifest, makeEngine());
+    await node.dispatch(makePid("keep-2"), testManifest, makeEngine());
+    await node.dispatch(makePid("remove-2"), testManifest, makeEngine());
 
     // Selectively terminate
     node.terminate("remove-1");
@@ -176,10 +177,10 @@ describe("Long-running jobs", () => {
     expect(ids).not.toContain("remove-2");
   });
 
-  it("can dispatch new agents after terminating others", () => {
+  it("can dispatch new agents after terminating others", async () => {
     // Fill up some slots
     for (let i = 0; i < 5; i++) {
-      node.dispatch(makePid(`batch1-${i}`), testManifest, makeEngine());
+      await node.dispatch(makePid(`batch1-${i}`), testManifest, makeEngine());
     }
     expect(node.listAgents().length).toBe(5);
 
@@ -191,18 +192,18 @@ describe("Long-running jobs", () => {
 
     // Dispatch new batch
     for (let i = 0; i < 5; i++) {
-      const result = node.dispatch(makePid(`batch2-${i}`), testManifest, makeEngine());
+      const result = await node.dispatch(makePid(`batch2-${i}`), testManifest, makeEngine());
       expect(result.ok).toBe(true);
     }
     expect(node.listAgents().length).toBe(5);
   });
 
-  it("handles rapid dispatch/terminate cycles", () => {
+  it("handles rapid dispatch/terminate cycles", async () => {
     for (let cycle = 0; cycle < 3; cycle++) {
       const ids: string[] = [];
       for (let i = 0; i < 5; i++) {
         const id = `cycle-${cycle}-agent-${i}`;
-        node.dispatch(makePid(id), testManifest, makeEngine());
+        await node.dispatch(makePid(id), testManifest, makeEngine());
         ids.push(id);
       }
       expect(node.listAgents().length).toBe(5);
@@ -216,7 +217,7 @@ describe("Long-running jobs", () => {
 
   it("stateful engines support save/load lifecycle", async () => {
     const engine = makeStatefulEngine();
-    node.dispatch(makePid("stateful-1"), testManifest, engine);
+    await node.dispatch(makePid("stateful-1"), testManifest, engine);
 
     // Save state
     const state = await engine.saveState?.();
@@ -239,7 +240,7 @@ describe("Long-running jobs", () => {
     expect(handshake?.type).toBe("node:handshake");
 
     // Dispatch agents and verify gateway sees status updates
-    node.dispatch(makePid("reported-1"), testManifest, makeEngine());
+    await node.dispatch(makePid("reported-1"), testManifest, makeEngine());
 
     // Status reporter runs on interval, give it time
     await new Promise((r) => setTimeout(r, 100));

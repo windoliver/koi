@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
 import type { AgentManifest, ComponentProvider, EngineAdapter, ProcessId } from "@koi/core";
-import { token } from "@koi/core";
+import { agentId, token } from "@koi/core";
 import type { NodeEvent } from "../types.js";
 import { createAgentHost } from "./host.js";
 
@@ -9,7 +9,7 @@ import { createAgentHost } from "./host.js";
 // ---------------------------------------------------------------------------
 
 function makePid(id: string): ProcessId {
-  return { id, name: `Agent ${id}`, type: "worker", depth: 0 };
+  return { id: agentId(id), name: `Agent ${id}`, type: "worker", depth: 0 };
 }
 
 const testManifest: AgentManifest = {
@@ -51,23 +51,23 @@ describe("AgentHost", () => {
   };
 
   describe("dispatch", () => {
-    it("creates an agent and returns ok", () => {
+    it("creates an agent and returns ok", async () => {
       const host = createAgentHost(config);
-      const result = host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
+      const result = await host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.value.pid.id).toBe("a1");
+        expect(result.value.pid.id).toBe(agentId("a1"));
         expect(result.value.state).toBe("running");
       }
     });
 
-    it("rejects dispatch when at capacity", () => {
+    it("rejects dispatch when at capacity", async () => {
       const host = createAgentHost(config);
-      host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
-      host.dispatch(makePid("a2"), testManifest, makeEngine(), emptyProviders);
-      host.dispatch(makePid("a3"), testManifest, makeEngine(), emptyProviders);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
+      await host.dispatch(makePid("a2"), testManifest, makeEngine(), emptyProviders);
+      await host.dispatch(makePid("a3"), testManifest, makeEngine(), emptyProviders);
 
-      const result = host.dispatch(makePid("a4"), testManifest, makeEngine(), emptyProviders);
+      const result = await host.dispatch(makePid("a4"), testManifest, makeEngine(), emptyProviders);
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.error.code).toBe("RATE_LIMIT");
@@ -75,25 +75,25 @@ describe("AgentHost", () => {
       }
     });
 
-    it("rejects duplicate agent ID", () => {
+    it("rejects duplicate agent ID", async () => {
       const host = createAgentHost(config);
-      host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
 
-      const result = host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
+      const result = await host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.error.code).toBe("CONFLICT");
       }
     });
 
-    it("attaches components from providers", () => {
+    it("attaches components from providers", async () => {
       const host = createAgentHost(config);
       const provider: ComponentProvider = {
         name: "test-provider",
-        attach: () => new Map([["tool:calculator", { name: "calculator" }]]),
+        attach: async () => new Map([["tool:calculator", { name: "calculator" }]]),
       };
 
-      const result = host.dispatch(makePid("a1"), testManifest, makeEngine(), [provider]);
+      const result = await host.dispatch(makePid("a1"), testManifest, makeEngine(), [provider]);
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value.has(token("tool:calculator"))).toBe(true);
@@ -102,9 +102,9 @@ describe("AgentHost", () => {
   });
 
   describe("terminate", () => {
-    it("removes an existing agent", () => {
+    it("removes an existing agent", async () => {
       const host = createAgentHost(config);
-      host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
 
       const result = host.terminate("a1");
       expect(result.ok).toBe(true);
@@ -120,10 +120,10 @@ describe("AgentHost", () => {
       }
     });
 
-    it("calls engine.dispose()", () => {
+    it("calls engine.dispose()", async () => {
       const host = createAgentHost(config);
       const engine = makeEngine();
-      host.dispatch(makePid("a1"), testManifest, engine, emptyProviders);
+      await host.dispatch(makePid("a1"), testManifest, engine, emptyProviders);
       host.terminate("a1");
 
       expect(engine.dispose).toHaveBeenCalledTimes(1);
@@ -136,10 +136,10 @@ describe("AgentHost", () => {
       expect(host.get("nonexistent")).toBeUndefined();
     });
 
-    it("lists all agents", () => {
+    it("lists all agents", async () => {
       const host = createAgentHost(config);
-      host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
-      host.dispatch(makePid("a2"), testManifest, makeEngine(), emptyProviders);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
+      await host.dispatch(makePid("a2"), testManifest, makeEngine(), emptyProviders);
 
       const agents = host.list();
       expect(agents.length).toBe(2);
@@ -147,20 +147,20 @@ describe("AgentHost", () => {
   });
 
   describe("capacity", () => {
-    it("reports correct capacity", () => {
+    it("reports correct capacity", async () => {
       const host = createAgentHost(config);
       expect(host.capacity()).toEqual({ current: 0, max: 3, available: 3 });
 
-      host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
       expect(host.capacity()).toEqual({ current: 1, max: 3, available: 2 });
     });
   });
 
   describe("terminateAll", () => {
-    it("removes all agents", () => {
+    it("removes all agents", async () => {
       const host = createAgentHost(config);
-      host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
-      host.dispatch(makePid("a2"), testManifest, makeEngine(), emptyProviders);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
+      await host.dispatch(makePid("a2"), testManifest, makeEngine(), emptyProviders);
 
       host.terminateAll();
       expect(host.list().length).toBe(0);
@@ -169,48 +169,48 @@ describe("AgentHost", () => {
   });
 
   describe("events", () => {
-    it("emits agent_dispatched event", () => {
+    it("emits agent_dispatched event", async () => {
       const host = createAgentHost(config);
       const events: NodeEvent[] = [];
       host.onEvent((e) => events.push(e));
 
-      host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
       expect(events.length).toBe(1);
       expect(events[0]?.type).toBe("agent_dispatched");
     });
 
-    it("emits agent_terminated event", () => {
+    it("emits agent_terminated event", async () => {
       const host = createAgentHost(config);
       const events: NodeEvent[] = [];
       host.onEvent((e) => events.push(e));
 
-      host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
       host.terminate("a1");
 
       expect(events.length).toBe(2);
       expect(events[1]?.type).toBe("agent_terminated");
     });
 
-    it("unsubscribes correctly", () => {
+    it("unsubscribes correctly", async () => {
       const host = createAgentHost(config);
       const events: NodeEvent[] = [];
       const unsub = host.onEvent((e) => events.push(e));
 
-      host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
+      await host.dispatch(makePid("a1"), testManifest, makeEngine(), emptyProviders);
       expect(events.length).toBe(1);
 
       unsub();
-      host.dispatch(makePid("a2"), testManifest, makeEngine(), emptyProviders);
+      await host.dispatch(makePid("a2"), testManifest, makeEngine(), emptyProviders);
       expect(events.length).toBe(1); // no new events after unsub
     });
   });
 
   describe("agent crash isolation (P0)", () => {
-    it("one agent's component error does not affect others", () => {
+    it("one agent's component error does not affect others", async () => {
       const host = createAgentHost(config);
 
-      host.dispatch(makePid("healthy"), testManifest, makeEngine(), emptyProviders);
-      host.dispatch(makePid("faulty"), testManifest, makeEngine(), emptyProviders);
+      await host.dispatch(makePid("healthy"), testManifest, makeEngine(), emptyProviders);
+      await host.dispatch(makePid("faulty"), testManifest, makeEngine(), emptyProviders);
 
       // Simulate: faulty agent gets terminated due to error
       host.terminate("faulty");

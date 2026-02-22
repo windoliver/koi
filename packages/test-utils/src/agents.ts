@@ -18,13 +18,14 @@ import type {
   ProcessState,
   SubsystemToken,
 } from "@koi/core";
+import { agentId } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Default values
 // ---------------------------------------------------------------------------
 
 const DEFAULT_PID: ProcessId = {
-  id: "mock-agent-1",
+  id: agentId("mock-agent-1"),
   name: "Mock Agent",
   type: "worker",
   depth: 0,

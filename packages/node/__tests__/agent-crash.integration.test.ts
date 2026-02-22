@@ -11,6 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import type { AgentManifest, EngineAdapter, ProcessId } from "@koi/core";
+import { agentId } from "@koi/core";
 import type { KoiNode } from "../src/node.js";
 import { createNode } from "../src/node.js";
 import type { NodeEvent } from "../src/types.js";
@@ -23,7 +24,7 @@ import { waitForCondition } from "./helpers/wait.js";
 // ---------------------------------------------------------------------------
 
 function makePid(id: string): ProcessId {
-  return { id, name: `Agent ${id}`, type: "worker", depth: 0 };
+  return { id: agentId(id), name: `Agent ${id}`, type: "worker", depth: 0 };
 }
 
 const testManifest: AgentManifest = {
@@ -85,10 +86,10 @@ describe("Agent crash isolation", () => {
     gateway.close();
   });
 
-  it("terminating one agent does not affect others", () => {
-    node.dispatch(makePid("healthy-1"), testManifest, makeEngine());
-    node.dispatch(makePid("healthy-2"), testManifest, makeEngine());
-    node.dispatch(makePid("faulty"), testManifest, makeEngine());
+  it("terminating one agent does not affect others", async () => {
+    await node.dispatch(makePid("healthy-1"), testManifest, makeEngine());
+    await node.dispatch(makePid("healthy-2"), testManifest, makeEngine());
+    await node.dispatch(makePid("faulty"), testManifest, makeEngine());
 
     // Terminate the faulty agent
     const result = node.terminate("faulty");
@@ -104,10 +105,10 @@ describe("Agent crash isolation", () => {
     expect(node.listAgents().length).toBe(2);
   });
 
-  it("faulty engine dispose does not block other terminations", () => {
+  it("faulty engine dispose does not block other terminations", async () => {
     const failingEngine = makeFailingEngine();
-    node.dispatch(makePid("healthy"), testManifest, makeEngine());
-    node.dispatch(makePid("faulty"), testManifest, failingEngine);
+    await node.dispatch(makePid("healthy"), testManifest, makeEngine());
+    await node.dispatch(makePid("faulty"), testManifest, failingEngine);
 
     // Terminating faulty agent (dispose will reject, but should be caught)
     node.terminate("faulty");
@@ -118,14 +119,14 @@ describe("Agent crash isolation", () => {
     expect(healthy?.state).toBe("running");
 
     // Node can still dispatch new agents
-    const d = node.dispatch(makePid("new-1"), testManifest, makeEngine());
+    const d = await node.dispatch(makePid("new-1"), testManifest, makeEngine());
     expect(d.ok).toBe(true);
   });
 
-  it("capacity is freed after crash/terminate", () => {
-    node.dispatch(makePid("a1"), testManifest, makeEngine());
-    node.dispatch(makePid("a2"), testManifest, makeEngine());
-    node.dispatch(makePid("a3"), testManifest, makeEngine());
+  it("capacity is freed after crash/terminate", async () => {
+    await node.dispatch(makePid("a1"), testManifest, makeEngine());
+    await node.dispatch(makePid("a2"), testManifest, makeEngine());
+    await node.dispatch(makePid("a3"), testManifest, makeEngine());
     expect(node.capacity().current).toBe(3);
 
     // Simulate crash by terminating
@@ -134,14 +135,14 @@ describe("Agent crash isolation", () => {
     expect(node.capacity().available).toBe(8); // maxAgents=10, 2 active
 
     // Can dispatch a replacement
-    const d = node.dispatch(makePid("a2-replacement"), testManifest, makeEngine());
+    const d = await node.dispatch(makePid("a2-replacement"), testManifest, makeEngine());
     expect(d.ok).toBe(true);
     expect(node.capacity().current).toBe(3);
   });
 
   it("gateway-initiated terminate isolates correctly", async () => {
-    node.dispatch(makePid("keep-alive"), testManifest, makeEngine());
-    node.dispatch(makePid("to-kill"), testManifest, makeEngine());
+    await node.dispatch(makePid("keep-alive"), testManifest, makeEngine());
+    await node.dispatch(makePid("to-kill"), testManifest, makeEngine());
 
     // Gateway sends terminate for one agent
     gateway.broadcast({
@@ -159,12 +160,12 @@ describe("Agent crash isolation", () => {
     expect(node.getAgent("keep-alive")?.state).toBe("running");
   });
 
-  it("emits agent_terminated events correctly", () => {
+  it("emits agent_terminated events correctly", async () => {
     const events: NodeEvent[] = [];
     node.onEvent((e) => events.push(e));
 
-    node.dispatch(makePid("a1"), testManifest, makeEngine());
-    node.dispatch(makePid("a2"), testManifest, makeEngine());
+    await node.dispatch(makePid("a1"), testManifest, makeEngine());
+    await node.dispatch(makePid("a2"), testManifest, makeEngine());
     node.terminate("a1");
 
     const terminated = events.filter((e) => e.type === "agent_terminated");
@@ -174,11 +175,11 @@ describe("Agent crash isolation", () => {
     expect(dispatched.length).toBe(2);
   });
 
-  it("node remains functional after multiple agent terminations", () => {
+  it("node remains functional after multiple agent terminations", async () => {
     // Dispatch and terminate in rapid succession
     for (let i = 0; i < 5; i++) {
       const id = `rapid-${i}`;
-      const d = node.dispatch(makePid(id), testManifest, makeEngine());
+      const d = await node.dispatch(makePid(id), testManifest, makeEngine());
       expect(d.ok).toBe(true);
       node.terminate(id);
     }
@@ -187,7 +188,7 @@ describe("Agent crash isolation", () => {
     expect(node.capacity().current).toBe(0);
 
     // Node still works
-    const d = node.dispatch(makePid("after-rapid"), testManifest, makeEngine());
+    const d = await node.dispatch(makePid("after-rapid"), testManifest, makeEngine());
     expect(d.ok).toBe(true);
     expect(node.listAgents().length).toBe(1);
   });
