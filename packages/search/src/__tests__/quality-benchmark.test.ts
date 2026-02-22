@@ -17,8 +17,9 @@
  *   - Deduplication: Are near-duplicate chunks suppressed?
  */
 import { describe, expect, test } from "bun:test";
-import type { Embedder, SearchResult } from "@koi/core";
+import type { Embedder } from "../contracts.js";
 import { createSearch } from "../index.js";
+import type { SearchResult } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Realistic corpus: developer notes / agent memory

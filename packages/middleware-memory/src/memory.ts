@@ -29,7 +29,12 @@ function extractLastMessageText(messages: readonly InboundMessage[]): string {
 }
 
 export function createMemoryMiddleware(config: MemoryMiddlewareConfig): KoiMiddleware {
-  const { store, maxRecallTokens = DEFAULT_MAX_RECALL_TOKENS, storeResponses = true } = config;
+  const {
+    store,
+    maxRecallTokens = DEFAULT_MAX_RECALL_TOKENS,
+    storeResponses = true,
+    onStoreError,
+  } = config;
 
   return {
     name: "memory",
@@ -76,8 +81,8 @@ export function createMemoryMiddleware(config: MemoryMiddlewareConfig): KoiMiddl
             turnIndex: ctx.turnIndex,
             model: response.model,
           });
-        } catch {
-          // Store failure should not crash the middleware
+        } catch (error: unknown) {
+          if (onStoreError) onStoreError(error);
         }
       }
 

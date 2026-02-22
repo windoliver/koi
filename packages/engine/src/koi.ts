@@ -32,6 +32,11 @@ function generatePid(manifest: CreateKoiOptions["manifest"]): ProcessId {
   };
 }
 
+/** Sort middleware by priority (ascending). Guards get low numbers, L2 middleware gets higher. */
+function sortByPriority(middleware: readonly KoiMiddleware[]): readonly KoiMiddleware[] {
+  return [...middleware].sort((a, b) => (a.priority ?? 500) - (b.priority ?? 500));
+}
+
 export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> {
   // --- 0. Input validation at the factory boundary ---
   if (!options.manifest?.name) {
@@ -72,8 +77,8 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     }),
   ];
 
-  // --- 3. Compose middleware chain: guards first, then user middleware ---
-  const allMiddleware: readonly KoiMiddleware[] = [...guards, ...middleware];
+  // --- 3. Compose middleware chain: guards + user middleware, sorted by priority ---
+  const allMiddleware: readonly KoiMiddleware[] = sortByPriority([...guards, ...middleware]);
 
   // --- 4. Default tool terminal (looks up tools from agent components via O(1) token) ---
   const defaultToolTerminal = async (request: ToolRequest): Promise<ToolResponse> => {
@@ -90,12 +95,20 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // --- 5. Track disposal ---
   // let justified: mutable flag for one-shot dispose guard
   let disposed = false;
+  // let justified: mutable flag for concurrent run() guard
+  let running = false;
 
   // --- 6. Build runtime ---
   const runtime: KoiRuntime = {
     agent,
 
-    run: (input: EngineInput): AsyncIterable<EngineEvent> => {
+    run(input: EngineInput): AsyncIterable<EngineEvent> {
+      // Guard concurrent run() calls
+      if (running) {
+        throw KoiEngineError.from("VALIDATION", "Agent is already running");
+      }
+      running = true;
+
       return {
         [Symbol.asyncIterator](): AsyncIterator<EngineEvent> {
           // let justified: mutable iterator state scoped to this run() invocation
@@ -167,6 +180,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
                 if (!iterator) {
                   done = true;
+                  running = false;
                   return { done: true, value: undefined };
                 }
 
@@ -174,6 +188,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
                 if (result.done) {
                   done = true;
+                  running = false;
                   agent.transition({ kind: "complete", stopReason: "completed" });
                   await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
                   return { done: true, value: undefined };
@@ -199,6 +214,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 // Process done events
                 if (event.kind === "done") {
                   done = true;
+                  running = false;
                   agent.transition({
                     kind: "complete",
                     stopReason: event.output.stopReason,
@@ -210,12 +226,17 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 return { done: false, value: event };
               } catch (error: unknown) {
                 done = true;
+                running = false;
 
                 // If it's a guard error, convert to a done event
                 if (error instanceof KoiEngineError) {
                   const stopReason = error.code === "TIMEOUT" ? "max_turns" : "error";
                   agent.transition({ kind: "complete", stopReason });
-                  await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+                  try {
+                    await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+                  } catch {
+                    // Don't mask guard error → done event conversion
+                  }
                   const doneEvent: EngineEvent = {
                     kind: "done",
                     output: {
@@ -235,13 +256,18 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
                 // Re-throw unexpected errors
                 agent.transition({ kind: "error", error });
-                await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+                try {
+                  await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+                } catch {
+                  // Don't mask original error — onSessionEnd failure must not override thrown error
+                }
                 throw error;
               }
             },
 
             async return(): Promise<IteratorResult<EngineEvent>> {
               done = true;
+              running = false;
               if (iterator?.return) {
                 await iterator.return();
               }

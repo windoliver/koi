@@ -2,7 +2,8 @@
  * Preset sandbox profile constructors.
  */
 
-import type { SandboxProfile, TrustTier } from "@koi/core";
+import type { TrustTier } from "@koi/core";
+import type { SandboxProfile } from "./types.js";
 
 const SENSITIVE_PATHS: readonly string[] = [
   "~/.ssh",

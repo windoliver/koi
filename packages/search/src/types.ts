@@ -1,5 +1,5 @@
 /**
- * @koi/core — Search value types (Layer 0)
+ * @koi/search — Search value types (Layer 2)
  *
  * All types are readonly, no runtime code.
  */

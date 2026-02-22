@@ -1,14 +1,8 @@
-import type {
-  KoiError,
-  Result,
-  Retriever,
-  SearchFilter,
-  SearchPage,
-  SearchQuery,
-  SearchResult,
-} from "@koi/core";
+import type { KoiError, Result } from "@koi/core";
+import type { Retriever } from "../contracts.js";
 import type { QueryExpansionConfig } from "../query/expand.js";
 import { expandQuery } from "../query/expand.js";
+import type { SearchFilter, SearchPage, SearchQuery, SearchResult } from "../types.js";
 import type { BM25Index } from "./bm25-index.js";
 import { defaultTokenize } from "./bm25-index.js";
 
