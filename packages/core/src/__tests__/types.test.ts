@@ -8,6 +8,7 @@ import type {
   EngineStopReason,
   GovernanceUsage,
   KoiError,
+  KoiErrorCode,
   KoiMiddleware,
   ProcessId,
   Result,
@@ -309,6 +310,103 @@ describe("SpawnCheck discriminant", () => {
     const check: SpawnCheck = { allowed: false, reason: "max depth exceeded" };
     if (!check.allowed) {
       expect(check.reason).toBe("max depth exceeded");
+    }
+  });
+});
+
+describe("KoiErrorCode", () => {
+  test("accepts all 8 valid error codes", () => {
+    const codes: readonly KoiErrorCode[] = [
+      "VALIDATION",
+      "NOT_FOUND",
+      "PERMISSION",
+      "CONFLICT",
+      "RATE_LIMIT",
+      "TIMEOUT",
+      "EXTERNAL",
+      "INTERNAL",
+    ];
+    expect(codes).toHaveLength(8);
+  });
+
+  test("rejects invalid error codes", () => {
+    // @ts-expect-error — "UNKNOWN" is not a valid KoiErrorCode
+    const _invalid: KoiErrorCode = "UNKNOWN";
+    void _invalid;
+  });
+});
+
+describe("KoiError new fields", () => {
+  test("context is optional and accepts JsonObject", () => {
+    const withContext: KoiError = {
+      code: "NOT_FOUND",
+      message: "missing",
+      retryable: false,
+      context: { resourceId: "abc-123" },
+    };
+    expect(withContext.context).toEqual({ resourceId: "abc-123" });
+  });
+
+  test("retryAfterMs is optional and accepts number", () => {
+    const withRetry: KoiError = {
+      code: "RATE_LIMIT",
+      message: "too fast",
+      retryable: true,
+      retryAfterMs: 5000,
+    };
+    expect(withRetry.retryAfterMs).toBe(5000);
+  });
+
+  test("KoiError without new fields is still valid", () => {
+    const minimal: KoiError = {
+      code: "INTERNAL",
+      message: "fail",
+      retryable: false,
+    };
+    expect(minimal.context).toBeUndefined();
+    expect(minimal.retryAfterMs).toBeUndefined();
+  });
+
+  test("context is readonly", () => {
+    const err: KoiError = {
+      code: "VALIDATION",
+      message: "bad",
+      retryable: false,
+      context: { field: "email" },
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    err.context = {};
+  });
+
+  test("retryAfterMs is readonly", () => {
+    const err: KoiError = {
+      code: "TIMEOUT",
+      message: "slow",
+      retryable: true,
+      retryAfterMs: 1000,
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    err.retryAfterMs = 2000;
+  });
+});
+
+describe("Result with custom error type", () => {
+  test("narrows with string error type", () => {
+    const result: Result<number, string> = { ok: false, error: "boom" };
+    if (!result.ok) {
+      const e: string = result.error;
+      expect(e).toBe("boom");
+    }
+  });
+
+  test("narrows with custom error object", () => {
+    type CustomError = { readonly kind: string; readonly detail: string };
+    const result: Result<number, CustomError> = {
+      ok: false,
+      error: { kind: "auth", detail: "expired token" },
+    };
+    if (!result.ok) {
+      expect(result.error.kind).toBe("auth");
     }
   });
 });

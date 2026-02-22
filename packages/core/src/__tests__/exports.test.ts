@@ -76,6 +76,7 @@ import {
   EVENTS,
   GOVERNANCE,
   MEMORY,
+  RETRYABLE_DEFAULTS,
   skillToken,
   token,
   toolToken,
@@ -148,9 +149,10 @@ describe("export inventory", () => {
     expect(GOVERNANCE).toBeDefined();
     expect(CREDENTIALS).toBeDefined();
     expect(EVENTS).toBeDefined();
+    expect(RETRYABLE_DEFAULTS).toBeDefined();
   });
 
-  test("runtime values are functions or strings", () => {
+  test("runtime values are functions, strings, or objects", () => {
     expect(typeof token).toBe("function");
     expect(typeof toolToken).toBe("function");
     expect(typeof channelToken).toBe("function");
@@ -159,5 +161,6 @@ describe("export inventory", () => {
     expect(typeof GOVERNANCE).toBe("string");
     expect(typeof CREDENTIALS).toBe("string");
     expect(typeof EVENTS).toBe("string");
+    expect(typeof RETRYABLE_DEFAULTS).toBe("object");
   });
 });
