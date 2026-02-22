@@ -25,7 +25,16 @@ mock.module("@clack/prompts", () => ({
 }));
 
 const { runInit } = await import("../commands/init.js");
-const { parseArgs } = await import("../args.js");
+const { parseArgs, isInitFlags } = await import("../args.js");
+
+/** Parse args and narrow to InitFlags, throwing if not an init command. */
+function parseInitArgs(argv: readonly string[]): import("../args.js").InitFlags {
+  const flags = parseArgs(argv);
+  if (!isInitFlags(flags)) {
+    throw new Error(`Expected init command, got: ${flags.command}`);
+  }
+  return flags;
+}
 
 function makeTempDir(): string {
   const dir = join(tmpdir(), `koi-int-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -50,7 +59,7 @@ describe("koi init --yes (minimal template)", () => {
     tempDirs.push(parent);
     const target = join(parent, "test-minimal");
 
-    const flags = parseArgs(["init", target, "--yes", "--name", "test-minimal"]);
+    const flags = parseInitArgs(["init", target, "--yes", "--name", "test-minimal"]);
     await runInit(flags);
 
     const yaml = await Bun.file(join(target, "koi.yaml")).text();
@@ -63,7 +72,7 @@ describe("koi init --yes (minimal template)", () => {
     tempDirs.push(parent);
     const target = join(parent, "test-pkg");
 
-    const flags = parseArgs(["init", target, "--yes", "--name", "test-pkg"]);
+    const flags = parseInitArgs(["init", target, "--yes", "--name", "test-pkg"]);
     await runInit(flags);
 
     const pkg = JSON.parse(await Bun.file(join(target, "package.json")).text());
@@ -77,7 +86,7 @@ describe("koi init --yes (minimal template)", () => {
     tempDirs.push(parent);
     const target = join(parent, "test-ts");
 
-    const flags = parseArgs(["init", target, "--yes", "--name", "test-ts"]);
+    const flags = parseInitArgs(["init", target, "--yes", "--name", "test-ts"]);
     await runInit(flags);
 
     const tsconfig = JSON.parse(await Bun.file(join(target, "tsconfig.json")).text());
@@ -90,7 +99,7 @@ describe("koi init --yes (minimal template)", () => {
     tempDirs.push(parent);
     const target = join(parent, "test-readme");
 
-    const flags = parseArgs(["init", target, "--yes", "--name", "test-readme"]);
+    const flags = parseInitArgs(["init", target, "--yes", "--name", "test-readme"]);
     await runInit(flags);
 
     const readme = await Bun.file(join(target, "README.md")).text();
@@ -102,7 +111,7 @@ describe("koi init --yes (minimal template)", () => {
     tempDirs.push(parent);
     const target = join(parent, "test-count");
 
-    const flags = parseArgs(["init", target, "--yes", "--name", "test-count"]);
+    const flags = parseInitArgs(["init", target, "--yes", "--name", "test-count"]);
     await runInit(flags);
 
     expect(existsSync(join(target, "koi.yaml"))).toBe(true);
@@ -118,7 +127,7 @@ describe("koi init --yes (copilot template)", () => {
     tempDirs.push(parent);
     const target = join(parent, "test-copilot");
 
-    const flags = parseArgs([
+    const flags = parseInitArgs([
       "init",
       target,
       "--yes",
@@ -142,7 +151,7 @@ describe("koi init — flag overrides", () => {
     tempDirs.push(parent);
     const target = join(parent, "test-model");
 
-    const flags = parseArgs([
+    const flags = parseInitArgs([
       "init",
       target,
       "--yes",
@@ -162,7 +171,7 @@ describe("koi init — flag overrides", () => {
     tempDirs.push(parent);
     const target = join(parent, "test-engine");
 
-    const flags = parseArgs([
+    const flags = parseInitArgs([
       "init",
       target,
       "--yes",
@@ -194,7 +203,7 @@ describe("koi init — edge cases", () => {
       throw new Error(`process.exit(${code})`);
     }) as never;
 
-    const flags = parseArgs(["init", target, "--yes", "--name", "conflict"]);
+    const flags = parseInitArgs(["init", target, "--yes", "--name", "conflict"]);
     try {
       await runInit(flags);
     } catch {
@@ -211,7 +220,7 @@ describe("koi init — edge cases", () => {
     const target = join(parent, "empty");
     mkdirSync(target, { recursive: true });
 
-    const flags = parseArgs(["init", target, "--yes", "--name", "empty-dir"]);
+    const flags = parseInitArgs(["init", target, "--yes", "--name", "empty-dir"]);
     await runInit(flags);
 
     expect(existsSync(join(target, "koi.yaml"))).toBe(true);
@@ -229,7 +238,7 @@ describe("koi init — edge cases", () => {
       throw new Error(`process.exit(${code})`);
     }) as never;
 
-    const flags = parseArgs(["init", target, "--yes", "--name", "My Cool Agent"]);
+    const flags = parseInitArgs(["init", target, "--yes", "--name", "My Cool Agent"]);
     try {
       await runInit(flags);
     } catch {
@@ -247,7 +256,7 @@ describe("koi init — edge cases", () => {
     tempDirs.push(parent);
     const target = join(parent, "special");
 
-    const flags = parseArgs(["init", target, "--yes", "--name", "my-agent.v2"]);
+    const flags = parseInitArgs(["init", target, "--yes", "--name", "my-agent.v2"]);
     await runInit(flags);
 
     const yaml = await Bun.file(join(target, "koi.yaml")).text();
@@ -259,7 +268,7 @@ describe("koi init — edge cases", () => {
     tempDirs.push(parent);
     const target = join(parent, "my-project-dir");
 
-    const flags = parseArgs(["init", target, "--yes"]);
+    const flags = parseInitArgs(["init", target, "--yes"]);
     await runInit(flags);
 
     const yaml = await Bun.file(join(target, "koi.yaml")).text();
@@ -274,7 +283,7 @@ describe("koi init — edge cases", () => {
     mkdirSync(target, { recursive: true });
 
     // When directory is ".", the resolved path is used but the name should fallback
-    const flags = parseArgs(["init", target, "--yes"]);
+    const flags = parseInitArgs(["init", target, "--yes"]);
     // directory is set to the full path, so basename will be "dot-test"
     await runInit(flags);
 

@@ -4,7 +4,7 @@
 
 import { resolve } from "node:path";
 import * as p from "@clack/prompts";
-import type { CliFlags } from "../args.js";
+import type { InitFlags } from "../args.js";
 import { writeScaffold } from "../scaffold.js";
 import { generateCopilot } from "../templates/copilot.js";
 import { generateMinimal } from "../templates/minimal.js";
@@ -24,7 +24,7 @@ const TEMPLATE_GENERATORS: Readonly<Record<TemplateName, (s: WizardState) => Fil
   copilot: generateCopilot,
 };
 
-export async function runInit(flags: CliFlags): Promise<void> {
+export async function runInit(flags: InitFlags): Promise<void> {
   p.intro("koi init — create a new agent");
 
   const directory = flags.directory ?? ".";
