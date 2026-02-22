@@ -10,6 +10,7 @@ export type { MockAgentOptions, MockEngineAdapterOptions } from "./agents.js";
 export { createMockAgent, createMockEngineAdapter } from "./agents.js";
 export type { ChannelContractOptions } from "./channel-contract.js";
 export { testChannelAdapter } from "./channel-contract.js";
+export { createTestConfig, createTestConfigStore } from "./config.js";
 export { createMockSessionContext, createMockTurnContext } from "./contexts.js";
 export type { EngineContractOptions } from "./engine-contract.js";
 export { testEngineAdapter } from "./engine-contract.js";

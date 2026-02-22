@@ -18,6 +18,23 @@ export type {
 export type { ChannelAdapter, ChannelCapabilities, MessageHandler } from "./channel.js";
 // common
 export type { JsonObject } from "./common.js";
+// config
+export type {
+  ConfigListener,
+  ConfigSource,
+  ConfigStore,
+  ConfigUnsubscribe,
+  FeatureFlags,
+  ForgeConfigSection,
+  KoiConfig,
+  LimitsConfig,
+  LogLevel,
+  LoopDetectionConfigSection,
+  ModelRouterConfigSection,
+  ModelTargetConfigEntry,
+  SpawnConfig,
+  TelemetryConfig,
+} from "./config.js";
 // context
 export type { CompactionResult, ContextCompactor, TokenEstimator } from "./context.js";
 // delegation

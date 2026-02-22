@@ -45,6 +45,15 @@
         "@koi/manifest": "workspace:*",
       },
     },
+    "packages/config": {
+      "name": "@koi/config",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
     "packages/core": {
       "name": "@koi/core",
       "version": "0.0.0",
@@ -99,6 +108,8 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
       },
     },
     "packages/gateway": {
@@ -418,6 +429,8 @@
     "@koi/channel-cli": ["@koi/channel-cli@workspace:packages/channel-cli"],
 
     "@koi/cli": ["@koi/cli@workspace:packages/cli"],
+
+    "@koi/config": ["@koi/config@workspace:packages/config"],
 
     "@koi/core": ["@koi/core@workspace:packages/core"],
 
