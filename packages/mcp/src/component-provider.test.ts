@@ -66,7 +66,7 @@ describe("createMcpComponentProviderAsync", () => {
     expect(result.failures).toHaveLength(2);
 
     const agent = createMockAgent();
-    const components = result.provider.attach(agent);
+    const components = await result.provider.attach(agent);
     expect(components.size).toBe(0);
   });
 

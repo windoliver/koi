@@ -169,7 +169,7 @@ export async function createMcpComponentProviderAsync(
 
   const provider: ComponentProvider = {
     name: "mcp",
-    attach: (_agent: Agent): ReadonlyMap<string, unknown> => {
+    attach: async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
       return allTools;
     },
   };

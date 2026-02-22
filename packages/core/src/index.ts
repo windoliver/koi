@@ -62,6 +62,7 @@ export {
 } from "./ecs.js";
 // engine
 export type {
+  ComposedCallHandlers,
   EngineAdapter,
   EngineEvent,
   EngineInput,
@@ -89,10 +90,15 @@ export type {
 } from "./message.js";
 // middleware
 export type {
+  ApprovalDecision,
+  ApprovalHandler,
+  ApprovalRequest,
   KoiMiddleware,
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   SessionContext,
   ToolHandler,
   ToolRequest,

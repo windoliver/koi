@@ -111,7 +111,8 @@ export interface SkillMetadata {
 
 export interface ComponentProvider {
   readonly name: string;
-  readonly attach: (agent: Agent) => ReadonlyMap<string, unknown>;
+  readonly attach: (agent: Agent) => Promise<ReadonlyMap<string, unknown>>;
+  readonly detach?: (agent: Agent) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

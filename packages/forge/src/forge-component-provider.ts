@@ -73,10 +73,6 @@ export interface ForgeComponentProviderConfig {
  * Async factory that pre-loads tools from the store, then returns
  * a ComponentProvider whose attach() is already populated.
  *
- * Note: The L0 ComponentProvider.attach() is synchronous, but ForgeStore
- * is async. This factory resolves the async gap by pre-loading tools
- * before returning the provider.
- *
  * The same tool instances are shared across all attach() calls for efficiency.
  * Forged tools are stateless — state lives in the sandbox execution context.
  */
@@ -106,7 +102,7 @@ export async function createForgeComponentProviderAsync(
 
   return {
     name: "forge",
-    attach: (_agent: Agent): ReadonlyMap<string, unknown> => {
+    attach: async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
       return tools;
     },
   };

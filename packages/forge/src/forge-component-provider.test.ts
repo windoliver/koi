@@ -161,7 +161,7 @@ describe("createForgeComponentProviderAsync", () => {
 
     expect(provider.name).toBe("forge");
 
-    const components = provider.attach(createMockAgent());
+    const components = await provider.attach(createMockAgent());
     expect(components.size).toBe(2);
 
     const addToken = toolToken("add") as string;
@@ -177,7 +177,7 @@ describe("createForgeComponentProviderAsync", () => {
       executor: echoExecutor(),
     });
 
-    const components = provider.attach(createMockAgent());
+    const components = await provider.attach(createMockAgent());
     expect(components.size).toBe(0);
   });
 
@@ -207,7 +207,7 @@ describe("createForgeComponentProviderAsync", () => {
       executor: echoExecutor(),
     });
 
-    const components = provider.attach(createMockAgent());
+    const components = await provider.attach(createMockAgent());
     expect(components.size).toBe(1);
   });
 
@@ -221,7 +221,7 @@ describe("createForgeComponentProviderAsync", () => {
       executor: echoExecutor(),
     });
 
-    const components = provider.attach(createMockAgent());
+    const components = await provider.attach(createMockAgent());
     expect(components.size).toBe(1);
   });
 
@@ -235,7 +235,7 @@ describe("createForgeComponentProviderAsync", () => {
       executor: echoExecutor(),
     });
 
-    const components = provider.attach(createMockAgent());
+    const components = await provider.attach(createMockAgent());
     expect(components.size).toBe(1);
   });
 
@@ -249,7 +249,7 @@ describe("createForgeComponentProviderAsync", () => {
       sandboxTimeoutMs: 10_000,
     });
 
-    const components = provider.attach(createMockAgent());
+    const components = await provider.attach(createMockAgent());
     expect(components.size).toBe(1);
   });
 
@@ -288,7 +288,7 @@ describe("createForgeComponentProviderAsync", () => {
       executor: echoExecutor(),
     });
 
-    const components = provider.attach(createMockAgent());
+    const components = await provider.attach(createMockAgent());
     const token = toolToken("echo") as string;
     const tool = components.get(token) as { execute: (input: unknown) => Promise<unknown> };
 

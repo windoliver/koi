@@ -359,7 +359,7 @@ describe("E2E: Koi adapter layers with real MCP server", () => {
       components: () => new Map(),
     };
 
-    const components = result.provider.attach(agent);
+    const components = await result.provider.attach(agent);
     expect(components.size).toBe(3);
 
     // Execute echo tool through the component
