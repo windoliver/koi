@@ -70,7 +70,35 @@ export function parseFrame(raw: string): Result<GatewayFrame, KoiError> {
 }
 
 /**
+ * Negotiate the highest mutually supported protocol version between client and server.
+ * Returns the highest version in the overlap, or an error if no overlap exists.
+ */
+export function negotiateProtocol(
+  clientMin: number,
+  clientMax: number,
+  serverMin: number,
+  serverMax: number,
+): Result<number, KoiError> {
+  const overlapMin = Math.max(clientMin, serverMin);
+  const overlapMax = Math.min(clientMax, serverMax);
+
+  if (overlapMin > overlapMax) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: `No protocol overlap: client [${clientMin}..${clientMax}], server [${serverMin}..${serverMax}]`,
+        retryable: false,
+      },
+    };
+  }
+
+  return { ok: true, value: overlapMax };
+}
+
+/**
  * Parse the first message on a connection as a structured ConnectFrame.
+ * Accepts both new range format (minProtocol/maxProtocol) and legacy format (protocol).
  * Rejects if the message is not a valid connect frame.
  */
 export function parseConnectFrame(raw: string): Result<ConnectFrame, KoiError> {
@@ -91,8 +119,41 @@ export function parseConnectFrame(raw: string): Result<ConnectFrame, KoiError> {
     return makeError('First message must be a connect frame (type: "connect")');
   }
 
-  if (typeof obj.protocol !== "number" || !Number.isInteger(obj.protocol) || obj.protocol < 1) {
-    return makeError('"protocol" must be a positive integer');
+  // Protocol version: accept range format or legacy single-value format
+  let minProtocol: number;
+  let maxProtocol: number;
+
+  const hasRange = obj.minProtocol !== undefined || obj.maxProtocol !== undefined;
+  const hasLegacy = obj.protocol !== undefined;
+
+  if (hasRange) {
+    if (
+      typeof obj.minProtocol !== "number" ||
+      !Number.isInteger(obj.minProtocol) ||
+      obj.minProtocol < 1
+    ) {
+      return makeError('"minProtocol" must be a positive integer');
+    }
+    if (
+      typeof obj.maxProtocol !== "number" ||
+      !Number.isInteger(obj.maxProtocol) ||
+      obj.maxProtocol < 1
+    ) {
+      return makeError('"maxProtocol" must be a positive integer');
+    }
+    if (obj.minProtocol > obj.maxProtocol) {
+      return makeError('"minProtocol" must be <= "maxProtocol"');
+    }
+    minProtocol = obj.minProtocol as number;
+    maxProtocol = obj.maxProtocol as number;
+  } else if (hasLegacy) {
+    if (typeof obj.protocol !== "number" || !Number.isInteger(obj.protocol) || obj.protocol < 1) {
+      return makeError('"protocol" must be a positive integer');
+    }
+    minProtocol = obj.protocol as number;
+    maxProtocol = obj.protocol as number;
+  } else {
+    return makeError('Missing protocol version: provide "minProtocol"/"maxProtocol" or "protocol"');
   }
 
   if (typeof obj.auth !== "object" || obj.auth === null || Array.isArray(obj.auth)) {
@@ -120,7 +181,8 @@ export function parseConnectFrame(raw: string): Result<ConnectFrame, KoiError> {
 
   const frame: ConnectFrame = {
     type: "connect",
-    protocol: obj.protocol as number,
+    minProtocol,
+    maxProtocol,
     auth: { token: auth.token as string },
     ...(client !== undefined ? { client } : {}),
   };
@@ -133,4 +195,42 @@ export function parseConnectFrame(raw: string): Result<ConnectFrame, KoiError> {
  */
 export function encodeFrame(frame: GatewayFrame): string {
   return JSON.stringify(frame);
+}
+
+// ---------------------------------------------------------------------------
+// Monotonic frame ID generator (server-side only)
+// ---------------------------------------------------------------------------
+
+let frameCounter = 0;
+const instanceId = crypto.randomUUID().slice(0, 8);
+
+function nextFrameId(): string {
+  return `gw-${instanceId}-${frameCounter++}`;
+}
+
+/**
+ * Build a JSON-encoded error frame string for server-generated error responses.
+ */
+export function buildErrorFrame(seq: number, code: string, message: string): string {
+  return encodeFrame({
+    kind: "error",
+    id: nextFrameId(),
+    seq,
+    timestamp: Date.now(),
+    payload: { code, message },
+  });
+}
+
+/**
+ * Build a JSON-encoded ack frame string for server-generated acknowledgements.
+ */
+export function buildAckFrame(seq: number, ref?: string, payload?: unknown): string {
+  return encodeFrame({
+    kind: "ack",
+    id: nextFrameId(),
+    seq,
+    timestamp: Date.now(),
+    payload: payload ?? null,
+    ...(ref !== undefined ? { ref } : {}),
+  });
 }
