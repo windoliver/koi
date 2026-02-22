@@ -30,6 +30,8 @@ import type { DiscoveryService } from "./discovery.js";
 import { createDiscoveryService } from "./discovery.js";
 import type { FrameCounters } from "./frame-counter.js";
 import { createFrameCounters } from "./frame-counter.js";
+import type { FrameDeduplicator } from "./frame-dedup.js";
+import { createFrameDeduplicator } from "./frame-dedup.js";
 import type { MemoryMonitor } from "./monitor.js";
 import { createMemoryMonitor } from "./monitor.js";
 import type { ShutdownHandler } from "./shutdown.js";
@@ -44,6 +46,7 @@ import type {
   NodeEvent,
   NodeEventListener,
   NodeFrame,
+  NodeFrameType,
   NodeSessionRecord,
   NodeSessionStore,
   NodeState,
@@ -156,6 +159,9 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
   // Frame counters for seq/remoteSeq tracking
   const frameCounters: FrameCounters = createFrameCounters();
 
+  // Inbound frame deduplicator (drops Gateway retransmits on reconnect)
+  const dedup: FrameDeduplicator = createFrameDeduplicator();
+
   // Write queue for batched checkpoint writes
   const writeQueue: WriteQueue | undefined =
     deps?.sessionStore !== undefined ? createWriteQueue(deps.sessionStore) : undefined;
@@ -197,10 +203,36 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
 
   const discovery: DiscoveryService = createDiscoveryService(config.discovery);
   const monitor: MemoryMonitor = createMemoryMonitor(config.resources, host, emit);
+  // Business frame types that should be persisted for crash recovery
+  const PERSISTENT_FRAME_TYPES: ReadonlySet<NodeFrameType> = new Set([
+    "agent:message",
+    "tool_result",
+    "tool_error",
+  ] as const);
+
   // Outbound send wrapper: counts frames for seq tracking
   function sendFrame(frame: NodeFrame): void {
     if (frame.agentId.length > 0) {
       frameCounters.increment(frame.agentId);
+    }
+    // Route business frames through persistence layer when available
+    if (
+      deliveryMgr !== undefined &&
+      checkpointMgr !== undefined &&
+      frame.agentId.length > 0 &&
+      PERSISTENT_FRAME_TYPES.has(frame.type)
+    ) {
+      const sessionId = checkpointMgr.getSessionId(frame.agentId);
+      if (sessionId !== undefined) {
+        deliveryMgr.enqueueSend(frame, sessionId).catch((e: unknown) => {
+          emit("agent_crashed", {
+            reason: "enqueueSend failed",
+            agentId: frame.agentId,
+            error: e,
+          });
+        });
+        return;
+      }
     }
     transport.send(frame);
   }
@@ -234,6 +266,11 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
 
   // Handle incoming frames from Gateway
   transport.onFrame((frame) => {
+    // Dedup: skip frames already processed (e.g., Gateway retransmits on reconnect)
+    if (frame.correlationId.length > 0 && dedup.isDuplicate(frame.correlationId)) {
+      return;
+    }
+
     // Track inbound sequence for crash recovery
     if (frame.agentId.length > 0) {
       const currentState = frameCounters.get(frame.agentId);

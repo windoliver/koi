@@ -6,7 +6,8 @@
  * backoff when transport is unavailable.
  */
 
-import type { NodeEvent, NodePendingFrame, NodeSessionStore } from "./types.js";
+import { agentId as toAgentId } from "@koi/core";
+import type { NodeEvent, NodeFrame, NodePendingFrame, NodeSessionStore } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -47,6 +48,8 @@ export const DELIVERY_DEFAULTS: DeliveryManagerConfig = {
 export interface DeliveryManager {
   /** Replay all pending frames for a session with retry/backoff. */
   readonly replayPendingFrames: (sessionId: string) => Promise<void>;
+  /** Persist an outbound frame (write-ahead) and send if connected. */
+  readonly enqueueSend: (frame: NodeFrame, sessionId: string) => Promise<void>;
   /** Cancel all pending retry timers and release resources. */
   readonly dispose: () => void;
 }
@@ -186,5 +189,43 @@ export function createDeliveryManager(
     pendingTimers.clear();
   }
 
-  return { replayPendingFrames, dispose };
+  async function enqueueSend(frame: NodeFrame, sessionId: string): Promise<void> {
+    const pendingFrame: NodePendingFrame = {
+      frameId: `pf-${frame.correlationId}`,
+      sessionId,
+      agentId: toAgentId(frame.agentId),
+      frameType: frame.type,
+      payload: frame.payload,
+      orderIndex: Date.now(),
+      createdAt: Date.now(),
+      ttl: frame.ttl,
+      retryCount: 0,
+    };
+
+    // Write-ahead: persist before sending
+    const saveResult = await deps.store.savePendingFrame(pendingFrame);
+    if (!saveResult.ok) {
+      // Fallback: degrade to direct send (current behavior) rather than silent loss
+      deps.sendFrame(pendingFrame);
+      return;
+    }
+
+    // If connected, attempt immediate delivery
+    if (deps.isConnected()) {
+      try {
+        deps.sendFrame(pendingFrame);
+        deps.emit("pending_frame_sent", {
+          frameId: pendingFrame.frameId,
+          sessionId,
+          agentId: pendingFrame.agentId,
+        });
+        await deps.store.removePendingFrame(pendingFrame.frameId);
+      } catch {
+        // Send failed — frame stays in store for replay on reconnect
+      }
+    }
+    // If not connected, frame stays in store for replayPendingFrames on reconnect
+  }
+
+  return { replayPendingFrames, enqueueSend, dispose };
 }

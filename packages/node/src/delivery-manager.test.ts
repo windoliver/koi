@@ -7,7 +7,7 @@ import type { KoiError, Result } from "@koi/core";
 import { agentId } from "@koi/core";
 import type { DeliveryManagerDeps } from "./delivery-manager.js";
 import { createDeliveryManager } from "./delivery-manager.js";
-import type { NodeEvent, NodePendingFrame, NodeSessionStore } from "./types.js";
+import type { NodeEvent, NodeFrame, NodePendingFrame, NodeSessionStore } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -236,6 +236,30 @@ describe("DeliveryManager", () => {
     expect(deps.sendFrame).toHaveBeenCalledTimes(5);
   });
 
+  test("handles load failure gracefully", async () => {
+    const store = createMockStore();
+    (store.loadPendingFrames as ReturnType<typeof mock>).mockImplementation(() => ({
+      ok: false as const,
+      error: { code: "INTERNAL", message: "db error", retryable: false },
+    }));
+    const events: NodeEvent[] = [];
+    const deps: DeliveryManagerDeps = {
+      store,
+      isConnected: () => true,
+      sendFrame: mock(() => {}),
+      emit: mock((type: NodeEvent["type"], data?: unknown) => {
+        events.push({ type, timestamp: Date.now(), data });
+      }),
+    };
+
+    const dm = createDeliveryManager(deps);
+    await dm.replayPendingFrames("s1");
+    dm.dispose();
+
+    // Should not crash, should not send
+    expect(deps.sendFrame).toHaveBeenCalledTimes(0);
+  });
+
   test("does not expire frames without ttl", async () => {
     const frame = makePendingFrame({
       frameId: "f-no-ttl",
@@ -251,5 +275,118 @@ describe("DeliveryManager", () => {
     expect(deps.sendFrame).toHaveBeenCalledTimes(1);
     expect(events.some((e) => e.type === "pending_frame_sent")).toBe(true);
     expect(events.some((e) => e.type === "pending_frame_expired")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// enqueueSend tests
+// ---------------------------------------------------------------------------
+
+function makeNodeFrame(overrides: Partial<NodeFrame> = {}): NodeFrame {
+  return {
+    nodeId: "node-1",
+    agentId: "agent-1",
+    correlationId: "corr-1",
+    type: "agent:message",
+    payload: { text: "hello" },
+    ...overrides,
+  };
+}
+
+describe("DeliveryManager.enqueueSend", () => {
+  test("persists frame and sends when connected", async () => {
+    const { deps, events, store } = createMockDeps([], true);
+
+    const dm = createDeliveryManager(deps);
+    await dm.enqueueSend(makeNodeFrame(), "s1");
+    dm.dispose();
+
+    // Should have persisted
+    expect(store.savePendingFrame).toHaveBeenCalledTimes(1);
+    // Should have sent (connected)
+    expect(deps.sendFrame).toHaveBeenCalledTimes(1);
+    // Should have removed after successful send
+    expect(store.removePendingFrame).toHaveBeenCalledWith("pf-corr-1");
+    // Should emit pending_frame_sent
+    expect(events.some((e) => e.type === "pending_frame_sent")).toBe(true);
+  });
+
+  test("persists but does not send when disconnected", async () => {
+    const { deps, events, store } = createMockDeps([], false);
+
+    const dm = createDeliveryManager(deps);
+    await dm.enqueueSend(makeNodeFrame(), "s1");
+    dm.dispose();
+
+    // Should have persisted
+    expect(store.savePendingFrame).toHaveBeenCalledTimes(1);
+    // Should NOT have sent (disconnected)
+    expect(deps.sendFrame).toHaveBeenCalledTimes(0);
+    // Should NOT have removed (awaiting reconnect replay)
+    expect(store.removePendingFrame).toHaveBeenCalledTimes(0);
+    // No sent event
+    expect(events.some((e) => e.type === "pending_frame_sent")).toBe(false);
+  });
+
+  test("removes frame from store after successful send", async () => {
+    const { deps, store } = createMockDeps([], true);
+
+    const dm = createDeliveryManager(deps);
+    await dm.enqueueSend(makeNodeFrame({ correlationId: "c-42" }), "s1");
+    dm.dispose();
+
+    expect(store.removePendingFrame).toHaveBeenCalledWith("pf-c-42");
+  });
+
+  test("falls back to direct send on store failure", async () => {
+    const store = createMockStore();
+    (store.savePendingFrame as ReturnType<typeof mock>).mockImplementation(() => ({
+      ok: false as const,
+      error: { code: "INTERNAL", message: "disk full", retryable: false },
+    }));
+    const events: NodeEvent[] = [];
+    const deps: DeliveryManagerDeps = {
+      store,
+      isConnected: () => true,
+      sendFrame: mock(() => {}),
+      emit: mock((type: NodeEvent["type"], data?: unknown) => {
+        events.push({ type, timestamp: Date.now(), data });
+      }),
+    };
+
+    const dm = createDeliveryManager(deps);
+    await dm.enqueueSend(makeNodeFrame(), "s1");
+    dm.dispose();
+
+    // Should have fallen back to direct send
+    expect(deps.sendFrame).toHaveBeenCalledTimes(1);
+    // No remove call (frame wasn't in store)
+    expect(store.removePendingFrame).toHaveBeenCalledTimes(0);
+  });
+
+  test("derives frameId from correlationId", async () => {
+    const { deps, store } = createMockDeps([], true);
+
+    const dm = createDeliveryManager(deps);
+    await dm.enqueueSend(makeNodeFrame({ correlationId: "abc-123" }), "s1");
+    dm.dispose();
+
+    const savedFrame = (store.savePendingFrame as ReturnType<typeof mock>).mock.calls[0]?.[0] as
+      | NodePendingFrame
+      | undefined;
+    expect(savedFrame?.frameId).toBe("pf-abc-123");
+  });
+
+  test("preserves ttl from source frame", async () => {
+    const { deps, store } = createMockDeps([], true);
+
+    const dm = createDeliveryManager(deps);
+    await dm.enqueueSend(makeNodeFrame({ ttl: 30_000 }), "s1");
+    dm.dispose();
+
+    const savedFrame = (store.savePendingFrame as ReturnType<typeof mock>).mock.calls[0]?.[0] as
+      | NodePendingFrame
+      | undefined;
+    expect(savedFrame?.ttl).toBe(30_000);
   });
 });
