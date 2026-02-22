@@ -8,6 +8,9 @@ import { describe, expect, test } from "bun:test";
 import type {
   Agent,
   AgentManifest,
+  // forge types
+  BrickKind,
+  BrickLifecycle,
   ButtonBlock,
   ChannelAdapter,
   // channel
@@ -29,6 +32,7 @@ import type {
   FileBlock,
   // sandbox
   FilesystemPolicy,
+  ForgeScope,
   GovernanceComponent,
   GovernanceUsage,
   ImageBlock,
@@ -98,6 +102,10 @@ import {
 type AssertDefined<T> = T extends undefined ? never : T;
 type _TypeGuard =
   | AssertDefined<JsonObject>
+  | AssertDefined<BrickKind>
+  | AssertDefined<BrickLifecycle>
+  | AssertDefined<ForgeScope>
+  | AssertDefined<TrustTier>
   | AssertDefined<KoiErrorCode>
   | AssertDefined<KoiError>
   | AssertDefined<Result<unknown>>

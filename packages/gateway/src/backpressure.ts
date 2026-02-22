@@ -40,13 +40,13 @@ interface ConnState {
 export function createBackpressureMonitor(
   config: Pick<
     GatewayConfig,
-    "maxBufferPerConnection" | "backpressureHighWatermark" | "globalBufferLimitBytes"
+    "maxBufferBytesPerConnection" | "backpressureHighWatermark" | "globalBufferLimitBytes"
   >,
 ): BackpressureMonitor {
   const conns = new Map<string, ConnState>();
   let globalBytes = 0;
 
-  const maxBytesPerConn = config.maxBufferPerConnection;
+  const maxBytesPerConn = config.maxBufferBytesPerConnection;
   const warningThreshold = Math.floor(maxBytesPerConn * config.backpressureHighWatermark);
 
   function getOrCreate(connId: string): ConnState {

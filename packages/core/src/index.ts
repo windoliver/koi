@@ -74,6 +74,8 @@ export type {
 export type { KoiError, KoiErrorCode, Result } from "./errors.js";
 // errors — runtime values
 export { RETRYABLE_DEFAULTS } from "./errors.js";
+// forge types
+export type { BrickKind, BrickLifecycle, ForgeScope } from "./forge-types.js";
 // message
 export type {
   ButtonBlock,
