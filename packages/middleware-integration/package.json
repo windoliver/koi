@@ -9,7 +9,8 @@
     "@koi/middleware-permissions": "workspace:*",
     "@koi/middleware-pay": "workspace:*",
     "@koi/middleware-audit": "workspace:*",
-    "@koi/middleware-memory": "workspace:*"
+    "@koi/middleware-memory": "workspace:*",
+    "@koi/context": "workspace:*"
   },
   "scripts": {
     "test": "bun test"
