@@ -1,0 +1,337 @@
+/**
+ * @koi/node — Configuration schema (Zod) and domain types.
+ *
+ * NodeConfig is the sole configuration surface for createNode().
+ * All sub-configs have sane defaults; only `gateway.url` is required.
+ *
+ * Schemas are module-private. Only types and parseNodeConfig() are exported,
+ * keeping the public API compatible with isolatedDeclarations.
+ */
+
+import type { KoiError, Result } from "@koi/core";
+import { RETRYABLE_DEFAULTS } from "@koi/core";
+import { z } from "zod";
+
+// ---------------------------------------------------------------------------
+// Config schemas (not exported — isolatedDeclarations compliance)
+// ---------------------------------------------------------------------------
+
+const gatewayConnectionSchema = z.object({
+  url: z.url(),
+  reconnectBaseDelay: z.number().positive().default(1_000),
+  reconnectMaxDelay: z.number().positive().default(30_000),
+  reconnectMultiplier: z.number().positive().default(2),
+  reconnectJitter: z.number().min(0).max(1).default(0.1),
+  maxRetries: z.number().int().nonnegative().default(10),
+});
+
+const heartbeatSchema = z.object({
+  interval: z.number().positive().default(30_000),
+  timeout: z.number().positive().default(5_000),
+});
+
+const discoverySchema = z.object({
+  enabled: z.boolean().default(true),
+  serviceType: z.string().default("_koi-agent._tcp"),
+});
+
+const toolsSchema = z.object({
+  directories: z.array(z.string()).default([]),
+  builtins: z
+    .object({
+      filesystem: z.boolean().default(true),
+      shell: z.boolean().default(true),
+    })
+    .default({ filesystem: true, shell: true }),
+});
+
+const resourcesSchema = z.object({
+  maxAgents: z.number().int().positive().default(50),
+  memoryWarningPercent: z.number().min(0).max(100).default(80),
+  memoryEvictionPercent: z.number().min(0).max(100).default(90),
+  monitorInterval: z.number().positive().default(30_000),
+});
+
+const authSchema = z.object({
+  /** Bearer token sent during initial auth handshake. */
+  token: z.string().min(1),
+  /** HMAC-SHA256 secret for challenge/response. Omit for token-only auth. */
+  secret: z.string().min(1).optional(),
+  /** Milliseconds to wait for auth to complete before giving up. */
+  timeoutMs: z.number().positive().default(10_000),
+});
+
+const nodeConfigSchema = z.object({
+  nodeId: z.string().optional(),
+  /** Node mode: "full" runs engines + exposes tools; "thin" exposes tools only (no engine). */
+  mode: z.enum(["full", "thin"]).default("full"),
+  gateway: gatewayConnectionSchema,
+  heartbeat: heartbeatSchema.default({ interval: 30_000, timeout: 5_000 }),
+  discovery: discoverySchema.default({ enabled: true, serviceType: "_koi-agent._tcp" }),
+  tools: toolsSchema.default({
+    directories: [],
+    builtins: { filesystem: true, shell: true },
+  }),
+  resources: resourcesSchema.default({
+    maxAgents: 50,
+    memoryWarningPercent: 80,
+    memoryEvictionPercent: 90,
+    monitorInterval: 30_000,
+  }),
+  /** Optional auth config. Omit for unauthenticated connections. */
+  auth: authSchema.optional(),
+});
+
+// ---------------------------------------------------------------------------
+// Explicit config types (isolatedDeclarations-safe)
+// ---------------------------------------------------------------------------
+
+export interface GatewayConnectionConfig {
+  readonly url: string;
+  readonly reconnectBaseDelay: number;
+  readonly reconnectMaxDelay: number;
+  readonly reconnectMultiplier: number;
+  readonly reconnectJitter: number;
+  readonly maxRetries: number;
+}
+
+export interface HeartbeatConfig {
+  readonly interval: number;
+  readonly timeout: number;
+}
+
+export interface DiscoveryConfig {
+  readonly enabled: boolean;
+  readonly serviceType: string;
+}
+
+export interface ToolResolverConfig {
+  readonly directories: readonly string[];
+  readonly builtins: {
+    readonly filesystem: boolean;
+    readonly shell: boolean;
+  };
+}
+
+export interface ResourcesConfig {
+  readonly maxAgents: number;
+  readonly memoryWarningPercent: number;
+  readonly memoryEvictionPercent: number;
+  readonly monitorInterval: number;
+}
+
+export interface AuthConfig {
+  /** Bearer token sent during initial auth handshake. */
+  readonly token: string;
+  /** HMAC-SHA256 secret for challenge/response. Omit for token-only auth. */
+  readonly secret?: string | undefined;
+  /** Milliseconds to wait for auth to complete (default 10 000). */
+  readonly timeoutMs: number;
+}
+
+/** Node mode: "full" runs engines + exposes tools; "thin" exposes tools only (no engine). */
+export type NodeMode = "full" | "thin";
+
+export interface NodeConfig {
+  readonly nodeId?: string | undefined;
+  /** Node mode. Default: "full". Thin nodes skip engine/agent host, only handle tool_call frames. */
+  readonly mode: NodeMode;
+  readonly gateway: GatewayConnectionConfig;
+  readonly heartbeat: HeartbeatConfig;
+  readonly discovery: DiscoveryConfig;
+  readonly tools: ToolResolverConfig;
+  readonly resources: ResourcesConfig;
+  /** Optional auth config. Omit for unauthenticated connections. */
+  readonly auth?: AuthConfig | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Config parser
+// ---------------------------------------------------------------------------
+
+/** Parse and validate raw config into a typed NodeConfig. */
+export function parseNodeConfig(raw: unknown): Result<NodeConfig, KoiError> {
+  const result = nodeConfigSchema.safeParse(raw);
+  if (!result.success) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: `Invalid node config: ${result.error.message}`,
+        retryable: RETRYABLE_DEFAULTS.VALIDATION,
+      },
+    };
+  }
+  // Zod output matches NodeConfig structurally; satisfies verifies at compile time
+  const config: NodeConfig = result.data;
+  return { ok: true, value: config };
+}
+
+// ---------------------------------------------------------------------------
+// Node frame protocol types (Nexus-inspired envelope)
+// ---------------------------------------------------------------------------
+
+/** Discriminated union of all frame types flowing over the Node <-> Gateway WS. */
+export type NodeFrameType =
+  | "agent:dispatch"
+  | "agent:message"
+  | "agent:status"
+  | "agent:terminate"
+  | "node:auth"
+  | "node:auth_challenge"
+  | "node:auth_response"
+  | "node:auth_ack"
+  | "node:handshake"
+  | "node:heartbeat"
+  | "node:capacity"
+  | "node:capabilities"
+  | "node:error"
+  | "tool_call"
+  | "tool_result"
+  | "tool_error";
+
+/** Wire frame sent over the multiplexed WebSocket. */
+export interface NodeFrame {
+  readonly nodeId: string;
+  readonly agentId: string;
+  readonly correlationId: string;
+  /** Milliseconds until the frame expires. Undefined = no expiry. */
+  readonly ttl?: number | undefined;
+  readonly type: NodeFrameType;
+  readonly payload: unknown;
+}
+
+// ---------------------------------------------------------------------------
+// Auth payloads
+// ---------------------------------------------------------------------------
+
+/** Node → Gateway: initial authentication. */
+export interface AuthPayload {
+  readonly token: string;
+  readonly timestamp: number;
+}
+
+/** Gateway → Node: challenge for HMAC verification. */
+export interface AuthChallengePayload {
+  readonly challenge: string;
+}
+
+/** Node → Gateway: signed response to challenge. */
+export interface AuthResponsePayload {
+  readonly response: string;
+}
+
+/** Gateway → Node: auth result. */
+export interface AuthAckPayload {
+  readonly success: boolean;
+  readonly reason?: string | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Tool routing payloads (remote tool invocation between Nodes)
+// ---------------------------------------------------------------------------
+
+/** Gateway → Node: execute a tool on this Node (may originate from a remote agent). */
+export interface ToolCallPayload {
+  readonly toolName: string;
+  readonly args: Readonly<Record<string, unknown>>;
+  /** Agent requesting the tool call (for permission checks). */
+  readonly callerAgentId: string;
+  /** Zone scope for permission enforcement (backend-dependent). */
+  readonly zone?: string | undefined;
+}
+
+/** Node → Gateway: tool execution result returned to calling agent. */
+export interface ToolResultPayload {
+  readonly toolName: string;
+  readonly result: unknown;
+}
+
+/** Node → Gateway: tool execution failed or permission denied. */
+export interface ToolErrorPayload {
+  readonly toolName: string;
+  readonly code: "permission_denied" | "not_found" | "execution_error" | "timeout";
+  readonly message: string;
+}
+
+// ---------------------------------------------------------------------------
+// Capability advertisement payloads
+// ---------------------------------------------------------------------------
+
+/** Descriptor for a single tool advertised by a Node. */
+export interface AdvertisedTool {
+  readonly name: string;
+  readonly description?: string | undefined;
+  /** JSON Schema for the tool's arguments. */
+  readonly schema?: Readonly<Record<string, unknown>> | undefined;
+}
+
+/** Node → Gateway: advertise this Node's tool surface. */
+export interface CapabilitiesPayload {
+  readonly nodeType: "full" | "thin";
+  readonly tools: readonly AdvertisedTool[];
+}
+
+// ---------------------------------------------------------------------------
+// Handshake payloads
+// ---------------------------------------------------------------------------
+
+export interface HandshakePayload {
+  readonly nodeId: string;
+  readonly version: string;
+  readonly capacity: CapacityReport;
+}
+
+export interface CapacityReport {
+  readonly current: number;
+  readonly max: number;
+  readonly available: number;
+}
+
+// ---------------------------------------------------------------------------
+// Agent status payloads (Nexus-inspired spec/status reporting)
+// ---------------------------------------------------------------------------
+
+export interface AgentStatusPayload {
+  readonly agentId: string;
+  readonly state: string;
+  readonly turnCount: number;
+  readonly lastActivityMs: number;
+}
+
+// ---------------------------------------------------------------------------
+// Node lifecycle
+// ---------------------------------------------------------------------------
+
+export type NodeState = "starting" | "connected" | "reconnecting" | "stopping" | "stopped";
+
+// ---------------------------------------------------------------------------
+// Node event types (emitted by internal subsystems)
+// ---------------------------------------------------------------------------
+
+export type NodeEventType =
+  | "connected"
+  | "disconnected"
+  | "reconnecting"
+  | "reconnected"
+  | "reconnect_exhausted"
+  | "heartbeat_timeout"
+  | "auth_started"
+  | "auth_success"
+  | "auth_failed"
+  | "agent_dispatched"
+  | "agent_terminated"
+  | "agent_crashed"
+  | "memory_warning"
+  | "memory_eviction"
+  | "shutdown_started"
+  | "shutdown_complete";
+
+export interface NodeEvent {
+  readonly type: NodeEventType;
+  readonly timestamp: number;
+  readonly data?: unknown;
+}
+
+/** Listener for node events. */
+export type NodeEventListener = (event: NodeEvent) => void;
