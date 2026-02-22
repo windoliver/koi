@@ -46,7 +46,9 @@ export function createMemoryMonitor(
 
   function getMetrics(): MemoryMetrics {
     const mem = process.memoryUsage();
-    const usagePercent = mem.heapTotal > 0 ? (mem.heapUsed / mem.heapTotal) * 100 : 0;
+    // heapUsed can temporarily exceed heapTotal during GC pressure; cap at 100
+    const usagePercent =
+      mem.heapTotal > 0 ? Math.min((mem.heapUsed / mem.heapTotal) * 100, 100) : 0;
     return {
       heapUsedBytes: mem.heapUsed,
       heapTotalBytes: mem.heapTotal,
