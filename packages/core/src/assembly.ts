@@ -2,24 +2,26 @@
  * Agent manifest and configuration types.
  */
 
+import type { JsonObject } from "./common.js";
+
 export interface ModelConfig {
   readonly name: string;
-  readonly options?: Readonly<Record<string, unknown>>;
+  readonly options?: JsonObject;
 }
 
 export interface ToolConfig {
   readonly name: string;
-  readonly options?: Readonly<Record<string, unknown>>;
+  readonly options?: JsonObject;
 }
 
 export interface ChannelConfig {
   readonly name: string;
-  readonly options?: Readonly<Record<string, unknown>>;
+  readonly options?: JsonObject;
 }
 
 export interface MiddlewareConfig {
   readonly name: string;
-  readonly options?: Readonly<Record<string, unknown>>;
+  readonly options?: JsonObject;
 }
 
 export interface PermissionConfig {
@@ -30,11 +32,12 @@ export interface PermissionConfig {
 
 export interface AgentManifest {
   readonly name: string;
+  readonly version: string;
   readonly description?: string;
   readonly model: ModelConfig;
   readonly tools?: readonly ToolConfig[];
   readonly channels?: readonly ChannelConfig[];
   readonly middleware?: readonly MiddlewareConfig[];
   readonly permissions?: PermissionConfig;
-  readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly metadata?: JsonObject;
 }

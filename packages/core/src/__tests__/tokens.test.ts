@@ -28,6 +28,10 @@ describe("token()", () => {
   test("different names produce different tokens", () => {
     expect(str(token("a"))).not.toBe(str(token("b")));
   });
+
+  test("empty string returns empty string", () => {
+    expect(str(token(""))).toBe("");
+  });
 });
 
 describe("toolToken()", () => {
@@ -37,6 +41,14 @@ describe("toolToken()", () => {
 
   test("contains namespace separator", () => {
     expect(str(toolToken("search"))).toContain(":");
+  });
+
+  test("empty name produces tool: prefix only", () => {
+    expect(str(toolToken(""))).toBe("tool:");
+  });
+
+  test("name with colon produces double colon", () => {
+    expect(str(toolToken("search:v2"))).toBe("tool:search:v2");
   });
 });
 
@@ -48,6 +60,10 @@ describe("channelToken()", () => {
   test("contains namespace separator", () => {
     expect(str(channelToken("slack"))).toContain(":");
   });
+
+  test("empty name produces channel: prefix only", () => {
+    expect(str(channelToken(""))).toBe("channel:");
+  });
 });
 
 describe("skillToken()", () => {
@@ -57,6 +73,10 @@ describe("skillToken()", () => {
 
   test("contains namespace separator", () => {
     expect(str(skillToken("summarize"))).toContain(":");
+  });
+
+  test("empty name produces skill: prefix only", () => {
+    expect(str(skillToken(""))).toBe("skill:");
   });
 });
 
