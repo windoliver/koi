@@ -27,6 +27,8 @@ import type {
   EngineStopReason,
   EventComponent,
   FileBlock,
+  // sandbox
+  FilesystemPolicy,
   GovernanceComponent,
   GovernanceUsage,
   ImageBlock,
@@ -45,13 +47,21 @@ import type {
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  NetworkPolicy,
   OutboundMessage,
   PermissionConfig,
   ProcessId,
   ProcessState,
   // resolver
   Resolver,
+  ResourceLimits,
   Result,
+  SandboxAdapter,
+  SandboxExecOptions,
+  SandboxInstance,
+  SandboxProfile,
+  SandboxResult,
+  SandboxTier,
   // middleware
   SessionContext,
   SkillMetadata,
@@ -137,7 +147,16 @@ type _TypeGuard =
   | AssertDefined<GovernanceUsage>
   | AssertDefined<SpawnCheck>
   | AssertDefined<CredentialComponent>
-  | AssertDefined<EventComponent>;
+  | AssertDefined<EventComponent>
+  | AssertDefined<SandboxTier>
+  | AssertDefined<FilesystemPolicy>
+  | AssertDefined<NetworkPolicy>
+  | AssertDefined<ResourceLimits>
+  | AssertDefined<SandboxAdapter>
+  | AssertDefined<SandboxExecOptions>
+  | AssertDefined<SandboxInstance>
+  | AssertDefined<SandboxProfile>
+  | AssertDefined<SandboxResult>;
 
 describe("export inventory", () => {
   test("all runtime values are defined", () => {
