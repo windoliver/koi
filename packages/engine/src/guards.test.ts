@@ -14,7 +14,13 @@ import type {
 } from "@koi/core";
 import { GOVERNANCE } from "@koi/core";
 import { KoiEngineError } from "./errors.js";
-import { createIterationGuard, createLoopDetector, createSpawnGuard, fnv1a } from "./guards.js";
+import {
+  createIterationGuard,
+  createLoopDetector,
+  createSpawnGuard,
+  detectRepeatingPattern,
+  fnv1a,
+} from "./guards.js";
 import { createInMemorySpawnLedger } from "./spawn-ledger.js";
 
 // ---------------------------------------------------------------------------
@@ -246,7 +252,7 @@ describe("createLoopDetector", () => {
   });
 
   test("passes through for unique tool calls", async () => {
-    const detector = createLoopDetector({ windowSize: 4, threshold: 3 });
+    const detector = createLoopDetector({ windowSize: 4, threshold: 3, noProgressEnabled: false });
     const wrap = getToolWrap(detector);
     const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
     const ctx = mockTurnContext();
@@ -258,7 +264,7 @@ describe("createLoopDetector", () => {
   });
 
   test("passes through for repeated calls below threshold", async () => {
-    const detector = createLoopDetector({ windowSize: 8, threshold: 3 });
+    const detector = createLoopDetector({ windowSize: 8, threshold: 3, noProgressEnabled: false });
     const wrap = getToolWrap(detector);
     const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
     const ctx = mockTurnContext();
@@ -270,7 +276,7 @@ describe("createLoopDetector", () => {
   });
 
   test("throws when repeated calls reach threshold", async () => {
-    const detector = createLoopDetector({ windowSize: 8, threshold: 3 });
+    const detector = createLoopDetector({ windowSize: 8, threshold: 3, noProgressEnabled: false });
     const wrap = getToolWrap(detector);
     const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
     const ctx = mockTurnContext();
@@ -293,7 +299,7 @@ describe("createLoopDetector", () => {
   });
 
   test("different arguments don't trigger loop detection", async () => {
-    const detector = createLoopDetector({ windowSize: 8, threshold: 3 });
+    const detector = createLoopDetector({ windowSize: 8, threshold: 3, noProgressEnabled: false });
     const wrap = getToolWrap(detector);
     const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
     const ctx = mockTurnContext();
@@ -310,6 +316,7 @@ describe("createLoopDetector", () => {
       windowSize: 8,
       threshold: 4,
       warningThreshold: 2,
+      noProgressEnabled: false,
       onWarning: (info) => warnings.push(info),
     });
     const wrap = getToolWrap(detector);
@@ -336,6 +343,7 @@ describe("createLoopDetector", () => {
       windowSize: 8,
       threshold: 4,
       warningThreshold: 2,
+      noProgressEnabled: false,
       onWarning: (info) => warnings.push(info),
     });
     const wrap = getToolWrap(detector);
@@ -354,6 +362,7 @@ describe("createLoopDetector", () => {
       windowSize: 8,
       threshold: 4,
       warningThreshold: 2,
+      noProgressEnabled: false,
       onWarning: (info) => warnings.push(info),
     });
     const wrap = getToolWrap(detector);
@@ -375,6 +384,7 @@ describe("createLoopDetector", () => {
       windowSize: 8,
       threshold: 3,
       warningThreshold: 2,
+      noProgressEnabled: false,
       onWarning: (info) => warnings.push(info),
     });
     const wrap = getToolWrap(detector);
@@ -400,6 +410,7 @@ describe("createLoopDetector", () => {
     const detector = createLoopDetector({
       windowSize: 8,
       threshold: 3,
+      noProgressEnabled: false,
       // warningThreshold not set
       onWarning,
     });
@@ -442,6 +453,7 @@ describe("createLoopDetector", () => {
     const detector = createLoopDetector({
       windowSize: 8,
       threshold: 3,
+      noProgressEnabled: false,
       onWarning,
       // warningThreshold not set
     });
@@ -454,8 +466,57 @@ describe("createLoopDetector", () => {
     expect(onWarning).not.toHaveBeenCalled();
   });
 
+  test("skips input hashing for large inputs (maxInputKeys)", async () => {
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 3,
+      maxInputKeys: 2,
+      noProgressEnabled: false,
+    });
+    const wrap = getToolWrap(detector);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    // Large input (3 keys > maxInputKeys=2): fingerprint falls back to toolId only
+    const largeInput = { a: 1, b: 2, c: 3 };
+    await wrap(ctx, mockToolRequest("calc", largeInput), next);
+    await wrap(ctx, mockToolRequest("calc", { x: 9, y: 8, z: 7 }), next);
+
+    // Both have same toolId-only fingerprint, so count=2
+    // Third call with different large input should still trigger threshold
+    try {
+      await wrap(ctx, mockToolRequest("calc", { p: 1, q: 2, r: 3 }), next);
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiEngineError);
+      if (e instanceof KoiEngineError) {
+        expect(e.code).toBe("TIMEOUT");
+        expect(e.message).toContain("Loop detected");
+      }
+    }
+  });
+
+  test("small inputs still use full fingerprint with maxInputKeys", async () => {
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 3,
+      maxInputKeys: 5,
+      noProgressEnabled: false,
+    });
+    const wrap = getToolWrap(detector);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    // Small input (1 key < maxInputKeys=5): full fingerprint used
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    await wrap(ctx, mockToolRequest("calc", { a: 2 }), next);
+    await wrap(ctx, mockToolRequest("calc", { a: 3 }), next);
+    // All have different inputs, so no loop detected
+    expect(next).toHaveBeenCalledTimes(3);
+  });
+
   test("window slides — old hashes fall off", async () => {
-    const detector = createLoopDetector({ windowSize: 3, threshold: 3 });
+    const detector = createLoopDetector({ windowSize: 3, threshold: 3, noProgressEnabled: false });
     const wrap = getToolWrap(detector);
     const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
     const ctx = mockTurnContext();
@@ -1357,6 +1418,393 @@ describe("createSpawnGuard", () => {
 });
 
 // ---------------------------------------------------------------------------
+// detectRepeatingPattern (unit)
+// ---------------------------------------------------------------------------
+
+describe("detectRepeatingPattern", () => {
+  test("detects length-2 pattern (A,B,A,B)", () => {
+    const hashes = [1, 2, 1, 2];
+    expect(detectRepeatingPattern(hashes, 2, 2)).toBe(2);
+  });
+
+  test("detects length-3 pattern (A,B,C,A,B,C)", () => {
+    const hashes = [1, 2, 3, 1, 2, 3];
+    expect(detectRepeatingPattern(hashes, 2, 2)).toBe(3);
+  });
+
+  test("returns 0 when no pattern", () => {
+    const hashes = [1, 2, 3, 4, 5];
+    expect(detectRepeatingPattern(hashes, 2, 2)).toBe(0);
+  });
+
+  test("returns 0 when sequence too short", () => {
+    const hashes = [1, 2];
+    expect(detectRepeatingPattern(hashes, 2, 2)).toBe(0);
+  });
+
+  test("prefers shortest pattern length", () => {
+    // [1,2,1,2,1,2] could be length-2 repeated 3x or length-3 repeated 2x
+    const hashes = [1, 2, 1, 2, 1, 2];
+    expect(detectRepeatingPattern(hashes, 2, 2)).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createLoopDetector — ping-pong
+// ---------------------------------------------------------------------------
+
+describe("createLoopDetector — ping-pong", () => {
+  test("A,B,A,B pattern is detected", async () => {
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 10, // high repeat threshold so only ping-pong fires
+      pingPongEnabled: true,
+      pingPongMinPatternLength: 2,
+      pingPongRepetitions: 2,
+    });
+    const wrap = getToolWrap(detector);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    await wrap(ctx, mockToolRequest("toolA", { x: 1 }), next);
+    await wrap(ctx, mockToolRequest("toolB", { x: 2 }), next);
+    await wrap(ctx, mockToolRequest("toolA", { x: 1 }), next);
+
+    try {
+      await wrap(ctx, mockToolRequest("toolB", { x: 2 }), next);
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiEngineError);
+      if (e instanceof KoiEngineError) {
+        expect(e.code).toBe("VALIDATION");
+        expect(e.message).toContain("Ping-pong");
+      }
+    }
+  });
+
+  test("A,B,C,A,B,C pattern is detected", async () => {
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 10,
+      pingPongEnabled: true,
+      pingPongMinPatternLength: 2,
+      pingPongRepetitions: 2,
+    });
+    const wrap = getToolWrap(detector);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    await wrap(ctx, mockToolRequest("a", { v: 1 }), next);
+    await wrap(ctx, mockToolRequest("b", { v: 2 }), next);
+    await wrap(ctx, mockToolRequest("c", { v: 3 }), next);
+    await wrap(ctx, mockToolRequest("a", { v: 1 }), next);
+    await wrap(ctx, mockToolRequest("b", { v: 2 }), next);
+
+    try {
+      await wrap(ctx, mockToolRequest("c", { v: 3 }), next);
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiEngineError);
+      if (e instanceof KoiEngineError) {
+        expect(e.message).toContain("Ping-pong");
+      }
+    }
+  });
+
+  test("broken pattern passes", async () => {
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 10,
+      pingPongEnabled: true,
+      pingPongMinPatternLength: 2,
+      pingPongRepetitions: 2,
+    });
+    const wrap = getToolWrap(detector);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    await wrap(ctx, mockToolRequest("a"), next);
+    await wrap(ctx, mockToolRequest("b"), next);
+    await wrap(ctx, mockToolRequest("a"), next);
+    await wrap(ctx, mockToolRequest("c"), next); // breaks the pattern
+    expect(next).toHaveBeenCalledTimes(4);
+  });
+
+  test("all unique passes", async () => {
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 10,
+      pingPongEnabled: true,
+      pingPongMinPatternLength: 2,
+      pingPongRepetitions: 2,
+    });
+    const wrap = getToolWrap(detector);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    await wrap(ctx, mockToolRequest("a", { v: 1 }), next);
+    await wrap(ctx, mockToolRequest("b", { v: 2 }), next);
+    await wrap(ctx, mockToolRequest("c", { v: 3 }), next);
+    await wrap(ctx, mockToolRequest("d", { v: 4 }), next);
+    expect(next).toHaveBeenCalledTimes(4);
+  });
+
+  test("minPatternLength is respected", async () => {
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 10,
+      pingPongEnabled: true,
+      pingPongMinPatternLength: 3, // requires at least 3-element pattern
+      pingPongRepetitions: 2,
+    });
+    const wrap = getToolWrap(detector);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    // A,B,A,B pattern of length 2 — should NOT trigger with minPatternLength=3
+    await wrap(ctx, mockToolRequest("a", { v: 1 }), next);
+    await wrap(ctx, mockToolRequest("b", { v: 2 }), next);
+    await wrap(ctx, mockToolRequest("a", { v: 1 }), next);
+    await wrap(ctx, mockToolRequest("b", { v: 2 }), next);
+    expect(next).toHaveBeenCalledTimes(4);
+  });
+
+  test("repetitions=3 requires 3 full cycles", async () => {
+    const detector = createLoopDetector({
+      windowSize: 12,
+      threshold: 10,
+      pingPongEnabled: true,
+      pingPongMinPatternLength: 2,
+      pingPongRepetitions: 3,
+      noProgressEnabled: false,
+    });
+    const wrap = getToolWrap(detector);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    // 2 cycles should pass
+    await wrap(ctx, mockToolRequest("a", { v: 1 }), next);
+    await wrap(ctx, mockToolRequest("b", { v: 2 }), next);
+    await wrap(ctx, mockToolRequest("a", { v: 1 }), next);
+    await wrap(ctx, mockToolRequest("b", { v: 2 }), next);
+    expect(next).toHaveBeenCalledTimes(4);
+
+    // 3rd cycle should trigger
+    await wrap(ctx, mockToolRequest("a", { v: 1 }), next);
+    try {
+      await wrap(ctx, mockToolRequest("b", { v: 2 }), next);
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiEngineError);
+      if (e instanceof KoiEngineError) {
+        expect(e.message).toContain("Ping-pong");
+      }
+    }
+  });
+
+  test("disabled via config", async () => {
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 10,
+      pingPongEnabled: false,
+      noProgressEnabled: false,
+    });
+    const wrap = getToolWrap(detector);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    // A,B,A,B pattern should pass when ping-pong disabled
+    await wrap(ctx, mockToolRequest("a", { v: 1 }), next);
+    await wrap(ctx, mockToolRequest("b", { v: 2 }), next);
+    await wrap(ctx, mockToolRequest("a", { v: 1 }), next);
+    await wrap(ctx, mockToolRequest("b", { v: 2 }), next);
+    expect(next).toHaveBeenCalledTimes(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createLoopDetector — no-progress
+// ---------------------------------------------------------------------------
+
+describe("createLoopDetector — no-progress", () => {
+  test("3 identical outputs triggers detection", async () => {
+    const detector = createLoopDetector({
+      windowSize: 20,
+      threshold: 20, // high so repeat doesn't fire
+      pingPongEnabled: false,
+      noProgressEnabled: true,
+      noProgressThreshold: 3,
+    });
+    const wrap = getToolWrap(detector);
+    const ctx = mockTurnContext();
+
+    // Each call has different input but same output
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse("same-result")));
+
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    await wrap(ctx, mockToolRequest("calc", { a: 2 }), next);
+
+    try {
+      await wrap(ctx, mockToolRequest("calc", { a: 3 }), next);
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiEngineError);
+      if (e instanceof KoiEngineError) {
+        expect(e.code).toBe("VALIDATION");
+        expect(e.message).toContain("No-progress");
+        expect(e.message).toContain("3 consecutive");
+      }
+    }
+  });
+
+  test("output change resets counter", async () => {
+    const detector = createLoopDetector({
+      windowSize: 20,
+      threshold: 20,
+      pingPongEnabled: false,
+      noProgressEnabled: true,
+      noProgressThreshold: 3,
+    });
+    const wrap = getToolWrap(detector);
+    const ctx = mockTurnContext();
+    let outputValue = "result-a";
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse(outputValue)));
+
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    await wrap(ctx, mockToolRequest("calc", { a: 2 }), next);
+
+    // Change output — resets counter
+    outputValue = "result-b";
+    await wrap(ctx, mockToolRequest("calc", { a: 3 }), next);
+    await wrap(ctx, mockToolRequest("calc", { a: 4 }), next);
+    expect(next).toHaveBeenCalledTimes(4);
+  });
+
+  test("per-tool tracking", async () => {
+    const detector = createLoopDetector({
+      windowSize: 20,
+      threshold: 20,
+      pingPongEnabled: false,
+      noProgressEnabled: true,
+      noProgressThreshold: 3,
+    });
+    const wrap = getToolWrap(detector);
+    const ctx = mockTurnContext();
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse("same")));
+
+    // Interleave different tools — each should track independently
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    await wrap(ctx, mockToolRequest("search", { q: "x" }), next);
+    await wrap(ctx, mockToolRequest("calc", { a: 2 }), next);
+    await wrap(ctx, mockToolRequest("search", { q: "y" }), next);
+
+    // calc has 2 identical outputs, search has 2 — neither at threshold 3
+    expect(next).toHaveBeenCalledTimes(4);
+  });
+
+  test("custom threshold", async () => {
+    const detector = createLoopDetector({
+      windowSize: 20,
+      threshold: 20,
+      pingPongEnabled: false,
+      noProgressEnabled: true,
+      noProgressThreshold: 5,
+    });
+    const wrap = getToolWrap(detector);
+    const ctx = mockTurnContext();
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse("fixed")));
+
+    // 4 calls with same output should pass (threshold is 5)
+    for (let i = 0; i < 4; i++) {
+      await wrap(ctx, mockToolRequest("calc", { a: i }), next);
+    }
+    expect(next).toHaveBeenCalledTimes(4);
+
+    // 5th should trigger
+    try {
+      await wrap(ctx, mockToolRequest("calc", { a: 5 }), next);
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiEngineError);
+      if (e instanceof KoiEngineError) {
+        expect(e.message).toContain("No-progress");
+      }
+    }
+  });
+
+  test("disabled via config", async () => {
+    const detector = createLoopDetector({
+      windowSize: 20,
+      threshold: 20,
+      pingPongEnabled: false,
+      noProgressEnabled: false,
+    });
+    const wrap = getToolWrap(detector);
+    const ctx = mockTurnContext();
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse("same")));
+
+    // 5 identical outputs should pass when no-progress disabled
+    for (let i = 0; i < 5; i++) {
+      await wrap(ctx, mockToolRequest("calc", { a: i }), next);
+    }
+    expect(next).toHaveBeenCalledTimes(5);
+  });
+
+  test("error shape includes detectionKind", async () => {
+    const detector = createLoopDetector({
+      windowSize: 20,
+      threshold: 20,
+      pingPongEnabled: false,
+      noProgressEnabled: true,
+      noProgressThreshold: 2,
+    });
+    const wrap = getToolWrap(detector);
+    const ctx = mockTurnContext();
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse("fixed")));
+
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+
+    try {
+      await wrap(ctx, mockToolRequest("calc", { a: 2 }), next);
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiEngineError);
+      if (e instanceof KoiEngineError) {
+        expect(e.context).toBeDefined();
+        expect((e.context as Record<string, unknown>).detectionKind).toBe("no_progress");
+      }
+    }
+  });
+
+  test("different output structure resets counter", async () => {
+    const detector = createLoopDetector({
+      windowSize: 20,
+      threshold: 20,
+      pingPongEnabled: false,
+      noProgressEnabled: true,
+      noProgressThreshold: 3,
+    });
+    const wrap = getToolWrap(detector);
+    const ctx = mockTurnContext();
+
+    let callIndex = 0;
+    const next: ToolNext = mock(() => {
+      callIndex++;
+      // Return different structure on 3rd call
+      const output = callIndex === 3 ? { different: true } : "same";
+      return Promise.resolve(mockToolResponse(output));
+    });
+
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    await wrap(ctx, mockToolRequest("calc", { a: 2 }), next);
+    await wrap(ctx, mockToolRequest("calc", { a: 3 }), next); // different output, resets
+    await wrap(ctx, mockToolRequest("calc", { a: 4 }), next); // back to "same", count=1
+
+    expect(next).toHaveBeenCalledTimes(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // IterationGuard — streaming
 // ---------------------------------------------------------------------------
 
@@ -1693,7 +2141,11 @@ describe("composed guards interaction", () => {
 
   test("IterationGuard and LoopDetector both active on same request flow", async () => {
     createIterationGuard({ maxTurns: 10 });
-    const loopGuard = createLoopDetector({ windowSize: 8, threshold: 3 });
+    const loopGuard = createLoopDetector({
+      windowSize: 8,
+      threshold: 3,
+      noProgressEnabled: false,
+    });
 
     const toolChain = composeToolWraps(
       [loopGuard],

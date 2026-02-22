@@ -218,6 +218,38 @@ export interface EventComponent {
 }
 
 // ---------------------------------------------------------------------------
+// Process accounting
+// ---------------------------------------------------------------------------
+
+/** Shared process accounter for cross-agent spawn accounting. */
+export interface ProcessAccounter {
+  /** Current number of active processes. */
+  readonly activeCount: () => number;
+  /** Manually increment the active count (e.g., on successful spawn). */
+  readonly increment: () => void;
+  /** Manually decrement the active count (e.g., on agent termination). */
+  readonly decrement: () => void;
+}
+
+// ---------------------------------------------------------------------------
+// Child lifecycle
+// ---------------------------------------------------------------------------
+
+/** Lifecycle event for a child agent. */
+export type ChildLifecycleEvent =
+  | { readonly kind: "started"; readonly childId: AgentId }
+  | { readonly kind: "completed"; readonly childId: AgentId }
+  | { readonly kind: "error"; readonly childId: AgentId; readonly cause?: unknown }
+  | { readonly kind: "terminated"; readonly childId: AgentId };
+
+/** Handle for monitoring a child agent's lifecycle. */
+export interface ChildHandle {
+  readonly childId: AgentId;
+  readonly name: string;
+  readonly onEvent: (listener: (event: ChildLifecycleEvent) => void) => () => void;
+}
+
+// ---------------------------------------------------------------------------
 // Well-known singleton tokens
 // ---------------------------------------------------------------------------
 

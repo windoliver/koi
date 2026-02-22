@@ -11,6 +11,12 @@ export type { AgentHost } from "./agent/host.js";
 export { createAgentHost } from "./agent/host.js";
 export type { StatusReporter } from "./agent/status.js";
 export { createStatusReporter } from "./agent/status.js";
+export type { CheckpointManager, CheckpointManagerDeps } from "./checkpoint.js";
+// -- Checkpoint manager -----------------------------------------------------
+export { createCheckpointManager } from "./checkpoint.js";
+export type { CheckpointingEngineConfig } from "./checkpointing-engine.js";
+// -- Auto-checkpointing engine decorator ------------------------------------
+export { createCheckpointingEngine } from "./checkpointing-engine.js";
 export type { AuthHandshake, AuthHandshakeConfig } from "./connection/auth.js";
 export { createAuthHandshake, createAuthPayload, signChallenge } from "./connection/auth.js";
 export type { HeartbeatCallbacks, HeartbeatMonitor } from "./connection/heartbeat.js";
@@ -27,12 +33,22 @@ export {
 } from "./connection/reconnect.js";
 export type { Transport, TransportState } from "./connection/transport.js";
 export { createTransport } from "./connection/transport.js";
+export type {
+  DeliveryManager,
+  DeliveryManagerConfig,
+  DeliveryManagerDeps,
+} from "./delivery-manager.js";
+// -- Delivery manager -------------------------------------------------------
+export { createDeliveryManager, DELIVERY_DEFAULTS } from "./delivery-manager.js";
 export type { DiscoveryService, ServiceInfo } from "./discovery.js";
 // -- Discovery & monitoring -------------------------------------------------
 export { createDiscoveryService } from "./discovery.js";
+export type { FrameCounterState, FrameCounters } from "./frame-counter.js";
+// -- Frame counters ---------------------------------------------------------
+export { createFrameCounters } from "./frame-counter.js";
 export type { MemoryMetrics, MemoryMonitor } from "./monitor.js";
 export { createMemoryMonitor } from "./monitor.js";
-export type { KoiNode } from "./node.js";
+export type { KoiNode, NodeDeps, RecoveryResult } from "./node.js";
 // -- Main entry point -------------------------------------------------------
 export { createNode } from "./node.js";
 export type { ShutdownCallbacks, ShutdownHandler } from "./shutdown.js";
@@ -57,6 +73,7 @@ export type {
   GatewayConnectionConfig,
   HandshakePayload,
   HeartbeatConfig,
+  NodeCheckpoint,
   NodeConfig,
   NodeEvent,
   NodeEventListener,
@@ -64,6 +81,10 @@ export type {
   NodeFrame,
   NodeFrameType,
   NodeMode,
+  NodePendingFrame,
+  NodeRecoveryPlan,
+  NodeSessionRecord,
+  NodeSessionStore,
   NodeState,
   ResourcesConfig,
   ToolCallPayload,
@@ -73,3 +94,6 @@ export type {
 } from "./types.js";
 // -- Configuration & types --------------------------------------------------
 export { parseNodeConfig } from "./types.js";
+export type { WriteQueue, WriteQueueConfig } from "./write-queue.js";
+// -- Write queue ------------------------------------------------------------
+export { createWriteQueue } from "./write-queue.js";

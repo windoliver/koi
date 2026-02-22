@@ -1,13 +1,6 @@
-import type {
-  Embedder,
-  KoiError,
-  Result,
-  Retriever,
-  SearchFilter,
-  SearchPage,
-  SearchQuery,
-  SearchResult,
-} from "@koi/core";
+import type { KoiError, Result } from "@koi/core";
+import type { Embedder, Retriever } from "../contracts.js";
+import type { SearchFilter, SearchPage, SearchQuery, SearchResult } from "../types.js";
 import type { VectorStore } from "./sqlite-vec.js";
 
 export interface VectorRetrieverConfig {

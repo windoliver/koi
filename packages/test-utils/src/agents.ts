@@ -21,6 +21,22 @@ import type {
 import { agentId } from "@koi/core";
 
 // ---------------------------------------------------------------------------
+// MockStatefulEngine types
+// ---------------------------------------------------------------------------
+
+/**
+ * Deterministic, JSON-serializable state for the mock stateful engine.
+ *
+ * Used by `createMockStatefulEngine` to track calls and provide verifiable
+ * state for round-trip persistence tests.
+ */
+export interface MockEngineData {
+  readonly turnCount: number;
+  readonly lastInput: string | null;
+  readonly customData: unknown;
+}
+
+// ---------------------------------------------------------------------------
 // Default values
 // ---------------------------------------------------------------------------
 
@@ -168,5 +184,86 @@ export function createMockEngineAdapter(options?: MockEngineAdapterOptions): Eng
 
     disposeCalls,
     streamCalls,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// createMockStatefulEngine
+// ---------------------------------------------------------------------------
+
+export interface MockStatefulEngineOptions {
+  readonly engineId?: string;
+  /** Initial custom data stored alongside turn tracking. Defaults to `null`. */
+  readonly initialCustomData?: unknown;
+}
+
+/**
+ * A stateful engine adapter whose state is fully deterministic and
+ * JSON-round-trip safe. Designed for testing session-store persistence,
+ * checkpoint save/load, and crash recovery flows.
+ *
+ * Behavior:
+ * - `stream()` increments `turnCount` and captures the input text (or "resume"
+ *   for resume inputs, "messages" for message inputs).
+ * - `saveState()` returns the current `MockEngineData` as `EngineState.data`.
+ * - `loadState()` restores from a previously saved `EngineState`.
+ * - State survives `JSON.parse(JSON.stringify(state))` without data loss.
+ */
+export function createMockStatefulEngine(options?: MockStatefulEngineOptions): EngineAdapter & {
+  /** Read current state without going through saveState(). */
+  readonly currentData: () => MockEngineData;
+} {
+  const eid = options?.engineId ?? "mock-stateful-engine";
+
+  let data: MockEngineData = {
+    turnCount: 0,
+    lastInput: null,
+    customData: options?.initialCustomData ?? null,
+  };
+
+  function inputLabel(input: EngineInput): string {
+    switch (input.kind) {
+      case "text":
+        return input.text;
+      case "messages":
+        return "messages";
+      case "resume":
+        return "resume";
+    }
+  }
+
+  return {
+    engineId: eid,
+
+    async *stream(input: EngineInput): AsyncIterable<EngineEvent> {
+      data = {
+        turnCount: data.turnCount + 1,
+        lastInput: inputLabel(input),
+        customData: data.customData,
+      };
+
+      const output: EngineOutput = {
+        content: [{ kind: "text", text: `turn-${String(data.turnCount)}` }],
+        stopReason: "completed",
+        metrics: DEFAULT_METRICS,
+      };
+      yield { kind: "done", output };
+    },
+
+    async saveState(): Promise<EngineState> {
+      return { engineId: eid, data };
+    },
+
+    async loadState(state: EngineState): Promise<void> {
+      data = state.data as MockEngineData;
+    },
+
+    async dispose(): Promise<void> {
+      // no-op
+    },
+
+    currentData(): MockEngineData {
+      return data;
+    },
   };
 }

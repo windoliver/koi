@@ -1,11 +1,11 @@
 /**
- * @koi/core — Search contracts (Layer 0)
+ * @koi/search — Search contracts (Layer 2)
  *
  * Interfaces only — no runtime code.
  */
 
-import type { KoiError, Result } from "./errors.js";
-import type { IndexDocument, SearchPage, SearchQuery } from "./search.js";
+import type { KoiError, Result } from "@koi/core";
+import type { IndexDocument, SearchPage, SearchQuery } from "./types.js";
 
 /** Contract 1: Retriever (read path) */
 export interface Retriever<T = unknown> {

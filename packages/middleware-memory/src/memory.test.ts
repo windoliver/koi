@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type { InboundMessage, ModelRequest } from "@koi/core";
 import { createMockTurnContext, createSpyModelHandler } from "@koi/test-utils";
 import { createMemoryMiddleware } from "./memory.js";
@@ -168,5 +168,37 @@ describe("createMemoryMiddleware", () => {
     const memMsg = spy.calls[0]?.messages[0];
     expect(memMsg).toBeDefined();
     expect(memMsg?.senderId).toBe("system:memory");
+  });
+
+  test("onStoreError callback fires on store failure", async () => {
+    const storeError = new Error("store broken");
+    const failingStore: MemoryStore = {
+      recall: async () => [],
+      store: async () => {
+        throw storeError;
+      },
+    };
+    const onStoreError = mock(() => {});
+    const mw = createMemoryMiddleware({ store: failingStore, onStoreError });
+    const ctx = createMockTurnContext();
+    const spy = createSpyModelHandler({ content: "response" });
+    const response = await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
+    expect(response?.content).toBe("response");
+    expect(onStoreError).toHaveBeenCalledTimes(1);
+    expect(onStoreError).toHaveBeenCalledWith(storeError);
+  });
+
+  test("store failure without onStoreError does not crash", async () => {
+    const failingStore: MemoryStore = {
+      recall: async () => [],
+      store: async () => {
+        throw new Error("store broken");
+      },
+    };
+    const mw = createMemoryMiddleware({ store: failingStore });
+    const ctx = createMockTurnContext();
+    const spy = createSpyModelHandler({ content: "response" });
+    const response = await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
+    expect(response?.content).toBe("response");
   });
 });

@@ -9,17 +9,16 @@
  * host filesystem (the OS sandbox restricts what the process can access).
  */
 
+import type { KoiError, Result } from "@koi/core";
+import type { ExecuteOptions } from "./execute.js";
+import { execute } from "./execute.js";
 import type {
-  KoiError,
-  Result,
   SandboxAdapter,
   SandboxExecOptions,
   SandboxInstance,
   SandboxProfile,
   SandboxResult,
-} from "@koi/core";
-import type { ExecuteOptions } from "./execute.js";
-import { execute } from "./execute.js";
+} from "./types.js";
 
 /**
  * Create an OS-level SandboxAdapter.

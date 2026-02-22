@@ -340,7 +340,7 @@ describe("approval cache", () => {
     expect(requestApproval).toHaveBeenCalledTimes(2);
   });
 
-  test("cache respects maxEntries and evicts when full", async () => {
+  test("LRU eviction: oldest entry evicted when cache full, recent entries kept", async () => {
     const requestApproval = mock(async () => true);
     const approvalHandler: ApprovalHandler = { requestApproval };
     const mw = createPermissionsMiddleware({
@@ -352,16 +352,20 @@ describe("approval cache", () => {
     const spy = createSpyToolHandler();
 
     // Fill cache with 2 entries
-    await mw.wrapToolCall?.(ctx, makeRequest("deploy", { a: 1 }), spy.handler);
-    await mw.wrapToolCall?.(ctx, makeRequest("deploy", { a: 2 }), spy.handler);
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy", { a: 1 }), spy.handler); // prompt 1
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy", { a: 2 }), spy.handler); // prompt 2
     expect(requestApproval).toHaveBeenCalledTimes(2);
 
-    // Third unique entry — evicts (clear), prompts
-    await mw.wrapToolCall?.(ctx, makeRequest("deploy", { a: 3 }), spy.handler);
+    // Third unique entry — LRU evicts oldest ({a:1}), prompts
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy", { a: 3 }), spy.handler); // prompt 3
     expect(requestApproval).toHaveBeenCalledTimes(3);
 
-    // Entry {a:1} was evicted, should re-prompt
-    await mw.wrapToolCall?.(ctx, makeRequest("deploy", { a: 1 }), spy.handler);
+    // Entry {a:2} should still be cached — no new prompt
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy", { a: 2 }), spy.handler); // cache hit
+    expect(requestApproval).toHaveBeenCalledTimes(3);
+
+    // Entry {a:1} was evicted — should re-prompt
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy", { a: 1 }), spy.handler); // prompt 4
     expect(requestApproval).toHaveBeenCalledTimes(4);
   });
 

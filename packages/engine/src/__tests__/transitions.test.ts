@@ -91,9 +91,9 @@ describe("validateTransition", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("created → terminated is invalid (must go through running first)", () => {
+  test("created → terminated is valid (error during creation)", () => {
     const result = validateTransition("created", "terminated");
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(true);
   });
 
   test("self-transition is invalid", () => {
@@ -101,9 +101,9 @@ describe("validateTransition", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("waiting → suspended is invalid", () => {
+  test("waiting → suspended is valid (HITL pause during waiting)", () => {
     const result = validateTransition("waiting", "suspended");
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(true);
   });
 
   // --- Edge: verify all transitions in VALID_TRANSITIONS are accepted ---
@@ -199,7 +199,7 @@ describe("applyTransition", () => {
   test("invalid transition returns VALIDATION error", () => {
     const result = applyTransition(
       { phase: "created", generation: 0, conditions: [], lastTransitionAt: 0 },
-      input("created", "terminated", 0),
+      input("created", "waiting", 0),
     );
     expect(result.ok).toBe(false);
     if (!result.ok) {

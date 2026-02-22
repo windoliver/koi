@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { SandboxProfile } from "@koi/core";
+import type { SandboxProfile } from "../types.js";
 import { buildSeatbeltArgs, generateSeatbeltProfile } from "./seatbelt.js";
 
 const MINIMAL_PROFILE: SandboxProfile = {

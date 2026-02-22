@@ -11,3 +11,5 @@ pre-push:
       run: bun run build
     typecheck:
       run: bun run typecheck
+    test:
+      run: bun run test

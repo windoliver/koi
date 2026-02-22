@@ -6,7 +6,7 @@
  * are implementation details of the search package.
  */
 
-import type { SearchResult } from "@koi/core";
+import type { SearchResult } from "./types.js";
 
 /** Score normalizer names for linear combination fusion */
 export type ScoreNormalizer = "min_max" | "z_score" | "l2";
