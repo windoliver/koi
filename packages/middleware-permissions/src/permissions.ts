@@ -11,7 +11,9 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core/middleware";
-import type { PermissionsMiddlewareConfig } from "./config.js";
+import type { ApprovalCacheConfig, PermissionsMiddlewareConfig } from "./config.js";
+import { DEFAULT_APPROVAL_CACHE_MAX_ENTRIES } from "./config.js";
+import { fnv1a } from "./hash.js";
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 30_000;
 
@@ -21,8 +23,19 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     rules,
     approvalHandler,
     approvalTimeoutMs = DEFAULT_APPROVAL_TIMEOUT_MS,
-    defaultDeny = true,
+    approvalCache: approvalCacheOption,
   } = config;
+
+  // Resolve cache config: true → defaults, false/undefined → disabled, object → custom
+  const resolvedCache: ApprovalCacheConfig | false =
+    approvalCacheOption === true
+      ? { maxEntries: DEFAULT_APPROVAL_CACHE_MAX_ENTRIES }
+      : approvalCacheOption === false || approvalCacheOption === undefined
+        ? false
+        : { maxEntries: approvalCacheOption.maxEntries ?? DEFAULT_APPROVAL_CACHE_MAX_ENTRIES };
+
+  /** Cache keyed by fnv1a(toolId + ":" + JSON.stringify(input)). Only approvals are cached. */
+  const cache = resolvedCache !== false ? new Map<number, true>() : undefined;
 
   return {
     name: "permissions",
@@ -50,6 +63,15 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       }
 
       // decision.allowed === "ask"
+
+      // Check approval cache before prompting
+      if (cache !== undefined) {
+        const cacheKey = fnv1a(`${request.toolId}:${JSON.stringify(request.input)}`);
+        if (cache.has(cacheKey)) {
+          return next(request);
+        }
+      }
+
       if (!approvalHandler) {
         const error: KoiError = {
           code: "PERMISSION",
@@ -60,10 +82,11 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         throw error;
       }
 
+      const ac = new AbortController();
       const approved = await Promise.race([
         approvalHandler.requestApproval(request.toolId, request.input, decision.reason),
-        new Promise<boolean>((_, reject) => {
-          setTimeout(() => {
+        new Promise<never>((_, reject) => {
+          const timerId = setTimeout(() => {
             const timeoutError: KoiError = {
               code: "TIMEOUT",
               message: `Approval timed out after ${approvalTimeoutMs}ms for tool "${request.toolId}"`,
@@ -72,10 +95,21 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
             };
             reject(timeoutError);
           }, approvalTimeoutMs);
+          ac.signal.addEventListener("abort", () => clearTimeout(timerId), { once: true });
         }),
-      ]);
+      ]).finally(() => {
+        ac.abort();
+      });
 
       if (approved) {
+        // Cache the approval (only approvals, not denials)
+        if (cache !== undefined && resolvedCache !== false) {
+          const cacheKey = fnv1a(`${request.toolId}:${JSON.stringify(request.input)}`);
+          if (cache.size >= (resolvedCache.maxEntries ?? DEFAULT_APPROVAL_CACHE_MAX_ENTRIES)) {
+            cache.clear();
+          }
+          cache.set(cacheKey, true);
+        }
         return next(request);
       }
 

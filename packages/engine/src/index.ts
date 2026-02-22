@@ -16,7 +16,8 @@ export {
   composeToolChain,
   createComposedCallHandlers,
   createTerminalHandlers,
-  runHooks,
+  runSessionHooks,
+  runTurnHooks,
 } from "./compose.js";
 // dispose
 export { disposeAll } from "./dispose.js";
@@ -53,5 +54,6 @@ export type {
   IterationLimits,
   KoiRuntime,
   LoopDetectionConfig,
+  LoopWarningInfo,
   SpawnPolicy,
 } from "./types.js";

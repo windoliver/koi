@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type { KoiError } from "@koi/core/errors";
 import type { ToolRequest } from "@koi/core/middleware";
 import { createMockTurnContext, createSpyToolHandler } from "@koi/test-utils";
@@ -129,6 +129,22 @@ describe("createPermissionsMiddleware", () => {
     }
   });
 
+  test("approval cleans up timeout timer (no leak)", async () => {
+    const fastHandler: ApprovalHandler = {
+      requestApproval: async () => true,
+    };
+    const mw = createPermissionsMiddleware({
+      engine,
+      rules: { allow: [], deny: [], ask: ["deploy"] },
+      approvalHandler: fastHandler,
+      approvalTimeoutMs: 60_000, // very long — would hang if not cleaned up
+    });
+    const spy = createSpyToolHandler();
+    const response = await mw.wrapToolCall?.(ctx, makeRequest("deploy"), spy.handler);
+    expect(spy.calls).toHaveLength(1);
+    expect(response?.output).toEqual({ result: "mock" });
+  });
+
   test("defaultDeny blocks unmatched tools", async () => {
     const mw = createPermissionsMiddleware({
       engine,
@@ -206,5 +222,164 @@ describe("createPermissionsMiddleware", () => {
     const request = makeRequest("calc");
     await mw.wrapToolCall?.(ctx, request, spy.handler);
     expect(spy.calls[0]).toBe(request);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Approval Cache
+// ---------------------------------------------------------------------------
+
+describe("approval cache", () => {
+  const engine = createPatternPermissionEngine();
+  const ctx = createMockTurnContext();
+
+  const makeRequest = (toolId: string, input: Record<string, unknown> = {}): ToolRequest => ({
+    toolId,
+    input,
+  });
+
+  test("second identical ask call skips approval when cache enabled", async () => {
+    const requestApproval = mock(async () => true);
+    const approvalHandler: ApprovalHandler = { requestApproval };
+    const mw = createPermissionsMiddleware({
+      engine,
+      rules: { allow: [], deny: [], ask: ["deploy"] },
+      approvalHandler,
+      approvalCache: true,
+    });
+    const spy = createSpyToolHandler();
+
+    // First call — prompts for approval
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy"), spy.handler);
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+
+    // Second identical call — cache hit, no prompt
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy"), spy.handler);
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+    expect(spy.calls).toHaveLength(2);
+  });
+
+  test("different inputs trigger separate approvals", async () => {
+    const requestApproval = mock(async () => true);
+    const approvalHandler: ApprovalHandler = { requestApproval };
+    const mw = createPermissionsMiddleware({
+      engine,
+      rules: { allow: [], deny: [], ask: ["deploy"] },
+      approvalHandler,
+      approvalCache: true,
+    });
+    const spy = createSpyToolHandler();
+
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy", { env: "staging" }), spy.handler);
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy", { env: "prod" }), spy.handler);
+    expect(requestApproval).toHaveBeenCalledTimes(2);
+  });
+
+  test("denied approvals are NOT cached", async () => {
+    let callCount = 0;
+    const approvalHandler: ApprovalHandler = {
+      requestApproval: async () => {
+        callCount++;
+        // First call denied, second call approved
+        return callCount > 1;
+      },
+    };
+    const mw = createPermissionsMiddleware({
+      engine,
+      rules: { allow: [], deny: [], ask: ["deploy"] },
+      approvalHandler,
+      approvalCache: true,
+    });
+    const spy = createSpyToolHandler();
+
+    // First call — denied
+    try {
+      await mw.wrapToolCall?.(ctx, makeRequest("deploy"), spy.handler);
+      expect.unreachable("should have thrown");
+    } catch (e) {
+      const err = e as KoiError;
+      expect(err.code).toBe("PERMISSION");
+    }
+
+    // Second identical call — should prompt again (denial was not cached)
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy"), spy.handler);
+    expect(callCount).toBe(2);
+    expect(spy.calls).toHaveLength(1);
+  });
+
+  test("cache disabled by default", async () => {
+    const requestApproval = mock(async () => true);
+    const approvalHandler: ApprovalHandler = { requestApproval };
+    const mw = createPermissionsMiddleware({
+      engine,
+      rules: { allow: [], deny: [], ask: ["deploy"] },
+      approvalHandler,
+      // no approvalCache — disabled by default
+    });
+    const spy = createSpyToolHandler();
+
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy"), spy.handler);
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy"), spy.handler);
+    // Both calls should prompt
+    expect(requestApproval).toHaveBeenCalledTimes(2);
+  });
+
+  test("cache disabled when approvalCache is false", async () => {
+    const requestApproval = mock(async () => true);
+    const approvalHandler: ApprovalHandler = { requestApproval };
+    const mw = createPermissionsMiddleware({
+      engine,
+      rules: { allow: [], deny: [], ask: ["deploy"] },
+      approvalHandler,
+      approvalCache: false,
+    });
+    const spy = createSpyToolHandler();
+
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy"), spy.handler);
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy"), spy.handler);
+    expect(requestApproval).toHaveBeenCalledTimes(2);
+  });
+
+  test("cache respects maxEntries and evicts when full", async () => {
+    const requestApproval = mock(async () => true);
+    const approvalHandler: ApprovalHandler = { requestApproval };
+    const mw = createPermissionsMiddleware({
+      engine,
+      rules: { allow: [], deny: [], ask: ["deploy"] },
+      approvalHandler,
+      approvalCache: { maxEntries: 2 },
+    });
+    const spy = createSpyToolHandler();
+
+    // Fill cache with 2 entries
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy", { a: 1 }), spy.handler);
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy", { a: 2 }), spy.handler);
+    expect(requestApproval).toHaveBeenCalledTimes(2);
+
+    // Third unique entry — evicts (clear), prompts
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy", { a: 3 }), spy.handler);
+    expect(requestApproval).toHaveBeenCalledTimes(3);
+
+    // Entry {a:1} was evicted, should re-prompt
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy", { a: 1 }), spy.handler);
+    expect(requestApproval).toHaveBeenCalledTimes(4);
+  });
+
+  test("allowed tools bypass cache entirely", async () => {
+    const requestApproval = mock(async () => true);
+    const approvalHandler: ApprovalHandler = { requestApproval };
+    const mw = createPermissionsMiddleware({
+      engine,
+      rules: { allow: ["calc"], deny: [], ask: ["deploy"] },
+      approvalHandler,
+      approvalCache: true,
+    });
+    const spy = createSpyToolHandler();
+
+    // Allowed tool — no approval needed, no cache involvement
+    await mw.wrapToolCall?.(ctx, makeRequest("calc"), spy.handler);
+    await mw.wrapToolCall?.(ctx, makeRequest("calc"), spy.handler);
+    expect(requestApproval).not.toHaveBeenCalled();
+    expect(spy.calls).toHaveLength(2);
   });
 });

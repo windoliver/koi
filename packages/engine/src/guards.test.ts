@@ -200,6 +200,33 @@ describe("createIterationGuard", () => {
     expect(guard.name).toBe("koi:iteration-guard");
     // Should not throw on first call with defaults (maxTurns: 25)
   });
+
+  test("throws KoiEngineError when duration limit exceeded", async () => {
+    // Very short duration limit
+    const guard = createIterationGuard({ maxDurationMs: 1 });
+    const wrap = getModelWrap(guard);
+    const next: ModelNext = mock(async () => {
+      // Delay to ensure duration exceeds 1ms
+      await new Promise((r) => setTimeout(r, 10));
+      return mockModelResponse();
+    });
+    const ctx = mockTurnContext();
+
+    // First call succeeds (checkLimits runs before next(), elapsed ~ 0ms)
+    await wrap(ctx, mockModelRequest(), next);
+
+    // Second call: elapsed > 1ms, should throw
+    try {
+      await wrap(ctx, mockModelRequest(), next);
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiEngineError);
+      if (e instanceof KoiEngineError) {
+        expect(e.code).toBe("TIMEOUT");
+        expect(e.message).toContain("Duration limit exceeded");
+      }
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -269,6 +296,156 @@ describe("createLoopDetector", () => {
     await wrap(ctx, mockToolRequest("calc", { a: 2 }), next);
     await wrap(ctx, mockToolRequest("calc", { a: 3 }), next);
     expect(next).toHaveBeenCalledTimes(3); // All unique
+  });
+
+  test("fires onWarning when warningThreshold is reached", async () => {
+    const warnings: unknown[] = [];
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 4,
+      warningThreshold: 2,
+      onWarning: (info) => warnings.push(info),
+    });
+    const wrap = getToolWrap(detector);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    expect(warnings).toHaveLength(0);
+
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toEqual({
+      toolId: "calc",
+      repeatCount: 2,
+      windowSize: 8,
+      warningThreshold: 2,
+      threshold: 4,
+    });
+  });
+
+  test("warning fires at most once per unique hash", async () => {
+    const warnings: unknown[] = [];
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 4,
+      warningThreshold: 2,
+      onWarning: (info) => warnings.push(info),
+    });
+    const wrap = getToolWrap(detector);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next); // fires warning
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next); // does NOT fire again
+    expect(warnings).toHaveLength(1);
+  });
+
+  test("different tools fire independent warnings", async () => {
+    const warnings: unknown[] = [];
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 4,
+      warningThreshold: 2,
+      onWarning: (info) => warnings.push(info),
+    });
+    const wrap = getToolWrap(detector);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next); // warning for calc
+    await wrap(ctx, mockToolRequest("search", { q: "x" }), next);
+    await wrap(ctx, mockToolRequest("search", { q: "x" }), next); // warning for search
+    expect(warnings).toHaveLength(2);
+    expect((warnings[0] as { toolId: string }).toolId).toBe("calc");
+    expect((warnings[1] as { toolId: string }).toolId).toBe("search");
+  });
+
+  test("warning fires on earlier call than throw", async () => {
+    const warnings: unknown[] = [];
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 3,
+      warningThreshold: 2,
+      onWarning: (info) => warnings.push(info),
+    });
+    const wrap = getToolWrap(detector);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next); // count=1
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next); // count=2, warning fires
+
+    expect(warnings).toHaveLength(1);
+
+    // count=3, loop throws
+    try {
+      await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiEngineError);
+    }
+  });
+
+  test("no warning when warningThreshold is not configured", async () => {
+    const onWarning = mock(() => {});
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 3,
+      // warningThreshold not set
+      onWarning,
+    });
+    const wrap = getToolWrap(detector);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    expect(onWarning).not.toHaveBeenCalled();
+  });
+
+  test("throws VALIDATION at construction if warningThreshold >= threshold", () => {
+    try {
+      createLoopDetector({ warningThreshold: 3, threshold: 3 });
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiEngineError);
+      if (e instanceof KoiEngineError) {
+        expect(e.code).toBe("VALIDATION");
+        expect(e.message).toContain("warningThreshold");
+      }
+    }
+  });
+
+  test("warningThreshold equal to threshold throws VALIDATION", () => {
+    try {
+      createLoopDetector({ warningThreshold: 5, threshold: 5 });
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiEngineError);
+      if (e instanceof KoiEngineError) {
+        expect(e.code).toBe("VALIDATION");
+      }
+    }
+  });
+
+  test("onWarning without warningThreshold does not fire", async () => {
+    const onWarning = mock(() => {});
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 3,
+      onWarning,
+      // warningThreshold not set
+    });
+    const wrap = getToolWrap(detector);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
+    expect(onWarning).not.toHaveBeenCalled();
   });
 
   test("window slides — old hashes fall off", async () => {

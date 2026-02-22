@@ -8,7 +8,12 @@
 
 import type { KoiMiddleware } from "@koi/core";
 import { KoiEngineError } from "./errors.js";
-import type { IterationLimits, LoopDetectionConfig, SpawnPolicy } from "./types.js";
+import type {
+  IterationLimits,
+  LoopDetectionConfig,
+  LoopWarningInfo,
+  SpawnPolicy,
+} from "./types.js";
 import { DEFAULT_ITERATION_LIMITS, DEFAULT_LOOP_DETECTION, DEFAULT_SPAWN_POLICY } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -115,7 +120,28 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
     ...config,
   };
 
+  // Validate: warningThreshold must be strictly less than threshold
+  if (
+    detection.warningThreshold !== undefined &&
+    detection.warningThreshold >= detection.threshold
+  ) {
+    throw KoiEngineError.from(
+      "VALIDATION",
+      `warningThreshold (${detection.warningThreshold}) must be less than threshold (${detection.threshold})`,
+      {
+        context: {
+          warningThreshold: detection.warningThreshold,
+          threshold: detection.threshold,
+        },
+      },
+    );
+  }
+
   const recentHashes: number[] = [];
+  /** Incremental count per hash — avoids O(window) rebuild every call. */
+  const counts = new Map<number, number>();
+  /** Tracks hashes that have already fired a warning (at most once per unique hash). */
+  const firedWarnings = new Set<number>();
 
   return {
     name: "koi:loop-detector",
@@ -125,31 +151,56 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
       const fingerprint = `${request.toolId}:${JSON.stringify(request.input)}`;
       const hash = fnv1a(fingerprint);
 
-      // Add to window
-      recentHashes.push(hash);
-      if (recentHashes.length > detection.windowSize) {
-        recentHashes.shift();
+      // Evict oldest hash if window is full
+      if (recentHashes.length >= detection.windowSize) {
+        const evicted = recentHashes.shift();
+        if (evicted !== undefined) {
+          const prev = counts.get(evicted) ?? 0;
+          if (prev <= 1) {
+            counts.delete(evicted);
+          } else {
+            counts.set(evicted, prev - 1);
+          }
+        }
       }
 
-      // Check for repeated hashes in the window
-      const counts = new Map<number, number>();
-      for (const h of recentHashes) {
-        const count = (counts.get(h) ?? 0) + 1;
-        counts.set(h, count);
-        if (count >= detection.threshold) {
-          throw KoiEngineError.from(
-            "VALIDATION",
-            `Loop detected: tool "${request.toolId}" called with identical arguments ${count} times in last ${detection.windowSize} calls`,
-            {
-              context: {
-                toolId: request.toolId,
-                repeatCount: count,
-                windowSize: detection.windowSize,
-                threshold: detection.threshold,
-              },
+      // Add new hash and increment count
+      recentHashes.push(hash);
+      const newCount = (counts.get(hash) ?? 0) + 1;
+      counts.set(hash, newCount);
+
+      // Warning check — fires at most once per unique hash
+      if (
+        detection.warningThreshold !== undefined &&
+        detection.onWarning !== undefined &&
+        newCount >= detection.warningThreshold &&
+        !firedWarnings.has(hash)
+      ) {
+        firedWarnings.add(hash);
+        const info: LoopWarningInfo = {
+          toolId: request.toolId,
+          repeatCount: newCount,
+          windowSize: detection.windowSize,
+          warningThreshold: detection.warningThreshold,
+          threshold: detection.threshold,
+        };
+        detection.onWarning(info);
+      }
+
+      // Check threshold — O(1) instead of O(window)
+      if (newCount >= detection.threshold) {
+        throw KoiEngineError.from(
+          "VALIDATION",
+          `Loop detected: tool "${request.toolId}" called with identical arguments ${newCount} times in last ${detection.windowSize} calls`,
+          {
+            context: {
+              toolId: request.toolId,
+              repeatCount: newCount,
+              windowSize: detection.windowSize,
+              threshold: detection.threshold,
             },
-          );
-        }
+          },
+        );
       }
 
       return next(request);
