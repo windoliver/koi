@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentManifest, ComponentProvider, ProcessId, Tool } from "@koi/core";
-import { MEMORY, token, toolToken } from "@koi/core";
+import { agentId, MEMORY, token, toolToken } from "@koi/core";
 import { AgentEntity } from "./agent-entity.js";
 
 // ---------------------------------------------------------------------------
@@ -9,7 +9,7 @@ import { AgentEntity } from "./agent-entity.js";
 
 function testPid(overrides?: Partial<ProcessId>): ProcessId {
   return {
-    id: "test-001",
+    id: agentId("test-001"),
     name: "test-agent",
     type: "copilot",
     depth: 0,

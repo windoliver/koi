@@ -1,16 +1,17 @@
 import { describe, expect, mock, test } from "bun:test";
-import type {
-  AgentManifest,
-  ApprovalHandler,
-  KoiMiddleware,
-  ModelChunk,
-  ModelRequest,
-  ModelResponse,
-  ModelStreamHandler,
-  SessionContext,
-  ToolRequest,
-  ToolResponse,
-  TurnContext,
+import {
+  type AgentManifest,
+  type ApprovalHandler,
+  agentId,
+  type KoiMiddleware,
+  type ModelChunk,
+  type ModelRequest,
+  type ModelResponse,
+  type ModelStreamHandler,
+  type SessionContext,
+  type ToolRequest,
+  type ToolResponse,
+  type TurnContext,
 } from "@koi/core";
 import { AgentEntity } from "./agent-entity.js";
 import {
@@ -434,7 +435,7 @@ const testManifest: AgentManifest = {
 };
 
 async function createStartedAgent(): Promise<AgentEntity> {
-  const pid = { id: "a1", name: "Test", type: "copilot" as const, depth: 0 };
+  const pid = { id: agentId("a1"), name: "Test", type: "copilot" as const, depth: 0 };
   const agent = await AgentEntity.assemble(pid, testManifest, []);
   agent.transition({ kind: "start" });
   return agent;
