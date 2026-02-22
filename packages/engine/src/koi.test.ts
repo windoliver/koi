@@ -1577,4 +1577,139 @@ describe("createKoi live forge resolution", () => {
     expect(tool1.execute).toHaveBeenCalledTimes(2);
     expect(tool2.execute).toHaveBeenCalledTimes(1);
   });
+
+  test("middleware injected between turns takes effect on next turn (deferred refresh)", async () => {
+    // Tracks which tool calls the middleware intercepted
+    const intercepted: string[] = [];
+    // Mutable middleware list — starts empty, populated between turns
+    // let justified: mutable list updated mid-session to simulate forge injection
+    let forgedMiddleware: readonly KoiMiddleware[] = [];
+
+    const forge = mockForgeRuntime({
+      middleware: mock(async () => forgedMiddleware),
+    });
+
+    const adapter = forgeTestAdapter(async function* (input) {
+      if (!input.callHandlers) {
+        yield { kind: "done" as const, output: doneOutput() };
+        return;
+      }
+
+      // Turn 0: call tool (no forge middleware yet)
+      await input.callHandlers.toolCall({ toolId: "echo", input: { msg: "turn0" } });
+      yield { kind: "turn_end" as const, turnIndex: 0 };
+
+      // Turn 1: call tool (forge middleware should be active now)
+      await input.callHandlers.toolCall({ toolId: "echo", input: { msg: "turn1" } });
+      yield { kind: "turn_end" as const, turnIndex: 1 };
+
+      yield {
+        kind: "done" as const,
+        output: doneOutput({
+          metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 2, durationMs: 0 },
+        }),
+      };
+    });
+
+    const echoTool: Tool = {
+      descriptor: { name: "echo", description: "Echo tool", inputSchema: {} },
+      trustTier: "verified",
+      execute: mock(async (input: unknown) => input),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+      providers: [
+        {
+          name: "tools",
+          attach: async () => new Map([[toolToken("echo") as string, echoTool]]),
+        },
+      ],
+    });
+
+    // Consume events, injecting middleware after turn 0
+    for await (const event of runtime.run({ kind: "text", text: "test" })) {
+      if (event.kind === "turn_end" && event.turnIndex === 0) {
+        // Inject middleware between turns — deferred refresh picks it up
+        forgedMiddleware = [
+          {
+            name: "test-audit",
+            wrapToolCall: async (_ctx, req, next) => {
+              intercepted.push(req.toolId);
+              return next(req);
+            },
+          },
+        ];
+      }
+    }
+
+    // Turn 0 tool call should NOT be intercepted (middleware not yet injected)
+    // Turn 1 tool call SHOULD be intercepted (middleware injected after turn 0)
+    expect(intercepted).toEqual(["echo"]);
+    expect(echoTool.execute).toHaveBeenCalledTimes(2);
+    await runtime.dispose();
+  });
+
+  test("tool injected between turns is discoverable in next turn descriptors", async () => {
+    // Mutable descriptors list — starts empty
+    // let justified: mutable list updated mid-session to simulate forge tool injection
+    let forgedDescriptors: readonly ToolDescriptor[] = [];
+    const forgedTool = mockTool("dynamic-tool");
+
+    const forge = mockForgeRuntime({
+      toolDescriptors: mock(async () => forgedDescriptors),
+      resolveTool: mock(async (id: string) => (id === "dynamic-tool" ? forgedTool : undefined)),
+    });
+
+    const descriptorSnapshots: Array<readonly ToolDescriptor[]> = [];
+
+    const adapter = forgeTestAdapter(async function* (input) {
+      if (!input.callHandlers) {
+        yield { kind: "done" as const, output: doneOutput() };
+        return;
+      }
+
+      // Turn 0: capture descriptors (should NOT include dynamic-tool)
+      descriptorSnapshots.push([...input.callHandlers.tools]);
+      yield { kind: "turn_end" as const, turnIndex: 0 };
+
+      // Turn 1: capture descriptors (should include dynamic-tool)
+      descriptorSnapshots.push([...input.callHandlers.tools]);
+      // Also resolve and call the dynamically added tool
+      await input.callHandlers.toolCall({ toolId: "dynamic-tool", input: {} });
+      yield { kind: "turn_end" as const, turnIndex: 1 };
+
+      yield {
+        kind: "done" as const,
+        output: doneOutput({
+          metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 2, durationMs: 0 },
+        }),
+      };
+    });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    for await (const event of runtime.run({ kind: "text", text: "test" })) {
+      if (event.kind === "turn_end" && event.turnIndex === 0) {
+        // Inject tool between turns
+        forgedDescriptors = [forgedTool.descriptor];
+      }
+    }
+
+    // Turn 0: no forged descriptors
+    expect(descriptorSnapshots[0]?.find((d) => d.name === "dynamic-tool")).toBeUndefined();
+    // Turn 1: forged descriptor present
+    expect(descriptorSnapshots[1]?.find((d) => d.name === "dynamic-tool")).toBeDefined();
+    // Tool was callable
+    expect(forgedTool.execute).toHaveBeenCalledTimes(1);
+    await runtime.dispose();
+  });
 });
