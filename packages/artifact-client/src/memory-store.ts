@@ -4,39 +4,22 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core";
+import { conflict, notFound, validation } from "@koi/core";
 import type { ArtifactClient } from "./client.js";
 import { computeContentHash } from "./hash.js";
 import type { Artifact, ArtifactId, ArtifactPage, ArtifactQuery, ArtifactUpdate } from "./types.js";
 
-// ---------------------------------------------------------------------------
-// Error helpers
-// ---------------------------------------------------------------------------
-
+// Error helpers use shared factories from @koi/core.
 function notFoundError(id: string): KoiError {
-  return {
-    code: "NOT_FOUND",
-    message: `Artifact not found: ${id}`,
-    retryable: RETRYABLE_DEFAULTS.NOT_FOUND,
-    context: { resourceId: id },
-  };
+  return notFound(id, `Artifact not found: ${id}`);
 }
 
 function conflictError(id: string): KoiError {
-  return {
-    code: "CONFLICT",
-    message: `Artifact already exists: ${id}`,
-    retryable: RETRYABLE_DEFAULTS.CONFLICT,
-    context: { resourceId: id },
-  };
+  return conflict(id, `Artifact already exists: ${id}`);
 }
 
 function validationError(message: string): KoiError {
-  return {
-    code: "VALIDATION",
-    message,
-    retryable: RETRYABLE_DEFAULTS.VALIDATION,
-  };
+  return validation(message);
 }
 
 // ---------------------------------------------------------------------------

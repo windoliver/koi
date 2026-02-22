@@ -42,12 +42,12 @@ describe("MemoryMonitor", () => {
       events.push({ type, data });
     });
 
-    // Artificially low thresholds to trigger warning
-    const lowConfig = { ...config, memoryWarningPercent: 1, memoryEvictionPercent: 99 };
+    // Low warning threshold to guarantee trigger; eviction unreachable so warning branch runs
+    const lowConfig = { ...config, memoryWarningPercent: 1, memoryEvictionPercent: 200 };
     const monitor = createMemoryMonitor(lowConfig, host, emit);
 
     monitor.start();
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 120));
     monitor.stop();
 
     const warnings = events.filter((e) => e.type === "memory_warning");
@@ -61,11 +61,12 @@ describe("MemoryMonitor", () => {
       events.push({ type });
     });
 
-    const lowConfig = { ...config, memoryWarningPercent: 1, memoryEvictionPercent: 99 };
+    // Low warning threshold; eviction unreachable so warning branch runs
+    const lowConfig = { ...config, memoryWarningPercent: 1, memoryEvictionPercent: 200 };
     const monitor = createMemoryMonitor(lowConfig, host, emit);
 
     monitor.start();
-    await new Promise((r) => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 200));
     monitor.stop();
 
     const warnings = events.filter((e) => e.type === "memory_warning");
