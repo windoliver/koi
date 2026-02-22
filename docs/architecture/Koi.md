@@ -855,20 +855,59 @@ Snapshots use content-addressable storage — only changed bricks are stored. Li
 
 ### Forge Governance
 
+#### Depth Limits
+
 | Depth | Forge Allowed | Scope Promotion |
 |-------|--------------|-----------------|
 | 0 (root) | All 6 primordial tools | agent → zone → global |
 | 1 (sub-agent) | forge_tool, forge_skill, search_forge, promote_forge | agent → zone (with HITL) |
 | 2+ (deeper) | search_forge only | None (read-only) |
 
+#### Forge Policy (Enterprise Governance)
+
+The forge system defines what's **possible**. The policy defines what's **allowed**. Per-brick-type gating using the same allow/deny/ask pattern as permissions:
+
+| Preset | Use case | Allowed |
+|--------|----------|---------|
+| **locked** | Regulated enterprise | Nothing forgeable. Bundled tools only. |
+| **restrictive** | Enterprise default | Tools + skills only. |
+| **standard** | Teams, startups | + workers, memory. Middleware/copilot need HITL. L1/L0 proposals with HITL. |
+| **permissive** | Research, personal | Everything. Trust tiers still enforced. |
+
+Zone-level policy overrides agent manifests. Most restrictive always wins:
+
+```
+Zone policy (enterprise admin ceiling)
+  ↓ most restrictive wins
+Agent manifest (developer config)
+  ↓ most restrictive wins
+ForgeGovernance middleware (runtime enforcement)
+  ↓
+Trust tier verification (sandbox/verified/promoted)
+  ↓
+4-stage forge pipeline
+```
+
 ```yaml
 # koi.yaml — forge governance
 forge:
-  enabled: true
+  preset: standard          # locked | restrictive | standard | permissive
   maxForgeDepth: 1
   maxForgesPerSession: 5
   defaultScope: agent
   trustTier: sandbox
+
+  # Per-brick-type override (optional, preset provides defaults):
+  policy:
+    tool:           sandbox   # auto-verified
+    skill:          sandbox
+    worker:         sandbox
+    middleware:     hitl       # HITL required
+    copilot:        hitl
+    engine:         deny       # not allowed
+    l1_extension:  deny
+    l0_proposal:   deny
+
   scopePromotion:
     requireHumanApproval: true
     minTrustForZone: verified
