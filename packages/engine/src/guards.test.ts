@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from "bun:test";
 import type {
   Agent,
   GovernanceComponent,
+  InboundMessage,
   KoiMiddleware,
   ModelChunk,
   ModelRequest,
@@ -290,7 +291,7 @@ describe("createLoopDetector", () => {
     } catch (e: unknown) {
       expect(e).toBeInstanceOf(KoiEngineError);
       if (e instanceof KoiEngineError) {
-        expect(e.code).toBe("VALIDATION");
+        expect(e.code).toBe("TIMEOUT");
         expect(e.message).toContain("Loop detected");
         expect(e.message).toContain("calc");
       }
@@ -489,7 +490,7 @@ describe("createLoopDetector", () => {
     } catch (e: unknown) {
       expect(e).toBeInstanceOf(KoiEngineError);
       if (e instanceof KoiEngineError) {
-        expect(e.code).toBe("VALIDATION");
+        expect(e.code).toBe("TIMEOUT");
         expect(e.message).toContain("Loop detected");
       }
     }
@@ -531,6 +532,221 @@ describe("createLoopDetector", () => {
     // Now only 1 "calc:a=1" in window of 3, so this should pass
     await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
     expect(next).toHaveBeenCalledTimes(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LoopDetector — warning injection
+// ---------------------------------------------------------------------------
+
+describe("createLoopDetector warning injection", () => {
+  test("injects warning into ModelRequest on next model call", async () => {
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 4,
+      warningThreshold: 2,
+    });
+    const toolWrap = getToolWrap(detector);
+    const modelWrap = getModelWrap(detector);
+    const toolNext: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    // Trigger warning via 2 identical tool calls
+    await toolWrap(ctx, mockToolRequest("calc", { a: 1 }), toolNext);
+    await toolWrap(ctx, mockToolRequest("calc", { a: 1 }), toolNext);
+
+    // Next model call should have injected warning
+    const capturedRequest: ModelRequest[] = [];
+    const capturingNext: ModelNext = mock((req: ModelRequest) => {
+      capturedRequest.push(req);
+      return Promise.resolve(mockModelResponse());
+    });
+    await modelWrap(ctx, mockModelRequest(), capturingNext);
+
+    expect(capturedRequest).toHaveLength(1);
+    const injectedMessages = capturedRequest[0]?.messages ?? [];
+    expect(injectedMessages.length).toBeGreaterThan(0);
+    const systemMsg = injectedMessages[0] as InboundMessage;
+    expect(systemMsg.senderId).toBe("system:loop-detector");
+    expect(systemMsg.content[0]).toBeDefined();
+    if (systemMsg.content[0]?.kind === "text") {
+      expect(systemMsg.content[0].text).toContain("calc");
+      expect(systemMsg.content[0].text).toContain("2 times");
+      expect(systemMsg.content[0].text).toContain("MUST try a different approach");
+    }
+  });
+
+  test("clears pending warnings after injection", async () => {
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 4,
+      warningThreshold: 2,
+    });
+    const toolWrap = getToolWrap(detector);
+    const modelWrap = getModelWrap(detector);
+    const toolNext: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    // Trigger warning
+    await toolWrap(ctx, mockToolRequest("calc", { a: 1 }), toolNext);
+    await toolWrap(ctx, mockToolRequest("calc", { a: 1 }), toolNext);
+
+    // First model call injects warning
+    const capturedFirst: ModelRequest[] = [];
+    await modelWrap(
+      ctx,
+      mockModelRequest(),
+      mock((req: ModelRequest) => {
+        capturedFirst.push(req);
+        return Promise.resolve(mockModelResponse());
+      }),
+    );
+    expect((capturedFirst[0]?.messages ?? []).length).toBeGreaterThan(0);
+
+    // Second model call should NOT inject (cleared)
+    const capturedSecond: ModelRequest[] = [];
+    await modelWrap(
+      ctx,
+      mockModelRequest(),
+      mock((req: ModelRequest) => {
+        capturedSecond.push(req);
+        return Promise.resolve(mockModelResponse());
+      }),
+    );
+    expect(capturedSecond[0]?.messages ?? []).toHaveLength(0);
+  });
+
+  test("injects warning into streaming ModelRequest", async () => {
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 4,
+      warningThreshold: 2,
+    });
+    const toolWrap = getToolWrap(detector);
+    const streamWrap = getStreamWrap(detector);
+    const toolNext: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    // Trigger warning
+    await toolWrap(ctx, mockToolRequest("calc", { a: 1 }), toolNext);
+    await toolWrap(ctx, mockToolRequest("calc", { a: 1 }), toolNext);
+
+    // Stream call should have injected warning
+    const capturedRequest: ModelRequest[] = [];
+    const capturingStreamNext: StreamNext = (req: ModelRequest) => {
+      capturedRequest.push(req);
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield { kind: "text_delta" as const, delta: "hi" };
+          yield { kind: "done" as const, response: mockModelResponse() };
+        },
+      };
+    };
+    await collectChunks(streamWrap(ctx, mockModelRequest(), capturingStreamNext));
+
+    expect(capturedRequest).toHaveLength(1);
+    const injectedMessages = capturedRequest[0]?.messages ?? [];
+    expect(injectedMessages.length).toBeGreaterThan(0);
+    const systemMsg = injectedMessages[0] as InboundMessage;
+    expect(systemMsg.senderId).toBe("system:loop-detector");
+  });
+
+  test("does not inject when injectWarning is false", () => {
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 4,
+      warningThreshold: 2,
+      injectWarning: false,
+    });
+
+    // Hooks should not be attached at all — no overhead on the hot path
+    expect(detector.wrapModelCall).toBeUndefined();
+    expect(detector.wrapModelStream).toBeUndefined();
+  });
+
+  test("onWarning callback still fires alongside injection", async () => {
+    const warnings: unknown[] = [];
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 4,
+      warningThreshold: 2,
+      onWarning: (info) => warnings.push(info),
+    });
+    const toolWrap = getToolWrap(detector);
+    const modelWrap = getModelWrap(detector);
+    const toolNext: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    // Trigger warning
+    await toolWrap(ctx, mockToolRequest("calc", { a: 1 }), toolNext);
+    await toolWrap(ctx, mockToolRequest("calc", { a: 1 }), toolNext);
+
+    // Callback fired
+    expect(warnings).toHaveLength(1);
+
+    // Injection also happened
+    const capturedRequest: ModelRequest[] = [];
+    await modelWrap(
+      ctx,
+      mockModelRequest(),
+      mock((req: ModelRequest) => {
+        capturedRequest.push(req);
+        return Promise.resolve(mockModelResponse());
+      }),
+    );
+    const injectedMessages = capturedRequest[0]?.messages ?? [];
+    expect(injectedMessages.length).toBeGreaterThan(0);
+    expect((injectedMessages[0] as InboundMessage).senderId).toBe("system:loop-detector");
+  });
+
+  test("batches warnings from multiple tools into single injection", async () => {
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 4,
+      warningThreshold: 2,
+    });
+    const toolWrap = getToolWrap(detector);
+    const modelWrap = getModelWrap(detector);
+    const toolNext: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    // Trigger warnings for two different tools
+    await toolWrap(ctx, mockToolRequest("calc", { a: 1 }), toolNext);
+    await toolWrap(ctx, mockToolRequest("calc", { a: 1 }), toolNext); // warning for calc
+    await toolWrap(ctx, mockToolRequest("search", { q: "x" }), toolNext);
+    await toolWrap(ctx, mockToolRequest("search", { q: "x" }), toolNext); // warning for search
+
+    // Next model call should contain both warnings in one message
+    const capturedRequest: ModelRequest[] = [];
+    await modelWrap(
+      ctx,
+      mockModelRequest(),
+      mock((req: ModelRequest) => {
+        capturedRequest.push(req);
+        return Promise.resolve(mockModelResponse());
+      }),
+    );
+
+    const injectedMessages = capturedRequest[0]?.messages ?? [];
+    expect(injectedMessages).toHaveLength(1);
+    const systemMsg = injectedMessages[0] as InboundMessage;
+    expect(systemMsg.senderId).toBe("system:loop-detector");
+    if (systemMsg.content[0]?.kind === "text") {
+      expect(systemMsg.content[0].text).toContain("calc");
+      expect(systemMsg.content[0].text).toContain("search");
+    }
+  });
+
+  test("no injection when warningThreshold is not set", () => {
+    const detector = createLoopDetector({
+      windowSize: 8,
+      threshold: 3,
+      // warningThreshold not set → no injection possible
+    });
+
+    // Hooks should not be attached at all — no overhead on the hot path
+    expect(detector.wrapModelCall).toBeUndefined();
+    expect(detector.wrapModelStream).toBeUndefined();
   });
 });
 
@@ -1815,6 +2031,145 @@ describe("createIterationGuard streaming", () => {
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
       expect(e).toBeInstanceOf(KoiEngineError);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Composed guards interaction
+// ---------------------------------------------------------------------------
+
+describe("composed guards interaction", () => {
+  /**
+   * Compose multiple guards into a single wrapToolCall chain,
+   * mirroring how createKoi() assembles them.
+   */
+  function composeToolWraps(
+    guards: readonly KoiMiddleware[],
+    terminal: ToolNext,
+  ): (req: ToolRequest) => Promise<ToolResponse> {
+    const ctx = mockTurnContext();
+    return (req: ToolRequest): Promise<ToolResponse> => {
+      const dispatch = (i: number, r: ToolRequest): Promise<ToolResponse> => {
+        const guard = guards[i];
+        if (guard?.wrapToolCall === undefined) {
+          return i < guards.length ? dispatch(i + 1, r) : terminal(r);
+        }
+        return guard.wrapToolCall(ctx, r, (next) => dispatch(i + 1, next));
+      };
+      return dispatch(0, req);
+    };
+  }
+
+  /**
+   * Compose multiple guards into a single wrapModelCall chain.
+   */
+  function composeModelWraps(
+    guards: readonly KoiMiddleware[],
+    terminal: ModelNext,
+  ): (req: ModelRequest) => Promise<ModelResponse> {
+    const ctx = mockTurnContext();
+    return (req: ModelRequest): Promise<ModelResponse> => {
+      const dispatch = (i: number, r: ModelRequest): Promise<ModelResponse> => {
+        const guard = guards[i];
+        if (guard?.wrapModelCall === undefined) {
+          return i < guards.length ? dispatch(i + 1, r) : terminal(r);
+        }
+        return guard.wrapModelCall(ctx, r, (next) => dispatch(i + 1, next));
+      };
+      return dispatch(0, req);
+    };
+  }
+
+  test("LoopDetector throw does not count as a turn in IterationGuard", async () => {
+    const iterGuard = createIterationGuard({ maxTurns: 2 });
+    const loopGuard = createLoopDetector({ windowSize: 4, threshold: 2 });
+
+    // Compose: iteration guard wraps loop detector (iteration checks model, loop checks tools)
+    const modelChain = composeModelWraps(
+      [iterGuard],
+      mock(() => Promise.resolve(mockModelResponse())),
+    );
+    const toolChain = composeToolWraps(
+      [loopGuard],
+      mock(() => Promise.resolve(mockToolResponse())),
+    );
+
+    // Trigger loop detection (2 identical tool calls → threshold 2 → throws)
+    await toolChain(mockToolRequest("calc", { a: 1 }));
+    try {
+      await toolChain(mockToolRequest("calc", { a: 1 }));
+      expect.unreachable("loop should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiEngineError);
+      if (e instanceof KoiEngineError) {
+        expect(e.code).toBe("TIMEOUT");
+      }
+    }
+
+    // IterationGuard should still allow 2 model calls (loop throw didn't count)
+    await modelChain(mockModelRequest());
+    await modelChain(mockModelRequest());
+
+    // 3rd model call should throw (turns exhausted)
+    await expect(modelChain(mockModelRequest())).rejects.toBeInstanceOf(KoiEngineError);
+  });
+
+  test("IterationGuard throw does not affect LoopDetector window", async () => {
+    const iterGuard = createIterationGuard({ maxTurns: 1 });
+    const loopGuard = createLoopDetector({ windowSize: 4, threshold: 3 });
+
+    const modelChain = composeModelWraps(
+      [iterGuard],
+      mock(() => Promise.resolve(mockModelResponse())),
+    );
+    const toolChain = composeToolWraps(
+      [loopGuard],
+      mock(() => Promise.resolve(mockToolResponse())),
+    );
+
+    // Use up the iteration budget
+    await modelChain(mockModelRequest());
+    await expect(modelChain(mockModelRequest())).rejects.toBeInstanceOf(KoiEngineError);
+
+    // LoopDetector should still be tracking independently —
+    // 2 calls with same args should be under threshold 3
+    await toolChain(mockToolRequest("calc", { a: 1 }));
+    await toolChain(mockToolRequest("calc", { a: 1 }));
+    // Both should succeed (count=2, threshold=3)
+  });
+
+  test("IterationGuard and LoopDetector both active on same request flow", async () => {
+    createIterationGuard({ maxTurns: 10 });
+    const loopGuard = createLoopDetector({
+      windowSize: 8,
+      threshold: 3,
+      noProgressEnabled: false,
+    });
+
+    const toolChain = composeToolWraps(
+      [loopGuard],
+      mock(() => Promise.resolve(mockToolResponse())),
+    );
+
+    // Varied tool calls should pass both guards
+    await toolChain(mockToolRequest("calc", { a: 1 }));
+    await toolChain(mockToolRequest("calc", { a: 2 }));
+    await toolChain(mockToolRequest("search", { q: "hello" }));
+    await toolChain(mockToolRequest("calc", { a: 3 }));
+
+    // Repeated calls should trigger loop detector, not iteration guard
+    await toolChain(mockToolRequest("search", { q: "same" }));
+    await toolChain(mockToolRequest("search", { q: "same" }));
+    try {
+      await toolChain(mockToolRequest("search", { q: "same" }));
+      expect.unreachable("loop should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiEngineError);
+      if (e instanceof KoiEngineError) {
+        expect(e.code).toBe("TIMEOUT");
+        expect(e.message).toContain("Loop detected");
+      }
     }
   });
 });

@@ -48,6 +48,12 @@ export interface LoopDetectionConfig {
   readonly warningThreshold?: number;
   /** Callback fired when warningThreshold is reached. Requires warningThreshold to be set. */
   readonly onWarning?: (info: LoopWarningInfo) => void;
+  /**
+   * When true (default), inject a system warning message into the model context
+   * when warningThreshold is reached, giving the agent a chance to self-correct.
+   * Requires warningThreshold to be set.
+   */
+  readonly injectWarning?: boolean;
   /** Max number of keys in tool input before falling back to toolId-only fingerprinting. Default: 20. */
   readonly maxInputKeys?: number;
   /** Enable ping-pong (alternating pattern) detection. Default: true. */
