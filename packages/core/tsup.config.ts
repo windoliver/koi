@@ -6,6 +6,7 @@ export default defineConfig({
     "src/assembly.ts",
     "src/channel.ts",
     "src/common.ts",
+    "src/context.ts",
     "src/delegation.ts",
     "src/ecs.ts",
     "src/engine.ts",
