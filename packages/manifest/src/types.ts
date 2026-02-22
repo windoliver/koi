@@ -16,6 +16,7 @@ export interface ManifestExtensions {
   readonly schedule?: unknown;
   readonly webhooks?: unknown;
   readonly forge?: unknown;
+  readonly context?: unknown;
 }
 
 /**

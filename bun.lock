@@ -45,6 +45,18 @@
         "@koi/manifest": "workspace:*",
       },
     },
+    "packages/context": {
+      "name": "@koi/context",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/core": {
       "name": "@koi/core",
       "version": "0.0.0",
@@ -141,6 +153,7 @@
       "name": "@koi/middleware-integration",
       "version": "0.0.0",
       "devDependencies": {
+        "@koi/context": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
         "@koi/middleware-memory": "workspace:*",
@@ -428,6 +441,8 @@
     "@koi/channel-cli": ["@koi/channel-cli@workspace:packages/channel-cli"],
 
     "@koi/cli": ["@koi/cli@workspace:packages/cli"],
+
+    "@koi/context": ["@koi/context@workspace:packages/context"],
 
     "@koi/core": ["@koi/core@workspace:packages/core"],
 

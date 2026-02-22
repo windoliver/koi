@@ -19,6 +19,8 @@ export {
 } from "./agents.js";
 export type { ChannelContractOptions } from "./channel-contract.js";
 export { testChannelAdapter } from "./channel-contract.js";
+export type { MockMemoryComponentOptions } from "./components.js";
+export { createMockMemoryComponent } from "./components.js";
 export { createMockSessionContext, createMockTurnContext } from "./contexts.js";
 export type { EngineContractOptions } from "./engine-contract.js";
 export { testEngineAdapter } from "./engine-contract.js";
