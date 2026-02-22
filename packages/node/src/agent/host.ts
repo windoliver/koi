@@ -1,0 +1,251 @@
+/**
+ * Agent host — registry, lifecycle, and capacity management.
+ *
+ * Hosts N agent ECS entities in a single event loop. Enforces maxAgents
+ * admission control and provides dispatch/terminate/query operations.
+ */
+
+import type {
+  Agent,
+  AgentManifest,
+  ComponentProvider,
+  EngineAdapter,
+  KoiError,
+  ProcessId,
+  ProcessState,
+  Result,
+  SubsystemToken,
+} from "@koi/core";
+import { RETRYABLE_DEFAULTS } from "@koi/core";
+import type { CapacityReport, NodeEventListener, ResourcesConfig } from "../types.js";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/** Mutable agent record managed by the host.
+ *  state/turnCount/lastActivityMs are intentionally mutable — this is a
+ *  closure-private record, never exposed. Mutated by dispatch/terminate. */
+interface ManagedAgent {
+  readonly pid: ProcessId;
+  readonly manifest: AgentManifest;
+  readonly engine: EngineAdapter;
+  state: ProcessState;
+  turnCount: number;
+  lastActivityMs: number;
+  readonly components: Map<string, unknown>;
+}
+
+export interface AgentHost {
+  /** Dispatch (create) a new agent on this node. */
+  readonly dispatch: (
+    pid: ProcessId,
+    manifest: AgentManifest,
+    engine: EngineAdapter,
+    providers: readonly ComponentProvider[],
+  ) => Result<Agent, KoiError>;
+  /** Terminate an agent by ID. */
+  readonly terminate: (agentId: string) => Result<void, KoiError>;
+  /** Get an agent by ID. */
+  readonly get: (agentId: string) => Agent | undefined;
+  /** List all hosted agents. */
+  readonly list: () => readonly Agent[];
+  /** Iterate agents without allocating a snapshot array. */
+  readonly agents: () => IterableIterator<Agent>;
+  /** Return the least-recently-active agent (for eviction). */
+  readonly leastActive: () => Agent | undefined;
+  /** Current capacity report. */
+  readonly capacity: () => CapacityReport;
+  /** Register an event listener. */
+  readonly onEvent: (listener: NodeEventListener) => () => void;
+  /** Terminate all agents (used during shutdown). */
+  readonly terminateAll: () => void;
+}
+
+// ---------------------------------------------------------------------------
+// Agent snapshot (immutable view)
+// ---------------------------------------------------------------------------
+
+/**
+ * Creates an immutable Agent snapshot from a ManagedAgent.
+ * Captures state at creation time — the snapshot does not track later mutations.
+ * Component lookups still reference the live components map (intentional: components
+ * are structurally stable after dispatch, only state/turnCount change).
+ */
+function toAgentSnapshot(managed: ManagedAgent): Agent {
+  const componentMap: ReadonlyMap<string, unknown> = managed.components;
+  // Capture state at snapshot time — prevents stale reads
+  const capturedState = managed.state;
+
+  return {
+    pid: managed.pid,
+    manifest: managed.manifest,
+    state: capturedState,
+    // SubsystemToken<T> is a branded string — casts mirror L0's token() factory
+    component<T>(token: SubsystemToken<T>): T | undefined {
+      return managed.components.get(token as string) as T | undefined;
+    },
+    has(token: SubsystemToken<unknown>): boolean {
+      return managed.components.has(token as string);
+    },
+    hasAll(...tokens: readonly SubsystemToken<unknown>[]): boolean {
+      return tokens.every((t) => managed.components.has(t as string));
+    },
+    query<T>(prefix: string): ReadonlyMap<SubsystemToken<T>, T> {
+      const result = new Map<SubsystemToken<T>, T>();
+      for (const [key, value] of managed.components) {
+        if (key.startsWith(prefix)) {
+          result.set(key as SubsystemToken<T>, value as T);
+        }
+      }
+      return result;
+    },
+    components(): ReadonlyMap<string, unknown> {
+      return componentMap;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
+export function createAgentHost(config: ResourcesConfig): AgentHost {
+  const agents = new Map<string, ManagedAgent>();
+  const eventListeners = new Set<NodeEventListener>();
+
+  function emit(type: Parameters<NodeEventListener>[0]["type"], data?: unknown): void {
+    const event = { type, timestamp: Date.now(), data };
+    for (const listener of eventListeners) {
+      listener(event);
+    }
+  }
+
+  return {
+    dispatch(pid, manifest, engine, providers) {
+      if (agents.size >= config.maxAgents) {
+        return {
+          ok: false,
+          error: {
+            code: "RATE_LIMIT",
+            message: `Node at capacity: ${agents.size}/${config.maxAgents} agents`,
+            retryable: RETRYABLE_DEFAULTS.RATE_LIMIT,
+            context: { current: agents.size, max: config.maxAgents },
+          },
+        };
+      }
+
+      if (agents.has(pid.id)) {
+        return {
+          ok: false,
+          error: {
+            code: "CONFLICT",
+            message: `Agent already exists: ${pid.id}`,
+            retryable: RETRYABLE_DEFAULTS.CONFLICT,
+            context: { agentId: pid.id },
+          },
+        };
+      }
+
+      const managed: ManagedAgent = {
+        pid,
+        manifest,
+        engine,
+        state: "created",
+        turnCount: 0,
+        lastActivityMs: Date.now(),
+        components: new Map(),
+      };
+
+      // Attach components from providers
+      const snapshot = toAgentSnapshot(managed);
+      for (const provider of providers) {
+        const provided = provider.attach(snapshot);
+        for (const [key, value] of provided) {
+          managed.components.set(key, value);
+        }
+      }
+
+      managed.state = "running";
+      agents.set(pid.id, managed);
+      emit("agent_dispatched", { agentId: pid.id, name: pid.name });
+
+      return { ok: true, value: toAgentSnapshot(managed) };
+    },
+
+    terminate(agentId) {
+      const managed = agents.get(agentId);
+      if (managed === undefined) {
+        return {
+          ok: false,
+          error: {
+            code: "NOT_FOUND",
+            message: `Agent not found: ${agentId}`,
+            retryable: RETRYABLE_DEFAULTS.NOT_FOUND,
+            context: { agentId },
+          },
+        };
+      }
+
+      managed.state = "terminated";
+      agents.delete(agentId);
+
+      // Dispose engine adapter if supported
+      void managed.engine.dispose?.().catch(() => {
+        // Best-effort cleanup — engine disposal is not critical
+      });
+
+      emit("agent_terminated", { agentId });
+      return { ok: true, value: undefined };
+    },
+
+    get(agentId) {
+      const managed = agents.get(agentId);
+      return managed !== undefined ? toAgentSnapshot(managed) : undefined;
+    },
+
+    list() {
+      return [...agents.values()].map(toAgentSnapshot);
+    },
+
+    *agents() {
+      for (const managed of agents.values()) {
+        yield toAgentSnapshot(managed);
+      }
+    },
+
+    leastActive() {
+      let oldest: ManagedAgent | undefined;
+      for (const managed of agents.values()) {
+        if (oldest === undefined || managed.lastActivityMs < oldest.lastActivityMs) {
+          oldest = managed;
+        }
+      }
+      return oldest !== undefined ? toAgentSnapshot(oldest) : undefined;
+    },
+
+    capacity() {
+      return {
+        current: agents.size,
+        max: config.maxAgents,
+        available: Math.max(0, config.maxAgents - agents.size),
+      };
+    },
+
+    onEvent(listener) {
+      eventListeners.add(listener);
+      return () => {
+        eventListeners.delete(listener);
+      };
+    },
+
+    terminateAll() {
+      for (const [agentId, managed] of agents) {
+        managed.state = "terminated";
+        void managed.engine.dispose?.().catch(() => {});
+        emit("agent_terminated", { agentId });
+      }
+      agents.clear();
+    },
+  };
+}

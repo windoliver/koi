@@ -1,0 +1,171 @@
+/**
+ * Mock agent and engine adapter factories for testing.
+ *
+ * Provides configurable mocks for the ECS Agent entity and EngineAdapter,
+ * usable across all packages that depend on @koi/core.
+ */
+
+import type {
+  Agent,
+  AgentManifest,
+  EngineAdapter,
+  EngineEvent,
+  EngineInput,
+  EngineMetrics,
+  EngineOutput,
+  EngineState,
+  ProcessId,
+  ProcessState,
+  SubsystemToken,
+} from "@koi/core";
+
+// ---------------------------------------------------------------------------
+// Default values
+// ---------------------------------------------------------------------------
+
+const DEFAULT_PID: ProcessId = {
+  id: "mock-agent-1",
+  name: "Mock Agent",
+  type: "worker",
+  depth: 0,
+};
+
+const DEFAULT_MANIFEST: AgentManifest = {
+  name: "mock-agent",
+  version: "0.0.1",
+  description: "A mock agent for testing",
+  model: { name: "test-model" },
+};
+
+const DEFAULT_METRICS: EngineMetrics = {
+  totalTokens: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  turns: 0,
+  durationMs: 0,
+};
+
+// ---------------------------------------------------------------------------
+// createMockAgent
+// ---------------------------------------------------------------------------
+
+export interface MockAgentOptions {
+  readonly pid?: Partial<ProcessId>;
+  readonly manifest?: Partial<AgentManifest>;
+  readonly state?: ProcessState;
+  readonly components?: ReadonlyMap<string, unknown>;
+}
+
+/**
+ * Creates a mock Agent ECS entity for testing.
+ *
+ * Returns an immutable Agent that satisfies the @koi/core Agent interface.
+ * All ECS query methods operate on the provided components map.
+ */
+export function createMockAgent(options?: MockAgentOptions): Agent {
+  const pid: ProcessId = { ...DEFAULT_PID, ...options?.pid };
+  const manifest: AgentManifest = { ...DEFAULT_MANIFEST, ...options?.manifest };
+  const state: ProcessState = options?.state ?? "running";
+  const componentMap: ReadonlyMap<string, unknown> =
+    options?.components ?? new Map<string, unknown>();
+
+  return {
+    pid,
+    manifest,
+    state,
+    // SubsystemToken<T> is a branded string — casts mirror L0's token() factory
+    component<T>(token: SubsystemToken<T>): T | undefined {
+      return componentMap.get(token as string) as T | undefined;
+    },
+    has(token: SubsystemToken<unknown>): boolean {
+      return componentMap.has(token as string);
+    },
+    hasAll(...tokens: readonly SubsystemToken<unknown>[]): boolean {
+      return tokens.every((t) => componentMap.has(t as string));
+    },
+    query<T>(prefix: string): ReadonlyMap<SubsystemToken<T>, T> {
+      const result = new Map<SubsystemToken<T>, T>();
+      for (const [key, value] of componentMap) {
+        if (key.startsWith(prefix)) {
+          result.set(key as SubsystemToken<T>, value as T);
+        }
+      }
+      return result;
+    },
+    components(): ReadonlyMap<string, unknown> {
+      return componentMap;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// createMockEngineAdapter
+// ---------------------------------------------------------------------------
+
+export interface MockEngineAdapterOptions {
+  readonly engineId?: string;
+  /** Events to yield from stream(). Defaults to a single "done" event. */
+  readonly events?: readonly EngineEvent[];
+  /** Whether saveState/loadState are available. */
+  readonly stateful?: boolean;
+  /** Custom dispose behavior. */
+  readonly onDispose?: () => Promise<void>;
+}
+
+/**
+ * Creates a mock EngineAdapter for testing.
+ *
+ * The stream() method yields the provided events sequence (defaults to a
+ * single "done" event). Tracks dispose() calls for assertion purposes.
+ */
+export function createMockEngineAdapter(options?: MockEngineAdapterOptions): EngineAdapter & {
+  readonly disposeCalls: readonly unknown[];
+  readonly streamCalls: readonly EngineInput[];
+} {
+  const disposeCalls: unknown[] = [];
+  const streamCalls: EngineInput[] = [];
+
+  const defaultOutput: EngineOutput = {
+    content: [],
+    stopReason: "completed",
+    metrics: DEFAULT_METRICS,
+  };
+
+  const events: readonly EngineEvent[] = options?.events ?? [
+    { kind: "done", output: defaultOutput },
+  ];
+
+  let savedState: EngineState | undefined;
+
+  return {
+    engineId: options?.engineId ?? "mock-engine",
+
+    async *stream(input: EngineInput): AsyncIterable<EngineEvent> {
+      streamCalls.push(input);
+      for (const event of events) {
+        yield event;
+      }
+    },
+
+    ...(options?.stateful === true
+      ? {
+          async saveState(): Promise<EngineState> {
+            return savedState ?? { engineId: options?.engineId ?? "mock-engine", data: null };
+          },
+          async loadState(state: EngineState): Promise<void> {
+            savedState = state;
+          },
+        }
+      : {}),
+
+    async dispose(): Promise<void> {
+      disposeCalls.push(Date.now());
+      if (options?.onDispose !== undefined) {
+        await options.onDispose();
+      }
+    },
+
+    disposeCalls,
+    streamCalls,
+  };
+}

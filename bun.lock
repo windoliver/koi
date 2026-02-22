@@ -132,6 +132,18 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/node": {
+      "name": "@koi/node",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/gateway": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/sandbox": {
       "name": "@koi/sandbox",
       "version": "0.0.0",
@@ -280,6 +292,8 @@
     "@koi/middleware-pay": ["@koi/middleware-pay@workspace:packages/middleware-pay"],
 
     "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/middleware-permissions"],
+
+    "@koi/node": ["@koi/node@workspace:packages/node"],
 
     "@koi/sandbox": ["@koi/sandbox@workspace:packages/sandbox"],
 
