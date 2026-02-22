@@ -24,6 +24,7 @@ const SEARCH_FORGE_CONFIG: ForgeToolConfig = {
       lifecycle: { type: "string" },
       tags: { type: "array", items: { type: "string" } },
       createdBy: { type: "string" },
+      text: { type: "string" },
       limit: { type: "number" },
     },
   },

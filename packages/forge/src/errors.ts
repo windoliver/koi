@@ -20,7 +20,13 @@ export interface TestFailure {
 export type ForgeError =
   | {
       readonly stage: "static";
-      readonly code: "INVALID_SCHEMA" | "INVALID_NAME" | "SIZE_EXCEEDED" | "MISSING_FIELD";
+      readonly code:
+        | "INVALID_SCHEMA"
+        | "INVALID_NAME"
+        | "SIZE_EXCEEDED"
+        | "MISSING_FIELD"
+        | "INVALID_TYPE"
+        | "MANIFEST_PARSE_FAILED";
       readonly message: string;
     }
   | {
@@ -42,7 +48,12 @@ export type ForgeError =
     }
   | {
       readonly stage: "governance";
-      readonly code: "FORGE_DISABLED" | "MAX_DEPTH" | "MAX_SESSION_FORGES" | "SCOPE_VIOLATION";
+      readonly code:
+        | "FORGE_DISABLED"
+        | "MAX_DEPTH"
+        | "MAX_SESSION_FORGES"
+        | "SCOPE_VIOLATION"
+        | "DEPTH_TOOL_RESTRICTED";
       readonly message: string;
     }
   | {
@@ -60,6 +71,10 @@ export function staticError(
   message: string,
 ): ForgeError {
   return { stage: "static", code, message };
+}
+
+export function typeError(message: string): ForgeError {
+  return { stage: "static", code: "INVALID_TYPE", message };
 }
 
 export function sandboxError(

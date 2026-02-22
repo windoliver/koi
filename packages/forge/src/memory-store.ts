@@ -3,16 +3,19 @@
  * No eviction, no persistence across restarts.
  */
 
-import type { KoiError, Result } from "@koi/core";
-import type { BrickUpdate, ForgeStore } from "./store.js";
-import type { BrickArtifact, ForgeQuery } from "./types.js";
+import type {
+  BrickArtifact,
+  BrickUpdate,
+  ForgeQuery,
+  ForgeStore,
+  KoiError,
+  Result,
+} from "@koi/core";
+import { notFound } from "@koi/core";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
+// Error helpers use shared factories from @koi/core.
 function notFoundError(id: string): KoiError {
-  return { code: "NOT_FOUND", message: `Brick not found: ${id}`, retryable: false };
+  return notFound(id, `Brick not found: ${id}`);
 }
 
 function matchesQuery(brick: BrickArtifact, query: ForgeQuery): boolean {
@@ -37,6 +40,16 @@ function matchesQuery(brick: BrickArtifact, query: ForgeQuery): boolean {
       if (!brick.tags.includes(tag)) {
         return false;
       }
+    }
+  }
+  // Case-insensitive substring match against name + description
+  if (query.text !== undefined && query.text.length > 0) {
+    const lower = query.text.toLowerCase();
+    if (
+      !brick.name.toLowerCase().includes(lower) &&
+      !brick.description.toLowerCase().includes(lower)
+    ) {
+      return false;
     }
   }
   return true;
@@ -99,5 +112,9 @@ export function createInMemoryForgeStore(): ForgeStore {
     return { ok: true, value: undefined };
   };
 
-  return { save, load, search, remove, update };
+  const exists = async (id: string): Promise<Result<boolean, KoiError>> => {
+    return { ok: true, value: bricks.has(id) };
+  };
+
+  return { save, load, search, remove, update, exists };
 }

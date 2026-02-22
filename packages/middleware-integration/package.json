@@ -5,11 +5,12 @@
   "type": "module",
   "devDependencies": {
     "@koi/core": "workspace:*",
-    "@koi/test-utils": "workspace:*",
-    "@koi/middleware-permissions": "workspace:*",
-    "@koi/middleware-pay": "workspace:*",
     "@koi/middleware-audit": "workspace:*",
-    "@koi/middleware-memory": "workspace:*"
+    "@koi/middleware-memory": "workspace:*",
+    "@koi/context": "workspace:*",
+    "@koi/middleware-pay": "workspace:*",
+    "@koi/middleware-permissions": "workspace:*",
+    "@koi/test-utils": "workspace:*"
   },
   "scripts": {
     "test": "bun test"

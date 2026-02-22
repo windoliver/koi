@@ -3,10 +3,11 @@
  * Runs a command in a sandboxed process and collects output.
  */
 
-import type { KoiError, Result, SandboxProfile, SandboxResult } from "@koi/core";
+import type { KoiError, Result } from "@koi/core";
 import { detectPlatform } from "./detect.js";
 import { buildBwrapArgs } from "./platform/bwrap.js";
 import { buildSeatbeltArgs } from "./platform/seatbelt.js";
+import type { SandboxProfile, SandboxResult } from "./types.js";
 
 export interface ExecuteOptions {
   readonly cwd?: string;

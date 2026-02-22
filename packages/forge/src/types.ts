@@ -2,7 +2,17 @@
  * Core types for the @koi/forge self-extension system.
  */
 
-import type { BrickKind, BrickLifecycle, ForgeScope, ToolDescriptor, TrustTier } from "@koi/core";
+import type {
+  BrickKind,
+  BrickLifecycle,
+  ForgeScope,
+  TestCase,
+  ToolDescriptor,
+  TrustTier,
+} from "@koi/core";
+
+// Re-export L0 types that other forge modules import from this file
+export type { BrickKind, BrickLifecycle, ForgeScope };
 
 // ---------------------------------------------------------------------------
 // Forge result (pure data — L1 handles mutation)
@@ -58,12 +68,7 @@ export interface VerificationReport {
 // Forge inputs (discriminated union)
 // ---------------------------------------------------------------------------
 
-export interface TestCase {
-  readonly name: string;
-  readonly input: unknown;
-  readonly expectedOutput?: unknown;
-  readonly shouldThrow?: boolean;
-}
+export type { TestCase } from "@koi/core";
 
 export interface ForgeToolInput {
   readonly kind: "tool";
@@ -152,39 +157,48 @@ export interface ForgeContext {
   readonly forgesThisSession: number;
 }
 
+// Brick artifact types — canonical definitions live in @koi/core (L0)
+export type {
+  AgentArtifact,
+  BrickArtifact,
+  BrickArtifactBase,
+  CompositeArtifact,
+  SkillArtifact,
+  ToolArtifact,
+} from "@koi/core";
+
 // ---------------------------------------------------------------------------
-// Brick artifact (stored representation)
+// Promote result (returned by promote_forge)
 // ---------------------------------------------------------------------------
 
-export interface BrickArtifact {
-  readonly id: string;
-  readonly kind: BrickKind;
-  readonly name: string;
-  readonly description: string;
-  readonly scope: ForgeScope;
-  readonly trustTier: TrustTier;
-  readonly lifecycle: BrickLifecycle;
-  readonly createdBy: string;
-  readonly createdAt: number;
-  readonly version: string;
-  readonly tags: readonly string[];
-  readonly usageCount: number;
-  readonly implementation?: string;
-  readonly content?: string;
-  readonly inputSchema?: Readonly<Record<string, unknown>>;
-  readonly testCases?: readonly TestCase[];
+export interface PromoteChange<T> {
+  readonly from: T;
+  readonly to: T;
+}
+
+export interface PromoteResult {
+  readonly brickId: string;
+  readonly applied: boolean;
+  readonly requiresHumanApproval: boolean;
+  readonly changes: {
+    readonly scope?: PromoteChange<ForgeScope>;
+    readonly trustTier?: PromoteChange<TrustTier>;
+    readonly lifecycle?: PromoteChange<BrickLifecycle>;
+  };
+  readonly message?: string;
 }
 
 // ---------------------------------------------------------------------------
-// Forge query (structured search)
+// Manifest parser (injected dependency — avoids L2 peer import of @koi/manifest)
 // ---------------------------------------------------------------------------
 
-export interface ForgeQuery {
-  readonly kind?: BrickKind;
-  readonly scope?: ForgeScope;
-  readonly trustTier?: TrustTier;
-  readonly lifecycle?: BrickLifecycle;
-  readonly tags?: readonly string[];
-  readonly createdBy?: string;
-  readonly limit?: number;
+export type ManifestParseResult =
+  | { readonly ok: true; readonly warnings: readonly string[] }
+  | { readonly ok: false; readonly error: string };
+
+export interface ManifestParser {
+  readonly parse: (yaml: string) => ManifestParseResult | Promise<ManifestParseResult>;
 }
+
+// Forge query — canonical definition lives in @koi/core (L0)
+export type { ForgeQuery } from "@koi/core";

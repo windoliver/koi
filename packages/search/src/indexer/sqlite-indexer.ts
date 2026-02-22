@@ -1,5 +1,7 @@
 import { Database } from "bun:sqlite";
-import type { Embedder, IndexDocument, Indexer, KoiError, Result } from "@koi/core";
+import type { KoiError, Result } from "@koi/core";
+import type { Embedder, Indexer } from "../contracts.js";
+import type { IndexDocument } from "../types.js";
 import type { ChunkerConfig } from "./chunker.js";
 import { chunk } from "./chunker.js";
 

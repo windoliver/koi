@@ -44,6 +44,10 @@
       "types": "./dist/errors.d.ts",
       "import": "./dist/errors.js"
     },
+    "./hash": {
+      "types": "./dist/hash.d.ts",
+      "import": "./dist/hash.js"
+    },
     "./message": {
       "types": "./dist/message.d.ts",
       "import": "./dist/message.js"
@@ -71,6 +75,10 @@
     "./resolver": {
       "types": "./dist/resolver.d.ts",
       "import": "./dist/resolver.js"
+    },
+    "./brick-store": {
+      "types": "./dist/brick-store.d.ts",
+      "import": "./dist/brick-store.js"
     }
   },
   "scripts": {

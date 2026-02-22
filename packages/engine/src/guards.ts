@@ -6,8 +6,18 @@
  * State is scoped to the middleware instance lifetime (one per session).
  */
 
-import type { Agent, GovernanceComponent, KoiMiddleware, SpawnLedger } from "@koi/core";
-import { GOVERNANCE } from "@koi/core";
+import type {
+  Agent,
+  GovernanceComponent,
+  InboundMessage,
+  KoiMiddleware,
+  ModelChunk,
+  ModelRequest,
+  ModelResponse,
+  SpawnLedger,
+  TurnContext,
+} from "@koi/core";
+import { fnv1a, GOVERNANCE } from "@koi/core";
 import { KoiEngineError } from "./errors.js";
 import { createInMemorySpawnLedger } from "./spawn-ledger.js";
 import type {
@@ -23,17 +33,29 @@ import {
   DEFAULT_SPAWN_TOOL_IDS,
 } from "./types.js";
 
+export { fnv1a };
+
 // ---------------------------------------------------------------------------
-// FNV-1a hash (32-bit)
+// Shared validation helper
 // ---------------------------------------------------------------------------
 
-export function fnv1a(input: string): number {
-  let hash = 0x811c9dc5; // FNV offset basis
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193); // FNV prime
+/**
+ * Validates that a warning threshold is strictly less than its corresponding
+ * hard limit. Throws VALIDATION error if the invariant is violated.
+ */
+function validateWarningThreshold(
+  warningName: string,
+  warningValue: number | undefined,
+  limitName: string,
+  limitValue: number,
+): void {
+  if (warningValue !== undefined && warningValue >= limitValue) {
+    throw KoiEngineError.from(
+      "VALIDATION",
+      `${warningName} (${warningValue}) must be less than ${limitName} (${limitValue})`,
+      { context: { [warningName]: warningValue, [limitName]: limitValue } },
+    );
   }
-  return hash >>> 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +109,7 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
 
   return {
     name: "koi:iteration-guard",
+    priority: 0,
 
     wrapModelCall: async (_ctx, request, next) => {
       checkLimits();
@@ -119,18 +142,25 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
 }
 
 // ---------------------------------------------------------------------------
-// Loop Detector
+// Loop Detector — helpers
 // ---------------------------------------------------------------------------
 
 /**
  * Build a shallow fingerprint of a tool call without JSON.stringify.
  * Hashes toolId + top-level keys and shallow string values (capped at 128 chars).
  * O(keys) instead of O(input_size).
+ *
+ * When maxKeys is provided and the input exceeds it, falls back to
+ * toolId-only fingerprinting to avoid hashing extremely wide objects.
  */
-function shallowToolFingerprint(toolId: string, input: unknown): number {
+function shallowToolFingerprint(toolId: string, input: unknown, maxKeys?: number): number {
   let hash = fnv1a(toolId);
   if (typeof input === "object" && input !== null) {
     const keys = Object.keys(input).sort();
+    if (maxKeys !== undefined && keys.length > maxKeys) {
+      // Fall back to toolId-only fingerprint for very large inputs
+      return hash >>> 0;
+    }
     for (const key of keys) {
       hash ^= fnv1a(key);
       hash = Math.imul(hash, 0x01000193);
@@ -149,28 +179,147 @@ function shallowToolFingerprint(toolId: string, input: unknown): number {
   return hash >>> 0;
 }
 
+/** Check repeat-loop threshold and throw if exceeded. */
+function checkRepeatLoop(
+  toolId: string,
+  newCount: number,
+  threshold: number,
+  windowSize: number,
+): void {
+  if (newCount >= threshold) {
+    throw KoiEngineError.from(
+      "TIMEOUT",
+      `Loop detected: tool "${toolId}" called with identical arguments ${newCount} times in last ${windowSize} calls`,
+      {
+        context: {
+          toolId,
+          repeatCount: newCount,
+          windowSize,
+          threshold,
+          detectionKind: "repeat",
+        },
+      },
+    );
+  }
+}
+
+/**
+ * Detect a repeating pattern in a hash sequence.
+ *
+ * Checks whether the tail of `hashes` consists of a repeating sub-sequence
+ * of length `minPatternLength..floor(len/requiredRepetitions)`.
+ *
+ * @returns the detected pattern length, or 0 if no repeating pattern found.
+ */
+export function detectRepeatingPattern(
+  hashes: readonly number[],
+  minPatternLength: number,
+  requiredRepetitions: number,
+): number {
+  const len = hashes.length;
+  const maxPatternLength = Math.floor(len / requiredRepetitions);
+
+  for (let patLen = minPatternLength; patLen <= maxPatternLength; patLen++) {
+    const needed = patLen * requiredRepetitions;
+    if (needed > len) continue;
+
+    const start = len - needed;
+    let matches = true;
+
+    // Check that each repetition matches the first occurrence of the pattern
+    for (let rep = 1; rep < requiredRepetitions && matches; rep++) {
+      for (let i = 0; i < patLen; i++) {
+        if (hashes[start + i] !== hashes[start + rep * patLen + i]) {
+          matches = false;
+          break;
+        }
+      }
+    }
+
+    if (matches) return patLen;
+  }
+
+  return 0;
+}
+
+/** Check for ping-pong (alternating/repeating pattern) and throw if detected. */
+function checkPingPong(
+  toolId: string,
+  recentHashes: readonly number[],
+  minPatternLength: number,
+  requiredRepetitions: number,
+): void {
+  const patLen = detectRepeatingPattern(recentHashes, minPatternLength, requiredRepetitions);
+  if (patLen > 0) {
+    throw KoiEngineError.from(
+      "VALIDATION",
+      `Ping-pong loop detected: repeating pattern of length ${patLen} found after ${requiredRepetitions} repetitions (last tool: "${toolId}")`,
+      {
+        context: {
+          toolId,
+          patternLength: patLen,
+          repetitions: requiredRepetitions,
+          detectionKind: "ping_pong",
+        },
+      },
+    );
+  }
+}
+
+/** Check for no-progress (identical output) on a per-tool basis and throw if stalled. */
+function checkNoProgress(
+  toolId: string,
+  outputHash: number,
+  noProgressState: Map<string, { hash: number; count: number }>,
+  noProgressThreshold: number,
+): void {
+  const prev = noProgressState.get(toolId);
+  if (prev !== undefined && prev.hash === outputHash) {
+    const newCount = prev.count + 1;
+    noProgressState.set(toolId, { hash: outputHash, count: newCount });
+    if (newCount >= noProgressThreshold) {
+      throw KoiEngineError.from(
+        "VALIDATION",
+        `No-progress loop detected: tool "${toolId}" returned identical output ${newCount} consecutive times`,
+        {
+          context: {
+            toolId,
+            consecutiveCount: newCount,
+            threshold: noProgressThreshold,
+            detectionKind: "no_progress",
+          },
+        },
+      );
+    }
+  } else {
+    noProgressState.set(toolId, { hash: outputHash, count: 1 });
+  }
+}
+
+/** Extract ordered sequence from circular buffer (oldest → newest). */
+function ringBufferSnapshot(buf: readonly number[], cur: number, count: number): readonly number[] {
+  if (count < buf.length) {
+    return buf.slice(0, count);
+  }
+  return [...buf.slice(cur), ...buf.slice(0, cur)];
+}
+
+// ---------------------------------------------------------------------------
+// Loop Detector
+// ---------------------------------------------------------------------------
+
 export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMiddleware {
   const detection: LoopDetectionConfig = {
     ...DEFAULT_LOOP_DETECTION,
     ...config,
   };
 
-  // Validate: warningThreshold must be strictly less than threshold
-  if (
-    detection.warningThreshold !== undefined &&
-    detection.warningThreshold >= detection.threshold
-  ) {
-    throw KoiEngineError.from(
-      "VALIDATION",
-      `warningThreshold (${detection.warningThreshold}) must be less than threshold (${detection.threshold})`,
-      {
-        context: {
-          warningThreshold: detection.warningThreshold,
-          threshold: detection.threshold,
-        },
-      },
-    );
-  }
+  validateWarningThreshold(
+    "warningThreshold",
+    detection.warningThreshold,
+    "threshold",
+    detection.threshold,
+  );
 
   // Circular buffer for O(1) insert + evict
   const ringBuffer = new Array<number>(detection.windowSize).fill(0);
@@ -182,12 +331,83 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
   const hashCounts = new Map<number, number>();
   /** Tracks hashes that have already fired a warning (at most once per unique hash). */
   const firedWarnings = new Set<number>();
+  const noProgressState = new Map<string, { hash: number; count: number }>();
+
+  const pingPongEnabled = detection.pingPongEnabled ?? true;
+  const pingPongMinPatternLength = detection.pingPongMinPatternLength ?? 2;
+  const pingPongRepetitions = detection.pingPongRepetitions ?? 2;
+  const noProgressEnabled = detection.noProgressEnabled ?? true;
+  const noProgressThreshold = detection.noProgressThreshold ?? 3;
+  const maxKeys = detection.maxInputKeys ?? 20;
+
+  /** Queued warnings to inject into the next model call. */
+  // let justified: mutable binding swapped on each injection cycle
+  let pendingWarnings: readonly LoopWarningInfo[] = [];
+
+  // Both conditions required: injectWarning must not be explicitly disabled,
+  // AND warningThreshold must be set (otherwise no warnings are ever generated).
+  const shouldInject =
+    detection.injectWarning !== false && detection.warningThreshold !== undefined;
+
+  /**
+   * Build an InboundMessage from queued warnings and prepend to request.messages.
+   * Follows the same pattern as middleware-memory (senderId: "system:loop-detector").
+   */
+  function buildEnrichedRequest(request: ModelRequest): ModelRequest {
+    if (pendingWarnings.length === 0) {
+      return request;
+    }
+
+    const current = pendingWarnings;
+    pendingWarnings = [];
+
+    const lines = current.map(
+      (w) =>
+        `WARNING: Tool "${w.toolId}" has been called ${w.repeatCount} times with identical arguments` +
+        ` in the last ${w.windowSize} calls. Hard limit is ${w.threshold} repetitions.` +
+        ` You MUST try a different approach or your execution will be terminated.`,
+    );
+
+    const warningMessage: InboundMessage = {
+      senderId: "system:loop-detector",
+      timestamp: Date.now(),
+      content: [{ kind: "text", text: lines.join("\n") }],
+    };
+
+    return {
+      ...request,
+      messages: [warningMessage, ...request.messages],
+    };
+  }
 
   return {
     name: "koi:loop-detector",
+    priority: 1,
+
+    // Only attach model hooks when injection is enabled — avoids per-call
+    // overhead on the hot path when no warnings can ever be queued.
+    ...(shouldInject
+      ? {
+          wrapModelCall: async (
+            _ctx: TurnContext,
+            request: ModelRequest,
+            next: (req: ModelRequest) => Promise<ModelResponse>,
+          ): Promise<ModelResponse> => {
+            return next(buildEnrichedRequest(request));
+          },
+
+          wrapModelStream: (
+            _ctx: TurnContext,
+            request: ModelRequest,
+            next: (req: ModelRequest) => AsyncIterable<ModelChunk>,
+          ): AsyncIterable<ModelChunk> => {
+            return next(buildEnrichedRequest(request));
+          },
+        }
+      : {}),
 
     wrapToolCall: async (_ctx, request, next) => {
-      const hash = shallowToolFingerprint(request.toolId, request.input);
+      const hash = shallowToolFingerprint(request.toolId, request.input, maxKeys);
 
       // Evict the oldest entry if the buffer is full
       if (filled >= detection.windowSize) {
@@ -212,7 +432,6 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
       // Warning check — fires at most once per unique hash
       if (
         detection.warningThreshold !== undefined &&
-        detection.onWarning !== undefined &&
         newCount >= detection.warningThreshold &&
         !firedWarnings.has(hash)
       ) {
@@ -224,26 +443,41 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
           warningThreshold: detection.warningThreshold,
           threshold: detection.threshold,
         };
-        detection.onWarning(info);
+        if (detection.onWarning !== undefined) {
+          detection.onWarning(info);
+        }
+        if (shouldInject) {
+          pendingWarnings = [...pendingWarnings, info];
+        }
       }
 
-      // Check threshold
-      if (newCount >= detection.threshold) {
-        throw KoiEngineError.from(
-          "VALIDATION",
-          `Loop detected: tool "${request.toolId}" called with identical arguments ${newCount} times in last ${detection.windowSize} calls`,
-          {
-            context: {
-              toolId: request.toolId,
-              repeatCount: newCount,
-              windowSize: detection.windowSize,
-              threshold: detection.threshold,
-            },
-          },
-        );
+      // Pre-call checks
+      checkRepeatLoop(request.toolId, newCount, detection.threshold, detection.windowSize);
+
+      if (pingPongEnabled) {
+        const ordered = ringBufferSnapshot(ringBuffer, cursor, filled);
+        checkPingPong(request.toolId, ordered, pingPongMinPatternLength, pingPongRepetitions);
       }
 
-      return next(request);
+      // Execute the tool call
+      const response = await next(request);
+
+      // Post-call checks — hash output for no-progress detection.
+      // Safely serialize output, skipping check on circular refs or very large outputs.
+      if (noProgressEnabled) {
+        let serialized: string | undefined;
+        try {
+          serialized = JSON.stringify(response.output);
+        } catch {
+          // Circular reference or non-serializable output — skip no-progress check
+        }
+        if (serialized !== undefined && serialized.length <= 65_536) {
+          const outputHash = fnv1a(serialized);
+          checkNoProgress(request.toolId, outputHash, noProgressState, noProgressThreshold);
+        }
+      }
+
+      return response;
     },
   };
 }
@@ -275,34 +509,18 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
   };
 
   // Validate warning thresholds at construction time
-  if (policy.fanOutWarningAt !== undefined && policy.fanOutWarningAt >= policy.maxFanOut) {
-    throw KoiEngineError.from(
-      "VALIDATION",
-      `fanOutWarningAt (${policy.fanOutWarningAt}) must be less than maxFanOut (${policy.maxFanOut})`,
-      {
-        context: {
-          fanOutWarningAt: policy.fanOutWarningAt,
-          maxFanOut: policy.maxFanOut,
-        },
-      },
-    );
-  }
-
-  if (
-    policy.totalProcessWarningAt !== undefined &&
-    policy.totalProcessWarningAt >= policy.maxTotalProcesses
-  ) {
-    throw KoiEngineError.from(
-      "VALIDATION",
-      `totalProcessWarningAt (${policy.totalProcessWarningAt}) must be less than maxTotalProcesses (${policy.maxTotalProcesses})`,
-      {
-        context: {
-          totalProcessWarningAt: policy.totalProcessWarningAt,
-          maxTotalProcesses: policy.maxTotalProcesses,
-        },
-      },
-    );
-  }
+  validateWarningThreshold(
+    "fanOutWarningAt",
+    policy.fanOutWarningAt,
+    "maxFanOut",
+    policy.maxFanOut,
+  );
+  validateWarningThreshold(
+    "totalProcessWarningAt",
+    policy.totalProcessWarningAt,
+    "maxTotalProcesses",
+    policy.maxTotalProcesses,
+  );
 
   // Build spawn tool ID set for O(1) lookup
   const spawnToolIds = new Set<string>(policy.spawnToolIds ?? DEFAULT_SPAWN_TOOL_IDS);
@@ -323,6 +541,7 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
 
   return {
     name: "koi:spawn-guard",
+    priority: 2,
 
     wrapToolCall: async (_ctx, request, next) => {
       // Early return for non-spawn tools (hot path — O(1) set lookup)

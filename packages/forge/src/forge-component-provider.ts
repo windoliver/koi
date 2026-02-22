@@ -1,15 +1,24 @@
 /**
  * ForgeComponentProvider — attaches forged tools as components to agents.
  *
- * Implements the L0 ComponentProvider interface. On attach, it discovers all
- * active tool bricks from the ForgeStore and wraps each as an executable Tool
- * that runs in the sandbox.
+ * Implements the L0 ComponentProvider interface. On first attach(), it discovers
+ * all active tool bricks from the ForgeStore and wraps each as an executable
+ * Tool that runs in the sandbox. Results are cached for subsequent attach() calls.
+ *
+ * Lazy loading (decision 13A): tools are loaded on first attach(), not at creation.
  */
 
-import type { Agent, ComponentProvider, JsonObject, Tool, ToolDescriptor } from "@koi/core";
+import type {
+  Agent,
+  ComponentProvider,
+  ForgeStore,
+  JsonObject,
+  Tool,
+  ToolArtifact,
+  ToolDescriptor,
+} from "@koi/core";
 import { toolToken } from "@koi/core";
-import type { ForgeStore } from "./store.js";
-import type { BrickArtifact, SandboxExecutor } from "./types.js";
+import type { SandboxExecutor } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -21,24 +30,14 @@ const DEFAULT_SANDBOX_TIMEOUT_MS = 5_000;
 // Brick → Tool conversion
 // ---------------------------------------------------------------------------
 
-function brickToTool(brick: BrickArtifact, executor: SandboxExecutor, timeoutMs: number): Tool {
+function brickToTool(brick: ToolArtifact, executor: SandboxExecutor, timeoutMs: number): Tool {
   const descriptor: ToolDescriptor = {
     name: brick.name,
     description: brick.description,
-    inputSchema: brick.inputSchema ?? { type: "object" },
+    inputSchema: brick.inputSchema,
   };
 
   const execute = async (input: JsonObject): Promise<unknown> => {
-    if (brick.implementation === undefined) {
-      return {
-        ok: false,
-        error: {
-          code: "NO_IMPLEMENTATION",
-          message: `Brick "${brick.name}" has no implementation`,
-        },
-      };
-    }
-
     const result = await executor.execute(brick.implementation, input, timeoutMs);
     if (!result.ok) {
       return {
@@ -70,42 +69,71 @@ export interface ForgeComponentProviderConfig {
 }
 
 /**
- * Async factory that pre-loads tools from the store, then returns
- * a ComponentProvider whose attach() is already populated.
- *
- * The same tool instances are shared across all attach() calls for efficiency.
- * Forged tools are stateless — state lives in the sandbox execution context.
+ * Extended ComponentProvider with cache invalidation support.
+ * Call `invalidate()` after store mutations (save/remove/update) to ensure
+ * the next `attach()` re-queries the store for fresh data.
  */
-export async function createForgeComponentProviderAsync(
+export interface ForgeComponentProviderInstance extends ComponentProvider {
+  /** Clears the cached tool set. Next `attach()` will re-query the store. */
+  readonly invalidate: () => void;
+}
+
+/**
+ * Creates a ComponentProvider that lazily loads forged tools on first attach().
+ * Results are cached — subsequent attach() calls return the same tool instances.
+ * Call `invalidate()` to clear the cache after store mutations.
+ */
+export function createForgeComponentProvider(
   config: ForgeComponentProviderConfig,
-): Promise<ComponentProvider> {
+): ForgeComponentProviderInstance {
   const timeoutMs = config.sandboxTimeoutMs ?? DEFAULT_SANDBOX_TIMEOUT_MS;
-
-  // Load all active tool bricks
-  const searchResult = await config.store.search({
-    kind: "tool",
-    lifecycle: "active",
-  });
-
-  if (!searchResult.ok) {
-    throw new Error(`ForgeComponentProvider: failed to load tools: ${searchResult.error.message}`);
-  }
-
-  const tools: Map<string, unknown> = new Map();
-  for (const brick of searchResult.value) {
-    if (brick.kind === "tool" && brick.implementation !== undefined) {
-      const token = toolToken(brick.name);
-      const tool = brickToTool(brick, config.executor, timeoutMs);
-      tools.set(token as string, tool);
-    }
-  }
+  let cached: ReadonlyMap<string, unknown> | undefined;
 
   return {
     name: "forge",
     attach: async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
-      return tools;
+      if (cached !== undefined) {
+        return cached;
+      }
+
+      const searchResult = await config.store.search({
+        kind: "tool",
+        lifecycle: "active",
+      });
+
+      if (!searchResult.ok) {
+        throw new Error(
+          `ForgeComponentProvider: failed to load tools: ${searchResult.error.message}`,
+          { cause: searchResult.error },
+        );
+      }
+
+      const tools: Map<string, unknown> = new Map();
+      for (const brick of searchResult.value) {
+        if (brick.kind === "tool") {
+          const token = toolToken(brick.name);
+          const tool = brickToTool(brick, config.executor, timeoutMs);
+          tools.set(token as string, tool);
+        }
+      }
+
+      cached = tools;
+      return cached;
+    },
+    invalidate: (): void => {
+      cached = undefined;
     },
   };
+}
+
+/**
+ * @deprecated Use `createForgeComponentProvider` instead (lazy, synchronous factory).
+ * Kept for backward compatibility — now delegates to the lazy version.
+ */
+export async function createForgeComponentProviderAsync(
+  config: ForgeComponentProviderConfig,
+): Promise<ComponentProvider> {
+  return createForgeComponentProvider(config);
 }
 
 export { brickToTool };

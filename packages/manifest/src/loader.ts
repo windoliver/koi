@@ -25,6 +25,7 @@ const KNOWN_FIELDS = [
   "schedule",
   "webhooks",
   "forge",
+  "context",
 ] as const;
 
 /**

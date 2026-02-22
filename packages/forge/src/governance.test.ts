@@ -59,6 +59,71 @@ describe("checkGovernance", () => {
     const result = checkGovernance(context, config);
     expect(result.ok).toBe(true);
   });
+
+  test("depth 0 allows all 6 primordial tools", () => {
+    const config = createDefaultForgeConfig({ maxForgeDepth: 2 });
+    const context: ForgeContext = { ...DEFAULT_CONTEXT, depth: 0 };
+    for (const toolName of [
+      "forge_tool",
+      "forge_skill",
+      "forge_agent",
+      "search_forge",
+      "compose_forge",
+      "promote_forge",
+    ]) {
+      const result = checkGovernance(context, config, toolName);
+      expect(result.ok).toBe(true);
+    }
+  });
+
+  test("depth 1 allows forge_tool, forge_skill, search_forge, promote_forge", () => {
+    const config = createDefaultForgeConfig({ maxForgeDepth: 2 });
+    const context: ForgeContext = { ...DEFAULT_CONTEXT, depth: 1 };
+    for (const toolName of ["forge_tool", "forge_skill", "search_forge", "promote_forge"]) {
+      const result = checkGovernance(context, config, toolName);
+      expect(result.ok).toBe(true);
+    }
+  });
+
+  test("depth 1 rejects forge_agent and compose_forge", () => {
+    const config = createDefaultForgeConfig({ maxForgeDepth: 2 });
+    const context: ForgeContext = { ...DEFAULT_CONTEXT, depth: 1 };
+    for (const toolName of ["forge_agent", "compose_forge"]) {
+      const result = checkGovernance(context, config, toolName);
+      expect(result.ok).toBe(false);
+      if (!result.ok && result.error.stage === "governance") {
+        expect(result.error.code).toBe("DEPTH_TOOL_RESTRICTED");
+      }
+    }
+  });
+
+  test("depth 2+ allows only search_forge", () => {
+    const config = createDefaultForgeConfig({ maxForgeDepth: 3 });
+    const context: ForgeContext = { ...DEFAULT_CONTEXT, depth: 2 };
+    const allowed = checkGovernance(context, config, "search_forge");
+    expect(allowed.ok).toBe(true);
+
+    for (const toolName of [
+      "forge_tool",
+      "forge_skill",
+      "forge_agent",
+      "compose_forge",
+      "promote_forge",
+    ]) {
+      const result = checkGovernance(context, config, toolName);
+      expect(result.ok).toBe(false);
+      if (!result.ok && result.error.stage === "governance") {
+        expect(result.error.code).toBe("DEPTH_TOOL_RESTRICTED");
+      }
+    }
+  });
+
+  test("skips tool filtering when toolName not provided", () => {
+    const config = createDefaultForgeConfig({ maxForgeDepth: 3 });
+    const context: ForgeContext = { ...DEFAULT_CONTEXT, depth: 2 };
+    const result = checkGovernance(context, config);
+    expect(result.ok).toBe(true);
+  });
 });
 
 describe("checkScopePromotion", () => {

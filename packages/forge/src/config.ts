@@ -2,9 +2,10 @@
  * Forge configuration — Zod schema, validation, factory with defaults.
  */
 
-import type { ForgeScope, KoiError, Result, TrustTier } from "@koi/core";
+import type { KoiError, Result, TrustTier } from "@koi/core";
 import { validateWith } from "@koi/validation";
 import { z } from "zod";
+import type { ForgeScope } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Configuration interfaces
@@ -22,6 +23,7 @@ export interface VerificationConfig {
   readonly selfTestTimeoutMs: number;
   readonly totalTimeoutMs: number;
   readonly maxBrickSizeBytes: number;
+  readonly failFast: boolean;
 }
 
 export interface ForgeConfig {
@@ -58,6 +60,7 @@ const verificationSchema = z.object({
   selfTestTimeoutMs: z.number().int().positive().optional(),
   totalTimeoutMs: z.number().int().positive().optional(),
   maxBrickSizeBytes: z.number().int().positive().optional(),
+  failFast: z.boolean().optional(),
 });
 
 const forgeConfigInputSchema = z.object({
@@ -86,6 +89,7 @@ const DEFAULT_VERIFICATION: VerificationConfig = {
   selfTestTimeoutMs: 10_000,
   totalTimeoutMs: 30_000,
   maxBrickSizeBytes: 50_000,
+  failFast: true,
 } as const;
 
 const DEFAULT_CONFIG: ForgeConfig = {
@@ -164,6 +168,7 @@ export function validateForgeConfig(raw: unknown): Result<ForgeConfig, KoiError>
             totalTimeoutMs: p.verification.totalTimeoutMs ?? DEFAULT_VERIFICATION.totalTimeoutMs,
             maxBrickSizeBytes:
               p.verification.maxBrickSizeBytes ?? DEFAULT_VERIFICATION.maxBrickSizeBytes,
+            failFast: p.verification.failFast ?? DEFAULT_VERIFICATION.failFast,
           }
         : DEFAULT_VERIFICATION,
   };

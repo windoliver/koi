@@ -87,6 +87,7 @@ export function createInMemoryRegistry(): InMemoryRegistry {
       if (filter.condition !== undefined && !e.status.conditions.includes(filter.condition)) {
         return false;
       }
+      if (filter.parentId !== undefined && e.parentId !== filter.parentId) return false;
       return true;
     });
   }

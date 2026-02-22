@@ -1,9 +1,15 @@
 /**
  * Sandbox types — OS-level process isolation contracts.
  * Types only, zero runtime code.
+ *
+ * Owned by @koi/sandbox (L2). These types define the sandbox
+ * extension point and are not part of the @koi/core kernel.
  */
 
-import type { TrustTier } from "./ecs.js";
+import type { TrustTier } from "@koi/core";
+
+/** Sandbox-specific alias for the L0 TrustTier. */
+export type SandboxTier = TrustTier;
 
 /** Filesystem isolation policy. */
 export interface FilesystemPolicy {

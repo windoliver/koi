@@ -6,7 +6,7 @@
  * then deny sensitive read paths explicitly. File writes use an allow-list.
  */
 
-import type { SandboxProfile } from "@koi/core";
+import type { SandboxProfile } from "../types.js";
 
 /**
  * Generate a Seatbelt .sb profile string from a SandboxProfile.

@@ -387,6 +387,7 @@ describe("streaming mode", () => {
           modelCall: createSimpleModelHandler("composed fallback"),
           modelStream: createSimpleModelStreamHandler("Hello streaming world"),
           toolCall: createMockToolHandler(null),
+          tools: [],
         },
       }),
     );
@@ -417,6 +418,7 @@ describe("streaming mode", () => {
           modelCall: createSimpleModelHandler("composed fallback"),
           modelStream: createToolCallingStreamHandler(toolCalls, "Lookup complete."),
           toolCall: createMockToolHandler({ found: true }),
+          tools: [],
         },
       }),
     );
@@ -616,6 +618,7 @@ describe("callHandlers (cooperating adapter pattern)", () => {
         callHandlers: {
           modelCall: composedModelCall,
           toolCall: createMockToolHandler(null),
+          tools: [],
         },
       }),
     );
@@ -652,6 +655,7 @@ describe("callHandlers (cooperating adapter pattern)", () => {
         callHandlers: {
           modelCall: createToolCallingModelHandler(toolCalls, "Done with composed tool"),
           toolCall: composedToolHandler,
+          tools: [],
         },
       }),
     );

@@ -12,6 +12,7 @@ export default defineConfig({
     "src/ecs.ts",
     "src/engine.ts",
     "src/errors.ts",
+    "src/hash.ts",
     "src/eviction.ts",
     "src/health.ts",
     "src/lifecycle.ts",
@@ -19,6 +20,7 @@ export default defineConfig({
     "src/middleware.ts",
     "src/model-provider.ts",
     "src/resolver.ts",
+    "src/brick-store.ts",
   ],
   format: ["esm"],
   dts: {

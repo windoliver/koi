@@ -38,7 +38,7 @@ function formatToolResult(output: unknown): AgentToolResult<unknown> {
  * Wrap a single Koi Tool as a pi AgentTool.
  * The execute function routes through callHandlers.toolCall() for middleware.
  */
-function wrapTool(descriptor: ToolDescriptor, toolCall: ToolHandler): AgentTool {
+export function wrapTool(descriptor: ToolDescriptor, toolCall: ToolHandler): AgentTool {
   return {
     name: descriptor.name,
     description: descriptor.description,

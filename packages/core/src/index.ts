@@ -14,6 +14,23 @@ export type {
   PermissionConfig,
   ToolConfig,
 } from "./assembly.js";
+// brick store — persistence contracts for forged artifacts
+export type {
+  AdvisoryLock,
+  AgentArtifact,
+  BrickArtifact,
+  BrickArtifactBase,
+  BrickUpdate,
+  CompositeArtifact,
+  ForgeQuery,
+  ForgeStore,
+  LockHandle,
+  LockMode,
+  LockRequest,
+  SkillArtifact,
+  TestCase,
+  ToolArtifact,
+} from "./brick-store.js";
 // channel
 export type { ChannelAdapter, ChannelCapabilities, MessageHandler } from "./channel.js";
 // common
@@ -53,6 +70,8 @@ export type {
 export type {
   Agent,
   AgentId,
+  ChildHandle,
+  ChildLifecycleEvent,
   ComponentProvider,
   CredentialComponent,
   EventComponent,
@@ -60,6 +79,7 @@ export type {
   GovernanceUsage,
   MemoryComponent,
   MemoryResult,
+  ProcessAccounter,
   ProcessId,
   ProcessState,
   SkillMetadata,
@@ -94,6 +114,17 @@ export type {
   EngineState,
   EngineStopReason,
 } from "./engine.js";
+// error factories — pure data constructors for KoiError objects
+export {
+  conflict,
+  external,
+  internal,
+  notFound,
+  permission,
+  rateLimit,
+  timeout,
+  validation,
+} from "./error-factories.js";
 // errors — types
 export type { KoiError, KoiErrorCode, Result } from "./errors.js";
 // errors — runtime values
@@ -107,6 +138,8 @@ export type {
 } from "./eviction.js";
 // forge types
 export type { BrickKind, BrickLifecycle, ForgeScope } from "./forge-types.js";
+// hash
+export { fnv1a } from "./hash.js";
 // health
 export type {
   HealthMonitor,
@@ -161,19 +194,6 @@ export type {
 export type { ModelCapabilities, ModelProvider, ModelTarget } from "./model-provider.js";
 // resolver
 export type { Resolver } from "./resolver.js";
-// search contracts
-export type { Embedder, Indexer, Retriever } from "./retriever.js";
-// sandbox
-export type {
-  FilesystemPolicy,
-  NetworkPolicy,
-  ResourceLimits,
-  SandboxAdapter,
-  SandboxExecOptions,
-  SandboxInstance,
-  SandboxProfile,
-  SandboxResult,
-} from "./sandbox.js";
 // scheduler — types
 export type {
   CronSchedule,
@@ -192,12 +212,3 @@ export type {
 } from "./scheduler.js";
 // scheduler — runtime values (branded constructors + defaults)
 export { DEFAULT_SCHEDULER_CONFIG, scheduleId, taskId } from "./scheduler.js";
-// search value types
-export type {
-  IndexDocument,
-  SearchFilter,
-  SearchPage,
-  SearchQuery,
-  SearchResult,
-  SearchScore,
-} from "./search.js";

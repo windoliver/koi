@@ -11,7 +11,10 @@ import type {
   EngineEvent,
   EngineInput,
   KoiMiddleware,
+  ProcessAccounter,
   SpawnLedger,
+  Tool,
+  ToolDescriptor,
 } from "@koi/core";
 
 // ---------------------------------------------------------------------------
@@ -27,12 +30,15 @@ export interface IterationLimits {
   readonly maxTokens: number;
 }
 
+export type LoopDetectionKind = "repeat" | "ping_pong" | "no_progress";
+
 export interface LoopWarningInfo {
   readonly toolId: string;
   readonly repeatCount: number;
   readonly windowSize: number;
   readonly warningThreshold: number;
   readonly threshold: number;
+  readonly detectionKind?: LoopDetectionKind;
 }
 
 export interface LoopDetectionConfig {
@@ -44,6 +50,24 @@ export interface LoopDetectionConfig {
   readonly warningThreshold?: number;
   /** Callback fired when warningThreshold is reached. Requires warningThreshold to be set. */
   readonly onWarning?: (info: LoopWarningInfo) => void;
+  /**
+   * When true (default), inject a system warning message into the model context
+   * when warningThreshold is reached, giving the agent a chance to self-correct.
+   * Requires warningThreshold to be set.
+   */
+  readonly injectWarning?: boolean;
+  /** Max number of keys in tool input before falling back to toolId-only fingerprinting. Default: 20. */
+  readonly maxInputKeys?: number;
+  /** Enable ping-pong (alternating pattern) detection. Default: true. */
+  readonly pingPongEnabled?: boolean;
+  /** Minimum pattern length for ping-pong detection. Default: 2. */
+  readonly pingPongMinPatternLength?: number;
+  /** Number of full repetitions required to trigger ping-pong detection. Default: 2. */
+  readonly pingPongRepetitions?: number;
+  /** Enable no-progress (identical output) detection. Default: true. */
+  readonly noProgressEnabled?: boolean;
+  /** Number of consecutive identical outputs from the same tool before triggering. Default: 3. */
+  readonly noProgressThreshold?: number;
 }
 
 export interface SpawnWarningInfo {
@@ -119,6 +143,11 @@ export const DEFAULT_ITERATION_LIMITS: IterationLimits = Object.freeze({
 export const DEFAULT_LOOP_DETECTION: LoopDetectionConfig = Object.freeze({
   windowSize: 8,
   threshold: 3,
+  pingPongEnabled: true,
+  pingPongMinPatternLength: 2,
+  pingPongRepetitions: 2,
+  noProgressEnabled: true,
+  noProgressThreshold: 3,
 });
 
 /** Default tool IDs that trigger spawn governance. */
@@ -130,6 +159,27 @@ export const DEFAULT_SPAWN_POLICY: SpawnPolicy = Object.freeze({
   maxTotalProcesses: 20,
   spawnToolIds: DEFAULT_SPAWN_TOOL_IDS,
 });
+
+// ---------------------------------------------------------------------------
+// Live forge resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Enables forged capabilities to be used without agent re-assembly.
+ *
+ * Tools: resolved at call time (immediate). Descriptors refreshed at turn boundary.
+ * Middleware: re-composed at turn boundary (next turn picks up new middleware).
+ *
+ * All methods use L0 types only — L2 (forge) provides the implementation.
+ */
+export interface ForgeRuntime {
+  /** Resolve a forged tool by name. Returns undefined if not found or not accessible. */
+  readonly resolveTool: (toolId: string) => Promise<Tool | undefined>;
+  /** Get descriptors for all currently available forged tools. */
+  readonly toolDescriptors: () => Promise<readonly ToolDescriptor[]>;
+  /** Get currently active forged middleware. Re-queried at turn boundaries. */
+  readonly middleware?: () => Promise<readonly KoiMiddleware[]>;
+}
 
 // ---------------------------------------------------------------------------
 // Factory API
@@ -159,6 +209,10 @@ export interface CreateKoiOptions {
   readonly spawnLedger?: SpawnLedger;
   /** Optional approval handler for HITL permission gating. */
   readonly approvalHandler?: ApprovalHandler;
+  /** Optional live forge runtime — enables forged tools/middleware without agent re-assembly. */
+  readonly forge?: ForgeRuntime;
+  /** Optional shared process accounter for cross-agent spawn accounting. */
+  readonly processAccounter?: ProcessAccounter;
 }
 
 export interface KoiRuntime {

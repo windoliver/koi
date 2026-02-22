@@ -5,6 +5,7 @@
  * per-call pi Agent construction → event bridging.
  */
 
+import type { ToolDescriptor } from "@koi/core/ecs";
 import type { EngineEvent, EngineInput } from "@koi/core/engine";
 import type { AgentMessage, AgentOptions, StreamFn } from "@mariozechner/pi-agent-core";
 import { Agent as PiAgent } from "@mariozechner/pi-agent-core";
@@ -15,7 +16,7 @@ import { engineInputToPrompt } from "./message-map.js";
 import { createMetricsAccumulator } from "./metrics.js";
 import { createModelCallTerminal, createModelStreamTerminal } from "./model-terminal.js";
 import { createBridgeStreamFn } from "./stream-bridge.js";
-import { createPiTools } from "./tool-bridge.js";
+import { wrapTool } from "./tool-bridge.js";
 import type { PiAdapterConfig, PiEngineAdapter } from "./types.js";
 
 /**
@@ -113,14 +114,11 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
       }
       const bridgeStreamFn = createBridgeStreamFn(modelStream, realStreamSimple);
 
-      // Create pi tools from agent entity via callHandlers.toolCall.
-      // Tools are resolved through callHandlers.toolCall (middleware-wrapped).
-      // We pass a stub agent with empty query since tool lookup happens in L1's defaultToolTerminal.
-      const emptyAgent = { query: () => new Map() } as unknown as Parameters<
-        typeof createPiTools
-      >[0];
+      // Wrap Koi tool descriptors as pi AgentTools, routing execution through middleware.
       const agentTools =
-        input.kind === "resume" ? [] : createPiTools(emptyAgent, callHandlers.toolCall);
+        input.kind === "resume"
+          ? []
+          : callHandlers.tools.map((desc: ToolDescriptor) => wrapTool(desc, callHandlers.toolCall));
 
       // Build pi Agent options immutably with conditional spread.
       // Captures transformContext in a local const to satisfy TypeScript narrowing in closures.
