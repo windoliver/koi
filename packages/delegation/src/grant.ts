@@ -76,7 +76,6 @@ export function createGrant(params: CreateGrantParams): DelegationGrant {
  * - Child must include all parent deny rules
  * - Child expiresAt <= parent expiresAt
  * - Child chainDepth = parent.chainDepth + 1 <= parent.maxChainDepth
- * - Child budget <= parent budget (if parent has one)
  *
  * The parent's delegateeId becomes the child's issuerId (re-delegation).
  */
@@ -152,17 +151,6 @@ function validateScopeAttenuation(
         "Child scope permissions exceed parent scope — allow must be a subset and all parent deny rules must be preserved",
       retryable: false,
     };
-  }
-
-  // Check budget
-  if (parent.maxBudget !== undefined) {
-    if (child.maxBudget === undefined || child.maxBudget > parent.maxBudget) {
-      return {
-        code: "PERMISSION",
-        message: `Child budget ${String(child.maxBudget ?? "unlimited")} exceeds parent budget ${String(parent.maxBudget)}`,
-        retryable: false,
-      };
-    }
   }
 
   return undefined;

@@ -1,11 +1,5 @@
-import type {
-  FusionStrategy,
-  Retriever,
-  SearchOutcome,
-  SearchPage,
-  SearchQuery,
-  SearchResult,
-} from "@koi/core";
+import type { KoiError, Result, Retriever, SearchPage, SearchQuery, SearchResult } from "@koi/core";
+import type { FusionStrategy } from "../fusion-types.js";
 import { applyFusion } from "./fusion.js";
 import type { MmrConfig } from "./mmr.js";
 import { applyMmr } from "./mmr.js";
@@ -29,7 +23,7 @@ export function createHybridRetriever(config: HybridRetrieverConfig): Retriever 
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   return {
-    retrieve: async (query: SearchQuery): Promise<SearchOutcome<SearchPage>> => {
+    retrieve: async (query: SearchQuery): Promise<Result<SearchPage, KoiError>> => {
       // Over-fetch from each retriever for better fusion
       // Omit offset/minScore — each retriever starts from 0; we paginate after fusion
       const expandedQuery: SearchQuery = {
@@ -58,9 +52,10 @@ export function createHybridRetriever(config: HybridRetrieverConfig): Retriever 
         return {
           ok: false,
           error: {
-            kind: "backend_unavailable",
-            backend: "all",
-            cause: "All retrievers failed or timed out",
+            code: "EXTERNAL",
+            message: "All retrievers failed or timed out",
+            retryable: true,
+            context: { backend: "all" },
           },
         };
       }

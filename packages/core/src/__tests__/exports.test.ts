@@ -60,6 +60,7 @@ import type {
   KoiErrorCode,
   KoiMiddleware,
   MemoryComponent,
+  MemoryResult,
   MessageHandler,
   MiddlewareConfig,
   // assembly
@@ -84,7 +85,6 @@ import type {
   SandboxInstance,
   SandboxProfile,
   SandboxResult,
-  SandboxTier,
   // delegation
   ScopeChecker,
   // middleware
@@ -176,12 +176,12 @@ type _TypeGuard =
   | AssertDefined<SkillMetadata>
   | AssertDefined<ComponentProvider>
   | AssertDefined<MemoryComponent>
+  | AssertDefined<MemoryResult>
   | AssertDefined<GovernanceComponent>
   | AssertDefined<GovernanceUsage>
   | AssertDefined<SpawnCheck>
   | AssertDefined<CredentialComponent>
   | AssertDefined<EventComponent>
-  | AssertDefined<SandboxTier>
   | AssertDefined<FilesystemPolicy>
   | AssertDefined<NetworkPolicy>
   | AssertDefined<ResourceLimits>

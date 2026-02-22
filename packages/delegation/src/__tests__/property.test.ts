@@ -43,10 +43,8 @@ function randomSubset(items: readonly string[], seed: number): readonly string[]
 
 function makeRandomScope(seed: number): DelegationScope {
   const allow = randomSubset(ALL_TOOLS, seed);
-  const budget = ((seed * 31) % 200) + 1;
   return {
     permissions: { allow },
-    maxBudget: budget,
   };
 }
 
@@ -57,13 +55,6 @@ function makeNarrowerScope(parent: DelegationScope, seed: number): DelegationSco
     parent.permissions.deny !== undefined
       ? { allow: childAllow, deny: parent.permissions.deny }
       : { allow: childAllow };
-  if (parent.maxBudget !== undefined) {
-    const childBudget = Math.max(
-      1,
-      Math.floor((parent.maxBudget * (((seed * 17) % 80) + 10)) / 100),
-    );
-    return { permissions, maxBudget: childBudget };
-  }
   return { permissions };
 }
 
@@ -99,11 +90,6 @@ describe("property: monotonic attenuation", () => {
         // Every child allow must be in parent allow
         for (const perm of childAllow) {
           expect(parentAllow.has(perm)).toBe(true);
-        }
-
-        // Child budget <= parent budget
-        if (parentScope.maxBudget !== undefined && childGrant.scope.maxBudget !== undefined) {
-          expect(childGrant.scope.maxBudget).toBeLessThanOrEqual(parentScope.maxBudget);
         }
       }
       // If attenuation failed, the invariant holds trivially (denied escalation)

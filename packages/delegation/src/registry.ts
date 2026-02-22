@@ -15,15 +15,23 @@ interface RegistryEntry {
   readonly revokedAt: number;
 }
 
+/** Concrete return type for the in-memory registry with convenience methods. */
+export interface InMemoryRegistry extends RevocationRegistry {
+  /** Returns all currently revoked IDs (convenience — not part of the L0 interface). */
+  readonly revokedIds: () => ReadonlySet<DelegationId>;
+  /** Stops the periodic cleanup interval. */
+  readonly dispose: () => void;
+}
+
 /**
  * Creates an in-memory revocation registry with configurable max entries
- * and periodic cleanup. Returns a RevocationRegistry with a dispose function
- * to stop the cleanup interval.
+ * and periodic cleanup. `maxEntries` and `cleanupIntervalMs` are local
+ * configuration for this implementation, not part of L0 DelegationConfig.
  */
 export function createInMemoryRegistry(config?: {
   readonly maxEntries?: number;
   readonly cleanupIntervalMs?: number;
-}): RevocationRegistry & { readonly dispose: () => void } {
+}): InMemoryRegistry {
   const maxEntries = config?.maxEntries ?? 10_000;
   const cleanupIntervalMs = config?.cleanupIntervalMs ?? 60_000;
 

@@ -132,14 +132,23 @@ export interface ComponentProvider {
 // Singleton component types (sub-types deferred to L2)
 // ---------------------------------------------------------------------------
 
+/** A single memory recall result with content and optional metadata. */
+export interface MemoryResult {
+  readonly content: string;
+  readonly score?: number;
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
 export interface MemoryComponent {
-  readonly recall: (query: string) => Promise<readonly unknown[]>;
-  readonly store: (content: unknown) => Promise<void>;
+  readonly recall: (query: string) => Promise<readonly MemoryResult[]>;
+  readonly store: (content: string) => Promise<void>;
 }
 
 export interface GovernanceUsage {
   readonly turns: number;
   readonly spawns: number;
+  /** Extensible counters for L2-defined metrics (e.g., tokens, tool calls). */
+  readonly counters?: Readonly<Record<string, number>>;
 }
 
 export type SpawnCheck =

@@ -2,7 +2,7 @@
  * Preset sandbox profile constructors.
  */
 
-import type { SandboxProfile, SandboxTier } from "@koi/core";
+import type { SandboxProfile, TrustTier } from "@koi/core";
 
 const SENSITIVE_PATHS: readonly string[] = [
   "~/.ssh",
@@ -61,7 +61,7 @@ export function permissiveProfile(overrides?: Partial<SandboxProfile>): SandboxP
   return mergeProfile(PERMISSIVE_DEFAULTS, overrides);
 }
 
-export function profileForTier(tier: SandboxTier): SandboxProfile {
+export function profileForTier(tier: TrustTier): SandboxProfile {
   switch (tier) {
     case "sandbox":
       return restrictiveProfile();
