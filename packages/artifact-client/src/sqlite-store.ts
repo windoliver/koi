@@ -8,8 +8,14 @@
 
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import type { JsonObject, KoiError, Result } from "@koi/core";
-import { conflict, internal, notFound, validation } from "@koi/core";
 import type { ArtifactClient } from "./client.js";
+import {
+  conflictError,
+  internalError,
+  notFoundError,
+  validateId,
+  validateQuery,
+} from "./errors.js";
 import { computeContentHash } from "./hash.js";
 import type {
   Artifact,
@@ -28,45 +34,6 @@ import { artifactId, contentHash } from "./types.js";
 export interface SqliteStoreConfig {
   /** Database file path, or ":memory:" for in-memory. */
   readonly dbPath: string;
-}
-
-// Error helpers use shared factories from @koi/core.
-// Local aliases for convenience + domain-specific messages.
-function notFoundError(id: string): KoiError {
-  return notFound(id, `Artifact not found: ${id}`);
-}
-
-function conflictError(id: string): KoiError {
-  return conflict(id, `Artifact already exists: ${id}`);
-}
-
-function validationError(message: string): KoiError {
-  return validation(message);
-}
-
-function internalError(message: string, cause?: unknown): KoiError {
-  return internal(message, cause);
-}
-
-// ---------------------------------------------------------------------------
-// Validation
-// ---------------------------------------------------------------------------
-
-function validateId(id: ArtifactId): Result<void, KoiError> {
-  if (id === "") {
-    return { ok: false, error: validationError("Artifact ID must not be empty") };
-  }
-  return { ok: true, value: undefined };
-}
-
-function validateQuery(query: ArtifactQuery): Result<void, KoiError> {
-  if (query.limit !== undefined && query.limit < 0) {
-    return { ok: false, error: validationError("Query limit must not be negative") };
-  }
-  if (query.offset !== undefined && query.offset < 0) {
-    return { ok: false, error: validationError("Query offset must not be negative") };
-  }
-  return { ok: true, value: undefined };
 }
 
 // ---------------------------------------------------------------------------

@@ -6,8 +6,9 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
-import { conflict, notFound, RETRYABLE_DEFAULTS, validation } from "@koi/core";
+import { RETRYABLE_DEFAULTS } from "@koi/core";
 import type { ArtifactClient } from "./client.js";
+import { conflictError, notFoundError, validationError } from "./errors.js";
 import { computeContentHash } from "./hash.js";
 import type { Artifact, ArtifactId, ArtifactPage, ArtifactQuery, ArtifactUpdate } from "./types.js";
 
@@ -88,19 +89,6 @@ function mapRpcError(rpcError: { readonly code: number; readonly message: string
     };
   }
   return { code: "EXTERNAL", message: rpcError.message, retryable: true };
-}
-
-// Error helpers use shared factories from @koi/core.
-function validationError(message: string): KoiError {
-  return validation(message);
-}
-
-function notFoundError(id: string): KoiError {
-  return notFound(id, `Artifact not found: ${id}`);
-}
-
-function conflictError(id: string): KoiError {
-  return conflict(id, `Artifact already exists: ${id}`);
 }
 
 // ---------------------------------------------------------------------------

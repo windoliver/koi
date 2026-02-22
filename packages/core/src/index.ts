@@ -212,3 +212,15 @@ export type {
 } from "./scheduler.js";
 // scheduler — runtime values (branded constructors + defaults)
 export { DEFAULT_SCHEDULER_CONFIG, scheduleId, taskId } from "./scheduler.js";
+// session — persistence contract for crash recovery
+export type {
+  PendingFrame,
+  RecoveryPlan,
+  SessionCheckpoint,
+  SessionFilter,
+  SessionPersistence,
+  SessionRecord,
+  SkippedRecoveryEntry,
+} from "./session.js";
+// validation utilities — runtime type guards and validators
+export { isProcessState, validateNonEmpty } from "./validation-utils.js";

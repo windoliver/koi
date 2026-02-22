@@ -4,44 +4,10 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
-import { conflict, notFound, validation } from "@koi/core";
 import type { ArtifactClient } from "./client.js";
+import { conflictError, notFoundError, validateId, validateQuery } from "./errors.js";
 import { computeContentHash } from "./hash.js";
 import type { Artifact, ArtifactId, ArtifactPage, ArtifactQuery, ArtifactUpdate } from "./types.js";
-
-// Error helpers use shared factories from @koi/core.
-function notFoundError(id: string): KoiError {
-  return notFound(id, `Artifact not found: ${id}`);
-}
-
-function conflictError(id: string): KoiError {
-  return conflict(id, `Artifact already exists: ${id}`);
-}
-
-function validationError(message: string): KoiError {
-  return validation(message);
-}
-
-// ---------------------------------------------------------------------------
-// Validation
-// ---------------------------------------------------------------------------
-
-function validateId(id: ArtifactId): Result<void, KoiError> {
-  if (id === "") {
-    return { ok: false, error: validationError("Artifact ID must not be empty") };
-  }
-  return { ok: true, value: undefined };
-}
-
-function validateQuery(query: ArtifactQuery): Result<void, KoiError> {
-  if (query.limit !== undefined && query.limit < 0) {
-    return { ok: false, error: validationError("Query limit must not be negative") };
-  }
-  if (query.offset !== undefined && query.offset < 0) {
-    return { ok: false, error: validationError("Query offset must not be negative") };
-  }
-  return { ok: true, value: undefined };
-}
 
 // ---------------------------------------------------------------------------
 // Filtering & sorting

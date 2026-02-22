@@ -13,16 +13,19 @@
  *   - `recover()` loads all sessions + latest checkpoints from the store
  */
 
-import type { AgentId, EngineAdapter, KoiError, Result } from "@koi/core";
+import type {
+  AgentId,
+  EngineAdapter,
+  KoiError,
+  RecoveryPlan,
+  Result,
+  SessionCheckpoint,
+  SessionRecord,
+} from "@koi/core";
 import { internal, agentId as toAgentId } from "@koi/core";
 import type { AgentHost } from "./agent/host.js";
 import type { FrameCounters } from "./frame-counter.js";
-import type {
-  NodeCheckpoint,
-  NodeRecoveryPlan,
-  NodeSessionRecord,
-  NodeSessionStore,
-} from "./types.js";
+import type { NodeSessionStore } from "./types.js";
 import type { WriteQueue } from "./write-queue.js";
 
 // ---------------------------------------------------------------------------
@@ -38,7 +41,7 @@ export interface CheckpointManager {
   /** Look up the session ID for a given agent. */
   readonly getSessionId: (agentId: string) => string | undefined;
   /** Load recovery plan from the store. */
-  readonly recover: () => Promise<Result<NodeRecoveryPlan, KoiError>>;
+  readonly recover: () => Promise<Result<RecoveryPlan, KoiError>>;
   /** Flush any pending writes (no-op when write queue is absent). */
   readonly flush: () => Promise<void>;
   /** Stop listening to host events. */
@@ -53,6 +56,8 @@ export interface CheckpointManager {
 export interface CheckpointManagerDeps {
   readonly frameCounters?: FrameCounters;
   readonly writeQueue?: WriteQueue;
+  /** Emit a node event. Used to surface fire-and-forget store errors. */
+  readonly emit?: (type: string, data?: unknown) => void;
 }
 
 /**
@@ -68,7 +73,7 @@ export function createCheckpointManager(
   deps?: CheckpointManagerDeps,
 ): CheckpointManager {
   // In-memory session records — avoids needing loadSession on NodeSessionStore
-  const sessionRecords = new Map<string, NodeSessionRecord>();
+  const sessionRecords = new Map<string, SessionRecord>();
 
   // Generation counter per agent (CAS)
   const generations = new Map<string, number>();
@@ -88,7 +93,7 @@ export function createCheckpointManager(
       generations.set(data.agentId, 0);
 
       const counters = deps?.frameCounters?.get(data.agentId);
-      const record: NodeSessionRecord = {
+      const record: SessionRecord = {
         sessionId,
         agentId: aid,
         manifestSnapshot: agent.manifest,
@@ -100,7 +105,19 @@ export function createCheckpointManager(
       };
 
       sessionRecords.set(data.agentId, record);
-      void store.saveSession(record);
+      Promise.resolve(store.saveSession(record))
+        .then((r) => {
+          if (!r.ok) {
+            deps?.emit?.("agent_crashed", {
+              agentId: data.agentId,
+              error: r.error.message,
+              operation: "saveSession",
+            });
+          }
+        })
+        .catch(() => {
+          /* swallowed — best-effort persistence */
+        });
     }
 
     if (event.type === "agent_terminated") {
@@ -109,7 +126,19 @@ export function createCheckpointManager(
 
       const record = sessionRecords.get(data.agentId);
       if (record !== undefined) {
-        void store.removeSession(record.sessionId);
+        Promise.resolve(store.removeSession(record.sessionId))
+          .then((r) => {
+            if (!r.ok) {
+              deps?.emit?.("agent_crashed", {
+                agentId: data.agentId,
+                error: r.error.message,
+                operation: "removeSession",
+              });
+            }
+          })
+          .catch(() => {
+            /* swallowed — best-effort persistence */
+          });
         sessionRecords.delete(data.agentId);
         generations.delete(data.agentId);
       }
@@ -147,17 +176,29 @@ export function createCheckpointManager(
         const counters = deps?.frameCounters?.get(agentIdStr);
         const existing = sessionRecords.get(agentIdStr);
         if (counters !== undefined && existing !== undefined) {
-          const updated: NodeSessionRecord = {
+          const updated: SessionRecord = {
             ...existing,
             seq: counters.seq,
             remoteSeq: counters.remoteSeq,
             lastCheckpointAt: Date.now(),
           };
           sessionRecords.set(agentIdStr, updated);
-          void store.saveSession(updated);
+          Promise.resolve(store.saveSession(updated))
+            .then((r) => {
+              if (!r.ok) {
+                deps?.emit?.("agent_crashed", {
+                  agentId: agentIdStr,
+                  error: r.error.message,
+                  operation: "saveSession",
+                });
+              }
+            })
+            .catch(() => {
+              /* swallowed — best-effort persistence */
+            });
         }
 
-        const checkpoint: NodeCheckpoint = {
+        const checkpoint: SessionCheckpoint = {
           id: `cp-${agentIdStr}-${String(gen)}`,
           agentId: toAgentId(agentIdStr),
           sessionId,
@@ -187,7 +228,7 @@ export function createCheckpointManager(
       return sessionRecords.get(agentIdStr)?.sessionId;
     },
 
-    async recover(): Promise<Result<NodeRecoveryPlan, KoiError>> {
+    async recover(): Promise<Result<RecoveryPlan, KoiError>> {
       return await store.recover();
     },
 

@@ -5,7 +5,8 @@
  * Flushes on a configurable interval and on dispose.
  */
 
-import type { NodeCheckpoint, NodeSessionStore } from "./types.js";
+import type { SessionCheckpoint } from "@koi/core";
+import type { NodeSessionStore } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -24,7 +25,7 @@ const DEFAULT_FLUSH_INTERVAL_MS = 5_000;
 
 export interface WriteQueue {
   /** Enqueue a checkpoint for batched write. Keeps only the latest per agent. */
-  readonly enqueue: (agentId: string, checkpoint: NodeCheckpoint) => void;
+  readonly enqueue: (agentId: string, checkpoint: SessionCheckpoint) => void;
   /** Flush all pending checkpoints to the store immediately. */
   readonly flush: () => Promise<void>;
   /** Stop the auto-flush timer and flush remaining checkpoints. */
@@ -40,7 +41,7 @@ export function createWriteQueue(
   config?: Partial<WriteQueueConfig>,
 ): WriteQueue {
   const flushIntervalMs = config?.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS;
-  const pending = new Map<string, NodeCheckpoint>();
+  const pending = new Map<string, SessionCheckpoint>();
   let disposed = false;
 
   async function doFlush(): Promise<void> {
@@ -60,7 +61,7 @@ export function createWriteQueue(
   }, flushIntervalMs);
 
   return {
-    enqueue(agentId: string, checkpoint: NodeCheckpoint): void {
+    enqueue(agentId: string, checkpoint: SessionCheckpoint): void {
       if (disposed) return;
       pending.set(agentId, checkpoint);
     },
