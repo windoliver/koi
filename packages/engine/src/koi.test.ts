@@ -792,3 +792,142 @@ describe("createKoi HITL approval handler", () => {
     expect(toolResults[1]).toBe("Denied: tool is dangerous");
   });
 });
+
+// ---------------------------------------------------------------------------
+// createKoi — tool-not-found error path
+// ---------------------------------------------------------------------------
+
+describe("createKoi tool not found", () => {
+  test("default tool terminal throws NOT_FOUND for missing tool", async () => {
+    const { KoiEngineError } = await import("./errors.js");
+    const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
+
+    let caughtError: unknown;
+    const adapter: EngineAdapter = {
+      engineId: "tool-not-found-adapter",
+      terminals: { modelCall: modelTerminal },
+      stream: (input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          if (input.callHandlers) {
+            try {
+              await input.callHandlers.toolCall({
+                toolId: "nonexistent",
+                input: {},
+              });
+            } catch (e: unknown) {
+              caughtError = e;
+            }
+          }
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    expect(caughtError).toBeInstanceOf(KoiEngineError);
+    if (caughtError instanceof KoiEngineError) {
+      expect(caughtError.code).toBe("NOT_FOUND");
+      expect(caughtError.message).toContain("nonexistent");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createKoi — early return (interrupt)
+// ---------------------------------------------------------------------------
+
+describe("createKoi early return", () => {
+  test("breaking out of run() transitions agent to terminated:interrupted", async () => {
+    // Adapter that yields infinite events
+    const adapter: EngineAdapter = {
+      engineId: "infinite-adapter",
+      stream: () => ({
+        async *[Symbol.asyncIterator]() {
+          let i = 0;
+          while (true) {
+            yield { kind: "text_delta" as const, delta: `chunk${i++}` };
+          }
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+    });
+
+    let count = 0;
+    for await (const _event of runtime.run({ kind: "text", text: "test" })) {
+      count++;
+      if (count >= 3) break;
+    }
+
+    expect(count).toBe(3);
+    expect(runtime.agent.state).toBe("terminated");
+  });
+
+  test("onSessionEnd fires on early return", async () => {
+    const onSessionEnd = mock(() => Promise.resolve());
+    const adapter: EngineAdapter = {
+      engineId: "infinite-adapter",
+      stream: () => ({
+        async *[Symbol.asyncIterator]() {
+          while (true) {
+            yield { kind: "text_delta" as const, delta: "x" };
+          }
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [{ name: "test-mw", onSessionEnd }],
+      loopDetection: false,
+    });
+
+    let count = 0;
+    for await (const _event of runtime.run({ kind: "text", text: "test" })) {
+      count++;
+      if (count >= 1) break;
+    }
+
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
+  });
+
+  test("unexpected error transitions agent to terminated and fires onSessionEnd", async () => {
+    const onSessionEnd = mock(() => Promise.resolve());
+    const adapter: EngineAdapter = {
+      engineId: "crash-adapter",
+      stream: () => ({
+        [Symbol.asyncIterator]() {
+          return {
+            async next(): Promise<IteratorResult<EngineEvent>> {
+              throw new Error("unexpected crash");
+            },
+          };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [{ name: "test-mw", onSessionEnd }],
+      loopDetection: false,
+    });
+
+    await expect(collectEvents(runtime.run({ kind: "text", text: "test" }))).rejects.toThrow(
+      "unexpected crash",
+    );
+    expect(runtime.agent.state).toBe("terminated");
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
+  });
+});

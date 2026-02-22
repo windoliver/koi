@@ -195,6 +195,23 @@ describe("query", () => {
     const skills = agent.query("skill:");
     expect(skills.size).toBe(0);
   });
+
+  test("returns cached result on repeated calls (same reference)", async () => {
+    const provider: ComponentProvider = {
+      name: "tools",
+      attach: async () =>
+        new Map<string, unknown>([
+          ["tool:calc", testTool("calc")],
+          ["tool:search", testTool("search")],
+        ]),
+    };
+
+    const agent = await AgentEntity.assemble(testPid(), testManifest(), [provider]);
+    const first = agent.query<Tool>("tool:");
+    const second = agent.query<Tool>("tool:");
+    expect(first).toBe(second); // Same reference = cache hit
+    expect(first.size).toBe(2);
+  });
 });
 
 // ---------------------------------------------------------------------------

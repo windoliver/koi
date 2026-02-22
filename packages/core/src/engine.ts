@@ -58,7 +58,12 @@ export type EngineInput =
 
 export type EngineEvent =
   | { readonly kind: "text_delta"; readonly delta: string }
-  | { readonly kind: "tool_call_start"; readonly toolName: string; readonly callId: string }
+  | {
+      readonly kind: "tool_call_start";
+      readonly toolName: string;
+      readonly callId: string;
+      readonly args: JsonObject;
+    }
   | {
       readonly kind: "tool_call_end";
       readonly callId: string;

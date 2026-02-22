@@ -142,11 +142,17 @@ describe("EngineEvent discriminant", () => {
     }
   });
 
-  test("narrows to tool_call_start with toolName and callId", () => {
-    const event: EngineEvent = { kind: "tool_call_start", toolName: "calc", callId: "c1" };
+  test("narrows to tool_call_start with toolName, callId, and args", () => {
+    const event: EngineEvent = {
+      kind: "tool_call_start",
+      toolName: "calc",
+      callId: "c1",
+      args: { x: 1, y: 2 },
+    };
     if (event.kind === "tool_call_start") {
       expect(event.toolName).toBe("calc");
       expect(event.callId).toBe("c1");
+      expect(event.args).toEqual({ x: 1, y: 2 });
     }
   });
 
