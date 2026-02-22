@@ -38,6 +38,13 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/search": {
+      "name": "@koi/search",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
   },
   "trustedDependencies": [
     "esbuild",
@@ -128,6 +135,8 @@
     "@koi/manifest": ["@koi/manifest@workspace:packages/manifest"],
 
     "@koi/sandbox": ["@koi/sandbox@workspace:packages/sandbox"],
+
+    "@koi/search": ["@koi/search@workspace:packages/search"],
 
     "@rollup/rollup-android-arm-eabi": ["@rollup/rollup-android-arm-eabi@4.58.0", "", { "os": "android", "cpu": "arm" }, "sha512-mr0tmS/4FoVk1cnaeN244A/wjvGDNItZKR8hRhnmCzygyRXYtKF5jVDSIILR1U97CTzAYmbgIj/Dukg62ggG5w=="],
 
