@@ -1,0 +1,8 @@
+name: "env-agent"
+version: "1.0.0"
+model: "anthropic:claude-sonnet-4-5-20250929"
+channels:
+  - "@koi/channel-telegram": { token: "${TELEGRAM_BOT_TOKEN}" }
+metadata:
+  port: "${PORT:-8080}"
+  apiKey: "${API_KEY}"

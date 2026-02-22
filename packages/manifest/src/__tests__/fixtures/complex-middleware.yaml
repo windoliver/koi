@@ -1,0 +1,10 @@
+name: "complex-mw-agent"
+version: "1.0.0"
+model: "anthropic:claude-sonnet-4-5-20250929"
+middleware:
+  - name: "@koi/middleware-log"
+  - "@koi/middleware-memory": { scope: agent }
+  - name: "@koi/middleware-pay"
+    options:
+      dailyBudget: 1000
+      currency: USD

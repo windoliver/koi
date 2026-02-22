@@ -65,9 +65,11 @@ L3  Meta-packages    Convenience bundles (e.g., @koi/starter = L0 + L1 + selecte
 **When creating or editing `@koi/core` (L0):**
 - ONLY `type`, `interface`, and `readonly` const type definitions
 - NO function bodies, NO classes, NO side effects, NO runtime code
+  - Exception: branded type constructors (identity casts for `SubsystemToken<T>`) are permitted in L0 as they are zero-logic operations that exist purely for type safety
+  - Exception: pure `readonly` data constants derived from L0 type definitions (e.g., `RETRYABLE_DEFAULTS`) are permitted as they codify architecture-doc invariants with zero logic
 - NO `import` from any `@koi/*` package or external dependency
 - This package must compile with zero dependencies in `package.json`
-- Target: ~30 types across 6 contracts, ~500 LOC
+- Target: ~45 types across 6 contracts + ECS layer, ~500 LOC
 - Think of it as the Linux syscall table — it defines the plugs, not the things that plug in
 
 **When creating or editing `@koi/engine` (L1):**
@@ -91,7 +93,7 @@ The 6 contracts that define Koi's extension points:
 
 | # | Contract | Purpose | Minimal surface |
 |---|----------|---------|-----------------|
-| 1 | **Middleware** | Sole interposition layer for model/tool calls | 6 optional hooks |
+| 1 | **Middleware** | Sole interposition layer for model/tool calls | 8 optional hooks |
 | 2 | **Message** | Inbound/outbound data format | `ContentBlock[]` |
 | 3 | **Channel** | I/O interface to users | `send()` + `onMessage()` |
 | 4 | **Resolver** | Discovery of tools/skills/agents | `discover()` + `load()` |
@@ -113,7 +115,7 @@ These rules prevent vendor/framework concepts from contaminating core interfaces
 ### Anti-Leak Checklist (verify before every PR)
 
 - [ ] `@koi/core` has zero `import` statements from other packages
-- [ ] No `function` bodies or `class` in `@koi/core` (types/interfaces only)
+- [ ] No `function` bodies or `class` in `@koi/core` (types/interfaces only, except branded casts and pure data constants)
 - [ ] No vendor types (LangGraph, OpenAI, etc.) in any L0 or L1 file
 - [ ] L2 packages only import from `@koi/core`, never from `@koi/engine` or peer L2
 - [ ] All interface properties are `readonly`
@@ -174,11 +176,19 @@ When writing error handling code:
 - Error messages must answer: what happened + why + what to do about it
 
 ```typescript
-// Good — cause chaining with context
-throw new KoiError("Failed to fetch user", {
-  cause: err,
-  code: "USER_FETCH_FAILED",
-});
+// Good — expected failure: return Result<T, E>
+// (assumes userId: string, User is the domain type)
+const error: KoiError = {
+  code: "NOT_FOUND",
+  message: "User not found",
+  retryable: RETRYABLE_DEFAULTS.NOT_FOUND,
+  context: { resourceId: userId },
+};
+return { ok: false, error } satisfies Result<User>;
+
+// Good — unexpected failure: throw with cause chaining
+// (L1 @koi/engine will provide a concrete Error class)
+throw new Error("Failed to fetch user", { cause: err });
 
 // Bad — never do these
 catch (e) { console.log(e); }
