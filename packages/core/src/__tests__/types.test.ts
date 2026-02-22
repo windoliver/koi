@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import type {
   Agent,
   AgentManifest,
+  BrickKind,
+  BrickLifecycle,
   ChannelAdapter,
   ChannelCapabilities,
   ContentBlock,
@@ -10,6 +12,7 @@ import type {
   EngineInput,
   EngineStopReason,
   FilesystemPolicy,
+  ForgeScope,
   GovernanceUsage,
   KoiError,
   KoiErrorCode,
@@ -249,7 +252,7 @@ describe("Agent component typing", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Well-known token type narrowing (from main)
+// Well-known token type narrowing
 // ---------------------------------------------------------------------------
 
 describe("well-known token type narrowing", () => {
@@ -457,7 +460,7 @@ describe("PermissionConfig negative types", () => {
 });
 
 // ---------------------------------------------------------------------------
-// TrustTier and SpawnCheck (from main)
+// TrustTier and SpawnCheck
 // ---------------------------------------------------------------------------
 
 describe("TrustTier", () => {
@@ -484,7 +487,7 @@ describe("SpawnCheck discriminant", () => {
 });
 
 // ---------------------------------------------------------------------------
-// KoiErrorCode and KoiError extended fields (from main)
+// KoiErrorCode and KoiError extended fields
 // ---------------------------------------------------------------------------
 
 describe("KoiErrorCode", () => {
@@ -583,6 +586,10 @@ describe("Result with custom error type", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Sandbox types
+// ---------------------------------------------------------------------------
 
 describe("SandboxTier", () => {
   test("accepts valid tier literals", () => {
@@ -808,5 +815,39 @@ describe("Tool input typing", () => {
       },
     };
     expect(tool.descriptor.name).toBe("calc");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Forge type aliases
+// ---------------------------------------------------------------------------
+
+describe("Forge type aliases", () => {
+  test("ForgeScope accepts valid literals", () => {
+    const scopes: readonly ForgeScope[] = ["agent", "zone", "global"];
+    expect(scopes).toHaveLength(3);
+  });
+
+  test("BrickLifecycle accepts valid literals", () => {
+    const states: readonly BrickLifecycle[] = [
+      "draft",
+      "verifying",
+      "active",
+      "failed",
+      "deprecated",
+    ];
+    expect(states).toHaveLength(5);
+  });
+
+  test("BrickKind accepts valid literals", () => {
+    const kinds: readonly BrickKind[] = [
+      "tool",
+      "skill",
+      "agent",
+      "composite",
+      "middleware",
+      "channel",
+    ];
+    expect(kinds).toHaveLength(6);
   });
 });
