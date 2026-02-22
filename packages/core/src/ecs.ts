@@ -64,7 +64,14 @@ export interface Agent {
   readonly state: ProcessState;
   readonly component: <T>(token: SubsystemToken<T>) => T | undefined;
   readonly has: (token: SubsystemToken<unknown>) => boolean;
-  readonly query: (...tokens: readonly SubsystemToken<unknown>[]) => boolean;
+  readonly hasAll: (...tokens: readonly SubsystemToken<unknown>[]) => boolean;
+  readonly query: <T>(prefix: string) => ReadonlyMap<SubsystemToken<T>, T>;
+  /**
+   * Returns all attached components as a readonly map.
+   * Implementations SHOULD return a stable reference (not a copy)
+   * to avoid O(n) allocation on every call. This is a hot path
+   * during middleware execution.
+   */
   readonly components: () => ReadonlyMap<string, unknown>;
 }
 
@@ -80,7 +87,7 @@ export interface ToolDescriptor {
 
 export interface Tool {
   readonly descriptor: ToolDescriptor;
-  readonly execute: (input: unknown) => Promise<unknown>;
+  readonly execute: (input: Readonly<Record<string, unknown>>) => Promise<unknown>;
 }
 
 export interface SkillMetadata {

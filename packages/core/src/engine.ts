@@ -33,7 +33,11 @@ export type EngineInput =
 
 export type EngineEvent =
   | { readonly kind: "text_delta"; readonly delta: string }
-  | { readonly kind: "tool_call_start"; readonly toolId: string; readonly input: unknown }
+  | {
+      readonly kind: "tool_call_start";
+      readonly toolId: string;
+      readonly input: Readonly<Record<string, unknown>>;
+    }
   | { readonly kind: "tool_call_end"; readonly toolId: string; readonly output: unknown }
   | { readonly kind: "turn_end"; readonly turnIndex: number }
   | { readonly kind: "done"; readonly output: EngineOutput }
@@ -41,6 +45,12 @@ export type EngineEvent =
 
 export interface EngineAdapter {
   readonly engineId: string;
+  /**
+   * The sole required method. Returns an async iterable of engine events.
+   * Backpressure is handled naturally via `for await` consumption —
+   * the consumer controls iteration speed. Implementations should use
+   * AsyncGenerator for built-in backpressure support.
+   */
   readonly stream: (input: EngineInput) => AsyncIterable<EngineEvent>;
   readonly saveState?: () => Promise<EngineState>;
   readonly loadState?: (state: EngineState) => Promise<void>;

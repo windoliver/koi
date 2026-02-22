@@ -28,6 +28,10 @@ describe("token()", () => {
   test("different names produce different tokens", () => {
     expect(str(token("a"))).not.toBe(str(token("b")));
   });
+
+  test("empty string produces empty token", () => {
+    expect(str(token(""))).toBe("");
+  });
 });
 
 describe("toolToken()", () => {
@@ -38,6 +42,14 @@ describe("toolToken()", () => {
   test("contains namespace separator", () => {
     expect(str(toolToken("search"))).toContain(":");
   });
+
+  test("empty string produces 'tool:'", () => {
+    expect(str(toolToken(""))).toBe("tool:");
+  });
+
+  test("colon in name produces double colon", () => {
+    expect(str(toolToken("foo:bar"))).toBe("tool:foo:bar");
+  });
 });
 
 describe("channelToken()", () => {
@@ -47,6 +59,10 @@ describe("channelToken()", () => {
 
   test("contains namespace separator", () => {
     expect(str(channelToken("slack"))).toContain(":");
+  });
+
+  test("unicode name is preserved", () => {
+    expect(str(channelToken("\u{1F527}"))).toBe("channel:\u{1F527}");
   });
 });
 

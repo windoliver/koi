@@ -39,7 +39,7 @@ export type ModelHandler = (request: ModelRequest) => Promise<ModelResponse>;
 
 export interface ToolRequest {
   readonly toolId: string;
-  readonly input: unknown;
+  readonly input: Readonly<Record<string, unknown>>;
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
@@ -52,18 +52,24 @@ export type ToolHandler = (request: ToolRequest) => Promise<ToolResponse>;
 
 export interface KoiMiddleware {
   readonly name: string;
-  readonly beforeModel?: (
+  /** Called once when an agent session begins. */
+  readonly onSessionStart?: (ctx: SessionContext) => Promise<void>;
+  /** Called once when an agent session ends. */
+  readonly onSessionEnd?: (ctx: SessionContext) => Promise<void>;
+  /** Called before each turn's model call. */
+  readonly onBeforeTurn?: (ctx: TurnContext) => Promise<void>;
+  /** Called after each turn completes. */
+  readonly onAfterTurn?: (ctx: TurnContext) => Promise<void>;
+  /** Onion wrapper for model calls. Call `next(req)` to continue the chain. */
+  readonly wrapModelCall?: (
     ctx: TurnContext,
     request: ModelRequest,
     next: ModelHandler,
   ) => Promise<ModelResponse>;
-  readonly afterModel?: (ctx: TurnContext, response: ModelResponse) => Promise<ModelResponse>;
-  readonly beforeTool?: (
+  /** Onion wrapper for tool calls. Call `next(req)` to continue the chain. */
+  readonly wrapToolCall?: (
     ctx: TurnContext,
     request: ToolRequest,
     next: ToolHandler,
   ) => Promise<ToolResponse>;
-  readonly afterTool?: (ctx: TurnContext, response: ToolResponse) => Promise<ToolResponse>;
-  readonly onTurnStart?: (ctx: TurnContext) => Promise<void>;
-  readonly onTurnEnd?: (ctx: TurnContext) => Promise<void>;
 }

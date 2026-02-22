@@ -1,7 +1,17 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/index.ts"],
+  entry: [
+    "src/index.ts",
+    "src/assembly.ts",
+    "src/channel.ts",
+    "src/ecs.ts",
+    "src/engine.ts",
+    "src/errors.ts",
+    "src/message.ts",
+    "src/middleware.ts",
+    "src/resolver.ts",
+  ],
   format: ["esm"],
   dts: {
     compilerOptions: {
