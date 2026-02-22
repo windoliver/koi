@@ -1,0 +1,27 @@
+{
+  "name": "@koi/engine-pi",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@mariozechner/pi-agent-core": "0.54.0",
+    "@mariozechner/pi-ai": "0.54.0"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*",
+    "@sinclair/typebox": "0.34.33"
+  }
+}

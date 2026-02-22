@@ -11,6 +11,7 @@ import type {
   ProcessId,
   ToolRequest,
   ToolResponse,
+  TurnContext,
 } from "@koi/core";
 import { agentId, toolToken } from "@koi/core";
 import { AgentEntity } from "./agent-entity.js";
@@ -30,22 +31,36 @@ function generatePid(manifest: CreateKoiOptions["manifest"]): ProcessId {
 }
 
 export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> {
+  // --- 0. Input validation at the factory boundary ---
+  if (!options.manifest?.name) {
+    throw KoiEngineError.from("VALIDATION", "manifest.name is required", {
+      context: { manifest: options.manifest },
+    });
+  }
+  if (typeof options.adapter?.stream !== "function") {
+    throw KoiEngineError.from("VALIDATION", "adapter must implement stream()", {
+      context: { adapterId: options.adapter?.engineId },
+    });
+  }
+
   const { manifest, adapter, middleware = [], providers = [] } = options;
 
   // --- 1. Assemble the agent entity ---
   const pid = generatePid(manifest);
   const agent = await AgentEntity.assemble(pid, manifest, providers);
 
-  // --- 2. Create L1 guards ---
-  const guards: KoiMiddleware[] = [createIterationGuard(options.limits)];
-
-  if (options.loopDetection !== false) {
-    guards.push(
-      createLoopDetector(options.loopDetection === undefined ? undefined : options.loopDetection),
-    );
-  }
-
-  guards.push(createSpawnGuard(options.spawn, pid.depth));
+  // --- 2. Create L1 guards (declarative, no mutation) ---
+  const guards: readonly KoiMiddleware[] = [
+    createIterationGuard(options.limits),
+    ...(options.loopDetection !== false
+      ? [
+          createLoopDetector(
+            options.loopDetection === undefined ? undefined : options.loopDetection,
+          ),
+        ]
+      : []),
+    createSpawnGuard(options.spawn, pid.depth),
+  ];
 
   // --- 3. Compose middleware chain: guards first, then user middleware ---
   const allMiddleware: readonly KoiMiddleware[] = [...guards, ...middleware];
@@ -63,6 +78,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   };
 
   // --- 5. Track disposal ---
+  // let justified: mutable flag for one-shot dispose guard
   let disposed = false;
 
   // --- 6. Build runtime ---
@@ -72,10 +88,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     run: (input: EngineInput): AsyncIterable<EngineEvent> => {
       return {
         [Symbol.asyncIterator](): AsyncIterator<EngineEvent> {
+          // let justified: mutable iterator state scoped to this run() invocation
           let iterator: AsyncIterator<EngineEvent> | undefined;
           let sessionStarted = false;
           let done = false;
-          let currentTurnIndex = 0; // let justified: updated on turn_end events
+          let currentTurnIndex = 0;
           const sessionStartedAt = Date.now();
 
           const sessionCtx = {
@@ -96,19 +113,30 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   await runSessionHooks(allMiddleware, "onSessionStart", sessionCtx);
 
                   // Wire terminals → middleware → callHandlers if adapter is cooperating
+                  // let justified: effectiveInput may be replaced with callHandlers-augmented input
                   let effectiveInput = input;
                   if (adapter.terminals) {
                     const inputMessages = input.kind === "messages" ? input.messages : [];
-                    const getTurnContext = () => {
+                    // Cache turn context per turn index to avoid repeated allocations
+                    // let justified: mutable cache invalidated on turn index change
+                    let cachedTurnCtx: TurnContext | undefined;
+                    let cachedTurnIndex = -1;
+                    const getTurnContext = (): TurnContext => {
+                      if (cachedTurnIndex === currentTurnIndex && cachedTurnCtx) {
+                        return cachedTurnCtx;
+                      }
+                      cachedTurnIndex = currentTurnIndex;
                       const base = {
                         session: sessionCtx,
                         turnIndex: currentTurnIndex,
                         messages: inputMessages,
                         metadata: {},
                       };
-                      return options.approvalHandler !== undefined
-                        ? { ...base, requestApproval: options.approvalHandler }
-                        : base;
+                      cachedTurnCtx =
+                        options.approvalHandler !== undefined
+                          ? { ...base, requestApproval: options.approvalHandler }
+                          : base;
+                      return cachedTurnCtx;
                     };
                     const rawModelTerminal = adapter.terminals.modelCall;
                     const rawToolTerminal = adapter.terminals.toolCall ?? defaultToolTerminal;

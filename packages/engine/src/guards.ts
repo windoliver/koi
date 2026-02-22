@@ -39,6 +39,7 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
     ...config,
   };
 
+  // let justified: mutable counters scoped to this middleware instance lifetime
   let turns = 0;
   let totalTokens = 0;
   const startedAt = Date.now();
@@ -114,6 +115,33 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
 // Loop Detector
 // ---------------------------------------------------------------------------
 
+/**
+ * Build a shallow fingerprint of a tool call without JSON.stringify.
+ * Hashes toolId + top-level keys and shallow string values (capped at 128 chars).
+ * O(keys) instead of O(input_size).
+ */
+function shallowToolFingerprint(toolId: string, input: unknown): number {
+  let hash = fnv1a(toolId);
+  if (typeof input === "object" && input !== null) {
+    const keys = Object.keys(input).sort();
+    for (const key of keys) {
+      hash ^= fnv1a(key);
+      hash = Math.imul(hash, 0x01000193);
+      const value = (input as Record<string, unknown>)[key];
+      const repr =
+        typeof value === "string"
+          ? value.slice(0, 128)
+          : `${typeof value}:${String(value).slice(0, 64)}`;
+      hash ^= fnv1a(repr);
+      hash = Math.imul(hash, 0x01000193);
+    }
+  } else {
+    hash ^= fnv1a(String(input));
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
 export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMiddleware {
   const detection: LoopDetectionConfig = {
     ...DEFAULT_LOOP_DETECTION,
@@ -137,9 +165,14 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
     );
   }
 
-  const recentHashes: number[] = [];
-  /** Incremental count per hash — avoids O(window) rebuild every call. */
-  const counts = new Map<number, number>();
+  // Circular buffer for O(1) insert + evict
+  const ringBuffer = new Array<number>(detection.windowSize).fill(0);
+  // let justified: mutable write cursor and fill count for circular buffer
+  let cursor = 0;
+  let filled = 0;
+
+  // Persistent frequency map — updated incrementally, O(1) per call
+  const hashCounts = new Map<number, number>();
   /** Tracks hashes that have already fired a warning (at most once per unique hash). */
   const firedWarnings = new Set<number>();
 
@@ -147,27 +180,27 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
     name: "koi:loop-detector",
 
     wrapToolCall: async (_ctx, request, next) => {
-      // Hash the tool call signature: toolId + serialized input
-      const fingerprint = `${request.toolId}:${JSON.stringify(request.input)}`;
-      const hash = fnv1a(fingerprint);
+      const hash = shallowToolFingerprint(request.toolId, request.input);
 
-      // Evict oldest hash if window is full
-      if (recentHashes.length >= detection.windowSize) {
-        const evicted = recentHashes.shift();
-        if (evicted !== undefined) {
-          const prev = counts.get(evicted) ?? 0;
-          if (prev <= 1) {
-            counts.delete(evicted);
-          } else {
-            counts.set(evicted, prev - 1);
-          }
+      // Evict the oldest entry if the buffer is full
+      if (filled >= detection.windowSize) {
+        const evicted = ringBuffer[cursor] as number;
+        const oldCount = hashCounts.get(evicted) ?? 0;
+        if (oldCount <= 1) {
+          hashCounts.delete(evicted);
+        } else {
+          hashCounts.set(evicted, oldCount - 1);
         }
       }
 
-      // Add new hash and increment count
-      recentHashes.push(hash);
-      const newCount = (counts.get(hash) ?? 0) + 1;
-      counts.set(hash, newCount);
+      // Insert new hash into circular buffer
+      ringBuffer[cursor] = hash;
+      cursor = (cursor + 1) % detection.windowSize;
+      filled = Math.min(filled + 1, detection.windowSize);
+
+      // Increment count for new hash
+      const newCount = (hashCounts.get(hash) ?? 0) + 1;
+      hashCounts.set(hash, newCount);
 
       // Warning check — fires at most once per unique hash
       if (
@@ -187,7 +220,7 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
         detection.onWarning(info);
       }
 
-      // Check threshold — O(1) instead of O(window)
+      // Check threshold
       if (newCount >= detection.threshold) {
         throw KoiEngineError.from(
           "VALIDATION",
@@ -218,6 +251,7 @@ export function createSpawnGuard(config?: Partial<SpawnPolicy>, agentDepth = 0):
     ...config,
   };
 
+  // let justified: mutable counters scoped to this middleware instance lifetime
   let activeProcesses = 1; // The current agent counts as 1
   let directChildren = 0; // Tracks fan-out for this agent
 
