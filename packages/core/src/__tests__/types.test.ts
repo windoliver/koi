@@ -1,15 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import type {
   Agent,
+  AgentManifest,
   ContentBlock,
   EngineEvent,
   EngineInput,
   EngineStopReason,
+  GovernanceUsage,
   KoiError,
+  KoiMiddleware,
+  ProcessId,
   Result,
+  SpawnCheck,
   SubsystemToken,
+  ToolDescriptor,
+  TrustTier,
 } from "../index.js";
-import { token } from "../index.js";
+import { CREDENTIALS, EVENTS, GOVERNANCE, MEMORY, token } from "../index.js";
 
 /**
  * Type-level tests using @ts-expect-error.
@@ -102,10 +109,19 @@ describe("EngineEvent discriminant", () => {
     }
   });
 
-  test("narrows to tool_call_start", () => {
-    const event: EngineEvent = { kind: "tool_call_start", toolId: "calc", input: {} };
+  test("narrows to tool_call_start with toolName and callId", () => {
+    const event: EngineEvent = { kind: "tool_call_start", toolName: "calc", callId: "c1" };
     if (event.kind === "tool_call_start") {
-      expect(event.toolId).toBe("calc");
+      expect(event.toolName).toBe("calc");
+      expect(event.callId).toBe("c1");
+    }
+  });
+
+  test("narrows to tool_call_end with callId and result", () => {
+    const event: EngineEvent = { kind: "tool_call_end", callId: "c1", result: 42 };
+    if (event.kind === "tool_call_end") {
+      expect(event.callId).toBe("c1");
+      expect(event.result).toBe(42);
     }
   });
 
@@ -175,16 +191,124 @@ describe("readonly enforcement", () => {
     // @ts-expect-error — cannot assign to readonly property
     block.kind = "file";
   });
+
+  test("ProcessId properties are readonly", () => {
+    const pid: ProcessId = { id: "1", name: "test", type: "copilot", depth: 0 };
+    // @ts-expect-error — cannot assign to readonly property
+    pid.id = "2";
+  });
+
+  test("ToolDescriptor properties are readonly", () => {
+    const td: ToolDescriptor = { name: "calc", description: "Calculator", inputSchema: {} };
+    // @ts-expect-error — cannot assign to readonly property
+    td.name = "other";
+  });
+
+  test("AgentManifest properties are readonly", () => {
+    const m: AgentManifest = { name: "test", version: "0.0.0", model: { name: "gpt-4" } };
+    // @ts-expect-error — cannot assign to readonly property
+    m.name = "other";
+  });
 });
 
 describe("Agent component typing", () => {
   test("component returns T | undefined for typed token", () => {
-    // Verify the type signature compiles correctly
     const agentLike: Pick<Agent, "component"> = {
       component: <T>(_token: SubsystemToken<T>): T | undefined => undefined,
     };
     const result = agentLike.component(token<{ readonly val: number }>("test"));
-    // result is { readonly val: number } | undefined
     expect(result).toBeUndefined();
+  });
+});
+
+describe("well-known token type narrowing", () => {
+  test("MEMORY token narrows component to MemoryComponent", () => {
+    const agentLike: Pick<Agent, "component"> = {
+      component: <T>(_token: SubsystemToken<T>): T | undefined => undefined,
+    };
+    const mem = agentLike.component(MEMORY);
+    // If this compiles, MEMORY correctly narrows to MemoryComponent | undefined
+    if (mem) {
+      const _: Promise<readonly unknown[]> = mem.recall("test");
+      void _;
+    }
+    expect(mem).toBeUndefined();
+  });
+
+  test("GOVERNANCE token narrows component to GovernanceComponent", () => {
+    const agentLike: Pick<Agent, "component"> = {
+      component: <T>(_token: SubsystemToken<T>): T | undefined => undefined,
+    };
+    const gov = agentLike.component(GOVERNANCE);
+    if (gov) {
+      const _usage: GovernanceUsage = gov.usage();
+      const _check: SpawnCheck = gov.checkSpawn(0);
+      void _usage;
+      void _check;
+    }
+    expect(gov).toBeUndefined();
+  });
+
+  test("CREDENTIALS token narrows component to CredentialComponent", () => {
+    const agentLike: Pick<Agent, "component"> = {
+      component: <T>(_token: SubsystemToken<T>): T | undefined => undefined,
+    };
+    const cred = agentLike.component(CREDENTIALS);
+    if (cred) {
+      const _: Promise<string | undefined> = cred.get("api_key");
+      void _;
+    }
+    expect(cred).toBeUndefined();
+  });
+
+  test("EVENTS token narrows component to EventComponent", () => {
+    const agentLike: Pick<Agent, "component"> = {
+      component: <T>(_token: SubsystemToken<T>): T | undefined => undefined,
+    };
+    const events = agentLike.component(EVENTS);
+    if (events) {
+      const _: Promise<void> = events.emit("test", {});
+      void _;
+    }
+    expect(events).toBeUndefined();
+  });
+});
+
+describe("KoiMiddleware optionality", () => {
+  test("middleware with only name is valid", () => {
+    const mw: KoiMiddleware = { name: "noop" };
+    expect(mw.name).toBe("noop");
+  });
+
+  test("middleware with session hooks is valid", () => {
+    const mw: KoiMiddleware = {
+      name: "session-only",
+      onSessionStart: async () => {},
+      onSessionEnd: async () => {},
+    };
+    expect(mw.name).toBe("session-only");
+  });
+});
+
+describe("TrustTier", () => {
+  test("accepts valid trust tier literals", () => {
+    const tiers: readonly TrustTier[] = ["sandbox", "verified", "promoted"];
+    expect(tiers).toHaveLength(3);
+  });
+});
+
+describe("SpawnCheck discriminant", () => {
+  test("narrows to allowed branch", () => {
+    const check: SpawnCheck = { allowed: true };
+    if (check.allowed) {
+      expect(check.allowed).toBe(true);
+    }
+  });
+
+  test("narrows to denied branch with reason", () => {
+    const check: SpawnCheck = { allowed: false, reason: "max depth exceeded" };
+    if (!check.allowed) {
+      expect(check.reason).toBe("max depth exceeded");
+    }
   });
 });
