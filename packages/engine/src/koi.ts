@@ -18,7 +18,9 @@ import { AgentEntity } from "./agent-entity.js";
 import { createComposedCallHandlers, runSessionHooks, runTurnHooks } from "./compose.js";
 import { KoiEngineError } from "./errors.js";
 import { createIterationGuard, createLoopDetector, createSpawnGuard } from "./guards.js";
+import { createInMemorySpawnLedger } from "./spawn-ledger.js";
 import type { CreateKoiOptions, KoiRuntime } from "./types.js";
+import { DEFAULT_SPAWN_POLICY } from "./types.js";
 
 /** Generate a unique process ID for a new agent. */
 function generatePid(manifest: CreateKoiOptions["manifest"]): ProcessId {
@@ -50,6 +52,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   const agent = await AgentEntity.assemble(pid, manifest, providers);
 
   // --- 2. Create L1 guards (declarative, no mutation) ---
+  const spawnPolicy = { ...options.spawn };
+  const effectiveMaxTotal = spawnPolicy.maxTotalProcesses ?? DEFAULT_SPAWN_POLICY.maxTotalProcesses;
+  const spawnLedger = options.spawnLedger ?? createInMemorySpawnLedger(effectiveMaxTotal);
   const guards: readonly KoiMiddleware[] = [
     createIterationGuard(options.limits),
     ...(options.loopDetection !== false
@@ -59,7 +64,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           ),
         ]
       : []),
-    createSpawnGuard(options.spawn, pid.depth),
+    createSpawnGuard({
+      policy: spawnPolicy,
+      agentDepth: pid.depth,
+      ledger: spawnLedger,
+      agent,
+    }),
   ];
 
   // --- 3. Compose middleware chain: guards first, then user middleware ---

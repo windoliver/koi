@@ -46,6 +46,7 @@ export type {
   ProcessState,
   SkillMetadata,
   SpawnCheck,
+  SpawnLedger,
   SubsystemToken,
   Tool,
   ToolDescriptor,

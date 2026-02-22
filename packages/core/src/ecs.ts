@@ -151,6 +151,54 @@ export interface GovernanceComponent {
   readonly checkSpawn: (depth: number) => SpawnCheck;
 }
 
+// ---------------------------------------------------------------------------
+// Spawn ledger (tree-wide spawn accounting)
+// ---------------------------------------------------------------------------
+
+/**
+ * SpawnLedger — tree-wide spawn accounting for concurrency governance.
+ *
+ * Tracks active agent processes across an entire spawn tree.
+ * The root agent creates a ledger and passes it down to children via
+ * engine options. All agents in the tree share the same ledger instance.
+ *
+ * Implementations range from in-memory counters (single-Node) to
+ * distributed backends (multi-Node via EventComponent, Redis, etc.).
+ *
+ * acquire/release support `T | Promise<T>` return types so that
+ * implementations can be sync (in-memory) or async (network) without
+ * interface changes. Callers must always `await` the result.
+ */
+export interface SpawnLedger {
+  /**
+   * Attempt to reserve a spawn slot.
+   * Returns `true` if a slot was acquired, `false` if at capacity.
+   *
+   * Callers MUST call `release()` if the spawn subsequently fails,
+   * to avoid permanently leaking slots (optimistic locking pattern).
+   */
+  readonly acquire: () => boolean | Promise<boolean>;
+
+  /**
+   * Release a previously acquired spawn slot.
+   * Called when a child agent terminates or when a spawn fails
+   * after a successful `acquire()`.
+   */
+  readonly release: () => void | Promise<void>;
+
+  /**
+   * Current number of active (acquired but not released) slots.
+   * Sync — distributed implementations should cache locally.
+   */
+  readonly activeCount: () => number;
+
+  /**
+   * Maximum number of slots (total capacity).
+   * Immutable after creation.
+   */
+  readonly capacity: () => number;
+}
+
 export interface CredentialComponent {
   readonly get: (key: string) => Promise<string | undefined>;
 }
