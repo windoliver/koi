@@ -40,8 +40,8 @@ export function createSequenceTracker(windowSize: number): SequenceTracker {
   let nextExpected = 0;
   // Buffered out-of-order frames, keyed by seq
   const buffer = new Map<number, GatewayFrame>();
-  // Set of seen IDs within the current window for dedup
-  const seenIds = new Set<string>();
+  // Map of seen IDs → seq within the current window for dedup + precise pruning
+  const seenIds = new Map<string, number>();
 
   function flushReady(): readonly GatewayFrame[] {
     const ready: GatewayFrame[] = [];
@@ -52,17 +52,15 @@ export function createSequenceTracker(windowSize: number): SequenceTracker {
       nextExpected++;
       frame = buffer.get(nextExpected);
     }
-    // Trim seenIds: remove IDs for seqs that are now well below the window
     pruneSeenIds();
     return ready;
   }
 
   function pruneSeenIds(): void {
-    // Keep the set bounded: we only need IDs for seqs in [nextExpected - windowSize, nextExpected + windowSize)
-    // Since we don't track which ID maps to which seq efficiently, we cap the set size
-    if (seenIds.size > windowSize * 2) {
-      // Clear and let future frames re-populate; this is an amortized operation
-      seenIds.clear();
+    const cutoff = nextExpected - windowSize;
+    if (cutoff <= 0) return;
+    for (const [id, seq] of seenIds) {
+      if (seq < cutoff) seenIds.delete(id);
     }
   }
 
@@ -88,7 +86,7 @@ export function createSequenceTracker(windowSize: number): SequenceTracker {
         return { result: "duplicate", ready: [] };
       }
 
-      seenIds.add(id);
+      seenIds.set(id, seq);
 
       // In-order: accept immediately and flush any buffered followers
       if (seq === nextExpected) {
