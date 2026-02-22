@@ -3,33 +3,24 @@
  * No persistence across restarts. Implements checkpoint retention.
  */
 
-import type { AgentId, KoiError, Result } from "@koi/core";
-import { notFound, validation } from "@koi/core";
-import type { SessionPersistence } from "./persistence.js";
 import type {
+  AgentId,
+  KoiError,
   PendingFrame,
   RecoveryPlan,
+  Result,
   SessionCheckpoint,
   SessionFilter,
+  SessionPersistence,
   SessionRecord,
-} from "./types.js";
+} from "@koi/core";
+import { notFound, validateNonEmpty } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
 
 const DEFAULT_MAX_CHECKPOINTS_PER_AGENT = 3;
-
-// ---------------------------------------------------------------------------
-// Validation
-// ---------------------------------------------------------------------------
-
-function validateNonEmpty(value: string, name: string): Result<void, KoiError> {
-  if (value === "") {
-    return { ok: false, error: validation(`${name} must not be empty`) };
-  }
-  return { ok: true, value: undefined };
-}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -90,8 +81,12 @@ export function createInMemorySessionPersistence(
     sessions.delete(sessionId);
     // Also remove checkpoints for this session's agent
     checkpointsByAgent.delete(record.agentId);
-    // Also remove pending frames for this session
-    pendingFramesBySession.delete(sessionId);
+    // Cascade pending frames by agentId (across all sessions for this agent)
+    for (const [sid, frames] of pendingFramesBySession) {
+      if (frames[0]?.agentId === record.agentId) {
+        pendingFramesBySession.delete(sid);
+      }
+    }
     return { ok: true, value: undefined };
   };
 
@@ -218,7 +213,7 @@ export function createInMemorySessionPersistence(
     }
     return {
       ok: true,
-      value: { sessions: allSessions, checkpoints: checkpointMap, pendingFrames },
+      value: { sessions: allSessions, checkpoints: checkpointMap, pendingFrames, skipped: [] },
     };
   };
 

@@ -9,17 +9,22 @@
  */
 
 import { Database } from "bun:sqlite";
-import type { AgentId, AgentManifest, KoiError, ProcessState, Result } from "@koi/core";
-import { agentId, internal, notFound, validation } from "@koi/core";
-import type { SessionPersistence } from "./persistence.js";
 import type {
+  AgentId,
+  AgentManifest,
+  KoiError,
   PendingFrame,
+  ProcessState,
   RecoveryPlan,
+  Result,
   SessionCheckpoint,
   SessionFilter,
+  SessionPersistence,
   SessionRecord,
-  SessionStoreConfig,
-} from "./types.js";
+  SkippedRecoveryEntry,
+} from "@koi/core";
+import { agentId, internal, isProcessState, notFound, validateNonEmpty } from "@koi/core";
+import type { SessionStoreConfig } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -69,13 +74,6 @@ interface PendingFrameRow {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function validateNonEmpty(value: string, name: string): Result<void, KoiError> {
-  if (value === "") {
-    return { ok: false, error: validation(`${name} must not be empty`) };
-  }
-  return { ok: true, value: undefined };
-}
-
 function parseJson(raw: string, label: string): Record<string, unknown> {
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -88,11 +86,30 @@ function parseJson(raw: string, label: string): Record<string, unknown> {
   }
 }
 
+function parseManifest(raw: string, sessionId: string): AgentManifest {
+  const parsed: unknown = JSON.parse(raw);
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error(`Invalid manifest for session ${sessionId}: not an object`);
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (typeof obj.name !== "string" || typeof obj.version !== "string") {
+    throw new Error(`Invalid manifest for session ${sessionId}: missing name or version`);
+  }
+  return parsed as AgentManifest;
+}
+
+function parseProcessState(raw: string, contextId: string): ProcessState {
+  if (!isProcessState(raw)) {
+    throw new Error(`Invalid processState "${raw}" for checkpoint ${contextId}`);
+  }
+  return raw;
+}
+
 function rowToSessionRecord(row: SessionRow): SessionRecord {
   return {
     sessionId: row.sessionId,
     agentId: agentId(row.agentId),
-    manifestSnapshot: JSON.parse(row.manifest) as AgentManifest,
+    manifestSnapshot: parseManifest(row.manifest, row.sessionId),
     seq: row.seq,
     remoteSeq: row.remoteSeq,
     connectedAt: row.connectedAt,
@@ -124,7 +141,7 @@ function rowToCheckpoint(row: CheckpointRow): SessionCheckpoint {
     agentId: agentId(row.agentId),
     sessionId: row.sessionId,
     engineState,
-    processState: row.processState as ProcessState,
+    processState: parseProcessState(row.processState, row.id),
     generation: row.generation,
     metadata: parseJson(row.metadata, `checkpoint ${row.id}`),
     createdAt: row.createdAt,
@@ -231,10 +248,6 @@ export function createSqliteSessionPersistence(
     "SELECT * FROM session_records WHERE agentId = ?",
   );
 
-  const selectDistinctAgentIdsStmt = db.query<{ readonly agentId: string }, []>(
-    "SELECT DISTINCT agentId FROM checkpoints",
-  );
-
   const lookupAgentForSessionStmt = db.query<{ readonly agentId: string }, [string]>(
     "SELECT agentId FROM session_records WHERE sessionId = ?",
   );
@@ -257,8 +270,22 @@ export function createSqliteSessionPersistence(
 
   const deletePendingFramesByAgentStmt = db.prepare("DELETE FROM pending_frames WHERE agentId = ?");
 
-  const selectDistinctPfSessionIdsStmt = db.query<{ readonly sessionId: string }, []>(
-    "SELECT DISTINCT sessionId FROM pending_frames",
+  const pruneCheckpointsStmt = db.prepare(`
+    DELETE FROM checkpoints WHERE agentId = ? AND id NOT IN (
+      SELECT id FROM checkpoints WHERE agentId = ? ORDER BY createdAt DESC LIMIT ?
+    )
+  `);
+
+  // N+1 fix: batch-fetch latest checkpoint per agent and all pending frames
+  const selectLatestCheckpointsAllStmt = db.query<CheckpointRow, []>(`
+    SELECT c.* FROM checkpoints c
+    INNER JOIN (
+      SELECT agentId, MAX(createdAt) AS maxCreated FROM checkpoints GROUP BY agentId
+    ) latest ON c.agentId = latest.agentId AND c.createdAt = latest.maxCreated
+  `);
+
+  const selectAllPendingFramesStmt = db.query<PendingFrameRow, []>(
+    "SELECT * FROM pending_frames ORDER BY sessionId, orderIndex ASC",
   );
 
   // -- SessionPersistence implementation -----------------------------------
@@ -324,6 +351,8 @@ export function createSqliteSessionPersistence(
     }
   };
 
+  // N+1: processState filter issues one checkpoint query per session row.
+  // Acceptable for small session counts on edge devices; revisit if > 1000 sessions.
   const listSessions = (filter?: SessionFilter): Result<readonly SessionRecord[], KoiError> => {
     try {
       let rows: readonly SessionRow[];
@@ -370,12 +399,7 @@ export function createSqliteSessionPersistence(
         });
 
         // Prune oldest checkpoints beyond retention limit
-        const pruneStmt = db.prepare(`
-          DELETE FROM checkpoints WHERE agentId = ? AND id NOT IN (
-            SELECT id FROM checkpoints WHERE agentId = ? ORDER BY createdAt DESC LIMIT ?
-          )
-        `);
-        pruneStmt.run(checkpoint.agentId, checkpoint.agentId, maxCheckpoints);
+        pruneCheckpointsStmt.run(checkpoint.agentId, checkpoint.agentId, maxCheckpoints);
       })();
 
       return { ok: true, value: undefined };
@@ -470,31 +494,65 @@ export function createSqliteSessionPersistence(
 
   const recover = (): Result<RecoveryPlan, KoiError> => {
     try {
-      const sessionRows = selectAllSessionsStmt.all();
-      const sessions = sessionRows.map(rowToSessionRecord);
+      return db.transaction(() => {
+        const skipped: SkippedRecoveryEntry[] = [];
 
-      const checkpointMap = new Map<string, SessionCheckpoint>();
-      const agentIdRows = selectDistinctAgentIdsStmt.all();
-      for (const row of agentIdRows) {
-        const cpRow = selectLatestCheckpointStmt.get(row.agentId);
-        if (cpRow !== null) {
-          checkpointMap.set(row.agentId, rowToCheckpoint(cpRow));
+        // Batch-fetch sessions with per-row error isolation
+        const sessionRows = selectAllSessionsStmt.all();
+        const sessions: SessionRecord[] = [];
+        for (const row of sessionRows) {
+          try {
+            sessions.push(rowToSessionRecord(row));
+          } catch (e: unknown) {
+            skipped.push({
+              source: "session",
+              id: row.sessionId,
+              error: e instanceof Error ? e.message : String(e),
+            });
+          }
         }
-      }
 
-      const pendingFrames = new Map<string, PendingFrame[]>();
-      const pfSessionRows = selectDistinctPfSessionIdsStmt.all();
-      for (const row of pfSessionRows) {
-        const frames = selectPendingFramesStmt.all(row.sessionId);
-        if (frames.length > 0) {
-          pendingFrames.set(row.sessionId, frames.map(rowToPendingFrame));
+        // Batch-fetch latest checkpoint per agent (N+1 fix)
+        const checkpointMap = new Map<string, SessionCheckpoint>();
+        const cpRows = selectLatestCheckpointsAllStmt.all();
+        for (const row of cpRows) {
+          try {
+            checkpointMap.set(row.agentId, rowToCheckpoint(row));
+          } catch (e: unknown) {
+            skipped.push({
+              source: "checkpoint",
+              id: row.id,
+              error: e instanceof Error ? e.message : String(e),
+            });
+          }
         }
-      }
 
-      return {
-        ok: true,
-        value: { sessions, checkpoints: checkpointMap, pendingFrames },
-      };
+        // Batch-fetch all pending frames (N+1 fix)
+        const pendingFrames = new Map<string, PendingFrame[]>();
+        const allFrameRows = selectAllPendingFramesStmt.all();
+        for (const row of allFrameRows) {
+          try {
+            const frame = rowToPendingFrame(row);
+            const existing = pendingFrames.get(row.sessionId);
+            if (existing !== undefined) {
+              existing.push(frame);
+            } else {
+              pendingFrames.set(row.sessionId, [frame]);
+            }
+          } catch (e: unknown) {
+            skipped.push({
+              source: "pending_frame",
+              id: row.frameId,
+              error: e instanceof Error ? e.message : String(e),
+            });
+          }
+        }
+
+        return {
+          ok: true as const,
+          value: { sessions, checkpoints: checkpointMap, pendingFrames, skipped },
+        };
+      })();
     } catch (e: unknown) {
       return { ok: false, error: internal("Failed to recover sessions", e) };
     }

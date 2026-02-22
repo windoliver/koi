@@ -13,6 +13,8 @@ import type {
   KoiError,
   ProcessId,
   Result,
+  SessionCheckpoint,
+  SessionRecord,
 } from "@koi/core";
 import type { AgentHost } from "./agent/host.js";
 import { createAgentHost } from "./agent/host.js";
@@ -41,13 +43,11 @@ import { createLocalResolver } from "./tools/local-resolver.js";
 import type {
   AdvertisedTool,
   CapacityReport,
-  NodeCheckpoint,
   NodeConfig,
   NodeEvent,
   NodeEventListener,
   NodeFrame,
   NodeFrameType,
-  NodeSessionRecord,
   NodeSessionStore,
   NodeState,
 } from "./types.js";
@@ -114,8 +114,8 @@ export interface NodeDeps {
    * Return a `RecoveryResult` to re-dispatch the agent, or `null` to skip it.
    */
   readonly onRecover?: (
-    session: NodeSessionRecord,
-    checkpoint: NodeCheckpoint | undefined,
+    session: SessionRecord,
+    checkpoint: SessionCheckpoint | undefined,
   ) => RecoveryResult | null | Promise<RecoveryResult | null>;
 }
 

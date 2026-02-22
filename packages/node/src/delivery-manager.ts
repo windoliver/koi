@@ -6,8 +6,9 @@
  * backoff when transport is unavailable.
  */
 
+import type { PendingFrame } from "@koi/core";
 import { agentId as toAgentId } from "@koi/core";
-import type { NodeEvent, NodeFrame, NodePendingFrame, NodeSessionStore } from "./types.js";
+import type { NodeEvent, NodeFrame, NodeSessionStore } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -63,7 +64,7 @@ export interface DeliveryManagerDeps {
   /** Returns true when the transport is connected and can send. */
   readonly isConnected: () => boolean;
   /** Send a pending frame over the transport. */
-  readonly sendFrame: (frame: NodePendingFrame) => void;
+  readonly sendFrame: (frame: PendingFrame) => void;
   /** Emit a node event. */
   readonly emit: (type: NodeEvent["type"], data?: unknown) => void;
 }
@@ -95,7 +96,7 @@ export function createDeliveryManager(
   // let: toggled once by dispose() to prevent timer callbacks from running
   let disposed = false;
 
-  function scheduleRetry(sessionId: string, frame: NodePendingFrame): void {
+  function scheduleRetry(sessionId: string, frame: PendingFrame): void {
     const delay = calculateBackoffDelay(frame.retryCount, cfg);
     const timer = setTimeout(() => {
       pendingTimers.delete(timer);
@@ -113,7 +114,7 @@ export function createDeliveryManager(
     pendingTimers.add(timer);
   }
 
-  async function replaySingleFrame(sessionId: string, frame: NodePendingFrame): Promise<void> {
+  async function replaySingleFrame(sessionId: string, frame: PendingFrame): Promise<void> {
     const now = Date.now();
 
     // TTL expired?
@@ -149,9 +150,15 @@ export function createDeliveryManager(
           agentId: frame.agentId,
         });
         await deps.store.removePendingFrame(frame.frameId);
-      } catch {
-        // Send failed — increment and retry
-        const updated: NodePendingFrame = { ...frame, retryCount: frame.retryCount + 1 };
+      } catch (e: unknown) {
+        deps.emit("pending_frame_dead_letter", {
+          frameId: frame.frameId,
+          sessionId,
+          agentId: frame.agentId,
+          retryCount: frame.retryCount + 1,
+          error: e instanceof Error ? e.message : String(e),
+        });
+        const updated: PendingFrame = { ...frame, retryCount: frame.retryCount + 1 };
         await deps.store.savePendingFrame(updated);
         scheduleRetry(sessionId, updated);
       }
@@ -159,7 +166,7 @@ export function createDeliveryManager(
     }
 
     // Transport not connected — increment retryCount and schedule retry
-    const updated: NodePendingFrame = { ...frame, retryCount: frame.retryCount + 1 };
+    const updated: PendingFrame = { ...frame, retryCount: frame.retryCount + 1 };
     await deps.store.savePendingFrame(updated);
     scheduleRetry(sessionId, updated);
   }
@@ -190,7 +197,7 @@ export function createDeliveryManager(
   }
 
   async function enqueueSend(frame: NodeFrame, sessionId: string): Promise<void> {
-    const pendingFrame: NodePendingFrame = {
+    const pendingFrame: PendingFrame = {
       frameId: `pf-${frame.correlationId}`,
       sessionId,
       agentId: toAgentId(frame.agentId),
@@ -220,8 +227,14 @@ export function createDeliveryManager(
           agentId: pendingFrame.agentId,
         });
         await deps.store.removePendingFrame(pendingFrame.frameId);
-      } catch {
-        // Send failed — frame stays in store for replay on reconnect
+      } catch (e: unknown) {
+        deps.emit("pending_frame_dead_letter", {
+          frameId: pendingFrame.frameId,
+          sessionId,
+          agentId: pendingFrame.agentId,
+          retryCount: 0,
+          error: e instanceof Error ? e.message : String(e),
+        });
       }
     }
     // If not connected, frame stays in store for replayPendingFrames on reconnect
