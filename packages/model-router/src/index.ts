@@ -7,6 +7,13 @@
  * Depends on @koi/core (for types) and @koi/validation (for config validation).
  */
 
+export { createAnthropicAdapter } from "./adapters/anthropic.js";
+// Provider adapters
+export { createOpenAIAdapter } from "./adapters/openai.js";
+export {
+  createOpenRouterAdapter,
+  type OpenRouterAdapterConfig,
+} from "./adapters/openrouter.js";
 // Resilience
 export {
   type CircuitBreaker,
