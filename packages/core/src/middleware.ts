@@ -53,6 +53,8 @@ export type ToolHandler = (request: ToolRequest) => Promise<ToolResponse>;
 
 export interface KoiMiddleware {
   readonly name: string;
+  /** Middleware execution priority. Lower = outer onion layer (runs first). Default: 500. */
+  readonly priority?: number;
   /** Called once when an agent session begins. */
   readonly onSessionStart?: (ctx: SessionContext) => Promise<void>;
   /** Called once when an agent session ends. */

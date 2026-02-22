@@ -1,0 +1,17 @@
+{
+  "name": "@koi/middleware-integration",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/test-utils": "workspace:*",
+    "@koi/middleware-permissions": "workspace:*",
+    "@koi/middleware-pay": "workspace:*",
+    "@koi/middleware-audit": "workspace:*",
+    "@koi/middleware-memory": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test"
+  }
+}
