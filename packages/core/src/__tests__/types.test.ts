@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import type {
   Agent,
   AgentManifest,
+  ChannelAdapter,
+  ChannelCapabilities,
   ContentBlock,
+  EngineAdapter,
   EngineEvent,
   EngineInput,
   EngineStopReason,
@@ -10,10 +13,13 @@ import type {
   KoiError,
   KoiErrorCode,
   KoiMiddleware,
+  PermissionConfig,
   ProcessId,
+  Resolver,
   Result,
   SpawnCheck,
   SubsystemToken,
+  Tool,
   ToolDescriptor,
   TrustTier,
 } from "../index.js";
@@ -76,7 +82,11 @@ describe("ContentBlock discriminant", () => {
   });
 
   test("narrows to FileBlock on kind: file", () => {
-    const block: ContentBlock = { kind: "file", url: "https://x.com/f", mimeType: "text/plain" };
+    const block: ContentBlock = {
+      kind: "file",
+      url: "https://x.com/f",
+      mimeType: "text/plain",
+    };
     if (block.kind === "file") {
       const url: string = block.url;
       expect(url).toContain("x.com");
@@ -92,7 +102,11 @@ describe("ContentBlock discriminant", () => {
   });
 
   test("text property not accessible on file block", () => {
-    const block: ContentBlock = { kind: "file", url: "https://x.com/f", mimeType: "text/plain" };
+    const block: ContentBlock = {
+      kind: "file",
+      url: "https://x.com/f",
+      mimeType: "text/plain",
+    };
     if (block.kind === "file") {
       // @ts-expect-error — text does not exist on FileBlock
       const _t: string = block.text;
@@ -132,7 +146,13 @@ describe("EngineEvent discriminant", () => {
       output: {
         content: [],
         stopReason: "completed",
-        metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+        metrics: {
+          totalTokens: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          turns: 0,
+          durationMs: 0,
+        },
       },
     };
     if (event.kind === "done") {
@@ -222,13 +242,16 @@ describe("Agent component typing", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Well-known token type narrowing (from main)
+// ---------------------------------------------------------------------------
+
 describe("well-known token type narrowing", () => {
   test("MEMORY token narrows component to MemoryComponent", () => {
     const agentLike: Pick<Agent, "component"> = {
       component: <T>(_token: SubsystemToken<T>): T | undefined => undefined,
     };
     const mem = agentLike.component(MEMORY);
-    // If this compiles, MEMORY correctly narrows to MemoryComponent | undefined
     if (mem) {
       const _: Promise<readonly unknown[]> = mem.recall("test");
       void _;
@@ -275,10 +298,69 @@ describe("well-known token type narrowing", () => {
   });
 });
 
-describe("KoiMiddleware optionality", () => {
-  test("middleware with only name is valid", () => {
-    const mw: KoiMiddleware = { name: "noop" };
-    expect(mw.name).toBe("noop");
+// ---------------------------------------------------------------------------
+// Negative type tests for all 6 contracts
+// ---------------------------------------------------------------------------
+
+describe("AgentManifest negative types", () => {
+  test("model is required", () => {
+    // @ts-expect-error — model is required on AgentManifest
+    const _m: AgentManifest = { name: "test", version: "0.0.0" };
+    void _m;
+  });
+
+  test("name is required", () => {
+    // @ts-expect-error — name is required on AgentManifest
+    const _m: AgentManifest = { version: "0.0.0", model: { name: "gpt-4" } };
+    void _m;
+  });
+});
+
+describe("ChannelAdapter negative types", () => {
+  test("capabilities is required", () => {
+    // @ts-expect-error — capabilities is required on ChannelAdapter
+    const _c: ChannelAdapter = {
+      name: "test",
+      connect: async () => {},
+      disconnect: async () => {},
+      send: async () => {},
+      onMessage: () => () => {},
+    };
+    void _c;
+  });
+
+  test("send is required", () => {
+    const caps: ChannelCapabilities = {
+      text: true,
+      images: false,
+      files: false,
+      buttons: false,
+      audio: false,
+      video: false,
+      threads: false,
+    };
+    // @ts-expect-error — send is required on ChannelAdapter
+    const _c: ChannelAdapter = {
+      name: "test",
+      capabilities: caps,
+      connect: async () => {},
+      disconnect: async () => {},
+      onMessage: () => () => {},
+    };
+    void _c;
+  });
+});
+
+describe("KoiMiddleware negative types", () => {
+  test("name-only middleware satisfies interface", () => {
+    const mw: KoiMiddleware = { name: "passthrough" };
+    expect(mw.name).toBe("passthrough");
+  });
+
+  test("name is required", () => {
+    // @ts-expect-error — name is required on KoiMiddleware
+    const _mw: KoiMiddleware = {};
+    void _mw;
   });
 
   test("middleware with session hooks is valid", () => {
@@ -290,6 +372,87 @@ describe("KoiMiddleware optionality", () => {
     expect(mw.name).toBe("session-only");
   });
 });
+
+describe("EngineAdapter negative types", () => {
+  test("stream is required", () => {
+    // @ts-expect-error — stream is required on EngineAdapter
+    const _e: EngineAdapter = { engineId: "test" };
+    void _e;
+  });
+
+  test("engineId is required", () => {
+    async function* fakeStream(): AsyncGenerator<EngineEvent> {
+      yield {
+        kind: "done",
+        output: {
+          content: [],
+          stopReason: "completed",
+          metrics: {
+            totalTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            turns: 0,
+            durationMs: 0,
+          },
+        },
+      };
+    }
+    // @ts-expect-error — engineId is required on EngineAdapter
+    const _e: EngineAdapter = { stream: fakeStream };
+    void _e;
+  });
+
+  test("dispose and saveState are optional", () => {
+    async function* fakeStream(): AsyncGenerator<EngineEvent> {
+      yield {
+        kind: "done",
+        output: {
+          content: [],
+          stopReason: "completed",
+          metrics: {
+            totalTokens: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            turns: 0,
+            durationMs: 0,
+          },
+        },
+      };
+    }
+    const e: EngineAdapter = { engineId: "test", stream: fakeStream };
+    expect(e.engineId).toBe("test");
+  });
+});
+
+describe("KoiError negative types", () => {
+  test("retryable is required", () => {
+    // @ts-expect-error — retryable is required on KoiError
+    const _e: KoiError = { code: "INTERNAL", message: "fail" };
+    void _e;
+  });
+
+  test("code must be valid KoiErrorCode", () => {
+    const _e: KoiError = {
+      // @ts-expect-error — "UNKNOWN" is not a valid KoiErrorCode
+      code: "UNKNOWN",
+      message: "fail",
+      retryable: false,
+    };
+    void _e;
+  });
+});
+
+describe("PermissionConfig negative types", () => {
+  test("non-string arrays are rejected", () => {
+    // @ts-expect-error — number[] is not assignable to readonly string[]
+    const _p: PermissionConfig = { allow: [1, 2, 3] };
+    void _p;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TrustTier and SpawnCheck (from main)
+// ---------------------------------------------------------------------------
 
 describe("TrustTier", () => {
   test("accepts valid trust tier literals", () => {
@@ -313,6 +476,10 @@ describe("SpawnCheck discriminant", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// KoiErrorCode and KoiError extended fields (from main)
+// ---------------------------------------------------------------------------
 
 describe("KoiErrorCode", () => {
   test("accepts all 8 valid error codes", () => {
@@ -408,5 +575,81 @@ describe("Result with custom error type", () => {
     if (!result.ok) {
       expect(result.error.kind).toBe("auth");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Resolver type tests
+// ---------------------------------------------------------------------------
+
+describe("Resolver type tests", () => {
+  test("generic instantiation compiles", () => {
+    type ToolMeta = { readonly name: string };
+    const _r: Resolver<ToolMeta, Tool> = {
+      discover: async () => [],
+      load: async () => ({
+        ok: true,
+        value: {
+          descriptor: { name: "t", description: "d", inputSchema: {} },
+          trustTier: "sandbox",
+          execute: async () => ({}),
+        },
+      }),
+    };
+    expect(_r.discover).toBeDefined();
+  });
+
+  test("load returns Result<TFull, KoiError>", async () => {
+    type ToolMeta = { readonly name: string };
+    const r: Resolver<ToolMeta, Tool> = {
+      discover: async () => [],
+      load: async () => ({
+        ok: false,
+        error: {
+          code: "NOT_FOUND",
+          message: "missing",
+          retryable: false,
+        },
+      }),
+    };
+    const result = await r.load("missing");
+    expect(result.ok).toBe(false);
+  });
+
+  test("onChange is optional", () => {
+    type ToolMeta = { readonly name: string };
+    const r: Resolver<ToolMeta, Tool> = {
+      discover: async () => [],
+      load: async () => ({
+        ok: true,
+        value: {
+          descriptor: { name: "t", description: "d", inputSchema: {} },
+          trustTier: "sandbox",
+          execute: async () => ({}),
+        },
+      }),
+    };
+    expect(r.onChange).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tool input typing
+// ---------------------------------------------------------------------------
+
+describe("Tool input typing", () => {
+  test("Tool.execute accepts JsonObject args", () => {
+    const tool: Tool = {
+      descriptor: {
+        name: "calc",
+        description: "calculator",
+        inputSchema: {},
+      },
+      trustTier: "sandbox",
+      execute: async (args) => {
+        return { result: args.a };
+      },
+    };
+    expect(tool.descriptor.name).toBe("calc");
   });
 });
