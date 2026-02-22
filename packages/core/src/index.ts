@@ -18,6 +18,8 @@ export type {
 export type { ChannelAdapter, ChannelCapabilities, MessageHandler } from "./channel.js";
 // common
 export type { JsonObject } from "./common.js";
+// context
+export type { CompactionResult, ContextCompactor, TokenEstimator } from "./context.js";
 // delegation
 export type {
   DelegationComponent,
