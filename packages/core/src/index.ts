@@ -42,6 +42,7 @@ export type {
   GovernanceComponent,
   GovernanceUsage,
   MemoryComponent,
+  MemoryResult,
   ProcessId,
   ProcessState,
   SkillMetadata,
@@ -154,19 +155,11 @@ export type {
   SandboxInstance,
   SandboxProfile,
   SandboxResult,
-  SandboxTier,
 } from "./sandbox.js";
 // search value types
 export type {
-  FusionFunction,
-  FusionStrategy,
   IndexDocument,
-  ScoreNormalizer,
-  SearchErr,
-  SearchError,
   SearchFilter,
-  SearchOk,
-  SearchOutcome,
   SearchPage,
   SearchQuery,
   SearchResult,

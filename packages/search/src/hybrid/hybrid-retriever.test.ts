@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Retriever, SearchOutcome, SearchPage, SearchQuery, SearchResult } from "@koi/core";
+import type { KoiError, Result, Retriever, SearchPage, SearchQuery, SearchResult } from "@koi/core";
 import { createHybridRetriever } from "./hybrid-retriever.js";
 
 function makeResult(id: string, score: number, source: string): SearchResult {
@@ -8,7 +8,7 @@ function makeResult(id: string, score: number, source: string): SearchResult {
 
 function mockRetriever(results: readonly SearchResult[]): Retriever {
   return {
-    retrieve: async (query: SearchQuery): Promise<SearchOutcome<SearchPage>> => ({
+    retrieve: async (query: SearchQuery): Promise<Result<SearchPage, KoiError>> => ({
       ok: true,
       value: {
         results: results.slice(0, query.limit),
@@ -21,9 +21,14 @@ function mockRetriever(results: readonly SearchResult[]): Retriever {
 
 function failingRetriever(): Retriever {
   return {
-    retrieve: async (): Promise<SearchOutcome<SearchPage>> => ({
+    retrieve: async (): Promise<Result<SearchPage, KoiError>> => ({
       ok: false,
-      error: { kind: "backend_unavailable", backend: "test" },
+      error: {
+        code: "EXTERNAL",
+        message: "Backend unavailable",
+        retryable: true,
+        context: { backend: "test" },
+      },
     }),
   };
 }
@@ -88,7 +93,7 @@ describe("HybridRetriever", () => {
     const result = await hybrid.retrieve({ text: "test", limit: 10 });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error.kind).toBe("backend_unavailable");
+    expect(result.error.code).toBe("EXTERNAL");
   });
 
   test("timeout — slow retriever is dropped", async () => {

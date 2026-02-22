@@ -26,14 +26,12 @@ export type DelegationId = string & { readonly [__delegationBrand]: "DelegationI
 
 /**
  * What is being delegated. Wraps the existing PermissionConfig to stay DRY
- * and adds optional resource patterns and budget cap.
+ * and adds optional resource patterns.
  */
 export interface DelegationScope {
   readonly permissions: PermissionConfig;
   /** Optional glob-style resource patterns (e.g., "read_file:/workspace/src/**"). */
   readonly resources?: readonly string[];
-  /** Optional budget cap for metered operations. */
-  readonly maxBudget?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,9 +103,8 @@ export interface ScopeChecker {
 
 /** Pluggable revocation store. Default implementation is in-memory (L2). */
 export interface RevocationRegistry {
-  readonly isRevoked: (id: DelegationId) => boolean;
-  readonly revoke: (id: DelegationId, cascade: boolean) => void;
-  readonly revokedIds: () => ReadonlySet<DelegationId>;
+  readonly isRevoked: (id: DelegationId) => boolean | Promise<boolean>;
+  readonly revoke: (id: DelegationId, cascade: boolean) => void | Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,10 +118,6 @@ export interface DelegationConfig {
   readonly maxChainDepth: number;
   /** Default grant TTL in milliseconds (default: 3600000 = 1 hour). */
   readonly defaultTtlMs: number;
-  /** Maximum entries in the revocation registry (default: 10000). */
-  readonly maxEntries: number;
-  /** Cleanup interval in milliseconds (default: 60000 = 1 minute). */
-  readonly cleanupIntervalMs: number;
 }
 
 // ---------------------------------------------------------------------------

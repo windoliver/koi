@@ -16,7 +16,7 @@ export type { AttenuateParams, CreateGrantParams } from "./grant.js";
 export { attenuateGrant, createGrant } from "./grant.js";
 // middleware
 export { createDelegationMiddleware } from "./middleware.js";
-export type { GrantIndex } from "./registry.js";
+export type { GrantIndex, InMemoryRegistry } from "./registry.js";
 // registry
 export { createGrantIndex, createInMemoryRegistry } from "./registry.js";
 // revocation

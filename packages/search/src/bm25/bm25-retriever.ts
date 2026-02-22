@@ -1,7 +1,8 @@
 import type {
+  KoiError,
+  Result,
   Retriever,
   SearchFilter,
-  SearchOutcome,
   SearchPage,
   SearchQuery,
   SearchResult,
@@ -29,7 +30,7 @@ export function createBm25Retriever(config: BM25RetrieverConfig): Retriever {
   const tokenize = config.tokenize ?? defaultTokenize;
 
   return {
-    retrieve: async (query: SearchQuery): Promise<SearchOutcome<SearchPage>> => {
+    retrieve: async (query: SearchQuery): Promise<Result<SearchPage, KoiError>> => {
       const terms = config.queryExpansion
         ? expandQuery(query.text, config.queryExpansion)
         : tokenize(query.text);

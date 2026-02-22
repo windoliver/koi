@@ -1,8 +1,9 @@
 import type {
   Embedder,
+  KoiError,
+  Result,
   Retriever,
   SearchFilter,
-  SearchOutcome,
   SearchPage,
   SearchQuery,
   SearchResult,
@@ -17,7 +18,7 @@ export interface VectorRetrieverConfig {
 
 export function createVectorRetriever(config: VectorRetrieverConfig): Retriever {
   return {
-    retrieve: async (query: SearchQuery): Promise<SearchOutcome<SearchPage>> => {
+    retrieve: async (query: SearchQuery): Promise<Result<SearchPage, KoiError>> => {
       const embedding = await config.embedder.embed(query.text);
 
       // Over-fetch to allow for post-filtering and hasMore detection

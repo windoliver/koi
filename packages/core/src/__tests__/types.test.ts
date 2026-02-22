@@ -24,6 +24,7 @@ import type {
   KoiError,
   KoiErrorCode,
   KoiMiddleware,
+  MemoryResult,
   ModelCapabilities,
   ModelConfig,
   ModelProvider,
@@ -37,7 +38,6 @@ import type {
   SandboxInstance,
   SandboxProfile,
   SandboxResult,
-  SandboxTier,
   ScopeChecker,
   SpawnCheck,
   SubsystemToken,
@@ -287,7 +287,7 @@ describe("well-known token type narrowing", () => {
     };
     const mem = agentLike.component(MEMORY);
     if (mem) {
-      const _: Promise<readonly unknown[]> = mem.recall("test");
+      const _: Promise<readonly MemoryResult[]> = mem.recall("test");
       void _;
     }
     expect(mem).toBeUndefined();
@@ -632,15 +632,15 @@ describe("Result with custom error type", () => {
 // Sandbox types
 // ---------------------------------------------------------------------------
 
-describe("SandboxTier", () => {
+describe("TrustTier (replaces SandboxTier)", () => {
   test("accepts valid tier literals", () => {
-    const tiers: readonly SandboxTier[] = ["sandbox", "verified", "promoted"];
+    const tiers: readonly TrustTier[] = ["sandbox", "verified", "promoted"];
     expect(tiers).toHaveLength(3);
   });
 
   test("rejects invalid tier literal", () => {
-    // @ts-expect-error — "untrusted" is not a valid SandboxTier
-    const _t: SandboxTier = "untrusted";
+    // @ts-expect-error — "untrusted" is not a valid TrustTier
+    const _t: TrustTier = "untrusted";
     void _t;
   });
 });
@@ -932,18 +932,15 @@ describe("DelegationGrant readonly enforcement", () => {
 });
 
 describe("DelegationScope", () => {
-  test("permissions is required, resources and maxBudget are optional", () => {
+  test("permissions is required, resources is optional", () => {
     const minimal: DelegationScope = { permissions: { allow: ["*"] } };
     expect(minimal.resources).toBeUndefined();
-    expect(minimal.maxBudget).toBeUndefined();
 
     const full: DelegationScope = {
       permissions: { allow: ["read_file"], deny: ["write_file"] },
       resources: ["read_file:/workspace/**"],
-      maxBudget: 100,
     };
     expect(full.resources).toHaveLength(1);
-    expect(full.maxBudget).toBe(100);
   });
 
   test("resources array is readonly", () => {
@@ -1049,16 +1046,26 @@ describe("ScopeChecker interface", () => {
 });
 
 describe("RevocationRegistry interface", () => {
-  test("satisfies with minimal implementation", () => {
+  test("satisfies with minimal sync implementation", () => {
     const revoked = new Set<DelegationId>();
     const registry: RevocationRegistry = {
       isRevoked: (id) => revoked.has(id),
-      revoke: (id) => {
+      revoke: (id, _cascade) => {
         revoked.add(id);
       },
-      revokedIds: () => revoked,
     };
     expect(registry.isRevoked("test" as DelegationId)).toBe(false);
+  });
+
+  test("satisfies with async implementation", () => {
+    const revoked = new Set<DelegationId>();
+    const registry: RevocationRegistry = {
+      isRevoked: async (id) => revoked.has(id),
+      revoke: async (id, _cascade) => {
+        revoked.add(id);
+      },
+    };
+    expect(registry.isRevoked("test" as DelegationId)).toBeInstanceOf(Promise);
   });
 });
 
@@ -1068,8 +1075,6 @@ describe("DelegationConfig", () => {
     const _partial: DelegationConfig = {
       maxChainDepth: 3,
       defaultTtlMs: 3600000,
-      maxEntries: 10000,
-      cleanupIntervalMs: 60000,
     };
     void _partial;
   });
@@ -1079,8 +1084,6 @@ describe("DelegationConfig", () => {
       enabled: true,
       maxChainDepth: 3,
       defaultTtlMs: 3600000,
-      maxEntries: 10000,
-      cleanupIntervalMs: 60000,
     };
     // @ts-expect-error — cannot assign to readonly property
     config.enabled = false;
@@ -1120,8 +1123,6 @@ describe("AgentManifest delegation config", () => {
         enabled: true,
         maxChainDepth: 3,
         defaultTtlMs: 3600000,
-        maxEntries: 10000,
-        cleanupIntervalMs: 60000,
       },
     };
     expect(withDelegation.delegation?.enabled).toBe(true);

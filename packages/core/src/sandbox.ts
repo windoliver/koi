@@ -3,8 +3,7 @@
  * Types only, zero runtime code.
  */
 
-/** Trust tier determines sandbox enforcement level. */
-export type SandboxTier = "sandbox" | "verified" | "promoted";
+import type { TrustTier } from "./ecs.js";
 
 /** Filesystem isolation policy. */
 export interface FilesystemPolicy {
@@ -30,7 +29,7 @@ export interface ResourceLimits {
 
 /** Declarative sandbox profile — platform-agnostic policy. */
 export interface SandboxProfile {
-  readonly tier: SandboxTier;
+  readonly tier: TrustTier;
   readonly filesystem: FilesystemPolicy;
   readonly network: NetworkPolicy;
   readonly resources: ResourceLimits;
