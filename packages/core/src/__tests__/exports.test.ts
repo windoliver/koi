@@ -7,7 +7,12 @@ import { describe, expect, test } from "bun:test";
 
 import type {
   Agent,
+  // lifecycle
+  AgentCondition,
+  AgentId,
   AgentManifest,
+  AgentRegistry,
+  AgentStatus,
   // forge types
   BrickKind,
   BrickLifecycle,
@@ -29,12 +34,23 @@ import type {
   // engine
   EngineStopReason,
   EventComponent,
+  // eviction
+  EvictionCandidate,
+  EvictionPolicy,
+  EvictionReason,
+  EvictionResult,
   FileBlock,
   // sandbox
   FilesystemPolicy,
   ForgeScope,
   GovernanceComponent,
   GovernanceUsage,
+  // health
+  HealthMonitor,
+  HealthMonitorConfig,
+  HealthMonitorStats,
+  HealthSnapshot,
+  HealthStatus,
   ImageBlock,
   InboundMessage,
   // common
@@ -56,6 +72,9 @@ import type {
   PermissionConfig,
   ProcessId,
   ProcessState,
+  RegistryEntry,
+  RegistryEvent,
+  RegistryFilter,
   // resolver
   Resolver,
   ResourceLimits,
@@ -82,13 +101,16 @@ import type {
   ToolHandler,
   ToolRequest,
   ToolResponse,
+  TransitionReason,
   TrustTier,
   TurnContext,
 } from "../index.js";
 
 import {
+  agentId,
   CREDENTIALS,
   channelToken,
+  DEFAULT_HEALTH_MONITOR_CONFIG,
   EVENTS,
   GOVERNANCE,
   MEMORY,
@@ -96,6 +118,7 @@ import {
   skillToken,
   token,
   toolToken,
+  VALID_TRANSITIONS,
 } from "../index.js";
 
 // Prevent type imports from being optimized away
@@ -167,7 +190,27 @@ type _TypeGuard =
   | AssertDefined<SandboxInstance>
   | AssertDefined<SandboxProfile>
   | AssertDefined<SandboxResult>
-  | AssertDefined<ScopeChecker>;
+  | AssertDefined<ScopeChecker>
+  // lifecycle
+  | AssertDefined<AgentId>
+  | AssertDefined<AgentCondition>
+  | AssertDefined<AgentStatus>
+  | AssertDefined<AgentRegistry>
+  | AssertDefined<TransitionReason>
+  | AssertDefined<RegistryEntry>
+  | AssertDefined<RegistryEvent>
+  | AssertDefined<RegistryFilter>
+  // health
+  | AssertDefined<HealthStatus>
+  | AssertDefined<HealthSnapshot>
+  | AssertDefined<HealthMonitorStats>
+  | AssertDefined<HealthMonitorConfig>
+  | AssertDefined<HealthMonitor>
+  // eviction
+  | AssertDefined<EvictionCandidate>
+  | AssertDefined<EvictionReason>
+  | AssertDefined<EvictionResult>
+  | AssertDefined<EvictionPolicy>;
 
 describe("export inventory", () => {
   test("all runtime values are defined", () => {
@@ -175,11 +218,14 @@ describe("export inventory", () => {
     expect(toolToken).toBeDefined();
     expect(channelToken).toBeDefined();
     expect(skillToken).toBeDefined();
+    expect(agentId).toBeDefined();
     expect(MEMORY).toBeDefined();
     expect(GOVERNANCE).toBeDefined();
     expect(CREDENTIALS).toBeDefined();
     expect(EVENTS).toBeDefined();
     expect(RETRYABLE_DEFAULTS).toBeDefined();
+    expect(VALID_TRANSITIONS).toBeDefined();
+    expect(DEFAULT_HEALTH_MONITOR_CONFIG).toBeDefined();
   });
 
   test("runtime values are functions, strings, or objects", () => {
@@ -187,10 +233,13 @@ describe("export inventory", () => {
     expect(typeof toolToken).toBe("function");
     expect(typeof channelToken).toBe("function");
     expect(typeof skillToken).toBe("function");
+    expect(typeof agentId).toBe("function");
     expect(typeof MEMORY).toBe("string");
     expect(typeof GOVERNANCE).toBe("string");
     expect(typeof CREDENTIALS).toBe("string");
     expect(typeof EVENTS).toBe("string");
     expect(typeof RETRYABLE_DEFAULTS).toBe("object");
+    expect(typeof VALID_TRANSITIONS).toBe("object");
+    expect(typeof DEFAULT_HEALTH_MONITOR_CONFIG).toBe("object");
   });
 });

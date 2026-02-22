@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { agentId } from "@koi/core";
 import { createMcpComponentProviderAsync } from "./component-provider.js";
 import type { McpProviderConfig } from "./config.js";
 
@@ -98,7 +99,7 @@ describe("createMcpComponentProviderAsync", () => {
 
 function createMockAgent(): import("@koi/core").Agent {
   return {
-    pid: { id: "test-1", name: "test", type: "worker", depth: 0 },
+    pid: { id: agentId("test-1"), name: "test", type: "worker", depth: 0 },
     manifest: {
       name: "test-agent",
       version: "1.0.0",

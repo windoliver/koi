@@ -5,7 +5,7 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "target": "ES2022",
-    "lib": ["ES2023"],
+    "lib": ["ES2023", "esnext.disposable"],
     "types": ["bun"],
     "declaration": true,
     "declarationMap": true,
