@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Embedder } from "@koi/core";
+import type { Embedder } from "../contracts.js";
 import { createSqliteIndexer } from "./sqlite-indexer.js";
 
 const dims = 8;

@@ -15,6 +15,7 @@
   },
   "devDependencies": {
     "@koi/gateway": "workspace:*",
+    "@koi/session-store": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },
   "scripts": {

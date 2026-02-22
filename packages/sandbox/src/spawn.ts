@@ -3,10 +3,11 @@
  * Spawns a sandboxed process with direct stream access.
  */
 
-import type { KoiError, Result, SandboxProfile } from "@koi/core";
+import type { KoiError, Result } from "@koi/core";
 import { detectPlatform } from "./detect.js";
 import { buildBwrapArgs } from "./platform/bwrap.js";
 import { buildSeatbeltArgs } from "./platform/seatbelt.js";
+import type { SandboxProfile } from "./types.js";
 
 export interface SpawnOptions {
   readonly cwd?: string;

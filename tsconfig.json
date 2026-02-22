@@ -11,6 +11,7 @@
     { "path": "packages/search" },
     { "path": "packages/forge" },
     { "path": "packages/artifact-client" },
-    { "path": "packages/mcp" }
+    { "path": "packages/mcp" },
+    { "path": "packages/scheduler" }
   ]
 }

@@ -81,7 +81,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
     if (sessionId !== undefined) {
       connBySession.delete(sessionId);
       trackers.delete(sessionId);
-      store.delete(sessionId);
+      void store.delete(sessionId);
     }
   }
 
@@ -95,7 +95,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
     }
   }
 
-  function handlePostHandshake(conn: TransportConnection, data: string): void {
+  async function handlePostHandshake(conn: TransportConnection, data: string): Promise<void> {
     const sessionId = sessionByConn.get(conn.id);
     if (sessionId === undefined) {
       conn.close(4007, "No session");
@@ -103,12 +103,13 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
       return;
     }
 
-    const session = store.get(sessionId);
-    if (session === undefined) {
+    const sessionResult = await store.get(sessionId);
+    if (!sessionResult.ok) {
       conn.close(4008, "Session not found");
       cleanup(conn.id);
       return;
     }
+    const session = sessionResult.value;
 
     // Check backpressure before processing
     const bpState = bp.state(conn.id);
@@ -170,7 +171,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
             }
           : { ...currentSession, remoteSeq: readyFrame.seq, lastHeartbeat: Date.now() };
       currentSession = routedSession;
-      store.set(currentSession);
+      await store.set(currentSession);
       dispatchFrame(currentSession, readyFrame);
       conn.send(buildAckFrame(currentSession.seq, readyFrame.id));
     }
@@ -230,9 +231,9 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
               pendingHandshakes.set(conn.id, handler);
             },
           ).then(
-            ({ session }) => {
+            async ({ session }) => {
               pendingHandshakes.delete(conn.id);
-              store.set(session);
+              await store.set(session);
               sessionByConn.set(conn.id, session.id);
               connBySession.set(session.id, conn.id);
               trackers.set(session.id, createSequenceTracker(config.dedupWindowSize));
@@ -250,7 +251,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
             handshakeHandler(data);
             return;
           }
-          handlePostHandshake(conn, data);
+          void handlePostHandshake(conn, data);
         },
 
         onClose(conn: TransportConnection): void {

@@ -1,5 +1,7 @@
-import type { KoiError, Result, Retriever, SearchPage, SearchQuery, SearchResult } from "@koi/core";
+import type { KoiError, Result } from "@koi/core";
+import type { Retriever } from "../contracts.js";
 import type { FusionStrategy } from "../fusion-types.js";
+import type { SearchPage, SearchQuery, SearchResult } from "../types.js";
 import { applyFusion } from "./fusion.js";
 import type { MmrConfig } from "./mmr.js";
 import { applyMmr } from "./mmr.js";

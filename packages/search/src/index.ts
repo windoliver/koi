@@ -5,10 +5,10 @@
  * Wraps local SQLite by default; swap to Nexus via manifest config.
  */
 
-import type { Embedder, Indexer, Retriever } from "@koi/core";
 import type { BM25Config } from "./bm25/bm25-index.js";
 import { createBm25Index, defaultTokenize } from "./bm25/bm25-index.js";
 import { createBm25Retriever } from "./bm25/bm25-retriever.js";
+import type { Embedder, Indexer, Retriever } from "./contracts.js";
 import type { EmbedderCacheConfig } from "./embedder-cache.js";
 import { createCachedEmbedder } from "./embedder-cache.js";
 import type { FusionStrategy } from "./fusion-types.js";

@@ -9,7 +9,7 @@ import { createGateway } from "../gateway.js";
 import type { BunTransport } from "../transport.js";
 import { createBunTransport } from "../transport.js";
 import type { ConnectFrame, GatewayFrame, Session } from "../types.js";
-import { createConnectMessage, createTestAuthenticator } from "./test-utils.js";
+import { createConnectMessage, createTestAuthenticator, storeHas } from "./test-utils.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -407,7 +407,7 @@ describe("Gateway e2e (real WebSocket)", () => {
     await waitForMessages(messages, 1); // auth ack
 
     // Session is established
-    expect(gateway.sessions().has("s-heartbeat")).toBe(true);
+    expect(storeHas(gateway.sessions(), "s-heartbeat")).toBe(true);
 
     // Revoke the session — next sweep should close it
     shouldValidate = false;
@@ -415,7 +415,7 @@ describe("Gateway e2e (real WebSocket)", () => {
     // Wait for sweep to run and close the connection
     const closeEvt = await closed;
     expect(closeEvt.code).toBe(4004);
-    expect(gateway.sessions().has("s-heartbeat")).toBe(false);
+    expect(storeHas(gateway.sessions(), "s-heartbeat")).toBe(false);
   });
 
   test("reconnection: new client resumes after disconnect", async () => {

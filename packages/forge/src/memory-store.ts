@@ -11,13 +11,11 @@ import type {
   KoiError,
   Result,
 } from "@koi/core";
+import { notFound } from "@koi/core";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
+// Error helpers use shared factories from @koi/core.
 function notFoundError(id: string): KoiError {
-  return { code: "NOT_FOUND", message: `Brick not found: ${id}`, retryable: false };
+  return notFound(id, `Brick not found: ${id}`);
 }
 
 function matchesQuery(brick: BrickArtifact, query: ForgeQuery): boolean {

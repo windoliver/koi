@@ -13,3 +13,14 @@ export { execute } from "./execute.js";
 export { permissiveProfile, profileForTier, restrictiveProfile } from "./profiles.js";
 export type { SandboxProcess, SpawnOptions } from "./spawn.js";
 export { spawn } from "./spawn.js";
+export type {
+  FilesystemPolicy,
+  NetworkPolicy,
+  ResourceLimits,
+  SandboxAdapter,
+  SandboxExecOptions,
+  SandboxInstance,
+  SandboxProfile,
+  SandboxResult,
+  SandboxTier,
+} from "./types.js";

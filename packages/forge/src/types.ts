@@ -11,6 +11,9 @@ import type {
   TrustTier,
 } from "@koi/core";
 
+// Re-export L0 types that other forge modules import from this file
+export type { BrickKind, BrickLifecycle, ForgeScope };
+
 // ---------------------------------------------------------------------------
 // Forge result (pure data — L1 handles mutation)
 // ---------------------------------------------------------------------------

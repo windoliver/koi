@@ -40,7 +40,9 @@ import {
 } from "./compose.js";
 import { KoiEngineError } from "./errors.js";
 import { createIterationGuard, createLoopDetector, createSpawnGuard } from "./guards.js";
+import { createInMemorySpawnLedger } from "./spawn-ledger.js";
 import type { CreateKoiOptions, KoiRuntime } from "./types.js";
+import { DEFAULT_SPAWN_POLICY } from "./types.js";
 
 /** Generate a unique process ID for a new agent. */
 function generatePid(manifest: CreateKoiOptions["manifest"]): ProcessId {
@@ -50,6 +52,11 @@ function generatePid(manifest: CreateKoiOptions["manifest"]): ProcessId {
     type: "copilot",
     depth: 0,
   };
+}
+
+/** Sort middleware by priority (ascending). Guards get low numbers, L2 middleware gets higher. */
+function sortByPriority(middleware: readonly KoiMiddleware[]): readonly KoiMiddleware[] {
+  return [...middleware].sort((a, b) => (a.priority ?? 500) - (b.priority ?? 500));
 }
 
 export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> {
@@ -72,6 +79,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   const agent = await AgentEntity.assemble(pid, manifest, providers);
 
   // --- 2. Create L1 guards (declarative, no mutation) ---
+  const spawnPolicy = { ...options.spawn };
+  const effectiveMaxTotal = spawnPolicy.maxTotalProcesses ?? DEFAULT_SPAWN_POLICY.maxTotalProcesses;
+  const spawnLedger = options.spawnLedger ?? createInMemorySpawnLedger(effectiveMaxTotal);
   const guards: readonly KoiMiddleware[] = [
     createIterationGuard(options.limits),
     ...(options.loopDetection !== false
@@ -81,11 +91,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           ),
         ]
       : []),
-    createSpawnGuard(options.spawn, pid.depth),
+    createSpawnGuard({
+      policy: spawnPolicy,
+      agentDepth: pid.depth,
+      ledger: spawnLedger,
+      agent,
+    }),
   ];
 
-  // --- 3. Base middleware: guards first, then user middleware ---
-  const baseMiddleware: readonly KoiMiddleware[] = [...guards, ...middleware];
+  // --- 3. Compose middleware chain: guards + user middleware, sorted by priority ---
+  const allMiddleware: readonly KoiMiddleware[] = sortByPriority([...guards, ...middleware]);
 
   // --- 4. Default tool terminal (entity first, then forge fallback) ---
   const defaultToolTerminal = async (request: ToolRequest): Promise<ToolResponse> => {
@@ -105,12 +120,20 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // --- 5. Track disposal ---
   // let justified: mutable flag for one-shot dispose guard
   let disposed = false;
+  // let justified: mutable flag for concurrent run() guard
+  let running = false;
 
   // --- 6. Build runtime ---
   const runtime: KoiRuntime = {
     agent,
 
-    run: (input: EngineInput): AsyncIterable<EngineEvent> => {
+    run(input: EngineInput): AsyncIterable<EngineEvent> {
+      // Guard concurrent run() calls
+      if (running) {
+        throw KoiEngineError.from("VALIDATION", "Agent is already running");
+      }
+      running = true;
+
       return {
         [Symbol.asyncIterator](): AsyncIterator<EngineEvent> {
           // let justified: mutable iterator state scoped to this run() invocation
@@ -168,7 +191,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               const forgedMw = await forge.middleware();
               if (forgedMw !== previousForgedMw) {
                 previousForgedMw = forgedMw;
-                const allMw: readonly KoiMiddleware[] = [...baseMiddleware, ...forgedMw];
+                const allMw: readonly KoiMiddleware[] = [...allMiddleware, ...forgedMw];
                 activeToolChain = composeToolChain(allMw, terminals.toolHandler);
                 activeModelChain = composeModelChain(allMw, terminals.modelHandler);
                 if (terminals.modelStreamHandler !== undefined) {
@@ -187,7 +210,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 if (!sessionStarted) {
                   sessionStarted = true;
                   agent.transition({ kind: "start" });
-                  await runSessionHooks(baseMiddleware, "onSessionStart", sessionCtx);
+                  await runSessionHooks(allMiddleware, "onSessionStart", sessionCtx);
 
                   // Wire terminals → middleware → callHandlers if adapter is cooperating
                   // let justified: effectiveInput may be replaced with callHandlers-augmented input
@@ -228,14 +251,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                     );
 
                     // Initial chain composition
-                    activeToolChain = composeToolChain(baseMiddleware, cachedTerminals.toolHandler);
+                    activeToolChain = composeToolChain(allMiddleware, cachedTerminals.toolHandler);
                     activeModelChain = composeModelChain(
-                      baseMiddleware,
+                      allMiddleware,
                       cachedTerminals.modelHandler,
                     );
                     if (cachedTerminals.modelStreamHandler !== undefined) {
                       activeStreamChain = composeModelStreamChain(
-                        baseMiddleware,
+                        allMiddleware,
                         cachedTerminals.modelStreamHandler,
                       );
                     }
@@ -295,6 +318,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
                 if (!iterator) {
                   done = true;
+                  running = false;
                   return { done: true, value: undefined };
                 }
 
@@ -302,8 +326,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
                 if (result.done) {
                   done = true;
+                  running = false;
                   agent.transition({ kind: "complete", stopReason: "completed" });
-                  await runSessionHooks(baseMiddleware, "onSessionEnd", sessionCtx);
+                  await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
                   return { done: true, value: undefined };
                 }
 
@@ -326,30 +351,36 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   // so the consumer can inject tools/middleware after this turn_end
                   pendingForgeRefresh = true;
 
-                  await runTurnHooks(baseMiddleware, "onAfterTurn", turnCtx);
+                  await runTurnHooks(allMiddleware, "onAfterTurn", turnCtx);
                 }
 
                 // Process done events
                 if (event.kind === "done") {
                   done = true;
                   pendingForgeRefresh = false;
+                  running = false;
                   agent.transition({
                     kind: "complete",
                     stopReason: event.output.stopReason,
                     metrics: event.output.metrics,
                   });
-                  await runSessionHooks(baseMiddleware, "onSessionEnd", sessionCtx);
+                  await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
                 }
 
                 return { done: false, value: event };
               } catch (error: unknown) {
                 done = true;
+                running = false;
 
                 // If it's a guard error, convert to a done event
                 if (error instanceof KoiEngineError) {
                   const stopReason = error.code === "TIMEOUT" ? "max_turns" : "error";
                   agent.transition({ kind: "complete", stopReason });
-                  await runSessionHooks(baseMiddleware, "onSessionEnd", sessionCtx);
+                  try {
+                    await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+                  } catch {
+                    // Don't mask guard error → done event conversion
+                  }
                   const doneEvent: EngineEvent = {
                     kind: "done",
                     output: {
@@ -369,18 +400,23 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
                 // Re-throw unexpected errors
                 agent.transition({ kind: "error", error });
-                await runSessionHooks(baseMiddleware, "onSessionEnd", sessionCtx);
+                try {
+                  await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+                } catch {
+                  // Don't mask original error — onSessionEnd failure must not override thrown error
+                }
                 throw error;
               }
             },
 
             async return(): Promise<IteratorResult<EngineEvent>> {
               done = true;
+              running = false;
               if (iterator?.return) {
                 await iterator.return();
               }
               agent.transition({ kind: "complete", stopReason: "interrupted" });
-              await runSessionHooks(baseMiddleware, "onSessionEnd", sessionCtx);
+              await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
               return { done: true, value: undefined };
             },
           };

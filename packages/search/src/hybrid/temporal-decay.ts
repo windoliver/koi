@@ -1,4 +1,4 @@
-import type { SearchResult } from "@koi/core";
+import type { SearchResult } from "../types.js";
 
 export interface TemporalDecayConfig {
   /** Half-life in days. After this many days, score is halved. Default 30 */

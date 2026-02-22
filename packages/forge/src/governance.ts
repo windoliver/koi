@@ -2,11 +2,11 @@
  * Governance — depth-aware forge policies and scope promotion checks.
  */
 
-import type { ForgeScope, Result, TrustTier } from "@koi/core";
+import type { Result, TrustTier } from "@koi/core";
 import type { ForgeConfig } from "./config.js";
 import type { ForgeError } from "./errors.js";
 import { governanceError } from "./errors.js";
-import type { ForgeContext } from "./types.js";
+import type { ForgeContext, ForgeScope } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Trust tier ordering (for comparison)

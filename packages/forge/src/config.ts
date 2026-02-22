@@ -2,7 +2,8 @@
  * Forge configuration — required fields with factory defaults.
  */
 
-import type { ForgeScope, TrustTier } from "@koi/core";
+import type { TrustTier } from "@koi/core";
+import type { ForgeScope } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Configuration interfaces
