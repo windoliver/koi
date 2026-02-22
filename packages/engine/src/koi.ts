@@ -4,8 +4,15 @@
  * Orchestrates: assembly → guard creation → middleware composition → runtime.
  */
 
-import type { EngineEvent, EngineInput, KoiMiddleware, ToolRequest, ToolResponse } from "@koi/core";
-import { toolToken } from "@koi/core";
+import type {
+  EngineEvent,
+  EngineInput,
+  KoiMiddleware,
+  ProcessId,
+  ToolRequest,
+  ToolResponse,
+} from "@koi/core";
+import { agentId, toolToken } from "@koi/core";
 import { AgentEntity } from "./agent-entity.js";
 import { createComposedCallHandlers, runSessionHooks, runTurnHooks } from "./compose.js";
 import { KoiEngineError } from "./errors.js";
@@ -13,14 +20,9 @@ import { createIterationGuard, createLoopDetector, createSpawnGuard } from "./gu
 import type { CreateKoiOptions, KoiRuntime } from "./types.js";
 
 /** Generate a unique process ID for a new agent. */
-function generatePid(manifest: CreateKoiOptions["manifest"]): {
-  readonly id: string;
-  readonly name: string;
-  readonly type: "copilot" | "worker";
-  readonly depth: number;
-} {
+function generatePid(manifest: CreateKoiOptions["manifest"]): ProcessId {
   return {
-    id: crypto.randomUUID(),
+    id: agentId(crypto.randomUUID()),
     name: manifest.name,
     type: "copilot",
     depth: 0,
