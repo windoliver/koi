@@ -22,7 +22,9 @@ A **self-extending agent runtime** — agents that can create, discover, and com
 | **Forge** | Runtime brick creation, verification, discovery — agents grow their own capabilities |
 | **Gateway** | WebSocket control plane — session dispatch, routing, webhooks |
 | **Node** | Local device agent runtime — runs N agent entities |
-| **Proposal** | Agent-submitted change request for non-forgeable components (L0/L1/Sandbox/Gateway) — requires HITL |
+| **Proposal** | Agent-submitted change request for any layer — trust gate scales with blast radius |
+| **Snapshot** | Immutable point-in-time capture of an agent's full state — enables time travel and rollback |
+| **BrickStore** | Universal storage for all code (forged, bundled, extensions) — agent reads everything, writes to forge store |
 
 ## Architecture Components
 
@@ -343,6 +345,71 @@ function skillToken(name: string): SubsystemToken<Skill>;          // "skill:ref
 
 **Namespace convention**: No colon = singleton (`"memory"`), with colon = namespaced (`"tool:calculator"`). `query("tool:")` returns all tool components.
 
+### Brick Store & Snapshots
+
+```typescript
+interface BrickSource {
+  readonly code: string;                     // the actual TypeScript source
+  readonly interface: string;                // which L0 contract it implements
+  readonly tests?: readonly TestCase[];      // verification suite
+  readonly dependencies?: readonly string[]; // what it imports
+}
+
+interface BrickStore {
+  readonly read: (ref: BrickRef) => Promise<BrickSource | undefined>;
+  readonly write: (ref: BrickRef, source: string) => Promise<void>;
+  readonly list: (scope: ForgeScope) => Promise<readonly BrickRef[]>;
+  readonly snapshot: (agentId: string) => Promise<AgentSnapshot>;
+  readonly restore: (agentId: string, version: number) => Promise<void>;
+}
+
+interface AgentSnapshot {
+  readonly version: number;
+  readonly parent?: number;                    // previous snapshot
+  readonly timestamp: number;
+  readonly event: SnapshotEvent;               // what caused this version
+  readonly components: ReadonlyMap<string, BrickRef>; // content-addressed refs
+  readonly config: unknown;                    // current agent config
+  readonly engineState?: EngineState;          // opaque engine checkpoint
+}
+
+type SnapshotEvent =
+  | { readonly kind: "manifest_loaded" }
+  | { readonly kind: "brick_forged"; readonly brick: BrickRef }
+  | { readonly kind: "brick_quarantined"; readonly brick: BrickRef }
+  | { readonly kind: "component_attached"; readonly token: string }
+  | { readonly kind: "component_detached"; readonly token: string }
+  | { readonly kind: "config_changed"; readonly diff: unknown }
+  | { readonly kind: "proposal_applied"; readonly proposal: string }
+  | { readonly kind: "restored"; readonly fromVersion: number };
+```
+
+### Kernel Extension
+
+```typescript
+interface KernelExtension {
+  readonly name: string;
+  readonly kind: "guard" | "lifecycle_hook" | "composition_rule";
+  readonly execute: (...args: readonly unknown[]) => unknown | Promise<unknown>;
+}
+```
+
+L1 defines extension slots. L2 provides the implementations. Extensions load dynamically from disk — no binary rebuild needed.
+
+### Resolver Source (Level 3)
+
+```typescript
+interface Resolver<Meta, Full> {
+  readonly name: string;
+  discover(): Promise<readonly Meta[]>;                     // Level 1: names
+  load(id: string): Promise<Full | undefined>;              // Level 2: schemas
+  source?(id: string): Promise<BrickSource | undefined>;    // Level 3: full source
+  onChange?(listener: () => void): () => void;
+}
+```
+
+Progressive disclosure: `discover()` → ~10 tokens, `load()` → ~100 tokens, `source()` → ~5000 tokens. Agent requests deeper levels as needed.
+
 ### Other Kernel Types
 
 Additional types in `@koi/core`: `KoiConfig`, `ModelConfig`, `PermissionConfig`, `EngineOutput`, `EngineState`, `EngineMetrics`, `EngineStopReason`.
@@ -376,15 +443,17 @@ Subsystem-specific config types live in their owning packages (e.g., `ExecutionL
 | 7 | **Trust before storage** | Every forged brick passes 4-stage verification (static → sandbox → self-test → trust) |
 | 8 | **Scope controls blast radius** | Bricks start at `agent` scope. Promotion to `zone`/`global` requires HITL |
 | 9 | **Functional cache** | Forged tools ARE cached functionality. Capabilities compound across sessions |
-| 10 | **Non-forgeable but proposable** | L0, L1, Sandbox, Gateway can't be forged directly — but agents can propose changes through HITL governance |
+| 10 | **Everything is updatable** | Agent can update any layer. Trust gate scales with blast radius. Forge store is universal staging ground |
+| 11 | **Immutable snapshots** | Every change = new snapshot. Restore any version. Fork from any point. No mutation, ever |
+| 12 | **Forge → Promote → Bundle** | Changes start as local experiments, proven ones graduate into the base. Binary improves over time |
 
 ### Discovery
 
 | # | Principle | Application |
 |---|-----------|-------------|
-| 10 | **Progressive disclosure** | ~10 tokens (name) → ~100 tokens (metadata) → ~5000 tokens (full implementation) |
-| 11 | **First-wins resolver chain** | Local > Agent-forged > Zone-forged > Global-forged > Bundled |
-| 12 | **Skills as Markdown** | `SKILL.md` with YAML frontmatter — zero-code agent extension |
+| 13 | **Progressive disclosure** | ~10 tokens (name) → ~100 tokens (metadata) → ~5000 tokens (full source + tests) |
+| 14 | **First-wins resolver chain** | Agent-forged > Zone-forged > Global-forged > Bundled |
+| 15 | **Skills as Markdown** | `SKILL.md` with YAML frontmatter — zero-code agent extension |
 
 ---
 
@@ -524,16 +593,22 @@ No explicit TTL clocks — agents die naturally from the constraints that bound 
 | Resolvers, providers | Governance rules |
 | Memory backends | Credential providers |
 
-### What is NOT Forgeable (4 non-forgeable components)
+### Trust Gate by Layer
 
-| Component | Why |
-|-----------|-----|
-| **L0 interfaces** | Contracts themselves — changing them breaks all packages |
-| **L1 kernel** | Enforces the rules — can't forge your own judge |
-| **SandboxAdapter** | Evaluates forged code — can't grade your own exam |
-| **Gateway** | Routes messages — can't forge the postal service |
+The agent can update **anything**. The only thing that varies is the gate:
 
-These 4 are **non-forgeable but proposable** — agents can submit proposals to change them through the governance system (see Self-Evolution below).
+| Layer | Gate | Sandbox test scope | Takes effect |
+|-------|------|-------------------|--------------|
+| Forged brick (tool, skill) | Auto (sandbox verifies) | This brick only | Immediately |
+| Forged brick (middleware, channel) | HITL | This brick + integration | Next session |
+| Bundled L2 package | Fork to forge store (shadows it) | This brick only | Immediately |
+| L1 extension | HITL | Full agent test | Next startup |
+| L1 core | HITL + full agent test | Full agent test | Next binary |
+| L0 interface | HITL + all agents test | All affected agents | Next binary |
+| Sandbox policy | HITL + meta-sandbox | Meta-sandbox test | Config push |
+| Gateway routing | HITL | Staging gateway | Config push |
+
+**Every row writes to the forge store first.** The forge store is the universal staging ground for all changes.
 
 ### Process Isolation (absolute)
 
@@ -758,16 +833,25 @@ DRAFT → VERIFYING → ACTIVE → DEPRECATED
 
 ### Storage & Discovery
 
-Forged bricks stored as artifacts with tag convention:
+All bricks (forged, bundled, extensions) are stored behind the `BrickStore` L0 interface. L2 implementations:
+
+| Backend | Package | Use case |
+|---------|---------|----------|
+| Filesystem overlay | `@koi/store-fs` | Default, desktop, edge |
+| Nexus | `@koi/store-nexus` | Synced across devices |
+| SQLite | `@koi/store-sqlite` | Single-file, portable |
+| In-memory | `@koi/store-memory` | Tests |
+
+Tag convention for discovery:
 
 ```
 forge:kind:tool              forge:scope:agent          forge:trust:sandbox
 forge:created-by:<agentId>   forge:version:0.1.0        forge:usage-count:N
 ```
 
-Discovery via `search_forge` → `ArtifactClient.search()` with tag filtering. Resolver chain: `LocalResolver → ForgeResolver:agent → ForgeResolver:zone → ForgeResolver:global` (first-wins).
+Resolver chain: `Agent-forged → Zone-forged → Global-forged → Bundled` (first-wins). Scope promotion rules: minimum `verified` for zone, minimum `promoted` for global.
 
-Scope promotion rules: minimum `verified` for zone, minimum `promoted` for global.
+Snapshots use content-addressable storage — only changed bricks are stored. Like git objects, a snapshot is a manifest of hashes.
 
 ### Forge Governance
 
@@ -826,51 +910,161 @@ This requires `promoted` trust + HITL because the forged copilot:
 
 ---
 
-## Self-Evolution — Proposal Mechanism
+## Self-Evolution — Unified Change Model
 
-The 4 non-forgeable components (L0, L1, SandboxAdapter, Gateway) are **non-forgeable but proposable**. Agents can propose changes through a governance mechanism — a constitutional amendment process.
-
-### How Proposals Work
+Every change, at every layer, follows the same pipeline:
 
 ```
-Agent identifies need → submits Proposal → HITL review → approved/rejected
+Write to forge store → Gate (auto or HITL) → Sandbox test → Snapshot → Takes effect → Restorable
 ```
 
-| Target | What can be proposed | Example |
-|--------|---------------------|---------|
-| **L0 interfaces** | New interface shapes, new contracts | "Add AgentMailbox interface for IPC" |
-| **L1 kernel** | New guards, lifecycle hooks | "Add budget-exhaustion guard" |
-| **SandboxAdapter** | New sandbox policies | "Allow network access for verified bricks" |
-| **Gateway** | New routing rules | "Route tool calls by latency, not just capability" |
+### Agent Visibility
 
-### L0 Proposal Interface
+The agent sees **everything** through the resolver. Read access is universal. Write goes to the forge store only.
+
+```
+READ (through resolver, all layers):
+  Bundled code (L0, L1, L2)     — extracted from binary, read-only
+  L1 extensions                  — approved proposals
+  Zone/global promoted forges    — shared across agents
+  Agent's own forges             — this agent's experiments
+
+WRITE (forge store only):
+  Every modification creates a file in the agent's forge store.
+  Never touches bundled, L0, L1, or other agents' stores directly.
+```
+
+### Modification Patterns
+
+The agent never edits existing code. It **layers over it**:
+
+| Pattern | How it works | When to use |
+|---------|-------------|-------------|
+| **Shadow** | Forge same-named brick → resolver picks forged version (higher priority) | Change a tool's behavior |
+| **Wrap** | Forge middleware that intercepts existing behavior | Add pre/post processing |
+| **Fork** | Read source via `resolver.source()`, modify, forge new version | Deep restructuring |
+
+Original code is never modified. The resolver chain provides the merged view:
+
+```
+Agent-forged (read-write)     ← highest priority, agent writes HERE
+Zone-forged (read, promote)
+Global-forged (read, promote)
+Bundled (read-only)           ← lowest priority, extracted from binary
+```
+
+### Immutable Snapshot Chain
+
+Every change produces a new immutable snapshot:
+
+```
+v0 (manifest loaded)
+ └→ v1 (forged tool:calculator)
+     └→ v2 (attached memory backend)
+         └→ v3 (forged skill:research)
+             └→ v4 (config changed)
+                 └→ v5 (current)
+```
+
+Operations on the chain:
+
+```
+restore(v)     → load snapshot v, continue from there (new v6 pointing to v2)
+fork(v)        → create new agent starting from snapshot v's state
+diff(v1, v2)   → what changed between two snapshots
+current()      → latest snapshot
+history()      → full chain from v0 to now
+```
+
+Restore doesn't delete history — it appends a new snapshot pointing back. Like git, you can always see that v3-v5 happened.
+
+### Graduation Pipeline
+
+Changes start as local experiments. Proven ones graduate into the base:
+
+```
+FORGE (instant, local, zero cost)
+  → Agent shadows tool:search with v2. Only this agent affected.
+
+VALIDATE (runtime, automatic)
+  → Usage count, success rate, error rate tracked by crystallization middleware.
+  → Score: occurrences × success_rate × complexity_reduction
+
+PROMOTE (HITL for zone/global)
+  → Agent: "tool:search-v2 has 98% success over 500 calls, promote?"
+  → Human approves → available to zone/all agents
+
+BUNDLE (next binary release)
+  → CI collects proven promoted forges, absorbs into base packages.
+  → Builds new binary. Ships via self-update.
+
+CLEAN (forge layer thins out)
+  → Graduated forges removed from forge store — they're in bundled now.
+  → Only active experiments remain.
+```
+
+The binary is a snapshot of "everything proven so far." The forge layer is where evolution happens.
+
+### Proposal Interface
 
 ```typescript
 interface Proposal {
   readonly id: string;
-  readonly target: "l0" | "l1" | "sandbox" | "gateway";
+  readonly target: "l0" | "l1" | "l2" | "sandbox" | "gateway";
   readonly kind: "add" | "modify" | "deprecate";
+  readonly deployMode: "forge" | "config" | "release";
   readonly description: string;
-  readonly spec: unknown;        // the proposed change
+  readonly spec: unknown;
   readonly author: ProcessId;
-  readonly status: "pending" | "approved" | "rejected";
+  readonly status: "pending" | "approved" | "rejected" | "deployed" | "rolled_back";
 }
 
 interface ProposalGate {
-  readonly submit: (proposal: Proposal) => Promise<string>;  // returns proposal ID
-  readonly review: (id: string) => Promise<Proposal>;        // HITL reads it
+  readonly submit: (proposal: Proposal) => Promise<string>;
+  readonly review: (id: string) => Promise<Proposal>;
 }
 ```
 
-### Why This Matters
+### Binary as Delivery Vehicle
 
-This makes Koi **fully self-evolving**:
-- Agents can improve every layer of the system
-- But always through human-gated governance
-- The system learns and grows, but humans hold the keys
-- Evolution is auditable — every change has an author and approval chain
+The compiled binary (`bun build --compile`) embeds the Bun runtime + base system. On first run, it extracts bundled sources to disk:
 
-**Analogy**: Agents don't rewrite physics, but they can propose new laws. The constitutional amendment process (HITL) ensures no single agent can unilaterally change the rules.
+```
+Binary (koi, ships once):
+  L0 + L1 core + bundled L2 + Bun runtime + TS transpiler
+
+Extracted to disk (on first run / binary update):
+  ~/.koi/bundled/           ← source .ts (for reading) + pre-compiled .js (for loading)
+
+Grows at runtime:
+  ~/.koi/agents/{id}/forge/ ← agent's forges (experiments)
+  ~/.koi/extensions/        ← approved L1 extensions
+  ~/.koi/agents/{id}/snapshots/ ← immutable snapshot chain
+```
+
+99% of changes are agent-local forges. No binary rebuild, no restart. Only L0/L1 core changes need a new binary, and those are rare.
+
+Self-update is a built-in tool: download new binary → checkpoint all agents → swap → restart → restore from snapshots. Forged bricks and snapshots survive binary updates.
+
+### Crash Recovery = Restore
+
+```
+Agent crashes at v5
+  → restore(v4)          // try previous snapshot
+  → still crashes?
+  → restore(v3)          // keep going back
+  → works!               // v3 was the last good state
+  → diff(v3, v5)         // shows what broke
+  → quarantine the offending brick
+```
+
+```yaml
+# koi.yaml — recovery config
+recovery:
+  mode: checkpoint        # checkpoint | clean | manual
+  maxRestarts: 3          # circuit breaker before staying dead
+  backoff: exponential
+```
 
 ---
 
