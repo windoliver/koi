@@ -380,6 +380,22 @@ describe("KoiMiddleware negative types", () => {
     };
     expect(mw.name).toBe("session-only");
   });
+
+  test("priority is optional", () => {
+    const mw: KoiMiddleware = { name: "no-priority" };
+    expect(mw.priority).toBeUndefined();
+  });
+
+  test("priority accepts a number", () => {
+    const mw: KoiMiddleware = { name: "with-priority", priority: 100 };
+    expect(mw.priority).toBe(100);
+  });
+
+  test("priority is readonly", () => {
+    const mw: KoiMiddleware = { name: "readonly-priority", priority: 200 };
+    // @ts-expect-error — cannot assign to readonly property
+    mw.priority = 300;
+  });
 });
 
 describe("EngineAdapter negative types", () => {

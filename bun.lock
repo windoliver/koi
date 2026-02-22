@@ -38,6 +38,58 @@
         "zod": "4.3.6",
       },
     },
+    "packages/middleware-audit": {
+      "name": "@koi/middleware-audit",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware-integration": {
+      "name": "@koi/middleware-integration",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/middleware-audit": "workspace:*",
+        "@koi/middleware-memory": "workspace:*",
+        "@koi/middleware-pay": "workspace:*",
+        "@koi/middleware-permissions": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware-memory": {
+      "name": "@koi/middleware-memory",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware-pay": {
+      "name": "@koi/middleware-pay",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware-permissions": {
+      "name": "@koi/middleware-permissions",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/sandbox": {
       "name": "@koi/sandbox",
       "version": "0.0.0",
@@ -47,6 +99,13 @@
     },
     "packages/search": {
       "name": "@koi/search",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/test-utils": {
+      "name": "@koi/test-utils",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
@@ -143,9 +202,21 @@
 
     "@koi/manifest": ["@koi/manifest@workspace:packages/manifest"],
 
+    "@koi/middleware-audit": ["@koi/middleware-audit@workspace:packages/middleware-audit"],
+
+    "@koi/middleware-integration": ["@koi/middleware-integration@workspace:packages/middleware-integration"],
+
+    "@koi/middleware-memory": ["@koi/middleware-memory@workspace:packages/middleware-memory"],
+
+    "@koi/middleware-pay": ["@koi/middleware-pay@workspace:packages/middleware-pay"],
+
+    "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/middleware-permissions"],
+
     "@koi/sandbox": ["@koi/sandbox@workspace:packages/sandbox"],
 
     "@koi/search": ["@koi/search@workspace:packages/search"],
+
+    "@koi/test-utils": ["@koi/test-utils@workspace:packages/test-utils"],
 
     "@rollup/rollup-android-arm-eabi": ["@rollup/rollup-android-arm-eabi@4.58.0", "", { "os": "android", "cpu": "arm" }, "sha512-mr0tmS/4FoVk1cnaeN244A/wjvGDNItZKR8hRhnmCzygyRXYtKF5jVDSIILR1U97CTzAYmbgIj/Dukg62ggG5w=="],
 
