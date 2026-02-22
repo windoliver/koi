@@ -1,11 +1,23 @@
 /**
- * CLI argument parser — hand-rolled for a single subcommand.
- * Parses: koi init [directory] [--yes] [--name <v>] [--template <v>] [--model <v>] [--engine <v>]
+ * CLI argument parser — subcommand-aware design using node:util parseArgs.
+ *
+ * Extracts the command name first, then dispatches to command-specific
+ * flag parsing for `init` and `start` subcommands.
  */
 
-export interface CliFlags {
+import { parseArgs as nodeParseArgs } from "node:util";
+
+// ---------------------------------------------------------------------------
+// Flag types
+// ---------------------------------------------------------------------------
+
+export interface BaseFlags {
   readonly command: string | undefined;
   readonly directory: string | undefined;
+}
+
+export interface InitFlags extends BaseFlags {
+  readonly command: "init";
   readonly yes: boolean;
   readonly name: string | undefined;
   readonly template: string | undefined;
@@ -13,89 +25,120 @@ export interface CliFlags {
   readonly engine: string | undefined;
 }
 
-const VALUED_FLAGS = new Set(["--name", "--template", "--model", "--engine"]);
+export interface StartFlags extends BaseFlags {
+  readonly command: "start";
+  readonly manifest: string | undefined;
+  readonly verbose: boolean;
+  readonly dryRun: boolean;
+}
 
-export function parseArgs(argv: readonly string[]): CliFlags {
-  let command: string | undefined;
-  let directory: string | undefined;
-  let yes = false;
-  let name: string | undefined;
-  let template: string | undefined;
-  let model: string | undefined;
-  let engine: string | undefined;
+export type CliFlags = InitFlags | StartFlags | BaseFlags;
 
-  const flagMap: Record<string, (v: string) => void> = {
-    "--name": (v: string) => {
-      name = v;
-    },
-    "--template": (v: string) => {
-      template = v;
-    },
-    "--model": (v: string) => {
-      model = v;
-    },
-    "--engine": (v: string) => {
-      engine = v;
-    },
-  };
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-  let i = 0;
-  while (i < argv.length) {
-    const arg = argv[i] as string;
+/**
+ * Splits raw argv into the command name (first positional) and remaining args.
+ */
+function extractCommand(argv: readonly string[]): {
+  readonly command: string | undefined;
+  readonly rest: readonly string[];
+} {
+  const first = argv[0];
 
-    // Handle --flag=value syntax
-    const eqIndex = arg.indexOf("=");
-    if (eqIndex !== -1) {
-      const key = arg.slice(0, eqIndex);
-      const value = arg.slice(eqIndex + 1);
-      const handler = flagMap[key];
-      if (handler) {
-        handler(value);
-      }
-      i++;
-      continue;
-    }
-
-    // Boolean flags
-    if (arg === "--yes" || arg === "-y") {
-      yes = true;
-      i++;
-      continue;
-    }
-
-    // Valued flags
-    if (VALUED_FLAGS.has(arg)) {
-      const handler = flagMap[arg];
-      const nextArg = argv[i + 1];
-      if (handler && nextArg !== undefined) {
-        handler(nextArg);
-        i += 2;
-      } else {
-        i++;
-      }
-      continue;
-    }
-
-    // Skip unknown flags and their values
-    if (arg.startsWith("-")) {
-      // If next arg doesn't start with -, assume it's a value for this unknown flag
-      const nextArg = argv[i + 1];
-      if (nextArg !== undefined && !nextArg.startsWith("-")) {
-        i += 2;
-      } else {
-        i++;
-      }
-      continue;
-    }
-
-    // Positional args: first is command, second is directory
-    if (command === undefined) {
-      command = arg;
-    } else if (directory === undefined) {
-      directory = arg;
-    }
-    i++;
+  // If first arg is a flag, there's no command
+  if (first === undefined || first.startsWith("-")) {
+    return { command: undefined, rest: argv };
   }
 
-  return { command, directory, yes, name, template, model, engine };
+  return { command: first, rest: argv.slice(1) };
+}
+
+// ---------------------------------------------------------------------------
+// Command-specific parsers
+// ---------------------------------------------------------------------------
+
+function parseInitFlags(rest: readonly string[]): InitFlags {
+  const { values, positionals } = nodeParseArgs({
+    args: rest as string[],
+    options: {
+      yes: { type: "boolean", short: "y", default: false },
+      name: { type: "string" },
+      template: { type: "string" },
+      model: { type: "string" },
+      engine: { type: "string" },
+    },
+    strict: false,
+    allowPositionals: true,
+  });
+
+  return {
+    command: "init" as const,
+    directory: positionals[0] as string | undefined,
+    yes: (values.yes as boolean | undefined) ?? false,
+    name: values.name as string | undefined,
+    template: values.template as string | undefined,
+    model: values.model as string | undefined,
+    engine: values.engine as string | undefined,
+  };
+}
+
+function parseStartFlags(rest: readonly string[]): StartFlags {
+  const { values, positionals } = nodeParseArgs({
+    args: rest as string[],
+    options: {
+      manifest: { type: "string" },
+      verbose: { type: "boolean", short: "v", default: false },
+      "dry-run": { type: "boolean", default: false },
+    },
+    strict: false,
+    allowPositionals: true,
+  });
+
+  // First positional after "start" can be a manifest path
+  const positionalManifest = positionals[0] as string | undefined;
+
+  return {
+    command: "start" as const,
+    directory: positionalManifest,
+    manifest: (values.manifest as string | undefined) ?? positionalManifest,
+    verbose: (values.verbose as boolean | undefined) ?? false,
+    dryRun: (values["dry-run"] as boolean | undefined) ?? false,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Type guards
+// ---------------------------------------------------------------------------
+
+export function isInitFlags(flags: CliFlags): flags is InitFlags {
+  return flags.command === "init";
+}
+
+export function isStartFlags(flags: CliFlags): flags is StartFlags {
+  return flags.command === "start";
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Parses CLI arguments into a typed flags object based on the subcommand.
+ *
+ * @param argv - Raw arguments (typically `process.argv.slice(2)`)
+ * @returns Typed flags for the detected command
+ */
+export function parseArgs(argv: readonly string[]): CliFlags {
+  const { command, rest } = extractCommand(argv);
+
+  switch (command) {
+    case "init":
+      return parseInitFlags(rest);
+    case "start":
+      return parseStartFlags(rest);
+    default:
+      return { command, directory: undefined };
+  }
 }

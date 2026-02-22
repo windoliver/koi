@@ -113,7 +113,7 @@ describe("zodToKoiError", () => {
       const koiError = zodToKoiError(result.error);
       expect(koiError.code).toBe("VALIDATION");
       expect(koiError.retryable).toBe(false);
-      expect(koiError.message).toContain("Manifest validation failed");
+      expect(koiError.message).toContain("Validation failed");
       expect(koiError.context).toBeDefined();
     }
   });

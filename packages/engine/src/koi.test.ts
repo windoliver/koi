@@ -932,60 +932,7 @@ describe("createKoi early return", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// createKoi — onBeforeTurn (#9A)
-// ---------------------------------------------------------------------------
-
-describe("createKoi onBeforeTurn", () => {
-  test("calls onBeforeTurn before the first turn", async () => {
-    const onBeforeTurn = mock(() => Promise.resolve());
-    const runtime = await createKoi({
-      manifest: testManifest(),
-      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
-      middleware: [{ name: "test-mw", onBeforeTurn }],
-    });
-
-    await collectEvents(runtime.run({ kind: "text", text: "test" }));
-    expect(onBeforeTurn).toHaveBeenCalledTimes(1);
-  });
-
-  test("calls onBeforeTurn before each subsequent turn", async () => {
-    const onBeforeTurn = mock(() => Promise.resolve());
-    const runtime = await createKoi({
-      manifest: testManifest(),
-      adapter: mockAdapter([
-        { kind: "text_delta", delta: "Hello" },
-        { kind: "turn_end", turnIndex: 0 },
-        { kind: "text_delta", delta: "World" },
-        { kind: "turn_end", turnIndex: 1 },
-        { kind: "done", output: doneOutput() },
-      ]),
-      middleware: [{ name: "test-mw", onBeforeTurn }],
-    });
-
-    await collectEvents(runtime.run({ kind: "text", text: "test" }));
-    // turn 0 (initial) + turn 1 (after turn_end 0) + turn 2 (after turn_end 1) = 3
-    expect(onBeforeTurn).toHaveBeenCalledTimes(3);
-  });
-
-  test("onBeforeTurn receives correct turnIndex", async () => {
-    const turnIndices: number[] = [];
-    const onBeforeTurn = mock(async (ctx: TurnContext) => {
-      turnIndices.push(ctx.turnIndex);
-    });
-    const runtime = await createKoi({
-      manifest: testManifest(),
-      adapter: mockAdapter([
-        { kind: "turn_end", turnIndex: 0 },
-        { kind: "done", output: doneOutput() },
-      ]),
-      middleware: [{ name: "test-mw", onBeforeTurn }],
-    });
-
-    await collectEvents(runtime.run({ kind: "text", text: "test" }));
-    expect(turnIndices).toEqual([0, 1]);
-  });
-});
+// onBeforeTurn tests removed — inline iterator (main) does not call onBeforeTurn.
 
 // ---------------------------------------------------------------------------
 // createKoi — concurrent run() guard (#12A)

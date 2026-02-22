@@ -30,6 +30,7 @@ export { KoiEngineError } from "./errors.js";
 // eviction policies
 export { lruPolicy, qosPolicy } from "./eviction-policies.js";
 // guards
+export type { CreateSpawnGuardOptions } from "./guards.js";
 export {
   createIterationGuard,
   createLoopDetector,
@@ -54,6 +55,8 @@ export { createInMemoryRegistry } from "./registry.js";
 // result pruner
 export type { ResultPrunerConfig } from "./result-pruner.js";
 export { createResultPruner } from "./result-pruner.js";
+// spawn ledger
+export { createInMemorySpawnLedger } from "./spawn-ledger.js";
 // transitions
 export type { TransitionInput } from "./transitions.js";
 export { applyTransition, validateTransition } from "./transitions.js";
@@ -66,4 +69,6 @@ export type {
   LoopDetectionKind,
   LoopWarningInfo,
   SpawnPolicy,
+  SpawnWarningInfo,
 } from "./types.js";
+export { DEFAULT_SPAWN_TOOL_IDS } from "./types.js";

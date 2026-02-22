@@ -18,6 +18,8 @@ export type {
 export type { ChannelAdapter, ChannelCapabilities, MessageHandler } from "./channel.js";
 // common
 export type { JsonObject } from "./common.js";
+// context
+export type { CompactionResult, ContextCompactor, TokenEstimator } from "./context.js";
 // delegation
 export type {
   DelegationComponent,
@@ -42,11 +44,13 @@ export type {
   GovernanceComponent,
   GovernanceUsage,
   MemoryComponent,
+  MemoryResult,
   ProcessAccounter,
   ProcessId,
   ProcessState,
   SkillMetadata,
   SpawnCheck,
+  SpawnLedger,
   SubsystemToken,
   Tool,
   ToolDescriptor,
@@ -139,5 +143,25 @@ export type {
   ToolResponse,
   TurnContext,
 } from "./middleware.js";
+// model provider
+export type { ModelCapabilities, ModelProvider, ModelTarget } from "./model-provider.js";
 // resolver
 export type { Resolver } from "./resolver.js";
+// scheduler — types
+export type {
+  CronSchedule,
+  ScheduledTask,
+  ScheduleId,
+  SchedulerConfig,
+  SchedulerEvent,
+  SchedulerStats,
+  ScheduleStore,
+  TaskFilter,
+  TaskId,
+  TaskOptions,
+  TaskScheduler,
+  TaskStatus,
+  TaskStore,
+} from "./scheduler.js";
+// scheduler — runtime values (branded constructors + defaults)
+export { DEFAULT_SCHEDULER_CONFIG, scheduleId, taskId } from "./scheduler.js";

@@ -1,4 +1,4 @@
-import type { ScoreNormalizer } from "./types.js";
+import type { ScoreNormalizer } from "./fusion-types.js";
 
 /** Min-max normalization: scales scores to [0, 1] */
 export function normalizeMinMax(scores: readonly number[]): readonly number[] {

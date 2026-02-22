@@ -11,13 +11,13 @@ import { createBm25Retriever } from "./bm25/bm25-retriever.js";
 import type { Embedder, Indexer, Retriever } from "./contracts.js";
 import type { EmbedderCacheConfig } from "./embedder-cache.js";
 import { createCachedEmbedder } from "./embedder-cache.js";
+import type { FusionStrategy } from "./fusion-types.js";
 import { createHybridRetriever } from "./hybrid/hybrid-retriever.js";
 import type { MmrConfig } from "./hybrid/mmr.js";
 import type { TemporalDecayConfig } from "./hybrid/temporal-decay.js";
 import type { ChunkerConfig } from "./indexer/chunker.js";
 import { createSqliteIndexer } from "./indexer/sqlite-indexer.js";
 import type { QueryExpansionConfig } from "./query/expand.js";
-import type { FusionStrategy } from "./types.js";
 import { createVectorStore } from "./vector/sqlite-vec.js";
 import { createVectorRetriever } from "./vector/vector-retriever.js";
 
@@ -157,13 +157,14 @@ export function createSearch(config: KoiSearchConfig): KoiSearch {
   };
 }
 
-// Re-export individual pieces for advanced usage
 export type { BM25Config, BM25Hit, BM25Index } from "./bm25/bm25-index.js";
 export { createBm25Index, defaultTokenize } from "./bm25/bm25-index.js";
 export type { BM25RetrieverConfig } from "./bm25/bm25-retriever.js";
 export { createBm25Retriever } from "./bm25/bm25-retriever.js";
 export type { CachedEmbedder, CacheStats, EmbedderCacheConfig } from "./embedder-cache.js";
 export { createCachedEmbedder } from "./embedder-cache.js";
+// Re-export individual pieces for advanced usage
+export type { FusionFunction, FusionStrategy, ScoreNormalizer } from "./fusion-types.js";
 export { applyFusion, applyLinear, applyRrf, applyWeightedRrf } from "./hybrid/fusion.js";
 export type { HybridRetrieverConfig } from "./hybrid/hybrid-retriever.js";
 export { createHybridRetriever } from "./hybrid/hybrid-retriever.js";

@@ -20,6 +20,11 @@ import type {
   KoiError,
   KoiErrorCode,
   KoiMiddleware,
+  MemoryResult,
+  ModelCapabilities,
+  ModelConfig,
+  ModelProvider,
+  ModelTarget,
   PermissionConfig,
   ProcessId,
   Resolver,
@@ -274,7 +279,7 @@ describe("well-known token type narrowing", () => {
     };
     const mem = agentLike.component(MEMORY);
     if (mem) {
-      const _: Promise<readonly unknown[]> = mem.recall("test");
+      const _: Promise<readonly MemoryResult[]> = mem.recall("test");
       void _;
     }
     expect(mem).toBeUndefined();
@@ -764,18 +769,15 @@ describe("DelegationGrant readonly enforcement", () => {
 });
 
 describe("DelegationScope", () => {
-  test("permissions is required, resources and maxBudget are optional", () => {
+  test("permissions is required, resources is optional", () => {
     const minimal: DelegationScope = { permissions: { allow: ["*"] } };
     expect(minimal.resources).toBeUndefined();
-    expect(minimal.maxBudget).toBeUndefined();
 
     const full: DelegationScope = {
       permissions: { allow: ["read_file"], deny: ["write_file"] },
       resources: ["read_file:/workspace/**"],
-      maxBudget: 100,
     };
     expect(full.resources).toHaveLength(1);
-    expect(full.maxBudget).toBe(100);
   });
 
   test("resources array is readonly", () => {
@@ -881,16 +883,26 @@ describe("ScopeChecker interface", () => {
 });
 
 describe("RevocationRegistry interface", () => {
-  test("satisfies with minimal implementation", () => {
+  test("satisfies with minimal sync implementation", () => {
     const revoked = new Set<DelegationId>();
     const registry: RevocationRegistry = {
       isRevoked: (id) => revoked.has(id),
-      revoke: (id) => {
+      revoke: (id, _cascade) => {
         revoked.add(id);
       },
-      revokedIds: () => revoked,
     };
     expect(registry.isRevoked("test" as DelegationId)).toBe(false);
+  });
+
+  test("satisfies with async implementation", () => {
+    const revoked = new Set<DelegationId>();
+    const registry: RevocationRegistry = {
+      isRevoked: async (id) => revoked.has(id),
+      revoke: async (id, _cascade) => {
+        revoked.add(id);
+      },
+    };
+    expect(registry.isRevoked("test" as DelegationId)).toBeInstanceOf(Promise);
   });
 });
 
@@ -900,8 +912,6 @@ describe("DelegationConfig", () => {
     const _partial: DelegationConfig = {
       maxChainDepth: 3,
       defaultTtlMs: 3600000,
-      maxEntries: 10000,
-      cleanupIntervalMs: 60000,
     };
     void _partial;
   });
@@ -911,8 +921,6 @@ describe("DelegationConfig", () => {
       enabled: true,
       maxChainDepth: 3,
       defaultTtlMs: 3600000,
-      maxEntries: 10000,
-      cleanupIntervalMs: 60000,
     };
     // @ts-expect-error — cannot assign to readonly property
     config.enabled = false;
@@ -952,10 +960,148 @@ describe("AgentManifest delegation config", () => {
         enabled: true,
         maxChainDepth: 3,
         defaultTtlMs: 3600000,
-        maxEntries: 10000,
-        cleanupIntervalMs: 60000,
       },
     };
     expect(withDelegation.delegation?.enabled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Model provider types
+// ---------------------------------------------------------------------------
+
+describe("ModelCapabilities", () => {
+  test("all properties are required", () => {
+    const caps: ModelCapabilities = {
+      streaming: true,
+      functionCalling: true,
+      vision: false,
+      jsonMode: true,
+      maxContextTokens: 128_000,
+      maxOutputTokens: 4096,
+    };
+    expect(caps.streaming).toBe(true);
+    expect(caps.maxContextTokens).toBe(128_000);
+  });
+
+  test("properties are readonly", () => {
+    const caps: ModelCapabilities = {
+      streaming: true,
+      functionCalling: true,
+      vision: false,
+      jsonMode: true,
+      maxContextTokens: 128_000,
+      maxOutputTokens: 4096,
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    caps.streaming = false;
+  });
+});
+
+describe("ModelProvider", () => {
+  test("satisfies with full properties", () => {
+    const provider: ModelProvider = {
+      id: "openai",
+      name: "OpenAI",
+      capabilities: {
+        streaming: true,
+        functionCalling: true,
+        vision: true,
+        jsonMode: true,
+        maxContextTokens: 128_000,
+        maxOutputTokens: 16_384,
+      },
+    };
+    expect(provider.id).toBe("openai");
+    expect(provider.capabilities.vision).toBe(true);
+  });
+
+  test("id is required", () => {
+    // @ts-expect-error — id is required on ModelProvider
+    const _p: ModelProvider = {
+      name: "Test",
+      capabilities: {
+        streaming: false,
+        functionCalling: false,
+        vision: false,
+        jsonMode: false,
+        maxContextTokens: 0,
+        maxOutputTokens: 0,
+      },
+    };
+    void _p;
+  });
+
+  test("properties are readonly", () => {
+    const provider: ModelProvider = {
+      id: "openai",
+      name: "OpenAI",
+      capabilities: {
+        streaming: true,
+        functionCalling: true,
+        vision: true,
+        jsonMode: true,
+        maxContextTokens: 128_000,
+        maxOutputTokens: 16_384,
+      },
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    provider.id = "other";
+  });
+});
+
+describe("ModelTarget", () => {
+  test("minimal target with required fields only", () => {
+    const target: ModelTarget = {
+      provider: "openai",
+      model: "gpt-4o",
+    };
+    expect(target.weight).toBeUndefined();
+    expect(target.enabled).toBeUndefined();
+  });
+
+  test("full target with optional fields", () => {
+    const target: ModelTarget = {
+      provider: "anthropic",
+      model: "claude-sonnet-4-5-20250929",
+      weight: 0.8,
+      enabled: true,
+    };
+    expect(target.weight).toBe(0.8);
+    expect(target.enabled).toBe(true);
+  });
+
+  test("properties are readonly", () => {
+    const target: ModelTarget = {
+      provider: "openai",
+      model: "gpt-4o",
+      weight: 1,
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    target.provider = "other";
+  });
+});
+
+describe("ModelConfig fallbacks", () => {
+  test("fallbacks is optional", () => {
+    const config: ModelConfig = { name: "gpt-4o" };
+    expect(config.fallbacks).toBeUndefined();
+  });
+
+  test("fallbacks accepts readonly string array", () => {
+    const config: ModelConfig = {
+      name: "gpt-4o",
+      fallbacks: ["claude-sonnet-4-5-20250929", "gemini-pro"],
+    };
+    expect(config.fallbacks).toHaveLength(2);
+  });
+
+  test("fallbacks array is readonly", () => {
+    const config: ModelConfig = {
+      name: "gpt-4o",
+      fallbacks: ["claude-sonnet-4-5-20250929"],
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    config.fallbacks = [];
   });
 });

@@ -6,16 +6,22 @@
  * State is scoped to the middleware instance lifetime (one per session).
  */
 
-import type { KoiMiddleware, ProcessAccounter } from "@koi/core";
-import { fnv1a } from "@koi/core/hash";
+import type { Agent, GovernanceComponent, KoiMiddleware, SpawnLedger } from "@koi/core";
+import { fnv1a, GOVERNANCE } from "@koi/core";
 import { KoiEngineError } from "./errors.js";
+import { createInMemorySpawnLedger } from "./spawn-ledger.js";
 import type {
   IterationLimits,
   LoopDetectionConfig,
   LoopWarningInfo,
   SpawnPolicy,
 } from "./types.js";
-import { DEFAULT_ITERATION_LIMITS, DEFAULT_LOOP_DETECTION, DEFAULT_SPAWN_POLICY } from "./types.js";
+import {
+  DEFAULT_ITERATION_LIMITS,
+  DEFAULT_LOOP_DETECTION,
+  DEFAULT_SPAWN_POLICY,
+  DEFAULT_SPAWN_TOOL_IDS,
+} from "./types.js";
 
 export { fnv1a };
 
@@ -29,6 +35,7 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
     ...config,
   };
 
+  // let justified: mutable counters scoped to this middleware instance lifetime
   let turns = 0;
   let totalTokens = 0;
   const startedAt = Date.now();
@@ -105,38 +112,38 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
 // Loop Detector — helpers
 // ---------------------------------------------------------------------------
 
-/** Compute fingerprint hash from a tool request. */
-function computeFingerprint(toolId: string, input: unknown, maxKeys: number): number {
-  const inputKeyCount =
-    typeof input === "object" && input !== null
-      ? Object.keys(input as Record<string, unknown>).length
-      : 0;
-  const fingerprint = inputKeyCount > maxKeys ? toolId : `${toolId}:${JSON.stringify(input)}`;
-  return fnv1a(fingerprint);
-}
-
-/** Push hash into sliding window, evicting oldest if full. Returns the new count. */
-function updateWindow(
-  recentHashes: number[],
-  counts: Map<number, number>,
-  hash: number,
-  windowSize: number,
-): number {
-  if (recentHashes.length >= windowSize) {
-    const evicted = recentHashes.shift();
-    if (evicted !== undefined) {
-      const prev = counts.get(evicted) ?? 0;
-      if (prev <= 1) {
-        counts.delete(evicted);
-      } else {
-        counts.set(evicted, prev - 1);
-      }
+/**
+ * Build a shallow fingerprint of a tool call without JSON.stringify.
+ * Hashes toolId + top-level keys and shallow string values (capped at 128 chars).
+ * O(keys) instead of O(input_size).
+ *
+ * When maxKeys is provided and the input exceeds it, falls back to
+ * toolId-only fingerprinting to avoid hashing extremely wide objects.
+ */
+function shallowToolFingerprint(toolId: string, input: unknown, maxKeys?: number): number {
+  let hash = fnv1a(toolId);
+  if (typeof input === "object" && input !== null) {
+    const keys = Object.keys(input).sort();
+    if (maxKeys !== undefined && keys.length > maxKeys) {
+      // Fall back to toolId-only fingerprint for very large inputs
+      return hash >>> 0;
     }
+    for (const key of keys) {
+      hash ^= fnv1a(key);
+      hash = Math.imul(hash, 0x01000193);
+      const value = (input as Record<string, unknown>)[key];
+      const repr =
+        typeof value === "string"
+          ? value.slice(0, 128)
+          : `${typeof value}:${String(value).slice(0, 64)}`;
+      hash ^= fnv1a(repr);
+      hash = Math.imul(hash, 0x01000193);
+    }
+  } else {
+    hash ^= fnv1a(String(input));
+    hash = Math.imul(hash, 0x01000193);
   }
-  recentHashes.push(hash);
-  const newCount = (counts.get(hash) ?? 0) + 1;
-  counts.set(hash, newCount);
-  return newCount;
+  return hash >>> 0;
 }
 
 /** Check repeat-loop threshold and throw if exceeded. */
@@ -256,6 +263,14 @@ function checkNoProgress(
   }
 }
 
+/** Extract ordered sequence from circular buffer (oldest → newest). */
+function ringBufferSnapshot(buf: readonly number[], cur: number, count: number): readonly number[] {
+  if (count < buf.length) {
+    return buf.slice(0, count);
+  }
+  return [...buf.slice(cur), ...buf.slice(0, cur)];
+}
+
 // ---------------------------------------------------------------------------
 // Loop Detector
 // ---------------------------------------------------------------------------
@@ -283,8 +298,15 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
     );
   }
 
-  const recentHashes: number[] = [];
-  const counts = new Map<number, number>();
+  // Circular buffer for O(1) insert + evict
+  const ringBuffer = new Array<number>(detection.windowSize).fill(0);
+  // let justified: mutable write cursor and fill count for circular buffer
+  let cursor = 0;
+  let filled = 0;
+
+  // Persistent frequency map — updated incrementally, O(1) per call
+  const hashCounts = new Map<number, number>();
+  /** Tracks hashes that have already fired a warning (at most once per unique hash). */
   const firedWarnings = new Set<number>();
   const noProgressState = new Map<string, { hash: number; count: number }>();
 
@@ -300,8 +322,27 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
     priority: 1,
 
     wrapToolCall: async (_ctx, request, next) => {
-      const hash = computeFingerprint(request.toolId, request.input, maxKeys);
-      const newCount = updateWindow(recentHashes, counts, hash, detection.windowSize);
+      const hash = shallowToolFingerprint(request.toolId, request.input, maxKeys);
+
+      // Evict the oldest entry if the buffer is full
+      if (filled >= detection.windowSize) {
+        const evicted = ringBuffer[cursor] as number;
+        const oldCount = hashCounts.get(evicted) ?? 0;
+        if (oldCount <= 1) {
+          hashCounts.delete(evicted);
+        } else {
+          hashCounts.set(evicted, oldCount - 1);
+        }
+      }
+
+      // Insert new hash into circular buffer
+      ringBuffer[cursor] = hash;
+      cursor = (cursor + 1) % detection.windowSize;
+      filled = Math.min(filled + 1, detection.windowSize);
+
+      // Increment count for new hash
+      const newCount = (hashCounts.get(hash) ?? 0) + 1;
+      hashCounts.set(hash, newCount);
 
       // Warning check — fires at most once per unique hash
       if (
@@ -325,7 +366,8 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
       checkRepeatLoop(request.toolId, newCount, detection.threshold, detection.windowSize);
 
       if (pingPongEnabled) {
-        checkPingPong(request.toolId, recentHashes, pingPongMinPatternLength, pingPongRepetitions);
+        const ordered = ringBufferSnapshot(ringBuffer, cursor, filled);
+        checkPingPong(request.toolId, ordered, pingPongMinPatternLength, pingPongRepetitions);
       }
 
       // Execute the tool call
@@ -355,30 +397,86 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
 // Spawn Guard
 // ---------------------------------------------------------------------------
 
-export function createSpawnGuard(
-  config?: Partial<SpawnPolicy>,
-  agentDepth = 0,
-  accounter?: ProcessAccounter,
-): KoiMiddleware {
+/**
+ * Options for creating a spawn guard middleware.
+ */
+export interface CreateSpawnGuardOptions {
+  /** Spawn governance policy. Merged with DEFAULT_SPAWN_POLICY. */
+  readonly policy?: Partial<SpawnPolicy>;
+  /** Depth of the current agent in the process tree (0 = root). */
+  readonly agentDepth?: number;
+  /** Shared spawn ledger for tree-wide concurrency tracking. */
+  readonly ledger?: SpawnLedger;
+  /** Agent entity — if present, GovernanceComponent will be consulted. */
+  readonly agent?: Agent;
+}
+
+export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddleware {
+  const { policy: configOverrides, agentDepth = 0, agent } = options ?? {};
+
   const policy: SpawnPolicy = {
     ...DEFAULT_SPAWN_POLICY,
-    ...config,
+    ...configOverrides,
   };
 
-  let activeProcesses = 1; // The current agent counts as 1 (local fallback)
-  let directChildren = 0; // Tracks fan-out for this agent
+  // Validate warning thresholds at construction time
+  if (policy.fanOutWarningAt !== undefined && policy.fanOutWarningAt >= policy.maxFanOut) {
+    throw KoiEngineError.from(
+      "VALIDATION",
+      `fanOutWarningAt (${policy.fanOutWarningAt}) must be less than maxFanOut (${policy.maxFanOut})`,
+      {
+        context: {
+          fanOutWarningAt: policy.fanOutWarningAt,
+          maxFanOut: policy.maxFanOut,
+        },
+      },
+    );
+  }
+
+  if (
+    policy.totalProcessWarningAt !== undefined &&
+    policy.totalProcessWarningAt >= policy.maxTotalProcesses
+  ) {
+    throw KoiEngineError.from(
+      "VALIDATION",
+      `totalProcessWarningAt (${policy.totalProcessWarningAt}) must be less than maxTotalProcesses (${policy.maxTotalProcesses})`,
+      {
+        context: {
+          totalProcessWarningAt: policy.totalProcessWarningAt,
+          maxTotalProcesses: policy.maxTotalProcesses,
+        },
+      },
+    );
+  }
+
+  // Build spawn tool ID set for O(1) lookup
+  const spawnToolIds = new Set<string>(policy.spawnToolIds ?? DEFAULT_SPAWN_TOOL_IDS);
+
+  // Shared ledger — use provided or create in-memory default
+  const ledger: SpawnLedger =
+    options?.ledger ?? createInMemorySpawnLedger(policy.maxTotalProcesses);
+
+  // Cache GovernanceComponent lookup — fixed after assembly, no need to look up per-call
+  const governance = agent?.component<GovernanceComponent>(GOVERNANCE);
+
+  // let justified: mutable per-agent fan-out counter
+  let directChildren = 0;
+
+  // let justified: mutable flags to fire warnings at most once per kind
+  let firedFanOutWarning = false;
+  let firedTotalWarning = false;
 
   return {
     name: "koi:spawn-guard",
     priority: 2,
 
     wrapToolCall: async (_ctx, request, next) => {
-      // Only intercept spawn-related tool calls
-      if (request.toolId !== "forge_agent") {
+      // Early return for non-spawn tools (hot path — O(1) set lookup)
+      if (!spawnToolIds.has(request.toolId)) {
         return next(request);
       }
 
-      // Check depth limit — child would be at agentDepth + 1
+      // 1. Check depth (structural, PERMISSION — not retryable)
       const childDepth = agentDepth + 1;
       if (childDepth > policy.maxDepth) {
         throw KoiEngineError.from(
@@ -390,38 +488,83 @@ export function createSpawnGuard(
         );
       }
 
-      // Check fan-out limit
+      // 2. Consult GovernanceComponent (cached at construction)
+      if (governance !== undefined) {
+        const check = governance.checkSpawn(childDepth);
+        if (!check.allowed) {
+          throw KoiEngineError.from("PERMISSION", check.reason, {
+            context: { childDepth, source: "GovernanceComponent" },
+          });
+        }
+      }
+
+      // 3. Check fan-out (transient, RATE_LIMIT — retryable when child completes)
       if (directChildren >= policy.maxFanOut) {
         throw KoiEngineError.from(
-          "PERMISSION",
+          "RATE_LIMIT",
           `Max fan-out exceeded: ${directChildren}/${policy.maxFanOut} children`,
           {
+            retryable: true,
             context: { directChildren, maxFanOut: policy.maxFanOut },
           },
         );
       }
 
-      // Check total process limit — use shared accounter if available, else local
-      const totalActive = accounter !== undefined ? accounter.activeCount() : activeProcesses;
-      if (totalActive >= policy.maxTotalProcesses) {
-        throw KoiEngineError.from(
-          "PERMISSION",
-          `Max total processes exceeded: ${totalActive}/${policy.maxTotalProcesses}`,
-          {
-            context: { activeProcesses: totalActive, maxTotalProcesses: policy.maxTotalProcesses },
-          },
-        );
-      }
-
-      const response = await next(request);
-
-      if (accounter !== undefined) {
-        accounter.increment();
-      } else {
-        activeProcesses++;
-      }
+      // 4. Optimistic: increment fan-out before next()
       directChildren++;
-      return response;
+
+      // 5. Acquire ledger slot (total processes)
+      const acquired = await ledger.acquire();
+      if (!acquired) {
+        // Rollback fan-out
+        directChildren--;
+        const active = ledger.activeCount();
+        const cap = ledger.capacity();
+        throw KoiEngineError.from("RATE_LIMIT", `Max total processes exceeded: ${active}/${cap}`, {
+          retryable: true,
+          context: { activeProcesses: active, maxTotalProcesses: cap },
+        });
+      }
+
+      // 6. Fire warnings (synchronous, at most once per kind)
+      if (
+        !firedFanOutWarning &&
+        policy.fanOutWarningAt !== undefined &&
+        policy.onWarning !== undefined &&
+        directChildren >= policy.fanOutWarningAt
+      ) {
+        firedFanOutWarning = true;
+        policy.onWarning({
+          kind: "fan_out",
+          current: directChildren,
+          limit: policy.maxFanOut,
+          warningAt: policy.fanOutWarningAt,
+        });
+      }
+
+      const currentActive = ledger.activeCount();
+      if (
+        !firedTotalWarning &&
+        policy.totalProcessWarningAt !== undefined &&
+        policy.onWarning !== undefined &&
+        currentActive >= policy.totalProcessWarningAt
+      ) {
+        firedTotalWarning = true;
+        policy.onWarning({
+          kind: "total_processes",
+          current: currentActive,
+          limit: ledger.capacity(),
+          warningAt: policy.totalProcessWarningAt,
+        });
+      }
+
+      // 7. Execute spawn — release slots when child completes (success or failure)
+      try {
+        return await next(request);
+      } finally {
+        directChildren--;
+        await ledger.release();
+      }
     },
   };
 }

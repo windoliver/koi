@@ -3,7 +3,7 @@
  *
  * composeModelChain: wraps wrapModelCall hooks into an onion around the terminal handler.
  * composeToolChain: wraps wrapToolCall hooks into an onion around the terminal handler.
- * runSessionHooks/runTurnHooks: runs lifecycle hooks sequentially.
+ * runSessionHooks / runTurnHooks: runs lifecycle hooks sequentially with type safety.
  */
 
 import type {

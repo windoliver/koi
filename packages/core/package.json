@@ -20,6 +20,10 @@
       "types": "./dist/common.d.ts",
       "import": "./dist/common.js"
     },
+    "./context": {
+      "types": "./dist/context.d.ts",
+      "import": "./dist/context.js"
+    },
     "./delegation": {
       "types": "./dist/delegation.d.ts",
       "import": "./dist/delegation.js"
@@ -59,6 +63,10 @@
     "./lifecycle": {
       "types": "./dist/lifecycle.d.ts",
       "import": "./dist/lifecycle.js"
+    },
+    "./model-provider": {
+      "types": "./dist/model-provider.d.ts",
+      "import": "./dist/model-provider.js"
     },
     "./resolver": {
       "types": "./dist/resolver.d.ts",

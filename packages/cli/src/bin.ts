@@ -4,19 +4,20 @@
  * CLI entry point — routes to subcommands.
  */
 
-import { parseArgs } from "./args.js";
+import { isInitFlags, isStartFlags, parseArgs } from "./args.js";
 import { runInit } from "./commands/init.js";
+import { runStart } from "./commands/start.js";
 
 const flags = parseArgs(process.argv.slice(2));
 
-switch (flags.command) {
-  case "init":
-    await runInit(flags);
-    break;
-  default:
-    console.error(`Unknown command: ${flags.command ?? "(none)"}`);
-    console.error(
-      "Usage: koi init [directory] [--yes] [--name <name>] [--template <template>] [--model <model>]",
-    );
-    process.exit(1);
+if (isInitFlags(flags)) {
+  await runInit(flags);
+} else if (isStartFlags(flags)) {
+  await runStart(flags);
+} else {
+  process.stderr.write(`Unknown command: ${flags.command ?? "(none)"}\n`);
+  process.stderr.write("Usage:\n");
+  process.stderr.write("  koi init [directory]  Create a new agent\n");
+  process.stderr.write("  koi start [manifest]  Start an agent from koi.yaml\n");
+  process.exit(1);
 }

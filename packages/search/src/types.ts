@@ -50,30 +50,6 @@ export type SearchFilter =
   | { readonly kind: "or"; readonly filters: readonly SearchFilter[] }
   | { readonly kind: "not"; readonly filter: SearchFilter };
 
-/** Score normalization method */
-export type ScoreNormalizer = "min_max" | "z_score" | "l2";
-
-/** Fusion function signature for custom strategies */
-export type FusionFunction = (
-  rankedLists: readonly (readonly SearchResult[])[],
-  limit: number,
-) => readonly SearchResult[];
-
-/** Fusion strategy (discriminated union — logic lives in L2) */
-export type FusionStrategy =
-  | { readonly kind: "rrf"; readonly k?: number }
-  | {
-      readonly kind: "weighted_rrf";
-      readonly k?: number;
-      readonly weights: readonly number[];
-    }
-  | {
-      readonly kind: "linear";
-      readonly weights: readonly number[];
-      readonly normalizer?: ScoreNormalizer;
-    }
-  | { readonly kind: "custom"; readonly fuse: FusionFunction };
-
 /** Document for indexing */
 export interface IndexDocument<T = unknown> {
   readonly id: string;
@@ -82,19 +58,3 @@ export interface IndexDocument<T = unknown> {
   readonly embedding?: readonly number[];
   readonly data?: T;
 }
-
-/** Search errors (expected failures — typed values, not thrown) */
-export type SearchError =
-  | { readonly kind: "not_found"; readonly query: string }
-  | { readonly kind: "timeout"; readonly ms: number }
-  | {
-      readonly kind: "backend_unavailable";
-      readonly backend: string;
-      readonly cause?: unknown;
-    }
-  | { readonly kind: "invalid_query"; readonly reason: string };
-
-/** Result type for search operations */
-export type SearchOk<T> = { readonly ok: true; readonly value: T };
-export type SearchErr = { readonly ok: false; readonly error: SearchError };
-export type SearchOutcome<T> = SearchOk<T> | SearchErr;

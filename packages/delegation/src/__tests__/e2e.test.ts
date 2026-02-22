@@ -335,59 +335,6 @@ describe("e2e: pluggable ScopeChecker", () => {
 });
 
 // ---------------------------------------------------------------------------
-// E2E: Budget attenuation across chain
-// ---------------------------------------------------------------------------
-
-describe("e2e: budget attenuation", () => {
-  test("budget can only shrink through delegation chain", () => {
-    const rootGrant = createGrant({
-      issuerId: "orchestrator",
-      delegateeId: "worker",
-      scope: {
-        permissions: { allow: ["*"] },
-        maxBudget: 100,
-      },
-      maxChainDepth: 3,
-      ttlMs: 3600000,
-      secret: SECRET,
-    });
-
-    // Lower budget is ok
-    const lowerResult = attenuateGrant(
-      rootGrant,
-      {
-        delegateeId: "sub-worker",
-        scope: { permissions: { allow: ["read_file"] }, maxBudget: 50 },
-      },
-      SECRET,
-    );
-    expect(lowerResult.ok).toBe(true);
-
-    // Higher budget is rejected
-    const higherResult = attenuateGrant(
-      rootGrant,
-      {
-        delegateeId: "sub-worker",
-        scope: { permissions: { allow: ["read_file"] }, maxBudget: 200 },
-      },
-      SECRET,
-    );
-    expect(higherResult.ok).toBe(false);
-
-    // No budget specified when parent has one is rejected
-    const noBudgetResult = attenuateGrant(
-      rootGrant,
-      {
-        delegateeId: "sub-worker",
-        scope: { permissions: { allow: ["read_file"] } },
-      },
-      SECRET,
-    );
-    expect(noBudgetResult.ok).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // E2E: Deny rules grow monotonically
 // ---------------------------------------------------------------------------
 

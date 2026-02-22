@@ -19,7 +19,6 @@ function makeRegistry(revokedSet?: Set<DelegationId>): RevocationRegistry {
     revoke: (id) => {
       revoked.add(id);
     },
-    revokedIds: () => revoked,
   };
 }
 

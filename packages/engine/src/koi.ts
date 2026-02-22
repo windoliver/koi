@@ -11,13 +11,16 @@ import type {
   ProcessId,
   ToolRequest,
   ToolResponse,
+  TurnContext,
 } from "@koi/core";
 import { agentId, toolToken } from "@koi/core";
 import { AgentEntity } from "./agent-entity.js";
 import { createComposedCallHandlers, runSessionHooks, runTurnHooks } from "./compose.js";
 import { KoiEngineError } from "./errors.js";
 import { createIterationGuard, createLoopDetector, createSpawnGuard } from "./guards.js";
+import { createInMemorySpawnLedger } from "./spawn-ledger.js";
 import type { CreateKoiOptions, KoiRuntime } from "./types.js";
+import { DEFAULT_SPAWN_POLICY } from "./types.js";
 
 /** Generate a unique process ID for a new agent. */
 function generatePid(manifest: CreateKoiOptions["manifest"]): ProcessId {
@@ -35,22 +38,44 @@ function sortByPriority(middleware: readonly KoiMiddleware[]): readonly KoiMiddl
 }
 
 export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> {
+  // --- 0. Input validation at the factory boundary ---
+  if (!options.manifest?.name) {
+    throw KoiEngineError.from("VALIDATION", "manifest.name is required", {
+      context: { manifest: options.manifest },
+    });
+  }
+  if (typeof options.adapter?.stream !== "function") {
+    throw KoiEngineError.from("VALIDATION", "adapter must implement stream()", {
+      context: { adapterId: options.adapter?.engineId },
+    });
+  }
+
   const { manifest, adapter, middleware = [], providers = [] } = options;
 
   // --- 1. Assemble the agent entity ---
   const pid = generatePid(manifest);
   const agent = await AgentEntity.assemble(pid, manifest, providers);
 
-  // --- 2. Create L1 guards ---
-  const guards: KoiMiddleware[] = [createIterationGuard(options.limits)];
-
-  if (options.loopDetection !== false) {
-    guards.push(
-      createLoopDetector(options.loopDetection === undefined ? undefined : options.loopDetection),
-    );
-  }
-
-  guards.push(createSpawnGuard(options.spawn, pid.depth, options.processAccounter));
+  // --- 2. Create L1 guards (declarative, no mutation) ---
+  const spawnPolicy = { ...options.spawn };
+  const effectiveMaxTotal = spawnPolicy.maxTotalProcesses ?? DEFAULT_SPAWN_POLICY.maxTotalProcesses;
+  const spawnLedger = options.spawnLedger ?? createInMemorySpawnLedger(effectiveMaxTotal);
+  const guards: readonly KoiMiddleware[] = [
+    createIterationGuard(options.limits),
+    ...(options.loopDetection !== false
+      ? [
+          createLoopDetector(
+            options.loopDetection === undefined ? undefined : options.loopDetection,
+          ),
+        ]
+      : []),
+    createSpawnGuard({
+      policy: spawnPolicy,
+      agentDepth: pid.depth,
+      ledger: spawnLedger,
+      agent,
+    }),
+  ];
 
   // --- 3. Compose middleware chain: guards + user middleware, sorted by priority ---
   const allMiddleware: readonly KoiMiddleware[] = sortByPriority([...guards, ...middleware]);
@@ -67,8 +92,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     return request.metadata !== undefined ? { output, metadata: request.metadata } : { output };
   };
 
-  // --- 5. Track disposal and concurrency ---
+  // --- 5. Track disposal ---
+  // let justified: mutable flag for one-shot dispose guard
   let disposed = false;
+  // let justified: mutable flag for concurrent run() guard
   let running = false;
 
   // --- 6. Build runtime ---
@@ -80,13 +107,170 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       if (running) {
         throw KoiEngineError.from("VALIDATION", "Agent is already running");
       }
+      running = true;
 
       return {
         [Symbol.asyncIterator](): AsyncIterator<EngineEvent> {
-          const gen = runGenerator(input);
+          // let justified: mutable iterator state scoped to this run() invocation
+          let iterator: AsyncIterator<EngineEvent> | undefined;
+          let sessionStarted = false;
+          let done = false;
+          let currentTurnIndex = 0;
+          const sessionStartedAt = Date.now();
+
+          const sessionCtx = {
+            agentId: pid.id,
+            sessionId: crypto.randomUUID(),
+            metadata: {},
+          };
+
           return {
-            next: () => gen.next(),
-            return: (value?: unknown) => gen.return(value as EngineEvent),
+            async next(): Promise<IteratorResult<EngineEvent>> {
+              if (done) return { done: true, value: undefined };
+
+              try {
+                // Start session on first call
+                if (!sessionStarted) {
+                  sessionStarted = true;
+                  agent.transition({ kind: "start" });
+                  await runSessionHooks(allMiddleware, "onSessionStart", sessionCtx);
+
+                  // Wire terminals → middleware → callHandlers if adapter is cooperating
+                  // let justified: effectiveInput may be replaced with callHandlers-augmented input
+                  let effectiveInput = input;
+                  if (adapter.terminals) {
+                    const inputMessages = input.kind === "messages" ? input.messages : [];
+                    // Cache turn context per turn index to avoid repeated allocations
+                    // let justified: mutable cache invalidated on turn index change
+                    let cachedTurnCtx: TurnContext | undefined;
+                    let cachedTurnIndex = -1;
+                    const getTurnContext = (): TurnContext => {
+                      if (cachedTurnIndex === currentTurnIndex && cachedTurnCtx) {
+                        return cachedTurnCtx;
+                      }
+                      cachedTurnIndex = currentTurnIndex;
+                      const base = {
+                        session: sessionCtx,
+                        turnIndex: currentTurnIndex,
+                        messages: inputMessages,
+                        metadata: {},
+                      };
+                      cachedTurnCtx =
+                        options.approvalHandler !== undefined
+                          ? { ...base, requestApproval: options.approvalHandler }
+                          : base;
+                      return cachedTurnCtx;
+                    };
+                    const rawModelTerminal = adapter.terminals.modelCall;
+                    const rawToolTerminal = adapter.terminals.toolCall ?? defaultToolTerminal;
+                    const rawModelStreamTerminal = adapter.terminals.modelStream;
+                    const callHandlers = createComposedCallHandlers(
+                      allMiddleware,
+                      getTurnContext,
+                      agent,
+                      rawModelTerminal,
+                      rawToolTerminal,
+                      rawModelStreamTerminal,
+                    );
+                    effectiveInput = { ...input, callHandlers };
+                  }
+
+                  iterator = adapter.stream(effectiveInput)[Symbol.asyncIterator]();
+                }
+
+                if (!iterator) {
+                  done = true;
+                  running = false;
+                  return { done: true, value: undefined };
+                }
+
+                const result = await iterator.next();
+
+                if (result.done) {
+                  done = true;
+                  running = false;
+                  agent.transition({ kind: "complete", stopReason: "completed" });
+                  await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+                  return { done: true, value: undefined };
+                }
+
+                const event = result.value;
+
+                // Process turn_end events
+                if (event.kind === "turn_end") {
+                  currentTurnIndex = event.turnIndex + 1;
+                  const turnCtx = {
+                    session: sessionCtx,
+                    turnIndex: event.turnIndex,
+                    messages: [],
+                    metadata: {},
+                    ...(options.approvalHandler !== undefined
+                      ? { requestApproval: options.approvalHandler }
+                      : {}),
+                  };
+                  await runTurnHooks(allMiddleware, "onAfterTurn", turnCtx);
+                }
+
+                // Process done events
+                if (event.kind === "done") {
+                  done = true;
+                  running = false;
+                  agent.transition({
+                    kind: "complete",
+                    stopReason: event.output.stopReason,
+                    metrics: event.output.metrics,
+                  });
+                  await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+                }
+
+                return { done: false, value: event };
+              } catch (error: unknown) {
+                done = true;
+                running = false;
+
+                // If it's a guard error, convert to a done event
+                if (error instanceof KoiEngineError) {
+                  const stopReason = error.code === "TIMEOUT" ? "max_turns" : "error";
+                  agent.transition({ kind: "complete", stopReason });
+                  await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+                  const doneEvent: EngineEvent = {
+                    kind: "done",
+                    output: {
+                      content: [],
+                      stopReason,
+                      metrics: {
+                        totalTokens: 0,
+                        inputTokens: 0,
+                        outputTokens: 0,
+                        turns: 0,
+                        durationMs: Date.now() - sessionStartedAt,
+                      },
+                    },
+                  };
+                  return { done: false, value: doneEvent };
+                }
+
+                // Re-throw unexpected errors
+                agent.transition({ kind: "error", error });
+                try {
+                  await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+                } catch {
+                  // Don't mask original error — onSessionEnd failure must not override thrown error
+                }
+                throw error;
+              }
+            },
+
+            async return(): Promise<IteratorResult<EngineEvent>> {
+              done = true;
+              running = false;
+              if (iterator?.return) {
+                await iterator.return();
+              }
+              agent.transition({ kind: "complete", stopReason: "interrupted" });
+              await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+              return { done: true, value: undefined };
+            },
           };
         },
       };
@@ -98,153 +282,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       await adapter.dispose?.();
     },
   };
-
-  async function* runGenerator(input: EngineInput): AsyncGenerator<EngineEvent> {
-    running = true;
-    let completed = false; // let justified: tracks whether generator completed or was interrupted
-    const sessionStartedAt = Date.now();
-    let currentTurnIndex = 0; // let justified: updated on turn_end events
-
-    const sessionCtx = {
-      agentId: pid.id,
-      sessionId: crypto.randomUUID(),
-      metadata: {},
-    };
-
-    agent.transition({ kind: "start" });
-    await runSessionHooks(allMiddleware, "onSessionStart", sessionCtx);
-
-    // Wire terminals → middleware → callHandlers if adapter is cooperating
-    let effectiveInput = input;
-    if (adapter.terminals) {
-      const inputMessages = input.kind === "messages" ? input.messages : [];
-      const getTurnContext = () => {
-        const base = {
-          session: sessionCtx,
-          turnIndex: currentTurnIndex,
-          messages: inputMessages,
-          metadata: {},
-        };
-        return options.approvalHandler !== undefined
-          ? { ...base, requestApproval: options.approvalHandler }
-          : base;
-      };
-      const rawModelTerminal = adapter.terminals.modelCall;
-      const rawToolTerminal = adapter.terminals.toolCall ?? defaultToolTerminal;
-      const rawModelStreamTerminal = adapter.terminals.modelStream;
-      const callHandlers = createComposedCallHandlers(
-        allMiddleware,
-        getTurnContext,
-        agent,
-        rawModelTerminal,
-        rawToolTerminal,
-        rawModelStreamTerminal,
-      );
-      effectiveInput = { ...input, callHandlers };
-    }
-
-    // Fire onBeforeTurn for turn 0
-    await runTurnHooks(allMiddleware, "onBeforeTurn", {
-      session: sessionCtx,
-      turnIndex: currentTurnIndex,
-      messages: [],
-      metadata: {},
-      ...(options.approvalHandler !== undefined
-        ? { requestApproval: options.approvalHandler }
-        : {}),
-    });
-
-    try {
-      for await (const event of adapter.stream(effectiveInput)) {
-        // Process turn_end events
-        if (event.kind === "turn_end") {
-          currentTurnIndex = event.turnIndex + 1;
-          const turnCtx = {
-            session: sessionCtx,
-            turnIndex: event.turnIndex,
-            messages: [],
-            metadata: {},
-            ...(options.approvalHandler !== undefined
-              ? { requestApproval: options.approvalHandler }
-              : {}),
-          };
-          await runTurnHooks(allMiddleware, "onAfterTurn", turnCtx);
-
-          yield event;
-
-          // Fire onBeforeTurn for the next turn
-          await runTurnHooks(allMiddleware, "onBeforeTurn", {
-            session: sessionCtx,
-            turnIndex: currentTurnIndex,
-            messages: [],
-            metadata: {},
-            ...(options.approvalHandler !== undefined
-              ? { requestApproval: options.approvalHandler }
-              : {}),
-          });
-
-          continue;
-        }
-
-        // Process done events
-        if (event.kind === "done") {
-          agent.transition({
-            kind: "complete",
-            stopReason: event.output.stopReason,
-            metrics: event.output.metrics,
-          });
-          completed = true;
-          yield event;
-          return;
-        }
-
-        yield event;
-      }
-
-      // Stream ended without done event
-      agent.transition({ kind: "complete", stopReason: "completed" });
-      completed = true;
-    } catch (error: unknown) {
-      completed = true;
-
-      // If it's a guard error, convert to a done event
-      if (error instanceof KoiEngineError) {
-        const stopReason = error.code === "TIMEOUT" ? "max_turns" : "error";
-        agent.transition({ kind: "complete", stopReason });
-        yield {
-          kind: "done",
-          output: {
-            content: [],
-            stopReason,
-            metrics: {
-              totalTokens: 0,
-              inputTokens: 0,
-              outputTokens: 0,
-              turns: 0,
-              durationMs: Date.now() - sessionStartedAt,
-            },
-          },
-        };
-        return;
-      }
-
-      // Re-throw unexpected errors
-      agent.transition({ kind: "error", error });
-      throw error;
-    } finally {
-      // If generator was interrupted (break/return from consumer), transition to terminated
-      if (!completed) {
-        agent.transition({ kind: "complete", stopReason: "interrupted" });
-      }
-
-      try {
-        await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
-      } catch {
-        // Don't mask original error — onSessionEnd failure must not override thrown error
-      }
-      running = false;
-    }
-  }
 
   return runtime;
 }

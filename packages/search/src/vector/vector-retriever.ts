@@ -1,11 +1,6 @@
+import type { KoiError, Result } from "@koi/core";
 import type { Embedder, Retriever } from "../contracts.js";
-import type {
-  SearchFilter,
-  SearchOutcome,
-  SearchPage,
-  SearchQuery,
-  SearchResult,
-} from "../types.js";
+import type { SearchFilter, SearchPage, SearchQuery, SearchResult } from "../types.js";
 import type { VectorStore } from "./sqlite-vec.js";
 
 export interface VectorRetrieverConfig {
@@ -16,7 +11,7 @@ export interface VectorRetrieverConfig {
 
 export function createVectorRetriever(config: VectorRetrieverConfig): Retriever {
   return {
-    retrieve: async (query: SearchQuery): Promise<SearchOutcome<SearchPage>> => {
+    retrieve: async (query: SearchQuery): Promise<Result<SearchPage, KoiError>> => {
       const embedding = await config.embedder.embed(query.text);
 
       // Over-fetch to allow for post-filtering and hasMore detection
