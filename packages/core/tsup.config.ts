@@ -4,6 +4,7 @@ export default defineConfig({
   entry: [
     "src/index.ts",
     "src/assembly.ts",
+    "src/config.ts",
     "src/channel.ts",
     "src/common.ts",
     "src/context.ts",

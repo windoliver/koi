@@ -34,7 +34,7 @@ export {
 } from "./adversarial-verifiers.js";
 export type { ForgeConfig, ScopePromotionConfig, VerificationConfig } from "./config.js";
 // runtime values — config
-export { createDefaultForgeConfig } from "./config.js";
+export { createDefaultForgeConfig, validateForgeConfig } from "./config.js";
 export type { ForgeError, TestFailure } from "./errors.js";
 // runtime values — errors
 export {
