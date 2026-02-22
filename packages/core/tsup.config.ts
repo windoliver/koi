@@ -16,6 +16,7 @@ export default defineConfig({
     "src/lifecycle.ts",
     "src/message.ts",
     "src/middleware.ts",
+    "src/model-provider.ts",
     "src/resolver.ts",
   ],
   format: ["esm"],

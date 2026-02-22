@@ -24,6 +24,10 @@ import type {
   KoiError,
   KoiErrorCode,
   KoiMiddleware,
+  ModelCapabilities,
+  ModelConfig,
+  ModelProvider,
+  ModelTarget,
   PermissionConfig,
   ProcessId,
   Resolver,
@@ -1155,5 +1159,145 @@ describe("Forge type aliases", () => {
       "channel",
     ];
     expect(kinds).toHaveLength(6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Model provider types
+// ---------------------------------------------------------------------------
+
+describe("ModelCapabilities", () => {
+  test("all properties are required", () => {
+    const caps: ModelCapabilities = {
+      streaming: true,
+      functionCalling: true,
+      vision: false,
+      jsonMode: true,
+      maxContextTokens: 128_000,
+      maxOutputTokens: 4096,
+    };
+    expect(caps.streaming).toBe(true);
+    expect(caps.maxContextTokens).toBe(128_000);
+  });
+
+  test("properties are readonly", () => {
+    const caps: ModelCapabilities = {
+      streaming: true,
+      functionCalling: true,
+      vision: false,
+      jsonMode: true,
+      maxContextTokens: 128_000,
+      maxOutputTokens: 4096,
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    caps.streaming = false;
+  });
+});
+
+describe("ModelProvider", () => {
+  test("satisfies with full properties", () => {
+    const provider: ModelProvider = {
+      id: "openai",
+      name: "OpenAI",
+      capabilities: {
+        streaming: true,
+        functionCalling: true,
+        vision: true,
+        jsonMode: true,
+        maxContextTokens: 128_000,
+        maxOutputTokens: 16_384,
+      },
+    };
+    expect(provider.id).toBe("openai");
+    expect(provider.capabilities.vision).toBe(true);
+  });
+
+  test("id is required", () => {
+    // @ts-expect-error — id is required on ModelProvider
+    const _p: ModelProvider = {
+      name: "Test",
+      capabilities: {
+        streaming: false,
+        functionCalling: false,
+        vision: false,
+        jsonMode: false,
+        maxContextTokens: 0,
+        maxOutputTokens: 0,
+      },
+    };
+    void _p;
+  });
+
+  test("properties are readonly", () => {
+    const provider: ModelProvider = {
+      id: "openai",
+      name: "OpenAI",
+      capabilities: {
+        streaming: true,
+        functionCalling: true,
+        vision: true,
+        jsonMode: true,
+        maxContextTokens: 128_000,
+        maxOutputTokens: 16_384,
+      },
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    provider.id = "other";
+  });
+});
+
+describe("ModelTarget", () => {
+  test("minimal target with required fields only", () => {
+    const target: ModelTarget = {
+      provider: "openai",
+      model: "gpt-4o",
+    };
+    expect(target.weight).toBeUndefined();
+    expect(target.enabled).toBeUndefined();
+  });
+
+  test("full target with optional fields", () => {
+    const target: ModelTarget = {
+      provider: "anthropic",
+      model: "claude-sonnet-4-5-20250929",
+      weight: 0.8,
+      enabled: true,
+    };
+    expect(target.weight).toBe(0.8);
+    expect(target.enabled).toBe(true);
+  });
+
+  test("properties are readonly", () => {
+    const target: ModelTarget = {
+      provider: "openai",
+      model: "gpt-4o",
+      weight: 1,
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    target.provider = "other";
+  });
+});
+
+describe("ModelConfig fallbacks", () => {
+  test("fallbacks is optional", () => {
+    const config: ModelConfig = { name: "gpt-4o" };
+    expect(config.fallbacks).toBeUndefined();
+  });
+
+  test("fallbacks accepts readonly string array", () => {
+    const config: ModelConfig = {
+      name: "gpt-4o",
+      fallbacks: ["claude-sonnet-4-5-20250929", "gemini-pro"],
+    };
+    expect(config.fallbacks).toHaveLength(2);
+  });
+
+  test("fallbacks array is readonly", () => {
+    const config: ModelConfig = {
+      name: "gpt-4o",
+      fallbacks: ["claude-sonnet-4-5-20250929"],
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    config.fallbacks = [];
   });
 });

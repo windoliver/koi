@@ -60,6 +60,10 @@
       "types": "./dist/lifecycle.d.ts",
       "import": "./dist/lifecycle.js"
     },
+    "./model-provider": {
+      "types": "./dist/model-provider.d.ts",
+      "import": "./dist/model-provider.js"
+    },
     "./resolver": {
       "types": "./dist/resolver.d.ts",
       "import": "./dist/resolver.js"

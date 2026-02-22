@@ -88,6 +88,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
         "zod": "4.3.6",
       },
     },
@@ -96,6 +97,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
         "@modelcontextprotocol/sdk": "1.12.1",
         "zod": "4.3.6",
       },
@@ -152,6 +154,15 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/model-router": {
+      "name": "@koi/model-router",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
     "packages/node": {
       "name": "@koi/node",
       "version": "0.0.0",
@@ -190,6 +201,14 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+      },
+    },
+    "packages/validation": {
+      "name": "@koi/validation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "zod": "4.3.6",
       },
     },
   },
@@ -393,6 +412,8 @@
 
     "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/middleware-permissions"],
 
+    "@koi/model-router": ["@koi/model-router@workspace:packages/model-router"],
+
     "@koi/node": ["@koi/node@workspace:packages/node"],
 
     "@koi/sandbox": ["@koi/sandbox@workspace:packages/sandbox"],
@@ -402,6 +423,8 @@
     "@koi/skill-scanner": ["@koi/skill-scanner@workspace:packages/skill-scanner"],
 
     "@koi/test-utils": ["@koi/test-utils@workspace:packages/test-utils"],
+
+    "@koi/validation": ["@koi/validation@workspace:packages/validation"],
 
     "@mariozechner/pi-agent-core": ["@mariozechner/pi-agent-core@0.54.0", "", { "dependencies": { "@mariozechner/pi-ai": "^0.54.0" } }, "sha512-LsPoudpOJLj7JjSpjlAdLM5uA2iy8nP+4nA6Si1ASD3tMqXdjHzNaKNloGSODKJO+3O3yhwPMSbuk78CCnZteQ=="],
 
