@@ -506,6 +506,56 @@ describe("maxTurns limit", () => {
   });
 });
 
+describe("concurrent run guard", () => {
+  test("throws when a second stream is started while the first is still running", async () => {
+    // Create a model handler that delays to simulate a slow LLM call
+    let resolveFirst: (() => void) | undefined;
+    const slowModelCall: ModelHandler = async (_request: ModelRequest): Promise<ModelResponse> => {
+      await new Promise<void>((resolve) => {
+        resolveFirst = resolve;
+      });
+      return { content: "done", model: "test", usage: { inputTokens: 1, outputTokens: 1 } };
+    };
+
+    const adapter = createLoopAdapter({ modelCall: slowModelCall });
+
+    // Start the first run (will block on the slow model call)
+    const firstRun = adapter.stream({ kind: "text", text: "first" });
+    const iterator = firstRun[Symbol.asyncIterator]();
+    // Kick off first iteration — this triggers the model call and blocks
+    const firstNext = iterator.next();
+
+    // Attempt a second run while the first is still in progress
+    await expect(collectEvents(adapter.stream({ kind: "text", text: "second" }))).rejects.toThrow(
+      "concurrent",
+    );
+
+    // Clean up: resolve the first run so it can finish
+    resolveFirst?.();
+    await firstNext;
+    // Drain remaining events
+    let done = false;
+    while (!done) {
+      const result = await iterator.next();
+      done = result.done ?? false;
+    }
+  });
+
+  test("allows sequential runs after the first completes", async () => {
+    const adapter = createLoopAdapter({
+      modelCall: createSimpleModelHandler("hello"),
+    });
+
+    // First run
+    const events1 = await collectEvents(adapter.stream({ kind: "text", text: "first" }));
+    expect(findDoneOutput(events1)?.stopReason).toBe("completed");
+
+    // Second run — should succeed after the first completed
+    const events2 = await collectEvents(adapter.stream({ kind: "text", text: "second" }));
+    expect(findDoneOutput(events2)?.stopReason).toBe("completed");
+  });
+});
+
 describe("dispose idempotency", () => {
   test("dispose can be called once without error", async () => {
     const adapter = createLoopAdapter({

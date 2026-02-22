@@ -268,6 +268,7 @@ async function* streamModelAndCollect(
             kind: "tool_call_start" as const,
             toolName: chunk.toolName,
             callId: chunk.callId,
+            args: {},
           },
         };
         break;
@@ -303,6 +304,8 @@ export function createLoopAdapter(config: LoopAdapterConfig): EngineAdapter {
   const maxTurns = config.maxTurns ?? DEFAULT_MAX_TURNS;
   // let: toggled once by dispose() — lifecycle flag
   let disposed = false;
+  // let: guards against concurrent runs sharing mutable savedMessages
+  let running = false;
 
   // Resolve which handlers to use: prefer callHandlers (middleware-composed),
   // fall back to raw terminals.
@@ -327,166 +330,178 @@ export function createLoopAdapter(config: LoopAdapterConfig): EngineAdapter {
 
   // The ReAct loop — non-streaming path
   async function* runLoop(input: EngineInput): AsyncGenerator<EngineEvent, void, undefined> {
-    const callHandlers = input.callHandlers;
-    const modelCall = resolveModelCall(callHandlers);
-    const toolHandler = resolveToolCall(callHandlers);
-    const modelStream = resolveModelStream(callHandlers);
-
-    // Mutable array — local to this generator, never shared during iteration.
-    // Uses push() for O(1) append instead of O(n) spread per turn.
-    const messages: InboundMessage[] = inputToMutableMessages(input);
-    // let: accumulated immutably via reassignment each turn
-    let metrics = createMetricsAccumulator();
-    let stopReason: EngineStopReason = "completed";
-
-    for (let turn = 0; turn < maxTurns; turn++) {
-      if (disposed) {
-        stopReason = "interrupted";
-        break;
-      }
-
-      const request: ModelRequest = { messages };
-
-      // Decide: stream or call
-      if (modelStream !== undefined) {
-        // Streaming path
-        let response: ModelResponse | undefined;
-
-        for await (const item of streamModelAndCollect(modelStream, request)) {
-          if (item.kind === "event") {
-            yield item.event;
-          } else {
-            response = item.response;
-          }
-        }
-
-        if (response === undefined) {
-          // Stream ended without a done chunk — unexpected. Build a minimal response.
-          stopReason = "error";
-          metrics = incrementTurn(metrics);
-          yield { kind: "turn_end" as const, turnIndex: turn };
-          break;
-        }
-
-        metrics = addModelUsage(metrics, response);
-
-        // Check for tool calls
-        const toolCalls = extractToolCalls(response);
-
-        if (toolCalls.length === 0) {
-          // No tool calls — final response
-          // text_delta events were already yielded by streaming
-          messages.push(buildAssistantMessage(response.content, response.metadata));
-          metrics = incrementTurn(metrics);
-          yield { kind: "turn_end" as const, turnIndex: turn };
-          break;
-        }
-
-        // Execute tool calls in parallel
-        if (toolHandler === undefined) {
-          throw new Error(
-            "Model returned tool calls but no tool handler is available. " +
-              "Provide a toolCall terminal or ensure callHandlers include toolCall.",
-          );
-        }
-
-        const toolResults = await Promise.all(
-          toolCalls.map((tc) => {
-            // Emit tool_call_start for non-streaming tool calls
-            // (streaming already emitted tool_call_start via ModelChunk)
-            return executeToolCall(tc, toolHandler);
-          }),
-        );
-
-        // Emit tool_call_end events for each result
-        for (const result of toolResults) {
-          yield {
-            kind: "tool_call_end" as const,
-            callId: result.descriptor.callId,
-            result: result.response.output,
-          };
-        }
-
-        messages.push(buildAssistantMessage(response.content, response.metadata));
-        messages.push(...buildToolResultMessages(toolResults));
-        metrics = incrementTurn(metrics);
-        yield { kind: "turn_end" as const, turnIndex: turn };
-      } else {
-        // Non-streaming path
-        const response = await modelCall(request);
-        metrics = addModelUsage(metrics, response);
-
-        // Check for tool calls
-        const toolCalls = extractToolCalls(response);
-
-        if (toolCalls.length === 0) {
-          // No tool calls — emit text_delta and done
-          if (response.content.length > 0) {
-            yield { kind: "text_delta" as const, delta: response.content };
-          }
-          messages.push(buildAssistantMessage(response.content, response.metadata));
-          metrics = incrementTurn(metrics);
-          yield { kind: "turn_end" as const, turnIndex: turn };
-          break;
-        }
-
-        // Execute tool calls in parallel
-        if (toolHandler === undefined) {
-          throw new Error(
-            "Model returned tool calls but no tool handler is available. " +
-              "Provide a toolCall terminal or ensure callHandlers include toolCall.",
-          );
-        }
-
-        // Emit tool_call_start events
-        for (const tc of toolCalls) {
-          yield {
-            kind: "tool_call_start" as const,
-            toolName: tc.toolName,
-            callId: tc.callId,
-          };
-        }
-
-        const toolResults = await Promise.all(
-          toolCalls.map((tc) => executeToolCall(tc, toolHandler)),
-        );
-
-        // Emit tool_call_end events
-        for (const result of toolResults) {
-          yield {
-            kind: "tool_call_end" as const,
-            callId: result.descriptor.callId,
-            result: result.response.output,
-          };
-        }
-
-        messages.push(buildAssistantMessage(response.content, response.metadata));
-        messages.push(...buildToolResultMessages(toolResults));
-        metrics = incrementTurn(metrics);
-        yield { kind: "turn_end" as const, turnIndex: turn };
-      }
-
-      // If this was the last allowed turn, mark as max_turns
-      if (turn === maxTurns - 1) {
-        stopReason = "max_turns";
-      }
+    if (running) {
+      throw new Error(
+        "LoopAdapter does not support concurrent runs. Wait for the current run to complete.",
+      );
     }
+    running = true;
 
-    // Build final output
-    const lastMessage = messages[messages.length - 1];
-    const finalContent: readonly ContentBlock[] =
-      lastMessage !== undefined ? lastMessage.content : [];
+    try {
+      const callHandlers = input.callHandlers;
+      const modelCall = resolveModelCall(callHandlers);
+      const toolHandler = resolveToolCall(callHandlers);
+      const modelStream = resolveModelStream(callHandlers);
 
-    const output: EngineOutput = {
-      content: finalContent,
-      stopReason,
-      metrics: finalizeMetrics(metrics),
-    };
+      // Mutable array — local to this generator, never shared during iteration.
+      // Uses push() for O(1) append instead of O(n) spread per turn.
+      const messages: InboundMessage[] = inputToMutableMessages(input);
+      // let: accumulated immutably via reassignment each turn
+      let metrics = createMetricsAccumulator();
+      let stopReason: EngineStopReason = "completed";
 
-    // Persist final conversation state for saveState()
-    savedMessages = messages;
+      for (let turn = 0; turn < maxTurns; turn++) {
+        if (disposed) {
+          stopReason = "interrupted";
+          break;
+        }
 
-    yield { kind: "done" as const, output };
+        const request: ModelRequest = { messages };
+
+        // Decide: stream or call
+        if (modelStream !== undefined) {
+          // Streaming path
+          let response: ModelResponse | undefined;
+
+          for await (const item of streamModelAndCollect(modelStream, request)) {
+            if (item.kind === "event") {
+              yield item.event;
+            } else {
+              response = item.response;
+            }
+          }
+
+          if (response === undefined) {
+            // Stream ended without a done chunk — unexpected. Build a minimal response.
+            stopReason = "error";
+            metrics = incrementTurn(metrics);
+            yield { kind: "turn_end" as const, turnIndex: turn };
+            break;
+          }
+
+          metrics = addModelUsage(metrics, response);
+
+          // Check for tool calls
+          const toolCalls = extractToolCalls(response);
+
+          if (toolCalls.length === 0) {
+            // No tool calls — final response
+            // text_delta events were already yielded by streaming
+            messages.push(buildAssistantMessage(response.content, response.metadata));
+            metrics = incrementTurn(metrics);
+            yield { kind: "turn_end" as const, turnIndex: turn };
+            break;
+          }
+
+          // Execute tool calls in parallel
+          if (toolHandler === undefined) {
+            throw new Error(
+              "Model returned tool calls but no tool handler is available. " +
+                "Provide a toolCall terminal or ensure callHandlers include toolCall.",
+            );
+          }
+
+          const toolResults = await Promise.all(
+            toolCalls.map((tc) => {
+              // Emit tool_call_start for non-streaming tool calls
+              // (streaming already emitted tool_call_start via ModelChunk)
+              return executeToolCall(tc, toolHandler);
+            }),
+          );
+
+          // Emit tool_call_end events for each result
+          for (const result of toolResults) {
+            yield {
+              kind: "tool_call_end" as const,
+              callId: result.descriptor.callId,
+              result: result.response.output,
+            };
+          }
+
+          messages.push(buildAssistantMessage(response.content, response.metadata));
+          messages.push(...buildToolResultMessages(toolResults));
+          metrics = incrementTurn(metrics);
+          yield { kind: "turn_end" as const, turnIndex: turn };
+        } else {
+          // Non-streaming path
+          const response = await modelCall(request);
+          metrics = addModelUsage(metrics, response);
+
+          // Check for tool calls
+          const toolCalls = extractToolCalls(response);
+
+          if (toolCalls.length === 0) {
+            // No tool calls — emit text_delta and done
+            if (response.content.length > 0) {
+              yield { kind: "text_delta" as const, delta: response.content };
+            }
+            messages.push(buildAssistantMessage(response.content, response.metadata));
+            metrics = incrementTurn(metrics);
+            yield { kind: "turn_end" as const, turnIndex: turn };
+            break;
+          }
+
+          // Execute tool calls in parallel
+          if (toolHandler === undefined) {
+            throw new Error(
+              "Model returned tool calls but no tool handler is available. " +
+                "Provide a toolCall terminal or ensure callHandlers include toolCall.",
+            );
+          }
+
+          // Emit tool_call_start events
+          for (const tc of toolCalls) {
+            yield {
+              kind: "tool_call_start" as const,
+              toolName: tc.toolName,
+              callId: tc.callId,
+              args: tc.input,
+            };
+          }
+
+          const toolResults = await Promise.all(
+            toolCalls.map((tc) => executeToolCall(tc, toolHandler)),
+          );
+
+          // Emit tool_call_end events
+          for (const result of toolResults) {
+            yield {
+              kind: "tool_call_end" as const,
+              callId: result.descriptor.callId,
+              result: result.response.output,
+            };
+          }
+
+          messages.push(buildAssistantMessage(response.content, response.metadata));
+          messages.push(...buildToolResultMessages(toolResults));
+          metrics = incrementTurn(metrics);
+          yield { kind: "turn_end" as const, turnIndex: turn };
+        }
+
+        // If this was the last allowed turn, mark as max_turns
+        if (turn === maxTurns - 1) {
+          stopReason = "max_turns";
+        }
+      }
+
+      // Build final output
+      const lastMessage = messages[messages.length - 1];
+      const finalContent: readonly ContentBlock[] =
+        lastMessage !== undefined ? lastMessage.content : [];
+
+      const output: EngineOutput = {
+        content: finalContent,
+        stopReason,
+        metrics: finalizeMetrics(metrics),
+      };
+
+      // Persist final conversation state for saveState()
+      savedMessages = messages;
+
+      yield { kind: "done" as const, output };
+    } finally {
+      running = false;
+    }
   }
 
   // let: updated at end of each runLoop execution for state persistence

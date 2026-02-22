@@ -13,6 +13,7 @@
     "@koi/core": "workspace:*"
   },
   "devDependencies": {
+    "@koi/model-router": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },
   "scripts": {

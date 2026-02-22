@@ -137,13 +137,17 @@ export async function runStart(flags: StartFlags): Promise<void> {
   let shuttingDown = false;
 
   function shutdown(): void {
-    if (shuttingDown) return;
+    if (shuttingDown) {
+      // Second signal — force exit immediately
+      process.stderr.write("\nForce exit.\n");
+      process.exit(1);
+    }
     shuttingDown = true;
     process.stderr.write("\nShutting down...\n");
     controller.abort();
   }
 
-  process.once("SIGINT", shutdown);
+  process.on("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
 
   // 8. Print startup info
