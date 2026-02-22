@@ -86,3 +86,15 @@ export type {
 } from "./middleware.js";
 // resolver
 export type { Resolver } from "./resolver.js";
+// sandbox
+export type {
+  FilesystemPolicy,
+  NetworkPolicy,
+  ResourceLimits,
+  SandboxAdapter,
+  SandboxExecOptions,
+  SandboxInstance,
+  SandboxProfile,
+  SandboxResult,
+  SandboxTier,
+} from "./sandbox.js";

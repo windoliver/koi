@@ -46,6 +46,12 @@ export type EngineEvent =
 
 export interface EngineAdapter {
   readonly engineId: string;
+  /**
+   * The sole required method. Returns an async iterable of engine events.
+   * Backpressure is handled naturally via `for await` consumption —
+   * the consumer controls iteration speed. Implementations should use
+   * AsyncGenerator for built-in backpressure support.
+   */
   readonly stream: (input: EngineInput) => AsyncIterable<EngineEvent>;
   readonly saveState?: () => Promise<EngineState>;
   readonly loadState?: (state: EngineState) => Promise<void>;

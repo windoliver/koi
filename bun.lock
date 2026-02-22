@@ -16,12 +16,26 @@
       "name": "@koi/core",
       "version": "0.0.0",
     },
+    "packages/gateway": {
+      "name": "@koi/gateway",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/manifest": {
       "name": "@koi/manifest",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
         "zod": "4.3.6",
+      },
+    },
+    "packages/sandbox": {
+      "name": "@koi/sandbox",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
     },
   },
@@ -109,7 +123,11 @@
 
     "@koi/core": ["@koi/core@workspace:packages/core"],
 
+    "@koi/gateway": ["@koi/gateway@workspace:packages/gateway"],
+
     "@koi/manifest": ["@koi/manifest@workspace:packages/manifest"],
+
+    "@koi/sandbox": ["@koi/sandbox@workspace:packages/sandbox"],
 
     "@rollup/rollup-android-arm-eabi": ["@rollup/rollup-android-arm-eabi@4.58.0", "", { "os": "android", "cpu": "arm" }, "sha512-mr0tmS/4FoVk1cnaeN244A/wjvGDNItZKR8hRhnmCzygyRXYtKF5jVDSIILR1U97CTzAYmbgIj/Dukg62ggG5w=="],
 

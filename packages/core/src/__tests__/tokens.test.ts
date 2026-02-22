@@ -64,6 +64,10 @@ describe("channelToken()", () => {
   test("empty name produces channel: prefix only", () => {
     expect(str(channelToken(""))).toBe("channel:");
   });
+
+  test("unicode name is preserved", () => {
+    expect(str(channelToken("\u{1F527}"))).toBe("channel:\u{1F527}");
+  });
 });
 
 describe("skillToken()", () => {
