@@ -46,6 +46,9 @@ export { createDiscoveryService } from "./discovery.js";
 export type { FrameCounterState, FrameCounters } from "./frame-counter.js";
 // -- Frame counters ---------------------------------------------------------
 export { createFrameCounters } from "./frame-counter.js";
+export type { FrameDeduplicator } from "./frame-dedup.js";
+// -- Frame deduplicator -----------------------------------------------------
+export { createFrameDeduplicator } from "./frame-dedup.js";
 export type { MemoryMetrics, MemoryMonitor } from "./monitor.js";
 export { createMemoryMonitor } from "./monitor.js";
 export type { KoiNode, NodeDeps, RecoveryResult } from "./node.js";
