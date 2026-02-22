@@ -14,6 +14,23 @@ export type {
   PermissionConfig,
   ToolConfig,
 } from "./assembly.js";
+// brick store — persistence contracts for forged artifacts
+export type {
+  AdvisoryLock,
+  AgentArtifact,
+  BrickArtifact,
+  BrickArtifactBase,
+  BrickUpdate,
+  CompositeArtifact,
+  ForgeQuery,
+  ForgeStore,
+  LockHandle,
+  LockMode,
+  LockRequest,
+  SkillArtifact,
+  TestCase,
+  ToolArtifact,
+} from "./brick-store.js";
 // channel
 export type { ChannelAdapter, ChannelCapabilities, MessageHandler } from "./channel.js";
 // common
@@ -102,6 +119,8 @@ export type {
   EvictionReason,
   EvictionResult,
 } from "./eviction.js";
+// forge types
+export type { BrickKind, BrickLifecycle, ForgeScope } from "./forge-types.js";
 // hash
 export { fnv1a } from "./hash.js";
 // health

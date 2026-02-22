@@ -1,15 +1,27 @@
 /**
- * compose_forge — Stub for brick composition.
- * Full implementation deferred to follow-up PR.
+ * compose_forge — Groups multiple bricks into a metadata-only composite.
+ * Validates all referenced brick IDs exist in the store before creating.
  */
 
-import type { Tool } from "@koi/core";
+import type { Result, Tool } from "@koi/core";
+import type { ForgeError } from "../errors.js";
+import { staticError, storeError } from "../errors.js";
+import type { CompositeArtifact, ForgeCompositeInput, ForgeResult } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
-import { createForgeTool } from "./shared.js";
+import {
+  computeContentHash,
+  createForgeTool,
+  runForgePipeline,
+  validateInputFields,
+} from "./shared.js";
+
+// ---------------------------------------------------------------------------
+// Tool config
+// ---------------------------------------------------------------------------
 
 const COMPOSE_FORGE_CONFIG: ForgeToolConfig = {
   name: "compose_forge",
-  description: "Composes multiple bricks into a composite (not yet implemented)",
+  description: "Groups multiple bricks into a composite through the verification pipeline",
   inputSchema: {
     type: "object",
     properties: {
@@ -19,24 +31,91 @@ const COMPOSE_FORGE_CONFIG: ForgeToolConfig = {
     },
     required: ["name", "description", "brickIds"],
   },
-  handler: async (): Promise<{
-    readonly ok: false;
-    readonly error: {
-      readonly stage: "governance";
-      readonly code: "FORGE_DISABLED";
-      readonly message: string;
-    };
-  }> => {
+  handler: composeForgeHandler,
+};
+
+// ---------------------------------------------------------------------------
+// Handler
+// ---------------------------------------------------------------------------
+
+const COMPOSE_FORGE_FIELDS = [
+  { name: "name", type: "string", required: true },
+  { name: "description", type: "string", required: true },
+  { name: "brickIds", type: "array", required: true },
+] as const;
+
+async function composeForgeHandler(
+  input: unknown,
+  deps: ForgeDeps,
+): Promise<Result<ForgeResult, ForgeError>> {
+  const validationErr = validateInputFields(input, COMPOSE_FORGE_FIELDS);
+  if (validationErr !== undefined) {
+    return { ok: false, error: validationErr };
+  }
+
+  const compositeInput = input as ForgeCompositeInput;
+
+  // Check for duplicate brick IDs
+  const uniqueIds = new Set(compositeInput.brickIds);
+  if (uniqueIds.size !== compositeInput.brickIds.length) {
     return {
       ok: false,
-      error: {
-        stage: "governance",
-        code: "FORGE_DISABLED",
-        message: "compose_forge is not yet implemented — requires brick composition logic",
-      },
+      error: staticError("INVALID_SCHEMA", `Composite brickIds contain duplicate entries`),
     };
-  },
-};
+  }
+
+  // Validate all referenced bricks exist (parallel loading per decision 14B)
+  const loadResults = await Promise.all(compositeInput.brickIds.map((id) => deps.store.load(id)));
+
+  const missingIds: string[] = [];
+  for (let i = 0; i < loadResults.length; i++) {
+    const loadResult = loadResults[i];
+    if (loadResult === undefined || !loadResult.ok) {
+      const brickId = compositeInput.brickIds[i];
+      if (brickId !== undefined) {
+        missingIds.push(brickId);
+      }
+    }
+  }
+
+  if (missingIds.length > 0) {
+    return {
+      ok: false,
+      error: storeError("LOAD_FAILED", `Referenced brick(s) not found: ${missingIds.join(", ")}`),
+    };
+  }
+
+  const forgeInput: ForgeCompositeInput = {
+    kind: "composite",
+    name: compositeInput.name,
+    description: compositeInput.description,
+    brickIds: compositeInput.brickIds,
+  };
+
+  return runForgePipeline(forgeInput, deps, (id, report) => {
+    const artifact: CompositeArtifact = {
+      id,
+      kind: "composite",
+      name: forgeInput.name,
+      description: forgeInput.description,
+      scope: deps.config.defaultScope,
+      trustTier: report.finalTrustTier,
+      lifecycle: "active",
+      createdBy: deps.context.agentId,
+      createdAt: Date.now(),
+      version: "0.0.1",
+      tags: [],
+      usageCount: 0,
+      contentHash: computeContentHash(forgeInput.brickIds.join(",")),
+      brickIds: forgeInput.brickIds,
+    };
+    return artifact;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 export function createComposeForgeTool(deps: ForgeDeps): Tool {
   return createForgeTool(COMPOSE_FORGE_CONFIG, deps);

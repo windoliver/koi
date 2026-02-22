@@ -13,6 +13,8 @@ import type {
   KoiMiddleware,
   ProcessAccounter,
   SpawnLedger,
+  Tool,
+  ToolDescriptor,
 } from "@koi/core";
 
 // ---------------------------------------------------------------------------
@@ -159,6 +161,27 @@ export const DEFAULT_SPAWN_POLICY: SpawnPolicy = Object.freeze({
 });
 
 // ---------------------------------------------------------------------------
+// Live forge resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Enables forged capabilities to be used without agent re-assembly.
+ *
+ * Tools: resolved at call time (immediate). Descriptors refreshed at turn boundary.
+ * Middleware: re-composed at turn boundary (next turn picks up new middleware).
+ *
+ * All methods use L0 types only — L2 (forge) provides the implementation.
+ */
+export interface ForgeRuntime {
+  /** Resolve a forged tool by name. Returns undefined if not found or not accessible. */
+  readonly resolveTool: (toolId: string) => Promise<Tool | undefined>;
+  /** Get descriptors for all currently available forged tools. */
+  readonly toolDescriptors: () => Promise<readonly ToolDescriptor[]>;
+  /** Get currently active forged middleware. Re-queried at turn boundaries. */
+  readonly middleware?: () => Promise<readonly KoiMiddleware[]>;
+}
+
+// ---------------------------------------------------------------------------
 // Factory API
 // ---------------------------------------------------------------------------
 
@@ -186,6 +209,8 @@ export interface CreateKoiOptions {
   readonly spawnLedger?: SpawnLedger;
   /** Optional approval handler for HITL permission gating. */
   readonly approvalHandler?: ApprovalHandler;
+  /** Optional live forge runtime — enables forged tools/middleware without agent re-assembly. */
+  readonly forge?: ForgeRuntime;
   /** Optional shared process accounter for cross-agent spawn accounting. */
   readonly processAccounter?: ProcessAccounter;
 }

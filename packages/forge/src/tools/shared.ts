@@ -2,13 +2,28 @@
  * Shared factory for primordial forge tools — DRY across all 6 tools.
  */
 
-import type { JsonObject, Result, Tool, ToolDescriptor } from "@koi/core";
+import type {
+  BrickArtifact,
+  ForgeStore,
+  JsonObject,
+  Result,
+  Tool,
+  ToolDescriptor,
+} from "@koi/core";
 import type { ForgeConfig } from "../config.js";
 import type { ForgeError } from "../errors.js";
-import { staticError } from "../errors.js";
+import { staticError, typeError } from "../errors.js";
 import { checkGovernance } from "../governance.js";
-import type { ForgeStore } from "../store.js";
-import type { ForgeContext, ForgeVerifier, SandboxExecutor } from "../types.js";
+import type {
+  ForgeContext,
+  ForgeInput,
+  ForgeResult,
+  ForgeVerifier,
+  ManifestParser,
+  SandboxExecutor,
+  VerificationReport,
+} from "../types.js";
+import { verify } from "../verify.js";
 
 // ---------------------------------------------------------------------------
 // Shared dependencies
@@ -20,6 +35,8 @@ export interface ForgeDeps {
   readonly verifiers: readonly ForgeVerifier[];
   readonly config: ForgeConfig;
   readonly context: ForgeContext;
+  /** Injected manifest parser — required only for forge_agent. Avoids L2 peer import of @koi/manifest. */
+  readonly manifestParser?: ManifestParser;
 }
 
 // ---------------------------------------------------------------------------
@@ -59,26 +76,96 @@ export function validateInputFields(
     }
     if (value !== undefined) {
       if (field.type === "string" && typeof value !== "string") {
-        return staticError(
-          "MISSING_FIELD",
-          `Field "${field.name}" must be a string, got ${typeof value}`,
-        );
+        return typeError(`Field "${field.name}" must be a string, got ${typeof value}`);
       }
       if (field.type === "object" && (typeof value !== "object" || value === null)) {
-        return staticError(
-          "MISSING_FIELD",
-          `Field "${field.name}" must be an object, got ${typeof value}`,
-        );
+        return typeError(`Field "${field.name}" must be an object, got ${typeof value}`);
       }
       if (field.type === "array" && !Array.isArray(value)) {
-        return staticError(
-          "MISSING_FIELD",
-          `Field "${field.name}" must be an array, got ${typeof value}`,
-        );
+        return typeError(`Field "${field.name}" must be an array, got ${typeof value}`);
       }
     }
   }
   return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Content hash (SHA-256 hex digest for integrity verification)
+// ---------------------------------------------------------------------------
+
+export function computeContentHash(content: string): string {
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(content);
+  return hasher.digest("hex");
+}
+
+// ---------------------------------------------------------------------------
+// Shared forge pipeline (verify → generate ID → build artifact → save → result)
+// ---------------------------------------------------------------------------
+
+export type ArtifactBuilder = (
+  id: string,
+  report: VerificationReport,
+  deps: ForgeDeps,
+) => BrickArtifact;
+
+export async function runForgePipeline(
+  forgeInput: ForgeInput,
+  deps: ForgeDeps,
+  buildArtifact: ArtifactBuilder,
+): Promise<Result<ForgeResult, ForgeError>> {
+  const verifyResult = await verify(
+    forgeInput,
+    deps.context,
+    deps.executor,
+    deps.verifiers,
+    deps.config,
+  );
+
+  if (!verifyResult.ok) {
+    return { ok: false, error: verifyResult.error };
+  }
+
+  const report = verifyResult.value;
+  const id = `brick_${crypto.randomUUID()}`;
+
+  const artifact = buildArtifact(id, report, deps);
+
+  const saveResult = await deps.store.save(artifact);
+  if (!saveResult.ok) {
+    return {
+      ok: false,
+      error: {
+        stage: "store",
+        code: "SAVE_FAILED",
+        message: `Failed to save artifact: ${saveResult.error.message}`,
+      },
+    };
+  }
+
+  const forgeResult: ForgeResult = {
+    id,
+    kind: forgeInput.kind,
+    name: forgeInput.name,
+    descriptor: {
+      name: forgeInput.name,
+      description: forgeInput.description,
+      inputSchema: forgeInput.kind === "tool" ? forgeInput.inputSchema : {},
+    },
+    trustTier: report.finalTrustTier,
+    scope: deps.config.defaultScope,
+    lifecycle: "active",
+    verificationReport: report,
+    metadata: {
+      forgedAt: artifact.createdAt,
+      forgedBy: deps.context.agentId,
+      sessionId: deps.context.sessionId,
+      depth: deps.context.depth,
+    },
+    forgesConsumed: 1,
+  };
+
+  return { ok: true, value: forgeResult };
 }
 
 // ---------------------------------------------------------------------------
@@ -93,8 +180,8 @@ export function createForgeTool(toolConfig: ForgeToolConfig, deps: ForgeDeps): T
   };
 
   const execute = async (input: JsonObject): Promise<unknown> => {
-    // Governance pre-check
-    const govResult = checkGovernance(deps.context, deps.config);
+    // Governance pre-check (includes depth-aware tool filtering)
+    const govResult = checkGovernance(deps.context, deps.config, toolConfig.name);
     if (!govResult.ok) {
       return { ok: false, error: govResult.error };
     }

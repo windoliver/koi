@@ -127,6 +127,10 @@ describe("createForgeToolTool", () => {
         ok: false as const,
         error: { code: "INTERNAL" as const, message: "n/a", retryable: false },
       }),
+      exists: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "n/a", retryable: false },
+      }),
     };
 
     const tool = createForgeToolTool(createDeps({ store: failingStore }));
@@ -178,11 +182,12 @@ describe("createForgeToolTool", () => {
       implementation: "return 1;",
     })) as {
       readonly ok: false;
-      readonly error: { readonly stage: string; readonly message: string };
+      readonly error: { readonly stage: string; readonly code: string; readonly message: string };
     };
 
     expect(result.ok).toBe(false);
     expect(result.error.stage).toBe("static");
+    expect(result.error.code).toBe("INVALID_TYPE");
     expect(result.error.message).toContain("name");
     expect(result.error.message).toContain("string");
   });

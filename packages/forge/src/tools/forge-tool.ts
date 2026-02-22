@@ -4,10 +4,14 @@
 
 import type { Result, Tool } from "@koi/core";
 import type { ForgeError } from "../errors.js";
-import type { BrickArtifact, ForgeResult, ForgeToolInput } from "../types.js";
-import { verify } from "../verify.js";
+import type { ForgeResult, ForgeToolInput, ToolArtifact } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
-import { createForgeTool, validateInputFields } from "./shared.js";
+import {
+  computeContentHash,
+  createForgeTool,
+  runForgePipeline,
+  validateInputFields,
+} from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Tool config
@@ -72,76 +76,27 @@ async function forgeToolHandler(
     ...(toolInput.testCases !== undefined ? { testCases: toolInput.testCases } : {}),
   };
 
-  // Run verification pipeline
-  const verifyResult = await verify(
-    forgeInput,
-    deps.context,
-    deps.executor,
-    deps.verifiers,
-    deps.config,
-  );
-
-  if (!verifyResult.ok) {
-    return { ok: false, error: verifyResult.error };
-  }
-
-  const report = verifyResult.value;
-  const id = `brick_${crypto.randomUUID()}`;
-
-  // Save to store
-  const artifact: BrickArtifact = {
-    id,
-    kind: "tool",
-    name: forgeInput.name,
-    description: forgeInput.description,
-    scope: deps.config.defaultScope,
-    trustTier: report.finalTrustTier,
-    lifecycle: "active",
-    createdBy: deps.context.agentId,
-    createdAt: Date.now(),
-    version: "0.0.1",
-    tags: [],
-    usageCount: 0,
-    implementation: forgeInput.implementation,
-    inputSchema: forgeInput.inputSchema,
-    ...(forgeInput.testCases !== undefined ? { testCases: forgeInput.testCases } : {}),
-  };
-
-  const saveResult = await deps.store.save(artifact);
-  if (!saveResult.ok) {
-    return {
-      ok: false,
-      error: {
-        stage: "store",
-        code: "SAVE_FAILED",
-        message: `Failed to save artifact: ${saveResult.error.message}`,
-      },
-    };
-  }
-
-  const forgeResult: ForgeResult = {
-    id,
-    kind: "tool",
-    name: forgeInput.name,
-    descriptor: {
+  return runForgePipeline(forgeInput, deps, (id, report) => {
+    const artifact: ToolArtifact = {
+      id,
+      kind: "tool",
       name: forgeInput.name,
       description: forgeInput.description,
+      scope: deps.config.defaultScope,
+      trustTier: report.finalTrustTier,
+      lifecycle: "active",
+      createdBy: deps.context.agentId,
+      createdAt: Date.now(),
+      version: "0.0.1",
+      tags: [],
+      usageCount: 0,
+      contentHash: computeContentHash(forgeInput.implementation),
+      implementation: forgeInput.implementation,
       inputSchema: forgeInput.inputSchema,
-    },
-    trustTier: report.finalTrustTier,
-    scope: deps.config.defaultScope,
-    lifecycle: "active",
-    verificationReport: report,
-    metadata: {
-      forgedAt: artifact.createdAt,
-      forgedBy: deps.context.agentId,
-      sessionId: deps.context.sessionId,
-      depth: deps.context.depth,
-    },
-    forgesConsumed: 1,
-  };
-
-  return { ok: true, value: forgeResult };
+      ...(forgeInput.testCases !== undefined ? { testCases: forgeInput.testCases } : {}),
+    };
+    return artifact;
+  });
 }
 
 // ---------------------------------------------------------------------------
