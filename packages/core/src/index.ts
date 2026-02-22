@@ -33,6 +33,7 @@ export type {
 // ecs — types
 export type {
   Agent,
+  AgentId,
   ComponentProvider,
   CredentialComponent,
   EventComponent,
@@ -50,6 +51,7 @@ export type {
 } from "./ecs.js";
 // ecs — runtime values (token factories + well-known constants)
 export {
+  agentId,
   CREDENTIALS,
   channelToken,
   DELEGATION,
@@ -75,8 +77,37 @@ export type {
 export type { KoiError, KoiErrorCode, Result } from "./errors.js";
 // errors — runtime values
 export { RETRYABLE_DEFAULTS } from "./errors.js";
+// eviction
+export type {
+  EvictionCandidate,
+  EvictionPolicy,
+  EvictionReason,
+  EvictionResult,
+} from "./eviction.js";
 // forge types
 export type { BrickKind, BrickLifecycle, ForgeScope } from "./forge-types.js";
+// health
+export type {
+  HealthMonitor,
+  HealthMonitorConfig,
+  HealthMonitorStats,
+  HealthSnapshot,
+  HealthStatus,
+} from "./health.js";
+// health — runtime values
+export { DEFAULT_HEALTH_MONITOR_CONFIG } from "./health.js";
+// lifecycle
+export type {
+  AgentCondition,
+  AgentRegistry,
+  AgentStatus,
+  RegistryEntry,
+  RegistryEvent,
+  RegistryFilter,
+  TransitionReason,
+} from "./lifecycle.js";
+// lifecycle — runtime values
+export { VALID_TRANSITIONS } from "./lifecycle.js";
 // message
 export type {
   ButtonBlock,

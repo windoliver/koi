@@ -150,12 +150,19 @@ export function handleHandshake(
  */
 const SHARD_COUNT = 10;
 
+/** Contextual information passed to the sweep error handler. */
+export interface SweepError {
+  readonly sessionId: string;
+  readonly cause: unknown;
+}
+
 export function startHeartbeatSweep(
   store: SessionStore,
   authenticator: GatewayAuthenticator,
   heartbeatIntervalMs: number,
   sweepIntervalMs: number,
   onExpired: (sessionId: string) => void,
+  onError?: (error: SweepError) => void,
 ): () => void {
   let shardIndex = 0;
 
@@ -180,8 +187,10 @@ export function startHeartbeatSweep(
             store.set({ ...session, lastHeartbeat: Date.now() });
           }
         })
-        .catch(() => {
-          // Fail-open: auth service error → keep session alive, retry next sweep
+        .catch((cause: unknown) => {
+          // Fail-open: auth service error → keep session alive, retry next sweep.
+          // Notify caller for logging/metrics — never silently swallow.
+          onError?.({ sessionId: id, cause });
         });
     }
   }, sweepIntervalMs);

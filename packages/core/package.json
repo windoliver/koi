@@ -44,6 +44,18 @@
       "types": "./dist/middleware.d.ts",
       "import": "./dist/middleware.js"
     },
+    "./eviction": {
+      "types": "./dist/eviction.d.ts",
+      "import": "./dist/eviction.js"
+    },
+    "./health": {
+      "types": "./dist/health.d.ts",
+      "import": "./dist/health.js"
+    },
+    "./lifecycle": {
+      "types": "./dist/lifecycle.d.ts",
+      "import": "./dist/lifecycle.js"
+    },
     "./resolver": {
       "types": "./dist/resolver.d.ts",
       "import": "./dist/resolver.js"

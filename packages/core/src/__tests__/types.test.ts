@@ -41,7 +41,7 @@ import type {
   ToolDescriptor,
   TrustTier,
 } from "../index.js";
-import { CREDENTIALS, DELEGATION, EVENTS, GOVERNANCE, MEMORY, token } from "../index.js";
+import { agentId, CREDENTIALS, DELEGATION, EVENTS, GOVERNANCE, MEMORY, token } from "../index.js";
 
 /**
  * Type-level tests using @ts-expect-error.
@@ -232,9 +232,15 @@ describe("readonly enforcement", () => {
   });
 
   test("ProcessId properties are readonly", () => {
-    const pid: ProcessId = { id: "1", name: "test", type: "copilot", depth: 0 };
+    const pid: ProcessId = { id: agentId("1"), name: "test", type: "copilot", depth: 0 };
     // @ts-expect-error — cannot assign to readonly property
-    pid.id = "2";
+    pid.id = agentId("2");
+  });
+
+  test("ProcessId.id requires AgentId branded type", () => {
+    // @ts-expect-error — string is not assignable to AgentId
+    const _pid: ProcessId = { id: "plain-string", name: "test", type: "copilot", depth: 0 };
+    void _pid;
   });
 
   test("ToolDescriptor properties are readonly", () => {

@@ -7,7 +7,12 @@
  */
 
 // auth
-export type { GatewayAuthenticator, HandshakeOptions, HandshakeResult } from "./auth.js";
+export type {
+  GatewayAuthenticator,
+  HandshakeOptions,
+  HandshakeResult,
+  SweepError,
+} from "./auth.js";
 export { handleHandshake, startHeartbeatSweep } from "./auth.js";
 // backpressure
 export type { BackpressureMonitor } from "./backpressure.js";
