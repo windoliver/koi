@@ -57,8 +57,10 @@ export type {
   EngineState,
   EngineStopReason,
 } from "./engine.js";
-// errors
+// errors — types
 export type { KoiError, KoiErrorCode, Result } from "./errors.js";
+// errors — runtime values
+export { RETRYABLE_DEFAULTS } from "./errors.js";
 // message
 export type {
   ButtonBlock,
