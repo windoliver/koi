@@ -232,7 +232,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 if (error instanceof KoiEngineError) {
                   const stopReason = error.code === "TIMEOUT" ? "max_turns" : "error";
                   agent.transition({ kind: "complete", stopReason });
-                  await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+                  try {
+                    await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+                  } catch {
+                    // Don't mask guard error → done event conversion
+                  }
                   const doneEvent: EngineEvent = {
                     kind: "done",
                     output: {
