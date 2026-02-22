@@ -1,0 +1,3 @@
+name: "bad-model-agent"
+version: "1.0.0"
+model: 42

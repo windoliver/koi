@@ -1,0 +1,39 @@
+name: "Research Assistant"
+version: "2.1.0"
+description: "A research agent with full configuration"
+model:
+  name: "anthropic:claude-sonnet-4-5-20250929"
+  options:
+    temperature: 0.7
+    maxTokens: 4096
+tools:
+  mcp:
+    - name: filesystem
+      command: "npx @anthropic/mcp-server-filesystem /workspace"
+    - name: search
+      command: "npx @anthropic/mcp-server-search"
+channels:
+  - name: "@koi/channel-telegram"
+    options:
+      token: "bot-token-123"
+middleware:
+  - name: "@koi/middleware-memory"
+    options:
+      scope: agent
+  - name: "@koi/middleware-pay"
+    options:
+      dailyBudget: 1000
+permissions:
+  allow:
+    - "read_file:/workspace/**"
+  deny:
+    - "bash:rm -rf *"
+  ask:
+    - "bash:*"
+metadata:
+  author: "koi-team"
+  tags:
+    - research
+    - assistant
+engine: "deepagents"
+schedule: "0 9 * * *"
