@@ -25,6 +25,7 @@ export type { SessionStore } from "./session-store.js";
 export { createInMemorySessionStore } from "./session-store.js";
 // transport
 export type {
+  BunTransport,
   Transport,
   TransportConnection,
   TransportHandler,

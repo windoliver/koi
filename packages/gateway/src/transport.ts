@@ -44,11 +44,20 @@ export interface Transport {
 // BunTransport — wraps Bun.serve() WebSocket
 // ---------------------------------------------------------------------------
 
-export function createBunTransport(): Transport {
+export interface BunTransport extends Transport {
+  /** The actual port the server is listening on (useful when binding to port 0). */
+  readonly port: () => number;
+}
+
+export function createBunTransport(): BunTransport {
   let server: ReturnType<typeof Bun.serve> | undefined;
   let connectionCount = 0;
 
   return {
+    port(): number {
+      if (server === undefined) throw new Error("Transport not started");
+      return server.port;
+    },
     listen(port: number, handler: TransportHandler): Promise<void> {
       // Map from Bun's ServerWebSocket id → TransportConnection
       const connMap = new Map<string, TransportConnection>();
