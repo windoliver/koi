@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { SearchResult } from "@koi/core";
+import type { SearchResult } from "../types.js";
 import { applyTemporalDecay } from "./temporal-decay.js";
 
 function makeResult(id: string, score: number, indexedAt?: number | string): SearchResult {

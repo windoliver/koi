@@ -177,6 +177,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -187,6 +188,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -210,6 +212,7 @@
       },
       "devDependencies": {
         "@koi/gateway": "workspace:*",
+        "@koi/session-store": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -230,6 +233,13 @@
     },
     "packages/search": {
       "name": "@koi/search",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/session-store": {
+      "name": "@koi/session-store",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
@@ -473,6 +483,8 @@
     "@koi/scheduler": ["@koi/scheduler@workspace:packages/scheduler"],
 
     "@koi/search": ["@koi/search@workspace:packages/search"],
+
+    "@koi/session-store": ["@koi/session-store@workspace:packages/session-store"],
 
     "@koi/skill-scanner": ["@koi/skill-scanner@workspace:packages/skill-scanner"],
 

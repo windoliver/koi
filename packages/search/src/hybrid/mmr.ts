@@ -1,5 +1,5 @@
-import type { SearchResult } from "@koi/core";
 import { defaultTokenize } from "../bm25/bm25-index.js";
+import type { SearchResult } from "../types.js";
 
 export interface MmrConfig {
   /** 0 = max diversity, 1 = max relevance. Default 0.7 */

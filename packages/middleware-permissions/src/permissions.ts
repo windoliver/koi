@@ -2,8 +2,6 @@
  * Permissions middleware factory — tool-level access control + HITL approval.
  */
 
-import type { KoiError } from "@koi/core/errors";
-import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type {
   KoiMiddleware,
   ToolHandler,
@@ -11,6 +9,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core/middleware";
+import { KoiRuntimeError } from "@koi/errors";
 import type { ApprovalCacheConfig, PermissionsMiddlewareConfig } from "./config.js";
 import { DEFAULT_APPROVAL_CACHE_MAX_ENTRIES } from "./config.js";
 import { fnv1a } from "./hash.js";
@@ -53,13 +52,9 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       }
 
       if (decision.allowed === false) {
-        const error: KoiError = {
-          code: "PERMISSION",
-          message: decision.reason,
-          retryable: RETRYABLE_DEFAULTS.PERMISSION,
+        throw KoiRuntimeError.from("PERMISSION", decision.reason, {
           context: { toolId: request.toolId },
-        };
-        throw error;
+        });
       }
 
       // decision.allowed === "ask"
@@ -73,13 +68,13 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       }
 
       if (!approvalHandler) {
-        const error: KoiError = {
-          code: "PERMISSION",
-          message: `No approval handler configured for tool "${request.toolId}"`,
-          retryable: RETRYABLE_DEFAULTS.PERMISSION,
-          context: { toolId: request.toolId },
-        };
-        throw error;
+        throw KoiRuntimeError.from(
+          "PERMISSION",
+          `No approval handler configured for tool "${request.toolId}"`,
+          {
+            context: { toolId: request.toolId },
+          },
+        );
       }
 
       const ac = new AbortController();
@@ -87,13 +82,15 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         approvalHandler.requestApproval(request.toolId, request.input, decision.reason),
         new Promise<never>((_, reject) => {
           const timerId = setTimeout(() => {
-            const timeoutError: KoiError = {
-              code: "TIMEOUT",
-              message: `Approval timed out after ${approvalTimeoutMs}ms for tool "${request.toolId}"`,
-              retryable: RETRYABLE_DEFAULTS.TIMEOUT,
-              context: { toolId: request.toolId, timeoutMs: approvalTimeoutMs },
-            };
-            reject(timeoutError);
+            reject(
+              KoiRuntimeError.from(
+                "TIMEOUT",
+                `Approval timed out after ${approvalTimeoutMs}ms for tool "${request.toolId}"`,
+                {
+                  context: { toolId: request.toolId, timeoutMs: approvalTimeoutMs },
+                },
+              ),
+            );
           }, approvalTimeoutMs);
           ac.signal.addEventListener("abort", () => clearTimeout(timerId), { once: true });
         }),
@@ -106,20 +103,18 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         if (cache !== undefined && resolvedCache !== false) {
           const cacheKey = fnv1a(`${request.toolId}:${JSON.stringify(request.input)}`);
           if (cache.size >= (resolvedCache.maxEntries ?? DEFAULT_APPROVAL_CACHE_MAX_ENTRIES)) {
-            cache.clear();
+            // LRU eviction: Map iteration order is insertion order, so first key is oldest
+            const oldest = cache.keys().next().value;
+            if (oldest !== undefined) cache.delete(oldest);
           }
           cache.set(cacheKey, true);
         }
         return next(request);
       }
 
-      const error: KoiError = {
-        code: "PERMISSION",
-        message: `Approval denied for tool "${request.toolId}"`,
-        retryable: RETRYABLE_DEFAULTS.PERMISSION,
+      throw KoiRuntimeError.from("PERMISSION", `Approval denied for tool "${request.toolId}"`, {
         context: { toolId: request.toolId },
-      };
-      throw error;
+      });
     },
   };
 }

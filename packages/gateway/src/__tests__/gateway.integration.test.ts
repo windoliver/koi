@@ -9,6 +9,7 @@ import {
   createTestAuthenticator,
   createTestFrame,
   createTestSession,
+  storeHas,
   waitForCondition,
 } from "./test-utils.js";
 
@@ -44,7 +45,7 @@ describe("Gateway integration", () => {
 
     // Client sends auth token
     transport.simulateMessage(conn.id, createConnectMessage("valid-token"));
-    await waitForCondition(() => gateway.sessions().has("s1"));
+    await waitForCondition(() => storeHas(gateway.sessions(), "s1"));
 
     // Client sends a frame
     const frame = JSON.stringify({
@@ -99,7 +100,7 @@ describe("Gateway integration", () => {
 
     const conn = transport.simulateOpen();
     transport.simulateMessage(conn.id, createConnectMessage("valid-token"));
-    await waitForCondition(() => gateway.sessions().has("s1"));
+    await waitForCondition(() => storeHas(gateway.sessions(), "s1"));
 
     // Send invalid frame
     transport.simulateMessage(conn.id, "{invalid json");
@@ -123,7 +124,7 @@ describe("Gateway integration", () => {
 
     const conn = transport.simulateOpen();
     transport.simulateMessage(conn.id, createConnectMessage("valid-token"));
-    await waitForCondition(() => gateway.sessions().has("s1"));
+    await waitForCondition(() => storeHas(gateway.sessions(), "s1"));
 
     const outFrame: GatewayFrame = {
       kind: "event",
@@ -176,7 +177,7 @@ describe("Gateway integration", () => {
 
     const conn = transport.simulateOpen();
     transport.simulateMessage(conn.id, createConnectMessage());
-    await waitForCondition(() => gateway.sessions().has("s1"));
+    await waitForCondition(() => storeHas(gateway.sessions(), "s1"));
 
     const frame = JSON.stringify({
       kind: "request",
@@ -212,7 +213,7 @@ describe("Gateway integration", () => {
 
     const conn = transport.simulateOpen();
     transport.simulateMessage(conn.id, createConnectMessage());
-    await waitForCondition(() => gateway.sessions().has("s1"));
+    await waitForCondition(() => storeHas(gateway.sessions(), "s1"));
 
     // Unsubscribe
     unsub();
@@ -244,15 +245,15 @@ describe("Gateway integration", () => {
 
     const conn = transport.simulateOpen();
     transport.simulateMessage(conn.id, createConnectMessage());
-    await waitForCondition(() => gateway.sessions().has("s1"));
+    await waitForCondition(() => storeHas(gateway.sessions(), "s1"));
 
-    expect(gateway.sessions().has("s1")).toBe(true);
+    expect(storeHas(gateway.sessions(), "s1")).toBe(true);
 
     // Client disconnects
     transport.simulateClose(conn.id);
 
     // Session should be cleaned up from store (Issue #2 fix)
-    expect(gateway.sessions().has("s1")).toBe(false);
+    expect(storeHas(gateway.sessions(), "s1")).toBe(false);
 
     // send should fail now
     const result = gateway.send("s1", {
@@ -314,7 +315,7 @@ describe("Gateway integration", () => {
     // Open connection and complete auth
     const conn = transport.simulateOpen();
     transport.simulateMessage(conn.id, createConnectMessage());
-    await waitForCondition(() => gateway.sessions().has("s1"));
+    await waitForCondition(() => storeHas(gateway.sessions(), "s1"));
 
     // Manually close and clean up the session from the gateway, simulating session loss
     transport.simulateClose(conn.id);
@@ -368,12 +369,12 @@ describe("Gateway integration", () => {
 
     const conn = transport.simulateOpen();
     transport.simulateMessage(conn.id, createConnectMessage());
-    await waitForCondition(() => gateway.sessions().has("s-gone"));
+    await waitForCondition(() => storeHas(gateway.sessions(), "s-gone"));
 
     // Manually delete session from store to simulate session disappearing
-    gateway.sessions().delete("s-gone");
+    void gateway.sessions().delete("s-gone");
 
-    // Send a frame — should hit 4008 path
+    // Send a frame — should hit 4008 path (handlePostHandshake is async)
     transport.simulateMessage(
       conn.id,
       JSON.stringify({
@@ -385,6 +386,7 @@ describe("Gateway integration", () => {
       }),
     );
 
+    await waitForCondition(() => conn.closeCode !== undefined);
     expect(conn.closeCode).toBe(4008);
   });
 
@@ -408,7 +410,7 @@ describe("Gateway integration", () => {
 
     const conn = transport.simulateOpen();
     transport.simulateMessage(conn.id, createConnectMessage());
-    await waitForCondition(() => gateway.sessions().has("s-bp-timeout"));
+    await waitForCondition(() => storeHas(gateway.sessions(), "s-bp-timeout"));
 
     // First frame will push buffer into critical (JSON is > 10 bytes)
     transport.simulateMessage(
@@ -425,7 +427,7 @@ describe("Gateway integration", () => {
     // Wait for critical timeout
     await new Promise((r) => setTimeout(r, 100));
 
-    // Send another frame — should trigger backpressure timeout closure
+    // Send another frame — should trigger backpressure timeout closure (async)
     transport.simulateMessage(
       conn.id,
       JSON.stringify({
@@ -437,6 +439,7 @@ describe("Gateway integration", () => {
       }),
     );
 
+    await waitForCondition(() => conn.closeCode !== undefined);
     expect(conn.closeCode).toBe(4009);
   });
 
@@ -464,7 +467,7 @@ describe("Gateway integration", () => {
 
     const conn = transport.simulateOpen();
     transport.simulateMessage(conn.id, createConnectMessage());
-    await waitForCondition(() => gateway.sessions().has("s-drain"));
+    await waitForCondition(() => storeHas(gateway.sessions(), "s-drain"));
 
     // Send a frame to accumulate buffer usage (JSON ~80+ bytes)
     transport.simulateMessage(
@@ -513,7 +516,7 @@ describe("Gateway integration", () => {
     // Open connection with sendResult: 0 to simulate dropped sends
     const conn = transport.simulateOpen({ sendResult: 0 });
     transport.simulateMessage(conn.id, createConnectMessage());
-    await waitForCondition(() => gateway.sessions().has("s-drop"));
+    await waitForCondition(() => storeHas(gateway.sessions(), "s-drop"));
 
     const result = gateway.send("s-drop", {
       kind: "event",
@@ -541,7 +544,7 @@ describe("Gateway integration", () => {
 
     const conn = transport.simulateOpen();
     transport.simulateMessage(conn.id, createConnectMessage());
-    await waitForCondition(() => gateway.sessions().has("s-orphan"));
+    await waitForCondition(() => storeHas(gateway.sessions(), "s-orphan"));
 
     // Close the connection from transport side (removes from transport's map)
     // but via onClose which calls cleanup (removes from connMap too).
@@ -611,7 +614,7 @@ describe("Gateway integration", () => {
 
     const conn = transport.simulateOpen();
     transport.simulateMessage(conn.id, createConnectMessage());
-    await waitForCondition(() => gateway.sessions().has("s-route"));
+    await waitForCondition(() => storeHas(gateway.sessions(), "s-route"));
 
     transport.simulateMessage(
       conn.id,
@@ -651,7 +654,7 @@ describe("Gateway integration", () => {
 
     const conn = transport.simulateOpen();
     transport.simulateMessage(conn.id, createConnectMessage());
-    await waitForCondition(() => gateway.sessions().has("s-fallback"));
+    await waitForCondition(() => storeHas(gateway.sessions(), "s-fallback"));
 
     transport.simulateMessage(
       conn.id,
@@ -685,7 +688,7 @@ describe("Gateway integration", () => {
 
     const conn = transport.simulateOpen();
     transport.simulateMessage(conn.id, createConnectMessage());
-    await waitForCondition(() => gateway.sessions().has("s-compat"));
+    await waitForCondition(() => storeHas(gateway.sessions(), "s-compat"));
 
     transport.simulateMessage(
       conn.id,

@@ -178,13 +178,13 @@ export function startHeartbeatSweep(
 
       void authenticator
         .validate(id)
-        .then((valid) => {
+        .then(async (valid) => {
           if (!valid) {
-            store.delete(id);
+            await store.delete(id);
             onExpired(id);
           } else {
             // Update heartbeat timestamp
-            store.set({ ...session, lastHeartbeat: Date.now() });
+            await store.set({ ...session, lastHeartbeat: Date.now() });
           }
         })
         .catch((cause: unknown) => {
