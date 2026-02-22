@@ -86,6 +86,8 @@ export type {
 } from "./middleware.js";
 // resolver
 export type { Resolver } from "./resolver.js";
+// search contracts
+export type { Embedder, Indexer, Retriever } from "./retriever.js";
 // sandbox
 export type {
   FilesystemPolicy,
@@ -98,8 +100,6 @@ export type {
   SandboxResult,
   SandboxTier,
 } from "./sandbox.js";
-// search contracts
-export type { Embedder, Indexer, Retriever } from "./retriever.js";
 // search value types
 export type {
   FusionFunction,
