@@ -8,10 +8,17 @@
  * Lazy loading (decision 13A): tools are loaded on first attach(), not at creation.
  */
 
-import type { Agent, ComponentProvider, JsonObject, Tool, ToolDescriptor } from "@koi/core";
+import type {
+  Agent,
+  ComponentProvider,
+  ForgeStore,
+  JsonObject,
+  Tool,
+  ToolArtifact,
+  ToolDescriptor,
+} from "@koi/core";
 import { toolToken } from "@koi/core";
-import type { ForgeStore } from "./store.js";
-import type { SandboxExecutor, ToolArtifact } from "./types.js";
+import type { SandboxExecutor } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Constants

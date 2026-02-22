@@ -18,6 +18,7 @@ export default defineConfig({
     "src/middleware.ts",
     "src/model-provider.ts",
     "src/resolver.ts",
+    "src/brick-store.ts",
   ],
   format: ["esm"],
   dts: {

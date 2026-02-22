@@ -2,7 +2,14 @@
  * Core types for the @koi/forge self-extension system.
  */
 
-import type { BrickKind, BrickLifecycle, ForgeScope, ToolDescriptor, TrustTier } from "@koi/core";
+import type {
+  BrickKind,
+  BrickLifecycle,
+  ForgeScope,
+  TestCase,
+  ToolDescriptor,
+  TrustTier,
+} from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Forge result (pure data — L1 handles mutation)
@@ -58,12 +65,7 @@ export interface VerificationReport {
 // Forge inputs (discriminated union)
 // ---------------------------------------------------------------------------
 
-export interface TestCase {
-  readonly name: string;
-  readonly input: unknown;
-  readonly expectedOutput?: unknown;
-  readonly shouldThrow?: boolean;
-}
+export type { TestCase } from "@koi/core";
 
 export interface ForgeToolInput {
   readonly kind: "tool";
@@ -152,50 +154,15 @@ export interface ForgeContext {
   readonly forgesThisSession: number;
 }
 
-// ---------------------------------------------------------------------------
-// Brick artifact (stored representation) — discriminated union on `kind`
-// ---------------------------------------------------------------------------
-
-export interface BrickArtifactBase {
-  readonly id: string;
-  readonly kind: BrickKind;
-  readonly name: string;
-  readonly description: string;
-  readonly scope: ForgeScope;
-  readonly trustTier: TrustTier;
-  readonly lifecycle: BrickLifecycle;
-  readonly createdBy: string;
-  readonly createdAt: number;
-  readonly version: string;
-  readonly tags: readonly string[];
-  readonly usageCount: number;
-  /** SHA-256 hex digest of the brick's primary content for integrity verification. */
-  readonly contentHash: string;
-}
-
-export interface ToolArtifact extends BrickArtifactBase {
-  readonly kind: "tool";
-  readonly implementation: string;
-  readonly inputSchema: Readonly<Record<string, unknown>>;
-  readonly testCases?: readonly TestCase[];
-}
-
-export interface SkillArtifact extends BrickArtifactBase {
-  readonly kind: "skill";
-  readonly content: string;
-}
-
-export interface AgentArtifact extends BrickArtifactBase {
-  readonly kind: "agent";
-  readonly manifestYaml: string;
-}
-
-export interface CompositeArtifact extends BrickArtifactBase {
-  readonly kind: "composite";
-  readonly brickIds: readonly string[];
-}
-
-export type BrickArtifact = ToolArtifact | SkillArtifact | AgentArtifact | CompositeArtifact;
+// Brick artifact types — canonical definitions live in @koi/core (L0)
+export type {
+  AgentArtifact,
+  BrickArtifact,
+  BrickArtifactBase,
+  CompositeArtifact,
+  SkillArtifact,
+  ToolArtifact,
+} from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Promote result (returned by promote_forge)
@@ -230,18 +197,5 @@ export interface ManifestParser {
   readonly parse: (yaml: string) => ManifestParseResult | Promise<ManifestParseResult>;
 }
 
-// ---------------------------------------------------------------------------
-// Forge query (structured search)
-// ---------------------------------------------------------------------------
-
-export interface ForgeQuery {
-  readonly kind?: BrickKind;
-  readonly scope?: ForgeScope;
-  readonly trustTier?: TrustTier;
-  readonly lifecycle?: BrickLifecycle;
-  readonly tags?: readonly string[];
-  readonly createdBy?: string;
-  /** Case-insensitive substring match against brick name and description. */
-  readonly text?: string;
-  readonly limit?: number;
-}
+// Forge query — canonical definition lives in @koi/core (L0)
+export type { ForgeQuery } from "@koi/core";

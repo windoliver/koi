@@ -2,20 +2,41 @@
  * createKoi() — the primary factory for assembling and running an agent.
  *
  * Orchestrates: assembly → guard creation → middleware composition → runtime.
+ *
+ * When `options.forge` is provided, forged capabilities are resolved live:
+ * - Tools: resolved at call time (entity first, then forge fallback)
+ * - Tool descriptors: entity + forged, refreshed at turn boundaries
+ * - Middleware: re-composed at turn boundaries when forged middleware changes
  */
 
 import type {
+  ComposedCallHandlers,
   EngineEvent,
   EngineInput,
   KoiMiddleware,
+  ModelChunk,
+  ModelHandler,
+  ModelRequest,
+  ModelResponse,
+  ModelStreamHandler,
   ProcessId,
+  Tool,
+  ToolDescriptor,
+  ToolHandler,
   ToolRequest,
   ToolResponse,
   TurnContext,
 } from "@koi/core";
 import { agentId, toolToken } from "@koi/core";
 import { AgentEntity } from "./agent-entity.js";
-import { createComposedCallHandlers, runSessionHooks, runTurnHooks } from "./compose.js";
+import {
+  composeModelChain,
+  composeModelStreamChain,
+  composeToolChain,
+  createTerminalHandlers,
+  runSessionHooks,
+  runTurnHooks,
+} from "./compose.js";
 import { KoiEngineError } from "./errors.js";
 import { createIterationGuard, createLoopDetector, createSpawnGuard } from "./guards.js";
 import type { CreateKoiOptions, KoiRuntime } from "./types.js";
@@ -43,7 +64,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     });
   }
 
-  const { manifest, adapter, middleware = [], providers = [] } = options;
+  const { manifest, adapter, middleware = [], providers = [], forge } = options;
 
   // --- 1. Assemble the agent entity ---
   const pid = generatePid(manifest);
@@ -62,12 +83,15 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     createSpawnGuard(options.spawn, pid.depth),
   ];
 
-  // --- 3. Compose middleware chain: guards first, then user middleware ---
-  const allMiddleware: readonly KoiMiddleware[] = [...guards, ...middleware];
+  // --- 3. Base middleware: guards first, then user middleware ---
+  const baseMiddleware: readonly KoiMiddleware[] = [...guards, ...middleware];
 
-  // --- 4. Default tool terminal (looks up tools from agent components via O(1) token) ---
+  // --- 4. Default tool terminal (entity first, then forge fallback) ---
   const defaultToolTerminal = async (request: ToolRequest): Promise<ToolResponse> => {
-    const tool = agent.component(toolToken(request.toolId));
+    // O(1) entity lookup (manifest-defined + previously assembled forged tools)
+    const tool: Tool | undefined =
+      agent.component(toolToken(request.toolId)) ?? (await forge?.resolveTool(request.toolId));
+
     if (tool === undefined) {
       throw KoiEngineError.from("NOT_FOUND", `Tool not found: "${request.toolId}"`, {
         context: { toolId: request.toolId },
@@ -95,11 +119,47 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           let currentTurnIndex = 0;
           const sessionStartedAt = Date.now();
 
+          // let justified: mutable forged descriptor cache, refreshed at turn boundaries
+          let forgedDescriptorsCache: readonly ToolDescriptor[] = [];
+
+          // let justified: mutable middleware chain refs, updated at turn boundaries
+          let activeToolChain: (ctx: TurnContext, req: ToolRequest) => Promise<ToolResponse>;
+          let activeModelChain: (ctx: TurnContext, req: ModelRequest) => Promise<ModelResponse>;
+          let activeStreamChain:
+            | ((ctx: TurnContext, req: ModelRequest) => AsyncIterable<ModelChunk>)
+            | undefined;
+
           const sessionCtx = {
             agentId: pid.id,
             sessionId: crypto.randomUUID(),
             metadata: {},
           };
+
+          /** Refresh forged descriptors and re-compose middleware if forge runtime is provided. */
+          async function refreshForgeState(
+            _getTurnContext: () => TurnContext,
+            terminals: {
+              readonly modelHandler: ModelHandler;
+              readonly toolHandler: ToolHandler;
+              readonly modelStreamHandler?: ModelStreamHandler;
+            },
+          ): Promise<void> {
+            if (forge === undefined) return;
+
+            // Refresh forged tool descriptors
+            forgedDescriptorsCache = await forge.toolDescriptors();
+
+            // Re-compose middleware chains if forged middleware provider exists
+            if (forge.middleware !== undefined) {
+              const forgedMw = await forge.middleware();
+              const allMw: readonly KoiMiddleware[] = [...baseMiddleware, ...forgedMw];
+              activeToolChain = composeToolChain(allMw, terminals.toolHandler);
+              activeModelChain = composeModelChain(allMw, terminals.modelHandler);
+              if (terminals.modelStreamHandler !== undefined) {
+                activeStreamChain = composeModelStreamChain(allMw, terminals.modelStreamHandler);
+              }
+            }
+          }
 
           return {
             async next(): Promise<IteratorResult<EngineEvent>> {
@@ -110,7 +170,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 if (!sessionStarted) {
                   sessionStarted = true;
                   agent.transition({ kind: "start" });
-                  await runSessionHooks(allMiddleware, "onSessionStart", sessionCtx);
+                  await runSessionHooks(baseMiddleware, "onSessionStart", sessionCtx);
 
                   // Wire terminals → middleware → callHandlers if adapter is cooperating
                   // let justified: effectiveInput may be replaced with callHandlers-augmented input
@@ -141,14 +201,63 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                     const rawModelTerminal = adapter.terminals.modelCall;
                     const rawToolTerminal = adapter.terminals.toolCall ?? defaultToolTerminal;
                     const rawModelStreamTerminal = adapter.terminals.modelStream;
-                    const callHandlers = createComposedCallHandlers(
-                      allMiddleware,
-                      getTurnContext,
+
+                    // Create lifecycle-aware terminal handlers
+                    const terminals = createTerminalHandlers(
                       agent,
                       rawModelTerminal,
                       rawToolTerminal,
                       rawModelStreamTerminal,
                     );
+
+                    // Initial chain composition
+                    activeToolChain = composeToolChain(baseMiddleware, terminals.toolHandler);
+                    activeModelChain = composeModelChain(baseMiddleware, terminals.modelHandler);
+                    if (terminals.modelStreamHandler !== undefined) {
+                      activeStreamChain = composeModelStreamChain(
+                        baseMiddleware,
+                        terminals.modelStreamHandler,
+                      );
+                    }
+
+                    // Initial forge state (descriptors + forged middleware)
+                    await refreshForgeState(getTurnContext, terminals);
+
+                    // Extract entity tool descriptors (static, from assembly)
+                    const entityTools = agent.query<Tool>("tool:");
+                    const entityDescriptors: readonly ToolDescriptor[] = [
+                      ...entityTools.values(),
+                    ].map((t) => t.descriptor);
+
+                    // Build callHandlers with dynamic tools getter and chain refs
+                    // Capture stream chain presence — the mutable ref is read inside the closure
+                    const hasStreamChain = activeStreamChain !== undefined;
+                    const streamChainProxy = (request: ModelRequest) =>
+                      activeStreamChain?.(getTurnContext(), request);
+
+                    const callHandlers: ComposedCallHandlers = Object.defineProperties(
+                      {
+                        modelCall: (request: ModelRequest) =>
+                          activeModelChain(getTurnContext(), request),
+                        toolCall: (request: ToolRequest) =>
+                          activeToolChain(getTurnContext(), request),
+                        tools: entityDescriptors, // placeholder, overridden by getter below
+                        ...(hasStreamChain ? { modelStream: streamChainProxy } : {}),
+                      },
+                      {
+                        tools: {
+                          get(): readonly ToolDescriptor[] {
+                            if (forgedDescriptorsCache.length === 0) {
+                              return entityDescriptors;
+                            }
+                            return [...entityDescriptors, ...forgedDescriptorsCache];
+                          },
+                          enumerable: true,
+                          configurable: false,
+                        },
+                      },
+                    ) as ComposedCallHandlers;
+
                     effectiveInput = { ...input, callHandlers };
                   }
 
@@ -165,7 +274,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 if (result.done) {
                   done = true;
                   agent.transition({ kind: "complete", stopReason: "completed" });
-                  await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+                  await runSessionHooks(baseMiddleware, "onSessionEnd", sessionCtx);
                   return { done: true, value: undefined };
                 }
 
@@ -183,7 +292,22 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                       ? { requestApproval: options.approvalHandler }
                       : {}),
                   };
-                  await runTurnHooks(allMiddleware, "onAfterTurn", turnCtx);
+
+                  // Refresh forged state at turn boundary (new tools + middleware)
+                  if (forge !== undefined && adapter.terminals) {
+                    const rawModelTerminal = adapter.terminals.modelCall;
+                    const rawToolTerminal = adapter.terminals.toolCall ?? defaultToolTerminal;
+                    const rawModelStreamTerminal = adapter.terminals.modelStream;
+                    const terminals = createTerminalHandlers(
+                      agent,
+                      rawModelTerminal,
+                      rawToolTerminal,
+                      rawModelStreamTerminal,
+                    );
+                    await refreshForgeState(() => turnCtx, terminals);
+                  }
+
+                  await runTurnHooks(baseMiddleware, "onAfterTurn", turnCtx);
                 }
 
                 // Process done events
@@ -194,7 +318,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                     stopReason: event.output.stopReason,
                     metrics: event.output.metrics,
                   });
-                  await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+                  await runSessionHooks(baseMiddleware, "onSessionEnd", sessionCtx);
                 }
 
                 return { done: false, value: event };
@@ -205,7 +329,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 if (error instanceof KoiEngineError) {
                   const stopReason = error.code === "TIMEOUT" ? "max_turns" : "error";
                   agent.transition({ kind: "complete", stopReason });
-                  await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+                  await runSessionHooks(baseMiddleware, "onSessionEnd", sessionCtx);
                   const doneEvent: EngineEvent = {
                     kind: "done",
                     output: {
@@ -225,7 +349,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
                 // Re-throw unexpected errors
                 agent.transition({ kind: "error", error });
-                await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+                await runSessionHooks(baseMiddleware, "onSessionEnd", sessionCtx);
                 throw error;
               }
             },
@@ -236,7 +360,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 await iterator.return();
               }
               agent.transition({ kind: "complete", stopReason: "interrupted" });
-              await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+              await runSessionHooks(baseMiddleware, "onSessionEnd", sessionCtx);
               return { done: true, value: undefined };
             },
           };

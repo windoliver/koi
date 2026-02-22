@@ -3,9 +3,7 @@
  * Implements the L0 Resolver<BrickArtifact, BrickArtifact> interface.
  */
 
-import type { KoiError, Resolver, Result } from "@koi/core";
-import type { ForgeStore } from "./store.js";
-import type { BrickArtifact } from "./types.js";
+import type { BrickArtifact, ForgeStore, KoiError, Resolver, Result } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Public API

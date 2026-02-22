@@ -3,9 +3,14 @@
  * No eviction, no persistence across restarts.
  */
 
-import type { KoiError, Result } from "@koi/core";
-import type { BrickUpdate, ForgeStore } from "./store.js";
-import type { BrickArtifact, ForgeQuery } from "./types.js";
+import type {
+  BrickArtifact,
+  BrickUpdate,
+  ForgeQuery,
+  ForgeStore,
+  KoiError,
+  Result,
+} from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -109,5 +114,9 @@ export function createInMemoryForgeStore(): ForgeStore {
     return { ok: true, value: undefined };
   };
 
-  return { save, load, search, remove, update };
+  const exists = async (id: string): Promise<Result<boolean, KoiError>> => {
+    return { ok: true, value: bricks.has(id) };
+  };
+
+  return { save, load, search, remove, update, exists };
 }

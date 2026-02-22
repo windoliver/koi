@@ -100,6 +100,9 @@
       "dependencies": {
         "@koi/core": "workspace:*",
       },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+      },
     },
     "packages/gateway": {
       "name": "@koi/gateway",

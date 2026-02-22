@@ -10,10 +10,14 @@ import type {
   ModelChunk,
   ModelHandler,
   ModelStreamHandler,
+  Tool,
+  ToolDescriptor,
+  ToolRequest,
   TurnContext,
 } from "@koi/core";
 import { toolToken } from "@koi/core";
 import { createKoi } from "./koi.js";
+import type { ForgeRuntime } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -929,5 +933,648 @@ describe("createKoi early return", () => {
     );
     expect(runtime.agent.state).toBe("terminated");
     expect(onSessionEnd).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createKoi — live forge resolution
+// ---------------------------------------------------------------------------
+
+/** Helper: creates a mock ForgeRuntime with configurable behavior. */
+function mockForgeRuntime(overrides?: Partial<ForgeRuntime>): ForgeRuntime {
+  return {
+    resolveTool: mock(() => Promise.resolve(undefined)),
+    toolDescriptors: mock(() => Promise.resolve([])),
+    ...overrides,
+  };
+}
+
+/** Helper: creates a minimal Tool with the given name and execute mock. */
+function mockTool(
+  name: string,
+  executeFn: (input: unknown) => Promise<unknown> = async () => `${name}-result`,
+): Tool {
+  return {
+    descriptor: { name, description: `Tool: ${name}`, inputSchema: {} },
+    trustTier: "verified",
+    execute: mock(executeFn),
+  };
+}
+
+/** Helper: cooperating adapter that calls tools via callHandlers. */
+function forgeTestAdapter(
+  onStream: (input: EngineInput) => AsyncGenerator<EngineEvent>,
+): EngineAdapter {
+  const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
+  return {
+    engineId: "forge-test-adapter",
+    terminals: { modelCall: modelTerminal },
+    stream: (input: EngineInput) => ({
+      [Symbol.asyncIterator]() {
+        return onStream(input);
+      },
+    }),
+  };
+}
+
+describe("createKoi live forge resolution", () => {
+  test("forged tool resolves when entity lookup misses", async () => {
+    const forgedTool = mockTool("forged-calc", async () => 42);
+    const forge = mockForgeRuntime({
+      resolveTool: mock(async (toolId: string) =>
+        toolId === "forged-calc" ? forgedTool : undefined,
+      ),
+      toolDescriptors: mock(async () => [forgedTool.descriptor]),
+    });
+
+    let toolResult: unknown;
+    const adapter = forgeTestAdapter(async function* (input) {
+      if (input.callHandlers) {
+        const res = await input.callHandlers.toolCall({
+          toolId: "forged-calc",
+          input: { x: 1 },
+        });
+        toolResult = res.output;
+      }
+      yield { kind: "done" as const, output: doneOutput() };
+    });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    expect(forgedTool.execute).toHaveBeenCalledTimes(1);
+    expect(toolResult).toBe(42);
+  });
+
+  test("entity tool takes precedence over forged tool with same name", async () => {
+    const entityExecute = mock(() => Promise.resolve("entity-result"));
+    const forgedTool = mockTool("calculator", async () => "forged-result");
+    const forge = mockForgeRuntime({
+      resolveTool: mock(async (toolId: string) =>
+        toolId === "calculator" ? forgedTool : undefined,
+      ),
+    });
+
+    let toolResult: unknown;
+    const adapter = forgeTestAdapter(async function* (input) {
+      if (input.callHandlers) {
+        const res = await input.callHandlers.toolCall({
+          toolId: "calculator",
+          input: {},
+        });
+        toolResult = res.output;
+      }
+      yield { kind: "done" as const, output: doneOutput() };
+    });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+      providers: [
+        {
+          name: "tool-provider",
+          attach: async () =>
+            new Map([
+              [
+                toolToken("calculator") as string,
+                {
+                  descriptor: { name: "calculator", description: "Calc", inputSchema: {} },
+                  trustTier: "verified" as const,
+                  execute: entityExecute,
+                },
+              ],
+            ]),
+        },
+      ],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    // Entity tool should win; forge.resolveTool should NOT be called
+    expect(entityExecute).toHaveBeenCalledTimes(1);
+    expect(toolResult).toBe("entity-result");
+    expect(forgedTool.execute).not.toHaveBeenCalled();
+  });
+
+  test("NOT_FOUND when neither entity nor forge has the tool", async () => {
+    const { KoiEngineError } = await import("./errors.js");
+    const forge = mockForgeRuntime();
+
+    let caughtError: unknown;
+    const adapter = forgeTestAdapter(async function* (input) {
+      if (input.callHandlers) {
+        try {
+          await input.callHandlers.toolCall({ toolId: "nonexistent", input: {} });
+        } catch (e: unknown) {
+          caughtError = e;
+        }
+      }
+      yield { kind: "done" as const, output: doneOutput() };
+    });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    expect(caughtError).toBeInstanceOf(KoiEngineError);
+    if (caughtError instanceof KoiEngineError) {
+      expect(caughtError.code).toBe("NOT_FOUND");
+      expect(caughtError.message).toContain("nonexistent");
+    }
+  });
+
+  test("callHandlers.tools includes forged descriptors", async () => {
+    const forgedDescriptor: ToolDescriptor = {
+      name: "forged-search",
+      description: "Forged search tool",
+      inputSchema: { type: "object" },
+    };
+    const forge = mockForgeRuntime({
+      toolDescriptors: mock(async () => [forgedDescriptor]),
+    });
+
+    let capturedTools: readonly ToolDescriptor[] | undefined;
+    const adapter = forgeTestAdapter(async function* (input) {
+      capturedTools = input.callHandlers?.tools;
+      yield { kind: "done" as const, output: doneOutput() };
+    });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    expect(capturedTools).toBeDefined();
+    const names = capturedTools?.map((t) => t.name);
+    expect(names).toContain("forged-search");
+  });
+
+  test("callHandlers.tools merges entity and forged descriptors", async () => {
+    const forgedDescriptor: ToolDescriptor = {
+      name: "forged-tool",
+      description: "Forged",
+      inputSchema: {},
+    };
+    const forge = mockForgeRuntime({
+      toolDescriptors: mock(async () => [forgedDescriptor]),
+    });
+
+    let capturedTools: readonly ToolDescriptor[] | undefined;
+    const adapter = forgeTestAdapter(async function* (input) {
+      capturedTools = input.callHandlers?.tools;
+      yield { kind: "done" as const, output: doneOutput() };
+    });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+      providers: [
+        {
+          name: "tool-provider",
+          attach: async () =>
+            new Map([
+              [
+                toolToken("entity-tool") as string,
+                {
+                  descriptor: { name: "entity-tool", description: "Entity", inputSchema: {} },
+                  trustTier: "verified" as const,
+                  execute: async () => "ok",
+                },
+              ],
+            ]),
+        },
+      ],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    expect(capturedTools).toBeDefined();
+    const names = capturedTools?.map((t) => t.name);
+    expect(names).toContain("entity-tool");
+    expect(names).toContain("forged-tool");
+  });
+
+  test("forged descriptors returns entity-only when forge has no descriptors", async () => {
+    const forge = mockForgeRuntime({
+      toolDescriptors: mock(async () => []),
+    });
+
+    let capturedTools: readonly ToolDescriptor[] | undefined;
+    const adapter = forgeTestAdapter(async function* (input) {
+      capturedTools = input.callHandlers?.tools;
+      yield { kind: "done" as const, output: doneOutput() };
+    });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+      providers: [
+        {
+          name: "tool-provider",
+          attach: async () =>
+            new Map([
+              [
+                toolToken("entity-tool") as string,
+                {
+                  descriptor: { name: "entity-tool", description: "Entity", inputSchema: {} },
+                  trustTier: "verified" as const,
+                  execute: async () => "ok",
+                },
+              ],
+            ]),
+        },
+      ],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    expect(capturedTools).toBeDefined();
+    expect(capturedTools).toHaveLength(1);
+    expect(capturedTools?.[0]?.name).toBe("entity-tool");
+  });
+
+  test("forged tool descriptors refresh at turn boundary", async () => {
+    // Mutable counter — simulates new tools appearing after first refresh
+    let descriptorCallCount = 0;
+    const forge = mockForgeRuntime({
+      toolDescriptors: mock(async () => {
+        descriptorCallCount++;
+        if (descriptorCallCount <= 1) {
+          return [{ name: "tool-v1", description: "V1", inputSchema: {} }];
+        }
+        return [
+          { name: "tool-v1", description: "V1", inputSchema: {} },
+          { name: "tool-v2", description: "V2", inputSchema: {} },
+        ];
+      }),
+    });
+
+    const toolSnapshots: Array<readonly ToolDescriptor[]> = [];
+    const adapter: EngineAdapter = {
+      engineId: "turn-boundary-adapter",
+      terminals: {
+        modelCall: mock(() => Promise.resolve({ content: "ok", model: "test" })),
+      },
+      stream: (input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          // Snapshot tools before turn_end
+          if (input.callHandlers) {
+            toolSnapshots.push([...input.callHandlers.tools]);
+          }
+          yield { kind: "turn_end" as const, turnIndex: 0 };
+          // Snapshot tools after turn_end (forge descriptors should be refreshed)
+          if (input.callHandlers) {
+            toolSnapshots.push([...input.callHandlers.tools]);
+          }
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    expect(toolSnapshots).toHaveLength(2);
+    // Before turn_end: only tool-v1
+    expect(toolSnapshots[0]?.map((t) => t.name)).toEqual(["tool-v1"]);
+    // After turn_end: both tool-v1 and tool-v2
+    expect(toolSnapshots[1]?.map((t) => t.name)).toEqual(["tool-v1", "tool-v2"]);
+  });
+
+  test("forged middleware re-composes at turn boundary", async () => {
+    const callLog: string[] = [];
+
+    // Forged middleware that logs calls
+    const forgedMw: KoiMiddleware = {
+      name: "forged-logger",
+      wrapToolCall: async (_ctx, req, next) => {
+        callLog.push(`forged-mw:${req.toolId}`);
+        return next(req);
+      },
+    };
+
+    // Mutable flag — enables forged middleware after turn boundary
+    let middlewareEnabled = false;
+    const forge: ForgeRuntime = {
+      resolveTool: mock(async () => undefined),
+      toolDescriptors: mock(async () => []),
+      middleware: mock(async () => (middlewareEnabled ? [forgedMw] : [])),
+    };
+
+    const forgedTool = mockTool("dynamic-tool");
+
+    const adapter: EngineAdapter = {
+      engineId: "forge-mw-adapter",
+      terminals: {
+        modelCall: mock(() => Promise.resolve({ content: "ok", model: "test" })),
+        toolCall: async (req: ToolRequest) => {
+          if (req.toolId === "dynamic-tool") {
+            const output = await forgedTool.execute(req.input);
+            return { output };
+          }
+          throw new Error(`Unexpected tool: ${req.toolId}`);
+        },
+      },
+      stream: (input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          // Call tool before turn boundary — no forged middleware yet
+          if (input.callHandlers) {
+            await input.callHandlers.toolCall({
+              toolId: "dynamic-tool",
+              input: {},
+            });
+          }
+          // Enable forged middleware before turn boundary
+          middlewareEnabled = true;
+          yield { kind: "turn_end" as const, turnIndex: 0 };
+
+          // Call tool after turn boundary — forged middleware should now wrap it
+          if (input.callHandlers) {
+            await input.callHandlers.toolCall({
+              toolId: "dynamic-tool",
+              input: {},
+            });
+          }
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    // First call: no forged middleware, so callLog should be empty at that point
+    // Second call: forged middleware active, so it should log
+    expect(callLog).toEqual(["forged-mw:dynamic-tool"]);
+  });
+
+  test("no-forge path unchanged — callHandlers.tools contains only entity tools", async () => {
+    let capturedTools: readonly ToolDescriptor[] | undefined;
+    const adapter = forgeTestAdapter(async function* (input) {
+      capturedTools = input.callHandlers?.tools;
+      yield { kind: "done" as const, output: doneOutput() };
+    });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      // No forge option
+      loopDetection: false,
+      providers: [
+        {
+          name: "tool-provider",
+          attach: async () =>
+            new Map([
+              [
+                toolToken("my-tool") as string,
+                {
+                  descriptor: { name: "my-tool", description: "Mine", inputSchema: {} },
+                  trustTier: "verified" as const,
+                  execute: async () => "ok",
+                },
+              ],
+            ]),
+        },
+      ],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    expect(capturedTools).toBeDefined();
+    expect(capturedTools).toHaveLength(1);
+    expect(capturedTools?.[0]?.name).toBe("my-tool");
+  });
+
+  test("forged tool preserves metadata in response", async () => {
+    const forgedTool = mockTool("meta-tool", async () => "meta-result");
+    const forge = mockForgeRuntime({
+      resolveTool: mock(async (toolId: string) =>
+        toolId === "meta-tool" ? forgedTool : undefined,
+      ),
+    });
+
+    let toolResult: unknown;
+    const adapter = forgeTestAdapter(async function* (input) {
+      if (input.callHandlers) {
+        const res = await input.callHandlers.toolCall({
+          toolId: "meta-tool",
+          input: {},
+          metadata: { requestId: "abc-123" },
+        });
+        toolResult = res;
+      }
+      yield { kind: "done" as const, output: doneOutput() };
+    });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    expect(toolResult).toEqual({
+      output: "meta-result",
+      metadata: { requestId: "abc-123" },
+    });
+  });
+
+  test("forge.resolveTool is NOT called when entity has the tool", async () => {
+    const resolveTool = mock(async () => undefined);
+    const forge = mockForgeRuntime({ resolveTool });
+
+    const adapter = forgeTestAdapter(async function* (input) {
+      if (input.callHandlers) {
+        await input.callHandlers.toolCall({ toolId: "entity-calc", input: {} });
+      }
+      yield { kind: "done" as const, output: doneOutput() };
+    });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+      providers: [
+        {
+          name: "tool-provider",
+          attach: async () =>
+            new Map([
+              [
+                toolToken("entity-calc") as string,
+                {
+                  descriptor: { name: "entity-calc", description: "Calc", inputSchema: {} },
+                  trustTier: "verified" as const,
+                  execute: async () => "ok",
+                },
+              ],
+            ]),
+        },
+      ],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    // Due to ?? short-circuit, resolveTool should never be called
+    expect(resolveTool).not.toHaveBeenCalled();
+  });
+
+  test("forge.resolveTool error propagates to caller", async () => {
+    const forgeError = new Error("Forge connection failed");
+    const forge = mockForgeRuntime({
+      resolveTool: mock(async () => {
+        throw forgeError;
+      }),
+    });
+
+    let caughtError: unknown;
+    const adapter = forgeTestAdapter(async function* (input) {
+      if (input.callHandlers) {
+        try {
+          await input.callHandlers.toolCall({ toolId: "failing-tool", input: {} });
+        } catch (e: unknown) {
+          caughtError = e;
+        }
+      }
+      yield { kind: "done" as const, output: doneOutput() };
+    });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    expect(caughtError).toBe(forgeError);
+  });
+
+  test("forge.toolDescriptors error propagates at session start", async () => {
+    const forge = mockForgeRuntime({
+      toolDescriptors: mock(async () => {
+        throw new Error("Descriptor fetch failed");
+      }),
+    });
+
+    const adapter = forgeTestAdapter(async function* (_input) {
+      yield { kind: "done" as const, output: doneOutput() };
+    });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await expect(collectEvents(runtime.run({ kind: "text", text: "test" }))).rejects.toThrow(
+      "Descriptor fetch failed",
+    );
+  });
+
+  test("forge has no effect when adapter lacks terminals", async () => {
+    const resolveTool = mock(async () => mockTool("forged"));
+    const toolDescriptors = mock(async () => [
+      { name: "forged", description: "F", inputSchema: {} } as ToolDescriptor,
+    ]);
+    const forge = mockForgeRuntime({ resolveTool, toolDescriptors });
+
+    let receivedCallHandlers = false;
+    const adapter: EngineAdapter = {
+      engineId: "non-cooperating",
+      stream: (input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          receivedCallHandlers = input.callHandlers !== undefined;
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    expect(receivedCallHandlers).toBe(false);
+    expect(resolveTool).not.toHaveBeenCalled();
+    expect(toolDescriptors).not.toHaveBeenCalled();
+  });
+
+  test("multiple forged tool calls in same turn resolve independently", async () => {
+    const tool1 = mockTool("tool-1", async () => "result-1");
+    const tool2 = mockTool("tool-2", async () => "result-2");
+    const resolveTool = mock(async (toolId: string) => {
+      if (toolId === "tool-1") return tool1;
+      if (toolId === "tool-2") return tool2;
+      return undefined;
+    });
+    const forge = mockForgeRuntime({
+      resolveTool,
+      toolDescriptors: mock(async () => [tool1.descriptor, tool2.descriptor]),
+    });
+
+    const results: unknown[] = [];
+    const adapter = forgeTestAdapter(async function* (input) {
+      if (input.callHandlers) {
+        results.push((await input.callHandlers.toolCall({ toolId: "tool-1", input: {} })).output);
+        results.push((await input.callHandlers.toolCall({ toolId: "tool-2", input: {} })).output);
+        results.push((await input.callHandlers.toolCall({ toolId: "tool-1", input: {} })).output);
+      }
+      yield { kind: "done" as const, output: doneOutput() };
+    });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    expect(results).toEqual(["result-1", "result-2", "result-1"]);
+    expect(resolveTool).toHaveBeenCalledTimes(3);
+    expect(tool1.execute).toHaveBeenCalledTimes(2);
+    expect(tool2.execute).toHaveBeenCalledTimes(1);
   });
 });

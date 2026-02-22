@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type { ToolDescriptor } from "@koi/core/ecs";
 import type { ComposedCallHandlers, EngineEvent, EngineInput } from "@koi/core/engine";
 import type {
   ModelChunk,
@@ -23,6 +24,7 @@ import { createPiAdapter } from "../adapter.js";
 function createMockCallHandlers(opts?: {
   readonly modelStreamChunks?: readonly ModelChunk[];
   readonly toolCallResult?: ToolResponse;
+  readonly tools?: readonly ToolDescriptor[];
 }): ComposedCallHandlers {
   const chunks: readonly ModelChunk[] = opts?.modelStreamChunks ?? [
     { kind: "text_delta", delta: "Hello from pi!" },
@@ -53,6 +55,7 @@ function createMockCallHandlers(opts?: {
     toolCall: async (_request: ToolRequest): Promise<ToolResponse> => {
       return opts?.toolCallResult ?? { output: "tool result" };
     },
+    tools: opts?.tools ?? [],
   };
 }
 
@@ -268,6 +271,31 @@ describe("PiEngineAdapter integration", () => {
     expect(events.length).toBeGreaterThan(0);
     // transformContext is called by pi Agent during LLM call
     expect(transformCalled).toBe(true);
+  });
+
+  test("pi agent receives tool descriptors from callHandlers.tools", async () => {
+    const adapter = createPiAdapter({
+      model: "anthropic:claude-sonnet-4-5-20250929",
+      systemPrompt: "You are helpful.",
+    });
+
+    const calcDescriptor: ToolDescriptor = {
+      name: "calc",
+      description: "Calculator tool",
+      inputSchema: { type: "object", properties: { expr: { type: "string" } } },
+    };
+    const handlers = createMockCallHandlers({ tools: [calcDescriptor] });
+    const input: EngineInput = {
+      kind: "text",
+      text: "Calculate 2+2",
+      callHandlers: handlers,
+    };
+
+    const events = await collectEvents(adapter.stream(input));
+    expect(events.length).toBeGreaterThan(0);
+
+    const doneEvent = events.find((e) => e.kind === "done");
+    expect(doneEvent).toBeDefined();
   });
 
   test("passes getApiKey config to pi Agent", async () => {

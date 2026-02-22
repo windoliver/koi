@@ -3,8 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { ForgeStore } from "../store.js";
-import type { SkillArtifact, ToolArtifact } from "../types.js";
+import type { ForgeStore, SkillArtifact, ToolArtifact } from "@koi/core";
 
 function createBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
@@ -180,6 +179,26 @@ export function runForgeStoreContractTests(createStore: () => ForgeStore): void 
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.error.code).toBe("NOT_FOUND");
+      }
+    });
+
+    test("exists returns true for saved brick", async () => {
+      const store = createStore();
+      await store.save(createBrick({ id: "b1" }));
+
+      const result = await store.exists("b1");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value).toBe(true);
+      }
+    });
+
+    test("exists returns false for missing id", async () => {
+      const store = createStore();
+      const result = await store.exists("nonexistent");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value).toBe(false);
       }
     });
 

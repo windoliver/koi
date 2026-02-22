@@ -127,6 +127,10 @@ describe("createForgeToolTool", () => {
         ok: false as const,
         error: { code: "INTERNAL" as const, message: "n/a", retryable: false },
       }),
+      exists: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "n/a", retryable: false },
+      }),
     };
 
     const tool = createForgeToolTool(createDeps({ store: failingStore }));

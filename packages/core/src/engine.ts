@@ -3,6 +3,7 @@
  */
 
 import type { JsonObject } from "./common.js";
+import type { ToolDescriptor } from "./ecs.js";
 import type { ContentBlock, InboundMessage } from "./message.js";
 import type {
   ModelChunk,
@@ -41,6 +42,7 @@ export interface ComposedCallHandlers {
   readonly modelCall: (request: ModelRequest) => Promise<ModelResponse>;
   readonly modelStream?: (request: ModelRequest) => AsyncIterable<ModelChunk>;
   readonly toolCall: (request: ToolRequest) => Promise<ToolResponse>;
+  readonly tools: readonly ToolDescriptor[];
 }
 
 export type EngineInput =

@@ -83,6 +83,10 @@ describe("createForgeResolver", () => {
         ok: false as const,
         error: { code: "INTERNAL" as const, message: "store down", retryable: false },
       }),
+      exists: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "store down", retryable: false },
+      }),
     };
     const resolver = createForgeResolver(failingStore);
     await expect(resolver.discover()).rejects.toThrow("store down");

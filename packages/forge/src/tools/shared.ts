@@ -2,14 +2,19 @@
  * Shared factory for primordial forge tools — DRY across all 6 tools.
  */
 
-import type { JsonObject, Result, Tool, ToolDescriptor } from "@koi/core";
+import type {
+  BrickArtifact,
+  ForgeStore,
+  JsonObject,
+  Result,
+  Tool,
+  ToolDescriptor,
+} from "@koi/core";
 import type { ForgeConfig } from "../config.js";
 import type { ForgeError } from "../errors.js";
 import { staticError, typeError } from "../errors.js";
 import { checkGovernance } from "../governance.js";
-import type { ForgeStore } from "../store.js";
 import type {
-  BrickArtifact,
   ForgeContext,
   ForgeInput,
   ForgeResult,

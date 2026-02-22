@@ -3,6 +3,7 @@ import {
   type AgentManifest,
   type ApprovalHandler,
   agentId,
+  type ComponentProvider,
   type KoiMiddleware,
   type ModelChunk,
   type ModelRequest,
@@ -12,6 +13,7 @@ import {
   type ToolRequest,
   type ToolResponse,
   type TurnContext,
+  toolToken,
 } from "@koi/core";
 import { AgentEntity } from "./agent-entity.js";
 import {
@@ -542,6 +544,69 @@ describe("createComposedCallHandlers", () => {
 
     expect(intercepted).toHaveBeenCalledTimes(1);
     expect(rawTool).toHaveBeenCalledTimes(1);
+  });
+
+  test("tools is empty when agent has no tool components", async () => {
+    const agent = await createStartedAgent();
+    const rawModel = mock(() => Promise.resolve(mockModelResponse()));
+    const rawTool = mock(() => Promise.resolve(mockToolResponse()));
+
+    const handlers = createComposedCallHandlers(
+      [],
+      () => mockTurnContext(),
+      agent,
+      rawModel,
+      rawTool,
+    );
+
+    expect(handlers.tools).toEqual([]);
+  });
+
+  test("tools contains descriptors from agent tool components", async () => {
+    const toolProvider: ComponentProvider = {
+      name: "test-tools",
+      attach: async () => {
+        return new Map<string, unknown>([
+          [
+            toolToken("calc") as string,
+            {
+              descriptor: { name: "calc", description: "Calculator", inputSchema: {} },
+              trustTier: "sandboxed",
+              execute: async (): Promise<unknown> => 42,
+            },
+          ],
+          [
+            toolToken("search") as string,
+            {
+              descriptor: {
+                name: "search",
+                description: "Web search",
+                inputSchema: { type: "object" },
+              },
+              trustTier: "sandboxed",
+              execute: async (): Promise<unknown> => "results",
+            },
+          ],
+        ]);
+      },
+    };
+    const pid = { id: agentId("a1"), name: "Test", type: "copilot" as const, depth: 0 };
+    const agent = await AgentEntity.assemble(pid, testManifest, [toolProvider]);
+    agent.transition({ kind: "start" });
+
+    const rawModel = mock(() => Promise.resolve(mockModelResponse()));
+    const rawTool = mock(() => Promise.resolve(mockToolResponse()));
+
+    const handlers = createComposedCallHandlers(
+      [],
+      () => mockTurnContext(),
+      agent,
+      rawModel,
+      rawTool,
+    );
+
+    expect(handlers.tools).toHaveLength(2);
+    expect(handlers.tools.map((t) => t.name)).toEqual(expect.arrayContaining(["calc", "search"]));
   });
 });
 

@@ -51,6 +51,7 @@ export { applyTransition, validateTransition } from "./transitions.js";
 // types
 export type {
   CreateKoiOptions,
+  ForgeRuntime,
   IterationLimits,
   KoiRuntime,
   LoopDetectionConfig,

@@ -311,6 +311,10 @@ describe("Edge case 11: ForgeStore.save() failure after verification", () => {
         ok: false as const,
         error: { code: "INTERNAL" as const, message: "disk full", retryable: false },
       }),
+      exists: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "disk full", retryable: false },
+      }),
     };
 
     const tool = createForgeToolTool(createDeps({ store: failingStore }));

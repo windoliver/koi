@@ -187,6 +187,10 @@ describe("createSearchForgeTool", () => {
         ok: false as const,
         error: { code: "INTERNAL" as const, message: "store down", retryable: false },
       }),
+      exists: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "store down", retryable: false },
+      }),
     };
     const tool = createSearchForgeTool(createDeps({ store: failingStore }));
     const result = (await tool.execute({})) as {

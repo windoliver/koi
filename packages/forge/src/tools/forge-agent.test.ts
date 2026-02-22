@@ -262,6 +262,10 @@ describe("createForgeAgentTool", () => {
         ok: false as const,
         error: { code: "INTERNAL" as const, message: "n/a", retryable: false },
       }),
+      exists: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "n/a", retryable: false },
+      }),
     };
 
     const tool = createForgeAgentTool(createDeps({ store: failingStore }));

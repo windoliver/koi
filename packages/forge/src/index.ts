@@ -7,6 +7,24 @@
  * Depends on @koi/core only — never on L1 or peer L2 packages.
  */
 
+// Advisory lock types (for persistent backends)
+// types — brick artifacts & query from L0
+export type {
+  AdvisoryLock,
+  AgentArtifact,
+  BrickArtifact,
+  BrickArtifactBase,
+  BrickUpdate,
+  CompositeArtifact,
+  ForgeQuery,
+  ForgeStore,
+  LockHandle,
+  LockMode,
+  LockRequest,
+  SkillArtifact,
+  TestCase,
+  ToolArtifact,
+} from "@koi/core";
 // runtime values — adversarial verifiers
 export {
   createAdversarialVerifiers,
@@ -44,7 +62,6 @@ export type { GovernanceResult } from "./governance.js";
 export { checkGovernance, checkScopePromotion } from "./governance.js";
 // runtime values — storage
 export { createInMemoryForgeStore } from "./memory-store.js";
-export type { BrickUpdate, ForgeStore } from "./store.js";
 export { createComposeForgeTool } from "./tools/compose-forge.js";
 export { createForgeAgentTool } from "./tools/forge-agent.js";
 export { createForgeSkillTool } from "./tools/forge-skill.js";
@@ -52,20 +69,14 @@ export { createForgeToolTool } from "./tools/forge-tool.js";
 export { createPromoteForgeTool } from "./tools/promote-forge.js";
 export { createSearchForgeTool } from "./tools/search-forge.js";
 export type { ForgeDeps, ForgeToolConfig } from "./tools/shared.js";
-
 // runtime values — primordial tools
 export { createForgeTool } from "./tools/shared.js";
-// types
+// types — forge-specific (remain in L2)
 export type {
-  AgentArtifact,
-  BrickArtifact,
-  BrickArtifactBase,
-  CompositeArtifact,
   ForgeAgentInput,
   ForgeCompositeInput,
   ForgeContext,
   ForgeInput,
-  ForgeQuery,
   ForgeResult,
   ForgeResultMetadata,
   ForgeSkillInput,
@@ -79,10 +90,7 @@ export type {
   SandboxErrorCode,
   SandboxExecutor,
   SandboxResult,
-  SkillArtifact,
   StageReport,
-  TestCase,
-  ToolArtifact,
   TrustStageReport,
   VerificationReport,
   VerificationStage,

@@ -234,6 +234,10 @@ describe("createForgeComponentProviderAsync", () => {
         ok: false as const,
         error: { code: "INTERNAL" as const, message: "n/a", retryable: false },
       }),
+      exists: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "n/a", retryable: false },
+      }),
     };
 
     const provider = await createForgeComponentProviderAsync({

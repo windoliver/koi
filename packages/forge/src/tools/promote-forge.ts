@@ -3,11 +3,10 @@
  * Integrates with governance for scope promotion checks and HITL.
  */
 
-import type { BrickLifecycle, ForgeScope, Result, Tool, TrustTier } from "@koi/core";
+import type { BrickLifecycle, BrickUpdate, ForgeScope, Result, Tool, TrustTier } from "@koi/core";
 import type { ForgeError } from "../errors.js";
 import { governanceError, staticError, storeError, typeError } from "../errors.js";
 import { checkScopePromotion } from "../governance.js";
-import type { BrickUpdate } from "../store.js";
 import type { PromoteChange, PromoteResult } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import { createForgeTool, validateInputFields } from "./shared.js";
