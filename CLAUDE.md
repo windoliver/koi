@@ -120,6 +120,7 @@ These rules prevent vendor/framework concepts from contaminating core interfaces
 - [ ] L2 packages only import from `@koi/core`, never from `@koi/engine` or peer L2
 - [ ] All interface properties are `readonly`
 - [ ] Engine adapter exposes zero framework-specific concepts in its public API
+- [ ] Interfaces that may be backed by I/O return `T | Promise<T>`, not just `T`
 
 ## Code Principles
 
@@ -131,6 +132,15 @@ These rules prevent vendor/framework concepts from contaminating core interfaces
 - **Manifest-driven assembly** — declarative agent definition (YAML IS the agent)
 - **ECS composition** — Agent = entity, Tool = component, Middleware = system
 - **Vocabulary <= 10 concepts** — Agent, Channel, Tool, Skill, Middleware, Manifest, Engine, Resolver, Gateway, Node
+
+### Async by Default for I/O-Bound Interfaces
+
+When defining L0 interfaces or L2 contracts that may be backed by I/O (HTTP, database, filesystem, IPC):
+
+- Return `T | Promise<T>` so implementations can be sync (in-memory) or async (network) without interface changes
+- Callers must always `await` the result — `await` on a non-Promise value is a no-op
+- Order cheap sync checks (cache lookups, expiry, validation) before the async call to fail fast
+- Example: `ScopeChecker.isAllowed` returns `boolean | Promise<boolean>` — local glob matching is sync, Nexus ReBAC over HTTP is async, same interface for both
 
 ### Immutability (default)
 
@@ -266,6 +276,65 @@ When considering adding a dependency:
 - Pin exact versions (`exact = true` in `bunfig.toml`)
 - Review lockfile diffs in PRs — they are security events
 - If a function is < 50 lines, write it yourself instead of installing a package
+
+## Workflow Orchestration
+
+### 1. Plan Mode Default
+
+- Enter plan mode for ANY non-trivial task (3+ steps or architectural decisions)
+- If something goes sideways, STOP and re-plan immediately — don't keep pushing
+- Use plan mode for verification steps, not just building
+- Write detailed specs upfront to reduce ambiguity
+
+### 2. Subagent Strategy
+
+- Use subagents liberally to keep main context window clean
+- Offload research, exploration, and parallel analysis to subagents
+- For complex problems, throw more compute at it via subagents
+- One task per subagent for focused execution
+
+### 3. Self-Improvement Loop
+
+- After ANY correction from the user: update `tasks/lessons.md` with the pattern
+- Write rules for yourself that prevent the same mistake
+- Ruthlessly iterate on these lessons until mistake rate drops
+- Review lessons at session start for relevant project
+
+### 4. Verification Before Done
+
+- Never mark a task complete without proving it works
+- Diff behavior between main and your changes when relevant
+- Ask yourself: "Would a staff engineer approve this?"
+- Run tests, check logs, demonstrate correctness
+
+### 5. Demand Elegance (Balanced)
+
+- For non-trivial changes: pause and ask "is there a more elegant way?"
+- If a fix feels hacky: "Knowing everything I know now, implement the elegant solution"
+- Skip this for simple, obvious fixes — don't over-engineer
+- Challenge your own work before presenting it
+
+### 6. Autonomous Bug Fixing
+
+- When given a bug report: just fix it. Don't ask for hand-holding
+- Point at logs, errors, failing tests — then resolve them
+- Zero context switching required from the user
+- Go fix failing CI tests without being told how
+
+## Task Management
+
+1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
+2. **Verify Plan**: Check in before starting implementation
+3. **Track Progress**: Mark items complete as you go
+4. **Explain Changes**: High-level summary at each step
+5. **Document Results**: Add review section to `tasks/todo.md`
+6. **Capture Lessons**: Update `tasks/lessons.md` after corrections
+
+## Core Principles
+
+- **Simplicity First**: Make every change as simple as possible. Impact minimal code.
+- **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
+- **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
 
 ## Git
 

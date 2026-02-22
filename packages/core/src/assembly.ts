@@ -3,6 +3,7 @@
  */
 
 import type { JsonObject } from "./common.js";
+import type { DelegationConfig } from "./delegation.js";
 
 export interface ModelConfig {
   readonly name: string;
@@ -39,5 +40,6 @@ export interface AgentManifest {
   readonly channels?: readonly ChannelConfig[];
   readonly middleware?: readonly MiddlewareConfig[];
   readonly permissions?: PermissionConfig;
+  readonly delegation?: DelegationConfig;
   readonly metadata?: JsonObject;
 }

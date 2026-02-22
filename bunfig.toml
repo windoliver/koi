@@ -17,7 +17,7 @@ coverageDir = "coverage"
 coverageThreshold = { lines = 0.8, functions = 0.8, statements = 0.8 }
 
 # Exclude dist and node_modules from coverage
-coveragePathIgnorePatterns = ["dist/**", "node_modules/**", "*.config.ts"]
+coveragePathIgnorePatterns = ["dist/**", "**/dist/**", "node_modules/**", "**/node_modules/**", "*.config.ts"]
 
 [run]
 # Use bun shell for scripts (faster than system shell)
