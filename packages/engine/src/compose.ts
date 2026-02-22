@@ -3,7 +3,7 @@
  *
  * composeModelChain: wraps wrapModelCall hooks into an onion around the terminal handler.
  * composeToolChain: wraps wrapToolCall hooks into an onion around the terminal handler.
- * runHooks: runs lifecycle hooks (onSessionStart, onBeforeTurn, etc.) sequentially.
+ * runSessionHooks/runTurnHooks: runs lifecycle hooks sequentially.
  */
 
 import type {
@@ -23,118 +23,87 @@ import type {
 import type { AgentEntity } from "./agent-entity.js";
 
 // ---------------------------------------------------------------------------
-// Onion composition for model calls
+// Generic onion composition
+// ---------------------------------------------------------------------------
+
+/** A middleware hook extracted for the generic onion chain. */
+interface OnionEntry<Req, Res> {
+  readonly name: string;
+  readonly hook: (ctx: TurnContext, request: Req, next: (req: Req) => Res) => Res;
+}
+
+/**
+ * Builds an onion-style dispatch chain from a list of hook entries and a terminal.
+ * Each hook wraps the next, with double-call detection on every layer.
+ */
+function composeOnion<Req, Res>(
+  entries: readonly OnionEntry<Req, Res>[],
+  hookLabel: string,
+  terminal: (req: Req) => Res,
+): (ctx: TurnContext, request: Req) => Res {
+  return (ctx: TurnContext, request: Req): Res => {
+    const dispatch = (i: number, req: Req): Res => {
+      const entry = entries[i];
+      if (entry === undefined) {
+        return terminal(req);
+      }
+      let called = false;
+      const next = (nextReq: Req): Res => {
+        if (called) {
+          throw new Error(
+            `Middleware "${entry.name}" called next() multiple times in ${hookLabel}`,
+          );
+        }
+        called = true;
+        return dispatch(i + 1, nextReq);
+      };
+      return entry.hook(ctx, req, next);
+    };
+    return dispatch(0, request);
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Type-safe onion wrappers
 // ---------------------------------------------------------------------------
 
 export function composeModelChain(
   middleware: readonly KoiMiddleware[],
   terminal: ModelHandler,
 ): (ctx: TurnContext, request: ModelRequest) => Promise<ModelResponse> {
-  // Collect middleware that have wrapModelCall defined
-  const wrappers = middleware.filter(
-    (
-      mw,
-    ): mw is KoiMiddleware & {
-      readonly wrapModelCall: NonNullable<KoiMiddleware["wrapModelCall"]>;
-    } => mw.wrapModelCall !== undefined,
-  );
-
-  return (ctx: TurnContext, request: ModelRequest): Promise<ModelResponse> => {
-    const dispatch = (i: number, req: ModelRequest): Promise<ModelResponse> => {
-      const wrapper = wrappers[i];
-      if (wrapper === undefined) {
-        return terminal(req);
-      }
-      let called = false;
-      const next: ModelHandler = (nextReq: ModelRequest): Promise<ModelResponse> => {
-        if (called) {
-          throw new Error(
-            `Middleware "${wrapper.name}" called next() multiple times in wrapModelCall`,
-          );
-        }
-        called = true;
-        return dispatch(i + 1, nextReq);
-      };
-      return wrapper.wrapModelCall(ctx, req, next);
-    };
-    return dispatch(0, request);
-  };
+  const entries: OnionEntry<ModelRequest, Promise<ModelResponse>>[] = [];
+  for (const mw of middleware) {
+    if (mw.wrapModelCall !== undefined) {
+      entries.push({ name: mw.name, hook: mw.wrapModelCall });
+    }
+  }
+  return composeOnion(entries, "wrapModelCall", terminal);
 }
-
-// ---------------------------------------------------------------------------
-// Onion composition for model streams
-// ---------------------------------------------------------------------------
 
 export function composeModelStreamChain(
   middleware: readonly KoiMiddleware[],
   terminal: ModelStreamHandler,
 ): (ctx: TurnContext, request: ModelRequest) => AsyncIterable<ModelChunk> {
-  const wrappers = middleware.filter(
-    (
-      mw,
-    ): mw is KoiMiddleware & {
-      readonly wrapModelStream: NonNullable<KoiMiddleware["wrapModelStream"]>;
-    } => mw.wrapModelStream !== undefined,
-  );
-
-  return (ctx: TurnContext, request: ModelRequest): AsyncIterable<ModelChunk> => {
-    const dispatch = (i: number, req: ModelRequest): AsyncIterable<ModelChunk> => {
-      const wrapper = wrappers[i];
-      if (wrapper === undefined) {
-        return terminal(req);
-      }
-      let called = false;
-      const next: ModelStreamHandler = (nextReq: ModelRequest): AsyncIterable<ModelChunk> => {
-        if (called) {
-          throw new Error(
-            `Middleware "${wrapper.name}" called next() multiple times in wrapModelStream`,
-          );
-        }
-        called = true;
-        return dispatch(i + 1, nextReq);
-      };
-      return wrapper.wrapModelStream(ctx, req, next);
-    };
-    return dispatch(0, request);
-  };
+  const entries: OnionEntry<ModelRequest, AsyncIterable<ModelChunk>>[] = [];
+  for (const mw of middleware) {
+    if (mw.wrapModelStream !== undefined) {
+      entries.push({ name: mw.name, hook: mw.wrapModelStream });
+    }
+  }
+  return composeOnion(entries, "wrapModelStream", terminal);
 }
-
-// ---------------------------------------------------------------------------
-// Onion composition for tool calls
-// ---------------------------------------------------------------------------
 
 export function composeToolChain(
   middleware: readonly KoiMiddleware[],
   terminal: ToolHandler,
 ): (ctx: TurnContext, request: ToolRequest) => Promise<ToolResponse> {
-  const wrappers = middleware.filter(
-    (
-      mw,
-    ): mw is KoiMiddleware & {
-      readonly wrapToolCall: NonNullable<KoiMiddleware["wrapToolCall"]>;
-    } => mw.wrapToolCall !== undefined,
-  );
-
-  return (ctx: TurnContext, request: ToolRequest): Promise<ToolResponse> => {
-    const dispatch = (i: number, req: ToolRequest): Promise<ToolResponse> => {
-      const wrapper = wrappers[i];
-      if (wrapper === undefined) {
-        return terminal(req);
-      }
-      let called = false;
-      const next: ToolHandler = (nextReq: ToolRequest): Promise<ToolResponse> => {
-        if (called) {
-          throw new Error(
-            `Middleware "${wrapper.name}" called next() multiple times in wrapToolCall`,
-          );
-        }
-        called = true;
-        return dispatch(i + 1, nextReq);
-      };
-      return wrapper.wrapToolCall(ctx, req, next);
-    };
-    return dispatch(0, request);
-  };
+  const entries: OnionEntry<ToolRequest, Promise<ToolResponse>>[] = [];
+  for (const mw of middleware) {
+    if (mw.wrapToolCall !== undefined) {
+      entries.push({ name: mw.name, hook: mw.wrapToolCall });
+    }
+  }
+  return composeOnion(entries, "wrapToolCall", terminal);
 }
 
 // ---------------------------------------------------------------------------
@@ -295,21 +264,4 @@ export function createComposedCallHandlers(
     modelStream: (request) => streamChain(getTurnContext(), request),
     toolCall: (request) => toolChain(getTurnContext(), request),
   };
-}
-
-/**
- * @deprecated Use runSessionHooks or runTurnHooks for type safety.
- * This is a convenience alias that accepts either context type.
- */
-export async function runHooks(
-  middleware: readonly KoiMiddleware[],
-  hookName: SessionHook | TurnHook,
-  ctx: SessionContext | TurnContext,
-): Promise<void> {
-  for (const mw of middleware) {
-    const hook = mw[hookName] as ((ctx: never) => Promise<void>) | undefined;
-    if (hook) {
-      await hook(ctx as never);
-    }
-  }
 }

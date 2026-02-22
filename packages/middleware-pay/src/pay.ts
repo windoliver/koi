@@ -87,9 +87,12 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
         };
         await tracker.record(sessionId, costEntry);
 
-        const totalSpent = await tracker.totalSpend(sessionId);
+        // Parallel fetch — both reads depend on record being complete, not on each other
+        const [totalSpent, remainingBudget] = await Promise.all([
+          tracker.totalSpend(sessionId),
+          tracker.remaining(sessionId, budget),
+        ]);
         const pctUsed = budget > 0 ? totalSpent / budget : 1;
-        const remainingBudget = await tracker.remaining(sessionId, budget);
         checkAndFireAlerts(pctUsed, remainingBudget);
 
         if (onUsage) {

@@ -110,6 +110,28 @@ function createFailConnectManager(name: string): McpClientManager {
   };
 }
 
+function createThrowListToolsManager(name: string): McpClientManager {
+  let connected = false;
+  return {
+    connect: async () => {
+      connected = true;
+      return { ok: true as const, value: undefined };
+    },
+    listTools: async () => {
+      throw new Error(`Unexpected crash in "${name}"`);
+    },
+    callTool: async () => ({
+      ok: false as const,
+      error: { code: "EXTERNAL" as const, message: "N/A", retryable: false },
+    }),
+    close: async () => {
+      connected = false;
+    },
+    isConnected: () => connected,
+    serverName: () => name,
+  };
+}
+
 function createFailListToolsManager(name: string): McpClientManager {
   let connected = false;
   return {
@@ -395,6 +417,61 @@ describe("createMcpComponentProviderAsync (with mock factory)", () => {
     const agent = createMockAgent();
     const components = await result.provider.attach(agent);
     expect(components.size).toBe(0);
+  });
+
+  test("unexpected throw during discovery closes client and records failure", async () => {
+    const manager = createThrowListToolsManager("crashy");
+    const registry = new Map<string, McpClientManager>([["crashy", manager]]);
+
+    const config: McpProviderConfig = {
+      servers: [{ name: "crashy", transport: "stdio", command: "echo", mode: "tools" }],
+    };
+
+    const result = await createMcpComponentProviderAsync(config, createMockFactory(registry));
+    expect(result.failures).toHaveLength(1);
+    // Promise.allSettled rejected path uses serverName "unknown"
+    expect(result.failures[0]?.serverName).toBe("unknown");
+    expect(result.clients).toHaveLength(0);
+    // Verify client was closed in catch block
+    expect(manager.isConnected()).toBe(false);
+  });
+
+  test("unexpected throw in discover mode also closes client", async () => {
+    const manager = createThrowListToolsManager("crashy-discover");
+    const registry = new Map<string, McpClientManager>([["crashy-discover", manager]]);
+
+    const config: McpProviderConfig = {
+      servers: [{ name: "crashy-discover", transport: "stdio", command: "echo", mode: "discover" }],
+    };
+
+    const result = await createMcpComponentProviderAsync(config, createMockFactory(registry));
+    expect(result.failures).toHaveLength(1);
+    expect(result.clients).toHaveLength(0);
+    expect(manager.isConnected()).toBe(false);
+  });
+
+  test("attach returns same tools on repeated calls", async () => {
+    const registry = new Map<string, McpClientManager>([
+      [
+        "stable",
+        createSuccessfulMockManager("stable", [
+          { name: "ping", description: "Ping", inputSchema: { type: "object" } },
+        ]),
+      ],
+    ]);
+
+    const config: McpProviderConfig = {
+      servers: [{ name: "stable", transport: "stdio", command: "echo", mode: "tools" }],
+    };
+
+    const result = await createMcpComponentProviderAsync(config, createMockFactory(registry));
+    const agent = createMockAgent();
+    const first = await result.provider.attach(agent);
+    const second = await result.provider.attach(agent);
+    expect(first.size).toBe(second.size);
+    for (const [key, value] of first) {
+      expect(second.get(key)).toBe(value);
+    }
   });
 
   test("multiple servers in tools mode all contribute tools", async () => {

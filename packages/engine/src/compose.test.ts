@@ -19,7 +19,6 @@ import {
   composeToolChain,
   createComposedCallHandlers,
   createTerminalHandlers,
-  runHooks,
   runSessionHooks,
   runTurnHooks,
 } from "./compose.js";
@@ -400,26 +399,6 @@ describe("runTurnHooks", () => {
     };
     await runTurnHooks([mw1, mw2], "onAfterTurn", mockTurnContext());
     expect(order).toEqual(["first", "second"]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// runHooks (deprecated convenience alias)
-// ---------------------------------------------------------------------------
-
-describe("runHooks", () => {
-  test("works with session hooks", async () => {
-    const called = mock(() => Promise.resolve());
-    const mw: KoiMiddleware = { name: "test", onSessionStart: called };
-    await runHooks([mw], "onSessionStart", { agentId: "a", sessionId: "s", metadata: {} });
-    expect(called).toHaveBeenCalledTimes(1);
-  });
-
-  test("works with turn hooks", async () => {
-    const called = mock(() => Promise.resolve());
-    const mw: KoiMiddleware = { name: "test", onBeforeTurn: called };
-    await runHooks([mw], "onBeforeTurn", mockTurnContext());
-    expect(called).toHaveBeenCalledTimes(1);
   });
 });
 
