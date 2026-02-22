@@ -156,6 +156,24 @@ export type {
   SandboxProfile,
   SandboxResult,
 } from "./sandbox.js";
+// scheduler — types
+export type {
+  CronSchedule,
+  ScheduledTask,
+  ScheduleId,
+  SchedulerConfig,
+  SchedulerEvent,
+  SchedulerStats,
+  ScheduleStore,
+  TaskFilter,
+  TaskId,
+  TaskOptions,
+  TaskScheduler,
+  TaskStatus,
+  TaskStore,
+} from "./scheduler.js";
+// scheduler — runtime values (branded constructors + defaults)
+export { DEFAULT_SCHEDULER_CONFIG, scheduleId, taskId } from "./scheduler.js";
 // search value types
 export type {
   IndexDocument,
