@@ -45,7 +45,7 @@ import type {
   ToolDescriptor,
   TrustTier,
 } from "../index.js";
-import { CREDENTIALS, DELEGATION, EVENTS, GOVERNANCE, MEMORY, token } from "../index.js";
+import { agentId, CREDENTIALS, DELEGATION, EVENTS, GOVERNANCE, MEMORY, token } from "../index.js";
 
 /**
  * Type-level tests using @ts-expect-error.
@@ -146,11 +146,17 @@ describe("EngineEvent discriminant", () => {
     }
   });
 
-  test("narrows to tool_call_start with toolName and callId", () => {
-    const event: EngineEvent = { kind: "tool_call_start", toolName: "calc", callId: "c1" };
+  test("narrows to tool_call_start with toolName, callId, and args", () => {
+    const event: EngineEvent = {
+      kind: "tool_call_start",
+      toolName: "calc",
+      callId: "c1",
+      args: { x: 1, y: 2 },
+    };
     if (event.kind === "tool_call_start") {
       expect(event.toolName).toBe("calc");
       expect(event.callId).toBe("c1");
+      expect(event.args).toEqual({ x: 1, y: 2 });
     }
   });
 
@@ -236,9 +242,15 @@ describe("readonly enforcement", () => {
   });
 
   test("ProcessId properties are readonly", () => {
-    const pid: ProcessId = { id: "1", name: "test", type: "copilot", depth: 0 };
+    const pid: ProcessId = { id: agentId("1"), name: "test", type: "copilot", depth: 0 };
     // @ts-expect-error — cannot assign to readonly property
-    pid.id = "2";
+    pid.id = agentId("2");
+  });
+
+  test("ProcessId.id requires AgentId branded type", () => {
+    // @ts-expect-error — string is not assignable to AgentId
+    const _pid: ProcessId = { id: "plain-string", name: "test", type: "copilot", depth: 0 };
+    void _pid;
   });
 
   test("ToolDescriptor properties are readonly", () => {

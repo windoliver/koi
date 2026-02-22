@@ -10,7 +10,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import type { JsonObject, Tool } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { agentId, toolToken } from "@koi/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -342,7 +342,7 @@ describe("E2E: Koi adapter layers with real MCP server", () => {
     expect(result.clients).toHaveLength(1);
 
     const agent = {
-      pid: { id: "e2e-1", name: "e2e", type: "worker" as const, depth: 0 },
+      pid: { id: agentId("e2e-1"), name: "e2e", type: "worker" as const, depth: 0 },
       manifest: {
         name: "e2e-agent",
         version: "1.0.0",
@@ -359,7 +359,7 @@ describe("E2E: Koi adapter layers with real MCP server", () => {
       components: () => new Map(),
     };
 
-    const components = result.provider.attach(agent);
+    const components = await result.provider.attach(agent);
     expect(components.size).toBe(3);
 
     // Execute echo tool through the component

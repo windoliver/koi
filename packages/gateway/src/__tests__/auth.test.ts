@@ -517,4 +517,85 @@ describe("startHeartbeatSweep", () => {
     expect(store.has("s-fail-open")).toBe(true);
     expect(expiredIds).toHaveLength(0);
   });
+
+  test("onError callback is invoked with context when validate() throws", async () => {
+    const store = createInMemorySessionStore();
+    store.set(
+      createTestSession({
+        id: "s-err-cb",
+        lastHeartbeat: Date.now() - 60_000,
+      }),
+    );
+
+    const errors: Array<{ sessionId: string; cause: unknown }> = [];
+    const authError = new Error("Auth service unavailable");
+    const auth: GatewayAuthenticator = {
+      authenticate: async () => ({ ok: true, sessionId: "s-err-cb", agentId: "a", metadata: {} }),
+      validate: async () => {
+        throw authError;
+      },
+    };
+
+    stopSweep = startHeartbeatSweep(
+      store,
+      auth,
+      30_000,
+      20,
+      () => {},
+      (err) => {
+        errors.push(err);
+      },
+    );
+
+    await waitForCondition(() => errors.length > 0, 2000);
+
+    expect(errors[0]?.sessionId).toBe("s-err-cb");
+    expect(errors[0]?.cause).toBe(authError);
+    // Session still alive (fail-open)
+    expect(store.has("s-err-cb")).toBe(true);
+  });
+
+  test("partial failure: valid sessions evicted, errored sessions kept", async () => {
+    const store = createInMemorySessionStore();
+    // Both sessions are stale (60s ago)
+    store.set(createTestSession({ id: "s-invalid", lastHeartbeat: Date.now() - 60_000 }));
+    store.set(createTestSession({ id: "s-errored", lastHeartbeat: Date.now() - 60_000 }));
+
+    const expiredIds: string[] = [];
+    const errors: Array<{ sessionId: string }> = [];
+    const auth: GatewayAuthenticator = {
+      authenticate: async () => ({ ok: true, sessionId: "x", agentId: "a", metadata: {} }),
+      validate: async (sessionId: string) => {
+        if (sessionId === "s-errored") throw new Error("Auth service partial failure");
+        return false; // s-invalid fails validation
+      },
+    };
+
+    stopSweep = startHeartbeatSweep(
+      store,
+      auth,
+      30_000,
+      20,
+      (id) => {
+        expiredIds.push(id);
+      },
+      (err) => {
+        errors.push(err);
+      },
+    );
+
+    // Wait for both sessions to be swept
+    await waitForCondition(
+      () => expiredIds.includes("s-invalid") && errors.some((e) => e.sessionId === "s-errored"),
+      2000,
+    );
+
+    // s-invalid was evicted (validation returned false)
+    expect(expiredIds).toContain("s-invalid");
+    expect(store.has("s-invalid")).toBe(false);
+
+    // s-errored kept alive (fail-open on auth error)
+    expect(store.has("s-errored")).toBe(true);
+    expect(errors.some((e) => e.sessionId === "s-errored")).toBe(true);
+  });
 });

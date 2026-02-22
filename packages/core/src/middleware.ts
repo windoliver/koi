@@ -16,6 +16,7 @@ export interface TurnContext {
   readonly turnIndex: number;
   readonly messages: readonly InboundMessage[];
   readonly metadata: JsonObject;
+  readonly requestApproval?: ApprovalHandler;
 }
 
 export interface ModelRequest {
@@ -38,6 +39,17 @@ export interface ModelResponse {
 
 export type ModelHandler = (request: ModelRequest) => Promise<ModelResponse>;
 
+export type ModelChunk =
+  | { readonly kind: "text_delta"; readonly delta: string }
+  | { readonly kind: "thinking_delta"; readonly delta: string }
+  | { readonly kind: "tool_call_start"; readonly toolName: string; readonly callId: string }
+  | { readonly kind: "tool_call_delta"; readonly callId: string; readonly delta: string }
+  | { readonly kind: "tool_call_end"; readonly callId: string }
+  | { readonly kind: "usage"; readonly inputTokens: number; readonly outputTokens: number }
+  | { readonly kind: "done"; readonly response: ModelResponse };
+
+export type ModelStreamHandler = (request: ModelRequest) => AsyncIterable<ModelChunk>;
+
 export interface ToolRequest {
   readonly toolId: string;
   readonly input: JsonObject;
@@ -50,6 +62,20 @@ export interface ToolResponse {
 }
 
 export type ToolHandler = (request: ToolRequest) => Promise<ToolResponse>;
+
+export interface ApprovalRequest {
+  readonly toolId: string;
+  readonly input: JsonObject;
+  readonly reason: string;
+  readonly metadata?: JsonObject;
+}
+
+export type ApprovalDecision =
+  | { readonly kind: "allow" }
+  | { readonly kind: "modify"; readonly updatedInput: JsonObject }
+  | { readonly kind: "deny"; readonly reason: string };
+
+export type ApprovalHandler = (request: ApprovalRequest) => Promise<ApprovalDecision>;
 
 export interface KoiMiddleware {
   readonly name: string;
@@ -69,6 +95,12 @@ export interface KoiMiddleware {
     request: ModelRequest,
     next: ModelHandler,
   ) => Promise<ModelResponse>;
+  /** Onion wrapper for model streams. Call `next(req)` to continue the chain. */
+  readonly wrapModelStream?: (
+    ctx: TurnContext,
+    request: ModelRequest,
+    next: ModelStreamHandler,
+  ) => AsyncIterable<ModelChunk>;
   /** Onion wrapper for tool calls. Call `next(req)` to continue the chain. */
   readonly wrapToolCall?: (
     ctx: TurnContext,

@@ -103,6 +103,32 @@ describe("validateConfig", () => {
     }
   });
 
+  test("accepts approvalCache: true", () => {
+    const result = validateConfig({ engine, rules, approvalCache: true });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts approvalCache: { maxEntries: 100 }", () => {
+    const result = validateConfig({ engine, rules, approvalCache: { maxEntries: 100 } });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects approvalCache with negative maxEntries", () => {
+    const result = validateConfig({ engine, rules, approvalCache: { maxEntries: -1 } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("maxEntries");
+    }
+  });
+
+  test("rejects approvalCache with zero maxEntries", () => {
+    const result = validateConfig({ engine, rules, approvalCache: { maxEntries: 0 } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("maxEntries");
+    }
+  });
+
   test("all errors are non-retryable", () => {
     const result = validateConfig(null);
     if (!result.ok) {

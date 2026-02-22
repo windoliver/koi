@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Agent, SubsystemToken } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { agentId, toolToken } from "@koi/core";
 import { brickToTool, createForgeComponentProviderAsync } from "./forge-component-provider.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
 import type { BrickArtifact, SandboxExecutor } from "./types.js";
@@ -12,7 +12,7 @@ import type { BrickArtifact, SandboxExecutor } from "./types.js";
 function createMockAgent(): Agent {
   const components = new Map<string, unknown>();
   return {
-    pid: { id: "agent-1", name: "test", type: "worker", depth: 0 },
+    pid: { id: agentId("agent-1"), name: "test", type: "worker", depth: 0 },
     manifest: {
       name: "test-agent",
       version: "0.0.0",
@@ -161,7 +161,7 @@ describe("createForgeComponentProviderAsync", () => {
 
     expect(provider.name).toBe("forge");
 
-    const components = provider.attach(createMockAgent());
+    const components = await provider.attach(createMockAgent());
     expect(components.size).toBe(2);
 
     const addToken = toolToken("add") as string;
@@ -177,7 +177,7 @@ describe("createForgeComponentProviderAsync", () => {
       executor: echoExecutor(),
     });
 
-    const components = provider.attach(createMockAgent());
+    const components = await provider.attach(createMockAgent());
     expect(components.size).toBe(0);
   });
 
@@ -207,7 +207,7 @@ describe("createForgeComponentProviderAsync", () => {
       executor: echoExecutor(),
     });
 
-    const components = provider.attach(createMockAgent());
+    const components = await provider.attach(createMockAgent());
     expect(components.size).toBe(1);
   });
 
@@ -221,7 +221,7 @@ describe("createForgeComponentProviderAsync", () => {
       executor: echoExecutor(),
     });
 
-    const components = provider.attach(createMockAgent());
+    const components = await provider.attach(createMockAgent());
     expect(components.size).toBe(1);
   });
 
@@ -235,7 +235,7 @@ describe("createForgeComponentProviderAsync", () => {
       executor: echoExecutor(),
     });
 
-    const components = provider.attach(createMockAgent());
+    const components = await provider.attach(createMockAgent());
     expect(components.size).toBe(1);
   });
 
@@ -249,7 +249,7 @@ describe("createForgeComponentProviderAsync", () => {
       sandboxTimeoutMs: 10_000,
     });
 
-    const components = provider.attach(createMockAgent());
+    const components = await provider.attach(createMockAgent());
     expect(components.size).toBe(1);
   });
 
@@ -288,7 +288,7 @@ describe("createForgeComponentProviderAsync", () => {
       executor: echoExecutor(),
     });
 
-    const components = provider.attach(createMockAgent());
+    const components = await provider.attach(createMockAgent());
     const token = toolToken("echo") as string;
     const tool = components.get(token) as { execute: (input: unknown) => Promise<unknown> };
 

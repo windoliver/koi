@@ -13,7 +13,7 @@ import type { JsonObject } from "./common.js";
 import type { DelegationComponent } from "./delegation.js";
 
 // ---------------------------------------------------------------------------
-// Branded token
+// Branded types
 // ---------------------------------------------------------------------------
 
 declare const __brand: unique symbol;
@@ -22,8 +22,16 @@ export type SubsystemToken<T> = string & {
   readonly [__brand]: T;
 };
 
+declare const __agentBrand: unique symbol;
+
+/**
+ * Branded string type for agent identifiers.
+ * Prevents accidental mixing with session IDs, delegation IDs, etc.
+ */
+export type AgentId = string & { readonly [__agentBrand]: "AgentId" };
+
 // ---------------------------------------------------------------------------
-// Token factories (branded casts — sole runtime code in L0)
+// Token & ID factories (branded casts — sole runtime code in L0)
 // ---------------------------------------------------------------------------
 
 export function token<T>(name: string): SubsystemToken<T> {
@@ -42,6 +50,11 @@ export function skillToken(name: string): SubsystemToken<SkillMetadata> {
   return `skill:${name}` as SubsystemToken<SkillMetadata>;
 }
 
+/** Create a branded AgentId from a plain string. */
+export function agentId(id: string): AgentId {
+  return id as AgentId;
+}
+
 // ---------------------------------------------------------------------------
 // Process identity
 // ---------------------------------------------------------------------------
@@ -49,11 +62,11 @@ export function skillToken(name: string): SubsystemToken<SkillMetadata> {
 export type ProcessState = "created" | "running" | "waiting" | "suspended" | "terminated";
 
 export interface ProcessId {
-  readonly id: string;
+  readonly id: AgentId;
   readonly name: string;
   readonly type: "copilot" | "worker";
   readonly depth: number;
-  readonly parent?: string;
+  readonly parent?: AgentId;
 }
 
 // ---------------------------------------------------------------------------
@@ -111,7 +124,8 @@ export interface SkillMetadata {
 
 export interface ComponentProvider {
   readonly name: string;
-  readonly attach: (agent: Agent) => ReadonlyMap<string, unknown>;
+  readonly attach: (agent: Agent) => Promise<ReadonlyMap<string, unknown>>;
+  readonly detach?: (agent: Agent) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

@@ -6,12 +6,20 @@ import type { KoiError, Result } from "@koi/core/errors";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { ApprovalHandler, PermissionEngine, PermissionRules } from "./engine.js";
 
+export interface ApprovalCacheConfig {
+  readonly maxEntries?: number;
+}
+
+export const DEFAULT_APPROVAL_CACHE_MAX_ENTRIES = 256;
+
 export interface PermissionsMiddlewareConfig {
   readonly engine: PermissionEngine;
   readonly rules: PermissionRules;
   readonly approvalHandler?: ApprovalHandler;
   readonly approvalTimeoutMs?: number;
   readonly defaultDeny?: boolean;
+  /** Enable approval caching. false/undefined = disabled, true = defaults, object = custom. */
+  readonly approvalCache?: boolean | ApprovalCacheConfig;
 }
 
 export function validateConfig(config: unknown): Result<PermissionsMiddlewareConfig, KoiError> {
@@ -84,6 +92,32 @@ export function validateConfig(config: unknown): Result<PermissionsMiddlewareCon
           retryable: RETRYABLE_DEFAULTS.VALIDATION,
         },
       };
+    }
+  }
+
+  if (c.approvalCache !== undefined && c.approvalCache !== false && c.approvalCache !== true) {
+    if (typeof c.approvalCache !== "object" || c.approvalCache === null) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: "approvalCache must be a boolean or an ApprovalCacheConfig object",
+          retryable: RETRYABLE_DEFAULTS.VALIDATION,
+        },
+      };
+    }
+    const cache = c.approvalCache as Record<string, unknown>;
+    if (cache.maxEntries !== undefined) {
+      if (typeof cache.maxEntries !== "number" || cache.maxEntries <= 0) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: "approvalCache.maxEntries must be a positive number",
+            retryable: RETRYABLE_DEFAULTS.VALIDATION,
+          },
+        };
+      }
     }
   }
 
