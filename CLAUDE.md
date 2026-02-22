@@ -92,7 +92,7 @@ The 6 contracts that define Koi's extension points:
 
 | # | Contract | Purpose | Minimal surface |
 |---|----------|---------|-----------------|
-| 1 | **Middleware** | Sole interposition layer for model/tool calls | 6 optional hooks |
+| 1 | **Middleware** | Sole interposition layer for model/tool calls | 8 optional hooks |
 | 2 | **Message** | Inbound/outbound data format | `ContentBlock[]` |
 | 3 | **Channel** | I/O interface to users | `send()` + `onMessage()` |
 | 4 | **Resolver** | Discovery of tools/skills/agents | `discover()` + `load()` |

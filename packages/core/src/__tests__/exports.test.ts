@@ -28,8 +28,11 @@ import type {
   EventComponent,
   FileBlock,
   GovernanceComponent,
+  GovernanceUsage,
   ImageBlock,
   InboundMessage,
+  // common
+  JsonObject,
   KoiError,
   // errors
   KoiErrorCode,
@@ -52,6 +55,7 @@ import type {
   // middleware
   SessionContext,
   SkillMetadata,
+  SpawnCheck,
   // ecs
   SubsystemToken,
   // message
@@ -62,6 +66,7 @@ import type {
   ToolHandler,
   ToolRequest,
   ToolResponse,
+  TrustTier,
   TurnContext,
 } from "../index.js";
 
@@ -79,6 +84,7 @@ import {
 // Prevent type imports from being optimized away
 type AssertDefined<T> = T extends undefined ? never : T;
 type _TypeGuard =
+  | AssertDefined<JsonObject>
   | AssertDefined<KoiErrorCode>
   | AssertDefined<KoiError>
   | AssertDefined<Result<unknown>>
@@ -122,10 +128,13 @@ type _TypeGuard =
   | AssertDefined<Agent>
   | AssertDefined<ToolDescriptor>
   | AssertDefined<Tool>
+  | AssertDefined<TrustTier>
   | AssertDefined<SkillMetadata>
   | AssertDefined<ComponentProvider>
   | AssertDefined<MemoryComponent>
   | AssertDefined<GovernanceComponent>
+  | AssertDefined<GovernanceUsage>
+  | AssertDefined<SpawnCheck>
   | AssertDefined<CredentialComponent>
   | AssertDefined<EventComponent>;
 

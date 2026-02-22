@@ -2,19 +2,20 @@
  * Middleware contract — sole interposition layer for model/tool calls.
  */
 
+import type { JsonObject } from "./common.js";
 import type { InboundMessage } from "./message.js";
 
 export interface SessionContext {
   readonly agentId: string;
   readonly sessionId: string;
-  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly metadata: JsonObject;
 }
 
 export interface TurnContext {
   readonly session: SessionContext;
   readonly turnIndex: number;
   readonly messages: readonly InboundMessage[];
-  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly metadata: JsonObject;
 }
 
 export interface ModelRequest {
@@ -22,7 +23,7 @@ export interface ModelRequest {
   readonly model?: string;
   readonly temperature?: number;
   readonly maxTokens?: number;
-  readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly metadata?: JsonObject;
 }
 
 export interface ModelResponse {
@@ -32,7 +33,7 @@ export interface ModelResponse {
     readonly inputTokens: number;
     readonly outputTokens: number;
   };
-  readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly metadata?: JsonObject;
 }
 
 export type ModelHandler = (request: ModelRequest) => Promise<ModelResponse>;
@@ -40,18 +41,20 @@ export type ModelHandler = (request: ModelRequest) => Promise<ModelResponse>;
 export interface ToolRequest {
   readonly toolId: string;
   readonly input: unknown;
-  readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly metadata?: JsonObject;
 }
 
 export interface ToolResponse {
   readonly output: unknown;
-  readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly metadata?: JsonObject;
 }
 
 export type ToolHandler = (request: ToolRequest) => Promise<ToolResponse>;
 
 export interface KoiMiddleware {
   readonly name: string;
+  readonly onSessionStart?: (ctx: SessionContext) => Promise<void>;
+  readonly onSessionEnd?: (ctx: SessionContext) => Promise<void>;
   readonly beforeModel?: (
     ctx: TurnContext,
     request: ModelRequest,

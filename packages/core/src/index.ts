@@ -16,6 +16,8 @@ export type {
 } from "./assembly.js";
 // channel
 export type { ChannelAdapter, ChannelCapabilities, MessageHandler } from "./channel.js";
+// common
+export type { JsonObject } from "./common.js";
 // ecs — types
 export type {
   Agent,
@@ -23,13 +25,16 @@ export type {
   CredentialComponent,
   EventComponent,
   GovernanceComponent,
+  GovernanceUsage,
   MemoryComponent,
   ProcessId,
   ProcessState,
   SkillMetadata,
+  SpawnCheck,
   SubsystemToken,
   Tool,
   ToolDescriptor,
+  TrustTier,
 } from "./ecs.js";
 // ecs — runtime values (token factories + well-known constants)
 export {
