@@ -3,7 +3,11 @@ import type { Gateway } from "../gateway.js";
 import { createGateway } from "../gateway.js";
 import type { GatewayFrame } from "../types.js";
 import type { MockTransport } from "./test-utils.js";
-import { createMockTransport, createTestAuthenticator } from "./test-utils.js";
+import {
+  createConnectMessage,
+  createMockTransport,
+  createTestAuthenticator,
+} from "./test-utils.js";
 
 describe("Gateway integration", () => {
   let transport: MockTransport;
@@ -36,7 +40,7 @@ describe("Gateway integration", () => {
     const conn = transport.simulateOpen();
 
     // Client sends auth token
-    transport.simulateMessage(conn.id, "valid-token");
+    transport.simulateMessage(conn.id, createConnectMessage("valid-token"));
     // Wait for async auth
     await new Promise((r) => setTimeout(r, 50));
 
@@ -74,7 +78,7 @@ describe("Gateway integration", () => {
     await gateway.start(0);
 
     const conn = transport.simulateOpen();
-    transport.simulateMessage(conn.id, "bad-token");
+    transport.simulateMessage(conn.id, createConnectMessage("bad-token"));
 
     await new Promise((r) => setTimeout(r, 50));
 
@@ -93,7 +97,7 @@ describe("Gateway integration", () => {
     await gateway.start(0);
 
     const conn = transport.simulateOpen();
-    transport.simulateMessage(conn.id, "valid-token");
+    transport.simulateMessage(conn.id, createConnectMessage("valid-token"));
     await new Promise((r) => setTimeout(r, 50));
 
     // Send invalid frame
@@ -117,7 +121,7 @@ describe("Gateway integration", () => {
     await gateway.start(0);
 
     const conn = transport.simulateOpen();
-    transport.simulateMessage(conn.id, "valid-token");
+    transport.simulateMessage(conn.id, createConnectMessage("valid-token"));
     await new Promise((r) => setTimeout(r, 50));
 
     const outFrame: GatewayFrame = {
@@ -170,7 +174,7 @@ describe("Gateway integration", () => {
     });
 
     const conn = transport.simulateOpen();
-    transport.simulateMessage(conn.id, "token");
+    transport.simulateMessage(conn.id, createConnectMessage());
     await new Promise((r) => setTimeout(r, 50));
 
     const frame = JSON.stringify({
@@ -206,7 +210,7 @@ describe("Gateway integration", () => {
     });
 
     const conn = transport.simulateOpen();
-    transport.simulateMessage(conn.id, "token");
+    transport.simulateMessage(conn.id, createConnectMessage());
     await new Promise((r) => setTimeout(r, 50));
 
     // Unsubscribe
@@ -238,7 +242,7 @@ describe("Gateway integration", () => {
     await gateway.start(0);
 
     const conn = transport.simulateOpen();
-    transport.simulateMessage(conn.id, "token");
+    transport.simulateMessage(conn.id, createConnectMessage());
     await new Promise((r) => setTimeout(r, 50));
 
     expect(gateway.sessions().has("s1")).toBe(true);

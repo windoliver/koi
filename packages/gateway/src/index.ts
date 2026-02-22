@@ -15,7 +15,7 @@ export { createBackpressureMonitor } from "./backpressure.js";
 export type { Gateway, GatewayDeps } from "./gateway.js";
 export { createGateway } from "./gateway.js";
 // protocol
-export { encodeFrame, parseFrame } from "./protocol.js";
+export { encodeFrame, parseConnectFrame, parseFrame } from "./protocol.js";
 
 // sequence tracker
 export type { AcceptResult, SequenceTracker } from "./sequence-tracker.js";
@@ -36,6 +36,8 @@ export { createBunTransport } from "./transport.js";
 export type {
   AuthResult,
   BackpressureState,
+  ConnectClient,
+  ConnectFrame,
   GatewayConfig,
   GatewayFrame,
   GatewayFrameKind,

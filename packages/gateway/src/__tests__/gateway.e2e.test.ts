@@ -8,8 +8,8 @@ import type { Gateway } from "../gateway.js";
 import { createGateway } from "../gateway.js";
 import type { BunTransport } from "../transport.js";
 import { createBunTransport } from "../transport.js";
-import type { GatewayFrame } from "../types.js";
-import { createTestAuthenticator } from "./test-utils.js";
+import type { ConnectFrame, GatewayFrame } from "../types.js";
+import { createConnectMessage, createTestAuthenticator } from "./test-utils.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -84,13 +84,14 @@ describe("Gateway e2e (real WebSocket)", () => {
     const { ws, messages, opened } = await connectClient(port);
     await opened;
 
-    // 1. Send auth token
-    ws.send("my-e2e-token");
+    // 1. Send structured connect frame
+    ws.send(createConnectMessage("my-e2e-token"));
     await waitForMessages(messages, 1); // auth ack
 
     const authAck = JSON.parse(messages[0] as string);
     expect(authAck.kind).toBe("ack");
     expect(authAck.payload.sessionId).toBe("e2e-session");
+    expect(authAck.payload.protocol).toBe(1);
 
     // 2. Send a request frame
     const requestFrame = JSON.stringify({
@@ -140,7 +141,7 @@ describe("Gateway e2e (real WebSocket)", () => {
     const { ws, messages, opened, closed } = await connectClient(transport.port());
     await opened;
 
-    ws.send("bad-token");
+    ws.send(createConnectMessage("bad-token"));
 
     // Should receive error frame then close
     await waitForMessages(messages, 1);
@@ -166,7 +167,7 @@ describe("Gateway e2e (real WebSocket)", () => {
     const { ws, messages, opened } = await connectClient(transport.port());
     await opened;
 
-    ws.send("token");
+    ws.send(createConnectMessage());
     await waitForMessages(messages, 1); // auth ack
 
     // Send garbage
@@ -198,7 +199,7 @@ describe("Gateway e2e (real WebSocket)", () => {
     const { ws, messages, opened } = await connectClient(transport.port());
     await opened;
 
-    ws.send("token");
+    ws.send(createConnectMessage());
     await waitForMessages(messages, 1); // auth ack
 
     const frame = JSON.stringify({
@@ -242,7 +243,7 @@ describe("Gateway e2e (real WebSocket)", () => {
     const { ws, messages, opened } = await connectClient(transport.port());
     await opened;
 
-    ws.send("token");
+    ws.send(createConnectMessage());
     await waitForMessages(messages, 1);
 
     // Send seq 1 before seq 0
@@ -274,7 +275,7 @@ describe("Gateway e2e (real WebSocket)", () => {
 
     let sessionCounter = 0;
     const auth = {
-      async authenticate(_token: string) {
+      async authenticate(_frame: ConnectFrame) {
         sessionCounter++;
         return {
           ok: true as const,
@@ -301,7 +302,7 @@ describe("Gateway e2e (real WebSocket)", () => {
 
     for (const client of clients) {
       await client.opened;
-      client.ws.send("token");
+      client.ws.send(createConnectMessage());
     }
 
     // Wait for all auth acks
@@ -347,7 +348,7 @@ describe("Gateway e2e (real WebSocket)", () => {
     const { ws, messages, opened } = await connectClient(transport.port());
     await opened;
 
-    ws.send("token");
+    ws.send(createConnectMessage());
     await waitForMessages(messages, 1); // auth ack
 
     // Send seq 10 — far beyond window [0..3]
@@ -374,7 +375,7 @@ describe("Gateway e2e (real WebSocket)", () => {
 
     let shouldValidate = true;
     const auth = {
-      async authenticate(_token: string) {
+      async authenticate(_frame: ConnectFrame) {
         return {
           ok: true as const,
           sessionId: "s-heartbeat",
@@ -394,7 +395,7 @@ describe("Gateway e2e (real WebSocket)", () => {
     const { ws, messages, opened, closed } = await connectClient(transport.port());
     await opened;
 
-    ws.send("token");
+    ws.send(createConnectMessage());
     await waitForMessages(messages, 1); // auth ack
 
     // Session is established
@@ -414,7 +415,7 @@ describe("Gateway e2e (real WebSocket)", () => {
 
     let sessionCounter = 0;
     const auth = {
-      async authenticate(_token: string) {
+      async authenticate(_frame: ConnectFrame) {
         sessionCounter++;
         return {
           ok: true as const,
@@ -440,7 +441,7 @@ describe("Gateway e2e (real WebSocket)", () => {
     // First connection — send seq 0, 1
     const client1 = await connectClient(port);
     await client1.opened;
-    client1.ws.send("token");
+    client1.ws.send(createConnectMessage());
     await waitForMessages(client1.messages, 1);
 
     client1.ws.send(
@@ -459,7 +460,7 @@ describe("Gateway e2e (real WebSocket)", () => {
     // Reconnect as a new session — sends from seq 0 again (new tracker)
     const client2 = await connectClient(port);
     await client2.opened;
-    client2.ws.send("token");
+    client2.ws.send(createConnectMessage());
     await waitForMessages(client2.messages, 1);
 
     client2.ws.send(
@@ -497,7 +498,7 @@ describe("Gateway e2e (real WebSocket)", () => {
     const { ws, messages, opened } = await connectClient(transport.port());
     await opened;
 
-    ws.send("token");
+    ws.send(createConnectMessage());
     await waitForMessages(messages, 1);
 
     // First frame will be recorded against the buffer (~80 bytes of JSON > 50 limit → critical)

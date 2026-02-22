@@ -108,9 +108,15 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
           connMap.set(conn.id, conn);
 
           // Start auth handshake
-          void handleHandshake(conn, deps.auth, config.authTimeoutMs, (handler) => {
-            pendingHandshakes.set(conn.id, handler);
-          }).then(
+          void handleHandshake(
+            conn,
+            deps.auth,
+            config.authTimeoutMs,
+            config.protocolVersion,
+            (handler) => {
+              pendingHandshakes.set(conn.id, handler);
+            },
+          ).then(
             ({ session }) => {
               pendingHandshakes.delete(conn.id);
               store.set(session);

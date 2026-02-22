@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { encodeFrame, parseFrame } from "../protocol.js";
+import { encodeFrame, parseConnectFrame, parseFrame } from "../protocol.js";
 import type { GatewayFrame } from "../types.js";
 
 describe("parseFrame", () => {
@@ -128,6 +128,101 @@ describe("parseFrame", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.payload).toBeUndefined();
+    }
+  });
+});
+
+describe("parseConnectFrame", () => {
+  test("parses valid connect frame", () => {
+    const raw = JSON.stringify({
+      type: "connect",
+      protocol: 1,
+      auth: { token: "my-token" },
+    });
+    const result = parseConnectFrame(raw);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.type).toBe("connect");
+      expect(result.value.protocol).toBe(1);
+      expect(result.value.auth.token).toBe("my-token");
+    }
+  });
+
+  test("parses connect frame with client metadata", () => {
+    const raw = JSON.stringify({
+      type: "connect",
+      protocol: 1,
+      auth: { token: "tok" },
+      client: { id: "cli-1", version: "2.0", platform: "web" },
+    });
+    const result = parseConnectFrame(raw);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.client?.id).toBe("cli-1");
+      expect(result.value.client?.version).toBe("2.0");
+      expect(result.value.client?.platform).toBe("web");
+    }
+  });
+
+  test("rejects non-connect type", () => {
+    const raw = JSON.stringify({ type: "request", protocol: 1, auth: { token: "t" } });
+    const result = parseConnectFrame(raw);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("connect");
+    }
+  });
+
+  test("rejects missing type", () => {
+    const raw = JSON.stringify({ protocol: 1, auth: { token: "t" } });
+    expect(parseConnectFrame(raw).ok).toBe(false);
+  });
+
+  test("rejects missing protocol", () => {
+    const raw = JSON.stringify({ type: "connect", auth: { token: "t" } });
+    expect(parseConnectFrame(raw).ok).toBe(false);
+  });
+
+  test("rejects protocol < 1", () => {
+    const raw = JSON.stringify({ type: "connect", protocol: 0, auth: { token: "t" } });
+    expect(parseConnectFrame(raw).ok).toBe(false);
+  });
+
+  test("rejects missing auth", () => {
+    const raw = JSON.stringify({ type: "connect", protocol: 1 });
+    expect(parseConnectFrame(raw).ok).toBe(false);
+  });
+
+  test("rejects empty token", () => {
+    const raw = JSON.stringify({ type: "connect", protocol: 1, auth: { token: "" } });
+    expect(parseConnectFrame(raw).ok).toBe(false);
+  });
+
+  test("rejects malformed JSON", () => {
+    const result = parseConnectFrame("not json");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+    }
+  });
+
+  test("rejects raw string (non-JSON)", () => {
+    const result = parseConnectFrame("just-a-token");
+    expect(result.ok).toBe(false);
+  });
+
+  test("accepts partial client object", () => {
+    const raw = JSON.stringify({
+      type: "connect",
+      protocol: 1,
+      auth: { token: "t" },
+      client: { platform: "ios" },
+    });
+    const result = parseConnectFrame(raw);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.client?.platform).toBe("ios");
+      expect(result.value.client?.id).toBeUndefined();
     }
   });
 });

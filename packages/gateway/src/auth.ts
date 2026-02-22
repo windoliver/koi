@@ -2,18 +2,18 @@
  * Authentication: handshake + periodic heartbeat re-validation.
  */
 
-import { encodeFrame } from "./protocol.js";
+import { encodeFrame, parseConnectFrame } from "./protocol.js";
 import type { SessionStore } from "./session-store.js";
 import type { TransportConnection } from "./transport.js";
-import type { AuthResult, Session } from "./types.js";
+import type { AuthResult, ConnectFrame, Session } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Authenticator interface
 // ---------------------------------------------------------------------------
 
 export interface GatewayAuthenticator {
-  /** Authenticate an initial connection token. */
-  readonly authenticate: (token: string) => Promise<AuthResult>;
+  /** Authenticate based on a structured connect frame. */
+  readonly authenticate: (frame: ConnectFrame) => Promise<AuthResult>;
   /** Re-validate an existing session (heartbeat check). */
   readonly validate: (sessionId: string) => Promise<boolean>;
 }
@@ -24,16 +24,19 @@ export interface GatewayAuthenticator {
 
 export interface HandshakeResult {
   readonly session: Session;
+  readonly connectFrame: ConnectFrame;
 }
 
 /**
- * Wait for the first message on a connection to be an auth token.
+ * Wait for the first message on a connection to be a structured ConnectFrame.
+ * Parses + validates the frame, then delegates to the authenticator.
  * Resolves with a new Session on success, rejects on failure/timeout.
  */
 export function handleHandshake(
   conn: TransportConnection,
   authenticator: GatewayAuthenticator,
   timeoutMs: number,
+  protocolVersion: number,
   onMessage: (handler: (data: string) => void) => void,
 ): Promise<HandshakeResult> {
   return new Promise<HandshakeResult>((resolve, reject) => {
@@ -51,8 +54,25 @@ export function handleHandshake(
       settled = true;
       clearTimeout(timer);
 
-      // The first message is treated as the auth token
-      void authenticator.authenticate(data).then((result) => {
+      // Parse the structured connect frame
+      const parseResult = parseConnectFrame(data);
+      if (!parseResult.ok) {
+        const errorFrame = encodeFrame({
+          kind: "error",
+          id: crypto.randomUUID(),
+          seq: 0,
+          timestamp: Date.now(),
+          payload: { code: parseResult.error.code, message: parseResult.error.message },
+        });
+        conn.send(errorFrame);
+        conn.close(4002, "Invalid connect frame");
+        reject(new Error(`Invalid connect frame: ${parseResult.error.message}`));
+        return;
+      }
+
+      const connectFrame = parseResult.value;
+
+      void authenticator.authenticate(connectFrame).then((result) => {
         if (!result.ok) {
           const errorFrame = encodeFrame({
             kind: "error",
@@ -82,11 +102,11 @@ export function handleHandshake(
           id: crypto.randomUUID(),
           seq: 0,
           timestamp: Date.now(),
-          payload: { sessionId: session.id },
+          payload: { sessionId: session.id, protocol: protocolVersion },
         });
         conn.send(ackFrame);
 
-        resolve({ session });
+        resolve({ session, connectFrame });
       });
     });
   });

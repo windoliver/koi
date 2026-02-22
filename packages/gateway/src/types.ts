@@ -6,6 +6,33 @@
 // Wire protocol
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Connect handshake (structured first message)
+// ---------------------------------------------------------------------------
+
+export interface ConnectClient {
+  /** Client instance identifier. */
+  readonly id?: string;
+  /** Client version string (e.g. "1.2.0"). */
+  readonly version?: string;
+  /** Platform hint (e.g. "web", "ios", "cli", "node"). */
+  readonly platform?: string;
+}
+
+export interface ConnectFrame {
+  readonly type: "connect";
+  /** Protocol version the client speaks (positive integer). */
+  readonly protocol: number;
+  readonly auth: {
+    readonly token: string;
+  };
+  readonly client?: ConnectClient;
+}
+
+// ---------------------------------------------------------------------------
+// Wire protocol frames (post-handshake)
+// ---------------------------------------------------------------------------
+
 export type GatewayFrameKind = "request" | "response" | "event" | "ack" | "error";
 
 export interface GatewayFrame {
@@ -58,6 +85,8 @@ export type AuthResult =
 // ---------------------------------------------------------------------------
 
 export interface GatewayConfig {
+  /** Gateway protocol version. Default: 1. */
+  readonly protocolVersion: number;
   /** Maximum concurrent connections. Default: 10_000. */
   readonly maxConnections: number;
   /** Buffer utilization ratio that triggers warning state. Default: 0.8. */
@@ -77,6 +106,7 @@ export interface GatewayConfig {
 }
 
 export const DEFAULT_GATEWAY_CONFIG: GatewayConfig = {
+  protocolVersion: 1,
   maxConnections: 10_000,
   backpressureHighWatermark: 0.8,
   maxBufferPerConnection: 256,

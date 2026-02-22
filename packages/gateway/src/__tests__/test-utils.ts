@@ -4,7 +4,7 @@
 
 import type { GatewayAuthenticator } from "../auth.js";
 import type { Transport, TransportConnection, TransportHandler } from "../transport.js";
-import type { AuthResult, GatewayFrame, Session } from "../types.js";
+import type { AuthResult, ConnectFrame, GatewayFrame, Session } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Mock Transport
@@ -171,11 +171,29 @@ export function createTestAuthenticator(
   };
 
   return {
-    async authenticate(_token: string): Promise<AuthResult> {
+    async authenticate(_frame: ConnectFrame): Promise<AuthResult> {
       return defaultResult;
     },
     async validate(_sessionId: string): Promise<boolean> {
       return validateResult;
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Connect frame builder
+// ---------------------------------------------------------------------------
+
+/** Build a JSON-encoded connect frame string for tests. */
+export function createConnectMessage(
+  token = "test-token",
+  overrides?: Partial<Omit<ConnectFrame, "type">>,
+): string {
+  const frame: ConnectFrame = {
+    type: "connect",
+    protocol: overrides?.protocol ?? 1,
+    auth: overrides?.auth ?? { token },
+    ...(overrides?.client !== undefined ? { client: overrides.client } : {}),
+  };
+  return JSON.stringify(frame);
 }

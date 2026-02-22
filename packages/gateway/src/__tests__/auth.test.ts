@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { GatewayAuthenticator } from "../auth.js";
 import { handleHandshake, startHeartbeatSweep } from "../auth.js";
 import { createInMemorySessionStore } from "../session-store.js";
-import { createTestAuthenticator, createTestSession } from "./test-utils.js";
+import type { ConnectFrame } from "../types.js";
+import { createConnectMessage, createTestAuthenticator, createTestSession } from "./test-utils.js";
 
 // ---------------------------------------------------------------------------
 // Mock connection for handshake tests
@@ -59,21 +60,24 @@ describe("handleHandshake", () => {
     });
 
     let messageHandler: ((data: string) => void) | undefined;
-    const promise = handleHandshake(conn, auth, 5000, (handler) => {
+    const promise = handleHandshake(conn, auth, 5000, 1, (handler) => {
       messageHandler = handler;
     });
 
-    // Simulate client sending auth token
-    messageHandler?.("my-secret-token");
+    // Simulate client sending structured connect frame
+    messageHandler?.(createConnectMessage("my-secret-token"));
 
     const result = await promise;
     expect(result.session.id).toBe("session-1");
     expect(result.session.agentId).toBe("agent-1");
     expect(result.session.metadata).toEqual({ role: "admin" });
-    // Should have sent an ack
+    expect(result.connectFrame.protocol).toBe(1);
+    expect(result.connectFrame.auth.token).toBe("my-secret-token");
+    // Should have sent an ack with protocol version
     expect(conn.sent.length).toBe(1);
     const ack = JSON.parse(conn.sent[0] as string);
     expect(ack.kind).toBe("ack");
+    expect(ack.payload.protocol).toBe(1);
   });
 
   test("invalid token closes connection", async () => {
@@ -85,11 +89,11 @@ describe("handleHandshake", () => {
     });
 
     let messageHandler: ((data: string) => void) | undefined;
-    const promise = handleHandshake(conn, auth, 5000, (handler) => {
+    const promise = handleHandshake(conn, auth, 5000, 1, (handler) => {
       messageHandler = handler;
     });
 
-    messageHandler?.("bad-token");
+    messageHandler?.(createConnectMessage("bad-token"));
 
     await expect(promise).rejects.toThrow("Auth failed: INVALID_TOKEN");
     expect(conn.closeCode).toBe(4003);
@@ -99,11 +103,61 @@ describe("handleHandshake", () => {
     expect(errFrame.kind).toBe("error");
   });
 
+  test("malformed connect frame closes connection", async () => {
+    const { conn } = createHandshakeConn();
+    const auth = createTestAuthenticator();
+
+    let messageHandler: ((data: string) => void) | undefined;
+    const promise = handleHandshake(conn, auth, 5000, 1, (handler) => {
+      messageHandler = handler;
+    });
+
+    // Send raw string instead of connect frame
+    messageHandler?.("just-a-raw-token");
+
+    await expect(promise).rejects.toThrow("Invalid connect frame");
+    expect(conn.closeCode).toBe(4002);
+    expect(conn.sent.length).toBe(1);
+    const errFrame = JSON.parse(conn.sent[0] as string);
+    expect(errFrame.kind).toBe("error");
+  });
+
+  test("connect frame with client metadata is passed to authenticator", async () => {
+    const { conn } = createHandshakeConn();
+
+    let receivedFrame: ConnectFrame | undefined;
+    const auth: GatewayAuthenticator = {
+      async authenticate(frame: ConnectFrame) {
+        receivedFrame = frame;
+        return { ok: true, sessionId: "s1", agentId: "a1", metadata: {} };
+      },
+      async validate() {
+        return true;
+      },
+    };
+
+    let messageHandler: ((data: string) => void) | undefined;
+    const promise = handleHandshake(conn, auth, 5000, 1, (handler) => {
+      messageHandler = handler;
+    });
+
+    messageHandler?.(
+      createConnectMessage("tok", {
+        client: { id: "cli-1", version: "2.0.0", platform: "web" },
+      }),
+    );
+
+    await promise;
+    expect(receivedFrame?.client?.id).toBe("cli-1");
+    expect(receivedFrame?.client?.version).toBe("2.0.0");
+    expect(receivedFrame?.client?.platform).toBe("web");
+  });
+
   test("auth handshake timeout", async () => {
     const { conn } = createHandshakeConn();
     const auth = createTestAuthenticator();
 
-    const promise = handleHandshake(conn, auth, 50, (_handler) => {
+    const promise = handleHandshake(conn, auth, 50, 1, (_handler) => {
       // Never call the handler — simulates no token received
     });
 
@@ -201,7 +255,6 @@ describe("startHeartbeatSweep", () => {
     const auth = createTestAuthenticator();
 
     let sweepCount = 0;
-    const _originalSet = store.set.bind(store);
 
     stopSweep = startHeartbeatSweep(store, auth, 30_000, 50, () => {
       sweepCount++;

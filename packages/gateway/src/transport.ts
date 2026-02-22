@@ -56,7 +56,9 @@ export function createBunTransport(): BunTransport {
   return {
     port(): number {
       if (server === undefined) throw new Error("Transport not started");
-      return server.port;
+      const p = server.port;
+      if (p === undefined) throw new Error("Server port not available");
+      return p;
     },
     listen(port: number, handler: TransportHandler): Promise<void> {
       // Map from Bun's ServerWebSocket id → TransportConnection
