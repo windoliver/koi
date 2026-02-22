@@ -1,9 +1,25 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { GatewayAuthenticator } from "../auth.js";
+import type { GatewayAuthenticator, HandshakeOptions } from "../auth.js";
 import { handleHandshake, startHeartbeatSweep } from "../auth.js";
 import { createInMemorySessionStore } from "../session-store.js";
 import type { ConnectFrame } from "../types.js";
-import { createConnectMessage, createTestAuthenticator, createTestSession } from "./test-utils.js";
+import {
+  createConnectMessage,
+  createLegacyConnectMessage,
+  createTestAuthenticator,
+  createTestSession,
+  waitForCondition,
+} from "./test-utils.js";
+
+// ---------------------------------------------------------------------------
+// Default HandshakeOptions for tests
+// ---------------------------------------------------------------------------
+
+const DEFAULT_TEST_OPTIONS: HandshakeOptions = {
+  minProtocolVersion: 1,
+  maxProtocolVersion: 1,
+  capabilities: { compression: false, resumption: false, maxFrameBytes: 1_048_576 },
+};
 
 // ---------------------------------------------------------------------------
 // Mock connection for handshake tests
@@ -60,7 +76,7 @@ describe("handleHandshake", () => {
     });
 
     let messageHandler: ((data: string) => void) | undefined;
-    const promise = handleHandshake(conn, auth, 5000, 1, (handler) => {
+    const promise = handleHandshake(conn, auth, 5000, DEFAULT_TEST_OPTIONS, (handler) => {
       messageHandler = handler;
     });
 
@@ -71,13 +87,19 @@ describe("handleHandshake", () => {
     expect(result.session.id).toBe("session-1");
     expect(result.session.agentId).toBe("agent-1");
     expect(result.session.metadata).toEqual({ role: "admin" });
-    expect(result.connectFrame.protocol).toBe(1);
+    expect(result.connectFrame.minProtocol).toBe(1);
+    expect(result.connectFrame.maxProtocol).toBe(1);
     expect(result.connectFrame.auth.token).toBe("my-secret-token");
-    // Should have sent an ack with protocol version
+    // Should have sent an ack with protocol version and capabilities
     expect(conn.sent.length).toBe(1);
     const ack = JSON.parse(conn.sent[0] as string);
     expect(ack.kind).toBe("ack");
     expect(ack.payload.protocol).toBe(1);
+    expect(ack.payload.capabilities).toEqual({
+      compression: false,
+      resumption: false,
+      maxFrameBytes: 1_048_576,
+    });
   });
 
   test("invalid token closes connection", async () => {
@@ -89,7 +111,7 @@ describe("handleHandshake", () => {
     });
 
     let messageHandler: ((data: string) => void) | undefined;
-    const promise = handleHandshake(conn, auth, 5000, 1, (handler) => {
+    const promise = handleHandshake(conn, auth, 5000, DEFAULT_TEST_OPTIONS, (handler) => {
       messageHandler = handler;
     });
 
@@ -108,7 +130,7 @@ describe("handleHandshake", () => {
     const auth = createTestAuthenticator();
 
     let messageHandler: ((data: string) => void) | undefined;
-    const promise = handleHandshake(conn, auth, 5000, 1, (handler) => {
+    const promise = handleHandshake(conn, auth, 5000, DEFAULT_TEST_OPTIONS, (handler) => {
       messageHandler = handler;
     });
 
@@ -137,7 +159,7 @@ describe("handleHandshake", () => {
     };
 
     let messageHandler: ((data: string) => void) | undefined;
-    const promise = handleHandshake(conn, auth, 5000, 1, (handler) => {
+    const promise = handleHandshake(conn, auth, 5000, DEFAULT_TEST_OPTIONS, (handler) => {
       messageHandler = handler;
     });
 
@@ -157,12 +179,202 @@ describe("handleHandshake", () => {
     const { conn } = createHandshakeConn();
     const auth = createTestAuthenticator();
 
-    const promise = handleHandshake(conn, auth, 50, 1, (_handler) => {
+    const promise = handleHandshake(conn, auth, 50, DEFAULT_TEST_OPTIONS, (_handler) => {
       // Never call the handler — simulates no token received
     });
 
     await expect(promise).rejects.toThrow("Auth handshake timed out");
     expect(conn.closeCode).toBe(4001);
+  });
+
+  test("authenticate() throwing rejects with auth service error", async () => {
+    const { conn } = createHandshakeConn();
+    const auth: GatewayAuthenticator = {
+      async authenticate() {
+        throw new Error("Auth service unavailable");
+      },
+      async validate() {
+        return true;
+      },
+    };
+
+    let messageHandler: ((data: string) => void) | undefined;
+    const promise = handleHandshake(conn, auth, 5000, DEFAULT_TEST_OPTIONS, (handler) => {
+      messageHandler = handler;
+    });
+
+    messageHandler?.(createConnectMessage("some-token"));
+
+    await expect(promise).rejects.toThrow("Auth service error");
+    expect(conn.closeCode).toBe(4003);
+    // Should have sent error frame with INTERNAL code
+    expect(conn.sent.length).toBe(1);
+    const errFrame = JSON.parse(conn.sent[0] as string);
+    expect(errFrame.kind).toBe("error");
+    expect(errFrame.payload.code).toBe("INTERNAL");
+  });
+
+  // ----- Version negotiation tests -----
+
+  test("version mismatch closes with 4010 and PROTOCOL_MISMATCH error", async () => {
+    const { conn } = createHandshakeConn();
+    const auth = createTestAuthenticator();
+
+    const options: HandshakeOptions = {
+      minProtocolVersion: 3,
+      maxProtocolVersion: 5,
+      capabilities: { compression: false, resumption: false, maxFrameBytes: 1_048_576 },
+    };
+
+    let messageHandler: ((data: string) => void) | undefined;
+    const promise = handleHandshake(conn, auth, 5000, options, (handler) => {
+      messageHandler = handler;
+    });
+
+    // Client only speaks protocol 1-2, server requires 3-5
+    messageHandler?.(createConnectMessage("tok", { minProtocol: 1, maxProtocol: 2 }));
+
+    await expect(promise).rejects.toThrow("Protocol mismatch");
+    expect(conn.closeCode).toBe(4010);
+    expect(conn.sent.length).toBe(1);
+    const errFrame = JSON.parse(conn.sent[0] as string);
+    expect(errFrame.kind).toBe("error");
+    expect(errFrame.payload.code).toBe("PROTOCOL_MISMATCH");
+  });
+
+  test("negotiates highest overlap version", async () => {
+    const { conn } = createHandshakeConn();
+    const auth = createTestAuthenticator({
+      ok: true,
+      sessionId: "s1",
+      agentId: "a1",
+      metadata: {},
+    });
+
+    const options: HandshakeOptions = {
+      minProtocolVersion: 1,
+      maxProtocolVersion: 3,
+      capabilities: { compression: false, resumption: false, maxFrameBytes: 1_048_576 },
+    };
+
+    let messageHandler: ((data: string) => void) | undefined;
+    const promise = handleHandshake(conn, auth, 5000, options, (handler) => {
+      messageHandler = handler;
+    });
+
+    // Client speaks 2-5, server speaks 1-3 → negotiated = 3
+    messageHandler?.(createConnectMessage("tok", { minProtocol: 2, maxProtocol: 5 }));
+
+    await promise;
+    const ack = JSON.parse(conn.sent[0] as string);
+    expect(ack.payload.protocol).toBe(3);
+  });
+
+  test("ack includes capabilities", async () => {
+    const { conn } = createHandshakeConn();
+    const auth = createTestAuthenticator({
+      ok: true,
+      sessionId: "s1",
+      agentId: "a1",
+      metadata: {},
+    });
+
+    const options: HandshakeOptions = {
+      minProtocolVersion: 1,
+      maxProtocolVersion: 1,
+      capabilities: { compression: true, resumption: true, maxFrameBytes: 2_097_152 },
+    };
+
+    let messageHandler: ((data: string) => void) | undefined;
+    const promise = handleHandshake(conn, auth, 5000, options, (handler) => {
+      messageHandler = handler;
+    });
+
+    messageHandler?.(createConnectMessage("tok"));
+    await promise;
+
+    const ack = JSON.parse(conn.sent[0] as string);
+    expect(ack.payload.capabilities).toEqual({
+      compression: true,
+      resumption: true,
+      maxFrameBytes: 2_097_152,
+    });
+  });
+
+  test("ack includes snapshot when provided", async () => {
+    const { conn } = createHandshakeConn();
+    const auth = createTestAuthenticator({
+      ok: true,
+      sessionId: "s1",
+      agentId: "a1",
+      metadata: {},
+    });
+
+    const options: HandshakeOptions = {
+      minProtocolVersion: 1,
+      maxProtocolVersion: 1,
+      capabilities: { compression: false, resumption: false, maxFrameBytes: 1_048_576 },
+      snapshot: { serverTime: 1700000000000, activeConnections: 42 },
+    };
+
+    let messageHandler: ((data: string) => void) | undefined;
+    const promise = handleHandshake(conn, auth, 5000, options, (handler) => {
+      messageHandler = handler;
+    });
+
+    messageHandler?.(createConnectMessage("tok"));
+    await promise;
+
+    const ack = JSON.parse(conn.sent[0] as string);
+    expect(ack.payload.snapshot).toEqual({
+      serverTime: 1700000000000,
+      activeConnections: 42,
+    });
+  });
+
+  test("ack omits snapshot when not provided", async () => {
+    const { conn } = createHandshakeConn();
+    const auth = createTestAuthenticator({
+      ok: true,
+      sessionId: "s1",
+      agentId: "a1",
+      metadata: {},
+    });
+
+    let messageHandler: ((data: string) => void) | undefined;
+    const promise = handleHandshake(conn, auth, 5000, DEFAULT_TEST_OPTIONS, (handler) => {
+      messageHandler = handler;
+    });
+
+    messageHandler?.(createConnectMessage("tok"));
+    await promise;
+
+    const ack = JSON.parse(conn.sent[0] as string);
+    expect(ack.payload.snapshot).toBeUndefined();
+  });
+
+  test("backward compat: legacy protocol field works", async () => {
+    const { conn } = createHandshakeConn();
+    const auth = createTestAuthenticator({
+      ok: true,
+      sessionId: "s1",
+      agentId: "a1",
+      metadata: {},
+    });
+
+    let messageHandler: ((data: string) => void) | undefined;
+    const promise = handleHandshake(conn, auth, 5000, DEFAULT_TEST_OPTIONS, (handler) => {
+      messageHandler = handler;
+    });
+
+    // Send legacy format with single protocol field
+    messageHandler?.(createLegacyConnectMessage("tok", 1));
+
+    const result = await promise;
+    expect(result.connectFrame.minProtocol).toBe(1);
+    expect(result.connectFrame.maxProtocol).toBe(1);
+    const ack = JSON.parse(conn.sent[0] as string);
+    expect(ack.payload.protocol).toBe(1);
   });
 });
 
@@ -187,12 +399,13 @@ describe("startHeartbeatSweep", () => {
       validate: async () => false, // always fail validation
     };
 
-    stopSweep = startHeartbeatSweep(store, auth, 30_000, 50, (id) => {
+    // Use fast sweep interval to ensure all 10 shards are covered
+    stopSweep = startHeartbeatSweep(store, auth, 30_000, 20, (id) => {
       expiredIds.push(id);
     });
 
-    // Wait for sweep to run
-    await new Promise((r) => setTimeout(r, 150));
+    // Wait long enough for all shards to sweep (10 shards × 20ms = 200ms + margin)
+    await waitForCondition(() => expiredIds.includes("s1"), 2000);
 
     expect(expiredIds).toContain("s1");
     expect(store.has("s1")).toBe(false);
@@ -212,15 +425,18 @@ describe("startHeartbeatSweep", () => {
       validate: async () => true, // always pass
     };
 
-    stopSweep = startHeartbeatSweep(store, auth, 30_000, 50, (id) => {
+    stopSweep = startHeartbeatSweep(store, auth, 30_000, 20, (id) => {
       expiredIds.push(id);
     });
 
-    await new Promise((r) => setTimeout(r, 150));
+    // Wait for enough sweeps to cover all shards
+    await waitForCondition(() => {
+      const updated = store.get("s1");
+      return updated !== undefined && updated.lastHeartbeat > activeSession.lastHeartbeat;
+    }, 2000);
 
     expect(expiredIds).toHaveLength(0);
     expect(store.has("s1")).toBe(true);
-    // Heartbeat should have been updated
     const updated = store.get("s1");
     expect(updated?.lastHeartbeat).toBeGreaterThan(activeSession.lastHeartbeat);
   });
@@ -243,9 +459,10 @@ describe("startHeartbeatSweep", () => {
       },
     };
 
-    stopSweep = startHeartbeatSweep(store, auth, 30_000, 50, () => {});
+    stopSweep = startHeartbeatSweep(store, auth, 30_000, 20, () => {});
 
-    await new Promise((r) => setTimeout(r, 150));
+    // Wait for all shards to sweep
+    await new Promise((r) => setTimeout(r, 300));
 
     expect(validateCalled).toBe(false);
   });
@@ -266,5 +483,38 @@ describe("startHeartbeatSweep", () => {
     await new Promise((r) => setTimeout(r, 150));
     // No sweeps should have triggered expiry callbacks
     expect(sweepCount).toBe(0);
+  });
+
+  test("validate() throwing keeps session alive (fail-open)", async () => {
+    const store = createInMemorySessionStore();
+    const expiredSession = createTestSession({
+      id: "s-fail-open",
+      lastHeartbeat: Date.now() - 60_000, // 60s ago — will be checked
+    });
+    store.set(expiredSession);
+
+    const expiredIds: string[] = [];
+    const auth: GatewayAuthenticator = {
+      authenticate: async () => ({
+        ok: true,
+        sessionId: "s-fail-open",
+        agentId: "a",
+        metadata: {},
+      }),
+      validate: async () => {
+        throw new Error("Auth service down");
+      },
+    };
+
+    stopSweep = startHeartbeatSweep(store, auth, 30_000, 20, (id) => {
+      expiredIds.push(id);
+    });
+
+    // Wait for all shards to sweep
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Session should still be in the store (fail-open: error → keep session)
+    expect(store.has("s-fail-open")).toBe(true);
+    expect(expiredIds).toHaveLength(0);
   });
 });

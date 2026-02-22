@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { encodeFrame, parseConnectFrame, parseFrame } from "../protocol.js";
+import { encodeFrame, negotiateProtocol, parseConnectFrame, parseFrame } from "../protocol.js";
 import type { GatewayFrame } from "../types.js";
 
 describe("parseFrame", () => {
@@ -133,25 +133,42 @@ describe("parseFrame", () => {
 });
 
 describe("parseConnectFrame", () => {
-  test("parses valid connect frame", () => {
+  test("parses valid range format (minProtocol/maxProtocol)", () => {
     const raw = JSON.stringify({
       type: "connect",
-      protocol: 1,
+      minProtocol: 1,
+      maxProtocol: 3,
       auth: { token: "my-token" },
     });
     const result = parseConnectFrame(raw);
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.type).toBe("connect");
-      expect(result.value.protocol).toBe(1);
+      expect(result.value.minProtocol).toBe(1);
+      expect(result.value.maxProtocol).toBe(3);
       expect(result.value.auth.token).toBe("my-token");
+    }
+  });
+
+  test("parses legacy protocol field normalized to range", () => {
+    const raw = JSON.stringify({
+      type: "connect",
+      protocol: 2,
+      auth: { token: "my-token" },
+    });
+    const result = parseConnectFrame(raw);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.minProtocol).toBe(2);
+      expect(result.value.maxProtocol).toBe(2);
     }
   });
 
   test("parses connect frame with client metadata", () => {
     const raw = JSON.stringify({
       type: "connect",
-      protocol: 1,
+      minProtocol: 1,
+      maxProtocol: 1,
       auth: { token: "tok" },
       client: { id: "cli-1", version: "2.0", platform: "web" },
     });
@@ -165,7 +182,12 @@ describe("parseConnectFrame", () => {
   });
 
   test("rejects non-connect type", () => {
-    const raw = JSON.stringify({ type: "request", protocol: 1, auth: { token: "t" } });
+    const raw = JSON.stringify({
+      type: "request",
+      minProtocol: 1,
+      maxProtocol: 1,
+      auth: { token: "t" },
+    });
     const result = parseConnectFrame(raw);
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -174,27 +196,80 @@ describe("parseConnectFrame", () => {
   });
 
   test("rejects missing type", () => {
-    const raw = JSON.stringify({ protocol: 1, auth: { token: "t" } });
+    const raw = JSON.stringify({ minProtocol: 1, maxProtocol: 1, auth: { token: "t" } });
     expect(parseConnectFrame(raw).ok).toBe(false);
   });
 
-  test("rejects missing protocol", () => {
+  test("rejects missing both protocol formats", () => {
     const raw = JSON.stringify({ type: "connect", auth: { token: "t" } });
+    const result = parseConnectFrame(raw);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("Missing protocol version");
+    }
+  });
+
+  test("rejects minProtocol > maxProtocol", () => {
+    const raw = JSON.stringify({
+      type: "connect",
+      minProtocol: 5,
+      maxProtocol: 2,
+      auth: { token: "t" },
+    });
+    const result = parseConnectFrame(raw);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("minProtocol");
+    }
+  });
+
+  test("rejects non-integer minProtocol", () => {
+    const raw = JSON.stringify({
+      type: "connect",
+      minProtocol: 1.5,
+      maxProtocol: 2,
+      auth: { token: "t" },
+    });
     expect(parseConnectFrame(raw).ok).toBe(false);
   });
 
-  test("rejects protocol < 1", () => {
+  test("rejects minProtocol < 1", () => {
+    const raw = JSON.stringify({
+      type: "connect",
+      minProtocol: 0,
+      maxProtocol: 2,
+      auth: { token: "t" },
+    });
+    expect(parseConnectFrame(raw).ok).toBe(false);
+  });
+
+  test("rejects non-integer maxProtocol", () => {
+    const raw = JSON.stringify({
+      type: "connect",
+      minProtocol: 1,
+      maxProtocol: 2.5,
+      auth: { token: "t" },
+    });
+    expect(parseConnectFrame(raw).ok).toBe(false);
+  });
+
+  test("rejects legacy protocol < 1", () => {
     const raw = JSON.stringify({ type: "connect", protocol: 0, auth: { token: "t" } });
     expect(parseConnectFrame(raw).ok).toBe(false);
   });
 
   test("rejects missing auth", () => {
-    const raw = JSON.stringify({ type: "connect", protocol: 1 });
+    const raw = JSON.stringify({ type: "connect", minProtocol: 1, maxProtocol: 1 });
     expect(parseConnectFrame(raw).ok).toBe(false);
   });
 
   test("rejects empty token", () => {
-    const raw = JSON.stringify({ type: "connect", protocol: 1, auth: { token: "" } });
+    const raw = JSON.stringify({
+      type: "connect",
+      minProtocol: 1,
+      maxProtocol: 1,
+      auth: { token: "" },
+    });
     expect(parseConnectFrame(raw).ok).toBe(false);
   });
 
@@ -214,7 +289,8 @@ describe("parseConnectFrame", () => {
   test("accepts partial client object", () => {
     const raw = JSON.stringify({
       type: "connect",
-      protocol: 1,
+      minProtocol: 1,
+      maxProtocol: 1,
       auth: { token: "t" },
       client: { platform: "ios" },
     });
@@ -223,6 +299,65 @@ describe("parseConnectFrame", () => {
     if (result.ok) {
       expect(result.value.client?.platform).toBe("ios");
       expect(result.value.client?.id).toBeUndefined();
+    }
+  });
+});
+
+describe("negotiateProtocol", () => {
+  test("picks highest overlap when ranges overlap", () => {
+    const result = negotiateProtocol(1, 3, 2, 5);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toBe(3);
+    }
+  });
+
+  test("exact match returns the single version", () => {
+    const result = negotiateProtocol(2, 2, 2, 2);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toBe(2);
+    }
+  });
+
+  test("boundary overlap (single version in common)", () => {
+    const result = negotiateProtocol(1, 3, 3, 5);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toBe(3);
+    }
+  });
+
+  test("server range wider than client", () => {
+    const result = negotiateProtocol(2, 3, 1, 5);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toBe(3);
+    }
+  });
+
+  test("client range wider than server", () => {
+    const result = negotiateProtocol(1, 5, 2, 3);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toBe(3);
+    }
+  });
+
+  test("no overlap — client too old", () => {
+    const result = negotiateProtocol(1, 2, 3, 5);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("No protocol overlap");
+    }
+  });
+
+  test("no overlap — client too new", () => {
+    const result = negotiateProtocol(4, 6, 1, 3);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("No protocol overlap");
     }
   });
 });

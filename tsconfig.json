@@ -5,10 +5,12 @@
     "noEmit": true
   },
   "references": [
+    { "path": "packages/cli" },
     { "path": "packages/core" },
     { "path": "packages/sandbox" },
     { "path": "packages/search" },
     { "path": "packages/forge" },
+    { "path": "packages/artifact-client" },
     { "path": "packages/mcp" }
   ]
 }
