@@ -45,12 +45,12 @@ interface SdkClientLike {
   connect(transport: unknown): Promise<void>;
   close(): Promise<void>;
   listTools(): Promise<{
-    tools: Array<{ name: string; description?: string; inputSchema?: unknown }>;
+    tools: Array<{ name: string; description?: string | undefined; inputSchema?: unknown }>;
   }>;
   callTool(params: {
     name: string;
     arguments: Record<string, unknown>;
-  }): Promise<{ content: unknown; isError?: boolean }>;
+  }): Promise<{ content?: unknown; isError?: boolean | undefined }>;
 }
 
 /** Internal dependency injection for testing. Not part of the public API. */
@@ -63,7 +63,9 @@ export interface ClientManagerDeps {
 }
 
 const DEFAULT_DEPS: ClientManagerDeps = {
-  createClient: (info) => new Client(info),
+  // SDK Client's Zod-inferred return types don't structurally match our
+  // minimal SdkClientLike interface, so we cast at this boundary.
+  createClient: (info) => new Client(info) as unknown as SdkClientLike,
   createTransport: (config) => createTransport(config) as unknown,
 };
 
