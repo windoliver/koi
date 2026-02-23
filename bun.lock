@@ -308,6 +308,7 @@
         "zod": "4.3.6",
       },
       "devDependencies": {
+        "@koi/sandbox": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
