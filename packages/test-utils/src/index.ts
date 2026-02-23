@@ -6,10 +6,22 @@
  * ChannelAdapter implementations. Depends on @koi/core only.
  */
 
-export type { MockAgentOptions, MockEngineAdapterOptions } from "./agents.js";
-export { createMockAgent, createMockEngineAdapter } from "./agents.js";
+export type {
+  MockAgentOptions,
+  MockEngineAdapterOptions,
+  MockEngineData,
+  MockStatefulEngineOptions,
+} from "./agents.js";
+export {
+  createMockAgent,
+  createMockEngineAdapter,
+  createMockStatefulEngine,
+} from "./agents.js";
 export type { ChannelContractOptions } from "./channel-contract.js";
 export { testChannelAdapter } from "./channel-contract.js";
+export type { MockMemoryComponentOptions } from "./components.js";
+export { createMockMemoryComponent } from "./components.js";
+export { createTestConfig, createTestConfigStore } from "./config.js";
 export { createMockSessionContext, createMockTurnContext } from "./contexts.js";
 export type { EngineContractOptions } from "./engine-contract.js";
 export { testEngineAdapter } from "./engine-contract.js";

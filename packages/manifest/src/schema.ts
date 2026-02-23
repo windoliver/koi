@@ -41,6 +41,7 @@ export interface RawManifest {
   readonly schedule?: unknown;
   readonly webhooks?: unknown;
   readonly forge?: unknown;
+  readonly context?: unknown;
   readonly [key: string]: unknown;
 }
 
@@ -109,6 +110,7 @@ export const rawManifestSchema: z.ZodType<RawManifest> = z
     schedule: z.unknown().optional(),
     webhooks: z.unknown().optional(),
     forge: z.unknown().optional(),
+    context: z.unknown().optional(),
   })
   .passthrough();
 

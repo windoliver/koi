@@ -16,6 +16,11 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "@koi/validation": "workspace:*",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@koi/engine": "workspace:*"
   }
 }

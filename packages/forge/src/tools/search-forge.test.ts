@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
-import type { BrickArtifact } from "../types.js";
+import type { BrickArtifact, SkillArtifact, ToolArtifact } from "../types.js";
 import { createSearchForgeTool } from "./search-forge.js";
 import type { ForgeDeps } from "./shared.js";
 
-function createBrick(overrides?: Partial<BrickArtifact>): BrickArtifact {
+function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
     id: `brick_${Math.random().toString(36).slice(2, 10)}`,
     kind: "tool",
@@ -19,7 +19,29 @@ function createBrick(overrides?: Partial<BrickArtifact>): BrickArtifact {
     version: "0.0.1",
     tags: [],
     usageCount: 0,
+    contentHash: "test-hash",
     implementation: "return 1;",
+    inputSchema: { type: "object" },
+    ...overrides,
+  };
+}
+
+function createSkillBrick(overrides?: Partial<SkillArtifact>): SkillArtifact {
+  return {
+    id: `brick_${Math.random().toString(36).slice(2, 10)}`,
+    kind: "skill",
+    name: "test-skill",
+    description: "A test skill",
+    scope: "agent",
+    trustTier: "sandbox",
+    lifecycle: "active",
+    createdBy: "agent-1",
+    createdAt: Date.now(),
+    version: "0.0.1",
+    tags: [],
+    usageCount: 0,
+    contentHash: "test-hash",
+    content: "# Test Skill",
     ...overrides,
   };
 }
@@ -43,8 +65,8 @@ describe("createSearchForgeTool", () => {
 
   test("returns all bricks with empty query", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createBrick({ id: "b1" }));
-    await store.save(createBrick({ id: "b2" }));
+    await store.save(createToolBrick({ id: "b1" }));
+    await store.save(createToolBrick({ id: "b2" }));
 
     const tool = createSearchForgeTool(createDeps({ store }));
     const result = (await tool.execute({})) as {
@@ -57,8 +79,8 @@ describe("createSearchForgeTool", () => {
 
   test("filters by kind", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createBrick({ id: "b1", kind: "tool" }));
-    await store.save(createBrick({ id: "b2", kind: "skill" }));
+    await store.save(createToolBrick({ id: "b1" }));
+    await store.save(createSkillBrick({ id: "b2" }));
 
     const tool = createSearchForgeTool(createDeps({ store }));
     const result = (await tool.execute({ kind: "skill" })) as {
@@ -72,8 +94,8 @@ describe("createSearchForgeTool", () => {
 
   test("filters by scope", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createBrick({ id: "b1", scope: "agent" }));
-    await store.save(createBrick({ id: "b2", scope: "global" }));
+    await store.save(createToolBrick({ id: "b1", scope: "agent" }));
+    await store.save(createToolBrick({ id: "b2", scope: "global" }));
 
     const tool = createSearchForgeTool(createDeps({ store }));
     const result = (await tool.execute({ scope: "global" })) as {
@@ -93,5 +115,90 @@ describe("createSearchForgeTool", () => {
     };
     expect(result.ok).toBe(true);
     expect(result.value).toHaveLength(0);
+  });
+
+  test("filters by text (case-insensitive substring on name)", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: "b1", name: "calculator", description: "basic math" }));
+    await store.save(
+      createToolBrick({ id: "b2", name: "formatter", description: "text formatting" }),
+    );
+
+    const tool = createSearchForgeTool(createDeps({ store }));
+    const result = (await tool.execute({ text: "CALC" })) as {
+      readonly ok: true;
+      readonly value: readonly BrickArtifact[];
+    };
+    expect(result.ok).toBe(true);
+    expect(result.value).toHaveLength(1);
+    expect(result.value[0]?.name).toBe("calculator");
+  });
+
+  test("filters by text matching description", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      createToolBrick({ id: "b1", name: "tool-a", description: "handles JSON parsing" }),
+    );
+    await store.save(
+      createToolBrick({ id: "b2", name: "tool-b", description: "handles CSV export" }),
+    );
+
+    const tool = createSearchForgeTool(createDeps({ store }));
+    const result = (await tool.execute({ text: "json" })) as {
+      readonly ok: true;
+      readonly value: readonly BrickArtifact[];
+    };
+    expect(result.ok).toBe(true);
+    expect(result.value).toHaveLength(1);
+    expect(result.value[0]?.name).toBe("tool-a");
+  });
+
+  test("text search combined with kind filter", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: "b1", name: "math-tool", description: "math" }));
+    await store.save(createSkillBrick({ id: "b2", name: "math-skill", description: "math" }));
+
+    const tool = createSearchForgeTool(createDeps({ store }));
+    const result = (await tool.execute({ text: "math", kind: "skill" })) as {
+      readonly ok: true;
+      readonly value: readonly BrickArtifact[];
+    };
+    expect(result.ok).toBe(true);
+    expect(result.value).toHaveLength(1);
+    expect(result.value[0]?.kind).toBe("skill");
+  });
+
+  test("returns store error on search failure", async () => {
+    const failingStore = {
+      save: async () => ({ ok: true as const, value: undefined }),
+      load: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "store down", retryable: false },
+      }),
+      search: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "store down", retryable: false },
+      }),
+      remove: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "store down", retryable: false },
+      }),
+      update: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "store down", retryable: false },
+      }),
+      exists: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "store down", retryable: false },
+      }),
+    };
+    const tool = createSearchForgeTool(createDeps({ store: failingStore }));
+    const result = (await tool.execute({})) as {
+      readonly ok: false;
+      readonly error: { readonly stage: string; readonly code: string };
+    };
+    expect(result.ok).toBe(false);
+    expect(result.error.stage).toBe("store");
+    expect(result.error.code).toBe("SEARCH_FAILED");
   });
 });

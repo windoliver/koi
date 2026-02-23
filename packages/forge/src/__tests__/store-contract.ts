@@ -3,10 +3,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { ForgeStore } from "../store.js";
-import type { BrickArtifact } from "../types.js";
+import type { ForgeStore, SkillArtifact, ToolArtifact } from "@koi/core";
 
-function createBrick(overrides?: Partial<BrickArtifact>): BrickArtifact {
+function createBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
     id: `brick_${Math.random().toString(36).slice(2, 10)}`,
     kind: "tool",
@@ -20,7 +19,29 @@ function createBrick(overrides?: Partial<BrickArtifact>): BrickArtifact {
     version: "0.0.1",
     tags: [],
     usageCount: 0,
+    contentHash: "test-hash",
     implementation: "return 1;",
+    inputSchema: { type: "object" },
+    ...overrides,
+  };
+}
+
+function createSkillBrick(overrides?: Partial<SkillArtifact>): SkillArtifact {
+  return {
+    id: `brick_${Math.random().toString(36).slice(2, 10)}`,
+    kind: "skill",
+    name: "test-skill",
+    description: "A test skill",
+    scope: "agent",
+    trustTier: "sandbox",
+    lifecycle: "active",
+    createdBy: "agent-1",
+    createdAt: Date.now(),
+    version: "0.0.1",
+    tags: [],
+    usageCount: 0,
+    contentHash: "test-hash",
+    content: "# Test Skill",
     ...overrides,
   };
 }
@@ -64,8 +85,8 @@ export function runForgeStoreContractTests(createStore: () => ForgeStore): void 
 
     test("search filters by kind", async () => {
       const store = createStore();
-      await store.save(createBrick({ id: "b1", kind: "tool" }));
-      await store.save(createBrick({ id: "b2", kind: "skill" }));
+      await store.save(createBrick({ id: "b1" }));
+      await store.save(createSkillBrick({ id: "b2" }));
 
       const result = await store.search({ kind: "tool" });
       expect(result.ok).toBe(true);
@@ -158,6 +179,26 @@ export function runForgeStoreContractTests(createStore: () => ForgeStore): void 
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.error.code).toBe("NOT_FOUND");
+      }
+    });
+
+    test("exists returns true for saved brick", async () => {
+      const store = createStore();
+      await store.save(createBrick({ id: "b1" }));
+
+      const result = await store.exists("b1");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value).toBe(true);
+      }
+    });
+
+    test("exists returns false for missing id", async () => {
+      const store = createStore();
+      const result = await store.exists("nonexistent");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value).toBe(false);
       }
     });
 

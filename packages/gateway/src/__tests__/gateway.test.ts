@@ -19,6 +19,7 @@ import {
   createTestFrame,
   createTestSession,
   resetTestSeqCounter,
+  storeHas,
   waitForCondition,
 } from "./test-utils.js";
 
@@ -35,7 +36,7 @@ async function authenticateConnection(
 ): Promise<MockConnection> {
   const conn = transport.simulateOpen();
   transport.simulateMessage(conn.id, createConnectMessage(token));
-  await waitForCondition(() => gateway.sessions().has(sessionId));
+  await waitForCondition(() => storeHas(gateway.sessions(), sessionId));
   return conn;
 }
 
@@ -109,7 +110,7 @@ describe("createGateway", () => {
 
       await authenticateConnection(transport, gateway, "custom-s1");
 
-      expect(customStore.has("custom-s1")).toBe(true);
+      expect(customStore.has("custom-s1")).toEqual({ ok: true, value: true });
     });
 
     test("sessions() returns the store", () => {
@@ -293,7 +294,7 @@ describe("createGateway", () => {
       // Connection with sendResult: 0 always reports dropped
       const conn = transport.simulateOpen({ sendResult: 0 });
       transport.simulateMessage(conn.id, createConnectMessage());
-      await waitForCondition(() => gateway.sessions().has("s-drop"));
+      await waitForCondition(() => storeHas(gateway.sessions(), "s-drop"));
 
       const result = gateway.send("s-drop", createTestFrame());
 
@@ -317,7 +318,7 @@ describe("createGateway", () => {
       // Connection with sendResult: -1 simulates backpressure
       const conn = transport.simulateOpen({ sendResult: -1 });
       transport.simulateMessage(conn.id, createConnectMessage());
-      await waitForCondition(() => gateway.sessions().has("s-bp"));
+      await waitForCondition(() => storeHas(gateway.sessions(), "s-bp"));
 
       const result = gateway.send("s-bp", createTestFrame());
 
@@ -456,9 +457,9 @@ describe("createGateway", () => {
       expect(conn.closed).toBe(false);
 
       transport.simulateMessage(conn.id, createConnectMessage());
-      await waitForCondition(() => gateway.sessions().has("s-open"));
+      await waitForCondition(() => storeHas(gateway.sessions(), "s-open"));
 
-      expect(gateway.sessions().has("s-open")).toBe(true);
+      expect(gateway.sessions().has("s-open")).toEqual({ ok: true, value: true });
     });
 
     test("rejects when maxConnections exceeded (close 4005)", async () => {
@@ -498,11 +499,11 @@ describe("createGateway", () => {
       await gateway.start(0);
 
       const conn = await authenticateConnection(transport, gateway, "s-cleanup");
-      expect(gateway.sessions().has("s-cleanup")).toBe(true);
+      expect(gateway.sessions().has("s-cleanup")).toEqual({ ok: true, value: true });
 
       transport.simulateClose(conn.id);
 
-      expect(gateway.sessions().has("s-cleanup")).toBe(false);
+      expect(gateway.sessions().has("s-cleanup")).toEqual({ ok: true, value: false });
     });
 
     test("auth timeout closes with 4001", async () => {
@@ -631,6 +632,7 @@ describe("createGateway", () => {
       gateway.sessions().delete("s-gone");
 
       transport.simulateMessage(conn.id, frameString({ seq: 0 }));
+      await new Promise((r) => setTimeout(r, 0));
 
       expect(conn.closed).toBe(true);
       expect(conn.closeCode).toBe(4008);
@@ -704,6 +706,7 @@ describe("createGateway", () => {
 
       // Next frame triggers the timeout check
       transport.simulateMessage(conn.id, frameString({ seq: 1 }));
+      await new Promise((r) => setTimeout(r, 0));
 
       expect(conn.closed).toBe(true);
       expect(conn.closeCode).toBe(4009);
@@ -746,7 +749,7 @@ describe("createGateway", () => {
       await gateway.start(0);
 
       await authenticateConnection(transport, gateway, "s-stop2");
-      expect(store.has("s-stop2")).toBe(true);
+      expect(store.has("s-stop2")).toEqual({ ok: true, value: true });
 
       await gateway.stop();
 

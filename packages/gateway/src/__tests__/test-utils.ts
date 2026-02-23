@@ -2,7 +2,9 @@
  * Shared test utilities for @koi/gateway tests.
  */
 
+import type { KoiError, Result } from "@koi/core";
 import type { GatewayAuthenticator } from "../auth.js";
+import type { SessionStore } from "../session-store.js";
 import type {
   Transport,
   TransportConnection,
@@ -31,6 +33,22 @@ export async function waitForCondition(
     }
     await new Promise((r) => setTimeout(r, intervalMs));
   }
+}
+
+// ---------------------------------------------------------------------------
+// SessionStore Result helpers (sync unwrap for tests)
+// ---------------------------------------------------------------------------
+
+/** Unwrap sync SessionStore.has() → boolean for test assertions & waitForCondition. */
+export function storeHas(store: SessionStore, id: string): boolean {
+  const r = store.has(id) as Result<boolean, KoiError>;
+  return r.ok && r.value;
+}
+
+/** Unwrap sync SessionStore.get() → Session | undefined for test assertions. */
+export function storeGet(store: SessionStore, id: string): Session | undefined {
+  const r = store.get(id) as Result<Session, KoiError>;
+  return r.ok ? r.value : undefined;
 }
 
 // ---------------------------------------------------------------------------

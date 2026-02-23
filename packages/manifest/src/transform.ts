@@ -23,6 +23,27 @@ function toJsonObject(value: unknown): JsonObject {
   return {};
 }
 
+/** Extension field names that pass through from raw YAML to LoadedManifest. */
+const EXTENSION_FIELDS = ["engine", "schedule", "webhooks", "forge", "context"] as const;
+
+/**
+ * Extracts defined extension fields from a raw manifest into a partial object.
+ * Only includes fields that are explicitly present (not undefined) to satisfy
+ * `exactOptionalPropertyTypes`.
+ */
+export function extractExtensions(
+  raw: Readonly<Record<string, unknown>>,
+  fieldNames: readonly string[] = EXTENSION_FIELDS,
+): Readonly<Record<string, unknown>> {
+  const result: Record<string, unknown> = {};
+  for (const field of fieldNames) {
+    if (raw[field] !== undefined) {
+      result[field] = raw[field];
+    }
+  }
+  return result;
+}
+
 /**
  * Normalizes model config from string shorthand or object to `ModelConfig`.
  *
@@ -150,11 +171,8 @@ export function transformToLoadedManifest(raw: RawManifest): LoadedManifest {
       ? { permissions: normalizePermissions(raw.permissions) }
       : {}),
     ...(raw.metadata !== undefined ? { metadata: raw.metadata } : {}),
-    // Extension fields
-    ...(raw.engine !== undefined ? { engine: raw.engine } : {}),
-    ...(raw.schedule !== undefined ? { schedule: raw.schedule } : {}),
-    ...(raw.webhooks !== undefined ? { webhooks: raw.webhooks } : {}),
-    ...(raw.forge !== undefined ? { forge: raw.forge } : {}),
+    // Extension fields (engine, schedule, webhooks, forge, context)
+    ...extractExtensions(raw as unknown as Readonly<Record<string, unknown>>),
   };
 
   return manifest;

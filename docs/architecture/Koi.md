@@ -22,6 +22,9 @@ A **self-extending agent runtime** — agents that can create, discover, and com
 | **Forge** | Runtime brick creation, verification, discovery — agents grow their own capabilities |
 | **Gateway** | WebSocket control plane — session dispatch, routing, webhooks |
 | **Node** | Local device agent runtime — runs N agent entities |
+| **Proposal** | Agent-submitted change request for any layer — trust gate scales with blast radius |
+| **Snapshot** | Immutable point-in-time capture of an agent's full state — enables time travel and rollback |
+| **BrickStore** | Universal storage for all code (forged, bundled, extensions) — agent reads everything, writes to forge store |
 
 ## Architecture Components
 
@@ -318,6 +321,15 @@ type EngineEvent =
 ```typescript
 type SubsystemToken<T> = string & { readonly __brand: T };
 
+interface ProcessId {
+  readonly id: string;
+  readonly name: string;
+  readonly type: "copilot" | "worker";
+  readonly depth: number;
+  readonly parent?: string;
+  readonly ownerId?: string;  // human or org that owns this agent
+}
+
 interface Agent {
   readonly pid: ProcessId;
   readonly manifest: AgentManifest;
@@ -377,6 +389,71 @@ function skillToken(name: string): SubsystemToken<Skill>;          // "skill:ref
 
 **Namespace convention**: No colon = singleton (`"memory"`), with colon = namespaced (`"tool:calculator"`). `query("tool:")` returns all tool components.
 
+### Brick Store & Snapshots
+
+```typescript
+interface BrickSource {
+  readonly code: string;                     // the actual TypeScript source
+  readonly interface: string;                // which L0 contract it implements
+  readonly tests?: readonly TestCase[];      // verification suite
+  readonly dependencies?: readonly string[]; // what it imports
+}
+
+interface BrickStore {
+  readonly read: (ref: BrickRef) => Promise<BrickSource | undefined>;
+  readonly write: (ref: BrickRef, source: string) => Promise<void>;
+  readonly list: (scope: ForgeScope) => Promise<readonly BrickRef[]>;
+  readonly snapshot: (agentId: string) => Promise<AgentSnapshot>;
+  readonly restore: (agentId: string, version: number) => Promise<void>;
+}
+
+interface AgentSnapshot {
+  readonly version: number;
+  readonly parent?: number;                    // previous snapshot
+  readonly timestamp: number;
+  readonly event: SnapshotEvent;               // what caused this version
+  readonly components: ReadonlyMap<string, BrickRef>; // content-addressed refs
+  readonly config: unknown;                    // current agent config
+  readonly engineState?: EngineState;          // opaque engine checkpoint
+}
+
+type SnapshotEvent =
+  | { readonly kind: "manifest_loaded" }
+  | { readonly kind: "brick_forged"; readonly brick: BrickRef }
+  | { readonly kind: "brick_quarantined"; readonly brick: BrickRef }
+  | { readonly kind: "component_attached"; readonly token: string }
+  | { readonly kind: "component_detached"; readonly token: string }
+  | { readonly kind: "config_changed"; readonly diff: unknown }
+  | { readonly kind: "proposal_applied"; readonly proposal: string }
+  | { readonly kind: "restored"; readonly fromVersion: number };
+```
+
+### Kernel Extension
+
+```typescript
+interface KernelExtension {
+  readonly name: string;
+  readonly kind: "guard" | "lifecycle_hook" | "composition_rule";
+  readonly execute: (...args: readonly unknown[]) => unknown | Promise<unknown>;
+}
+```
+
+L1 defines extension slots. L2 provides the implementations. Extensions load dynamically from disk — no binary rebuild needed.
+
+### Resolver Source (Level 3)
+
+```typescript
+interface Resolver<Meta, Full> {
+  readonly name: string;
+  discover(): Promise<readonly Meta[]>;                     // Level 1: names
+  load(id: string): Promise<Full | undefined>;              // Level 2: schemas
+  source?(id: string): Promise<BrickSource | undefined>;    // Level 3: full source
+  onChange?(listener: () => void): () => void;
+}
+```
+
+Progressive disclosure: `discover()` → ~10 tokens, `load()` → ~100 tokens, `source()` → ~5000 tokens. Agent requests deeper levels as needed.
+
 ### Other Kernel Types
 
 Additional types in `@koi/core`: `KoiConfig`, `ModelConfig`, `PermissionConfig`, `EngineOutput`, `EngineState`, `EngineMetrics`, `EngineStopReason`.
@@ -405,19 +482,22 @@ Subsystem-specific config types live in their owning packages (e.g., `ExecutionL
 
 | # | Principle | Application |
 |---|-----------|-------------|
-| 5 | **Everything is a Brick** | Tools, skills, middleware, channels, agents — all bricks, all forgeable |
-| 6 | **Freedom within isolation** | Full creative freedom inside sandbox. OS-level sandbox is the safety net |
+| 5 | **Everything behind L0 is forgeable** | Any L0 interface is a forge target. Trust tier determines checks, not what's possible |
+| 6 | **Freedom within isolation** | Full creative freedom inside sandbox. OS-level sandbox is the safety net (RimWorld model) |
 | 7 | **Trust before storage** | Every forged brick passes 4-stage verification (static → sandbox → self-test → trust) |
 | 8 | **Scope controls blast radius** | Bricks start at `agent` scope. Promotion to `zone`/`global` requires HITL |
 | 9 | **Functional cache** | Forged tools ARE cached functionality. Capabilities compound across sessions |
+| 10 | **Everything is updatable** | Agent can update any layer. Trust gate scales with blast radius. Forge store is universal staging ground |
+| 11 | **Immutable snapshots** | Every change = new snapshot. Restore any version. Fork from any point. No mutation, ever |
+| 12 | **Forge → Promote → Bundle** | Changes start as local experiments, proven ones graduate into the base. Binary improves over time |
 
 ### Discovery
 
 | # | Principle | Application |
 |---|-----------|-------------|
-| 10 | **Progressive disclosure** | ~10 tokens (name) → ~100 tokens (metadata) → ~5000 tokens (full implementation) |
-| 11 | **First-wins resolver chain** | Local > Agent-forged > Zone-forged > Global-forged > Bundled |
-| 12 | **Skills as Markdown** | `SKILL.md` with YAML frontmatter — zero-code agent extension |
+| 13 | **Progressive disclosure** | ~10 tokens (name) → ~100 tokens (metadata) → ~5000 tokens (full source + tests) |
+| 14 | **First-wins resolver chain** | Agent-forged > Zone-forged > Global-forged > Bundled |
+| 15 | **Skills as Markdown** | `SKILL.md` with YAML frontmatter — zero-code agent extension |
 
 ---
 
@@ -506,23 +586,79 @@ permissions:
 | **Lifecycle** | Persistent (days/weeks) | Ephemeral (minutes/hours) |
 | **Trust Level** | High (user's permissions) | Low (minimal permissions) |
 | **API Key** | Long-lived | Short TTL |
+| **Identity** | Full (ProcessId + crypto identity) | Minimal (ProcessId only, lazy provisioning) |
+| **Memory** | Own persistent memory | Parent's memory or none |
+| **Channels** | Human-facing (accepts commands, sends messages) | None (parent-controlled) |
 | **Use Case** | Personal assistant, user-facing | Task execution, background jobs |
+| **Created by** | Human or copilot (HITL required) | Any agent (sandbox) |
+
+### Agent Identity
+
+Three tiers of identity, matching trust tiers:
+
+| Tier | Identity | When | Example |
+|------|----------|------|---------|
+| **Forged tool/brick** | Artifact metadata only (creator, timestamp, hash) | tool, skill, composite | `forge:created-by:agent-123` |
+| **Worker** | `ProcessId` (id, name, type, depth, parent, ownerId) | Ephemeral sub-agent | Background research task |
+| **Copilot** | `ProcessId` + crypto identity (L2, e.g., Ed25519/DID via Nexus) | Persistent, human-facing | Personal assistant |
+
+- `ProcessId` is L0 (always available, zero deps)
+- Crypto identity (keypairs, DID, message signing) is L2 — provided by `@koi/identity-nexus` or other backends
+- Workers get lazy identity provisioning: `ProcessId` immediately, crypto identity only if they need to sign messages
+
+### Agent Lifetime
+
+Agent lifetime is **emergent from constraints**, not explicit timers:
+
+| Death condition | Mechanism | Agent type |
+|----------------|-----------|------------|
+| Task completion | Engine returns `done` | Worker |
+| Budget exhaustion | PayMiddleware hard kill | Both |
+| Parent termination | Cascade from parent's `terminated` state | Worker |
+| Governance violation | SpawnGovernance revocation | Both |
+| Idle timeout | Auto-archive (optional, configurable) | Copilot |
+| Human revocation | HITL terminate command | Both |
+
+No explicit TTL clocks — agents die naturally from the constraints that bound them.
 
 ---
 
 ## Agent Capability Boundary
 
-Agents can freely:
-- Create tools, skills, and child agents via Forge
-- Discover and compose existing bricks
+### What Agents CAN Forge
 
-Agents CANNOT (without HITL):
-- Create middleware or world services
-- Modify governance or credentials
-- Touch other agents' components (process isolation is absolute)
-- Promote bricks beyond `agent` scope
+**Principle: Everything behind an L0 interface is forgeable.** Trust tier determines the checks, not what's possible.
 
-**Why no direct agent-to-agent communication**: If Agent A could write to Agent B's components, it would break process isolation. A compromised agent could modify another agent's tools, memory, or governance. All cross-agent interaction goes through audited infrastructure.
+| Without HITL (sandbox/verified) | With HITL (promoted) |
+|---------------------------------|----------------------|
+| Tools, skills, composites | Middleware |
+| Worker agents | Copilot agents |
+| Engine adapters | Channels |
+| Resolvers, providers | Governance rules |
+| Memory backends | Credential providers |
+
+### Trust Gate by Layer
+
+The agent can update **anything**. The only thing that varies is the gate:
+
+| Layer | Gate | Sandbox test scope | Takes effect |
+|-------|------|-------------------|--------------|
+| Forged brick (tool, skill) | Auto (sandbox verifies) | This brick only | Immediately |
+| Forged brick (middleware, channel) | HITL | This brick + integration | Next session |
+| Bundled L2 package | Fork to forge store (shadows it) | This brick only | Immediately |
+| L1 extension | HITL | Full agent test | Next startup |
+| L1 core | HITL + full agent test | Full agent test | Next binary |
+| L0 interface | HITL + all agents test | All affected agents | Next binary |
+| Sandbox policy | HITL + meta-sandbox | Meta-sandbox test | Config push |
+| Gateway routing | HITL | Staging gateway | Config push |
+
+**Every row writes to the forge store first.** The forge store is the universal staging ground for all changes.
+
+### Process Isolation (absolute)
+
+- Agents CANNOT touch other agents' components
+- All cross-agent interaction goes through audited infrastructure
+- A compromised agent cannot modify another agent's tools, memory, or governance
 
 ---
 
@@ -701,18 +837,35 @@ Name + syntax check     Timeout, memory limit    Pluggable verifiers     sandbox
 Size limits             No network access
 ```
 
-### Brick Taxonomy
+### Brick Taxonomy — Open Forge Model
 
-No universal `Brick` interface in `@koi/core`. Bricks are typed by which core interface they implement.
+**Principle: Everything behind an L0 interface is forgeable.** BrickKind is not a closed enum — it's a trust-classified label. Any L0 interface is a valid forge target.
 
 | Brick Kind | Core Interface | Forgeable? | Min Trust |
 |------------|---------------|------------|-----------|
 | **Tool** | JSON Schema + function | Yes | `sandbox` |
 | **Skill** | `SkillMetadata` | Yes | `sandbox` |
-| **Agent** | `AgentManifest` | Yes | `sandbox` |
+| **Agent (worker)** | `AgentManifest` | Yes | `sandbox` |
+| **Agent (copilot)** | `AgentManifest` | Yes | `promoted` + HITL |
 | **Composite** | Depends on composition | Yes | `sandbox` |
 | **Middleware** | `KoiMiddleware` | Yes | `promoted` + HITL |
 | **Channel** | `ChannelAdapter` | Yes | `promoted` + HITL |
+| **Engine** | `EngineAdapter` | Yes | `verified` |
+| **Resolver** | `Resolver` | Yes | `verified` |
+| **Provider** | `ComponentProvider` | Yes | `verified` |
+| **Memory** | `MemoryComponent` (via provider) | Yes | `verified` |
+| **Governance** | `GovernanceComponent` (via provider) | Yes | `promoted` + HITL |
+| **Credentials** | `CredentialComponent` (via provider) | Yes | `promoted` + HITL |
+
+**Trust classification determines what checks apply, not what can be forged:**
+
+| Trust Tier | Forge Check | Examples |
+|------------|------------|---------|
+| `sandbox` | 4-stage verification, OS sandbox | tool, skill, worker agent |
+| `verified` | + usage threshold, + code review | engine, resolver, provider, memory |
+| `promoted` + HITL | + human approval required | middleware, channel, copilot agent, governance, credentials |
+
+**Runtime forge = static L2 package:** A forged composite of related bricks (memory + tools + middleware + skill) IS an L2 package in all but name. Same L0 interfaces, different origin (static = curated/tested/published, runtime = emergent/sandboxed/discoverable).
 
 ### Brick Lifecycle
 
@@ -724,18 +877,29 @@ DRAFT → VERIFYING → ACTIVE → DEPRECATED
 
 ### Storage & Discovery
 
-Forged bricks stored as artifacts with tag convention:
+All bricks (forged, bundled, extensions) are stored behind the `BrickStore` L0 interface. L2 implementations:
+
+| Backend | Package | Use case |
+|---------|---------|----------|
+| Filesystem overlay | `@koi/store-fs` | Default, desktop, edge |
+| Nexus | `@koi/store-nexus` | Synced across devices |
+| SQLite | `@koi/store-sqlite` | Single-file, portable |
+| In-memory | `@koi/store-memory` | Tests |
+
+Tag convention for discovery:
 
 ```
 forge:kind:tool              forge:scope:agent          forge:trust:sandbox
 forge:created-by:<agentId>   forge:version:0.1.0        forge:usage-count:N
 ```
 
-Discovery via `search_forge` → `ArtifactClient.search()` with tag filtering. Resolver chain: `LocalResolver → ForgeResolver:agent → ForgeResolver:zone → ForgeResolver:global` (first-wins).
+Resolver chain: `Agent-forged → Zone-forged → Global-forged → Bundled` (first-wins). Scope promotion rules: minimum `verified` for zone, minimum `promoted` for global.
 
-Scope promotion rules: minimum `verified` for zone, minimum `promoted` for global.
+Snapshots use content-addressable storage — only changed bricks are stored. Like git objects, a snapshot is a manifest of hashes.
 
 ### Forge Governance
+
+#### Depth Limits
 
 | Depth | Forge Allowed | Scope Promotion |
 |-------|--------------|-----------------|
@@ -743,14 +907,51 @@ Scope promotion rules: minimum `verified` for zone, minimum `promoted` for globa
 | 1 (sub-agent) | forge_tool, forge_skill, search_forge, promote_forge | agent → zone (with HITL) |
 | 2+ (deeper) | search_forge only | None (read-only) |
 
+#### Forge Policy (Enterprise Governance)
+
+The forge system defines what's **possible**. The policy defines what's **allowed**. Per-brick-type gating using the same allow/deny/ask pattern as permissions:
+
+| Preset | Use case | Allowed |
+|--------|----------|---------|
+| **locked** | Regulated enterprise | Nothing forgeable. Bundled tools only. |
+| **restrictive** | Enterprise default | Tools + skills only. |
+| **standard** | Teams, startups | + workers, memory. Middleware/copilot need HITL. L1/L0 proposals with HITL. |
+| **permissive** | Research, personal | Everything. Trust tiers still enforced. |
+
+Zone-level policy overrides agent manifests. Most restrictive always wins:
+
+```
+Zone policy (enterprise admin ceiling)
+  ↓ most restrictive wins
+Agent manifest (developer config)
+  ↓ most restrictive wins
+ForgeGovernance middleware (runtime enforcement)
+  ↓
+Trust tier verification (sandbox/verified/promoted)
+  ↓
+4-stage forge pipeline
+```
+
 ```yaml
 # koi.yaml — forge governance
 forge:
-  enabled: true
+  preset: standard          # locked | restrictive | standard | permissive
   maxForgeDepth: 1
   maxForgesPerSession: 5
   defaultScope: agent
   trustTier: sandbox
+
+  # Per-brick-type override (optional, preset provides defaults):
+  policy:
+    tool:           sandbox   # auto-verified
+    skill:          sandbox
+    worker:         sandbox
+    middleware:     hitl       # HITL required
+    copilot:        hitl
+    engine:         deny       # not allowed
+    l1_extension:  deny
+    l0_proposal:   deny
+
   scopePromotion:
     requireHumanApproval: true
     minTrustForZone: verified
@@ -769,6 +970,184 @@ Session ends → ForgeCrystallizationMiddleware.onSessionEnd()
 ```
 
 The forged tool IS cached functionality — executes instantly without LLM tokens. Capabilities compound across sessions.
+
+### Copilot Forging Copilots
+
+A copilot (persistent agent) can forge another copilot — creating an autonomous, persistent, human-facing agent:
+
+```
+forge_agent({
+  type: "copilot",           // persistent, independent
+  channels: ["telegram"],    // human-facing
+  memory: { scope: "agent" } // own persistent memory
+})
+```
+
+This requires `promoted` trust + HITL because the forged copilot:
+- Survives restarts (persistent state)
+- Has independent budget (draws from parent or gets own allocation)
+- Accepts commands from humans (opens a channel)
+- Can itself forge further agents
+
+**Worker forging** (default) needs only `sandbox` trust — the worker dies when its task completes and has no independent budget or channels.
+
+---
+
+## Self-Evolution — Unified Change Model
+
+Every change, at every layer, follows the same pipeline:
+
+```
+Write to forge store → Gate (auto or HITL) → Sandbox test → Snapshot → Takes effect → Restorable
+```
+
+### Agent Visibility
+
+The agent sees **everything** through the resolver. Read access is universal. Write goes to the forge store only.
+
+```
+READ (through resolver, all layers):
+  Bundled code (L0, L1, L2)     — extracted from binary, read-only
+  L1 extensions                  — approved proposals
+  Zone/global promoted forges    — shared across agents
+  Agent's own forges             — this agent's experiments
+
+WRITE (forge store only):
+  Every modification creates a file in the agent's forge store.
+  Never touches bundled, L0, L1, or other agents' stores directly.
+```
+
+### Modification Patterns
+
+The agent never edits existing code. It **layers over it**:
+
+| Pattern | How it works | When to use |
+|---------|-------------|-------------|
+| **Shadow** | Forge same-named brick → resolver picks forged version (higher priority) | Change a tool's behavior |
+| **Wrap** | Forge middleware that intercepts existing behavior | Add pre/post processing |
+| **Fork** | Read source via `resolver.source()`, modify, forge new version | Deep restructuring |
+
+Original code is never modified. The resolver chain provides the merged view:
+
+```
+Agent-forged (read-write)     ← highest priority, agent writes HERE
+Zone-forged (read, promote)
+Global-forged (read, promote)
+Bundled (read-only)           ← lowest priority, extracted from binary
+```
+
+### Immutable Snapshot Chain
+
+Every change produces a new immutable snapshot:
+
+```
+v0 (manifest loaded)
+ └→ v1 (forged tool:calculator)
+     └→ v2 (attached memory backend)
+         └→ v3 (forged skill:research)
+             └→ v4 (config changed)
+                 └→ v5 (current)
+```
+
+Operations on the chain:
+
+```
+restore(v)     → load snapshot v, continue from there (new v6 pointing to v2)
+fork(v)        → create new agent starting from snapshot v's state
+diff(v1, v2)   → what changed between two snapshots
+current()      → latest snapshot
+history()      → full chain from v0 to now
+```
+
+Restore doesn't delete history — it appends a new snapshot pointing back. Like git, you can always see that v3-v5 happened.
+
+### Graduation Pipeline
+
+Changes start as local experiments. Proven ones graduate into the base:
+
+```
+FORGE (instant, local, zero cost)
+  → Agent shadows tool:search with v2. Only this agent affected.
+
+VALIDATE (runtime, automatic)
+  → Usage count, success rate, error rate tracked by crystallization middleware.
+  → Score: occurrences × success_rate × complexity_reduction
+
+PROMOTE (HITL for zone/global)
+  → Agent: "tool:search-v2 has 98% success over 500 calls, promote?"
+  → Human approves → available to zone/all agents
+
+BUNDLE (next binary release)
+  → CI collects proven promoted forges, absorbs into base packages.
+  → Builds new binary. Ships via self-update.
+
+CLEAN (forge layer thins out)
+  → Graduated forges removed from forge store — they're in bundled now.
+  → Only active experiments remain.
+```
+
+The binary is a snapshot of "everything proven so far." The forge layer is where evolution happens.
+
+### Proposal Interface
+
+```typescript
+interface Proposal {
+  readonly id: string;
+  readonly target: "l0" | "l1" | "l2" | "sandbox" | "gateway";
+  readonly kind: "add" | "modify" | "deprecate";
+  readonly deployMode: "forge" | "config" | "release";
+  readonly description: string;
+  readonly spec: unknown;
+  readonly author: ProcessId;
+  readonly status: "pending" | "approved" | "rejected" | "deployed" | "rolled_back";
+}
+
+interface ProposalGate {
+  readonly submit: (proposal: Proposal) => Promise<string>;
+  readonly review: (id: string) => Promise<Proposal>;
+}
+```
+
+### Binary as Delivery Vehicle
+
+The compiled binary (`bun build --compile`) embeds the Bun runtime + base system. On first run, it extracts bundled sources to disk:
+
+```
+Binary (koi, ships once):
+  L0 + L1 core + bundled L2 + Bun runtime + TS transpiler
+
+Extracted to disk (on first run / binary update):
+  ~/.koi/bundled/           ← source .ts (for reading) + pre-compiled .js (for loading)
+
+Grows at runtime:
+  ~/.koi/agents/{id}/forge/ ← agent's forges (experiments)
+  ~/.koi/extensions/        ← approved L1 extensions
+  ~/.koi/agents/{id}/snapshots/ ← immutable snapshot chain
+```
+
+99% of changes are agent-local forges. No binary rebuild, no restart. Only L0/L1 core changes need a new binary, and those are rare.
+
+Self-update is a built-in tool: download new binary → checkpoint all agents → swap → restart → restore from snapshots. Forged bricks and snapshots survive binary updates.
+
+### Crash Recovery = Restore
+
+```
+Agent crashes at v5
+  → restore(v4)          // try previous snapshot
+  → still crashes?
+  → restore(v3)          // keep going back
+  → works!               // v3 was the last good state
+  → diff(v3, v5)         // shows what broke
+  → quarantine the offending brick
+```
+
+```yaml
+# koi.yaml — recovery config
+recovery:
+  mode: checkpoint        # checkpoint | clean | manual
+  maxRestarts: 3          # circuit breaker before staying dead
+  backoff: exponential
+```
 
 ---
 
@@ -873,24 +1252,142 @@ Lifecycle hooks (`onSession*`, `onBefore/AfterTurn`) run sequentially. Onion hoo
 
 ## Deployment Topology
 
+### Two Node Types
+
+Koi separates the **control plane** (Gateway) from the **data plane** (Nodes). Nodes come in two modes:
+
+| | Full Node | Thin Node |
+|---|---|---|
+| **Runs engines** | Yes (L0+L1+L2) | No (L0+L2 only, skips L1) |
+| **Exposes tools** | Yes (filesystem, shell, forge) | Yes (device APIs — camera, GPS, health) |
+| **Channel UI** | Optional | Typically yes |
+| **Example devices** | Desktop, VPS, edge server | iPhone, iPad, IoT, tablet |
+| **Receives** | `session:dispatch` + `tool_call` frames | `tool_call` frames only |
+
+A Thin Node is a Full Node minus L1 — it connects to Gateway, advertises its tool surface, and handles `tool_call` frames from remote agents. No layer violations: Thin Nodes depend on L0 types only.
+
+### Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                       CLIENTS / CHANNELS                         │
+│  Web(AG-UI)  Telegram  Slack  Discord  CLI  Mobile(Thin Node)   │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+┌────────────────────────────┴────────────────────────────────────┐
+│  GATEWAY (cloud — control plane + routing)                       │
+│                                                                  │
+│  Session dispatch    → Full Nodes (engine execution)             │
+│  Tool call routing   → Any Node with the required tool           │
+│  Capability registry → Tracks each Node's advertised tool surface│
+│  Scheduler, webhooks, relay, channel registry                    │
+└──────┬──────────────────────┬──────────────────┬────────────────┘
+       │                      │                  │
+┌──────┴──────┐  ┌────────────┴────┐  ┌─────────┴──────────────┐
+│ FULL NODE   │  │ FULL NODE       │  │ THIN NODE              │
+│ (Desktop)   │  │ (Cloud VPS)     │  │ (iPhone)               │
+│             │  │                 │  │                        │
+│ Engine ✓    │  │ Engine ✓        │  │ Engine ✗               │
+│ Forge ✓     │  │ Forge ✓         │  │ Tool surface ✓         │
+│ Sandbox ✓   │  │ Docker sandbox  │  │  camera, GPS, health,  │
+│ Local tools │  │ Network tools   │  │  contacts, files       │
+│             │  │                 │  │ Channel UI ✓           │
+└─────────────┘  └─────────────────┘  └────────────────────────┘
+```
+
+### Gateway Routing
+
+Gateway routes based on **what the task needs**:
+
+| Request type | Routing decision |
+|---|---|
+| New agent session | → Full Node with required engine adapter |
+| Tool call: `filesystem.read` | → Desktop Node (has local files) |
+| Tool call: `camera.capture` | → iPhone Thin Node (has camera) |
+| Tool call: `docker.exec` | → Cloud Node (has Docker) |
+| Agent needs tool on sleeping Node | → Fallback to Cloud Node or queue until available |
+
+Nodes **advertise** their tool surface to Gateway on connect. Gateway maintains a live capability registry and routes accordingly.
+
+### Pluggable Infrastructure Backends
+
+All cross-node concerns are defined as **L0 interfaces** with swappable L2 backends. No concrete backend (Nexus, SQLite, etc.) is assumed by any Koi package.
+
+```
+L0 Interface (in @koi/core)              L2 Implementations (swappable)
+─────────────────────────────            ─────────────────────────────────
+PermissionBackend                        @koi/permissions-nexus  (ReBAC, Raft-replicated)
+  check(request) → PermissionResult     @koi/permissions-pattern (allow/deny/ask lists)
+                                         In-memory (test)
+
+CapabilityRegistry                       @koi/registry-nexus  (Raft-replicated)
+  advertise(nodeId, tools)               @koi/registry-gateway (Gateway in-memory)
+  resolve(toolName) → NodeCapability[]   Static map (test)
+
+RemoteToolBackend                        @koi/remote-nexus  (direct node-to-node)
+  invoke(nodeId, toolCall) → result      @koi/remote-gateway (routed via Gateway)
+                                         Local stub (test)
+```
+
+Backend selection is config-driven:
+
+```yaml
+# Simple — no federation, pattern permissions
+permissions: { mode: "pattern", allow: ["read_file:/**"], deny: ["bash:rm *"] }
+
+# Federated — Nexus ReBAC with local replica on every device
+permissions: { backend: "@koi/permissions-nexus", zone: "personal" }
+registry: { backend: "@koi/registry-nexus" }
+```
+
+When using a replicated backend (e.g., Nexus), each Node holds a local replica. Permission checks are local (~5μs), not network round-trips. The **device itself** enforces permissions — no trust in the Gateway required.
+
+### Remote Tool Invocation
+
+A remote agent on a Full Node can invoke tools on a Thin Node (if permitted):
+
+```
+Full Node (Desktop)              Gateway                 Thin Node (iPhone)
+     │                              │                         │
+     │  tool_call: camera.capture   │                         │
+     ├─────────────────────────────►│                         │
+     │                              │  route to iPhone        │
+     │                              ├────────────────────────►│
+     │                              │                         │
+     │                              │  PermissionBackend      │
+     │                              │  .check() — LOCAL       │
+     │                              │  (backend-dependent)    │
+     │                              │                         │
+     │                              │  Execute camera.capture │
+     │                              │  Return photo           │
+     │                              │◄────────────────────────┤
+     │  tool_result: <photo>        │                         │
+     │◄─────────────────────────────┤                         │
+```
+
+The permission check happens on the Thin Node, using whichever `PermissionBackend` is configured. With Nexus, it's a ~5μs local ReBAC lookup. With pattern mode, it's an allow/deny list match. The calling agent never knows which backend is in use.
+
 ### Deployment Scenarios
 
-| Scenario | Backend Mode | Runtime | Communication |
-|----------|-------------|---------|---------------|
-| **Cloud** | Server (HTTP) | Bun on server | HTTP REST |
-| **Desktop** | Embedded | Bun local | HTTP localhost |
-| **Edge device** | Embedded (lite) | Bun | HTTP localhost, minimal features |
-| **Browser** | None (remote) | Browser JS | HTTP to cloud backend |
+| Scenario | Node Type | Runtime | Tools | Backend |
+|----------|-----------|---------|-------|---------|
+| **Desktop** | Full | Bun local | Filesystem, shell, forge, sandbox | Any (Nexus, SQLite, in-memory) |
+| **Cloud VPS** | Full | Bun on server | Network, Docker sandbox, APIs | Any |
+| **Edge server** | Full (lite) | Bun | Reduced tool set, minimal middleware | SQLite or Nexus |
+| **iPhone/Android** | Thin | Native app | Camera, GPS, health, contacts, files | Nexus lite or pattern |
+| **IoT device** | Thin | Native | Device-specific sensors/actuators | Pattern (minimal) |
+| **Browser** | None | Browser JS | None — pure channel client | None (remote) |
 
-### Gateway / Node Split
+### Graceful Degradation
 
-```
-Gateway (cloud)                          Node (desktop/edge)
-├── WebSocket control plane              ├── Local agent execution
-├── Channel registry                     ├── Local tools (filesystem, shell)
-├── Session management                   ├── Sandbox profiles
-├── Agent routing (session → pid)        ├── Bonjour/mDNS discovery
-└── Scheduler, webhooks, relay           └── Connects to Gateway via WebSocket
-```
+Multiple Nodes can connect to a single Gateway. When a Node is unavailable:
 
-Multiple Nodes can connect to a single Gateway. Middleware handles missing backend features gracefully — falls back to reduced capability rather than failing.
+| Situation | Behavior |
+|---|---|
+| Desktop Node asleep | Gateway routes to Cloud Node; agent reports "local filesystem unavailable" |
+| iPhone offline | Queued tool calls delivered when reconnected; backend syncs on reconnect |
+| Cloud Node down | Gateway routes to Desktop Node if awake; queue if not |
+| All Nodes offline | Gateway queues session; resumes when any capable Node connects |
+| No Gateway | Full Nodes operate locally (offline mode); no cross-device routing |
+
+Middleware handles missing backend features gracefully — falls back to reduced capability rather than failing.

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { ToolDescriptor } from "@koi/core/ecs";
 import type { ComposedCallHandlers, EngineEvent, EngineInput } from "@koi/core/engine";
 import type {
   ModelChunk,
@@ -20,6 +21,7 @@ import { createPiAdapter } from "./adapter.js";
 function createMockCallHandlers(opts?: {
   readonly modelStreamChunks?: readonly ModelChunk[];
   readonly toolCallResult?: ToolResponse;
+  readonly tools?: readonly ToolDescriptor[];
 }): ComposedCallHandlers {
   const chunks: readonly ModelChunk[] = opts?.modelStreamChunks ?? [
     { kind: "text_delta", delta: "Hello from pi!" },
@@ -50,6 +52,7 @@ function createMockCallHandlers(opts?: {
     toolCall: async (_request: ToolRequest): Promise<ToolResponse> => {
       return opts?.toolCallResult ?? { output: "tool result" };
     },
+    tools: opts?.tools ?? [],
   };
 }
 
@@ -114,6 +117,7 @@ describe("createPiAdapter", () => {
       callHandlers: {
         modelCall: async () => ({ content: "", model: "m" }),
         toolCall: async () => ({ output: "ok" }),
+        tools: [],
       },
     };
 

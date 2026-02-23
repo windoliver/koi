@@ -16,7 +16,6 @@ import type { ForgeInput, StageReport } from "./types.js";
 const NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]{2,49}$/;
 const MAX_DESCRIPTION_LENGTH = 500;
 const DANGEROUS_KEYS = new Set(["__proto__", "constructor", "prototype"]);
-const TEXT_ENCODER = new TextEncoder();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -74,7 +73,7 @@ function validateSchema(schema: Readonly<Record<string, unknown>>): ForgeError |
 }
 
 function validateSize(content: string, maxBytes: number, label: string): ForgeError | undefined {
-  const size = TEXT_ENCODER.encode(content).byteLength;
+  const size = Buffer.byteLength(content, "utf8");
   if (size > maxBytes) {
     return staticError("SIZE_EXCEEDED", `${label} exceeds ${maxBytes} bytes (got ${size})`);
   }

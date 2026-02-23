@@ -8,7 +8,14 @@
  * keeping the public API compatible with isolatedDeclarations.
  */
 
-import type { KoiError, Result } from "@koi/core";
+import type {
+  AgentId,
+  AgentManifest,
+  EngineState,
+  KoiError,
+  ProcessState,
+  Result,
+} from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core";
 import { z } from "zod";
 
@@ -322,10 +329,14 @@ export type NodeEventType =
   | "agent_dispatched"
   | "agent_terminated"
   | "agent_crashed"
+  | "agent_recovered"
   | "memory_warning"
   | "memory_eviction"
   | "shutdown_started"
-  | "shutdown_complete";
+  | "shutdown_complete"
+  | "pending_frame_sent"
+  | "pending_frame_expired"
+  | "pending_frame_dead_letter";
 
 export interface NodeEvent {
   readonly type: NodeEventType;
@@ -335,3 +346,107 @@ export interface NodeEvent {
 
 /** Listener for node events. */
 export type NodeEventListener = (event: NodeEvent) => void;
+
+// ---------------------------------------------------------------------------
+// Session persistence types (structurally compatible with @koi/session-store)
+// ---------------------------------------------------------------------------
+
+/**
+ * Lightweight session metadata saved during agent dispatch.
+ * Structurally identical to `SessionRecord` in `@koi/session-store`.
+ */
+export interface NodeSessionRecord {
+  readonly sessionId: string;
+  readonly agentId: AgentId;
+  readonly manifestSnapshot: AgentManifest;
+  readonly seq: number;
+  readonly remoteSeq: number;
+  readonly connectedAt: number;
+  readonly lastCheckpointAt: number;
+  readonly metadata: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Engine state checkpoint saved at turn boundaries and lifecycle transitions.
+ * Structurally identical to `SessionCheckpoint` in `@koi/session-store`.
+ */
+export interface NodeCheckpoint {
+  readonly id: string;
+  readonly agentId: AgentId;
+  readonly sessionId: string;
+  readonly engineState: EngineState;
+  readonly processState: ProcessState;
+  readonly generation: number;
+  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly createdAt: number;
+}
+
+/**
+ * Pending outbound frame buffered during disconnection.
+ * Structurally identical to `PendingFrame` in `@koi/session-store`.
+ */
+export interface NodePendingFrame {
+  readonly frameId: string;
+  readonly sessionId: string;
+  readonly agentId: AgentId;
+  readonly frameType: string;
+  readonly payload: unknown;
+  readonly orderIndex: number;
+  readonly createdAt: number;
+  readonly ttl?: number | undefined;
+  /** Number of delivery attempts. 0 = never attempted. */
+  readonly retryCount: number;
+}
+
+/**
+ * Recovery plan returned by `recover()` — all sessions and their latest checkpoints.
+ * Structurally identical to `RecoveryPlan` in `@koi/session-store`.
+ */
+export interface NodeRecoveryPlan {
+  readonly sessions: readonly NodeSessionRecord[];
+  readonly checkpoints: ReadonlyMap<string, NodeCheckpoint>;
+  readonly pendingFrames: ReadonlyMap<string, readonly NodePendingFrame[]>;
+}
+
+/**
+ * Session persistence interface accepted by the node for crash recovery.
+ *
+ * Structurally compatible with `SessionPersistence` from `@koi/session-store`.
+ * Callers can pass a `createSqliteSessionPersistence()` or
+ * `createInMemorySessionPersistence()` result directly — TypeScript's structural
+ * typing makes this work without an L2-to-L2 import.
+ */
+export interface NodeSessionStore {
+  readonly saveSession: (
+    record: NodeSessionRecord,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+  readonly removeSession: (
+    sessionId: string,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+  readonly saveCheckpoint: (
+    checkpoint: NodeCheckpoint,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+  readonly loadLatestCheckpoint: (
+    agentId: AgentId,
+  ) =>
+    | Result<NodeCheckpoint | undefined, KoiError>
+    | Promise<Result<NodeCheckpoint | undefined, KoiError>>;
+  readonly savePendingFrame: (
+    frame: NodePendingFrame,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+  readonly loadPendingFrames: (
+    sessionId: string,
+  ) =>
+    | Result<readonly NodePendingFrame[], KoiError>
+    | Promise<Result<readonly NodePendingFrame[], KoiError>>;
+  readonly clearPendingFrames: (
+    sessionId: string,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+  readonly removePendingFrame: (
+    frameId: string,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+  readonly recover: () =>
+    | Result<NodeRecoveryPlan, KoiError>
+    | Promise<Result<NodeRecoveryPlan, KoiError>>;
+  readonly close: () => void | Promise<void>;
+}

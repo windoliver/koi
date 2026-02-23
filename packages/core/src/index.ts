@@ -14,10 +14,44 @@ export type {
   PermissionConfig,
   ToolConfig,
 } from "./assembly.js";
+// brick store — persistence contracts for forged artifacts
+export type {
+  AdvisoryLock,
+  AgentArtifact,
+  BrickArtifact,
+  BrickArtifactBase,
+  BrickUpdate,
+  CompositeArtifact,
+  ForgeQuery,
+  ForgeStore,
+  LockHandle,
+  LockMode,
+  LockRequest,
+  SkillArtifact,
+  TestCase,
+  ToolArtifact,
+} from "./brick-store.js";
 // channel
 export type { ChannelAdapter, ChannelCapabilities, MessageHandler } from "./channel.js";
 // common
 export type { JsonObject } from "./common.js";
+// config
+export type {
+  ConfigListener,
+  ConfigSource,
+  ConfigStore,
+  ConfigUnsubscribe,
+  FeatureFlags,
+  ForgeConfigSection,
+  KoiConfig,
+  LimitsConfig,
+  LogLevel,
+  LoopDetectionConfigSection,
+  ModelRouterConfigSection,
+  ModelTargetConfigEntry,
+  SpawnConfig,
+  TelemetryConfig,
+} from "./config.js";
 // context
 export type { CompactionResult, ContextCompactor, TokenEstimator } from "./context.js";
 // delegation
@@ -80,6 +114,17 @@ export type {
   EngineState,
   EngineStopReason,
 } from "./engine.js";
+// error factories — pure data constructors for KoiError objects
+export {
+  conflict,
+  external,
+  internal,
+  notFound,
+  permission,
+  rateLimit,
+  timeout,
+  validation,
+} from "./error-factories.js";
 // errors — types
 export type { KoiError, KoiErrorCode, Result } from "./errors.js";
 // errors — runtime values
@@ -91,6 +136,8 @@ export type {
   EvictionReason,
   EvictionResult,
 } from "./eviction.js";
+// forge types
+export type { BrickKind, BrickLifecycle, ForgeScope } from "./forge-types.js";
 // health
 export type {
   HealthMonitor,

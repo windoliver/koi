@@ -45,6 +45,27 @@
         "@koi/manifest": "workspace:*",
       },
     },
+    "packages/config": {
+      "name": "@koi/config",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
+    "packages/context": {
+      "name": "@koi/context",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/core": {
       "name": "@koi/core",
       "version": "0.0.0",
@@ -100,6 +121,11 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
       },
     },
     "packages/gateway": {
@@ -146,6 +172,7 @@
       "name": "@koi/middleware-integration",
       "version": "0.0.0",
       "devDependencies": {
+        "@koi/context": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
         "@koi/middleware-memory": "workspace:*",
@@ -205,6 +232,7 @@
       },
       "devDependencies": {
         "@koi/gateway": "workspace:*",
+        "@koi/session-store": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -225,6 +253,13 @@
     },
     "packages/search": {
       "name": "@koi/search",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/session-store": {
+      "name": "@koi/session-store",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
@@ -427,6 +462,10 @@
 
     "@koi/cli": ["@koi/cli@workspace:packages/cli"],
 
+    "@koi/config": ["@koi/config@workspace:packages/config"],
+
+    "@koi/context": ["@koi/context@workspace:packages/context"],
+
     "@koi/core": ["@koi/core@workspace:packages/core"],
 
     "@koi/delegation": ["@koi/delegation@workspace:packages/delegation"],
@@ -468,6 +507,8 @@
     "@koi/scheduler": ["@koi/scheduler@workspace:packages/scheduler"],
 
     "@koi/search": ["@koi/search@workspace:packages/search"],
+
+    "@koi/session-store": ["@koi/session-store@workspace:packages/session-store"],
 
     "@koi/skill-scanner": ["@koi/skill-scanner@workspace:packages/skill-scanner"],
 

@@ -129,6 +129,7 @@ describe("verify — pipeline timeout", () => {
         selfTestTimeoutMs: 10_000,
         totalTimeoutMs: 10, // 10ms total — sandbox alone takes 50ms
         maxBrickSizeBytes: 50_000,
+        failFast: true,
       },
     });
 

@@ -34,12 +34,39 @@ export interface GovernanceResult {
 }
 
 // ---------------------------------------------------------------------------
+// Depth-aware tool filtering (per architecture doc)
+// ---------------------------------------------------------------------------
+
+/** Depth 0 (root): all 6 primordial tools */
+const DEPTH_0_TOOLS = new Set([
+  "forge_tool",
+  "forge_skill",
+  "forge_agent",
+  "search_forge",
+  "compose_forge",
+  "promote_forge",
+]);
+
+/** Depth 1 (sub-agent): limited set */
+const DEPTH_1_TOOLS = new Set(["forge_tool", "forge_skill", "search_forge", "promote_forge"]);
+
+/** Depth 2+ (deeper): search only */
+const DEPTH_2_TOOLS = new Set(["search_forge"]);
+
+function getAllowedToolsForDepth(depth: number): ReadonlySet<string> {
+  if (depth <= 0) return DEPTH_0_TOOLS;
+  if (depth === 1) return DEPTH_1_TOOLS;
+  return DEPTH_2_TOOLS;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 export function checkGovernance(
   context: ForgeContext,
   config: ForgeConfig,
+  toolName?: string,
 ): Result<void, ForgeError> {
   if (!config.enabled) {
     return {
@@ -66,6 +93,20 @@ export function checkGovernance(
         `Session has reached max forges (${config.maxForgesPerSession})`,
       ),
     };
+  }
+
+  // Depth-aware tool filtering (only applies to known primordial tools)
+  if (toolName !== undefined && DEPTH_0_TOOLS.has(toolName)) {
+    const allowed = getAllowedToolsForDepth(context.depth);
+    if (!allowed.has(toolName)) {
+      return {
+        ok: false,
+        error: governanceError(
+          "DEPTH_TOOL_RESTRICTED",
+          `Tool "${toolName}" is not allowed at depth ${context.depth}`,
+        ),
+      };
+    }
   }
 
   return { ok: true, value: undefined };

@@ -5,10 +5,14 @@
 
 import type { Result, Tool } from "@koi/core";
 import type { ForgeError } from "../errors.js";
-import type { BrickArtifact, ForgeResult, ForgeSkillInput } from "../types.js";
-import { verify } from "../verify.js";
+import type { ForgeResult, ForgeSkillInput, SkillArtifact } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
-import { createForgeTool, validateInputFields } from "./shared.js";
+import {
+  computeContentHash,
+  createForgeTool,
+  runForgePipeline,
+  validateInputFields,
+} from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Tool config
@@ -58,73 +62,25 @@ async function forgeSkillHandler(
     ...(skillInput.tags !== undefined ? { tags: skillInput.tags } : {}),
   };
 
-  // Run verification pipeline (sandbox and self-test will skip for skills)
-  const verifyResult = await verify(
-    forgeInput,
-    deps.context,
-    deps.executor,
-    deps.verifiers,
-    deps.config,
-  );
-
-  if (!verifyResult.ok) {
-    return { ok: false, error: verifyResult.error };
-  }
-
-  const report = verifyResult.value;
-  const id = `brick_${crypto.randomUUID()}`;
-
-  const artifact: BrickArtifact = {
-    id,
-    kind: "skill",
-    name: forgeInput.name,
-    description: forgeInput.description,
-    scope: deps.config.defaultScope,
-    trustTier: report.finalTrustTier,
-    lifecycle: "active",
-    createdBy: deps.context.agentId,
-    createdAt: Date.now(),
-    version: "0.0.1",
-    tags: forgeInput.tags ?? [],
-    usageCount: 0,
-    content: forgeInput.content,
-  };
-
-  const saveResult = await deps.store.save(artifact);
-  if (!saveResult.ok) {
-    return {
-      ok: false,
-      error: {
-        stage: "store",
-        code: "SAVE_FAILED",
-        message: `Failed to save artifact: ${saveResult.error.message}`,
-      },
-    };
-  }
-
-  const forgeResult: ForgeResult = {
-    id,
-    kind: "skill",
-    name: forgeInput.name,
-    descriptor: {
+  return runForgePipeline(forgeInput, deps, (id, report) => {
+    const artifact: SkillArtifact = {
+      id,
+      kind: "skill",
       name: forgeInput.name,
       description: forgeInput.description,
-      inputSchema: {},
-    },
-    trustTier: report.finalTrustTier,
-    scope: deps.config.defaultScope,
-    lifecycle: "active",
-    verificationReport: report,
-    metadata: {
-      forgedAt: artifact.createdAt,
-      forgedBy: deps.context.agentId,
-      sessionId: deps.context.sessionId,
-      depth: deps.context.depth,
-    },
-    forgesConsumed: 1,
-  };
-
-  return { ok: true, value: forgeResult };
+      scope: deps.config.defaultScope,
+      trustTier: report.finalTrustTier,
+      lifecycle: "active",
+      createdBy: deps.context.agentId,
+      createdAt: Date.now(),
+      version: "0.0.1",
+      tags: forgeInput.tags ?? [],
+      usageCount: 0,
+      contentHash: computeContentHash(forgeInput.content),
+      content: forgeInput.content,
+    };
+    return artifact;
+  });
 }
 
 // ---------------------------------------------------------------------------

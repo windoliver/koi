@@ -111,15 +111,31 @@ export async function verifySelfTest(
 
   // Run test cases for tools
   if (input.kind === "tool" && input.testCases !== undefined && input.testCases.length > 0) {
-    for (const testCase of input.testCases) {
-      const failure = await runTestCase(
-        testCase,
-        input.implementation,
-        executor,
-        config.selfTestTimeoutMs,
+    if (config.failFast) {
+      // Sequential with early exit
+      for (const testCase of input.testCases) {
+        const failure = await runTestCase(
+          testCase,
+          input.implementation,
+          executor,
+          config.selfTestTimeoutMs,
+        );
+        if (failure !== undefined) {
+          failures.push(failure);
+          break;
+        }
+      }
+    } else {
+      // Parallel — all test cases must run regardless
+      const results = await Promise.all(
+        input.testCases.map((tc) =>
+          runTestCase(tc, input.implementation, executor, config.selfTestTimeoutMs),
+        ),
       );
-      if (failure !== undefined) {
-        failures.push(failure);
+      for (const failure of results) {
+        if (failure !== undefined) {
+          failures.push(failure);
+        }
       }
     }
   }

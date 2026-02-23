@@ -15,6 +15,8 @@ import type {
   ModelResponse,
   ModelStreamHandler,
   SessionContext,
+  Tool,
+  ToolDescriptor,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -250,10 +252,17 @@ export function createComposedCallHandlers(
   const modelChain = composeModelChain(middleware, modelHandler);
   const toolChain = composeToolChain(middleware, toolHandler);
 
+  // Extract tool descriptors from the agent's ECS components
+  const toolComponents = agent.query<Tool>("tool:");
+  const toolDescriptors: readonly ToolDescriptor[] = [...toolComponents.values()].map(
+    (t) => t.descriptor,
+  );
+
   if (modelStreamHandler === undefined) {
     return {
       modelCall: (request) => modelChain(getTurnContext(), request),
       toolCall: (request) => toolChain(getTurnContext(), request),
+      tools: toolDescriptors,
     };
   }
 
@@ -263,5 +272,6 @@ export function createComposedCallHandlers(
     modelCall: (request) => modelChain(getTurnContext(), request),
     modelStream: (request) => streamChain(getTurnContext(), request),
     toolCall: (request) => toolChain(getTurnContext(), request),
+    tools: toolDescriptors,
   };
 }
