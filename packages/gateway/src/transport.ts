@@ -63,6 +63,7 @@ export function createBunTransport(): BunTransport {
     listen(port: number, handler: TransportHandler): Promise<void> {
       // Map from Bun's ServerWebSocket id → TransportConnection
       const connMap = new Map<string, TransportConnection>();
+      const decoder = new TextDecoder();
 
       server = Bun.serve({
         port,
@@ -92,7 +93,7 @@ export function createBunTransport(): BunTransport {
             const id = (ws.data as { readonly id: string }).id;
             const conn = connMap.get(id);
             if (conn === undefined) return;
-            const data = typeof message === "string" ? message : new TextDecoder().decode(message);
+            const data = typeof message === "string" ? message : decoder.decode(message);
             handler.onMessage(conn, data);
           },
           close(ws, code, reason) {

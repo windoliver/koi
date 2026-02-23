@@ -18,6 +18,7 @@ import type { TemporalDecayConfig } from "./hybrid/temporal-decay.js";
 import type { ChunkerConfig } from "./indexer/chunker.js";
 import { createSqliteIndexer } from "./indexer/sqlite-indexer.js";
 import type { QueryExpansionConfig } from "./query/expand.js";
+import type { IndexDocument } from "./types.js";
 import { createVectorStore } from "./vector/sqlite-vec.js";
 import { createVectorRetriever } from "./vector/vector-retriever.js";
 
@@ -109,7 +110,8 @@ export function createSearch(config: KoiSearchConfig): KoiSearch {
   // Wrap the indexer to also update BM25 + content stores
   const indexer: Indexer = {
     index: async (documents) => {
-      // Update BM25 index and content store
+      // Compute embeddings once and enrich documents for downstream consumers
+      const enriched: IndexDocument[] = [];
       for (const doc of documents) {
         const tokens = defaultTokenize(doc.content);
         bm25Index = bm25Index.add(doc.id, tokens);
@@ -120,17 +122,14 @@ export function createSearch(config: KoiSearchConfig): KoiSearch {
         });
         contentStore.set(doc.id, doc.content);
 
-        // Also insert into vector store
-        if (doc.embedding) {
-          vectorStore.insert(doc.id, doc.embedding, doc.metadata ?? {});
-        } else {
-          const emb = await embedder.embed(doc.content);
-          vectorStore.insert(doc.id, emb, doc.metadata ?? {});
-        }
+        // Compute embedding once — reuse pre-computed if available
+        const emb = doc.embedding ?? (await embedder.embed(doc.content));
+        vectorStore.insert(doc.id, emb, doc.metadata ?? {});
+        enriched.push({ ...doc, embedding: emb });
       }
 
-      // Also run through sqlite indexer for FTS5
-      return sqliteIndexer.index(documents);
+      // Pass enriched docs so sqliteIndexer skips re-embedding single-chunk docs
+      return sqliteIndexer.index(enriched);
     },
     remove: async (ids) => {
       for (const id of ids) {

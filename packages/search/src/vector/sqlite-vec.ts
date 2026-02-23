@@ -101,7 +101,21 @@ export function createVectorStore(config: VectorStoreConfig): VectorStore {
     : db.prepare("INSERT OR REPLACE INTO chunks_vec (id, embedding) VALUES (?, ?)");
   const deleteMeta = db.prepare("DELETE FROM chunks_meta WHERE id = ?");
   const deleteVec = db.prepare("DELETE FROM chunks_vec WHERE id = ?");
-  const selectMeta = db.prepare("SELECT metadata FROM chunks_meta WHERE id = ?");
+  const selectAllVec = db.prepare("SELECT id, embedding FROM chunks_vec");
+
+  /** Batch-fetch metadata for a set of IDs in one query. */
+  function batchGetMeta(ids: readonly string[]): ReadonlyMap<string, Record<string, unknown>> {
+    if (ids.length === 0) return new Map();
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = db
+      .prepare(`SELECT id, metadata FROM chunks_meta WHERE id IN (${placeholders})`)
+      .all(...ids) as readonly { id: string; metadata: string }[];
+    const map = new Map<string, Record<string, unknown>>();
+    for (const row of rows) {
+      map.set(row.id, JSON.parse(row.metadata) as Record<string, unknown>);
+    }
+    return map;
+  }
 
   function searchNative(embedding: readonly number[], limit: number): readonly VectorHit[] {
     const blob = serializeEmbedding(embedding);
@@ -115,9 +129,9 @@ export function createVectorStore(config: VectorStoreConfig): VectorStore {
       )
       .all(blob, limit) as readonly { id: string; distance: number }[];
 
+    const metaMap = batchGetMeta(rows.map((r) => r.id));
     return rows.map((row) => {
-      const metaRow = selectMeta.get(row.id) as { metadata: string } | undefined;
-      const metadata = metaRow ? (JSON.parse(metaRow.metadata) as Record<string, unknown>) : {};
+      const metadata = metaMap.get(row.id) ?? {};
       // Convert distance to similarity score in [0, 1]: smaller distance = higher score
       const score = 1 / (1 + row.distance);
       return { id: row.id, score, metadata };
@@ -125,7 +139,6 @@ export function createVectorStore(config: VectorStoreConfig): VectorStore {
   }
 
   function searchBruteForce(embedding: readonly number[], limit: number): readonly VectorHit[] {
-    const selectAllVec = db.prepare("SELECT id, embedding FROM chunks_vec");
     const rows = selectAllVec.all() as readonly { id: string; embedding: Uint8Array }[];
     const scored: { id: string; score: number }[] = [];
 
@@ -138,9 +151,9 @@ export function createVectorStore(config: VectorStoreConfig): VectorStore {
     scored.sort((a, b) => b.score - a.score);
     const top = scored.slice(0, limit);
 
+    const metaMap = batchGetMeta(top.map((h) => h.id));
     return top.map((hit) => {
-      const metaRow = selectMeta.get(hit.id) as { metadata: string } | undefined;
-      const metadata = metaRow ? (JSON.parse(metaRow.metadata) as Record<string, unknown>) : {};
+      const metadata = metaMap.get(hit.id) ?? {};
       return { id: hit.id, score: hit.score, metadata };
     });
   }

@@ -171,9 +171,12 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
             }
           : { ...currentSession, remoteSeq: readyFrame.seq, lastHeartbeat: Date.now() };
       currentSession = routedSession;
-      await store.set(currentSession);
       dispatchFrame(currentSession, readyFrame);
       conn.send(buildAckFrame(currentSession.seq, readyFrame.id));
+    }
+    // Persist final session state once (dispatch/ack use in-memory state)
+    if (acceptance.ready.length > 0) {
+      await store.set(currentSession);
     }
   }
 
