@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { SandboxExecutor, TieredSandboxExecutor } from "@koi/core";
+import type { SandboxExecutor, SkillArtifact, TieredSandboxExecutor, ToolArtifact } from "@koi/core";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import type { ForgeResult, ManifestParser } from "../types.js";
@@ -332,5 +332,167 @@ describe("createForgeAgentTool", () => {
     expect(result.ok).toBe(false);
     expect(result.error.stage).toBe("governance");
     expect(result.error.code).toBe("DEPTH_TOOL_RESTRICTED");
+  });
+
+  // --- brickIds path (auto-assembly) ---
+
+  test("forges agent from brickIds with tool bricks", async () => {
+    const store = createInMemoryForgeStore();
+    const toolBrick: ToolArtifact = {
+      id: "brick_tool_1",
+      kind: "tool",
+      name: "calculator",
+      description: "Calculates things",
+      scope: "agent",
+      trustTier: "sandbox",
+      lifecycle: "active",
+      createdBy: "agent-1",
+      createdAt: Date.now(),
+      version: "0.0.1",
+      tags: [],
+      usageCount: 0,
+      contentHash: "hash1",
+      implementation: "return 1;",
+      inputSchema: { type: "object" },
+    };
+    await store.save(toolBrick);
+
+    const tool = createForgeAgentTool(createDeps({ store }));
+    const result = (await tool.execute({
+      name: "brickAgent",
+      description: "Agent from bricks",
+      brickIds: ["brick_tool_1"],
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    expect(result.value.kind).toBe("agent");
+    expect(result.value.name).toBe("brickAgent");
+
+    // Verify assembled manifest in stored artifact
+    const loadResult = await store.load(result.value.id);
+    expect(loadResult.ok).toBe(true);
+    if (loadResult.ok && loadResult.value.kind === "agent") {
+      expect(loadResult.value.manifestYaml).toContain("calculator");
+    }
+  });
+
+  test("rejects when both manifestYaml and brickIds are provided", async () => {
+    const tool = createForgeAgentTool(createDeps());
+    const result = (await tool.execute({
+      name: "badAgent",
+      description: "Both inputs",
+      manifestYaml: VALID_MANIFEST_YAML,
+      brickIds: ["brick_1"],
+    })) as {
+      readonly ok: false;
+      readonly error: { readonly stage: string; readonly code: string };
+    };
+
+    expect(result.ok).toBe(false);
+    expect(result.error.stage).toBe("static");
+  });
+
+  test("rejects when neither manifestYaml nor brickIds are provided", async () => {
+    const tool = createForgeAgentTool(createDeps());
+    const result = (await tool.execute({
+      name: "emptyAgent",
+      description: "No inputs",
+    })) as {
+      readonly ok: false;
+      readonly error: { readonly stage: string; readonly code: string };
+    };
+
+    expect(result.ok).toBe(false);
+    expect(result.error.stage).toBe("static");
+  });
+
+  test("returns error when referenced brick not found via brickIds", async () => {
+    const store = createInMemoryForgeStore();
+    const tool = createForgeAgentTool(createDeps({ store }));
+
+    const result = (await tool.execute({
+      name: "missingAgent",
+      description: "Agent with missing brick",
+      brickIds: ["brick_missing"],
+    })) as {
+      readonly ok: false;
+      readonly error: { readonly stage: string; readonly message: string };
+    };
+
+    expect(result.ok).toBe(false);
+    expect(result.error.message).toContain("brick_missing");
+  });
+
+  test("propagates tags from brickIds path", async () => {
+    const store = createInMemoryForgeStore();
+    const toolBrick: ToolArtifact = {
+      id: "brick_tag_1",
+      kind: "tool",
+      name: "tagger",
+      description: "A tool",
+      scope: "agent",
+      trustTier: "sandbox",
+      lifecycle: "active",
+      createdBy: "agent-1",
+      createdAt: Date.now(),
+      version: "0.0.1",
+      tags: [],
+      usageCount: 0,
+      contentHash: "hash",
+      implementation: "return 1;",
+      inputSchema: { type: "object" },
+    };
+    await store.save(toolBrick);
+
+    const tool = createForgeAgentTool(createDeps({ store }));
+    const result = (await tool.execute({
+      name: "taggedAgent",
+      description: "Agent with tags",
+      brickIds: ["brick_tag_1"],
+      tags: ["auto", "test"],
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    const loadResult = await store.load(result.value.id);
+    if (loadResult.ok) {
+      expect(loadResult.value.tags).toEqual(["auto", "test"]);
+    }
+  });
+
+  test("propagates model and agentType to assembled manifest", async () => {
+    const store = createInMemoryForgeStore();
+    const skillBrick: SkillArtifact = {
+      id: "brick_skill_1",
+      kind: "skill",
+      name: "math-skill",
+      description: "Math",
+      scope: "agent",
+      trustTier: "sandbox",
+      lifecycle: "active",
+      createdBy: "agent-1",
+      createdAt: Date.now(),
+      version: "0.0.1",
+      tags: [],
+      usageCount: 0,
+      contentHash: "hash",
+      content: "# Math",
+    };
+    await store.save(skillBrick);
+
+    const tool = createForgeAgentTool(createDeps({ store }));
+    const result = (await tool.execute({
+      name: "modelAgent",
+      description: "Agent with model",
+      brickIds: ["brick_skill_1"],
+      model: "claude-sonnet",
+      agentType: "research",
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    const loadResult = await store.load(result.value.id);
+    if (loadResult.ok && loadResult.value.kind === "agent") {
+      expect(loadResult.value.manifestYaml).toContain("model: claude-sonnet");
+      expect(loadResult.value.manifestYaml).toContain("agentType: research");
+    }
   });
 });

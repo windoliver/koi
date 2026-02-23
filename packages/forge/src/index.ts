@@ -33,6 +33,9 @@ export {
   createInjectionVerifier,
   createResourceExhaustionVerifier,
 } from "./adversarial-verifiers.js";
+// runtime values — manifest assembly
+export type { AssembleManifestOptions, AssembleManifestResult } from "./assemble-manifest.js";
+export { assembleManifest } from "./assemble-manifest.js";
 export type { ForgeConfig, ScopePromotionConfig, VerificationConfig } from "./config.js";
 // runtime values — config
 export { createDefaultForgeConfig, validateForgeConfig } from "./config.js";
@@ -54,6 +57,9 @@ export type {
 } from "./forge-component-provider.js";
 export { brickToTool, createForgeComponentProvider } from "./forge-component-provider.js";
 export { createForgeResolver } from "./forge-resolver.js";
+// runtime values — SKILL.md generation
+export type { SkillMdInput } from "./generate-skill-md.js";
+export { generateSkillMd } from "./generate-skill-md.js";
 export type { GovernanceResult } from "./governance.js";
 // runtime values — governance
 export { checkGovernance, checkScopePromotion } from "./governance.js";
@@ -70,7 +76,11 @@ export type { ForgeDeps, ForgeToolConfig } from "./tools/shared.js";
 export { createForgeTool } from "./tools/shared.js";
 // types — forge-specific (remain in L2)
 export type {
+  CompositionBrickInfo,
+  CompositionMetadata,
   ForgeAgentInput,
+  ForgeAgentInputWithBricks,
+  ForgeAgentInputWithManifest,
   ForgeCompositeInput,
   ForgeContext,
   ForgeInput,
