@@ -26,6 +26,8 @@ const KNOWN_FIELDS = [
   "webhooks",
   "forge",
   "context",
+  "soul",
+  "user",
   "deploy",
 ] as const;
 

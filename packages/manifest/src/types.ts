@@ -29,6 +29,8 @@ export interface ManifestExtensions {
   readonly webhooks?: unknown;
   readonly forge?: unknown;
   readonly context?: unknown;
+  readonly soul?: unknown;
+  readonly user?: unknown;
   readonly deploy?: DeployConfig | undefined;
 }
 

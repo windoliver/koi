@@ -57,6 +57,12 @@ interface RawDeploy {
   readonly system?: boolean | undefined;
 }
 
+/** Soul/user config: path string or object with path + maxTokens. */
+interface RawSoulUserConfig {
+  readonly path: string;
+  readonly maxTokens?: number | undefined;
+}
+
 /** The raw parsed YAML structure before transformation. */
 export interface RawManifest {
   readonly name: string;
@@ -76,6 +82,8 @@ export interface RawManifest {
   readonly webhooks?: readonly RawWebhook[] | undefined;
   readonly forge?: RawForge | undefined;
   readonly context?: unknown;
+  readonly soul?: string | RawSoulUserConfig | undefined;
+  readonly user?: string | RawSoulUserConfig | undefined;
   readonly deploy?: RawDeploy | undefined;
   readonly [key: string]: unknown;
 }
@@ -166,6 +174,15 @@ const forgeSchema = z.object({
     .optional(),
 });
 
+/** Soul/user config: string path/inline or object with path + maxTokens. */
+const soulUserSchema = z.union([
+  z.string(),
+  z.object({
+    path: z.string(),
+    maxTokens: z.number().positive().optional(),
+  }),
+]);
+
 /** Deploy configuration for background service management. */
 const deploySchema = z.object({
   port: z.number().int().min(1).max(65535).default(9100),
@@ -199,6 +216,8 @@ export const rawManifestSchema: z.ZodType<RawManifest> = z
     webhooks: webhooksSchema.optional(),
     forge: forgeSchema.optional(),
     context: z.unknown().optional(),
+    soul: soulUserSchema.optional(),
+    user: soulUserSchema.optional(),
     deploy: deploySchema.optional(),
   })
   .passthrough();
