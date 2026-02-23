@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { validateBrickArtifact } from "./validate.js";
+import { validateBrickArtifact } from "./brick-validation.js";
 
 function validTool(): Record<string, unknown> {
   return {
@@ -53,27 +53,27 @@ function validComposite(): Record<string, unknown> {
 
 describe("validateBrickArtifact", () => {
   test("accepts valid tool artifact", () => {
-    const result = validateBrickArtifact(validTool(), "test.json");
+    const result = validateBrickArtifact(validTool(), "test-source");
     expect(result.ok).toBe(true);
   });
 
   test("accepts valid skill artifact", () => {
-    const result = validateBrickArtifact(validSkill(), "test.json");
+    const result = validateBrickArtifact(validSkill(), "test-source");
     expect(result.ok).toBe(true);
   });
 
   test("accepts valid agent artifact", () => {
-    const result = validateBrickArtifact(validAgent(), "test.json");
+    const result = validateBrickArtifact(validAgent(), "test-source");
     expect(result.ok).toBe(true);
   });
 
   test("accepts valid composite artifact", () => {
-    const result = validateBrickArtifact(validComposite(), "test.json");
+    const result = validateBrickArtifact(validComposite(), "test-source");
     expect(result.ok).toBe(true);
   });
 
   test("rejects non-object", () => {
-    const result = validateBrickArtifact("not an object", "test.json");
+    const result = validateBrickArtifact("not an object", "test-source");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("INTERNAL");
@@ -82,14 +82,14 @@ describe("validateBrickArtifact", () => {
   });
 
   test("rejects null", () => {
-    const result = validateBrickArtifact(null, "test.json");
+    const result = validateBrickArtifact(null, "test-source");
     expect(result.ok).toBe(false);
   });
 
   test("rejects missing id", () => {
     const data = validTool();
     delete data.id;
-    const result = validateBrickArtifact(data, "test.json");
+    const result = validateBrickArtifact(data, "test-source");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("id");
@@ -97,12 +97,12 @@ describe("validateBrickArtifact", () => {
   });
 
   test("rejects empty id", () => {
-    const result = validateBrickArtifact({ ...validTool(), id: "" }, "test.json");
+    const result = validateBrickArtifact({ ...validTool(), id: "" }, "test-source");
     expect(result.ok).toBe(false);
   });
 
   test("rejects unknown kind", () => {
-    const result = validateBrickArtifact({ ...validTool(), kind: "unknown" }, "test.json");
+    const result = validateBrickArtifact({ ...validTool(), kind: "unknown" }, "test-source");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("kind");
@@ -110,37 +110,37 @@ describe("validateBrickArtifact", () => {
   });
 
   test("rejects invalid scope", () => {
-    const result = validateBrickArtifact({ ...validTool(), scope: "invalid" }, "test.json");
+    const result = validateBrickArtifact({ ...validTool(), scope: "invalid" }, "test-source");
     expect(result.ok).toBe(false);
   });
 
   test("rejects invalid trustTier", () => {
-    const result = validateBrickArtifact({ ...validTool(), trustTier: "invalid" }, "test.json");
+    const result = validateBrickArtifact({ ...validTool(), trustTier: "invalid" }, "test-source");
     expect(result.ok).toBe(false);
   });
 
   test("rejects invalid lifecycle", () => {
-    const result = validateBrickArtifact({ ...validTool(), lifecycle: "invalid" }, "test.json");
+    const result = validateBrickArtifact({ ...validTool(), lifecycle: "invalid" }, "test-source");
     expect(result.ok).toBe(false);
   });
 
   test("rejects non-number createdAt", () => {
     const result = validateBrickArtifact(
       { ...validTool(), createdAt: "not a number" },
-      "test.json",
+      "test-source",
     );
     expect(result.ok).toBe(false);
   });
 
   test("rejects non-array tags", () => {
-    const result = validateBrickArtifact({ ...validTool(), tags: "not an array" }, "test.json");
+    const result = validateBrickArtifact({ ...validTool(), tags: "not an array" }, "test-source");
     expect(result.ok).toBe(false);
   });
 
   test("rejects tool missing implementation", () => {
     const data = validTool();
     delete data.implementation;
-    const result = validateBrickArtifact(data, "test.json");
+    const result = validateBrickArtifact(data, "test-source");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("implementation");
@@ -150,41 +150,41 @@ describe("validateBrickArtifact", () => {
   test("rejects tool missing inputSchema", () => {
     const data = validTool();
     delete data.inputSchema;
-    const result = validateBrickArtifact(data, "test.json");
+    const result = validateBrickArtifact(data, "test-source");
     expect(result.ok).toBe(false);
   });
 
   test("rejects skill missing content", () => {
     const data = validSkill();
     delete data.content;
-    const result = validateBrickArtifact(data, "test.json");
+    const result = validateBrickArtifact(data, "test-source");
     expect(result.ok).toBe(false);
   });
 
   test("rejects agent missing manifestYaml", () => {
     const data = validAgent();
     delete data.manifestYaml;
-    const result = validateBrickArtifact(data, "test.json");
+    const result = validateBrickArtifact(data, "test-source");
     expect(result.ok).toBe(false);
   });
 
   test("rejects composite missing brickIds", () => {
     const data = validComposite();
     delete data.brickIds;
-    const result = validateBrickArtifact(data, "test.json");
+    const result = validateBrickArtifact(data, "test-source");
     expect(result.ok).toBe(false);
   });
 
   test("accepts artifact with valid files", () => {
     const result = validateBrickArtifact(
       { ...validTool(), files: { "lib/helper.ts": "export const x = 1;" } },
-      "test.json",
+      "test-source",
     );
     expect(result.ok).toBe(true);
   });
 
   test("rejects artifact with non-object files", () => {
-    const result = validateBrickArtifact({ ...validTool(), files: "bad" }, "test.json");
+    const result = validateBrickArtifact({ ...validTool(), files: "bad" }, "test-source");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("files");
@@ -194,13 +194,13 @@ describe("validateBrickArtifact", () => {
   test("accepts artifact with valid requires", () => {
     const result = validateBrickArtifact(
       { ...validTool(), requires: { bins: ["node"], env: ["API_KEY"] } },
-      "test.json",
+      "test-source",
     );
     expect(result.ok).toBe(true);
   });
 
   test("rejects artifact with non-object requires", () => {
-    const result = validateBrickArtifact({ ...validTool(), requires: 42 }, "test.json");
+    const result = validateBrickArtifact({ ...validTool(), requires: 42 }, "test-source");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("requires");

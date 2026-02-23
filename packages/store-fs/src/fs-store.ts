@@ -20,10 +20,10 @@ import type {
   Result,
 } from "@koi/core";
 import { notFound } from "@koi/core";
+import { validateBrickArtifact } from "@koi/validation";
 import { mapFsError, mapParseError } from "./errors.js";
 import { brickPath, shardDir, tmpPath } from "./paths.js";
 import { matchesQuery } from "./query.js";
-import { validateBrickArtifact } from "./validate.js";
 
 // ---------------------------------------------------------------------------
 // Config

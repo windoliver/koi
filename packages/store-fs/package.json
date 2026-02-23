@@ -10,7 +10,8 @@
     }
   },
   "dependencies": {
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "@koi/validation": "workspace:*"
   },
   "devDependencies": {
     "@koi/engine": "workspace:*",
