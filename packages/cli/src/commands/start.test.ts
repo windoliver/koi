@@ -38,6 +38,31 @@ mock.module("@koi/channel-cli", () => ({
   }),
 }));
 
+// ---------------------------------------------------------------------------
+// Mock model-resolve to avoid requiring real API keys in tests
+// ---------------------------------------------------------------------------
+
+mock.module("../model-resolve.js", () => ({
+  resolveModelCall:
+    () =>
+    async (request: {
+      readonly messages: readonly {
+        readonly content: readonly { readonly kind: string; readonly text?: string }[];
+      }[];
+    }) => {
+      const inputText = request.messages
+        .flatMap((m) => m.content)
+        .filter((b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text")
+        .map((b) => b.text)
+        .join("\n");
+      return {
+        content: `[echo] ${inputText}`,
+        model: "mock-model",
+        usage: { inputTokens: inputText.length, outputTokens: inputText.length + 7 },
+      };
+    },
+}));
+
 const { runStart } = await import("./start.js");
 
 // ---------------------------------------------------------------------------
@@ -153,7 +178,7 @@ describe("runStart — manifest errors", () => {
       process.stderr.write = originalWrite;
     }
 
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(78);
     const output = stderrChunks.join("");
     expect(output).toContain("Failed to load manifest");
   });
@@ -187,7 +212,7 @@ describe("runStart — manifest errors", () => {
       process.stderr.write = originalWrite;
     }
 
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(78);
   });
 });
 
@@ -242,7 +267,7 @@ describe("runStart — default manifest path", () => {
     }
 
     // Should fail with file not found (default koi.yaml doesn't exist in test cwd)
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(78);
     const output = stderrChunks.join("");
     expect(output).toContain("Failed to load manifest");
   });

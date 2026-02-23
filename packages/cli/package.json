@@ -29,6 +29,7 @@
     "@koi/engine-loop": "workspace:*",
     "@koi/channel-cli": "workspace:*",
     "@koi/manifest": "workspace:*",
+    "@koi/model-router": "workspace:*",
     "@koi/shutdown": "workspace:*"
   }
 }
