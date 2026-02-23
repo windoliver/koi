@@ -28,6 +28,16 @@ const COMPOSE_FORGE_CONFIG: ForgeToolConfig = {
       name: { type: "string" },
       description: { type: "string" },
       brickIds: { type: "array", items: { type: "string" } },
+      files: { type: "object", description: "Companion files: relative path → content" },
+      requires: {
+        type: "object",
+        description: "Runtime requirements (bins, env, tools)",
+        properties: {
+          bins: { type: "array", items: { type: "string" } },
+          env: { type: "array", items: { type: "string" } },
+          tools: { type: "array", items: { type: "string" } },
+        },
+      },
     },
     required: ["name", "description", "brickIds"],
   },
@@ -42,6 +52,8 @@ const COMPOSE_FORGE_FIELDS = [
   { name: "name", type: "string", required: true },
   { name: "description", type: "string", required: true },
   { name: "brickIds", type: "array", required: true },
+  { name: "files", type: "object", required: false },
+  { name: "requires", type: "object", required: false },
 ] as const;
 
 async function composeForgeHandler(
@@ -90,6 +102,8 @@ async function composeForgeHandler(
     name: compositeInput.name,
     description: compositeInput.description,
     brickIds: compositeInput.brickIds,
+    ...(compositeInput.files !== undefined ? { files: compositeInput.files } : {}),
+    ...(compositeInput.requires !== undefined ? { requires: compositeInput.requires } : {}),
   };
 
   return runForgePipeline(forgeInput, deps, (id, report) => {
@@ -106,8 +120,10 @@ async function composeForgeHandler(
       version: "0.0.1",
       tags: [],
       usageCount: 0,
-      contentHash: computeContentHash(forgeInput.brickIds.join(",")),
+      contentHash: computeContentHash(forgeInput.brickIds.join(","), forgeInput.files),
       brickIds: forgeInput.brickIds,
+      ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
+      ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
     };
     return artifact;
   });

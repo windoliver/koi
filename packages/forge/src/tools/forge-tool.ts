@@ -40,6 +40,16 @@ const FORGE_TOOL_CONFIG: ForgeToolConfig = {
           required: ["name", "input"],
         },
       },
+      files: { type: "object", description: "Companion files: relative path → content" },
+      requires: {
+        type: "object",
+        description: "Runtime requirements (bins, env, tools)",
+        properties: {
+          bins: { type: "array", items: { type: "string" } },
+          env: { type: "array", items: { type: "string" } },
+          tools: { type: "array", items: { type: "string" } },
+        },
+      },
     },
     required: ["name", "description", "inputSchema", "implementation"],
   },
@@ -56,6 +66,8 @@ const FORGE_TOOL_FIELDS = [
   { name: "inputSchema", type: "object", required: true },
   { name: "implementation", type: "string", required: true },
   { name: "testCases", type: "array", required: false },
+  { name: "files", type: "object", required: false },
+  { name: "requires", type: "object", required: false },
 ] as const;
 
 async function forgeToolHandler(
@@ -74,6 +86,8 @@ async function forgeToolHandler(
     inputSchema: toolInput.inputSchema,
     implementation: toolInput.implementation,
     ...(toolInput.testCases !== undefined ? { testCases: toolInput.testCases } : {}),
+    ...(toolInput.files !== undefined ? { files: toolInput.files } : {}),
+    ...(toolInput.requires !== undefined ? { requires: toolInput.requires } : {}),
   };
 
   return runForgePipeline(forgeInput, deps, (id, report) => {
@@ -90,10 +104,12 @@ async function forgeToolHandler(
       version: "0.0.1",
       tags: [],
       usageCount: 0,
-      contentHash: computeContentHash(forgeInput.implementation),
+      contentHash: computeContentHash(forgeInput.implementation, forgeInput.files),
       implementation: forgeInput.implementation,
       inputSchema: forgeInput.inputSchema,
       ...(forgeInput.testCases !== undefined ? { testCases: forgeInput.testCases } : {}),
+      ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
+      ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
     };
     return artifact;
   });

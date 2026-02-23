@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { BrickRequires } from "@koi/core";
 import type { VerificationConfig } from "./config.js";
 import type { ForgeInput } from "./types.js";
 import { verifyStatic } from "./verify-static.js";
@@ -235,5 +236,129 @@ describe("verifyStatic — kind-specific validation", () => {
       expect(result.value.passed).toBe(true);
       expect(result.value.durationMs).toBeGreaterThanOrEqual(0);
     }
+  });
+});
+
+describe("verifyStatic — files validation", () => {
+  test("accepts valid files", () => {
+    const input: ForgeInput = {
+      kind: "skill",
+      name: "mySkill",
+      description: "A skill",
+      content: "# Skill",
+      files: { "lib/helper.ts": "export const x = 1;" },
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects absolute file path", () => {
+    const input: ForgeInput = {
+      kind: "skill",
+      name: "mySkill",
+      description: "A skill",
+      content: "# Skill",
+      files: { "/etc/passwd": "bad" },
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("INVALID_NAME");
+    }
+  });
+
+  test("rejects file path with path traversal", () => {
+    const input: ForgeInput = {
+      kind: "skill",
+      name: "mySkill",
+      description: "A skill",
+      content: "# Skill",
+      files: { "../escape.ts": "bad" },
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("INVALID_NAME");
+    }
+  });
+
+  test("rejects dangerous key in files", () => {
+    const input: ForgeInput = {
+      kind: "skill",
+      name: "mySkill",
+      description: "A skill",
+      content: "# Skill",
+      files: { __proto__: "bad" },
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects empty files object", () => {
+    const input: ForgeInput = {
+      kind: "skill",
+      name: "mySkill",
+      description: "A skill",
+      content: "# Skill",
+      files: {},
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("MISSING_FIELD");
+    }
+  });
+});
+
+describe("verifyStatic — requires validation", () => {
+  test("accepts valid requires", () => {
+    const input: ForgeInput = {
+      kind: "skill",
+      name: "mySkill",
+      description: "A skill",
+      content: "# Skill",
+      requires: { bins: ["node"], env: ["API_KEY"], tools: ["search"] },
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects requires.bins with non-string entries", () => {
+    const input: ForgeInput = {
+      kind: "skill",
+      name: "mySkill",
+      description: "A skill",
+      content: "# Skill",
+      requires: { bins: [42] } as unknown as BrickRequires,
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("INVALID_SCHEMA");
+    }
+  });
+
+  test("rejects requires.env with non-string entries", () => {
+    const input: ForgeInput = {
+      kind: "skill",
+      name: "mySkill",
+      description: "A skill",
+      content: "# Skill",
+      requires: { env: [true] } as unknown as BrickRequires,
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+  });
+
+  test("accepts requires with only partial fields", () => {
+    const input: ForgeInput = {
+      kind: "skill",
+      name: "mySkill",
+      description: "A skill",
+      content: "# Skill",
+      requires: { bins: ["git"] },
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(true);
   });
 });

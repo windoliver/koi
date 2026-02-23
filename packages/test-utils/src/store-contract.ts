@@ -1,5 +1,8 @@
 /**
  * Reusable contract test suite for ForgeStore implementations.
+ *
+ * Accepts a factory that returns a ForgeStore (sync or async).
+ * Each test creates a fresh store instance for isolation.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -46,10 +49,18 @@ function createSkillBrick(overrides?: Partial<SkillArtifact>): SkillArtifact {
   };
 }
 
-export function runForgeStoreContractTests(createStore: () => ForgeStore): void {
+/**
+ * Run the ForgeStore contract test suite against any implementation.
+ *
+ * The factory can be sync or async — async factories are useful for
+ * filesystem/database stores that need setup (e.g., temp directory creation).
+ */
+export function runForgeStoreContractTests(
+  createStore: () => ForgeStore | Promise<ForgeStore>,
+): void {
   describe("ForgeStore contract", () => {
     test("save and load round-trip", async () => {
-      const store = createStore();
+      const store = await createStore();
       const brick = createBrick({ id: "brick_rt" });
       const saveResult = await store.save(brick);
       expect(saveResult.ok).toBe(true);
@@ -63,7 +74,7 @@ export function runForgeStoreContractTests(createStore: () => ForgeStore): void 
     });
 
     test("load returns NOT_FOUND for missing id", async () => {
-      const store = createStore();
+      const store = await createStore();
       const result = await store.load("nonexistent");
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -72,7 +83,7 @@ export function runForgeStoreContractTests(createStore: () => ForgeStore): void 
     });
 
     test("search with empty query returns all", async () => {
-      const store = createStore();
+      const store = await createStore();
       await store.save(createBrick({ id: "b1" }));
       await store.save(createBrick({ id: "b2" }));
 
@@ -84,7 +95,7 @@ export function runForgeStoreContractTests(createStore: () => ForgeStore): void 
     });
 
     test("search filters by kind", async () => {
-      const store = createStore();
+      const store = await createStore();
       await store.save(createBrick({ id: "b1" }));
       await store.save(createSkillBrick({ id: "b2" }));
 
@@ -97,7 +108,7 @@ export function runForgeStoreContractTests(createStore: () => ForgeStore): void 
     });
 
     test("search filters by scope", async () => {
-      const store = createStore();
+      const store = await createStore();
       await store.save(createBrick({ id: "b1", scope: "agent" }));
       await store.save(createBrick({ id: "b2", scope: "global" }));
 
@@ -110,7 +121,7 @@ export function runForgeStoreContractTests(createStore: () => ForgeStore): void 
     });
 
     test("search filters by tags (AND match)", async () => {
-      const store = createStore();
+      const store = await createStore();
       await store.save(createBrick({ id: "b1", tags: ["math", "calc"] }));
       await store.save(createBrick({ id: "b2", tags: ["math"] }));
       await store.save(createBrick({ id: "b3", tags: ["text"] }));
@@ -124,7 +135,7 @@ export function runForgeStoreContractTests(createStore: () => ForgeStore): void 
     });
 
     test("search respects limit", async () => {
-      const store = createStore();
+      const store = await createStore();
       await store.save(createBrick({ id: "b1" }));
       await store.save(createBrick({ id: "b2" }));
       await store.save(createBrick({ id: "b3" }));
@@ -137,7 +148,7 @@ export function runForgeStoreContractTests(createStore: () => ForgeStore): void 
     });
 
     test("remove deletes from results", async () => {
-      const store = createStore();
+      const store = await createStore();
       await store.save(createBrick({ id: "b1" }));
       await store.remove("b1");
 
@@ -149,7 +160,7 @@ export function runForgeStoreContractTests(createStore: () => ForgeStore): void 
     });
 
     test("remove returns NOT_FOUND for missing", async () => {
-      const store = createStore();
+      const store = await createStore();
       const result = await store.remove("nonexistent");
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -158,7 +169,7 @@ export function runForgeStoreContractTests(createStore: () => ForgeStore): void 
     });
 
     test("update modifies specific fields", async () => {
-      const store = createStore();
+      const store = await createStore();
       await store.save(createBrick({ id: "b1", lifecycle: "active", usageCount: 0 }));
 
       const updateResult = await store.update("b1", { lifecycle: "deprecated", usageCount: 5 });
@@ -174,7 +185,7 @@ export function runForgeStoreContractTests(createStore: () => ForgeStore): void 
     });
 
     test("update returns NOT_FOUND for missing id", async () => {
-      const store = createStore();
+      const store = await createStore();
       const result = await store.update("nonexistent", { usageCount: 1 });
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -183,7 +194,7 @@ export function runForgeStoreContractTests(createStore: () => ForgeStore): void 
     });
 
     test("exists returns true for saved brick", async () => {
-      const store = createStore();
+      const store = await createStore();
       await store.save(createBrick({ id: "b1" }));
 
       const result = await store.exists("b1");
@@ -194,7 +205,7 @@ export function runForgeStoreContractTests(createStore: () => ForgeStore): void 
     });
 
     test("exists returns false for missing id", async () => {
-      const store = createStore();
+      const store = await createStore();
       const result = await store.exists("nonexistent");
       expect(result.ok).toBe(true);
       if (result.ok) {
@@ -203,7 +214,7 @@ export function runForgeStoreContractTests(createStore: () => ForgeStore): void 
     });
 
     test("save with existing id overwrites", async () => {
-      const store = createStore();
+      const store = await createStore();
       await store.save(createBrick({ id: "b1", name: "original" }));
       await store.save(createBrick({ id: "b1", name: "updated" }));
 

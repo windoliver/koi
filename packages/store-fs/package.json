@@ -1,5 +1,5 @@
 {
-  "name": "@koi/forge",
+  "name": "@koi/store-fs",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,19 +9,18 @@
       "import": "./dist/index.js"
     }
   },
+  "dependencies": {
+    "@koi/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/engine": "workspace:*",
+    "@koi/forge": "workspace:*",
+    "@koi/test-utils": "workspace:*"
+  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test"
-  },
-  "dependencies": {
-    "@koi/core": "workspace:*",
-    "@koi/validation": "workspace:*",
-    "zod": "4.3.6"
-  },
-  "devDependencies": {
-    "@koi/engine": "workspace:*",
-    "@koi/test-utils": "workspace:*"
   }
 }

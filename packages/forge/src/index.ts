@@ -14,6 +14,7 @@ export type {
   AgentArtifact,
   BrickArtifact,
   BrickArtifactBase,
+  BrickRequires,
   BrickUpdate,
   CompositeArtifact,
   ForgeQuery,

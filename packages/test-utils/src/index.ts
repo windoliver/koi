@@ -34,4 +34,5 @@ export {
   createSpyModelHandler,
   createSpyToolHandler,
 } from "./handlers.js";
+export { runForgeStoreContractTests } from "./store-contract.js";
 export { createManifestFile, makeTempDir, withTempDir } from "./temp-dir.js";
