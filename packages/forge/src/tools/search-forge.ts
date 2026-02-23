@@ -4,9 +4,10 @@
 
 import type { Result, Tool } from "@koi/core";
 import type { ForgeError } from "../errors.js";
+import { staticError } from "../errors.js";
 import type { BrickArtifact, ForgeQuery } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
-import { createForgeTool, validateInputFields } from "./shared.js";
+import { createForgeTool } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Tool config
@@ -40,12 +41,14 @@ async function searchForgeHandler(
   deps: ForgeDeps,
 ): Promise<Result<readonly BrickArtifact[], ForgeError>> {
   // Allow null/undefined (defaults to empty query), but reject non-objects
-  if (input !== null && input !== undefined) {
-    const validationErr = validateInputFields(input, []);
-    if (validationErr !== undefined) {
-      return { ok: false, error: validationErr };
-    }
+  if (input !== null && input !== undefined && typeof input !== "object") {
+    return {
+      ok: false,
+      error: staticError("MISSING_FIELD", "Input must be a non-null object"),
+    };
   }
+
+  // All fields are optional — cast safely since ForgeQuery is all-optional
   const query = (input ?? {}) as ForgeQuery;
   const result = await deps.store.search(query);
 

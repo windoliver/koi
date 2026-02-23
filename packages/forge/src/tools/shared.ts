@@ -53,45 +53,6 @@ export interface ForgeToolConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Runtime input validation
-// ---------------------------------------------------------------------------
-
-interface FieldSpec {
-  readonly name: string;
-  readonly type: "string" | "object" | "array";
-  readonly required: boolean;
-}
-
-export function validateInputFields(
-  input: unknown,
-  fields: readonly FieldSpec[],
-): ForgeError | undefined {
-  if (input === null || typeof input !== "object") {
-    return staticError("MISSING_FIELD", "Input must be a non-null object");
-  }
-  const obj = input as Record<string, unknown>;
-
-  for (const field of fields) {
-    const value = obj[field.name];
-    if (field.required && value === undefined) {
-      return staticError("MISSING_FIELD", `Missing required field: "${field.name}"`);
-    }
-    if (value !== undefined) {
-      if (field.type === "string" && typeof value !== "string") {
-        return typeError(`Field "${field.name}" must be a string, got ${typeof value}`);
-      }
-      if (field.type === "object" && (typeof value !== "object" || value === null)) {
-        return typeError(`Field "${field.name}" must be an object, got ${typeof value}`);
-      }
-      if (field.type === "array" && !Array.isArray(value)) {
-        return typeError(`Field "${field.name}" must be an array, got ${typeof value}`);
-      }
-    }
-  }
-  return undefined;
-}
-
-// ---------------------------------------------------------------------------
 // Zod input schemas
 // ---------------------------------------------------------------------------
 

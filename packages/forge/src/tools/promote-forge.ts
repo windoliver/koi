@@ -4,20 +4,34 @@
  */
 
 import type { BrickLifecycle, BrickUpdate, ForgeScope, Result, Tool, TrustTier } from "@koi/core";
+import { z } from "zod";
 import type { ForgeError } from "../errors.js";
-import { governanceError, staticError, storeError, typeError } from "../errors.js";
+import { governanceError, storeError } from "../errors.js";
 import { checkScopePromotion, TRUST_ORDER } from "../governance.js";
 import type { PromoteChange, PromoteResult } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
-import { createForgeTool, validateInputFields } from "./shared.js";
+import { createForgeTool, parseForgeInput } from "./shared.js";
 
 // ---------------------------------------------------------------------------
-// Constants
+// Zod schema
 // ---------------------------------------------------------------------------
 
-const VALID_SCOPES = new Set<string>(["agent", "zone", "global"]);
-const VALID_TRUST_TIERS = new Set<string>(["sandbox", "verified", "promoted"]);
-const VALID_LIFECYCLES = new Set<string>(["draft", "verifying", "active", "failed", "deprecated"]);
+const promoteForgeInputSchema = z
+  .object({
+    brickId: z.string(),
+    targetScope: z.enum(["agent", "zone", "global"]).optional(),
+    targetTrustTier: z.enum(["sandbox", "verified", "promoted"]).optional(),
+    targetLifecycle: z.enum(["draft", "verifying", "active", "failed", "deprecated"]).optional(),
+  })
+  .refine(
+    (val) =>
+      val.targetScope !== undefined ||
+      val.targetTrustTier !== undefined ||
+      val.targetLifecycle !== undefined,
+    {
+      message: "Must specify at least one of: targetScope, targetTrustTier, targetLifecycle",
+    },
+  );
 
 // ---------------------------------------------------------------------------
 // Tool config
@@ -43,69 +57,16 @@ const PROMOTE_FORGE_CONFIG: ForgeToolConfig = {
 // Handler
 // ---------------------------------------------------------------------------
 
-const PROMOTE_FORGE_FIELDS = [
-  { name: "brickId", type: "string", required: true },
-  { name: "targetScope", type: "string", required: false },
-  { name: "targetTrustTier", type: "string", required: false },
-  { name: "targetLifecycle", type: "string", required: false },
-] as const;
-
 async function promoteForgeHandler(
   input: unknown,
   deps: ForgeDeps,
 ): Promise<Result<PromoteResult, ForgeError>> {
-  const validationErr = validateInputFields(input, PROMOTE_FORGE_FIELDS);
-  if (validationErr !== undefined) {
-    return { ok: false, error: validationErr };
+  const parsed = parseForgeInput(promoteForgeInputSchema, input);
+  if (!parsed.ok) {
+    return parsed;
   }
 
-  const obj = input as {
-    readonly brickId: string;
-    readonly targetScope?: string;
-    readonly targetTrustTier?: string;
-    readonly targetLifecycle?: string;
-  };
-
-  // Must specify at least one promotion target
-  if (
-    obj.targetScope === undefined &&
-    obj.targetTrustTier === undefined &&
-    obj.targetLifecycle === undefined
-  ) {
-    return {
-      ok: false,
-      error: staticError(
-        "MISSING_FIELD",
-        "Must specify at least one of: targetScope, targetTrustTier, targetLifecycle",
-      ),
-    };
-  }
-
-  // Validate enum values
-  if (obj.targetScope !== undefined && !VALID_SCOPES.has(obj.targetScope)) {
-    return {
-      ok: false,
-      error: typeError(
-        `Invalid targetScope "${obj.targetScope}" — must be one of: agent, zone, global`,
-      ),
-    };
-  }
-  if (obj.targetTrustTier !== undefined && !VALID_TRUST_TIERS.has(obj.targetTrustTier)) {
-    return {
-      ok: false,
-      error: typeError(
-        `Invalid targetTrustTier "${obj.targetTrustTier}" — must be one of: sandbox, verified, promoted`,
-      ),
-    };
-  }
-  if (obj.targetLifecycle !== undefined && !VALID_LIFECYCLES.has(obj.targetLifecycle)) {
-    return {
-      ok: false,
-      error: typeError(
-        `Invalid targetLifecycle "${obj.targetLifecycle}" — must be one of: draft, verifying, active, failed, deprecated`,
-      ),
-    };
-  }
+  const obj = parsed.value;
 
   // Load the brick
   const loadResult = await deps.store.load(obj.brickId);
@@ -121,7 +82,7 @@ async function promoteForgeHandler(
   // --- Validate scope promotion ---
   let scopeChange: PromoteChange<ForgeScope> | undefined;
   if (obj.targetScope !== undefined) {
-    const targetScope = obj.targetScope as ForgeScope;
+    const targetScope: ForgeScope = obj.targetScope;
     if (targetScope !== brick.scope) {
       const scopeResult = checkScopePromotion(
         brick.scope,
@@ -151,7 +112,7 @@ async function promoteForgeHandler(
   // --- Validate trust tier promotion ---
   let trustChange: PromoteChange<TrustTier> | undefined;
   if (obj.targetTrustTier !== undefined) {
-    const targetTrust = obj.targetTrustTier as TrustTier;
+    const targetTrust: TrustTier = obj.targetTrustTier;
     if (targetTrust !== brick.trustTier) {
       if (TRUST_ORDER[targetTrust] < TRUST_ORDER[brick.trustTier]) {
         return {
@@ -169,14 +130,14 @@ async function promoteForgeHandler(
   // --- Validate lifecycle transition ---
   let lifecycleChange: PromoteChange<BrickLifecycle> | undefined;
   if (obj.targetLifecycle !== undefined) {
-    const targetLifecycle = obj.targetLifecycle as BrickLifecycle;
+    const targetLifecycle: BrickLifecycle = obj.targetLifecycle;
     if (targetLifecycle !== brick.lifecycle) {
       if (brick.lifecycle === "failed") {
         return {
           ok: false,
           error: governanceError(
             "SCOPE_VIOLATION",
-            `Cannot transition from "failed" — failed is a terminal state`,
+            'Cannot transition from "failed" — failed is a terminal state',
           ),
         };
       }
