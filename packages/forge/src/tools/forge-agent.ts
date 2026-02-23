@@ -29,6 +29,16 @@ const FORGE_AGENT_CONFIG: ForgeToolConfig = {
       name: { type: "string" },
       description: { type: "string" },
       manifestYaml: { type: "string" },
+      files: { type: "object", description: "Companion files: relative path → content" },
+      requires: {
+        type: "object",
+        description: "Runtime requirements (bins, env, tools)",
+        properties: {
+          bins: { type: "array", items: { type: "string" } },
+          env: { type: "array", items: { type: "string" } },
+          tools: { type: "array", items: { type: "string" } },
+        },
+      },
     },
     required: ["name", "description", "manifestYaml"],
   },
@@ -43,6 +53,8 @@ const FORGE_AGENT_FIELDS = [
   { name: "name", type: "string", required: true },
   { name: "description", type: "string", required: true },
   { name: "manifestYaml", type: "string", required: true },
+  { name: "files", type: "object", required: false },
+  { name: "requires", type: "object", required: false },
 ] as const;
 
 async function forgeAgentHandler(
@@ -84,6 +96,8 @@ async function forgeAgentHandler(
     name: agentInput.name,
     description: agentInput.description,
     manifestYaml: agentInput.manifestYaml,
+    ...(agentInput.files !== undefined ? { files: agentInput.files } : {}),
+    ...(agentInput.requires !== undefined ? { requires: agentInput.requires } : {}),
   };
 
   return runForgePipeline(forgeInput, deps, (id, report) => {
@@ -100,8 +114,10 @@ async function forgeAgentHandler(
       version: "0.0.1",
       tags: [],
       usageCount: 0,
-      contentHash: computeContentHash(forgeInput.manifestYaml),
+      contentHash: computeContentHash(forgeInput.manifestYaml, forgeInput.files),
       manifestYaml: forgeInput.manifestYaml,
+      ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
+      ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
     };
     return artifact;
   });

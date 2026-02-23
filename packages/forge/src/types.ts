@@ -5,6 +5,7 @@
 import type {
   BrickKind,
   BrickLifecycle,
+  BrickRequires,
   ForgeScope,
   TestCase,
   ToolDescriptor,
@@ -12,7 +13,7 @@ import type {
 } from "@koi/core";
 
 // Re-export L0 types that other forge modules import from this file
-export type { BrickKind, BrickLifecycle, ForgeScope };
+export type { BrickKind, BrickLifecycle, BrickRequires, ForgeScope };
 
 // ---------------------------------------------------------------------------
 // Forge result (pure data — L1 handles mutation)
@@ -77,6 +78,8 @@ export interface ForgeToolInput {
   readonly inputSchema: Readonly<Record<string, unknown>>;
   readonly implementation: string;
   readonly testCases?: readonly TestCase[];
+  readonly files?: Readonly<Record<string, string>>;
+  readonly requires?: BrickRequires;
 }
 
 export interface ForgeSkillInput {
@@ -85,6 +88,8 @@ export interface ForgeSkillInput {
   readonly description: string;
   readonly content: string;
   readonly tags?: readonly string[];
+  readonly files?: Readonly<Record<string, string>>;
+  readonly requires?: BrickRequires;
 }
 
 export interface ForgeAgentInput {
@@ -92,6 +97,8 @@ export interface ForgeAgentInput {
   readonly name: string;
   readonly description: string;
   readonly manifestYaml: string;
+  readonly files?: Readonly<Record<string, string>>;
+  readonly requires?: BrickRequires;
 }
 
 export interface ForgeCompositeInput {
@@ -99,6 +106,8 @@ export interface ForgeCompositeInput {
   readonly name: string;
   readonly description: string;
   readonly brickIds: readonly string[];
+  readonly files?: Readonly<Record<string, string>>;
+  readonly requires?: BrickRequires;
 }
 
 export type ForgeInput = ForgeToolInput | ForgeSkillInput | ForgeAgentInput | ForgeCompositeInput;

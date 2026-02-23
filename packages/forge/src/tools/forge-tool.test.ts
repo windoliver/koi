@@ -191,4 +191,46 @@ describe("createForgeToolTool", () => {
     expect(result.error.message).toContain("name");
     expect(result.error.message).toContain("string");
   });
+
+  test("propagates files to artifact", async () => {
+    const store = createInMemoryForgeStore();
+    const deps = createDeps({ store });
+    const tool = createForgeToolTool(deps);
+
+    const result = (await tool.execute({
+      name: "filesTool",
+      description: "A tool with files",
+      inputSchema: { type: "object" },
+      implementation: "return 1;",
+      files: { "lib/utils.ts": "export const add = (a, b) => a + b;" },
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    const loadResult = await store.load(result.value.id);
+    if (loadResult.ok) {
+      expect(loadResult.value.files).toEqual({
+        "lib/utils.ts": "export const add = (a, b) => a + b;",
+      });
+    }
+  });
+
+  test("propagates requires to artifact", async () => {
+    const store = createInMemoryForgeStore();
+    const deps = createDeps({ store });
+    const tool = createForgeToolTool(deps);
+
+    const result = (await tool.execute({
+      name: "reqTool",
+      description: "A tool with requires",
+      inputSchema: { type: "object" },
+      implementation: "return 1;",
+      requires: { bins: ["python3"], tools: ["search"] },
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    const loadResult = await store.load(result.value.id);
+    if (loadResult.ok) {
+      expect(loadResult.value.requires).toEqual({ bins: ["python3"], tools: ["search"] });
+    }
+  });
 });

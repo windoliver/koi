@@ -93,9 +93,22 @@ export function validateInputFields(
 // Content hash (SHA-256 hex digest for integrity verification)
 // ---------------------------------------------------------------------------
 
-export function computeContentHash(content: string): string {
+export function computeContentHash(
+  content: string,
+  files?: Readonly<Record<string, string>>,
+): string {
   const hasher = new Bun.CryptoHasher("sha256");
   hasher.update(content);
+  if (files !== undefined) {
+    const sortedKeys = Object.keys(files).sort();
+    for (const key of sortedKeys) {
+      hasher.update(key);
+      const value = files[key];
+      if (value !== undefined) {
+        hasher.update(value);
+      }
+    }
+  }
   return hasher.digest("hex");
 }
 

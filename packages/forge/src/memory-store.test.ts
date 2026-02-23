@@ -1,4 +1,4 @@
-import { runForgeStoreContractTests } from "./__tests__/store-contract.js";
+import { runForgeStoreContractTests } from "@koi/test-utils";
 import { createInMemoryForgeStore } from "./memory-store.js";
 
 // Run the full contract test suite against InMemoryForgeStore

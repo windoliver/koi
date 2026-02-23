@@ -22,6 +22,19 @@ export interface TestCase {
 }
 
 // ---------------------------------------------------------------------------
+// Brick requirements (universal — applies to all forgeable brick kinds)
+// ---------------------------------------------------------------------------
+
+export interface BrickRequires {
+  /** CLI binaries that must exist on PATH (ALL required). */
+  readonly bins?: readonly string[];
+  /** Environment variables that must be set (ALL required). */
+  readonly env?: readonly string[];
+  /** Koi tool brick names that must be resolvable. */
+  readonly tools?: readonly string[];
+}
+
+// ---------------------------------------------------------------------------
 // Brick artifact — discriminated union on `kind`
 // ---------------------------------------------------------------------------
 
@@ -40,6 +53,10 @@ export interface BrickArtifactBase {
   readonly usageCount: number;
   /** SHA-256 hex digest of the brick's primary content for integrity verification. */
   readonly contentHash: string;
+  /** Optional companion files: relative path → content. */
+  readonly files?: Readonly<Record<string, string>>;
+  /** Runtime requirements for this brick to be usable. */
+  readonly requires?: BrickRequires;
 }
 
 export interface ToolArtifact extends BrickArtifactBase {

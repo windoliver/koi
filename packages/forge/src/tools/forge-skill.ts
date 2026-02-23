@@ -28,6 +28,16 @@ const FORGE_SKILL_CONFIG: ForgeToolConfig = {
       description: { type: "string" },
       content: { type: "string" },
       tags: { type: "array", items: { type: "string" } },
+      files: { type: "object", description: "Companion files: relative path → content" },
+      requires: {
+        type: "object",
+        description: "Runtime requirements (bins, env, tools)",
+        properties: {
+          bins: { type: "array", items: { type: "string" } },
+          env: { type: "array", items: { type: "string" } },
+          tools: { type: "array", items: { type: "string" } },
+        },
+      },
     },
     required: ["name", "description", "content"],
   },
@@ -43,6 +53,8 @@ const FORGE_SKILL_FIELDS = [
   { name: "description", type: "string", required: true },
   { name: "content", type: "string", required: true },
   { name: "tags", type: "array", required: false },
+  { name: "files", type: "object", required: false },
+  { name: "requires", type: "object", required: false },
 ] as const;
 
 async function forgeSkillHandler(
@@ -60,6 +72,8 @@ async function forgeSkillHandler(
     description: skillInput.description,
     content: skillInput.content,
     ...(skillInput.tags !== undefined ? { tags: skillInput.tags } : {}),
+    ...(skillInput.files !== undefined ? { files: skillInput.files } : {}),
+    ...(skillInput.requires !== undefined ? { requires: skillInput.requires } : {}),
   };
 
   return runForgePipeline(forgeInput, deps, (id, report) => {
@@ -76,8 +90,10 @@ async function forgeSkillHandler(
       version: "0.0.1",
       tags: forgeInput.tags ?? [],
       usageCount: 0,
-      contentHash: computeContentHash(forgeInput.content),
+      contentHash: computeContentHash(forgeInput.content, forgeInput.files),
       content: forgeInput.content,
+      ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
+      ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
     };
     return artifact;
   });

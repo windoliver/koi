@@ -124,6 +124,70 @@ function validateCompositeInput(
 }
 
 // ---------------------------------------------------------------------------
+// Universal validators (files + requires — apply to all brick kinds)
+// ---------------------------------------------------------------------------
+
+const MAX_FILES_TOTAL_BYTES = 500_000;
+
+function validateFiles(files: Readonly<Record<string, string>>): ForgeError | undefined {
+  const keys = Object.keys(files);
+  if (keys.length === 0) {
+    return staticError("MISSING_FIELD", "files must contain at least one entry if provided");
+  }
+
+  let totalBytes = 0;
+  for (const key of keys) {
+    // Reject absolute paths
+    if (key.startsWith("/") || key.startsWith("\\")) {
+      return staticError("INVALID_NAME", `File path must be relative, got: "${key}"`);
+    }
+    // Reject path traversal
+    if (key.includes("..")) {
+      return staticError("INVALID_NAME", `File path contains '..': "${key}"`);
+    }
+    // Reject dangerous keys
+    if (DANGEROUS_KEYS.has(key)) {
+      return staticError("INVALID_NAME", `File path uses dangerous key: "${key}"`);
+    }
+
+    const value = files[key];
+    if (typeof value !== "string") {
+      return staticError("INVALID_SCHEMA", `File content for "${key}" must be a string`);
+    }
+    totalBytes += Buffer.byteLength(key, "utf8") + Buffer.byteLength(value, "utf8");
+    if (totalBytes > MAX_FILES_TOTAL_BYTES) {
+      return staticError(
+        "SIZE_EXCEEDED",
+        `Total files size exceeds ${MAX_FILES_TOTAL_BYTES} bytes (got ${totalBytes})`,
+      );
+    }
+  }
+  return undefined;
+}
+
+function isStringArray(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function validateRequires(requires: unknown): ForgeError | undefined {
+  if (typeof requires !== "object" || requires === null) {
+    return staticError("INVALID_SCHEMA", "requires must be an object");
+  }
+  const rec = requires as Record<string, unknown>;
+
+  if (rec.bins !== undefined && !isStringArray(rec.bins)) {
+    return staticError("INVALID_SCHEMA", "requires.bins must be an array of strings");
+  }
+  if (rec.env !== undefined && !isStringArray(rec.env)) {
+    return staticError("INVALID_SCHEMA", "requires.env must be an array of strings");
+  }
+  if (rec.tools !== undefined && !isStringArray(rec.tools)) {
+    return staticError("INVALID_SCHEMA", "requires.tools must be an array of strings");
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -161,6 +225,22 @@ export function verifyStatic(
 
   if (kindErr !== undefined) {
     return { ok: false, error: kindErr };
+  }
+
+  // Universal: validate files if present
+  if (input.files !== undefined) {
+    const filesErr = validateFiles(input.files);
+    if (filesErr !== undefined) {
+      return { ok: false, error: filesErr };
+    }
+  }
+
+  // Universal: validate requires if present
+  if (input.requires !== undefined) {
+    const requiresErr = validateRequires(input.requires);
+    if (requiresErr !== undefined) {
+      return { ok: false, error: requiresErr };
+    }
   }
 
   const durationMs = performance.now() - start;

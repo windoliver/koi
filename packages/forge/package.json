@@ -21,6 +21,7 @@
     "zod": "4.3.6"
   },
   "devDependencies": {
-    "@koi/engine": "workspace:*"
+    "@koi/engine": "workspace:*",
+    "@koi/test-utils": "workspace:*"
   }
 }

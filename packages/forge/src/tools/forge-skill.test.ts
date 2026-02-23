@@ -85,4 +85,40 @@ describe("createForgeSkillTool", () => {
     expect(result.ok).toBe(false);
     expect(result.error.stage).toBe("static");
   });
+
+  test("propagates files to artifact", async () => {
+    const store = createInMemoryForgeStore();
+    const tool = createForgeSkillTool(createDeps({ store }));
+
+    const result = (await tool.execute({
+      name: "filesSkill",
+      description: "A skill with files",
+      content: "# Skill",
+      files: { "lib/helper.ts": "export const x = 1;" },
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    const loadResult = await store.load(result.value.id);
+    if (loadResult.ok) {
+      expect(loadResult.value.files).toEqual({ "lib/helper.ts": "export const x = 1;" });
+    }
+  });
+
+  test("propagates requires to artifact", async () => {
+    const store = createInMemoryForgeStore();
+    const tool = createForgeSkillTool(createDeps({ store }));
+
+    const result = (await tool.execute({
+      name: "reqSkill",
+      description: "A skill with requires",
+      content: "# Skill",
+      requires: { bins: ["node"], env: ["API_KEY"] },
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    const loadResult = await store.load(result.value.id);
+    if (loadResult.ok) {
+      expect(loadResult.value.requires).toEqual({ bins: ["node"], env: ["API_KEY"] });
+    }
+  });
 });
