@@ -298,6 +298,7 @@
         "zod": "4.3.6",
       },
       "devDependencies": {
+        "@koi/forge": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
