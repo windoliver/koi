@@ -33,6 +33,7 @@ export {
   createExfiltrationVerifier,
   createInjectionVerifier,
   createResourceExhaustionVerifier,
+  createStructuralHidingVerifier,
 } from "./adversarial-verifiers.js";
 // runtime values — manifest assembly
 export type { AssembleManifestOptions, AssembleManifestResult } from "./assemble-manifest.js";
