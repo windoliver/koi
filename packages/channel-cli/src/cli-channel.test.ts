@@ -52,15 +52,24 @@ afterEach(() => {
 describe("createCliChannel", () => {
   // Run the contract test suite from @koi/test-utils
   describe("contract compliance", () => {
+    // Capture the latest streams so injectMessage can write to stdin.
+    // createAdapter() runs before injectMessage() in each test, so this is safe.
+    let contractStreams: ReturnType<typeof createMockStreams> | undefined;
+
     testChannelAdapter({
       createAdapter: () => {
         const streams = createMockStreams();
+        contractStreams = streams;
         activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
         return createCliChannel({
           input: streams.input,
           output: streams.output,
           errorOutput: streams.errorOutput,
         });
+      },
+      injectMessage: async (_adapter) => {
+        contractStreams?.input.write("contract-inject\n");
+        await new Promise((resolve) => setTimeout(resolve, 50));
       },
     });
   });
@@ -145,7 +154,10 @@ describe("createCliChannel", () => {
     await channel.disconnect();
   });
 
-  test("send handles non-text blocks by writing description to error output", async () => {
+  test("send: image/file/button blocks are downgraded to text on stdout; custom goes to stderr", async () => {
+    // Behavior note: image, file, and button are downgraded to TextBlock by
+    // renderBlocks() (CLI declares these capabilities false) and written to stdout.
+    // CustomBlock has no capability flag, passes through to stderr.
     const streams = createMockStreams();
     activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
     const channel = createCliChannel({
@@ -170,16 +182,17 @@ describe("createCliChannel", () => {
     };
     await channel.send(message);
 
-    const errorWritten = readStream(streams.errorOutput);
-    expect(errorWritten).toContain("[file: doc.pdf]");
-    expect(errorWritten).toContain("[image: A picture]");
-    expect(errorWritten).toContain("[button: Click me]");
-    expect(errorWritten).toContain("[custom: chart]");
-
-    // Text output should not contain these
+    // Downgraded blocks written to stdout (consistent with text output)
     const textWritten = readStream(streams.output);
-    expect(textWritten).not.toContain("[file:");
-    expect(textWritten).not.toContain("[image:");
+    expect(textWritten).toContain("[File: doc.pdf]");
+    expect(textWritten).toContain("[Image: A picture]");
+    expect(textWritten).toContain("[Click me]");
+
+    // Custom block (no capability flag) still goes to stderr
+    const errorWritten = readStream(streams.errorOutput);
+    expect(errorWritten).toContain("[custom: chart]");
+    expect(errorWritten).not.toContain("[File:");
+    expect(errorWritten).not.toContain("[Image:");
 
     await channel.disconnect();
   });
@@ -347,7 +360,7 @@ describe("createCliChannel", () => {
     unsubscribe();
   });
 
-  test("file block without name falls back to URL", async () => {
+  test("file block without name falls back to URL in downgraded text on stdout", async () => {
     const streams = createMockStreams();
     activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
     const channel = createCliChannel({
@@ -361,11 +374,11 @@ describe("createCliChannel", () => {
     };
     await channel.send(message);
 
-    const errorWritten = readStream(streams.errorOutput);
-    expect(errorWritten).toContain("[file: https://example.com/doc.pdf]");
+    const textWritten = readStream(streams.output);
+    expect(textWritten).toContain("[File: https://example.com/doc.pdf]");
   });
 
-  test("image block without alt falls back to URL", async () => {
+  test("image block without alt falls back to URL in downgraded text on stdout", async () => {
     const streams = createMockStreams();
     activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
     const channel = createCliChannel({
@@ -379,8 +392,8 @@ describe("createCliChannel", () => {
     };
     await channel.send(message);
 
-    const errorWritten = readStream(streams.errorOutput);
-    expect(errorWritten).toContain("[image: https://example.com/pic.png]");
+    const textWritten = readStream(streams.output);
+    expect(textWritten).toContain("[Image: https://example.com/pic.png]");
   });
 
   test("custom prompt is used", async () => {
@@ -410,6 +423,75 @@ describe("createCliChannel", () => {
       errorOutput: streams.errorOutput,
     });
     expect(channel.sendStatus).toBeUndefined();
+  });
+
+  test("handler that throws does not prevent other handlers from receiving the message", async () => {
+    const streams = createMockStreams();
+    activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
+    const received: InboundMessage[] = [];
+    const channel = createCliChannel({
+      input: streams.input,
+      output: streams.output,
+      errorOutput: streams.errorOutput,
+    });
+
+    channel.onMessage(async () => {
+      throw new Error("handler crash");
+    });
+    channel.onMessage(async (msg) => {
+      received.push(msg);
+    });
+
+    await channel.connect();
+    streams.input.write("hello\n");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(received).toHaveLength(1); // second handler still received the message
+    // Error written to errorOutput by onHandlerError
+    const errorWritten = readStream(streams.errorOutput);
+    expect(errorWritten).toContain("handler crash");
+
+    await channel.disconnect();
+  });
+
+  test("reconnect cycle: handlers registered before disconnect receive messages after reconnect", async () => {
+    const streams = createMockStreams();
+    activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
+    const channel = createCliChannel({
+      input: streams.input,
+      output: streams.output,
+      errorOutput: streams.errorOutput,
+    });
+
+    const received: InboundMessage[] = [];
+    channel.onMessage(async (msg) => {
+      received.push(msg);
+    });
+
+    await channel.connect();
+    streams.input.write("first\n");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(received).toHaveLength(1);
+
+    await channel.disconnect();
+
+    // Reconnect — must create fresh streams since readline closes the old ones
+    const streams2 = createMockStreams();
+    activeStreams = [...activeStreams, streams2.input, streams2.output, streams2.errorOutput];
+    const channel2 = createCliChannel({
+      input: streams2.input,
+      output: streams2.output,
+      errorOutput: streams2.errorOutput,
+    });
+    channel2.onMessage(async (msg) => {
+      received.push(msg);
+    });
+    await channel2.connect();
+    streams2.input.write("second\n");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(received).toHaveLength(2); // both messages received
+    await channel2.disconnect();
   });
 
   test("connect is idempotent", async () => {

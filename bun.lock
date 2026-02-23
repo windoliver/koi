@@ -20,10 +20,18 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/channel-base": {
+      "name": "@koi/channel-base",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/channel-cli": {
       "name": "@koi/channel-cli",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/channel-base": "workspace:*",
         "@koi/core": "workspace:*",
       },
       "devDependencies": {
@@ -588,6 +596,8 @@
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
     "@koi/artifact-client": ["@koi/artifact-client@workspace:packages/artifact-client"],
+
+    "@koi/channel-base": ["@koi/channel-base@workspace:packages/channel-base"],
 
     "@koi/channel-cli": ["@koi/channel-cli@workspace:packages/channel-cli"],
 

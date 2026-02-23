@@ -1,5 +1,5 @@
 {
-  "name": "@koi/channel-cli",
+  "name": "@koi/channel-base",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,11 +10,7 @@
     }
   },
   "dependencies": {
-    "@koi/channel-base": "workspace:*",
     "@koi/core": "workspace:*"
-  },
-  "devDependencies": {
-    "@koi/test-utils": "workspace:*"
   },
   "scripts": {
     "build": "tsup",
