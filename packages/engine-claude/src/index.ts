@@ -7,8 +7,10 @@
  * MCP server.
  */
 
-export type { SdkFunctions, SdkQuery, SdkQueryFn } from "./adapter.js";
+export type { SdkFunctions, SdkInputMessage, SdkQuery, SdkQueryFn } from "./adapter.js";
 export { createClaudeAdapter } from "./adapter.js";
+export type { HitlEventEmitter } from "./approval-bridge.js";
+export { createApprovalBridge } from "./approval-bridge.js";
 export type {
   MapResult,
   MessageMapper,
@@ -29,6 +31,8 @@ export {
   mapSdkMessage,
   mapStopReason,
 } from "./event-map.js";
+export type { MessageQueue, MessageQueueOptions } from "./message-queue.js";
+export { createMessageQueue } from "./message-queue.js";
 export type { SdkResultFields } from "./metrics.js";
 export { mapMetrics, mapRichMetadata } from "./metrics.js";
 export type { McpBridgeConfig, SdkOptions } from "./policy-map.js";
@@ -40,4 +44,8 @@ export type {
   ClaudeEngineAdapter,
   ClaudeQueryControls,
   ClaudeSessionState,
+  HitlRequestData,
+  SdkCanUseTool,
+  SdkPermissionResult,
 } from "./types.js";
+export { HITL_EVENTS } from "./types.js";

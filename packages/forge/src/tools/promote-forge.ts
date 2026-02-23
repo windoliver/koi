@@ -6,7 +6,7 @@
 import type { BrickLifecycle, BrickUpdate, ForgeScope, Result, Tool, TrustTier } from "@koi/core";
 import type { ForgeError } from "../errors.js";
 import { governanceError, staticError, storeError, typeError } from "../errors.js";
-import { checkScopePromotion } from "../governance.js";
+import { checkScopePromotion, TRUST_ORDER } from "../governance.js";
 import type { PromoteChange, PromoteResult } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import { createForgeTool, validateInputFields } from "./shared.js";
@@ -18,12 +18,6 @@ import { createForgeTool, validateInputFields } from "./shared.js";
 const VALID_SCOPES = new Set<string>(["agent", "zone", "global"]);
 const VALID_TRUST_TIERS = new Set<string>(["sandbox", "verified", "promoted"]);
 const VALID_LIFECYCLES = new Set<string>(["draft", "verifying", "active", "failed", "deprecated"]);
-
-const TRUST_ORDER: Readonly<Record<TrustTier, number>> = {
-  sandbox: 0,
-  verified: 1,
-  promoted: 2,
-} as const;
 
 // ---------------------------------------------------------------------------
 // Tool config

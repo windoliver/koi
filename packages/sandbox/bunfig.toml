@@ -12,6 +12,7 @@ coverageDir = "coverage"
 coverageThreshold = { lines = 0.80, functions = 0.80, statements = 0.80 }
 coveragePathIgnorePatterns = [
   "src/adapter.ts",
+  "src/command.ts",
   "src/detect.ts",
   "src/execute.ts",
   "src/spawn.ts",

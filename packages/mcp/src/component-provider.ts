@@ -3,7 +3,7 @@
  *
  * Async factory that connects to all MCP servers in parallel, discovers
  * tools, and wraps them as Koi Tool components. Mirrors the pattern
- * from @koi/forge's createForgeComponentProviderAsync.
+ * from @koi/forge's createForgeComponentProvider.
  */
 
 import type { Agent, ComponentProvider, KoiError } from "@koi/core";

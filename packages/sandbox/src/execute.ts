@@ -4,9 +4,7 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
-import { detectPlatform } from "./detect.js";
-import { buildBwrapArgs } from "./platform/bwrap.js";
-import { buildSeatbeltArgs } from "./platform/seatbelt.js";
+import { buildSandboxCommand } from "./command.js";
 import type { SandboxProfile, SandboxResult } from "./types.js";
 
 export interface ExecuteOptions {
@@ -21,28 +19,12 @@ export async function execute(
   args: readonly string[],
   options?: ExecuteOptions,
 ): Promise<Result<SandboxResult, KoiError>> {
-  const platform = detectPlatform();
-  if (!platform.ok) {
-    return platform;
+  const cmd = buildSandboxCommand(profile, command, args);
+  if (!cmd.ok) {
+    return cmd;
   }
 
-  const sandboxArgs =
-    platform.value === "seatbelt"
-      ? buildSeatbeltArgs(profile, command, args)
-      : buildBwrapArgs(profile, command, args);
-
-  const [executable, ...execArgs] = sandboxArgs;
-  if (executable === undefined) {
-    return {
-      ok: false,
-      error: {
-        code: "INTERNAL",
-        message: "Failed to build sandbox command: empty argument list",
-        retryable: false,
-      },
-    };
-  }
-
+  const { executable, args: execArgs } = cmd.value;
   const startTime = performance.now();
   const hasStdin = options?.stdin !== undefined;
 

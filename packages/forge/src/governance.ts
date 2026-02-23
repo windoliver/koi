@@ -12,7 +12,7 @@ import type { ForgeContext, ForgeScope } from "./types.js";
 // Trust tier ordering (for comparison)
 // ---------------------------------------------------------------------------
 
-const TRUST_ORDER: Readonly<Record<TrustTier, number>> = {
+export const TRUST_ORDER: Readonly<Record<TrustTier, number>> = {
   sandbox: 0,
   verified: 1,
   promoted: 2,

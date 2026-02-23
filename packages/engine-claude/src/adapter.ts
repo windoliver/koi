@@ -3,11 +3,24 @@
  *
  * Creates an EngineAdapter that delegates to the Claude Agent SDK's query()
  * function, mapping SDK messages to Koi EngineEvents via streaming passthrough.
+ *
+ * Uses V1 Streaming Input mode: the prompt is always an AsyncIterable<SdkInputMessage>,
+ * enabling human-in-the-loop message injection via saveHumanMessage().
  */
 
-import type { EngineEvent, EngineInput, EngineState } from "@koi/core";
+import type {
+  EngineEvent,
+  EngineInput,
+  EngineOutput,
+  EngineState,
+  EngineStopReason,
+} from "@koi/core";
+import type { HitlEventEmitter } from "./approval-bridge.js";
+import { createApprovalBridge } from "./approval-bridge.js";
 import type { SdkMessage } from "./event-map.js";
 import { createMessageMapper } from "./event-map.js";
+import type { MessageQueue } from "./message-queue.js";
+import { createMessageQueue } from "./message-queue.js";
 import type { McpBridgeConfig, SdkOptions } from "./policy-map.js";
 import { buildSdkOptions } from "./policy-map.js";
 import type {
@@ -15,6 +28,7 @@ import type {
   ClaudeEngineAdapter,
   ClaudeQueryControls,
   ClaudeSessionState,
+  SdkCanUseTool,
 } from "./types.js";
 
 const ENGINE_ID = "claude" as const;
@@ -22,6 +36,18 @@ const ENGINE_ID = "claude" as const;
 // ---------------------------------------------------------------------------
 // SDK function types — thin wrappers to avoid leaking SDK types
 // ---------------------------------------------------------------------------
+
+/**
+ * Message shape for streaming input to the Claude SDK (V1 Streaming Input).
+ * This is what we SEND to the SDK as prompt items.
+ */
+export interface SdkInputMessage {
+  readonly type: "user";
+  readonly message: {
+    readonly role: "user";
+    readonly content: string;
+  };
+}
 
 /**
  * SDK query result — extends AsyncIterable with optional control methods
@@ -39,11 +65,11 @@ export interface SdkQuery extends AsyncIterable<SdkMessage> {
 }
 
 /**
- * SDK query function shape. Accepts prompt + options, returns an SdkQuery
- * (AsyncIterable with optional control methods).
+ * SDK query function shape. Accepts prompt (string or streaming input) + options,
+ * returns an SdkQuery (AsyncIterable with optional control methods).
  */
 export type SdkQueryFn = (params: {
-  readonly prompt: string;
+  readonly prompt: string | AsyncIterable<SdkInputMessage>;
   readonly options?: SdkOptions;
 }) => SdkQuery;
 
@@ -66,18 +92,20 @@ export interface SdkFunctions {
 }
 
 // ---------------------------------------------------------------------------
-// Input → prompt conversion
+// Input → SdkInputMessage conversion
 // ---------------------------------------------------------------------------
 
 /**
- * Extract a text prompt from EngineInput.
+ * Convert EngineInput to an SdkInputMessage for the streaming input queue.
  */
-function inputToPrompt(input: EngineInput): string {
+function inputToSdkInputMessage(input: EngineInput): SdkInputMessage | undefined {
   switch (input.kind) {
     case "text":
-      return input.text;
+      return {
+        type: "user",
+        message: { role: "user", content: input.text },
+      };
     case "messages": {
-      // Concatenate all text content blocks from the messages
       const parts: string[] = [];
       for (const msg of input.messages) {
         for (const block of msg.content) {
@@ -86,11 +114,78 @@ function inputToPrompt(input: EngineInput): string {
           }
         }
       }
-      return parts.join("\n");
+      const text = parts.join("\n");
+      if (text.length === 0) return undefined;
+      return {
+        type: "user",
+        message: { role: "user", content: text },
+      };
     }
     case "resume":
-      // Resume input — prompt is empty; session ID drives the continuation
-      return "";
+      return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Done event helpers — extracted to reduce runStream size
+// ---------------------------------------------------------------------------
+
+const ZERO_METRICS = {
+  totalTokens: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  turns: 0,
+  durationMs: 0,
+} as const;
+
+function createDoneEvent(
+  stopReason: EngineStopReason,
+  errorMessage?: string,
+): EngineEvent & { readonly kind: "done" } {
+  const output: EngineOutput =
+    errorMessage !== undefined
+      ? {
+          content: [{ kind: "text", text: `Error: ${errorMessage}` }],
+          stopReason,
+          metrics: ZERO_METRICS,
+        }
+      : { content: [], stopReason, metrics: ZERO_METRICS };
+  return { kind: "done", output };
+}
+
+function createErrorDoneEvent(error: unknown): EngineEvent & { readonly kind: "done" } {
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    kind: "done",
+    output: {
+      content: [{ kind: "text", text: `Error: ${message}` }],
+      stopReason: "error",
+      metrics: ZERO_METRICS,
+      metadata: {
+        error: message,
+        ...(error instanceof Error && error.cause !== undefined
+          ? { cause: String(error.cause) }
+          : {}),
+      },
+    },
+  };
+}
+
+/**
+ * Drain pending messages into the queue, then push the initial input message.
+ */
+function seedQueue(
+  pendingMessages: SdkInputMessage[],
+  queue: MessageQueue<SdkInputMessage>,
+  input: EngineInput,
+): void {
+  while (pendingMessages.length > 0) {
+    // biome-ignore lint/style/noNonNullAssertion: length > 0 guarantees element
+    queue.push(pendingMessages.shift()!);
+  }
+  const initialMessage = inputToSdkInputMessage(input);
+  if (initialMessage !== undefined) {
+    queue.push(initialMessage);
   }
 }
 
@@ -104,7 +199,7 @@ function inputToPrompt(input: EngineInput): string {
  * @param config - Adapter configuration (Koi-native)
  * @param sdk - SDK function bindings (query, createSdkMcpServer, tool)
  * @param mcpBridge - Optional pre-built MCP bridge for Koi tools
- * @returns EngineAdapter implementation
+ * @returns EngineAdapter implementation with HITL support
  */
 export function createClaudeAdapter(
   config: ClaudeAdapterConfig,
@@ -119,8 +214,30 @@ export function createClaudeAdapter(
   let activeAbortController: AbortController | undefined;
   // let: tracks active SDK query for control method delegation
   let activeQuery: SdkQuery | undefined;
-  // Session state for resume support
-  const sessionState: { sessionId: string | undefined } = { sessionId: undefined };
+  // let: tracks active message queue for HITL message injection
+  let activeQueue: MessageQueue<SdkInputMessage> | undefined;
+  // let: session state updated on init/result messages and loadState()
+  let sessionState: ClaudeSessionState = { sessionId: undefined };
+  // Mutable buffer: internal queue with single-owner lifecycle, never exposed
+  // outside createClaudeAdapter. Immutable rebuild per-drain would add O(n)
+  // copies per message with no safety benefit.
+  const pendingMessages: SdkInputMessage[] = [];
+
+  // Build canUseTool bridge if approval handler is configured
+  // let: holds the custom event emitter callback set during stream()
+  let hitlEventCallback:
+    | ((event: { readonly type: string; readonly data: unknown }) => void)
+    | undefined;
+
+  const hitlEmitter: HitlEventEmitter | undefined =
+    config.approvalHandler !== undefined
+      ? { emit: (event) => hitlEventCallback?.(event) }
+      : undefined;
+
+  const canUseTool: SdkCanUseTool | undefined =
+    config.approvalHandler !== undefined
+      ? createApprovalBridge(config.approvalHandler, hitlEmitter)
+      : undefined;
 
   async function* runStream(input: EngineInput): AsyncGenerator<EngineEvent, void, undefined> {
     if (running) {
@@ -129,14 +246,7 @@ export function createClaudeAdapter(
       );
     }
     if (disposed) {
-      yield {
-        kind: "done",
-        output: {
-          content: [],
-          stopReason: "interrupted",
-          metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
-        },
-      };
+      yield createDoneEvent("interrupted");
       return;
     }
 
@@ -144,33 +254,53 @@ export function createClaudeAdapter(
     const abortController = new AbortController();
     activeAbortController = abortController;
 
-    // Fresh message mapper per run — holds StreamEventMapper state
+    const queue = createMessageQueue<SdkInputMessage>(
+      config.hitl?.maxQueueSize !== undefined ? { maxSize: config.hitl.maxQueueSize } : undefined,
+    );
+    activeQueue = queue;
+
+    // Mutable buffer: accumulates HITL bridge events between SDK message yields.
+    // Single-owner within this generator scope, drained inline.
+    const pendingHitlEvents: EngineEvent[] = [];
+    hitlEventCallback = (event) => {
+      pendingHitlEvents.push({ kind: "custom", type: event.type, data: event.data });
+    };
+
     const mapper = createMessageMapper();
 
     try {
-      const prompt = inputToPrompt(input);
+      seedQueue(pendingMessages, queue, input);
 
-      // Determine resume session ID
       const resumeSessionId =
         input.kind === "resume"
           ? (extractSessionIdFromState(input.state) ?? sessionState.sessionId)
           : undefined;
 
-      const options = buildSdkOptions(config, mcpBridge, resumeSessionId, abortController);
-
-      const queryIterable = sdk.query({ prompt, options });
+      const options = buildSdkOptions(
+        config,
+        mcpBridge,
+        resumeSessionId,
+        abortController,
+        canUseTool,
+      );
+      const queryIterable = sdk.query({ prompt: queue, options });
       activeQuery = queryIterable;
       let receivedDone = false;
 
-      // Turn boundary tracking: a turn ends when a user message (tool results)
-      // follows an assistant message, signaling the assistant's tool calls completed.
+      // Turn boundary tracking
       let turnIndex = 0;
       let sawAssistant = false;
 
       for await (const message of queryIterable) {
         if (abortController.signal.aborted) break;
 
-        // Detect turn boundary before mapping: user after assistant = turn end
+        // Drain HITL events accumulated during canUseTool calls
+        while (pendingHitlEvents.length > 0) {
+          // biome-ignore lint/style/noNonNullAssertion: length > 0 guarantees element
+          yield pendingHitlEvents.shift()!;
+        }
+
+        // Detect turn boundary: user after assistant = turn end
         const msgType = (message as { readonly type: string }).type;
         if (msgType === "user" && sawAssistant) {
           yield { kind: "turn_end", turnIndex };
@@ -183,9 +313,8 @@ export function createClaudeAdapter(
 
         const result = mapper.map(message);
 
-        // Capture session ID from init or result messages
         if (result.sessionId !== undefined) {
-          sessionState.sessionId = result.sessionId;
+          sessionState = { sessionId: result.sessionId };
         }
 
         for (const event of result.events) {
@@ -197,49 +326,24 @@ export function createClaudeAdapter(
         }
       }
 
-      // Synthetic done event if SDK yielded no result
+      // Drain remaining HITL events
+      while (pendingHitlEvents.length > 0) {
+        // biome-ignore lint/style/noNonNullAssertion: length > 0 guarantees element
+        yield pendingHitlEvents.shift()!;
+      }
+
       if (!receivedDone) {
-        yield {
-          kind: "done",
-          output: {
-            content: [],
-            stopReason: abortController.signal.aborted ? "interrupted" : "error",
-            metrics: {
-              totalTokens: 0,
-              inputTokens: 0,
-              outputTokens: 0,
-              turns: 0,
-              durationMs: 0,
-            },
-          },
-        };
+        yield createDoneEvent(abortController.signal.aborted ? "interrupted" : "error");
       }
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      yield {
-        kind: "done",
-        output: {
-          content: [{ kind: "text", text: `Error: ${message}` }],
-          stopReason: "error",
-          metrics: {
-            totalTokens: 0,
-            inputTokens: 0,
-            outputTokens: 0,
-            turns: 0,
-            durationMs: 0,
-          },
-          metadata: {
-            error: message,
-            ...(error instanceof Error && error.cause !== undefined
-              ? { cause: String(error.cause) }
-              : {}),
-          },
-        },
-      };
+      yield createErrorDoneEvent(error);
     } finally {
+      queue.close();
+      activeQueue = undefined;
       activeQuery = undefined;
       running = false;
       activeAbortController = undefined;
+      hitlEventCallback = undefined;
     }
   }
 
@@ -262,9 +366,6 @@ export function createClaudeAdapter(
   const adapter: ClaudeEngineAdapter = {
     engineId: ENGINE_ID,
 
-    // Non-cooperating adapter — no terminals
-    // The SDK manages its own model/tool calls internally
-
     stream: (input: EngineInput): AsyncIterable<EngineEvent> => {
       return runStream(input);
     },
@@ -273,9 +374,26 @@ export function createClaudeAdapter(
       return running ? controls : undefined;
     },
 
+    saveHumanMessage(text: string): void {
+      if (disposed) {
+        console.warn("ClaudeAdapter: saveHumanMessage() called after dispose() — message dropped");
+        return;
+      }
+
+      const message: SdkInputMessage = {
+        type: "user",
+        message: { role: "user", content: text },
+      };
+
+      if (activeQueue !== undefined) {
+        activeQueue.push(message);
+      } else {
+        pendingMessages.push(message);
+      }
+    },
+
     saveState: async (): Promise<EngineState> => {
-      const data: ClaudeSessionState = { sessionId: sessionState.sessionId };
-      return { engineId: ENGINE_ID, data };
+      return { engineId: ENGINE_ID, data: sessionState };
     },
 
     loadState: async (state: EngineState): Promise<void> => {
@@ -284,7 +402,7 @@ export function createClaudeAdapter(
       }
       const data = state.data as ClaudeSessionState | undefined;
       if (data?.sessionId !== undefined) {
-        sessionState.sessionId = data.sessionId;
+        sessionState = { sessionId: data.sessionId };
       }
     },
 

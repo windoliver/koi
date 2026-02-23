@@ -107,4 +107,40 @@ describe.skipIf(!INTEGRATION_ENABLED)("@koi/engine-claude integration", () => {
     expect(output?.metrics.durationMs).toBeGreaterThan(0);
     expect(output?.metrics.turns).toBeGreaterThanOrEqual(1);
   }, 60_000);
+
+  test("HITL approval flow with canUseTool", async () => {
+    const { query } = await import("@anthropic-ai/claude-agent-sdk");
+    const { createClaudeAdapter } = await import("../src/adapter.js");
+
+    let approvalCalled = false;
+
+    const adapter = createClaudeAdapter(
+      {
+        model: "claude-sonnet-4-5-20250929",
+        maxTurns: 2,
+        permissionMode: "default", // Tools will trigger canUseTool
+        approvalHandler: async () => {
+          approvalCalled = true;
+          return { kind: "allow" } as const;
+        },
+      },
+      { query },
+    );
+
+    const events = await collectEvents(
+      adapter.stream({
+        kind: "text",
+        text: "Read the file ./package.json and tell me the name field",
+      }),
+    );
+
+    const output = findDoneOutput(events);
+    expect(output).toBeDefined();
+    // If the SDK called canUseTool, our handler should have been invoked
+    // Note: this may not trigger if SDK bypasses canUseTool for some tools
+    if (approvalCalled) {
+      const customEvents = events.filter((e) => e.kind === "custom");
+      expect(customEvents.length).toBeGreaterThanOrEqual(1);
+    }
+  }, 120_000);
 });

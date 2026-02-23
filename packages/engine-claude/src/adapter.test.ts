@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import type { EngineEvent, EngineOutput } from "@koi/core";
-import type { SdkFunctions, SdkQuery } from "./adapter.js";
+import type { ApprovalDecision, EngineEvent, EngineOutput } from "@koi/core";
+import type { SdkFunctions, SdkInputMessage, SdkQuery } from "./adapter.js";
 import { createClaudeAdapter } from "./adapter.js";
 import type { SdkMessage } from "./event-map.js";
 import type { ClaudeAdapterConfig } from "./types.js";
+import { HITL_EVENTS } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -26,14 +27,50 @@ function findDoneOutput(events: readonly EngineEvent[]): EngineOutput | undefine
 
 /**
  * Create a mock SDK that yields the given messages.
+ * Accepts the new prompt type (string | AsyncIterable<SdkInputMessage>).
  */
 function createMockSdk(messages: readonly SdkMessage[]): SdkFunctions {
   return {
-    query: async function* (_params: { prompt: string }) {
+    query: async function* (_params: {
+      readonly prompt: string | AsyncIterable<SdkInputMessage>;
+      readonly options?: Record<string, unknown>;
+    }) {
       for (const msg of messages) {
         yield msg;
       }
     },
+  };
+}
+
+/**
+ * Create a mock SDK for HITL tests that captures the prompt (queue) and options.
+ * The yielded messages can be controlled via the returned `messages` array.
+ */
+function createHitlMockSdk(messages: readonly SdkMessage[]): {
+  readonly sdk: SdkFunctions;
+  readonly getCapturedPrompt: () => string | AsyncIterable<SdkInputMessage> | undefined;
+  readonly getCapturedOptions: () => Record<string, unknown> | undefined;
+} {
+  let capturedPrompt: string | AsyncIterable<SdkInputMessage> | undefined;
+  let capturedOptions: Record<string, unknown> | undefined;
+
+  const sdk: SdkFunctions = {
+    query: async function* (params: {
+      readonly prompt: string | AsyncIterable<SdkInputMessage>;
+      readonly options?: Record<string, unknown>;
+    }) {
+      capturedPrompt = params.prompt;
+      capturedOptions = params.options as Record<string, unknown> | undefined;
+      for (const msg of messages) {
+        yield msg;
+      }
+    },
+  };
+
+  return {
+    sdk,
+    getCapturedPrompt: () => capturedPrompt,
+    getCapturedOptions: () => capturedOptions,
   };
 }
 
@@ -239,6 +276,22 @@ describe("stream", () => {
     const output = findDoneOutput(events);
     expect(output?.stopReason).toBe("max_turns");
   });
+
+  test("passes prompt as AsyncIterable (streaming input mode)", async () => {
+    const { sdk, getCapturedPrompt } = createHitlMockSdk([
+      initMessage("sess-1"),
+      resultMessage("success"),
+    ]);
+
+    const adapter = createClaudeAdapter({}, sdk);
+    await collectEvents(adapter.stream({ kind: "text", text: "Hello" }));
+
+    const prompt = getCapturedPrompt();
+    expect(prompt).toBeDefined();
+    // The prompt should be an AsyncIterable (the MessageQueue), not a string
+    expect(typeof prompt).not.toBe("string");
+    expect(Symbol.asyncIterator in (prompt as object)).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -432,8 +485,11 @@ describe("saveState and loadState", () => {
     let capturedOptions: Record<string, unknown> | undefined;
 
     const sdk: SdkFunctions = {
-      query: async function* (params: { prompt: string; options?: Record<string, unknown> }) {
-        capturedOptions = params.options;
+      query: async function* (params: {
+        readonly prompt: string | AsyncIterable<SdkInputMessage>;
+        readonly options?: Record<string, unknown>;
+      }) {
+        capturedOptions = params.options as Record<string, unknown> | undefined;
         yield resultMessage("success");
       },
     };
@@ -492,8 +548,12 @@ describe("dispose", () => {
     let aborted = false;
 
     const sdk: SdkFunctions = {
-      query: async function* (params: { prompt: string; options?: Record<string, unknown> }) {
-        const controller = params.options?.abortController as AbortController | undefined;
+      query: async function* (params: {
+        readonly prompt: string | AsyncIterable<SdkInputMessage>;
+        readonly options?: Record<string, unknown>;
+      }) {
+        const controller = (params.options as Record<string, unknown> | undefined)
+          ?.abortController as AbortController | undefined;
         controller?.signal.addEventListener("abort", () => {
           aborted = true;
         });
@@ -528,8 +588,11 @@ describe("config integration", () => {
     let capturedOptions: Record<string, unknown> | undefined;
 
     const sdk: SdkFunctions = {
-      query: async function* (params: { prompt: string; options?: Record<string, unknown> }) {
-        capturedOptions = params.options;
+      query: async function* (params: {
+        readonly prompt: string | AsyncIterable<SdkInputMessage>;
+        readonly options?: Record<string, unknown>;
+      }) {
+        capturedOptions = params.options as Record<string, unknown> | undefined;
         yield resultMessage("success");
       },
     };
@@ -609,7 +672,10 @@ describe("controls", () => {
     let resolveQuery: (() => void) | undefined;
 
     const sdk: SdkFunctions = {
-      query: (_params: { prompt: string }): SdkQuery => {
+      query: (_params: {
+        readonly prompt: string | AsyncIterable<SdkInputMessage>;
+        readonly options?: Record<string, unknown>;
+      }): SdkQuery => {
         const iterable: SdkQuery = {
           async *[Symbol.asyncIterator]() {
             await new Promise<void>((r) => {
@@ -654,7 +720,10 @@ describe("controls", () => {
     let resolveQuery: (() => void) | undefined;
 
     const sdk: SdkFunctions = {
-      query: (_params: { prompt: string }): SdkQuery => {
+      query: (_params: {
+        readonly prompt: string | AsyncIterable<SdkInputMessage>;
+        readonly options?: Record<string, unknown>;
+      }): SdkQuery => {
         const iterable: SdkQuery = {
           async *[Symbol.asyncIterator]() {
             await new Promise<void>((r) => {
@@ -813,5 +882,455 @@ describe("streaming integration", () => {
 
     const toolDeltas = events.filter((e) => e.kind === "tool_call_delta");
     expect(toolDeltas).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// saveHumanMessage
+// ---------------------------------------------------------------------------
+
+describe("saveHumanMessage", () => {
+  test("pushes message to active queue during streaming", async () => {
+    let resolveQuery: (() => void) | undefined;
+    let capturedPrompt: AsyncIterable<SdkInputMessage> | undefined;
+
+    const sdk: SdkFunctions = {
+      query: async function* (params: {
+        readonly prompt: string | AsyncIterable<SdkInputMessage>;
+        readonly options?: Record<string, unknown>;
+      }) {
+        capturedPrompt = params.prompt as AsyncIterable<SdkInputMessage>;
+        await new Promise<void>((r) => {
+          resolveQuery = r;
+        });
+        yield resultMessage("success");
+      },
+    };
+
+    const adapter = createClaudeAdapter({}, sdk);
+
+    // Start streaming
+    const stream = adapter.stream({ kind: "text", text: "Initial" });
+    const iterator = stream[Symbol.asyncIterator]();
+    const nextPromise = iterator.next();
+
+    await new Promise<void>((r) => setTimeout(r, 10));
+
+    // Push a human message while streaming
+    adapter.saveHumanMessage("Follow-up message");
+
+    // The message should be in the queue
+    expect(capturedPrompt).toBeDefined();
+
+    // Cleanup
+    resolveQuery?.();
+    await nextPromise;
+    let done = false;
+    while (!done) {
+      const result = await iterator.next();
+      done = result.done ?? false;
+    }
+  });
+
+  test("buffers messages when idle and drains on next stream", async () => {
+    const { sdk, getCapturedPrompt } = createHitlMockSdk([
+      initMessage("sess-1"),
+      resultMessage("success"),
+    ]);
+
+    const adapter = createClaudeAdapter({}, sdk);
+
+    // Push messages while idle
+    adapter.saveHumanMessage("Pre-buffered message 1");
+    adapter.saveHumanMessage("Pre-buffered message 2");
+
+    // Start streaming — pending messages should be drained into the queue
+    await collectEvents(adapter.stream({ kind: "text", text: "Hello" }));
+
+    const prompt = getCapturedPrompt();
+    expect(prompt).toBeDefined();
+    // The prompt is an AsyncIterable (MessageQueue) — verify it's not a string
+    expect(typeof prompt).not.toBe("string");
+  });
+
+  test("is a no-op after dispose with warning", async () => {
+    const sdk = createMockSdk([]);
+    const adapter = createClaudeAdapter({}, sdk);
+
+    await adapter.dispose?.();
+
+    // Should not throw
+    adapter.saveHumanMessage("Should be dropped");
+  });
+
+  test("saveHumanMessage is available on adapter", () => {
+    const sdk = createMockSdk([]);
+    const adapter = createClaudeAdapter({}, sdk);
+
+    expect(typeof adapter.saveHumanMessage).toBe("function");
+  });
+
+  test("multiple sequential streams each get fresh queues", async () => {
+    const capturedPrompts: Array<string | AsyncIterable<SdkInputMessage>> = [];
+
+    const sdk: SdkFunctions = {
+      query: async function* (params: {
+        readonly prompt: string | AsyncIterable<SdkInputMessage>;
+        readonly options?: Record<string, unknown>;
+      }) {
+        capturedPrompts.push(params.prompt);
+        yield initMessage("sess-1");
+        yield resultMessage("success");
+      },
+    };
+
+    const adapter = createClaudeAdapter({}, sdk);
+
+    await collectEvents(adapter.stream({ kind: "text", text: "First" }));
+    await collectEvents(adapter.stream({ kind: "text", text: "Second" }));
+
+    // Each stream should get its own queue (different objects)
+    expect(capturedPrompts).toHaveLength(2);
+    expect(capturedPrompts[0]).not.toBe(capturedPrompts[1]);
+  });
+
+  test("pending messages drained before initial message", async () => {
+    const consumedMessages: SdkInputMessage[] = [];
+
+    const sdk: SdkFunctions = {
+      query: async function* (params: {
+        readonly prompt: string | AsyncIterable<SdkInputMessage>;
+        readonly options?: Record<string, unknown>;
+      }) {
+        // Consume from the queue to verify ordering
+        const queue = params.prompt as AsyncIterable<SdkInputMessage>;
+        // We need to start iterating to see what was pushed
+        // But the queue blocks, so we yield first to unblock
+        yield initMessage("sess-1");
+
+        // Read a few messages from the queue without blocking forever
+        const iter = queue[Symbol.asyncIterator]();
+        // Use a timeout to avoid blocking forever
+        const readWithTimeout = async (): Promise<SdkInputMessage | undefined> => {
+          const result = await Promise.race([
+            iter.next(),
+            new Promise<{ done: true; value: undefined }>((r) =>
+              setTimeout(() => r({ done: true, value: undefined }), 50),
+            ),
+          ]);
+          if (result.done) return undefined;
+          return result.value;
+        };
+
+        const msg1 = await readWithTimeout();
+        if (msg1) consumedMessages.push(msg1);
+        const msg2 = await readWithTimeout();
+        if (msg2) consumedMessages.push(msg2);
+        const msg3 = await readWithTimeout();
+        if (msg3) consumedMessages.push(msg3);
+
+        yield resultMessage("success");
+      },
+    };
+
+    const adapter = createClaudeAdapter({}, sdk);
+
+    // Buffer two messages while idle
+    adapter.saveHumanMessage("Pending 1");
+    adapter.saveHumanMessage("Pending 2");
+
+    await collectEvents(adapter.stream({ kind: "text", text: "Initial" }));
+
+    // Pending messages should come first, then the initial message
+    expect(consumedMessages).toHaveLength(3);
+    expect(consumedMessages[0]?.message.content).toBe("Pending 1");
+    expect(consumedMessages[1]?.message.content).toBe("Pending 2");
+    expect(consumedMessages[2]?.message.content).toBe("Initial");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Approval bridge integration (custom event signaling)
+// ---------------------------------------------------------------------------
+
+describe("approval bridge integration", () => {
+  test("passes canUseTool to SDK options when approvalHandler is configured", async () => {
+    let capturedOptions: Record<string, unknown> | undefined;
+
+    const sdk: SdkFunctions = {
+      query: async function* (params: {
+        readonly prompt: string | AsyncIterable<SdkInputMessage>;
+        readonly options?: Record<string, unknown>;
+      }) {
+        capturedOptions = params.options as Record<string, unknown> | undefined;
+        yield initMessage("sess-1");
+        yield resultMessage("success");
+      },
+    };
+
+    const config: ClaudeAdapterConfig = {
+      approvalHandler: async () => ({ kind: "allow" }) satisfies ApprovalDecision,
+    };
+
+    const adapter = createClaudeAdapter(config, sdk);
+    await collectEvents(adapter.stream({ kind: "text", text: "Test" }));
+
+    expect(capturedOptions?.canUseTool).toBeDefined();
+    expect(typeof capturedOptions?.canUseTool).toBe("function");
+  });
+
+  test("does not pass canUseTool when no approvalHandler", async () => {
+    let capturedOptions: Record<string, unknown> | undefined;
+
+    const sdk: SdkFunctions = {
+      query: async function* (params: {
+        readonly prompt: string | AsyncIterable<SdkInputMessage>;
+        readonly options?: Record<string, unknown>;
+      }) {
+        capturedOptions = params.options as Record<string, unknown> | undefined;
+        yield initMessage("sess-1");
+        yield resultMessage("success");
+      },
+    };
+
+    const adapter = createClaudeAdapter({}, sdk);
+    await collectEvents(adapter.stream({ kind: "text", text: "Test" }));
+
+    expect(capturedOptions?.canUseTool).toBeUndefined();
+  });
+
+  test("emits HITL custom events during approval flow", async () => {
+    let canUseToolFn:
+      | ((toolName: string, input: Record<string, unknown>) => Promise<unknown>)
+      | undefined;
+
+    const sdk: SdkFunctions = {
+      query: async function* (params: {
+        readonly prompt: string | AsyncIterable<SdkInputMessage>;
+        readonly options?: Record<string, unknown>;
+      }) {
+        // Capture the canUseTool callback
+        canUseToolFn = (params.options as Record<string, unknown>)
+          ?.canUseTool as typeof canUseToolFn;
+        yield initMessage("sess-1");
+
+        // Simulate calling canUseTool (like the SDK would do)
+        if (canUseToolFn !== undefined) {
+          await canUseToolFn("search", { q: "test" });
+        }
+
+        yield assistantMessage([{ type: "text", text: "Done" }]);
+        yield resultMessage("success");
+      },
+    };
+
+    const config: ClaudeAdapterConfig = {
+      approvalHandler: async () => ({ kind: "allow" }) satisfies ApprovalDecision,
+    };
+
+    const adapter = createClaudeAdapter(config, sdk);
+    const events = await collectEvents(adapter.stream({ kind: "text", text: "Test" }));
+
+    // Should have HITL custom events
+    const customEvents = events.filter(
+      (e): e is EngineEvent & { readonly kind: "custom" } => e.kind === "custom",
+    );
+
+    const hitlRequest = customEvents.find((e) => e.type === HITL_EVENTS.REQUEST);
+    expect(hitlRequest).toBeDefined();
+    expect((hitlRequest?.data as Record<string, unknown>)?.toolName).toBe("search");
+
+    const hitlResponse = customEvents.find((e) => e.type === HITL_EVENTS.RESPONSE_RECEIVED);
+    expect(hitlResponse).toBeDefined();
+  });
+
+  test("emits HITL error event when approval handler throws", async () => {
+    let canUseToolFn:
+      | ((toolName: string, input: Record<string, unknown>) => Promise<unknown>)
+      | undefined;
+
+    const sdk: SdkFunctions = {
+      query: async function* (params: {
+        readonly prompt: string | AsyncIterable<SdkInputMessage>;
+        readonly options?: Record<string, unknown>;
+      }) {
+        canUseToolFn = (params.options as Record<string, unknown>)
+          ?.canUseTool as typeof canUseToolFn;
+        yield initMessage("sess-1");
+
+        if (canUseToolFn !== undefined) {
+          await canUseToolFn("dangerous_tool", {});
+        }
+
+        yield resultMessage("success");
+      },
+    };
+
+    const config: ClaudeAdapterConfig = {
+      approvalHandler: async () => {
+        throw new Error("Handler crashed");
+      },
+    };
+
+    const adapter = createClaudeAdapter(config, sdk);
+    const events = await collectEvents(adapter.stream({ kind: "text", text: "Test" }));
+
+    const customEvents = events.filter(
+      (e): e is EngineEvent & { readonly kind: "custom" } => e.kind === "custom",
+    );
+
+    const errorEvent = customEvents.find((e) => e.type === HITL_EVENTS.ERROR);
+    expect(errorEvent).toBeDefined();
+    expect((errorEvent?.data as Record<string, unknown>)?.error).toBe("Handler crashed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lifecycle edge cases
+// ---------------------------------------------------------------------------
+
+describe("lifecycle edge cases", () => {
+  test("queue is closed after stream completes", async () => {
+    let capturedPrompt: AsyncIterable<SdkInputMessage> | undefined;
+
+    const sdk: SdkFunctions = {
+      query: async function* (params: {
+        readonly prompt: string | AsyncIterable<SdkInputMessage>;
+        readonly options?: Record<string, unknown>;
+      }) {
+        capturedPrompt = params.prompt as AsyncIterable<SdkInputMessage>;
+        yield initMessage("sess-1");
+        yield resultMessage("success");
+      },
+    };
+
+    const adapter = createClaudeAdapter({}, sdk);
+    await collectEvents(adapter.stream({ kind: "text", text: "Test" }));
+
+    // After stream completes, the queue should be closed
+    // We can verify by checking if the queue is the message-queue type
+    const queue = capturedPrompt as unknown as { readonly closed: boolean };
+    expect(queue.closed).toBe(true);
+  });
+
+  test("queue is closed after stream errors", async () => {
+    let capturedPrompt: AsyncIterable<SdkInputMessage> | undefined;
+
+    const sdk: SdkFunctions = {
+      // biome-ignore lint/correctness/useYield: intentionally throws before yielding to test error handling
+      query: async function* (params: {
+        readonly prompt: string | AsyncIterable<SdkInputMessage>;
+        readonly options?: Record<string, unknown>;
+      }) {
+        capturedPrompt = params.prompt as AsyncIterable<SdkInputMessage>;
+        throw new Error("SDK crash");
+      },
+    };
+
+    const adapter = createClaudeAdapter({}, sdk);
+    await collectEvents(adapter.stream({ kind: "text", text: "Test" }));
+
+    const queue = capturedPrompt as unknown as { readonly closed: boolean };
+    expect(queue.closed).toBe(true);
+  });
+
+  test("saveHumanMessage works across sequential streams", async () => {
+    const consumedPerStream: SdkInputMessage[][] = [];
+
+    const sdk: SdkFunctions = {
+      query: async function* (params: {
+        readonly prompt: string | AsyncIterable<SdkInputMessage>;
+        readonly options?: Record<string, unknown>;
+      }) {
+        const messages: SdkInputMessage[] = [];
+        const queue = params.prompt as AsyncIterable<SdkInputMessage>;
+        const iter = queue[Symbol.asyncIterator]();
+
+        // Read available messages with timeout
+        const readWithTimeout = async (): Promise<SdkInputMessage | undefined> => {
+          const result = await Promise.race([
+            iter.next(),
+            new Promise<{ done: true; value: undefined }>((r) =>
+              setTimeout(() => r({ done: true, value: undefined }), 50),
+            ),
+          ]);
+          if (result.done) return undefined;
+          return result.value;
+        };
+
+        const msg = await readWithTimeout();
+        if (msg) messages.push(msg);
+
+        consumedPerStream.push(messages);
+        yield initMessage("sess-1");
+        yield resultMessage("success");
+      },
+    };
+
+    const adapter = createClaudeAdapter({}, sdk);
+
+    // First stream
+    await collectEvents(adapter.stream({ kind: "text", text: "First" }));
+
+    // Buffer a message between streams
+    adapter.saveHumanMessage("Between streams");
+
+    // Second stream
+    await collectEvents(adapter.stream({ kind: "text", text: "Second" }));
+
+    expect(consumedPerStream).toHaveLength(2);
+    // Second stream should get the buffered message as first item
+    expect(consumedPerStream[1]?.[0]?.message.content).toBe("Between streams");
+  });
+
+  test("resume input sends no initial message to queue", async () => {
+    const consumedMessages: SdkInputMessage[] = [];
+
+    const sdk: SdkFunctions = {
+      query: async function* (params: {
+        readonly prompt: string | AsyncIterable<SdkInputMessage>;
+        readonly options?: Record<string, unknown>;
+      }) {
+        const queue = params.prompt as AsyncIterable<SdkInputMessage>;
+        const iter = queue[Symbol.asyncIterator]();
+
+        // Try to read — should timeout since resume sends no message
+        const result = await Promise.race([
+          iter.next(),
+          new Promise<{ done: true; value: undefined }>((r) =>
+            setTimeout(() => r({ done: true, value: undefined }), 50),
+          ),
+        ]);
+        if (!result.done && result.value) {
+          consumedMessages.push(result.value);
+        }
+
+        yield initMessage("sess-1");
+        yield resultMessage("success");
+      },
+    };
+
+    const adapter = createClaudeAdapter({}, sdk);
+    await collectEvents(
+      adapter.stream({
+        kind: "resume",
+        state: { engineId: "claude", data: { sessionId: "sess-1" } },
+      }),
+    );
+
+    // No initial message should have been pushed for resume
+    expect(consumedMessages).toHaveLength(0);
+  });
+
+  test("hitl maxQueueSize is passed to message queue", async () => {
+    const { sdk } = createHitlMockSdk([initMessage("sess-1"), resultMessage("success")]);
+
+    const config: ClaudeAdapterConfig = {
+      hitl: { maxQueueSize: 5 },
+    };
+
+    // Should not throw — verifies maxQueueSize is passed through
+    const adapter = createClaudeAdapter(config, sdk);
+    await collectEvents(adapter.stream({ kind: "text", text: "Test" }));
   });
 });

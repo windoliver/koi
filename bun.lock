@@ -187,6 +187,17 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-feedback-loop": {
+      "name": "@koi/middleware-feedback-loop",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-integration": {
       "name": "@koi/middleware-integration",
       "version": "0.0.0",
@@ -276,6 +287,18 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+      },
+    },
+    "packages/sandbox-ipc": {
+      "name": "@koi/sandbox-ipc",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/sandbox": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
       },
     },
     "packages/scheduler": {
@@ -579,6 +602,8 @@
 
     "@koi/middleware-audit": ["@koi/middleware-audit@workspace:packages/middleware-audit"],
 
+    "@koi/middleware-feedback-loop": ["@koi/middleware-feedback-loop@workspace:packages/middleware-feedback-loop"],
+
     "@koi/middleware-integration": ["@koi/middleware-integration@workspace:packages/middleware-integration"],
 
     "@koi/middleware-memory": ["@koi/middleware-memory@workspace:packages/middleware-memory"],
@@ -594,6 +619,8 @@
     "@koi/node": ["@koi/node@workspace:packages/node"],
 
     "@koi/sandbox": ["@koi/sandbox@workspace:packages/sandbox"],
+
+    "@koi/sandbox-ipc": ["@koi/sandbox-ipc@workspace:packages/sandbox-ipc"],
 
     "@koi/scheduler": ["@koi/scheduler@workspace:packages/scheduler"],
 
