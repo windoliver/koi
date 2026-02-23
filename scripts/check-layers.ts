@@ -3,13 +3,14 @@
  * Layer dependency enforcement — validates the 4-layer architecture.
  *
  * Rules:
- *   L0 (@koi/core):     zero @koi/* dependencies
- *   L1 (@koi/engine):   depends on @koi/core only
- *   L2 (everything else): depends on @koi/core only
- *     Exception: utility packages (@koi/errors, @koi/test-utils) may be
- *     depended upon by other L2 packages for shared infrastructure.
+ *   L0  (@koi/core):       zero @koi/* dependencies
+ *   L0u (utility packages): depend on @koi/core only
+ *   L1  (@koi/engine):      depends on L0 + L0u only
+ *   L2  (feature packages): runtime deps on L0 + L0u only;
+ *                            devDependencies may include L1 + L2 (for tests)
+ *   L3  (meta-packages):    may depend on any layer
  *
- * Also verifies no L2→L1 imports via source file scanning.
+ * Source scan: L2 non-test source files must not import from L1.
  *
  * Usage: bun scripts/check-layers.ts
  */
@@ -21,9 +22,19 @@ const PACKAGES_DIR = new URL("../packages/", import.meta.url).pathname;
 // --- Layer classification ---
 
 const L0_PACKAGES = new Set(["@koi/core"]);
+/** L0-utility packages — pure helpers with no business logic, depend on L0 only. */
+const L0U_PACKAGES = new Set([
+  "@koi/errors",
+  "@koi/hash",
+  "@koi/manifest",
+  "@koi/shutdown",
+  "@koi/skill-scanner",
+  "@koi/test-utils",
+  "@koi/validation",
+]);
 const L1_PACKAGES = new Set(["@koi/engine"]);
-/** Utility L2 packages that other L2 packages may depend on. */
-const UTILITY_L2 = new Set(["@koi/errors", "@koi/shutdown", "@koi/test-utils"]);
+/** Meta-packages that bundle L0 + L1 + L2 — no new logic, only re-exports / orchestration. */
+const L3_PACKAGES = new Set(["@koi/cli"]);
 
 // --- Main ---
 
@@ -64,34 +75,44 @@ async function main(): Promise<void> {
       continue;
     }
 
-    // --- L1: may only depend on @koi/core ---
-    if (L1_PACKAGES.has(pkg.name)) {
-      const badDeps = koiDeps.filter((d) => !L0_PACKAGES.has(d));
+    // --- L0u: may depend on L0 + peer L0u ---
+    if (L0U_PACKAGES.has(pkg.name)) {
+      const allowedL0u = new Set([...L0_PACKAGES, ...L0U_PACKAGES]);
+      const badDeps = koiDeps.filter((d) => !allowedL0u.has(d));
       if (badDeps.length > 0) {
         violations.push({
           pkg: pkg.name,
-          message: `L1 package may only depend on @koi/core, found: ${badDeps.join(", ")}`,
+          message: `L0u package may only depend on L0 + L0u, found: ${badDeps.join(", ")}`,
         });
       }
       continue;
     }
 
-    // --- L2: may only depend on @koi/core + utility L2 packages ---
-    const allowedDeps = new Set([...L0_PACKAGES, ...UTILITY_L2]);
-    const badDeps = koiDeps.filter((d) => !allowedDeps.has(d));
+    // --- L1: may depend on L0 + L0u ---
+    if (L1_PACKAGES.has(pkg.name)) {
+      const allowedL1 = new Set([...L0_PACKAGES, ...L0U_PACKAGES]);
+      const badDeps = koiDeps.filter((d) => !allowedL1.has(d));
+      if (badDeps.length > 0) {
+        violations.push({
+          pkg: pkg.name,
+          message: `L1 package may only depend on L0 + L0u, found: ${badDeps.join(", ")}`,
+        });
+      }
+      continue;
+    }
+
+    // --- L3: may depend on any layer (meta-package / orchestrator) ---
+    if (L3_PACKAGES.has(pkg.name)) {
+      continue;
+    }
+
+    // --- L2: runtime deps on L0 + L0u only; devDeps may include L1 + L2 (for tests) ---
+    const allowedRuntime = new Set([...L0_PACKAGES, ...L0U_PACKAGES]);
+    const badDeps = koiDeps.filter((d) => !allowedRuntime.has(d));
     if (badDeps.length > 0) {
       violations.push({
         pkg: pkg.name,
-        message: `L2 package may only depend on @koi/core and utility packages, found: ${badDeps.join(", ")}`,
-      });
-    }
-
-    // L2 must NEVER depend on L1 (even as devDep)
-    const l1Deps = allKoiDeps.filter((d) => L1_PACKAGES.has(d));
-    if (l1Deps.length > 0) {
-      violations.push({
-        pkg: pkg.name,
-        message: `L2 package must never depend on L1 (@koi/engine), found: ${l1Deps.join(", ")}`,
+        message: `L2 runtime deps may only include L0 + L0u, found: ${badDeps.join(", ")}`,
       });
     }
   }
@@ -105,7 +126,14 @@ async function main(): Promise<void> {
     if (!(await file.exists())) continue;
 
     const pkg = (await file.json()) as { name: string };
-    if (L0_PACKAGES.has(pkg.name) || L1_PACKAGES.has(pkg.name)) continue;
+    // Skip L0, L0u, L1, and L3 — only L2 source is constrained
+    if (
+      L0_PACKAGES.has(pkg.name) ||
+      L0U_PACKAGES.has(pkg.name) ||
+      L1_PACKAGES.has(pkg.name) ||
+      L3_PACKAGES.has(pkg.name)
+    )
+      continue;
 
     const srcDir = `${PACKAGES_DIR}${dir.name}/src`;
     if (!(await Bun.file(`${srcDir}/../package.json`).exists())) continue;
@@ -134,11 +162,23 @@ function getKoiDeps(deps: Record<string, string> | undefined): readonly string[]
   return Object.keys(deps).filter((name) => name.startsWith("@koi/"));
 }
 
+function isTestFile(filePath: string): boolean {
+  return (
+    filePath.includes("__tests__/") ||
+    filePath.endsWith(".test.ts") ||
+    filePath.endsWith(".e2e.test.ts") ||
+    filePath.endsWith(".spec.ts")
+  );
+}
+
 async function scanImports(dir: string, pkgName: string): Promise<readonly Violation[]> {
   const violations: Violation[] = [];
   const glob = new Bun.Glob("**/*.ts");
 
   for await (const file of glob.scan({ cwd: dir, absolute: true })) {
+    // Skip test files — L2 tests are allowed to import L1 for integration/E2E
+    if (isTestFile(file)) continue;
+
     const content = await Bun.file(file).text();
     const lines = content.split("\n");
 
