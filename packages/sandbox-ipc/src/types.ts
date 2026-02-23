@@ -4,8 +4,22 @@
  * Types only, zero runtime code.
  */
 
-import type { JsonObject, Result } from "@koi/core";
-import type { SandboxProfile } from "@koi/sandbox";
+import type { JsonObject, KoiError, Result, SandboxProfile } from "@koi/core";
+
+// ---------------------------------------------------------------------------
+// Command builder — injected dependency (avoids L2→L2 import of @koi/sandbox)
+// ---------------------------------------------------------------------------
+
+export interface SandboxCommand {
+  readonly executable: string;
+  readonly args: readonly string[];
+}
+
+export type CommandBuilder = (
+  profile: SandboxProfile,
+  command: string,
+  args: readonly string[],
+) => Result<SandboxCommand, KoiError>;
 
 // ---------------------------------------------------------------------------
 // Bridge configuration
@@ -13,6 +27,8 @@ import type { SandboxProfile } from "@koi/sandbox";
 
 export interface BridgeConfig {
   readonly profile: SandboxProfile;
+  /** Injected command builder — translates profile + command into sandboxed invocation. */
+  readonly buildCommand: CommandBuilder;
   /** Serialization format for Bun IPC. Default: "advanced" (JSC structured clone). */
   readonly serialization?: "advanced" | "json";
   /** Grace period (ms) added to sandbox timeout for bridge-level timeout. Default: 5000. */
@@ -35,6 +51,8 @@ export interface BridgeResult {
   readonly durationMs: number;
   readonly memoryUsedBytes?: number;
   readonly exitCode: number;
+  /** Time from bridge.execute() entry to IPC process spawn completion (ms). */
+  readonly spawnDurationMs?: number;
 }
 
 // ---------------------------------------------------------------------------

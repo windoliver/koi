@@ -6,41 +6,13 @@
  * extension point and are not part of the @koi/core kernel.
  */
 
-import type { TrustTier } from "@koi/core";
+import type { SandboxProfile, TrustTier } from "@koi/core";
 
 /** Sandbox-specific alias for the L0 TrustTier. */
 export type SandboxTier = TrustTier;
 
-/** Filesystem isolation policy. */
-export interface FilesystemPolicy {
-  readonly allowRead?: readonly string[];
-  readonly denyRead?: readonly string[];
-  readonly allowWrite?: readonly string[];
-  readonly denyWrite?: readonly string[];
-}
-
-/** Network isolation policy. */
-export interface NetworkPolicy {
-  readonly allow: boolean;
-  readonly allowedHosts?: readonly string[];
-}
-
-/** OS-level resource limits for sandboxed processes. */
-export interface ResourceLimits {
-  readonly maxMemoryMb?: number;
-  readonly timeoutMs?: number;
-  readonly maxPids?: number;
-  readonly maxOpenFiles?: number;
-}
-
-/** Declarative sandbox profile — platform-agnostic policy. */
-export interface SandboxProfile {
-  readonly tier: TrustTier;
-  readonly filesystem: FilesystemPolicy;
-  readonly network: NetworkPolicy;
-  readonly resources: ResourceLimits;
-  readonly env?: Readonly<Record<string, string>>;
-}
+// Sandbox profile — canonical definitions live in @koi/core (L0)
+export type { FilesystemPolicy, NetworkPolicy, ResourceLimits, SandboxProfile } from "@koi/core";
 
 /** Result of a completed sandboxed execution. */
 export interface SandboxResult {

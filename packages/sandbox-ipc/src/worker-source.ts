@@ -1,89 +1,11 @@
 /**
- * Embedded worker script — written to a temp file and executed inside the sandbox.
+ * AUTO-GENERATED — do not edit manually.
  *
- * This is a self-contained Bun script string. It runs as a child process with IPC
- * enabled. The worker:
- * 1. Sends { kind: "ready" } on startup
- * 2. Listens for IPC messages via process.on("message", ...)
- * 3. Validates messages (fail-fast on unknown kinds)
- * 4. Executes code via new Function() (OS sandbox is the trust boundary)
- * 5. Sends result or error back via process.send()
- *
- * Security: Unknown message kinds are logged and ignored (Chrome CVE-2025-2783 lesson).
+ * Source: src/worker-entry.ts + src/worker-exec.ts
+ * Generator: scripts/generate-worker-source.ts
+ * Regenerate: bun run prebuild
  */
 
-export const WORKER_SCRIPT = `
-"use strict";
-
-// ---- Internal timeout watchdog ----
-// Worker kills itself if total execution exceeds a generous limit.
-// The per-request timeout is handled by the execute flow.
-
-process.send({ kind: "ready" });
-
-let handled = false;
-
-process.on("message", async (raw) => {
-  // Only handle one execute message per worker lifetime (per-request spawn model)
-  if (handled) {
-    process.send({ kind: "error", code: "CRASH", message: "Worker received duplicate message", durationMs: 0 });
-    return;
-  }
-
-  // Validate message shape
-  if (raw === null || typeof raw !== "object") {
-    process.send({ kind: "error", code: "CRASH", message: "Invalid message: not an object", durationMs: 0 });
-    return;
-  }
-
-  const msg = raw;
-  if (msg.kind !== "execute") {
-    // Unknown message kind — log and ignore (fail-fast per Chrome CVE lesson)
-    process.send({ kind: "error", code: "CRASH", message: "Unknown message kind: " + String(msg.kind), durationMs: 0 });
-    return;
-  }
-
-  handled = true;
-
-  const code = msg.code;
-  const input = msg.input;
-  const timeoutMs = msg.timeoutMs;
-
-  if (typeof code !== "string" || typeof input !== "object" || input === null || typeof timeoutMs !== "number") {
-    process.send({ kind: "error", code: "CRASH", message: "Invalid execute message fields", durationMs: 0 });
-    process.exit(1);
-    return;
-  }
-
-  // Internal timeout watchdog — worker kills itself if execution exceeds deadline
-  const watchdog = setTimeout(() => {
-    process.send({ kind: "error", code: "TIMEOUT", message: "Worker execution timed out", durationMs: timeoutMs });
-    process.exit(124);
-  }, timeoutMs);
-
-  const startTime = performance.now();
-
-  try {
-    const fn = new Function("input", code);
-    const result = await Promise.resolve(fn(input));
-    const durationMs = performance.now() - startTime;
-    clearTimeout(watchdog);
-
-    process.send({ kind: "result", output: result, durationMs });
-    process.exit(0);
-  } catch (e) {
-    const durationMs = performance.now() - startTime;
-    clearTimeout(watchdog);
-
-    const message = e instanceof Error ? e.message : String(e);
-    let errorCode = "CRASH";
-
-    if (message.includes("Permission denied") || message.includes("EACCES")) {
-      errorCode = "PERMISSION";
-    }
-
-    process.send({ kind: "error", code: errorCode, message, durationMs });
-    process.exit(1);
-  }
-});
-`;
+export const WORKER_SCRIPT =
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: auto-generated embedded worker script contains template literals
+  '// @bun\n// src/worker-exec.ts\nasync function executeCode(code, input, timeoutMs, onTimeout) {\n  const startTime = performance.now();\n  const timeoutAction = onTimeout ?? (() => process.exit(124));\n  const timeoutHandle = setTimeout(timeoutAction, timeoutMs);\n  try {\n    const fn = new Function("input", code);\n    const result = await Promise.resolve(fn(input));\n    const durationMs = performance.now() - startTime;\n    clearTimeout(timeoutHandle);\n    return formatResult(result, durationMs);\n  } catch (e) {\n    const durationMs = performance.now() - startTime;\n    clearTimeout(timeoutHandle);\n    const message = e instanceof Error ? e.message : String(e);\n    if (message.includes("Permission denied") || message.includes("EACCES")) {\n      return formatError("PERMISSION", message, durationMs);\n    }\n    return formatError("CRASH", message, durationMs);\n  }\n}\nfunction formatResult(output, durationMs) {\n  return {\n    kind: "result",\n    output,\n    durationMs\n  };\n}\nfunction formatError(code, message, durationMs) {\n  return {\n    kind: "error",\n    code,\n    message,\n    durationMs\n  };\n}\n\n// src/worker-entry.ts\nfunction ipcSend(message) {\n  if (typeof process.send !== "function") {\n    throw new Error("Worker must be spawned with IPC enabled");\n  }\n  process.send(message);\n}\nipcSend({ kind: "ready" });\nvar handled = false;\nprocess.on("message", async (raw) => {\n  if (handled) {\n    ipcSend({\n      kind: "error",\n      code: "CRASH",\n      message: "Worker received duplicate message",\n      durationMs: 0\n    });\n    return;\n  }\n  if (raw === null || typeof raw !== "object") {\n    ipcSend({\n      kind: "error",\n      code: "CRASH",\n      message: "Invalid message: not an object",\n      durationMs: 0\n    });\n    return;\n  }\n  const msg = raw;\n  if (msg.kind !== "execute") {\n    ipcSend({\n      kind: "error",\n      code: "CRASH",\n      message: `Unknown message kind: ${String(msg.kind)}`,\n      durationMs: 0\n    });\n    return;\n  }\n  handled = true;\n  const code = msg.code;\n  const input = msg.input;\n  const timeoutMs = msg.timeoutMs;\n  if (typeof code !== "string" || typeof input !== "object" || input === null || typeof timeoutMs !== "number") {\n    ipcSend({\n      kind: "error",\n      code: "CRASH",\n      message: "Invalid execute message fields",\n      durationMs: 0\n    });\n    process.exit(1);\n    return;\n  }\n  const response = await executeCode(code, input, timeoutMs, () => {\n    ipcSend({\n      kind: "error",\n      code: "TIMEOUT",\n      message: "Worker execution timed out",\n      durationMs: timeoutMs\n    });\n    process.exit(124);\n  });\n  ipcSend(response);\n  process.exit(response.kind === "result" ? 0 : 1);\n});\n';

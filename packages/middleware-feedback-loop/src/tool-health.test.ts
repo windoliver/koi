@@ -1,6 +1,11 @@
 import { describe, expect, mock, test } from "bun:test";
+import type { KoiError } from "@koi/core";
 import type { ForgeHealthConfig } from "./config.js";
 import { createToolHealthTracker } from "./tool-health.js";
+
+type StoreResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: KoiError };
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -12,14 +17,20 @@ function createMockForgeStore() {
     load: mock(() => Promise.resolve({ ok: true as const, value: {} as never })),
     search: mock(() => Promise.resolve({ ok: true as const, value: [] as never })),
     remove: mock(() => Promise.resolve({ ok: true as const, value: undefined })),
-    update: mock(() => Promise.resolve({ ok: true as const, value: undefined })),
+    update: mock(
+      (): Promise<StoreResult<undefined>> =>
+        Promise.resolve({ ok: true as const, value: undefined }),
+    ),
     exists: mock(() => Promise.resolve({ ok: true as const, value: false })),
   };
 }
 
 function createMockSnapshotStore() {
   return {
-    record: mock(() => Promise.resolve({ ok: true as const, value: undefined })),
+    record: mock(
+      (): Promise<StoreResult<undefined>> =>
+        Promise.resolve({ ok: true as const, value: undefined }),
+    ),
     get: mock(() => Promise.resolve({ ok: true as const, value: {} as never })),
     list: mock(() => Promise.resolve({ ok: true as const, value: [] as never })),
     history: mock(() => Promise.resolve({ ok: true as const, value: [] as never })),

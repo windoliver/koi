@@ -134,6 +134,16 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/filesystem": {
+      "name": "@koi/filesystem",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/forge": {
       "name": "@koi/forge",
       "version": "0.0.0",
@@ -193,6 +203,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "zod": "4.3.6",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -294,11 +305,9 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/sandbox": "workspace:*",
         "zod": "4.3.6",
       },
       "devDependencies": {
-        "@koi/forge": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -590,6 +599,8 @@
     "@koi/engine-pi": ["@koi/engine-pi@workspace:packages/engine-pi"],
 
     "@koi/errors": ["@koi/errors@workspace:packages/errors"],
+
+    "@koi/filesystem": ["@koi/filesystem@workspace:packages/filesystem"],
 
     "@koi/forge": ["@koi/forge@workspace:packages/forge"],
 

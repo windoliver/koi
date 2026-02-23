@@ -53,131 +53,97 @@ export type ParseResult<T> =
     };
 
 // ---------------------------------------------------------------------------
+// Internal helper — converts Zod safeParse result to our ParseResult type
+// ---------------------------------------------------------------------------
+
+function wrapZodParse<TZod, TOut = TZod>(
+  schema: z.ZodType<TZod>,
+  raw: unknown,
+  transform?: (data: TZod) => TOut,
+): ParseResult<TOut> {
+  const result = schema.safeParse(raw);
+  if (result.success) {
+    const data = transform ? transform(result.data) : (result.data as unknown as TOut);
+    return { success: true, data };
+  }
+  return {
+    success: false,
+    error: {
+      issues: result.error.issues.map((i: z.core.$ZodIssue) => ({ message: i.message })),
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Zod schemas (private — never exported)
+// ---------------------------------------------------------------------------
+
+const executeSchema = z.object({
+  kind: z.literal("execute"),
+  code: z.string(),
+  input: z.record(z.string(), z.unknown()),
+  timeoutMs: z.number().positive(),
+});
+
+const readySchema = z.object({
+  kind: z.literal("ready"),
+});
+
+const resultSchema = z.object({
+  kind: z.literal("result"),
+  output: z.unknown(),
+  durationMs: z.number().nonnegative(),
+  memoryUsedBytes: z.number().nonnegative().optional(),
+});
+
+const errorSchema = z.object({
+  kind: z.literal("error"),
+  code: z.enum(["TIMEOUT", "OOM", "PERMISSION", "CRASH"]),
+  message: z.string(),
+  durationMs: z.number().nonnegative(),
+});
+
+const workerMessageSchema = z.discriminatedUnion("kind", [readySchema, resultSchema, errorSchema]);
+
+// ---------------------------------------------------------------------------
+// Transform: strip undefined optional fields (exactOptionalPropertyTypes)
+// ---------------------------------------------------------------------------
+
+function cleanResultMessage(d: z.infer<typeof resultSchema>): ResultMessage {
+  const { memoryUsedBytes, ...rest } = d;
+  return memoryUsedBytes !== undefined ? { ...rest, memoryUsedBytes } : rest;
+}
+
+function cleanWorkerMessage(d: z.infer<typeof workerMessageSchema>): WorkerMessage {
+  if (d.kind === "result") {
+    return cleanResultMessage(d);
+  }
+  if (d.kind === "ready") {
+    return { kind: d.kind };
+  }
+  return { kind: d.kind, code: d.code, message: d.message, durationMs: d.durationMs };
+}
+
+// ---------------------------------------------------------------------------
 // Validation functions
 // ---------------------------------------------------------------------------
 
 export function parseExecuteMessage(raw: unknown): ParseResult<ExecuteMessage> {
-  const result = z
-    .object({
-      kind: z.literal("execute"),
-      code: z.string(),
-      input: z.record(z.string(), z.unknown()),
-      timeoutMs: z.number().positive(),
-    })
-    .safeParse(raw);
-
-  if (result.success) {
-    return { success: true, data: result.data };
-  }
-  return {
-    success: false,
-    error: {
-      issues: result.error.issues.map((i: z.core.$ZodIssue) => ({ message: i.message })),
-    },
-  };
+  return wrapZodParse(executeSchema, raw);
 }
 
 export function parseWorkerMessage(raw: unknown): ParseResult<WorkerMessage> {
-  const result = z
-    .discriminatedUnion("kind", [
-      z.object({ kind: z.literal("ready") }),
-      z.object({
-        kind: z.literal("result"),
-        output: z.unknown(),
-        durationMs: z.number().nonnegative(),
-        memoryUsedBytes: z.number().nonnegative().optional(),
-      }),
-      z.object({
-        kind: z.literal("error"),
-        code: z.enum(["TIMEOUT", "OOM", "PERMISSION", "CRASH"]),
-        message: z.string(),
-        durationMs: z.number().nonnegative(),
-      }),
-    ])
-    .safeParse(raw);
-
-  if (result.success) {
-    const d = result.data;
-    // Handle exactOptionalPropertyTypes: strip undefined optional fields
-    if (d.kind === "result") {
-      const { memoryUsedBytes, ...rest } = d;
-      const data: WorkerMessage =
-        memoryUsedBytes !== undefined ? { ...rest, memoryUsedBytes } : rest;
-      return { success: true, data };
-    }
-    // "ready" and "error" variants have no optional fields — safe to construct directly
-    const data: WorkerMessage =
-      d.kind === "ready"
-        ? { kind: d.kind }
-        : { kind: d.kind, code: d.code, message: d.message, durationMs: d.durationMs };
-    return { success: true, data };
-  }
-  return {
-    success: false,
-    error: {
-      issues: result.error.issues.map((i: z.core.$ZodIssue) => ({ message: i.message })),
-    },
-  };
+  return wrapZodParse(workerMessageSchema, raw, cleanWorkerMessage);
 }
 
 export function parseReadyMessage(raw: unknown): ParseResult<ReadyMessage> {
-  const result = z
-    .object({
-      kind: z.literal("ready"),
-    })
-    .safeParse(raw);
-
-  if (result.success) {
-    return { success: true, data: result.data };
-  }
-  return {
-    success: false,
-    error: {
-      issues: result.error.issues.map((i: z.core.$ZodIssue) => ({ message: i.message })),
-    },
-  };
+  return wrapZodParse(readySchema, raw);
 }
 
 export function parseResultMessage(raw: unknown): ParseResult<ResultMessage> {
-  const result = z
-    .object({
-      kind: z.literal("result"),
-      output: z.unknown(),
-      durationMs: z.number().nonnegative(),
-      memoryUsedBytes: z.number().nonnegative().optional(),
-    })
-    .safeParse(raw);
-
-  if (result.success) {
-    const { memoryUsedBytes, ...rest } = result.data;
-    const data: ResultMessage = memoryUsedBytes !== undefined ? { ...rest, memoryUsedBytes } : rest;
-    return { success: true, data };
-  }
-  return {
-    success: false,
-    error: {
-      issues: result.error.issues.map((i: z.core.$ZodIssue) => ({ message: i.message })),
-    },
-  };
+  return wrapZodParse(resultSchema, raw, cleanResultMessage);
 }
 
 export function parseErrorMessage(raw: unknown): ParseResult<ErrorMessage> {
-  const result = z
-    .object({
-      kind: z.literal("error"),
-      code: z.enum(["TIMEOUT", "OOM", "PERMISSION", "CRASH"]),
-      message: z.string(),
-      durationMs: z.number().nonnegative(),
-    })
-    .safeParse(raw);
-
-  if (result.success) {
-    return { success: true, data: result.data };
-  }
-  return {
-    success: false,
-    error: {
-      issues: result.error.issues.map((i: z.core.$ZodIssue) => ({ message: i.message })),
-    },
-  };
+  return wrapZodParse(errorSchema, raw);
 }

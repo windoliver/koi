@@ -1,5 +1,5 @@
 {
-  "name": "@koi/sandbox-ipc",
+  "name": "@koi/filesystem",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,18 +9,16 @@
       "import": "./dist/index.js"
     }
   },
-  "dependencies": {
-    "@koi/core": "workspace:*",
-    "zod": "4.3.6"
-  },
-  "devDependencies": {
-    "@koi/test-utils": "workspace:*"
-  },
   "scripts": {
-    "prebuild": "bun run scripts/generate-worker-source.ts",
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*"
   }
 }

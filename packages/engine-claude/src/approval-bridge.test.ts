@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ApprovalDecision, ApprovalRequest } from "@koi/core";
 import type { HitlEventEmitter } from "./approval-bridge.js";
 import { createApprovalBridge } from "./approval-bridge.js";
+import type { SdkCanUseToolOptions } from "./types.js";
 import { HITL_EVENTS } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -19,6 +20,14 @@ function createMockEmitter(): {
   };
 }
 
+function mockOptions(overrides?: Partial<SdkCanUseToolOptions>): SdkCanUseToolOptions {
+  return {
+    signal: AbortSignal.abort(),
+    toolUseID: "tool-1",
+    ...overrides,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Approval decisions
 // ---------------------------------------------------------------------------
@@ -30,7 +39,7 @@ describe("createApprovalBridge", () => {
     });
 
     const canUseTool = createApprovalBridge(handler);
-    const result = await canUseTool("search", { q: "test" });
+    const result = await canUseTool("search", { q: "test" }, mockOptions());
 
     expect(result.behavior).toBe("allow");
     expect(result.updatedInput).toBeUndefined();
@@ -44,7 +53,7 @@ describe("createApprovalBridge", () => {
     });
 
     const canUseTool = createApprovalBridge(handler);
-    const result = await canUseTool("delete_file", { path: "/etc/passwd" });
+    const result = await canUseTool("delete_file", { path: "/etc/passwd" }, mockOptions());
 
     expect(result.behavior).toBe("deny");
     expect(result.message).toBe("Not allowed in sandbox");
@@ -57,7 +66,7 @@ describe("createApprovalBridge", () => {
     });
 
     const canUseTool = createApprovalBridge(handler);
-    const result = await canUseTool("search", { q: "original query" });
+    const result = await canUseTool("search", { q: "original query" }, mockOptions());
 
     expect(result.behavior).toBe("allow");
     expect(result.updatedInput).toEqual({ q: "sanitized query", limit: 10 });
@@ -72,12 +81,32 @@ describe("createApprovalBridge", () => {
     };
 
     const canUseTool = createApprovalBridge(handler);
-    await canUseTool("search", { q: "test", limit: 5 });
+    await canUseTool("search", { q: "test", limit: 5 }, mockOptions());
 
     expect(capturedRequest).toBeDefined();
     expect(capturedRequest?.toolId).toBe("search");
     expect(capturedRequest?.input).toEqual({ q: "test", limit: 5 });
     expect(capturedRequest?.reason).toBe('Tool "search" requires approval');
+  });
+
+  test("uses decisionReason from SDK options when provided", async () => {
+    let capturedRequest: ApprovalRequest | undefined;
+
+    const handler = async (req: ApprovalRequest): Promise<ApprovalDecision> => {
+      capturedRequest = req;
+      return { kind: "allow" };
+    };
+
+    const canUseTool = createApprovalBridge(handler);
+    await canUseTool(
+      "Write",
+      { path: "/tmp/foo" },
+      mockOptions({
+        decisionReason: "Path is outside allowed working directories",
+      }),
+    );
+
+    expect(capturedRequest?.reason).toBe("Path is outside allowed working directories");
   });
 });
 
@@ -92,7 +121,7 @@ describe("fail-closed on handler error", () => {
     };
 
     const canUseTool = createApprovalBridge(handler);
-    const result = await canUseTool("search", {});
+    const result = await canUseTool("search", {}, mockOptions());
 
     expect(result.behavior).toBe("deny");
     expect(result.message).toContain("Approval handler error");
@@ -105,7 +134,7 @@ describe("fail-closed on handler error", () => {
     };
 
     const canUseTool = createApprovalBridge(handler);
-    const result = await canUseTool("search", {});
+    const result = await canUseTool("search", {}, mockOptions());
 
     expect(result.behavior).toBe("deny");
     expect(result.message).toContain("string error");
@@ -127,7 +156,7 @@ describe("event emission", () => {
     };
 
     const canUseTool = createApprovalBridge(handler, emitter);
-    await canUseTool("search", { q: "test" });
+    await canUseTool("search", { q: "test" }, mockOptions());
 
     // Request event should be emitted before handler is called
     expect(handlerCalledAt).toBe(1); // 1 event (request) before handler
@@ -141,7 +170,7 @@ describe("event emission", () => {
     const handler = async (): Promise<ApprovalDecision> => ({ kind: "allow" });
 
     const canUseTool = createApprovalBridge(handler, emitter);
-    await canUseTool("search", {});
+    await canUseTool("search", {}, mockOptions());
 
     expect(events).toHaveLength(2);
     expect(events[1]?.type).toBe(HITL_EVENTS.RESPONSE_RECEIVED);
@@ -156,7 +185,7 @@ describe("event emission", () => {
     };
 
     const canUseTool = createApprovalBridge(handler, emitter);
-    await canUseTool("dangerous_tool", {});
+    await canUseTool("dangerous_tool", {}, mockOptions());
 
     expect(events).toHaveLength(2); // request + error
     expect(events[0]?.type).toBe(HITL_EVENTS.REQUEST);
@@ -168,7 +197,7 @@ describe("event emission", () => {
     const handler = async (): Promise<ApprovalDecision> => ({ kind: "allow" });
 
     const canUseTool = createApprovalBridge(handler);
-    const result = await canUseTool("search", {});
+    const result = await canUseTool("search", {}, mockOptions());
 
     expect(result.behavior).toBe("allow");
   });

@@ -11,6 +11,7 @@ import type { AgentManifest } from "./assembly.js";
 import type { ChannelAdapter } from "./channel.js";
 import type { JsonObject } from "./common.js";
 import type { DelegationComponent } from "./delegation.js";
+import type { FileSystemBackend } from "./filesystem-backend.js";
 
 // ---------------------------------------------------------------------------
 // Branded types
@@ -261,3 +262,4 @@ export const CREDENTIALS: SubsystemToken<CredentialComponent> =
 export const EVENTS: SubsystemToken<EventComponent> = token<EventComponent>("events");
 export const DELEGATION: SubsystemToken<DelegationComponent> =
   token<DelegationComponent>("delegation");
+export const FILESYSTEM: SubsystemToken<FileSystemBackend> = token<FileSystemBackend>("filesystem");

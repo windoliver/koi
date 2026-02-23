@@ -3,8 +3,13 @@ import type { ApprovalDecision, EngineEvent, EngineOutput } from "@koi/core";
 import type { SdkFunctions, SdkInputMessage, SdkQuery } from "./adapter.js";
 import { createClaudeAdapter } from "./adapter.js";
 import type { SdkMessage } from "./event-map.js";
-import type { ClaudeAdapterConfig } from "./types.js";
+import type { ClaudeAdapterConfig, SdkCanUseToolOptions } from "./types.js";
 import { HITL_EVENTS } from "./types.js";
+
+const MOCK_OPTIONS: SdkCanUseToolOptions = {
+  signal: AbortSignal.abort(),
+  toolUseID: "tool-1",
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1101,7 +1106,11 @@ describe("approval bridge integration", () => {
 
   test("emits HITL custom events during approval flow", async () => {
     let canUseToolFn:
-      | ((toolName: string, input: Record<string, unknown>) => Promise<unknown>)
+      | ((
+          toolName: string,
+          input: Record<string, unknown>,
+          opts: SdkCanUseToolOptions,
+        ) => Promise<unknown>)
       | undefined;
 
     const sdk: SdkFunctions = {
@@ -1116,7 +1125,7 @@ describe("approval bridge integration", () => {
 
         // Simulate calling canUseTool (like the SDK would do)
         if (canUseToolFn !== undefined) {
-          await canUseToolFn("search", { q: "test" });
+          await canUseToolFn("search", { q: "test" }, MOCK_OPTIONS);
         }
 
         yield assistantMessage([{ type: "text", text: "Done" }]);
@@ -1146,7 +1155,11 @@ describe("approval bridge integration", () => {
 
   test("emits HITL error event when approval handler throws", async () => {
     let canUseToolFn:
-      | ((toolName: string, input: Record<string, unknown>) => Promise<unknown>)
+      | ((
+          toolName: string,
+          input: Record<string, unknown>,
+          opts: SdkCanUseToolOptions,
+        ) => Promise<unknown>)
       | undefined;
 
     const sdk: SdkFunctions = {
@@ -1159,7 +1172,7 @@ describe("approval bridge integration", () => {
         yield initMessage("sess-1");
 
         if (canUseToolFn !== undefined) {
-          await canUseToolFn("dangerous_tool", {});
+          await canUseToolFn("dangerous_tool", {}, MOCK_OPTIONS);
         }
 
         yield resultMessage("success");

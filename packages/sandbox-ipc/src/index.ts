@@ -1,11 +1,11 @@
 /**
  * @koi/sandbox-ipc — IPC bridge for sandboxed code execution (Layer 2)
  *
- * Connects OS-level sandboxing (@koi/sandbox) with forge verification
- * (@koi/forge) by providing structured IPC between host and sandboxed
- * Bun child processes.
+ * Connects OS-level sandboxing with forge verification by providing
+ * structured IPC between host and sandboxed Bun child processes.
  *
- * Depends on @koi/core (L0) and @koi/sandbox (L2 peer — allowed per plan).
+ * Depends on @koi/core (L0) only. The sandbox command builder is injected
+ * via BridgeConfig.buildCommand to avoid L2→L2 peer imports.
  */
 
 // Adapter
@@ -37,9 +37,11 @@ export type {
   BridgeConfig,
   BridgeExecOptions,
   BridgeResult,
+  CommandBuilder,
   IpcError,
   IpcErrorCode,
   IpcProcess,
   SandboxBridge,
+  SandboxCommand,
   SpawnFn,
 } from "./types.js";

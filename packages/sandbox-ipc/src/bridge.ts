@@ -12,14 +12,15 @@
  */
 
 import type { JsonObject, Result } from "@koi/core";
-import { buildSandboxCommand } from "@koi/sandbox";
 import { createIpcError } from "./errors.js";
+import type { ErrorMessage, ResultMessage } from "./protocol.js";
 import { parseWorkerMessage } from "./protocol.js";
 import type {
   BridgeConfig,
   BridgeExecOptions,
   BridgeResult,
   IpcError,
+  IpcErrorCode,
   IpcProcess,
   SandboxBridge,
   SpawnFn,
@@ -104,6 +105,85 @@ function signalNameFromExitCode(exitCode: number): string {
 }
 
 // ---------------------------------------------------------------------------
+// Pure sub-functions extracted from execute() for readability + testability
+// ---------------------------------------------------------------------------
+
+/** Map a process exit code to an IpcError. */
+function classifyExitCode(exitCode: number, durationMs: number): IpcError {
+  // Exit 137 → OOM (SIGKILL)
+  if (exitCode === 137) {
+    return createIpcError("OOM", "Worker killed by SIGKILL (likely OOM)", {
+      exitCode,
+      signal: "SIGKILL",
+      durationMs,
+    });
+  }
+
+  // Exit 124 → internal timeout (worker self-terminated)
+  if (exitCode === 124) {
+    return createIpcError("TIMEOUT", "Worker self-terminated due to timeout", {
+      exitCode,
+      durationMs,
+    });
+  }
+
+  // Any other non-zero exit → crash
+  if (exitCode !== 0) {
+    return createIpcError("CRASH", `Worker exited with code ${exitCode}`, {
+      exitCode,
+      ...(exitCode > 128 ? { signal: signalNameFromExitCode(exitCode) } : {}),
+      durationMs,
+    });
+  }
+
+  // Exit 0 without a result message → unexpected
+  return createIpcError("CRASH", "Worker exited cleanly without sending result", {
+    exitCode: 0,
+    durationMs,
+  });
+}
+
+/** Validate result size and build BridgeResult from a ResultMessage. */
+function processResultMessage(
+  msg: ResultMessage,
+  maxResultBytes: number,
+  durationMs: number,
+  spawnDurationMs: number,
+): Result<BridgeResult, IpcError> {
+  // Check result size — Buffer.byteLength is ~3x faster than TextEncoder
+  const serialized = JSON.stringify(msg.output);
+  const sizeBytes = Buffer.byteLength(serialized, "utf8");
+  if (sizeBytes > maxResultBytes) {
+    return {
+      ok: false,
+      error: createIpcError(
+        "RESULT_TOO_LARGE",
+        `Result size ${sizeBytes} bytes exceeds limit of ${maxResultBytes} bytes`,
+        { durationMs },
+      ),
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      output: msg.output,
+      durationMs: msg.durationMs,
+      ...(msg.memoryUsedBytes !== undefined ? { memoryUsedBytes: msg.memoryUsedBytes } : {}),
+      exitCode: 0,
+      spawnDurationMs,
+    },
+  };
+}
+
+/** Map worker error codes to bridge-level IPC error codes. */
+function mapWorkerErrorCode(code: ErrorMessage["code"]): IpcErrorCode {
+  if (code === "TIMEOUT") return "TIMEOUT";
+  if (code === "OOM") return "OOM";
+  return "WORKER_ERROR";
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -148,8 +228,8 @@ export async function createSandboxBridge(
     const requestTimeoutMs = execOptions?.timeoutMs ?? sandboxTimeoutMs;
     const bridgeTimeoutMs = requestTimeoutMs + graceMs;
 
-    // Build sandbox command
-    const cmd = buildSandboxCommand(config.profile, "bun", ["run", workerPath]);
+    // Build sandbox command via injected builder
+    const cmd = config.buildCommand(config.profile, "bun", ["run", workerPath]);
     if (!cmd.ok) {
       return {
         ok: false,
@@ -173,6 +253,8 @@ export async function createSandboxBridge(
         }),
       };
     }
+
+    const spawnDurationMs = performance.now() - startTime;
 
     // Race: IPC messages vs bridge timeout vs process exit
     return new Promise<Result<BridgeResult, IpcError>>((resolve) => {
@@ -218,53 +300,9 @@ export async function createSandboxBridge(
       // Handle process exit before we get a response
       proc.onExit((exitCode: number) => {
         if (settled) return;
-        const durationMs = performance.now() - startTime;
-
-        // Exit 137 without timeout → OOM
-        if (exitCode === 137) {
-          settle({
-            ok: false,
-            error: createIpcError("OOM", "Worker killed by SIGKILL (likely OOM)", {
-              exitCode,
-              signal: "SIGKILL",
-              durationMs,
-            }),
-          });
-          return;
-        }
-
-        // Exit 124 → internal timeout (worker self-terminated)
-        if (exitCode === 124) {
-          settle({
-            ok: false,
-            error: createIpcError("TIMEOUT", "Worker self-terminated due to timeout", {
-              exitCode,
-              durationMs,
-            }),
-          });
-          return;
-        }
-
-        // Any other non-zero exit → crash
-        if (exitCode !== 0) {
-          settle({
-            ok: false,
-            error: createIpcError("CRASH", `Worker exited with code ${exitCode}`, {
-              exitCode,
-              ...(exitCode > 128 ? { signal: signalNameFromExitCode(exitCode) } : {}),
-              durationMs,
-            }),
-          });
-          return;
-        }
-
-        // Exit 0 without a result message → unexpected
         settle({
           ok: false,
-          error: createIpcError("CRASH", "Worker exited cleanly without sending result", {
-            exitCode: 0,
-            durationMs,
-          }),
+          error: classifyExitCode(exitCode, performance.now() - startTime),
         });
       });
 
@@ -280,9 +318,7 @@ export async function createSandboxBridge(
             error: createIpcError(
               "DESERIALIZE",
               `Invalid worker message: ${parsed.error.issues.map((i) => i.message).join("; ")}`,
-              {
-                durationMs: performance.now() - startTime,
-              },
+              { durationMs: performance.now() - startTime },
             ),
           });
           return;
@@ -294,7 +330,6 @@ export async function createSandboxBridge(
           case "ready": {
             readyReceived = true;
             clearTimeout(readyTimeout);
-            // Send execute command to worker
             proc.send({
               kind: "execute",
               code,
@@ -305,50 +340,21 @@ export async function createSandboxBridge(
           }
 
           case "result": {
-            const durationMs = performance.now() - startTime;
-
-            // Check result size
-            const serialized = JSON.stringify(msg.output);
-            const sizeBytes = new TextEncoder().encode(serialized).byteLength;
-            if (sizeBytes > maxResultBytes) {
-              settle({
-                ok: false,
-                error: createIpcError(
-                  "RESULT_TOO_LARGE",
-                  `Result size ${sizeBytes} bytes exceeds limit of ${maxResultBytes} bytes`,
-                  {
-                    durationMs,
-                  },
-                ),
-              });
-              return;
-            }
-
-            settle({
-              ok: true,
-              value: {
-                output: msg.output,
-                durationMs: msg.durationMs,
-                ...(msg.memoryUsedBytes !== undefined
-                  ? { memoryUsedBytes: msg.memoryUsedBytes }
-                  : {}),
-                exitCode: 0,
-              },
-            });
+            settle(
+              processResultMessage(
+                msg,
+                maxResultBytes,
+                performance.now() - startTime,
+                spawnDurationMs,
+              ),
+            );
             break;
           }
 
           case "error": {
-            const ipcCode =
-              msg.code === "TIMEOUT"
-                ? ("TIMEOUT" as const)
-                : msg.code === "OOM"
-                  ? ("OOM" as const)
-                  : ("WORKER_ERROR" as const);
-
             settle({
               ok: false,
-              error: createIpcError(ipcCode, msg.message, {
+              error: createIpcError(mapWorkerErrorCode(msg.code), msg.message, {
                 durationMs: msg.durationMs,
               }),
             });

@@ -6,7 +6,7 @@
  */
 
 import type { ApprovalHandler, ApprovalRequest } from "@koi/core";
-import type { SdkCanUseTool, SdkPermissionResult } from "./types.js";
+import type { SdkCanUseTool, SdkCanUseToolOptions, SdkPermissionResult } from "./types.js";
 import { HITL_EVENTS } from "./types.js";
 
 /**
@@ -30,11 +30,12 @@ export function createApprovalBridge(
   return async (
     toolName: string,
     input: Readonly<Record<string, unknown>>,
+    options: SdkCanUseToolOptions,
   ): Promise<SdkPermissionResult> => {
     const request: ApprovalRequest = {
       toolId: toolName,
       input,
-      reason: `Tool "${toolName}" requires approval`,
+      reason: options.decisionReason ?? `Tool "${toolName}" requires approval`,
     };
 
     // Signal: approval request sent

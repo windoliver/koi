@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { createSandboxBridge } from "./bridge.js";
-import type { BridgeConfig, IpcProcess, SpawnFn } from "./types.js";
+import type { BridgeConfig, CommandBuilder, IpcProcess, SpawnFn } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -25,9 +25,16 @@ const TEST_PROFILE: BridgeConfig["profile"] = {
   },
 };
 
+/** Mock command builder that returns the command as-is (no sandboxing). */
+const mockBuildCommand: CommandBuilder = (_profile, command, args) => ({
+  ok: true,
+  value: { executable: command, args: [...args] },
+});
+
 function testConfig(overrides?: Partial<BridgeConfig>): BridgeConfig {
   return {
     profile: TEST_PROFILE,
+    buildCommand: mockBuildCommand,
     serialization: "json",
     graceMs: 1_000,
     maxResultBytes: 1_048_576, // 1 MB for tests

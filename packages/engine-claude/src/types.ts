@@ -48,11 +48,24 @@ export interface SdkPermissionResult {
 }
 
 /**
+ * SDK canUseTool options — contextual metadata the SDK passes alongside each
+ * permission request. Structurally typed to avoid importing SDK types.
+ */
+export interface SdkCanUseToolOptions {
+  readonly signal: AbortSignal;
+  readonly toolUseID: string;
+  readonly agentID?: string;
+  readonly decisionReason?: string;
+  readonly blockedPath?: string;
+}
+
+/**
  * SDK canUseTool callback shape (structural — avoids importing SDK types).
  */
 export type SdkCanUseTool = (
   toolName: string,
   input: Readonly<Record<string, unknown>>,
+  options: SdkCanUseToolOptions,
 ) => Promise<SdkPermissionResult>;
 
 // ---------------------------------------------------------------------------

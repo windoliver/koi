@@ -46,6 +46,7 @@ export type {
   ClaudeSessionState,
   HitlRequestData,
   SdkCanUseTool,
+  SdkCanUseToolOptions,
   SdkPermissionResult,
 } from "./types.js";
 export { HITL_EVENTS } from "./types.js";

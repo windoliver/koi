@@ -4,7 +4,7 @@
  * Maps IpcError to both SandboxError (forge) and KoiError (core).
  */
 
-import type { KoiError } from "@koi/core";
+import type { KoiError, SandboxError, SandboxErrorCode } from "@koi/core";
 import type { IpcError, IpcErrorCode } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -35,18 +35,8 @@ export function createIpcError(
 }
 
 // ---------------------------------------------------------------------------
-// SandboxError adapter (for @koi/forge SandboxExecutor interface)
+// SandboxError adapter (for forge's SandboxExecutor interface)
 // ---------------------------------------------------------------------------
-
-/** SandboxErrorCode from @koi/forge — duplicated here to avoid L2→L2 import. */
-type SandboxErrorCode = "TIMEOUT" | "OOM" | "PERMISSION" | "CRASH";
-
-/** SandboxError shape from @koi/forge — duplicated here to avoid L2→L2 import. */
-interface SandboxError {
-  readonly code: SandboxErrorCode;
-  readonly message: string;
-  readonly durationMs: number;
-}
 
 const IPC_TO_SANDBOX_CODE: Readonly<Record<IpcErrorCode, SandboxErrorCode>> = {
   TIMEOUT: "TIMEOUT",

@@ -5,37 +5,9 @@
  * for the SandboxExecutor dependency in @koi/forge's verification pipeline.
  */
 
+import type { SandboxError, SandboxExecutor, SandboxResult } from "@koi/core";
 import { ipcErrorToSandboxError } from "./errors.js";
 import type { SandboxBridge } from "./types.js";
-
-// ---------------------------------------------------------------------------
-// SandboxExecutor types (duplicated from @koi/forge to avoid L2→L2 import)
-// ---------------------------------------------------------------------------
-
-type SandboxErrorCode = "TIMEOUT" | "OOM" | "PERMISSION" | "CRASH";
-
-interface SandboxError {
-  readonly code: SandboxErrorCode;
-  readonly message: string;
-  readonly durationMs: number;
-}
-
-interface SandboxResult {
-  readonly output: unknown;
-  readonly durationMs: number;
-  readonly memoryUsedBytes?: number;
-}
-
-interface SandboxExecutor {
-  readonly execute: (
-    code: string,
-    input: unknown,
-    timeoutMs: number,
-  ) => Promise<
-    | { readonly ok: true; readonly value: SandboxResult }
-    | { readonly ok: false; readonly error: SandboxError }
-  >;
-}
 
 // ---------------------------------------------------------------------------
 // Adapter

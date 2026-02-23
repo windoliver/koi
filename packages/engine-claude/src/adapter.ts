@@ -173,20 +173,25 @@ function createErrorDoneEvent(error: unknown): EngineEvent & { readonly kind: "d
 
 /**
  * Drain pending messages into the queue, then push the initial input message.
+ * Returns true if at least one message was pushed, false otherwise.
  */
 function seedQueue(
   pendingMessages: SdkInputMessage[],
   queue: MessageQueue<SdkInputMessage>,
   input: EngineInput,
-): void {
+): boolean {
+  let seeded = false;
   while (pendingMessages.length > 0) {
     // biome-ignore lint/style/noNonNullAssertion: length > 0 guarantees element
     queue.push(pendingMessages.shift()!);
+    seeded = true;
   }
   const initialMessage = inputToSdkInputMessage(input);
   if (initialMessage !== undefined) {
     queue.push(initialMessage);
+    seeded = true;
   }
+  return seeded;
 }
 
 // ---------------------------------------------------------------------------
@@ -269,7 +274,14 @@ export function createClaudeAdapter(
     const mapper = createMessageMapper();
 
     try {
-      seedQueue(pendingMessages, queue, input);
+      const hasInput = seedQueue(pendingMessages, queue, input);
+
+      // When no messages were seeded (e.g. resume with no pending messages),
+      // close the queue so the SDK subprocess knows there is no input coming
+      // and can exit after producing its output.
+      if (!hasInput) {
+        queue.close();
+      }
 
       const resumeSessionId =
         input.kind === "resume"
@@ -323,6 +335,10 @@ export function createClaudeAdapter(
 
         if (result.isDone) {
           receivedDone = true;
+          // Close the queue so the SDK subprocess can exit and its iterator
+          // completes. Without this the SDK process stays alive waiting for
+          // more streaming input, causing the for-await loop to hang.
+          queue.close();
         }
       }
 
