@@ -14,8 +14,7 @@
     "zod": "4.3.6"
   },
   "devDependencies": {
-    "@koi/sandbox": "workspace:*",
-    "@koi/test-utils": "workspace:*"
+    "@koi/sandbox": "workspace:*"
   },
   "scripts": {
     "prebuild": "bun run scripts/generate-worker-source.ts",
