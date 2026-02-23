@@ -34,13 +34,17 @@ import { renderBlocks } from "./render-blocks.js";
 
 /**
  * Maps a raw platform event to an InboundMessage, or null to ignore the event.
+ * May return a Promise for platforms that need an async API call during normalization
+ * (e.g., resolving a file URL from a file_id before building an ImageBlock).
  *
  * Returning null is the correct response for platform system events that should
  * not trigger agent turns: typing indicators, delivery receipts, poll votes, etc.
  * The factory calls onIgnoredEvent when null is returned — wire this to a debug
  * logger to trace "why didn't the agent respond?" in production.
  */
-export type MessageNormalizer<E> = (event: E) => InboundMessage | null;
+export type MessageNormalizer<E> = (
+  event: E,
+) => InboundMessage | null | Promise<InboundMessage | null>;
 
 /**
  * Configuration for createChannelAdapter<E>().
@@ -151,28 +155,30 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
   let sendQueue: readonly OutboundMessage[] = [];
 
   const dispatchEvent = (event: E): void => {
-    const message = normalize(event);
-    if (message === null) {
-      onIgnoredEvent(event);
-      return;
-    }
-
-    const currentHandlers = handlers;
-    if (currentHandlers.length === 0) {
-      return;
-    }
-
-    // Parallel dispatch — all handlers run concurrently.
-    // InboundMessage is readonly, so concurrent access is safe.
-    // Promise.allSettled() never rejects, so no unhandled rejection possible.
-    void Promise.allSettled(currentHandlers.map((h) => h(message))).then((results) => {
-      for (const result of results) {
-        if (result.status === "rejected") {
-          // result.reason is typed as any in PromiseRejectedResult; widen to unknown for type safety
-          const reason: unknown = result.reason;
-          onHandlerError(reason, message);
-        }
+    // Normalize may be sync or async — always treat as Promise for uniform handling.
+    void Promise.resolve(normalize(event)).then((message) => {
+      if (message === null) {
+        onIgnoredEvent(event);
+        return;
       }
+
+      const currentHandlers = handlers;
+      if (currentHandlers.length === 0) {
+        return;
+      }
+
+      // Parallel dispatch — all handlers run concurrently.
+      // InboundMessage is readonly, so concurrent access is safe.
+      // Promise.allSettled() never rejects, so no unhandled rejection possible.
+      void Promise.allSettled(currentHandlers.map((h) => h(message))).then((results) => {
+        for (const result of results) {
+          if (result.status === "rejected") {
+            // result.reason is typed as any in PromiseRejectedResult; widen to unknown for type safety
+            const reason: unknown = result.reason;
+            onHandlerError(reason, message);
+          }
+        }
+      });
     });
   };
 
