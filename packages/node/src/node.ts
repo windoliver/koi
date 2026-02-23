@@ -449,6 +449,14 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
       statusReporter.start();
 
       // Install shutdown handler
+      // Wrap emit with a type guard: createShutdownHandler calls emit(string),
+      // but our emit() requires NodeEventType. Shutdown only emits these two types.
+      const shutdownEmit = (type: string, data?: unknown): void => {
+        if (type === "shutdown_started" || type === "shutdown_complete") {
+          emit(type, data);
+        }
+      };
+
       shutdown = createShutdownHandler(
         {
           onStopAccepting() {
@@ -474,7 +482,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
             currentState = "stopped";
           },
         },
-        emit,
+        shutdownEmit,
       );
       shutdown.install();
     },

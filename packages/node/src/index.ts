@@ -54,7 +54,7 @@ export { createMemoryMonitor } from "./monitor.js";
 export type { KoiNode, NodeDeps, RecoveryResult } from "./node.js";
 // -- Main entry point -------------------------------------------------------
 export { createNode } from "./node.js";
-export type { ShutdownCallbacks, ShutdownHandler } from "./shutdown.js";
+export type { ShutdownCallbacks, ShutdownEmit, ShutdownHandler } from "./shutdown.js";
 // -- Shutdown ---------------------------------------------------------------
 export { createShutdownHandler } from "./shutdown.js";
 export { createFilesystemTool } from "./tools/filesystem.js";

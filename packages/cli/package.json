@@ -24,9 +24,12 @@
   "dependencies": {
     "@clack/prompts": "0.10.0",
     "@koi/core": "workspace:*",
+    "@koi/deploy": "workspace:*",
     "@koi/engine": "workspace:*",
-    "@koi/manifest": "workspace:*",
     "@koi/engine-loop": "workspace:*",
-    "@koi/channel-cli": "workspace:*"
+    "@koi/channel-cli": "workspace:*",
+    "@koi/manifest": "workspace:*",
+    "@koi/model-router": "workspace:*",
+    "@koi/shutdown": "workspace:*"
   }
 }

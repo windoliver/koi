@@ -12,18 +12,13 @@
  */
 
 import { createCliChannel } from "@koi/channel-cli";
-import type {
-  ContentBlock,
-  EngineEvent,
-  EngineInput,
-  ModelHandler,
-  ModelRequest,
-  ModelResponse,
-} from "@koi/core";
+import type { ContentBlock, EngineEvent, EngineInput, ModelHandler } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { loadManifest } from "@koi/manifest";
+import { EXIT_CONFIG } from "@koi/shutdown";
 import type { StartFlags } from "../args.js";
+import { resolveModelCall } from "../model-resolve.js";
 
 // ---------------------------------------------------------------------------
 // Event rendering
@@ -70,26 +65,6 @@ function extractTextFromBlocks(blocks: readonly ContentBlock[]): string {
 }
 
 // ---------------------------------------------------------------------------
-// Placeholder model terminal
-// ---------------------------------------------------------------------------
-
-function createEchoModelCall(modelName: string): ModelHandler {
-  return async (request: ModelRequest): Promise<ModelResponse> => {
-    const inputText = request.messages
-      .flatMap((m) => m.content)
-      .filter((b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text")
-      .map((b) => b.text)
-      .join("\n");
-
-    return {
-      content: `[echo] ${inputText}`,
-      model: modelName,
-      usage: { inputTokens: inputText.length, outputTokens: inputText.length + 7 },
-    };
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Main command
 // ---------------------------------------------------------------------------
 
@@ -101,7 +76,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
   const loadResult = await loadManifest(manifestPath);
   if (!loadResult.ok) {
     process.stderr.write(`Failed to load manifest: ${loadResult.error.message}\n`);
-    process.exit(1);
+    process.exit(EXIT_CONFIG);
   }
 
   const { manifest, warnings } = loadResult.value;
@@ -120,9 +95,16 @@ export async function runStart(flags: StartFlags): Promise<void> {
     return;
   }
 
-  // 4. ASSEMBLE: Create engine adapter with placeholder model terminal
+  // 4. ASSEMBLE: Create engine adapter with real model provider
   const modelName = manifest.model.name;
-  const modelCall = createEchoModelCall(modelName);
+  // let: TypeScript cannot narrow through process.exit() in catch
+  let modelCall: ModelHandler;
+  try {
+    modelCall = resolveModelCall(manifest);
+  } catch (error: unknown) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(EXIT_CONFIG);
+  }
   const adapter = createLoopAdapter({ modelCall });
 
   // 5. WIRE: Create the Koi runtime

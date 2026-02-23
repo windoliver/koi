@@ -23,7 +23,7 @@ const PACKAGES_DIR = new URL("../packages/", import.meta.url).pathname;
 const L0_PACKAGES = new Set(["@koi/core"]);
 const L1_PACKAGES = new Set(["@koi/engine"]);
 /** Utility L2 packages that other L2 packages may depend on. */
-const UTILITY_L2 = new Set(["@koi/errors", "@koi/test-utils"]);
+const UTILITY_L2 = new Set(["@koi/errors", "@koi/shutdown", "@koi/test-utils"]);
 
 // --- Main ---
 

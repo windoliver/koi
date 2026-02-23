@@ -13,7 +13,7 @@ import type {
   ToolConfig,
 } from "@koi/core";
 import type { RawManifest } from "./schema.js";
-import type { LoadedManifest } from "./types.js";
+import type { DeployConfig, LoadedManifest } from "./types.js";
 
 /** Narrows an unknown value to JsonObject after a runtime type guard. */
 function toJsonObject(value: unknown): JsonObject {
@@ -171,8 +171,9 @@ export function transformToLoadedManifest(raw: RawManifest): LoadedManifest {
       ? { permissions: normalizePermissions(raw.permissions) }
       : {}),
     ...(raw.metadata !== undefined ? { metadata: raw.metadata } : {}),
-    // Extension fields (engine, schedule, webhooks, forge, context)
+    // Extension fields (engine, schedule, webhooks, forge, context, deploy)
     ...extractExtensions(raw as unknown as Readonly<Record<string, unknown>>),
+    ...(raw.deploy !== undefined ? { deploy: raw.deploy as DeployConfig } : {}),
   };
 
   return manifest;
