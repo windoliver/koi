@@ -405,4 +405,36 @@ describe("createContextHydrator — wrapModelStream", () => {
     expect(capturedRequest).toBeDefined();
     expect(capturedRequest?.messages).toHaveLength(0);
   });
+
+  test("stream mode includes correct text content (11A)", async () => {
+    const agent = createMockAgent();
+    const config: ContextManifestConfig = {
+      sources: [{ kind: "text", text: "Stream context data", label: "StreamLabel" }],
+    };
+    const mw = createContextHydrator({ config, agent });
+    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+
+    const ctx = createMockTurnContext();
+    let capturedRequest: { messages: readonly unknown[] } | undefined;
+
+    async function* mockStream(req: { messages: readonly unknown[] }) {
+      capturedRequest = req;
+      yield { kind: "done" as const, response: { content: "ok", model: "test" } };
+    }
+
+    const gen = mw.wrapModelStream?.(ctx, { messages: [] }, mockStream);
+    if (gen === undefined) throw new Error("Expected generator");
+    for await (const _chunk of gen) {
+      /* consume */
+    }
+
+    expect(capturedRequest).toBeDefined();
+    const msg = capturedRequest?.messages[0] as {
+      content: readonly { kind: string; text: string }[];
+    };
+    const textBlock = msg.content[0];
+    expect(textBlock).toBeDefined();
+    expect(textBlock?.text).toContain("Stream context data");
+    expect(textBlock?.text).toContain("StreamLabel");
+  });
 });

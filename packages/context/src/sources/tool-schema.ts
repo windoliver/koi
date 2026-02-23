@@ -24,7 +24,7 @@ export function resolveToolSchemaSource(
       inputSchema: tool.descriptor.inputSchema,
     }));
 
-  const content = result.length > 0 ? JSON.stringify(result, null, 2) : "No tools available.";
+  const content = result.length > 0 ? JSON.stringify(result) : "No tools available.";
 
   return Promise.resolve({
     label: source.label ?? "Tool Schemas",

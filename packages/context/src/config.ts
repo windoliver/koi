@@ -12,6 +12,7 @@ const sourceBaseSchema = z.object({
   required: z.boolean().optional(),
   priority: z.number().optional(),
   maxTokens: z.number().positive().optional(),
+  refreshable: z.boolean().optional(),
 });
 
 const textSourceSchema = sourceBaseSchema.extend({
@@ -50,6 +51,7 @@ const contextSourceSchema = z.discriminatedUnion("kind", [
 const contextManifestConfigSchema = z.object({
   sources: z.array(contextSourceSchema).min(1, "At least one context source is required"),
   maxTokens: z.number().positive().optional(),
+  refreshInterval: z.number().int().positive().optional(),
 });
 
 /**

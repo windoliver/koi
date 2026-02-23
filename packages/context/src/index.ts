@@ -9,8 +9,8 @@
  */
 
 export { validateContextConfig } from "./config.js";
-export { heuristicTokenEstimator } from "./estimator.js";
-export type { ContextHydratorOptions } from "./hydrator.js";
+export { CHARS_PER_TOKEN, heuristicTokenEstimator } from "./estimator.js";
+export type { ContextHydratorMiddleware, ContextHydratorOptions } from "./hydrator.js";
 export { createContextHydrator } from "./hydrator.js";
 export type {
   ContextManifestConfig,
@@ -19,6 +19,8 @@ export type {
   HydrationResult,
   MemorySource,
   SkillSource,
+  SourceBase,
+  SourceResolver,
   SourceResult,
   TextSource,
   ToolSchemaSource,

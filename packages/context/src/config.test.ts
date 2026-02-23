@@ -134,4 +134,73 @@ describe("validateContextConfig", () => {
     expect(validateContextConfig(42).ok).toBe(false);
     expect(validateContextConfig(null).ok).toBe(false);
   });
+
+  test("rejects per-source maxTokens: 0", () => {
+    const result = validateContextConfig({
+      sources: [{ kind: "text", text: "hi", maxTokens: 0 }],
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects per-source maxTokens: -1", () => {
+    const result = validateContextConfig({
+      sources: [{ kind: "text", text: "hi", maxTokens: -1 }],
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects refreshInterval: 0", () => {
+    const result = validateContextConfig({
+      sources: [{ kind: "text", text: "hi" }],
+      refreshInterval: 0,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects refreshInterval: 1.5 (non-integer)", () => {
+    const result = validateContextConfig({
+      sources: [{ kind: "text", text: "hi" }],
+      refreshInterval: 1.5,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects source missing kind field", () => {
+    const result = validateContextConfig({
+      sources: [{ text: "hi" }],
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("accepts valid config with all fields including refreshable and refreshInterval", () => {
+    const result = validateContextConfig({
+      sources: [
+        {
+          kind: "text",
+          text: "hi",
+          label: "Test",
+          required: true,
+          priority: 1,
+          maxTokens: 100,
+          refreshable: true,
+        },
+      ],
+      maxTokens: 8000,
+      refreshInterval: 5,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.refreshInterval).toBe(5);
+      const source = result.value.sources[0];
+      if (source === undefined) throw new Error("Expected source");
+      expect(source.refreshable).toBe(true);
+    }
+  });
+
+  test("accepts refreshable: false", () => {
+    const result = validateContextConfig({
+      sources: [{ kind: "text", text: "hi", refreshable: false }],
+    });
+    expect(result.ok).toBe(true);
+  });
 });
