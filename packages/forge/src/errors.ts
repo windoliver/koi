@@ -26,7 +26,8 @@ export type ForgeError =
         | "SIZE_EXCEEDED"
         | "MISSING_FIELD"
         | "INVALID_TYPE"
-        | "MANIFEST_PARSE_FAILED";
+        | "MANIFEST_PARSE_FAILED"
+        | "SYNTAX_ERROR";
       readonly message: string;
     }
   | {

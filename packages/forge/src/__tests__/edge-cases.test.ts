@@ -277,7 +277,7 @@ describe("Edge case 10: SandboxExecutor returns CRASH error", () => {
       name: "myTool",
       description: "A tool",
       inputSchema: { type: "object" },
-      implementation: "broken code",
+      implementation: "export function run() { throw new Error('crash'); }",
     };
     const config = createDefaultForgeConfig();
     const result = await verify(input, DEFAULT_CONTEXT, executor, [], config);

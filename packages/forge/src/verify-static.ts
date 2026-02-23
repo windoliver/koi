@@ -80,6 +80,34 @@ function validateSize(content: string, maxBytes: number, label: string): ForgeEr
   return undefined;
 }
 
+type BunLoader = "ts" | "tsx" | "js" | "jsx";
+
+const EXTENSION_TO_LOADER: ReadonlyMap<string, BunLoader> = new Map([
+  [".ts", "ts"],
+  [".tsx", "tsx"],
+  [".js", "js"],
+  [".jsx", "jsx"],
+]);
+
+function extractParseDetail(e: unknown): string {
+  if (e instanceof AggregateError && Array.isArray(e.errors) && e.errors.length > 0) {
+    return (e.errors as ReadonlyArray<{ readonly message?: unknown }>)
+      .map((err) => (typeof err.message === "string" ? err.message : String(err)))
+      .join("; ");
+  }
+  return e instanceof Error ? e.message : String(e);
+}
+
+/** Returns the raw parse error detail string, or `undefined` if syntax is valid. */
+function extractSyntaxError(code: string, loader: BunLoader): string | undefined {
+  try {
+    new Bun.Transpiler({ loader }).scan(code);
+    return undefined;
+  } catch (e: unknown) {
+    return extractParseDetail(e);
+  }
+}
+
 function validateToolInput(
   input: Extract<ForgeInput, { readonly kind: "tool" }>,
   config: VerificationConfig,
@@ -91,7 +119,15 @@ function validateToolInput(
   if (schemaErr !== undefined) {
     return schemaErr;
   }
-  return validateSize(input.implementation, config.maxBrickSizeBytes, "Implementation");
+  const sizeErr = validateSize(input.implementation, config.maxBrickSizeBytes, "Implementation");
+  if (sizeErr !== undefined) {
+    return sizeErr;
+  }
+  const syntaxDetail = extractSyntaxError(input.implementation, "ts");
+  if (syntaxDetail !== undefined) {
+    return staticError("SYNTAX_ERROR", `Syntax error in implementation: ${syntaxDetail}`);
+  }
+  return undefined;
 }
 
 function validateSkillInput(
@@ -160,6 +196,16 @@ function validateFiles(files: Readonly<Record<string, string>>): ForgeError | un
         "SIZE_EXCEEDED",
         `Total files size exceeds ${MAX_FILES_TOTAL_BYTES} bytes (got ${totalBytes})`,
       );
+    }
+
+    // Syntax-check TS/JS files
+    const extIndex = key.lastIndexOf(".");
+    const loader = extIndex !== -1 ? EXTENSION_TO_LOADER.get(key.slice(extIndex)) : undefined;
+    if (loader !== undefined) {
+      const syntaxDetail = extractSyntaxError(value, loader);
+      if (syntaxDetail !== undefined) {
+        return staticError("SYNTAX_ERROR", `Syntax error in file "${key}": ${syntaxDetail}`);
+      }
     }
   }
   return undefined;
