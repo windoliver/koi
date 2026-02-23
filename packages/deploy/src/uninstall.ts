@@ -42,8 +42,8 @@ export async function uninstallService(config: UninstallConfig): Promise<Uninsta
   }
 
   // Stop then uninstall
-  const status = await manager.status(serviceName);
-  if (status === "running") {
+  const info = await manager.status(serviceName);
+  if (info.status === "running") {
     await manager.stop(serviceName);
   }
 

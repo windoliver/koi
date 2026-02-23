@@ -75,9 +75,9 @@ describe("resolveServiceDir", () => {
 });
 
 describe("resolveLogDir", () => {
-  it("returns log path for linux", () => {
+  it("returns log path for linux with service name", () => {
     const dir = resolveLogDir("linux", "koi-test");
-    expect(dir).toContain(".local/share/koi/logs");
+    expect(dir).toContain(".local/share/koi/logs/koi-test");
   });
 
   it("returns log path for darwin with service name", () => {

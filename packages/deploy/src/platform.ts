@@ -116,8 +116,8 @@ export function resolveServiceDir(platform: Platform, system: boolean): string {
 /** Resolves the default log directory for a service. */
 export function resolveLogDir(platform: Platform, serviceName: string): string {
   if (platform === "linux") {
-    // systemd uses journald — no log files needed
-    return join(homedir(), ".local/share/koi/logs");
+    // systemd uses journald — but provide a log dir per service for consistency
+    return join(homedir(), ".local/share/koi/logs", serviceName);
   }
   // darwin: launchd uses file-based logging
   return join(homedir(), "Library/Logs/Koi", serviceName);

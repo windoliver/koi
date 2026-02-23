@@ -31,8 +31,8 @@ export async function runLogs(flags: LogsFlags): Promise<void> {
   const manager =
     platform === "linux" ? createSystemdManager(system) : createLaunchdManager(system, logDir);
 
-  const status = await manager.status(serviceName);
-  if (status === "not-installed") {
+  const info = await manager.status(serviceName);
+  if (info.status === "not-installed") {
     process.stderr.write(`Service "${serviceName}" is not installed.\n`);
     return;
   }

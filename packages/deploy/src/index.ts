@@ -21,7 +21,7 @@ export { installService } from "./install.js";
 // Service managers
 export { createLaunchdManager } from "./managers/launchd.js";
 export { createSystemdManager, isLingerEnabled } from "./managers/systemd.js";
-export type { LogOptions, ServiceManager, ServiceStatus } from "./managers/types.js";
+export type { LogOptions, ServiceInfo, ServiceManager, ServiceStatus } from "./managers/types.js";
 // Platform detection
 export type { Platform } from "./platform.js";
 export {

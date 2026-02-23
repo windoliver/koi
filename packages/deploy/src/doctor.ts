@@ -83,12 +83,12 @@ async function checkServiceStatus(
   manager: ServiceManager,
   serviceName: string,
 ): Promise<DiagnosticCheck> {
-  const status = await manager.status(serviceName);
+  const info = await manager.status(serviceName);
 
-  if (status === "running") {
+  if (info.status === "running") {
     return { name: "Service status", status: "pass", message: "Running" };
   }
-  if (status === "failed") {
+  if (info.status === "failed") {
     return {
       name: "Service status",
       status: "fail",
@@ -96,7 +96,7 @@ async function checkServiceStatus(
       fix: "Check logs with `koi logs` and restart with `koi deploy`",
     };
   }
-  if (status === "stopped") {
+  if (info.status === "stopped") {
     return {
       name: "Service status",
       status: "warn",
