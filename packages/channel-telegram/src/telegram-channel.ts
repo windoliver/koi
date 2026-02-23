@@ -84,7 +84,7 @@ const TELEGRAM_CAPABILITIES: ChannelCapabilities = {
   buttons: true,
   audio: true,
   video: true,
-  threads: false, // Telegram forum topics are not yet modeled
+  threads: true, // Forum topics routed via "chatId:messageThreadId" threadId encoding
 } as const satisfies ChannelCapabilities;
 
 // ---------------------------------------------------------------------------
@@ -92,8 +92,8 @@ const TELEGRAM_CAPABILITIES: ChannelCapabilities = {
 // ---------------------------------------------------------------------------
 
 /**
- * ChannelAdapter extended with handleUpdate() for webhook deployments.
- * handleUpdate is present only when deployment.mode === "webhook".
+ * ChannelAdapter extended with webhook-specific methods.
+ * These are only present when deployment.mode === "webhook".
  *
  * Callers can check: if ("handleUpdate" in adapter) { ... }
  */
@@ -105,6 +105,17 @@ export interface TelegramChannelAdapter extends ChannelAdapter {
    * Only present when deployment.mode === "webhook".
    */
   readonly handleUpdate?: (update: unknown) => Promise<void>;
+
+  /**
+   * Verifies the X-Telegram-Bot-Api-Secret-Token header value.
+   * Returns true if the token matches the configured secretToken, or if no
+   * secretToken was configured (open webhook). Returns false on mismatch.
+   *
+   * Only present when deployment.mode === "webhook".
+   *
+   * Usage: if (!adapter.verifyWebhookToken?.(req.headers["x-telegram-bot-api-secret-token"])) return 403;
+   */
+  readonly verifyWebhookToken?: (token: string | undefined) => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +134,8 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
 
   // let requires justification: typing interval handle, started/cleared by sendStatus
   let typingInterval: ReturnType<typeof setInterval> | undefined;
+  // let requires justification: 5-minute TTL timeout — auto-stops if idle is never sent
+  let typingTimeout: ReturnType<typeof setTimeout> | undefined;
   // let requires justification: tracks the last chatId that triggered a typing indicator
   let typingChatId: string | undefined;
 
@@ -130,8 +143,12 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
     if (typingInterval !== undefined) {
       clearInterval(typingInterval);
       typingInterval = undefined;
-      typingChatId = undefined;
     }
+    if (typingTimeout !== undefined) {
+      clearTimeout(typingTimeout);
+      typingTimeout = undefined;
+    }
+    typingChatId = undefined;
   };
 
   const platformSendStatus = async (status: ChannelStatus): Promise<void> => {
@@ -151,6 +168,13 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
             console.error("[channel-telegram] sendChatAction failed:", e);
           });
         }, 4000);
+        // Safety TTL: auto-stop after 5 minutes if caller never sends "idle"
+        typingTimeout = setTimeout(
+          () => {
+            stopTyping();
+          },
+          5 * 60 * 1000,
+        );
       }
     } else {
       // "idle" or "error" — stop the typing indicator
@@ -239,11 +263,18 @@ export function createTelegramChannel(config: TelegramChannelConfig): TelegramCh
     }),
   });
 
-  // Expose handleUpdate so callers can feed webhook payloads
+  // Expose handleUpdate and verifyWebhookToken so callers can process webhook payloads
   return {
     ...base,
     handleUpdate: async (update: unknown): Promise<void> => {
       await bot.handleUpdate(update as Parameters<typeof bot.handleUpdate>[0]);
+    },
+    verifyWebhookToken: (token: string | undefined): boolean => {
+      // No secretToken configured — accept all requests (open webhook)
+      if (secretToken === undefined) {
+        return true;
+      }
+      return token === secretToken;
     },
   };
 }

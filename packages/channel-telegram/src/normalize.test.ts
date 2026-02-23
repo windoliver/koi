@@ -309,6 +309,47 @@ describe("normalize — callback_query", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Forum topic routing (message_thread_id)
+// ---------------------------------------------------------------------------
+
+describe("normalize — forum topic routing", () => {
+  test("encodes message_thread_id into threadId as chatId:threadId", async () => {
+    const ctx = makeCtx({ message: { text: "forum msg", message_thread_id: 42 } });
+    const msg = await normalize(ctx);
+    expect(msg?.threadId).toBe(`${CHAT_ID}:42`);
+  });
+
+  test("uses plain chatId when message_thread_id is absent (regression)", async () => {
+    const msg = await normalize(textCtx("regular msg"));
+    expect(msg?.threadId).toBe(String(CHAT_ID));
+  });
+
+  test("encodes message_thread_id for callback queries from forum topics", async () => {
+    // callbackQuery.message holds the parent message — ctx.message is undefined
+    // for callback_query updates. This is the bug-fix regression test.
+    const ctx = makeCtx({
+      callbackQuery: {
+        data: "action",
+        message: {
+          chat: { id: CHAT_ID, type: "supergroup", title: "Test Forum" },
+          message_id: 1,
+          date: 0,
+          message_thread_id: 42,
+        },
+      },
+    });
+    const msg = await normalize(ctx);
+    expect(msg?.threadId).toBe(`${CHAT_ID}:42`);
+  });
+
+  test("uses plain chatId for callback queries without message_thread_id", async () => {
+    const ctx = makeCtx({ callbackQuery: { data: "action" } });
+    const msg = await normalize(ctx);
+    expect(msg?.threadId).toBe(String(CHAT_ID));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Null-return system events
 // ---------------------------------------------------------------------------
 

@@ -5,7 +5,7 @@
  * Uses dependency injection (_bot config) to avoid network calls.
  */
 
-import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, mock, spyOn, test } from "bun:test";
 import type { Context } from "grammy";
 import { Bot } from "grammy";
 import { createTelegramChannel } from "./telegram-channel.js";
@@ -215,6 +215,7 @@ describe("createTelegramChannel — capabilities", () => {
       buttons: true,
       audio: true,
       video: true,
+      threads: true,
     });
   });
 
@@ -226,5 +227,102 @@ describe("createTelegramChannel — capabilities", () => {
   test("sendStatus is present (typing support)", () => {
     const adapter = createTelegramChannel({ token: DUMMY_TOKEN });
     expect(typeof adapter.sendStatus).toBe("function");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Typing indicator TTL
+// ---------------------------------------------------------------------------
+
+describe("createTelegramChannel — typing indicator TTL", () => {
+  test("typing indicator stops automatically after 5 minutes", async () => {
+    jest.useFakeTimers();
+    try {
+      const mockBot = makeMockBot();
+      const adapter = createTelegramChannel({
+        token: DUMMY_TOKEN,
+        deployment: { mode: "polling" },
+        _bot: mockBot as unknown as Bot<Context>,
+      });
+      await adapter.connect();
+
+      // Trigger typing indicator
+      await adapter.sendStatus?.({ kind: "processing", turnIndex: 0, messageRef: "42" });
+
+      // Advance past 5-minute TTL
+      jest.advanceTimersByTime(5 * 60 * 1000 + 1);
+
+      // Record call count right after TTL fires
+      const callsAtTtl = mockBot.api.sendChatAction.mock.calls.length;
+
+      // Advance another full interval period — interval should be cleared
+      jest.advanceTimersByTime(5000);
+      const callsAfterInterval = mockBot.api.sendChatAction.mock.calls.length;
+
+      // No new calls after TTL cleared the interval
+      expect(callsAfterInterval).toBe(callsAtTtl);
+
+      await adapter.disconnect();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Webhook secret token verification
+// ---------------------------------------------------------------------------
+
+describe("createTelegramChannel — verifyWebhookToken", () => {
+  test("returns true when token matches configured secretToken", () => {
+    const mockBot = makeMockBot();
+    const adapter = createTelegramChannel({
+      token: DUMMY_TOKEN,
+      deployment: { mode: "webhook", webhookUrl: WEBHOOK_URL, secretToken: "my-secret" },
+      _bot: mockBot as unknown as Bot<Context>,
+    });
+    expect(adapter.verifyWebhookToken?.("my-secret")).toBe(true);
+  });
+
+  test("returns false when token does not match configured secretToken", () => {
+    const mockBot = makeMockBot();
+    const adapter = createTelegramChannel({
+      token: DUMMY_TOKEN,
+      deployment: { mode: "webhook", webhookUrl: WEBHOOK_URL, secretToken: "my-secret" },
+      _bot: mockBot as unknown as Bot<Context>,
+    });
+    expect(adapter.verifyWebhookToken?.("wrong-token")).toBe(false);
+  });
+
+  test("returns false when token is undefined and secretToken is configured", () => {
+    const mockBot = makeMockBot();
+    const adapter = createTelegramChannel({
+      token: DUMMY_TOKEN,
+      deployment: { mode: "webhook", webhookUrl: WEBHOOK_URL, secretToken: "my-secret" },
+      _bot: mockBot as unknown as Bot<Context>,
+    });
+    expect(adapter.verifyWebhookToken?.(undefined)).toBe(false);
+  });
+
+  test("returns true when no secretToken configured (open webhook)", () => {
+    const mockBot = makeMockBot();
+    const adapter = createTelegramChannel({
+      token: DUMMY_TOKEN,
+      deployment: { mode: "webhook", webhookUrl: WEBHOOK_URL },
+      _bot: mockBot as unknown as Bot<Context>,
+    });
+    // With no secretToken, any token (even undefined) is accepted
+    expect(adapter.verifyWebhookToken?.(undefined)).toBe(true);
+    expect(adapter.verifyWebhookToken?.("anything")).toBe(true);
+  });
+
+  test("verifyWebhookToken is not present in polling mode", () => {
+    const mockBot = makeMockBot();
+    const adapter = createTelegramChannel({
+      token: DUMMY_TOKEN,
+      deployment: { mode: "polling" },
+      _bot: mockBot as unknown as Bot<Context>,
+    });
+    expect("verifyWebhookToken" in adapter).toBe(false);
   });
 });

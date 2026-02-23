@@ -60,6 +60,7 @@
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
+        "@mariozechner/pi-ai": "0.54.0",
       },
     },
     "packages/cli": {

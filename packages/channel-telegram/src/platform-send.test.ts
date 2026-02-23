@@ -55,7 +55,7 @@ describe("telegramSend — text blocks", () => {
   test("sends a single sendMessage for one text block", async () => {
     await telegramSend(bot, msg({ content: [{ kind: "text", text: "hello" }] }));
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage).toHaveBeenCalledWith(CHAT_ID, "hello");
+    expect(sendMessage).toHaveBeenCalledWith(CHAT_ID, "hello", {});
   });
 
   test("merges two adjacent text blocks into one sendMessage", async () => {
@@ -69,7 +69,7 @@ describe("telegramSend — text blocks", () => {
       }),
     );
     expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage).toHaveBeenCalledWith(CHAT_ID, "line 1\nline 2");
+    expect(sendMessage).toHaveBeenCalledWith(CHAT_ID, "line 1\nline 2", {});
   });
 
   test("splits text over 4096 chars into multiple sendMessage calls", async () => {
@@ -261,37 +261,38 @@ describe("telegramSend — custom blocks", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Rate limit retry (429)
+// Rate limit retry (429) — exponential backoff with MAX_RETRIES = 3
 // ---------------------------------------------------------------------------
 
 describe("telegramSend — 429 retry", () => {
-  test("retries once after waiting retry_after seconds on 429", async () => {
+  function make429Error(): GrammyError {
+    const error = new GrammyError(
+      "Too Many Requests",
+      { ok: false, error_code: 429, description: "Too Many Requests: retry after 1" },
+      "sendMessage",
+      {},
+    );
+    (error as unknown as { parameters: { retry_after: number } }).parameters = { retry_after: 0 };
+    return error;
+  }
+
+  test("retries up to 3 attempts on 429 — fails twice, succeeds on third", async () => {
     const bot = makeBot();
     // let requires justification: call count tracked across multiple spy calls
     let callCount = 0;
     spyOn(bot.api, "sendMessage").mockImplementation(async () => {
       callCount++;
-      if (callCount === 1) {
-        const error = new GrammyError(
-          "Too Many Requests",
-          { ok: false, error_code: 429, description: "Too Many Requests: retry after 1" },
-          "sendMessage",
-          {},
-        );
-        // Attach retry_after to parameters
-        (error as unknown as { parameters: { retry_after: number } }).parameters = {
-          retry_after: 0,
-        };
-        throw error;
+      if (callCount < 3) {
+        throw make429Error();
       }
       return {} as never;
     });
 
     await telegramSend(bot, msg({ content: [{ kind: "text", text: "hi" }] }));
-    expect(callCount).toBe(2);
+    expect(callCount).toBe(3);
   });
 
-  test("rethrows non-429 errors", async () => {
+  test("rethrows non-429 errors immediately", async () => {
     const bot = makeBot();
     spyOn(bot.api, "sendMessage").mockRejectedValue(
       new GrammyError(
@@ -304,5 +305,72 @@ describe("telegramSend — 429 retry", () => {
     await expect(
       telegramSend(bot, msg({ content: [{ kind: "text", text: "hi" }] })),
     ).rejects.toThrow();
+  });
+
+  test("throws after exhausting MAX_RETRIES (3 consecutive 429s)", async () => {
+    const bot = makeBot();
+    spyOn(bot.api, "sendMessage").mockImplementation(async () => {
+      throw make429Error();
+    });
+    await expect(
+      telegramSend(bot, msg({ content: [{ kind: "text", text: "hi" }] })),
+    ).rejects.toBeInstanceOf(GrammyError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Forum topic routing via threadId
+// ---------------------------------------------------------------------------
+
+describe("telegramSend — forum topic routing", () => {
+  test("passes message_thread_id when threadId contains colon", async () => {
+    const bot = makeBot();
+    const sendMessage = spyOn(bot.api, "sendMessage").mockResolvedValue({} as never);
+    await telegramSend(bot, msg({ threadId: "42:7", content: [{ kind: "text", text: "hi" }] }));
+    expect(sendMessage).toHaveBeenCalledWith("42", "hi", { message_thread_id: 7 });
+  });
+
+  test("omits message_thread_id when threadId has no colon", async () => {
+    const bot = makeBot();
+    const sendMessage = spyOn(bot.api, "sendMessage").mockResolvedValue({} as never);
+    await telegramSend(bot, msg({ threadId: "42", content: [{ kind: "text", text: "hi" }] }));
+    expect(sendMessage).toHaveBeenCalledWith("42", "hi", {});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parse_mode via metadata
+// ---------------------------------------------------------------------------
+
+describe("telegramSend — parse_mode", () => {
+  test("passes parse_mode when metadata.parse_mode is a valid mode", async () => {
+    const bot = makeBot();
+    const sendMessage = spyOn(bot.api, "sendMessage").mockResolvedValue({} as never);
+    await telegramSend(
+      bot,
+      msg({ content: [{ kind: "text", text: "bold" }], metadata: { parse_mode: "HTML" } }),
+    );
+    expect(sendMessage).toHaveBeenCalledWith(CHAT_ID, "bold", { parse_mode: "HTML" });
+  });
+
+  test("omits parse_mode when metadata is absent", async () => {
+    const bot = makeBot();
+    const sendMessage = spyOn(bot.api, "sendMessage").mockResolvedValue({} as never);
+    await telegramSend(bot, msg({ content: [{ kind: "text", text: "plain" }] }));
+    expect(sendMessage).toHaveBeenCalledWith(CHAT_ID, "plain", {});
+  });
+
+  test("ignores unknown parse_mode values", async () => {
+    const bot = makeBot();
+    const sendMessage = spyOn(bot.api, "sendMessage").mockResolvedValue({} as never);
+    await telegramSend(
+      bot,
+      msg({
+        content: [{ kind: "text", text: "x" }],
+        metadata: { parse_mode: "INVALID_MODE" },
+      }),
+    );
+    // parse_mode should be omitted — only valid Telegram parse modes are accepted
+    expect(sendMessage).toHaveBeenCalledWith(CHAT_ID, "x", {});
   });
 });

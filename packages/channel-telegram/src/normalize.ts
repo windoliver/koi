@@ -57,11 +57,15 @@ export function createNormalizer(token: string): MessageNormalizer<Context> {
     }
 
     const senderId = String(fromId);
-    const threadId = String(chatId);
     const timestamp = Date.now();
 
     // --- Callback query (button press) ---
     if (ctx.callbackQuery !== undefined) {
+      // Forum topic routing: the button's parent message is on callbackQuery.message,
+      // not ctx.message (which is undefined for callback_query updates).
+      const cbqThreadId = ctx.callbackQuery.message?.message_thread_id;
+      const threadId = cbqThreadId !== undefined ? `${chatId}:${cbqThreadId}` : String(chatId);
+
       try {
         await ctx.answerCallbackQuery();
       } catch (e: unknown) {
@@ -100,6 +104,11 @@ export function createNormalizer(token: string): MessageNormalizer<Context> {
       // edited_message, channel_post, chat_member, my_chat_member, etc.
       return null;
     }
+
+    // Forum topic routing: encode message_thread_id into threadId when present
+    const messageThreadId = msg.message_thread_id;
+    const threadId =
+      messageThreadId !== undefined ? `${chatId}:${messageThreadId}` : String(chatId);
 
     // Text
     if (msg.text !== undefined) {

@@ -15,6 +15,7 @@
     "grammy": "1.40.0"
   },
   "devDependencies": {
+    "@mariozechner/pi-ai": "0.54.0",
     "@koi/test-utils": "workspace:*"
   },
   "scripts": {

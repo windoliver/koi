@@ -33,6 +33,34 @@ const TEXT_LIMIT = 4096;
 /** Telegram callback_data byte limit. */
 const CALLBACK_DATA_LIMIT = 64;
 
+/** Maximum send attempts for rate-limited (429) requests. */
+const MAX_RETRIES = 3;
+
+/** Valid Telegram parse_mode values. */
+type ParseMode = "HTML" | "MarkdownV2" | "Markdown";
+
+function isParseMode(v: string): v is ParseMode {
+  return v === "HTML" || v === "MarkdownV2" || v === "Markdown";
+}
+
+/**
+ * Splits a threadId into Telegram chat_id and optional message_thread_id.
+ * Format: "chatId" or "chatId:messageThreadId"
+ */
+function parseChatTarget(threadId: string): {
+  readonly chatId: string;
+  readonly messageThreadId?: number;
+} {
+  const idx = threadId.indexOf(":");
+  if (idx === -1) {
+    return { chatId: threadId };
+  }
+  return {
+    chatId: threadId.slice(0, idx),
+    messageThreadId: Number(threadId.slice(idx + 1)),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Internal chunk types — output of buildChunks
 // ---------------------------------------------------------------------------
@@ -54,18 +82,24 @@ type SendChunk = TextChunk | MediaChunk;
  * @throws {GrammyError} For non-retryable Telegram API errors.
  */
 export async function telegramSend(bot: Bot, message: OutboundMessage): Promise<void> {
-  const chatId = message.threadId;
-  if (chatId === undefined) {
+  if (message.threadId === undefined) {
     throw new Error(
       "[channel-telegram] Cannot send: OutboundMessage.threadId (chatId) is required. " +
         "Ensure the agent echoes the threadId from the InboundMessage.",
     );
   }
 
+  const { chatId, messageThreadId } = parseChatTarget(message.threadId);
+
+  // Extract parse_mode from metadata if provided (Telegram-specific, stays in metadata)
+  const rawParseMode: unknown = message.metadata?.parse_mode;
+  const parseMode: ParseMode | undefined =
+    typeof rawParseMode === "string" && isParseMode(rawParseMode) ? rawParseMode : undefined;
+
   const chunks = buildChunks(message);
 
   for (const chunk of chunks) {
-    await sendWithRetry(bot, chatId, chunk);
+    await sendWithRetry(bot, chatId, messageThreadId, parseMode, chunk);
   }
 }
 
@@ -104,18 +138,34 @@ function buildChunks(message: OutboundMessage): readonly SendChunk[] {
 // Retry wrapper — handles Telegram 429
 // ---------------------------------------------------------------------------
 
-async function sendWithRetry(bot: Bot, chatId: string, chunk: SendChunk): Promise<void> {
-  try {
-    await sendChunk(bot, chatId, chunk);
-  } catch (e: unknown) {
-    if (e instanceof GrammyError && e.error_code === 429) {
-      const retryAfter =
-        (e.parameters as { readonly retry_after?: number } | undefined)?.retry_after ?? 1;
-      await sleep(retryAfter * 1000);
-      await sendChunk(bot, chatId, chunk);
+async function sendWithRetry(
+  bot: Bot,
+  chatId: string,
+  messageThreadId: number | undefined,
+  parseMode: ParseMode | undefined,
+  chunk: SendChunk,
+): Promise<void> {
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      await sendChunk(bot, chatId, messageThreadId, parseMode, chunk);
       return;
+    } catch (e: unknown) {
+      if (e instanceof GrammyError && e.error_code === 429 && attempt < MAX_RETRIES - 1) {
+        // GrammyError.parameters is typed as Record<string,unknown> by grammy;
+        // extract retry_after safely without a banned as-assertion.
+        const params: unknown = e.parameters;
+        const retryAfter =
+          typeof params === "object" &&
+          params !== null &&
+          "retry_after" in params &&
+          typeof (params as Record<string, unknown>).retry_after === "number"
+            ? ((params as Record<string, unknown>).retry_after as number)
+            : 1;
+        await sleep(retryAfter * 1000);
+      } else {
+        throw e;
+      }
     }
-    throw e;
   }
 }
 
@@ -123,11 +173,21 @@ async function sendWithRetry(bot: Bot, chatId: string, chunk: SendChunk): Promis
 // Per-chunk sender
 // ---------------------------------------------------------------------------
 
-async function sendChunk(bot: Bot, chatId: string, chunk: SendChunk): Promise<void> {
+async function sendChunk(
+  bot: Bot,
+  chatId: string,
+  messageThreadId: number | undefined,
+  parseMode: ParseMode | undefined,
+  chunk: SendChunk,
+): Promise<void> {
+  // Conditional spreads — exactOptionalPropertyTypes: omit when undefined
+  const threadOpt = messageThreadId !== undefined ? { message_thread_id: messageThreadId } : {};
+  const modeOpt = parseMode !== undefined ? { parse_mode: parseMode } : {};
+
   if (chunk.kind === "text") {
     const parts = splitText(chunk.text);
     for (const part of parts) {
-      await bot.api.sendMessage(chatId, part);
+      await bot.api.sendMessage(chatId, part, { ...threadOpt, ...modeOpt });
     }
     return;
   }
@@ -137,15 +197,17 @@ async function sendChunk(bot: Bot, chatId: string, chunk: SendChunk): Promise<vo
   switch (block.kind) {
     case "image":
       await bot.api.sendPhoto(chatId, block.url, {
-        // exactOptionalPropertyTypes: omit caption when undefined
         ...(block.alt !== undefined && { caption: block.alt }),
+        ...threadOpt,
+        ...modeOpt,
       });
       break;
 
     case "file":
       await bot.api.sendDocument(chatId, block.url, {
-        // exactOptionalPropertyTypes: omit caption when undefined
         ...(block.name !== undefined && { caption: block.name }),
+        ...threadOpt,
+        ...modeOpt,
       });
       break;
 
@@ -154,6 +216,8 @@ async function sendChunk(bot: Bot, chatId: string, chunk: SendChunk): Promise<vo
       const keyboard = new InlineKeyboard().text(block.label, callbackData);
       await bot.api.sendMessage(chatId, block.label, {
         reply_markup: keyboard,
+        ...threadOpt,
+        ...modeOpt,
       });
       break;
     }
@@ -223,20 +287,25 @@ function encodeCallbackData(action: string, payload: unknown): string {
   return truncateUtf8(action, CALLBACK_DATA_LIMIT);
 }
 
+// Module-level codec instances — avoid per-call allocations in button encoding.
+const utf8Encoder = new TextEncoder();
+const utf8Decoder = new TextDecoder();
+
 function byteLength(str: string): number {
-  return new TextEncoder().encode(str).length;
+  return utf8Encoder.encode(str).length;
 }
 
 /**
  * Truncates a string to fit within maxBytes (UTF-8 encoded).
- * Avoids splitting in the middle of a multi-byte character by decoding back.
+ * Strips any trailing replacement character (U+FFFD) that arises when slicing
+ * falls in the middle of a multi-byte sequence.
  */
 function truncateUtf8(str: string, maxBytes: number): string {
-  const encoded = new TextEncoder().encode(str);
+  const encoded = utf8Encoder.encode(str);
   if (encoded.length <= maxBytes) {
     return str;
   }
-  return new TextDecoder().decode(encoded.slice(0, maxBytes));
+  return utf8Decoder.decode(encoded.slice(0, maxBytes)).replace(/\uFFFD+$/, "");
 }
 
 function sleep(ms: number): Promise<void> {
