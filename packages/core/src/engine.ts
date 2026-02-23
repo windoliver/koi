@@ -64,8 +64,9 @@ export type EngineEvent =
       readonly kind: "tool_call_start";
       readonly toolName: string;
       readonly callId: string;
-      readonly args: JsonObject;
+      readonly args?: JsonObject;
     }
+  | { readonly kind: "tool_call_delta"; readonly callId: string; readonly delta: string }
   | {
       readonly kind: "tool_call_end";
       readonly callId: string;

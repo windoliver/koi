@@ -155,6 +155,53 @@ export function testEngineAdapter(options: EngineContractOptions): void {
   );
 
   test(
+    "tool_call_delta events have non-empty delta and valid callId",
+    async () => {
+      const adapter = await createAdapter();
+      const events = await collectEvents(adapter.stream(input));
+
+      const deltas = events.filter(
+        (e): e is EngineEvent & { readonly kind: "tool_call_delta" } =>
+          e.kind === "tool_call_delta",
+      );
+      for (const delta of deltas) {
+        expect(typeof delta.callId).toBe("string");
+        expect(delta.callId.length).toBeGreaterThan(0);
+        expect(typeof delta.delta).toBe("string");
+        expect(delta.delta.length).toBeGreaterThan(0);
+      }
+    },
+    timeoutMs,
+  );
+
+  test(
+    "tool_call_delta events reference a known tool_call_start callId",
+    async () => {
+      const adapter = await createAdapter();
+      const events = await collectEvents(adapter.stream(input));
+
+      const startIds = new Set(
+        events
+          .filter(
+            (e): e is EngineEvent & { readonly kind: "tool_call_start" } =>
+              e.kind === "tool_call_start",
+          )
+          .map((s) => s.callId),
+      );
+
+      const deltas = events.filter(
+        (e): e is EngineEvent & { readonly kind: "tool_call_delta" } =>
+          e.kind === "tool_call_delta",
+      );
+
+      for (const delta of deltas) {
+        expect(startIds.has(delta.callId)).toBe(true);
+      }
+    },
+    timeoutMs,
+  );
+
+  test(
     "all events have a valid kind",
     async () => {
       const adapter = await createAdapter();
@@ -162,6 +209,7 @@ export function testEngineAdapter(options: EngineContractOptions): void {
       const validKinds = new Set([
         "text_delta",
         "tool_call_start",
+        "tool_call_delta",
         "tool_call_end",
         "turn_end",
         "done",

@@ -202,8 +202,21 @@ export function createEventSubscriber(
             metrics.addUsage(errMsg.usage.input, errMsg.usage.output);
             break;
           }
+          case "toolcall_delta":
+            queue.push({
+              kind: "tool_call_delta",
+              callId: (() => {
+                const tc = findToolCallByContentIndex(
+                  assistantEvent.partial.content,
+                  assistantEvent.contentIndex,
+                );
+                return tc?.id ?? "";
+              })(),
+              delta: assistantEvent.delta,
+            });
+            break;
           // text_start, text_end, thinking_start, thinking_end,
-          // toolcall_delta, toolcall_end, start → no-op for Koi events
+          // toolcall_end, start → no-op for Koi events
           default:
             break;
         }
