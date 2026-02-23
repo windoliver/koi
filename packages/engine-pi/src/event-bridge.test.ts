@@ -181,6 +181,33 @@ describe("createEventSubscriber", () => {
     });
   });
 
+  test("maps toolcall_delta to tool_call_delta event", async () => {
+    const queue = new AsyncQueue<EngineEvent>();
+    const metrics = createMetricsAccumulator();
+    const subscriber = createEventSubscriber(queue, metrics);
+
+    const partial = makePartialMessage({
+      content: [{ type: "toolCall", id: "call-1", name: "search", arguments: {} }],
+    });
+
+    subscriber(
+      makeMessageUpdate({
+        type: "toolcall_delta",
+        contentIndex: 0,
+        delta: '{"query":"test"}',
+        partial,
+      }),
+    );
+    subscriber({ type: "agent_end", messages: [] });
+
+    const events = await collectEvents(queue);
+    expect(events[0]).toEqual({
+      kind: "tool_call_delta",
+      callId: "call-1",
+      delta: '{"query":"test"}',
+    });
+  });
+
   test("maps toolcall_start to tool_call_start event", async () => {
     const queue = new AsyncQueue<EngineEvent>();
     const metrics = createMetricsAccumulator();

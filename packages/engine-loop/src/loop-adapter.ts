@@ -318,7 +318,16 @@ async function* streamModelAndCollect(
             kind: "tool_call_start" as const,
             toolName: chunk.toolName,
             callId: chunk.callId,
-            args: {},
+          },
+        };
+        break;
+      case "tool_call_delta":
+        yield {
+          kind: "event" as const,
+          event: {
+            kind: "tool_call_delta" as const,
+            callId: chunk.callId,
+            delta: chunk.delta,
           },
         };
         break;
@@ -328,7 +337,7 @@ async function* streamModelAndCollect(
       case "done":
         finalResponse = chunk.response;
         break;
-      // thinking_delta, tool_call_delta, usage — internal, not forwarded as EngineEvent
+      // thinking_delta, usage — internal, not forwarded as EngineEvent
       default:
         break;
     }
