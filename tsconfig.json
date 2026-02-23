@@ -13,6 +13,8 @@
     { "path": "packages/artifact-client" },
     { "path": "packages/mcp" },
     { "path": "packages/scheduler" },
-    { "path": "packages/store-fs" }
+    { "path": "packages/store-fs" },
+    { "path": "packages/validation" },
+    { "path": "packages/store-sqlite" }
   ]
 }

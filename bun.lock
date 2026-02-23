@@ -350,10 +350,22 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/forge": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/store-sqlite": {
+      "name": "@koi/store-sqlite",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+      "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -646,6 +658,8 @@
     "@koi/skill-scanner": ["@koi/skill-scanner@workspace:packages/skill-scanner"],
 
     "@koi/store-fs": ["@koi/store-fs@workspace:packages/store-fs"],
+
+    "@koi/store-sqlite": ["@koi/store-sqlite@workspace:packages/store-sqlite"],
 
     "@koi/test-utils": ["@koi/test-utils@workspace:packages/test-utils"],
 
