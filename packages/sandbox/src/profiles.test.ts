@@ -94,16 +94,22 @@ describe("permissiveProfile", () => {
     // Permissive profile should have higher limits
     expect(permissive.resources.maxMemoryMb).toBe(2048);
     expect(restrictive.resources.maxMemoryMb).toBe(512);
-    expect(permissive.resources.maxMemoryMb!).toBeGreaterThan(restrictive.resources.maxMemoryMb!);
+    expect(permissive.resources.maxMemoryMb ?? 0).toBeGreaterThan(
+      restrictive.resources.maxMemoryMb ?? 0,
+    );
 
     expect(permissive.resources.timeoutMs).toBe(120_000);
-    expect(permissive.resources.timeoutMs!).toBeGreaterThan(restrictive.resources.timeoutMs!);
+    expect(permissive.resources.timeoutMs ?? 0).toBeGreaterThan(
+      restrictive.resources.timeoutMs ?? 0,
+    );
 
     expect(permissive.resources.maxPids).toBe(256);
-    expect(permissive.resources.maxPids!).toBeGreaterThan(restrictive.resources.maxPids!);
+    expect(permissive.resources.maxPids ?? 0).toBeGreaterThan(restrictive.resources.maxPids ?? 0);
 
     expect(permissive.resources.maxOpenFiles).toBe(1024);
-    expect(permissive.resources.maxOpenFiles!).toBeGreaterThan(restrictive.resources.maxOpenFiles!);
+    expect(permissive.resources.maxOpenFiles ?? 0).toBeGreaterThan(
+      restrictive.resources.maxOpenFiles ?? 0,
+    );
   });
 
   test("denies cloud config but not .env patterns", () => {

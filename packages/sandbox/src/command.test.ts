@@ -42,7 +42,10 @@ describe("buildSandboxCommand", () => {
     if (!result.ok) return;
 
     expect(result.value.executable).toBe("bwrap");
-    expect(result.value.args).toContain("/bin/echo");
+    // Command may be embedded in a ulimit wrapper (sh -c "...") when
+    // profile has resource limits, so check the joined args string.
+    const allArgs = result.value.args.join(" ");
+    expect(allArgs).toContain("/bin/echo");
   });
 
   test("includes command arguments in output", () => {
@@ -51,8 +54,11 @@ describe("buildSandboxCommand", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    expect(result.value.args).toContain("arg1");
-    expect(result.value.args).toContain("arg2");
+    // Args may be direct array elements (macOS seatbelt) or embedded
+    // in a ulimit wrapper string (Linux bwrap with resource limits).
+    const allArgs = result.value.args.join(" ");
+    expect(allArgs).toContain("arg1");
+    expect(allArgs).toContain("arg2");
   });
 
   test("returns well-formed error on unsupported platform", () => {
