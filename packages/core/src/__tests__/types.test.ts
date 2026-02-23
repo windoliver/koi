@@ -31,6 +31,8 @@ import type {
   Result,
   RevocationRegistry,
   ScopeChecker,
+  SourceBundle,
+  SourceLanguage,
   SpawnCheck,
   SubsystemToken,
   Tool,
@@ -1103,5 +1105,94 @@ describe("ModelConfig fallbacks", () => {
     };
     // @ts-expect-error — cannot assign to readonly property
     config.fallbacks = [];
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SourceBundle and SourceLanguage type tests
+// ---------------------------------------------------------------------------
+
+describe("SourceBundle", () => {
+  test("minimal SourceBundle without files", () => {
+    const bundle: SourceBundle = { content: "return 1;", language: "typescript" };
+    expect(bundle.content).toBe("return 1;");
+    expect(bundle.language).toBe("typescript");
+    expect(bundle.files).toBeUndefined();
+  });
+
+  test("SourceBundle with files", () => {
+    const bundle: SourceBundle = {
+      content: "return 1;",
+      language: "typescript",
+      files: { "helper.ts": "export const x = 1;" },
+    };
+    expect(bundle.files).toBeDefined();
+  });
+
+  test("SourceBundle properties are readonly", () => {
+    const bundle: SourceBundle = { content: "x", language: "json" };
+    // @ts-expect-error — cannot assign to readonly property
+    bundle.content = "y";
+    // @ts-expect-error — cannot assign to readonly property
+    bundle.language = "yaml";
+  });
+});
+
+describe("SourceLanguage", () => {
+  test("accepts all valid language literals", () => {
+    const langs: readonly SourceLanguage[] = [
+      "typescript",
+      "javascript",
+      "markdown",
+      "yaml",
+      "json",
+    ];
+    expect(langs).toHaveLength(5);
+  });
+});
+
+describe("Resolver.source", () => {
+  test("source is optional on Resolver", () => {
+    type ToolMeta = { readonly name: string };
+    const r: Resolver<ToolMeta, Tool> = {
+      discover: async () => [],
+      load: async () => ({
+        ok: true,
+        value: {
+          descriptor: { name: "t", description: "d", inputSchema: {} },
+          trustTier: "sandbox",
+          execute: async () => ({}),
+        },
+      }),
+    };
+    expect(r.source).toBeUndefined();
+  });
+
+  test("source returns Result<SourceBundle, KoiError>", async () => {
+    type ToolMeta = { readonly name: string };
+    const r: Resolver<ToolMeta, Tool> = {
+      discover: async () => [],
+      load: async () => ({
+        ok: true,
+        value: {
+          descriptor: { name: "t", description: "d", inputSchema: {} },
+          trustTier: "sandbox",
+          execute: async () => ({}),
+        },
+      }),
+      source: async () => ({
+        ok: true,
+        value: { content: "return 1;", language: "typescript" },
+      }),
+    };
+    expect(r.source).toBeDefined();
+    const result = await r.source?.("t");
+    expect(result).toBeDefined();
+    if (result === undefined) return;
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.content).toBe("return 1;");
+      expect(result.value.language).toBe("typescript");
+    }
   });
 });
