@@ -371,14 +371,17 @@ function createContentScanningVerifier(): ForgeVerifier {
 // biome-ignore lint/suspicious/noMisleadingCharacterClass: intentional detection of individual invisible chars, not emoji sequences
 const INVISIBLE_UNICODE_PATTERN = /[\u200B\u200C\u200D\u2060\uFEFF\u00AD\u200E\u200F\u202A-\u202E]/;
 
-/** Long base64 strings (40+ chars) that may encode hidden payloads. */
-const BASE64_BLOCK_PATTERN = /[A-Za-z0-9+/]{40,}={0,2}/;
+/** Long base64 strings (40+ chars) that may encode hidden payloads — global flag for matchAll. */
+const BASE64_BLOCK_PATTERN_GLOBAL = /[A-Za-z0-9+/]{40,}={0,2}/g;
 
 /** Hex escape sequences (e.g., \x41\x42) — 4+ consecutive = suspicious. */
 const HEX_ESCAPE_PATTERN = /(\\x[0-9a-fA-F]{2}){4,}/;
 
 /** HTML/markdown comments that could hide instructions. */
 const HIDDEN_COMMENT_PATTERN = /<!--[\s\S]*?-->/;
+
+/** Reusable UTF-8 decoder — avoids allocation per tryDecodeBase64() call. */
+const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 
 /**
  * Attempts to decode a base64 string. Returns the decoded UTF-8 text,
@@ -387,7 +390,7 @@ const HIDDEN_COMMENT_PATTERN = /<!--[\s\S]*?-->/;
 function tryDecodeBase64(encoded: string): string | undefined {
   try {
     const bytes = Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0));
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const text = UTF8_DECODER.decode(bytes);
     // Only return if it looks like readable text (>80% printable ASCII)
     const printable = text.split("").filter((c) => {
       const code = c.charCodeAt(0);
@@ -442,7 +445,8 @@ function createStructuralHidingVerifier(): ForgeVerifier {
       }
 
       // Decode-then-rescan: find base64 blocks and scan decoded content
-      const base64Matches = content.match(new RegExp(BASE64_BLOCK_PATTERN.source, "g"));
+      BASE64_BLOCK_PATTERN_GLOBAL.lastIndex = 0;
+      const base64Matches = content.match(BASE64_BLOCK_PATTERN_GLOBAL);
       if (base64Matches !== null) {
         for (const match of base64Matches) {
           const decoded = tryDecodeBase64(match);
