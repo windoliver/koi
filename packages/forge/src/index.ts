@@ -29,6 +29,7 @@ export type {
 // runtime values — adversarial verifiers
 export {
   createAdversarialVerifiers,
+  createContentScanningVerifier,
   createExfiltrationVerifier,
   createInjectionVerifier,
   createResourceExhaustionVerifier,

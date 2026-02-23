@@ -215,6 +215,122 @@ function createExfiltrationVerifier(executor: SandboxExecutor): ForgeVerifier {
 }
 
 // ---------------------------------------------------------------------------
+// Content scanning verifier (skills, agents — text-based adversarial probes)
+// ---------------------------------------------------------------------------
+
+interface ContentPattern {
+  readonly category: string;
+  readonly description: string;
+  readonly regex: RegExp;
+}
+
+const CONTENT_PATTERNS: readonly ContentPattern[] = [
+  // Prompt injection — attempts to override agent instructions
+  {
+    category: "prompt_injection",
+    description: "Attempts to override system instructions",
+    regex:
+      /ignore\s+(all\s+)?(previous|prior|above|earlier|system)\s+(instructions?|prompts?|rules?|guidelines?)/i,
+  },
+  {
+    category: "prompt_injection",
+    description: "Attempts to redefine agent identity",
+    regex: /you\s+are\s+now\s+(a|an|my)\s+/i,
+  },
+  {
+    category: "prompt_injection",
+    description: "Attempts to bypass safety measures",
+    regex:
+      /(override|bypass|disable|ignore)\s+(all\s+)?(safety|security|content)\s+(filters?|measures?|restrictions?|guardrails?|checks?)/i,
+  },
+  {
+    category: "prompt_injection",
+    description: "Known jailbreak technique reference",
+    regex: /\b(jailbreak|DAN\s+mode|do\s+anything\s+now)\b/i,
+  },
+  {
+    category: "prompt_injection",
+    description: "Attempts to disregard training or rules",
+    regex:
+      /(disregard|forget|abandon)\s+(your|all|the)\s+(training|rules?|instructions?|guidelines?)/i,
+  },
+  // Credential harvesting — instructions to output secrets
+  {
+    category: "credential_harvesting",
+    description: "Instructions to output sensitive data",
+    regex:
+      /(output|print|display|show|reveal|dump|list)\s+(all\s+)?(env(ironment)?\s*var(iable)?s|secrets?|credentials?|api[_\s-]?keys?|tokens?|passwords?)/i,
+  },
+  {
+    category: "credential_harvesting",
+    description: "Instructions to read sensitive files",
+    regex:
+      /(read|cat|open|access)\s+(the\s+)?(\.env|\.ssh|\.aws|\/etc\/shadow|\/etc\/passwd|credentials)/i,
+  },
+  // Destructive commands — instructions to run harmful operations
+  {
+    category: "destructive_command",
+    description: "Destructive shell commands",
+    regex: /\brm\s+-r?f\s+\//i,
+  },
+  {
+    category: "destructive_command",
+    description: "Remote code execution via piped download",
+    regex: /(curl|wget)\s+\S+\s*\|\s*(sh|bash|zsh|python)/i,
+  },
+  // Data exfiltration — instructions to send data externally
+  {
+    category: "exfiltration",
+    description: "Instructions to send data to external endpoints",
+    regex:
+      /send\s+(all\s+)?(data|info|information|content|secrets?|credentials?|files?)\s+to\s+https?:\/\//i,
+  },
+  {
+    category: "exfiltration",
+    description: "Encoded data exfiltration technique",
+    regex: /\b(exfiltrate|base64\s+encode\s+.*\s+send)\b/i,
+  },
+];
+
+/**
+ * Extracts scannable text content from a ForgeInput.
+ * Returns undefined if the input kind has no text to scan
+ * (tools and composites are handled by other verifiers).
+ */
+function extractScannableContent(input: ForgeInput): string | undefined {
+  if (input.kind === "skill") {
+    return input.body;
+  }
+  if (input.kind === "agent" && input.manifestYaml !== undefined) {
+    return input.manifestYaml;
+  }
+  return undefined;
+}
+
+function createContentScanningVerifier(): ForgeVerifier {
+  return {
+    name: "adversarial:content_scanning",
+    verify: async (input: ForgeInput, _context: ForgeContext): Promise<VerifierResult> => {
+      const content = extractScannableContent(input);
+      if (content === undefined) {
+        return { passed: true, message: "Skipped: no scannable content" };
+      }
+
+      for (const pattern of CONTENT_PATTERNS) {
+        if (pattern.regex.test(content)) {
+          return {
+            passed: false,
+            message: `Content scanning failed [${pattern.category}]: ${pattern.description}`,
+          };
+        }
+      }
+
+      return { passed: true, message: "Content scanning passed" };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -223,7 +339,13 @@ export function createAdversarialVerifiers(executor: SandboxExecutor): readonly 
     createInjectionVerifier(executor),
     createResourceExhaustionVerifier(executor),
     createExfiltrationVerifier(executor),
+    createContentScanningVerifier(),
   ];
 }
 
-export { createInjectionVerifier, createResourceExhaustionVerifier, createExfiltrationVerifier };
+export {
+  createInjectionVerifier,
+  createResourceExhaustionVerifier,
+  createExfiltrationVerifier,
+  createContentScanningVerifier,
+};
