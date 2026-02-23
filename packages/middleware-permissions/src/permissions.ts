@@ -59,10 +59,12 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
 
       // decision.allowed === "ask"
 
-      // Check approval cache before prompting
+      // Check approval cache before prompting (true LRU: delete+reinsert on hit)
       if (cache !== undefined) {
         const cacheKey = fnv1a(`${request.toolId}:${JSON.stringify(request.input)}`);
         if (cache.has(cacheKey)) {
+          cache.delete(cacheKey);
+          cache.set(cacheKey, true);
           return next(request);
         }
       }

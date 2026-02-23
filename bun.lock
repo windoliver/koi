@@ -82,6 +82,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
       },
     },
     "packages/engine-loop": {
@@ -133,6 +134,10 @@
       "dependencies": {
         "@koi/core": "workspace:*",
       },
+    },
+    "packages/hash": {
+      "name": "@koi/hash",
+      "version": "0.0.0",
     },
     "packages/manifest": {
       "name": "@koi/manifest",
@@ -203,6 +208,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/hash": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -475,6 +481,8 @@
     "@koi/forge": ["@koi/forge@workspace:packages/forge"],
 
     "@koi/gateway": ["@koi/gateway@workspace:packages/gateway"],
+
+    "@koi/hash": ["@koi/hash@workspace:packages/hash"],
 
     "@koi/manifest": ["@koi/manifest@workspace:packages/manifest"],
 

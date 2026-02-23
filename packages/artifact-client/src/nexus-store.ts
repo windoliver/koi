@@ -52,11 +52,13 @@ interface JsonRpcError {
 
 type JsonRpcResponse<T> = JsonRpcSuccess<T> | JsonRpcError;
 
-let rpcIdCounter = 0;
-
-function makeRpcRequest(method: string, params: Record<string, unknown>): JsonRpcRequest {
-  rpcIdCounter += 1;
-  return { jsonrpc: "2.0", id: rpcIdCounter, method, params };
+function createRpcIdGenerator(): () => number {
+  // let justified: monotonically increasing counter for JSON-RPC request IDs
+  let counter = 0;
+  return () => {
+    counter += 1;
+    return counter;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -98,12 +100,13 @@ function mapRpcError(rpcError: { readonly code: number; readonly message: string
 export function createNexusArtifactStore(config: NexusStoreConfig): ArtifactClient {
   const basePath = config.basePath ?? "/artifacts";
   const fetchFn = config.fetch ?? globalThis.fetch;
+  const nextRpcId = createRpcIdGenerator();
 
   async function rpc<T>(
     method: string,
     params: Record<string, unknown>,
   ): Promise<Result<T, KoiError>> {
-    const body = makeRpcRequest(method, params);
+    const body: JsonRpcRequest = { jsonrpc: "2.0", id: nextRpcId(), method, params };
     let response: Response;
     try {
       response = await fetchFn(config.baseUrl, {

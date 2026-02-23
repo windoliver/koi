@@ -138,8 +138,6 @@ export type {
 } from "./eviction.js";
 // forge types
 export type { BrickKind, BrickLifecycle, ForgeScope } from "./forge-types.js";
-// hash
-export { fnv1a } from "./hash.js";
 // health
 export type {
   HealthMonitor,

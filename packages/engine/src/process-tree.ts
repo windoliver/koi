@@ -74,12 +74,18 @@ export function createProcessTree(registry: AgentRegistry): ProcessTree {
   function descendantsOf(id: AgentId): readonly AgentId[] {
     const result: AgentId[] = [];
     const queue: AgentId[] = [...childrenOf(id)];
+    // let justified: index pointer avoids O(n) shift per iteration
+    let i = 0;
 
-    while (queue.length > 0) {
-      const current = queue.shift();
-      if (current === undefined) break;
+    while (i < queue.length) {
+      // biome-ignore lint/style/noNonNullAssertion: i < queue.length guarantees element exists
+      const current = queue[i]!;
+      i++;
       result.push(current);
-      queue.push(...childrenOf(current));
+      const children = childrenOf(current);
+      for (const child of children) {
+        queue.push(child);
+      }
     }
 
     return result;

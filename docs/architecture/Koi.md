@@ -163,6 +163,11 @@ Infrastructure backends      L3      Pluggable (Nexus, SQLite, custom)
 │  ProcessState transitions (lifecycle state machine)          │
 │  Middleware chain composition → EngineAdapter dispatch        │
 ├─────────────────────────────────────────────────────────────┤
+│  Layer 0u: UTILITIES (pure functions, zero business logic)    │
+│  @koi/errors   @koi/validation   @koi/manifest               │
+│  @koi/hash     @koi/test-utils   @koi/skill-scanner          │
+│  Depend on L0 only. Importable by L1 and L2.                 │
+├─────────────────────────────────────────────────────────────┤
 │  Layer 0: KERNEL (@koi/core — types only, 6 contracts)       │
 │  Middleware, Message, Channel, Resolver, Assembly, Engine     │
 │  + ECS: Agent, SubsystemToken<T>, ComponentProvider          │
@@ -171,17 +176,19 @@ Infrastructure backends      L3      Pluggable (Nexus, SQLite, custom)
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Why 4 Layers?
+### Why 4 Layers? (plus L0-utilities)
 
-| Property | Kernel (L0) | Engine (L1) | Features (L2) | Meta (L3) |
-|----------|-------------|-------------|----------------|-----------|
-| **Contains** | 6 contracts + ECS (types only) | Guards, validation, dispatch | Channels, middleware, providers | Dependency bundles |
-| **Dependencies** | Zero | @koi/core only | @koi/core only | L0 + L1 + selected L2 |
-| **Breakage scope** | All packages | Engine only | Own package only | None |
-| **Can be swapped?** | Never | No (it IS the runtime) | Yes (per package) | Yes |
-| **Analogy** | Kernel headers | Kernel runtime (`__schedule()`) | Kernel modules (ext4, tcp) | Distro packages |
+| Property | Kernel (L0) | Utilities (L0u) | Engine (L1) | Features (L2) | Meta (L3) |
+|----------|-------------|-----------------|-------------|----------------|-----------|
+| **Contains** | 6 contracts + ECS (types only) | Pure functions, error types, validation, hashing | Guards, validation, dispatch | Channels, middleware, providers | Dependency bundles |
+| **Dependencies** | Zero | @koi/core only | @koi/core + L0u | @koi/core + L0u | L0 + L0u + L1 + selected L2 |
+| **Breakage scope** | All packages | Consumers only | Engine only | Own package only | None |
+| **Can be swapped?** | Never | Yes (per package) | No (it IS the runtime) | Yes (per package) | Yes |
+| **Analogy** | Kernel headers | libc / POSIX utilities | Kernel runtime (`__schedule()`) | Kernel modules (ext4, tcp) | Distro packages |
 
 Engine *adapters* (LangGraph, OpenAI, custom) are swappable L2 packages. The engine *runtime* (guards, governance) is not — it IS the kernel runtime.
+
+**L0-utility packages**: `@koi/errors`, `@koi/validation`, `@koi/manifest`, `@koi/hash`, `@koi/test-utils`, `@koi/skill-scanner`. These contain pure utility functions with zero business logic. They depend on `@koi/core` only and are importable by both L1 and L2 packages. They do NOT define core contracts — they provide shared implementations of common operations (error creation, schema validation, hashing).
 
 ---
 

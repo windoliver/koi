@@ -99,6 +99,15 @@ export interface EngineAdapter {
    */
   readonly stream: (input: EngineInput) => AsyncIterable<EngineEvent>;
   readonly saveState?: () => Promise<EngineState>;
+  /**
+   * Restore adapter state from a previously saved snapshot.
+   *
+   * @remarks Adapters MUST validate the shape of `state.data` before use.
+   * `EngineState.data` is typed as `unknown` to maintain adapter opacity —
+   * corrupt or tampered state must produce a typed KoiError (code: "VALIDATION"),
+   * never an unhandled runtime crash. Use schema validation (e.g., Zod) or
+   * manual type narrowing inside this method.
+   */
   readonly loadState?: (state: EngineState) => Promise<void>;
   readonly dispose?: () => Promise<void>;
 }

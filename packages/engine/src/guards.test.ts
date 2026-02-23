@@ -13,13 +13,13 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { GOVERNANCE } from "@koi/core";
+import { fnv1a } from "@koi/hash";
 import { KoiEngineError } from "./errors.js";
 import {
   createIterationGuard,
   createLoopDetector,
   createSpawnGuard,
   detectRepeatingPattern,
-  fnv1a,
 } from "./guards.js";
 import { createInMemorySpawnLedger } from "./spawn-ledger.js";
 

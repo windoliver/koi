@@ -203,6 +203,56 @@ async function executeToolCall(
 }
 
 // ---------------------------------------------------------------------------
+// Tool round execution (shared by streaming + non-streaming paths)
+// ---------------------------------------------------------------------------
+
+async function executeToolRound(
+  toolCalls: readonly ToolCallDescriptor[],
+  toolHandler: ToolHandler | undefined,
+  emitStartEvents: boolean,
+): Promise<{
+  readonly results: readonly {
+    readonly descriptor: ToolCallDescriptor;
+    readonly response: ToolResponse;
+  }[];
+  readonly events: readonly EngineEvent[];
+}> {
+  if (toolHandler === undefined) {
+    throw new Error(
+      "Model returned tool calls but no tool handler is available. " +
+        "Provide a toolCall terminal or ensure callHandlers include toolCall.",
+    );
+  }
+
+  const events: EngineEvent[] = [];
+
+  // Non-streaming: emit tool_call_start before execution.
+  // Streaming: already emitted by the stream, so skip.
+  if (emitStartEvents) {
+    for (const tc of toolCalls) {
+      events.push({
+        kind: "tool_call_start" as const,
+        toolName: tc.toolName,
+        callId: tc.callId,
+        args: tc.input,
+      });
+    }
+  }
+
+  const results = await Promise.all(toolCalls.map((tc) => executeToolCall(tc, toolHandler)));
+
+  for (const result of results) {
+    events.push({
+      kind: "tool_call_end" as const,
+      callId: result.descriptor.callId,
+      result: result.response.output,
+    });
+  }
+
+  return { results, events };
+}
+
+// ---------------------------------------------------------------------------
 // Message building helpers (mutate-in-place for O(1) append in hot loop)
 // ---------------------------------------------------------------------------
 
@@ -328,7 +378,7 @@ export function createLoopAdapter(config: LoopAdapterConfig): EngineAdapter {
     return config.toolCall;
   }
 
-  // The ReAct loop — non-streaming path
+  // The ReAct loop
   async function* runLoop(input: EngineInput): AsyncGenerator<EngineEvent, void, undefined> {
     if (running) {
       throw new Error(
@@ -358,11 +408,10 @@ export function createLoopAdapter(config: LoopAdapterConfig): EngineAdapter {
 
         const request: ModelRequest = { messages };
 
-        // Decide: stream or call
-        if (modelStream !== undefined) {
-          // Streaming path
-          let response: ModelResponse | undefined;
+        // --- Get model response (streaming or non-streaming) ---
+        let response: ModelResponse | undefined;
 
+        if (modelStream !== undefined) {
           for await (const item of streamModelAndCollect(modelStream, request)) {
             if (item.kind === "event") {
               yield item.event;
@@ -370,115 +419,43 @@ export function createLoopAdapter(config: LoopAdapterConfig): EngineAdapter {
               response = item.response;
             }
           }
-
           if (response === undefined) {
-            // Stream ended without a done chunk — unexpected. Build a minimal response.
             stopReason = "error";
             metrics = incrementTurn(metrics);
             yield { kind: "turn_end" as const, turnIndex: turn };
             break;
           }
-
-          metrics = addModelUsage(metrics, response);
-
-          // Check for tool calls
-          const toolCalls = extractToolCalls(response);
-
-          if (toolCalls.length === 0) {
-            // No tool calls — final response
-            // text_delta events were already yielded by streaming
-            messages.push(buildAssistantMessage(response.content, response.metadata));
-            metrics = incrementTurn(metrics);
-            yield { kind: "turn_end" as const, turnIndex: turn };
-            break;
-          }
-
-          // Execute tool calls in parallel
-          if (toolHandler === undefined) {
-            throw new Error(
-              "Model returned tool calls but no tool handler is available. " +
-                "Provide a toolCall terminal or ensure callHandlers include toolCall.",
-            );
-          }
-
-          const toolResults = await Promise.all(
-            toolCalls.map((tc) => {
-              // Emit tool_call_start for non-streaming tool calls
-              // (streaming already emitted tool_call_start via ModelChunk)
-              return executeToolCall(tc, toolHandler);
-            }),
-          );
-
-          // Emit tool_call_end events for each result
-          for (const result of toolResults) {
-            yield {
-              kind: "tool_call_end" as const,
-              callId: result.descriptor.callId,
-              result: result.response.output,
-            };
-          }
-
-          messages.push(buildAssistantMessage(response.content, response.metadata));
-          messages.push(...buildToolResultMessages(toolResults));
-          metrics = incrementTurn(metrics);
-          yield { kind: "turn_end" as const, turnIndex: turn };
         } else {
-          // Non-streaming path
-          const response = await modelCall(request);
-          metrics = addModelUsage(metrics, response);
-
-          // Check for tool calls
-          const toolCalls = extractToolCalls(response);
-
-          if (toolCalls.length === 0) {
-            // No tool calls — emit text_delta and done
-            if (response.content.length > 0) {
-              yield { kind: "text_delta" as const, delta: response.content };
-            }
-            messages.push(buildAssistantMessage(response.content, response.metadata));
-            metrics = incrementTurn(metrics);
-            yield { kind: "turn_end" as const, turnIndex: turn };
-            break;
-          }
-
-          // Execute tool calls in parallel
-          if (toolHandler === undefined) {
-            throw new Error(
-              "Model returned tool calls but no tool handler is available. " +
-                "Provide a toolCall terminal or ensure callHandlers include toolCall.",
-            );
-          }
-
-          // Emit tool_call_start events
-          for (const tc of toolCalls) {
-            yield {
-              kind: "tool_call_start" as const,
-              toolName: tc.toolName,
-              callId: tc.callId,
-              args: tc.input,
-            };
-          }
-
-          const toolResults = await Promise.all(
-            toolCalls.map((tc) => executeToolCall(tc, toolHandler)),
-          );
-
-          // Emit tool_call_end events
-          for (const result of toolResults) {
-            yield {
-              kind: "tool_call_end" as const,
-              callId: result.descriptor.callId,
-              result: result.response.output,
-            };
-          }
-
-          messages.push(buildAssistantMessage(response.content, response.metadata));
-          messages.push(...buildToolResultMessages(toolResults));
-          metrics = incrementTurn(metrics);
-          yield { kind: "turn_end" as const, turnIndex: turn };
+          response = await modelCall(request);
         }
 
-        // If this was the last allowed turn, mark as max_turns
+        metrics = addModelUsage(metrics, response);
+        const toolCalls = extractToolCalls(response);
+
+        // --- No tool calls: final response ---
+        if (toolCalls.length === 0) {
+          if (modelStream === undefined && response.content.length > 0) {
+            yield { kind: "text_delta" as const, delta: response.content };
+          }
+          messages.push(buildAssistantMessage(response.content, response.metadata));
+          metrics = incrementTurn(metrics);
+          yield { kind: "turn_end" as const, turnIndex: turn };
+          break;
+        }
+
+        // --- Tool calls: execute round and continue loop ---
+        const { results, events } = await executeToolRound(
+          toolCalls,
+          toolHandler,
+          modelStream === undefined,
+        );
+        for (const event of events) yield event;
+
+        messages.push(buildAssistantMessage(response.content, response.metadata));
+        messages.push(...buildToolResultMessages(results));
+        metrics = incrementTurn(metrics);
+        yield { kind: "turn_end" as const, turnIndex: turn };
+
         if (turn === maxTurns - 1) {
           stopReason = "max_turns";
         }

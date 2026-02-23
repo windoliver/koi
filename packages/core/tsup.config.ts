@@ -12,7 +12,6 @@ export default defineConfig({
     "src/ecs.ts",
     "src/engine.ts",
     "src/errors.ts",
-    "src/hash.ts",
     "src/eviction.ts",
     "src/health.ts",
     "src/lifecycle.ts",
