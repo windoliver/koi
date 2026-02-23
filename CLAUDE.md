@@ -55,7 +55,7 @@ Koi is a self-extending agent engine with a strict layered architecture. Layer v
 
 ```
 L0  @koi/core       Interfaces-only kernel. Types + contracts. Zero logic. Zero deps.
-L1  @koi/engine      Kernel runtime. Guards, lifecycle, middleware composition. Depends on L0 only.
+L1  @koi/engine      Kernel runtime. Guards, lifecycle, middleware composition. Depends on L0 + L0u.
 L2  @koi/*           Feature packages. Each depends on L0 only. Never on L1 or L2 peers.
 L3  Meta-packages    Convenience bundles (e.g., @koi/starter = L0 + L1 + selected L2).
 ```
@@ -67,20 +67,22 @@ L3  Meta-packages    Convenience bundles (e.g., @koi/starter = L0 + L1 + selecte
 - NO function bodies, NO classes, NO side effects, NO runtime code
   - Exception: branded type constructors (identity casts for `SubsystemToken<T>`) are permitted in L0 as they are zero-logic operations that exist purely for type safety
   - Exception: pure `readonly` data constants derived from L0 type definitions (e.g., `RETRYABLE_DEFAULTS`) are permitted as they codify architecture-doc invariants with zero logic
+  - Exception: pure functions operating only on L0 types (type guards like `isProcessState`, validation helpers like `validateNonEmpty`, error factories) are permitted as they are side-effect-free data constructors
 - NO `import` from any `@koi/*` package or external dependency
 - This package must compile with zero dependencies in `package.json`
-- Target: ~45 types across 6 contracts + ECS layer, ~500 LOC
+- Target: ~230 types across 7 contracts + ECS layer, ~3,200 LOC
 - Think of it as the Linux syscall table — it defines the plugs, not the things that plug in
 
 **When creating or editing `@koi/engine` (L1):**
 - Runtime logic: factory functions, guards (iteration/loop/spawn), middleware chain composition, lifecycle state machine
-- Import from `@koi/core` only — never from any L2 package
+- Import from `@koi/core` (L0) and L0-utility packages (L0u) — never from any L2 package
 - Engine *adapters* (e.g., LangGraph, OpenAI) are L2 packages, not part of L1
 - L1 IS the kernel runtime — it validates, guards, and dispatches but never knows which adapter is running
 
 **When creating or editing feature packages (L2):**
 - Import from `@koi/core` (L0) and L0-utility packages (L0u) only — never from `@koi/engine` or other L2 packages
-- L0u packages: `@koi/errors`, `@koi/validation`, `@koi/manifest`, `@koi/hash`, `@koi/test-utils`, `@koi/skill-scanner`, `@koi/channel-base`
+- L0u packages: `@koi/channel-base`, `@koi/errors`, `@koi/hash`, `@koi/manifest`, `@koi/shutdown`, `@koi/skill-scanner`, `@koi/snapshot-chain-store`, `@koi/test-utils`, `@koi/validation`
+- L0u packages may import from `@koi/core` and from peer L0u packages
 - Each L2 package is independent and swappable
 - Examples: channel adapters, middleware implementations, engine adapters, MCP bridge
 - If two L2 packages need shared code, extract it to a new L2 package or move the shared types to L0
@@ -90,16 +92,17 @@ L3  Meta-packages    Convenience bundles (e.g., @koi/starter = L0 + L1 + selecte
 
 ### Core Contracts (L0)
 
-The 6 contracts that define Koi's extension points:
+The 7 contracts that define Koi's extension points:
 
 | # | Contract | Purpose | Minimal surface |
 |---|----------|---------|-----------------|
-| 1 | **Middleware** | Sole interposition layer for model/tool calls | 8 optional hooks |
+| 1 | **Middleware** | Sole interposition layer for model/tool calls | 7 optional hooks |
 | 2 | **Message** | Inbound/outbound data format | `ContentBlock[]` |
 | 3 | **Channel** | I/O interface to users | `send()` + `onMessage()` |
 | 4 | **Resolver** | Discovery of tools/skills/agents | `discover()` + `load()` |
 | 5 | **Assembly** | What an agent IS (manifest) | Declarative config |
 | 6 | **Engine** | Swappable agent loop | `stream()` is the only required method |
+| 7 | **AgentRegistry** | Agent lifecycle management | CAS transitions + `watch()` |
 
 Plus the ECS compositional layer: `Agent` (entity), `SubsystemToken<T>` (typed component key), `ComponentProvider` (attaches components during assembly).
 

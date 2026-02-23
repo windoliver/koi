@@ -1,7 +1,7 @@
 /**
  * @koi/core — Interfaces-only kernel (Layer 0)
  *
- * Zero dependencies. Defines the 6 core contracts + ECS compositional layer.
+ * Zero dependencies. Defines the 7 core contracts + ECS compositional layer.
  * Only runtime code: branded type constructors for SubsystemToken.
  */
 

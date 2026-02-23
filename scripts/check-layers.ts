@@ -24,11 +24,13 @@ const PACKAGES_DIR = new URL("../packages/", import.meta.url).pathname;
 const L0_PACKAGES = new Set(["@koi/core"]);
 /** L0-utility packages — pure helpers with no business logic, depend on L0 only. */
 const L0U_PACKAGES = new Set([
+  "@koi/channel-base",
   "@koi/errors",
   "@koi/hash",
   "@koi/manifest",
   "@koi/shutdown",
   "@koi/skill-scanner",
+  "@koi/snapshot-chain-store",
   "@koi/test-utils",
   "@koi/validation",
 ]);

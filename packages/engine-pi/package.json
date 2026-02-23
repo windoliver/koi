@@ -21,7 +21,6 @@
     "@mariozechner/pi-ai": "0.54.0"
   },
   "devDependencies": {
-    "@koi/test-utils": "workspace:*",
     "@sinclair/typebox": "0.34.33"
   }
 }

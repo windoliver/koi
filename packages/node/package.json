@@ -15,7 +15,6 @@
     "zod": "4.3.6"
   },
   "devDependencies": {
-    "@koi/gateway": "workspace:*",
     "@koi/session-store": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },
