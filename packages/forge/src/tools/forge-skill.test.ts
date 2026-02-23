@@ -43,7 +43,7 @@ describe("createForgeSkillTool", () => {
     const result = (await tool.execute({
       name: "mySkill",
       description: "A skill",
-      content: "# My Skill\nContent here.",
+      body: "# My Skill\nContent here.",
     })) as { readonly ok: true; readonly value: ForgeResult };
 
     expect(result.ok).toBe(true);
@@ -61,7 +61,7 @@ describe("createForgeSkillTool", () => {
     const result = (await tool.execute({
       name: "mySkill",
       description: "A skill",
-      content: "Some content here.",
+      body: "Some content here.",
     })) as { readonly ok: true; readonly value: ForgeResult };
 
     expect(result.ok).toBe(true);
@@ -77,7 +77,7 @@ describe("createForgeSkillTool", () => {
     const result = (await tool.execute({
       name: "taggedSkill",
       description: "A tagged skill",
-      content: "Content",
+      body: "Content",
       tags: ["math", "calc"],
     })) as { readonly ok: true; readonly value: ForgeResult };
 
@@ -93,7 +93,7 @@ describe("createForgeSkillTool", () => {
     const result = (await tool.execute({
       name: "x",
       description: "A skill",
-      content: "Content",
+      body: "Content",
     })) as { readonly ok: false; readonly error: { readonly stage: string } };
 
     expect(result.ok).toBe(false);
@@ -107,7 +107,7 @@ describe("createForgeSkillTool", () => {
     const result = (await tool.execute({
       name: "filesSkill",
       description: "A skill with files",
-      content: "# Skill",
+      body: "# Skill",
       files: { "lib/helper.ts": "export const x = 1;" },
     })) as { readonly ok: true; readonly value: ForgeResult };
 
@@ -125,7 +125,7 @@ describe("createForgeSkillTool", () => {
     const result = (await tool.execute({
       name: "reqSkill",
       description: "A skill with requires",
-      content: "# Skill",
+      body: "# Skill",
       requires: { bins: ["node"], env: ["API_KEY"] },
     })) as { readonly ok: true; readonly value: ForgeResult };
 

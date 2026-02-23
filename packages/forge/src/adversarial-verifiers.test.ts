@@ -33,7 +33,7 @@ function skillInput(): ForgeInput {
     kind: "skill",
     name: "mySkill",
     description: "A skill",
-    content: "# Hello",
+    body: "# Hello",
   };
 }
 

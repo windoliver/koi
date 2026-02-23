@@ -173,12 +173,12 @@ describe("verifyStatic — kind-specific validation", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("rejects skill with empty content", () => {
+  test("rejects skill with empty body", () => {
     const input: ForgeInput = {
       kind: "skill",
       name: "mySkill",
       description: "A skill",
-      content: "",
+      body: "",
     };
     const result = verifyStatic(input, DEFAULT_VERIFICATION);
     expect(result.ok).toBe(false);
@@ -189,7 +189,7 @@ describe("verifyStatic — kind-specific validation", () => {
       kind: "skill",
       name: "mySkill",
       description: "A skill",
-      content: "# My Skill\nSome content here.",
+      body: "# My Skill\nSome content here.",
     };
     const result = verifyStatic(input, DEFAULT_VERIFICATION);
     expect(result.ok).toBe(true);
@@ -245,7 +245,7 @@ describe("verifyStatic — files validation", () => {
       kind: "skill",
       name: "mySkill",
       description: "A skill",
-      content: "# Skill",
+      body: "# Skill",
       files: { "lib/helper.ts": "export const x = 1;" },
     };
     const result = verifyStatic(input, DEFAULT_VERIFICATION);
@@ -257,7 +257,7 @@ describe("verifyStatic — files validation", () => {
       kind: "skill",
       name: "mySkill",
       description: "A skill",
-      content: "# Skill",
+      body: "# Skill",
       files: { "/etc/passwd": "bad" },
     };
     const result = verifyStatic(input, DEFAULT_VERIFICATION);
@@ -272,7 +272,7 @@ describe("verifyStatic — files validation", () => {
       kind: "skill",
       name: "mySkill",
       description: "A skill",
-      content: "# Skill",
+      body: "# Skill",
       files: { "../escape.ts": "bad" },
     };
     const result = verifyStatic(input, DEFAULT_VERIFICATION);
@@ -287,7 +287,7 @@ describe("verifyStatic — files validation", () => {
       kind: "skill",
       name: "mySkill",
       description: "A skill",
-      content: "# Skill",
+      body: "# Skill",
       files: { __proto__: "bad" },
     };
     const result = verifyStatic(input, DEFAULT_VERIFICATION);
@@ -299,7 +299,7 @@ describe("verifyStatic — files validation", () => {
       kind: "skill",
       name: "mySkill",
       description: "A skill",
-      content: "# Skill",
+      body: "# Skill",
       files: {},
     };
     const result = verifyStatic(input, DEFAULT_VERIFICATION);
@@ -376,7 +376,7 @@ describe("verifyStatic — syntax validation", () => {
       kind: "skill",
       name: "mySkill",
       description: "A skill",
-      content: "# My Skill",
+      body: "# My Skill",
       files: { "lib/helper.ts": "export function { broken" },
     };
     const result = verifyStatic(input, DEFAULT_VERIFICATION);
@@ -392,7 +392,7 @@ describe("verifyStatic — syntax validation", () => {
       kind: "skill",
       name: "mySkill",
       description: "A skill",
-      content: "# My Skill",
+      body: "# My Skill",
       files: { "lib/helper.ts": "export const x: number = 42;" },
     };
     const result = verifyStatic(input, DEFAULT_VERIFICATION);
@@ -404,7 +404,7 @@ describe("verifyStatic — syntax validation", () => {
       kind: "skill",
       name: "mySkill",
       description: "A skill",
-      content: "# My Skill",
+      body: "# My Skill",
       files: { "components/Button.tsx": "export function Button() { return <button />; }" },
     };
     const result = verifyStatic(input, DEFAULT_VERIFICATION);
@@ -416,7 +416,7 @@ describe("verifyStatic — syntax validation", () => {
       kind: "skill",
       name: "mySkill",
       description: "A skill",
-      content: "# My Skill",
+      body: "# My Skill",
       files: {
         "config.json": "{ not valid json but not checked }",
         "README.md": "# this is {{ not }} valid TS but should pass",
@@ -433,7 +433,7 @@ describe("verifyStatic — requires validation", () => {
       kind: "skill",
       name: "mySkill",
       description: "A skill",
-      content: "# Skill",
+      body: "# Skill",
       requires: { bins: ["node"], env: ["API_KEY"], tools: ["search"] },
     };
     const result = verifyStatic(input, DEFAULT_VERIFICATION);
@@ -445,7 +445,7 @@ describe("verifyStatic — requires validation", () => {
       kind: "skill",
       name: "mySkill",
       description: "A skill",
-      content: "# Skill",
+      body: "# Skill",
       requires: { bins: [42] } as unknown as BrickRequires,
     };
     const result = verifyStatic(input, DEFAULT_VERIFICATION);
@@ -460,7 +460,7 @@ describe("verifyStatic — requires validation", () => {
       kind: "skill",
       name: "mySkill",
       description: "A skill",
-      content: "# Skill",
+      body: "# Skill",
       requires: { env: [true] } as unknown as BrickRequires,
     };
     const result = verifyStatic(input, DEFAULT_VERIFICATION);
@@ -472,7 +472,7 @@ describe("verifyStatic — requires validation", () => {
       kind: "skill",
       name: "mySkill",
       description: "A skill",
-      content: "# Skill",
+      body: "# Skill",
       requires: { bins: ["git"] },
     };
     const result = verifyStatic(input, DEFAULT_VERIFICATION);

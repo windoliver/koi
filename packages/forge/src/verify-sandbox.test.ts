@@ -28,7 +28,7 @@ describe("verifySandbox", () => {
       kind: "skill",
       name: "mySkill",
       description: "A skill",
-      content: "content",
+      body: "content",
     };
     const result = await verifySandbox(input, mockExecutor(), DEFAULT_VERIFICATION);
     expect(result.ok).toBe(true);

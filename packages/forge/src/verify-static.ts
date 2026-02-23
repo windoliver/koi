@@ -134,10 +134,10 @@ function validateSkillInput(
   input: Extract<ForgeInput, { readonly kind: "skill" }>,
   config: VerificationConfig,
 ): ForgeError | undefined {
-  if (input.content.length === 0) {
-    return staticError("MISSING_FIELD", "Skill content must not be empty");
+  if (input.body.length === 0) {
+    return staticError("MISSING_FIELD", "Skill body must not be empty");
   }
-  return validateSize(input.content, config.maxBrickSizeBytes, "Content");
+  return validateSize(input.body, config.maxBrickSizeBytes, "Body");
 }
 
 function validateAgentInput(

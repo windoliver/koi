@@ -97,7 +97,7 @@ describe("Forge lifecycle — end-to-end", () => {
     const skillResult = (await forgeSkill.execute({
       name: "mathHelper",
       description: "Tips for math operations",
-      content: "# Math Helper\n\nUse the adder tool for addition.",
+      body: "# Math Helper\n\nUse the adder tool for addition.",
       tags: ["math", "helper"],
     })) as { readonly ok: true; readonly value: ForgeResult };
 
@@ -273,7 +273,7 @@ describe("Forge lifecycle — end-to-end", () => {
     const skillResult = (await forgeSkill.execute({
       name: "mySkill",
       description: "A skill",
-      content: "# Skill content",
+      body: "# Skill content",
     })) as { readonly ok: false; readonly error: { readonly stage: string } };
 
     const searchResult = (await searchForge.execute({})) as {

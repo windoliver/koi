@@ -118,7 +118,7 @@ async function composeForgeHandler(
       createdBy: deps.context.agentId,
       createdAt: Date.now(),
       version: "0.0.1",
-      tags: [],
+      tags: forgeInput.tags ?? [],
       usageCount: 0,
       contentHash: computeContentHash(forgeInput.brickIds.join(","), forgeInput.files),
       brickIds: forgeInput.brickIds,

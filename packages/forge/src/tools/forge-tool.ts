@@ -102,7 +102,7 @@ async function forgeToolHandler(
       createdBy: deps.context.agentId,
       createdAt: Date.now(),
       version: "0.0.1",
-      tags: [],
+      tags: forgeInput.tags ?? [],
       usageCount: 0,
       contentHash: computeContentHash(forgeInput.implementation, forgeInput.files),
       implementation: forgeInput.implementation,

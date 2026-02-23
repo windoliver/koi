@@ -26,7 +26,7 @@ const FORGE_SKILL_CONFIG: ForgeToolConfig = {
     properties: {
       name: { type: "string" },
       description: { type: "string" },
-      content: { type: "string" },
+      body: { type: "string" },
       tags: { type: "array", items: { type: "string" } },
       files: { type: "object", description: "Companion files: relative path → content" },
       requires: {
@@ -39,7 +39,7 @@ const FORGE_SKILL_CONFIG: ForgeToolConfig = {
         },
       },
     },
-    required: ["name", "description", "content"],
+    required: ["name", "description", "body"],
   },
   handler: forgeSkillHandler,
 };
@@ -51,7 +51,7 @@ const FORGE_SKILL_CONFIG: ForgeToolConfig = {
 const FORGE_SKILL_FIELDS = [
   { name: "name", type: "string", required: true },
   { name: "description", type: "string", required: true },
-  { name: "content", type: "string", required: true },
+  { name: "body", type: "string", required: true },
   { name: "tags", type: "array", required: false },
   { name: "files", type: "object", required: false },
   { name: "requires", type: "object", required: false },
@@ -70,7 +70,7 @@ async function forgeSkillHandler(
     kind: "skill",
     name: skillInput.name,
     description: skillInput.description,
-    content: skillInput.content,
+    body: skillInput.body,
     ...(skillInput.tags !== undefined ? { tags: skillInput.tags } : {}),
     ...(skillInput.files !== undefined ? { files: skillInput.files } : {}),
     ...(skillInput.requires !== undefined ? { requires: skillInput.requires } : {}),
@@ -90,8 +90,8 @@ async function forgeSkillHandler(
       version: "0.0.1",
       tags: forgeInput.tags ?? [],
       usageCount: 0,
-      contentHash: computeContentHash(forgeInput.content, forgeInput.files),
-      content: forgeInput.content,
+      contentHash: computeContentHash(forgeInput.body, forgeInput.files),
+      content: forgeInput.body,
       ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
       ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
     };

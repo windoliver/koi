@@ -46,7 +46,7 @@ describe("verify — full pipeline", () => {
       kind: "skill",
       name: "mySkill",
       description: "A skill",
-      content: "# Skill content",
+      body: "# Skill content",
     };
     const result = await verify(input, DEFAULT_CONTEXT, mockExecutor(), [], config);
     expect(result.ok).toBe(true);

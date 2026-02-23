@@ -75,6 +75,7 @@ export interface ForgeToolInput {
   readonly kind: "tool";
   readonly name: string;
   readonly description: string;
+  readonly tags?: readonly string[];
   readonly inputSchema: Readonly<Record<string, unknown>>;
   readonly implementation: string;
   readonly testCases?: readonly TestCase[];
@@ -86,7 +87,8 @@ export interface ForgeSkillInput {
   readonly kind: "skill";
   readonly name: string;
   readonly description: string;
-  readonly content: string;
+  /** Markdown body of the skill (the raw content, not the generated SKILL.md). */
+  readonly body: string;
   readonly tags?: readonly string[];
   readonly files?: Readonly<Record<string, string>>;
   readonly requires?: BrickRequires;
@@ -96,6 +98,7 @@ export interface ForgeAgentInput {
   readonly kind: "agent";
   readonly name: string;
   readonly description: string;
+  readonly tags?: readonly string[];
   readonly manifestYaml: string;
   readonly files?: Readonly<Record<string, string>>;
   readonly requires?: BrickRequires;
@@ -105,6 +108,7 @@ export interface ForgeCompositeInput {
   readonly kind: "composite";
   readonly name: string;
   readonly description: string;
+  readonly tags?: readonly string[];
   readonly brickIds: readonly string[];
   readonly files?: Readonly<Record<string, string>>;
   readonly requires?: BrickRequires;
