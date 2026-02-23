@@ -12,6 +12,13 @@ import type { ChannelAdapter, InboundMessage, OutboundMessage } from "@koi/core"
 export interface ChannelContractOptions {
   /** Factory that creates a fresh adapter instance for each test. */
   readonly createAdapter: () => ChannelAdapter | Promise<ChannelAdapter>;
+  /**
+   * Optional: injects a simulated inbound message to test handler dispatch.
+   * Required for event-delivery contract tests (handler-throws isolation,
+   * reconnect cycle, pre-connect handler registration, idempotent connect).
+   * If not provided, those tests are skipped.
+   */
+  readonly injectMessage?: (adapter: ChannelAdapter) => Promise<void>;
   /** Timeout for each test in milliseconds. Defaults to 5_000. */
   readonly timeoutMs?: number;
 }
@@ -128,4 +135,98 @@ export function testChannelAdapter(options: ChannelContractOptions): void {
     },
     timeoutMs,
   );
+
+  // Event-delivery contract tests — only run when injectMessage is provided.
+  // These verify behavioral guarantees that require the ability to trigger
+  // inbound events (e.g., typing to a CLI, posting to a webhook).
+  if (options.injectMessage !== undefined) {
+    const inject = options.injectMessage;
+
+    test(
+      "handler registered before connect receives messages after connect",
+      async () => {
+        const adapter = await createAdapter();
+        const received: InboundMessage[] = [];
+        adapter.onMessage(async (msg) => {
+          received.push(msg);
+        });
+
+        await adapter.connect();
+        await inject(adapter);
+
+        expect(received.length).toBeGreaterThan(0);
+        await adapter.disconnect();
+      },
+      timeoutMs,
+    );
+
+    test(
+      "connect() is idempotent — events are not duplicated on double-connect",
+      async () => {
+        const adapter = await createAdapter();
+        await adapter.connect();
+        await adapter.connect(); // second call must be a no-op
+
+        const received: InboundMessage[] = [];
+        adapter.onMessage(async (msg) => {
+          received.push(msg);
+        });
+
+        await inject(adapter);
+
+        expect(received).toHaveLength(1); // exactly one, not two
+        await adapter.disconnect();
+      },
+      timeoutMs,
+    );
+
+    test(
+      "handler that throws does not prevent other handlers from receiving the message",
+      async () => {
+        const adapter = await createAdapter();
+        const received: InboundMessage[] = [];
+
+        adapter.onMessage(async () => {
+          throw new Error("contract-test: intentional throw");
+        });
+        adapter.onMessage(async (msg) => {
+          received.push(msg);
+        });
+
+        await adapter.connect();
+        await inject(adapter);
+
+        // Second handler must still have received the message despite first throwing
+        expect(received.length).toBeGreaterThan(0);
+        await adapter.disconnect();
+      },
+      timeoutMs,
+    );
+
+    test(
+      "unsubscribed handler does not receive messages",
+      async () => {
+        const adapter = await createAdapter();
+        const received: InboundMessage[] = [];
+
+        const unsub = adapter.onMessage(async (msg) => {
+          received.push(msg);
+        });
+
+        await adapter.connect();
+        await inject(adapter);
+        expect(received.length).toBeGreaterThan(0);
+
+        const countBeforeUnsub = received.length;
+        unsub();
+
+        await inject(adapter);
+        // Handler was unsubscribed; no new messages should arrive
+        expect(received).toHaveLength(countBeforeUnsub);
+
+        await adapter.disconnect();
+      },
+      timeoutMs,
+    );
+  }
 }

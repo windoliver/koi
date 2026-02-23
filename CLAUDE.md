@@ -80,7 +80,7 @@ L3  Meta-packages    Convenience bundles (e.g., @koi/starter = L0 + L1 + selecte
 
 **When creating or editing feature packages (L2):**
 - Import from `@koi/core` (L0) and L0-utility packages (L0u) only — never from `@koi/engine` or other L2 packages
-- L0u packages: `@koi/errors`, `@koi/validation`, `@koi/manifest`, `@koi/hash`, `@koi/test-utils`, `@koi/skill-scanner`
+- L0u packages: `@koi/errors`, `@koi/validation`, `@koi/manifest`, `@koi/hash`, `@koi/test-utils`, `@koi/skill-scanner`, `@koi/channel-base`
 - Each L2 package is independent and swappable
 - Examples: channel adapters, middleware implementations, engine adapters, MCP bridge
 - If two L2 packages need shared code, extract it to a new L2 package or move the shared types to L0
