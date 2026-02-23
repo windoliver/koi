@@ -66,6 +66,7 @@ function buildTest(
   opts?: {
     readonly withSendStatus?: boolean;
     readonly caps?: ChannelCapabilities;
+    readonly withQueue?: boolean;
   },
 ): TestSetup {
   let platformEventHandler: ((e: MockEvent) => void) | undefined;
@@ -100,6 +101,7 @@ function buildTest(
         statusLog.push(status);
       },
     }),
+    ...(opts?.withQueue === true && { queueWhenDisconnected: true }),
   };
 
   return {
@@ -352,6 +354,70 @@ describe("createChannelAdapter", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
 
       expect(received).toHaveLength(1); // first handler still active
+      await adapter.disconnect();
+    });
+  });
+
+  describe("send — disconnected guard", () => {
+    test("send() throws when called before connect", async () => {
+      const { adapter } = buildTest(normalizeAll);
+      await expect(adapter.send({ content: [{ kind: "text", text: "hi" }] })).rejects.toThrow(
+        "is not connected",
+      );
+    });
+
+    test("send() throws when called after disconnect", async () => {
+      const { adapter } = buildTest(normalizeAll);
+      await adapter.connect();
+      await adapter.disconnect();
+      await expect(adapter.send({ content: [{ kind: "text", text: "hi" }] })).rejects.toThrow(
+        "is not connected",
+      );
+    });
+  });
+
+  describe("queueWhenDisconnected", () => {
+    test("send() does not throw when disconnected and queueWhenDisconnected is true", async () => {
+      const { adapter } = buildTest(normalizeAll, { withQueue: true });
+      // Should not throw — message is buffered
+      await adapter.send({ content: [{ kind: "text", text: "queued" }] });
+    });
+
+    test("queued messages are flushed in order on connect", async () => {
+      const { adapter, sendLog } = buildTest(normalizeAll, { withQueue: true });
+
+      await adapter.send({ content: [{ kind: "text", text: "first" }] });
+      await adapter.send({ content: [{ kind: "text", text: "second" }] });
+      expect(sendLog).toHaveLength(0); // not sent yet
+
+      await adapter.connect();
+
+      expect(sendLog).toHaveLength(2);
+      expect(sendLog[0]?.content[0]).toEqual({ kind: "text", text: "first" });
+      expect(sendLog[1]?.content[0]).toEqual({ kind: "text", text: "second" });
+      await adapter.disconnect();
+    });
+
+    test("queue is cleared after drain — no double-send on reconnect", async () => {
+      const { adapter, sendLog } = buildTest(normalizeAll, { withQueue: true });
+
+      await adapter.send({ content: [{ kind: "text", text: "once" }] });
+
+      await adapter.connect();
+      await adapter.disconnect();
+      await adapter.connect(); // second connect — queue already drained
+
+      expect(sendLog).toHaveLength(1); // sent exactly once
+      await adapter.disconnect();
+    });
+
+    test("messages sent while connected are not queued", async () => {
+      const { adapter, sendLog } = buildTest(normalizeAll, { withQueue: true });
+      await adapter.connect();
+
+      await adapter.send({ content: [{ kind: "text", text: "live" }] });
+
+      expect(sendLog).toHaveLength(1);
       await adapter.disconnect();
     });
   });

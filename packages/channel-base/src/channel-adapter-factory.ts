@@ -15,6 +15,11 @@
  * sends events faster than handlers can process them, handlers receive calls
  * concurrently. Turn-level sequencing is the engine adapter's responsibility,
  * not the channel's.
+ *
+ * Queue-on-disconnect: when queueWhenDisconnected is true, send() buffers
+ * outbound messages while the channel is disconnected and flushes them in
+ * order on the next connect(). When false (default), send() throws if called
+ * while disconnected.
  */
 
 import type {
@@ -97,6 +102,15 @@ export interface ChannelAdapterConfig<E> {
    * Defaults to no-op. Wire to a debug logger to trace missed responses.
    */
   readonly onIgnoredEvent?: (event: E) => void;
+
+  /**
+   * When true, send() called while disconnected buffers the message and
+   * flushes it in order on the next connect(). Drain errors are logged to
+   * console.error but do not fail connect() — the platform connected successfully.
+   *
+   * When false (default), send() throws if called while disconnected.
+   */
+  readonly queueWhenDisconnected?: boolean;
 }
 
 /**
@@ -119,6 +133,7 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
       console.error("Channel handler error:", err);
     },
     onIgnoredEvent = (_event: E) => {},
+    queueWhenDisconnected = false,
   } = config;
 
   // let requires justification: mutable connection state managed by connect/disconnect lifecycle
@@ -130,6 +145,10 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
   // O(N) alloc per subscribe/unsubscribe is intentional and appropriate for this size.
   // let requires justification: handler list updated by onMessage() and its unsubscribe closure
   let handlers: readonly MessageHandler[] = [];
+
+  // let requires justification: outbound queue populated by send() while disconnected,
+  // drained sequentially by connect() when queueWhenDisconnected is true
+  let sendQueue: readonly OutboundMessage[] = [];
 
   const dispatchEvent = (event: E): void => {
     const message = normalize(event);
@@ -164,6 +183,20 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
     await platformConnect();
     unsubPlatform = onPlatformEvent(dispatchEvent);
     connected = true;
+
+    // Drain queued messages in order. Errors are logged but do not abort the
+    // drain or fail connect() — the platform connected successfully.
+    if (sendQueue.length > 0) {
+      const queued = sendQueue;
+      sendQueue = [];
+      for (const msg of queued) {
+        try {
+          await platformSend(msg);
+        } catch (e: unknown) {
+          console.error(`[channel:${name}] failed to drain queued message:`, e);
+        }
+      }
+    }
   };
 
   const disconnect = async (): Promise<void> => {
@@ -180,6 +213,15 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
     // Avoid allocation when renderBlocks returns the same reference (fast path).
     const rendered =
       renderedContent === message.content ? message : { ...message, content: renderedContent };
+
+    if (!connected) {
+      if (queueWhenDisconnected) {
+        sendQueue = [...sendQueue, rendered];
+        return;
+      }
+      throw new Error(`Channel "${name}" is not connected`);
+    }
+
     await platformSend(rendered);
   };
 

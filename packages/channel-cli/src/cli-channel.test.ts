@@ -197,7 +197,7 @@ describe("createCliChannel", () => {
     await channel.disconnect();
   });
 
-  test("send before connect writes to output without error", async () => {
+  test("send before connect throws — channel is not connected", async () => {
     const streams = createMockStreams();
     activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
     const channel = createCliChannel({
@@ -209,10 +209,7 @@ describe("createCliChannel", () => {
     const message: OutboundMessage = {
       content: [{ kind: "text", text: "Before connect" }],
     };
-    await channel.send(message);
-
-    const written = readStream(streams.output);
-    expect(written).toContain("Before connect\n");
+    await expect(channel.send(message)).rejects.toThrow("is not connected");
   });
 
   test("send with empty content does not write anything", async () => {
@@ -369,10 +366,12 @@ describe("createCliChannel", () => {
       errorOutput: streams.errorOutput,
     });
 
+    await channel.connect();
     const message: OutboundMessage = {
       content: [{ kind: "file", url: "https://example.com/doc.pdf", mimeType: "application/pdf" }],
     };
     await channel.send(message);
+    await channel.disconnect();
 
     const textWritten = readStream(streams.output);
     expect(textWritten).toContain("[File: https://example.com/doc.pdf]");
@@ -387,10 +386,12 @@ describe("createCliChannel", () => {
       errorOutput: streams.errorOutput,
     });
 
+    await channel.connect();
     const message: OutboundMessage = {
       content: [{ kind: "image", url: "https://example.com/pic.png" }],
     };
     await channel.send(message);
+    await channel.disconnect();
 
     const textWritten = readStream(streams.output);
     expect(textWritten).toContain("[Image: https://example.com/pic.png]");
