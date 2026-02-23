@@ -54,6 +54,13 @@ describe("createForgeSkillTool", () => {
     // Verify saved in store
     const loadResult = await store.load(result.value.id);
     expect(loadResult.ok).toBe(true);
+    if (loadResult.ok && loadResult.value.kind === "skill") {
+      // Content is now generated SKILL.md with frontmatter
+      expect(loadResult.value.content).toContain("---");
+      expect(loadResult.value.content).toContain("name: mySkill");
+      expect(loadResult.value.content).toContain("description: A skill");
+      expect(loadResult.value.content).toContain("# My Skill\nContent here.");
+    }
   });
 
   test("does not run sandbox for skills", async () => {
@@ -98,6 +105,26 @@ describe("createForgeSkillTool", () => {
 
     expect(result.ok).toBe(false);
     expect(result.error.stage).toBe("static");
+  });
+
+  test("generated SKILL.md contains frontmatter with author and version", async () => {
+    const store = createInMemoryForgeStore();
+    const tool = createForgeSkillTool(createDeps({ store }));
+
+    const result = (await tool.execute({
+      name: "fmSkill",
+      description: "Frontmatter test",
+      body: "# Body",
+      tags: ["test"],
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    const loadResult = await store.load(result.value.id);
+    if (loadResult.ok && loadResult.value.kind === "skill") {
+      expect(loadResult.value.content).toContain("author: agent-1");
+      expect(loadResult.value.content).toContain("version: 0.0.1");
+      expect(loadResult.value.content).toContain("- test");
+    }
   });
 
   test("propagates files to artifact", async () => {

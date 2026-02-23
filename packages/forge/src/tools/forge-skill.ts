@@ -5,13 +5,16 @@
 
 import type { Result, Tool } from "@koi/core";
 import type { ForgeError } from "../errors.js";
+import { generateSkillMd } from "../generate-skill-md.js";
 import type { ForgeResult, ForgeSkillInput, SkillArtifact } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import {
+  buildBaseFields,
   computeContentHash,
   createForgeTool,
+  forgeSkillInputSchema,
+  parseForgeInput,
   runForgePipeline,
-  validateInputFields,
 } from "./shared.js";
 
 // ---------------------------------------------------------------------------
@@ -48,50 +51,41 @@ const FORGE_SKILL_CONFIG: ForgeToolConfig = {
 // Handler
 // ---------------------------------------------------------------------------
 
-const FORGE_SKILL_FIELDS = [
-  { name: "name", type: "string", required: true },
-  { name: "description", type: "string", required: true },
-  { name: "body", type: "string", required: true },
-  { name: "tags", type: "array", required: false },
-  { name: "files", type: "object", required: false },
-  { name: "requires", type: "object", required: false },
-] as const;
-
 async function forgeSkillHandler(
   input: unknown,
   deps: ForgeDeps,
 ): Promise<Result<ForgeResult, ForgeError>> {
-  const validationErr = validateInputFields(input, FORGE_SKILL_FIELDS);
-  if (validationErr !== undefined) {
-    return { ok: false, error: validationErr };
+  const parsed = parseForgeInput(forgeSkillInputSchema, input);
+  if (!parsed.ok) {
+    return parsed;
   }
-  const skillInput = input as ForgeSkillInput;
+
   const forgeInput: ForgeSkillInput = {
     kind: "skill",
-    name: skillInput.name,
-    description: skillInput.description,
-    body: skillInput.body,
-    ...(skillInput.tags !== undefined ? { tags: skillInput.tags } : {}),
-    ...(skillInput.files !== undefined ? { files: skillInput.files } : {}),
-    ...(skillInput.requires !== undefined ? { requires: skillInput.requires } : {}),
+    name: parsed.value.name,
+    description: parsed.value.description,
+    body: parsed.value.body,
+    ...(parsed.value.tags !== undefined ? { tags: parsed.value.tags } : {}),
+    ...(parsed.value.files !== undefined ? { files: parsed.value.files } : {}),
+    ...(parsed.value.requires !== undefined ? { requires: parsed.value.requires } : {}),
   };
 
+  // Generate full SKILL.md with YAML frontmatter
+  const generatedContent = generateSkillMd({
+    name: forgeInput.name,
+    description: forgeInput.description,
+    tags: forgeInput.tags,
+    agentId: deps.context.agentId,
+    version: "0.0.1",
+    body: forgeInput.body,
+  });
+
   return runForgePipeline(forgeInput, deps, (id, report) => {
+    const contentHash = computeContentHash(generatedContent, forgeInput.files);
     const artifact: SkillArtifact = {
-      id,
+      ...buildBaseFields(id, forgeInput, report, deps, contentHash),
       kind: "skill",
-      name: forgeInput.name,
-      description: forgeInput.description,
-      scope: deps.config.defaultScope,
-      trustTier: report.finalTrustTier,
-      lifecycle: "active",
-      createdBy: deps.context.agentId,
-      createdAt: Date.now(),
-      version: "0.0.1",
-      tags: forgeInput.tags ?? [],
-      usageCount: 0,
-      contentHash: computeContentHash(forgeInput.body, forgeInput.files),
-      content: forgeInput.body,
+      content: generatedContent,
       ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
       ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
     };
