@@ -32,7 +32,13 @@ export type {
   ToolArtifact,
 } from "./brick-store.js";
 // channel
-export type { ChannelAdapter, ChannelCapabilities, MessageHandler } from "./channel.js";
+export type {
+  ChannelAdapter,
+  ChannelCapabilities,
+  ChannelStatus,
+  ChannelStatusKind,
+  MessageHandler,
+} from "./channel.js";
 // common
 export type { JsonObject } from "./common.js";
 // config

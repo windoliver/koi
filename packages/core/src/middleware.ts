@@ -2,6 +2,7 @@
  * Middleware contract — sole interposition layer for model/tool calls.
  */
 
+import type { ChannelStatus } from "./channel.js";
 import type { JsonObject } from "./common.js";
 import type { InboundMessage } from "./message.js";
 
@@ -17,6 +18,8 @@ export interface TurnContext {
   readonly messages: readonly InboundMessage[];
   readonly metadata: JsonObject;
   readonly requestApproval?: ApprovalHandler;
+  /** Optional callback to notify channels of turn status. Injected by L1 if configured. */
+  readonly sendStatus?: (status: ChannelStatus) => Promise<void>;
 }
 
 export interface ModelRequest {

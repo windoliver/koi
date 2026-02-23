@@ -230,6 +230,16 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-turn-ack": {
+      "name": "@koi/middleware-turn-ack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/model-router": {
       "name": "@koi/model-router",
       "version": "0.0.0",
@@ -549,6 +559,8 @@
     "@koi/middleware-pay": ["@koi/middleware-pay@workspace:packages/middleware-pay"],
 
     "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/middleware-permissions"],
+
+    "@koi/middleware-turn-ack": ["@koi/middleware-turn-ack@workspace:packages/middleware-turn-ack"],
 
     "@koi/model-router": ["@koi/model-router@workspace:packages/model-router"],
 

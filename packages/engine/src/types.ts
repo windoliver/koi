@@ -6,6 +6,7 @@ import type {
   Agent,
   AgentManifest,
   ApprovalHandler,
+  ChannelStatus,
   ComponentProvider,
   EngineAdapter,
   EngineEvent,
@@ -213,6 +214,8 @@ export interface CreateKoiOptions {
   readonly forge?: ForgeRuntime;
   /** Optional shared process accounter for cross-agent spawn accounting. */
   readonly processAccounter?: ProcessAccounter;
+  /** Optional status handler for turn lifecycle notifications. L1 threads this into TurnContext. */
+  readonly sendStatus?: (status: ChannelStatus) => Promise<void>;
 }
 
 export interface KoiRuntime {

@@ -165,12 +165,12 @@ describe("createKoi run lifecycle", () => {
     });
 
     const events = await collectEvents(runtime.run({ kind: "text", text: "test" }));
-    expect(events.map((e) => e.kind)).toEqual(["text_delta", "done"]);
+    expect(events.map((e) => e.kind)).toEqual(["turn_start", "text_delta", "done"]);
     expect(runtime.agent.state).toBe("terminated");
   });
 
-  test("yields all events from adapter", async () => {
-    const expectedEvents: readonly EngineEvent[] = [
+  test("yields all events from adapter (plus turn_start)", async () => {
+    const adapterEvents: readonly EngineEvent[] = [
       { kind: "text_delta", delta: "Hello " },
       { kind: "text_delta", delta: "world" },
       { kind: "turn_end", turnIndex: 0 },
@@ -179,21 +179,30 @@ describe("createKoi run lifecycle", () => {
 
     const runtime = await createKoi({
       manifest: testManifest(),
-      adapter: mockAdapter(expectedEvents),
+      adapter: mockAdapter(adapterEvents),
     });
 
     const events = await collectEvents(runtime.run({ kind: "text", text: "test" }));
-    expect(events).toEqual(expectedEvents);
+    // turn_start is injected by L1 before adapter events; second turn_start after turn_end
+    expect(events.map((e) => e.kind)).toEqual([
+      "turn_start",
+      "text_delta",
+      "text_delta",
+      "turn_end",
+      "turn_start",
+      "done",
+    ]);
   });
 
-  test("handles empty event stream", async () => {
+  test("handles empty event stream (still emits turn_start)", async () => {
     const runtime = await createKoi({
       manifest: testManifest(),
       adapter: mockAdapter([]),
     });
 
     const events = await collectEvents(runtime.run({ kind: "text", text: "test" }));
-    expect(events).toEqual([]);
+    // L1 emits turn_start, then adapter is exhausted → session ends
+    expect(events.map((e) => e.kind)).toEqual(["turn_start"]);
     expect(runtime.agent.state).toBe("terminated");
   });
 });
@@ -387,8 +396,9 @@ describe("createKoi terminal injection", () => {
     });
 
     const events = await collectEvents(runtime.run({ kind: "text", text: "test" }));
-    expect(events).toHaveLength(1);
-    expect(events[0]?.kind).toBe("done");
+    expect(events).toHaveLength(2);
+    expect(events[0]?.kind).toBe("turn_start");
+    expect(events[1]?.kind).toBe("done");
   });
 
   test("default tool terminal finds and executes agent tools", async () => {
@@ -1714,7 +1724,270 @@ describe("createKoi live forge resolution", () => {
   });
 });
 
-// onBeforeTurn tests removed — inline iterator (main) does not call onBeforeTurn.
+// ---------------------------------------------------------------------------
+// createKoi — turn_start event emission
+// ---------------------------------------------------------------------------
+
+describe("createKoi turn_start emission", () => {
+  test("turn_start is always first event", async () => {
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([
+        { kind: "text_delta", delta: "Hello" },
+        { kind: "done", output: doneOutput() },
+      ]),
+    });
+
+    const events = await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    expect(events[0]?.kind).toBe("turn_start");
+  });
+
+  test("turn_start has correct turnIndex", async () => {
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+    });
+
+    const events = await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    const turnStart = events[0];
+    expect(turnStart?.kind).toBe("turn_start");
+    if (turnStart?.kind === "turn_start") {
+      expect(turnStart.turnIndex).toBe(0);
+    }
+  });
+
+  test("empty adapter stream still gets turn_start", async () => {
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([]),
+    });
+
+    const events = await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    expect(events).toHaveLength(1);
+    expect(events[0]?.kind).toBe("turn_start");
+  });
+
+  test("error stream: turn_start emitted before error", async () => {
+    const { KoiEngineError } = await import("./errors.js");
+    const adapter: EngineAdapter = {
+      engineId: "crash-adapter",
+      stream: () => ({
+        [Symbol.asyncIterator]() {
+          return {
+            async next(): Promise<IteratorResult<EngineEvent>> {
+              throw KoiEngineError.from("TIMEOUT", "max turns");
+            },
+          };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+    });
+
+    const events = await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    expect(events[0]?.kind).toBe("turn_start");
+    expect(events[1]?.kind).toBe("done");
+  });
+
+  test("multi-turn: turn_start for each turn", async () => {
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([
+        { kind: "text_delta", delta: "t0" },
+        { kind: "turn_end", turnIndex: 0 },
+        { kind: "text_delta", delta: "t1" },
+        { kind: "turn_end", turnIndex: 1 },
+        { kind: "done", output: doneOutput() },
+      ]),
+    });
+
+    const events = await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    const kinds = events.map((e) => e.kind);
+    expect(kinds).toEqual([
+      "turn_start",
+      "text_delta",
+      "turn_end",
+      "turn_start",
+      "text_delta",
+      "turn_end",
+      "turn_start",
+      "done",
+    ]);
+
+    // Verify turnIndex values
+    const turnStarts = events.filter((e) => e.kind === "turn_start");
+    if (turnStarts[0]?.kind === "turn_start") expect(turnStarts[0].turnIndex).toBe(0);
+    if (turnStarts[1]?.kind === "turn_start") expect(turnStarts[1].turnIndex).toBe(1);
+    if (turnStarts[2]?.kind === "turn_start") expect(turnStarts[2].turnIndex).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createKoi — onBeforeTurn hook wiring
+// ---------------------------------------------------------------------------
+
+describe("createKoi onBeforeTurn hooks", () => {
+  test("calls onBeforeTurn before first turn", async () => {
+    const onBeforeTurn = mock(() => Promise.resolve());
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "test-mw", onBeforeTurn }],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    expect(onBeforeTurn).toHaveBeenCalledTimes(1);
+  });
+
+  test("calls onBeforeTurn for each turn", async () => {
+    const onBeforeTurn = mock(() => Promise.resolve());
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([
+        { kind: "turn_end", turnIndex: 0 },
+        { kind: "turn_end", turnIndex: 1 },
+        { kind: "done", output: doneOutput() },
+      ]),
+      middleware: [{ name: "test-mw", onBeforeTurn }],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    // 3 turns: initial + after each turn_end
+    expect(onBeforeTurn).toHaveBeenCalledTimes(3);
+  });
+
+  test("onBeforeTurn receives sendStatus from options", async () => {
+    const sendStatus = mock(() => Promise.resolve());
+    let capturedCtx: TurnContext | undefined;
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [
+        {
+          name: "ctx-capture",
+          onBeforeTurn: async (ctx) => {
+            capturedCtx = ctx;
+          },
+        },
+      ],
+      sendStatus,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    expect(capturedCtx).toBeDefined();
+    expect(capturedCtx?.sendStatus).toBe(sendStatus);
+  });
+
+  test("onBeforeTurn fires before turn_start event is yielded", async () => {
+    const order: string[] = [];
+    const onBeforeTurn = mock(async () => {
+      order.push("hook");
+    });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "test-mw", onBeforeTurn }],
+    });
+
+    for await (const event of runtime.run({ kind: "text", text: "test" })) {
+      if (event.kind === "turn_start") {
+        order.push("event");
+      }
+    }
+
+    expect(order).toEqual(["hook", "event"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createKoi — sendStatus threading
+// ---------------------------------------------------------------------------
+
+describe("createKoi sendStatus threading", () => {
+  test("sendStatus is threaded into cooperating adapter TurnContext", async () => {
+    const sendStatus = mock(() => Promise.resolve());
+    let capturedCtx: TurnContext | undefined;
+
+    const mw: KoiMiddleware = {
+      name: "ctx-capture",
+      wrapModelCall: async (ctx, req, next) => {
+        capturedCtx = ctx;
+        return next(req);
+      },
+    };
+
+    const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
+    const adapter: EngineAdapter = {
+      engineId: "status-adapter",
+      terminals: { modelCall: modelTerminal },
+      stream: (input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          if (input.callHandlers) {
+            await input.callHandlers.modelCall({ messages: [] });
+          }
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [mw],
+      sendStatus,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    expect(capturedCtx).toBeDefined();
+    expect(capturedCtx?.sendStatus).toBe(sendStatus);
+  });
+
+  test("no sendStatus means TurnContext.sendStatus is undefined", async () => {
+    let capturedCtx: TurnContext | undefined;
+
+    const mw: KoiMiddleware = {
+      name: "ctx-capture",
+      wrapModelCall: async (ctx, req, next) => {
+        capturedCtx = ctx;
+        return next(req);
+      },
+    };
+
+    const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
+    const adapter: EngineAdapter = {
+      engineId: "no-status-adapter",
+      terminals: { modelCall: modelTerminal },
+      stream: (input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          if (input.callHandlers) {
+            await input.callHandlers.modelCall({ messages: [] });
+          }
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [mw],
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    expect(capturedCtx).toBeDefined();
+    expect(capturedCtx?.sendStatus).toBeUndefined();
+  });
+});
 
 // ---------------------------------------------------------------------------
 // createKoi — concurrent run() guard (#12A)
@@ -1770,7 +2043,7 @@ describe("createKoi concurrent run guard", () => {
     await collectEvents(runtime.run({ kind: "text", text: "first" }));
     // Second run should work
     const events = await collectEvents(runtime.run({ kind: "text", text: "second" }));
-    expect(events).toHaveLength(1);
+    expect(events).toHaveLength(2); // turn_start + done
   });
 });
 
