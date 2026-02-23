@@ -51,9 +51,14 @@ describe("formatErrors", () => {
 });
 
 describe("defaultRepairStrategy", () => {
-  test("appends assistant response and error feedback to messages", () => {
+  test("appends assistant response and error feedback to messages", async () => {
     const errors: readonly ValidationError[] = [{ validator: "schema", message: "invalid JSON" }];
-    const result = defaultRepairStrategy.buildRetryRequest(baseRequest, baseResponse, errors, 1);
+    const result = await defaultRepairStrategy.buildRetryRequest(
+      baseRequest,
+      baseResponse,
+      errors,
+      1,
+    );
 
     expect(result.messages).toHaveLength(3);
     expect(result.messages[0]?.senderId).toBe("user-1");
@@ -75,16 +80,21 @@ describe("defaultRepairStrategy", () => {
     }
   });
 
-  test("preserves original request properties", () => {
+  test("preserves original request properties", async () => {
     const errors: readonly ValidationError[] = [{ validator: "v1", message: "bad" }];
-    const result = defaultRepairStrategy.buildRetryRequest(baseRequest, baseResponse, errors, 1);
+    const result = await defaultRepairStrategy.buildRetryRequest(
+      baseRequest,
+      baseResponse,
+      errors,
+      1,
+    );
     expect(result.model).toBe("test-model");
   });
 
-  test("does not mutate original request", () => {
+  test("does not mutate original request", async () => {
     const errors: readonly ValidationError[] = [{ validator: "v1", message: "bad" }];
     const originalLength = baseRequest.messages.length;
-    defaultRepairStrategy.buildRetryRequest(baseRequest, baseResponse, errors, 1);
+    await defaultRepairStrategy.buildRetryRequest(baseRequest, baseResponse, errors, 1);
     expect(baseRequest.messages).toHaveLength(originalLength);
   });
 });

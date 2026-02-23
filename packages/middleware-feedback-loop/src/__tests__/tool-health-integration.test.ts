@@ -1,0 +1,297 @@
+import { describe, expect, mock, test } from "bun:test";
+import type { ToolRequest } from "@koi/core/middleware";
+import { KoiRuntimeError } from "@koi/errors";
+import {
+  createFailingValidator,
+  createMockTurnContext,
+  createMockValidator,
+  createSpyToolHandler,
+} from "@koi/test-utils";
+import type { ForgeHealthConfig } from "../config.js";
+import { createFeedbackLoopMiddleware } from "../feedback-loop.js";
+import type { ForgeToolErrorFeedback } from "../types.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const ctx = createMockTurnContext();
+
+function createMockForgeStore() {
+  return {
+    save: mock(() => Promise.resolve({ ok: true as const, value: undefined })),
+    load: mock(() => Promise.resolve({ ok: true as const, value: {} as never })),
+    search: mock(() => Promise.resolve({ ok: true as const, value: [] as never })),
+    remove: mock(() => Promise.resolve({ ok: true as const, value: undefined })),
+    update: mock(() => Promise.resolve({ ok: true as const, value: undefined })),
+    exists: mock(() => Promise.resolve({ ok: true as const, value: false })),
+  };
+}
+
+function createMockSnapshotStore() {
+  return {
+    record: mock(() => Promise.resolve({ ok: true as const, value: undefined })),
+    get: mock(() => Promise.resolve({ ok: true as const, value: {} as never })),
+    list: mock(() => Promise.resolve({ ok: true as const, value: [] as never })),
+    history: mock(() => Promise.resolve({ ok: true as const, value: [] as never })),
+    latest: mock(() => Promise.resolve({ ok: true as const, value: {} as never })),
+  };
+}
+
+function createForgeHealthConfig(overrides?: Partial<ForgeHealthConfig>): ForgeHealthConfig {
+  return {
+    resolveBrickId: (toolId: string) =>
+      toolId.startsWith("forged-") ? `brick-${toolId}` : undefined,
+    forgeStore: createMockForgeStore(),
+    snapshotStore: createMockSnapshotStore(),
+    windowSize: 4,
+    quarantineThreshold: 0.5,
+    maxRecentFailures: 5,
+    clock: () => 1000,
+    ...overrides,
+  };
+}
+
+const forgedToolRequest: ToolRequest = {
+  toolId: "forged-tool-1",
+  input: { query: "test" },
+};
+
+const nonForgedToolRequest: ToolRequest = {
+  toolId: "builtin-tool-1",
+  input: { query: "test" },
+};
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe("tool health integration", () => {
+  test("forged tool success records metrics", async () => {
+    // let: capture clock calls to verify latency tracking
+    let clockCalls = 0;
+    const forgeHealth = createForgeHealthConfig({
+      clock: () => {
+        clockCalls++;
+        // First call = start, second call = end (10ms latency)
+        return clockCalls <= 1 ? 1000 : 1010;
+      },
+    });
+
+    const spy = createSpyToolHandler({ output: { result: "ok" } });
+    const mw = createFeedbackLoopMiddleware({ forgeHealth });
+
+    const result = await mw.wrapToolCall?.(ctx, forgedToolRequest, spy.handler);
+    expect(result?.output).toEqual({ result: "ok" });
+    expect(spy.calls).toHaveLength(1);
+  });
+
+  test("forged tool failure records failure", async () => {
+    const forgeStore = createMockForgeStore();
+    const forgeHealth = createForgeHealthConfig({ forgeStore });
+
+    const failingHandler = async () => {
+      throw new Error("tool crashed");
+    };
+    const mw = createFeedbackLoopMiddleware({ forgeHealth });
+
+    try {
+      await mw.wrapToolCall?.(ctx, forgedToolRequest, failingHandler);
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(Error);
+      if (e instanceof Error) {
+        expect(e.message).toBe("tool crashed");
+      }
+    }
+  });
+
+  test("tool exceeds threshold → quarantined → subsequent calls return ForgeToolErrorFeedback", async () => {
+    const forgeStore = createMockForgeStore();
+    const snapshotStore = createMockSnapshotStore();
+    const onQuarantine = mock(() => {});
+
+    const forgeHealth = createForgeHealthConfig({
+      forgeStore,
+      snapshotStore,
+      onQuarantine,
+      windowSize: 2,
+      quarantineThreshold: 0.5,
+    });
+
+    const failingHandler = async () => {
+      throw new Error("tool error");
+    };
+    const mw = createFeedbackLoopMiddleware({ forgeHealth });
+
+    // Fail twice to trigger quarantine (100% error rate with window=2)
+    for (let i = 0; i < 2; i++) {
+      try {
+        await mw.wrapToolCall?.(ctx, forgedToolRequest, failingHandler);
+      } catch {
+        // Expected
+      }
+    }
+
+    // Subsequent call should return structured feedback, not throw
+    const spy = createSpyToolHandler({ output: "should not reach" });
+    const result = await mw.wrapToolCall?.(ctx, forgedToolRequest, spy.handler);
+
+    expect(spy.calls).toHaveLength(0); // Handler never called
+    const feedback = result?.output as ForgeToolErrorFeedback;
+    expect(feedback.error).toContain("quarantined");
+    expect(feedback.errorRate).toBeGreaterThan(0);
+    expect(feedback.suggestion).toContain("re-forge");
+  });
+
+  test("non-forged tool passes through without health tracking", async () => {
+    const forgeHealth = createForgeHealthConfig();
+    const spy = createSpyToolHandler({ output: "raw" });
+    const mw = createFeedbackLoopMiddleware({ forgeHealth });
+
+    const result = await mw.wrapToolCall?.(ctx, nonForgedToolRequest, spy.handler);
+    expect(result?.output).toBe("raw");
+    expect(spy.calls).toHaveLength(1);
+  });
+
+  test("onQuarantine callback fires when tool is quarantined", async () => {
+    const onQuarantine = mock(() => {});
+    const forgeHealth = createForgeHealthConfig({
+      onQuarantine,
+      windowSize: 2,
+      quarantineThreshold: 0.5,
+    });
+
+    const failingHandler = async () => {
+      throw new Error("crash");
+    };
+    const mw = createFeedbackLoopMiddleware({ forgeHealth });
+
+    for (let i = 0; i < 2; i++) {
+      try {
+        await mw.wrapToolCall?.(ctx, forgedToolRequest, failingHandler);
+      } catch {
+        // Expected
+      }
+    }
+
+    expect(onQuarantine).toHaveBeenCalledWith("brick-forged-tool-1");
+  });
+
+  test("gate failure counts as tool failure", async () => {
+    const forgeStore = createMockForgeStore();
+    const snapshotStore = createMockSnapshotStore();
+    const onQuarantine = mock(() => {});
+
+    const forgeHealth = createForgeHealthConfig({
+      forgeStore,
+      snapshotStore,
+      onQuarantine,
+      windowSize: 2,
+      quarantineThreshold: 0.5,
+    });
+
+    const spy = createSpyToolHandler({ output: { data: "bad" } });
+    const mw = createFeedbackLoopMiddleware({
+      forgeHealth,
+      toolGates: [
+        createFailingValidator(
+          [{ validator: "safety-gate", message: "unsafe output" }],
+          "safety-gate",
+        ),
+      ],
+    });
+
+    // Gate failures trigger health tracking
+    for (let i = 0; i < 2; i++) {
+      try {
+        await mw.wrapToolCall?.(ctx, forgedToolRequest, spy.handler);
+      } catch {
+        // Expected gate failure
+      }
+    }
+
+    // Should be quarantined now
+    const successSpy = createSpyToolHandler({ output: "ok" });
+    const result = await mw.wrapToolCall?.(ctx, forgedToolRequest, successSpy.handler);
+    expect(successSpy.calls).toHaveLength(0);
+    const feedback = result?.output as ForgeToolErrorFeedback;
+    expect(feedback.error).toContain("quarantined");
+  });
+
+  test("forgeStore.update and snapshotStore.record called during quarantine", async () => {
+    const forgeStore = createMockForgeStore();
+    const snapshotStore = createMockSnapshotStore();
+
+    const forgeHealth = createForgeHealthConfig({
+      forgeStore,
+      snapshotStore,
+      windowSize: 2,
+      quarantineThreshold: 0.5,
+    });
+
+    const failingHandler = async () => {
+      throw new Error("err");
+    };
+    const mw = createFeedbackLoopMiddleware({ forgeHealth });
+
+    for (let i = 0; i < 2; i++) {
+      try {
+        await mw.wrapToolCall?.(ctx, forgedToolRequest, failingHandler);
+      } catch {
+        // Expected
+      }
+    }
+
+    expect(forgeStore.update).toHaveBeenCalledTimes(1);
+    expect(snapshotStore.record).toHaveBeenCalledTimes(1);
+  });
+
+  test("mixed forged and non-forged tools in same middleware", async () => {
+    const forgeHealth = createForgeHealthConfig();
+    const spy = createSpyToolHandler({ output: "ok" });
+    const mw = createFeedbackLoopMiddleware({
+      forgeHealth,
+      toolGates: [createMockValidator("gate")],
+    });
+
+    // Forged tool
+    const result1 = await mw.wrapToolCall?.(ctx, forgedToolRequest, spy.handler);
+    expect(result1?.output).toBe("ok");
+
+    // Non-forged tool
+    const result2 = await mw.wrapToolCall?.(ctx, nonForgedToolRequest, spy.handler);
+    expect(result2?.output).toBe("ok");
+
+    expect(spy.calls).toHaveLength(2);
+  });
+
+  test("health tracking disabled when forgeHealth not configured", async () => {
+    const spy = createSpyToolHandler({ output: "ok" });
+    const mw = createFeedbackLoopMiddleware({});
+
+    const result = await mw.wrapToolCall?.(ctx, forgedToolRequest, spy.handler);
+    expect(result?.output).toBe("ok");
+    expect(spy.calls).toHaveLength(1);
+  });
+
+  test("existing tool validators still work with health tracking enabled", async () => {
+    const forgeHealth = createForgeHealthConfig();
+    const spy = createSpyToolHandler();
+    const mw = createFeedbackLoopMiddleware({
+      forgeHealth,
+      toolValidators: [
+        createFailingValidator([{ validator: "input-check", message: "bad input" }], "input-check"),
+      ],
+    });
+
+    try {
+      await mw.wrapToolCall?.(ctx, forgedToolRequest, spy.handler);
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+    }
+    // Handler never called — input validation failed before execution
+    expect(spy.calls).toHaveLength(0);
+  });
+});

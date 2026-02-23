@@ -34,7 +34,51 @@ export interface RepairStrategy {
     response: ModelResponse,
     errors: readonly ValidationError[],
     attempt: number,
-  ) => ModelRequest;
+  ) => ModelRequest | Promise<ModelRequest>;
+}
+
+// ---------------------------------------------------------------------------
+// Tool health tracking types (forge runtime health)
+// ---------------------------------------------------------------------------
+
+/** Aggregated health metrics for a single tool. */
+export interface ToolHealthMetrics {
+  /** Success rate (0-1). */
+  readonly successRate: number;
+  /** Error rate (0-1). */
+  readonly errorRate: number;
+  /** Total invocations in the tracking window. */
+  readonly usageCount: number;
+  /** Average latency in milliseconds. */
+  readonly avgLatencyMs: number;
+}
+
+/** Health state of a forged tool. */
+export type ToolHealthState = "healthy" | "degraded" | "quarantined";
+
+/** Point-in-time snapshot of a tool's health. */
+export interface ToolHealthSnapshot {
+  readonly brickId: string;
+  readonly toolId: string;
+  readonly metrics: ToolHealthMetrics;
+  readonly state: ToolHealthState;
+  readonly recentFailures: readonly ToolFailureRecord[];
+  readonly lastUpdatedAt: number;
+}
+
+/** Record of a single tool failure. */
+export interface ToolFailureRecord {
+  readonly timestamp: number;
+  readonly error: string;
+  readonly latencyMs: number;
+}
+
+/** Enriched error feedback returned to the agent when a tool is quarantined or degraded. */
+export interface ForgeToolErrorFeedback {
+  readonly error: string;
+  readonly errorRate: number;
+  readonly recentFailures: readonly ToolFailureRecord[];
+  readonly suggestion: string;
 }
 
 /** Category-aware retry budget configuration. */

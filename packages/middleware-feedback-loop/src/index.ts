@@ -6,13 +6,22 @@
  * the pipeline on failure without retry. Layer 2: depends on @koi/core only.
  */
 
-export type { FeedbackLoopConfig } from "./config.js";
+export type { FeedbackLoopConfig, ForgeHealthConfig } from "./config.js";
 export { validateConfig } from "./config.js";
 export { createFeedbackLoopMiddleware } from "./feedback-loop.js";
+export type { ForgeRepairConfig } from "./forge-repair.js";
+export { createForgeRepairStrategy } from "./forge-repair.js";
 export { defaultRepairStrategy, formatErrors } from "./repair.js";
+export type { ToolHealthTracker } from "./tool-health.js";
+export { createToolHealthTracker } from "./tool-health.js";
 export type {
+  ForgeToolErrorFeedback,
   RepairStrategy,
   RetryConfig,
+  ToolFailureRecord,
+  ToolHealthMetrics,
+  ToolHealthSnapshot,
+  ToolHealthState,
   ValidationError,
   ValidationResult,
   Validator,

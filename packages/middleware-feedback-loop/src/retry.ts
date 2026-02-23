@@ -122,7 +122,7 @@ export function createRetryLoop(config: RetryConfig): RetryLoop {
 
             onRetry?.(validationAttempts, e.errors);
             await delay(validationDelay);
-            currentRequest = repair.buildRetryRequest(
+            currentRequest = await repair.buildRetryRequest(
               initialRequest,
               e.response,
               e.errors,
