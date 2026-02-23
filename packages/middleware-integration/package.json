@@ -8,6 +8,7 @@
     "@koi/core": "workspace:*",
     "@koi/engine": "workspace:*",
     "@koi/engine-loop": "workspace:*",
+    "@koi/hash": "workspace:*",
     "@koi/manifest": "workspace:*",
     "@koi/middleware-audit": "workspace:*",
     "@koi/middleware-memory": "workspace:*",
