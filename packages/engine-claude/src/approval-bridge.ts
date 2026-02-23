@@ -35,7 +35,7 @@ export function createApprovalBridge(
     const request: ApprovalRequest = {
       toolId: toolName,
       input,
-      reason: options.decisionReason ?? `Tool "${toolName}" requires approval`,
+      reason: options?.decisionReason ?? `Tool "${toolName}" requires approval`,
     };
 
     // Signal: approval request sent

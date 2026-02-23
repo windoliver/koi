@@ -69,7 +69,11 @@ describe("@koi/engine-claude contract", () => {
 describe("@koi/engine-claude HITL contract", () => {
   test("adapter with approvalHandler emits HITL events and saveHumanMessage works", async () => {
     let canUseToolFn:
-      | ((toolName: string, input: Record<string, unknown>) => Promise<unknown>)
+      | ((
+          toolName: string,
+          input: Record<string, unknown>,
+          opts: Record<string, unknown>,
+        ) => Promise<unknown>)
       | undefined;
 
     const hitlSdk: SdkFunctions = {
@@ -84,7 +88,14 @@ describe("@koi/engine-claude HITL contract", () => {
 
         // Simulate SDK calling canUseTool
         if (canUseToolFn !== undefined) {
-          await canUseToolFn("search", { q: "test" });
+          await canUseToolFn(
+            "search",
+            { q: "test" },
+            {
+              signal: AbortSignal.abort(),
+              toolUseID: "tool-1",
+            },
+          );
         }
 
         yield {
