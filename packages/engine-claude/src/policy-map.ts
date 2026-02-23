@@ -5,7 +5,7 @@
  * with MCP bridge server integration and sdkOverrides applied last.
  */
 
-import type { ClaudeAdapterConfig } from "./types.js";
+import type { ClaudeAdapterConfig, SdkCanUseTool } from "./types.js";
 
 /**
  * Minimal SDK Options shape — avoids importing SDK types into adapter API.
@@ -24,6 +24,7 @@ export interface SdkOptions {
   readonly mcpServers?: Readonly<Record<string, unknown>>;
   readonly resume?: string;
   readonly abortController?: AbortController;
+  readonly canUseTool?: SdkCanUseTool;
   readonly [key: string]: unknown;
 }
 
@@ -43,6 +44,7 @@ export interface McpBridgeConfig {
  * @param mcpBridge - Optional MCP bridge server config for Koi tools
  * @param resumeSessionId - Optional session ID for resuming a conversation
  * @param abortController - Optional AbortController for cancellation
+ * @param canUseTool - Optional canUseTool callback for HITL approval
  * @returns SDK-compatible options object
  */
 export function buildSdkOptions(
@@ -50,6 +52,7 @@ export function buildSdkOptions(
   mcpBridge: McpBridgeConfig | undefined,
   resumeSessionId: string | undefined,
   abortController: AbortController | undefined,
+  canUseTool?: SdkCanUseTool,
 ): SdkOptions {
   return {
     ...(config.model !== undefined ? { model: config.model } : {}),
@@ -70,6 +73,8 @@ export function buildSdkOptions(
     ...(resumeSessionId !== undefined ? { resume: resumeSessionId } : {}),
     // Abort controller
     ...(abortController !== undefined ? { abortController } : {}),
+    // HITL tool approval callback
+    ...(canUseTool !== undefined ? { canUseTool } : {}),
     // SDK overrides applied last — can override anything
     ...config.sdkOverrides,
   };

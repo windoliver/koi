@@ -1,11 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Agent, SubsystemToken } from "@koi/core";
 import { agentId, toolToken } from "@koi/core";
-import {
-  brickToTool,
-  createForgeComponentProvider,
-  createForgeComponentProviderAsync,
-} from "./forge-component-provider.js";
+import { brickToTool, createForgeComponentProvider } from "./forge-component-provider.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
 import type { SandboxExecutor, SkillArtifact, ToolArtifact } from "./types.js";
 
@@ -121,16 +117,16 @@ describe("brickToTool", () => {
 });
 
 // ---------------------------------------------------------------------------
-// createForgeComponentProviderAsync
+// createForgeComponentProvider (lazy, attach triggers store load)
 // ---------------------------------------------------------------------------
 
-describe("createForgeComponentProviderAsync", () => {
+describe("createForgeComponentProvider — backward-compat attach tests", () => {
   test("attaches tool bricks as components", async () => {
     const store = createInMemoryForgeStore();
     await store.save(createToolBrick({ name: "add" }));
     await store.save(createToolBrick({ name: "subtract" }));
 
-    const provider = await createForgeComponentProviderAsync({
+    const provider = createForgeComponentProvider({
       store,
       executor: echoExecutor(),
     });
@@ -148,7 +144,7 @@ describe("createForgeComponentProviderAsync", () => {
 
   test("returns empty map when store is empty", async () => {
     const store = createInMemoryForgeStore();
-    const provider = await createForgeComponentProviderAsync({
+    const provider = createForgeComponentProvider({
       store,
       executor: echoExecutor(),
     });
@@ -178,7 +174,7 @@ describe("createForgeComponentProviderAsync", () => {
     };
     await store.save(skillBrick);
 
-    const provider = await createForgeComponentProviderAsync({
+    const provider = createForgeComponentProvider({
       store,
       executor: echoExecutor(),
     });
@@ -192,7 +188,7 @@ describe("createForgeComponentProviderAsync", () => {
     await store.save(createToolBrick({ id: "b1", name: "active" }));
     await store.save(createToolBrick({ id: "b2", name: "deprecated", lifecycle: "deprecated" }));
 
-    const provider = await createForgeComponentProviderAsync({
+    const provider = createForgeComponentProvider({
       store,
       executor: echoExecutor(),
     });
@@ -205,7 +201,7 @@ describe("createForgeComponentProviderAsync", () => {
     const store = createInMemoryForgeStore();
     await store.save(createToolBrick({ name: "myTool" }));
 
-    const provider = await createForgeComponentProviderAsync({
+    const provider = createForgeComponentProvider({
       store,
       executor: echoExecutor(),
       sandboxTimeoutMs: 10_000,
@@ -240,7 +236,7 @@ describe("createForgeComponentProviderAsync", () => {
       }),
     };
 
-    const provider = await createForgeComponentProviderAsync({
+    const provider = createForgeComponentProvider({
       store: failingStore,
       executor: echoExecutor(),
     });
@@ -252,7 +248,7 @@ describe("createForgeComponentProviderAsync", () => {
     const store = createInMemoryForgeStore();
     await store.save(createToolBrick({ name: "echo" }));
 
-    const provider = await createForgeComponentProviderAsync({
+    const provider = createForgeComponentProvider({
       store,
       executor: echoExecutor(),
     });

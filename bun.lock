@@ -134,6 +134,16 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/filesystem": {
+      "name": "@koi/filesystem",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/forge": {
       "name": "@koi/forge",
       "version": "0.0.0",
@@ -182,6 +192,18 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware-feedback-loop": {
+      "name": "@koi/middleware-feedback-loop",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "zod": "4.3.6",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -276,6 +298,18 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+      },
+    },
+    "packages/sandbox-ipc": {
+      "name": "@koi/sandbox-ipc",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/sandbox": "workspace:*",
+        "@koi/test-utils": "workspace:*",
       },
     },
     "packages/scheduler": {
@@ -567,6 +601,8 @@
 
     "@koi/errors": ["@koi/errors@workspace:packages/errors"],
 
+    "@koi/filesystem": ["@koi/filesystem@workspace:packages/filesystem"],
+
     "@koi/forge": ["@koi/forge@workspace:packages/forge"],
 
     "@koi/gateway": ["@koi/gateway@workspace:packages/gateway"],
@@ -578,6 +614,8 @@
     "@koi/mcp": ["@koi/mcp@workspace:packages/mcp"],
 
     "@koi/middleware-audit": ["@koi/middleware-audit@workspace:packages/middleware-audit"],
+
+    "@koi/middleware-feedback-loop": ["@koi/middleware-feedback-loop@workspace:packages/middleware-feedback-loop"],
 
     "@koi/middleware-integration": ["@koi/middleware-integration@workspace:packages/middleware-integration"],
 
@@ -594,6 +632,8 @@
     "@koi/node": ["@koi/node@workspace:packages/node"],
 
     "@koi/sandbox": ["@koi/sandbox@workspace:packages/sandbox"],
+
+    "@koi/sandbox-ipc": ["@koi/sandbox-ipc@workspace:packages/sandbox-ipc"],
 
     "@koi/scheduler": ["@koi/scheduler@workspace:packages/scheduler"],
 

@@ -126,34 +126,13 @@ export interface ForgeVerifier {
   readonly verify: (input: ForgeInput, context: ForgeContext) => Promise<VerifierResult>;
 }
 
-// ---------------------------------------------------------------------------
-// Sandbox executor (injected dependency)
-// ---------------------------------------------------------------------------
-
-export type SandboxErrorCode = "TIMEOUT" | "OOM" | "PERMISSION" | "CRASH";
-
-export interface SandboxError {
-  readonly code: SandboxErrorCode;
-  readonly message: string;
-  readonly durationMs: number;
-}
-
-export interface SandboxResult {
-  readonly output: unknown;
-  readonly durationMs: number;
-  readonly memoryUsedBytes?: number;
-}
-
-export interface SandboxExecutor {
-  readonly execute: (
-    code: string,
-    input: unknown,
-    timeoutMs: number,
-  ) => Promise<
-    | { readonly ok: true; readonly value: SandboxResult }
-    | { readonly ok: false; readonly error: SandboxError }
-  >;
-}
+// Sandbox executor — canonical definitions live in @koi/core (L0)
+export type {
+  SandboxError,
+  SandboxErrorCode,
+  SandboxExecutor,
+  SandboxResult,
+} from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Forge context

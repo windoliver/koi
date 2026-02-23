@@ -126,14 +126,4 @@ export function createForgeComponentProvider(
   };
 }
 
-/**
- * @deprecated Use `createForgeComponentProvider` instead (lazy, synchronous factory).
- * Kept for backward compatibility — now delegates to the lazy version.
- */
-export async function createForgeComponentProviderAsync(
-  config: ForgeComponentProviderConfig,
-): Promise<ComponentProvider> {
-  return createForgeComponentProvider(config);
-}
-
 export { brickToTool };

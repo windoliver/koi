@@ -79,7 +79,8 @@ L3  Meta-packages    Convenience bundles (e.g., @koi/starter = L0 + L1 + selecte
 - L1 IS the kernel runtime — it validates, guards, and dispatches but never knows which adapter is running
 
 **When creating or editing feature packages (L2):**
-- Import from `@koi/core` only — never from `@koi/engine` or other L2 packages
+- Import from `@koi/core` (L0) and L0-utility packages (L0u) only — never from `@koi/engine` or other L2 packages
+- L0u packages: `@koi/errors`, `@koi/validation`, `@koi/manifest`, `@koi/hash`, `@koi/test-utils`, `@koi/skill-scanner`
 - Each L2 package is independent and swappable
 - Examples: channel adapters, middleware implementations, engine adapters, MCP bridge
 - If two L2 packages need shared code, extract it to a new L2 package or move the shared types to L0
@@ -117,7 +118,7 @@ These rules prevent vendor/framework concepts from contaminating core interfaces
 - [ ] `@koi/core` has zero `import` statements from other packages
 - [ ] No `function` bodies or `class` in `@koi/core` (types/interfaces only, except branded casts and pure data constants)
 - [ ] No vendor types (LangGraph, OpenAI, etc.) in any L0 or L1 file
-- [ ] L2 packages only import from `@koi/core`, never from `@koi/engine` or peer L2
+- [ ] L2 packages only import from `@koi/core` (L0) and L0u utilities, never from `@koi/engine` or peer L2
 - [ ] All interface properties are `readonly`
 - [ ] Engine adapter exposes zero framework-specific concepts in its public API
 - [ ] Interfaces that may be backed by I/O return `T | Promise<T>`, not just `T`

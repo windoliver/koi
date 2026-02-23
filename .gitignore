@@ -8,3 +8,6 @@ coverage/
 !.env.example
 test-results.json
 .DS_Store
+workstream.md
+prompt
+plan-work.md

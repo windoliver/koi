@@ -310,6 +310,123 @@ describe("verifyStatic — files validation", () => {
   });
 });
 
+describe("verifyStatic — syntax validation", () => {
+  test("accepts syntactically valid tool implementation", () => {
+    const input: ForgeInput = {
+      kind: "tool",
+      name: "myTool",
+      description: "A tool",
+      inputSchema: { type: "object" },
+      implementation: "export function run(input: unknown): string { return String(input); }",
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects tool with syntax error", () => {
+    const input: ForgeInput = {
+      kind: "tool",
+      name: "myTool",
+      description: "A tool",
+      inputSchema: { type: "object" },
+      implementation: "function { broken",
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("SYNTAX_ERROR");
+    }
+  });
+
+  test("error message includes syntax details from Bun.Transpiler", () => {
+    const input: ForgeInput = {
+      kind: "tool",
+      name: "myTool",
+      description: "A tool",
+      inputSchema: { type: "object" },
+      implementation: "const x = {;",
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("Syntax error in implementation:");
+      // Should contain actionable detail beyond just the prefix
+      expect(result.error.message).toMatch(/Expected/i);
+    }
+  });
+
+  test("accepts valid TypeScript features (arrow fns, generics, async/await)", () => {
+    const input: ForgeInput = {
+      kind: "tool",
+      name: "myTool",
+      description: "A tool",
+      inputSchema: { type: "object" },
+      implementation: [
+        "const add = (a: number, b: number): number => a + b;",
+        "function identity<T>(value: T): T { return value; }",
+        "async function fetchData(): Promise<string> { return await Promise.resolve('ok'); }",
+      ].join("\n"),
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects .ts file in files field with syntax error", () => {
+    const input: ForgeInput = {
+      kind: "skill",
+      name: "mySkill",
+      description: "A skill",
+      content: "# My Skill",
+      files: { "lib/helper.ts": "export function { broken" },
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("SYNTAX_ERROR");
+      expect(result.error.message).toContain("lib/helper.ts");
+    }
+  });
+
+  test("accepts .ts file in files field with valid syntax", () => {
+    const input: ForgeInput = {
+      kind: "skill",
+      name: "mySkill",
+      description: "A skill",
+      content: "# My Skill",
+      files: { "lib/helper.ts": "export const x: number = 42;" },
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts .tsx file with valid JSX syntax", () => {
+    const input: ForgeInput = {
+      kind: "skill",
+      name: "mySkill",
+      description: "A skill",
+      content: "# My Skill",
+      files: { "components/Button.tsx": "export function Button() { return <button />; }" },
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(true);
+  });
+
+  test("skips syntax check for non-TS/JS files (.json, .md)", () => {
+    const input: ForgeInput = {
+      kind: "skill",
+      name: "mySkill",
+      description: "A skill",
+      content: "# My Skill",
+      files: {
+        "config.json": "{ not valid json but not checked }",
+        "README.md": "# this is {{ not }} valid TS but should pass",
+      },
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(true);
+  });
+});
+
 describe("verifyStatic — requires validation", () => {
   test("accepts valid requires", () => {
     const input: ForgeInput = {

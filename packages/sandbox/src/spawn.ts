@@ -4,9 +4,7 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
-import { detectPlatform } from "./detect.js";
-import { buildBwrapArgs } from "./platform/bwrap.js";
-import { buildSeatbeltArgs } from "./platform/seatbelt.js";
+import { buildSandboxCommand } from "./command.js";
 import type { SandboxProfile } from "./types.js";
 
 export interface SpawnOptions {
@@ -29,27 +27,12 @@ export function spawn(
   args: readonly string[],
   options?: SpawnOptions,
 ): Result<SandboxProcess, KoiError> {
-  const platform = detectPlatform();
-  if (!platform.ok) {
-    return platform;
+  const cmd = buildSandboxCommand(profile, command, args);
+  if (!cmd.ok) {
+    return cmd;
   }
 
-  const sandboxArgs =
-    platform.value === "seatbelt"
-      ? buildSeatbeltArgs(profile, command, args)
-      : buildBwrapArgs(profile, command, args);
-
-  const [executable, ...execArgs] = sandboxArgs;
-  if (executable === undefined) {
-    return {
-      ok: false,
-      error: {
-        code: "INTERNAL",
-        message: "Failed to build sandbox command: empty argument list",
-        retryable: false,
-      },
-    };
-  }
+  const { executable, args: execArgs } = cmd.value;
 
   try {
     const spawnOpts: {

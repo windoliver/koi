@@ -1,0 +1,27 @@
+{
+  "name": "@koi/sandbox-ipc",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@koi/sandbox": "workspace:*",
+    "@koi/test-utils": "workspace:*"
+  },
+  "scripts": {
+    "prebuild": "bun run scripts/generate-worker-source.ts",
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  }
+}

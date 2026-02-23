@@ -79,6 +79,14 @@
     "./brick-store": {
       "types": "./dist/brick-store.d.ts",
       "import": "./dist/brick-store.js"
+    },
+    "./sandbox-executor": {
+      "types": "./dist/sandbox-executor.d.ts",
+      "import": "./dist/sandbox-executor.js"
+    },
+    "./sandbox-profile": {
+      "types": "./dist/sandbox-profile.d.ts",
+      "import": "./dist/sandbox-profile.js"
     }
   },
   "scripts": {

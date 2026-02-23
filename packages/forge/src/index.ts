@@ -52,11 +52,7 @@ export type {
   ForgeComponentProviderConfig,
   ForgeComponentProviderInstance,
 } from "./forge-component-provider.js";
-export {
-  brickToTool,
-  createForgeComponentProvider,
-  createForgeComponentProviderAsync,
-} from "./forge-component-provider.js";
+export { brickToTool, createForgeComponentProvider } from "./forge-component-provider.js";
 export { createForgeResolver } from "./forge-resolver.js";
 export type { GovernanceResult } from "./governance.js";
 // runtime values — governance

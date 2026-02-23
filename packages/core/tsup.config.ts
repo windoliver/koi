@@ -21,6 +21,9 @@ export default defineConfig({
     "src/resolver.ts",
     "src/brick-snapshot.ts",
     "src/brick-store.ts",
+    "src/filesystem-backend.ts",
+    "src/sandbox-executor.ts",
+    "src/sandbox-profile.ts",
   ],
   format: ["esm"],
   dts: {

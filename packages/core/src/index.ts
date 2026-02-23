@@ -116,6 +116,7 @@ export {
   channelToken,
   DELEGATION,
   EVENTS,
+  FILESYSTEM,
   GOVERNANCE,
   MEMORY,
   skillToken,
@@ -155,6 +156,24 @@ export type {
   EvictionReason,
   EvictionResult,
 } from "./eviction.js";
+// filesystem backend
+export type {
+  FileEdit,
+  FileEditOptions,
+  FileEditResult,
+  FileEntryKind,
+  FileListEntry,
+  FileListOptions,
+  FileListResult,
+  FileReadOptions,
+  FileReadResult,
+  FileSearchMatch,
+  FileSearchOptions,
+  FileSearchResult,
+  FileSystemBackend,
+  FileWriteOptions,
+  FileWriteResult,
+} from "./filesystem-backend.js";
 // forge types
 export type { BrickKind, BrickLifecycle, ForgeScope } from "./forge-types.js";
 // health
@@ -211,6 +230,20 @@ export type {
 export type { ModelCapabilities, ModelProvider, ModelTarget } from "./model-provider.js";
 // resolver
 export type { Resolver } from "./resolver.js";
+// sandbox executor — code execution in isolation (forge verification contract)
+export type {
+  SandboxError,
+  SandboxErrorCode,
+  SandboxExecutor,
+  SandboxResult,
+} from "./sandbox-executor.js";
+// sandbox profile — platform-agnostic isolation policy
+export type {
+  FilesystemPolicy,
+  NetworkPolicy,
+  ResourceLimits,
+  SandboxProfile,
+} from "./sandbox-profile.js";
 // scheduler — types
 export type {
   CronSchedule,

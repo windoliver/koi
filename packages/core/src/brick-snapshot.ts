@@ -98,6 +98,14 @@ export type SnapshotEvent =
       readonly actor: string;
       readonly timestamp: number;
       readonly reason: string;
+    }
+  | {
+      readonly type: "quarantined";
+      readonly actor: string;
+      readonly timestamp: number;
+      readonly reason: string;
+      readonly errorRate: number;
+      readonly failureCount: number;
     };
 
 // ---------------------------------------------------------------------------
