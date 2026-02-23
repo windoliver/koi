@@ -360,6 +360,18 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/sandbox-executor": {
+      "name": "@koi/sandbox-executor",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/sandbox": "workspace:*",
+        "@koi/sandbox-ipc": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/sandbox-ipc": {
       "name": "@koi/sandbox-ipc",
       "version": "0.0.0",
@@ -729,6 +741,8 @@
     "@koi/node": ["@koi/node@workspace:packages/node"],
 
     "@koi/sandbox": ["@koi/sandbox@workspace:packages/sandbox"],
+
+    "@koi/sandbox-executor": ["@koi/sandbox-executor@workspace:packages/sandbox-executor"],
 
     "@koi/sandbox-ipc": ["@koi/sandbox-ipc@workspace:packages/sandbox-ipc"],
 

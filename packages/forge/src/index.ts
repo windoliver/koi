@@ -88,6 +88,8 @@ export type {
   SandboxExecutor,
   SandboxResult,
   StageReport,
+  TieredSandboxExecutor,
+  TierResolution,
   TrustStageReport,
   VerificationReport,
   VerificationStage,

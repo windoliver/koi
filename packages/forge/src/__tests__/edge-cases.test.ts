@@ -3,19 +3,14 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type { SandboxExecutor, TieredSandboxExecutor } from "@koi/core";
 import { createDefaultForgeConfig } from "../config.js";
 import type { ForgeError } from "../errors.js";
 import { checkGovernance } from "../governance.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import { createForgeToolTool } from "../tools/forge-tool.js";
 import type { ForgeDeps } from "../tools/shared.js";
-import type {
-  BrickArtifact,
-  ForgeContext,
-  ForgeInput,
-  SandboxExecutor,
-  ToolArtifact,
-} from "../types.js";
+import type { BrickArtifact, ForgeContext, ForgeInput, ToolArtifact } from "../types.js";
 import { verify } from "../verify.js";
 import { verifyStatic } from "../verify-static.js";
 
@@ -37,10 +32,21 @@ function mockExecutor(): SandboxExecutor {
   };
 }
 
+function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
+  return {
+    forTier: (tier) => ({
+      executor: exec,
+      requestedTier: tier,
+      resolvedTier: tier,
+      fallback: false,
+    }),
+  };
+}
+
 function createDeps(overrides?: Partial<ForgeDeps>): ForgeDeps {
   return {
     store: createInMemoryForgeStore(),
-    executor: mockExecutor(),
+    executor: mockTiered(mockExecutor()),
     verifiers: [],
     config: createDefaultForgeConfig(),
     context: DEFAULT_CONTEXT,

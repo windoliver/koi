@@ -30,7 +30,12 @@ import { createForgeSkillTool } from "../tools/forge-skill.js";
 import { createForgeToolTool } from "../tools/forge-tool.js";
 import { createSearchForgeTool } from "../tools/search-forge.js";
 import type { ForgeDeps } from "../tools/shared.js";
-import type { BrickArtifact, ForgeResult, SandboxExecutor } from "../types.js";
+import type {
+  BrickArtifact,
+  ForgeResult,
+  SandboxExecutor,
+  TieredSandboxExecutor,
+} from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -82,13 +87,24 @@ function adderExecutor(): SandboxExecutor {
   };
 }
 
+function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
+  return {
+    forTier: (tier) => ({
+      executor: exec,
+      requestedTier: tier,
+      resolvedTier: tier,
+      fallback: false,
+    }),
+  };
+}
+
 function defaultDeps(
   store: ReturnType<typeof createInMemoryForgeStore>,
   executor: SandboxExecutor,
 ): ForgeDeps {
   return {
     store,
-    executor,
+    executor: mockTiered(executor),
     verifiers: [],
     config: createDefaultForgeConfig(),
     context: {
@@ -134,7 +150,7 @@ describe("forge → agent e2e", () => {
     expect(forgeResult.value.name).toBe("adder");
 
     // Step 2: Create ForgeComponentProvider backed by the same store
-    const forgeProvider = createForgeComponentProvider({ store, executor });
+    const forgeProvider = createForgeComponentProvider({ store, executor: mockTiered(executor) });
 
     // Step 3: Build cooperating adapter that calls the forged tool
     // Local mutation acceptable: arrays are never exposed until test assertions
@@ -218,7 +234,7 @@ describe("forge → agent e2e", () => {
       implementation: "return input;",
     });
 
-    const forgeProvider = createForgeComponentProvider({ store, executor });
+    const forgeProvider = createForgeComponentProvider({ store, executor: mockTiered(executor) });
 
     const errors: unknown[] = [];
 
@@ -280,7 +296,7 @@ describe("forge → agent e2e", () => {
       implementation: "return input;",
     });
 
-    const forgeProvider = createForgeComponentProvider({ store, executor });
+    const forgeProvider = createForgeComponentProvider({ store, executor: mockTiered(executor) });
 
     // --- First run: tool-1 is available ---
     const firstResults: ToolResponse[] = [];
@@ -538,7 +554,7 @@ describe("forge → callHandlers.tools visibility", () => {
       implementation: "return input.a + input.b;",
     });
 
-    const forgeProvider = createForgeComponentProvider({ store, executor });
+    const forgeProvider = createForgeComponentProvider({ store, executor: mockTiered(executor) });
 
     // Adapter inspects callHandlers.tools to discover available tools
     const discoveredTools: readonly ToolDescriptor[] = [];
@@ -610,7 +626,7 @@ describe("forge → reuse: agent self-extends", () => {
     };
 
     // ForgeComponentProvider loads forged tools from the store
-    const forgeProvider = createForgeComponentProvider({ store, executor });
+    const forgeProvider = createForgeComponentProvider({ store, executor: mockTiered(executor) });
 
     // --- Run 1: Adapter discovers forge_tool and uses it to forge "adder" ---
     const run1ToolNames: string[] = [];
@@ -736,7 +752,7 @@ describe("forge → reuse: agent self-extends", () => {
       attach: async (): Promise<ReadonlyMap<string, unknown>> =>
         new Map<string, unknown>([[toolToken("forge_tool") as string, forgeTool]]),
     };
-    const forgeProvider = createForgeComponentProvider({ store, executor });
+    const forgeProvider = createForgeComponentProvider({ store, executor: mockTiered(executor) });
 
     // Middleware spy — records all tool calls through the chain
     const interceptedToolIds: string[] = [];
