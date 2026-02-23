@@ -23,8 +23,8 @@ A **self-extending agent runtime** — agents that can create, discover, and com
 | **Gateway** | WebSocket control plane — session dispatch, routing, webhooks |
 | **Node** | Local device agent runtime — runs N agent entities |
 | **Proposal** | Agent-submitted change request for any layer — trust gate scales with blast radius |
-| **Snapshot** | Immutable point-in-time capture of an agent's full state — enables time travel and rollback |
-| **BrickStore** | Universal storage for all code (forged, bundled, extensions) — agent reads everything, writes to forge store |
+| **Snapshot** | Immutable point-in-time capture of a brick's state — enables version history, rollback, and provenance tracking |
+| **ForgeStore** | Persistence backend for forged brick artifacts — save, search, update, remove with structured queries |
 
 ## Architecture Components
 
@@ -80,9 +80,12 @@ A **self-extending agent runtime** — agents that can create, discover, and com
 │  │  ┌────────────┐ ┌────────────┐ ┌─────────────────────┐  │  │
 │  │  │ MEMORY     │ │ GOVERNANCE │ │ CREDENTIALS         │  │  │
 │  │  └────────────┘ └────────────┘ └─────────────────────┘  │  │
-│  │  ┌────────────┐ ┌─────────────────┐ ┌────────────────┐  │  │
-│  │  │ EVENTS     │ │ skill:research  │ │ channel:tg     │  │  │
-│  │  └────────────┘ └─────────────────┘ └────────────────┘  │  │
+│  │  ┌────────────┐ ┌────────────┐ ┌─────────────────────┐  │  │
+│  │  │ EVENTS     │ │ DELEGATION │ │ FILESYSTEM          │  │  │
+│  │  └────────────┘ └────────────┘ └─────────────────────┘  │  │
+│  │  ┌─────────────────┐ ┌────────────────┐                 │  │
+│  │  │ skill:research  │ │ channel:tg     │                 │  │
+│  │  └─────────────────┘ └────────────────┘                 │  │
 │  │                                                          │  │
 │  │  SYSTEMS (middleware — logic over components):            │  │
 │  │  SpawnGov → Perms → Pay → Audit → Context → Exec        │  │
@@ -93,7 +96,7 @@ A **self-extending agent runtime** — agents that can create, discover, and com
 │                                                               │
 │  ┌──────── FORGE (runs inside forge_tool component) ────────┐  │
 │  │ forge_tool → 4-stage verify → attach(token, tool)        │  │
-│  │ Trust: sandbox → verified → promoted                     │  │
+│  │ Trust: sandbox ⇄ verified ⇄ promoted (bidirectional)     │  │
 │  │ Scope: agent → zone → global (HITL for promotion)        │  │
 │  └──────────────────────────────────────────────────────────┘  │
 │                                                               │
@@ -168,10 +171,13 @@ Infrastructure backends      L3      Pluggable (Nexus, SQLite, custom)
 │  @koi/hash     @koi/test-utils   @koi/skill-scanner          │
 │  Depend on L0 only. Importable by L1 and L2.                 │
 ├─────────────────────────────────────────────────────────────┤
-│  Layer 0: KERNEL (@koi/core — types only, 6 contracts)       │
-│  Middleware, Message, Channel, Resolver, Assembly, Engine     │
-│  + ECS: Agent, SubsystemToken<T>, ComponentProvider          │
-│  + Components: Tool, Memory, Governance, Credentials, Events │
+│  Layer 0: KERNEL (@koi/core — types only)                    │
+│  6 core contracts + extended contracts + ECS layer            │
+│  Core: Middleware, Message, Channel, Resolver, Assembly,      │
+│        Engine                                                 │
+│  Extended: Lifecycle, ForgeStore, SnapshotStore, Delegation,  │
+│           FileSystemBackend, SandboxExecutor, Config, ...     │
+│  ECS: Agent, SubsystemToken<T>, ComponentProvider, Tool       │
 │  ZERO implementations                                        │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -180,13 +186,13 @@ Infrastructure backends      L3      Pluggable (Nexus, SQLite, custom)
 
 | Property | Kernel (L0) | Utilities (L0u) | Engine (L1) | Features (L2) | Meta (L3) |
 |----------|-------------|-----------------|-------------|----------------|-----------|
-| **Contains** | 6 contracts + ECS (types only) | Pure functions, error types, validation, hashing | Guards, validation, dispatch | Channels, middleware, providers | Dependency bundles |
+| **Contains** | Core + extended contracts, ECS (types only) | Pure functions, error types, validation, hashing | Guards, validation, dispatch | Channels, middleware, providers | Dependency bundles |
 | **Dependencies** | Zero | @koi/core only | @koi/core + L0u | @koi/core + L0u | L0 + L0u + L1 + selected L2 |
 | **Breakage scope** | All packages | Consumers only | Engine only | Own package only | None |
 | **Can be swapped?** | Never | Yes (per package) | No (it IS the runtime) | Yes (per package) | Yes |
 | **Analogy** | Kernel headers | libc / POSIX utilities | Kernel runtime (`__schedule()`) | Kernel modules (ext4, tcp) | Distro packages |
 
-Engine *adapters* (LangGraph, OpenAI, custom) are swappable L2 packages. The engine *runtime* (guards, governance) is not — it IS the kernel runtime.
+Engine *adapters* (Claude, Pi, Loop, custom) are swappable L2 packages. The engine *runtime* (guards, governance) is not — it IS the kernel runtime.
 
 **L0-utility packages**: `@koi/errors`, `@koi/validation`, `@koi/manifest`, `@koi/hash`, `@koi/test-utils`, `@koi/skill-scanner`. These contain pure utility functions with zero business logic. They depend on `@koi/core` only and are importable by both L1 and L2 packages. They do NOT define core contracts — they provide shared implementations of common operations (error creation, schema validation, hashing).
 
@@ -194,159 +200,67 @@ Engine *adapters* (LangGraph, OpenAI, custom) are swappable L2 packages. The eng
 
 ## Kernel Interfaces (L0)
 
-`@koi/core` defines 6 contracts. All `readonly`, all immutable.
+`@koi/core` defines the complete contract surface. All properties `readonly`, all data immutable. See source files for exact type signatures — this section describes architectural intent, not verbatim types.
 
-### 1. Middleware Contract
+### Core Contracts (original 6)
 
-```typescript
-interface KoiMiddleware {
-  readonly name: string;
-  readonly priority?: number; // Lower = outer onion layer (runs first). Default: 500
-  readonly onSessionStart?: (ctx: SessionContext) => Promise<void>;
-  readonly onSessionEnd?: (ctx: SessionContext) => Promise<void>;
-  readonly onBeforeTurn?: (ctx: TurnContext) => Promise<void>;
-  readonly onAfterTurn?: (ctx: TurnContext) => Promise<void>;
-  readonly wrapModelCall?: (ctx: TurnContext, request: ModelRequest, next: ModelHandler) => Promise<ModelResponse>;
-  readonly wrapModelStream?: (ctx: TurnContext, request: ModelRequest, next: ModelStreamHandler) => AsyncIterable<ModelChunk>;
-  readonly wrapToolCall?: (ctx: TurnContext, request: ToolRequest, next: ToolHandler) => Promise<ToolResponse>;
-}
+| # | Contract | Source | Surface | Key Idea |
+|---|----------|--------|---------|----------|
+| 1 | **Middleware** | `middleware.ts` | 7 optional hooks + priority | Sole interposition layer for model/tool calls. Onion composition with `wrapModelCall`, `wrapModelStream`, `wrapToolCall`. HITL approval via `TurnContext.requestApproval`. |
+| 2 | **Message** | `message.ts` | `ContentBlock` union, `InboundMessage`, `OutboundMessage` | Content blocks: text, file, image, button, custom. Inbound messages carry `senderId`, `timestamp`, and content blocks. |
+| 3 | **Channel** | `channel.ts` | `ChannelAdapter` — connect, disconnect, send, onMessage | Where the agent talks. Capabilities-aware. Supports status notifications (`sendStatus`). |
+| 4 | **Resolver** | `resolver.ts` | `discover()` + `load()` + optional `onChange()` | Generic `<TMeta, TFull>` discovery. `load()` returns `Result<TFull, KoiError>` (typed errors, not undefined). |
+| 5 | **Assembly** | `assembly.ts` | `AgentManifest` — name, model, tools, channels, middleware, permissions, delegation | Declarative agent definition. YAML IS the agent. |
+| 6 | **Engine** | `engine.ts` | `EngineAdapter` — `stream()` is the only required method | Swappable agent loop. `terminals` enable middleware interposition. `ComposedCallHandlers` passes middleware-wrapped calls back to the adapter including the `tools` descriptor list. |
 
-type ModelChunk =
-  | { readonly kind: "text_delta"; readonly delta: string }
-  | { readonly kind: "thinking_delta"; readonly delta: string }
-  | { readonly kind: "tool_call_start"; readonly toolName: string; readonly callId: string }
-  | { readonly kind: "tool_call_delta"; readonly callId: string; readonly delta: string }
-  | { readonly kind: "tool_call_end"; readonly callId: string }
-  | { readonly kind: "usage"; readonly inputTokens: number; readonly outputTokens: number }
-  | { readonly kind: "done"; readonly response: ModelResponse };
+### Extended Contracts
 
-type ModelStreamHandler = (request: ModelRequest) => AsyncIterable<ModelChunk>;
+As Koi matured, additional L0 contracts were added for subsystems that need pluggable backends:
 
-// HITL approval — available via TurnContext.requestApproval
-type ApprovalHandler = (request: ApprovalRequest) => Promise<ApprovalDecision>;
-type ApprovalDecision =
-  | { readonly kind: "allow" }
-  | { readonly kind: "modify"; readonly updatedInput: JsonObject }
-  | { readonly kind: "deny"; readonly reason: string };
-```
-
-### 2. Message Contract
-
-```typescript
-type ContentBlock = TextBlock | FileBlock | ImageBlock | ButtonBlock;
-interface OutboundMessage { readonly blocks: readonly ContentBlock[]; }
-interface InboundMessage { readonly text: string; readonly blocks?: readonly ContentBlock[]; }
-```
-
-### 3. Channel Contract
-
-```typescript
-interface ChannelAdapter {
-  readonly name: string;
-  readonly capabilities: ChannelCapabilities;
-  connect(): Promise<void>;
-  disconnect(): Promise<void>;
-  send(message: OutboundMessage): Promise<void>;
-  onMessage(handler: MessageHandler): void;
-}
-```
-
-### 4. Discovery Contract
-
-```typescript
-interface Resolver<Meta, Full> {
-  readonly name: string;
-  discover(): Promise<readonly Meta[]>;
-  load(id: string): Promise<Full | undefined>;
-  onChange?(listener: () => void): () => void;
-}
-```
-
-### 5. Assembly Contract
-
-```typescript
-interface AgentManifest {
-  readonly name: string;
-  readonly version: string;
-  readonly description?: string;
-  readonly model: ModelConfig;
-  readonly tools?: readonly ToolConfig[];
-  readonly channels?: readonly ChannelConfig[];
-  readonly middleware?: readonly MiddlewareConfig[];
-  readonly permissions?: PermissionConfig;
-  readonly delegation?: DelegationConfig;
-  readonly metadata?: JsonObject;
-}
-```
-
-### 6. Engine Contract
-
-```typescript
-interface EngineAdapter {
-  readonly engineId: string;
-  readonly terminals?: {
-    readonly modelCall: ModelHandler;
-    readonly modelStream?: ModelStreamHandler;
-    readonly toolCall?: ToolHandler;
-  };
-  readonly stream: (input: EngineInput) => AsyncIterable<EngineEvent>;  // ONLY required method
-  readonly saveState?: () => Promise<EngineState>;
-  readonly loadState?: (state: EngineState) => Promise<void>;
-  readonly dispose?: () => Promise<void>;
-}
-
-// ComposedCallHandlers — middleware-wrapped terminals passed back via EngineInput
-interface ComposedCallHandlers {
-  readonly modelCall: (request: ModelRequest) => Promise<ModelResponse>;
-  readonly modelStream?: (request: ModelRequest) => AsyncIterable<ModelChunk>;
-  readonly toolCall: (request: ToolRequest) => Promise<ToolResponse>;
-}
-
-type EngineInput =
-  | { readonly kind: "text"; readonly text: string; readonly callHandlers?: ComposedCallHandlers }
-  | { readonly kind: "messages"; readonly messages: readonly InboundMessage[]; readonly callHandlers?: ComposedCallHandlers }
-  | { readonly kind: "resume"; readonly state: EngineState; readonly callHandlers?: ComposedCallHandlers };
-
-type EngineEvent =
-  | { readonly kind: "text_delta"; readonly delta: string }
-  | { readonly kind: "tool_call_start"; readonly toolName: string; readonly callId: string; readonly args: JsonObject }
-  | { readonly kind: "tool_call_end"; readonly callId: string; readonly result: unknown }
-  | { readonly kind: "turn_end"; readonly turnIndex: number }
-  | { readonly kind: "done"; readonly output: EngineOutput }
-  | { readonly kind: "custom"; readonly type: string; readonly data: unknown };
-```
+| Contract | Source | Purpose |
+|----------|--------|---------|
+| **AgentRegistry** | `lifecycle.ts` | Agent lifecycle management with CAS-based state transitions, conditions (K8s-inspired), and `watch()` for change notification |
+| **ForgeStore** | `brick-store.ts` | Brick artifact persistence — save, load, search, remove, update with `Result<T, KoiError>` returns. Replaced the earlier `BrickStore` concept |
+| **SnapshotStore** | `brick-snapshot.ts` | Per-brick version history and provenance. Records `created`, `updated`, `promoted`, `deprecated`, `quarantined` events. `BrickSnapshot` is per-brick (not per-agent) |
+| **Delegation** | `delegation.ts` | Capability delegation with HMAC-signed grants, scope checking, and revocation registry |
+| **FileSystemBackend** | `filesystem-backend.ts` | Cross-engine file operations (read, write, edit, list, search). Wrapped as Tool components by an L2 ComponentProvider |
+| **SandboxExecutor** | `sandbox-executor.ts` | Code execution in isolation — the forge verification contract |
+| **SandboxProfile** | `sandbox-profile.ts` | Platform-agnostic isolation policy (filesystem, network, resource limits per trust tier) |
+| **SessionPersistence** | `session.ts` | Crash recovery — checkpoint, restore, recovery planning |
+| **ConfigStore** | `config.ts` | Reactive configuration with typed sections, feature flags, and change listeners |
+| **HealthMonitor** | `health.ts` | Runtime health tracking with degraded/unhealthy/healthy status |
+| **TaskScheduler** | `scheduler.ts` | Cron-based task scheduling with persistence |
+| **ContextCompactor** | `context.ts` | Context window management — compaction and token estimation |
+| **EvictionPolicy** | `eviction.ts` | Agent eviction strategies (idle, LRU, priority-based) |
+| **ModelProvider** | `model-provider.ts` | LLM provider abstraction with capabilities discovery |
 
 ### ECS Compositional Layer
 
+The ECS layer is the architectural heart — `Agent` is the entity, `Tool` is a component, `Middleware` is a system.
+
 ```typescript
+// Branded typed component keys — type-safe at zero runtime cost
 type SubsystemToken<T> = string & { readonly __brand: T };
 
-interface ProcessId {
-  readonly id: string;
-  readonly name: string;
-  readonly type: "copilot" | "worker";
-  readonly depth: number;
-  readonly parent?: string;
-  readonly ownerId?: string;  // human or org that owns this agent
-}
-
+// Agent = ECS entity
 interface Agent {
-  readonly pid: ProcessId;
+  readonly pid: ProcessId;       // id, name, type ("copilot"|"worker"), depth, parent
   readonly manifest: AgentManifest;
-  readonly state: ProcessState;
+  readonly state: ProcessState;  // "created"|"running"|"waiting"|"suspended"|"terminated"
   readonly component: <T>(token: SubsystemToken<T>) => T | undefined;
   readonly has: (token: SubsystemToken<unknown>) => boolean;
-  readonly hasAll: (...tokens: readonly SubsystemToken<unknown>[]) => boolean;
   readonly query: <T>(prefix: string) => ReadonlyMap<SubsystemToken<T>, T>;
   readonly components: () => ReadonlyMap<string, unknown>;
 }
 
+// Tool = component with trust tier
 interface Tool {
   readonly descriptor: ToolDescriptor;
-  readonly trustTier: TrustTier; // "sandbox" | "verified" | "promoted"
+  readonly trustTier: TrustTier;  // "sandbox" | "verified" | "promoted"
   readonly execute: (args: JsonObject) => Promise<unknown>;
 }
 
+// ComponentProvider attaches components during assembly
 interface ComponentProvider {
   readonly name: string;
   readonly attach: (agent: Agent) => Promise<ReadonlyMap<string, unknown>>;
@@ -354,113 +268,41 @@ interface ComponentProvider {
 }
 ```
 
-### Singleton Components (one per agent)
-
-```typescript
-interface MemoryComponent {
-  readonly recall: (query: string) => Promise<readonly unknown[]>;
-  readonly store: (content: unknown) => Promise<void>;
-}
-interface GovernanceComponent {
-  readonly usage: () => GovernanceUsage;
-  readonly checkSpawn: (depth: number) => SpawnCheck;
-}
-interface CredentialComponent {
-  readonly get: (key: string) => Promise<string | undefined>;
-}
-interface EventComponent {
-  readonly emit: (type: string, data: unknown) => Promise<void>;
-  readonly on: (type: string, handler: (data: unknown) => void) => () => void;
-}
-```
-
 ### Well-Known Tokens
 
 ```typescript
-const MEMORY = token<MemoryComponent>("memory");
-const GOVERNANCE = token<GovernanceComponent>("governance");
+const MEMORY      = token<MemoryComponent>("memory");
+const GOVERNANCE  = token<GovernanceComponent>("governance");
 const CREDENTIALS = token<CredentialComponent>("credentials");
-const EVENTS = token<EventComponent>("events");
+const EVENTS      = token<EventComponent>("events");
+const DELEGATION  = token<DelegationComponent>("delegation");
+const FILESYSTEM  = token<FileSystemBackend>("filesystem");
 
-function toolToken(name: string): SubsystemToken<Tool>;           // "tool:calculator"
+function toolToken(name: string): SubsystemToken<Tool>;              // "tool:calculator"
 function channelToken(name: string): SubsystemToken<ChannelAdapter>; // "channel:telegram"
-function skillToken(name: string): SubsystemToken<Skill>;          // "skill:refund-policy"
+function skillToken(name: string): SubsystemToken<SkillMetadata>;    // "skill:refund-policy"
 ```
 
 **Namespace convention**: No colon = singleton (`"memory"`), with colon = namespaced (`"tool:calculator"`). `query("tool:")` returns all tool components.
 
-### Brick Store & Snapshots
+### Singleton Components
 
-```typescript
-interface BrickSource {
-  readonly code: string;                     // the actual TypeScript source
-  readonly interface: string;                // which L0 contract it implements
-  readonly tests?: readonly TestCase[];      // verification suite
-  readonly dependencies?: readonly string[]; // what it imports
-}
+One per agent, accessed via well-known tokens:
 
-interface BrickStore {
-  readonly read: (ref: BrickRef) => Promise<BrickSource | undefined>;
-  readonly write: (ref: BrickRef, source: string) => Promise<void>;
-  readonly list: (scope: ForgeScope) => Promise<readonly BrickRef[]>;
-  readonly snapshot: (agentId: string) => Promise<AgentSnapshot>;
-  readonly restore: (agentId: string, version: number) => Promise<void>;
-}
+| Component | Token | Purpose |
+|-----------|-------|---------|
+| `MemoryComponent` | `MEMORY` | `recall(query)` → `MemoryResult[]` (content + score + metadata), `store(content)` |
+| `GovernanceComponent` | `GOVERNANCE` | Usage tracking, spawn checking |
+| `CredentialComponent` | `CREDENTIALS` | Secret retrieval by key |
+| `EventComponent` | `EVENTS` | Pub/sub event bus (emit + subscribe) |
+| `DelegationComponent` | `DELEGATION` | Capability grants with HMAC signing |
+| `FileSystemBackend` | `FILESYSTEM` | Cross-engine file operations |
 
-interface AgentSnapshot {
-  readonly version: number;
-  readonly parent?: number;                    // previous snapshot
-  readonly timestamp: number;
-  readonly event: SnapshotEvent;               // what caused this version
-  readonly components: ReadonlyMap<string, BrickRef>; // content-addressed refs
-  readonly config: unknown;                    // current agent config
-  readonly engineState?: EngineState;          // opaque engine checkpoint
-}
-
-type SnapshotEvent =
-  | { readonly kind: "manifest_loaded" }
-  | { readonly kind: "brick_forged"; readonly brick: BrickRef }
-  | { readonly kind: "brick_quarantined"; readonly brick: BrickRef }
-  | { readonly kind: "component_attached"; readonly token: string }
-  | { readonly kind: "component_detached"; readonly token: string }
-  | { readonly kind: "config_changed"; readonly diff: unknown }
-  | { readonly kind: "proposal_applied"; readonly proposal: string }
-  | { readonly kind: "restored"; readonly fromVersion: number };
-```
-
-### Kernel Extension
-
-```typescript
-interface KernelExtension {
-  readonly name: string;
-  readonly kind: "guard" | "lifecycle_hook" | "composition_rule";
-  readonly execute: (...args: readonly unknown[]) => unknown | Promise<unknown>;
-}
-```
-
-L1 defines extension slots. L2 provides the implementations. Extensions load dynamically from disk — no binary rebuild needed.
-
-### Resolver Source (Level 3)
-
-```typescript
-interface Resolver<Meta, Full> {
-  readonly name: string;
-  discover(): Promise<readonly Meta[]>;                     // Level 1: names
-  load(id: string): Promise<Full | undefined>;              // Level 2: schemas
-  source?(id: string): Promise<BrickSource | undefined>;    // Level 3: full source
-  onChange?(listener: () => void): () => void;
-}
-```
-
-Progressive disclosure: `discover()` → ~10 tokens, `load()` → ~100 tokens, `source()` → ~5000 tokens. Agent requests deeper levels as needed.
+Additional ECS types: `SpawnLedger` (tree-wide spawn accounting), `ProcessAccounter` (cross-agent spawn counting), `ChildHandle` + `ChildLifecycleEvent` (monitoring child agents).
 
 ### Other Kernel Types
 
-Additional types in `@koi/core`: `KoiConfig`, `ModelConfig`, `PermissionConfig`, `EngineOutput`, `EngineState`, `EngineMetrics`, `EngineStopReason`.
-
-```typescript
-type EngineStopReason = "completed" | "max_turns" | "interrupted" | "error";
-```
+Additional types in `@koi/core`: `KoiConfig`, `FeatureFlags`, `ModelConfig`, `PermissionConfig`, `EngineOutput`, `EngineState`, `EngineMetrics`, `EngineStopReason`, `BrickKind` (6 values: tool, skill, agent, composite, middleware, channel), `BrickLifecycle`, `ForgeScope`, `TrustTier`.
 
 Subsystem-specific config types live in their owning packages (e.g., `ExecutionLimitsConfig` in `@koi/engine`).
 
@@ -474,7 +316,7 @@ Subsystem-specific config types live in their owning packages (e.g., `ExecutionL
 |---|-----------|-------------|
 | 0 | **KISS** | Core vocabulary <= 10 concepts. Code over configuration. No framework reinvention |
 | 1 | **Interface-first kernel** | `@koi/core` = types only. Zero implementations. The kernel defines the plugs, not the things that plug in |
-| 2 | **Minimal-surface contracts** | Channel: `send()` + `onMessage()`. Middleware: 7 optional hooks + priority. Engine: `stream()` only required method |
+| 2 | **Minimal-surface contracts** | Channel: `send()` + `onMessage()` + `sendStatus()`. Middleware: 7 optional hooks + priority. Engine: `stream()` only required method. Extended contracts follow same principle |
 | 3 | **Middleware = sole interposition layer** | ONE way to intercept model/tool calls. No separate `EngineHooks` |
 | 4 | **Manifest-driven assembly** | `koi.yaml` IS the agent. Static for 80%, runtime assembly via Forge for 20% |
 
@@ -490,14 +332,17 @@ Subsystem-specific config types live in their owning packages (e.g., `ExecutionL
 | 10 | **Everything is updatable** | Agent can update any layer. Trust gate scales with blast radius. Forge store is universal staging ground |
 | 11 | **Immutable snapshots** | Every change = new snapshot. Restore any version. Fork from any point. No mutation, ever |
 | 12 | **Forge → Promote → Bundle** | Changes start as local experiments, proven ones graduate into the base. Binary improves over time |
+| 13 | **Bidirectional trust** | Trust is earned AND lost. Bricks demote on health failure, not just promote on success (Red Queen) |
+| 14 | **Fitness-driven selection** | Runtime health signals (success rate, latency, error rate) determine which bricks survive (natural selection) |
+| 15 | **Supervision over restart** | Erlang/OTP-style supervision trees manage crash recovery — not naive "try previous snapshot" |
 
 ### Discovery
 
 | # | Principle | Application |
 |---|-----------|-------------|
-| 13 | **Progressive disclosure** | ~10 tokens (name) → ~100 tokens (metadata) → ~5000 tokens (full source + tests) |
-| 14 | **First-wins resolver chain** | Agent-forged > Zone-forged > Global-forged > Bundled |
-| 15 | **Skills as Markdown** | `SKILL.md` with YAML frontmatter — zero-code agent extension |
+| 16 | **Progressive disclosure** | ~10 tokens (name) → ~100 tokens (metadata) → ~5000 tokens (full source + tests) |
+| 17 | **First-wins resolver chain** | Agent-forged > Zone-forged > Global-forged > Bundled |
+| 18 | **Skills as Markdown** | `SKILL.md` with YAML frontmatter — zero-code agent extension |
 
 ---
 
@@ -509,14 +354,13 @@ Subsystem-specific config types live in their owning packages (e.g., `ExecutionL
 
 | Adapter | Underlying Framework | Use Case |
 |---|---|---|
-| `@koi/engine-deepagents` | DeepAgents.js (on LangGraph) | Planning, context mgmt, sub-agents |
-| `@koi/engine-langgraph` | Raw LangGraph.js | Custom graph workflows |
+| `@koi/engine-claude` | Anthropic Claude API | Claude-native tool use, HITL approval bridge, streaming |
+| `@koi/engine-pi` | Inflection Pi API | Pi-specific conversation style |
 | `@koi/engine-loop` | None (pure TS) | Simple ReAct loop, lightweight agents |
-| `@koi/engine-custom` | Bring your own | Any execution model |
 
 ```yaml
 # koi.yaml — engine selection
-engine: deepagents    # or "langgraph", "loop", "custom"
+engine: claude    # or "pi", "loop"
 ```
 
 **Engine interposition (one layer, not two):**
@@ -571,7 +415,7 @@ permissions:
 
 ### Interfaces-Only Kernel
 
-**Decision**: `@koi/core` = zero runtime code. The kernel is a protocol specification, not code. Core never breaks, never has bugs, never needs patches.
+**Decision**: `@koi/core` = types-only kernel. The sole runtime code is branded type constructors (zero-logic identity casts for `SubsystemToken<T>`) and pure data constants derived from type definitions (e.g., `VALID_TRANSITIONS`, `RETRYABLE_DEFAULTS`). The kernel is a protocol specification, not an implementation.
 
 ### Monorepo with Meta-Packages
 
@@ -599,7 +443,7 @@ Three tiers of identity, matching trust tiers:
 | Tier | Identity | When | Example |
 |------|----------|------|---------|
 | **Forged tool/brick** | Artifact metadata only (creator, timestamp, hash) | tool, skill, composite | `forge:created-by:agent-123` |
-| **Worker** | `ProcessId` (id, name, type, depth, parent, ownerId) | Ephemeral sub-agent | Background research task |
+| **Worker** | `ProcessId` (id, name, type, depth, parent) | Ephemeral sub-agent | Background research task |
 | **Copilot** | `ProcessId` + crypto identity (L2, e.g., Ed25519/DID via Nexus) | Persistent, human-facing | Personal assistant |
 
 - `ProcessId` is L0 (always available, zero deps)
@@ -710,6 +554,22 @@ The agent can update **anything**. The only thing that varies is the gate:
 | **Sibling relay** | Agent A sends via Gateway → routes to Agent B |
 | **Broadcast** | EVENTS component → event bus → subscribers |
 | **Shared state** | Both agents read/write via ArtifactClient or Memory |
+| **Stigmergy** (#254, planned) | Agents leave traces in the environment (forge store, snapshots) that influence other agents' behavior — indirect coordination like ant pheromone trails |
+
+```
+Stigmergic coordination (planned, #254):
+
+Agent₁ forges tool:parser-v2 → writes to forge store
+  ↓ (artifact exists in shared scope)
+Agent₂ discovers tool:parser-v2 via resolver → uses it
+  ↓ (usage count increases, fitness score rises)
+Agent₃ observes high-fitness brick → adopts it
+  ↓ (positive feedback loop)
+Brick promoted to zone scope → all agents benefit
+
+No messages exchanged. No coordination protocol.
+The environment IS the coordination medium.
+```
 
 ---
 
@@ -761,11 +621,34 @@ The sandbox profile is inside the terminal. No "stale authorization" — middlew
 |-------|-----------|
 | 1. Authentication | API keys (TTL-based), SSO/OAuth2 |
 | 2. Authorization | ReBAC + pattern permissions (allow/deny/ask) |
-| 3. Content Sanitization | Strip injection patterns, control chars |
-| 4. OS Sandbox | macOS Seatbelt, Linux bubblewrap |
-| 5. Container Sandbox | Docker, Firecracker (for workers) |
-| 6. Audit Logging | Immutable trail, agent attribution |
-| 7. Adversarial Detection | Goal-drift monitoring, deception detection |
+| 3. Capability tokens (#252, planned) | Unforgeable, attenuable, delegatable (seL4/Fuchsia model) |
+| 4. Content Sanitization | Strip injection patterns, control chars |
+| 5. OS Sandbox | macOS Seatbelt, Linux bubblewrap |
+| 6. Container Sandbox | Docker, Firecracker (for workers) |
+| 7. Audit Logging | Immutable trail, agent attribution |
+| 8. Adversarial Detection | Goal-drift monitoring, deception detection |
+
+### Capability-Based Security (#252, planned)
+
+```
+Current: permission = (subject, action, resource) checked per call
+Target:  capability = unforgeable token granting specific rights
+
+┌──────────────┐     delegate      ┌──────────────┐
+│  Parent Agent │───────────────────│  Child Agent  │
+│  cap: full-fs │  attenuate to:   │  cap: read-fs │
+│               │  read-only +     │  /workspace/** │
+│               │  /workspace/**   │               │
+└──────────────┘                   └──────────────┘
+
+Properties:
+  • Unforgeable — cannot be created, only delegated from a holder
+  • Attenuable — can be narrowed (read+write → read-only) but never widened
+  • Revocable — parent can revoke at any time via RevocationRegistry
+  • Composable — multiple capabilities combine via intersection
+```
+
+This replaces ambient authority (checking "is this agent allowed?") with capability authority (the token IS the permission). Aligns with the existing `DelegationComponent` + HMAC-signed grants.
 
 ### Pattern-Based Permissions
 
@@ -831,11 +714,14 @@ Layer 7 defense — against the agent itself acting against user interests durin
 ### Verification Pipeline (4-stage gate)
 
 ```
-Stage 1: STATIC        Stage 2: SANDBOX         Stage 3: SELF-TEST      Stage 4: TRUST
-Schema validation       Execute in isolation      Run test cases          Assign trust tier
-Name + syntax check     Timeout, memory limit    Pluggable verifiers     sandbox/verified/promoted
-Size limits             No network access
+Stage 1: STATIC           Stage 2: SANDBOX         Stage 3: SELF-TEST      Stage 4: TRUST
+Schema validation          Execute in isolation      Run test cases          Assign trust tier
+Bun.Transpiler.scan()      Timeout, memory limit    Pluggable verifiers     sandbox/verified/promoted
+Name + syntax check        No network access        Health tracking starts
+Size limits
 ```
+
+Stage 1 uses Bun's native transpiler for zero-overhead syntax validation before any sandbox execution. Stage 3 pluggable verifiers enable custom verification logic per brick kind. After Stage 4, runtime health tracking (#251) monitors ongoing fitness.
 
 ### Brick Taxonomy — Open Forge Model
 
@@ -867,17 +753,44 @@ Size limits             No network access
 
 **Runtime forge = static L2 package:** A forged composite of related bricks (memory + tools + middleware + skill) IS an L2 package in all but name. Same L0 interfaces, different origin (static = curated/tested/published, runtime = emergent/sandboxed/discoverable).
 
+### Brick Composition Algebra (#255, planned)
+
+Bricks compose via category-theoretic operations — composition is type-safe and associative:
+
+```
+SEQUENTIAL:   brick_A >>> brick_B        (output of A feeds input of B)
+PARALLEL:     brick_A ||| brick_B        (run both, merge results)
+CONDITIONAL:  brick_A <|> brick_B        (try A, fallback to B)
+LIFTING:      lift(tool) → middleware    (wrap a tool as middleware)
+
+Properties (must hold for all compositions):
+  (A >>> B) >>> C  ≡  A >>> (B >>> C)    associativity
+  id >>> A         ≡  A                  left identity
+  A >>> id         ≡  A                  right identity
+```
+
+This allows the forge to build complex bricks from simple ones with guaranteed composability. A composite brick's trust tier = minimum of its components' tiers.
+
 ### Brick Lifecycle
 
 ```
-DRAFT → VERIFYING → ACTIVE → DEPRECATED
-                      ↓
-                    FAILED
+                          fitness signals
+                          ┌──────────┐
+                          ▼          │
+DRAFT → VERIFYING → ACTIVE ─── DEPRECATED
+              │        │ ▲
+              ▼        │ │ remediation
+           FAILED      ▼ │
+                   QUARANTINED
+                   (auto-demoted on
+                    health failure)
 ```
+
+`QUARANTINED` is set automatically when runtime health tracking detects repeated failures (see #259 bidirectional trust). Quarantined bricks can be remediated and returned to `ACTIVE`, or permanently `DEPRECATED`.
 
 ### Storage & Discovery
 
-All bricks (forged, bundled, extensions) are stored behind the `BrickStore` L0 interface. L2 implementations:
+All forged brick artifacts are stored behind the `ForgeStore` L0 interface, with version history tracked by `SnapshotStore`. L2 implementations:
 
 | Backend | Package | Use case |
 |---------|---------|----------|
@@ -895,7 +808,7 @@ forge:created-by:<agentId>   forge:version:0.1.0        forge:usage-count:N
 
 Resolver chain: `Agent-forged → Zone-forged → Global-forged → Bundled` (first-wins). Scope promotion rules: minimum `verified` for zone, minimum `promoted` for global.
 
-Snapshots use content-addressable storage — only changed bricks are stored. Like git objects, a snapshot is a manifest of hashes.
+Each `BrickArtifact` carries a `contentHash` (SHA-256 hex digest) for integrity verification. `BrickSnapshot` records provenance with `BrickRef` + `BrickSource` tracking.
 
 ### Forge Governance
 
@@ -1001,6 +914,39 @@ Every change, at every layer, follows the same pipeline:
 Write to forge store → Gate (auto or HITL) → Sandbox test → Snapshot → Takes effect → Restorable
 ```
 
+### The Evolution Loop
+
+Koi's self-evolution is modeled on biological evolution: variation (forge), selection (fitness signals), inheritance (snapshots), and adaptation (bidirectional trust). The full loop:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    SELF-EVOLUTION LOOP                                │
+│                                                                      │
+│   ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐  │
+│   │  FORGE   │────►│ VERIFY   │────►│  DEPLOY  │────►│ OBSERVE  │  │
+│   │ (vary)   │     │ (gate)   │     │ (select) │     │ (signal) │  │
+│   └──────────┘     └──────────┘     └──────────┘     └─────┬────┘  │
+│        ▲                                                     │      │
+│        │           ┌──────────────────────────────────────────┘      │
+│        │           │                                                 │
+│        │           ▼                                                 │
+│        │     ┌──────────┐     ┌──────────┐     ┌──────────┐        │
+│        │     │ FITNESS  │────►│ PROMOTE  │────►│  BUNDLE  │        │
+│        │     │ (score)  │     │ or DEMOTE│     │ (absorb) │        │
+│        │     └──────────┘     └─────┬────┘     └──────────┘        │
+│        │                            │                                │
+│        │    ┌───────────────────────┼───────────────────┐           │
+│        │    ▼                       ▼                   ▼           │
+│   ┌──────────┐           ┌──────────────┐      ┌────────────┐      │
+│   │QUARANTINE│           │  CRYSTALLIZE │      │ DEPRECATE  │      │
+│   │(isolate) │           │(auto-forge)  │      │ (retire)   │      │
+│   └──────────┘           └──────────────┘      └────────────┘      │
+│                                                                      │
+│   Theory: autopoiesis + Red Queen + punctuated equilibrium           │
+│   Issues: #249-#261                                                  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
 ### Agent Visibility
 
 The agent sees **everything** through the resolver. Read access is universal. Write goes to the forge store only.
@@ -1036,30 +982,104 @@ Global-forged (read, promote)
 Bundled (read-only)           ← lowest priority, extracted from binary
 ```
 
+### Bidirectional Trust Lifecycle
+
+Trust is **earned AND lost**. Unlike traditional systems where promotion is one-way, Koi bricks can be demoted based on runtime health signals (Red Queen hypothesis — you must keep running just to stay in place):
+
+```
+                    HITL approve        usage threshold
+                   ┌───────────┐       ┌───────────┐
+                   │           ▼       │           ▼
+              ┌─────────┐  ┌──────────┐  ┌──────────┐
+              │ SANDBOX │  │ VERIFIED │  │ PROMOTED │
+              └────┬────┘  └────┬─────┘  └────┬─────┘
+                   ▲            ▲              │
+                   │            │              │
+                   │     health failure        │
+                   │     ┌─────┘    ┌──────────┘
+                   │     │          │ trust score decay
+                   │     ▼          ▼
+              ┌────┴──────────────────┐
+              │     QUARANTINED       │
+              │  (auto-demotion on    │
+              │   health failure)     │
+              └───────────────────────┘
+                        │
+              remediation + re-verify
+                        │
+                        ▼
+                   back to SANDBOX
+                   (must re-earn trust)
+
+Trust score = f(success_rate, latency_p99, error_rate, usage_count)
+Decay: score decays over time without positive signals
+Demotion trigger: score < tier_threshold for sustained period
+```
+
+This ensures the system never accumulates stale promoted bricks — every brick must continuously prove its fitness. Implemented via #259 (bidirectional trust demotion) and #251 (fitness signals).
+
+### Fitness Signals & Natural Selection (#251)
+
+Bricks compete for survival based on runtime fitness — the system is a market, not a museum:
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                   BRICK FITNESS SIGNALS                           │
+│                                                                   │
+│  Per-brick health tracking (HealthMonitor):                       │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐              │
+│  │ success_rate│  │ latency_p99 │  │ error_rate  │              │
+│  │ (calls/ok)  │  │ (ms)        │  │ (calls/err) │              │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘              │
+│         │                │                │                      │
+│         └────────────────┼────────────────┘                      │
+│                          ▼                                        │
+│                  ┌──────────────┐                                 │
+│                  │ FITNESS SCORE│ = weighted composite             │
+│                  └──────┬───────┘                                 │
+│                         │                                         │
+│              ┌──────────┼──────────┐                              │
+│              ▼          ▼          ▼                              │
+│         score > 0.9  0.5–0.9   score < 0.5                       │
+│         ┌────────┐ ┌────────┐ ┌────────────┐                    │
+│         │PROMOTE │ │ ACTIVE │ │ QUARANTINE │                    │
+│         │candidate│ │ (ok)   │ │ + DEMOTE   │                    │
+│         └────────┘ └────────┘ └────────────┘                    │
+│                                                                   │
+│  When multiple bricks serve same purpose:                         │
+│  → highest fitness wins resolver priority (natural selection)     │
+│  → low-fitness bricks deprecated automatically                   │
+│  → crystallization detects repeated patterns, forges optimized    │
+│    replacements (punctuated equilibrium, #258)                   │
+└──────────────────────────────────────────────────────────────────┘
+```
+
 ### Immutable Snapshot Chain
 
-Every change produces a new immutable snapshot:
+Every brick change produces a new immutable `BrickSnapshot` via the `SnapshotStore`. Snapshots are per-brick (not per-agent), tracking individual brick provenance and version history.
 
 ```
-v0 (manifest loaded)
- └→ v1 (forged tool:calculator)
-     └→ v2 (attached memory backend)
-         └→ v3 (forged skill:research)
-             └→ v4 (config changed)
-                 └→ v5 (current)
+brick:calculator
+  snap-0 (created, source: forged, by: agent-123)
+   └→ snap-1 (updated — new implementation)
+       └→ snap-2 (promoted — scope: agent → zone)
+           └→ snap-3 (quarantined — fitness < threshold)
+               └→ snap-4 (updated — bug fixed, back to active)
 ```
+
+Snapshot events: `created`, `updated`, `promoted`, `deprecated`, `quarantined`. Each snapshot records the `BrickSource` (forged, bundled, imported, composed), the actor, and a `BrickRef` with content hash.
 
 Operations on the chain:
 
 ```
-restore(v)     → load snapshot v, continue from there (new v6 pointing to v2)
-fork(v)        → create new agent starting from snapshot v's state
-diff(v1, v2)   → what changed between two snapshots
-current()      → latest snapshot
-history()      → full chain from v0 to now
+record(snap)    → append a new snapshot
+get(snapId)     → retrieve a specific snapshot
+latest(brickId) → most recent snapshot for a brick
+history(brickId)→ full chain from creation to now
+list(query)     → search snapshots by brick, event type, time range
 ```
 
-Restore doesn't delete history — it appends a new snapshot pointing back. Like git, you can always see that v3-v5 happened.
+Snapshots are append-only — quarantine doesn't delete history, it adds a new snapshot event. Like git, you can always see the full provenance chain.
 
 ### Graduation Pipeline
 
@@ -1069,13 +1089,19 @@ Changes start as local experiments. Proven ones graduate into the base:
 FORGE (instant, local, zero cost)
   → Agent shadows tool:search with v2. Only this agent affected.
 
-VALIDATE (runtime, automatic)
-  → Usage count, success rate, error rate tracked by crystallization middleware.
-  → Score: occurrences × success_rate × complexity_reduction
+OBSERVE (runtime, automatic)
+  → Health tracking starts immediately after deploy.
+  → Fitness score computed from success rate, latency, error rate.
 
-PROMOTE (HITL for zone/global)
+PROMOTE (fitness-gated + HITL for zone/global)
   → Agent: "tool:search-v2 has 98% success over 500 calls, promote?"
+  → Fitness score must exceed tier threshold
   → Human approves → available to zone/all agents
+
+DEMOTE (automatic on health failure)
+  → Fitness score drops below threshold → auto-quarantine
+  → Snapshot records the demotion event
+  → Agent falls back to previous version via resolver chain
 
 BUNDLE (next binary release)
   → CI collects proven promoted forges, absorbs into base packages.
@@ -1088,25 +1114,140 @@ CLEAN (forge layer thins out)
 
 The binary is a snapshot of "everything proven so far." The forge layer is where evolution happens.
 
-### Proposal Interface
+### Demand-Triggered Forge (#258)
 
-```typescript
-interface Proposal {
-  readonly id: string;
-  readonly target: "l0" | "l1" | "l2" | "sandbox" | "gateway";
-  readonly kind: "add" | "modify" | "deprecate";
-  readonly deployMode: "forge" | "config" | "release";
-  readonly description: string;
-  readonly spec: unknown;
-  readonly author: ProcessId;
-  readonly status: "pending" | "approved" | "rejected" | "deployed" | "rolled_back";
-}
+Not all forging is agent-initiated. The system also forges in response to environmental pressure (punctuated equilibrium):
 
-interface ProposalGate {
-  readonly submit: (proposal: Proposal) => Promise<string>;
-  readonly review: (id: string) => Promise<Proposal>;
-}
 ```
+Environmental trigger              System response
+─────────────────────              ───────────────
+Tool call fails repeatedly    →    Auto-forge fallback tool
+New API version detected      →    Crystallize adapter update
+Usage pattern crystallizes    →    Auto-forge optimized composite
+Brick quarantined             →    Trigger replacement search
+```
+
+The crystallization middleware observes tool sequences and auto-forges when confidence is high enough. Combined with fitness signals, this creates a system that adapts to changing conditions without explicit human intervention.
+
+### Supervision Trees (#257)
+
+Agent crash recovery uses Erlang/OTP-style supervision, not naive snapshot restoration:
+
+```
+┌────────────────────────────────────────────────────────┐
+│              SUPERVISION TREE                            │
+│                                                          │
+│              ┌──────────────┐                            │
+│              │  SUPERVISOR  │ (one_for_one strategy)     │
+│              │  max_restarts│                            │
+│              │  per_period  │                            │
+│              └──────┬───────┘                            │
+│           ┌─────────┼─────────┐                          │
+│           ▼         ▼         ▼                          │
+│     ┌──────────┐┌──────────┐┌──────────┐                │
+│     │ Agent₁   ││ Agent₂   ││ Agent₃   │                │
+│     │ (worker) ││ (worker) ││ (copilot)│                │
+│     └──────────┘└──────────┘└──────────┘                │
+│                                                          │
+│  Restart strategies:                                     │
+│  ─────────────────                                       │
+│  one_for_one : only crashed child restarts               │
+│  one_for_all : all children restart (consistent state)   │
+│  rest_for_one: crashed + all started after it restart    │
+│                                                          │
+│  Escalation:                                             │
+│  ───────────                                             │
+│  Child fails → supervisor restarts (up to max_restarts)  │
+│  Supervisor exhausts budget → escalate to parent         │
+│  Root supervisor exhausts → system enters degraded mode  │
+│                                                          │
+│  Recovery flow:                                          │
+│  ──────────────                                          │
+│  Agent crashes → supervisor catches                      │
+│    → restore from latest healthy snapshot                 │
+│    → re-attach components                                │
+│    → quarantine offending brick if identified             │
+│    → resume from last checkpoint                         │
+│    → if repeated: escalate + circuit break               │
+└────────────────────────────────────────────────────────┘
+```
+
+This replaces the naive "try previous snapshot" approach with structured fault tolerance. The supervision tree provides:
+- **Isolation**: one child's failure doesn't take down siblings
+- **Budget-based escalation**: local recovery before global intervention
+- **Automatic quarantine**: identify and isolate the offending brick
+- **Graceful degradation**: system operates in reduced capacity, doesn't hard-crash
+
+### Reconciliation Controllers (#253)
+
+K8s-inspired desired-state reconciliation ensures the system converges to its intended configuration:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│             RECONCILIATION LOOP                           │
+│                                                           │
+│   ┌──────────────┐         ┌──────────────┐              │
+│   │ DESIRED STATE│         │ ACTUAL STATE │              │
+│   │ (manifest +  │         │ (registry +  │              │
+│   │  config)     │         │  runtime)    │              │
+│   └──────┬───────┘         └──────┬───────┘              │
+│          │                        │                       │
+│          └────────┬───────────────┘                       │
+│                   ▼                                       │
+│          ┌──────────────┐                                │
+│          │     DIFF     │  desired vs actual              │
+│          └──────┬───────┘                                │
+│                 │                                         │
+│       ┌─────────┼─────────┐                              │
+│       ▼         ▼         ▼                              │
+│   missing    drifted   extra                             │
+│   component  config    component                         │
+│       │         │         │                              │
+│       ▼         ▼         ▼                              │
+│   attach()  update()  detach()                           │
+│                                                           │
+│   Loop runs continuously via AgentRegistry.watch()        │
+│   Convergence, not scripted steps                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+Reconciliation controllers react to registry events and drive the system toward desired state. This is the same pattern that makes Kubernetes self-healing — the system doesn't follow a script, it converges to a declaration.
+
+### Unified Governance (#261)
+
+All governance concerns (spawn limits, forge budgets, trust thresholds, resource quotas) converge into a single homeostatic controller:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│            GOVERNANCE CONTROLLER                          │
+│            (homeostasis — maintaining equilibrium)         │
+│                                                           │
+│   Inputs (sensors):              Outputs (actuators):     │
+│   ┌───────────────┐             ┌───────────────┐        │
+│   │ spawn count   │────────────►│ spawn limits  │        │
+│   │ forge budget  │────────────►│ forge quota   │        │
+│   │ trust scores  │────────────►│ trust gates   │        │
+│   │ resource usage│────────────►│ resource caps │        │
+│   │ error rates   │────────────►│ circuit break │        │
+│   └───────────────┘             └───────────────┘        │
+│                                                           │
+│   The controller maintains system-wide invariants:        │
+│   • Total spawns ≤ tree capacity (SpawnLedger)           │
+│   • Forge rate ≤ session budget                           │
+│   • Trust never exceeds evidence                          │
+│   • Resources never exceed allocation                     │
+│                                                           │
+│   Single source of truth, not scattered middleware.       │
+│   Middleware reads from governance, doesn't own policy.   │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Proposal Interface (planned)
+
+The proposal system for L0/L1 changes is planned but not yet implemented in `@koi/core`. When implemented, it will formalize the trust gate for cross-layer modifications:
+
+- `Proposal` — identifies target layer, change kind, deploy mode, and approval status
+- `ProposalGate` — submit/review interface for HITL approval workflows
 
 ### Binary as Delivery Vehicle
 
@@ -1128,26 +1269,6 @@ Grows at runtime:
 99% of changes are agent-local forges. No binary rebuild, no restart. Only L0/L1 core changes need a new binary, and those are rare.
 
 Self-update is a built-in tool: download new binary → checkpoint all agents → swap → restart → restore from snapshots. Forged bricks and snapshots survive binary updates.
-
-### Crash Recovery = Restore
-
-```
-Agent crashes at v5
-  → restore(v4)          // try previous snapshot
-  → still crashes?
-  → restore(v3)          // keep going back
-  → works!               // v3 was the last good state
-  → diff(v3, v5)         // shows what broke
-  → quarantine the offending brick
-```
-
-```yaml
-# koi.yaml — recovery config
-recovery:
-  mode: checkpoint        # checkpoint | clean | manual
-  maxRestarts: 3          # circuit breaker before staying dead
-  backoff: exponential
-```
 
 ---
 
@@ -1391,3 +1512,88 @@ Multiple Nodes can connect to a single Gateway. When a Node is unavailable:
 | No Gateway | Full Nodes operate locally (offline mode); no cross-device routing |
 
 Middleware handles missing backend features gracefully — falls back to reduced capability rather than failing.
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                  RESEARCH ISSUE DEPENDENCIES                         │
+│                                                                      │
+│  FOUNDATIONS (implement first):                                      │
+│  ┌─────────────────┐    ┌─────────────────┐                         │
+│  │ #249 Watch      │    │ #250 Content-   │                         │
+│  │ Semantics       │    │ Addressed       │                         │
+│  │ (etcd/K8s)      │    │ BrickId         │                         │
+│  └────────┬────────┘    │ (git/Nix/IPFS)  │                         │
+│           │             └────────┬────────┘                         │
+│           │                      │                                   │
+│  SELECTION LAYER (depends on foundations):                            │
+│           │                      │                                   │
+│           ▼                      ▼                                   │
+│  ┌─────────────────┐    ┌─────────────────┐                         │
+│  │ #253 Reconcil-  │    │ #251 Fitness    │                         │
+│  │ iation Control- │    │ Signals         │                         │
+│  │ lers (K8s)      │    │ (natural        │                         │
+│  └────────┬────────┘    │  selection)     │                         │
+│           │             └────────┬────────┘                         │
+│           │                      │                                   │
+│  ADAPTATION LAYER (depends on selection):                            │
+│           │                      │                                   │
+│           ▼                      ▼                                   │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐  │
+│  │ #257 Supervision│    │ #259 Bidirection│    │ #258 Demand-    │  │
+│  │ Trees           │    │ Trust Demotion  │    │ Triggered Forge │  │
+│  │ (Erlang/OTP)    │    │ (Red Queen)     │    │ (punctuated eq.)│  │
+│  └─────────────────┘    └─────────────────┘    └─────────────────┘  │
+│                                                                      │
+│  INDEPENDENT (can implement in any order):                           │
+│  ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐       │
+│  │ #252 Capability │ │ #254 Stigmergic │ │ #255 Brick      │       │
+│  │ Tokens          │ │ Coordination    │ │ Composition     │       │
+│  │ (seL4/Fuchsia)  │ │ (ant colonies)  │ │ Algebra         │       │
+│  └─────────────────┘ └─────────────────┘ │ (category thy.) │       │
+│                                           └─────────────────┘       │
+│  ┌─────────────────┐ ┌─────────────────┐                            │
+│  │ #260 Required   │ │ #261 Unified    │                            │
+│  │ Test Cases      │ │ Governance      │                            │
+│  │ (CDGP auto-gen) │ │ (homeostasis)   │                            │
+│  └─────────────────┘ └─────────────────┘                            │
+│                                                                      │
+│  Theory basis:                                                       │
+│  ────────────                                                        │
+│  #249,#253     — distributed systems (etcd watch, K8s reconcile)    │
+│  #250          — content-addressable storage (git, Nix, IPFS)       │
+│  #251,#258,#259— biological evolution (fitness, punctuated eq.)     │
+│  #252          — capability-based security (seL4, Fuchsia)          │
+│  #254          — emergent coordination (stigmergy, ant colonies)    │
+│  #255          — formal composition (category theory, monoids)      │
+│  #257          — fault tolerance (Erlang/OTP supervision)           │
+│  #260          — program synthesis (CDGP, counterexample-driven)    │
+│  #261          — homeostasis (biological equilibrium maintenance)   │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Placement by Workstream
+
+| Issue | Workstream | Layer Impact |
+|-------|------------|-------------|
+| #249 Universal watch | WS1 Kernel | L0 (contract) + L1 (implementation) |
+| #250 Content-addressed BrickId | WS1 Kernel | L0 (type change) |
+| #251 Fitness signals | WS3 Forge | L2 (HealthMonitor + forge governance) |
+| #252 Capability tokens | WS4 Security | L0 (contract) + L2 (implementation) |
+| #253 Reconciliation controllers | WS1 Kernel | L1 (controllers) |
+| #254 Stigmergic coordination | WS3 Forge | L2 (middleware) |
+| #255 Brick composition algebra | WS3 Forge | L0 (type) + L2 (implementation) |
+| #257 Supervision trees | WS1 Kernel | L1 (supervisor runtime) |
+| #258 Demand-triggered forge | WS3 Forge | L2 (crystallization middleware) |
+| #259 Bidirectional trust demotion | WS3 Forge | L2 (health → trust pipeline) |
+| #260 Required test cases | WS3 Forge | L0 (contract) + L2 (CDGP generator) |
+| #261 Unified governance | WS1 Kernel | L1 (controller) + L2 (middleware) |
+
+### Unifying Insight
+
+All 12 issues derive from one insight: **interfaces are all you need**. Every L0 contract is a composable expression that can evaluate itself. The research roadmap extends this from static composition (current) to dynamic, fitness-driven, self-healing composition (target):
+
+```
+CURRENT:  manifest → assembly → static components → run
+TARGET:   manifest → assembly → observe → adapt → evolve → converge
+```
+
+The system doesn't just assemble agents — it grows them, tests them under selection pressure, and converges toward optimal configurations. The binary improves itself.
