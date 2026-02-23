@@ -105,4 +105,45 @@ describe("LocalResolver", () => {
       }
     });
   });
+
+  describe("source", () => {
+    it("returns JSON content for directory tool", async () => {
+      const resolver = createLocalResolver({
+        directories: [testDir],
+        builtins: { filesystem: false, shell: false },
+      });
+      const result = await resolver.source("calculator");
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.language).toBe("json");
+        const parsed = JSON.parse(result.value.content);
+        expect(parsed.name).toBe("calculator");
+      }
+    });
+
+    it("returns NOT_FOUND with actionable message for built-in tool", async () => {
+      const resolver = createLocalResolver({
+        directories: [],
+        builtins: { filesystem: true, shell: false },
+      });
+      const result = await resolver.source("filesystem");
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("NOT_FOUND");
+        expect(result.error.message).toContain("Shadow pattern");
+      }
+    });
+
+    it("returns NOT_FOUND for unknown tool", async () => {
+      const resolver = createLocalResolver({
+        directories: [],
+        builtins: { filesystem: false, shell: false },
+      });
+      const result = await resolver.source("nonexistent");
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("NOT_FOUND");
+      }
+    });
+  });
 });

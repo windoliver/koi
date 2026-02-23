@@ -244,7 +244,7 @@ export type {
 // model provider
 export type { ModelCapabilities, ModelProvider, ModelTarget } from "./model-provider.js";
 // resolver
-export type { Resolver } from "./resolver.js";
+export type { Resolver, SourceBundle, SourceLanguage } from "./resolver.js";
 // sandbox executor — code execution in isolation (forge verification contract)
 export type {
   SandboxError,

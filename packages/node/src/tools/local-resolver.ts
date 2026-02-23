@@ -5,7 +5,7 @@
  * Priority: local config > built-in defaults (first-wins).
  */
 
-import type { KoiError, Result, Tool, ToolDescriptor } from "@koi/core";
+import type { KoiError, Result, SourceBundle, Tool, ToolDescriptor } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core";
 import type { ToolResolverConfig } from "../types.js";
 import { createFilesystemTool } from "./filesystem.js";
@@ -26,6 +26,7 @@ export interface LocalResolver {
   /** Synchronous list of already-discovered tools. Empty if discover() hasn't been called. */
   readonly list: () => readonly ToolMeta[];
   readonly load: (id: string) => Promise<Result<Tool, KoiError>>;
+  readonly source: (id: string) => Promise<Result<SourceBundle, KoiError>>;
   readonly onChange?: (listener: () => void) => () => void;
 }
 
@@ -36,6 +37,7 @@ export interface LocalResolver {
 export function createLocalResolver(config: ToolResolverConfig): LocalResolver {
   const tools = new Map<string, Tool>();
   const toolSources = new Map<string, "builtin" | "directory">();
+  const toolPaths = new Map<string, string>();
   // let: lazy discovery flag, set once after initial scan
   let discovered = false;
 
@@ -119,6 +121,7 @@ export function createLocalResolver(config: ToolResolverConfig): LocalResolver {
 
           tools.set(name, tool);
           toolSources.set(name, "directory");
+          toolPaths.set(name, filePath);
         } catch {
           // Skip malformed tool definitions
         }
@@ -161,6 +164,59 @@ export function createLocalResolver(config: ToolResolverConfig): LocalResolver {
         };
       }
       return { ok: true, value: tool };
+    },
+
+    async source(id) {
+      await ensureDiscovered();
+      const src = toolSources.get(id);
+      if (src === undefined) {
+        return {
+          ok: false,
+          error: {
+            code: "NOT_FOUND",
+            message: `Tool not found: ${id}`,
+            retryable: RETRYABLE_DEFAULTS.NOT_FOUND,
+            context: { toolId: id },
+          },
+        };
+      }
+      if (src === "builtin") {
+        return {
+          ok: false,
+          error: {
+            code: "NOT_FOUND",
+            message: `Built-in tool "${id}" has no readable source. Use Shadow pattern to override.`,
+            retryable: RETRYABLE_DEFAULTS.NOT_FOUND,
+            context: { toolId: id, source: "builtin" },
+          },
+        };
+      }
+      const filePath = toolPaths.get(id);
+      if (filePath === undefined) {
+        return {
+          ok: false,
+          error: {
+            code: "INTERNAL",
+            message: `No file path tracked for directory tool: ${id}`,
+            retryable: false,
+            context: { toolId: id },
+          },
+        };
+      }
+      try {
+        const content = await Bun.file(filePath).text();
+        return { ok: true, value: { content, language: "json" as const } };
+      } catch (e: unknown) {
+        return {
+          ok: false,
+          error: {
+            code: "INTERNAL",
+            message: `Failed to read source for tool "${id}": ${e instanceof Error ? e.message : String(e)}`,
+            retryable: false,
+            context: { toolId: id, filePath },
+          },
+        };
+      }
     },
   };
 }

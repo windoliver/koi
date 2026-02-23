@@ -162,4 +162,10 @@ describe("createMcpResolver", () => {
       expect(result2.value.descriptor.name).toBe("mcp/github/create_pr");
     }
   });
+
+  test("source is not defined on MCP resolver", () => {
+    const managers = createTestManagers();
+    const resolver = createMcpResolver(managers);
+    expect(resolver.source).toBeUndefined();
+  });
 });

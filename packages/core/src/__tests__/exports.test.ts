@@ -79,6 +79,8 @@ import type {
   // middleware
   SessionContext,
   SkillMetadata,
+  SourceBundle,
+  SourceLanguage,
   SpawnCheck,
   // ecs
   SubsystemToken,
@@ -191,7 +193,10 @@ type _TypeGuard =
   | AssertDefined<EvictionCandidate>
   | AssertDefined<EvictionReason>
   | AssertDefined<EvictionResult>
-  | AssertDefined<EvictionPolicy>;
+  | AssertDefined<EvictionPolicy>
+  // resolver source types
+  | AssertDefined<SourceBundle>
+  | AssertDefined<SourceLanguage>;
 
 describe("export inventory", () => {
   test("all runtime values are defined", () => {
