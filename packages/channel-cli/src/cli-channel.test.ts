@@ -401,6 +401,17 @@ describe("createCliChannel", () => {
     await channel.disconnect();
   });
 
+  test("does not implement sendStatus (backward-compatible)", () => {
+    const streams = createMockStreams();
+    activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];
+    const channel = createCliChannel({
+      input: streams.input,
+      output: streams.output,
+      errorOutput: streams.errorOutput,
+    });
+    expect(channel.sendStatus).toBeUndefined();
+  });
+
   test("connect is idempotent", async () => {
     const streams = createMockStreams();
     activeStreams = [...activeStreams, streams.input, streams.output, streams.errorOutput];

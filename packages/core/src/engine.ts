@@ -72,6 +72,7 @@ export type EngineEvent =
       readonly callId: string;
       readonly result: unknown;
     }
+  | { readonly kind: "turn_start"; readonly turnIndex: number }
   | { readonly kind: "turn_end"; readonly turnIndex: number }
   | { readonly kind: "done"; readonly output: EngineOutput }
   | { readonly kind: "custom"; readonly type: string; readonly data: unknown };

@@ -110,7 +110,14 @@ describe("full lifecycle integration", () => {
 
     const collected = await collectEvents(runtime.run({ kind: "text", text: "hello" }));
 
-    expect(collected.map((e) => e.kind)).toEqual(["text_delta", "text_delta", "turn_end", "done"]);
+    expect(collected.map((e) => e.kind)).toEqual([
+      "turn_start",
+      "text_delta",
+      "text_delta",
+      "turn_end",
+      "turn_start",
+      "done",
+    ]);
     expect(runtime.agent.state).toBe("terminated");
   });
 
@@ -307,7 +314,7 @@ describe("input types integration", () => {
     });
 
     const events = await collectEvents(runtime.run({ kind: "text", text: "hello" }));
-    expect(events).toHaveLength(1);
+    expect(events).toHaveLength(2); // turn_start + done
   });
 
   test("accepts messages input", async () => {
@@ -328,7 +335,7 @@ describe("input types integration", () => {
         ],
       }),
     );
-    expect(events).toHaveLength(1);
+    expect(events).toHaveLength(2); // turn_start + done
   });
 });
 

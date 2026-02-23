@@ -150,6 +150,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           // giving the consumer a chance to inject tools/middleware between turns
           let pendingForgeRefresh = false;
 
+          // let justified: mutable flag — true when a turn_start event should be emitted
+          let shouldEmitTurnStart = true;
+
           // let justified: mutable middleware chain refs, updated at turn boundaries
           let activeToolChain: (ctx: TurnContext, req: ToolRequest) => Promise<ToolResponse>;
           let activeModelChain: (ctx: TurnContext, req: ModelRequest) => Promise<ModelResponse>;
@@ -232,10 +235,15 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                         messages: inputMessages,
                         metadata: {},
                       };
-                      cachedTurnCtx =
-                        options.approvalHandler !== undefined
-                          ? { ...base, requestApproval: options.approvalHandler }
-                          : base;
+                      cachedTurnCtx = {
+                        ...base,
+                        ...(options.approvalHandler !== undefined
+                          ? { requestApproval: options.approvalHandler }
+                          : {}),
+                        ...(options.sendStatus !== undefined
+                          ? { sendStatus: options.sendStatus }
+                          : {}),
+                      };
                       return cachedTurnCtx;
                     };
                     const rawModelTerminal = adapter.terminals.modelCall;
@@ -316,6 +324,26 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   }
                 }
 
+                // Emit turn_start event with onBeforeTurn hooks
+                if (shouldEmitTurnStart) {
+                  shouldEmitTurnStart = false;
+                  const turnCtx: TurnContext = {
+                    session: sessionCtx,
+                    turnIndex: currentTurnIndex,
+                    messages: input.kind === "messages" ? input.messages : [],
+                    metadata: {},
+                    ...(options.approvalHandler !== undefined
+                      ? { requestApproval: options.approvalHandler }
+                      : {}),
+                    ...(options.sendStatus !== undefined ? { sendStatus: options.sendStatus } : {}),
+                  };
+                  await runTurnHooks(allMiddleware, "onBeforeTurn", turnCtx);
+                  return {
+                    done: false,
+                    value: { kind: "turn_start", turnIndex: currentTurnIndex },
+                  };
+                }
+
                 if (!iterator) {
                   done = true;
                   running = false;
@@ -337,7 +365,8 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 // Process turn_end events
                 if (event.kind === "turn_end") {
                   currentTurnIndex = event.turnIndex + 1;
-                  const turnCtx = {
+                  shouldEmitTurnStart = true;
+                  const turnCtx: TurnContext = {
                     session: sessionCtx,
                     turnIndex: event.turnIndex,
                     messages: [],
@@ -345,6 +374,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                     ...(options.approvalHandler !== undefined
                       ? { requestApproval: options.approvalHandler }
                       : {}),
+                    ...(options.sendStatus !== undefined ? { sendStatus: options.sendStatus } : {}),
                   };
 
                   // Defer forge refresh to the start of the next next() call,
