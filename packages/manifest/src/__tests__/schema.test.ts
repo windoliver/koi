@@ -329,6 +329,74 @@ describe("rawManifestSchema — deploy", () => {
 });
 
 // ---------------------------------------------------------------------------
+// soul field
+// ---------------------------------------------------------------------------
+
+describe("rawManifestSchema — soul", () => {
+  test("accepts soul as string path", () => {
+    const result = parse({ soul: "./SOUL.md" });
+    expect(result.success).toBe(true);
+    if (result.success) expect((result.data as Record<string, unknown>).soul).toBe("./SOUL.md");
+  });
+
+  test("accepts soul as object with path and maxTokens", () => {
+    expect(parse({ soul: { path: "./soul/", maxTokens: 2000 } }).success).toBe(true);
+  });
+
+  test("accepts soul as inline multiline string", () => {
+    expect(parse({ soul: "You are helpful.\nBe concise." }).success).toBe(true);
+  });
+
+  test("accepts soul object with path only (no maxTokens)", () => {
+    expect(parse({ soul: { path: "./SOUL.md" } }).success).toBe(true);
+  });
+
+  test("rejects soul as number", () => {
+    expect(parse({ soul: 42 }).success).toBe(false);
+  });
+
+  test("rejects soul as boolean", () => {
+    expect(parse({ soul: true }).success).toBe(false);
+  });
+
+  test("rejects soul object without path", () => {
+    expect(parse({ soul: { maxTokens: 2000 } }).success).toBe(false);
+  });
+
+  test("rejects soul with negative maxTokens", () => {
+    expect(parse({ soul: { path: "./SOUL.md", maxTokens: -1 } }).success).toBe(false);
+  });
+
+  test("rejects soul with zero maxTokens", () => {
+    expect(parse({ soul: { path: "./SOUL.md", maxTokens: 0 } }).success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// user field
+// ---------------------------------------------------------------------------
+
+describe("rawManifestSchema — user", () => {
+  test("accepts user as string path", () => {
+    const result = parse({ user: "./USER.md" });
+    expect(result.success).toBe(true);
+    if (result.success) expect((result.data as Record<string, unknown>).user).toBe("./USER.md");
+  });
+
+  test("accepts user as object with path and maxTokens", () => {
+    expect(parse({ user: { path: "./USER.md", maxTokens: 1000 } }).success).toBe(true);
+  });
+
+  test("rejects user as number", () => {
+    expect(parse({ user: 42 }).success).toBe(false);
+  });
+
+  test("rejects user as array", () => {
+    expect(parse({ user: ["./USER.md"] }).success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // zodToKoiError
 // ---------------------------------------------------------------------------
 

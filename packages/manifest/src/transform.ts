@@ -24,7 +24,15 @@ function toJsonObject(value: unknown): JsonObject {
 }
 
 /** Extension field names that pass through from raw YAML to LoadedManifest. */
-const EXTENSION_FIELDS = ["engine", "schedule", "webhooks", "forge", "context"] as const;
+const EXTENSION_FIELDS = [
+  "engine",
+  "schedule",
+  "webhooks",
+  "forge",
+  "context",
+  "soul",
+  "user",
+] as const;
 
 /**
  * Extracts defined extension fields from a raw manifest into a partial object.
