@@ -20,6 +20,18 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/bootstrap": {
+      "name": "@koi/bootstrap",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/context": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/channel-base": {
       "name": "@koi/channel-base",
       "version": "0.0.0",
@@ -647,6 +659,8 @@
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
     "@koi/artifact-client": ["@koi/artifact-client@workspace:packages/artifact-client"],
+
+    "@koi/bootstrap": ["@koi/bootstrap@workspace:packages/bootstrap"],
 
     "@koi/channel-base": ["@koi/channel-base@workspace:packages/channel-base"],
 
