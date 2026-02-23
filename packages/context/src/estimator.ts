@@ -5,9 +5,10 @@
  * TokenEstimator interface from @koi/core.
  */
 
-import type { TokenEstimator } from "@koi/core";
+import type { InboundMessage, TokenEstimator } from "@koi/core";
 
-const CHARS_PER_TOKEN = 4;
+/** Characters per token used by the heuristic estimator. */
+export const CHARS_PER_TOKEN = 4;
 
 /**
  * Estimates token count using a simple character-based heuristic.
@@ -18,7 +19,7 @@ export const heuristicTokenEstimator: TokenEstimator = {
     return Math.ceil(text.length / CHARS_PER_TOKEN);
   },
 
-  estimateMessages(messages): number {
+  estimateMessages(messages: readonly InboundMessage[]): number {
     let total = 0;
     for (const msg of messages) {
       for (const block of msg.content) {
