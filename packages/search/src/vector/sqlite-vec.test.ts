@@ -161,4 +161,21 @@ describe("VectorStore", () => {
     expect(results[0]?.metadata).toEqual({ title: "test" });
     store.close();
   });
+
+  test("batch metadata query returns correct metadata for multiple hits", () => {
+    const store = createVectorStore({ dbPath: ":memory:", dimensions: dims });
+    // Insert several docs with distinct metadata
+    for (let i = 0; i < 20; i++) {
+      store.insert(`doc${i}`, makeEmbedding(i, dims), { index: i, label: `item-${i}` });
+    }
+
+    // Search should return multiple hits, each with correct metadata (batch-fetched)
+    const results = store.search(makeEmbedding(0, dims), 10);
+    expect(results.length).toBe(10);
+    for (const hit of results) {
+      const idx = Number(hit.id.replace("doc", ""));
+      expect(hit.metadata).toEqual({ index: idx, label: `item-${idx}` });
+    }
+    store.close();
+  });
 });

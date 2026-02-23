@@ -224,4 +224,37 @@ describe("E2E: createSearch full pipeline", () => {
 
     search.close();
   });
+
+  test("embed is called once per document during indexing, not twice", async () => {
+    let embedCallCount = 0;
+    const base = createMockEmbedder();
+    const countingEmbedder: Embedder = {
+      dimensions: base.dimensions,
+      embed: async (text: string) => {
+        embedCallCount++;
+        return base.embed(text);
+      },
+      embedMany: async (texts: readonly string[]) => {
+        embedCallCount += texts.length;
+        return base.embedMany(texts);
+      },
+    };
+
+    const search = createSearch({ embedder: countingEmbedder });
+    const docs = [
+      { id: "a", content: "alpha document" },
+      { id: "b", content: "beta document" },
+      { id: "c", content: "gamma document" },
+    ] as const;
+
+    embedCallCount = 0;
+    await search.indexer.index(docs);
+
+    // Each doc should be embedded exactly once (3 docs = 3 embeds from the
+    // index wrapper). The sqlite-indexer receives enriched docs with
+    // pre-computed embeddings so it should not re-embed single-chunk docs.
+    expect(embedCallCount).toBe(3);
+
+    search.close();
+  });
 });
