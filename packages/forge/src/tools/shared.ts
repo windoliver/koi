@@ -4,12 +4,14 @@
 
 import type {
   BrickArtifact,
+  BrickArtifactBase,
   ForgeStore,
   JsonObject,
   Result,
   Tool,
   ToolDescriptor,
 } from "@koi/core";
+import { z } from "zod";
 import type { ForgeConfig } from "../config.js";
 import type { ForgeError } from "../errors.js";
 import { staticError, typeError } from "../errors.js";
@@ -87,6 +89,142 @@ export function validateInputFields(
     }
   }
   return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Zod input schemas
+// ---------------------------------------------------------------------------
+
+const baseInputFields = {
+  name: z.string(),
+  description: z.string(),
+  tags: z.array(z.string()).optional(),
+  files: z.record(z.string(), z.string()).optional(),
+  requires: z
+    .object({
+      bins: z.array(z.string()).optional(),
+      env: z.array(z.string()).optional(),
+      tools: z.array(z.string()).optional(),
+    })
+    .optional(),
+};
+
+export const forgeToolInputSchema = z.object({
+  ...baseInputFields,
+  inputSchema: z.record(z.string(), z.unknown()),
+  implementation: z.string(),
+  testCases: z
+    .array(
+      z.object({
+        name: z.string(),
+        input: z.unknown(),
+        expectedOutput: z.unknown().optional(),
+        shouldThrow: z.boolean().optional(),
+      }),
+    )
+    .optional(),
+});
+
+export const forgeSkillInputSchema = z.object({
+  ...baseInputFields,
+  body: z.string(),
+});
+
+export const forgeAgentInputSchema = z
+  .object({
+    ...baseInputFields,
+    manifestYaml: z.string().optional(),
+    brickIds: z.array(z.string()).optional(),
+    model: z.string().optional(),
+    agentType: z.string().optional(),
+  })
+  .refine((val) => (val.manifestYaml !== undefined) !== (val.brickIds !== undefined), {
+    message: "Exactly one of manifestYaml or brickIds must be provided",
+  });
+
+export const forgeCompositeInputSchema = z.object({
+  ...baseInputFields,
+  brickIds: z.array(z.string()),
+});
+
+// ---------------------------------------------------------------------------
+// Zod-based input parser
+// ---------------------------------------------------------------------------
+
+export function parseForgeInput<T>(schema: z.ZodType<T>, input: unknown): Result<T, ForgeError> {
+  if (input === null || typeof input !== "object") {
+    return { ok: false, error: staticError("MISSING_FIELD", "Input must be a non-null object") };
+  }
+  const result = schema.safeParse(input);
+  if (result.success) {
+    return { ok: true, value: result.data };
+  }
+  const firstIssue = result.error.issues[0];
+  if (firstIssue === undefined) {
+    return { ok: false, error: staticError("INVALID_SCHEMA", "Input validation failed") };
+  }
+  const fieldPath = firstIssue.path.join(".");
+  if (firstIssue.code === "invalid_type") {
+    // Zod v4: `received` is not a top-level field; detect from message
+    const isMissing = firstIssue.message.includes("received undefined");
+    if (isMissing) {
+      return {
+        ok: false,
+        error: staticError("MISSING_FIELD", `Missing required field: "${fieldPath}"`),
+      };
+    }
+    // Extract received type from message: "expected string, received number"
+    const receivedMatch = /received (\w+)/.exec(firstIssue.message);
+    const received = receivedMatch?.[1] ?? "unknown";
+    return {
+      ok: false,
+      error: typeError(`Field "${fieldPath}" must be a ${firstIssue.expected}, got ${received}`),
+    };
+  }
+  if (firstIssue.code === "custom") {
+    return {
+      ok: false,
+      error: staticError("INVALID_SCHEMA", firstIssue.message ?? "Validation failed"),
+    };
+  }
+  return {
+    ok: false,
+    error: staticError(
+      "INVALID_SCHEMA",
+      `Validation error at "${fieldPath}": ${firstIssue.message}`,
+    ),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Shared base fields builder (DRY artifact construction)
+// ---------------------------------------------------------------------------
+
+export function buildBaseFields(
+  id: string,
+  input: {
+    readonly name: string;
+    readonly description: string;
+    readonly tags?: readonly string[];
+  },
+  report: VerificationReport,
+  deps: ForgeDeps,
+  contentHash: string,
+): Omit<BrickArtifactBase, "kind"> {
+  return {
+    id,
+    name: input.name,
+    description: input.description,
+    scope: deps.config.defaultScope,
+    trustTier: report.finalTrustTier,
+    lifecycle: "active",
+    createdBy: deps.context.agentId,
+    createdAt: Date.now(),
+    version: "0.0.1",
+    tags: input.tags ?? [],
+    usageCount: 0,
+    contentHash,
+  };
 }
 
 // ---------------------------------------------------------------------------
