@@ -34,6 +34,8 @@ export {
   createSpyModelHandler,
   createSpyToolHandler,
 } from "./handlers.js";
+export { runSessionPersistenceContractTests } from "./session-persistence-contract.js";
+export { runSnapshotChainStoreContractTests } from "./snapshot-chain-contract.js";
 export { runForgeStoreContractTests } from "./store-contract.js";
 export { createManifestFile, makeTempDir, withTempDir } from "./temp-dir.js";
 export type { MockValidationError, MockValidationResult, MockValidator } from "./validators.js";

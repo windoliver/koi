@@ -5,6 +5,8 @@
  * Only runtime code: branded type constructors for SubsystemToken.
  */
 
+// agent snapshot — per-agent state capture
+export type { AgentSnapshot, AgentSnapshotStore } from "./agent-snapshot.js";
 // assembly
 export type {
   AgentManifest,
@@ -272,5 +274,32 @@ export type {
   SessionRecord,
   SkippedRecoveryEntry,
 } from "./session.js";
+// snapshot chain — immutable DAG for time travel, fork, and recovery
+export type {
+  AncestorQuery,
+  ChainCompactor,
+  ChainId,
+  ForkRef,
+  NodeId,
+  PruningPolicy,
+  PutOptions,
+  SnapshotChainStore,
+  SnapshotNode,
+} from "./snapshot-chain.js";
+export { chainId, nodeId } from "./snapshot-chain.js";
+// snapshot time-travel — filesystem journal, backtrack constraints, event trace
+export type {
+  BacktrackConstraint,
+  BacktrackReason,
+  BacktrackReasonKind,
+  CompensatingOp,
+  EventCursor,
+  FileOpKind,
+  FileOpRecord,
+  TraceEvent,
+  TraceEventKind,
+  TurnTrace,
+} from "./snapshot-time-travel.js";
+export { BACKTRACK_REASON_KEY } from "./snapshot-time-travel.js";
 // validation utilities — runtime type guards and validators
 export { isProcessState, validateNonEmpty } from "./validation-utils.js";

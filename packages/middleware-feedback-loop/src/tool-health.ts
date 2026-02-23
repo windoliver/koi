@@ -221,7 +221,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
         version: "0.0.0",
         source: { origin: "forged", forgedBy: "system:health-tracker" },
         event: {
-          type: "quarantined",
+          kind: "quarantined",
           actor: "system:health-tracker",
           timestamp: now,
           reason: `Error rate ${metrics.errorRate.toFixed(2)} exceeded threshold ${threshold}`,

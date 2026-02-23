@@ -1,5 +1,5 @@
 {
-  "name": "@koi/test-utils",
+  "name": "@koi/middleware-event-trace",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,12 +10,16 @@
     }
   },
   "dependencies": {
-    "@koi/core": "workspace:*",
-    "@koi/hash": "workspace:*"
+    "@koi/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/snapshot-chain-store": "workspace:*",
+    "@koi/test-utils": "workspace:*"
   },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
-    "lint": "biome check ."
+    "lint": "biome check .",
+    "test": "bun test"
   }
 }

@@ -1,5 +1,5 @@
 {
-  "name": "@koi/test-utils",
+  "name": "@koi/snapshot-chain-store",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,13 +9,17 @@
       "import": "./dist/index.js"
     }
   },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/hash": "workspace:*"
   },
-  "scripts": {
-    "build": "tsup",
-    "typecheck": "tsc --noEmit",
-    "lint": "biome check ."
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*"
   }
 }

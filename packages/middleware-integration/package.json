@@ -13,8 +13,12 @@
     "@koi/middleware-audit": "workspace:*",
     "@koi/middleware-memory": "workspace:*",
     "@koi/middleware-pay": "workspace:*",
+    "@koi/middleware-event-trace": "workspace:*",
+    "@koi/middleware-fs-rollback": "workspace:*",
+    "@koi/middleware-guided-retry": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
     "@koi/model-router": "workspace:*",
+    "@koi/snapshot-chain-store": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },
   "scripts": {

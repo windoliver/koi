@@ -45,31 +45,31 @@ describe("brick-snapshot branded types", () => {
   });
 
   test("SnapshotEvent discriminated union covers all types", () => {
-    const created: SnapshotEvent = { type: "created", actor: "agent-1", timestamp: 1000 };
+    const created: SnapshotEvent = { kind: "created", actor: "agent-1", timestamp: 1000 };
     const updated: SnapshotEvent = {
-      type: "updated",
+      kind: "updated",
       actor: "agent-1",
       timestamp: 2000,
       fieldsChanged: ["name"],
     };
     const promoted: SnapshotEvent = {
-      type: "promoted",
+      kind: "promoted",
       actor: "admin",
       timestamp: 3000,
       fromTier: "shared",
       toTier: "agent",
     };
     const deprecated: SnapshotEvent = {
-      type: "deprecated",
+      kind: "deprecated",
       actor: "admin",
       timestamp: 4000,
       reason: "replaced",
     };
 
-    expect(created.type).toBe("created");
-    expect(updated.type).toBe("updated");
-    expect(promoted.type).toBe("promoted");
-    expect(deprecated.type).toBe("deprecated");
+    expect(created.kind).toBe("created");
+    expect(updated.kind).toBe("updated");
+    expect(promoted.kind).toBe("promoted");
+    expect(deprecated.kind).toBe("deprecated");
   });
 
   test("BrickSnapshot interface compiles with all fields", () => {
@@ -79,7 +79,7 @@ describe("brick-snapshot branded types", () => {
       version: "1.0.0",
       parentSnapshotId: snapshotId("snap_0"),
       source: { origin: "forged", forgedBy: "agent-1" },
-      event: { type: "created", actor: "agent-1", timestamp: Date.now() },
+      event: { kind: "created", actor: "agent-1", timestamp: Date.now() },
       artifact: { implementation: "return 1;" },
       contentHash: "sha256-abc",
       createdAt: Date.now(),
@@ -95,7 +95,7 @@ describe("brick-snapshot branded types", () => {
       brickId: brickId("brick_1"),
       version: "1.0.0",
       source: { origin: "bundled", bundleName: "core", bundleVersion: "0.1.0" },
-      event: { type: "created", actor: "system", timestamp: Date.now() },
+      event: { kind: "created", actor: "system", timestamp: Date.now() },
       artifact: {},
       contentHash: "sha256-def",
       createdAt: Date.now(),

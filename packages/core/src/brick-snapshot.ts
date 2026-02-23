@@ -76,31 +76,31 @@ export type BrickSource =
 
 export type SnapshotEvent =
   | {
-      readonly type: "created";
+      readonly kind: "created";
       readonly actor: string;
       readonly timestamp: number;
     }
   | {
-      readonly type: "updated";
+      readonly kind: "updated";
       readonly actor: string;
       readonly timestamp: number;
       readonly fieldsChanged: readonly string[];
     }
   | {
-      readonly type: "promoted";
+      readonly kind: "promoted";
       readonly actor: string;
       readonly timestamp: number;
       readonly fromTier: string;
       readonly toTier: string;
     }
   | {
-      readonly type: "deprecated";
+      readonly kind: "deprecated";
       readonly actor: string;
       readonly timestamp: number;
       readonly reason: string;
     }
   | {
-      readonly type: "quarantined";
+      readonly kind: "quarantined";
       readonly actor: string;
       readonly timestamp: number;
       readonly reason: string;
@@ -141,6 +141,10 @@ export interface SnapshotQuery {
 // SnapshotStore — orthogonal interface (like AdvisoryLock)
 // ---------------------------------------------------------------------------
 
+/**
+ * @deprecated Use `SnapshotChainStore<BrickSnapshot>` from `snapshot-chain.ts` instead.
+ * This interface lacks DAG/fork/history semantics. Retained for backward compatibility.
+ */
 export interface SnapshotStore {
   readonly record: (snapshot: BrickSnapshot) => Promise<Result<void, KoiError>>;
   readonly get: (id: SnapshotId) => Promise<Result<BrickSnapshot, KoiError>>;

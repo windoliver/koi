@@ -205,6 +205,17 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-event-trace": {
+      "name": "@koi/middleware-event-trace",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/snapshot-chain-store": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-feedback-loop": {
       "name": "@koi/middleware-feedback-loop",
       "version": "0.0.0",
@@ -212,6 +223,27 @@
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
         "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware-fs-rollback": {
+      "name": "@koi/middleware-fs-rollback",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/snapshot-chain-store": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware-guided-retry": {
+      "name": "@koi/middleware-guided-retry",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -228,10 +260,14 @@
         "@koi/hash": "workspace:*",
         "@koi/manifest": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
+        "@koi/middleware-event-trace": "workspace:*",
+        "@koi/middleware-fs-rollback": "workspace:*",
+        "@koi/middleware-guided-retry": "workspace:*",
         "@koi/middleware-memory": "workspace:*",
         "@koi/middleware-pay": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/model-router": "workspace:*",
+        "@koi/snapshot-chain-store": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -341,6 +377,9 @@
       "dependencies": {
         "@koi/core": "workspace:*",
       },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
     },
     "packages/shutdown": {
       "name": "@koi/shutdown",
@@ -351,6 +390,17 @@
       "version": "0.0.0",
       "dependencies": {
         "oxc-parser": "0.114.0",
+      },
+    },
+    "packages/snapshot-chain-store": {
+      "name": "@koi/snapshot-chain-store",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
       },
     },
     "packages/store-fs": {
@@ -382,6 +432,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
       },
     },
     "packages/validation": {
@@ -637,7 +688,13 @@
 
     "@koi/middleware-audit": ["@koi/middleware-audit@workspace:packages/middleware-audit"],
 
+    "@koi/middleware-event-trace": ["@koi/middleware-event-trace@workspace:packages/middleware-event-trace"],
+
     "@koi/middleware-feedback-loop": ["@koi/middleware-feedback-loop@workspace:packages/middleware-feedback-loop"],
+
+    "@koi/middleware-fs-rollback": ["@koi/middleware-fs-rollback@workspace:packages/middleware-fs-rollback"],
+
+    "@koi/middleware-guided-retry": ["@koi/middleware-guided-retry@workspace:packages/middleware-guided-retry"],
 
     "@koi/middleware-integration": ["@koi/middleware-integration@workspace:packages/middleware-integration"],
 
@@ -666,6 +723,8 @@
     "@koi/shutdown": ["@koi/shutdown@workspace:packages/shutdown"],
 
     "@koi/skill-scanner": ["@koi/skill-scanner@workspace:packages/skill-scanner"],
+
+    "@koi/snapshot-chain-store": ["@koi/snapshot-chain-store@workspace:packages/snapshot-chain-store"],
 
     "@koi/store-fs": ["@koi/store-fs@workspace:packages/store-fs"],
 
