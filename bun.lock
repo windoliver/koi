@@ -144,6 +144,7 @@
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
+        "@koi/test-utils": "workspace:*",
       },
     },
     "packages/gateway": {
@@ -308,6 +309,18 @@
       "version": "0.0.0",
       "dependencies": {
         "oxc-parser": "0.114.0",
+      },
+    },
+    "packages/store-fs": {
+      "name": "@koi/store-fs",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/forge": "workspace:*",
+        "@koi/test-utils": "workspace:*",
       },
     },
     "packages/test-utils": {
@@ -591,6 +604,8 @@
     "@koi/shutdown": ["@koi/shutdown@workspace:packages/shutdown"],
 
     "@koi/skill-scanner": ["@koi/skill-scanner@workspace:packages/skill-scanner"],
+
+    "@koi/store-fs": ["@koi/store-fs@workspace:packages/store-fs"],
 
     "@koi/test-utils": ["@koi/test-utils@workspace:packages/test-utils"],
 

@@ -14,12 +14,25 @@ export type {
   PermissionConfig,
   ToolConfig,
 } from "./assembly.js";
+// brick snapshot — version history, provenance, audit
+export type {
+  BrickId,
+  BrickRef,
+  BrickSnapshot,
+  BrickSource,
+  SnapshotEvent,
+  SnapshotId,
+  SnapshotQuery,
+  SnapshotStore,
+} from "./brick-snapshot.js";
+export { brickId, snapshotId } from "./brick-snapshot.js";
 // brick store — persistence contracts for forged artifacts
 export type {
   AdvisoryLock,
   AgentArtifact,
   BrickArtifact,
   BrickArtifactBase,
+  BrickRequires,
   BrickUpdate,
   CompositeArtifact,
   ForgeQuery,

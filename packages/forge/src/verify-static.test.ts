@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { BrickRequires } from "@koi/core";
 import type { VerificationConfig } from "./config.js";
 import type { ForgeInput } from "./types.js";
 import { verifyStatic } from "./verify-static.js";
@@ -328,7 +329,7 @@ describe("verifyStatic — requires validation", () => {
       name: "mySkill",
       description: "A skill",
       content: "# Skill",
-      requires: { bins: [42] } as unknown as ForgeInput["requires"],
+      requires: { bins: [42] } as unknown as BrickRequires,
     };
     const result = verifyStatic(input, DEFAULT_VERIFICATION);
     expect(result.ok).toBe(false);
@@ -343,7 +344,7 @@ describe("verifyStatic — requires validation", () => {
       name: "mySkill",
       description: "A skill",
       content: "# Skill",
-      requires: { env: [true] } as unknown as ForgeInput["requires"],
+      requires: { env: [true] } as unknown as BrickRequires,
     };
     const result = verifyStatic(input, DEFAULT_VERIFICATION);
     expect(result.ok).toBe(false);
