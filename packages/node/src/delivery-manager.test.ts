@@ -60,7 +60,7 @@ function createMockStore(frames: readonly NodePendingFrame[] = []): NodeSessionS
     }),
     recover: mock(() => ({
       ok: true as const,
-      value: { sessions: [], checkpoints: new Map(), pendingFrames: new Map() },
+      value: { sessions: [], checkpoints: new Map(), pendingFrames: new Map(), skipped: [] },
     })),
     close: mock(() => {}),
   };

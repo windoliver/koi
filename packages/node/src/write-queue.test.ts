@@ -49,12 +49,14 @@ function createMockStore(): NodeSessionStore & {
             sessions: [],
             checkpoints: new Map(),
             pendingFrames: new Map(),
+            skipped: [],
           },
         }) as Result<
           {
             sessions: readonly never[];
             checkpoints: ReadonlyMap<string, NodeCheckpoint>;
             pendingFrames: ReadonlyMap<string, readonly never[]>;
+            skipped: readonly never[];
           },
           KoiError
         >,

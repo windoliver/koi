@@ -262,6 +262,7 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
       if (result.ok) {
         expect(result.value.sessions.length).toBe(0);
         expect(result.value.checkpoints.size).toBe(0);
+        expect(result.value.skipped).toEqual([]);
       }
     });
 
@@ -284,6 +285,7 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
         expect(result.value.checkpoints.size).toBe(2);
         expect(result.value.checkpoints.get(a1)?.id).toBe("cp1-new");
         expect(result.value.checkpoints.get(a2)?.id).toBe("cp2");
+        expect(result.value.skipped).toEqual([]);
       }
     });
 
@@ -300,6 +302,7 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
       if (result.ok) {
         expect(result.value.sessions.length).toBe(10);
         expect(result.value.checkpoints.size).toBe(10);
+        expect(result.value.skipped).toEqual([]);
       }
     });
   });
@@ -408,6 +411,27 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
       }
     });
 
+    test("removeSession cascades pending frames by agentId across sessions", async () => {
+      const store = createStore();
+      const aid = agentId("agent-cascade");
+      // Two sessions for the same agent
+      await store.saveSession(makeSessionRecord({ sessionId: "s1", agentId: aid }));
+      await store.saveSession(makeSessionRecord({ sessionId: "s2", agentId: aid }));
+      // Pending frames on s2 belong to the same agent
+      await store.savePendingFrame(
+        makePendingFrame({ frameId: "f1", sessionId: "s2", agentId: aid, orderIndex: 0 }),
+      );
+
+      // Remove s1 — should cascade pending frames for agent across ALL sessions
+      await store.removeSession("s1");
+
+      const loadResult = await store.loadPendingFrames("s2");
+      expect(loadResult.ok).toBe(true);
+      if (loadResult.ok) {
+        expect(loadResult.value.length).toBe(0);
+      }
+    });
+
     test("recover includes pending frames", async () => {
       const store = createStore();
       const aid = agentId("agent-recover-pf");
@@ -426,6 +450,7 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
         const frames = result.value.pendingFrames.get("s1");
         expect(frames).toBeDefined();
         expect(frames?.length).toBe(2);
+        expect(result.value.skipped).toEqual([]);
       }
     });
 
@@ -667,6 +692,7 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
       if (result.ok) {
         expect(result.value.sessions.length).toBe(1);
         expect(result.value.sessions[0]?.seq).toBe(99);
+        expect(result.value.skipped).toEqual([]);
       }
     });
 
