@@ -35,7 +35,8 @@ function composeModelChain(
     .sort((a, b) => (a.priority ?? 500) - (b.priority ?? 500));
   let handler = innerHandler;
   for (let i = sorted.length - 1; i >= 0; i--) {
-    const mw = sorted[i]!;
+    const mw = sorted[i];
+    if (mw === undefined) continue;
     const nextHandler = handler;
     handler = (req: ModelRequest) => mw.wrapModelCall?.(ctx, req, nextHandler);
   }
@@ -52,7 +53,8 @@ function composeToolChain(
     .sort((a, b) => (a.priority ?? 500) - (b.priority ?? 500));
   let handler = innerHandler;
   for (let i = sorted.length - 1; i >= 0; i--) {
-    const mw = sorted[i]!;
+    const mw = sorted[i];
+    if (mw === undefined) continue;
     const nextHandler = handler;
     handler = (req: ToolRequest) => mw.wrapToolCall?.(ctx, req, nextHandler);
   }
