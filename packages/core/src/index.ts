@@ -251,6 +251,8 @@ export type {
   SandboxErrorCode,
   SandboxExecutor,
   SandboxResult,
+  TieredSandboxExecutor,
+  TierResolution,
 } from "./sandbox-executor.js";
 // sandbox profile — platform-agnostic isolation policy
 export type {

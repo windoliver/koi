@@ -13,12 +13,13 @@ import type {
   ComponentProvider,
   ForgeStore,
   JsonObject,
+  SandboxExecutor,
+  TieredSandboxExecutor,
   Tool,
   ToolArtifact,
   ToolDescriptor,
 } from "@koi/core";
 import { toolToken } from "@koi/core";
-import type { SandboxExecutor } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -64,7 +65,7 @@ function brickToTool(brick: ToolArtifact, executor: SandboxExecutor, timeoutMs: 
 
 export interface ForgeComponentProviderConfig {
   readonly store: ForgeStore;
-  readonly executor: SandboxExecutor;
+  readonly executor: TieredSandboxExecutor;
   readonly sandboxTimeoutMs?: number;
 }
 
@@ -112,7 +113,8 @@ export function createForgeComponentProvider(
       for (const brick of searchResult.value) {
         if (brick.kind === "tool") {
           const token = toolToken(brick.name);
-          const tool = brickToTool(brick, config.executor, timeoutMs);
+          const { executor: tierExecutor } = config.executor.forTier(brick.trustTier);
+          const tool = brickToTool(brick, tierExecutor, timeoutMs);
           tools.set(token as string, tool);
         }
       }

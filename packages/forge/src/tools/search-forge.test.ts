@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { SandboxExecutor, TieredSandboxExecutor } from "@koi/core";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import type { BrickArtifact, SkillArtifact, ToolArtifact } from "../types.js";
@@ -46,10 +47,23 @@ function createSkillBrick(overrides?: Partial<SkillArtifact>): SkillArtifact {
   };
 }
 
+function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
+  return {
+    forTier: (tier) => ({
+      executor: exec,
+      requestedTier: tier,
+      resolvedTier: tier,
+      fallback: false,
+    }),
+  };
+}
+
 function createDeps(overrides?: Partial<ForgeDeps>): ForgeDeps {
   return {
     store: createInMemoryForgeStore(),
-    executor: { execute: async () => ({ ok: true, value: { output: "ok", durationMs: 1 } }) },
+    executor: mockTiered({
+      execute: async () => ({ ok: true, value: { output: "ok", durationMs: 1 } }),
+    }),
     verifiers: [],
     config: createDefaultForgeConfig(),
     context: { agentId: "agent-1", depth: 0, sessionId: "session-1", forgesThisSession: 0 },

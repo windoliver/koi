@@ -45,3 +45,29 @@ export interface SandboxExecutor {
     | { readonly ok: false; readonly error: SandboxError }
   >;
 }
+
+// ---------------------------------------------------------------------------
+// Tiered execution — trust-tier-aware dispatch
+// ---------------------------------------------------------------------------
+
+import type { TrustTier } from "./ecs.js";
+
+/**
+ * Result of resolving a trust tier to a concrete executor.
+ * Includes observability metadata: which tier was requested,
+ * which tier actually resolved, and whether fallback was applied.
+ */
+export interface TierResolution {
+  readonly executor: SandboxExecutor;
+  readonly requestedTier: TrustTier;
+  readonly resolvedTier: TrustTier;
+  readonly fallback: boolean;
+}
+
+/**
+ * Trust-tier-aware dispatcher — routes `execute()` calls to per-tier backends.
+ * Used by @koi/forge to dispatch bricks to the correct execution environment.
+ */
+export interface TieredSandboxExecutor {
+  readonly forTier: (tier: TrustTier) => TierResolution;
+}

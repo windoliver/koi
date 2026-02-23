@@ -132,6 +132,8 @@ export type {
   SandboxErrorCode,
   SandboxExecutor,
   SandboxResult,
+  TieredSandboxExecutor,
+  TierResolution,
 } from "@koi/core";
 
 // ---------------------------------------------------------------------------

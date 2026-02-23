@@ -20,7 +20,7 @@ import type {
   ForgeResult,
   ForgeVerifier,
   ManifestParser,
-  SandboxExecutor,
+  TieredSandboxExecutor,
   VerificationReport,
 } from "../types.js";
 import { verify } from "../verify.js";
@@ -31,7 +31,7 @@ import { verify } from "../verify.js";
 
 export interface ForgeDeps {
   readonly store: ForgeStore;
-  readonly executor: SandboxExecutor;
+  readonly executor: TieredSandboxExecutor;
   readonly verifiers: readonly ForgeVerifier[];
   readonly config: ForgeConfig;
   readonly context: ForgeContext;
@@ -127,10 +127,11 @@ export async function runForgePipeline(
   deps: ForgeDeps,
   buildArtifact: ArtifactBuilder,
 ): Promise<Result<ForgeResult, ForgeError>> {
+  const { executor: sandboxExecutor } = deps.executor.forTier("sandbox");
   const verifyResult = await verify(
     forgeInput,
     deps.context,
-    deps.executor,
+    sandboxExecutor,
     deps.verifiers,
     deps.config,
   );

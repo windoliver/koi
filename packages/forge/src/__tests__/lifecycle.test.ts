@@ -7,19 +7,31 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type { SandboxExecutor, TieredSandboxExecutor } from "@koi/core";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import { createForgeSkillTool } from "../tools/forge-skill.js";
 import { createForgeToolTool } from "../tools/forge-tool.js";
 import { createSearchForgeTool } from "../tools/search-forge.js";
 import type { ForgeDeps } from "../tools/shared.js";
-import type { BrickArtifact, ForgeContext, ForgeResult, SandboxExecutor } from "../types.js";
+import type { BrickArtifact, ForgeContext, ForgeResult } from "../types.js";
 
 function mockExecutor(): SandboxExecutor {
   return {
     execute: async (_code, input, _timeout) => ({
       ok: true,
       value: { output: input, durationMs: 1 },
+    }),
+  };
+}
+
+function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
+  return {
+    forTier: (tier) => ({
+      executor: exec,
+      requestedTier: tier,
+      resolvedTier: tier,
+      fallback: false,
     }),
   };
 }
@@ -37,7 +49,7 @@ describe("Forge lifecycle — end-to-end", () => {
 
     const deps: ForgeDeps = {
       store,
-      executor: mockExecutor(),
+      executor: mockTiered(mockExecutor()),
       verifiers: [],
       config,
       context,
@@ -197,7 +209,7 @@ describe("Forge lifecycle — end-to-end", () => {
 
     const deps: ForgeDeps = {
       store,
-      executor: mockExecutor(),
+      executor: mockTiered(mockExecutor()),
       verifiers: [],
       config,
       context,
@@ -240,7 +252,7 @@ describe("Forge lifecycle — end-to-end", () => {
 
     const deps: ForgeDeps = {
       store,
-      executor: mockExecutor(),
+      executor: mockTiered(mockExecutor()),
       verifiers: [],
       config,
       context,

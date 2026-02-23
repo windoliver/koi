@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Agent, SubsystemToken } from "@koi/core";
+import type { Agent, SubsystemToken, TieredSandboxExecutor } from "@koi/core";
 import { agentId, toolToken } from "@koi/core";
 import { brickToTool, createForgeComponentProvider } from "./forge-component-provider.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
@@ -68,6 +68,17 @@ function failExecutor(): SandboxExecutor {
   };
 }
 
+function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
+  return {
+    forTier: (tier) => ({
+      executor: exec,
+      requestedTier: tier,
+      resolvedTier: tier,
+      fallback: false,
+    }),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // brickToTool
 // ---------------------------------------------------------------------------
@@ -128,7 +139,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
 
     const provider = createForgeComponentProvider({
       store,
-      executor: echoExecutor(),
+      executor: mockTiered(echoExecutor()),
     });
 
     expect(provider.name).toBe("forge");
@@ -146,7 +157,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
     const store = createInMemoryForgeStore();
     const provider = createForgeComponentProvider({
       store,
-      executor: echoExecutor(),
+      executor: mockTiered(echoExecutor()),
     });
 
     const components = await provider.attach(createMockAgent());
@@ -176,7 +187,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
 
     const provider = createForgeComponentProvider({
       store,
-      executor: echoExecutor(),
+      executor: mockTiered(echoExecutor()),
     });
 
     const components = await provider.attach(createMockAgent());
@@ -190,7 +201,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
 
     const provider = createForgeComponentProvider({
       store,
-      executor: echoExecutor(),
+      executor: mockTiered(echoExecutor()),
     });
 
     const components = await provider.attach(createMockAgent());
@@ -203,7 +214,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
 
     const provider = createForgeComponentProvider({
       store,
-      executor: echoExecutor(),
+      executor: mockTiered(echoExecutor()),
       sandboxTimeoutMs: 10_000,
     });
 
@@ -238,7 +249,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
 
     const provider = createForgeComponentProvider({
       store: failingStore,
-      executor: echoExecutor(),
+      executor: mockTiered(echoExecutor()),
     });
 
     await expect(provider.attach(createMockAgent())).rejects.toThrow("store unavailable");
@@ -250,7 +261,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
 
     const provider = createForgeComponentProvider({
       store,
-      executor: echoExecutor(),
+      executor: mockTiered(echoExecutor()),
     });
 
     const components = await provider.attach(createMockAgent());
@@ -281,7 +292,7 @@ describe("createForgeComponentProvider", () => {
 
     const provider = createForgeComponentProvider({
       store: spyStore,
-      executor: echoExecutor(),
+      executor: mockTiered(echoExecutor()),
     });
 
     // Provider is created, store not yet queried
@@ -295,7 +306,7 @@ describe("createForgeComponentProvider", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: echoExecutor(),
+      executor: mockTiered(echoExecutor()),
     });
 
     const components = await provider.attach(createMockAgent());
@@ -318,7 +329,7 @@ describe("createForgeComponentProvider", () => {
 
     const provider = createForgeComponentProvider({
       store: countingStore,
-      executor: echoExecutor(),
+      executor: mockTiered(echoExecutor()),
     });
 
     const first = await provider.attach(createMockAgent());
@@ -345,7 +356,7 @@ describe("createForgeComponentProvider", () => {
 
     const provider = createForgeComponentProvider({
       store: countingStore,
-      executor: echoExecutor(),
+      executor: mockTiered(echoExecutor()),
     });
 
     // First attach — loads from store
@@ -377,7 +388,7 @@ describe("createForgeComponentProvider", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: echoExecutor(),
+      executor: mockTiered(echoExecutor()),
     });
 
     // Invalidate before any attach — should not throw
@@ -403,7 +414,7 @@ describe("createForgeComponentProvider", () => {
 
     const provider = createForgeComponentProvider({
       store: countingStore,
-      executor: echoExecutor(),
+      executor: mockTiered(echoExecutor()),
     });
 
     await provider.attach(createMockAgent());

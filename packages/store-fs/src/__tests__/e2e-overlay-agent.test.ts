@@ -27,13 +27,15 @@ import type {
   EngineOutput,
   KoiMiddleware,
   ModelResponse,
+  SandboxExecutor,
+  TieredSandboxExecutor,
   ToolDescriptor,
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
 import { toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
-import type { ForgeDeps, ForgeResult, SandboxExecutor } from "@koi/forge";
+import type { ForgeDeps, ForgeResult } from "@koi/forge";
 import {
   createDefaultForgeConfig,
   createForgeComponentProvider,
@@ -103,6 +105,17 @@ function echoExecutor(): SandboxExecutor {
   };
 }
 
+function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
+  return {
+    forTier: (tier) => ({
+      executor: exec,
+      requestedTier: tier,
+      resolvedTier: tier,
+      fallback: false,
+    }),
+  };
+}
+
 /** Multiplier executor: evaluates `input.a * input.b`. */
 function multiplierExecutor(): SandboxExecutor {
   return {
@@ -148,7 +161,7 @@ async function collectEvents(iter: AsyncIterable<EngineEvent>): Promise<readonly
 
 function createDeps(
   store: Awaited<ReturnType<typeof createOverlayForgeStore>>,
-  executor: SandboxExecutor,
+  executor: TieredSandboxExecutor,
 ): ForgeDeps {
   return {
     store,
@@ -212,7 +225,10 @@ describe("overlay store → agent e2e", () => {
     const overlayStore = await createOverlayForgeStore(config);
 
     // Wire ForgeComponentProvider to overlay store
-    const forgeProvider = createForgeComponentProvider({ store: overlayStore, executor });
+    const forgeProvider = createForgeComponentProvider({
+      store: overlayStore,
+      executor: mockTiered(executor),
+    });
 
     // Adapter calls the bundled "adder" tool
     const toolResults: ToolResponse[] = [];
@@ -264,7 +280,7 @@ describe("overlay store → agent e2e", () => {
   test("agent forges tool → saved to agent tier → reusable in next run", async () => {
     const executor = multiplierExecutor();
     const overlayStore = await createOverlayForgeStore(config);
-    const deps = createDeps(overlayStore, executor);
+    const deps = createDeps(overlayStore, mockTiered(executor));
 
     // Attach forge_tool as primordial provider
     const forgeTool = createForgeToolTool(deps);
@@ -274,7 +290,10 @@ describe("overlay store → agent e2e", () => {
         new Map<string, unknown>([[toolToken("forge_tool") as string, forgeTool]]),
     };
 
-    const forgeProvider = createForgeComponentProvider({ store: overlayStore, executor });
+    const forgeProvider = createForgeComponentProvider({
+      store: overlayStore,
+      executor: mockTiered(executor),
+    });
 
     // --- Run 1: Forge "multiplier" tool ---
     const forgeResults: ToolResponse[] = [];
@@ -433,7 +452,7 @@ describe("overlay store → agent e2e", () => {
     const overlayStore = await createOverlayForgeStore(config);
 
     // Search via forge tool — exercises overlay search through the real pipeline
-    const deps = createDeps(overlayStore, executor);
+    const deps = createDeps(overlayStore, mockTiered(executor));
     const searchTool = createSearchForgeTool(deps);
 
     // Search all — should find 2 (calculator deduped, + logger)
@@ -532,7 +551,7 @@ describe("overlay store → agent e2e", () => {
     });
 
     const overlayStore = await createOverlayForgeStore(config);
-    const deps = createDeps(overlayStore, executor);
+    const deps = createDeps(overlayStore, mockTiered(executor));
 
     // --- Step 1: Agent forges an improved "adder" v2 → saved to agent tier ---
     const forgeTool = createForgeToolTool(deps);
@@ -576,7 +595,10 @@ describe("overlay store → agent e2e", () => {
     expect(names).toContain("adder");
 
     // --- Step 4: Agent uses the forge provider to execute bundled adder through engine ---
-    const forgeProvider = createForgeComponentProvider({ store: overlayStore, executor });
+    const forgeProvider = createForgeComponentProvider({
+      store: overlayStore,
+      executor: mockTiered(executor),
+    });
 
     const interceptedToolIds: string[] = [];
     const middlewareSpy: KoiMiddleware = {
@@ -689,7 +711,10 @@ describe("overlay store → agent e2e", () => {
     });
 
     const overlayStore = await createOverlayForgeStore(config);
-    const forgeProvider = createForgeComponentProvider({ store: overlayStore, executor });
+    const forgeProvider = createForgeComponentProvider({
+      store: overlayStore,
+      executor: mockTiered(executor),
+    });
 
     // Adapter inspects callHandlers.tools
     const discoveredTools: ToolDescriptor[] = [];
