@@ -27,6 +27,9 @@ export { createTestConfig, createTestConfigStore } from "./config.js";
 export { createMockSessionContext, createMockTurnContext } from "./contexts.js";
 export type { EngineContractOptions } from "./engine-contract.js";
 export { testEngineAdapter } from "./engine-contract.js";
+export { runEventBackendContractTests } from "./event-backend-contract.js";
+export type { MockEventBackend } from "./event-backend-mock.js";
+export { createMockEventBackend } from "./event-backend-mock.js";
 export type { SpyModelHandler, SpyToolHandler } from "./handlers.js";
 export {
   createMockModelHandler,

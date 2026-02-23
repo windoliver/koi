@@ -151,6 +151,19 @@ export {
 export type { KoiError, KoiErrorCode, Result } from "./errors.js";
 // errors — runtime values
 export { RETRYABLE_DEFAULTS } from "./errors.js";
+// event backend
+export type {
+  DeadLetterEntry,
+  DeadLetterFilter,
+  EventBackend,
+  EventBackendConfig,
+  EventEnvelope,
+  EventInput,
+  ReadOptions,
+  ReadResult,
+  SubscribeOptions,
+  SubscriptionHandle,
+} from "./event-backend.js";
 // eviction
 export type {
   EvictionCandidate,

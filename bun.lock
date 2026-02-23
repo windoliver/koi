@@ -154,6 +154,17 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/events-memory": {
+      "name": "@koi/events-memory",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/filesystem": {
       "name": "@koi/filesystem",
       "version": "0.0.0",
@@ -687,6 +698,8 @@
     "@koi/engine-pi": ["@koi/engine-pi@workspace:packages/engine-pi"],
 
     "@koi/errors": ["@koi/errors@workspace:packages/errors"],
+
+    "@koi/events-memory": ["@koi/events-memory@workspace:packages/events-memory"],
 
     "@koi/filesystem": ["@koi/filesystem@workspace:packages/filesystem"],
 

@@ -40,6 +40,10 @@
       "types": "./dist/engine.d.ts",
       "import": "./dist/engine.js"
     },
+    "./event-backend": {
+      "types": "./dist/event-backend.d.ts",
+      "import": "./dist/event-backend.js"
+    },
     "./errors": {
       "types": "./dist/errors.d.ts",
       "import": "./dist/errors.js"
