@@ -20,8 +20,7 @@ import {
   buildBaseFields,
   computeContentHash,
   createForgeTool,
-  forgeCompositeInputSchema,
-  parseForgeInput,
+  parseCompositeInput,
   runForgePipeline,
 } from "./shared.js";
 
@@ -81,7 +80,7 @@ async function composeForgeHandler(
   input: unknown,
   deps: ForgeDeps,
 ): Promise<Result<ForgeResult, ForgeError>> {
-  const parsed = parseForgeInput(forgeCompositeInputSchema, input);
+  const parsed = parseCompositeInput(input);
   if (!parsed.ok) {
     return parsed;
   }
@@ -144,7 +143,21 @@ async function composeForgeHandler(
     brickIds: compositeInput.brickIds,
     ...(compositeInput.tags !== undefined ? { tags: compositeInput.tags } : {}),
     ...(compositeInput.files !== undefined ? { files: compositeInput.files } : {}),
-    ...(compositeInput.requires !== undefined ? { requires: compositeInput.requires } : {}),
+    ...(compositeInput.requires !== undefined
+      ? {
+          requires: {
+            ...(compositeInput.requires.bins !== undefined
+              ? { bins: compositeInput.requires.bins }
+              : {}),
+            ...(compositeInput.requires.env !== undefined
+              ? { env: compositeInput.requires.env }
+              : {}),
+            ...(compositeInput.requires.tools !== undefined
+              ? { tools: compositeInput.requires.tools }
+              : {}),
+          },
+        }
+      : {}),
   };
 
   return runForgePipeline(forgeInput, deps, (id, report) => {

@@ -144,7 +144,7 @@ function validateAgentInput(
   input: Extract<ForgeInput, { readonly kind: "agent" }>,
   config: VerificationConfig,
 ): ForgeError | undefined {
-  if (input.manifestYaml.length === 0) {
+  if (input.manifestYaml === undefined || input.manifestYaml.length === 0) {
     return staticError("MISSING_FIELD", "Agent manifest YAML must not be empty");
   }
   return validateSize(input.manifestYaml, config.maxBrickSizeBytes, "Manifest YAML");

@@ -53,6 +53,52 @@ export interface ForgeToolConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Parsed input types — explicit for isolatedDeclarations (.d.ts generation)
+// ---------------------------------------------------------------------------
+
+export interface ParsedBaseInput {
+  readonly name: string;
+  readonly description: string;
+  readonly tags?: readonly string[] | undefined;
+  readonly files?: Readonly<Record<string, string>> | undefined;
+  readonly requires?:
+    | {
+        readonly bins?: readonly string[] | undefined;
+        readonly env?: readonly string[] | undefined;
+        readonly tools?: readonly string[] | undefined;
+      }
+    | undefined;
+}
+
+export interface ParsedToolInput extends ParsedBaseInput {
+  readonly inputSchema: Record<string, unknown>;
+  readonly implementation: string;
+  readonly testCases?:
+    | readonly {
+        readonly name: string;
+        readonly input: unknown;
+        readonly expectedOutput?: unknown | undefined;
+        readonly shouldThrow?: boolean | undefined;
+      }[]
+    | undefined;
+}
+
+export interface ParsedSkillInput extends ParsedBaseInput {
+  readonly body: string;
+}
+
+export interface ParsedAgentInput extends ParsedBaseInput {
+  readonly manifestYaml?: string | undefined;
+  readonly brickIds?: readonly string[] | undefined;
+  readonly model?: string | undefined;
+  readonly agentType?: string | undefined;
+}
+
+export interface ParsedCompositeInput extends ParsedBaseInput {
+  readonly brickIds: readonly string[];
+}
+
+// ---------------------------------------------------------------------------
 // Zod input schemas
 // ---------------------------------------------------------------------------
 
@@ -70,7 +116,7 @@ const baseInputFields = {
     .optional(),
 };
 
-export const forgeToolInputSchema = z.object({
+const forgeToolInputSchema = z.object({
   ...baseInputFields,
   inputSchema: z.record(z.string(), z.unknown()),
   implementation: z.string(),
@@ -86,12 +132,12 @@ export const forgeToolInputSchema = z.object({
     .optional(),
 });
 
-export const forgeSkillInputSchema = z.object({
+const forgeSkillInputSchema = z.object({
   ...baseInputFields,
   body: z.string(),
 });
 
-export const forgeAgentInputSchema = z
+const forgeAgentInputSchema = z
   .object({
     ...baseInputFields,
     manifestYaml: z.string().optional(),
@@ -103,16 +149,16 @@ export const forgeAgentInputSchema = z
     message: "Exactly one of manifestYaml or brickIds must be provided",
   });
 
-export const forgeCompositeInputSchema = z.object({
+const forgeCompositeInputSchema = z.object({
   ...baseInputFields,
   brickIds: z.array(z.string()),
 });
 
 // ---------------------------------------------------------------------------
-// Zod-based input parser
+// Typed parse functions — replaces exported schemas for isolatedDeclarations
 // ---------------------------------------------------------------------------
 
-export function parseForgeInput<T>(schema: z.ZodType<T>, input: unknown): Result<T, ForgeError> {
+function zodParse<T>(schema: z.ZodType<T>, input: unknown): Result<T, ForgeError> {
   if (input === null || typeof input !== "object") {
     return { ok: false, error: staticError("MISSING_FIELD", "Input must be a non-null object") };
   }
@@ -155,6 +201,27 @@ export function parseForgeInput<T>(schema: z.ZodType<T>, input: unknown): Result
       `Validation error at "${fieldPath}": ${firstIssue.message}`,
     ),
   };
+}
+
+/** @deprecated Use parseToolInput/parseSkillInput/parseAgentInput/parseCompositeInput instead */
+export function parseForgeInput<T>(schema: z.ZodType<T>, input: unknown): Result<T, ForgeError> {
+  return zodParse(schema, input);
+}
+
+export function parseToolInput(input: unknown): Result<ParsedToolInput, ForgeError> {
+  return zodParse(forgeToolInputSchema, input);
+}
+
+export function parseSkillInput(input: unknown): Result<ParsedSkillInput, ForgeError> {
+  return zodParse(forgeSkillInputSchema, input);
+}
+
+export function parseAgentInput(input: unknown): Result<ParsedAgentInput, ForgeError> {
+  return zodParse(forgeAgentInputSchema, input);
+}
+
+export function parseCompositeInput(input: unknown): Result<ParsedCompositeInput, ForgeError> {
+  return zodParse(forgeCompositeInputSchema, input);
 }
 
 // ---------------------------------------------------------------------------

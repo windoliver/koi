@@ -8,9 +8,8 @@ import {
   buildBaseFields,
   computeContentHash,
   createForgeTool,
-  forgeSkillInputSchema,
-  forgeToolInputSchema,
-  parseForgeInput,
+  parseSkillInput,
+  parseToolInput,
 } from "./shared.js";
 
 function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
@@ -154,7 +153,7 @@ describe("computeContentHash", () => {
 
 describe("parseForgeInput", () => {
   test("parses valid tool input", () => {
-    const result = parseForgeInput(forgeToolInputSchema, {
+    const result = parseToolInput({
       name: "myTool",
       description: "A tool",
       inputSchema: { type: "object" },
@@ -167,7 +166,7 @@ describe("parseForgeInput", () => {
   });
 
   test("returns MISSING_FIELD for null input", () => {
-    const result = parseForgeInput(forgeToolInputSchema, null);
+    const result = parseToolInput(null);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.stage).toBe("static");
@@ -176,7 +175,7 @@ describe("parseForgeInput", () => {
   });
 
   test("returns MISSING_FIELD for missing required field", () => {
-    const result = parseForgeInput(forgeToolInputSchema, {
+    const result = parseToolInput({
       name: "myTool",
     });
     expect(result.ok).toBe(false);
@@ -188,7 +187,7 @@ describe("parseForgeInput", () => {
   });
 
   test("returns INVALID_TYPE for wrong field type", () => {
-    const result = parseForgeInput(forgeToolInputSchema, {
+    const result = parseToolInput({
       name: 123,
       description: "A tool",
       inputSchema: { type: "object" },
@@ -203,7 +202,7 @@ describe("parseForgeInput", () => {
   });
 
   test("parses valid skill input with body", () => {
-    const result = parseForgeInput(forgeSkillInputSchema, {
+    const result = parseSkillInput({
       name: "mySkill",
       description: "A skill",
       body: "# Content",

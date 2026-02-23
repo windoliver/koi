@@ -10,8 +10,7 @@ import {
   buildBaseFields,
   computeContentHash,
   createForgeTool,
-  forgeToolInputSchema,
-  parseForgeInput,
+  parseToolInput,
   runForgePipeline,
 } from "./shared.js";
 
@@ -67,7 +66,7 @@ async function forgeToolHandler(
   input: unknown,
   deps: ForgeDeps,
 ): Promise<Result<ForgeResult, ForgeError>> {
-  const parsed = parseForgeInput(forgeToolInputSchema, input);
+  const parsed = parseToolInput(input);
   if (!parsed.ok) {
     return parsed;
   }
@@ -78,10 +77,31 @@ async function forgeToolHandler(
     description: parsed.value.description,
     inputSchema: parsed.value.inputSchema,
     implementation: parsed.value.implementation,
-    ...(parsed.value.testCases !== undefined ? { testCases: parsed.value.testCases } : {}),
+    ...(parsed.value.testCases !== undefined
+      ? {
+          testCases: parsed.value.testCases.map((tc) => ({
+            name: tc.name,
+            input: tc.input,
+            ...(tc.expectedOutput !== undefined ? { expectedOutput: tc.expectedOutput } : {}),
+            ...(tc.shouldThrow !== undefined ? { shouldThrow: tc.shouldThrow } : {}),
+          })),
+        }
+      : {}),
     ...(parsed.value.tags !== undefined ? { tags: parsed.value.tags } : {}),
     ...(parsed.value.files !== undefined ? { files: parsed.value.files } : {}),
-    ...(parsed.value.requires !== undefined ? { requires: parsed.value.requires } : {}),
+    ...(parsed.value.requires !== undefined
+      ? {
+          requires: {
+            ...(parsed.value.requires.bins !== undefined
+              ? { bins: parsed.value.requires.bins }
+              : {}),
+            ...(parsed.value.requires.env !== undefined ? { env: parsed.value.requires.env } : {}),
+            ...(parsed.value.requires.tools !== undefined
+              ? { tools: parsed.value.requires.tools }
+              : {}),
+          },
+        }
+      : {}),
   };
 
   return runForgePipeline(forgeInput, deps, (id, report) => {

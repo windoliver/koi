@@ -12,8 +12,7 @@ import {
   buildBaseFields,
   computeContentHash,
   createForgeTool,
-  forgeSkillInputSchema,
-  parseForgeInput,
+  parseSkillInput,
   runForgePipeline,
 } from "./shared.js";
 
@@ -55,7 +54,7 @@ async function forgeSkillHandler(
   input: unknown,
   deps: ForgeDeps,
 ): Promise<Result<ForgeResult, ForgeError>> {
-  const parsed = parseForgeInput(forgeSkillInputSchema, input);
+  const parsed = parseSkillInput(input);
   if (!parsed.ok) {
     return parsed;
   }
@@ -67,14 +66,26 @@ async function forgeSkillHandler(
     body: parsed.value.body,
     ...(parsed.value.tags !== undefined ? { tags: parsed.value.tags } : {}),
     ...(parsed.value.files !== undefined ? { files: parsed.value.files } : {}),
-    ...(parsed.value.requires !== undefined ? { requires: parsed.value.requires } : {}),
+    ...(parsed.value.requires !== undefined
+      ? {
+          requires: {
+            ...(parsed.value.requires.bins !== undefined
+              ? { bins: parsed.value.requires.bins }
+              : {}),
+            ...(parsed.value.requires.env !== undefined ? { env: parsed.value.requires.env } : {}),
+            ...(parsed.value.requires.tools !== undefined
+              ? { tools: parsed.value.requires.tools }
+              : {}),
+          },
+        }
+      : {}),
   };
 
   // Generate full SKILL.md with YAML frontmatter
   const generatedContent = generateSkillMd({
     name: forgeInput.name,
     description: forgeInput.description,
-    tags: forgeInput.tags,
+    ...(forgeInput.tags !== undefined ? { tags: forgeInput.tags } : {}),
     agentId: deps.context.agentId,
     version: "0.0.1",
     body: forgeInput.body,

@@ -18,8 +18,7 @@ import {
   buildBaseFields,
   computeContentHash,
   createForgeTool,
-  forgeAgentInputSchema,
-  parseForgeInput,
+  parseAgentInput,
   runForgePipeline,
 } from "./shared.js";
 
@@ -73,7 +72,7 @@ async function forgeAgentHandler(
   input: unknown,
   deps: ForgeDeps,
 ): Promise<Result<ForgeResult, ForgeError>> {
-  const parsed = parseForgeInput(forgeAgentInputSchema, input);
+  const parsed = parseAgentInput(input);
   if (!parsed.ok) {
     return parsed;
   }
@@ -98,8 +97,8 @@ async function forgeAgentHandler(
     const assemblyResult = await assembleManifest(parsed.value.brickIds, deps.store, {
       name: parsed.value.name,
       description: parsed.value.description,
-      model: parsed.value.model,
-      agentType: parsed.value.agentType,
+      ...(parsed.value.model !== undefined ? { model: parsed.value.model } : {}),
+      ...(parsed.value.agentType !== undefined ? { agentType: parsed.value.agentType } : {}),
     });
     if (!assemblyResult.ok) {
       return assemblyResult;
@@ -130,7 +129,19 @@ async function forgeAgentHandler(
     manifestYaml,
     ...(parsed.value.tags !== undefined ? { tags: parsed.value.tags } : {}),
     ...(parsed.value.files !== undefined ? { files: parsed.value.files } : {}),
-    ...(parsed.value.requires !== undefined ? { requires: parsed.value.requires } : {}),
+    ...(parsed.value.requires !== undefined
+      ? {
+          requires: {
+            ...(parsed.value.requires.bins !== undefined
+              ? { bins: parsed.value.requires.bins }
+              : {}),
+            ...(parsed.value.requires.env !== undefined ? { env: parsed.value.requires.env } : {}),
+            ...(parsed.value.requires.tools !== undefined
+              ? { tools: parsed.value.requires.tools }
+              : {}),
+          },
+        }
+      : {}),
   };
 
   return runForgePipeline(forgeInput, deps, (id, report) => {
