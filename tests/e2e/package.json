@@ -9,6 +9,7 @@
     "@koi/engine-loop": "workspace:*",
     "@koi/engine-pi": "workspace:*",
     "@koi/middleware-audit": "workspace:*",
+    "@koi/middleware-call-limits": "workspace:*",
     "@koi/middleware-memory": "workspace:*",
     "@koi/middleware-turn-ack": "workspace:*",
     "@koi/model-router": "workspace:*",

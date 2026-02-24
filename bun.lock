@@ -254,6 +254,17 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-call-limits": {
+      "name": "@koi/middleware-call-limits",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-compactor": {
       "name": "@koi/middleware-compactor",
       "version": "0.0.0",
@@ -649,6 +660,7 @@
         "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
+        "@koi/middleware-call-limits": "workspace:*",
         "@koi/middleware-memory": "workspace:*",
         "@koi/middleware-turn-ack": "workspace:*",
         "@koi/model-router": "workspace:*",
@@ -923,6 +935,8 @@
     "@koi/mcp": ["@koi/mcp@workspace:packages/mcp"],
 
     "@koi/middleware-audit": ["@koi/middleware-audit@workspace:packages/middleware-audit"],
+
+    "@koi/middleware-call-limits": ["@koi/middleware-call-limits@workspace:packages/middleware-call-limits"],
 
     "@koi/middleware-compactor": ["@koi/middleware-compactor@workspace:packages/middleware-compactor"],
 
