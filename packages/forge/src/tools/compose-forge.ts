@@ -8,6 +8,7 @@ import type { BrickArtifact, Result, Tool, TrustTier } from "@koi/core";
 import type { ForgeError } from "../errors.js";
 import { staticError, storeError } from "../errors.js";
 import { TRUST_ORDER } from "../governance.js";
+import { isVisibleToAgent } from "../scope-filter.js";
 import type {
   CompositeArtifact,
   CompositionBrickInfo,
@@ -96,14 +97,18 @@ async function composeForgeHandler(
     };
   }
 
-  // Validate all referenced bricks exist (parallel loading — 14A)
+  // Validate all referenced bricks exist and are visible (parallel loading — 14A)
   const loadResults = await Promise.all(compositeInput.brickIds.map((id) => deps.store.load(id)));
 
   const loadedBricks: BrickArtifact[] = [];
   const missingIds: string[] = [];
   for (let i = 0; i < loadResults.length; i++) {
     const loadResult = loadResults[i];
-    if (loadResult === undefined || !loadResult.ok) {
+    if (
+      loadResult === undefined ||
+      !loadResult.ok ||
+      !isVisibleToAgent(loadResult.value, deps.context.agentId)
+    ) {
       const brickId = compositeInput.brickIds[i];
       if (brickId !== undefined) {
         missingIds.push(brickId);

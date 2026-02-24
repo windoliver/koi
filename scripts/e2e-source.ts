@@ -103,7 +103,7 @@ async function testForgeResolverSource(): Promise<void> {
   try {
     const store = createInMemoryForgeStore();
     await store.save(createToolBrick({ id: "fib-1" }));
-    const resolver = createForgeResolver(store);
+    const resolver = createForgeResolver(store, { agentId: "agent-1" });
     assert(resolver.source !== undefined, "source should be defined");
     if (resolver.source === undefined) throw new Error("unreachable");
     const result = await resolver.source("fib-1");
@@ -138,7 +138,7 @@ async function testForgeResolverSource(): Promise<void> {
       contentHash: "h1",
       content: "# Greeting Guide\n\nSay hello warmly.",
     });
-    const resolver = createForgeResolver(store);
+    const resolver = createForgeResolver(store, { agentId: "a1" });
     assert(resolver.source !== undefined, "source should be defined");
     if (resolver.source === undefined) throw new Error("unreachable");
     const result = await resolver.source("skill-1");
@@ -170,7 +170,7 @@ async function testForgeResolverSource(): Promise<void> {
       contentHash: "h2",
       manifestYaml: "name: math-agent\nversion: 0.0.1\nmodel: gpt-4o-mini",
     });
-    const resolver = createForgeResolver(store);
+    const resolver = createForgeResolver(store, { agentId: "a1" });
     assert(resolver.source !== undefined, "source should be defined");
     if (resolver.source === undefined) throw new Error("unreachable");
     const result = await resolver.source("agent-1");
@@ -202,7 +202,7 @@ async function testForgeResolverSource(): Promise<void> {
       contentHash: "h3",
       brickIds: ["fib-1", "skill-1"],
     });
-    const resolver = createForgeResolver(store);
+    const resolver = createForgeResolver(store, { agentId: "a1" });
     assert(resolver.source !== undefined, "source should be defined");
     if (resolver.source === undefined) throw new Error("unreachable");
     const result = await resolver.source("comp-1");
@@ -219,7 +219,7 @@ async function testForgeResolverSource(): Promise<void> {
   // NOT_FOUND
   try {
     const store = createInMemoryForgeStore();
-    const resolver = createForgeResolver(store);
+    const resolver = createForgeResolver(store, { agentId: "any" });
     assert(resolver.source !== undefined, "source should be defined");
     if (resolver.source === undefined) throw new Error("unreachable");
     const result = await resolver.source("nonexistent");
@@ -237,7 +237,7 @@ async function testForgeResolverSource(): Promise<void> {
     await store.save(
       createToolBrick({ id: "with-files", files: { "helper.ts": "export const PI = 3.14;" } }),
     );
-    const resolver = createForgeResolver(store);
+    const resolver = createForgeResolver(store, { agentId: "agent-1" });
     assert(resolver.source !== undefined, "source should be defined");
     if (resolver.source === undefined) throw new Error("unreachable");
     const result = await resolver.source("with-files");
@@ -372,7 +372,7 @@ async function testLlmReadsSource(): Promise<void> {
   try {
     const store = createInMemoryForgeStore();
     await store.save(createToolBrick({ id: "fib-tool" }));
-    const resolver = createForgeResolver(store);
+    const resolver = createForgeResolver(store, { agentId: "agent-1" });
 
     assert(resolver.source !== undefined, "source should be defined");
     if (resolver.source === undefined) throw new Error("unreachable");
@@ -426,7 +426,7 @@ async function testLlmReadsSource(): Promise<void> {
       }),
     );
 
-    const resolver = createForgeResolver(store);
+    const resolver = createForgeResolver(store, { agentId: "agent-1" });
     assert(resolver.source !== undefined, "source should be defined");
     if (resolver.source === undefined) throw new Error("unreachable");
     const sourceResult = await resolver.source("buggy-fib");

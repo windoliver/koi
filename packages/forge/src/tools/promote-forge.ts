@@ -14,6 +14,7 @@ import { z } from "zod";
 import type { ForgeError } from "../errors.js";
 import { governanceError, storeError } from "../errors.js";
 import { checkScopePromotion, TRUST_ORDER } from "../governance.js";
+import { isVisibleToAgent } from "../scope-filter.js";
 import type { PromoteChange, PromoteResult } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import { createForgeTool, parseForgeInput } from "./shared.js";
@@ -150,9 +151,16 @@ async function promoteForgeHandler(
 
   const obj = parsed.value;
 
-  // Load the brick
+  // Load the brick (returns NOT_FOUND for invisible bricks to avoid leaking existence)
   const loadResult = await deps.store.load(obj.brickId);
   if (!loadResult.ok) {
+    return {
+      ok: false,
+      error: storeError("LOAD_FAILED", `Brick not found: ${obj.brickId}`),
+    };
+  }
+
+  if (!isVisibleToAgent(loadResult.value, deps.context.agentId)) {
     return {
       ok: false,
       error: storeError("LOAD_FAILED", `Brick not found: ${obj.brickId}`),

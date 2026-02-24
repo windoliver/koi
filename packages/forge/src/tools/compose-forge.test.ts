@@ -423,4 +423,40 @@ describe("createComposeForgeTool", () => {
       expect(loadResult.value.tags).toEqual(["group", "v1"]);
     }
   });
+
+  test("rejects composing another agent's agent-scoped brick", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: "brick_own", createdBy: "agent-1" }));
+    await store.save(
+      createToolBrick({ id: "brick_foreign", createdBy: "agent-2", scope: "agent" }),
+    );
+
+    const tool = createComposeForgeTool(createDeps({ store }));
+    const result = (await tool.execute({
+      name: "sneaky-composite",
+      description: "Trying to compose foreign brick",
+      brickIds: ["brick_own", "brick_foreign"],
+    })) as { readonly ok: false; readonly error: { readonly code: string } };
+
+    expect(result.ok).toBe(false);
+    expect(result.error.code).toBe("LOAD_FAILED");
+  });
+
+  test("allows composing another agent's global-scoped brick", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: "brick_own", createdBy: "agent-1" }));
+    await store.save(
+      createToolBrick({ id: "brick_global", createdBy: "agent-2", scope: "global" }),
+    );
+
+    const tool = createComposeForgeTool(createDeps({ store }));
+    const result = (await tool.execute({
+      name: "valid-composite",
+      description: "Composing with global brick",
+      brickIds: ["brick_own", "brick_global"],
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    expect(result.value.kind).toBe("composite");
+  });
 });
