@@ -3,6 +3,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ModelRequest } from "@koi/core";
 import { createMockTurnContext, createSpyModelHandler } from "@koi/test-utils";
+import type { SoulMiddleware } from "./soul.js";
 import { createSoulMiddleware, enrichRequest } from "./soul.js";
 
 let tmpDir: string;
@@ -310,6 +311,160 @@ describe("createSoulMiddleware — refreshUser", () => {
     if (secondMsg?.content[0]?.kind === "text") {
       expect(secondMsg.content[0].text).toContain("Version 2");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createSoulMiddleware — reload()
+// ---------------------------------------------------------------------------
+
+describe("createSoulMiddleware — reload", () => {
+  test("exposes reload method on returned middleware", async () => {
+    const mw = await createSoulMiddleware({ basePath: tmpDir });
+    expect(typeof mw.reload).toBe("function");
+  });
+
+  test("reload picks up soul file changes", async () => {
+    await writeFile(join(tmpDir, "SOUL.md"), "Version A");
+
+    const mw = await createSoulMiddleware({
+      soul: "SOUL.md",
+      basePath: tmpDir,
+    });
+    const ctx = createMockTurnContext();
+    const spy = createSpyModelHandler();
+    const request: ModelRequest = {
+      messages: [{ senderId: "user", timestamp: 1, content: [{ kind: "text", text: "hi" }] }],
+    };
+
+    // Before reload — sees Version A
+    await mw.wrapModelCall?.(ctx, request, spy.handler);
+    const before = spy.calls[0]?.messages[0];
+    if (before?.content[0]?.kind === "text") {
+      expect(before.content[0].text).toContain("Version A");
+    }
+
+    // Modify file on disk
+    await writeFile(join(tmpDir, "SOUL.md"), "Version B — updated via HITL");
+
+    // Without reload — still Version A (closure cache protects)
+    await mw.wrapModelCall?.(ctx, request, spy.handler);
+    const cached = spy.calls[1]?.messages[0];
+    if (cached?.content[0]?.kind === "text") {
+      expect(cached.content[0].text).toContain("Version A");
+    }
+
+    // After reload — picks up Version B
+    await mw.reload();
+    await mw.wrapModelCall?.(ctx, request, spy.handler);
+    const after = spy.calls[2]?.messages[0];
+    if (after?.content[0]?.kind === "text") {
+      expect(after.content[0].text).toContain("Version B");
+    }
+  });
+
+  test("reload picks up user file changes", async () => {
+    await writeFile(join(tmpDir, "SOUL.md"), "Soul text");
+    await writeFile(join(tmpDir, "USER.md"), "User v1");
+
+    const mw = await createSoulMiddleware({
+      soul: "SOUL.md",
+      user: "USER.md",
+      basePath: tmpDir,
+    });
+    const ctx = createMockTurnContext();
+    const spy = createSpyModelHandler();
+    const request: ModelRequest = {
+      messages: [{ senderId: "user", timestamp: 1, content: [{ kind: "text", text: "hi" }] }],
+    };
+
+    // Before — User v1
+    await mw.wrapModelCall?.(ctx, request, spy.handler);
+    const before = spy.calls[0]?.messages[0];
+    if (before?.content[0]?.kind === "text") {
+      expect(before.content[0].text).toContain("User v1");
+    }
+
+    // Modify user file
+    await writeFile(join(tmpDir, "USER.md"), "User v2 — HITL approved");
+
+    // After reload — User v2
+    await mw.reload();
+    await mw.wrapModelCall?.(ctx, request, spy.handler);
+    const after = spy.calls[1]?.messages[0];
+    if (after?.content[0]?.kind === "text") {
+      expect(after.content[0].text).toContain("User v2");
+    }
+  });
+
+  test("reload updates soul + user atomically", async () => {
+    await writeFile(join(tmpDir, "SOUL.md"), "Soul A");
+    await writeFile(join(tmpDir, "USER.md"), "User A");
+
+    const mw = await createSoulMiddleware({
+      soul: "SOUL.md",
+      user: "USER.md",
+      basePath: tmpDir,
+    });
+
+    // Modify both
+    await writeFile(join(tmpDir, "SOUL.md"), "Soul B");
+    await writeFile(join(tmpDir, "USER.md"), "User B");
+
+    await mw.reload();
+
+    const ctx = createMockTurnContext();
+    const spy = createSpyModelHandler();
+    await mw.wrapModelCall?.(
+      ctx,
+      { messages: [{ senderId: "user", timestamp: 1, content: [{ kind: "text", text: "hi" }] }] },
+      spy.handler,
+    );
+
+    const msg = spy.calls[0]?.messages[0];
+    if (msg?.content[0]?.kind === "text") {
+      expect(msg.content[0].text).toContain("Soul B");
+      expect(msg.content[0].text).toContain("User B");
+    }
+  });
+
+  test("reload on directory mode picks up new STYLE.md", async () => {
+    const soulDir = join(tmpDir, "soul-dir");
+    await mkdir(soulDir, { recursive: true });
+    await writeFile(join(soulDir, "SOUL.md"), "Core soul");
+
+    const mw = await createSoulMiddleware({
+      soul: "soul-dir",
+      basePath: tmpDir,
+    });
+    const ctx = createMockTurnContext();
+    const spy = createSpyModelHandler();
+    const request: ModelRequest = {
+      messages: [{ senderId: "user", timestamp: 1, content: [{ kind: "text", text: "hi" }] }],
+    };
+
+    // Before — no STYLE.md
+    await mw.wrapModelCall?.(ctx, request, spy.handler);
+    const before = spy.calls[0]?.messages[0];
+    if (before?.content[0]?.kind === "text") {
+      expect(before.content[0].text).not.toContain("New style");
+    }
+
+    // Add STYLE.md to directory
+    await writeFile(join(soulDir, "STYLE.md"), "New style added via HITL");
+
+    await mw.reload();
+    await mw.wrapModelCall?.(ctx, request, spy.handler);
+    const after = spy.calls[1]?.messages[0];
+    if (after?.content[0]?.kind === "text") {
+      expect(after.content[0].text).toContain("New style added via HITL");
+    }
+  });
+
+  test("SoulMiddleware type is assignable from createSoulMiddleware", async () => {
+    const mw: SoulMiddleware = await createSoulMiddleware({ basePath: tmpDir });
+    expect(mw.name).toBe("soul");
+    expect(typeof mw.reload).toBe("function");
   });
 });
 
