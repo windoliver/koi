@@ -21,7 +21,6 @@ import {
   createSpawnGuard,
   detectRepeatingPattern,
 } from "./guards.js";
-import { createInMemorySpawnLedger } from "./spawn-ledger.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -805,21 +804,17 @@ describe("createSpawnGuard", () => {
   });
 
   test("allows forge_agent calls under limit", async () => {
-    const ledger = createInMemorySpawnLedger(10);
-    const guard = createSpawnGuard({ ledger });
+    const guard = createSpawnGuard({ agentDepth: 0 });
     const wrap = getToolWrap(guard);
     const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
     const ctx = mockTurnContext();
 
     await wrap(ctx, mockToolRequest("forge_agent"), next);
     expect(next).toHaveBeenCalledTimes(1);
-    // Ledger slot released after child completed
-    expect(ledger.activeCount()).toBe(0);
   });
 
-  test("non-forge calls don't count toward process limit", async () => {
-    const ledger = createInMemorySpawnLedger(2);
-    const guard = createSpawnGuard({ ledger });
+  test("non-forge calls don't count toward fan-out", async () => {
+    const guard = createSpawnGuard({ agentDepth: 0, policy: { maxFanOut: 2 } });
     const wrap = getToolWrap(guard);
     const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
     const ctx = mockTurnContext();
@@ -830,8 +825,6 @@ describe("createSpawnGuard", () => {
 
     await wrap(ctx, mockToolRequest("forge_agent"), next);
     expect(next).toHaveBeenCalledTimes(4);
-    // Ledger slot released after child completed
-    expect(ledger.activeCount()).toBe(0);
   });
 
   // -------------------------------------------------------------------------
@@ -957,105 +950,13 @@ describe("createSpawnGuard", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Total process checks via SpawnLedger (RATE_LIMIT — retryable)
-  // -------------------------------------------------------------------------
-
-  test("throws RATE_LIMIT when ledger is at capacity", async () => {
-    const ledger = createInMemorySpawnLedger(1); // capacity 1
-    ledger.acquire(); // fill it up
-    const guard = createSpawnGuard({ ledger, agentDepth: 0 });
-    const wrap = getToolWrap(guard);
-    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
-    const ctx = mockTurnContext();
-
-    try {
-      await wrap(ctx, mockToolRequest("forge_agent"), next);
-      expect.unreachable("should have thrown");
-    } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiRuntimeError);
-      if (e instanceof KoiRuntimeError) {
-        expect(e.code).toBe("RATE_LIMIT");
-        expect(e.retryable).toBe(true);
-        expect(e.message).toContain("Max total processes exceeded");
-      }
-    }
-    expect(next).not.toHaveBeenCalled();
-  });
-
-  test("allows spawn at total processes limit minus one (boundary)", async () => {
-    const ledger = createInMemorySpawnLedger(3);
-    ledger.acquire(); // 1
-    ledger.acquire(); // 2
-    const guard = createSpawnGuard({ ledger, agentDepth: 0 });
-    const wrap = getToolWrap(guard);
-    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
-    const ctx = mockTurnContext();
-
-    // Ledger at 2/3, spawn should succeed (acquires slot 3, releases after completion)
-    await wrap(ctx, mockToolRequest("forge_agent"), next);
-    expect(next).toHaveBeenCalledTimes(1);
-    // Pre-acquired 2 remain, guard-acquired 1 released after child completed
-    expect(ledger.activeCount()).toBe(2);
-  });
-
-  test("allows sequential spawns beyond ledger capacity", async () => {
-    const ledger = createInMemorySpawnLedger(1); // capacity of 1
-    const guard = createSpawnGuard({ ledger, agentDepth: 0 });
-    const wrap = getToolWrap(guard);
-    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
-    const ctx = mockTurnContext();
-
-    // Each spawn completes and releases before the next one starts
-    await wrap(ctx, mockToolRequest("forge_agent"), next);
-    await wrap(ctx, mockToolRequest("forge_agent"), next);
-    await wrap(ctx, mockToolRequest("forge_agent"), next);
-    expect(next).toHaveBeenCalledTimes(3);
-    expect(ledger.activeCount()).toBe(0);
-  });
-
-  test("ledger slot freed when concurrent child completes", async () => {
-    const ledger = createInMemorySpawnLedger(1); // capacity of 1
-    const guard = createSpawnGuard({ ledger, agentDepth: 0 });
-    const wrap = getToolWrap(guard);
-    const ctx = mockTurnContext();
-
-    // Start 1 concurrent spawn
-    const d1 = deferredToolNext();
-    const p1 = wrap(ctx, mockToolRequest("forge_agent"), d1.next);
-    expect(ledger.activeCount()).toBe(1);
-
-    // 2nd spawn blocked — ledger full
-    try {
-      await wrap(ctx, mockToolRequest("forge_agent"), () => Promise.resolve(mockToolResponse()));
-      expect.unreachable("should have thrown");
-    } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiRuntimeError);
-      if (e instanceof KoiRuntimeError) {
-        expect(e.code).toBe("RATE_LIMIT");
-      }
-    }
-
-    // Complete child 1 — ledger slot freed
-    d1.resolve();
-    await p1;
-    expect(ledger.activeCount()).toBe(0);
-
-    // Now spawn succeeds
-    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
-    await wrap(ctx, mockToolRequest("forge_agent"), next);
-    expect(next).toHaveBeenCalledTimes(1);
-  });
-
-  // -------------------------------------------------------------------------
   // Independent limit enforcement
   // -------------------------------------------------------------------------
 
-  test("depth and fan-out checked independently of total processes", async () => {
-    const ledger = createInMemorySpawnLedger(100);
+  test("depth and fan-out checked independently", async () => {
     const guard = createSpawnGuard({
       policy: { maxDepth: 1, maxFanOut: 1 },
       agentDepth: 0,
-      ledger,
     });
     const wrap = getToolWrap(guard);
     const ctx = mockTurnContext();
@@ -1080,36 +981,12 @@ describe("createSpawnGuard", () => {
     await p1;
   });
 
-  test("all three limits enforced — total processes hit first", async () => {
-    const ledger = createInMemorySpawnLedger(0); // zero capacity
-    const guard = createSpawnGuard({
-      policy: { maxDepth: 3, maxFanOut: 5 },
-      agentDepth: 0,
-      ledger,
-    });
-    const wrap = getToolWrap(guard);
-    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
-    const ctx = mockTurnContext();
-
-    try {
-      await wrap(ctx, mockToolRequest("forge_agent"), next);
-      expect.unreachable("should have thrown");
-    } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiRuntimeError);
-      if (e instanceof KoiRuntimeError) {
-        expect(e.code).toBe("RATE_LIMIT");
-        expect(e.message).toContain("Max total processes exceeded");
-      }
-    }
-  });
-
   // -------------------------------------------------------------------------
   // Optimistic locking — failure path (#8A, #9A)
   // -------------------------------------------------------------------------
 
   test("rolls back fan-out counter when next() throws", async () => {
-    const ledger = createInMemorySpawnLedger(10);
-    const guard = createSpawnGuard({ ledger, agentDepth: 0, policy: { maxFanOut: 2 } });
+    const guard = createSpawnGuard({ agentDepth: 0, policy: { maxFanOut: 2 } });
     const wrap = getToolWrap(guard);
     const ctx = mockTurnContext();
 
@@ -1127,40 +1004,24 @@ describe("createSpawnGuard", () => {
     expect(succeedingNext).toHaveBeenCalledTimes(2);
   });
 
-  test("releases ledger slot when next() throws", async () => {
-    const ledger = createInMemorySpawnLedger(2);
-    const guard = createSpawnGuard({ ledger, agentDepth: 0 });
-    const wrap = getToolWrap(guard);
-    const ctx = mockTurnContext();
-
-    const failingNext: ToolNext = mock(() => Promise.reject(new Error("spawn failed")));
-    const succeedingNext: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
-
-    // Failing spawn acquires then releases ledger slot
-    await expect(wrap(ctx, mockToolRequest("forge_agent"), failingNext)).rejects.toThrow(
-      "spawn failed",
-    );
-    expect(ledger.activeCount()).toBe(0);
-
-    // Both slots available — success also releases after completion
-    await wrap(ctx, mockToolRequest("forge_agent"), succeedingNext);
-    await wrap(ctx, mockToolRequest("forge_agent"), succeedingNext);
-    expect(ledger.activeCount()).toBe(0);
-  });
-
   test("multiple failures don't accumulate phantom counts", async () => {
-    const ledger = createInMemorySpawnLedger(5);
-    const guard = createSpawnGuard({ ledger, agentDepth: 0, policy: { maxFanOut: 5 } });
+    const guard = createSpawnGuard({ agentDepth: 0, policy: { maxFanOut: 5 } });
     const wrap = getToolWrap(guard);
     const ctx = mockTurnContext();
 
     const failingNext: ToolNext = mock(() => Promise.reject(new Error("fail")));
 
-    // 5 failures should not consume any slots
+    // 5 failures should not consume any fan-out slots
     for (let i = 0; i < 5; i++) {
       await expect(wrap(ctx, mockToolRequest("forge_agent"), failingNext)).rejects.toThrow("fail");
     }
-    expect(ledger.activeCount()).toBe(0);
+
+    // All fan-out slots should still be available after failures
+    const succeedingNext: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    for (let i = 0; i < 5; i++) {
+      await wrap(ctx, mockToolRequest("forge_agent"), succeedingNext);
+    }
+    expect(succeedingNext).toHaveBeenCalledTimes(5);
   });
 
   // -------------------------------------------------------------------------
@@ -1168,45 +1029,37 @@ describe("createSpawnGuard", () => {
   // -------------------------------------------------------------------------
 
   test("uses custom spawnToolIds", async () => {
-    const ledger = createInMemorySpawnLedger(10);
     const guard = createSpawnGuard({
-      policy: { spawnToolIds: ["forge_agent", "delegate_agent"] },
-      ledger,
+      policy: { spawnToolIds: ["forge_agent", "delegate_agent"], maxFanOut: 5 },
       agentDepth: 0,
     });
     const wrap = getToolWrap(guard);
     const ctx = mockTurnContext();
 
-    // Both IDs should trigger governance (use deferred to keep slots active)
+    // Both IDs should trigger spawn governance (use deferred to keep fan-out slots active)
     const d1 = deferredToolNext();
     const d2 = deferredToolNext();
     const p1 = wrap(ctx, mockToolRequest("forge_agent"), d1.next);
     const p2 = wrap(ctx, mockToolRequest("delegate_agent"), d2.next);
-    expect(ledger.activeCount()).toBe(2);
 
-    // Non-spawn tool should pass through without ledger impact
+    // Non-spawn tool should pass through without fan-out impact
     const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
     await wrap(ctx, mockToolRequest("calc"), next);
-    expect(ledger.activeCount()).toBe(2);
 
     d1.resolve();
     d2.resolve();
     await p1;
     await p2;
-    // Released after children completed
-    expect(ledger.activeCount()).toBe(0);
   });
 
   test("default spawnToolIds includes forge_agent", async () => {
-    const ledger = createInMemorySpawnLedger(10);
-    const guard = createSpawnGuard({ ledger, agentDepth: 0 });
+    const guard = createSpawnGuard({ agentDepth: 0 });
     const wrap = getToolWrap(guard);
     const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
     const ctx = mockTurnContext();
 
     await wrap(ctx, mockToolRequest("forge_agent"), next);
-    // Released after child completed
-    expect(ledger.activeCount()).toBe(0);
+    expect(next).toHaveBeenCalledTimes(1);
   });
 
   // -------------------------------------------------------------------------
@@ -1232,7 +1085,7 @@ describe("createSpawnGuard", () => {
     const p1 = wrap(ctx, mockToolRequest("forge_agent"), d1.next);
     const p2 = wrap(ctx, mockToolRequest("forge_agent"), d2.next);
 
-    // Flush microtasks — warning fires after await ledger.acquire()
+    // Flush microtasks — warning fires after fan-out increment
     await new Promise((r) => setTimeout(r, 0));
 
     expect(warnings).toHaveLength(1);
@@ -1247,32 +1100,6 @@ describe("createSpawnGuard", () => {
     d2.resolve();
     await p1;
     await p2;
-  });
-
-  test("fires total process warning when threshold reached", async () => {
-    const warnings: unknown[] = [];
-    const ledger = createInMemorySpawnLedger(5);
-    ledger.acquire(); // pre-fill 1 slot
-    const guard = createSpawnGuard({
-      policy: {
-        totalProcessWarningAt: 2,
-        onWarning: (info) => warnings.push(info),
-      },
-      ledger,
-      agentDepth: 0,
-    });
-    const wrap = getToolWrap(guard);
-    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
-    const ctx = mockTurnContext();
-
-    await wrap(ctx, mockToolRequest("forge_agent"), next); // ledger at 2, fires warning
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toEqual({
-      kind: "total_processes",
-      current: 2,
-      limit: 5,
-      warningAt: 2,
-    });
   });
 
   test("warning fires at most once per limit kind", async () => {
@@ -1332,21 +1159,6 @@ describe("createSpawnGuard", () => {
       if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("VALIDATION");
         expect(e.message).toContain("fanOutWarningAt");
-      }
-    }
-  });
-
-  test("throws VALIDATION if totalProcessWarningAt >= maxTotalProcesses", () => {
-    try {
-      createSpawnGuard({
-        policy: { totalProcessWarningAt: 20, maxTotalProcesses: 20 },
-      });
-      expect.unreachable("should have thrown");
-    } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiRuntimeError);
-      if (e instanceof KoiRuntimeError) {
-        expect(e.code).toBe("VALIDATION");
-        expect(e.message).toContain("totalProcessWarningAt");
       }
     }
   });

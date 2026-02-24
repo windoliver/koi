@@ -3,7 +3,7 @@
  * pipeline with cooperating adapters that trigger spawn tool calls via callHandlers.
  *
  * Verifies that SpawnGuard (L1 guard) is correctly wired into the middleware chain
- * and that spawn options (limits, ledger, warnings) propagate end-to-end.
+ * and that spawn options (depth, governance, fan-out, warnings) propagate end-to-end.
  */
 
 import { describe, expect, mock, test } from "bun:test";
@@ -13,11 +13,9 @@ import type {
   EngineEvent,
   EngineInput,
   EngineOutput,
-  SpawnLedger,
   ToolResponse,
 } from "@koi/core";
 import { createKoi } from "../koi.js";
-import { createInMemorySpawnLedger } from "../spawn-ledger.js";
 import type { SpawnWarningInfo } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -103,7 +101,7 @@ function spawnTestAdapter(
 
 /**
  * Cooperating adapter that makes concurrent tool calls (all started before any awaited).
- * Used for testing fan-out and ledger limits under concurrency.
+ * Used for testing fan-out limits under concurrency.
  */
 function concurrentSpawnAdapter(count: number, results: string[]): EngineAdapter {
   return {
@@ -218,103 +216,6 @@ describe("spawn governance integration", () => {
     expect(errors.every((e) => e.includes("Max fan-out exceeded"))).toBe(true);
   });
 
-  test("enforces total process limit via shared ledger", async () => {
-    const ledger = createInMemorySpawnLedger(2);
-    // Pre-fill 1 slot — only 1 slot left
-    ledger.acquire();
-
-    const results: string[] = [];
-    // Fire 3 concurrent spawns — only 1 slot available
-    const adapter = concurrentSpawnAdapter(3, results);
-
-    const runtime = await createKoi({
-      manifest: testManifest(),
-      adapter,
-      spawnLedger: ledger,
-      loopDetection: false,
-    });
-
-    await collectEvents(runtime.run({ kind: "text", text: "test" }));
-
-    const successes = results.filter((r) => r.startsWith("ok:"));
-    const errors = results.filter((r) => r.startsWith("error:"));
-
-    // At most 1 should succeed (1 slot available in ledger)
-    expect(successes.length).toBeLessThanOrEqual(1);
-    expect(errors.length).toBeGreaterThanOrEqual(2);
-    expect(errors.every((e) => e.includes("Max total processes exceeded"))).toBe(true);
-  });
-
-  test("releases slots on completion — sequential cycling beyond capacity", async () => {
-    const results: string[] = [];
-    // 5 sequential spawns with total process capacity of 1
-    const adapter = spawnTestAdapter(
-      Array.from({ length: 5 }, (_, i) => ({
-        toolId: "forge_agent",
-        input: { task: `job-${i}` },
-      })),
-      results,
-    );
-
-    const ledger = createInMemorySpawnLedger(1);
-
-    const runtime = await createKoi({
-      manifest: testManifest(),
-      adapter,
-      spawnLedger: ledger,
-      loopDetection: false,
-    });
-
-    await collectEvents(runtime.run({ kind: "text", text: "test" }));
-
-    // All 5 should succeed — each completes and releases before the next starts
-    expect(results).toHaveLength(5);
-    expect(results.every((r) => r.startsWith("ok:"))).toBe(true);
-    // Ledger should be empty after all children completed
-    expect(ledger.activeCount()).toBe(0);
-  });
-
-  test("custom spawnLedger is used when provided", async () => {
-    const acquireCalls: boolean[] = [];
-    const releaseCalls: number[] = [];
-
-    const customLedger: SpawnLedger = {
-      acquire: () => {
-        acquireCalls.push(true);
-        return true;
-      },
-      release: () => {
-        releaseCalls.push(Date.now());
-      },
-      activeCount: () => acquireCalls.length - releaseCalls.length,
-      capacity: () => 100,
-    };
-
-    const results: string[] = [];
-    const adapter = spawnTestAdapter(
-      [
-        { toolId: "forge_agent", input: { task: "a" } },
-        { toolId: "forge_agent", input: { task: "b" } },
-      ],
-      results,
-    );
-
-    const runtime = await createKoi({
-      manifest: testManifest(),
-      adapter,
-      spawnLedger: customLedger,
-      loopDetection: false,
-    });
-
-    await collectEvents(runtime.run({ kind: "text", text: "test" }));
-
-    // Custom ledger was called for each spawn
-    expect(acquireCalls).toHaveLength(2);
-    expect(releaseCalls).toHaveLength(2);
-    expect(results).toHaveLength(2);
-    expect(results.every((r) => r.startsWith("ok:"))).toBe(true);
-  });
-
   test("warning callback fires through createKoi spawn options", async () => {
     const warnings: SpawnWarningInfo[] = [];
 
@@ -341,26 +242,20 @@ describe("spawn governance integration", () => {
     expect(warnings[0]?.warningAt).toBe(2);
   });
 
-  test("depth limit and total process limit enforced together", async () => {
+  test("depth limit is enforced", async () => {
     const results: string[] = [];
     const adapter = spawnTestAdapter([{ toolId: "forge_agent", input: {} }], results);
-
-    // maxDepth 0 blocks before ledger is even consulted
-    const ledger = createInMemorySpawnLedger(100);
 
     const runtime = await createKoi({
       manifest: testManifest(),
       adapter,
       spawn: { maxDepth: 0 },
-      spawnLedger: ledger,
       loopDetection: false,
     });
 
     await collectEvents(runtime.run({ kind: "text", text: "test" }));
 
-    // Depth check fires first — ledger never consulted
     expect(results[0]).toContain("Max spawn depth exceeded");
-    expect(ledger.activeCount()).toBe(0);
   });
 
   test("raw tool terminal receives request only when guard allows spawn", async () => {

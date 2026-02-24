@@ -76,6 +76,7 @@ export { loadAndVerify, verifyBrickIntegrity } from "./integrity.js";
 // runtime values — storage
 export { createInMemoryForgeStore } from "./memory-store.js";
 export { createComposeForgeTool } from "./tools/compose-forge.js";
+export type { OnForgeAgentSpawn } from "./tools/forge-agent.js";
 export { createForgeAgentTool } from "./tools/forge-agent.js";
 export { createForgeSkillTool } from "./tools/forge-skill.js";
 export { createForgeToolTool } from "./tools/forge-tool.js";
