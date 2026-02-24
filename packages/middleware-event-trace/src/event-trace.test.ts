@@ -8,7 +8,7 @@ import type {
   SnapshotChainStore,
   TurnTrace,
 } from "@koi/core";
-import { chainId } from "@koi/core";
+import { chainId, runId, sessionId } from "@koi/core";
 import { createInMemorySnapshotChainStore } from "@koi/snapshot-chain-store";
 import {
   createMockModelHandler,
@@ -164,7 +164,12 @@ describe("createEventTraceMiddleware", () => {
   test("onAfterTurn stores TurnTrace in chain", async () => {
     const ctx = createMockTurnContext({
       turnIndex: 0,
-      session: { sessionId: "sess-1", agentId: "agent-1", metadata: {} },
+      session: {
+        sessionId: sessionId("sess-1"),
+        runId: runId("run-1"),
+        agentId: "agent-1",
+        metadata: {},
+      },
     });
     const next = createMockModelHandler();
     const h = hooks(handle.middleware);
@@ -176,7 +181,7 @@ describe("createEventTraceMiddleware", () => {
     const headResult = await store.head(cid);
     expect(headResult.ok).toBe(true);
     if (headResult.ok && headResult.value !== undefined) {
-      expect(headResult.value.data.sessionId).toBe("sess-1");
+      expect(headResult.value.data.sessionId).toBe(sessionId("sess-1"));
       expect(headResult.value.data.agentId).toBe("agent-1");
       expect(headResult.value.data.turnIndex).toBe(0);
     }

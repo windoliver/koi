@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { ChannelStatus, ChannelStatusKind, EngineEvent } from "./index.js";
+import { toolCallId } from "./index.js";
 
 // ---------------------------------------------------------------------------
 // EngineEvent exhaustiveness (compile-time + runtime)
@@ -53,19 +54,19 @@ describe("EngineEvent exhaustiveness", () => {
     const event: EngineEvent = {
       kind: "tool_call_start",
       toolName: "calc",
-      callId: "c1",
+      callId: toolCallId("c1"),
       args: {},
     };
     expect(engineEventLabel(event)).toBe("tcs");
   });
 
   test("tool_call_delta variant is handled", () => {
-    const event: EngineEvent = { kind: "tool_call_delta", callId: "c1", delta: "{}" };
+    const event: EngineEvent = { kind: "tool_call_delta", callId: toolCallId("c1"), delta: "{}" };
     expect(engineEventLabel(event)).toBe("tcd");
   });
 
   test("tool_call_end variant is handled", () => {
-    const event: EngineEvent = { kind: "tool_call_end", callId: "c1", result: 42 };
+    const event: EngineEvent = { kind: "tool_call_end", callId: toolCallId("c1"), result: 42 };
     expect(engineEventLabel(event)).toBe("tce");
   });
 

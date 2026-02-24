@@ -8,6 +8,8 @@
  *   - @koi/middleware-event-trace (TraceEventKind, TraceEvent, TurnTrace, EventCursor)
  */
 
+import type { SessionId, ToolCallId } from "./ecs.js";
+
 // ---------------------------------------------------------------------------
 // Feature 1: Filesystem side-effect journal
 // ---------------------------------------------------------------------------
@@ -18,7 +20,7 @@ export type FileOpKind = "write" | "edit";
 /** Record of a single file operation captured during a tool call. */
 export interface FileOpRecord {
   /** Identifier of the tool call that produced this operation. */
-  readonly callId: string;
+  readonly callId: ToolCallId;
   /** Kind of file operation. */
   readonly kind: FileOpKind;
   /** Absolute path to the affected file. */
@@ -93,7 +95,7 @@ export type TraceEventKind =
   | {
       readonly kind: "tool_call";
       readonly toolId: string;
-      readonly callId: string;
+      readonly callId: ToolCallId;
       readonly input: unknown;
       readonly output: unknown;
       readonly durationMs: number;
@@ -123,7 +125,7 @@ export interface TraceEvent {
 /** Complete trace of all events within a single turn. */
 export interface TurnTrace {
   readonly turnIndex: number;
-  readonly sessionId: string;
+  readonly sessionId: SessionId;
   readonly agentId: string;
   readonly events: readonly TraceEvent[];
   readonly durationMs: number;

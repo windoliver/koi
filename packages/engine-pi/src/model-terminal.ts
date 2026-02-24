@@ -9,6 +9,7 @@
  * functions through the JsonObject metadata field.
  */
 
+import { toolCallId } from "@koi/core/ecs";
 import type {
   ModelChunk,
   ModelHandler,
@@ -83,18 +84,26 @@ export function assistantEventToModelChunk(event: AssistantMessageEvent): ModelC
     case "toolcall_start": {
       const toolCall = findToolCallByIndex(event.partial.content, event.contentIndex);
       if (toolCall) {
-        return { kind: "tool_call_start", toolName: toolCall.name, callId: toolCall.id };
+        return {
+          kind: "tool_call_start",
+          toolName: toolCall.name,
+          callId: toolCallId(toolCall.id),
+        };
       }
       return undefined;
     }
 
     case "toolcall_delta": {
       const toolCall = findToolCallByIndex(event.partial.content, event.contentIndex);
-      return { kind: "tool_call_delta", callId: toolCall?.id ?? "", delta: event.delta };
+      return {
+        kind: "tool_call_delta",
+        callId: toolCallId(toolCall?.id ?? ""),
+        delta: event.delta,
+      };
     }
 
     case "toolcall_end":
-      return { kind: "tool_call_end", callId: event.toolCall.id };
+      return { kind: "tool_call_end", callId: toolCallId(event.toolCall.id) };
 
     case "done":
       return {

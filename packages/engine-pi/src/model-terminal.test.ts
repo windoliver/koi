@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { toolCallId } from "@koi/core/ecs";
 import type { ModelChunk, ModelRequest } from "@koi/core/middleware";
 import type {
   AssistantMessage,
@@ -117,7 +118,11 @@ describe("assistantEventToModelChunk", () => {
       contentIndex: 0,
       partial,
     });
-    expect(chunk).toEqual({ kind: "tool_call_start", toolName: "search", callId: "tc-1" });
+    expect(chunk).toEqual({
+      kind: "tool_call_start",
+      toolName: "search",
+      callId: toolCallId("tc-1"),
+    });
   });
 
   test("returns undefined for toolcall_start with missing tool call", () => {
@@ -139,7 +144,7 @@ describe("assistantEventToModelChunk", () => {
       delta: '{"q":',
       partial,
     });
-    expect(chunk).toEqual({ kind: "tool_call_delta", callId: "tc-1", delta: '{"q":' });
+    expect(chunk).toEqual({ kind: "tool_call_delta", callId: toolCallId("tc-1"), delta: '{"q":' });
   });
 
   test("maps toolcall_delta with empty callId when tool call missing", () => {
@@ -149,7 +154,7 @@ describe("assistantEventToModelChunk", () => {
       delta: '{"q":',
       partial: makePartialMessage(),
     });
-    expect(chunk).toEqual({ kind: "tool_call_delta", callId: "", delta: '{"q":' });
+    expect(chunk).toEqual({ kind: "tool_call_delta", callId: toolCallId(""), delta: '{"q":' });
   });
 
   test("maps toolcall_end", () => {
@@ -159,7 +164,7 @@ describe("assistantEventToModelChunk", () => {
       toolCall: { type: "toolCall", id: "tc-1", name: "search", arguments: { q: "test" } },
       partial: makePartialMessage(),
     });
-    expect(chunk).toEqual({ kind: "tool_call_end", callId: "tc-1" });
+    expect(chunk).toEqual({ kind: "tool_call_end", callId: toolCallId("tc-1") });
   });
 
   test("maps done to usage", () => {

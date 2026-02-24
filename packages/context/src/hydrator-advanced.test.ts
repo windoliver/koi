@@ -6,6 +6,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { CompactionResult, ContextCompactor, TokenEstimator } from "@koi/core";
+import { runId, sessionId } from "@koi/core";
 import { createMockAgent, createMockTurnContext, createSpyModelHandler } from "@koi/test-utils";
 import type { ContextHydratorMiddleware } from "./hydrator.js";
 import { createContextHydrator } from "./hydrator.js";
@@ -32,7 +33,12 @@ describe("createContextHydrator — custom estimator (9A)", () => {
       ],
     };
     const mw = createContextHydrator({ config, agent, estimator: wordEstimator });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();
@@ -58,7 +64,12 @@ describe("createContextHydrator — custom estimator (9A)", () => {
       sources: [{ kind: "text", text: "async test content", label: "Async" }],
     };
     const mw = createContextHydrator({ config, agent, estimator: asyncEstimator });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();
@@ -85,7 +96,12 @@ describe("createContextHydrator — custom estimator (9A)", () => {
     const mw = createContextHydrator({ config, agent, estimator: failEstimator });
 
     await expect(
-      mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} }),
+      mw.onSessionStart?.({
+        agentId: "a",
+        sessionId: sessionId("s"),
+        runId: runId("r"),
+        metadata: {},
+      }),
     ).rejects.toThrow("estimator broke");
   });
 });
@@ -99,7 +115,12 @@ describe("createContextHydrator — single-source-exceeds-budget (10A)", () => {
       sources: [{ kind: "text", text: "x".repeat(1000), label: "Big Source" }],
     };
     const mw = createContextHydrator({ config, agent });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();
@@ -122,10 +143,20 @@ describe("createContextHydrator — freeze-on-first-hydrate (1A)", () => {
     };
     const mw = createContextHydrator({ config, agent });
 
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     await expect(
-      mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} }),
+      mw.onSessionStart?.({
+        agentId: "a",
+        sessionId: sessionId("s"),
+        runId: runId("r"),
+        metadata: {},
+      }),
     ).rejects.toThrow("Context already hydrated");
   });
 });
@@ -153,7 +184,12 @@ describe("createContextHydrator — refresh (2A)", () => {
       agent,
       resolvers: new Map([["text", trackingResolver]]),
     });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     // Call onBeforeTurn multiple times — should NOT re-resolve
     const resolveCountAfterInit = resolveCount;
@@ -185,7 +221,12 @@ describe("createContextHydrator — refresh (2A)", () => {
       agent,
       resolvers: new Map([["text", dynamicResolver]]),
     });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
     expect(callCount).toBe(1);
 
     // Turn 1: no refresh (1 % 3 !== 0)
@@ -240,7 +281,12 @@ describe("createContextHydrator — refresh (2A)", () => {
         ["file", dynamicResolver],
       ]),
     });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     // Trigger refresh at turn 2
     await mw.onBeforeTurn?.(createMockTurnContext({ turnIndex: 2 }));
@@ -277,7 +323,12 @@ describe("createContextHydrator — custom resolver (3A)", () => {
       agent,
       resolvers: new Map([["text", apiResolver]]),
     });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();
@@ -319,7 +370,12 @@ describe("createContextHydrator — compactor (4A)", () => {
       ],
     };
     const mw = createContextHydrator({ config, agent, compactor: mockCompactor });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();
@@ -363,7 +419,12 @@ describe("createContextHydrator — compactor (4A)", () => {
       ],
     };
     const mw = createContextHydrator({ config, agent, compactor: failCompactor });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();
@@ -404,7 +465,12 @@ describe("createContextHydrator — refresh failure warnings", () => {
       agent,
       resolvers: new Map([["text", flakyResolver]]),
     });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     // First hydration succeeds
     const resultBefore = (mw as ContextHydratorMiddleware).getHydrationResult();
@@ -448,7 +514,12 @@ describe("createContextHydrator — getHydrationResult accessor", () => {
       ],
     };
     const mw = createContextHydrator({ config, agent });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const result = mw.getHydrationResult();
     expect(result).toBeDefined();
@@ -482,7 +553,12 @@ describe("createContextHydrator — getHydrationResult accessor", () => {
       agent,
       resolvers: new Map([["text", dynamicResolver]]),
     });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const before = mw.getHydrationResult();
     expect(before?.content).toContain("v1");
@@ -504,7 +580,12 @@ describe("createContextHydrator — getHydrationResult accessor", () => {
       ],
     };
     const mw = createContextHydrator({ config, agent });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const result = mw.getHydrationResult();
     expect(result?.sources).toHaveLength(1);

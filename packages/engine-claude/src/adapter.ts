@@ -259,6 +259,17 @@ export function createClaudeAdapter(
     const abortController = new AbortController();
     activeAbortController = abortController;
 
+    // Compose caller signal with internal controller for unified cancellation
+    if (input.signal !== undefined) {
+      if (input.signal.aborted) {
+        abortController.abort(input.signal.reason);
+      } else {
+        input.signal.addEventListener("abort", () => abortController.abort(input.signal?.reason), {
+          once: true,
+        });
+      }
+    }
+
     const queue = createMessageQueue<SdkInputMessage>(
       config.hitl?.maxQueueSize !== undefined ? { maxSize: config.hitl.maxQueueSize } : undefined,
     );

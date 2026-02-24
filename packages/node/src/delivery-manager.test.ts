@@ -4,7 +4,7 @@
 
 import { describe, expect, mock, test } from "bun:test";
 import type { KoiError, Result } from "@koi/core";
-import { agentId } from "@koi/core";
+import { agentId, sessionId } from "@koi/core";
 import type { DeliveryManagerDeps } from "./delivery-manager.js";
 import { createDeliveryManager } from "./delivery-manager.js";
 import type { NodeEvent, NodeFrame, NodePendingFrame, NodeSessionStore } from "./types.js";
@@ -16,7 +16,7 @@ import type { NodeEvent, NodeFrame, NodePendingFrame, NodeSessionStore } from ".
 function makePendingFrame(overrides: Partial<NodePendingFrame> = {}): NodePendingFrame {
   return {
     frameId: "f1",
-    sessionId: "s1",
+    sessionId: sessionId("s1"),
     agentId: agentId("agent-1"),
     frameType: "agent:message",
     payload: { text: "hello" },

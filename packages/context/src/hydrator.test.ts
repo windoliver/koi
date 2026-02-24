@@ -3,7 +3,7 @@ import { unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MemoryComponent } from "@koi/core";
-import { MEMORY } from "@koi/core";
+import { MEMORY, runId, sessionId } from "@koi/core";
 import { createMockAgent, createMockTurnContext, createSpyModelHandler } from "@koi/test-utils";
 import { createContextHydrator } from "./hydrator.js";
 import type { ContextManifestConfig } from "./types.js";
@@ -70,7 +70,12 @@ describe("createContextHydrator", () => {
     const mw = createContextHydrator({ config, agent });
 
     // Trigger onSessionStart
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     // Trigger wrapModelCall
     const ctx = createMockTurnContext();
@@ -94,7 +99,12 @@ describe("createContextHydrator", () => {
       sources: [{ kind: "text", text: "" }],
     };
     const mw = createContextHydrator({ config, agent });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();
@@ -130,7 +140,12 @@ describe("createContextHydrator", () => {
       sources: [{ kind: "file", path, label: "Knowledge" }],
     };
     const mw = createContextHydrator({ config, agent });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();
@@ -147,7 +162,12 @@ describe("createContextHydrator", () => {
       sources: [{ kind: "memory", query: "facts" }],
     };
     const mw = createContextHydrator({ config, agent });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();
@@ -163,7 +183,12 @@ describe("createContextHydrator", () => {
       sources: [{ kind: "text", text: "cached", label: "Cache Test" }],
     };
     const mw = createContextHydrator({ config, agent });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const ctx = createMockTurnContext();
 
@@ -194,7 +219,12 @@ describe("createContextHydrator — edge cases", () => {
     const mw = createContextHydrator({ config, agent });
 
     // Should not throw
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     // wrapModelCall should pass through without system message
     const ctx = createMockTurnContext();
@@ -214,7 +244,12 @@ describe("createContextHydrator — edge cases", () => {
     const mw = createContextHydrator({ config, agent });
 
     await expect(
-      mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} }),
+      mw.onSessionStart?.({
+        agentId: "a",
+        sessionId: sessionId("s"),
+        runId: runId("r"),
+        metadata: {},
+      }),
     ).rejects.toThrow("Required context source failed: Critical File");
   });
 
@@ -226,7 +261,12 @@ describe("createContextHydrator — edge cases", () => {
       sources: [{ kind: "text", text: longText, maxTokens: 10 }], // 10 tokens = 40 chars
     };
     const mw = createContextHydrator({ config, agent });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();
@@ -250,7 +290,12 @@ describe("createContextHydrator — edge cases", () => {
       ],
     };
     const mw = createContextHydrator({ config, agent });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();
@@ -281,7 +326,12 @@ describe("createContextHydrator — edge cases", () => {
       ],
     };
     const mw = createContextHydrator({ config, agent });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();
@@ -300,7 +350,12 @@ describe("createContextHydrator — edge cases", () => {
     };
     const mw = createContextHydrator({ config, agent });
     await expect(
-      mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} }),
+      mw.onSessionStart?.({
+        agentId: "a",
+        sessionId: sessionId("s"),
+        runId: runId("r"),
+        metadata: {},
+      }),
     ).rejects.toThrow("Required context source failed: Memories");
   });
 
@@ -315,7 +370,12 @@ describe("createContextHydrator — edge cases", () => {
       ],
     };
     const mw = createContextHydrator({ config, agent });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();
@@ -339,7 +399,12 @@ describe("createContextHydrator — edge cases", () => {
       ],
     };
     const mw = createContextHydrator({ config, agent });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();
@@ -358,7 +423,12 @@ describe("createContextHydrator — wrapModelStream", () => {
       sources: [{ kind: "text", text: "Stream context", label: "Stream" }],
     };
     const mw = createContextHydrator({ config, agent });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const ctx = createMockTurnContext();
     let capturedRequest: { messages: readonly unknown[] } | undefined;
@@ -412,7 +482,12 @@ describe("createContextHydrator — wrapModelStream", () => {
       sources: [{ kind: "text", text: "Stream context data", label: "StreamLabel" }],
     };
     const mw = createContextHydrator({ config, agent });
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     const ctx = createMockTurnContext();
     let capturedRequest: { messages: readonly unknown[] } | undefined;

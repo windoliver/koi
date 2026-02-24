@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { toolCallId } from "@koi/core/ecs";
 import type { EngineEvent } from "@koi/core/engine";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import type { AssistantMessage, AssistantMessageEvent } from "@mariozechner/pi-ai";
@@ -203,7 +204,7 @@ describe("createEventSubscriber", () => {
     const events = await collectEvents(queue);
     expect(events[0]).toEqual({
       kind: "tool_call_delta",
-      callId: "call-1",
+      callId: toolCallId("call-1"),
       delta: '{"query":"test"}',
     });
   });
@@ -230,7 +231,7 @@ describe("createEventSubscriber", () => {
     expect(events[0]).toEqual({
       kind: "tool_call_start",
       toolName: "search",
-      callId: "call-1",
+      callId: toolCallId("call-1"),
       args: {},
     });
   });
@@ -286,7 +287,7 @@ describe("createEventSubscriber", () => {
     expect(events[0]).toEqual({
       kind: "tool_call_start",
       toolName: "write",
-      callId: "call-2",
+      callId: toolCallId("call-2"),
       args: {},
     });
   });
@@ -308,7 +309,7 @@ describe("createEventSubscriber", () => {
     const events = await collectEvents(queue);
     expect(events[0]).toEqual({
       kind: "tool_call_end",
-      callId: "call-1",
+      callId: toolCallId("call-1"),
       result: { text: "found it" },
     });
   });

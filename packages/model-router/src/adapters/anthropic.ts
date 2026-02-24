@@ -104,6 +104,11 @@ export function createAnthropicAdapter(config: ProviderAdapterConfig): ProviderA
 
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
+      // Compose caller signal with local timeout controller
+      const effectiveSignal =
+        request.signal !== undefined
+          ? AbortSignal.any([request.signal, controller.signal])
+          : controller.signal;
 
       try {
         const response = await fetch(url, {
@@ -115,7 +120,7 @@ export function createAnthropicAdapter(config: ProviderAdapterConfig): ProviderA
             ...config.headers,
           },
           body: JSON.stringify(body),
-          signal: controller.signal,
+          signal: effectiveSignal,
         });
 
         if (!response.ok) {
@@ -148,10 +153,13 @@ export function createAnthropicAdapter(config: ProviderAdapterConfig): ProviderA
         return fromAnthropicResponse(json);
       } catch (error: unknown) {
         if (error instanceof DOMException && error.name === "AbortError") {
+          const isCallerAbort = request.signal?.aborted === true;
           throw {
-            code: "TIMEOUT",
-            message: `Anthropic request timed out after ${timeoutMs}ms`,
-            retryable: true,
+            code: isCallerAbort ? "EXTERNAL" : "TIMEOUT",
+            message: isCallerAbort
+              ? "Anthropic request cancelled"
+              : `Anthropic request timed out after ${timeoutMs}ms`,
+            retryable: !isCallerAbort,
           } satisfies KoiError;
         }
         throw error;
@@ -171,6 +179,11 @@ export function createAnthropicAdapter(config: ProviderAdapterConfig): ProviderA
         clearTimeout(timer);
         timer = setTimeout(() => controller.abort(), timeoutMs);
       };
+      // Compose caller signal with local timeout controller
+      const effectiveSignal =
+        request.signal !== undefined
+          ? AbortSignal.any([request.signal, controller.signal])
+          : controller.signal;
 
       try {
         const response = await fetch(url, {
@@ -182,7 +195,7 @@ export function createAnthropicAdapter(config: ProviderAdapterConfig): ProviderA
             ...config.headers,
           },
           body: JSON.stringify(body),
-          signal: controller.signal,
+          signal: effectiveSignal,
         });
 
         if (!response.ok) {
@@ -239,7 +252,13 @@ export function createAnthropicAdapter(config: ProviderAdapterConfig): ProviderA
         }
       } catch (error: unknown) {
         if (error instanceof DOMException && error.name === "AbortError") {
-          yield { kind: "error", message: `Anthropic stream idle timeout after ${timeoutMs}ms` };
+          const isCallerAbort = request.signal?.aborted === true;
+          yield {
+            kind: "error",
+            message: isCallerAbort
+              ? "Anthropic stream cancelled"
+              : `Anthropic stream idle timeout after ${timeoutMs}ms`,
+          };
         } else {
           yield {
             kind: "error",

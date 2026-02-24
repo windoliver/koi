@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agentId } from "@koi/core";
+import { agentId, sessionId } from "@koi/core";
 import { runSessionPersistenceContractTests } from "./__tests__/store-contract.js";
 import { createSqliteSessionPersistence } from "./sqlite-store.js";
 
@@ -45,7 +45,7 @@ describe("SqliteSessionPersistence", () => {
       // Write data and close
       const store1 = createSqliteSessionPersistence({ dbPath, maxCheckpointsPerAgent: 3 });
       await store1.saveSession({
-        sessionId: "s1",
+        sessionId: sessionId("s1"),
         agentId: aid,
         manifestSnapshot: {
           name: "test",
@@ -62,7 +62,7 @@ describe("SqliteSessionPersistence", () => {
       await store1.saveCheckpoint({
         id: "cp1",
         agentId: aid,
-        sessionId: "s1",
+        sessionId: sessionId("s1"),
         engineState: { engineId: "test", data: { turnCount: 5 } },
         processState: "running",
         generation: 3,
@@ -106,7 +106,7 @@ describe("SqliteSessionPersistence", () => {
       const store = createSqliteSessionPersistence({ dbPath, durability: "process" });
       // Verify store is functional (PRAGMA synchronous is per-connection, can't verify from outside)
       const result = await store.saveSession({
-        sessionId: "test-sync",
+        sessionId: sessionId("test-sync"),
         agentId: agentId("a1"),
         manifestSnapshot: { name: "t", version: "0.1.0", description: "d", model: { name: "m" } },
         seq: 0,
@@ -123,7 +123,7 @@ describe("SqliteSessionPersistence", () => {
       const dbPath = makeTempDbPath();
       const store = createSqliteSessionPersistence({ dbPath, durability: "os" });
       const result = await store.saveSession({
-        sessionId: "test-sync",
+        sessionId: sessionId("test-sync"),
         agentId: agentId("a1"),
         manifestSnapshot: { name: "t", version: "0.1.0", description: "d", model: { name: "m" } },
         seq: 0,
@@ -145,7 +145,7 @@ describe("SqliteSessionPersistence", () => {
         await store.saveCheckpoint({
           id: `cp-${i}`,
           agentId: aid,
-          sessionId: "s1",
+          sessionId: sessionId("s1"),
           engineState: { engineId: "test", data: i },
           processState: "running",
           generation: i,
@@ -175,7 +175,7 @@ describe("SqliteSessionPersistence", () => {
       // First session: populate
       const store1 = createSqliteSessionPersistence({ dbPath, maxCheckpointsPerAgent: 3 });
       await store1.saveSession({
-        sessionId: "s1",
+        sessionId: sessionId("s1"),
         agentId: a1,
         manifestSnapshot: { name: "a1", version: "0.1.0", description: "d", model: { name: "m" } },
         seq: 1,
@@ -185,7 +185,7 @@ describe("SqliteSessionPersistence", () => {
         metadata: {},
       });
       await store1.saveSession({
-        sessionId: "s2",
+        sessionId: sessionId("s2"),
         agentId: a2,
         manifestSnapshot: { name: "a2", version: "0.1.0", description: "d", model: { name: "m" } },
         seq: 5,
@@ -197,7 +197,7 @@ describe("SqliteSessionPersistence", () => {
       await store1.saveCheckpoint({
         id: "cp1",
         agentId: a1,
-        sessionId: "s1",
+        sessionId: sessionId("s1"),
         engineState: { engineId: "e1", data: "state-a1" },
         processState: "running",
         generation: 1,
@@ -207,7 +207,7 @@ describe("SqliteSessionPersistence", () => {
       await store1.saveCheckpoint({
         id: "cp2",
         agentId: a2,
-        sessionId: "s2",
+        sessionId: sessionId("s2"),
         engineState: { engineId: "e2", data: "state-a2" },
         processState: "waiting",
         generation: 2,

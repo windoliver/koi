@@ -5,7 +5,14 @@
  * Separated into text, tool, and result mappers for testability.
  */
 
-import type { EngineEvent, EngineOutput, EngineStopReason, JsonObject } from "@koi/core";
+import type {
+  EngineEvent,
+  EngineOutput,
+  EngineStopReason,
+  JsonObject,
+  ToolCallId,
+} from "@koi/core";
+import { toolCallId } from "@koi/core";
 import type { SdkResultFields } from "./metrics.js";
 import { mapMetrics, mapRichMetadata } from "./metrics.js";
 
@@ -166,7 +173,7 @@ export function mapAssistantMessage(msg: SdkAssistantMessage): readonly EngineEv
           events.push({
             kind: "tool_call_start",
             toolName: block.name,
-            callId: block.id,
+            callId: toolCallId(block.id),
             args: (block.input ?? {}) as JsonObject,
           });
         }
@@ -205,7 +212,7 @@ export function mapUserMessage(msg: SdkUserMessage): readonly EngineEvent[] {
             : "";
       events.push({
         kind: "tool_call_end",
-        callId: block.tool_use_id,
+        callId: toolCallId(block.tool_use_id),
         result: resultText,
       });
     }
@@ -259,7 +266,10 @@ export interface StreamEventMapper {
  */
 export function createStreamEventMapper(): StreamEventMapper {
   // Track active tool call IDs by content block index
-  const activeToolCalls = new Map<number, { readonly callId: string; readonly toolName: string }>();
+  const activeToolCalls = new Map<
+    number,
+    { readonly callId: ToolCallId; readonly toolName: string }
+  >();
 
   return {
     map(event: SdkStreamEvent): readonly EngineEvent[] {
@@ -269,14 +279,15 @@ export function createStreamEventMapper(): StreamEventMapper {
           if (block === undefined) return [];
 
           if (block.type === "tool_use" && block.id !== undefined && block.name !== undefined) {
+            const cid = toolCallId(block.id);
             if (event.index !== undefined) {
-              activeToolCalls.set(event.index, { callId: block.id, toolName: block.name });
+              activeToolCalls.set(event.index, { callId: cid, toolName: block.name });
             }
             return [
               {
                 kind: "tool_call_start",
                 toolName: block.name,
-                callId: block.id,
+                callId: cid,
               },
             ];
           }

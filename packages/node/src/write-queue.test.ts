@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { AgentId, KoiError, Result } from "@koi/core";
-import { agentId } from "@koi/core";
+import { agentId, sessionId } from "@koi/core";
 import type { NodeCheckpoint, NodeSessionStore } from "./types.js";
 import { createWriteQueue } from "./write-queue.js";
 
@@ -12,7 +12,7 @@ function makeCheckpoint(aid: string, gen: number): NodeCheckpoint {
   return {
     id: `cp-${aid}-${String(gen)}`,
     agentId: agentId(aid) as AgentId,
-    sessionId: `session-${aid}`,
+    sessionId: sessionId(`session-${aid}`),
     engineState: { engineId: "test", data: { gen } },
     processState: "running",
     generation: gen,

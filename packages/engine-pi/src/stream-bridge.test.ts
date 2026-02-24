@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { toolCallId } from "@koi/core/ecs";
 import type { ModelRequest, ModelStreamHandler } from "@koi/core/middleware";
 import type { StreamFn } from "@mariozechner/pi-agent-core";
 import type {
@@ -94,7 +95,7 @@ describe("modelChunkToAssistantEvent", () => {
 
   test("maps tool_call_start chunk", () => {
     const event = modelChunkToAssistantEvent(
-      { kind: "tool_call_start", toolName: "search", callId: "c1" },
+      { kind: "tool_call_start", toolName: "search", callId: toolCallId("c1") },
       partial,
     );
     expect(event?.type).toBe("toolcall_start");
@@ -102,7 +103,7 @@ describe("modelChunkToAssistantEvent", () => {
 
   test("maps tool_call_delta chunk", () => {
     const event = modelChunkToAssistantEvent(
-      { kind: "tool_call_delta", callId: "c1", delta: '{"q":' },
+      { kind: "tool_call_delta", callId: toolCallId("c1"), delta: '{"q":' },
       partial,
     );
     expect(event?.type).toBe("toolcall_delta");
@@ -112,7 +113,10 @@ describe("modelChunkToAssistantEvent", () => {
   });
 
   test("returns undefined for tool_call_end", () => {
-    const event = modelChunkToAssistantEvent({ kind: "tool_call_end", callId: "c1" }, partial);
+    const event = modelChunkToAssistantEvent(
+      { kind: "tool_call_end", callId: toolCallId("c1") },
+      partial,
+    );
     expect(event).toBeUndefined();
   });
 

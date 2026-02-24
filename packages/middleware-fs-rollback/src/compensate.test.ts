@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { FileOpRecord } from "@koi/core";
+import { toolCallId } from "@koi/core";
 import { computeCompensatingOps } from "./compensate.js";
 
 function makeRecord(
@@ -8,7 +9,7 @@ function makeRecord(
   newContent: string,
 ): FileOpRecord {
   return {
-    callId: `call-${Date.now()}`,
+    callId: toolCallId(`call-${Date.now()}`),
     kind: "write",
     path,
     previousContent,

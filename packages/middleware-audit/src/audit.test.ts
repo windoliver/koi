@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { runId, sessionId } from "@koi/core";
 import {
   createMockSessionContext,
   createMockTurnContext,
@@ -220,7 +221,12 @@ describe("createAuditMiddleware", () => {
     const sink = createInMemoryAuditSink();
     const mw = createAuditMiddleware({ sink });
     const customCtx = createMockTurnContext({
-      session: { agentId: "custom-agent", sessionId: "custom-session", metadata: {} },
+      session: {
+        agentId: "custom-agent",
+        sessionId: sessionId("custom-session"),
+        runId: runId("custom-run"),
+        metadata: {},
+      },
     });
     const spy = createSpyModelHandler();
     await mw.wrapModelCall?.(customCtx, { messages: [] }, spy.handler);

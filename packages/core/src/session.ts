@@ -8,7 +8,7 @@
  */
 
 import type { AgentManifest } from "./assembly.js";
-import type { AgentId, ProcessState } from "./ecs.js";
+import type { AgentId, ProcessState, SessionId } from "./ecs.js";
 import type { EngineState } from "./engine.js";
 import type { KoiError, Result } from "./errors.js";
 
@@ -22,7 +22,7 @@ export interface SessionCheckpoint {
   /** Agent this checkpoint belongs to. */
   readonly agentId: AgentId;
   /** Gateway session this agent was part of. */
-  readonly sessionId: string;
+  readonly sessionId: SessionId;
   /** Opaque engine state from EngineAdapter.saveState(). */
   readonly engineState: EngineState;
   /** Lifecycle phase at checkpoint time. */
@@ -41,7 +41,7 @@ export interface SessionCheckpoint {
 
 export interface SessionRecord {
   /** Gateway session ID. */
-  readonly sessionId: string;
+  readonly sessionId: SessionId;
   /** Agent this session belongs to. */
   readonly agentId: AgentId;
   /** Agent manifest snapshot for re-assembly on recovery. */
@@ -66,7 +66,7 @@ export interface PendingFrame {
   /** Unique frame identifier. */
   readonly frameId: string;
   /** Session this frame belongs to. */
-  readonly sessionId: string;
+  readonly sessionId: SessionId;
   /** Agent that originated this frame. */
   readonly agentId: AgentId;
   /** Frame type discriminator (e.g., "agent:message"). */

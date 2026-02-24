@@ -23,7 +23,14 @@ import type {
   SessionRecord,
   SkippedRecoveryEntry,
 } from "@koi/core";
-import { agentId, internal, isProcessState, notFound, validateNonEmpty } from "@koi/core";
+import {
+  agentId,
+  internal,
+  isProcessState,
+  notFound,
+  sessionId,
+  validateNonEmpty,
+} from "@koi/core";
 import type { SessionStoreConfig } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -107,7 +114,7 @@ function parseProcessState(raw: string, contextId: string): ProcessState {
 
 function rowToSessionRecord(row: SessionRow): SessionRecord {
   return {
-    sessionId: row.sessionId,
+    sessionId: sessionId(row.sessionId),
     agentId: agentId(row.agentId),
     manifestSnapshot: parseManifest(row.manifest, row.sessionId),
     seq: row.seq,
@@ -121,7 +128,7 @@ function rowToSessionRecord(row: SessionRow): SessionRecord {
 function rowToPendingFrame(row: PendingFrameRow): PendingFrame {
   return {
     frameId: row.frameId,
-    sessionId: row.sessionId,
+    sessionId: sessionId(row.sessionId),
     agentId: agentId(row.agentId),
     frameType: row.frameType,
     payload: JSON.parse(row.payload) as unknown,
@@ -139,7 +146,7 @@ function rowToCheckpoint(row: CheckpointRow): SessionCheckpoint {
   return {
     id: row.id,
     agentId: agentId(row.agentId),
-    sessionId: row.sessionId,
+    sessionId: sessionId(row.sessionId),
     engineState,
     processState: parseProcessState(row.processState, row.id),
     generation: row.generation,

@@ -118,6 +118,11 @@ export function createOpenAIAdapter(config: ProviderAdapterConfig): ProviderAdap
 
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
+      // Compose caller signal with local timeout controller
+      const effectiveSignal =
+        request.signal !== undefined
+          ? AbortSignal.any([request.signal, controller.signal])
+          : controller.signal;
 
       try {
         const response = await fetch(url, {
@@ -128,7 +133,7 @@ export function createOpenAIAdapter(config: ProviderAdapterConfig): ProviderAdap
             ...config.headers,
           },
           body: JSON.stringify(body),
-          signal: controller.signal,
+          signal: effectiveSignal,
         });
 
         if (!response.ok) {
@@ -147,10 +152,14 @@ export function createOpenAIAdapter(config: ProviderAdapterConfig): ProviderAdap
         return fromOpenAIResponse(json);
       } catch (error: unknown) {
         if (error instanceof DOMException && error.name === "AbortError") {
+          // Discriminate caller-initiated cancel from internal timeout
+          const isCallerAbort = request.signal?.aborted === true;
           throw {
-            code: "TIMEOUT",
-            message: `OpenAI request timed out after ${timeoutMs}ms`,
-            retryable: true,
+            code: isCallerAbort ? "EXTERNAL" : "TIMEOUT",
+            message: isCallerAbort
+              ? "OpenAI request cancelled"
+              : `OpenAI request timed out after ${timeoutMs}ms`,
+            retryable: !isCallerAbort,
           } satisfies KoiError;
         }
         throw error;
@@ -170,6 +179,11 @@ export function createOpenAIAdapter(config: ProviderAdapterConfig): ProviderAdap
         clearTimeout(timer);
         timer = setTimeout(() => controller.abort(), timeoutMs);
       };
+      // Compose caller signal with local timeout controller
+      const effectiveSignal =
+        request.signal !== undefined
+          ? AbortSignal.any([request.signal, controller.signal])
+          : controller.signal;
 
       try {
         const response = await fetch(url, {
@@ -180,7 +194,7 @@ export function createOpenAIAdapter(config: ProviderAdapterConfig): ProviderAdap
             ...config.headers,
           },
           body: JSON.stringify(body),
-          signal: controller.signal,
+          signal: effectiveSignal,
         });
 
         if (!response.ok) {
@@ -241,7 +255,13 @@ export function createOpenAIAdapter(config: ProviderAdapterConfig): ProviderAdap
         }
       } catch (error: unknown) {
         if (error instanceof DOMException && error.name === "AbortError") {
-          yield { kind: "error", message: `OpenAI stream idle timeout after ${timeoutMs}ms` };
+          const isCallerAbort = request.signal?.aborted === true;
+          yield {
+            kind: "error",
+            message: isCallerAbort
+              ? "OpenAI stream cancelled"
+              : `OpenAI stream idle timeout after ${timeoutMs}ms`,
+          };
         } else {
           yield {
             kind: "error",

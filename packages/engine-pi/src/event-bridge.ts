@@ -5,6 +5,7 @@
  * Maps pi AgentEvent → Koi EngineEvent, filtering out events that have no mapping.
  */
 
+import { toolCallId } from "@koi/core/ecs";
 import type { EngineEvent, EngineOutput, EngineStopReason } from "@koi/core/engine";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import type { StopReason } from "@mariozechner/pi-ai";
@@ -186,7 +187,7 @@ export function createEventSubscriber(
               queue.push({
                 kind: "tool_call_start",
                 toolName: toolCall.name,
-                callId: toolCall.id,
+                callId: toolCallId(toolCall.id),
                 args: (toolCall.arguments ?? {}) as Readonly<Record<string, unknown>>,
               });
             }
@@ -205,13 +206,15 @@ export function createEventSubscriber(
           case "toolcall_delta":
             queue.push({
               kind: "tool_call_delta",
-              callId: (() => {
-                const tc = findToolCallByContentIndex(
-                  assistantEvent.partial.content,
-                  assistantEvent.contentIndex,
-                );
-                return tc?.id ?? "";
-              })(),
+              callId: toolCallId(
+                (() => {
+                  const tc = findToolCallByContentIndex(
+                    assistantEvent.partial.content,
+                    assistantEvent.contentIndex,
+                  );
+                  return tc?.id ?? "";
+                })(),
+              ),
               delta: assistantEvent.delta,
             });
             break;
@@ -230,7 +233,7 @@ export function createEventSubscriber(
           queue.push({
             kind: "tool_call_start",
             toolName: event.toolName,
-            callId: event.toolCallId,
+            callId: toolCallId(event.toolCallId),
             args: (event.args ?? {}) as Readonly<Record<string, unknown>>,
           });
         }
@@ -240,7 +243,7 @@ export function createEventSubscriber(
       case "tool_execution_end": {
         queue.push({
           kind: "tool_call_end",
-          callId: event.toolCallId,
+          callId: toolCallId(event.toolCallId),
           result: event.result,
         });
         break;

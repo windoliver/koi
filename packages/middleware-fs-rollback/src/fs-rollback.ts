@@ -11,6 +11,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
+import { toolCallId } from "@koi/core";
 import { capturePreState, DEFAULT_MAX_CAPTURE_SIZE } from "./capture.js";
 import { rollbackTo as rollbackToImpl } from "./rollback.js";
 import type { FsRollbackConfig, FsRollbackHandle } from "./types.js";
@@ -83,7 +84,7 @@ export function createFsRollbackMiddleware(config: FsRollbackConfig): FsRollback
 
       // 4. Build FileOpRecord
       const record: FileOpRecord = {
-        callId: `${request.toolId}-${Date.now()}-${callCounter++}`,
+        callId: toolCallId(`${request.toolId}-${Date.now()}-${callCounter++}`),
         kind: toolIdToOpKind(request.toolId, toolPrefix),
         path: filePath,
         previousContent,

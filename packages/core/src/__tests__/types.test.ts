@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type {
+  AbortReason,
   Agent,
   AgentManifest,
   ChannelAdapter,
   ChannelCapabilities,
   ContentBlock,
+  CorrelationIds,
   DelegationComponent,
   DelegationConfig,
   DelegationDenyReason,
@@ -24,22 +26,40 @@ import type {
   ModelCapabilities,
   ModelConfig,
   ModelProvider,
+  ModelRequest,
   ModelTarget,
   PermissionConfig,
   ProcessId,
   Resolver,
   Result,
   RevocationRegistry,
+  RunId,
   ScopeChecker,
+  SessionId,
   SourceBundle,
   SourceLanguage,
   SpawnCheck,
   SubsystemToken,
   Tool,
+  ToolCallId,
   ToolDescriptor,
   TrustTier,
+  TurnContext,
+  TurnId,
 } from "../index.js";
-import { agentId, CREDENTIALS, DELEGATION, EVENTS, GOVERNANCE, MEMORY, token } from "../index.js";
+import {
+  agentId,
+  CREDENTIALS,
+  DELEGATION,
+  EVENTS,
+  GOVERNANCE,
+  MEMORY,
+  runId,
+  sessionId,
+  token,
+  toolCallId,
+  turnId,
+} from "../index.js";
 
 /**
  * Type-level tests using @ts-expect-error.
@@ -144,20 +164,20 @@ describe("EngineEvent discriminant", () => {
     const event: EngineEvent = {
       kind: "tool_call_start",
       toolName: "calc",
-      callId: "c1",
+      callId: toolCallId("c1"),
       args: { x: 1, y: 2 },
     };
     if (event.kind === "tool_call_start") {
       expect(event.toolName).toBe("calc");
-      expect(event.callId).toBe("c1");
+      expect(event.callId).toBe(toolCallId("c1"));
       expect(event.args).toEqual({ x: 1, y: 2 });
     }
   });
 
   test("narrows to tool_call_end with callId and result", () => {
-    const event: EngineEvent = { kind: "tool_call_end", callId: "c1", result: 42 };
+    const event: EngineEvent = { kind: "tool_call_end", callId: toolCallId("c1"), result: 42 };
     if (event.kind === "tool_call_end") {
-      expect(event.callId).toBe("c1");
+      expect(event.callId).toBe(toolCallId("c1"));
       expect(event.result).toBe(42);
     }
   });
@@ -1194,5 +1214,258 @@ describe("Resolver.source", () => {
       expect(result.value.content).toBe("return 1;");
       expect(result.value.language).toBe("typescript");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Branded ID types (#80 — Canonical ID hierarchy)
+// ---------------------------------------------------------------------------
+
+describe("SessionId branding", () => {
+  test("sessionId() returns branded type", () => {
+    const sid = sessionId("sess-1");
+    const _s: SessionId = sid;
+    void _s;
+    expect(sid).toBe(sessionId("sess-1"));
+  });
+
+  test("plain string is not assignable to SessionId", () => {
+    // @ts-expect-error — plain string is not assignable to SessionId
+    const _sid: SessionId = "plain-string";
+    void _sid;
+  });
+
+  test("SessionId is assignable to string", () => {
+    const sid = sessionId("sess-2");
+    const _s: string = sid;
+    void _s;
+    expect(_s).toBe("sess-2");
+  });
+});
+
+describe("RunId branding", () => {
+  test("runId() returns branded type", () => {
+    const rid = runId("run-1");
+    const _r: RunId = rid;
+    void _r;
+    expect(rid).toBe(runId("run-1"));
+  });
+
+  test("plain string is not assignable to RunId", () => {
+    // @ts-expect-error — plain string is not assignable to RunId
+    const _rid: RunId = "plain-string";
+    void _rid;
+  });
+});
+
+describe("TurnId branding", () => {
+  test("turnId() produces hierarchical format", () => {
+    const rid = runId("run-abc");
+    const tid = turnId(rid, 0);
+    const _t: TurnId = tid;
+    void _t;
+    expect(tid).toBe(turnId(runId("run-abc"), 0));
+  });
+
+  test("turnId() increments with turn index", () => {
+    const rid = runId("run-xyz");
+    expect(turnId(rid, 0)).toBe(turnId(runId("run-xyz"), 0));
+    expect(turnId(rid, 1)).toBe(turnId(runId("run-xyz"), 1));
+    expect(turnId(rid, 42)).toBe(turnId(runId("run-xyz"), 42));
+  });
+
+  test("plain string is not assignable to TurnId", () => {
+    // @ts-expect-error — plain string is not assignable to TurnId
+    const _tid: TurnId = "plain-string";
+    void _tid;
+  });
+});
+
+describe("ToolCallId branding", () => {
+  test("toolCallId() returns branded type", () => {
+    const cid = toolCallId("call-1");
+    const _c: ToolCallId = cid;
+    void _c;
+    expect(cid).toBe(toolCallId("call-1"));
+  });
+
+  test("plain string is not assignable to ToolCallId", () => {
+    // @ts-expect-error — plain string is not assignable to ToolCallId
+    const _cid: ToolCallId = "plain-string";
+    void _cid;
+  });
+});
+
+describe("CorrelationIds", () => {
+  test("minimal CorrelationIds with required fields", () => {
+    const ids: CorrelationIds = {
+      sessionId: sessionId("s1"),
+      runId: runId("r1"),
+    };
+    expect(ids.sessionId).toBe(sessionId("s1"));
+    expect(ids.runId).toBe(runId("r1"));
+    expect(ids.turnId).toBeUndefined();
+    expect(ids.toolCallId).toBeUndefined();
+  });
+
+  test("full CorrelationIds with all fields", () => {
+    const rid = runId("r1");
+    const ids: CorrelationIds = {
+      sessionId: sessionId("s1"),
+      runId: rid,
+      turnId: turnId(rid, 3),
+      toolCallId: toolCallId("tc-1"),
+    };
+    expect(ids.turnId).toBe(turnId(runId("r1"), 3));
+    expect(ids.toolCallId).toBe(toolCallId("tc-1"));
+  });
+
+  test("properties are readonly", () => {
+    const ids: CorrelationIds = {
+      sessionId: sessionId("s1"),
+      runId: runId("r1"),
+    };
+    // @ts-expect-error — cannot assign to readonly property
+    ids.sessionId = sessionId("s2");
+  });
+});
+
+describe("branded ID cross-assignment prevention", () => {
+  test("SessionId is not assignable to RunId", () => {
+    const sid = sessionId("id-1");
+    // @ts-expect-error — SessionId is not assignable to RunId
+    const _rid: RunId = sid;
+    void _rid;
+  });
+
+  test("RunId is not assignable to SessionId", () => {
+    const rid = runId("id-1");
+    // @ts-expect-error — RunId is not assignable to SessionId
+    const _sid: SessionId = rid;
+    void _sid;
+  });
+
+  test("ToolCallId is not assignable to TurnId", () => {
+    const cid = toolCallId("id-1");
+    // @ts-expect-error — ToolCallId is not assignable to TurnId
+    const _tid: TurnId = cid;
+    void _tid;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AbortSignal on EngineInput (#79)
+// ---------------------------------------------------------------------------
+
+describe("EngineInput.signal", () => {
+  test("signal is optional on text input", () => {
+    const input: EngineInput = { kind: "text", text: "hello" };
+    expect(input.signal).toBeUndefined();
+  });
+
+  test("signal is accepted on text input", () => {
+    const controller = new AbortController();
+    const input: EngineInput = { kind: "text", text: "hello", signal: controller.signal };
+    expect(input.signal).toBe(controller.signal);
+  });
+
+  test("signal is accepted on messages input", () => {
+    const controller = new AbortController();
+    const input: EngineInput = { kind: "messages", messages: [], signal: controller.signal };
+    expect(input.signal).toBe(controller.signal);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TurnContext new fields (#79, #80)
+// ---------------------------------------------------------------------------
+
+describe("TurnContext new fields", () => {
+  test("turnId is present on TurnContext", () => {
+    const rid = runId("r1");
+    const ctx: TurnContext = {
+      session: { agentId: "a1", sessionId: sessionId("s1"), runId: rid, metadata: {} },
+      turnIndex: 0,
+      turnId: turnId(rid, 0),
+      messages: [],
+      metadata: {},
+    };
+    expect(ctx.turnId).toBe(turnId(runId("r1"), 0));
+  });
+
+  test("signal is optional on TurnContext", () => {
+    const rid = runId("r1");
+    const ctx: TurnContext = {
+      session: { agentId: "a1", sessionId: sessionId("s1"), runId: rid, metadata: {} },
+      turnIndex: 0,
+      turnId: turnId(rid, 0),
+      messages: [],
+      metadata: {},
+    };
+    expect(ctx.signal).toBeUndefined();
+  });
+
+  test("signal is accepted on TurnContext", () => {
+    const rid = runId("r1");
+    const controller = new AbortController();
+    const ctx: TurnContext = {
+      session: { agentId: "a1", sessionId: sessionId("s1"), runId: rid, metadata: {} },
+      turnIndex: 0,
+      turnId: turnId(rid, 0),
+      messages: [],
+      metadata: {},
+      signal: controller.signal,
+    };
+    expect(ctx.signal).toBe(controller.signal);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AbortReason type (#79 — discriminated abort reasons)
+// ---------------------------------------------------------------------------
+
+describe("AbortReason", () => {
+  test("accepts all four valid abort reasons", () => {
+    const reasons: readonly AbortReason[] = ["user_cancel", "timeout", "token_limit", "shutdown"];
+    expect(reasons).toHaveLength(4);
+  });
+
+  test("rejects invalid abort reason", () => {
+    // @ts-expect-error — "unknown_reason" is not a valid AbortReason
+    const _invalid: AbortReason = "unknown_reason";
+    void _invalid;
+  });
+
+  test("can be used as AbortController.abort() reason", () => {
+    const controller = new AbortController();
+    const reason: AbortReason = "user_cancel";
+    controller.abort(reason);
+    expect(controller.signal.reason).toBe("user_cancel");
+  });
+
+  test("signal.reason discriminates timeout vs user_cancel", () => {
+    const c1 = new AbortController();
+    const c2 = new AbortController();
+    c1.abort("timeout" satisfies AbortReason);
+    c2.abort("user_cancel" satisfies AbortReason);
+    expect(c1.signal.reason).toBe("timeout");
+    expect(c2.signal.reason).toBe("user_cancel");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ModelRequest.signal (#79 — signal propagation to adapters)
+// ---------------------------------------------------------------------------
+
+describe("ModelRequest.signal", () => {
+  test("signal is optional on ModelRequest", () => {
+    const req: ModelRequest = { messages: [] };
+    expect(req.signal).toBeUndefined();
+  });
+
+  test("signal is accepted on ModelRequest", () => {
+    const controller = new AbortController();
+    const req: ModelRequest = { messages: [], signal: controller.signal };
+    expect(req.signal).toBe(controller.signal);
   });
 });

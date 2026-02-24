@@ -3,7 +3,8 @@
  */
 
 import type { JsonObject } from "./common.js";
-import type { ToolDescriptor } from "./ecs.js";
+import type { CorrelationIds } from "./correlation.js";
+import type { ToolCallId, ToolDescriptor } from "./ecs.js";
 import type { ContentBlock, InboundMessage } from "./message.js";
 import type {
   ModelChunk,
@@ -17,6 +18,14 @@ import type {
 } from "./middleware.js";
 
 export type EngineStopReason = "completed" | "max_turns" | "interrupted" | "error";
+
+/**
+ * Typed abort reasons for discriminating _why_ a signal fired.
+ * Passed as the `reason` argument to `AbortController.abort(reason)`.
+ * Consumers can inspect `signal.reason` to choose behavior
+ * (e.g., save checkpoint on user_cancel, retry on timeout, discard on shutdown).
+ */
+export type AbortReason = "user_cancel" | "timeout" | "token_limit" | "shutdown";
 
 export interface EngineMetrics {
   readonly totalTokens: number;
@@ -45,31 +54,29 @@ export interface ComposedCallHandlers {
   readonly tools: readonly ToolDescriptor[];
 }
 
+export interface EngineInputBase {
+  readonly callHandlers?: ComposedCallHandlers;
+  readonly signal?: AbortSignal | undefined;
+  readonly correlationIds?: CorrelationIds | undefined;
+}
+
 export type EngineInput =
-  | { readonly kind: "text"; readonly text: string; readonly callHandlers?: ComposedCallHandlers }
-  | {
-      readonly kind: "messages";
-      readonly messages: readonly InboundMessage[];
-      readonly callHandlers?: ComposedCallHandlers;
-    }
-  | {
-      readonly kind: "resume";
-      readonly state: EngineState;
-      readonly callHandlers?: ComposedCallHandlers;
-    };
+  | ({ readonly kind: "text"; readonly text: string } & EngineInputBase)
+  | ({ readonly kind: "messages"; readonly messages: readonly InboundMessage[] } & EngineInputBase)
+  | ({ readonly kind: "resume"; readonly state: EngineState } & EngineInputBase);
 
 export type EngineEvent =
   | { readonly kind: "text_delta"; readonly delta: string }
   | {
       readonly kind: "tool_call_start";
       readonly toolName: string;
-      readonly callId: string;
+      readonly callId: ToolCallId;
       readonly args?: JsonObject;
     }
-  | { readonly kind: "tool_call_delta"; readonly callId: string; readonly delta: string }
+  | { readonly kind: "tool_call_delta"; readonly callId: ToolCallId; readonly delta: string }
   | {
       readonly kind: "tool_call_end";
-      readonly callId: string;
+      readonly callId: ToolCallId;
       readonly result: unknown;
     }
   | { readonly kind: "turn_start"; readonly turnIndex: number }

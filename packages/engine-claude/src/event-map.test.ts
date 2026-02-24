@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { EngineEvent } from "@koi/core";
+import { toolCallId } from "@koi/core";
 import type {
   SdkAssistantMessage,
   SdkResultMessage,
@@ -88,7 +89,7 @@ describe("mapAssistantMessage", () => {
     const event = events[0] as EngineEvent & { readonly kind: "tool_call_start" };
     expect(event.kind).toBe("tool_call_start");
     expect(event.toolName).toBe("search");
-    expect(event.callId).toBe("call-123");
+    expect(event.callId).toBe(toolCallId("call-123"));
     expect(event.args).toEqual({ query: "test" });
   });
 
@@ -337,7 +338,7 @@ describe("createStreamEventMapper", () => {
     expect(events[0]).toEqual({
       kind: "tool_call_start",
       toolName: "search",
-      callId: "call-1",
+      callId: toolCallId("call-1"),
     });
   });
 
@@ -375,7 +376,7 @@ describe("createStreamEventMapper", () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toEqual({
       kind: "tool_call_delta",
-      callId: "call-2",
+      callId: toolCallId("call-2"),
       delta: '{"path":',
     });
   });
@@ -467,7 +468,7 @@ describe("mapUserMessage", () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toEqual({
       kind: "tool_call_end",
-      callId: "call-1",
+      callId: toolCallId("call-1"),
       result: "Search results here",
     });
   });
@@ -551,8 +552,12 @@ describe("mapUserMessage", () => {
 
     const events = mapUserMessage(msg);
     expect(events).toHaveLength(2);
-    expect((events[0] as EngineEvent & { readonly kind: "tool_call_end" }).callId).toBe("call-a");
-    expect((events[1] as EngineEvent & { readonly kind: "tool_call_end" }).callId).toBe("call-b");
+    expect((events[0] as EngineEvent & { readonly kind: "tool_call_end" }).callId).toBe(
+      toolCallId("call-a"),
+    );
+    expect((events[1] as EngineEvent & { readonly kind: "tool_call_end" }).callId).toBe(
+      toolCallId("call-b"),
+    );
   });
 
   test("defaults to empty string when content is undefined", () => {
@@ -746,7 +751,7 @@ describe("createMessageMapper", () => {
     expect(result.events[0]).toEqual({
       kind: "tool_call_start",
       toolName: "search",
-      callId: "call-1",
+      callId: toolCallId("call-1"),
     });
   });
 
@@ -776,7 +781,7 @@ describe("createMessageMapper", () => {
     expect(result.events).toHaveLength(1);
     expect(result.events[0]).toEqual({
       kind: "tool_call_delta",
-      callId: "call-1",
+      callId: toolCallId("call-1"),
       delta: '{"path":',
     });
   });
