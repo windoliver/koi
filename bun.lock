@@ -243,6 +243,19 @@
         "zod": "4.3.6",
       },
     },
+    "packages/middleware-ace": {
+      "name": "@koi/middleware-ace",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-audit": {
       "name": "@koi/middleware-audit",
       "version": "0.0.0",
@@ -933,6 +946,8 @@
     "@koi/manifest": ["@koi/manifest@workspace:packages/manifest"],
 
     "@koi/mcp": ["@koi/mcp@workspace:packages/mcp"],
+
+    "@koi/middleware-ace": ["@koi/middleware-ace@workspace:packages/middleware-ace"],
 
     "@koi/middleware-audit": ["@koi/middleware-audit@workspace:packages/middleware-audit"],
 

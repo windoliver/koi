@@ -1,0 +1,317 @@
+import { describe, expect, test } from "bun:test";
+import type { InboundMessage } from "@koi/core/message";
+import type { ModelRequest, ModelResponse, ToolResponse } from "@koi/core/middleware";
+import { testMiddlewareContract } from "@koi/test-utils";
+import { createAceMiddleware } from "./ace.js";
+import { createInMemoryPlaybookStore, createInMemoryTrajectoryStore } from "./stores.js";
+
+function createModelRequest(): ModelRequest {
+  return {
+    messages: [
+      {
+        content: [{ kind: "text" as const, text: "test" }],
+        senderId: "test-sender",
+        timestamp: 1000,
+      } satisfies InboundMessage,
+    ],
+    model: "test-model",
+  };
+}
+
+function createModelResponse(): ModelResponse {
+  return {
+    content: "test response",
+    model: "test-model",
+    usage: { inputTokens: 10, outputTokens: 20 },
+  };
+}
+
+function createToolResponse(): ToolResponse {
+  return { output: "test output" };
+}
+
+describe("createAceMiddleware", () => {
+  const baseConfig = () => ({
+    trajectoryStore: createInMemoryTrajectoryStore(),
+    playbookStore: createInMemoryPlaybookStore(),
+    clock: () => 1000,
+  });
+
+  // --- Contract tests ---
+  describe("middleware contract", () => {
+    testMiddlewareContract({
+      createMiddleware: () => createAceMiddleware(baseConfig()),
+    });
+  });
+
+  test("returns middleware with name 'ace'", () => {
+    const mw = createAceMiddleware(baseConfig());
+    expect(mw.name).toBe("ace");
+  });
+
+  test("returns middleware with priority 350", () => {
+    const mw = createAceMiddleware(baseConfig());
+    expect(mw.priority).toBe(350);
+  });
+
+  test("wrapModelCall records trajectory entry on success", async () => {
+    const recorded: unknown[] = [];
+    const mw = createAceMiddleware({
+      ...baseConfig(),
+      onRecord: (entry) => recorded.push(entry),
+    });
+    const ctx = {
+      session: { agentId: "a", sessionId: "s" as never, runId: "r" as never, metadata: {} },
+      turnIndex: 0,
+      turnId: "r:t0" as never,
+      messages: [],
+      metadata: {},
+    };
+
+    await mw.wrapModelCall?.(ctx, createModelRequest(), async () => createModelResponse());
+
+    expect(recorded).toHaveLength(1);
+    expect((recorded[0] as Record<string, unknown>).kind).toBe("model_call");
+    expect((recorded[0] as Record<string, unknown>).outcome).toBe("success");
+  });
+
+  test("wrapToolCall records success on normal execution", async () => {
+    const recorded: unknown[] = [];
+    const mw = createAceMiddleware({
+      ...baseConfig(),
+      onRecord: (entry) => recorded.push(entry),
+    });
+    const ctx = {
+      session: { agentId: "a", sessionId: "s" as never, runId: "r" as never, metadata: {} },
+      turnIndex: 0,
+      turnId: "r:t0" as never,
+      messages: [],
+      metadata: {},
+    };
+
+    await mw.wrapToolCall?.(ctx, { toolId: "test-tool", input: {} }, async () =>
+      createToolResponse(),
+    );
+
+    expect(recorded).toHaveLength(1);
+    expect((recorded[0] as Record<string, unknown>).kind).toBe("tool_call");
+    expect((recorded[0] as Record<string, unknown>).outcome).toBe("success");
+  });
+
+  test("wrapToolCall records failure and re-throws on error", async () => {
+    const recorded: unknown[] = [];
+    const mw = createAceMiddleware({
+      ...baseConfig(),
+      onRecord: (entry) => recorded.push(entry),
+    });
+    const ctx = {
+      session: { agentId: "a", sessionId: "s" as never, runId: "r" as never, metadata: {} },
+      turnIndex: 0,
+      turnId: "r:t0" as never,
+      messages: [],
+      metadata: {},
+    };
+
+    await expect(
+      mw.wrapToolCall?.(ctx, { toolId: "test-tool", input: {} }, async () => {
+        throw new Error("tool failed");
+      }),
+    ).rejects.toThrow("tool failed");
+
+    expect(recorded).toHaveLength(1);
+    expect((recorded[0] as Record<string, unknown>).outcome).toBe("failure");
+  });
+
+  test("wrapModelCall injects playbooks when available", async () => {
+    const playbookStore = createInMemoryPlaybookStore();
+    await playbookStore.save({
+      id: "pb-1",
+      title: "Test Strategy",
+      strategy: "Use caching",
+      tags: [],
+      confidence: 0.9,
+      source: "curated",
+      createdAt: 1000,
+      updatedAt: 1000,
+      sessionCount: 1,
+    });
+
+    const injected: unknown[] = [];
+    const mw = createAceMiddleware({
+      ...baseConfig(),
+      playbookStore,
+      onInject: (pbs) => injected.push(...pbs),
+    });
+    const ctx = {
+      session: { agentId: "a", sessionId: "s" as never, runId: "r" as never, metadata: {} },
+      turnIndex: 0,
+      turnId: "r:t0" as never,
+      messages: [],
+      metadata: {},
+    };
+
+    let capturedRequest: ModelRequest | undefined;
+    await mw.wrapModelCall?.(ctx, createModelRequest(), async (req) => {
+      capturedRequest = req;
+      return createModelResponse();
+    });
+
+    expect(injected).toHaveLength(1);
+    expect(capturedRequest).toBeDefined();
+    // The enriched request should have an extra message prepended
+    expect(capturedRequest?.messages.length).toBe(2);
+    const first = capturedRequest?.messages[0];
+    expect(first?.senderId).toBe("system:ace");
+  });
+
+  test("wrapModelCall passes through when no playbooks match", async () => {
+    const mw = createAceMiddleware(baseConfig());
+    const ctx = {
+      session: { agentId: "a", sessionId: "s" as never, runId: "r" as never, metadata: {} },
+      turnIndex: 0,
+      turnId: "r:t0" as never,
+      messages: [],
+      metadata: {},
+    };
+
+    let capturedRequest: ModelRequest | undefined;
+    await mw.wrapModelCall?.(ctx, createModelRequest(), async (req) => {
+      capturedRequest = req;
+      return createModelResponse();
+    });
+
+    // No extra messages — original request passed through
+    expect(capturedRequest?.messages).toHaveLength(1);
+  });
+
+  test("onSessionEnd flushes buffer and persists trajectory", async () => {
+    const trajectoryStore = createInMemoryTrajectoryStore();
+    const mw = createAceMiddleware({
+      ...baseConfig(),
+      trajectoryStore,
+    });
+    const ctx = {
+      session: { agentId: "a", sessionId: "s" as never, runId: "r" as never, metadata: {} },
+      turnIndex: 0,
+      turnId: "r:t0" as never,
+      messages: [],
+      metadata: {},
+    };
+
+    // Record some entries via wrapModelCall
+    await mw.wrapModelCall?.(ctx, createModelRequest(), async () => createModelResponse());
+
+    // End session
+    await mw.onSessionEnd?.({
+      agentId: "a",
+      sessionId: "s" as never,
+      runId: "r" as never,
+      metadata: {},
+    });
+
+    const entries = await trajectoryStore.getSession("s");
+    expect(entries.length).toBeGreaterThan(0);
+  });
+
+  test("onSessionEnd with no entries is a no-op", async () => {
+    const curated: unknown[] = [];
+    const mw = createAceMiddleware({
+      ...baseConfig(),
+      onCurate: (c) => curated.push(...c),
+    });
+
+    await mw.onSessionEnd?.({
+      agentId: "a",
+      sessionId: "s" as never,
+      runId: "r" as never,
+      metadata: {},
+    });
+
+    expect(curated).toHaveLength(0);
+  });
+
+  test("wrapModelCall records failure and re-throws on model error", async () => {
+    const recorded: unknown[] = [];
+    const mw = createAceMiddleware({
+      ...baseConfig(),
+      onRecord: (entry) => recorded.push(entry),
+    });
+    const ctx = {
+      session: { agentId: "a", sessionId: "s" as never, runId: "r" as never, metadata: {} },
+      turnIndex: 0,
+      turnId: "r:t0" as never,
+      messages: [],
+      metadata: {},
+    };
+
+    await expect(
+      mw.wrapModelCall?.(ctx, createModelRequest(), async () => {
+        throw new Error("model failed");
+      }),
+    ).rejects.toThrow("model failed");
+
+    expect(recorded).toHaveLength(1);
+    expect((recorded[0] as Record<string, unknown>).kind).toBe("model_call");
+    expect((recorded[0] as Record<string, unknown>).outcome).toBe("failure");
+    expect((recorded[0] as Record<string, unknown>).identifier).toBe("test-model");
+  });
+
+  test("wrapModelCall uses 'unknown' identifier when model is not set on request", async () => {
+    const recorded: unknown[] = [];
+    const mw = createAceMiddleware({
+      ...baseConfig(),
+      onRecord: (entry) => recorded.push(entry),
+    });
+    const ctx = {
+      session: { agentId: "a", sessionId: "s" as never, runId: "r" as never, metadata: {} },
+      turnIndex: 0,
+      turnId: "r:t0" as never,
+      messages: [],
+      metadata: {},
+    };
+
+    const requestNoModel: ModelRequest = {
+      messages: createModelRequest().messages,
+    };
+
+    await expect(
+      mw.wrapModelCall?.(ctx, requestNoModel, async () => {
+        throw new Error("model failed");
+      }),
+    ).rejects.toThrow("model failed");
+
+    expect((recorded[0] as Record<string, unknown>).identifier).toBe("unknown");
+  });
+
+  test("onSessionEnd wraps store errors with context", async () => {
+    const failingStore = {
+      ...createInMemoryTrajectoryStore(),
+      async append(): Promise<void> {
+        throw new Error("disk full");
+      },
+    };
+    const mw = createAceMiddleware({
+      ...baseConfig(),
+      trajectoryStore: failingStore,
+    });
+    const ctx = {
+      session: { agentId: "a", sessionId: "s" as never, runId: "r" as never, metadata: {} },
+      turnIndex: 0,
+      turnId: "r:t0" as never,
+      messages: [],
+      metadata: {},
+    };
+
+    // Record an entry so buffer is non-empty
+    await mw.wrapModelCall?.(ctx, createModelRequest(), async () => createModelResponse());
+
+    await expect(
+      mw.onSessionEnd?.({
+        agentId: "a",
+        sessionId: "s" as never,
+        runId: "r" as never,
+        metadata: {},
+      }),
+    ).rejects.toThrow("ACE: onSessionEnd failed for session s");
+  });
+});
