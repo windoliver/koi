@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/shutdown API surface . has stable type surface 1`] = `
-"export { EXIT_CONFIG, EXIT_ERROR, EXIT_OK, EXIT_UNAVAILABLE } from './exit-codes.js';
+"export { EXIT_CONFIG, EXIT_ERROR, EXIT_OK, EXIT_UNAVAILABLE, exitCodeForError } from './exit-codes.js';
 
 /**
  * Graceful shutdown handler — coordinates orderly process termination.
@@ -52,7 +52,17 @@ declare const EXIT_ERROR = 1;
 declare const EXIT_UNAVAILABLE = 69;
 /** Configuration error — restart won't help. */
 declare const EXIT_CONFIG = 78;
+/**
+ * Map a KoiErrorCode string to a process exit code.
+ *
+ * - VALIDATION → EXIT_CONFIG (78): config / input error, restart won't help
+ * - RATE_LIMIT, TIMEOUT → EXIT_UNAVAILABLE (69): transient, retry later
+ * - Everything else → EXIT_ERROR (1): generic runtime failure
+ *
+ * Accepts \`string\` instead of \`KoiErrorCode\` to keep @koi/shutdown dependency-free.
+ */
+declare function exitCodeForError(code: string): number;
 
-export { EXIT_CONFIG, EXIT_ERROR, EXIT_OK, EXIT_UNAVAILABLE };
+export { EXIT_CONFIG, EXIT_ERROR, EXIT_OK, EXIT_UNAVAILABLE, exitCodeForError };
 "
 `;

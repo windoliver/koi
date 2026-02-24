@@ -3,7 +3,7 @@
 exports[`@koi/test-utils API surface . has stable type surface 1`] = `
 "import { ProcessId, AgentManifest, ProcessState, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, ChannelAdapter, MemoryResult, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, SessionPersistence, SnapshotChainStore, ForgeStore } from '@koi/core';
 import { Result, KoiError } from '@koi/core/errors';
-import { SessionContext, TurnContext, KoiMiddleware, ModelHandler, ModelRequest, ToolHandler, ToolRequest, ModelResponse, ToolResponse } from '@koi/core/middleware';
+import { SessionContext, TurnContext, ModelHandler, ModelRequest, ToolHandler, ToolRequest, ModelResponse, ToolResponse, KoiMiddleware } from '@koi/core/middleware';
 import { Resolver } from '@koi/core/resolver';
 
 /**
@@ -243,6 +243,43 @@ interface EngineContractOptions {
 declare function testEngineAdapter(options: EngineContractOptions): void;
 
 /**
+ * Reusable contract test suite for EventBackend implementations.
+ *
+ * Accepts a factory that returns an EventBackend (sync or async).
+ * Each test creates a fresh backend instance for isolation.
+ */
+
+/**
+ * Run the EventBackend contract test suite against any implementation.
+ *
+ * The factory can return sync or async. Called once per test for isolation.
+ */
+declare function runEventBackendContractTests(createBackend: () => EventBackend | Promise<EventBackend>): void;
+
+/**
+ * Mock EventBackend for downstream testing.
+ *
+ * Records all operations for assertion. No real subscription delivery.
+ */
+
+interface MockEventBackend extends EventBackend {
+    /** All events successfully appended. */
+    readonly appendedEvents: () => readonly EventEnvelope[];
+    /** Active subscription names. */
+    readonly activeSubscriptions: () => readonly string[];
+    /** All dead-letter entries. */
+    readonly deadLetterEntries: () => readonly DeadLetterEntry[];
+}
+/**
+ * Create a mock EventBackend that records operations.
+ *
+ * Append works (stores in memory), subscribe is a no-op, DLQ is empty.
+ * Use for testing code that *depends on* an EventBackend without needing
+ * real subscription delivery.
+ */
+declare function createMockEventBackend(): MockEventBackend;
+
+/**
  * Generic factory helper for test fixtures.
  *
  * Creates a factory function that returns a new object from defaults,
@@ -261,18 +298,21 @@ declare function testEngineAdapter(options: EngineContractOptions): void;
 declare function createFactory<T extends Record<string, unknown>>(defaults: T): (overrides?: Partial<T>) => T;
 
 /**
- * Reusable contract test suite for EventBackend implementations.
- *
- * Accepts a factory that returns an EventBackend (sync or async).
- * Each test creates a fresh backend instance for isolation.
+ * Mock and spy handler factories for middleware testing.
  */
 
-/**
- * Run the EventBackend contract test suite against any implementation.
- *
- * The factory can return sync or async. Called once per test for isolation.
- */
-declare function runEventBackendContractTests(createBackend: () => EventBackend | Promise<EventBackend>): void;
+declare function createMockModelHandler(response?: Partial<ModelResponse>): ModelHandler;
+declare function createMockToolHandler(response?: Partial<ToolResponse>): ToolHandler;
+interface SpyModelHandler {
+    readonly handler: ModelHandler;
+    readonly calls: readonly ModelRequest[];
+}
+declare function createSpyModelHandler(response?: Partial<ModelResponse>): SpyModelHandler;
+interface SpyToolHandler {
+    readonly handler: ToolHandler;
+    readonly calls: readonly ToolRequest[];
+}
+declare function createSpyToolHandler(response?: Partial<ToolResponse>): SpyToolHandler;
 
 /**
  * Middleware contract test suite.
@@ -299,44 +339,28 @@ interface MiddlewareContractOptions {
 declare function testMiddlewareContract(options: MiddlewareContractOptions): void;
 
 /**
- * Mock EventBackend for downstream testing.
+ * Resolver contract test suite.
  *
- * Records all operations for assertion. No real subscription delivery.
+ * Validates that any Resolver<TMeta, TFull> implementation satisfies the L0 contract.
+ * Usage: import { testResolverContract } from "@koi/test-utils" and call it
+ * inside a describe() block with a factory function.
  */
 
-interface MockEventBackend extends EventBackend {
-    /** All events successfully appended. */
-    readonly appendedEvents: () => readonly EventEnvelope[];
-    /** Active subscription names. */
-    readonly activeSubscriptions: () => readonly string[];
-    /** All dead-letter entries. */
-    readonly deadLetterEntries: () => readonly DeadLetterEntry[];
+interface ResolverContractOptions<TMeta, TFull> {
+    /** Factory that creates a fresh resolver instance for each test. */
+    readonly createResolver: () => Resolver<TMeta, TFull> | Promise<Resolver<TMeta, TFull>>;
+    /** Items the resolver should be seeded with for testing. */
+    readonly seedItems?: readonly TMeta[] | undefined;
+    /** Extract the string ID from a metadata object. */
+    readonly getId: (meta: TMeta) => string;
 }
 /**
- * Create a mock EventBackend that records operations.
+ * Runs the resolver contract test suite.
  *
- * Append works (stores in memory), subscribe is a no-op, DLQ is empty.
- * Use for testing code that *depends on* an EventBackend without needing
- * real subscription delivery.
+ * Call this inside a \`describe()\` block. It will register tests that verify
+ * the resolver satisfies all L0 contract invariants.
  */
-declare function createMockEventBackend(): MockEventBackend;
-
-/**
- * Mock and spy handler factories for middleware testing.
- */
-
-declare function createMockModelHandler(response?: Partial<ModelResponse>): ModelHandler;
-declare function createMockToolHandler(response?: Partial<ToolResponse>): ToolHandler;
-interface SpyModelHandler {
-    readonly handler: ModelHandler;
-    readonly calls: readonly ModelRequest[];
-}
-declare function createSpyModelHandler(response?: Partial<ModelResponse>): SpyModelHandler;
-interface SpyToolHandler {
-    readonly handler: ToolHandler;
-    readonly calls: readonly ToolRequest[];
-}
-declare function createSpyToolHandler(response?: Partial<ToolResponse>): SpyToolHandler;
+declare function testResolverContract<TMeta, TFull>(options: ResolverContractOptions<TMeta, TFull>): void;
 
 /**
  * Reusable contract test suite for any SessionPersistence implementation.
@@ -396,30 +420,6 @@ declare function createManifestFile(dir: string, content?: string, filename?: st
  * @param fn - Callback receiving the temp dir path
  */
 declare function withTempDir(fn: (dir: string) => Promise<void>): Promise<void>;
-
-/**
- * Resolver contract test suite.
- *
- * Validates that any Resolver<TMeta, TFull> implementation satisfies the L0 contract.
- * Usage: import { testResolverContract } from "@koi/test-utils" and call it
- * inside a describe() block with a factory function.
- */
-
-interface ResolverContractOptions<TMeta, TFull> {
-    /** Factory that creates a fresh resolver instance for each test. */
-    readonly createResolver: () => Resolver<TMeta, TFull> | Promise<Resolver<TMeta, TFull>>;
-    /** Items the resolver should be seeded with for testing. */
-    readonly seedItems?: readonly TMeta[] | undefined;
-    /** Extract the string ID from a metadata object. */
-    readonly getId: (meta: TMeta) => string;
-}
-/**
- * Runs the resolver contract test suite.
- *
- * Call this inside a \`describe()\` block. It will register tests that verify
- * the resolver satisfies all L0 contract invariants.
- */
-declare function testResolverContract<TMeta, TFull>(options: ResolverContractOptions<TMeta, TFull>): void;
 
 /**
  * Mock validator factories for testing validation middleware.

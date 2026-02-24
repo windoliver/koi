@@ -3,23 +3,23 @@
 exports[`@koi/core API surface . has stable type surface 1`] = `
 "import { BrickRef } from './brick-snapshot.js';
 export { BrickId, BrickSnapshot, BrickSource, SnapshotEvent, SnapshotId, SnapshotQuery, SnapshotStore, brickId, snapshotId } from './brick-snapshot.js';
-import { AgentId, ProcessState, SessionId, ToolCallId } from './ecs.js';
-export { Agent, CREDENTIALS, ChildHandle, ChildLifecycleEvent, ComponentProvider, CredentialComponent, DELEGATION, EVENTS, EventComponent, FILESYSTEM, GOVERNANCE, GovernanceComponent, GovernanceUsage, MEMORY, MemoryComponent, MemoryResult, ProcessAccounter, ProcessId, RunId, SkillMetadata, SpawnCheck, SpawnLedger, SubsystemToken, Tool, ToolDescriptor, TrustTier, TurnId, agentId, channelToken, runId, sessionId, skillToken, token, toolCallId, toolToken, turnId } from './ecs.js';
-import { E as EngineState, a as EngineInput } from './engine-DqqLTAGq.js';
-export { A as AbortReason, C as ComposedCallHandlers, b as CorrelationIds, c as EngineAdapter, d as EngineEvent, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, h as EngineStopReason } from './engine-DqqLTAGq.js';
+import { A as AgentId, P as ProcessState, S as SessionId, T as ToolCallId } from './ecs-BuUt_ixx.js';
+export { a as Agent, B as BROWSER, b as BrowserActionOptions, c as BrowserDriver, d as BrowserEvaluateOptions, e as BrowserEvaluateResult, f as BrowserFormField, g as BrowserNavigateOptions, h as BrowserNavigateResult, i as BrowserRefInfo, j as BrowserScreenshotOptions, k as BrowserScreenshotResult, l as BrowserScrollOptions, m as BrowserSnapshotOptions, n as BrowserSnapshotResult, o as BrowserTabCloseOptions, p as BrowserTabFocusOptions, q as BrowserTabInfo, r as BrowserTabNewOptions, s as BrowserTypeOptions, t as BrowserWaitOptions, u as BrowserWaitUntil, C as CREDENTIALS, v as ChildHandle, w as ChildLifecycleEvent, x as ComponentProvider, y as CredentialComponent, D as DELEGATION, E as EVENTS, z as EventComponent, F as FILESYSTEM, G as GOVERNANCE, H as GovernanceComponent, I as GovernanceUsage, M as MEMORY, J as MemoryComponent, K as MemoryResult, L as ProcessAccounter, N as ProcessId, R as RunId, O as SkillMetadata, Q as SpawnCheck, U as SpawnLedger, V as SubsystemToken, W as Tool, X as ToolDescriptor, Y as TrustTier, Z as TurnId, _ as agentId, $ as channelToken, a0 as runId, a1 as sessionId, a2 as skillToken, a3 as token, a4 as toolCallId, a5 as toolToken, a6 as turnId } from './ecs-BuUt_ixx.js';
+import { E as EngineState, a as EngineInput } from './engine-FsHiCBd9.js';
+export { A as AbortReason, C as ComposedCallHandlers, b as CorrelationIds, c as EngineAdapter, d as EngineEvent, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, h as EngineStopReason } from './engine-FsHiCBd9.js';
 import { Result, KoiError } from './errors.js';
 export { BackendErrorMapper, KoiErrorCode, RETRYABLE_DEFAULTS } from './errors.js';
 import { A as AgentManifest } from './assembly-DuMs8y-i.js';
 export { C as ChannelConfig, D as DelegationComponent, a as DelegationConfig, b as DelegationDenyReason, c as DelegationGrant, d as DelegationId, e as DelegationScope, f as DelegationVerifyResult, M as MiddlewareConfig, g as ModelConfig, P as PermissionConfig, R as RevocationRegistry, S as ScopeChecker, T as ToolConfig } from './assembly-DuMs8y-i.js';
-export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, CompositeArtifact, ForgeQuery, ForgeStore, LockHandle, LockMode, LockRequest, SkillArtifact, TestCase, ToolArtifact } from './brick-store.js';
-export { ChannelAdapter, ChannelCapabilities, ChannelStatus, ChannelStatusKind, MessageHandler } from './channel.js';
 import { JsonObject } from './common.js';
+export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, CompositeArtifact, ForgeQuery, ForgeStore, LockHandle, LockMode, LockRequest, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, ToolArtifact } from './brick-store.js';
+export { ChannelAdapter, ChannelCapabilities, ChannelStatus, ChannelStatusKind, MessageHandler } from './channel.js';
 export { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, FeatureFlags, ForgeConfigSection, KoiConfig, LimitsConfig, LogLevel, LoopDetectionConfigSection, ModelRouterConfigSection, ModelTargetConfigEntry, SpawnConfig, TelemetryConfig } from './config.js';
 export { CompactionResult, ContextCompactor, TokenEstimator } from './context.js';
 export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, EventEnvelope, EventInput, ReadOptions, ReadResult, SubscribeOptions, SubscriptionHandle } from './event-backend.js';
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
 export { FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-backend.js';
-export { B as BrickKind, a as BrickLifecycle, F as ForgeScope } from './forge-types-CPKJn7J3.js';
+export { B as BrickKind, a as BrickLifecycle, F as ForgeScope, V as VALID_LIFECYCLE_TRANSITIONS } from './forge-types-4-HydRtT.js';
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
 export { AgentCondition, AgentRegistry, AgentStatus, RegistryEntry, RegistryEvent, RegistryFilter, TransitionReason, VALID_TRANSITIONS } from './lifecycle.js';
 export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
@@ -175,6 +175,34 @@ interface AgentSnapshot {
 }
 /** A SnapshotChainStore specialized for AgentSnapshot payloads. */
 type AgentSnapshotStore = SnapshotChainStore<AgentSnapshot>;
+
+/**
+ * Audit backend — structured audit logging contract (Layer 0).
+ *
+ * Defines the shape of audit entries, sinks, and redaction rules.
+ * L2 packages implement AuditSink for specific backends (console, Nexus, etc.).
+ */
+
+interface AuditEntry {
+    readonly timestamp: number;
+    readonly sessionId: string;
+    readonly agentId: string;
+    readonly turnIndex: number;
+    readonly kind: "model_call" | "tool_call" | "session_start" | "session_end";
+    readonly request?: unknown;
+    readonly response?: unknown;
+    readonly error?: unknown;
+    readonly durationMs: number;
+    readonly metadata?: JsonObject;
+}
+interface AuditSink {
+    readonly log: (entry: AuditEntry) => Promise<void>;
+    readonly flush?: () => Promise<void>;
+}
+interface RedactionRule {
+    readonly pattern: RegExp;
+    readonly replacement: string;
+}
 
 /**
  * Pure data constructors for KoiError objects.
@@ -617,7 +645,7 @@ declare function isProcessState(value: string): value is ProcessState;
  */
 declare function validateNonEmpty(value: string, name: string): Result<void, KoiError>;
 
-export { AgentId, AgentManifest, type AgentSnapshot, type AgentSnapshotStore, type AncestorQuery, BACKTRACK_REASON_KEY, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickRef, type ChainCompactor, type ChainId, type CompensatingOp, type CronSchedule, DEFAULT_SCHEDULER_CONFIG, EngineInput, EngineState, type EventCursor, type FileOpKind, type FileOpRecord, type ForkRef, JsonObject, KoiError, type NodeId, type PendingFrame, ProcessState, type PruningPolicy, type PutOptions, type RecoveryPlan, Result, type ScheduleId, type ScheduleStore, type ScheduledTask, type SchedulerConfig, type SchedulerEvent, type SchedulerStats, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, type TaskFilter, type TaskId, type TaskOptions, type TaskScheduler, type TaskStatus, type TaskStore, ToolCallId, type TraceEvent, type TraceEventKind, type TurnTrace, chainId, conflict, external, internal, isProcessState, nodeId, notFound, permission, rateLimit, scheduleId, taskId, timeout, validateNonEmpty, validation };
+export { AgentId, AgentManifest, type AgentSnapshot, type AgentSnapshotStore, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickRef, type ChainCompactor, type ChainId, type CompensatingOp, type CronSchedule, DEFAULT_SCHEDULER_CONFIG, EngineInput, EngineState, type EventCursor, type FileOpKind, type FileOpRecord, type ForkRef, JsonObject, KoiError, type NodeId, type PendingFrame, ProcessState, type PruningPolicy, type PutOptions, type RecoveryPlan, type RedactionRule, Result, type ScheduleId, type ScheduleStore, type ScheduledTask, type SchedulerConfig, type SchedulerEvent, type SchedulerStats, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, type TaskFilter, type TaskId, type TaskOptions, type TaskScheduler, type TaskStatus, type TaskStore, ToolCallId, type TraceEvent, type TraceEventKind, type TurnTrace, chainId, conflict, external, internal, isProcessState, nodeId, notFound, permission, rateLimit, scheduleId, taskId, timeout, validateNonEmpty, validation };
 "
 `;
 
@@ -824,237 +852,26 @@ import './common.js';
 `;
 
 exports[`@koi/core API surface ./ecs has stable type surface 1`] = `
-"import { A as AgentManifest, D as DelegationComponent } from './assembly-DuMs8y-i.js';
-import { ChannelAdapter } from './channel.js';
-import { JsonObject } from './common.js';
-import { FileSystemBackend } from './filesystem-backend.js';
-import './message.js';
+"import './assembly-DuMs8y-i.js';
+export { a as Agent, A as AgentId, B as BROWSER, C as CREDENTIALS, v as ChildHandle, w as ChildLifecycleEvent, x as ComponentProvider, y as CredentialComponent, D as DELEGATION, E as EVENTS, z as EventComponent, F as FILESYSTEM, G as GOVERNANCE, H as GovernanceComponent, I as GovernanceUsage, M as MEMORY, J as MemoryComponent, K as MemoryResult, L as ProcessAccounter, N as ProcessId, P as ProcessState, R as RunId, S as SessionId, O as SkillMetadata, Q as SpawnCheck, U as SpawnLedger, V as SubsystemToken, W as Tool, T as ToolCallId, X as ToolDescriptor, Y as TrustTier, Z as TurnId, _ as agentId, $ as channelToken, a0 as runId, a1 as sessionId, a2 as skillToken, a3 as token, a4 as toolCallId, a5 as toolToken, a6 as turnId } from './ecs-BuUt_ixx.js';
+import './channel.js';
+import './common.js';
+import './filesystem-backend.js';
 import './errors.js';
-
-/**
- * ECS compositional layer — Agent (entity), SubsystemToken (component key),
- * Tool, ComponentProvider, and singleton component types.
- *
- * Exception: branded type constructors (identity casts for SubsystemToken<T>)
- * are permitted in L0 as they are zero-logic operations that exist purely for
- * type safety.
- */
-
-declare const __brand: unique symbol;
-type SubsystemToken<T> = string & {
-    readonly [__brand]: T;
-};
-declare const __agentBrand: unique symbol;
-/**
- * Branded string type for agent identifiers.
- * Prevents accidental mixing with session IDs, delegation IDs, etc.
- */
-type AgentId = string & {
-    readonly [__agentBrand]: "AgentId";
-};
-declare const __sessionBrand: unique symbol;
-/** Branded string type for session identifiers. */
-type SessionId = string & {
-    readonly [__sessionBrand]: "SessionId";
-};
-declare const __runBrand: unique symbol;
-/** Branded string type for run identifiers (one per run() invocation). */
-type RunId = string & {
-    readonly [__runBrand]: "RunId";
-};
-declare const __turnBrand: unique symbol;
-/** Branded string type for turn identifiers. Hierarchical: \`\${runId}:t\${turnIndex}\`. */
-type TurnId = string & {
-    readonly [__turnBrand]: "TurnId";
-};
-declare const __toolCallBrand: unique symbol;
-/** Branded string type for tool call identifiers. */
-type ToolCallId = string & {
-    readonly [__toolCallBrand]: "ToolCallId";
-};
-declare function token<T>(name: string): SubsystemToken<T>;
-declare function toolToken(name: string): SubsystemToken<Tool>;
-declare function channelToken(name: string): SubsystemToken<ChannelAdapter>;
-declare function skillToken(name: string): SubsystemToken<SkillMetadata>;
-/** Create a branded AgentId from a plain string. */
-declare function agentId(id: string): AgentId;
-/** Create a branded SessionId from a plain string. */
-declare function sessionId(id: string): SessionId;
-/** Create a branded RunId from a plain string. */
-declare function runId(id: string): RunId;
-/** Create a branded TurnId from a RunId and turn index. Hierarchical: \`\${runId}:t\${turnIndex}\`. */
-declare function turnId(run: RunId, turnIndex: number): TurnId;
-/** Create a branded ToolCallId from a plain string. */
-declare function toolCallId(id: string): ToolCallId;
-type ProcessState = "created" | "running" | "waiting" | "suspended" | "terminated";
-interface ProcessId {
-    readonly id: AgentId;
-    readonly name: string;
-    readonly type: "copilot" | "worker";
-    readonly depth: number;
-    readonly parent?: AgentId;
-}
-interface Agent {
-    readonly pid: ProcessId;
-    readonly manifest: AgentManifest;
-    readonly state: ProcessState;
-    readonly component: <T>(token: SubsystemToken<T>) => T | undefined;
-    readonly has: (token: SubsystemToken<unknown>) => boolean;
-    readonly hasAll: (...tokens: readonly SubsystemToken<unknown>[]) => boolean;
-    readonly query: <T>(prefix: string) => ReadonlyMap<SubsystemToken<T>, T>;
-    /**
-     * Returns all attached components as a readonly map.
-     * Implementations SHOULD return a stable reference (not a copy)
-     * to avoid O(n) allocation on every call. This is a hot path
-     * during middleware execution.
-     */
-    readonly components: () => ReadonlyMap<string, unknown>;
-}
-type TrustTier = "sandbox" | "verified" | "promoted";
-interface ToolDescriptor {
-    readonly name: string;
-    readonly description: string;
-    readonly inputSchema: JsonObject;
-}
-interface Tool {
-    readonly descriptor: ToolDescriptor;
-    readonly trustTier: TrustTier;
-    readonly execute: (args: JsonObject) => Promise<unknown>;
-}
-interface SkillMetadata {
-    readonly name: string;
-    readonly description: string;
-    readonly tags?: readonly string[];
-}
-interface ComponentProvider {
-    readonly name: string;
-    readonly attach: (agent: Agent) => Promise<ReadonlyMap<string, unknown>>;
-    readonly detach?: (agent: Agent) => Promise<void>;
-}
-/** A single memory recall result with content and optional metadata. */
-interface MemoryResult {
-    readonly content: string;
-    readonly score?: number;
-    readonly metadata?: Readonly<Record<string, unknown>>;
-}
-interface MemoryComponent {
-    readonly recall: (query: string) => Promise<readonly MemoryResult[]>;
-    readonly store: (content: string) => Promise<void>;
-}
-interface GovernanceUsage {
-    readonly turns: number;
-    readonly spawns: number;
-    /** Extensible counters for L2-defined metrics (e.g., tokens, tool calls). */
-    readonly counters?: Readonly<Record<string, number>>;
-}
-type SpawnCheck = {
-    readonly allowed: true;
-} | {
-    readonly allowed: false;
-    readonly reason: string;
-};
-interface GovernanceComponent {
-    readonly usage: () => GovernanceUsage;
-    readonly checkSpawn: (depth: number) => SpawnCheck;
-}
-/**
- * SpawnLedger — tree-wide spawn accounting for concurrency governance.
- *
- * Tracks active agent processes across an entire spawn tree.
- * The root agent creates a ledger and passes it down to children via
- * engine options. All agents in the tree share the same ledger instance.
- *
- * Implementations range from in-memory counters (single-Node) to
- * distributed backends (multi-Node via EventComponent, Redis, etc.).
- *
- * acquire/release support \`T | Promise<T>\` return types so that
- * implementations can be sync (in-memory) or async (network) without
- * interface changes. Callers must always \`await\` the result.
- */
-interface SpawnLedger {
-    /**
-     * Attempt to reserve a spawn slot.
-     * Returns \`true\` if a slot was acquired, \`false\` if at capacity.
-     *
-     * Callers MUST call \`release()\` if the spawn subsequently fails,
-     * to avoid permanently leaking slots (optimistic locking pattern).
-     */
-    readonly acquire: () => boolean | Promise<boolean>;
-    /**
-     * Release a previously acquired spawn slot.
-     * Called when a child agent terminates or when a spawn fails
-     * after a successful \`acquire()\`.
-     */
-    readonly release: () => void | Promise<void>;
-    /**
-     * Current number of active (acquired but not released) slots.
-     * Sync — distributed implementations should cache locally.
-     */
-    readonly activeCount: () => number;
-    /**
-     * Maximum number of slots (total capacity).
-     * Immutable after creation.
-     */
-    readonly capacity: () => number;
-}
-interface CredentialComponent {
-    readonly get: (key: string) => Promise<string | undefined>;
-}
-interface EventComponent {
-    readonly emit: (type: string, data: unknown) => Promise<void>;
-    readonly on: (type: string, handler: (data: unknown) => void) => () => void;
-}
-/** Shared process accounter for cross-agent spawn accounting. */
-interface ProcessAccounter {
-    /** Current number of active processes. */
-    readonly activeCount: () => number;
-    /** Manually increment the active count (e.g., on successful spawn). */
-    readonly increment: () => void;
-    /** Manually decrement the active count (e.g., on agent termination). */
-    readonly decrement: () => void;
-}
-/** Lifecycle event for a child agent. */
-type ChildLifecycleEvent = {
-    readonly kind: "started";
-    readonly childId: AgentId;
-} | {
-    readonly kind: "completed";
-    readonly childId: AgentId;
-} | {
-    readonly kind: "error";
-    readonly childId: AgentId;
-    readonly cause?: unknown;
-} | {
-    readonly kind: "terminated";
-    readonly childId: AgentId;
-};
-/** Handle for monitoring a child agent's lifecycle. */
-interface ChildHandle {
-    readonly childId: AgentId;
-    readonly name: string;
-    readonly onEvent: (listener: (event: ChildLifecycleEvent) => void) => () => void;
-}
-declare const MEMORY: SubsystemToken<MemoryComponent>;
-declare const GOVERNANCE: SubsystemToken<GovernanceComponent>;
-declare const CREDENTIALS: SubsystemToken<CredentialComponent>;
-declare const EVENTS: SubsystemToken<EventComponent>;
-declare const DELEGATION: SubsystemToken<DelegationComponent>;
-declare const FILESYSTEM: SubsystemToken<FileSystemBackend>;
-
-export { type Agent, type AgentId, CREDENTIALS, type ChildHandle, type ChildLifecycleEvent, type ComponentProvider, type CredentialComponent, DELEGATION, EVENTS, type EventComponent, FILESYSTEM, GOVERNANCE, type GovernanceComponent, type GovernanceUsage, MEMORY, type MemoryComponent, type MemoryResult, type ProcessAccounter, type ProcessId, type ProcessState, type RunId, type SessionId, type SkillMetadata, type SpawnCheck, type SpawnLedger, type SubsystemToken, type Tool, type ToolCallId, type ToolDescriptor, type TrustTier, type TurnId, agentId, channelToken, runId, sessionId, skillToken, token, toolCallId, toolToken, turnId };
+import './message.js';
 "
 `;
 
 exports[`@koi/core API surface ./engine has stable type surface 1`] = `
 "import './common.js';
-export { A as AbortReason, C as ComposedCallHandlers, c as EngineAdapter, d as EngineEvent, a as EngineInput, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, E as EngineState, h as EngineStopReason } from './engine-DqqLTAGq.js';
-import './ecs.js';
+export { A as AbortReason, C as ComposedCallHandlers, c as EngineAdapter, d as EngineEvent, a as EngineInput, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, E as EngineState, h as EngineStopReason } from './engine-FsHiCBd9.js';
+import './ecs-BuUt_ixx.js';
 import './message.js';
 import './middleware.js';
 import './assembly-DuMs8y-i.js';
+import './errors.js';
 import './channel.js';
 import './filesystem-backend.js';
-import './errors.js';
 "
 `;
 
@@ -1313,11 +1130,11 @@ export type { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, Inb
 exports[`@koi/core API surface ./middleware has stable type surface 1`] = `
 "import { ChannelStatus } from './channel.js';
 import { JsonObject } from './common.js';
-import { ToolCallId, SessionId, RunId, TurnId } from './ecs.js';
+import { T as ToolCallId, S as SessionId, R as RunId, Z as TurnId } from './ecs-BuUt_ixx.js';
 import { InboundMessage } from './message.js';
 import './assembly-DuMs8y-i.js';
-import './filesystem-backend.js';
 import './errors.js';
+import './filesystem-backend.js';
 
 /**
  * Middleware contract — sole interposition layer for model/tool calls.
@@ -1436,13 +1253,13 @@ export type { ApprovalDecision, ApprovalHandler, ApprovalRequest, KoiMiddleware,
 `;
 
 exports[`@koi/core API surface ./eviction has stable type surface 1`] = `
-"import { AgentId, ProcessState } from './ecs.js';
+"import { A as AgentId, P as ProcessState } from './ecs-BuUt_ixx.js';
 import './assembly-DuMs8y-i.js';
 import './common.js';
+import './errors.js';
 import './channel.js';
 import './message.js';
 import './filesystem-backend.js';
-import './errors.js';
 
 /**
  * Eviction policy contract — candidate selection for agent eviction.
@@ -1489,13 +1306,13 @@ export type { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult 
 `;
 
 exports[`@koi/core API surface ./health has stable type surface 1`] = `
-"import { AgentId } from './ecs.js';
+"import { A as AgentId } from './ecs-BuUt_ixx.js';
 import './assembly-DuMs8y-i.js';
 import './common.js';
+import './errors.js';
 import './channel.js';
 import './message.js';
 import './filesystem-backend.js';
-import './errors.js';
 
 /**
  * Health monitoring contract — heartbeat recording, staleness detection.
@@ -1560,7 +1377,7 @@ export { DEFAULT_HEALTH_MONITOR_CONFIG, type HealthMonitor, type HealthMonitorCo
 `;
 
 exports[`@koi/core API surface ./lifecycle has stable type surface 1`] = `
-"import { AgentId, ProcessState } from './ecs.js';
+"import { A as AgentId, P as ProcessState } from './ecs-BuUt_ixx.js';
 import { Result, KoiError } from './errors.js';
 import './assembly-DuMs8y-i.js';
 import './common.js';
@@ -1787,7 +1604,7 @@ export type { Resolver, SourceBundle, SourceLanguage };
 
 exports[`@koi/core API surface ./brick-snapshot has stable type surface 1`] = `
 "import { Result, KoiError } from './errors.js';
-import { B as BrickKind } from './forge-types-CPKJn7J3.js';
+import { B as BrickKind } from './forge-types-4-HydRtT.js';
 import './common.js';
 
 /**
@@ -1900,9 +1717,9 @@ export { type BrickId, type BrickRef, type BrickSnapshot, type BrickSource, type
 `;
 
 exports[`@koi/core API surface ./brick-store has stable type surface 1`] = `
-"import { TrustTier } from './ecs.js';
+"import { Y as TrustTier } from './ecs-BuUt_ixx.js';
 import { Result, KoiError } from './errors.js';
-import { B as BrickKind, F as ForgeScope, a as BrickLifecycle } from './forge-types-CPKJn7J3.js';
+import { B as BrickKind, F as ForgeScope, a as BrickLifecycle } from './forge-types-4-HydRtT.js';
 import './assembly-DuMs8y-i.js';
 import './common.js';
 import './channel.js';
@@ -1986,6 +1803,7 @@ interface BrickUpdate {
     readonly trustTier?: TrustTier;
     readonly scope?: ForgeScope;
     readonly usageCount?: number;
+    readonly tags?: readonly string[] | undefined;
 }
 interface ForgeStore {
     readonly save: (brick: BrickArtifact) => Promise<Result<void, KoiError>>;
@@ -1994,6 +1812,34 @@ interface ForgeStore {
     readonly remove: (id: string) => Promise<Result<void, KoiError>>;
     readonly update: (id: string, updates: BrickUpdate) => Promise<Result<void, KoiError>>;
     readonly exists: (id: string) => Promise<Result<boolean, KoiError>>;
+    /**
+     * Optional scope-aware promotion — moves a brick between storage tiers.
+     * Not all backends support tiered storage; filesystem overlay stores do.
+     * When available, promote_forge wires scope metadata changes to physical tier moves.
+     */
+    readonly promote?: (id: string, targetScope: ForgeScope) => Promise<Result<void, KoiError>>;
+}
+/** Describes what changed in the store. */
+type StoreChangeKind = "saved" | "updated" | "removed" | "promoted";
+/** Notification payload for store mutations. */
+interface StoreChangeEvent {
+    readonly kind: StoreChangeKind;
+    readonly brickId: string;
+    /** The scope after the change (if applicable). */
+    readonly scope?: ForgeScope;
+}
+/**
+ * Pluggable notification interface for cross-agent cache invalidation.
+ *
+ * Sync implementations (in-memory event bus) return void.
+ * Async implementations (Nexus pub/sub, Redis) return Promise<void>.
+ * Subscribers receive targeted change events for delta-based invalidation.
+ */
+interface StoreChangeNotifier {
+    /** Emit a change event after a store mutation. */
+    readonly notify: (event: StoreChangeEvent) => void | Promise<void>;
+    /** Subscribe to change events. Returns unsubscribe function. */
+    readonly subscribe: (listener: (event: StoreChangeEvent) => void) => () => void;
 }
 declare const __lockBrand: unique symbol;
 type LockHandle = string & {
@@ -2010,18 +1856,18 @@ interface AdvisoryLock {
     readonly release: (handle: LockHandle) => Promise<Result<void, KoiError>>;
 }
 
-export type { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, CompositeArtifact, ForgeQuery, ForgeStore, LockHandle, LockMode, LockRequest, SkillArtifact, TestCase, ToolArtifact };
+export type { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, CompositeArtifact, ForgeQuery, ForgeStore, LockHandle, LockMode, LockRequest, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, ToolArtifact };
 "
 `;
 
 exports[`@koi/core API surface ./sandbox-executor has stable type surface 1`] = `
-"import { TrustTier } from './ecs.js';
+"import { Y as TrustTier } from './ecs-BuUt_ixx.js';
 import './assembly-DuMs8y-i.js';
 import './common.js';
+import './errors.js';
 import './channel.js';
 import './message.js';
 import './filesystem-backend.js';
-import './errors.js';
 
 /**
  * Sandbox executor contract — injected dependency for code execution in isolation.
@@ -2078,13 +1924,13 @@ export type { SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, Ti
 `;
 
 exports[`@koi/core API surface ./sandbox-profile has stable type surface 1`] = `
-"import { TrustTier } from './ecs.js';
+"import { Y as TrustTier } from './ecs-BuUt_ixx.js';
 import './assembly-DuMs8y-i.js';
 import './common.js';
+import './errors.js';
 import './channel.js';
 import './message.js';
 import './filesystem-backend.js';
-import './errors.js';
 
 /**
  * Sandbox profile contract — platform-agnostic isolation policy.

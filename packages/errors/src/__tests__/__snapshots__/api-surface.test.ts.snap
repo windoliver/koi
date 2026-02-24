@@ -23,6 +23,16 @@ declare function swallowError(error: unknown, context: {
     readonly package: string;
     readonly operation: string;
 }): void;
+/**
+ * Detect whether an error indicates the model's context window was exceeded.
+ *
+ * Checks provider-specific patterns:
+ * - Anthropic: \`type === "invalid_request_error"\` + message contains "prompt is too long"
+ * - OpenAI / OpenRouter: \`code === "context_length_exceeded"\`
+ *
+ * Accepts \`unknown\` so callers don't need to narrow first.
+ */
+declare function isContextOverflowError(error: unknown): boolean;
 
 /**
  * Filesystem error mapper — maps native FS errors to KoiError.
@@ -96,10 +106,19 @@ declare class KoiRuntimeError extends Error {
         readonly context?: JsonObject;
         readonly retryAfterMs?: number;
     }): KoiRuntimeError;
+    /** Serialize to a JSON-safe object for logging and transport. */
+    toJSON(): {
+        readonly code: KoiErrorCode;
+        readonly message: string;
+        readonly retryable: boolean;
+        readonly context?: JsonObject;
+        readonly retryAfterMs?: number;
+        readonly stack?: string;
+    };
     /** Convert to a plain KoiError data object. */
     toKoiError(): KoiError;
 }
 
-export { DEFAULT_RETRY_CONFIG, KoiRuntimeError, type RetryConfig, calculateBackoff, extractCode, extractMessage, isKoiError, isRetryable, mapFsError, mapParseError, swallowError, toKoiError, withRetry };
+export { DEFAULT_RETRY_CONFIG, KoiRuntimeError, type RetryConfig, calculateBackoff, extractCode, extractMessage, isContextOverflowError, isKoiError, isRetryable, mapFsError, mapParseError, swallowError, toKoiError, withRetry };
 "
 `;
