@@ -1,9 +1,15 @@
 /**
  * Main ModelRouter service — routes model calls across providers
- * with retry, fallback, and circuit breaker resilience.
+ * with retry, fallback, cascade, and circuit breaker resilience.
  */
 
 import type { KoiError, ModelRequest, ModelResponse, Result } from "@koi/core";
+import { withCascade } from "./cascade/cascade.js";
+import type {
+  CascadeClassifier,
+  CascadeCostMetrics,
+  CascadeEvaluator,
+} from "./cascade/cascade-types.js";
 import {
   type CircuitBreaker,
   type CircuitBreakerSnapshot,
@@ -19,6 +25,7 @@ export interface RouterMetrics {
   readonly totalFailures: number;
   readonly requestsByTarget: Readonly<Record<string, number>>;
   readonly failuresByTarget: Readonly<Record<string, number>>;
+  readonly cascade?: CascadeCostMetrics;
 }
 
 export interface ModelRouter {
@@ -27,6 +34,12 @@ export interface ModelRouter {
   readonly getHealth: () => ReadonlyMap<string, CircuitBreakerSnapshot>;
   readonly getMetrics: () => RouterMetrics;
   readonly dispose: () => void;
+}
+
+export interface ModelRouterOptions {
+  readonly evaluator?: CascadeEvaluator;
+  readonly classifier?: CascadeClassifier;
+  readonly clock?: () => number;
 }
 
 function targetId(t: ResolvedTargetConfig): string {
@@ -40,13 +53,26 @@ function targetId(t: ResolvedTargetConfig): string {
  *
  * @param config - Resolved router configuration
  * @param adapters - Map of provider ID → ProviderAdapter
- * @param clock - Injectable clock for deterministic testing
+ * @param clockOrOptions - Injectable clock (deprecated) or options object
  */
 export function createModelRouter(
   config: ResolvedRouterConfig,
   adapters: ReadonlyMap<string, ProviderAdapter>,
-  clock: () => number = Date.now,
+  clockOrOptions?: (() => number) | ModelRouterOptions,
 ): ModelRouter {
+  // Support both legacy clock parameter and new options object
+  const options: ModelRouterOptions =
+    typeof clockOrOptions === "function" ? { clock: clockOrOptions } : (clockOrOptions ?? {});
+
+  const clock = options.clock ?? Date.now;
+
+  // Validate cascade requires evaluator
+  if (config.strategy === "cascade" && !options.evaluator) {
+    throw new Error(
+      "Cascade strategy requires an evaluator. Pass { evaluator } in the options parameter.",
+    );
+  }
+
   // Validate that all configured providers have adapters
   for (const target of config.targets) {
     if (!adapters.has(target.provider)) {
@@ -85,15 +111,15 @@ export function createModelRouter(
   let totalRequests = 0;
   let totalFailures = 0;
 
-  async function executeForTarget(
-    target: FallbackTarget,
-    request: ModelRequest,
-  ): Promise<ModelResponse> {
-    const targetConfig = targetConfigById.get(target.id);
+  // Cascade metrics tracking
+  let cascadeEscalations = 0;
+
+  async function executeForTargetId(id: string, request: ModelRequest): Promise<ModelResponse> {
+    const targetConfig = targetConfigById.get(id);
     if (!targetConfig) {
       throw {
         code: "NOT_FOUND",
-        message: `Target config not found: ${target.id}`,
+        message: `Target config not found: ${id}`,
         retryable: false,
       } satisfies KoiError;
     }
@@ -108,7 +134,7 @@ export function createModelRouter(
     }
 
     // Track metrics
-    requestsByTarget[target.id] = (requestsByTarget[target.id] ?? 0) + 1;
+    requestsByTarget[id] = (requestsByTarget[id] ?? 0) + 1;
 
     const modelRequest: ModelRequest = {
       ...request,
@@ -122,9 +148,38 @@ export function createModelRouter(
     async route(request: ModelRequest): Promise<Result<ModelResponse, KoiError>> {
       totalRequests++;
 
+      if (config.strategy === "cascade" && config.cascade && options.evaluator) {
+        // Pre-request classification: skip cheap tiers for complex requests
+        const allTiers = config.cascade.tiers;
+        const classification = options.classifier?.(request, allTiers.length);
+        const classifiedTiers = classification
+          ? allTiers.slice(classification.recommendedTierIndex)
+          : allTiers;
+        // Ensure at least one tier remains
+        const tiers = classifiedTiers.length > 0 ? classifiedTiers : allTiers;
+
+        const result = await withCascade(
+          tiers,
+          (tier) => executeForTargetId(tier.targetId, request),
+          options.evaluator,
+          config.cascade,
+          circuitBreakers,
+          request,
+          clock,
+        );
+
+        if (!result.ok) {
+          totalFailures++;
+          return result;
+        }
+
+        cascadeEscalations += result.value.totalEscalations;
+        return { ok: true, value: result.value.response };
+      }
+
       const result = await withFallback(
         fallbackTargets,
-        (target) => executeForTarget(target, request),
+        (target) => executeForTargetId(target.id, request),
         circuitBreakers,
         clock,
       );
@@ -138,6 +193,7 @@ export function createModelRouter(
     },
 
     async *routeStream(request: ModelRequest): AsyncGenerator<StreamChunk> {
+      // Stream uses fallback behavior for all strategies (cascade v1 limitation)
       const errors: KoiError[] = [];
 
       for (const target of enabledFallbackTargets) {
@@ -187,12 +243,33 @@ export function createModelRouter(
     },
 
     getMetrics(): RouterMetrics {
-      return {
+      const base: RouterMetrics = {
         totalRequests,
         totalFailures,
         requestsByTarget: { ...requestsByTarget },
         failuresByTarget: { ...failuresByTarget },
       };
+
+      if (config.strategy === "cascade" && config.cascade) {
+        return {
+          ...base,
+          cascade: {
+            tiers: config.cascade.tiers.map((t) => ({
+              tierId: t.targetId,
+              requests: requestsByTarget[t.targetId] ?? 0,
+              escalations: 0,
+              totalInputTokens: 0,
+              totalOutputTokens: 0,
+              estimatedCost: 0,
+            })),
+            totalRequests,
+            totalEscalations: cascadeEscalations,
+            totalEstimatedCost: 0,
+          },
+        };
+      }
+
+      return base;
     },
 
     dispose(): void {

@@ -5,11 +5,16 @@
 import type { KoiError, Result } from "@koi/core";
 import { validateWith } from "@koi/validation";
 import { z } from "zod";
+import type {
+  CascadeConfig,
+  CascadeTierConfig,
+  ResolvedCascadeConfig,
+} from "./cascade/cascade-types.js";
 import { type CircuitBreakerConfig, DEFAULT_CIRCUIT_BREAKER_CONFIG } from "./circuit-breaker.js";
 import type { ProviderAdapterConfig } from "./provider-adapter.js";
 import { DEFAULT_RETRY_CONFIG, type RetryConfig } from "./retry.js";
 
-export type RoutingStrategy = "fallback" | "round-robin" | "weighted";
+export type RoutingStrategy = "fallback" | "round-robin" | "weighted" | "cascade";
 
 export interface ModelTargetConfig {
   readonly provider: string;
@@ -24,6 +29,7 @@ export interface ModelRouterConfig {
   readonly strategy: RoutingStrategy;
   readonly retry?: Partial<RetryConfig>;
   readonly circuitBreaker?: Partial<CircuitBreakerConfig>;
+  readonly cascade?: CascadeConfig;
 }
 
 export interface ResolvedRouterConfig {
@@ -31,6 +37,7 @@ export interface ResolvedRouterConfig {
   readonly strategy: RoutingStrategy;
   readonly retry: RetryConfig;
   readonly circuitBreaker: CircuitBreakerConfig;
+  readonly cascade?: ResolvedCascadeConfig;
 }
 
 export interface ResolvedTargetConfig {
@@ -75,11 +82,32 @@ const circuitBreakerSchema = z.object({
   failureStatusCodes: z.array(z.number().int()).optional(),
 });
 
+const cascadeTierSchema = z.object({
+  targetId: z.string().min(1),
+  costPerInputToken: z.number().min(0).optional(),
+  costPerOutputToken: z.number().min(0).optional(),
+  timeoutMs: z.number().int().positive().optional(),
+});
+
+const cascadeSchema = z.object({
+  tiers: z.array(cascadeTierSchema).min(1),
+  confidenceThreshold: z.number().min(0).max(1),
+  maxEscalations: z.number().int().min(0).optional(),
+  budgetLimitTokens: z.number().int().min(0).optional(),
+  evaluatorTimeoutMs: z.number().int().positive().optional(),
+});
+
 const routerConfigSchema = z.object({
   targets: z.array(targetSchema).min(1),
-  strategy: z.union([z.literal("fallback"), z.literal("round-robin"), z.literal("weighted")]),
+  strategy: z.union([
+    z.literal("fallback"),
+    z.literal("round-robin"),
+    z.literal("weighted"),
+    z.literal("cascade"),
+  ]),
   retry: retrySchema.optional(),
   circuitBreaker: circuitBreakerSchema.optional(),
+  cascade: cascadeSchema.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -127,6 +155,53 @@ export function validateRouterConfig(raw: unknown): Result<ResolvedRouterConfig,
       DEFAULT_CIRCUIT_BREAKER_CONFIG.failureStatusCodes,
   };
 
+  // Cascade cross-validation
+  if (config.strategy === "cascade" && !config.cascade) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message:
+          'Model router config validation failed: cascade config is required when strategy is "cascade"',
+        retryable: false,
+      },
+    };
+  }
+
+  // Resolve cascade config (if present)
+  let resolvedCascade: ResolvedCascadeConfig | undefined;
+  if (config.cascade) {
+    // Validate tier targetIds reference existing targets
+    const targetIds = new Set(resolvedTargets.map((t) => `${t.provider}:${t.model}`));
+    for (const tier of config.cascade.tiers) {
+      if (!targetIds.has(tier.targetId)) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: `Model router config validation failed: cascade tier references unknown target "${tier.targetId}". Available: ${[...targetIds].join(", ")}`,
+            retryable: false,
+          },
+        };
+      }
+    }
+
+    const cascadeTiers: readonly CascadeTierConfig[] = config.cascade.tiers.map((t) => ({
+      targetId: t.targetId,
+      ...(t.costPerInputToken !== undefined ? { costPerInputToken: t.costPerInputToken } : {}),
+      ...(t.costPerOutputToken !== undefined ? { costPerOutputToken: t.costPerOutputToken } : {}),
+      ...(t.timeoutMs !== undefined ? { timeoutMs: t.timeoutMs } : {}),
+    }));
+
+    resolvedCascade = {
+      tiers: cascadeTiers,
+      confidenceThreshold: config.cascade.confidenceThreshold,
+      maxEscalations: config.cascade.maxEscalations ?? config.cascade.tiers.length - 1,
+      budgetLimitTokens: config.cascade.budgetLimitTokens ?? 0,
+      evaluatorTimeoutMs: config.cascade.evaluatorTimeoutMs ?? 10_000,
+    };
+  }
+
   return {
     ok: true,
     value: {
@@ -134,6 +209,7 @@ export function validateRouterConfig(raw: unknown): Result<ResolvedRouterConfig,
       strategy: config.strategy,
       retry: resolvedRetry,
       circuitBreaker: resolvedCB,
+      ...(resolvedCascade !== undefined ? { cascade: resolvedCascade } : {}),
     },
   };
 }
