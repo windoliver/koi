@@ -169,3 +169,125 @@ describe("createMcpResolver", () => {
     expect(resolver.source).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// onChange (#73 — push-based discovery notifications)
+// ---------------------------------------------------------------------------
+
+describe("createMcpResolver onChange", () => {
+  test("onChange is defined on MCP resolver", () => {
+    const managers = createTestManagers();
+    const resolver = createMcpResolver(managers);
+    expect(resolver.onChange).toBeDefined();
+    expect(typeof resolver.onChange).toBe("function");
+  });
+
+  test("onChange returns an unsubscribe function", () => {
+    const managers = createTestManagers();
+    const resolver = createMcpResolver(managers);
+
+    const unsub = resolver.onChange?.(() => {});
+    expect(typeof unsub).toBe("function");
+  });
+
+  test("listener fires when manager tools change (debounced)", async () => {
+    const managers = createTestManagers();
+    const resolver = createMcpResolver(managers);
+    let callCount = 0;
+
+    resolver.onChange?.(() => {
+      callCount++;
+    });
+
+    // Simulate a tool change from the first manager
+    managers[0]?.simulateToolsChanged();
+
+    // Wait for debounce (100ms default + buffer)
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    expect(callCount).toBe(1);
+  });
+
+  test("rapid tool changes are debounced into one callback", async () => {
+    const managers = createTestManagers();
+    const resolver = createMcpResolver(managers);
+    let callCount = 0;
+
+    resolver.onChange?.(() => {
+      callCount++;
+    });
+
+    // Fire 5 rapid notifications
+    for (let i = 0; i < 5; i++) {
+      managers[0]?.simulateToolsChanged();
+    }
+
+    // Wait for debounce
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    // Should be debounced into 1 callback
+    expect(callCount).toBe(1);
+  });
+
+  test("unsubscribe prevents further notifications", async () => {
+    const managers = createTestManagers();
+    const resolver = createMcpResolver(managers);
+    let callCount = 0;
+
+    const unsub = resolver.onChange?.(() => {
+      callCount++;
+    });
+
+    // Unsubscribe before any notification
+    unsub?.();
+
+    managers[0]?.simulateToolsChanged();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    expect(callCount).toBe(0);
+  });
+
+  test("multiple listeners are all notified", async () => {
+    const managers = createTestManagers();
+    const resolver = createMcpResolver(managers);
+    let callCount1 = 0;
+    let callCount2 = 0;
+
+    resolver.onChange?.(() => {
+      callCount1++;
+    });
+    resolver.onChange?.(() => {
+      callCount2++;
+    });
+
+    managers[0]?.simulateToolsChanged();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    expect(callCount1).toBe(1);
+    expect(callCount2).toBe(1);
+  });
+
+  test("onChange invalidates tool cache so next discover re-fetches", async () => {
+    const managers = createTestManagers();
+    const resolver = createMcpResolver(managers);
+
+    // Populate cache
+    const initial = await resolver.discover();
+    expect(initial).toHaveLength(3);
+
+    // Wait for onChange to fire and invalidate cache
+    let changed = false;
+    resolver.onChange?.(() => {
+      changed = true;
+    });
+
+    managers[0]?.simulateToolsChanged();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    expect(changed).toBe(true);
+
+    // Next discover should re-fetch (cache was cleared)
+    const after = await resolver.discover();
+    expect(after).toHaveLength(3);
+  });
+});

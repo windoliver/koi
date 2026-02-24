@@ -11,10 +11,12 @@ import type {
   ModelRequest,
   ModelResponse,
   ModelStreamHandler,
+  ToolCallId,
   ToolHandler,
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
+import { toolCallId } from "@koi/core";
 import { testEngineAdapter } from "@koi/test-utils";
 import { createLoopAdapter } from "./loop-adapter.js";
 
@@ -143,7 +145,7 @@ function createSimpleModelStreamHandler(text: string): ModelStreamHandler {
 function createToolCallingStreamHandler(
   toolCalls: readonly {
     readonly toolName: string;
-    readonly callId: string;
+    readonly callId: ToolCallId;
     readonly input: Record<string, unknown>;
   }[],
   finalText: string,
@@ -295,12 +297,12 @@ describe("tool call round-trip", () => {
     const start = starts[0];
     if (start !== undefined && start.kind === "tool_call_start") {
       expect(start.toolName).toBe("calculator");
-      expect(start.callId).toBe("calc-1");
+      expect(start.callId).toBe(toolCallId("calc-1"));
     }
 
     const end = ends[0];
     if (end !== undefined && end.kind === "tool_call_end") {
-      expect(end.callId).toBe("calc-1");
+      expect(end.callId).toBe(toolCallId("calc-1"));
       expect(end.result).toEqual({ result: 4 });
     }
 
@@ -402,7 +404,9 @@ describe("streaming mode", () => {
   });
 
   test("streaming with tool calls works end-to-end", async () => {
-    const toolCalls = [{ toolName: "lookup", callId: "look-1", input: { key: "test" } }] as const;
+    const toolCalls = [
+      { toolName: "lookup", callId: toolCallId("look-1"), input: { key: "test" } },
+    ] as const;
 
     const adapter = createLoopAdapter({
       modelCall: createSimpleModelHandler("fallback"),

@@ -112,7 +112,37 @@ export function createMcpResolver(
     };
   };
 
-  return { discover, load };
+  // --- onChange: push-based tool discovery notifications ---
+  const changeListeners = new Set<() => void>();
+  // let justified: mutable timer ref for debounce
+  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+  const DEBOUNCE_MS = 100;
+
+  const notifyListeners = (): void => {
+    if (debounceTimer !== undefined) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = undefined;
+      // Invalidate all cached tool lists so next discover() re-fetches
+      toolCache.clear();
+      for (const listener of changeListeners) {
+        listener();
+      }
+    }, DEBOUNCE_MS);
+  };
+
+  // Subscribe to each manager's onToolsChanged
+  for (const manager of managers) {
+    manager.onToolsChanged?.(notifyListeners);
+  }
+
+  const onChange = (listener: () => void): (() => void) => {
+    changeListeners.add(listener);
+    return () => {
+      changeListeners.delete(listener);
+    };
+  };
+
+  return { discover, load, onChange };
 }
 
 // ---------------------------------------------------------------------------

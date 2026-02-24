@@ -18,6 +18,7 @@ import type {
   TurnContext,
   TurnTrace,
 } from "@koi/core";
+import { toolCallId } from "@koi/core";
 import { getEventsBetween as queryEventsBetween } from "./query.js";
 import { createTraceCollector } from "./trace-collector.js";
 import type { EventTraceConfig, EventTraceHandle } from "./types.js";
@@ -103,7 +104,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
       collector.record(ctx.turnIndex, {
         kind: "tool_call",
         toolId: request.toolId,
-        callId: `trace-${eventIndex}`,
+        callId: toolCallId(`trace-${eventIndex}`),
         input: request.input,
         output: response.output,
         durationMs,

@@ -7,7 +7,7 @@
  */
 
 import type { PendingFrame } from "@koi/core";
-import { agentId as toAgentId } from "@koi/core";
+import { agentId as toAgentId, sessionId as toSessionId } from "@koi/core";
 import type { NodeEvent, NodeFrame, NodeSessionStore } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -199,7 +199,7 @@ export function createDeliveryManager(
   async function enqueueSend(frame: NodeFrame, sessionId: string): Promise<void> {
     const pendingFrame: PendingFrame = {
       frameId: `pf-${frame.correlationId}`,
-      sessionId,
+      sessionId: toSessionId(sessionId),
       agentId: toAgentId(frame.agentId),
       frameType: frame.type,
       payload: frame.payload,

@@ -12,7 +12,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
-import { GOVERNANCE } from "@koi/core";
+import { GOVERNANCE, runId, sessionId, turnId } from "@koi/core";
 import { fnv1a } from "@koi/hash";
 import { KoiEngineError } from "./errors.js";
 import {
@@ -28,9 +28,11 @@ import { createInMemorySpawnLedger } from "./spawn-ledger.js";
 // ---------------------------------------------------------------------------
 
 function mockTurnContext(overrides?: Partial<TurnContext>): TurnContext {
+  const rid = runId("r1");
   return {
-    session: { agentId: "a1", sessionId: "s1", metadata: {} },
+    session: { agentId: "a1", sessionId: sessionId("s1"), runId: rid, metadata: {} },
     turnIndex: 0,
+    turnId: turnId(rid, 0),
     messages: [],
     metadata: {},
     ...overrides,

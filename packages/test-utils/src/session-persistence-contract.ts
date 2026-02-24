@@ -12,10 +12,11 @@ import type {
   EngineState,
   PendingFrame,
   SessionCheckpoint,
+  SessionId,
   SessionPersistence,
   SessionRecord,
 } from "@koi/core";
-import { agentId } from "@koi/core";
+import { agentId, sessionId } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -29,7 +30,7 @@ const testManifest: AgentManifest = {
 };
 
 function makeSessionRecord(
-  overrides: Partial<SessionRecord> & { readonly sessionId: string },
+  overrides: Partial<SessionRecord> & { readonly sessionId: SessionId },
 ): SessionRecord {
   return {
     agentId: agentId("agent-1"),
@@ -47,7 +48,7 @@ function makePendingFrame(
   overrides: Partial<PendingFrame> & { readonly frameId: string },
 ): PendingFrame {
   return {
-    sessionId: "session-1",
+    sessionId: sessionId("session-1"),
     agentId: agentId("agent-1"),
     frameType: "agent:message",
     payload: { text: "hello" },
@@ -62,7 +63,7 @@ function makeCheckpoint(
   overrides: Partial<SessionCheckpoint> & { readonly id: string; readonly agentId: AgentId },
 ): SessionCheckpoint {
   return {
-    sessionId: "session-1",
+    sessionId: sessionId("session-1"),
     engineState: { engineId: "test-engine", data: { turnCount: 1 } },
     processState: "running",
     generation: 1,
@@ -83,14 +84,14 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
   describe("session records", () => {
     test("save and load round-trip", async () => {
       const store = createStore();
-      const record = makeSessionRecord({ sessionId: "s1" });
+      const record = makeSessionRecord({ sessionId: sessionId("s1") });
       const saveResult = await store.saveSession(record);
       expect(saveResult.ok).toBe(true);
 
       const loadResult = await store.loadSession("s1");
       expect(loadResult.ok).toBe(true);
       if (loadResult.ok) {
-        expect(loadResult.value.sessionId).toBe("s1");
+        expect(loadResult.value.sessionId).toBe(sessionId("s1"));
         expect(loadResult.value.agentId).toBe(agentId("agent-1"));
         expect(loadResult.value.manifestSnapshot.name).toBe("test-agent");
       }
@@ -98,8 +99,8 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
 
     test("save overwrites existing session", async () => {
       const store = createStore();
-      await store.saveSession(makeSessionRecord({ sessionId: "s1", seq: 0 }));
-      await store.saveSession(makeSessionRecord({ sessionId: "s1", seq: 42 }));
+      await store.saveSession(makeSessionRecord({ sessionId: sessionId("s1"), seq: 0 }));
+      await store.saveSession(makeSessionRecord({ sessionId: sessionId("s1"), seq: 42 }));
 
       const result = await store.loadSession("s1");
       expect(result.ok).toBe(true);
@@ -120,7 +121,7 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
     test("remove deletes session and its checkpoints", async () => {
       const store = createStore();
       const aid = agentId("agent-rm");
-      await store.saveSession(makeSessionRecord({ sessionId: "s1", agentId: aid }));
+      await store.saveSession(makeSessionRecord({ sessionId: sessionId("s1"), agentId: aid }));
       await store.saveCheckpoint(makeCheckpoint({ id: "cp1", agentId: aid }));
 
       const removeResult = await store.removeSession("s1");
@@ -148,8 +149,12 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
 
     test("listSessions returns all sessions", async () => {
       const store = createStore();
-      await store.saveSession(makeSessionRecord({ sessionId: "s1", agentId: agentId("a1") }));
-      await store.saveSession(makeSessionRecord({ sessionId: "s2", agentId: agentId("a2") }));
+      await store.saveSession(
+        makeSessionRecord({ sessionId: sessionId("s1"), agentId: agentId("a1") }),
+      );
+      await store.saveSession(
+        makeSessionRecord({ sessionId: sessionId("s2"), agentId: agentId("a2") }),
+      );
 
       const result = await store.listSessions();
       expect(result.ok).toBe(true);
@@ -160,14 +165,18 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
 
     test("listSessions filters by agentId", async () => {
       const store = createStore();
-      await store.saveSession(makeSessionRecord({ sessionId: "s1", agentId: agentId("a1") }));
-      await store.saveSession(makeSessionRecord({ sessionId: "s2", agentId: agentId("a2") }));
+      await store.saveSession(
+        makeSessionRecord({ sessionId: sessionId("s1"), agentId: agentId("a1") }),
+      );
+      await store.saveSession(
+        makeSessionRecord({ sessionId: sessionId("s2"), agentId: agentId("a2") }),
+      );
 
       const result = await store.listSessions({ agentId: agentId("a1") });
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value.length).toBe(1);
-        expect(result.value[0]?.sessionId).toBe("s1");
+        expect(result.value[0]?.sessionId).toBe(sessionId("s1"));
       }
     });
   });
@@ -277,8 +286,8 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
       const a1 = agentId("agent-1");
       const a2 = agentId("agent-2");
 
-      await store.saveSession(makeSessionRecord({ sessionId: "s1", agentId: a1 }));
-      await store.saveSession(makeSessionRecord({ sessionId: "s2", agentId: a2 }));
+      await store.saveSession(makeSessionRecord({ sessionId: sessionId("s1"), agentId: a1 }));
+      await store.saveSession(makeSessionRecord({ sessionId: sessionId("s2"), agentId: a2 }));
 
       await store.saveCheckpoint(makeCheckpoint({ id: "cp1-old", agentId: a1, createdAt: 1000 }));
       await store.saveCheckpoint(makeCheckpoint({ id: "cp1-new", agentId: a1, createdAt: 2000 }));
@@ -299,7 +308,9 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
       const store = createStore();
       for (let i = 0; i < 10; i++) {
         const aid = agentId(`agent-${i}`);
-        await store.saveSession(makeSessionRecord({ sessionId: `s-${i}`, agentId: aid }));
+        await store.saveSession(
+          makeSessionRecord({ sessionId: sessionId(`s-${i}`), agentId: aid }),
+        );
         await store.saveCheckpoint(makeCheckpoint({ id: `cp-${i}`, agentId: aid }));
       }
 
@@ -319,7 +330,7 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
   describe("pending frames", () => {
     test("savePendingFrame persists frame", async () => {
       const store = createStore();
-      const frame = makePendingFrame({ frameId: "f1", sessionId: "s1" });
+      const frame = makePendingFrame({ frameId: "f1", sessionId: sessionId("s1") });
       const result = await store.savePendingFrame(frame);
       expect(result.ok).toBe(true);
 
@@ -334,13 +345,13 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
     test("loadPendingFrames returns ordered by orderIndex", async () => {
       const store = createStore();
       await store.savePendingFrame(
-        makePendingFrame({ frameId: "f3", sessionId: "s1", orderIndex: 3 }),
+        makePendingFrame({ frameId: "f3", sessionId: sessionId("s1"), orderIndex: 3 }),
       );
       await store.savePendingFrame(
-        makePendingFrame({ frameId: "f1", sessionId: "s1", orderIndex: 1 }),
+        makePendingFrame({ frameId: "f1", sessionId: sessionId("s1"), orderIndex: 1 }),
       );
       await store.savePendingFrame(
-        makePendingFrame({ frameId: "f2", sessionId: "s1", orderIndex: 2 }),
+        makePendingFrame({ frameId: "f2", sessionId: sessionId("s1"), orderIndex: 2 }),
       );
 
       const result = await store.loadPendingFrames("s1");
@@ -365,10 +376,10 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
     test("clearPendingFrames removes all for session", async () => {
       const store = createStore();
       await store.savePendingFrame(
-        makePendingFrame({ frameId: "f1", sessionId: "s1", orderIndex: 0 }),
+        makePendingFrame({ frameId: "f1", sessionId: sessionId("s1"), orderIndex: 0 }),
       );
       await store.savePendingFrame(
-        makePendingFrame({ frameId: "f2", sessionId: "s1", orderIndex: 1 }),
+        makePendingFrame({ frameId: "f2", sessionId: sessionId("s1"), orderIndex: 1 }),
       );
 
       const clearResult = await store.clearPendingFrames("s1");
@@ -384,10 +395,10 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
     test("clearPendingFrames does not affect other sessions", async () => {
       const store = createStore();
       await store.savePendingFrame(
-        makePendingFrame({ frameId: "f1", sessionId: "s1", orderIndex: 0 }),
+        makePendingFrame({ frameId: "f1", sessionId: sessionId("s1"), orderIndex: 0 }),
       );
       await store.savePendingFrame(
-        makePendingFrame({ frameId: "f2", sessionId: "s2", orderIndex: 0 }),
+        makePendingFrame({ frameId: "f2", sessionId: sessionId("s2"), orderIndex: 0 }),
       );
 
       await store.clearPendingFrames("s1");
@@ -403,9 +414,14 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
     test("removeSession also clears pending frames", async () => {
       const store = createStore();
       const aid = agentId("agent-pf");
-      await store.saveSession(makeSessionRecord({ sessionId: "s1", agentId: aid }));
+      await store.saveSession(makeSessionRecord({ sessionId: sessionId("s1"), agentId: aid }));
       await store.savePendingFrame(
-        makePendingFrame({ frameId: "f1", sessionId: "s1", agentId: aid, orderIndex: 0 }),
+        makePendingFrame({
+          frameId: "f1",
+          sessionId: sessionId("s1"),
+          agentId: aid,
+          orderIndex: 0,
+        }),
       );
 
       await store.removeSession("s1");
@@ -421,11 +437,16 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
       const store = createStore();
       const aid = agentId("agent-cascade");
       // Two sessions for the same agent
-      await store.saveSession(makeSessionRecord({ sessionId: "s1", agentId: aid }));
-      await store.saveSession(makeSessionRecord({ sessionId: "s2", agentId: aid }));
+      await store.saveSession(makeSessionRecord({ sessionId: sessionId("s1"), agentId: aid }));
+      await store.saveSession(makeSessionRecord({ sessionId: sessionId("s2"), agentId: aid }));
       // Pending frames on s2 belong to the same agent
       await store.savePendingFrame(
-        makePendingFrame({ frameId: "f1", sessionId: "s2", agentId: aid, orderIndex: 0 }),
+        makePendingFrame({
+          frameId: "f1",
+          sessionId: sessionId("s2"),
+          agentId: aid,
+          orderIndex: 0,
+        }),
       );
 
       // Remove s1 — should cascade pending frames for agent across ALL sessions
@@ -441,12 +462,22 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
     test("recover includes pending frames", async () => {
       const store = createStore();
       const aid = agentId("agent-recover-pf");
-      await store.saveSession(makeSessionRecord({ sessionId: "s1", agentId: aid }));
+      await store.saveSession(makeSessionRecord({ sessionId: sessionId("s1"), agentId: aid }));
       await store.savePendingFrame(
-        makePendingFrame({ frameId: "f1", sessionId: "s1", agentId: aid, orderIndex: 0 }),
+        makePendingFrame({
+          frameId: "f1",
+          sessionId: sessionId("s1"),
+          agentId: aid,
+          orderIndex: 0,
+        }),
       );
       await store.savePendingFrame(
-        makePendingFrame({ frameId: "f2", sessionId: "s1", agentId: aid, orderIndex: 1 }),
+        makePendingFrame({
+          frameId: "f2",
+          sessionId: sessionId("s1"),
+          agentId: aid,
+          orderIndex: 1,
+        }),
       );
 
       const result = await store.recover();
@@ -463,10 +494,10 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
     test("removePendingFrame removes single frame", async () => {
       const store = createStore();
       await store.savePendingFrame(
-        makePendingFrame({ frameId: "f1", sessionId: "s1", orderIndex: 0 }),
+        makePendingFrame({ frameId: "f1", sessionId: sessionId("s1"), orderIndex: 0 }),
       );
       await store.savePendingFrame(
-        makePendingFrame({ frameId: "f2", sessionId: "s1", orderIndex: 1 }),
+        makePendingFrame({ frameId: "f2", sessionId: sessionId("s1"), orderIndex: 1 }),
       );
 
       const removeResult = await store.removePendingFrame("f1");
@@ -483,7 +514,7 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
     test("removePendingFrame for unknown frameId is no-op", async () => {
       const store = createStore();
       await store.savePendingFrame(
-        makePendingFrame({ frameId: "f1", sessionId: "s1", orderIndex: 0 }),
+        makePendingFrame({ frameId: "f1", sessionId: sessionId("s1"), orderIndex: 0 }),
       );
 
       const removeResult = await store.removePendingFrame("nonexistent");
@@ -499,12 +530,22 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
     test("savePendingFrame upserts retryCount", async () => {
       const store = createStore();
       await store.savePendingFrame(
-        makePendingFrame({ frameId: "f1", sessionId: "s1", orderIndex: 0, retryCount: 0 }),
+        makePendingFrame({
+          frameId: "f1",
+          sessionId: sessionId("s1"),
+          orderIndex: 0,
+          retryCount: 0,
+        }),
       );
 
       // Upsert with incremented retryCount
       await store.savePendingFrame(
-        makePendingFrame({ frameId: "f1", sessionId: "s1", orderIndex: 0, retryCount: 3 }),
+        makePendingFrame({
+          frameId: "f1",
+          sessionId: sessionId("s1"),
+          orderIndex: 0,
+          retryCount: 3,
+        }),
       );
 
       const loadResult = await store.loadPendingFrames("s1");
@@ -519,7 +560,7 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
       const store = createStore();
       const payload = { nested: { data: [1, 2, 3] }, flag: true };
       await store.savePendingFrame(
-        makePendingFrame({ frameId: "f1", sessionId: "s1", payload, orderIndex: 0 }),
+        makePendingFrame({ frameId: "f1", sessionId: sessionId("s1"), payload, orderIndex: 0 }),
       );
 
       const result = await store.loadPendingFrames("s1");
@@ -536,7 +577,7 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
   describe("validation", () => {
     test("saveSession rejects empty session ID", async () => {
       const store = createStore();
-      const result = await store.saveSession(makeSessionRecord({ sessionId: "" }));
+      const result = await store.saveSession(makeSessionRecord({ sessionId: sessionId("") }));
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.error.code).toBe("VALIDATION");
@@ -546,7 +587,7 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
     test("saveSession rejects empty agent ID", async () => {
       const store = createStore();
       const result = await store.saveSession(
-        makeSessionRecord({ sessionId: "s1", agentId: agentId("") }),
+        makeSessionRecord({ sessionId: sessionId("s1"), agentId: agentId("") }),
       );
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -650,7 +691,7 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
       const aid = agentId("agent-unicode");
       await store.saveSession(
         makeSessionRecord({
-          sessionId: "s-unicode",
+          sessionId: sessionId("s-unicode"),
           agentId: aid,
           metadata: { name: "工具-名前-도구", emoji: "🤖" },
         }),
@@ -690,8 +731,12 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
     test("overwrite session then recover returns latest", async () => {
       const store = createStore();
       const aid = agentId("agent-overwrite");
-      await store.saveSession(makeSessionRecord({ sessionId: "s1", agentId: aid, seq: 1 }));
-      await store.saveSession(makeSessionRecord({ sessionId: "s1", agentId: aid, seq: 99 }));
+      await store.saveSession(
+        makeSessionRecord({ sessionId: sessionId("s1"), agentId: aid, seq: 1 }),
+      );
+      await store.saveSession(
+        makeSessionRecord({ sessionId: sessionId("s1"), agentId: aid, seq: 99 }),
+      );
 
       const result = await store.recover();
       expect(result.ok).toBe(true);

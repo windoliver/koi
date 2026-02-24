@@ -9,11 +9,14 @@ import {
   type ModelRequest,
   type ModelResponse,
   type ModelStreamHandler,
+  runId,
   type SessionContext,
+  sessionId,
   type ToolRequest,
   type ToolResponse,
   type TurnContext,
   toolToken,
+  turnId,
 } from "@koi/core";
 import { AgentEntity } from "./agent-entity.js";
 import {
@@ -31,9 +34,11 @@ import {
 // ---------------------------------------------------------------------------
 
 function mockTurnContext(overrides?: Partial<TurnContext>): TurnContext {
+  const rid = runId("r1");
   return {
-    session: { agentId: "a1", sessionId: "s1", metadata: {} },
+    session: { agentId: "a1", sessionId: sessionId("s1"), runId: rid, metadata: {} },
     turnIndex: 0,
+    turnId: turnId(rid, 0),
     messages: [],
     metadata: {},
     ...overrides,
@@ -306,7 +311,12 @@ describe("composeToolChain", () => {
 // ---------------------------------------------------------------------------
 
 describe("runSessionHooks", () => {
-  const sessionCtx: SessionContext = { agentId: "a1", sessionId: "s1", metadata: {} };
+  const sessionCtx: SessionContext = {
+    agentId: "a1",
+    sessionId: sessionId("s1"),
+    runId: runId("r1"),
+    metadata: {},
+  };
 
   test("calls onSessionStart hooks in order", async () => {
     const order: string[] = [];

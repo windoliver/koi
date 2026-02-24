@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { KoiMiddleware, ToolRequest, ToolResponse, TurnContext } from "@koi/core";
+import { runId, sessionId, turnId } from "@koi/core";
 import { createResultPruner } from "./result-pruner.js";
 
 // ---------------------------------------------------------------------------
@@ -7,9 +8,11 @@ import { createResultPruner } from "./result-pruner.js";
 // ---------------------------------------------------------------------------
 
 function mockTurnContext(): TurnContext {
+  const rid = runId("r1");
   return {
-    session: { agentId: "a1", sessionId: "s1", metadata: {} },
+    session: { agentId: "a1", sessionId: sessionId("s1"), runId: rid, metadata: {} },
     turnIndex: 0,
+    turnId: turnId(rid, 0),
     messages: [],
     metadata: {},
   };

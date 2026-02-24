@@ -9,6 +9,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
+import { runId, sessionId, turnId } from "@koi/core";
 import { createGrant } from "./grant.js";
 import { createDelegationMiddleware } from "./middleware.js";
 import { signGrant } from "./sign.js";
@@ -26,13 +27,16 @@ function makeRegistry(revokedSet?: Set<DelegationId>): RevocationRegistry {
 }
 
 function makeTurnContext(delegationId?: string): TurnContext {
+  const rid = runId("run-1");
   return {
     session: {
       agentId: "agent-1",
-      sessionId: "session-1",
+      sessionId: sessionId("session-1"),
+      runId: rid,
       metadata: delegationId !== undefined ? { delegationId } : {},
     },
     turnIndex: 0,
+    turnId: turnId(rid, 0),
     messages: [],
     metadata: delegationId !== undefined ? { delegationId } : {},
   };

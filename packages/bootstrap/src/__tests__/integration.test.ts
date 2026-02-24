@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ContextManifestConfig, TextSource } from "@koi/context";
 import { createContextHydrator } from "@koi/context";
+import { runId, sessionId } from "@koi/core";
 import { createMockAgent, createMockTurnContext, createSpyModelHandler } from "@koi/test-utils";
 import { resolveBootstrap } from "../resolve.js";
 
@@ -55,7 +56,12 @@ describe("bootstrap → context hydrator integration", () => {
     const mw = createContextHydrator({ config, agent });
 
     // 5. Trigger hydration
-    await mw.onSessionStart?.({ agentId: "a", sessionId: "s", metadata: {} });
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
 
     // 6. Capture model call to inspect prepended system message
     const ctx = createMockTurnContext();

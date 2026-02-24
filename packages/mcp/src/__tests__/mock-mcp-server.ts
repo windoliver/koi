@@ -22,11 +22,16 @@ export interface MockMcpServerOptions {
   readonly listToolsError?: KoiError;
 }
 
+export interface MockMcpClientManager extends McpClientManager {
+  /** Simulate a tools/list_changed notification from the MCP server. */
+  readonly simulateToolsChanged: () => void;
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
-export function createMockMcpClientManager(options: MockMcpServerOptions): McpClientManager {
+export function createMockMcpClientManager(options: MockMcpServerOptions): MockMcpClientManager {
   let connected = false;
 
   const tools: readonly McpToolInfo[] = options.tools ?? [];
@@ -83,12 +88,30 @@ export function createMockMcpClientManager(options: MockMcpServerOptions): McpCl
     connected = false;
   };
 
-  return {
+  // Tool change listener support for testing
+  const toolChangeListeners = new Set<() => void>();
+
+  const onToolsChanged = (listener: () => void): (() => void) => {
+    toolChangeListeners.add(listener);
+    return () => {
+      toolChangeListeners.delete(listener);
+    };
+  };
+
+  const manager: MockMcpClientManager = {
     connect,
     listTools,
     callTool,
     close,
     isConnected: () => connected,
     serverName: () => options.name,
+    onToolsChanged,
+    simulateToolsChanged: () => {
+      for (const listener of toolChangeListeners) {
+        listener();
+      }
+    },
   };
+
+  return manager;
 }

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { toolCallId } from "@koi/core";
 import type { TraceCollector } from "./trace-collector.js";
 import { createTraceCollector } from "./trace-collector.js";
 
@@ -22,7 +23,7 @@ describe("createTraceCollector", () => {
     const e1 = collector.record(0, {
       kind: "tool_call",
       toolId: "t1",
-      callId: "c1",
+      callId: toolCallId("c1"),
       input: {},
       output: {},
       durationMs: 5,

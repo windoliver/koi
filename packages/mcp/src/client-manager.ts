@@ -34,6 +34,8 @@ export interface McpClientManager {
   readonly close: () => Promise<void>;
   readonly isConnected: () => boolean;
   readonly serverName: () => string;
+  /** Subscribe to tool list changes from MCP notifications/tools/list_changed. */
+  readonly onToolsChanged?: (listener: () => void) => () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +53,14 @@ interface SdkClientLike {
     name: string;
     arguments: Record<string, unknown>;
   }): Promise<{ content?: unknown; isError?: boolean | undefined }>;
+  setNotificationHandler?(method: string, handler: (params: unknown) => void): void;
+  getServerCapabilities?():
+    | {
+        tools?: { listChanged?: boolean };
+        resources?: { listChanged?: boolean };
+        prompts?: { listChanged?: boolean };
+      }
+    | undefined;
 }
 
 /** Internal dependency injection for testing. Not part of the public API. */
@@ -93,6 +103,8 @@ export function createMcpClientManager(
   let reconnectAttempt = 0;
   // Shared reconnection promise to prevent thundering herd
   let reconnecting: Promise<Result<void, KoiError>> | undefined;
+  // Tool change listeners (justified: mutable set for pub/sub lifecycle)
+  const toolChangeListeners = new Set<() => void>();
 
   const connect = async (): Promise<Result<void, KoiError>> => {
     let newClient: SdkClientLike | undefined;
@@ -129,6 +141,9 @@ export function createMcpClientManager(
       client = newClient;
       connected = true;
       reconnectAttempt = 0;
+
+      // Subscribe to tools/list_changed notifications if server supports it
+      subscribeToToolChanges(newClient);
 
       return { ok: true, value: undefined };
     } catch (error: unknown) {
@@ -265,6 +280,26 @@ export function createMcpClientManager(
     }
   };
 
+  /** Subscribe to notifications/tools/list_changed if the server advertises support. */
+  function subscribeToToolChanges(sdkClient: SdkClientLike): void {
+    if (sdkClient.setNotificationHandler === undefined) return;
+    const caps = sdkClient.getServerCapabilities?.();
+    if (caps?.tools?.listChanged !== true) return;
+
+    sdkClient.setNotificationHandler("notifications/tools/list_changed", () => {
+      for (const listener of toolChangeListeners) {
+        listener();
+      }
+    });
+  }
+
+  const onToolsChanged = (listener: () => void): (() => void) => {
+    toolChangeListeners.add(listener);
+    return () => {
+      toolChangeListeners.delete(listener);
+    };
+  };
+
   return {
     connect,
     listTools,
@@ -272,6 +307,7 @@ export function createMcpClientManager(
     close,
     isConnected: () => connected,
     serverName: () => config.name,
+    onToolsChanged,
   };
 }
 

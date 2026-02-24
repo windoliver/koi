@@ -2130,3 +2130,282 @@ describe("createKoi middleware priority sorting", () => {
     expect(order).toContain("tracker-enter");
   });
 });
+
+// ---------------------------------------------------------------------------
+// AbortSignal propagation (#79)
+// ---------------------------------------------------------------------------
+
+describe("AbortSignal propagation", () => {
+  test("signal from EngineInput reaches TurnContext via onBeforeTurn", async () => {
+    const controller = new AbortController();
+    let receivedSignal: AbortSignal | undefined;
+
+    const signalCapture: KoiMiddleware = {
+      name: "signal-capture",
+      async onBeforeTurn(ctx) {
+        receivedSignal = ctx.signal;
+      },
+    };
+
+    const adapter = mockAdapter([{ kind: "done", output: doneOutput() }]);
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [signalCapture],
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test", signal: controller.signal }));
+
+    expect(receivedSignal).toBeDefined();
+    expect(receivedSignal?.aborted).toBe(false);
+  });
+
+  test("aborting signal marks run as done", async () => {
+    const controller = new AbortController();
+
+    // Adapter that hangs until aborted
+    const hangingAdapter: EngineAdapter = {
+      engineId: "hanging",
+      stream: () => ({
+        [Symbol.asyncIterator]() {
+          return {
+            async next(): Promise<IteratorResult<EngineEvent>> {
+              // Wait until aborted
+              return new Promise((resolve) => {
+                controller.signal.addEventListener(
+                  "abort",
+                  () => {
+                    resolve({
+                      done: false,
+                      value: { kind: "done", output: doneOutput({ stopReason: "interrupted" }) },
+                    });
+                  },
+                  { once: true },
+                );
+              });
+            },
+          };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: hangingAdapter,
+      loopDetection: false,
+    });
+
+    const iter = runtime.run({ kind: "text", text: "test", signal: controller.signal });
+    const asyncIter = iter[Symbol.asyncIterator]();
+
+    // First call gets turn_start
+    const first = await asyncIter.next();
+    expect(first.done).toBe(false);
+    if (!first.done) {
+      expect(first.value.kind).toBe("turn_start");
+    }
+
+    // Abort before the next call completes
+    setTimeout(() => controller.abort(), 10);
+
+    const second = await asyncIter.next();
+    // After abort, the adapter returns a done event
+    expect(second.done).toBe(false);
+  });
+
+  test("pre-aborted signal is handled gracefully", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const adapter = mockAdapter([{ kind: "done", output: doneOutput() }]);
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+    });
+
+    // Pre-aborted signal should still allow the iterator to produce events
+    const events = await collectEvents(
+      runtime.run({ kind: "text", text: "test", signal: controller.signal }),
+    );
+
+    // Should get at least turn_start
+    expect(events.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Canonical ID hierarchy (#80)
+// ---------------------------------------------------------------------------
+
+describe("Canonical ID hierarchy", () => {
+  test("SessionContext contains branded sessionId and runId", async () => {
+    let capturedSessionId: string | undefined;
+    let capturedRunId: string | undefined;
+
+    const idCapture: KoiMiddleware = {
+      name: "id-capture",
+      async onSessionStart(ctx) {
+        capturedSessionId = ctx.sessionId;
+        capturedRunId = ctx.runId;
+      },
+    };
+
+    const adapter = mockAdapter([{ kind: "done", output: doneOutput() }]);
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [idCapture],
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    expect(capturedSessionId).toBeDefined();
+    expect(typeof capturedSessionId).toBe("string");
+    expect(capturedRunId).toBeDefined();
+    expect(typeof capturedRunId).toBe("string");
+    // SessionId and RunId should be UUID-like
+    expect(capturedSessionId?.length).toBeGreaterThan(0);
+    expect(capturedRunId?.length).toBeGreaterThan(0);
+  });
+
+  test("TurnContext contains hierarchical turnId", async () => {
+    let capturedTurnId: string | undefined;
+    let capturedRunId: string | undefined;
+    let capturedTurnIndex: number | undefined;
+
+    const idCapture: KoiMiddleware = {
+      name: "id-capture",
+      async onSessionStart(ctx) {
+        capturedRunId = ctx.runId;
+      },
+      async onBeforeTurn(ctx) {
+        capturedTurnId = ctx.turnId;
+        capturedTurnIndex = ctx.turnIndex;
+      },
+    };
+
+    const adapter = mockAdapter([{ kind: "done", output: doneOutput() }]);
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [idCapture],
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    expect(capturedTurnId).toBeDefined();
+    expect(capturedTurnIndex).toBe(0);
+    // TurnId should follow hierarchical format: "${runId}:t${turnIndex}"
+    expect(capturedTurnId).toBe(`${capturedRunId}:t0`);
+  });
+
+  test("multi-turn produces incrementing turnIds", async () => {
+    const turnIds: string[] = [];
+    let capturedRunId: string | undefined;
+
+    const idCapture: KoiMiddleware = {
+      name: "id-capture",
+      async onSessionStart(ctx) {
+        capturedRunId = ctx.runId;
+      },
+      async onBeforeTurn(ctx) {
+        turnIds.push(ctx.turnId);
+      },
+    };
+
+    const adapter = mockAdapter([
+      { kind: "turn_end", turnIndex: 0 },
+      { kind: "turn_end", turnIndex: 1 },
+      { kind: "done", output: doneOutput() },
+    ]);
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [idCapture],
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    expect(turnIds).toHaveLength(3);
+    expect(turnIds[0]).toBe(`${capturedRunId}:t0`);
+    expect(turnIds[1]).toBe(`${capturedRunId}:t1`);
+    expect(turnIds[2]).toBe(`${capturedRunId}:t2`);
+  });
+
+  test("separate runs get distinct RunIds", async () => {
+    const runIds: string[] = [];
+
+    const idCapture: KoiMiddleware = {
+      name: "id-capture",
+      async onSessionStart(ctx) {
+        runIds.push(ctx.runId);
+      },
+    };
+
+    const adapter = mockAdapter([{ kind: "done", output: doneOutput() }]);
+
+    const runtime1 = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [idCapture],
+      loopDetection: false,
+    });
+    await collectEvents(runtime1.run({ kind: "text", text: "test1" }));
+
+    const runtime2 = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [idCapture],
+      loopDetection: false,
+    });
+    await collectEvents(runtime2.run({ kind: "text", text: "test2" }));
+
+    expect(runIds).toHaveLength(2);
+    expect(runIds[0]).not.toBe(runIds[1]);
+  });
+
+  test("SessionId encodes trust boundary with agent ownership", async () => {
+    let capturedSessionId: string | undefined;
+    let capturedAgentId: string | undefined;
+
+    const idCapture: KoiMiddleware = {
+      name: "id-capture",
+      async onSessionStart(ctx) {
+        capturedSessionId = ctx.sessionId;
+        capturedAgentId = ctx.agentId;
+      },
+    };
+
+    const adapter = mockAdapter([{ kind: "done", output: doneOutput() }]);
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [idCapture],
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    expect(capturedSessionId).toBeDefined();
+    expect(capturedAgentId).toBeDefined();
+    // SessionId should follow trust-boundary format: "agent:{agentId}:{uuid}"
+    expect(capturedSessionId).toContain(`agent:${capturedAgentId}:`);
+    // Should still contain a UUID portion after the prefix
+    const parts = capturedSessionId?.split(":") ?? [];
+    expect(parts.length).toBe(3);
+    expect(parts[0]).toBe("agent");
+    expect(parts[1]).toBe(capturedAgentId);
+    expect(parts[2]?.length).toBeGreaterThan(0);
+  });
+});

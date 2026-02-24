@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { FileOpRecord, FileSystemBackend, KoiError, Result } from "@koi/core";
-import { chainId, nodeId } from "@koi/core";
+import { chainId, nodeId, toolCallId } from "@koi/core";
 import { createInMemorySnapshotChainStore } from "@koi/snapshot-chain-store";
 import { rollbackTo } from "./rollback.js";
 
@@ -54,7 +54,7 @@ function makeRecord(
   newContent: string,
 ): FileOpRecord {
   return {
-    callId: `call-${Date.now()}`,
+    callId: toolCallId(`call-${Date.now()}`),
     kind: "write",
     path,
     previousContent,

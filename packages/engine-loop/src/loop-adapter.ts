@@ -27,6 +27,7 @@ import type {
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
+import { toolCallId } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -233,7 +234,7 @@ async function executeToolRound(
       events.push({
         kind: "tool_call_start" as const,
         toolName: tc.toolName,
-        callId: tc.callId,
+        callId: toolCallId(tc.callId),
         args: tc.input,
       });
     }
@@ -244,7 +245,7 @@ async function executeToolRound(
   for (const result of results) {
     events.push({
       kind: "tool_call_end" as const,
-      callId: result.descriptor.callId,
+      callId: toolCallId(result.descriptor.callId),
       result: result.response.output,
     });
   }

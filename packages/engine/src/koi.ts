@@ -11,6 +11,8 @@
  */
 
 import type {
+  ApprovalHandler,
+  ChannelStatus,
   ComposedCallHandlers,
   EngineEvent,
   EngineInput,
@@ -21,6 +23,9 @@ import type {
   ModelResponse,
   ModelStreamHandler,
   ProcessId,
+  RunId,
+  SessionContext,
+  SessionId,
   Tool,
   ToolDescriptor,
   ToolHandler,
@@ -28,7 +33,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
-import { agentId, toolToken } from "@koi/core";
+import { agentId, runId, sessionId, toolToken, turnId } from "@koi/core";
 import { AgentEntity } from "./agent-entity.js";
 import {
   composeModelChain,
@@ -57,6 +62,27 @@ function generatePid(manifest: CreateKoiOptions["manifest"]): ProcessId {
 /** Sort middleware by priority (ascending). Guards get low numbers, L2 middleware gets higher. */
 function sortByPriority(middleware: readonly KoiMiddleware[]): readonly KoiMiddleware[] {
   return [...middleware].sort((a, b) => (a.priority ?? 500) - (b.priority ?? 500));
+}
+
+/** Factory for constructing TurnContext with hierarchical turnId. */
+function createTurnContext(opts: {
+  readonly session: SessionContext;
+  readonly turnIndex: number;
+  readonly messages: readonly import("@koi/core").InboundMessage[];
+  readonly signal?: AbortSignal | undefined;
+  readonly approvalHandler?: ApprovalHandler | undefined;
+  readonly sendStatus?: ((status: ChannelStatus) => Promise<void>) | undefined;
+}): TurnContext {
+  return {
+    session: opts.session,
+    turnIndex: opts.turnIndex,
+    turnId: turnId(opts.session.runId, opts.turnIndex),
+    messages: opts.messages,
+    metadata: {},
+    ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    ...(opts.approvalHandler !== undefined ? { requestApproval: opts.approvalHandler } : {}),
+    ...(opts.sendStatus !== undefined ? { sendStatus: opts.sendStatus } : {}),
+  };
 }
 
 export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> {
@@ -143,6 +169,24 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           let currentTurnIndex = 0;
           const sessionStartedAt = Date.now();
 
+          // AbortSignal: compose caller signal with internal controller
+          const abortController = new AbortController();
+          const runSignal =
+            input.signal !== undefined
+              ? AbortSignal.any([input.signal, abortController.signal])
+              : abortController.signal;
+
+          // Abort listener: mark done when signal fires.
+          // Discriminates reason via signal.reason (typed AbortReason).
+          const onAbort = (): void => {
+            if (!done) {
+              done = true;
+              running = false;
+              agent.transition({ kind: "complete", stopReason: "interrupted" });
+            }
+          };
+          runSignal.addEventListener("abort", onAbort, { once: true });
+
           // let justified: mutable forged descriptor cache, refreshed at turn boundaries
           let forgedDescriptorsCache: readonly ToolDescriptor[] = [];
 
@@ -172,9 +216,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           // let justified: previous forge middleware ref for identity-based skip
           let previousForgedMw: readonly KoiMiddleware[] | undefined;
 
-          const sessionCtx = {
+          // Structured IDs encode trust boundary: agent ownership is parseable from the ID itself.
+          // Format: "agent:{agentId}:{uuid}" for session, plain UUID for run.
+          const sid: SessionId = sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
+          const rid: RunId = runId(crypto.randomUUID());
+          const sessionCtx: SessionContext = {
             agentId: pid.id,
-            sessionId: crypto.randomUUID(),
+            sessionId: sid,
+            runId: rid,
             metadata: {},
           };
 
@@ -217,7 +266,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
                   // Wire terminals → middleware → callHandlers if adapter is cooperating
                   // let justified: effectiveInput may be replaced with callHandlers-augmented input
-                  let effectiveInput = input;
+                  let effectiveInput: EngineInput = { ...input, signal: runSignal };
                   if (adapter.terminals) {
                     const inputMessages = input.kind === "messages" ? input.messages : [];
                     // Cache turn context per turn index to avoid repeated allocations
@@ -229,21 +278,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                         return cachedTurnCtx;
                       }
                       cachedTurnIndex = currentTurnIndex;
-                      const base = {
+                      cachedTurnCtx = createTurnContext({
                         session: sessionCtx,
                         turnIndex: currentTurnIndex,
                         messages: inputMessages,
-                        metadata: {},
-                      };
-                      cachedTurnCtx = {
-                        ...base,
-                        ...(options.approvalHandler !== undefined
-                          ? { requestApproval: options.approvalHandler }
-                          : {}),
-                        ...(options.sendStatus !== undefined
-                          ? { sendStatus: options.sendStatus }
-                          : {}),
-                      };
+                        signal: runSignal,
+                        approvalHandler: options.approvalHandler,
+                        sendStatus: options.sendStatus,
+                      });
                       return cachedTurnCtx;
                     };
                     const rawModelTerminal = adapter.terminals.modelCall;
@@ -309,7 +351,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                       },
                     ) as ComposedCallHandlers;
 
-                    effectiveInput = { ...input, callHandlers };
+                    effectiveInput = { ...input, callHandlers, signal: runSignal };
                   }
 
                   iterator = adapter.stream(effectiveInput)[Symbol.asyncIterator]();
@@ -327,16 +369,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 // Emit turn_start event with onBeforeTurn hooks
                 if (shouldEmitTurnStart) {
                   shouldEmitTurnStart = false;
-                  const turnCtx: TurnContext = {
+                  const turnCtx = createTurnContext({
                     session: sessionCtx,
                     turnIndex: currentTurnIndex,
                     messages: input.kind === "messages" ? input.messages : [],
-                    metadata: {},
-                    ...(options.approvalHandler !== undefined
-                      ? { requestApproval: options.approvalHandler }
-                      : {}),
-                    ...(options.sendStatus !== undefined ? { sendStatus: options.sendStatus } : {}),
-                  };
+                    signal: runSignal,
+                    approvalHandler: options.approvalHandler,
+                    sendStatus: options.sendStatus,
+                  });
                   await runTurnHooks(allMiddleware, "onBeforeTurn", turnCtx);
                   return {
                     done: false,
@@ -355,6 +395,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 if (result.done) {
                   done = true;
                   running = false;
+                  runSignal.removeEventListener("abort", onAbort);
                   agent.transition({ kind: "complete", stopReason: "completed" });
                   await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
                   return { done: true, value: undefined };
@@ -366,16 +407,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 if (event.kind === "turn_end") {
                   currentTurnIndex = event.turnIndex + 1;
                   shouldEmitTurnStart = true;
-                  const turnCtx: TurnContext = {
+                  const turnCtx = createTurnContext({
                     session: sessionCtx,
                     turnIndex: event.turnIndex,
                     messages: [],
-                    metadata: {},
-                    ...(options.approvalHandler !== undefined
-                      ? { requestApproval: options.approvalHandler }
-                      : {}),
-                    ...(options.sendStatus !== undefined ? { sendStatus: options.sendStatus } : {}),
-                  };
+                    signal: runSignal,
+                    approvalHandler: options.approvalHandler,
+                    sendStatus: options.sendStatus,
+                  });
 
                   // Defer forge refresh to the start of the next next() call,
                   // so the consumer can inject tools/middleware after this turn_end
@@ -389,6 +428,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   done = true;
                   pendingForgeRefresh = false;
                   running = false;
+                  runSignal.removeEventListener("abort", onAbort);
                   agent.transition({
                     kind: "complete",
                     stopReason: event.output.stopReason,
@@ -401,6 +441,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               } catch (error: unknown) {
                 done = true;
                 running = false;
+                runSignal.removeEventListener("abort", onAbort);
 
                 // If it's a guard error, convert to a done event
                 if (error instanceof KoiEngineError) {
@@ -442,6 +483,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             async return(): Promise<IteratorResult<EngineEvent>> {
               done = true;
               running = false;
+              runSignal.removeEventListener("abort", onAbort);
               if (iterator?.return) {
                 await iterator.return();
               }

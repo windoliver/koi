@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { ChainId, SnapshotChainStore, TurnTrace } from "@koi/core";
-import { chainId } from "@koi/core";
+import { chainId, sessionId, toolCallId } from "@koi/core";
 import { createInMemorySnapshotChainStore } from "@koi/snapshot-chain-store";
 import { getEventsBetween } from "./query.js";
 
@@ -29,7 +29,7 @@ describe("getEventsBetween", () => {
   test("returns events within a single turn", async () => {
     const trace: TurnTrace = {
       turnIndex: 0,
-      sessionId: "s1",
+      sessionId: sessionId("s1"),
       agentId: "a1",
       events: [
         {
@@ -44,7 +44,7 @@ describe("getEventsBetween", () => {
           event: {
             kind: "tool_call",
             toolId: "t1",
-            callId: "c1",
+            callId: toolCallId("c1"),
             input: {},
             output: {},
             durationMs: 5,
@@ -80,7 +80,7 @@ describe("getEventsBetween", () => {
   test("returns events spanning multiple turns", async () => {
     const trace0: TurnTrace = {
       turnIndex: 0,
-      sessionId: "s1",
+      sessionId: sessionId("s1"),
       agentId: "a1",
       events: [
         {
@@ -95,7 +95,7 @@ describe("getEventsBetween", () => {
           event: {
             kind: "tool_call",
             toolId: "t1",
-            callId: "c1",
+            callId: toolCallId("c1"),
             input: {},
             output: {},
             durationMs: 5,
@@ -112,7 +112,7 @@ describe("getEventsBetween", () => {
 
     const trace1: TurnTrace = {
       turnIndex: 1,
-      sessionId: "s1",
+      sessionId: sessionId("s1"),
       agentId: "a1",
       events: [
         {
@@ -127,7 +127,7 @@ describe("getEventsBetween", () => {
           event: {
             kind: "tool_call",
             toolId: "t2",
-            callId: "c2",
+            callId: toolCallId("c2"),
             input: {},
             output: {},
             durationMs: 7,
@@ -159,7 +159,7 @@ describe("getEventsBetween", () => {
   test("filters by from.eventIndex correctly", async () => {
     const trace: TurnTrace = {
       turnIndex: 0,
-      sessionId: "s1",
+      sessionId: sessionId("s1"),
       agentId: "a1",
       events: [
         {

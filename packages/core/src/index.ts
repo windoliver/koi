@@ -75,6 +75,8 @@ export type {
 } from "./config.js";
 // context
 export type { CompactionResult, ContextCompactor, TokenEstimator } from "./context.js";
+// correlation
+export type { CorrelationIds } from "./correlation.js";
 // delegation
 export type {
   DelegationComponent,
@@ -103,13 +105,17 @@ export type {
   ProcessAccounter,
   ProcessId,
   ProcessState,
+  RunId,
+  SessionId,
   SkillMetadata,
   SpawnCheck,
   SpawnLedger,
   SubsystemToken,
   Tool,
+  ToolCallId,
   ToolDescriptor,
   TrustTier,
+  TurnId,
 } from "./ecs.js";
 // ecs — runtime values (token factories + well-known constants)
 export {
@@ -121,16 +127,22 @@ export {
   FILESYSTEM,
   GOVERNANCE,
   MEMORY,
+  runId,
+  sessionId,
   skillToken,
   token,
+  toolCallId,
   toolToken,
+  turnId,
 } from "./ecs.js";
 // engine
 export type {
+  AbortReason,
   ComposedCallHandlers,
   EngineAdapter,
   EngineEvent,
   EngineInput,
+  EngineInputBase,
   EngineMetrics,
   EngineOutput,
   EngineState,

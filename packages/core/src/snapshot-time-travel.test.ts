@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { sessionId, toolCallId } from "./ecs.js";
 import type {
   BacktrackConstraint,
   BacktrackReason,
@@ -15,7 +16,7 @@ describe("snapshot-time-travel types", () => {
   describe("FileOpRecord", () => {
     test("write op with no previous content", () => {
       const record: FileOpRecord = {
-        callId: "call-1",
+        callId: toolCallId("call-1"),
         kind: "write",
         path: "/tmp/test.txt",
         previousContent: undefined,
@@ -30,7 +31,7 @@ describe("snapshot-time-travel types", () => {
 
     test("edit op with previous content", () => {
       const record: FileOpRecord = {
-        callId: "call-2",
+        callId: toolCallId("call-2"),
         kind: "edit",
         path: "/tmp/existing.txt",
         previousContent: "old content",
@@ -176,7 +177,7 @@ describe("snapshot-time-travel types", () => {
       const event: TraceEventKind = {
         kind: "tool_call",
         toolId: "fs_write",
-        callId: "call-1",
+        callId: toolCallId("call-1"),
         input: { path: "/tmp/x" },
         output: { ok: true },
         durationMs: 25,
@@ -204,7 +205,14 @@ describe("snapshot-time-travel types", () => {
     test("exhaustive kind check compiles", () => {
       const events: readonly TraceEventKind[] = [
         { kind: "model_call", request: {}, response: {}, durationMs: 0 },
-        { kind: "tool_call", toolId: "x", callId: "c", input: {}, output: {}, durationMs: 0 },
+        {
+          kind: "tool_call",
+          toolId: "x",
+          callId: toolCallId("c"),
+          input: {},
+          output: {},
+          durationMs: 0,
+        },
         { kind: "model_stream_start", request: {} },
         { kind: "model_stream_end", response: {}, durationMs: 0 },
       ];
@@ -232,7 +240,7 @@ describe("snapshot-time-travel types", () => {
         event: {
           kind: "tool_call",
           toolId: "fs_write",
-          callId: "c1",
+          callId: toolCallId("c1"),
           input: {},
           output: {},
           durationMs: 10,
@@ -249,7 +257,7 @@ describe("snapshot-time-travel types", () => {
       const now = Date.now();
       const trace: TurnTrace = {
         turnIndex: 0,
-        sessionId: "sess-1",
+        sessionId: sessionId("sess-1"),
         agentId: "agent-1",
         events: [
           {
@@ -264,7 +272,7 @@ describe("snapshot-time-travel types", () => {
             event: {
               kind: "tool_call",
               toolId: "fs_write",
-              callId: "c1",
+              callId: toolCallId("c1"),
               input: {},
               output: {},
               durationMs: 20,

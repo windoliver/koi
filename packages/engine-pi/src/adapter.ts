@@ -168,6 +168,15 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
       // Store as current agent for steer/followUp/abort
       currentPiAgent = piAgent;
 
+      // Wire caller signal → piAgent.abort() for cancellation propagation
+      if (input.signal !== undefined) {
+        if (input.signal.aborted) {
+          piAgent.abort();
+        } else {
+          input.signal.addEventListener("abort", () => piAgent.abort(), { once: true });
+        }
+      }
+
       // Subscribe to pi Agent events
       const unsubscribe = piAgent.subscribe(subscriber);
 

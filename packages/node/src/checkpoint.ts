@@ -22,7 +22,7 @@ import type {
   SessionCheckpoint,
   SessionRecord,
 } from "@koi/core";
-import { internal, agentId as toAgentId } from "@koi/core";
+import { internal, agentId as toAgentId, sessionId as toSessionId } from "@koi/core";
 import type { AgentHost } from "./agent/host.js";
 import type { FrameCounters } from "./frame-counter.js";
 import type { NodeSessionStore } from "./types.js";
@@ -94,7 +94,7 @@ export function createCheckpointManager(
 
       const counters = deps?.frameCounters?.get(data.agentId);
       const record: SessionRecord = {
-        sessionId,
+        sessionId: toSessionId(sessionId),
         agentId: aid,
         manifestSnapshot: agent.manifest,
         seq: counters?.seq ?? 0,
@@ -201,7 +201,7 @@ export function createCheckpointManager(
         const checkpoint: SessionCheckpoint = {
           id: `cp-${agentIdStr}-${String(gen)}`,
           agentId: toAgentId(agentIdStr),
-          sessionId,
+          sessionId: toSessionId(sessionId),
           engineState,
           processState: agent?.state ?? "running",
           generation: gen,

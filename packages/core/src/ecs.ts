@@ -31,6 +31,26 @@ declare const __agentBrand: unique symbol;
  */
 export type AgentId = string & { readonly [__agentBrand]: "AgentId" };
 
+declare const __sessionBrand: unique symbol;
+
+/** Branded string type for session identifiers. */
+export type SessionId = string & { readonly [__sessionBrand]: "SessionId" };
+
+declare const __runBrand: unique symbol;
+
+/** Branded string type for run identifiers (one per run() invocation). */
+export type RunId = string & { readonly [__runBrand]: "RunId" };
+
+declare const __turnBrand: unique symbol;
+
+/** Branded string type for turn identifiers. Hierarchical: `${runId}:t${turnIndex}`. */
+export type TurnId = string & { readonly [__turnBrand]: "TurnId" };
+
+declare const __toolCallBrand: unique symbol;
+
+/** Branded string type for tool call identifiers. */
+export type ToolCallId = string & { readonly [__toolCallBrand]: "ToolCallId" };
+
 // ---------------------------------------------------------------------------
 // Token & ID factories (branded casts — sole runtime code in L0)
 // ---------------------------------------------------------------------------
@@ -54,6 +74,26 @@ export function skillToken(name: string): SubsystemToken<SkillMetadata> {
 /** Create a branded AgentId from a plain string. */
 export function agentId(id: string): AgentId {
   return id as AgentId;
+}
+
+/** Create a branded SessionId from a plain string. */
+export function sessionId(id: string): SessionId {
+  return id as SessionId;
+}
+
+/** Create a branded RunId from a plain string. */
+export function runId(id: string): RunId {
+  return id as RunId;
+}
+
+/** Create a branded TurnId from a RunId and turn index. Hierarchical: `${runId}:t${turnIndex}`. */
+export function turnId(run: RunId, turnIndex: number): TurnId {
+  return `${run}:t${turnIndex}` as TurnId;
+}
+
+/** Create a branded ToolCallId from a plain string. */
+export function toolCallId(id: string): ToolCallId {
+  return id as ToolCallId;
 }
 
 // ---------------------------------------------------------------------------

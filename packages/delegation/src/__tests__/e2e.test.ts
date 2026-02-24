@@ -22,6 +22,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
+import { runId, sessionId, turnId } from "@koi/core";
 import {
   attenuateGrant,
   createDelegationMiddleware,
@@ -39,13 +40,16 @@ const SECRET = "e2e-test-secret-key-32-bytes-min";
 // ---------------------------------------------------------------------------
 
 function makeTurnContext(delegationId?: string): TurnContext {
+  const rid = runId("test-run");
   return {
     session: {
       agentId: "test-agent",
-      sessionId: "test-session",
+      sessionId: sessionId("test-session"),
+      runId: rid,
       metadata: delegationId !== undefined ? { delegationId } : {},
     },
     turnIndex: 0,
+    turnId: turnId(rid, 0),
     messages: [],
     metadata: delegationId !== undefined ? { delegationId } : {},
   };
