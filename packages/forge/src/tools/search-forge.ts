@@ -5,6 +5,7 @@
 import type { Result, Tool } from "@koi/core";
 import type { ForgeError } from "../errors.js";
 import { staticError } from "../errors.js";
+import { filterByAgentScope } from "../scope-filter.js";
 import type { BrickArtifact, ForgeQuery } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import { createForgeTool } from "./shared.js";
@@ -63,7 +64,8 @@ async function searchForgeHandler(
     };
   }
 
-  return { ok: true, value: result.value };
+  const filtered = filterByAgentScope(result.value, deps.context.agentId);
+  return { ok: true, value: filtered };
 }
 
 // ---------------------------------------------------------------------------

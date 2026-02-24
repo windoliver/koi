@@ -90,14 +90,14 @@ describe("createForgeResolver", () => {
     await store.save(createBrick({ id: "b1" }));
     await store.save(createBrick({ id: "b2" }));
 
-    const resolver = createForgeResolver(store);
+    const resolver = createForgeResolver(store, { agentId: "agent-1" });
     const results = await resolver.discover();
     expect(results).toHaveLength(2);
   });
 
   test("discover returns empty when store is empty", async () => {
     const store = createInMemoryForgeStore();
-    const resolver = createForgeResolver(store);
+    const resolver = createForgeResolver(store, { agentId: "agent-1" });
     const results = await resolver.discover();
     expect(results).toHaveLength(0);
   });
@@ -106,7 +106,7 @@ describe("createForgeResolver", () => {
     const store = createInMemoryForgeStore();
     await store.save(createBrick({ id: "b1", name: "my-tool" }));
 
-    const resolver = createForgeResolver(store);
+    const resolver = createForgeResolver(store, { agentId: "agent-1" });
     const result = await resolver.load("b1");
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -116,7 +116,7 @@ describe("createForgeResolver", () => {
 
   test("load returns NOT_FOUND for missing id", async () => {
     const store = createInMemoryForgeStore();
-    const resolver = createForgeResolver(store);
+    const resolver = createForgeResolver(store, { agentId: "agent-1" });
     const result = await resolver.load("nonexistent");
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -148,8 +148,74 @@ describe("createForgeResolver", () => {
         error: { code: "INTERNAL" as const, message: "store down", retryable: false },
       }),
     };
-    const resolver = createForgeResolver(failingStore);
+    const resolver = createForgeResolver(failingStore, { agentId: "agent-1" });
     await expect(resolver.discover()).rejects.toThrow("store down");
+  });
+
+  test("discover excludes agent-scoped bricks not owned by caller", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createBrick({ id: "b1", scope: "agent", createdBy: "agent-1" }));
+    await store.save(createBrick({ id: "b2", scope: "agent", createdBy: "agent-2" }));
+
+    const resolver = createForgeResolver(store, { agentId: "agent-1" });
+    const results = await resolver.discover();
+    expect(results).toHaveLength(1);
+    expect(results[0]?.id).toBe("b1");
+  });
+
+  test("discover includes global-scoped bricks for any caller", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createBrick({ id: "b1", scope: "global", createdBy: "other-agent" }));
+
+    const resolver = createForgeResolver(store, { agentId: "agent-1" });
+    const results = await resolver.discover();
+    expect(results).toHaveLength(1);
+  });
+
+  test("load returns NOT_FOUND for another agent's agent-scoped brick", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createBrick({ id: "b1", scope: "agent", createdBy: "agent-2" }));
+
+    const resolver = createForgeResolver(store, { agentId: "agent-1" });
+    const result = await resolver.load("b1");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("NOT_FOUND");
+    }
+  });
+
+  test("load succeeds for own agent-scoped brick", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createBrick({ id: "b1", scope: "agent", createdBy: "agent-1" }));
+
+    const resolver = createForgeResolver(store, { agentId: "agent-1" });
+    const result = await resolver.load("b1");
+    expect(result.ok).toBe(true);
+  });
+
+  test("source returns NOT_FOUND for another agent's agent-scoped brick", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createBrick({ id: "b1", scope: "agent", createdBy: "agent-2" }));
+
+    const resolver = createForgeResolver(store, { agentId: "agent-1" });
+    const result = await resolver.source?.("b1");
+    expect(result).toBeDefined();
+    if (result === undefined) return;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("NOT_FOUND");
+    }
+  });
+
+  test("source succeeds for own agent-scoped brick", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createBrick({ id: "b1", scope: "agent", createdBy: "agent-1" }));
+
+    const resolver = createForgeResolver(store, { agentId: "agent-1" });
+    const result = await resolver.source?.("b1");
+    expect(result).toBeDefined();
+    if (result === undefined) return;
+    expect(result.ok).toBe(true);
   });
 });
 
@@ -210,7 +276,7 @@ describe("ForgeResolver.source()", () => {
     const store = createInMemoryForgeStore();
     await store.save(createBrick({ id: "t1", implementation: "return 42;" }));
 
-    const resolver = createForgeResolver(store);
+    const resolver = createForgeResolver(store, { agentId: "agent-1" });
     expect(resolver.source).toBeDefined();
     const result = await resolver.source?.("t1");
     expect(result).toBeDefined();
@@ -224,7 +290,7 @@ describe("ForgeResolver.source()", () => {
 
   test("source returns NOT_FOUND for missing id", async () => {
     const store = createInMemoryForgeStore();
-    const resolver = createForgeResolver(store);
+    const resolver = createForgeResolver(store, { agentId: "agent-1" });
     expect(resolver.source).toBeDefined();
     const result = await resolver.source?.("nonexistent");
     expect(result).toBeDefined();

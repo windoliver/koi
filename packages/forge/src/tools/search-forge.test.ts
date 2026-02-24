@@ -215,4 +215,71 @@ describe("createSearchForgeTool", () => {
     expect(result.error.stage).toBe("store");
     expect(result.error.code).toBe("SEARCH_FAILED");
   });
+
+  test("agent-scoped brick only visible to creator", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: "b1", scope: "agent", createdBy: "agent-1" }));
+
+    const tool = createSearchForgeTool(createDeps({ store }));
+    const result = (await tool.execute({})) as {
+      readonly ok: true;
+      readonly value: readonly BrickArtifact[];
+    };
+    expect(result.ok).toBe(true);
+    expect(result.value).toHaveLength(1);
+  });
+
+  test("agent-scoped brick hidden from different agent", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: "b1", scope: "agent", createdBy: "agent-2" }));
+
+    const tool = createSearchForgeTool(
+      createDeps({
+        store,
+        context: { agentId: "agent-1", depth: 0, sessionId: "session-1", forgesThisSession: 0 },
+      }),
+    );
+    const result = (await tool.execute({})) as {
+      readonly ok: true;
+      readonly value: readonly BrickArtifact[];
+    };
+    expect(result.ok).toBe(true);
+    expect(result.value).toHaveLength(0);
+  });
+
+  test("global-scoped brick visible regardless of agentId", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: "b1", scope: "global", createdBy: "agent-2" }));
+
+    const tool = createSearchForgeTool(
+      createDeps({
+        store,
+        context: { agentId: "agent-1", depth: 0, sessionId: "session-1", forgesThisSession: 0 },
+      }),
+    );
+    const result = (await tool.execute({})) as {
+      readonly ok: true;
+      readonly value: readonly BrickArtifact[];
+    };
+    expect(result.ok).toBe(true);
+    expect(result.value).toHaveLength(1);
+  });
+
+  test("mixed scope query returns correct subset", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: "b1", scope: "global", createdBy: "other" }));
+    await store.save(createToolBrick({ id: "b2", scope: "agent", createdBy: "agent-1" }));
+    await store.save(createToolBrick({ id: "b3", scope: "agent", createdBy: "other" }));
+
+    const tool = createSearchForgeTool(createDeps({ store }));
+    const result = (await tool.execute({})) as {
+      readonly ok: true;
+      readonly value: readonly BrickArtifact[];
+    };
+    expect(result.ok).toBe(true);
+    expect(result.value).toHaveLength(2);
+    const ids = result.value.map((b) => b.id);
+    expect(ids).toContain("b1");
+    expect(ids).toContain("b2");
+  });
 });

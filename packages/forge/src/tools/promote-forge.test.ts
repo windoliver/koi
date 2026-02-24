@@ -947,4 +947,49 @@ describe("createPromoteForgeTool", () => {
 
     expect(result.ok).toBe(true);
   });
+
+  test("rejects promoting another agent's agent-scoped brick", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      createToolBrick({ id: "brick_foreign", createdBy: "agent-2", scope: "agent" }),
+    );
+
+    const tool = createPromoteForgeTool(createDeps({ store }));
+    const result = (await tool.execute({
+      brickId: "brick_foreign",
+      targetTrustTier: "verified",
+    })) as { readonly ok: false; readonly error: { readonly code: string } };
+
+    expect(result.ok).toBe(false);
+    expect(result.error.code).toBe("LOAD_FAILED");
+  });
+
+  test("allows promoting own agent-scoped brick", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: "brick_own", createdBy: "agent-1", scope: "agent" }));
+
+    const tool = createPromoteForgeTool(createDeps({ store }));
+    const result = (await tool.execute({
+      brickId: "brick_own",
+      targetTrustTier: "verified",
+    })) as { readonly ok: true; readonly value: PromoteResult };
+
+    expect(result.ok).toBe(true);
+    expect(result.value.changes.trustTier).toBeDefined();
+  });
+
+  test("allows promoting another agent's global-scoped brick", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      createToolBrick({ id: "brick_global", createdBy: "agent-2", scope: "global" }),
+    );
+
+    const tool = createPromoteForgeTool(createDeps({ store }));
+    const result = (await tool.execute({
+      brickId: "brick_global",
+      targetTrustTier: "verified",
+    })) as { readonly ok: true; readonly value: PromoteResult };
+
+    expect(result.ok).toBe(true);
+  });
 });

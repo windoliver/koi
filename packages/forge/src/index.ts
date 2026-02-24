@@ -66,6 +66,7 @@ export type {
   ForgeComponentProviderInstance,
 } from "./forge-component-provider.js";
 export { brickToTool, createForgeComponentProvider } from "./forge-component-provider.js";
+export type { ForgeResolverContext } from "./forge-resolver.js";
 export { createForgeResolver } from "./forge-resolver.js";
 // runtime values — usage tracking middleware
 export type { ForgeUsageMiddlewareConfig } from "./forge-usage-middleware.js";
@@ -81,6 +82,7 @@ export type { IntegrityMismatch, IntegrityOk, IntegrityResult } from "./integrit
 export { loadAndVerify, verifyBrickIntegrity } from "./integrity.js";
 // runtime values — storage
 export { createInMemoryForgeStore } from "./memory-store.js";
+export { filterByAgentScope, isVisibleToAgent } from "./scope-filter.js";
 // runtime values — store change notification
 export { createMemoryStoreChangeNotifier } from "./store-notifier.js";
 export { createComposeForgeTool } from "./tools/compose-forge.js";
