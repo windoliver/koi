@@ -62,3 +62,9 @@ export const RETRYABLE_DEFAULTS: Readonly<Record<KoiErrorCode, boolean>> = Objec
 export type Result<T, E = KoiError> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: E };
+
+/**
+ * Standard signature for backend error mappers.
+ * Each L2 backend adapter should export a function matching this shape.
+ */
+export type BackendErrorMapper = (error: unknown, context: string) => KoiError;

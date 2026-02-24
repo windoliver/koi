@@ -10,7 +10,8 @@
     }
   },
   "dependencies": {
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "@koi/errors": "workspace:*"
   },
   "scripts": {
     "build": "tsup",

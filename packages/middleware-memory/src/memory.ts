@@ -10,6 +10,7 @@ import type {
   ModelResponse,
   TurnContext,
 } from "@koi/core/middleware";
+import { swallowError } from "@koi/errors";
 import type { MemoryMiddlewareConfig } from "./config.js";
 
 const DEFAULT_MAX_RECALL_TOKENS = 4000;
@@ -82,7 +83,11 @@ export function createMemoryMiddleware(config: MemoryMiddlewareConfig): KoiMiddl
             model: response.model,
           });
         } catch (error: unknown) {
-          if (onStoreError) onStoreError(error);
+          if (onStoreError) {
+            onStoreError(error);
+          } else {
+            swallowError(error, { package: "middleware-memory", operation: "store" });
+          }
         }
       }
 

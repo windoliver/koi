@@ -6,6 +6,7 @@
  */
 
 import { join, resolve } from "node:path";
+import { mapFsError } from "@koi/errors";
 import { fnv1a } from "@koi/hash";
 import type { BootstrapSlot, ResolvedSlot } from "./types.js";
 
@@ -77,21 +78,27 @@ async function tryReadSlot(
     return undefined;
   }
 
-  const originalSize = file.size;
-  // Read bounded bytes, then character-truncate for consistent budget semantics
-  const maxBytes = slot.budget * BYTES_PER_CHAR_MAX;
-  const raw = await file.slice(0, maxBytes).text();
-  const truncated = raw.length > slot.budget;
-  const content = truncated ? raw.slice(0, slot.budget) : raw;
-  const contentHash = fnv1a(content);
+  try {
+    const originalSize = file.size;
+    // Read bounded bytes, then character-truncate for consistent budget semantics
+    const maxBytes = slot.budget * BYTES_PER_CHAR_MAX;
+    const raw = await file.slice(0, maxBytes).text();
+    const truncated = raw.length > slot.budget;
+    const content = truncated ? raw.slice(0, slot.budget) : raw;
+    const contentHash = fnv1a(content);
 
-  return {
-    fileName: slot.fileName,
-    label: slot.label,
-    content,
-    contentHash,
-    resolvedFrom: filePath,
-    truncated,
-    originalSize,
-  };
+    return {
+      fileName: slot.fileName,
+      label: slot.label,
+      content,
+      contentHash,
+      resolvedFrom: filePath,
+      truncated,
+      originalSize,
+    };
+  } catch (e: unknown) {
+    // Re-throw with FS-aware error mapping for better diagnostics
+    const mapped = mapFsError(e, filePath);
+    throw new Error(mapped.message, { cause: e });
+  }
 }

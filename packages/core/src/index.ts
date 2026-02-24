@@ -160,7 +160,7 @@ export {
   validation,
 } from "./error-factories.js";
 // errors — types
-export type { KoiError, KoiErrorCode, Result } from "./errors.js";
+export type { BackendErrorMapper, KoiError, KoiErrorCode, Result } from "./errors.js";
 // errors — runtime values
 export { RETRYABLE_DEFAULTS } from "./errors.js";
 // event backend

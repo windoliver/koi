@@ -13,6 +13,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core/middleware";
+import { swallowError } from "@koi/errors";
 import type { AuditMiddlewareConfig } from "./config.js";
 import type { AuditEntry } from "./sink.js";
 import { applyRedaction, truncate } from "./sink.js";
@@ -51,6 +52,8 @@ export function createAuditMiddleware(config: AuditMiddlewareConfig): KoiMiddlew
     void sink.log(entry).catch((error: unknown) => {
       if (onError) {
         onError(error, entry);
+      } else {
+        swallowError(error, { package: "middleware-audit", operation: "sink.log" });
       }
     });
   }

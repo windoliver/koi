@@ -6,6 +6,7 @@
  */
 
 import type { JsonObject, KoiError, Result } from "@koi/core";
+import { isKoiError } from "@koi/errors";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { McpTransportConfig, ResolvedMcpServerConfig } from "./config.js";
 import {
@@ -314,16 +315,6 @@ export function createMcpClientManager(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function isKoiError(error: unknown): error is KoiError {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    "message" in error &&
-    "retryable" in error
-  );
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {

@@ -1,29 +1,21 @@
 /**
- * KoiEngineError — concrete error class for L1 engine failures.
+ * KoiEngineError — thin subclass of KoiRuntimeError for L1 engine failures.
  *
- * Extends Error with structured KoiErrorCode, retryable flag, and optional context.
- * Used by guards and the engine loop to signal termination or invalid state.
+ * Preserves instanceof checks + error.name while eliminating ~40 LOC
+ * of duplicated logic. Engine errors default to non-retryable (terminal state).
  */
 
 import type { JsonObject, KoiError, KoiErrorCode } from "@koi/core";
+import { KoiRuntimeError } from "@koi/errors";
 
-export class KoiEngineError extends Error {
-  readonly code: KoiErrorCode;
-  readonly retryable: boolean;
-  readonly context: JsonObject | undefined;
-  readonly retryAfterMs: number | undefined;
-
+export class KoiEngineError extends KoiRuntimeError {
   constructor(error: KoiError) {
-    super(error.message, { cause: error.cause });
+    super(error);
     this.name = "KoiEngineError";
-    this.code = error.code;
-    this.retryable = error.retryable;
-    this.context = error.context;
-    this.retryAfterMs = error.retryAfterMs;
   }
 
-  /** Create a KoiEngineError from code and message with sensible defaults. */
-  static from(
+  /** Engine errors default to non-retryable (terminal state). */
+  static override from(
     code: KoiErrorCode,
     message: string,
     options?: {
@@ -33,21 +25,10 @@ export class KoiEngineError extends Error {
       readonly retryAfterMs?: number;
     },
   ): KoiEngineError {
-    const error: KoiError = {
-      code,
-      message,
+    const runtime = KoiRuntimeError.from(code, message, {
+      ...options,
       retryable: options?.retryable ?? false,
-    };
-
-    // Build the full error object, only including optional fields when defined
-    // to satisfy exactOptionalPropertyTypes
-    const fullError: KoiError = {
-      ...error,
-      ...(options?.cause !== undefined ? { cause: options.cause } : {}),
-      ...(options?.context !== undefined ? { context: options.context } : {}),
-      ...(options?.retryAfterMs !== undefined ? { retryAfterMs: options.retryAfterMs } : {}),
-    };
-
-    return new KoiEngineError(fullError);
+    });
+    return new KoiEngineError(runtime.toKoiError());
   }
 }

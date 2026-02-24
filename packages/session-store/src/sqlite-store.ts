@@ -31,6 +31,7 @@ import {
   sessionId,
   validateNonEmpty,
 } from "@koi/core";
+import { extractMessage } from "@koi/errors";
 import type { SessionStoreConfig } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -88,8 +89,8 @@ function parseJson(raw: string, label: string): Record<string, unknown> {
       return parsed as Record<string, unknown>;
     }
     throw new Error("not an object");
-  } catch {
-    throw new Error(`Corrupt JSON in ${label}: ${raw.slice(0, 100)}`);
+  } catch (e: unknown) {
+    throw new Error(`Corrupt JSON in ${label}: ${raw.slice(0, 100)}`, { cause: e });
   }
 }
 
@@ -514,7 +515,7 @@ export function createSqliteSessionPersistence(
             skipped.push({
               source: "session",
               id: row.sessionId,
-              error: e instanceof Error ? e.message : String(e),
+              error: extractMessage(e),
             });
           }
         }
@@ -529,7 +530,7 @@ export function createSqliteSessionPersistence(
             skipped.push({
               source: "checkpoint",
               id: row.id,
-              error: e instanceof Error ? e.message : String(e),
+              error: extractMessage(e),
             });
           }
         }
@@ -550,7 +551,7 @@ export function createSqliteSessionPersistence(
             skipped.push({
               source: "pending_frame",
               id: row.frameId,
-              error: e instanceof Error ? e.message : String(e),
+              error: extractMessage(e),
             });
           }
         }

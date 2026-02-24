@@ -25,6 +25,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
         "@koi/hash": "workspace:*",
       },
       "devDependencies": {
@@ -37,6 +38,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
     },
     "packages/channel-cli": {
@@ -95,6 +97,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
       },
@@ -122,6 +125,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
         "@koi/hash": "workspace:*",
       },
     },
@@ -202,6 +206,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
     },
     "packages/hash": {
@@ -222,6 +227,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
         "@koi/validation": "workspace:*",
         "@modelcontextprotocol/sdk": "1.12.1",
         "zod": "4.3.6",
@@ -232,6 +238,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -306,6 +313,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -359,6 +367,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
       },
@@ -435,6 +444,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -467,6 +477,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
         "@koi/validation": "workspace:*",
       },
       "devDependencies": {
@@ -480,6 +491,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
         "@koi/validation": "workspace:*",
       },
       "devDependencies": {
