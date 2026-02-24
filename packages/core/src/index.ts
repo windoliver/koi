@@ -287,6 +287,13 @@ export type {
 export type { ModelCapabilities, ModelProvider, ModelTarget } from "./model-provider.js";
 // resolver
 export type { Resolver, SourceBundle, SourceLanguage } from "./resolver.js";
+// sandbox adapter — pluggable sandbox backends (OS-level, cloud, WASM)
+export type {
+  SandboxAdapter,
+  SandboxAdapterResult,
+  SandboxExecOptions,
+  SandboxInstance,
+} from "./sandbox-adapter.js";
 // sandbox executor — code execution in isolation (forge verification contract)
 export type {
   SandboxError,
