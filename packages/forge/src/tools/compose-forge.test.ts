@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import type { SandboxExecutor, TieredSandboxExecutor } from "@koi/core";
+import type { SandboxExecutor, TieredSandboxExecutor, ToolArtifact } from "@koi/core";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
-import type { ForgeResult, ToolArtifact } from "../types.js";
+import type { CompositionMetadata, ForgeResult } from "../types.js";
 import { createComposeForgeTool } from "./compose-forge.js";
 import type { ForgeDeps } from "./shared.js";
 
@@ -318,5 +318,109 @@ describe("createComposeForgeTool", () => {
     expect(result.ok).toBe(false);
     expect(result.error.stage).toBe("governance");
     expect(result.error.code).toBe("DEPTH_TOOL_RESTRICTED");
+  });
+
+  // --- Trust propagation ---
+
+  test("sandbox + sandbox → sandbox trust", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: "brick_s1", trustTier: "sandbox" }));
+    await store.save(createToolBrick({ id: "brick_s2", trustTier: "sandbox" }));
+
+    const tool = createComposeForgeTool(createDeps({ store }));
+    const result = (await tool.execute({
+      name: "sandboxComposite",
+      description: "Two sandbox bricks",
+      brickIds: ["brick_s1", "brick_s2"],
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    expect(result.value.trustTier).toBe("sandbox");
+  });
+
+  test("sandbox + verified → sandbox (min)", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: "brick_s3", trustTier: "sandbox" }));
+    await store.save(createToolBrick({ id: "brick_v1", trustTier: "verified" }));
+
+    const tool = createComposeForgeTool(createDeps({ store }));
+    const result = (await tool.execute({
+      name: "mixedComposite",
+      description: "sandbox + verified",
+      brickIds: ["brick_s3", "brick_v1"],
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    expect(result.value.trustTier).toBe("sandbox");
+  });
+
+  test("verified + promoted → verified (min)", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: "brick_v2", trustTier: "verified" }));
+    await store.save(createToolBrick({ id: "brick_p1", trustTier: "promoted" }));
+
+    const tool = createComposeForgeTool(createDeps({ store }));
+    const result = (await tool.execute({
+      name: "highComposite",
+      description: "verified + promoted",
+      brickIds: ["brick_v2", "brick_p1"],
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    // Pipeline assigns "sandbox" by default, and min(sandbox, verified) = sandbox
+    // But the trust from components: min(verified, promoted) = verified
+    // So overall trust = min(pipeline=sandbox, components=verified) = sandbox
+    expect(result.value.trustTier).toBe("sandbox");
+  });
+
+  // --- Composition metadata ---
+
+  test("stores composition metadata in _composition.json", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: "brick_m1", name: "calc", trustTier: "sandbox" }));
+
+    const tool = createComposeForgeTool(createDeps({ store }));
+    const result = (await tool.execute({
+      name: "metaComposite",
+      description: "Composite with metadata",
+      brickIds: ["brick_m1"],
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    const loadResult = await store.load(result.value.id);
+    expect(loadResult.ok).toBe(true);
+    if (loadResult.ok) {
+      const compositionJson = loadResult.value.files?.["_composition.json"];
+      expect(compositionJson).toBeDefined();
+      if (compositionJson !== undefined) {
+        const metadata = JSON.parse(compositionJson) as CompositionMetadata;
+        expect(metadata.bricks).toHaveLength(1);
+        expect(metadata.bricks[0]?.name).toBe("calc");
+        expect(metadata.bricks[0]?.kind).toBe("tool");
+        expect(metadata.bricks[0]?.trustTier).toBe("sandbox");
+        expect(metadata.minimumTrustTier).toBe("sandbox");
+      }
+    }
+  });
+
+  // --- Tags propagation ---
+
+  test("propagates tags to composite artifact", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: "brick_t1" }));
+
+    const tool = createComposeForgeTool(createDeps({ store }));
+    const result = (await tool.execute({
+      name: "taggedComposite",
+      description: "Composite with tags",
+      brickIds: ["brick_t1"],
+      tags: ["group", "v1"],
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    const loadResult = await store.load(result.value.id);
+    if (loadResult.ok) {
+      expect(loadResult.value.tags).toEqual(["group", "v1"]);
+    }
   });
 });

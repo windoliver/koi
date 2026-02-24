@@ -3,7 +3,8 @@ import { interpolateEnv } from "../env.js";
 
 // Helper to build env-var reference strings without triggering Biome's noTemplateCurlyInString
 function envRef(name: string, defaultVal?: string): string {
-  return defaultVal !== undefined ? "$" + `{${name}:-${defaultVal}}` : "$" + `{${name}}`;
+  const dollar = "$";
+  return defaultVal !== undefined ? `${dollar}{${name}:-${defaultVal}}` : `${dollar}{${name}}`;
 }
 
 describe("interpolateEnv", () => {

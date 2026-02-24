@@ -134,17 +134,17 @@ function validateSkillInput(
   input: Extract<ForgeInput, { readonly kind: "skill" }>,
   config: VerificationConfig,
 ): ForgeError | undefined {
-  if (input.content.length === 0) {
-    return staticError("MISSING_FIELD", "Skill content must not be empty");
+  if (input.body.length === 0) {
+    return staticError("MISSING_FIELD", "Skill body must not be empty");
   }
-  return validateSize(input.content, config.maxBrickSizeBytes, "Content");
+  return validateSize(input.body, config.maxBrickSizeBytes, "Body");
 }
 
 function validateAgentInput(
   input: Extract<ForgeInput, { readonly kind: "agent" }>,
   config: VerificationConfig,
 ): ForgeError | undefined {
-  if (input.manifestYaml.length === 0) {
+  if (input.manifestYaml === undefined || input.manifestYaml.length === 0) {
     return staticError("MISSING_FIELD", "Agent manifest YAML must not be empty");
   }
   return validateSize(input.manifestYaml, config.maxBrickSizeBytes, "Manifest YAML");

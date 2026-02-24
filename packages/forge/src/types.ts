@@ -75,6 +75,7 @@ export interface ForgeToolInput {
   readonly kind: "tool";
   readonly name: string;
   readonly description: string;
+  readonly tags?: readonly string[];
   readonly inputSchema: Readonly<Record<string, unknown>>;
   readonly implementation: string;
   readonly testCases?: readonly TestCase[];
@@ -86,25 +87,44 @@ export interface ForgeSkillInput {
   readonly kind: "skill";
   readonly name: string;
   readonly description: string;
-  readonly content: string;
+  /** Markdown body of the skill (the raw content, not the generated SKILL.md). */
+  readonly body: string;
   readonly tags?: readonly string[];
   readonly files?: Readonly<Record<string, string>>;
   readonly requires?: BrickRequires;
 }
 
-export interface ForgeAgentInput {
+export interface ForgeAgentInputWithManifest {
   readonly kind: "agent";
   readonly name: string;
   readonly description: string;
+  readonly tags?: readonly string[];
   readonly manifestYaml: string;
+  readonly brickIds?: undefined;
   readonly files?: Readonly<Record<string, string>>;
   readonly requires?: BrickRequires;
 }
+
+export interface ForgeAgentInputWithBricks {
+  readonly kind: "agent";
+  readonly name: string;
+  readonly description: string;
+  readonly tags?: readonly string[];
+  readonly brickIds: readonly string[];
+  readonly manifestYaml?: undefined;
+  readonly model?: string;
+  readonly agentType?: string;
+  readonly files?: Readonly<Record<string, string>>;
+  readonly requires?: BrickRequires;
+}
+
+export type ForgeAgentInput = ForgeAgentInputWithManifest | ForgeAgentInputWithBricks;
 
 export interface ForgeCompositeInput {
   readonly kind: "composite";
   readonly name: string;
   readonly description: string;
+  readonly tags?: readonly string[];
   readonly brickIds: readonly string[];
   readonly files?: Readonly<Record<string, string>>;
   readonly requires?: BrickRequires;
@@ -188,6 +208,22 @@ export type ManifestParseResult =
 
 export interface ManifestParser {
   readonly parse: (yaml: string) => ManifestParseResult | Promise<ManifestParseResult>;
+}
+
+// ---------------------------------------------------------------------------
+// Composition metadata (used by compose_forge for trust propagation)
+// ---------------------------------------------------------------------------
+
+export interface CompositionBrickInfo {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: BrickKind;
+  readonly trustTier: TrustTier;
+}
+
+export interface CompositionMetadata {
+  readonly bricks: readonly CompositionBrickInfo[];
+  readonly minimumTrustTier: TrustTier;
 }
 
 // Forge query — canonical definition lives in @koi/core (L0)

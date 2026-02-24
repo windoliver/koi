@@ -4,12 +4,14 @@
 
 import type {
   BrickArtifact,
+  BrickArtifactBase,
   ForgeStore,
   JsonObject,
   Result,
   Tool,
   ToolDescriptor,
 } from "@koi/core";
+import { z } from "zod";
 import type { ForgeConfig } from "../config.js";
 import type { ForgeError } from "../errors.js";
 import { staticError, typeError } from "../errors.js";
@@ -51,42 +53,206 @@ export interface ForgeToolConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Runtime input validation
+// Parsed input types — explicit for isolatedDeclarations (.d.ts generation)
 // ---------------------------------------------------------------------------
 
-interface FieldSpec {
+export interface ParsedBaseInput {
   readonly name: string;
-  readonly type: "string" | "object" | "array";
-  readonly required: boolean;
+  readonly description: string;
+  readonly tags?: readonly string[] | undefined;
+  readonly files?: Readonly<Record<string, string>> | undefined;
+  readonly requires?:
+    | {
+        readonly bins?: readonly string[] | undefined;
+        readonly env?: readonly string[] | undefined;
+        readonly tools?: readonly string[] | undefined;
+      }
+    | undefined;
 }
 
-export function validateInputFields(
-  input: unknown,
-  fields: readonly FieldSpec[],
-): ForgeError | undefined {
-  if (input === null || typeof input !== "object") {
-    return staticError("MISSING_FIELD", "Input must be a non-null object");
-  }
-  const obj = input as Record<string, unknown>;
+export interface ParsedToolInput extends ParsedBaseInput {
+  readonly inputSchema: Record<string, unknown>;
+  readonly implementation: string;
+  readonly testCases?:
+    | readonly {
+        readonly name: string;
+        readonly input: unknown;
+        readonly expectedOutput?: unknown | undefined;
+        readonly shouldThrow?: boolean | undefined;
+      }[]
+    | undefined;
+}
 
-  for (const field of fields) {
-    const value = obj[field.name];
-    if (field.required && value === undefined) {
-      return staticError("MISSING_FIELD", `Missing required field: "${field.name}"`);
-    }
-    if (value !== undefined) {
-      if (field.type === "string" && typeof value !== "string") {
-        return typeError(`Field "${field.name}" must be a string, got ${typeof value}`);
-      }
-      if (field.type === "object" && (typeof value !== "object" || value === null)) {
-        return typeError(`Field "${field.name}" must be an object, got ${typeof value}`);
-      }
-      if (field.type === "array" && !Array.isArray(value)) {
-        return typeError(`Field "${field.name}" must be an array, got ${typeof value}`);
-      }
-    }
+export interface ParsedSkillInput extends ParsedBaseInput {
+  readonly body: string;
+}
+
+export interface ParsedAgentInput extends ParsedBaseInput {
+  readonly manifestYaml?: string | undefined;
+  readonly brickIds?: readonly string[] | undefined;
+  readonly model?: string | undefined;
+  readonly agentType?: string | undefined;
+}
+
+export interface ParsedCompositeInput extends ParsedBaseInput {
+  readonly brickIds: readonly string[];
+}
+
+// ---------------------------------------------------------------------------
+// Zod input schemas
+// ---------------------------------------------------------------------------
+
+const baseInputFields = {
+  name: z.string(),
+  description: z.string(),
+  tags: z.array(z.string()).optional(),
+  files: z.record(z.string(), z.string()).optional(),
+  requires: z
+    .object({
+      bins: z.array(z.string()).optional(),
+      env: z.array(z.string()).optional(),
+      tools: z.array(z.string()).optional(),
+    })
+    .optional(),
+};
+
+const forgeToolInputSchema = z.object({
+  ...baseInputFields,
+  inputSchema: z.record(z.string(), z.unknown()),
+  implementation: z.string(),
+  testCases: z
+    .array(
+      z.object({
+        name: z.string(),
+        input: z.unknown(),
+        expectedOutput: z.unknown().optional(),
+        shouldThrow: z.boolean().optional(),
+      }),
+    )
+    .optional(),
+});
+
+const forgeSkillInputSchema = z.object({
+  ...baseInputFields,
+  body: z.string(),
+});
+
+const forgeAgentInputSchema = z
+  .object({
+    ...baseInputFields,
+    manifestYaml: z.string().optional(),
+    brickIds: z.array(z.string()).optional(),
+    model: z.string().optional(),
+    agentType: z.string().optional(),
+  })
+  .refine((val) => (val.manifestYaml !== undefined) !== (val.brickIds !== undefined), {
+    message: "Exactly one of manifestYaml or brickIds must be provided",
+  });
+
+const forgeCompositeInputSchema = z.object({
+  ...baseInputFields,
+  brickIds: z.array(z.string()),
+});
+
+// ---------------------------------------------------------------------------
+// Typed parse functions — replaces exported schemas for isolatedDeclarations
+// ---------------------------------------------------------------------------
+
+function zodParse<T>(schema: z.ZodType<T>, input: unknown): Result<T, ForgeError> {
+  if (input === null || typeof input !== "object") {
+    return { ok: false, error: staticError("MISSING_FIELD", "Input must be a non-null object") };
   }
-  return undefined;
+  const result = schema.safeParse(input);
+  if (result.success) {
+    return { ok: true, value: result.data };
+  }
+  const firstIssue = result.error.issues[0];
+  if (firstIssue === undefined) {
+    return { ok: false, error: staticError("INVALID_SCHEMA", "Input validation failed") };
+  }
+  const fieldPath = firstIssue.path.join(".");
+  if (firstIssue.code === "invalid_type") {
+    // Zod v4: `received` is not a top-level field; detect from message
+    const isMissing = firstIssue.message.includes("received undefined");
+    if (isMissing) {
+      return {
+        ok: false,
+        error: staticError("MISSING_FIELD", `Missing required field: "${fieldPath}"`),
+      };
+    }
+    // Extract received type from message: "expected string, received number"
+    const receivedMatch = /received (\w+)/.exec(firstIssue.message);
+    const received = receivedMatch?.[1] ?? "unknown";
+    return {
+      ok: false,
+      error: typeError(`Field "${fieldPath}" must be a ${firstIssue.expected}, got ${received}`),
+    };
+  }
+  if (firstIssue.code === "custom") {
+    return {
+      ok: false,
+      error: staticError("INVALID_SCHEMA", firstIssue.message ?? "Validation failed"),
+    };
+  }
+  return {
+    ok: false,
+    error: staticError(
+      "INVALID_SCHEMA",
+      `Validation error at "${fieldPath}": ${firstIssue.message}`,
+    ),
+  };
+}
+
+/** @deprecated Use parseToolInput/parseSkillInput/parseAgentInput/parseCompositeInput instead */
+export function parseForgeInput<T>(schema: z.ZodType<T>, input: unknown): Result<T, ForgeError> {
+  return zodParse(schema, input);
+}
+
+export function parseToolInput(input: unknown): Result<ParsedToolInput, ForgeError> {
+  return zodParse(forgeToolInputSchema, input);
+}
+
+export function parseSkillInput(input: unknown): Result<ParsedSkillInput, ForgeError> {
+  return zodParse(forgeSkillInputSchema, input);
+}
+
+export function parseAgentInput(input: unknown): Result<ParsedAgentInput, ForgeError> {
+  return zodParse(forgeAgentInputSchema, input);
+}
+
+export function parseCompositeInput(input: unknown): Result<ParsedCompositeInput, ForgeError> {
+  return zodParse(forgeCompositeInputSchema, input);
+}
+
+// ---------------------------------------------------------------------------
+// Shared base fields builder (DRY artifact construction)
+// ---------------------------------------------------------------------------
+
+export function buildBaseFields(
+  id: string,
+  input: {
+    readonly name: string;
+    readonly description: string;
+    readonly tags?: readonly string[];
+  },
+  report: VerificationReport,
+  deps: ForgeDeps,
+  contentHash: string,
+): Omit<BrickArtifactBase, "kind"> {
+  return {
+    id,
+    name: input.name,
+    description: input.description,
+    scope: deps.config.defaultScope,
+    trustTier: report.finalTrustTier,
+    lifecycle: "active",
+    createdBy: deps.context.agentId,
+    createdAt: Date.now(),
+    version: "0.0.1",
+    tags: input.tags ?? [],
+    usageCount: 0,
+    contentHash,
+  };
 }
 
 // ---------------------------------------------------------------------------

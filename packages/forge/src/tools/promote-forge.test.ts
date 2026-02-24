@@ -352,7 +352,8 @@ describe("createPromoteForgeTool", () => {
 
     expect(result.ok).toBe(false);
     expect(result.error.stage).toBe("static");
-    expect(result.error.code).toBe("INVALID_TYPE");
+    // Zod enum validation produces INVALID_SCHEMA for invalid enum values
+    expect(result.error.code).toBe("INVALID_SCHEMA");
   });
 
   test("rejects invalid trust tier value", async () => {
@@ -370,7 +371,8 @@ describe("createPromoteForgeTool", () => {
 
     expect(result.ok).toBe(false);
     expect(result.error.stage).toBe("static");
-    expect(result.error.code).toBe("INVALID_TYPE");
+    // Zod enum validation produces INVALID_SCHEMA for invalid enum values
+    expect(result.error.code).toBe("INVALID_SCHEMA");
   });
 
   // --- Store failures ---

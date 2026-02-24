@@ -7,10 +7,11 @@ import type { ForgeError } from "../errors.js";
 import type { ForgeResult, ForgeToolInput, ToolArtifact } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import {
+  buildBaseFields,
   computeContentHash,
   createForgeTool,
+  parseToolInput,
   runForgePipeline,
-  validateInputFields,
 } from "./shared.js";
 
 // ---------------------------------------------------------------------------
@@ -40,6 +41,7 @@ const FORGE_TOOL_CONFIG: ForgeToolConfig = {
           required: ["name", "input"],
         },
       },
+      tags: { type: "array", items: { type: "string" } },
       files: { type: "object", description: "Companion files: relative path → content" },
       requires: {
         type: "object",
@@ -60,51 +62,53 @@ const FORGE_TOOL_CONFIG: ForgeToolConfig = {
 // Handler
 // ---------------------------------------------------------------------------
 
-const FORGE_TOOL_FIELDS = [
-  { name: "name", type: "string", required: true },
-  { name: "description", type: "string", required: true },
-  { name: "inputSchema", type: "object", required: true },
-  { name: "implementation", type: "string", required: true },
-  { name: "testCases", type: "array", required: false },
-  { name: "files", type: "object", required: false },
-  { name: "requires", type: "object", required: false },
-] as const;
-
 async function forgeToolHandler(
   input: unknown,
   deps: ForgeDeps,
 ): Promise<Result<ForgeResult, ForgeError>> {
-  const validationErr = validateInputFields(input, FORGE_TOOL_FIELDS);
-  if (validationErr !== undefined) {
-    return { ok: false, error: validationErr };
+  const parsed = parseToolInput(input);
+  if (!parsed.ok) {
+    return parsed;
   }
-  const toolInput = input as ForgeToolInput;
+
   const forgeInput: ForgeToolInput = {
     kind: "tool",
-    name: toolInput.name,
-    description: toolInput.description,
-    inputSchema: toolInput.inputSchema,
-    implementation: toolInput.implementation,
-    ...(toolInput.testCases !== undefined ? { testCases: toolInput.testCases } : {}),
-    ...(toolInput.files !== undefined ? { files: toolInput.files } : {}),
-    ...(toolInput.requires !== undefined ? { requires: toolInput.requires } : {}),
+    name: parsed.value.name,
+    description: parsed.value.description,
+    inputSchema: parsed.value.inputSchema,
+    implementation: parsed.value.implementation,
+    ...(parsed.value.testCases !== undefined
+      ? {
+          testCases: parsed.value.testCases.map((tc) => ({
+            name: tc.name,
+            input: tc.input,
+            ...(tc.expectedOutput !== undefined ? { expectedOutput: tc.expectedOutput } : {}),
+            ...(tc.shouldThrow !== undefined ? { shouldThrow: tc.shouldThrow } : {}),
+          })),
+        }
+      : {}),
+    ...(parsed.value.tags !== undefined ? { tags: parsed.value.tags } : {}),
+    ...(parsed.value.files !== undefined ? { files: parsed.value.files } : {}),
+    ...(parsed.value.requires !== undefined
+      ? {
+          requires: {
+            ...(parsed.value.requires.bins !== undefined
+              ? { bins: parsed.value.requires.bins }
+              : {}),
+            ...(parsed.value.requires.env !== undefined ? { env: parsed.value.requires.env } : {}),
+            ...(parsed.value.requires.tools !== undefined
+              ? { tools: parsed.value.requires.tools }
+              : {}),
+          },
+        }
+      : {}),
   };
 
   return runForgePipeline(forgeInput, deps, (id, report) => {
+    const contentHash = computeContentHash(forgeInput.implementation, forgeInput.files);
     const artifact: ToolArtifact = {
-      id,
+      ...buildBaseFields(id, forgeInput, report, deps, contentHash),
       kind: "tool",
-      name: forgeInput.name,
-      description: forgeInput.description,
-      scope: deps.config.defaultScope,
-      trustTier: report.finalTrustTier,
-      lifecycle: "active",
-      createdBy: deps.context.agentId,
-      createdAt: Date.now(),
-      version: "0.0.1",
-      tags: [],
-      usageCount: 0,
-      contentHash: computeContentHash(forgeInput.implementation, forgeInput.files),
       implementation: forgeInput.implementation,
       inputSchema: forgeInput.inputSchema,
       ...(forgeInput.testCases !== undefined ? { testCases: forgeInput.testCases } : {}),

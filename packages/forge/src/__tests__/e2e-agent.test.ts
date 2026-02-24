@@ -414,7 +414,7 @@ describe("forge search + compose e2e", () => {
     const skillResult = (await forgeSkill.execute({
       name: "math-tips",
       description: "Tips for math operations",
-      content: "# Math Tips\n\nUse calculator for arithmetic.",
+      body: "# Math Tips\n\nUse calculator for arithmetic.",
     })) as { readonly ok: true; readonly value: ForgeResult };
 
     expect(skillResult.ok).toBe(true);
@@ -499,7 +499,7 @@ describe("forge search + compose e2e", () => {
     await forgeSkill.execute({
       name: "json-guide",
       description: "guide for JSON operations",
-      content: "# JSON Guide\n\nHow to work with JSON.",
+      body: "# JSON Guide\n\nHow to work with JSON.",
     });
 
     const searchTool = createSearchForgeTool(deps);

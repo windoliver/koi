@@ -1,19 +1,25 @@
 /**
  * forge_agent — Creates a new sub-agent with manifest validation.
+ * Supports two input modes:
+ *   1. `manifestYaml` — raw YAML manifest (existing behavior)
+ *   2. `brickIds` — auto-assembles manifest from referenced bricks
+ *
  * Requires a ManifestParser injected via ForgeDeps to validate YAML
  * without importing @koi/manifest (avoids L2 peer dependency).
  */
 
-import type { Result, Tool } from "@koi/core";
+import type { BrickArtifact, Result, Tool } from "@koi/core";
+import { assembleManifest } from "../assemble-manifest.js";
 import type { ForgeError } from "../errors.js";
 import { staticError } from "../errors.js";
 import type { AgentArtifact, ForgeAgentInput, ForgeResult } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import {
+  buildBaseFields,
   computeContentHash,
   createForgeTool,
+  parseAgentInput,
   runForgePipeline,
-  validateInputFields,
 } from "./shared.js";
 
 // ---------------------------------------------------------------------------
@@ -22,13 +28,26 @@ import {
 
 const FORGE_AGENT_CONFIG: ForgeToolConfig = {
   name: "forge_agent",
-  description: "Creates a new sub-agent from a YAML manifest through the verification pipeline",
+  description:
+    "Creates a new sub-agent from a YAML manifest or brick IDs through the verification pipeline",
   inputSchema: {
     type: "object",
     properties: {
       name: { type: "string" },
       description: { type: "string" },
-      manifestYaml: { type: "string" },
+      manifestYaml: {
+        type: "string",
+        description: "Raw YAML manifest (mutually exclusive with brickIds)",
+      },
+      brickIds: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Brick IDs to auto-assemble into a manifest (mutually exclusive with manifestYaml)",
+      },
+      model: { type: "string", description: "Model for auto-assembled manifest" },
+      agentType: { type: "string", description: "Agent type for auto-assembled manifest" },
+      tags: { type: "array", items: { type: "string" } },
       files: { type: "object", description: "Companion files: relative path → content" },
       requires: {
         type: "object",
@@ -40,7 +59,7 @@ const FORGE_AGENT_CONFIG: ForgeToolConfig = {
         },
       },
     },
-    required: ["name", "description", "manifestYaml"],
+    required: ["name", "description"],
   },
   handler: forgeAgentHandler,
 };
@@ -49,21 +68,13 @@ const FORGE_AGENT_CONFIG: ForgeToolConfig = {
 // Handler
 // ---------------------------------------------------------------------------
 
-const FORGE_AGENT_FIELDS = [
-  { name: "name", type: "string", required: true },
-  { name: "description", type: "string", required: true },
-  { name: "manifestYaml", type: "string", required: true },
-  { name: "files", type: "object", required: false },
-  { name: "requires", type: "object", required: false },
-] as const;
-
 async function forgeAgentHandler(
   input: unknown,
   deps: ForgeDeps,
 ): Promise<Result<ForgeResult, ForgeError>> {
-  const validationErr = validateInputFields(input, FORGE_AGENT_FIELDS);
-  if (validationErr !== undefined) {
-    return { ok: false, error: validationErr };
+  const parsed = parseAgentInput(input);
+  if (!parsed.ok) {
+    return parsed;
   }
 
   // Validate manifest parser is available
@@ -77,10 +88,30 @@ async function forgeAgentHandler(
     };
   }
 
-  const agentInput = input as ForgeAgentInput;
+  // Resolve manifest YAML from either path
+  let manifestYaml: string;
+  let _loadedBricks: readonly BrickArtifact[] | undefined;
 
-  // Parse and validate the manifest YAML before entering the pipeline
-  const parseResult = await deps.manifestParser.parse(agentInput.manifestYaml);
+  if (parsed.value.brickIds !== undefined) {
+    // Auto-assembly path
+    const assemblyResult = await assembleManifest(parsed.value.brickIds, deps.store, {
+      name: parsed.value.name,
+      description: parsed.value.description,
+      ...(parsed.value.model !== undefined ? { model: parsed.value.model } : {}),
+      ...(parsed.value.agentType !== undefined ? { agentType: parsed.value.agentType } : {}),
+    });
+    if (!assemblyResult.ok) {
+      return assemblyResult;
+    }
+    manifestYaml = assemblyResult.value.manifestYaml;
+    _loadedBricks = assemblyResult.value.loadedBricks;
+  } else {
+    // Raw YAML path (existing behavior)
+    manifestYaml = parsed.value.manifestYaml ?? "";
+  }
+
+  // Parse and validate the manifest YAML (both paths)
+  const parseResult = await deps.manifestParser.parse(manifestYaml);
   if (!parseResult.ok) {
     return {
       ok: false,
@@ -93,29 +124,32 @@ async function forgeAgentHandler(
 
   const forgeInput: ForgeAgentInput = {
     kind: "agent",
-    name: agentInput.name,
-    description: agentInput.description,
-    manifestYaml: agentInput.manifestYaml,
-    ...(agentInput.files !== undefined ? { files: agentInput.files } : {}),
-    ...(agentInput.requires !== undefined ? { requires: agentInput.requires } : {}),
+    name: parsed.value.name,
+    description: parsed.value.description,
+    manifestYaml,
+    ...(parsed.value.tags !== undefined ? { tags: parsed.value.tags } : {}),
+    ...(parsed.value.files !== undefined ? { files: parsed.value.files } : {}),
+    ...(parsed.value.requires !== undefined
+      ? {
+          requires: {
+            ...(parsed.value.requires.bins !== undefined
+              ? { bins: parsed.value.requires.bins }
+              : {}),
+            ...(parsed.value.requires.env !== undefined ? { env: parsed.value.requires.env } : {}),
+            ...(parsed.value.requires.tools !== undefined
+              ? { tools: parsed.value.requires.tools }
+              : {}),
+          },
+        }
+      : {}),
   };
 
   return runForgePipeline(forgeInput, deps, (id, report) => {
+    const contentHash = computeContentHash(manifestYaml, forgeInput.files);
     const artifact: AgentArtifact = {
-      id,
+      ...buildBaseFields(id, forgeInput, report, deps, contentHash),
       kind: "agent",
-      name: forgeInput.name,
-      description: forgeInput.description,
-      scope: deps.config.defaultScope,
-      trustTier: report.finalTrustTier,
-      lifecycle: "active",
-      createdBy: deps.context.agentId,
-      createdAt: Date.now(),
-      version: "0.0.1",
-      tags: [],
-      usageCount: 0,
-      contentHash: computeContentHash(forgeInput.manifestYaml, forgeInput.files),
-      manifestYaml: forgeInput.manifestYaml,
+      manifestYaml,
       ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
       ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
     };

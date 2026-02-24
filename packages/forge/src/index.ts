@@ -29,11 +29,21 @@ export type {
 // runtime values — adversarial verifiers
 export {
   createAdversarialVerifiers,
+  createContentScanningVerifier,
   createExfiltrationVerifier,
   createInjectionVerifier,
   createResourceExhaustionVerifier,
+  createStructuralHidingVerifier,
 } from "./adversarial-verifiers.js";
-export type { ForgeConfig, ScopePromotionConfig, VerificationConfig } from "./config.js";
+// runtime values — manifest assembly
+export type { AssembleManifestOptions, AssembleManifestResult } from "./assemble-manifest.js";
+export { assembleManifest } from "./assemble-manifest.js";
+export type {
+  AutoPromotionConfig,
+  ForgeConfig,
+  ScopePromotionConfig,
+  VerificationConfig,
+} from "./config.js";
 // runtime values — config
 export { createDefaultForgeConfig, validateForgeConfig } from "./config.js";
 export type { ForgeError, TestFailure } from "./errors.js";
@@ -54,9 +64,15 @@ export type {
 } from "./forge-component-provider.js";
 export { brickToTool, createForgeComponentProvider } from "./forge-component-provider.js";
 export { createForgeResolver } from "./forge-resolver.js";
+// runtime values — SKILL.md generation
+export type { SkillMdInput } from "./generate-skill-md.js";
+export { generateSkillMd } from "./generate-skill-md.js";
 export type { GovernanceResult } from "./governance.js";
 // runtime values — governance
 export { checkGovernance, checkScopePromotion } from "./governance.js";
+// runtime values — integrity verification
+export type { IntegrityMismatch, IntegrityOk, IntegrityResult } from "./integrity.js";
+export { loadAndVerify, verifyBrickIntegrity } from "./integrity.js";
 // runtime values — storage
 export { createInMemoryForgeStore } from "./memory-store.js";
 export { createComposeForgeTool } from "./tools/compose-forge.js";
@@ -70,7 +86,11 @@ export type { ForgeDeps, ForgeToolConfig } from "./tools/shared.js";
 export { createForgeTool } from "./tools/shared.js";
 // types — forge-specific (remain in L2)
 export type {
+  CompositionBrickInfo,
+  CompositionMetadata,
   ForgeAgentInput,
+  ForgeAgentInputWithBricks,
+  ForgeAgentInputWithManifest,
   ForgeCompositeInput,
   ForgeContext,
   ForgeInput,
@@ -95,6 +115,9 @@ export type {
   VerificationStage,
   VerifierResult,
 } from "./types.js";
+// runtime values — usage tracking & auto-promotion
+export type { UsagePromotedResult, UsageRecordedResult, UsageResult } from "./usage.js";
+export { computeAutoPromotion, recordBrickUsage } from "./usage.js";
 // runtime values — verification
 export { verify } from "./verify.js";
 export { verifySandbox } from "./verify-sandbox.js";
