@@ -237,7 +237,7 @@ describe("Long-running jobs", () => {
     // Wait for handshake frame
     await gateway.waitForFrames(1);
     const handshake = gateway.receivedFrames[0];
-    expect(handshake?.type).toBe("node:handshake");
+    expect(handshake?.kind).toBe("node:handshake");
 
     // Dispatch agents and verify gateway sees status updates
     await node.dispatch(makePid("reported-1"), testManifest, makeEngine());

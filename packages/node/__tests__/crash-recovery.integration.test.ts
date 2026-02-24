@@ -657,7 +657,7 @@ describe("Outbound frame persistence and replay", () => {
 
     // Verify a frame with the pending payload was sent to gateway
     const replayedFrame = frames.find(
-      (f) => f.type === "agent:message" && f.agentId === "replay-agent",
+      (f) => f.kind === "agent:message" && f.agentId === "replay-agent",
     );
     expect(replayedFrame).toBeDefined();
 
@@ -690,7 +690,7 @@ describe("Outbound frame persistence and replay", () => {
       nodeId: node.nodeId,
       agentId: "some-agent",
       correlationId: "dup-corr-123",
-      type: "agent:terminate" as const,
+      kind: "agent:terminate" as const,
       payload: {},
     };
 

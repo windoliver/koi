@@ -75,7 +75,7 @@ export function createMockGateway(): MockGateway {
         try {
           const raw = typeof message === "string" ? message : new TextDecoder().decode(message);
           const parsed: unknown = JSON.parse(raw);
-          if (typeof parsed !== "object" || parsed === null || !("type" in parsed)) {
+          if (typeof parsed !== "object" || parsed === null || !("kind" in parsed)) {
             return;
           }
           receivedFrames.push(parsed as NodeFrame);

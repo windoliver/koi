@@ -52,12 +52,12 @@ describe("Reconnection integration", () => {
       nodeId: "test-node",
       agentId: "agent-1",
       correlationId: "corr-1",
-      type: "agent:message",
+      kind: "agent:message",
       payload: { text: "hello" },
     });
 
     await gateway.waitForFrames(1);
-    expect(gateway.receivedFrames[0]?.type).toBe("agent:message");
+    expect(gateway.receivedFrames[0]?.kind).toBe("agent:message");
 
     await transport.close();
   });
@@ -117,7 +117,7 @@ describe("Reconnection integration", () => {
       nodeId: "test-node",
       agentId: "agent-1",
       correlationId: "gw-corr-1",
-      type: "agent:dispatch",
+      kind: "agent:dispatch",
       payload: { task: "do something" },
     });
 
