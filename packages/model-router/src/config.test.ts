@@ -179,4 +179,191 @@ describe("validateRouterConfig", () => {
     if (result.ok) throw new Error("Expected error");
     expect(result.error.message).toContain("Model router config validation failed");
   });
+
+  test("accepts cascade strategy", () => {
+    const result = validateRouterConfig({
+      targets: [validTarget],
+      strategy: "cascade",
+      cascade: {
+        tiers: [{ targetId: "openai:gpt-4o" }],
+        confidenceThreshold: 0.7,
+      },
+    });
+    expect(result.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cascade config
+// ---------------------------------------------------------------------------
+
+describe("cascade config", () => {
+  test("valid cascade config passes", () => {
+    const result = validateRouterConfig({
+      targets: [validTarget, { ...validTarget, provider: "anthropic", model: "claude" }],
+      strategy: "cascade",
+      cascade: {
+        tiers: [
+          { targetId: "openai:gpt-4o", costPerInputToken: 0.001 },
+          { targetId: "anthropic:claude", costPerInputToken: 0.01 },
+        ],
+        confidenceThreshold: 0.7,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected ok");
+    expect(result.value.cascade).toBeDefined();
+    expect(result.value.cascade?.tiers).toHaveLength(2);
+    expect(result.value.cascade?.confidenceThreshold).toBe(0.7);
+  });
+
+  test("cascade strategy without cascade config field fails", () => {
+    const result = validateRouterConfig({
+      targets: [validTarget],
+      strategy: "cascade",
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected error");
+    expect(result.error.code).toBe("VALIDATION");
+    expect(result.error.message).toContain("cascade config is required");
+  });
+
+  test("empty tiers array fails", () => {
+    const result = validateRouterConfig({
+      targets: [validTarget],
+      strategy: "cascade",
+      cascade: {
+        tiers: [],
+        confidenceThreshold: 0.7,
+      },
+    });
+
+    expect(result.ok).toBe(false);
+  });
+
+  test("threshold < 0 fails", () => {
+    const result = validateRouterConfig({
+      targets: [validTarget],
+      strategy: "cascade",
+      cascade: {
+        tiers: [{ targetId: "openai:gpt-4o" }],
+        confidenceThreshold: -0.1,
+      },
+    });
+
+    expect(result.ok).toBe(false);
+  });
+
+  test("threshold > 1 fails", () => {
+    const result = validateRouterConfig({
+      targets: [validTarget],
+      strategy: "cascade",
+      cascade: {
+        tiers: [{ targetId: "openai:gpt-4o" }],
+        confidenceThreshold: 1.5,
+      },
+    });
+
+    expect(result.ok).toBe(false);
+  });
+
+  test("tier referencing non-existent target fails", () => {
+    const result = validateRouterConfig({
+      targets: [validTarget],
+      strategy: "cascade",
+      cascade: {
+        tiers: [{ targetId: "anthropic:claude" }],
+        confidenceThreshold: 0.7,
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected error");
+    expect(result.error.message).toContain("unknown target");
+    expect(result.error.message).toContain("anthropic:claude");
+  });
+
+  test("non-cascade strategy ignores cascade field", () => {
+    const result = validateRouterConfig({
+      targets: [validTarget],
+      strategy: "fallback",
+      cascade: {
+        tiers: [{ targetId: "openai:gpt-4o" }],
+        confidenceThreshold: 0.7,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected ok");
+    // Cascade config is still resolved if present (even for non-cascade strategies)
+    expect(result.value.cascade).toBeDefined();
+  });
+
+  test("resolves default maxEscalations to tiers.length - 1", () => {
+    const result = validateRouterConfig({
+      targets: [validTarget, { ...validTarget, provider: "anthropic", model: "claude" }],
+      strategy: "cascade",
+      cascade: {
+        tiers: [{ targetId: "openai:gpt-4o" }, { targetId: "anthropic:claude" }],
+        confidenceThreshold: 0.7,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected ok");
+    expect(result.value.cascade?.maxEscalations).toBe(1);
+  });
+
+  test("resolves default budgetLimitTokens to 0 (unlimited)", () => {
+    const result = validateRouterConfig({
+      targets: [validTarget],
+      strategy: "cascade",
+      cascade: {
+        tiers: [{ targetId: "openai:gpt-4o" }],
+        confidenceThreshold: 0.7,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected ok");
+    expect(result.value.cascade?.budgetLimitTokens).toBe(0);
+  });
+
+  test("resolves default evaluatorTimeoutMs to 10_000", () => {
+    const result = validateRouterConfig({
+      targets: [validTarget],
+      strategy: "cascade",
+      cascade: {
+        tiers: [{ targetId: "openai:gpt-4o" }],
+        confidenceThreshold: 0.7,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected ok");
+    expect(result.value.cascade?.evaluatorTimeoutMs).toBe(10_000);
+  });
+
+  test("preserves explicit cascade overrides", () => {
+    const result = validateRouterConfig({
+      targets: [validTarget],
+      strategy: "cascade",
+      cascade: {
+        tiers: [{ targetId: "openai:gpt-4o" }],
+        confidenceThreshold: 0.8,
+        maxEscalations: 5,
+        budgetLimitTokens: 100_000,
+        evaluatorTimeoutMs: 5_000,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected ok");
+    expect(result.value.cascade?.confidenceThreshold).toBe(0.8);
+    expect(result.value.cascade?.maxEscalations).toBe(5);
+    expect(result.value.cascade?.budgetLimitTokens).toBe(100_000);
+    expect(result.value.cascade?.evaluatorTimeoutMs).toBe(5_000);
+  });
 });

@@ -467,3 +467,7 @@ describe("dispose", () => {
     expect(healthAfter.get("openai:gpt-4o")?.state).toBe("CLOSED");
   });
 });
+
+// ---------------------------------------------------------------------------
+// cascade strategy — see router-cascade.test.ts for full cascade tests
+// ---------------------------------------------------------------------------
