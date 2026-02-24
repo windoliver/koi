@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { ToolArtifact } from "@koi/core";
+import type { StoreChangeEvent, ToolArtifact } from "@koi/core";
 import { runForgeStoreContractTests } from "@koi/test-utils";
 import { createInMemoryForgeStore } from "./memory-store.js";
 
@@ -7,7 +7,7 @@ import { createInMemoryForgeStore } from "./memory-store.js";
 runForgeStoreContractTests(createInMemoryForgeStore);
 
 // ---------------------------------------------------------------------------
-// onChange notification tests
+// watch notification tests
 // ---------------------------------------------------------------------------
 
 function testToolArtifact(overrides?: Partial<ToolArtifact>): ToolArtifact {
@@ -31,102 +31,108 @@ function testToolArtifact(overrides?: Partial<ToolArtifact>): ToolArtifact {
   };
 }
 
-describe("InMemoryForgeStore onChange", () => {
-  test("onChange fires after successful save", async () => {
+describe("InMemoryForgeStore watch", () => {
+  test("watch fires after successful save with correct event", async () => {
     const store = createInMemoryForgeStore();
     const listener = mock(() => {});
 
-    store.onChange?.(listener);
+    store.watch?.(listener);
 
-    await store.save(testToolArtifact());
+    const brick = testToolArtifact();
+    await store.save(brick);
 
-    // Wait for debounce (50ms)
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 10));
 
     expect(listener).toHaveBeenCalledTimes(1);
+    const calls = listener.mock.calls as unknown as StoreChangeEvent[][];
+    const event = calls[0]?.[0];
+    expect(event?.kind).toBe("saved");
+    expect(event?.brickId).toBe(brick.id);
   });
 
-  test("onChange fires after successful remove", async () => {
+  test("watch fires after successful remove with correct event", async () => {
     const store = createInMemoryForgeStore();
-    const listener = mock(() => {});
     const brick = testToolArtifact();
 
     await store.save(brick);
 
-    // Wait for save notification to fire first
-    await new Promise((r) => setTimeout(r, 80));
-
-    store.onChange?.(listener);
+    const listener = mock(() => {});
+    store.watch?.(listener);
 
     await store.remove(brick.id);
 
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 10));
 
     expect(listener).toHaveBeenCalledTimes(1);
+    const calls = listener.mock.calls as unknown as StoreChangeEvent[][];
+    const event = calls[0]?.[0];
+    expect(event?.kind).toBe("removed");
+    expect(event?.brickId).toBe(brick.id);
   });
 
-  test("onChange fires after successful update", async () => {
+  test("watch fires after successful update with correct event", async () => {
     const store = createInMemoryForgeStore();
-    const listener = mock(() => {});
     const brick = testToolArtifact();
 
     await store.save(brick);
 
-    await new Promise((r) => setTimeout(r, 80));
-
-    store.onChange?.(listener);
+    const listener = mock(() => {});
+    store.watch?.(listener);
 
     await store.update(brick.id, { lifecycle: "deprecated" });
 
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 10));
 
     expect(listener).toHaveBeenCalledTimes(1);
+    const calls = listener.mock.calls as unknown as StoreChangeEvent[][];
+    const event = calls[0]?.[0];
+    expect(event?.kind).toBe("updated");
+    expect(event?.brickId).toBe(brick.id);
   });
 
-  test("onChange does NOT fire after failed remove (non-existent)", async () => {
+  test("watch does NOT fire after failed remove (non-existent)", async () => {
     const store = createInMemoryForgeStore();
     const listener = mock(() => {});
 
-    store.onChange?.(listener);
+    store.watch?.(listener);
 
     const result = await store.remove("non-existent-id");
     expect(result.ok).toBe(false);
 
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 10));
 
     expect(listener).not.toHaveBeenCalled();
   });
 
-  test("50ms debounce: two rapid saves produce one notification", async () => {
+  test("rapid saves fire one event each (no debounce)", async () => {
     const store = createInMemoryForgeStore();
     const listener = mock(() => {});
 
-    store.onChange?.(listener);
+    store.watch?.(listener);
 
     await store.save(testToolArtifact({ id: "tool-1", name: "tool-1" }));
     await store.save(testToolArtifact({ id: "tool-2", name: "tool-2" }));
 
-    // Wait for debounce
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 10));
 
-    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledTimes(2);
   });
 
   test("unsubscribe prevents further notifications", async () => {
     const store = createInMemoryForgeStore();
     const listener = mock(() => {});
 
-    const unsubscribe = store.onChange?.(listener);
+    const unsubscribe = store.watch?.(listener);
 
     await store.save(testToolArtifact({ id: "tool-1" }));
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 10));
     expect(listener).toHaveBeenCalledTimes(1);
 
     // Unsubscribe
     unsubscribe?.();
 
     await store.save(testToolArtifact({ id: "tool-2" }));
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 10));
 
     // Still just 1 call (no new notifications)
     expect(listener).toHaveBeenCalledTimes(1);
@@ -137,11 +143,11 @@ describe("InMemoryForgeStore onChange", () => {
     const listener1 = mock(() => {});
     const listener2 = mock(() => {});
 
-    store.onChange?.(listener1);
-    store.onChange?.(listener2);
+    store.watch?.(listener1);
+    store.watch?.(listener2);
 
     await store.save(testToolArtifact());
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 10));
 
     expect(listener1).toHaveBeenCalledTimes(1);
     expect(listener2).toHaveBeenCalledTimes(1);

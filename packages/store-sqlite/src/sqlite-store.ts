@@ -15,6 +15,7 @@ import type {
   ForgeStore,
   KoiError,
   Result,
+  StoreChangeEvent,
 } from "@koi/core";
 import { internal, notFound } from "@koi/core";
 import { validateBrickArtifact } from "@koi/validation";
@@ -24,8 +25,6 @@ import { applyMigrations } from "./schema.js";
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-const DEBOUNCE_MS = 50;
 
 // ---------------------------------------------------------------------------
 // Config types
@@ -136,30 +135,23 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
      WHERE id = ?`,
   );
 
-  // --- onChange notification -------------------------------------------------
-  const changeListeners = new Set<() => void>();
-  // let justified: mutable timer ref for debounce
-  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+  // --- watch notification ---------------------------------------------------
+  const changeListeners = new Set<(event: StoreChangeEvent) => void>();
 
-  const notifyListeners = (): void => {
-    if (debounceTimer !== undefined) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      debounceTimer = undefined;
-      for (const listener of changeListeners) {
-        listener();
+  const notifyListeners = (event: StoreChangeEvent): void => {
+    for (const listener of changeListeners) {
+      try {
+        listener(event);
+      } catch (_err: unknown) {
+        // Listener errors must not break the mutation return path or skip other listeners.
       }
-    }, DEBOUNCE_MS);
+    }
   };
 
-  const onChange = (listener: () => void): (() => void) => {
+  const watch = (listener: (event: StoreChangeEvent) => void): (() => void) => {
     changeListeners.add(listener);
     return () => {
       changeListeners.delete(listener);
-      // Clear pending debounce when no listeners remain to prevent timer leak
-      if (changeListeners.size === 0 && debounceTimer !== undefined) {
-        clearTimeout(debounceTimer);
-        debounceTimer = undefined;
-      }
     };
   };
 
@@ -190,7 +182,7 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
   const save = async (brick: BrickArtifact): Promise<Result<void, KoiError>> => {
     const dataJson = JSON.stringify(brick);
     const result = wrapSqlite(() => saveBrickAndTags(brick, dataJson), `save(${brick.id})`);
-    if (result.ok) notifyListeners();
+    if (result.ok) notifyListeners({ kind: "saved", brickId: brick.id });
     return result;
   };
 
@@ -283,7 +275,7 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
     const result = wrapSqlite(() => {
       deleteStmt.run(id);
     }, `remove(${id})`);
-    if (result.ok) notifyListeners();
+    if (result.ok) notifyListeners({ kind: "removed", brickId: id });
     return result;
   };
 
@@ -327,7 +319,7 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
   const update = async (id: string, updates: BrickUpdate): Promise<Result<void, KoiError>> => {
     try {
       const result = updateBrick(id, updates);
-      if (result.ok) notifyListeners();
+      if (result.ok) notifyListeners({ kind: "updated", brickId: id });
       return result;
     } catch (e: unknown) {
       return { ok: false, error: mapSqliteError(e, `update(${id})`) };
@@ -340,6 +332,7 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
   };
 
   const close = (): void => {
+    changeListeners.clear();
     try {
       db.run("PRAGMA optimize");
     } catch {
@@ -350,5 +343,5 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
     }
   };
 
-  return { save, load, search, remove, update, exists, close, onChange };
+  return { save, load, search, remove, update, exists, close, watch };
 }

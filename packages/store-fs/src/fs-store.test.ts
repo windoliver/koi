@@ -246,18 +246,18 @@ describe("FsForgeStore watcher", () => {
     return store;
   }
 
-  test("external file write triggers onChange", async () => {
+  test("external file write triggers watch", async () => {
     // Store A watches the directory
     const storeA = await watchingStore();
     const listener = mock(() => {});
-    storeA.onChange?.(listener);
+    storeA.watch?.(listener);
 
     // Store B (non-watching) writes a brick to the same directory
     const storeB = await plainStore();
     const brick = createTestBrick({ id: "brick_ext_write" });
     await storeB.save(brick);
 
-    // Wait for watcher debounce (100ms) + onChange debounce (50ms) + margin
+    // Wait for watcher debounce (100ms) + margin
     await new Promise((r) => setTimeout(r, 300));
 
     expect(listener).toHaveBeenCalled();
@@ -270,26 +270,28 @@ describe("FsForgeStore watcher", () => {
     }
   });
 
-  test("programmatic save does not double-fire onChange", async () => {
+  test("programmatic save does not double-fire watch", async () => {
     const store = await watchingStore();
     const listener = mock(() => {});
-    store.onChange?.(listener);
+    store.watch?.(listener);
 
     // Single programmatic save
     const brick = createTestBrick({ id: "brick_no_double" });
     await store.save(brick);
 
-    // Wait for both debounces to settle
+    // Wait for watcher debounce to settle
     await new Promise((r) => setTimeout(r, 300));
 
-    // Should fire exactly once (the programmatic mutation's debounced notification)
+    // Should fire exactly once (the programmatic mutation's immediate notification).
+    // The watcher rescan may also detect the change, but the index is already updated
+    // so computeIndexDiff returns no events → no duplicate.
     expect(listener).toHaveBeenCalledTimes(1);
   });
 
-  test("manually dropped valid JSON triggers onChange", async () => {
+  test("manually dropped valid JSON triggers watch", async () => {
     const store = await watchingStore();
     const listener = mock(() => {});
-    store.onChange?.(listener);
+    store.watch?.(listener);
 
     // Manually write a valid brick JSON to the correct shard path
     const brick = createTestBrick({ id: "brick_dropped" });
@@ -314,7 +316,7 @@ describe("FsForgeStore watcher", () => {
   test("dispose stops watcher (no further notifications)", async () => {
     const store = await watchingStore();
     const listener = mock(() => {});
-    store.onChange?.(listener);
+    store.watch?.(listener);
 
     // Dispose the store
     store.dispose();
@@ -338,7 +340,7 @@ describe("FsForgeStore watcher", () => {
     // Store A without watcher
     const storeA = await plainStore();
     const listener = mock(() => {});
-    storeA.onChange?.(listener);
+    storeA.watch?.(listener);
 
     // Store B saves a brick
     const storeB = await plainStore();

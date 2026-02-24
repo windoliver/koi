@@ -8,7 +8,7 @@
  * - Git-style hash-sharded directory layout
  */
 
-import { type FSWatcher, watch } from "node:fs";
+import { type FSWatcher, watch as fsWatch } from "node:fs";
 import { mkdir, readdir, rename, rm, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import type {
@@ -19,6 +19,7 @@ import type {
   ForgeStore,
   KoiError,
   Result,
+  StoreChangeEvent,
 } from "@koi/core";
 import { notFound } from "@koi/core";
 import { validateBrickArtifact } from "@koi/validation";
@@ -30,7 +31,6 @@ import { matchesQuery } from "./query.js";
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEBOUNCE_MS = 50;
 const WATCHER_DEBOUNCE_MS = 100;
 
 // ---------------------------------------------------------------------------
@@ -99,26 +99,37 @@ async function ensureDir(dirPath: string): Promise<void> {
   await mkdir(dirPath, { recursive: true });
 }
 
-/** Compare two metadata indexes for meaningful differences. */
-function indexChanged(
+/** Compute per-brick diff events between two metadata indexes. */
+function computeIndexDiff(
   prev: ReadonlyMap<string, BrickArtifactBase>,
   next: ReadonlyMap<string, BrickArtifactBase>,
-): boolean {
-  if (prev.size !== next.size) return true;
+): readonly StoreChangeEvent[] {
+  const events: StoreChangeEvent[] = [];
+
+  // Detect additions and updates
   for (const [id, meta] of next) {
     const prevMeta = prev.get(id);
-    if (prevMeta === undefined) return true;
-    if (
+    if (prevMeta === undefined) {
+      events.push({ kind: "saved", brickId: id });
+    } else if (
       prevMeta.contentHash !== meta.contentHash ||
       prevMeta.lifecycle !== meta.lifecycle ||
       prevMeta.trustTier !== meta.trustTier ||
       prevMeta.scope !== meta.scope ||
       prevMeta.usageCount !== meta.usageCount
     ) {
-      return true;
+      events.push({ kind: "updated", brickId: id });
     }
   }
-  return false;
+
+  // Detect removals
+  for (const id of prev.keys()) {
+    if (!next.has(id)) {
+      events.push({ kind: "removed", brickId: id });
+    }
+  }
+
+  return events;
 }
 
 /** Scan all .json files under baseDir and build the metadata index. */
@@ -205,30 +216,23 @@ export async function createFsForgeStore(
   // Build metadata index from existing files
   const index = await scanAndBuildIndex(baseDir, cleanOrphanedTmp);
 
-  // --- onChange notification -------------------------------------------------
-  const changeListeners = new Set<() => void>();
-  // let justified: mutable timer ref for debounce
-  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+  // --- watch notification ---------------------------------------------------
+  const changeListeners = new Set<(event: StoreChangeEvent) => void>();
 
-  const notifyListeners = (): void => {
-    if (debounceTimer !== undefined) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      debounceTimer = undefined;
-      for (const listener of changeListeners) {
-        listener();
+  const notifyListeners = (event: StoreChangeEvent): void => {
+    for (const listener of changeListeners) {
+      try {
+        listener(event);
+      } catch (_err: unknown) {
+        // Listener errors must not break the mutation return path or skip other listeners.
       }
-    }, DEBOUNCE_MS);
+    }
   };
 
-  const onChange = (listener: () => void): (() => void) => {
+  const watch = (listener: (event: StoreChangeEvent) => void): (() => void) => {
     changeListeners.add(listener);
     return () => {
       changeListeners.delete(listener);
-      // Clear pending debounce when no listeners remain to prevent timer leak
-      if (changeListeners.size === 0 && debounceTimer !== undefined) {
-        clearTimeout(debounceTimer);
-        debounceTimer = undefined;
-      }
     };
   };
 
@@ -239,7 +243,7 @@ export async function createFsForgeStore(
   let watcherTimer: ReturnType<typeof setTimeout> | undefined;
 
   if (config.watch === true) {
-    fsWatcher = watch(baseDir, { recursive: true }, () => {
+    fsWatcher = fsWatch(baseDir, { recursive: true }, () => {
       if (watcherTimer !== undefined) clearTimeout(watcherTimer);
       watcherTimer = setTimeout(() => {
         watcherTimer = undefined;
@@ -255,12 +259,15 @@ export async function createFsForgeStore(
     try {
       const snapshot = new Map(index); // shallow copy for comparison
       const fresh = await scanAndBuildIndex(baseDir, false); // don't clean .tmp on rescan
-      if (indexChanged(snapshot, fresh)) {
+      const events = computeIndexDiff(snapshot, fresh);
+      if (events.length > 0) {
         index.clear();
         for (const [k, v] of fresh) {
           index.set(k, v);
         }
-        notifyListeners();
+        for (const event of events) {
+          notifyListeners(event);
+        }
       }
     } catch (_err: unknown) {
       // Rescan failure is non-fatal — index stays stale until next event
@@ -278,10 +285,6 @@ export async function createFsForgeStore(
       clearTimeout(watcherTimer);
       watcherTimer = undefined;
     }
-    if (debounceTimer !== undefined) {
-      clearTimeout(debounceTimer);
-      debounceTimer = undefined;
-    }
     changeListeners.clear();
   };
 
@@ -297,7 +300,7 @@ export async function createFsForgeStore(
       const json = JSON.stringify(brick, null, 2);
       await atomicWrite(final, temp, json);
       index.set(brick.id, extractMetadata(brick));
-      notifyListeners();
+      notifyListeners({ kind: "saved", brickId: brick.id });
       return { ok: true, value: undefined };
     } catch (err: unknown) {
       return { ok: false, error: mapFsError(err, final) };
@@ -351,7 +354,7 @@ export async function createFsForgeStore(
     try {
       await rm(filePath);
       index.delete(id);
-      notifyListeners();
+      notifyListeners({ kind: "removed", brickId: id });
       return { ok: true, value: undefined };
     } catch (err: unknown) {
       return { ok: false, error: mapFsError(err, filePath) };
@@ -386,7 +389,7 @@ export async function createFsForgeStore(
       const json = JSON.stringify(updated, null, 2);
       await atomicWrite(filePath, temp, json);
       index.set(id, extractMetadata(updated));
-      notifyListeners();
+      notifyListeners({ kind: "updated", brickId: id });
       return { ok: true, value: undefined };
     } catch (err: unknown) {
       return { ok: false, error: mapFsError(err, filePath) };
@@ -425,7 +428,7 @@ export async function createFsForgeStore(
     remove,
     update,
     exists,
-    onChange,
+    watch,
     searchIndex,
     loadFromDisk,
     dispose,

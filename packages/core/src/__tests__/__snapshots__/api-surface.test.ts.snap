@@ -3,10 +3,10 @@
 exports[`@koi/core API surface . has stable type surface 1`] = `
 "import { BrickRef } from './brick-snapshot.js';
 export { BrickId, BrickSnapshot, BrickSource, SnapshotEvent, SnapshotId, SnapshotQuery, SnapshotStore, brickId, snapshotId } from './brick-snapshot.js';
-import { A as AgentId, P as ProcessState, S as SessionId, T as ToolCallId } from './ecs-CwvIgGaq.js';
-export { a as Agent, B as BROWSER, b as BrowserActionOptions, c as BrowserConsoleEntry, d as BrowserConsoleLevel, e as BrowserConsoleOptions, f as BrowserConsoleResult, g as BrowserDriver, h as BrowserEvaluateOptions, i as BrowserEvaluateResult, j as BrowserFormField, k as BrowserNavigateOptions, l as BrowserNavigateResult, m as BrowserRefInfo, n as BrowserScreenshotOptions, o as BrowserScreenshotResult, p as BrowserScrollOptions, q as BrowserSnapshotOptions, r as BrowserSnapshotResult, s as BrowserTabCloseOptions, t as BrowserTabFocusOptions, u as BrowserTabInfo, v as BrowserTabNewOptions, w as BrowserTypeOptions, x as BrowserWaitOptions, y as BrowserWaitUntil, C as CREDENTIALS, z as ChildHandle, D as ChildLifecycleEvent, E as ComponentProvider, F as CredentialComponent, G as DELEGATION, H as EVENTS, I as EventComponent, J as FILESYSTEM, K as GOVERNANCE, L as GovernanceComponent, M as GovernanceUsage, N as MEMORY, O as MemoryComponent, Q as MemoryResult, R as ProcessAccounter, U as ProcessId, V as RunId, W as SkillMetadata, X as SpawnCheck, Y as SpawnLedger, Z as SubsystemToken, _ as Tool, $ as ToolDescriptor, a0 as TrustTier, a1 as TurnId, a2 as agentId, a3 as channelToken, a4 as runId, a5 as sessionId, a6 as skillToken, a7 as token, a8 as toolCallId, a9 as toolToken, aa as turnId } from './ecs-CwvIgGaq.js';
-import { E as EngineState, a as EngineInput } from './engine-DiC-Tg05.js';
-export { A as AbortReason, C as ComposedCallHandlers, b as CorrelationIds, c as EngineAdapter, d as EngineEvent, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, h as EngineStopReason } from './engine-DiC-Tg05.js';
+import { A as AgentId, P as ProcessState, S as SessionId, T as ToolCallId } from './ecs-BV2EgL97.js';
+export { a as Agent, B as BROWSER, b as BrowserActionOptions, c as BrowserConsoleEntry, d as BrowserConsoleLevel, e as BrowserConsoleOptions, f as BrowserConsoleResult, g as BrowserDriver, h as BrowserEvaluateOptions, i as BrowserEvaluateResult, j as BrowserFormField, k as BrowserNavigateOptions, l as BrowserNavigateResult, m as BrowserRefInfo, n as BrowserScreenshotOptions, o as BrowserScreenshotResult, p as BrowserScrollOptions, q as BrowserSnapshotOptions, r as BrowserSnapshotResult, s as BrowserTabCloseOptions, t as BrowserTabFocusOptions, u as BrowserTabInfo, v as BrowserTabNewOptions, w as BrowserTypeOptions, x as BrowserWaitOptions, y as BrowserWaitUntil, C as CREDENTIALS, z as ChildHandle, D as ChildLifecycleEvent, E as ComponentEvent, F as ComponentEventKind, G as ComponentProvider, H as CredentialComponent, I as DELEGATION, J as EVENTS, K as EventComponent, L as FILESYSTEM, M as GOVERNANCE, N as GovernanceComponent, O as GovernanceUsage, Q as MEMORY, R as MemoryComponent, U as MemoryResult, V as ProcessAccounter, W as ProcessId, X as RunId, Y as SkillMetadata, Z as SpawnCheck, _ as SpawnLedger, $ as SubsystemToken, a0 as Tool, a1 as ToolDescriptor, a2 as TrustTier, a3 as TurnId, a4 as agentId, a5 as channelToken, a6 as runId, a7 as sessionId, a8 as skillToken, a9 as token, aa as toolCallId, ab as toolToken, ac as turnId } from './ecs-BV2EgL97.js';
+import { E as EngineState, a as EngineInput } from './engine-BCN59tjf.js';
+export { A as AbortReason, C as ComposedCallHandlers, b as CorrelationIds, c as EngineAdapter, d as EngineEvent, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, h as EngineStopReason } from './engine-BCN59tjf.js';
 import { Result, KoiError } from './errors.js';
 export { BackendErrorMapper, KoiErrorCode, RETRYABLE_DEFAULTS } from './errors.js';
 import { A as AgentManifest } from './assembly-BeWjVbbb.js';
@@ -865,7 +865,7 @@ import './webhook.js';
 
 exports[`@koi/core API surface ./ecs has stable type surface 1`] = `
 "import './assembly-BeWjVbbb.js';
-export { a as Agent, A as AgentId, B as BROWSER, C as CREDENTIALS, z as ChildHandle, D as ChildLifecycleEvent, E as ComponentProvider, F as CredentialComponent, G as DELEGATION, H as EVENTS, I as EventComponent, J as FILESYSTEM, K as GOVERNANCE, L as GovernanceComponent, M as GovernanceUsage, N as MEMORY, O as MemoryComponent, Q as MemoryResult, R as ProcessAccounter, U as ProcessId, P as ProcessState, V as RunId, S as SessionId, W as SkillMetadata, X as SpawnCheck, Y as SpawnLedger, Z as SubsystemToken, _ as Tool, T as ToolCallId, $ as ToolDescriptor, a0 as TrustTier, a1 as TurnId, a2 as agentId, a3 as channelToken, a4 as runId, a5 as sessionId, a6 as skillToken, a7 as token, a8 as toolCallId, a9 as toolToken, aa as turnId } from './ecs-CwvIgGaq.js';
+export { a as Agent, A as AgentId, B as BROWSER, C as CREDENTIALS, z as ChildHandle, D as ChildLifecycleEvent, E as ComponentEvent, F as ComponentEventKind, G as ComponentProvider, H as CredentialComponent, I as DELEGATION, J as EVENTS, K as EventComponent, L as FILESYSTEM, M as GOVERNANCE, N as GovernanceComponent, O as GovernanceUsage, Q as MEMORY, R as MemoryComponent, U as MemoryResult, V as ProcessAccounter, W as ProcessId, P as ProcessState, X as RunId, S as SessionId, Y as SkillMetadata, Z as SpawnCheck, _ as SpawnLedger, $ as SubsystemToken, a0 as Tool, T as ToolCallId, a1 as ToolDescriptor, a2 as TrustTier, a3 as TurnId, a4 as agentId, a5 as channelToken, a6 as runId, a7 as sessionId, a8 as skillToken, a9 as token, aa as toolCallId, ab as toolToken, ac as turnId } from './ecs-BV2EgL97.js';
 import './channel.js';
 import './common.js';
 import './filesystem-backend.js';
@@ -877,8 +877,8 @@ import './message.js';
 
 exports[`@koi/core API surface ./engine has stable type surface 1`] = `
 "import './common.js';
-export { A as AbortReason, C as ComposedCallHandlers, c as EngineAdapter, d as EngineEvent, a as EngineInput, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, E as EngineState, h as EngineStopReason } from './engine-DiC-Tg05.js';
-import './ecs-CwvIgGaq.js';
+export { A as AbortReason, C as ComposedCallHandlers, c as EngineAdapter, d as EngineEvent, a as EngineInput, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, E as EngineState, h as EngineStopReason } from './engine-BCN59tjf.js';
+import './ecs-BV2EgL97.js';
 import './message.js';
 import './middleware.js';
 import './assembly-BeWjVbbb.js';
@@ -1157,7 +1157,7 @@ export type { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, Inb
 exports[`@koi/core API surface ./middleware has stable type surface 1`] = `
 "import { ChannelStatus } from './channel.js';
 import { JsonObject } from './common.js';
-import { T as ToolCallId, S as SessionId, V as RunId, a1 as TurnId } from './ecs-CwvIgGaq.js';
+import { T as ToolCallId, S as SessionId, X as RunId, a3 as TurnId } from './ecs-BV2EgL97.js';
 import { InboundMessage } from './message.js';
 import './assembly-BeWjVbbb.js';
 import './webhook.js';
@@ -1281,7 +1281,7 @@ export type { ApprovalDecision, ApprovalHandler, ApprovalRequest, KoiMiddleware,
 `;
 
 exports[`@koi/core API surface ./eviction has stable type surface 1`] = `
-"import { A as AgentId, P as ProcessState } from './ecs-CwvIgGaq.js';
+"import { A as AgentId, P as ProcessState } from './ecs-BV2EgL97.js';
 import './assembly-BeWjVbbb.js';
 import './common.js';
 import './webhook.js';
@@ -1335,7 +1335,7 @@ export type { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult 
 `;
 
 exports[`@koi/core API surface ./health has stable type surface 1`] = `
-"import { A as AgentId } from './ecs-CwvIgGaq.js';
+"import { A as AgentId } from './ecs-BV2EgL97.js';
 import './assembly-BeWjVbbb.js';
 import './common.js';
 import './webhook.js';
@@ -1407,7 +1407,7 @@ export { DEFAULT_HEALTH_MONITOR_CONFIG, type HealthMonitor, type HealthMonitorCo
 `;
 
 exports[`@koi/core API surface ./lifecycle has stable type surface 1`] = `
-"import { A as AgentId, P as ProcessState } from './ecs-CwvIgGaq.js';
+"import { A as AgentId, P as ProcessState } from './ecs-BV2EgL97.js';
 import { Result, KoiError } from './errors.js';
 import './assembly-BeWjVbbb.js';
 import './common.js';
@@ -1748,7 +1748,7 @@ export { type BrickId, type BrickRef, type BrickSnapshot, type BrickSource, type
 `;
 
 exports[`@koi/core API surface ./brick-store has stable type surface 1`] = `
-"import { a0 as TrustTier } from './ecs-CwvIgGaq.js';
+"import { a2 as TrustTier } from './ecs-BV2EgL97.js';
 import { Result, KoiError } from './errors.js';
 import { B as BrickKind, F as ForgeScope, a as BrickLifecycle } from './forge-types-4-HydRtT.js';
 import './assembly-BeWjVbbb.js';
@@ -1850,8 +1850,8 @@ interface ForgeStore {
      * When available, promote_forge wires scope metadata changes to physical tier moves.
      */
     readonly promote?: (id: string, targetScope: ForgeScope) => Promise<Result<void, KoiError>>;
-    /** Optional push notification when store contents change (save/remove/update). Returns unsubscribe. */
-    readonly onChange?: (listener: () => void) => () => void;
+    /** Optional typed watch for store mutations. Returns unsubscribe. */
+    readonly watch?: (listener: (event: StoreChangeEvent) => void) => () => void;
     /** Clean up resources (filesystem watchers, timers). Not all backends hold resources. */
     readonly dispose?: () => void;
 }
@@ -1898,7 +1898,7 @@ export type { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, Bri
 
 exports[`@koi/core API surface ./sandbox-adapter has stable type surface 1`] = `
 "import { SandboxProfile } from './sandbox-profile.js';
-import './ecs-CwvIgGaq.js';
+import './ecs-BV2EgL97.js';
 import './assembly-BeWjVbbb.js';
 import './common.js';
 import './webhook.js';
@@ -1970,7 +1970,7 @@ export type { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxI
 `;
 
 exports[`@koi/core API surface ./sandbox-executor has stable type surface 1`] = `
-"import { a0 as TrustTier } from './ecs-CwvIgGaq.js';
+"import { a2 as TrustTier } from './ecs-BV2EgL97.js';
 import './assembly-BeWjVbbb.js';
 import './common.js';
 import './webhook.js';
@@ -2034,7 +2034,7 @@ export type { SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, Ti
 `;
 
 exports[`@koi/core API surface ./sandbox-profile has stable type surface 1`] = `
-"import { a0 as TrustTier } from './ecs-CwvIgGaq.js';
+"import { a2 as TrustTier } from './ecs-BV2EgL97.js';
 import './assembly-BeWjVbbb.js';
 import './common.js';
 import './webhook.js';

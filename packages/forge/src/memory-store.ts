@@ -10,6 +10,7 @@ import type {
   ForgeStore,
   KoiError,
   Result,
+  StoreChangeEvent,
 } from "@koi/core";
 import { notFound } from "@koi/core";
 
@@ -59,41 +60,32 @@ function matchesQuery(brick: BrickArtifact, query: ForgeQuery): boolean {
 // Public API
 // ---------------------------------------------------------------------------
 
-const DEBOUNCE_MS = 50;
-
 export function createInMemoryForgeStore(): ForgeStore {
   const bricks = new Map<string, BrickArtifact>();
 
-  // --- onChange notification ---
-  const changeListeners = new Set<() => void>();
-  // let justified: mutable timer ref for debounce
-  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+  // --- watch notification ---
+  const changeListeners = new Set<(event: StoreChangeEvent) => void>();
 
-  const notifyListeners = (): void => {
-    if (debounceTimer !== undefined) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      debounceTimer = undefined;
-      for (const listener of changeListeners) {
-        listener();
+  const notifyListeners = (event: StoreChangeEvent): void => {
+    for (const listener of changeListeners) {
+      try {
+        listener(event);
+      } catch (_err: unknown) {
+        // Listener errors must not break the mutation return path or skip other listeners.
       }
-    }, DEBOUNCE_MS);
+    }
   };
 
-  const onChange = (listener: () => void): (() => void) => {
+  const watch = (listener: (event: StoreChangeEvent) => void): (() => void) => {
     changeListeners.add(listener);
     return () => {
       changeListeners.delete(listener);
-      // Clear pending debounce when no listeners remain to prevent timer leak
-      if (changeListeners.size === 0 && debounceTimer !== undefined) {
-        clearTimeout(debounceTimer);
-        debounceTimer = undefined;
-      }
     };
   };
 
   const save = async (brick: BrickArtifact): Promise<Result<void, KoiError>> => {
     bricks.set(brick.id, brick);
-    notifyListeners();
+    notifyListeners({ kind: "saved", brickId: brick.id });
     return { ok: true, value: undefined };
   };
 
@@ -123,7 +115,7 @@ export function createInMemoryForgeStore(): ForgeStore {
       return { ok: false, error: notFoundError(id) };
     }
     bricks.delete(id);
-    notifyListeners();
+    notifyListeners({ kind: "removed", brickId: id });
     return { ok: true, value: undefined };
   };
 
@@ -141,7 +133,7 @@ export function createInMemoryForgeStore(): ForgeStore {
       ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
     };
     bricks.set(id, updated);
-    notifyListeners();
+    notifyListeners({ kind: "updated", brickId: id });
     return { ok: true, value: undefined };
   };
 
@@ -149,5 +141,5 @@ export function createInMemoryForgeStore(): ForgeStore {
     return { ok: true, value: bricks.has(id) };
   };
 
-  return { save, load, search, remove, update, exists, onChange };
+  return { save, load, search, remove, update, exists, watch };
 }

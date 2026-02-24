@@ -10,6 +10,7 @@ import type {
   ModelChunk,
   ModelHandler,
   ModelStreamHandler,
+  StoreChangeEvent,
   Tool,
   ToolDescriptor,
   ToolRequest,
@@ -2411,11 +2412,11 @@ describe("Canonical ID hierarchy", () => {
 });
 
 // ---------------------------------------------------------------------------
-// createKoi — forge onChange subscription (hot-attach)
+// createKoi — forge watch subscription (hot-attach)
 // ---------------------------------------------------------------------------
 
-describe("createKoi forge onChange", () => {
-  test("forged tool descriptors update mid-session when forge.onChange fires", async () => {
+describe("createKoi forge watch", () => {
+  test("forged tool descriptors update mid-session when forge.watch fires", async () => {
     const initialDescriptor: ToolDescriptor = {
       name: "initial-tool",
       description: "Initial",
@@ -2429,16 +2430,16 @@ describe("createKoi forge onChange", () => {
 
     // let justified: mutable state simulating forge store changes
     let currentDescriptors: readonly ToolDescriptor[] = [initialDescriptor];
-    // let justified: onChange listener ref for triggering mid-session
-    let onChangeListener: (() => void) | undefined;
+    // let justified: watch listener ref for triggering mid-session
+    let watchListener: ((event: StoreChangeEvent) => void) | undefined;
 
     const forge: ForgeRuntime = {
       resolveTool: mock(async () => undefined),
       toolDescriptors: mock(async () => currentDescriptors),
-      onChange: (listener: () => void): (() => void) => {
-        onChangeListener = listener;
+      watch: (listener: (event: StoreChangeEvent) => void): (() => void) => {
+        watchListener = listener;
         return () => {
-          onChangeListener = undefined;
+          watchListener = undefined;
         };
       },
     };
@@ -2460,14 +2461,14 @@ describe("createKoi forge onChange", () => {
           // Snapshot 1: initial descriptors
           descriptorSnapshots.push([...input.callHandlers.tools]);
 
-          // Simulate forge store change: add new tool + fire onChange
+          // Simulate forge store change: add new tool + fire watch
           currentDescriptors = [initialDescriptor, newDescriptor];
-          onChangeListener?.();
+          watchListener?.({ kind: "saved", brickId: "hot-attached-tool" });
 
           // Wait for fire-and-forget descriptor refresh
           await new Promise((r) => setTimeout(r, 20));
 
-          // Snapshot 2: after onChange fired (should include new tool eagerly)
+          // Snapshot 2: after watch fired (should include new tool eagerly)
           descriptorSnapshots.push([...input.callHandlers.tools]);
 
           yield { kind: "done" as const, output: doneOutput() };
@@ -2486,19 +2487,19 @@ describe("createKoi forge onChange", () => {
 
     // Snapshot 1: only initial tool
     expect(descriptorSnapshots[0]?.map((t) => t.name)).toEqual(["initial-tool"]);
-    // Snapshot 2: both tools (eager refresh via onChange)
+    // Snapshot 2: both tools (eager refresh via watch)
     const names = descriptorSnapshots[1]?.map((t) => t.name) ?? [];
     expect(names).toContain("initial-tool");
     expect(names).toContain("hot-attached-tool");
   });
 
-  test("forged tool callable via callHandlers.toolCall after forge.onChange", async () => {
+  test("forged tool callable via callHandlers.toolCall after forge.watch", async () => {
     const hotTool = mockTool("hot-tool", async () => "hot-result");
 
     // let justified: mutable state simulating forge store changes
     let resolveHotTool = false;
-    // let justified: onChange listener ref
-    let onChangeListener: (() => void) | undefined;
+    // let justified: watch listener ref
+    let watchListener: ((event: StoreChangeEvent) => void) | undefined;
 
     const forge: ForgeRuntime = {
       resolveTool: mock(async (toolId: string) => {
@@ -2506,10 +2507,10 @@ describe("createKoi forge onChange", () => {
         return undefined;
       }),
       toolDescriptors: mock(async () => (resolveHotTool ? [hotTool.descriptor] : [])),
-      onChange: (listener: () => void): (() => void) => {
-        onChangeListener = listener;
+      watch: (listener: (event: StoreChangeEvent) => void): (() => void) => {
+        watchListener = listener;
         return () => {
-          onChangeListener = undefined;
+          watchListener = undefined;
         };
       },
     };
@@ -2521,9 +2522,9 @@ describe("createKoi forge onChange", () => {
         return;
       }
 
-      // Make the tool available and fire onChange
+      // Make the tool available and fire watch
       resolveHotTool = true;
-      onChangeListener?.();
+      watchListener?.({ kind: "saved", brickId: "hot-tool" });
       await new Promise((r) => setTimeout(r, 20));
 
       // Call the hot-attached tool
@@ -2554,7 +2555,7 @@ describe("createKoi forge onChange", () => {
     const forge: ForgeRuntime = {
       resolveTool: mock(async () => undefined),
       toolDescriptors: mock(async () => []),
-      onChange: (_listener: () => void): (() => void) => {
+      watch: (_listener: (event: StoreChangeEvent) => void): (() => void) => {
         return () => {
           unsubCalled = true;
         };
@@ -2582,7 +2583,7 @@ describe("createKoi forge onChange", () => {
     const forge: ForgeRuntime = {
       resolveTool: mock(async () => undefined),
       toolDescriptors: mock(async () => []),
-      onChange: (_listener: () => void): (() => void) => {
+      watch: (_listener: (event: StoreChangeEvent) => void): (() => void) => {
         return () => {
           unsubCalled = true;
         };
@@ -2629,10 +2630,10 @@ describe("createKoi forge onChange", () => {
     expect(unsubCalled).toBe(true);
   });
 
-  test("no error when forge.onChange is undefined (backward compat)", async () => {
-    // ForgeRuntime without onChange — should work exactly as before
+  test("no error when forge.watch is undefined (backward compat)", async () => {
+    // ForgeRuntime without watch — should work exactly as before
     const forge = mockForgeRuntime();
-    expect(forge.onChange).toBeUndefined();
+    expect(forge.watch).toBeUndefined();
 
     const adapter = forgeTestAdapter(async function* (_input) {
       yield { kind: "done" as const, output: doneOutput() };
@@ -2655,7 +2656,7 @@ describe("createKoi forge onChange", () => {
     const forge: ForgeRuntime = {
       resolveTool: mock(async () => undefined),
       toolDescriptors,
-      onChange: (_listener: () => void): (() => void) => {
+      watch: (_listener: (event: StoreChangeEvent) => void): (() => void) => {
         return () => {};
       },
     };
@@ -2684,7 +2685,7 @@ describe("createKoi forge onChange", () => {
     await collectEvents(runtime.run({ kind: "text", text: "test" }));
 
     // toolDescriptors called once at session start (initial refreshForgeState),
-    // but NOT again at turn boundaries because onChange is active and dirty flag is false
+    // but NOT again at turn boundaries because watch is active and dirty flag is false
     expect(toolDescriptors).toHaveBeenCalledTimes(1);
   });
 });

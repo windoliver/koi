@@ -112,7 +112,7 @@ describe("createForgeRuntime", () => {
     expect(descriptors).toHaveLength(0);
   });
 
-  test("cache invalidation: forge new tool → onChange → resolveTool finds it", async () => {
+  test("cache invalidation: forge new tool → watch → resolveTool finds it", async () => {
     const store = createInMemoryForgeStore();
     const runtime = createForgeRuntime({ store, executor: mockTiered() });
 
@@ -123,28 +123,33 @@ describe("createForgeRuntime", () => {
     // Save a new tool to the store
     await store.save(testToolArtifact({ name: "new-tool" }));
 
-    // Wait for debounce
-    await new Promise((r) => setTimeout(r, 80));
+    // Events fire immediately — flush microtasks
+    await new Promise((r) => setTimeout(r, 10));
 
-    // After onChange fires, cache should be invalidated
+    // After watch fires, cache should be invalidated
     const after = await runtime.resolveTool("new-tool");
     expect(after).toBeDefined();
     expect(after?.descriptor.name).toBe("new-tool");
   });
 
-  test("onChange propagates from store", async () => {
+  test("watch propagates typed events from store", async () => {
     const store = createInMemoryForgeStore();
     const runtime = createForgeRuntime({ store, executor: mockTiered() });
 
-    expect(runtime.onChange).toBeDefined();
+    expect(runtime.watch).toBeDefined();
 
     const listener = mock(() => {});
-    const unsub = runtime.onChange?.(listener);
+    const unsub = runtime.watch?.(listener);
 
     await store.save(testToolArtifact());
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 10));
 
     expect(listener).toHaveBeenCalledTimes(1);
+    // Verify typed event payload
+    const calls = listener.mock.calls as unknown as import("@koi/core").StoreChangeEvent[][];
+    const event = calls[0]?.[0];
+    expect(event).toBeDefined();
+    expect(event?.kind).toBe("saved");
 
     unsub?.();
   });

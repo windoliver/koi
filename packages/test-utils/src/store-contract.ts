@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { ForgeStore, SkillArtifact, ToolArtifact } from "@koi/core";
+import type { ForgeStore, SkillArtifact, StoreChangeEvent, ToolArtifact } from "@koi/core";
 
 function createBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
@@ -242,145 +242,169 @@ export function runForgeStoreContractTests(
     });
   });
 
-  // --- onChange contract (optional — skipped if store doesn't implement it) ---
+  // --- watch contract (optional — skipped if store doesn't implement it) ---
 
-  describe("ForgeStore onChange contract", () => {
-    test("onChange fires after successful save", async () => {
+  describe("ForgeStore watch contract", () => {
+    test("watch fires once per mutation with correct event", async () => {
       const store = await createStore();
-      if (store.onChange === undefined) {
-        return; // skip — store doesn't implement onChange
+      if (store.watch === undefined) {
+        return; // skip — store doesn't implement watch
       }
 
-      let called = false;
-      store.onChange(() => {
-        called = true;
+      const events: StoreChangeEvent[] = [];
+      store.watch((event) => {
+        events.push(event);
+      });
+
+      const brickId = "oc_typed";
+      await store.save(createBrick({ id: brickId, usageCount: 0 }));
+      await store.update(brickId, { usageCount: 5 });
+      await store.remove(brickId);
+
+      // Events fire immediately (no debounce)
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(events).toHaveLength(3);
+      expect(events[0]).toEqual({ kind: "saved", brickId });
+      expect(events[1]).toEqual({ kind: "updated", brickId });
+      expect(events[2]).toEqual({ kind: "removed", brickId });
+    });
+
+    test("watch fires after successful save", async () => {
+      const store = await createStore();
+      if (store.watch === undefined) {
+        return;
+      }
+
+      const events: StoreChangeEvent[] = [];
+      store.watch((event) => {
+        events.push(event);
       });
 
       await store.save(createBrick({ id: "oc_save" }));
-
-      // Wait for debounce (stores use 50ms)
-      await new Promise((r) => setTimeout(r, 100));
-      expect(called).toBe(true);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(events).toHaveLength(1);
+      expect(events[0]?.kind).toBe("saved");
     });
 
-    test("onChange fires after successful remove", async () => {
+    test("watch fires after successful remove", async () => {
       const store = await createStore();
-      if (store.onChange === undefined) {
+      if (store.watch === undefined) {
         return;
       }
 
       await store.save(createBrick({ id: "oc_rm" }));
-      // Wait for save notification to flush
-      await new Promise((r) => setTimeout(r, 100));
 
-      let called = false;
-      store.onChange(() => {
-        called = true;
+      const events: StoreChangeEvent[] = [];
+      store.watch((event) => {
+        events.push(event);
       });
 
       await store.remove("oc_rm");
-      await new Promise((r) => setTimeout(r, 100));
-      expect(called).toBe(true);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(events).toHaveLength(1);
+      expect(events[0]?.kind).toBe("removed");
     });
 
-    test("onChange fires after successful update", async () => {
+    test("watch fires after successful update", async () => {
       const store = await createStore();
-      if (store.onChange === undefined) {
+      if (store.watch === undefined) {
         return;
       }
 
       await store.save(createBrick({ id: "oc_up", usageCount: 0 }));
-      await new Promise((r) => setTimeout(r, 100));
 
-      let called = false;
-      store.onChange(() => {
-        called = true;
+      const events: StoreChangeEvent[] = [];
+      store.watch((event) => {
+        events.push(event);
       });
 
       await store.update("oc_up", { usageCount: 5 });
-      await new Promise((r) => setTimeout(r, 100));
-      expect(called).toBe(true);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(events).toHaveLength(1);
+      expect(events[0]?.kind).toBe("updated");
     });
 
-    test("onChange does NOT fire after failed operations", async () => {
+    test("watch does NOT fire after failed operations", async () => {
       const store = await createStore();
-      if (store.onChange === undefined) {
+      if (store.watch === undefined) {
         return;
       }
 
-      let callCount = 0;
-      store.onChange(() => {
-        callCount++;
+      const events: StoreChangeEvent[] = [];
+      store.watch((event) => {
+        events.push(event);
       });
 
-      // These should fail (NOT_FOUND) and NOT trigger onChange
+      // These should fail (NOT_FOUND) and NOT trigger watch
       await store.remove("nonexistent");
       await store.update("nonexistent", { usageCount: 1 });
-      await new Promise((r) => setTimeout(r, 100));
-      expect(callCount).toBe(0);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(events).toHaveLength(0);
     });
 
-    test("debounce coalesces rapid mutations", async () => {
+    test("rapid mutations fire one event each (no debounce)", async () => {
       const store = await createStore();
-      if (store.onChange === undefined) {
+      if (store.watch === undefined) {
         return;
       }
 
-      let callCount = 0;
-      store.onChange(() => {
-        callCount++;
+      const events: StoreChangeEvent[] = [];
+      store.watch((event) => {
+        events.push(event);
       });
 
-      // Rapid-fire 3 saves within debounce window
+      // Rapid-fire 3 saves — each fires immediately
       await store.save(createBrick({ id: "oc_d1" }));
       await store.save(createBrick({ id: "oc_d2" }));
       await store.save(createBrick({ id: "oc_d3" }));
 
-      await new Promise((r) => setTimeout(r, 100));
-      expect(callCount).toBe(1);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(events).toHaveLength(3);
+      expect(events.every((e) => e.kind === "saved")).toBe(true);
     });
 
     test("unsubscribe prevents further notifications", async () => {
       const store = await createStore();
-      if (store.onChange === undefined) {
+      if (store.watch === undefined) {
         return;
       }
 
-      let callCount = 0;
-      const unsub = store.onChange(() => {
-        callCount++;
+      const events: StoreChangeEvent[] = [];
+      const unsub = store.watch((event) => {
+        events.push(event);
       });
 
       await store.save(createBrick({ id: "oc_unsub1" }));
-      await new Promise((r) => setTimeout(r, 100));
-      expect(callCount).toBe(1);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(events).toHaveLength(1);
 
       unsub();
 
       await store.save(createBrick({ id: "oc_unsub2" }));
-      await new Promise((r) => setTimeout(r, 100));
-      expect(callCount).toBe(1); // unchanged
+      await new Promise((r) => setTimeout(r, 10));
+      expect(events).toHaveLength(1); // unchanged
     });
 
     test("multiple listeners all receive notifications", async () => {
       const store = await createStore();
-      if (store.onChange === undefined) {
+      if (store.watch === undefined) {
         return;
       }
 
-      let count1 = 0;
-      let count2 = 0;
-      store.onChange(() => {
-        count1++;
+      const events1: StoreChangeEvent[] = [];
+      const events2: StoreChangeEvent[] = [];
+      store.watch((event) => {
+        events1.push(event);
       });
-      store.onChange(() => {
-        count2++;
+      store.watch((event) => {
+        events2.push(event);
       });
 
       await store.save(createBrick({ id: "oc_multi" }));
-      await new Promise((r) => setTimeout(r, 100));
-      expect(count1).toBe(1);
-      expect(count2).toBe(1);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(events1).toHaveLength(1);
+      expect(events2).toHaveLength(1);
     });
   });
 }

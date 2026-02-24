@@ -84,8 +84,8 @@ export function createForgeResolver(
   };
 
   const onChange =
-    store.onChange !== undefined
-      ? (listener: () => void): (() => void) => store.onChange?.(listener) ?? (() => {})
+    store.watch !== undefined
+      ? (listener: () => void): (() => void) => store.watch?.((_event) => listener()) ?? (() => {})
       : undefined;
 
   return { discover, load, source, ...(onChange !== undefined ? { onChange } : {}) };

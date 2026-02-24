@@ -6,7 +6,7 @@
  * invalidated on store onChange.
  */
 
-import type { ForgeStore, Tool, ToolArtifact, ToolDescriptor } from "@koi/core";
+import type { ForgeStore, StoreChangeEvent, Tool, ToolArtifact, ToolDescriptor } from "@koi/core";
 import { brickToTool } from "./brick-conversion.js";
 import type { TieredSandboxExecutor } from "./types.js";
 
@@ -29,7 +29,7 @@ export interface CreateForgeRuntimeOptions {
 export interface ForgeRuntimeInstance {
   readonly resolveTool: (toolId: string) => Promise<Tool | undefined>;
   readonly toolDescriptors: () => Promise<readonly ToolDescriptor[]>;
-  readonly onChange?: (listener: () => void) => () => void;
+  readonly watch?: (listener: (event: StoreChangeEvent) => void) => () => void;
   /** Clean up internal store subscription and external listeners. */
   readonly dispose?: () => void;
 }
@@ -38,13 +38,13 @@ export interface ForgeRuntimeInstance {
  * Creates a ForgeRuntime backed by a ForgeStore.
  *
  * - Caches active tool artifacts in a name→ToolArtifact Map
- * - Invalidates cache on store.onChange notifications
+ * - Invalidates cache on store.watch notifications
  * - Provides onChange pass-through from the underlying store
  */
 export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRuntimeInstance {
   const { store, executor, sandboxTimeoutMs = DEFAULT_SANDBOX_TIMEOUT_MS } = options;
 
-  // let justified: mutable cache invalidated by store.onChange
+  // let justified: mutable cache invalidated by store.watch
   let cachedTools: ReadonlyMap<string, ToolArtifact> | undefined;
 
   async function ensureCache(): Promise<ReadonlyMap<string, ToolArtifact>> {
@@ -95,24 +95,24 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
     return descriptors;
   };
 
-  // Self-subscribe to store.onChange for automatic cache invalidation.
-  // External listeners registered via onChange() also get notified.
-  const externalListeners = new Set<() => void>();
+  // Self-subscribe to store.watch for automatic cache invalidation.
+  // External listeners registered via watch() also get notified.
+  const externalListeners = new Set<(event: StoreChangeEvent) => void>();
 
   // let justified: mutable unsubscribe handle for store subscription cleanup
   let unsubStore: (() => void) | undefined;
-  if (store.onChange !== undefined) {
-    unsubStore = store.onChange(() => {
+  if (store.watch !== undefined) {
+    unsubStore = store.watch((event) => {
       invalidateCache();
       for (const listener of externalListeners) {
-        listener();
+        listener(event);
       }
     });
   }
 
-  const onChange =
-    store.onChange !== undefined
-      ? (listener: () => void): (() => void) => {
+  const watch =
+    store.watch !== undefined
+      ? (listener: (event: StoreChangeEvent) => void): (() => void) => {
           externalListeners.add(listener);
           return () => {
             externalListeners.delete(listener);
@@ -133,7 +133,7 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
   return {
     resolveTool,
     toolDescriptors,
-    ...(onChange !== undefined ? { onChange } : {}),
+    ...(watch !== undefined ? { watch } : {}),
     dispose,
   };
 }

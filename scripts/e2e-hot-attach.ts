@@ -3,11 +3,11 @@
  * E2E test script for hot-attach with Pi engine adapter + real Claude API calls.
  *
  * Validates the full pipeline:
- *   1. forge_tool → store.onChange fires → ForgeRuntime cache invalidation
+ *   1. forge_tool → store.watch fires typed events → ForgeRuntime cache invalidation
  *   2. ForgeRuntime.toolDescriptors() → build tool definitions
  *   3. ForgeRuntime.resolveTool() → callable Tool (sandbox execution)
  *   4. Pi adapter with callHandlers → real Claude API → Claude calls forged tool
- *   5. Forge second tool mid-session → onChange → ForgeRuntime sees both
+ *   5. Forge second tool mid-session → watch → ForgeRuntime sees both
  *
  * Uses createPiAdapter().stream() directly with composed callHandlers.
  *
@@ -174,17 +174,17 @@ async function buildCallHandlers(adapter: EngineAdapter): Promise<{
 // Test 1: onChange pipeline — forge tool, verify ForgeRuntime sees it
 // ---------------------------------------------------------------------------
 
-console.log("[test 1] onChange pipeline: forge → store.onChange → ForgeRuntime cache invalidation");
+console.log("[test 1] watch pipeline: forge → store.watch → ForgeRuntime cache invalidation");
 
 try {
   const before = await forgeRuntime.toolDescriptors();
   assert("forgeRuntime starts empty", before.length === 0, `found ${before.length} tools`);
 
-  let onChangeCount = 0;
-  const unsub = forgeRuntime.onChange?.(() => {
-    onChangeCount++;
+  let watchCount = 0;
+  const unsub = forgeRuntime.watch?.(() => {
+    watchCount++;
   });
-  assert("forgeRuntime.onChange is available", unsub !== undefined);
+  assert("forgeRuntime.watch is available", unsub !== undefined);
 
   const result = await forgeTool.execute({
     name: "adder",
@@ -207,8 +207,8 @@ try {
     (result as { ok: boolean }).ok;
   assert("forge_tool 'adder' succeeded", forgeOk, JSON.stringify(result).slice(0, 200));
 
-  await new Promise((r) => setTimeout(r, 150));
-  assert("onChange fired", onChangeCount >= 1, `count: ${onChangeCount}`);
+  await new Promise((r) => setTimeout(r, 50));
+  assert("watch fired", watchCount >= 1, `count: ${watchCount}`);
 
   const after = await forgeRuntime.toolDescriptors();
   assert(
@@ -334,12 +334,12 @@ try {
 // Test 3: Forge second tool → onChange → Pi adapter sees both
 // ---------------------------------------------------------------------------
 
-console.log("\n[test 3] Forge second tool → onChange → Pi adapter sees both tools");
+console.log("\n[test 3] Forge second tool → watch → Pi adapter sees both tools");
 
 try {
-  let onChangeCount = 0;
-  const unsub = forgeRuntime.onChange?.(() => {
-    onChangeCount++;
+  let watchCount = 0;
+  const unsub = forgeRuntime.watch?.(() => {
+    watchCount++;
   });
 
   const result = await forgeTool.execute({
@@ -363,8 +363,8 @@ try {
     (result as { ok: boolean }).ok;
   assert("forge_tool 'multiplier' succeeded", forgeOk, JSON.stringify(result).slice(0, 200));
 
-  await new Promise((r) => setTimeout(r, 150));
-  assert("onChange fired for second forge", onChangeCount >= 1);
+  await new Promise((r) => setTimeout(r, 50));
+  assert("watch fired for second forge", watchCount >= 1);
 
   const descriptors = await forgeRuntime.toolDescriptors();
   assert(

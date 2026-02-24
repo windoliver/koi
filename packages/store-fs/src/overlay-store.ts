@@ -16,6 +16,7 @@ import type {
   ForgeStore,
   KoiError,
   Result,
+  StoreChangeEvent,
 } from "@koi/core";
 import { conflict, notFound, permission, validation } from "@koi/core";
 import type { FsForgeStoreExtended } from "./fs-store.js";
@@ -123,25 +124,30 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
   // Sort by priority for consistent iteration
   const sorted = sortByPriority(tierEntries);
 
-  // --- onChange notification -------------------------------------------------
-  // Forward onChange from all underlying tier stores into a single listener set.
-  const changeListeners = new Set<() => void>();
+  // --- watch notification ---------------------------------------------------
+  // Forward watch events from all underlying tier stores into a single listener set.
+  const changeListeners = new Set<(event: StoreChangeEvent) => void>();
 
-  const notifyListeners = (): void => {
+  const notifyListeners = (event: StoreChangeEvent): void => {
     for (const listener of changeListeners) {
-      listener();
+      try {
+        listener(event);
+      } catch (_err: unknown) {
+        // Listener errors must not break the mutation return path or skip other listeners.
+      }
     }
   };
 
-  // Subscribe to each tier store's onChange (if available).
-  // Tier stores already debounce, so no additional debounce needed here.
+  // Subscribe to each tier store's watch (if available).
+  // Capture unsubscribe handles for proper cleanup in dispose().
+  const tierUnsubscribes: (() => void)[] = [];
   for (const entry of sorted) {
-    if (entry.store.onChange !== undefined) {
-      entry.store.onChange(notifyListeners);
+    if (entry.store.watch !== undefined) {
+      tierUnsubscribes.push(entry.store.watch(notifyListeners));
     }
   }
 
-  const onChange = (listener: () => void): (() => void) => {
+  const watch = (listener: (event: StoreChangeEvent) => void): (() => void) => {
     changeListeners.add(listener);
     return () => {
       changeListeners.delete(listener);
@@ -403,6 +409,10 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
   // --- Dispose ---------------------------------------------------------------
 
   const dispose = (): void => {
+    // Unsubscribe from tier stores before disposing them
+    for (const unsub of tierUnsubscribes) {
+      unsub();
+    }
     for (const entry of sorted) {
       entry.store.dispose();
     }
@@ -419,7 +429,7 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
     promote: promoteByScope,
     promoteTier,
     locateTier,
-    onChange,
+    watch,
     dispose,
   };
 }

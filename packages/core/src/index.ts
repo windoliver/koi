@@ -127,6 +127,8 @@ export type {
   AgentId,
   ChildHandle,
   ChildLifecycleEvent,
+  ComponentEvent,
+  ComponentEventKind,
   ComponentProvider,
   CredentialComponent,
   EventComponent,

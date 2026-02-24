@@ -337,8 +337,8 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                     await refreshForgeState(cachedTerminals);
 
                     // Subscribe to forge push notifications for mid-session tool visibility
-                    if (forge?.onChange !== undefined) {
-                      unsubForgeChange = forge.onChange(() => {
+                    if (forge?.watch !== undefined) {
+                      unsubForgeChange = forge.watch((_event) => {
                         // Eagerly refresh descriptor cache (fire-and-forget)
                         void forge
                           .toolDescriptors()
@@ -400,8 +400,8 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 // so tools/middleware injected between turns take effect next turn
                 if (pendingForgeRefresh) {
                   pendingForgeRefresh = false;
-                  // Skip refresh if onChange is active and nothing changed since last notification
-                  const shouldRefresh = forge?.onChange === undefined || forgeStateDirty;
+                  // Skip refresh if watch is active and nothing changed since last notification
+                  const shouldRefresh = forge?.watch === undefined || forgeStateDirty;
                   if (shouldRefresh && forge !== undefined && cachedTerminals !== undefined) {
                     forgeStateDirty = false;
                     await refreshForgeState(cachedTerminals);
