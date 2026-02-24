@@ -30,4 +30,18 @@ describe("browser_tab_close", () => {
     const result = await tool.execute({ tabId: "tab-nonexistent" });
     expect(result).toMatchObject({ code: "NOT_FOUND" });
   });
+
+  test("rejects timeout below minimum", async () => {
+    const driver = createMockDriver();
+    const tool = createBrowserTabCloseTool(driver, "browser", "verified");
+    const result = await tool.execute({ timeout: 50 });
+    expect(result).toMatchObject({ code: "VALIDATION" });
+  });
+
+  test("rejects timeout above maximum", async () => {
+    const driver = createMockDriver();
+    const tool = createBrowserTabCloseTool(driver, "browser", "verified");
+    const result = await tool.execute({ timeout: 20_000 });
+    expect(result).toMatchObject({ code: "VALIDATION" });
+  });
 });

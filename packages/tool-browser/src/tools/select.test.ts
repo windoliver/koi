@@ -30,4 +30,32 @@ describe("browser_select", () => {
     const result = await tool.execute({ ref: "e5", value: "Option A" });
     expect(result).toMatchObject({ code: "NOT_FOUND" });
   });
+
+  test("rejects non-string snapshotId", async () => {
+    const driver = createMockDriver();
+    const tool = createBrowserSelectTool(driver, "browser", "verified");
+    const result = await tool.execute({ ref: "e5", value: "Option A", snapshotId: 42 });
+    expect(result).toMatchObject({ code: "VALIDATION" });
+  });
+
+  test("rejects empty snapshotId", async () => {
+    const driver = createMockDriver();
+    const tool = createBrowserSelectTool(driver, "browser", "verified");
+    const result = await tool.execute({ ref: "e5", value: "Option A", snapshotId: "" });
+    expect(result).toMatchObject({ code: "VALIDATION" });
+  });
+
+  test("rejects timeout below minimum", async () => {
+    const driver = createMockDriver();
+    const tool = createBrowserSelectTool(driver, "browser", "verified");
+    const result = await tool.execute({ ref: "e5", value: "Option A", timeout: 50 });
+    expect(result).toMatchObject({ code: "VALIDATION" });
+  });
+
+  test("rejects timeout above maximum", async () => {
+    const driver = createMockDriver();
+    const tool = createBrowserSelectTool(driver, "browser", "verified");
+    const result = await tool.execute({ ref: "e5", value: "Option A", timeout: 20_000 });
+    expect(result).toMatchObject({ code: "VALIDATION" });
+  });
 });

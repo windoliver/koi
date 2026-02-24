@@ -34,4 +34,18 @@ describe("browser_tab_new", () => {
     const result = await tool.execute({});
     expect(result).toMatchObject({ code: "INTERNAL" });
   });
+
+  test("rejects timeout below minimum", async () => {
+    const driver = createMockDriver();
+    const tool = createBrowserTabNewTool(driver, "browser", "verified");
+    const result = await tool.execute({ timeout: 500 });
+    expect(result).toMatchObject({ code: "VALIDATION" });
+  });
+
+  test("rejects timeout above maximum", async () => {
+    const driver = createMockDriver();
+    const tool = createBrowserTabNewTool(driver, "browser", "verified");
+    const result = await tool.execute({ timeout: 120_000 });
+    expect(result).toMatchObject({ code: "VALIDATION" });
+  });
 });

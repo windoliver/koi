@@ -35,4 +35,25 @@ describe("browser_screenshot", () => {
     const result = await tool.execute({});
     expect(result).toMatchObject({ code: "INTERNAL" });
   });
+
+  test("rejects non-number quality", async () => {
+    const driver = createMockDriver();
+    const tool = createBrowserScreenshotTool(driver, "browser", "verified");
+    const result = await tool.execute({ quality: "high" });
+    expect(result).toMatchObject({ code: "VALIDATION" });
+  });
+
+  test("rejects timeout below minimum", async () => {
+    const driver = createMockDriver();
+    const tool = createBrowserScreenshotTool(driver, "browser", "verified");
+    const result = await tool.execute({ timeout: 50 });
+    expect(result).toMatchObject({ code: "VALIDATION" });
+  });
+
+  test("rejects timeout above maximum", async () => {
+    const driver = createMockDriver();
+    const tool = createBrowserScreenshotTool(driver, "browser", "verified");
+    const result = await tool.execute({ timeout: 60_000 });
+    expect(result).toMatchObject({ code: "VALIDATION" });
+  });
 });
