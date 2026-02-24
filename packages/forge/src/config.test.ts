@@ -66,6 +66,26 @@ describe("createDefaultForgeConfig", () => {
     expect(config.verification.maxBrickSizeBytes).toBe(25_000);
   });
 
+  test("returns defaults for nested autoPromotion", () => {
+    const config = createDefaultForgeConfig();
+    expect(config.autoPromotion.enabled).toBe(false);
+    expect(config.autoPromotion.sandboxToVerifiedThreshold).toBe(5);
+    expect(config.autoPromotion.verifiedToPromotedThreshold).toBe(20);
+  });
+
+  test("overrides nested autoPromotion", () => {
+    const config = createDefaultForgeConfig({
+      autoPromotion: {
+        enabled: true,
+        sandboxToVerifiedThreshold: 10,
+        verifiedToPromotedThreshold: 50,
+      },
+    });
+    expect(config.autoPromotion.enabled).toBe(true);
+    expect(config.autoPromotion.sandboxToVerifiedThreshold).toBe(10);
+    expect(config.autoPromotion.verifiedToPromotedThreshold).toBe(50);
+  });
+
   test("returns new object each time", () => {
     const a = createDefaultForgeConfig();
     const b = createDefaultForgeConfig();
@@ -120,6 +140,34 @@ describe("validateForgeConfig (positive)", () => {
     if (result.ok) {
       expect(result.value.maxForgeDepth).toBe(2);
       expect(result.value.defaultScope).toBe("zone");
+    }
+  });
+
+  test("accepts partial autoPromotion overrides", () => {
+    const result = validateForgeConfig({
+      autoPromotion: { enabled: true },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.autoPromotion.enabled).toBe(true);
+      expect(result.value.autoPromotion.sandboxToVerifiedThreshold).toBe(5);
+      expect(result.value.autoPromotion.verifiedToPromotedThreshold).toBe(20);
+    }
+  });
+
+  test("accepts full autoPromotion config", () => {
+    const result = validateForgeConfig({
+      autoPromotion: {
+        enabled: true,
+        sandboxToVerifiedThreshold: 10,
+        verifiedToPromotedThreshold: 50,
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.autoPromotion.enabled).toBe(true);
+      expect(result.value.autoPromotion.sandboxToVerifiedThreshold).toBe(10);
+      expect(result.value.autoPromotion.verifiedToPromotedThreshold).toBe(50);
     }
   });
 });
@@ -206,6 +254,20 @@ describe("validateForgeConfig (negative)", () => {
   test("rejects invalid minTrustForZone in scopePromotion", () => {
     const result = validateForgeConfig({
       scopePromotion: { minTrustForZone: "invalid" },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects negative sandboxToVerifiedThreshold in autoPromotion", () => {
+    const result = validateForgeConfig({
+      autoPromotion: { sandboxToVerifiedThreshold: -1 },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects zero verifiedToPromotedThreshold in autoPromotion", () => {
+    const result = validateForgeConfig({
+      autoPromotion: { verifiedToPromotedThreshold: 0 },
     });
     expect(result.ok).toBe(false);
   });

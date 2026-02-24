@@ -26,6 +26,12 @@ export interface VerificationConfig {
   readonly failFast: boolean;
 }
 
+export interface AutoPromotionConfig {
+  readonly enabled: boolean;
+  readonly sandboxToVerifiedThreshold: number;
+  readonly verifiedToPromotedThreshold: number;
+}
+
 export interface ForgeConfig {
   readonly enabled: boolean;
   readonly maxForgeDepth: number;
@@ -34,6 +40,7 @@ export interface ForgeConfig {
   readonly defaultTrustTier: TrustTier;
   readonly scopePromotion: ScopePromotionConfig;
   readonly verification: VerificationConfig;
+  readonly autoPromotion: AutoPromotionConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +70,12 @@ const verificationSchema = z.object({
   failFast: z.boolean().optional(),
 });
 
+const autoPromotionSchema = z.object({
+  enabled: z.boolean().optional(),
+  sandboxToVerifiedThreshold: z.number().int().positive().optional(),
+  verifiedToPromotedThreshold: z.number().int().positive().optional(),
+});
+
 const forgeConfigInputSchema = z.object({
   enabled: z.boolean().optional(),
   maxForgeDepth: z.number().int().min(0).optional(),
@@ -71,6 +84,7 @@ const forgeConfigInputSchema = z.object({
   defaultTrustTier: trustTierSchema.optional(),
   scopePromotion: scopePromotionSchema.optional(),
   verification: verificationSchema.optional(),
+  autoPromotion: autoPromotionSchema.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -92,6 +106,12 @@ const DEFAULT_VERIFICATION: VerificationConfig = {
   failFast: true,
 } as const;
 
+const DEFAULT_AUTO_PROMOTION: AutoPromotionConfig = {
+  enabled: false,
+  sandboxToVerifiedThreshold: 5,
+  verifiedToPromotedThreshold: 20,
+} as const;
+
 const DEFAULT_CONFIG: ForgeConfig = {
   enabled: true,
   maxForgeDepth: 1,
@@ -100,6 +120,7 @@ const DEFAULT_CONFIG: ForgeConfig = {
   defaultTrustTier: "sandbox",
   scopePromotion: DEFAULT_SCOPE_PROMOTION,
   verification: DEFAULT_VERIFICATION,
+  autoPromotion: DEFAULT_AUTO_PROMOTION,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -121,6 +142,10 @@ export function createDefaultForgeConfig(overrides?: Partial<ForgeConfig>): Forg
       overrides.verification !== undefined
         ? { ...DEFAULT_VERIFICATION, ...overrides.verification }
         : DEFAULT_VERIFICATION,
+    autoPromotion:
+      overrides.autoPromotion !== undefined
+        ? { ...DEFAULT_AUTO_PROMOTION, ...overrides.autoPromotion }
+        : DEFAULT_AUTO_PROMOTION,
   };
 }
 
@@ -171,6 +196,18 @@ export function validateForgeConfig(raw: unknown): Result<ForgeConfig, KoiError>
             failFast: p.verification.failFast ?? DEFAULT_VERIFICATION.failFast,
           }
         : DEFAULT_VERIFICATION,
+    autoPromotion:
+      p.autoPromotion !== undefined
+        ? {
+            enabled: p.autoPromotion.enabled ?? DEFAULT_AUTO_PROMOTION.enabled,
+            sandboxToVerifiedThreshold:
+              p.autoPromotion.sandboxToVerifiedThreshold ??
+              DEFAULT_AUTO_PROMOTION.sandboxToVerifiedThreshold,
+            verifiedToPromotedThreshold:
+              p.autoPromotion.verifiedToPromotedThreshold ??
+              DEFAULT_AUTO_PROMOTION.verifiedToPromotedThreshold,
+          }
+        : DEFAULT_AUTO_PROMOTION,
   };
   return { ok: true, value: config };
 }
