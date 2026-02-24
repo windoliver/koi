@@ -8,7 +8,7 @@
  * 4. Register child in registry (if provided)
  * 5. Create ChildHandle for lifecycle monitoring
  * 6. Wire parent termination → child cascade (auto-terminates child if parent dies)
- * 7. Wire ledger release + watcher cleanup to child termination event
+ * 7. Wire ledger release + runtime disposal + watcher cleanup to child termination event
  */
 
 import type { AgentId, ChildHandle, ChildLifecycleEvent } from "@koi/core";
@@ -146,11 +146,12 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
       unsubParentWatch();
     }
 
-    // 7. Wire ledger release + watcher cleanup to child termination
+    // 7. Wire ledger release + runtime disposal + watcher cleanup to child termination
     handle.onEvent((event) => {
       if (event.kind === "terminated") {
         const release = options.spawnLedger.release();
         void (release instanceof Promise ? release : undefined);
+        void childRuntime.dispose();
         unsubParentWatch();
       }
     });

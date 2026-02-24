@@ -306,10 +306,10 @@ describe("spawnChildAgent inherited provider", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Ledger release on child termination
+// Ledger release + runtime disposal on child termination
 // ---------------------------------------------------------------------------
 
-describe("spawnChildAgent ledger release on termination", () => {
+describe("spawnChildAgent cleanup on termination", () => {
   let registry: InMemoryRegistry;
 
   beforeEach(() => {
@@ -336,6 +336,71 @@ describe("spawnChildAgent ledger release on termination", () => {
 
     // Ledger should be released after termination event fires
     expect(ledger.activeCount()).toBe(0);
+  });
+
+  test("calls runtime.dispose() when child transitions to terminated", async () => {
+    // let justified: mutable flag to track dispose call
+    let disposeCalled = false;
+    const adapterWithDispose: EngineAdapter = {
+      ...mockAdapter(),
+      dispose: async () => {
+        disposeCalled = true;
+      },
+    };
+
+    const result = await spawnChildAgent(baseOptions({ adapter: adapterWithDispose, registry }));
+
+    expect(disposeCalled).toBe(false);
+
+    // Transition child: created -> running -> terminated
+    registry.transition(result.childPid.id, "running", 0, {
+      kind: "assembly_complete",
+    });
+    registry.transition(result.childPid.id, "terminated", 1, {
+      kind: "completed",
+    });
+
+    // Allow async dispose to settle
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(disposeCalled).toBe(true);
+  });
+
+  test("calls runtime.dispose() on cascade termination", async () => {
+    // let justified: mutable flag to track dispose call
+    let disposeCalled = false;
+    const adapterWithDispose: EngineAdapter = {
+      ...mockAdapter(),
+      dispose: async () => {
+        disposeCalled = true;
+      },
+    };
+
+    const parent = mockParentAgent(0);
+
+    // Register parent
+    registry.register({
+      agentId: parent.pid.id,
+      status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
+      agentType: "copilot",
+      metadata: {},
+      registeredAt: Date.now(),
+    });
+    registry.transition(parent.pid.id, "running", 0, { kind: "assembly_complete" });
+
+    await spawnChildAgent(
+      baseOptions({ adapter: adapterWithDispose, parentAgent: parent, registry }),
+    );
+
+    expect(disposeCalled).toBe(false);
+
+    // Parent terminates — cascade kills child
+    registry.transition(parent.pid.id, "terminated", 1, { kind: "completed" });
+
+    // Allow async dispose to settle
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(disposeCalled).toBe(true);
   });
 });
 
