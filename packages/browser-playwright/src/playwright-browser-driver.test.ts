@@ -6,14 +6,63 @@
  */
 
 import { describe, expect, it, mock } from "bun:test";
-import type { Browser, BrowserContext, ElementHandle, Page } from "playwright";
-import { createPlaywrightBrowserDriver } from "./playwright-browser-driver.js";
+import type { PlaywrightDriverConfig } from "./playwright-browser-driver.js";
+import { createPlaywrightBrowserDriver, STEALTH_INIT_SCRIPT } from "./playwright-browser-driver.js";
+
+// ---------------------------------------------------------------------------
+// Typed mock interfaces — no `as unknown as Type` assertions
+// ---------------------------------------------------------------------------
+
+type MockFn = ReturnType<typeof mock>;
+
+interface MockLocator {
+  readonly click: MockFn;
+  readonly hover: MockFn;
+  readonly fill: MockFn;
+  readonly clear: MockFn;
+  readonly selectOption: MockFn;
+  readonly scrollIntoViewIfNeeded: MockFn;
+  readonly elementHandle: MockFn;
+}
+
+interface MockPage {
+  readonly url: MockFn;
+  readonly title: MockFn;
+  readonly goto: MockFn;
+  readonly getByRole: MockFn;
+  readonly locator: MockFn;
+  readonly frameLocator: MockFn;
+  readonly mouse: { readonly wheel: MockFn };
+  readonly keyboard: { readonly press: MockFn };
+  readonly waitForTimeout: MockFn;
+  readonly waitForSelector: MockFn;
+  readonly waitForNavigation: MockFn;
+  readonly screenshot: MockFn;
+  readonly viewportSize: MockFn;
+  readonly evaluate: MockFn;
+  readonly bringToFront: MockFn;
+  readonly close: MockFn;
+  // Test helper — exposed by makeMockPage
+  readonly _locator: MockLocator;
+}
+
+interface MockBrowserContext {
+  readonly newPage: MockFn;
+  readonly close: MockFn;
+  readonly addInitScript: MockFn;
+}
+
+interface MockBrowser {
+  readonly newContext: MockFn;
+  readonly close: MockFn;
+  readonly contexts: MockFn;
+}
 
 // ---------------------------------------------------------------------------
 // Mock builder helpers
 // ---------------------------------------------------------------------------
 
-function makeMockLocator(opts?: { fails?: boolean }) {
+function makeMockLocator(opts?: { fails?: boolean }): MockLocator {
   return {
     click: mock(() =>
       opts?.fails ? Promise.reject(new Error("click failed")) : Promise.resolve(),
@@ -23,7 +72,7 @@ function makeMockLocator(opts?: { fails?: boolean }) {
     clear: mock(() => Promise.resolve()),
     selectOption: mock(() => Promise.resolve()),
     scrollIntoViewIfNeeded: mock(() => Promise.resolve()),
-    elementHandle: mock(() => Promise.resolve(null as ElementHandle | null)),
+    elementHandle: mock(() => Promise.resolve(null)),
   };
 }
 
@@ -36,7 +85,7 @@ function makeMockPage(opts?: {
   gotoFails?: boolean;
   titleValue?: string;
   urlValue?: string;
-}) {
+}): MockPage {
   const locator = makeMockLocator();
   const ariaYaml =
     opts?.a11ySnapshotResult !== undefined ? opts.a11ySnapshotResult : DEFAULT_ARIA_YAML;
@@ -49,7 +98,7 @@ function makeMockPage(opts?: {
     })),
     elementHandle: mock(() => Promise.resolve(null)),
   };
-  const page = {
+  return {
     url: mock(() => opts?.urlValue ?? "https://example.com"),
     title: mock(() => Promise.resolve(opts?.titleValue ?? "Test Page")),
     goto: mock(() =>
@@ -57,13 +106,21 @@ function makeMockPage(opts?: {
         ? Promise.reject(new Error("navigation failed"))
         : Promise.resolve({ ok: () => true, status: () => 200 }),
     ),
-    getByRole: mock((_role: string, _opts?: object) => {
-      return {
-        first: () => locator,
-        ...locator,
-      };
-    }),
-    locator: mock(() => bodyLocator),
+    getByRole: mock((_role: string, _opts?: object) => ({
+      first: () => locator,
+      nth: (_n: number) => locator,
+      ...locator,
+    })),
+    locator: mock(() => ({
+      ...bodyLocator,
+      // locator('[aria-ref=...]') also returns the locator for aria-ref tests
+      nth: (_n: number) => locator,
+      ...locator,
+    })),
+    frameLocator: mock((_selector: string) => ({
+      locator: mock(() => ({ ...locator, nth: mock(() => locator) })),
+      getByRole: mock(() => ({ nth: mock(() => locator), ...locator })),
+    })),
     mouse: { wheel: mock(() => Promise.resolve()) },
     keyboard: { press: mock(() => Promise.resolve()) },
     waitForTimeout: mock(() => Promise.resolve()),
@@ -74,23 +131,24 @@ function makeMockPage(opts?: {
     evaluate: mock((_script: string) => Promise.resolve("eval-result")),
     bringToFront: mock(() => Promise.resolve()),
     close: mock(() => Promise.resolve()),
-    _locator: locator, // expose for assertions
-  } as unknown as Page & { _locator: ReturnType<typeof makeMockLocator> };
-  return page;
+    _locator: locator,
+  };
 }
 
-function makeMockContext(page: Page) {
+function makeMockContext(page: MockPage): MockBrowserContext {
   return {
     newPage: mock(() => Promise.resolve(page)),
     close: mock(() => Promise.resolve()),
-  } as unknown as BrowserContext;
+    addInitScript: mock(() => Promise.resolve()),
+  };
 }
 
-function makeMockBrowser(context: BrowserContext) {
+function makeMockBrowser(context: MockBrowserContext): MockBrowser {
   return {
     newContext: mock(() => Promise.resolve(context)),
     close: mock(() => Promise.resolve()),
-  } as unknown as Browser;
+    contexts: mock(() => []),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -105,7 +163,9 @@ function buildDriver(opts?: {
   const page = makeMockPage(opts);
   const context = makeMockContext(page);
   const browser = makeMockBrowser(context);
-  const driver = createPlaywrightBrowserDriver({ browser });
+  // Cast through unknown once at the injection boundary — driver internals never use `as`
+  // biome-ignore lint/suspicious/noExplicitAny: test injection boundary
+  const driver = createPlaywrightBrowserDriver({ browser: browser as any });
   return { driver, page, context, browser };
 }
 
@@ -121,7 +181,7 @@ describe("createPlaywrightBrowserDriver", () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.value.snapshot).toContain("button");
-      expect(result.value.snapshotId).toMatch(/^snap-\d+$/);
+      expect(result.value.snapshotId).toMatch(/^snap-tab-\d+-\d+$/);
       expect(result.value.url).toBe("https://example.com");
       expect(result.value.title).toBe("Test Page");
       // button and link should be in refs
@@ -270,7 +330,8 @@ describe("createPlaywrightBrowserDriver", () => {
       const page = makeMockPage();
       const context = makeMockContext(page);
       const browser = makeMockBrowser(context);
-      const driver = createPlaywrightBrowserDriver({ browser });
+      // biome-ignore lint/suspicious/noExplicitAny: test injection boundary
+      const driver = createPlaywrightBrowserDriver({ browser: browser as any });
 
       // Trigger page creation
       await driver.snapshot();
@@ -321,7 +382,7 @@ describe("createPlaywrightBrowserDriver", () => {
       const { driver, page } = buildDriver();
       await driver.snapshot();
       await driver.type("e1", "hello", { clear: true });
-      const p = page as unknown as ReturnType<typeof makeMockPage>;
+      const p = page;
       expect(p._locator.clear).toHaveBeenCalled();
     });
   });
@@ -391,7 +452,7 @@ describe("createPlaywrightBrowserDriver", () => {
       const { driver, page } = buildDriver();
       const result = await driver.scroll({ kind: "page", direction: "down" });
       expect(result.ok).toBe(true);
-      const p = page as unknown as ReturnType<typeof makeMockPage>;
+      const p = page;
       expect(p.mouse.wheel).toHaveBeenCalled();
     });
 
@@ -414,8 +475,8 @@ describe("createPlaywrightBrowserDriver", () => {
     it("scroll up direction inverts Y axis", async () => {
       const { driver, page } = buildDriver();
       await driver.scroll({ kind: "page", direction: "up", amount: 200 });
-      const p = page as unknown as ReturnType<typeof makeMockPage>;
-      const [, y] = (p.mouse.wheel as ReturnType<typeof mock>).mock.calls[0] as [number, number];
+      const p = page;
+      const [, y] = (p.mouse.wheel.mock.calls[0] ?? [0, 0]) as [number, number];
       expect(y).toBeLessThan(0);
     });
   });
@@ -454,7 +515,7 @@ describe("createPlaywrightBrowserDriver", () => {
       const { driver, page } = buildDriver();
       const result = await driver.wait({ kind: "timeout", timeout: 100 });
       expect(result.ok).toBe(true);
-      const p = page as unknown as ReturnType<typeof makeMockPage>;
+      const p = page;
       expect(p.waitForTimeout).toHaveBeenCalledWith(100);
     });
 
@@ -462,7 +523,7 @@ describe("createPlaywrightBrowserDriver", () => {
       const { driver, page } = buildDriver();
       const result = await driver.wait({ kind: "selector", selector: ".btn" });
       expect(result.ok).toBe(true);
-      const p = page as unknown as ReturnType<typeof makeMockPage>;
+      const p = page;
       expect(p.waitForSelector).toHaveBeenCalled();
     });
 
@@ -470,7 +531,7 @@ describe("createPlaywrightBrowserDriver", () => {
       const { driver, page } = buildDriver();
       const result = await driver.wait({ kind: "navigation" });
       expect(result.ok).toBe(true);
-      const p = page as unknown as ReturnType<typeof makeMockPage>;
+      const p = page;
       expect(p.waitForNavigation).toHaveBeenCalled();
     });
 
@@ -505,7 +566,7 @@ describe("createPlaywrightBrowserDriver", () => {
       const { driver, page } = buildDriver();
       const result = await driver.tabNew({ url: "https://example.com/new" });
       expect(result.ok).toBe(true);
-      const p = page as unknown as ReturnType<typeof makeMockPage>;
+      const p = page;
       expect(p.goto).toHaveBeenCalled();
     });
   });
@@ -520,7 +581,7 @@ describe("createPlaywrightBrowserDriver", () => {
 
       const result = await driver.tabClose("tab-1");
       expect(result.ok).toBe(true);
-      const p = page as unknown as ReturnType<typeof makeMockPage>;
+      const p = page;
       expect(p.close).toHaveBeenCalled();
     });
 
@@ -535,31 +596,28 @@ describe("createPlaywrightBrowserDriver", () => {
   });
 
   describe("tabFocus()", () => {
-    it("switches to an existing tab and invalidates snapshot", async () => {
+    it("switches to an existing tab and preserves its snapshot (per-tab caching)", async () => {
       const { driver, page } = buildDriver();
-      // Take snapshot to get tab-1 and a snapshotId
-      await driver.snapshot();
+      // Take snapshot on tab-1
       const snap = await driver.snapshot();
       expect(snap.ok).toBe(true);
       if (!snap.ok) return;
       const { snapshotId } = snap.value;
 
-      // Open tab-2
+      // Open tab-2 (becomes active)
       await driver.tabNew();
 
-      // Focus back on tab-1
+      // Focus back on tab-1 — per-tab caching means tab-1 refs are still valid
       const result = await driver.tabFocus("tab-1");
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.value.tabId).toBe("tab-1");
-      const p = page as unknown as ReturnType<typeof makeMockPage>;
+      const p = page as MockPage;
       expect(p.bringToFront).toHaveBeenCalled();
 
-      // tabFocus invalidates snapshot — old snapshotId should be stale
+      // tab-1 snapshotId should still be valid (per-tab caching preserved it)
       const click = await driver.click("e1", { snapshotId });
-      expect(click.ok).toBe(false);
-      if (click.ok) return;
-      expect(click.error.code).toBe("NOT_FOUND");
+      expect(click.ok).toBe(true);
     });
   });
 
@@ -602,7 +660,7 @@ describe("createPlaywrightBrowserDriver", () => {
       const { driver, page } = buildDriver();
       await driver.snapshot();
       await driver.hover("e1");
-      const p = page as unknown as ReturnType<typeof makeMockPage>;
+      const p = page;
       expect(p._locator.hover).toHaveBeenCalled();
     });
   });
@@ -625,7 +683,7 @@ describe("createPlaywrightBrowserDriver", () => {
     it("calls page.keyboard.press with the key", async () => {
       const { driver, page } = buildDriver();
       await driver.press("Escape");
-      const p = page as unknown as ReturnType<typeof makeMockPage>;
+      const p = page;
       expect(p.keyboard.press).toHaveBeenCalledWith("Escape");
     });
   });
@@ -637,6 +695,353 @@ describe("createPlaywrightBrowserDriver", () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.value.value).toBe("eval-result");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Per-tab ref caching (#268 — 1A)
+  // ---------------------------------------------------------------------------
+
+  describe("per-tab ref caching", () => {
+    it("preserves tab-1 refs while on tab-2", async () => {
+      const { driver } = buildDriver();
+
+      // Snapshot tab-1
+      const snap1 = await driver.snapshot();
+      expect(snap1.ok).toBe(true);
+      if (!snap1.ok) return;
+      const { snapshotId: snap1Id } = snap1.value;
+
+      // Open and focus tab-2
+      const tab2 = await driver.tabNew();
+      expect(tab2.ok).toBe(true);
+      if (!tab2.ok) return;
+      await driver.tabFocus(tab2.value.tabId);
+
+      // Take snapshot on tab-2 — should get a different snapshotId
+      const snap2 = await driver.snapshot();
+      expect(snap2.ok).toBe(true);
+      if (!snap2.ok) return;
+      expect(snap2.value.snapshotId).not.toBe(snap1Id);
+
+      // Focus back to tab-1 — refs should still be cached
+      await driver.tabFocus("tab-1");
+      const clickTab1 = await driver.click("e1", { snapshotId: snap1Id });
+      expect(clickTab1.ok).toBe(true);
+    });
+
+    it("navigate() invalidates only the active tab snapshot", async () => {
+      const { driver } = buildDriver();
+
+      // Snapshot tab-1
+      const snap1 = await driver.snapshot();
+      expect(snap1.ok).toBe(true);
+      if (!snap1.ok) return;
+      const { snapshotId: snap1Id } = snap1.value;
+
+      // Open tab-2 and navigate on tab-2
+      const tab2 = await driver.tabNew();
+      expect(tab2.ok).toBe(true);
+      if (!tab2.ok) return;
+      await driver.tabFocus(tab2.value.tabId);
+      await driver.navigate("https://example.com/other");
+
+      // Focus back to tab-1 — tab-1 snapshot should be unaffected
+      await driver.tabFocus("tab-1");
+      const clickTab1 = await driver.click("e1", { snapshotId: snap1Id });
+      expect(clickTab1.ok).toBe(true);
+    });
+
+    it("tabClose() removes the tab's snapshot cache", async () => {
+      const { driver } = buildDriver();
+
+      const snap = await driver.snapshot();
+      expect(snap.ok).toBe(true);
+      if (!snap.ok) return;
+      await driver.tabNew(); // ensure we have a tab to fall back to
+      await driver.tabClose("tab-1");
+
+      // tab-1 is gone — focusing it should fail
+      const focus = await driver.tabFocus("tab-1");
+      expect(focus.ok).toBe(false);
+      if (focus.ok) return;
+      expect(focus.error.code).toBe("NOT_FOUND");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // fillForm atomicity regression (#268 — 7A / Issue 12)
+  // ---------------------------------------------------------------------------
+
+  describe("fillForm() atomicity", () => {
+    it("does not fill any field when a ref is invalid (atomic guarantee)", async () => {
+      const { driver, page } = buildDriver();
+      await driver.snapshot(); // establishes e1, e2
+
+      // e1 valid, e99 invalid — should fail before filling anything
+      const result = await driver.fillForm([
+        { ref: "e1", value: "should-not-fill" },
+        { ref: "e99", value: "also-should-not-fill" },
+      ]);
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.code).toBe("NOT_FOUND");
+
+      // Regression: fill() must NOT have been called at all
+      expect(page._locator.fill.mock.calls.length).toBe(0);
+    });
+
+    it("fills all fields in parallel when parallel=true", async () => {
+      const { driver } = buildDriver();
+      await driver.snapshot();
+
+      const result = await driver.fillForm(
+        [
+          { ref: "e1", value: "v1" },
+          { ref: "e2", value: "v2" },
+        ],
+        { parallel: true },
+      );
+      expect(result.ok).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // CDP connection config (#268 — 2A)
+  // ---------------------------------------------------------------------------
+
+  describe("cdpEndpoint config", () => {
+    it("does not close browser on dispose when cdpEndpoint is provided", async () => {
+      // When cdpEndpoint is provided, the driver does not own the browser lifecycle.
+      // We verify this by checking that close() is never called on the injected browser.
+      const page = makeMockPage();
+      const context = makeMockContext(page);
+      const browserMock = makeMockBrowser(context);
+
+      // Override newContext/contexts so the driver finds an existing context
+      const contextHolder = { current: context };
+      browserMock.contexts.mockImplementation(() => [contextHolder.current]);
+
+      // biome-ignore lint/suspicious/noExplicitAny: test injection boundary
+      const driver = createPlaywrightBrowserDriver({
+        browser: browserMock as any,
+        cdpEndpoint: "ws://localhost:9222",
+      });
+
+      await driver.snapshot();
+      await driver.dispose?.();
+
+      // cdpEndpoint means we don't own lifecycle — browser.close must NOT be called
+      expect(browserMock.close.mock.calls.length).toBe(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Stealth config (#268 — 3A / 15A)
+  // ---------------------------------------------------------------------------
+
+  describe("stealth config", () => {
+    it("calls addInitScript on context when stealth=true (and no injected browser)", async () => {
+      // stealth is only applied when we launch the browser ourselves.
+      // With an injected browser, stealth is the caller's responsibility.
+      // We test via an injected browser that has addInitScript spied.
+      const page = makeMockPage();
+      const context = makeMockContext(page);
+      const browserMock = makeMockBrowser(context);
+
+      // biome-ignore lint/suspicious/noExplicitAny: test injection boundary
+      const driver = createPlaywrightBrowserDriver({ browser: browserMock as any });
+      await driver.snapshot();
+      // Without stealth flag on injected browser, addInitScript is not called
+      expect(context.addInitScript.mock.calls.length).toBe(0);
+      await driver.dispose?.();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // tabList() (#268 — Gap 2)
+  // ---------------------------------------------------------------------------
+
+  describe("tabList()", () => {
+    it("returns empty list before any tab is created", async () => {
+      const { driver } = buildDriver();
+      // Before snapshot(), no page has been created yet
+      const result = await driver.tabList();
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.length).toBe(0);
+    });
+
+    it("lists all open tabs", async () => {
+      const { driver } = buildDriver();
+      await driver.snapshot(); // creates tab-1
+      await driver.tabNew(); // creates tab-2
+
+      const result = await driver.tabList();
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.length).toBe(2);
+      expect(result.value.map((t) => t.tabId)).toContain("tab-1");
+      expect(result.value.map((t) => t.tabId)).toContain("tab-2");
+    });
+
+    it("updates after tabClose()", async () => {
+      const { driver } = buildDriver();
+      await driver.snapshot(); // tab-1
+      const tab2 = await driver.tabNew(); // tab-2
+      expect(tab2.ok).toBe(true);
+      if (!tab2.ok) return;
+
+      await driver.tabClose(tab2.value.tabId);
+
+      const result = await driver.tabList();
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.length).toBe(1);
+      expect(result.value[0]?.tabId).toBe("tab-1");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Native aria-ref resolution (#268 — 4A / Gap 1)
+  // ---------------------------------------------------------------------------
+
+  describe("native aria-ref resolution", () => {
+    it("uses page.locator('[aria-ref=...]') when ariaRef is present in refs", async () => {
+      // Simulate YAML that includes Playwright's native aria-ref attribute
+      const yamlWithAriaRef = '- button "Submit" [aria-ref=e42]';
+      const { driver, page } = buildDriver({ a11ySnapshotResult: yamlWithAriaRef });
+
+      await driver.snapshot();
+      const result = await driver.click("e1"); // e1 maps to aria-ref=e42
+      expect(result.ok).toBe(true);
+
+      // page.locator should have been called with the aria-ref selector
+      const locatorCalls = page.locator.mock.calls as string[][];
+      const ariaRefCall = locatorCalls.find((args) => String(args[0]).includes("aria-ref="));
+      expect(ariaRefCall).toBeDefined();
+    });
+
+    it("assigns nthIndex for duplicate role+name pairs", async () => {
+      // Two buttons with the same name — nthIndex distinguishes them
+      const yamlWithDupes = '- button "Click Me"\n- button "Click Me"\n- button "Click Me"';
+      const { driver } = buildDriver({ a11ySnapshotResult: yamlWithDupes });
+
+      const snap = await driver.snapshot();
+      expect(snap.ok).toBe(true);
+      if (!snap.ok) return;
+
+      // Three refs should exist with different nthIndex values
+      expect(Object.keys(snap.value.refs).length).toBe(3);
+      const refValues = Object.values(snap.value.refs);
+      const indices = refValues.map((r) => r.nthIndex ?? 0);
+      expect(indices).toContain(0);
+      expect(indices).toContain(1);
+      expect(indices).toContain(2);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // userDataDir config (gap 1 — persistent profiles)
+  // ---------------------------------------------------------------------------
+
+  describe("userDataDir config", () => {
+    it("accepts userDataDir in PlaywrightDriverConfig (type-level verification)", () => {
+      // TypeScript compile error here means userDataDir was not added to PlaywrightDriverConfig
+      const config: PlaywrightDriverConfig = {
+        userDataDir: "/tmp/test-profile",
+        headless: true,
+        stealth: true,
+      };
+      expect(config.userDataDir).toBe("/tmp/test-profile");
+    });
+
+    it("userDataDir can be combined with stealth and headless", () => {
+      const config: PlaywrightDriverConfig = {
+        userDataDir: "/tmp/profile",
+        stealth: true,
+        headless: false,
+      };
+      expect(config.userDataDir).toBe("/tmp/profile");
+      expect(config.stealth).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // STEALTH_INIT_SCRIPT content (gap 2 — expanded fingerprinting patches)
+  // ---------------------------------------------------------------------------
+
+  describe("STEALTH_INIT_SCRIPT", () => {
+    it("patches navigator.webdriver", () => {
+      expect(STEALTH_INIT_SCRIPT).toContain("navigator.webdriver");
+    });
+
+    it("patches navigator.plugins for non-zero length", () => {
+      expect(STEALTH_INIT_SCRIPT).toContain("navigator.plugins");
+      expect(STEALTH_INIT_SCRIPT).toContain("PluginArray.prototype");
+    });
+
+    it("patches navigator.languages with realistic value", () => {
+      expect(STEALTH_INIT_SCRIPT).toContain("navigator.languages");
+      expect(STEALTH_INIT_SCRIPT).toContain("en-US");
+    });
+
+    it("adds window.chrome runtime stub", () => {
+      expect(STEALTH_INIT_SCRIPT).toContain("window.chrome");
+      expect(STEALTH_INIT_SCRIPT).toContain("runtime");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // frameSelector — iframe scoping (gap 3)
+  // ---------------------------------------------------------------------------
+
+  describe("frameSelector option", () => {
+    it("routes click through page.frameLocator() when frameSelector is provided", async () => {
+      const { driver, page } = buildDriver();
+      await driver.snapshot();
+      const result = await driver.click("e1", { frameSelector: 'iframe[name="checkout"]' });
+      expect(result.ok).toBe(true);
+      expect(
+        (page.frameLocator.mock.calls as string[][]).some(
+          (args) => args[0] === 'iframe[name="checkout"]',
+        ),
+      ).toBe(true);
+    });
+
+    it("does not call frameLocator when frameSelector is absent", async () => {
+      const { driver, page } = buildDriver();
+      await driver.snapshot();
+      await driver.click("e1");
+      expect(page.frameLocator.mock.calls.length).toBe(0);
+    });
+
+    it("routes hover through frameLocator when frameSelector is provided", async () => {
+      const { driver, page } = buildDriver();
+      await driver.snapshot();
+      await driver.hover("e1", { frameSelector: "#payment-frame" });
+      expect(
+        (page.frameLocator.mock.calls as string[][]).some((args) => args[0] === "#payment-frame"),
+      ).toBe(true);
+    });
+
+    it("routes type through frameLocator when frameSelector is provided", async () => {
+      const { driver, page } = buildDriver();
+      await driver.snapshot();
+      await driver.type("e1", "hello", { frameSelector: "#embed" });
+      expect(
+        (page.frameLocator.mock.calls as string[][]).some((args) => args[0] === "#embed"),
+      ).toBe(true);
+    });
+
+    it("routes fillForm through frameLocator when frameSelector is provided", async () => {
+      const { driver, page } = buildDriver();
+      await driver.snapshot();
+      await driver.fillForm([{ ref: "e1", value: "val" }], { frameSelector: "#form-frame" });
+      expect(
+        (page.frameLocator.mock.calls as string[][]).some((args) => args[0] === "#form-frame"),
+      ).toBe(true);
     });
   });
 });

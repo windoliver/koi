@@ -33,7 +33,7 @@ describe.skipIf(SKIP)("PlaywrightBrowserDriver (integration)", () => {
     if (!snap.ok) return;
 
     expect(typeof snap.value.snapshot).toBe("string");
-    expect(snap.value.snapshotId).toMatch(/^snap-\d+$/);
+    expect(snap.value.snapshotId).toMatch(/^snap-tab-\d+-\d+$/);
     expect(snap.value.truncated).toBe(false);
     expect(snap.value.url).toBe("about:blank");
   });
@@ -119,15 +119,56 @@ describe.skipIf(SKIP)("PlaywrightBrowserDriver (integration)", () => {
     expect(tab2.ok).toBe(true);
     if (!tab2.ok) return;
 
-    const tabId = tab2.value.tabId;
-
-    // Focus back to the original would require tab1's ID... this test
-    // instead verifies tab2 can be focused
-    const focus = await driver.tabFocus(tabId);
+    const focus = await driver.tabFocus(tab2.value.tabId);
     expect(focus.ok).toBe(true);
 
-    // tabFocus invalidates snapshot
     const snap = await driver.snapshot();
     expect(snap.ok).toBe(true);
+  });
+
+  it("per-tab ref caching: tab-1 refs survive while working on tab-2", async () => {
+    // Navigate tab-1 to a page with a known interactive element
+    const html1 = `<!DOCTYPE html><html><body><button>Tab1Button</button></body></html>`;
+    await driver.navigate(`data:text/html,${encodeURIComponent(html1)}`);
+
+    const snap1 = await driver.snapshot();
+    expect(snap1.ok).toBe(true);
+    if (!snap1.ok) return;
+
+    const { snapshotId: snap1Id, refs: refs1 } = snap1.value;
+    const tab1ButtonRef = Object.entries(refs1).find(
+      ([, info]) => info.role === "button" && info.name === "Tab1Button",
+    );
+    expect(tab1ButtonRef).toBeDefined();
+    if (!tab1ButtonRef) return;
+
+    // Open tab-2 and do work there
+    const tab2 = await driver.tabNew({ url: "about:blank" });
+    expect(tab2.ok).toBe(true);
+    if (!tab2.ok) return;
+
+    await driver.snapshot(); // creates a snapshot for tab-2
+
+    // Switch back to tab-1 — tab-1's refs should still be cached
+    const focusResult = await driver.tabFocus("tab-1");
+    expect(focusResult.ok).toBe(true);
+
+    // Old snapshotId from tab-1 should still be valid (per-tab caching)
+    const clickResult = await driver.click(tab1ButtonRef[0], { snapshotId: snap1Id });
+    expect(clickResult.ok).toBe(true);
+  });
+
+  it("tabList() returns all open tabs", async () => {
+    await driver.navigate("about:blank");
+
+    const tab2 = await driver.tabNew({ url: "about:blank" });
+    expect(tab2.ok).toBe(true);
+
+    const listResult = await driver.tabList();
+    expect(listResult.ok).toBe(true);
+    if (!listResult.ok) return;
+
+    expect(listResult.value.length).toBeGreaterThanOrEqual(2);
+    expect(listResult.value.some((t) => t.tabId === "tab-1")).toBe(true);
   });
 });

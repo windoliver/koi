@@ -211,6 +211,14 @@ export function createMockDriver(options: MockDriverOptions = {}): BrowserDriver
       if (failWith) return fail();
       return { ok: true, value: { value: "mock-eval-result" } };
     },
+
+    tabList: (): Result<readonly BrowserTabInfo[], KoiError> => {
+      if (failWith) return fail();
+      return {
+        ok: true,
+        value: [{ tabId: "tab-1", url: "https://example.com", title: "Example Page" }],
+      };
+    },
   };
 }
 

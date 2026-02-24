@@ -4,8 +4,15 @@
  * Single persistent Browser + BrowserContext per driver instance.
  * Pages (tabs) are tracked in a Map<tabId, Page>.
  *
- * snapshotId is invalidated on navigate() and tabFocus().
- * Interaction tools validate snapshotId and return NOT_FOUND if stale.
+ * Per-tab snapshot state: each tab has its own snapshotId, refs, and
+ * refCounter — switching tabs does not invalidate another tab's refs.
+ *
+ * Ref resolution priority:
+ *   1. Native aria-ref → page.locator('[aria-ref="..."]') — O(1) direct lookup
+ *   2. getByRole(role, {name}).nth(nthIndex) — fallback with nth deduplication
+ *
+ * CDP connection: set cdpEndpoint to connect to an existing Chrome instance.
+ * Stealth: set stealth:true to hide navigator.webdriver and disable AutomationControlled.
  */
 
 import type {
@@ -32,9 +39,15 @@ import type {
   Result,
 } from "@koi/core";
 import { internal, notFound, validation } from "@koi/core";
-import type { Browser, BrowserContext, Locator, Page } from "playwright";
+import type { Browser, BrowserContext, FrameLocator, Locator, Page } from "playwright";
 import { chromium } from "playwright";
-import { parseAriaYaml } from "./a11y-serializer.js";
+import { parseAriaYaml, VALID_ROLES } from "./a11y-serializer.js";
+
+/** Playwright-typed role guard — same validation as isAriaRole, returns Playwright's AriaRole. */
+type AriaRole = Parameters<Page["getByRole"]>[0];
+function isAriaRole(role: string): role is AriaRole {
+  return VALID_ROLES.has(role);
+}
 
 export interface PlaywrightDriverConfig {
   /**
@@ -42,10 +55,33 @@ export interface PlaywrightDriverConfig {
    * When provided, `dispose()` will NOT close this browser — the caller manages lifecycle.
    */
   readonly browser?: Browser;
-  /** Run headless (default: true). Ignored when `browser` is provided. */
+  /**
+   * Connect to an existing Chrome/Chromium instance via CDP.
+   * Example: "ws://localhost:9222" (start Chrome with --remote-debugging-port=9222).
+   * When provided, `dispose()` will NOT close the browser — the caller manages lifecycle.
+   * Ignored when `browser` is provided.
+   */
+  readonly cdpEndpoint?: string;
+  /** Run headless (default: true). Ignored when `browser` or `cdpEndpoint` is provided. */
   readonly headless?: boolean;
-  /** Browser launch timeout in ms (default: 30000). Ignored when `browser` is provided. */
+  /** Browser launch timeout in ms (default: 30000). Ignored when `browser` or `cdpEndpoint` is provided. */
   readonly launchTimeout?: number;
+  /**
+   * Enable basic stealth mode (default: false).
+   * Applies Chromium launch flags and injects navigator/chrome patches.
+   * Covers common bot detection: navigator.webdriver, AutomationControlled flag,
+   * navigator.plugins, navigator.languages, window.chrome runtime stub.
+   * Ignored when `browser` or `cdpEndpoint` is provided (caller controls stealth).
+   */
+  readonly stealth?: boolean;
+  /**
+   * Absolute path to a Chromium user data directory for persistent profiles.
+   * Reuses cookies, localStorage, IndexedDB, and extensions across driver instances.
+   * Uses `chromium.launchPersistentContext()` — mutually exclusive with `browser` and
+   * `cdpEndpoint` (those options take precedence if also provided).
+   * Example: '/Users/alice/.koi/profiles/work'
+   */
+  readonly userDataDir?: string;
 }
 
 // Timeout defaults and maximum caps (ms)
@@ -59,32 +95,90 @@ const EVALUATE_DEFAULT_MS = 5_000;
 const EVALUATE_MAX_MS = 10_000;
 const LAUNCH_DEFAULT_MS = 30_000;
 
-/** Validate a timeout against a maximum cap and return a VALIDATION error if exceeded. */
-function checkTimeout(
-  ms: number,
+// ---------------------------------------------------------------------------
+// Stealth init script — injected at BrowserContext level
+// ---------------------------------------------------------------------------
+
+/**
+ * JavaScript snippet injected into every page at BrowserContext level when stealth is enabled.
+ * Covers the most commonly checked bot-detection signals without any extra dependencies.
+ * Exported so CDP callers can apply the same patches to their own contexts.
+ */
+export const STEALTH_INIT_SCRIPT = `
+// 1. navigator.webdriver — primary automation flag
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+// 2. navigator.plugins — real Chrome always has at least one plugin; headless has none
+if (navigator.plugins.length === 0) {
+  Object.defineProperty(navigator, 'plugins', {
+    get: () => Object.setPrototypeOf(
+      [{ name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format', length: 0 }],
+      PluginArray.prototype
+    ),
+  });
+}
+
+// 3. navigator.languages — ensure realistic browser language preferences
+Object.defineProperty(navigator, 'languages', { get: () => Object.freeze(['en-US', 'en']) });
+
+// 4. window.chrome — real Chrome exposes a runtime stub; headless Chromium does not
+if (typeof window.chrome === 'undefined') {
+  Object.defineProperty(window, 'chrome', { value: Object.freeze({ runtime: {} }), configurable: true });
+}
+`;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a raw timeout option to a validated ms value.
+ * Returns {ok: false} if the value exceeds maxMs, {ok: true, value: ms} otherwise.
+ */
+function resolveTimeout(
+  raw: number | undefined,
+  defaultMs: number,
   maxMs: number,
   label: string,
-): { readonly ok: false; readonly error: KoiError } | null {
+):
+  | { readonly ok: false; readonly error: KoiError }
+  | { readonly ok: true; readonly value: number } {
+  const ms = raw ?? defaultMs;
   if (ms > maxMs) {
     return {
       ok: false,
       error: validation(`${label} timeout ${ms}ms exceeds maximum ${maxMs}ms`),
     };
   }
-  return null;
+  return { ok: true, value: ms };
 }
 
+// ---------------------------------------------------------------------------
+// Per-tab snapshot state
+// ---------------------------------------------------------------------------
+
+interface TabSnapshot {
+  readonly snapshotId: string;
+  readonly refs: Readonly<Record<string, BrowserRefInfo>>;
+  readonly refCounter: number;
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
 export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {}): BrowserDriver {
-  // State (all mutable, closure-managed)
+  // Whether we own the browser lifecycle (launched it ourselves)
+  const ownsLifecycle = !config.browser && !config.cdpEndpoint;
+
   let browser: Browser | null = config.browser ?? null;
   let browserContext: BrowserContext | null = null;
   let tabCounter = 0;
-  let snapshotCounter = 0;
   const tabs = new Map<string, Page>();
   let currentTabId: string | null = null;
-  let currentSnapshotId: string | null = null;
-  // refs stored as BrowserRefInfo (role + optional name)
-  let currentRefs: Record<string, BrowserRefInfo> = {};
+
+  // Per-tab snapshot state — replaces the old single global currentSnapshotId / currentRefs
+  const tabSnapshots = new Map<string, TabSnapshot>();
 
   // ---------------------------------------------------------------------------
   // Internal helpers
@@ -94,29 +188,67 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
     return `tab-${++tabCounter}`;
   }
 
-  function newSnapshotId(): string {
-    return `snap-${++snapshotCounter}`;
-  }
-
-  function invalidateSnapshot(): void {
-    currentSnapshotId = null;
-    currentRefs = {};
+  function invalidateTabSnapshot(tabId: string): void {
+    tabSnapshots.delete(tabId);
   }
 
   async function ensureBrowser(): Promise<Browser> {
     if (!browser) {
-      browser = await chromium.launch({
-        headless: config.headless ?? true,
-        timeout: config.launchTimeout ?? LAUNCH_DEFAULT_MS,
-      });
+      if (config.cdpEndpoint) {
+        browser = await chromium.connectOverCDP(config.cdpEndpoint, {
+          timeout: config.launchTimeout ?? LAUNCH_DEFAULT_MS,
+        });
+      } else {
+        const launchArgs = config.stealth
+          ? [
+              "--disable-blink-features=AutomationControlled",
+              "--no-first-run",
+              "--no-default-browser-check",
+            ]
+          : [];
+        browser = await chromium.launch({
+          headless: config.headless ?? true,
+          timeout: config.launchTimeout ?? LAUNCH_DEFAULT_MS,
+          args: launchArgs,
+          ...(config.stealth ? { ignoreDefaultArgs: ["--enable-automation"] } : {}),
+        });
+      }
     }
     return browser;
   }
 
   async function ensureContext(): Promise<BrowserContext> {
     if (!browserContext) {
-      const b = await ensureBrowser();
-      browserContext = await b.newContext();
+      // Persistent context path: userDataDir bypasses ensureBrowser() entirely.
+      // chromium.launchPersistentContext() returns a BrowserContext directly.
+      if (config.userDataDir && !config.browser && !config.cdpEndpoint) {
+        const launchArgs = config.stealth
+          ? [
+              "--disable-blink-features=AutomationControlled",
+              "--no-first-run",
+              "--no-default-browser-check",
+            ]
+          : [];
+        browserContext = await chromium.launchPersistentContext(config.userDataDir, {
+          headless: config.headless ?? true,
+          timeout: config.launchTimeout ?? LAUNCH_DEFAULT_MS,
+          args: launchArgs,
+          ...(config.stealth ? { ignoreDefaultArgs: ["--enable-automation"] } : {}),
+        });
+      } else {
+        const b = await ensureBrowser();
+        // For CDP connections, reuse the default context if one exists
+        if (config.cdpEndpoint) {
+          const contexts = b.contexts();
+          browserContext = contexts[0] ?? (await b.newContext());
+        } else {
+          browserContext = await b.newContext();
+        }
+      }
+      // Inject stealth script at context level — covers all pages and window.open() tabs
+      if (config.stealth && !config.browser && !config.cdpEndpoint) {
+        await browserContext.addInitScript(STEALTH_INIT_SCRIPT);
+      }
     }
     return browserContext;
   }
@@ -136,10 +268,17 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
     return page;
   }
 
-  /** Returns an error Result if snapshotId is provided but stale. */
+  function getActiveTabId(): string | null {
+    return currentTabId;
+  }
+
+  /** Returns a stale-snapshot error if snapshotId is provided but doesn't match the active tab's. */
   function checkSnapshotId(snapshotId: string | undefined): Result<void, KoiError> | null {
     if (snapshotId === undefined) return null;
-    if (snapshotId !== currentSnapshotId) {
+    const tabId = getActiveTabId();
+    if (!tabId) return null;
+    const snap = tabSnapshots.get(tabId);
+    if (!snap || snapshotId !== snap.snapshotId) {
       return {
         ok: false,
         error: notFound("Snapshot is stale — call browser_snapshot to refresh refs"),
@@ -148,24 +287,48 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
     return null;
   }
 
-  /** Look up a ref and return a Playwright Locator, or null if not found. */
-  function getLocator(page: Page, ref: string): Locator | null {
-    const refInfo = currentRefs[ref];
+  /**
+   * Resolve a ref to a Playwright Locator, optionally scoped inside an iframe.
+   *
+   * Priority:
+   *   1. Native aria-ref → direct attribute selector (O(1))
+   *   2. getByRole(role, {name}).nth(nthIndex) — with deduplication
+   *
+   * When frameSelector is provided, all resolution is done via page.frameLocator(),
+   * which supports cross-origin iframes without explicit context switching.
+   */
+  function getLocator(page: Page, ref: string, frameSelector?: string): Locator | null {
+    const tabId = getActiveTabId();
+    if (!tabId) return null;
+    const snap = tabSnapshots.get(tabId);
+    if (!snap) return null;
+    const refInfo = snap.refs[ref];
     if (!refInfo) return null;
-    // Cast to the first parameter type of getByRole (Playwright's internal AriaRole union)
-    type Role = Parameters<Page["getByRole"]>[0];
-    if (refInfo.name) {
-      return page.getByRole(refInfo.role as Role, { name: refInfo.name, exact: true }).first();
+
+    const root: Page | FrameLocator = frameSelector ? page.frameLocator(frameSelector) : page;
+
+    // Strategy 1: native aria-ref direct attribute lookup
+    if (refInfo.ariaRef) {
+      return root.locator(`[aria-ref="${refInfo.ariaRef}"]`);
     }
-    return page.getByRole(refInfo.role as Role).first();
+
+    // Strategy 2: getByRole with nth deduplication
+    if (!isAriaRole(refInfo.role)) return null;
+    const role = refInfo.role; // narrowed to AriaRole by isAriaRole guard above
+    const nthIndex = refInfo.nthIndex ?? 0;
+    if (refInfo.name) {
+      return root.getByRole(role, { name: refInfo.name, exact: true }).nth(nthIndex);
+    }
+    return root.getByRole(role).nth(nthIndex);
   }
 
-  /** Get a ref or return a NOT_FOUND error Result. */
+  /** Get a Locator or return a NOT_FOUND error Result. */
   function requireLocator(
     page: Page,
     ref: string,
-  ): { locator: Locator } | { error: Result<never, KoiError> } {
-    const locator = getLocator(page, ref);
+    frameSelector?: string,
+  ): { readonly locator: Locator } | { readonly error: Result<never, KoiError> } {
+    const locator = getLocator(page, ref, frameSelector);
     if (!locator) {
       return {
         error: {
@@ -191,8 +354,9 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
     ): Promise<Result<BrowserSnapshotResult, KoiError>> {
       try {
         const page = await ensurePage();
+        const tabId = currentTabId;
+        if (!tabId) return { ok: false, error: internal("No active tab") };
 
-        // Use Playwright 1.44+ locator.ariaSnapshot() — page.accessibility was removed.
         const locator = options?.selector
           ? page.locator(options.selector).first()
           : page.locator("body");
@@ -205,11 +369,20 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
           };
         }
 
-        const { text, refs, truncated } = parseAriaYaml(yamlText, options);
+        const { text, refs, truncated, title: yamlTitle } = parseAriaYaml(yamlText, options);
 
-        const snapshotId = newSnapshotId();
-        currentSnapshotId = snapshotId;
-        currentRefs = refs as Record<string, BrowserRefInfo>;
+        // Generate a new snapshotId and store per-tab state
+        const prevCounter = tabSnapshots.get(tabId)?.refCounter ?? 0;
+        const refCounter = prevCounter + 1;
+        const snapshotId = `snap-${tabId}-${refCounter}`;
+        tabSnapshots.set(tabId, {
+          snapshotId,
+          refs,
+          refCounter,
+        });
+
+        // Use title from YAML if extracted, fall back to IPC only when absent
+        const title = yamlTitle ?? (await page.title());
 
         return {
           ok: true,
@@ -219,7 +392,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
             refs,
             truncated,
             url: page.url(),
-            title: await page.title(),
+            title,
           },
         };
       } catch (e: unknown) {
@@ -233,15 +406,22 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
     ): Promise<Result<BrowserNavigateResult, KoiError>> {
       try {
         const page = await ensurePage();
-        const timeoutMs = options?.timeout ?? NAVIGATE_DEFAULT_MS;
-        const cap = checkTimeout(timeoutMs, NAVIGATE_MAX_MS, "navigate");
-        if (cap) return cap;
+        const tabId = currentTabId;
+        if (!tabId) return { ok: false, error: internal("No active tab") };
 
-        invalidateSnapshot();
+        const t = resolveTimeout(
+          options?.timeout,
+          NAVIGATE_DEFAULT_MS,
+          NAVIGATE_MAX_MS,
+          "navigate",
+        );
+        if (!t.ok) return t;
+
+        invalidateTabSnapshot(tabId);
 
         await page.goto(url, {
           waitUntil: options?.waitUntil ?? "load",
-          timeout: timeoutMs,
+          timeout: t.value,
         });
 
         return {
@@ -262,14 +442,13 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         const stale = checkSnapshotId(options?.snapshotId);
         if (stale) return stale;
 
-        const found = requireLocator(page, ref);
+        const found = requireLocator(page, ref, options?.frameSelector);
         if ("error" in found) return found.error;
 
-        const timeoutMs = options?.timeout ?? ACTION_DEFAULT_MS;
-        const cap = checkTimeout(timeoutMs, ACTION_MAX_MS, "click");
-        if (cap) return cap;
+        const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "click");
+        if (!t.ok) return t;
 
-        await found.locator.click({ timeout: timeoutMs });
+        await found.locator.click({ timeout: t.value });
         return { ok: true, value: undefined };
       } catch (e: unknown) {
         return { ok: false, error: internal("browser_click failed", e) };
@@ -282,14 +461,13 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         const stale = checkSnapshotId(options?.snapshotId);
         if (stale) return stale;
 
-        const found = requireLocator(page, ref);
+        const found = requireLocator(page, ref, options?.frameSelector);
         if ("error" in found) return found.error;
 
-        const timeoutMs = options?.timeout ?? ACTION_DEFAULT_MS;
-        const cap = checkTimeout(timeoutMs, ACTION_MAX_MS, "hover");
-        if (cap) return cap;
+        const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "hover");
+        if (!t.ok) return t;
 
-        await found.locator.hover({ timeout: timeoutMs });
+        await found.locator.hover({ timeout: t.value });
         return { ok: true, value: undefined };
       } catch (e: unknown) {
         return { ok: false, error: internal("browser_hover failed", e) };
@@ -299,9 +477,8 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
     async press(key: string, options?: BrowserActionOptions): Promise<Result<void, KoiError>> {
       try {
         const page = await ensurePage();
-        const timeoutMs = options?.timeout ?? ACTION_DEFAULT_MS;
-        const cap = checkTimeout(timeoutMs, ACTION_MAX_MS, "press");
-        if (cap) return cap;
+        const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "press");
+        if (!t.ok) return t;
 
         await page.keyboard.press(key);
         return { ok: true, value: undefined };
@@ -320,17 +497,16 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         const stale = checkSnapshotId(options?.snapshotId);
         if (stale) return stale;
 
-        const found = requireLocator(page, ref);
+        const found = requireLocator(page, ref, options?.frameSelector);
         if ("error" in found) return found.error;
 
-        const timeoutMs = options?.timeout ?? ACTION_DEFAULT_MS;
-        const cap = checkTimeout(timeoutMs, ACTION_MAX_MS, "type");
-        if (cap) return cap;
+        const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "type");
+        if (!t.ok) return t;
 
         if (options?.clear) {
-          await found.locator.clear({ timeout: timeoutMs });
+          await found.locator.clear({ timeout: t.value });
         }
-        await found.locator.fill(value, { timeout: timeoutMs });
+        await found.locator.fill(value, { timeout: t.value });
         return { ok: true, value: undefined };
       } catch (e: unknown) {
         return { ok: false, error: internal("browser_type failed", e) };
@@ -347,14 +523,13 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         const stale = checkSnapshotId(options?.snapshotId);
         if (stale) return stale;
 
-        const found = requireLocator(page, ref);
+        const found = requireLocator(page, ref, options?.frameSelector);
         if ("error" in found) return found.error;
 
-        const timeoutMs = options?.timeout ?? ACTION_DEFAULT_MS;
-        const cap = checkTimeout(timeoutMs, ACTION_MAX_MS, "select");
-        if (cap) return cap;
+        const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "select");
+        if (!t.ok) return t;
 
-        await found.locator.selectOption(value, { timeout: timeoutMs });
+        await found.locator.selectOption(value, { timeout: t.value });
         return { ok: true, value: undefined };
       } catch (e: unknown) {
         return { ok: false, error: internal("browser_select failed", e) };
@@ -370,19 +545,32 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         const stale = checkSnapshotId(options?.snapshotId);
         if (stale) return stale;
 
-        const timeoutMs = options?.timeout ?? ACTION_DEFAULT_MS;
-        const cap = checkTimeout(timeoutMs, ACTION_MAX_MS, "fill_form");
-        if (cap) return cap;
+        const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "fill_form");
+        if (!t.ok) return t;
 
+        // Pass 1: validate all refs before touching any field (atomic guarantee)
+        const resolved: Array<{ readonly locator: Locator; readonly field: BrowserFormField }> = [];
         for (const field of fields) {
-          const found = requireLocator(page, field.ref);
+          const found = requireLocator(page, field.ref, options?.frameSelector);
           if ("error" in found) return found.error;
-
-          if (field.clear) {
-            await found.locator.clear({ timeout: timeoutMs });
-          }
-          await found.locator.fill(field.value, { timeout: timeoutMs });
+          resolved.push({ locator: found.locator, field });
         }
+
+        // Pass 2: fill — parallel when caller opts in, sequential otherwise
+        if (options?.parallel) {
+          await Promise.all(
+            resolved.map(async ({ locator, field }) => {
+              if (field.clear) await locator.clear({ timeout: t.value });
+              await locator.fill(field.value, { timeout: t.value });
+            }),
+          );
+        } else {
+          for (const { locator, field } of resolved) {
+            if (field.clear) await locator.clear({ timeout: t.value });
+            await locator.fill(field.value, { timeout: t.value });
+          }
+        }
+
         return { ok: true, value: undefined };
       } catch (e: unknown) {
         return { ok: false, error: internal("browser_fill_form failed", e) };
@@ -400,22 +588,20 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
           const found = requireLocator(page, options.ref);
           if ("error" in found) return found.error;
 
-          const timeoutMs = options.timeout ?? ACTION_DEFAULT_MS;
-          const cap = checkTimeout(timeoutMs, ACTION_MAX_MS, "scroll");
-          if (cap) return cap;
+          const t = resolveTimeout(options.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "scroll");
+          if (!t.ok) return t;
 
-          await found.locator.scrollIntoViewIfNeeded({ timeout: timeoutMs });
+          await found.locator.scrollIntoViewIfNeeded({ timeout: t.value });
         } else {
-          // page scroll
-          const directionMap: Record<string, [number, number]> = {
+          const directionMap: Readonly<Record<string, readonly [number, number]>> = {
             up: [0, -1],
             down: [0, 1],
             left: [-1, 0],
             right: [1, 0],
           };
-          const [x, y] = directionMap[options.direction] ?? [0, 1];
+          const dir = directionMap[options.direction] ?? ([0, 1] as const);
           const amount = options.amount ?? 400;
-          await page.mouse.wheel(x * amount, y * amount);
+          await page.mouse.wheel(dir[0] * amount, dir[1] * amount);
         }
 
         return { ok: true, value: undefined };
@@ -429,9 +615,8 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
     ): Promise<Result<BrowserScreenshotResult, KoiError>> {
       try {
         const page = await ensurePage();
-        const timeoutMs = options?.timeout ?? ACTION_DEFAULT_MS;
-        const cap = checkTimeout(timeoutMs, ACTION_MAX_MS, "screenshot");
-        if (cap) return cap;
+        const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "screenshot");
+        if (!t.ok) return t;
 
         const quality = options?.quality ?? 80;
         const fullPage = options?.fullPage ?? false;
@@ -439,9 +624,8 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         const buffer = await page.screenshot({
           fullPage,
           type: quality < 100 ? "jpeg" : "png",
-          // exactOptionalPropertyTypes: only pass quality when it's meaningful (JPEG)
           ...(quality < 100 ? { quality } : {}),
-          timeout: timeoutMs,
+          timeout: t.value,
         });
 
         const mimeType = quality < 100 ? "image/jpeg" : "image/png";
@@ -468,26 +652,22 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         const page = await ensurePage();
 
         if (options.kind === "timeout") {
-          const timeoutMs = options.timeout;
-          const cap = checkTimeout(timeoutMs, WAIT_MAX_MS, "wait");
-          if (cap) return cap;
-          await page.waitForTimeout(timeoutMs);
+          const t = resolveTimeout(options.timeout, WAIT_DEFAULT_MS, WAIT_MAX_MS, "wait");
+          if (!t.ok) return t;
+          await page.waitForTimeout(t.value);
         } else if (options.kind === "selector") {
-          const timeoutMs = options.timeout ?? WAIT_DEFAULT_MS;
-          const cap = checkTimeout(timeoutMs, WAIT_MAX_MS, "wait");
-          if (cap) return cap;
+          const t = resolveTimeout(options.timeout, WAIT_DEFAULT_MS, WAIT_MAX_MS, "wait");
+          if (!t.ok) return t;
           await page.waitForSelector(options.selector, {
             state: options.state ?? "visible",
-            timeout: timeoutMs,
+            timeout: t.value,
           });
         } else {
-          // navigation
-          const timeoutMs = options.timeout ?? WAIT_DEFAULT_MS;
-          const cap = checkTimeout(timeoutMs, WAIT_MAX_MS, "wait");
-          if (cap) return cap;
+          const t = resolveTimeout(options.timeout, WAIT_DEFAULT_MS, WAIT_MAX_MS, "wait");
+          if (!t.ok) return t;
           await page.waitForNavigation({
             waitUntil: options.event ?? "load",
-            timeout: timeoutMs,
+            timeout: t.value,
           });
         }
 
@@ -503,10 +683,22 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         const page = await ctx.newPage();
         const tabId = newTabId();
         tabs.set(tabId, page);
+        // New tab becomes the active tab (matches real browser behaviour).
+        currentTabId = tabId;
 
         if (options?.url) {
-          const timeoutMs = options.timeout ?? NAVIGATE_DEFAULT_MS;
-          await page.goto(options.url, { timeout: timeoutMs });
+          const t = resolveTimeout(
+            options.timeout,
+            NAVIGATE_DEFAULT_MS,
+            NAVIGATE_MAX_MS,
+            "tab_new",
+          );
+          if (!t.ok) {
+            await page.close();
+            tabs.delete(tabId);
+            return t;
+          }
+          await page.goto(options.url, { timeout: t.value });
         }
 
         return {
@@ -537,12 +729,13 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         }
         await page.close();
         tabs.delete(targetId);
+        invalidateTabSnapshot(targetId);
 
         if (currentTabId === targetId) {
-          // Switch to the most recently added remaining tab
-          const remaining = [...tabs.keys()];
-          currentTabId = remaining[remaining.length - 1] ?? null;
-          invalidateSnapshot();
+          // Single-pass iterator — avoids allocating a full array just to get the last key.
+          let lastKey: string | null = null;
+          for (const k of tabs.keys()) lastKey = k;
+          currentTabId = lastKey;
         }
 
         return { ok: true, value: undefined };
@@ -560,9 +753,23 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         if (!page) {
           return { ok: false, error: notFound(`Tab "${tabId}" not found`) };
         }
-        await page.bringToFront();
+        // bringToFront() has no built-in timeout; guard against infinite hangs.
+        // Timer handle is cleared on normal resolution to avoid dangling rejections.
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error("bringToFront timed out")), 10_000);
+          page.bringToFront().then(
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            (e: unknown) => {
+              clearTimeout(timer);
+              reject(e);
+            },
+          );
+        });
         currentTabId = tabId;
-        invalidateSnapshot(); // New page content, old refs are stale
+        // Note: we do NOT invalidate the tab's snapshot — per-tab caching preserves it
 
         return {
           ok: true,
@@ -577,15 +784,36 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       }
     },
 
+    async tabList(): Promise<Result<readonly BrowserTabInfo[], KoiError>> {
+      try {
+        // Fire all CDP title() calls in parallel — one round-trip per tab concurrently.
+        const entries = [...tabs.entries()];
+        const value = await Promise.all(
+          entries.map(async ([tabId, page]) => ({
+            tabId,
+            url: page.url(),
+            title: await page.title(),
+          })),
+        );
+        return { ok: true, value };
+      } catch (e: unknown) {
+        return { ok: false, error: internal("browser_tab_list failed", e) };
+      }
+    },
+
     async evaluate(
       script: string,
       options?: BrowserEvaluateOptions,
     ): Promise<Result<BrowserEvaluateResult, KoiError>> {
       try {
         const page = await ensurePage();
-        const timeoutMs = options?.timeout ?? EVALUATE_DEFAULT_MS;
-        const cap = checkTimeout(timeoutMs, EVALUATE_MAX_MS, "evaluate");
-        if (cap) return cap;
+        const t = resolveTimeout(
+          options?.timeout,
+          EVALUATE_DEFAULT_MS,
+          EVALUATE_MAX_MS,
+          "evaluate",
+        );
+        if (!t.ok) return t;
 
         const value: unknown = await page.evaluate(script);
         return { ok: true, value: { value } };
@@ -595,8 +823,9 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
     },
 
     async dispose(): Promise<void> {
-      invalidateSnapshot();
-      // Close all pages
+      // Invalidate all tab snapshots
+      tabSnapshots.clear();
+
       for (const page of tabs.values()) {
         await page.close().catch(() => undefined);
       }
@@ -608,11 +837,14 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         browserContext = null;
       }
 
-      // Only close browser if we launched it (not injected)
-      if (!config.browser && browser) {
+      // Only close browser if we launched it (not injected and not CDP)
+      if (ownsLifecycle && browser) {
         await browser.close().catch(() => undefined);
         browser = null;
       }
     },
   };
 }
+
+// Re-export for consumers who want to use VALID_ROLES or isAriaRole directly
+export { VALID_ROLES, isAriaRole };

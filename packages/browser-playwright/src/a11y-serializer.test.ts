@@ -66,8 +66,8 @@ describe("serializeA11yTree", () => {
       };
       const result = serializeA11yTree(node);
       expect(result.refs).toEqual({
-        e1: { role: "button", name: "Submit" },
-        e2: { role: "link", name: "Home" },
+        e1: { role: "button", name: "Submit", nthIndex: 0 },
+        e2: { role: "link", name: "Home", nthIndex: 0 },
       });
     });
 
@@ -78,7 +78,7 @@ describe("serializeA11yTree", () => {
         children: [{ role: "button", name: "" }],
       };
       const result = serializeA11yTree(node);
-      expect(result.refs.e1).toEqual({ role: "button" });
+      expect(result.refs.e1).toEqual({ role: "button", nthIndex: 0 });
       expect(result.refs.e1).not.toHaveProperty("name");
     });
 
@@ -114,9 +114,9 @@ describe("serializeA11yTree", () => {
       };
       const result = serializeA11yTree(node);
       expect(Object.keys(result.refs)).toEqual(["e1", "e2", "e3"]);
-      expect(result.refs.e1).toEqual({ role: "button", name: "First" });
-      expect(result.refs.e2).toEqual({ role: "link", name: "Second" });
-      expect(result.refs.e3).toEqual({ role: "textbox", name: "Third" });
+      expect(result.refs.e1).toEqual({ role: "button", name: "First", nthIndex: 0 });
+      expect(result.refs.e2).toEqual({ role: "link", name: "Second", nthIndex: 0 });
+      expect(result.refs.e3).toEqual({ role: "textbox", name: "Third", nthIndex: 0 });
     });
   });
 
@@ -271,16 +271,16 @@ describe("parseAriaYaml", () => {
       const result = parseAriaYaml(yaml);
       expect(result.text).toContain('link "Learn more"');
       expect(result.text).toContain("[ref=e1]");
-      expect(result.refs).toEqual({ e1: { role: "link", name: "Learn more" } });
+      expect(result.refs).toEqual({ e1: { role: "link", name: "Learn more", nthIndex: 0 } });
     });
 
     it("parses multiple interactive elements with sequential refs", () => {
       const yaml = ['- button "Submit"', '- link "Home"', '- textbox "Email"'].join("\n");
       const result = parseAriaYaml(yaml);
       expect(Object.keys(result.refs)).toEqual(["e1", "e2", "e3"]);
-      expect(result.refs.e1).toEqual({ role: "button", name: "Submit" });
-      expect(result.refs.e2).toEqual({ role: "link", name: "Home" });
-      expect(result.refs.e3).toEqual({ role: "textbox", name: "Email" });
+      expect(result.refs.e1).toEqual({ role: "button", name: "Submit", nthIndex: 0 });
+      expect(result.refs.e2).toEqual({ role: "link", name: "Home", nthIndex: 0 });
+      expect(result.refs.e3).toEqual({ role: "textbox", name: "Email", nthIndex: 0 });
     });
 
     it("non-interactive elements get no ref", () => {
@@ -291,7 +291,7 @@ describe("parseAriaYaml", () => {
       ].join("\n");
       const result = parseAriaYaml(yaml);
       expect(Object.keys(result.refs)).toEqual(["e1"]);
-      expect(result.refs.e1).toEqual({ role: "link", name: "Click me" });
+      expect(result.refs.e1).toEqual({ role: "link", name: "Click me", nthIndex: 0 });
     });
 
     it("skips metadata lines starting with - /", () => {
@@ -315,7 +315,7 @@ describe("parseAriaYaml", () => {
       const yaml = "- button";
       const result = parseAriaYaml(yaml);
       expect(result.text).toBe("button [ref=e1]");
-      expect(result.refs.e1).toEqual({ role: "button" });
+      expect(result.refs.e1).toEqual({ role: "button", nthIndex: 0 });
       expect(result.refs.e1).not.toHaveProperty("name");
     });
   });
@@ -339,7 +339,7 @@ describe("parseAriaYaml", () => {
         "    - /url: https://iana.org/domains/example",
       ].join("\n");
       const result = parseAriaYaml(yaml);
-      expect(result.refs).toEqual({ e1: { role: "link", name: "Learn more" } });
+      expect(result.refs).toEqual({ e1: { role: "link", name: "Learn more", nthIndex: 0 } });
       expect(result.text).toContain('link "Learn more"');
       expect(result.text).toContain("[ref=e1]");
       expect(result.text).not.toContain("/url");

@@ -32,6 +32,18 @@ export interface BrowserSnapshotOptions {
 export interface BrowserRefInfo {
   readonly role: string;
   readonly name?: string;
+  /**
+   * Playwright's native aria-ref attribute value (e.g. "e3") from
+   * locator.ariaSnapshot() YAML. When present, used for direct
+   * `page.locator('[aria-ref="e3"]')` lookup — O(1) vs getByRole O(n).
+   */
+  readonly ariaRef?: string;
+  /**
+   * 0-based occurrence index for getByRole() fallback when multiple
+   * elements share the same role+name. Ensures `.nth(nthIndex)` picks
+   * the correct element instead of silently using `.first()`.
+   */
+  readonly nthIndex?: number;
 }
 
 export interface BrowserSnapshotResult {
@@ -81,6 +93,19 @@ export interface BrowserActionOptions {
    */
   readonly snapshotId?: string;
   readonly timeout?: number;
+  /**
+   * Fill form fields in parallel using Promise.all (default: false — sequential).
+   * Only set to true when fields are independent (no JS field-interdependencies).
+   * Applies to fillForm only.
+   */
+  readonly parallel?: boolean;
+  /**
+   * CSS selector for an <iframe> or <frame> to scope this action within.
+   * Example: 'iframe[name="payment"]', '#checkout-frame', 'iframe:first-of-type'.
+   * Uses Playwright's frameLocator() — supports cross-origin iframes without
+   * needing to switch browsing context explicitly.
+   */
+  readonly frameSelector?: string;
 }
 
 export interface BrowserTypeOptions extends BrowserActionOptions {
@@ -301,6 +326,11 @@ export interface BrowserDriver {
     key: string,
     options?: BrowserActionOptions,
   ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+
+  /** List all open tabs. */
+  readonly tabList: () =>
+    | Result<readonly BrowserTabInfo[], KoiError>
+    | Promise<Result<readonly BrowserTabInfo[], KoiError>>;
 
   readonly dispose?: () => void | Promise<void>;
 }
