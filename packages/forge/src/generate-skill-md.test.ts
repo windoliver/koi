@@ -37,8 +37,8 @@ describe("generateSkillMd", () => {
     expect(secondDelimiter).toBeGreaterThan(0);
   });
 
-  test("omits tags key when tags is undefined", () => {
-    const result = generateSkillMd(baseInput({ tags: undefined }));
+  test("omits tags key when tags is not provided", () => {
+    const result = generateSkillMd(baseInput());
     expect(result).not.toContain("tags:");
   });
 
