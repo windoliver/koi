@@ -1,9 +1,15 @@
 /**
  * promote_forge — Promotes a brick's scope, trust tier, or lifecycle.
- * Integrates with governance for scope promotion checks and HITL.
+ *
+ * Per-field evaluation (Issue 5A): each dimension is validated independently.
+ * Scope HITL does NOT block trust or lifecycle changes.
+ * Uses VALID_LIFECYCLE_TRANSITIONS for state machine enforcement (Issue 7A).
+ * Dedicated error codes: TRUST_DEMOTION_NOT_ALLOWED, LIFECYCLE_INVALID_TRANSITION (Issue 6A).
+ * Wires scope promotion to store.promote() if available (Issue 1A).
  */
 
 import type { BrickLifecycle, BrickUpdate, ForgeScope, Result, Tool, TrustTier } from "@koi/core";
+import { VALID_LIFECYCLE_TRANSITIONS } from "@koi/core";
 import { z } from "zod";
 import type { ForgeError } from "../errors.js";
 import { governanceError, storeError } from "../errors.js";
@@ -13,7 +19,7 @@ import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import { createForgeTool, parseForgeInput } from "./shared.js";
 
 // ---------------------------------------------------------------------------
-// Zod schema
+// Zod schema — includes quarantined for remediation path
 // ---------------------------------------------------------------------------
 
 const promoteForgeInputSchema = z
@@ -21,7 +27,9 @@ const promoteForgeInputSchema = z
     brickId: z.string(),
     targetScope: z.enum(["agent", "zone", "global"]).optional(),
     targetTrustTier: z.enum(["sandbox", "verified", "promoted"]).optional(),
-    targetLifecycle: z.enum(["draft", "verifying", "active", "failed", "deprecated"]).optional(),
+    targetLifecycle: z
+      .enum(["draft", "verifying", "active", "failed", "deprecated", "quarantined"])
+      .optional(),
   })
   .refine(
     (val) =>
@@ -46,12 +54,86 @@ const PROMOTE_FORGE_CONFIG: ForgeToolConfig = {
       brickId: { type: "string" },
       targetScope: { type: "string", enum: ["agent", "zone", "global"] },
       targetTrustTier: { type: "string", enum: ["sandbox", "verified", "promoted"] },
-      targetLifecycle: { type: "string", enum: ["active", "deprecated", "archived"] },
+      targetLifecycle: {
+        type: "string",
+        enum: ["draft", "verifying", "active", "failed", "deprecated", "quarantined"],
+      },
     },
     required: ["brickId"],
   },
   handler: promoteForgeHandler,
 };
+
+// ---------------------------------------------------------------------------
+// Per-field validators (pure functions returning change or error)
+// ---------------------------------------------------------------------------
+
+interface ScopeValidation {
+  readonly change: PromoteChange<ForgeScope> | undefined;
+  readonly requiresHitl: boolean;
+  readonly hitlMessage?: string | undefined;
+}
+
+function validateScopeChange(
+  current: ForgeScope,
+  target: ForgeScope,
+  trustTier: TrustTier,
+  deps: ForgeDeps,
+): Result<ScopeValidation, ForgeError> {
+  if (target === current) {
+    return { ok: true, value: { change: undefined, requiresHitl: false } };
+  }
+  const scopeResult = checkScopePromotion(current, target, trustTier, deps.config);
+  if (!scopeResult.ok) {
+    return { ok: false, error: scopeResult.error };
+  }
+  if (scopeResult.value.requiresHumanApproval) {
+    return {
+      ok: true,
+      value: { change: undefined, requiresHitl: true, hitlMessage: scopeResult.value.message },
+    };
+  }
+  return { ok: true, value: { change: { from: current, to: target }, requiresHitl: false } };
+}
+
+function validateTrustChange(
+  current: TrustTier,
+  target: TrustTier,
+): Result<PromoteChange<TrustTier> | undefined, ForgeError> {
+  if (target === current) {
+    return { ok: true, value: undefined };
+  }
+  if (TRUST_ORDER[target] < TRUST_ORDER[current]) {
+    return {
+      ok: false,
+      error: governanceError(
+        "TRUST_DEMOTION_NOT_ALLOWED",
+        `Trust tier demotion not allowed: "${current}" → "${target}"`,
+      ),
+    };
+  }
+  return { ok: true, value: { from: current, to: target } };
+}
+
+function validateLifecycleChange(
+  current: BrickLifecycle,
+  target: BrickLifecycle,
+): Result<PromoteChange<BrickLifecycle> | undefined, ForgeError> {
+  if (target === current) {
+    return { ok: true, value: undefined };
+  }
+  const allowed = VALID_LIFECYCLE_TRANSITIONS[current];
+  if (!allowed.includes(target)) {
+    return {
+      ok: false,
+      error: governanceError(
+        "LIFECYCLE_INVALID_TRANSITION",
+        `Invalid lifecycle transition: "${current}" → "${target}". Allowed: [${allowed.join(", ")}]`,
+      ),
+    };
+  }
+  return { ok: true, value: { from: current, to: target } };
+}
 
 // ---------------------------------------------------------------------------
 // Handler
@@ -79,95 +161,162 @@ async function promoteForgeHandler(
 
   const brick = loadResult.value;
 
-  // --- Validate scope promotion ---
+  // --- Per-field validation (Issue 5A) ---
+  // Each dimension is evaluated independently. Scope HITL does NOT block other fields.
+
   let scopeChange: PromoteChange<ForgeScope> | undefined;
+  let scopeRequiresHitl = false;
+  let scopeHitlMessage: string | undefined;
+
   if (obj.targetScope !== undefined) {
-    const targetScope: ForgeScope = obj.targetScope;
-    if (targetScope !== brick.scope) {
-      const scopeResult = checkScopePromotion(
-        brick.scope,
-        targetScope,
-        brick.trustTier,
-        deps.config,
-      );
-      if (!scopeResult.ok) {
-        return { ok: false, error: scopeResult.error };
-      }
-      if (scopeResult.value.requiresHumanApproval) {
-        const promoteResult: PromoteResult = {
-          brickId: obj.brickId,
-          applied: false,
-          requiresHumanApproval: true,
-          changes: { scope: { from: brick.scope, to: targetScope } },
-          ...(scopeResult.value.message !== undefined
-            ? { message: scopeResult.value.message }
-            : {}),
-        };
-        return { ok: true, value: promoteResult };
-      }
-      scopeChange = { from: brick.scope, to: targetScope };
+    const scopeResult = validateScopeChange(brick.scope, obj.targetScope, brick.trustTier, deps);
+    if (!scopeResult.ok) {
+      return { ok: false, error: scopeResult.error };
     }
+    scopeChange = scopeResult.value.change;
+    scopeRequiresHitl = scopeResult.value.requiresHitl;
+    scopeHitlMessage = scopeResult.value.hitlMessage;
   }
 
-  // --- Validate trust tier promotion ---
+  // Trust tier — independent of scope HITL
   let trustChange: PromoteChange<TrustTier> | undefined;
   if (obj.targetTrustTier !== undefined) {
-    const targetTrust: TrustTier = obj.targetTrustTier;
-    if (targetTrust !== brick.trustTier) {
-      if (TRUST_ORDER[targetTrust] < TRUST_ORDER[brick.trustTier]) {
-        return {
-          ok: false,
-          error: governanceError(
-            "SCOPE_VIOLATION",
-            `Trust tier demotion not allowed: "${brick.trustTier}" → "${targetTrust}"`,
-          ),
-        };
-      }
-      trustChange = { from: brick.trustTier, to: targetTrust };
+    const trustResult = validateTrustChange(brick.trustTier, obj.targetTrustTier);
+    if (!trustResult.ok) {
+      return { ok: false, error: trustResult.error };
     }
+    trustChange = trustResult.value;
   }
 
-  // --- Validate lifecycle transition ---
+  // Lifecycle — independent of scope HITL
   let lifecycleChange: PromoteChange<BrickLifecycle> | undefined;
   if (obj.targetLifecycle !== undefined) {
-    const targetLifecycle: BrickLifecycle = obj.targetLifecycle;
-    if (targetLifecycle !== brick.lifecycle) {
-      if (brick.lifecycle === "failed") {
-        return {
-          ok: false,
-          error: governanceError(
-            "SCOPE_VIOLATION",
-            'Cannot transition from "failed" — failed is a terminal state',
-          ),
-        };
-      }
-      lifecycleChange = { from: brick.lifecycle, to: targetLifecycle };
+    const lifecycleResult = validateLifecycleChange(brick.lifecycle, obj.targetLifecycle);
+    if (!lifecycleResult.ok) {
+      return { ok: false, error: lifecycleResult.error };
+    }
+    lifecycleChange = lifecycleResult.value;
+  }
+
+  // --- Auto-assign zone tag when promoting to zone scope (Issue C2) ---
+  // If scope changes to "zone" and zoneId is available, ensure zone:<zoneId> tag exists
+  let tagUpdate: readonly string[] | undefined;
+  if (scopeChange !== undefined && scopeChange.to === "zone" && deps.context.zoneId !== undefined) {
+    const zoneTag = `zone:${deps.context.zoneId}`;
+    if (!brick.tags.includes(zoneTag)) {
+      tagUpdate = [...brick.tags, zoneTag];
     }
   }
 
-  // Build immutable updates object and apply if any changes exist
-  const changes = {
+  // --- Apply non-HITL changes (trust + lifecycle always, scope only if not gated) ---
+  const hasNonHitlChanges =
+    scopeChange !== undefined ||
+    trustChange !== undefined ||
+    lifecycleChange !== undefined ||
+    tagUpdate !== undefined;
+
+  if (hasNonHitlChanges) {
+    const updates: BrickUpdate = {
+      ...(scopeChange !== undefined ? { scope: scopeChange.to } : {}),
+      ...(trustChange !== undefined ? { trustTier: trustChange.to } : {}),
+      ...(lifecycleChange !== undefined ? { lifecycle: lifecycleChange.to } : {}),
+      ...(tagUpdate !== undefined ? { tags: tagUpdate } : {}),
+    };
+
+    // Wire scope promotion to store.promote() if available (Issue 1A)
+    // NOTE: promote() + update() are NOT atomic. If update() fails after promote()
+    // succeeds, the brick is in the new tier with stale trust/lifecycle metadata.
+    if (scopeChange !== undefined && deps.store.promote !== undefined) {
+      const promoteResult = await deps.store.promote(obj.brickId, scopeChange.to);
+      if (!promoteResult.ok) {
+        return {
+          ok: false,
+          error: storeError(
+            "SAVE_FAILED",
+            `Scope promotion failed: ${promoteResult.error.message}`,
+          ),
+        };
+      }
+      // Apply remaining non-scope updates if any (includes zone tag assignment)
+      const nonScopeUpdates: BrickUpdate = {
+        ...(trustChange !== undefined ? { trustTier: trustChange.to } : {}),
+        ...(lifecycleChange !== undefined ? { lifecycle: lifecycleChange.to } : {}),
+        ...(tagUpdate !== undefined ? { tags: tagUpdate } : {}),
+      };
+      const hasNonScopeUpdates =
+        trustChange !== undefined || lifecycleChange !== undefined || tagUpdate !== undefined;
+      if (hasNonScopeUpdates) {
+        const updateResult = await deps.store.update(obj.brickId, nonScopeUpdates);
+        if (!updateResult.ok) {
+          return {
+            ok: false,
+            error: storeError(
+              "SAVE_FAILED",
+              `Failed to update brick: ${updateResult.error.message}`,
+            ),
+          };
+        }
+      }
+
+      // Fire-and-forget: notify promoted
+      if (deps.notifier !== undefined) {
+        void Promise.resolve(
+          deps.notifier.notify({
+            kind: "promoted",
+            brickId: obj.brickId,
+            scope: scopeChange.to,
+          }),
+        ).catch(() => {});
+      }
+    } else {
+      // No store.promote — update all fields via store.update()
+      const updateResult = await deps.store.update(obj.brickId, updates);
+      if (!updateResult.ok) {
+        return {
+          ok: false,
+          error: storeError("SAVE_FAILED", `Failed to update brick: ${updateResult.error.message}`),
+        };
+      }
+
+      // Fire-and-forget: notify updated
+      if (deps.notifier !== undefined) {
+        void Promise.resolve(
+          deps.notifier.notify({
+            kind: "updated",
+            brickId: obj.brickId,
+            ...(scopeChange !== undefined ? { scope: scopeChange.to } : {}),
+          }),
+        ).catch(() => {});
+      }
+    }
+  }
+
+  // Build changes record for the result
+  const appliedChanges = {
     ...(scopeChange !== undefined ? { scope: scopeChange } : {}),
     ...(trustChange !== undefined ? { trustTier: trustChange } : {}),
     ...(lifecycleChange !== undefined ? { lifecycle: lifecycleChange } : {}),
   };
 
-  const hasChanges =
-    scopeChange !== undefined || trustChange !== undefined || lifecycleChange !== undefined;
-
-  if (hasChanges) {
-    const updates: BrickUpdate = {
-      ...(scopeChange !== undefined ? { scope: scopeChange.to } : {}),
-      ...(trustChange !== undefined ? { trustTier: trustChange.to } : {}),
-      ...(lifecycleChange !== undefined ? { lifecycle: lifecycleChange.to } : {}),
+  // If scope is HITL-gated but other changes were applied, report partial
+  if (scopeRequiresHitl) {
+    const pendingScopeChange: PromoteChange<ForgeScope> = {
+      from: brick.scope,
+      to: obj.targetScope as ForgeScope,
     };
-    const updateResult = await deps.store.update(obj.brickId, updates);
-    if (!updateResult.ok) {
-      return {
-        ok: false,
-        error: storeError("SAVE_FAILED", `Failed to update brick: ${updateResult.error.message}`),
-      };
-    }
+    return {
+      ok: true,
+      value: {
+        brickId: obj.brickId,
+        applied: hasNonHitlChanges,
+        requiresHumanApproval: true,
+        changes: {
+          ...appliedChanges,
+          scope: pendingScopeChange,
+        },
+        ...(scopeHitlMessage !== undefined ? { message: scopeHitlMessage } : {}),
+      },
+    };
   }
 
   return {
@@ -176,7 +325,7 @@ async function promoteForgeHandler(
       brickId: obj.brickId,
       applied: true,
       requiresHumanApproval: false,
-      changes,
+      changes: appliedChanges,
     },
   };
 }

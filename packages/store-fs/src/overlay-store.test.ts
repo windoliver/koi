@@ -331,14 +331,14 @@ describe("OverlayForgeStore", () => {
     });
   });
 
-  // -- promote -------------------------------------------------------------
+  // -- promoteTier (low-level tier-based promote) ---------------------------
 
-  describe("promote", () => {
+  describe("promoteTier", () => {
     test("moves brick from shared to agent tier", async () => {
       await seedTier(tiers.shared, createBrick({ id: "brick_promote", name: "shared-brick" }));
 
       const store = await createOverlayForgeStore(config);
-      const result = await store.promote("brick_promote", "agent");
+      const result = await store.promoteTier("brick_promote", "agent");
       expect(result.ok).toBe(true);
 
       // Should be in agent tier now
@@ -360,7 +360,7 @@ describe("OverlayForgeStore", () => {
       await seedTier(tiers.bundled, createBrick({ id: "brick_promote_ro" }));
 
       const store = await createOverlayForgeStore(config);
-      const result = await store.promote("brick_promote_ro", "agent");
+      const result = await store.promoteTier("brick_promote_ro", "agent");
       expect(result.ok).toBe(true);
 
       // Now in agent tier
@@ -383,7 +383,7 @@ describe("OverlayForgeStore", () => {
       await seedTier(tiers.agent, createBrick({ id: "brick_noop" }));
 
       const store = await createOverlayForgeStore(config);
-      const result = await store.promote("brick_noop", "agent");
+      const result = await store.promoteTier("brick_noop", "agent");
       expect(result.ok).toBe(true);
     });
 
@@ -391,7 +391,7 @@ describe("OverlayForgeStore", () => {
       await seedTier(tiers.agent, createBrick({ id: "brick_bad_target" }));
 
       const store = await createOverlayForgeStore(config);
-      const result = await store.promote("brick_bad_target", "bundled");
+      const result = await store.promoteTier("brick_bad_target", "bundled");
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -401,7 +401,7 @@ describe("OverlayForgeStore", () => {
 
     test("returns NOT_FOUND for nonexistent brick", async () => {
       const store = await createOverlayForgeStore(config);
-      const result = await store.promote("nonexistent", "agent");
+      const result = await store.promoteTier("nonexistent", "agent");
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -412,11 +412,90 @@ describe("OverlayForgeStore", () => {
     test("returns VALIDATION error for unknown tier", async () => {
       const store = await createOverlayForgeStore(config);
       // @ts-expect-error — intentionally passing invalid tier name
-      const result = await store.promote("brick_x", "nonexistent");
+      const result = await store.promoteTier("brick_x", "nonexistent");
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.error.code).toBe("VALIDATION");
+      }
+    });
+
+    test("idempotent when brick already exists in target with same contentHash", async () => {
+      const brick = createBrick({ id: "brick_idemp", contentHash: "hash_abc" });
+      await seedTier(tiers.shared, brick);
+      await seedTier(tiers.agent, brick);
+
+      const store = await createOverlayForgeStore(config);
+      const result = await store.promoteTier("brick_idemp", "agent");
+      expect(result.ok).toBe(true);
+    });
+
+    test("returns CONFLICT when brick exists in target with different contentHash", async () => {
+      // Source brick in agent tier (higher priority), target is shared tier
+      const sourceBrick = createBrick({ id: "brick_conflict", contentHash: "hash_v1" });
+      const targetBrick = createBrick({ id: "brick_conflict", contentHash: "hash_v2" });
+      await seedTier(tiers.agent, sourceBrick);
+      await seedTier(tiers.shared, targetBrick);
+
+      const store = await createOverlayForgeStore(config);
+      const result = await store.promoteTier("brick_conflict", "shared");
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("CONFLICT");
+      }
+    });
+  });
+
+  // -- promote (scope-based) ------------------------------------------------
+
+  describe("promote (scope-based)", () => {
+    test("promotes agent-scoped brick to zone (shared tier)", async () => {
+      const brick = createBrick({ id: "brick_scope_zone" });
+      await seedTier(tiers.agent, brick);
+
+      const store = await createOverlayForgeStore(config);
+      const result = await store.promote("brick_scope_zone", "zone");
+      expect(result.ok).toBe(true);
+
+      // Should now be in the shared tier
+      const tierResult = await store.locateTier("brick_scope_zone");
+      expect(tierResult.ok).toBe(true);
+      if (tierResult.ok) {
+        expect(tierResult.value).toBe("shared");
+      }
+    });
+
+    test("promotes agent-scoped brick to global (shared tier, since bundled is read-only)", async () => {
+      const brick = createBrick({ id: "brick_scope_global" });
+      await seedTier(tiers.agent, brick);
+
+      const store = await createOverlayForgeStore(config);
+      const result = await store.promote("brick_scope_global", "global");
+      expect(result.ok).toBe(true);
+
+      // Should be in the shared tier (bundled is read-only, so global routes to shared)
+      const tierResult = await store.locateTier("brick_scope_global");
+      expect(tierResult.ok).toBe(true);
+      if (tierResult.ok) {
+        expect(tierResult.value).toBe("shared");
+      }
+    });
+
+    test("no-op when brick is already at agent scope in agent tier", async () => {
+      await seedTier(tiers.agent, createBrick({ id: "brick_scope_noop" }));
+
+      const store = await createOverlayForgeStore(config);
+      const result = await store.promote("brick_scope_noop", "agent");
+      expect(result.ok).toBe(true);
+    });
+
+    test("returns NOT_FOUND for nonexistent brick", async () => {
+      const store = await createOverlayForgeStore(config);
+      const result = await store.promote("nonexistent", "zone");
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("NOT_FOUND");
       }
     });
   });

@@ -263,6 +263,7 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
       ...(updates.trustTier !== undefined ? { trustTier: updates.trustTier } : {}),
       ...(updates.scope !== undefined ? { scope: updates.scope } : {}),
       ...(updates.usageCount !== undefined ? { usageCount: updates.usageCount } : {}),
+      ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
     };
     const dataJson = JSON.stringify(updated);
 
@@ -274,6 +275,14 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
       dataJson,
       id,
     );
+
+    // Sync brick_tags when tags are updated
+    if (updates.tags !== undefined) {
+      deleteTagsStmt.run(id);
+      for (const tag of updates.tags) {
+        insertTagStmt.run(id, tag);
+      }
+    }
 
     return { ok: true, value: undefined };
   });

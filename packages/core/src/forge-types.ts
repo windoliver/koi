@@ -3,6 +3,10 @@
  *
  * TrustTier lives in ecs.ts (used by Tool interface).
  * These are additional L0 types used by @koi/forge (L2).
+ *
+ * Exception: VALID_LIFECYCLE_TRANSITIONS is a pure readonly data constant
+ * derived from L0 type definitions, codifying architecture-doc invariants
+ * with zero logic.
  */
 
 /** Visibility scope of a forged brick. */
@@ -16,6 +20,33 @@ export type BrickLifecycle =
   | "failed"
   | "deprecated"
   | "quarantined";
+
+// ---------------------------------------------------------------------------
+// Valid lifecycle transitions (architecture-doc invariants)
+// ---------------------------------------------------------------------------
+
+/**
+ * Allowed lifecycle state transitions per Koi architecture doc.
+ * L2 forge packages use this to validate transitions.
+ *
+ * Transitions:
+ *   draft       → verifying, failed
+ *   verifying   → active, failed
+ *   active      → deprecated, quarantined
+ *   failed      → (none — terminal)
+ *   deprecated  → quarantined
+ *   quarantined → draft (remediation — must re-earn trust)
+ */
+export const VALID_LIFECYCLE_TRANSITIONS: Readonly<
+  Record<BrickLifecycle, readonly BrickLifecycle[]>
+> = Object.freeze({
+  draft: ["verifying", "failed"] as const,
+  verifying: ["active", "failed"] as const,
+  active: ["deprecated", "quarantined"] as const,
+  failed: [] as const,
+  deprecated: ["quarantined"] as const,
+  quarantined: ["draft"] as const,
+});
 
 /** Kind of forged brick (tool, skill, agent, composite, middleware, channel). */
 export type BrickKind = "tool" | "skill" | "agent" | "composite" | "middleware" | "channel";

@@ -8,6 +8,7 @@ import type {
   ForgeStore,
   JsonObject,
   Result,
+  StoreChangeNotifier,
   Tool,
   ToolDescriptor,
 } from "@koi/core";
@@ -39,6 +40,8 @@ export interface ForgeDeps {
   readonly context: ForgeContext;
   /** Injected manifest parser — required only for forge_agent. Avoids L2 peer import of @koi/manifest. */
   readonly manifestParser?: ManifestParser;
+  /** Optional notifier for cross-agent cache invalidation after store mutations. */
+  readonly notifier?: StoreChangeNotifier;
 }
 
 // ---------------------------------------------------------------------------
@@ -321,6 +324,13 @@ export async function runForgePipeline(
         message: `Failed to save artifact: ${saveResult.error.message}`,
       },
     };
+  }
+
+  // Fire-and-forget notification for cross-agent cache invalidation
+  if (deps.notifier !== undefined) {
+    void Promise.resolve(
+      deps.notifier.notify({ kind: "saved", brickId: id, scope: deps.config.defaultScope }),
+    ).catch(() => {});
   }
 
   const forgeResult: ForgeResult = {

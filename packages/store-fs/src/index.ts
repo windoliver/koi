@@ -10,7 +10,7 @@
 export type { ExtractBundledConfig, ExtractBundledResult } from "./extract-bundled.js";
 export { extractBundled } from "./extract-bundled.js";
 // single-directory store
-export type { FsForgeStoreConfig } from "./fs-store.js";
+export type { FsForgeStoreConfig, FsForgeStoreExtended } from "./fs-store.js";
 export { createFsForgeStore } from "./fs-store.js";
 
 // overlay store

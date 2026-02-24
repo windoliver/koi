@@ -54,6 +54,8 @@ export type ForgeError =
         | "MAX_DEPTH"
         | "MAX_SESSION_FORGES"
         | "SCOPE_VIOLATION"
+        | "TRUST_DEMOTION_NOT_ALLOWED"
+        | "LIFECYCLE_INVALID_TRANSITION"
         | "DEPTH_TOOL_RESTRICTED";
       readonly message: string;
     }

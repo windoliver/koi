@@ -184,6 +184,22 @@ export function runForgeStoreContractTests(
       }
     });
 
+    test("update modifies tags", async () => {
+      const store = await createStore();
+      await store.save(createBrick({ id: "b1", tags: ["original"] }));
+
+      const updateResult = await store.update("b1", { tags: ["original", "zone:team-a"] });
+      expect(updateResult.ok).toBe(true);
+
+      const loadResult = await store.load("b1");
+      expect(loadResult.ok).toBe(true);
+      if (loadResult.ok) {
+        expect(loadResult.value.tags).toContain("original");
+        expect(loadResult.value.tags).toContain("zone:team-a");
+        expect(loadResult.value.tags.length).toBe(2);
+      }
+    });
+
     test("update returns NOT_FOUND for missing id", async () => {
       const store = await createStore();
       const result = await store.update("nonexistent", { usageCount: 1 });
