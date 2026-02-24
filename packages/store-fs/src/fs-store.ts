@@ -135,6 +135,21 @@ async function scanAndBuildIndex(
 }
 
 // ---------------------------------------------------------------------------
+// Extended interface (internal — used by overlay store for two-phase search)
+// ---------------------------------------------------------------------------
+
+/**
+ * Extended ForgeStore with metadata-only search for efficient overlay composition.
+ * Returned by `createFsForgeStore`; callers needing only `ForgeStore` can ignore it.
+ */
+export interface FsForgeStoreExtended extends ForgeStore {
+  /** Search the in-memory index without loading full artifacts from disk. */
+  readonly searchIndex: (query: ForgeQuery) => readonly BrickArtifactBase[];
+  /** Load a single brick from disk by ID (bypasses index check). */
+  readonly loadFromDisk: (id: string) => Promise<Result<BrickArtifact, KoiError>>;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -145,7 +160,9 @@ async function scanAndBuildIndex(
  * Uses atomic write-temp-rename for crash safety and git-style hash sharding
  * for directory scalability.
  */
-export async function createFsForgeStore(config: FsForgeStoreConfig): Promise<ForgeStore> {
+export async function createFsForgeStore(
+  config: FsForgeStoreConfig,
+): Promise<FsForgeStoreExtended> {
   const { baseDir, cleanOrphanedTmp = true } = config;
 
   // Ensure base directory exists
@@ -244,6 +261,7 @@ export async function createFsForgeStore(config: FsForgeStoreConfig): Promise<Fo
       ...(updates.trustTier !== undefined ? { trustTier: updates.trustTier } : {}),
       ...(updates.scope !== undefined ? { scope: updates.scope } : {}),
       ...(updates.usageCount !== undefined ? { usageCount: updates.usageCount } : {}),
+      ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
     };
 
     // Atomic write back
@@ -262,5 +280,26 @@ export async function createFsForgeStore(config: FsForgeStoreConfig): Promise<Fo
     return { ok: true, value: index.has(id) };
   };
 
-  return { save, load, search, remove, update, exists };
+  // -- Extended methods (internal, used by overlay for two-phase search) -----
+
+  /** Search the in-memory metadata index without touching disk. */
+  const searchIndex = (query: ForgeQuery): readonly BrickArtifactBase[] => {
+    const results: BrickArtifactBase[] = [];
+    for (const [, meta] of index) {
+      if (matchesQuery(meta, query)) {
+        results.push(meta);
+        if (query.limit !== undefined && results.length >= query.limit) {
+          break;
+        }
+      }
+    }
+    return results;
+  };
+
+  /** Load a single brick from disk by ID (bypasses index check for overlay use). */
+  const loadFromDisk = async (id: string): Promise<Result<BrickArtifact, KoiError>> => {
+    return readBrick(brickPath(baseDir, id));
+  };
+
+  return { save, load, search, remove, update, exists, searchIndex, loadFromDisk };
 }

@@ -574,7 +574,7 @@ describe("overlay store → agent e2e", () => {
     if (tierResult.ok) expect(tierResult.value).toBe("agent");
 
     // --- Step 2: Promote from agent → shared ---
-    const promoteResult = await overlayStore.promote(forgedId, "shared");
+    const promoteResult = await overlayStore.promoteTier(forgedId, "shared");
     expect(promoteResult.ok).toBe(true);
 
     // Now in shared tier (moved from agent since agent is writable)

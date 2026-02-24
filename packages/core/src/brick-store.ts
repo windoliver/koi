@@ -108,6 +108,7 @@ export interface BrickUpdate {
   readonly trustTier?: TrustTier;
   readonly scope?: ForgeScope;
   readonly usageCount?: number;
+  readonly tags?: readonly string[] | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +122,41 @@ export interface ForgeStore {
   readonly remove: (id: string) => Promise<Result<void, KoiError>>;
   readonly update: (id: string, updates: BrickUpdate) => Promise<Result<void, KoiError>>;
   readonly exists: (id: string) => Promise<Result<boolean, KoiError>>;
+  /**
+   * Optional scope-aware promotion — moves a brick between storage tiers.
+   * Not all backends support tiered storage; filesystem overlay stores do.
+   * When available, promote_forge wires scope metadata changes to physical tier moves.
+   */
+  readonly promote?: (id: string, targetScope: ForgeScope) => Promise<Result<void, KoiError>>;
+}
+
+// ---------------------------------------------------------------------------
+// Store change notification — pluggable cross-agent invalidation
+// ---------------------------------------------------------------------------
+
+/** Describes what changed in the store. */
+export type StoreChangeKind = "saved" | "updated" | "removed" | "promoted";
+
+/** Notification payload for store mutations. */
+export interface StoreChangeEvent {
+  readonly kind: StoreChangeKind;
+  readonly brickId: string;
+  /** The scope after the change (if applicable). */
+  readonly scope?: ForgeScope;
+}
+
+/**
+ * Pluggable notification interface for cross-agent cache invalidation.
+ *
+ * Sync implementations (in-memory event bus) return void.
+ * Async implementations (Nexus pub/sub, Redis) return Promise<void>.
+ * Subscribers receive targeted change events for delta-based invalidation.
+ */
+export interface StoreChangeNotifier {
+  /** Emit a change event after a store mutation. */
+  readonly notify: (event: StoreChangeEvent) => void | Promise<void>;
+  /** Subscribe to change events. Returns unsubscribe function. */
+  readonly subscribe: (listener: (event: StoreChangeEvent) => void) => () => void;
 }
 
 // ---------------------------------------------------------------------------

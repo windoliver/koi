@@ -45,6 +45,9 @@ export type {
   LockMode,
   LockRequest,
   SkillArtifact,
+  StoreChangeEvent,
+  StoreChangeKind,
+  StoreChangeNotifier,
   TestCase,
   ToolArtifact,
 } from "./brick-store.js";
@@ -229,6 +232,7 @@ export type {
 } from "./filesystem-backend.js";
 // forge types
 export type { BrickKind, BrickLifecycle, ForgeScope } from "./forge-types.js";
+export { VALID_LIFECYCLE_TRANSITIONS } from "./forge-types.js";
 // health
 export type {
   HealthMonitor,

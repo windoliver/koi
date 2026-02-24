@@ -165,6 +165,8 @@ export interface ForgeContext {
   readonly depth: number;
   readonly sessionId: string;
   readonly forgesThisSession: number;
+  /** Zone identifier for zone-scoped brick visibility. */
+  readonly zoneId?: string | undefined;
 }
 
 // Brick artifact types — canonical definitions live in @koi/core (L0)

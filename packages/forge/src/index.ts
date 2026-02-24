@@ -23,6 +23,9 @@ export type {
   LockMode,
   LockRequest,
   SkillArtifact,
+  StoreChangeEvent,
+  StoreChangeKind,
+  StoreChangeNotifier,
   TestCase,
   ToolArtifact,
 } from "@koi/core";
@@ -64,6 +67,9 @@ export type {
 } from "./forge-component-provider.js";
 export { brickToTool, createForgeComponentProvider } from "./forge-component-provider.js";
 export { createForgeResolver } from "./forge-resolver.js";
+// runtime values — usage tracking middleware
+export type { ForgeUsageMiddlewareConfig } from "./forge-usage-middleware.js";
+export { createForgeUsageMiddleware } from "./forge-usage-middleware.js";
 // runtime values — SKILL.md generation
 export type { SkillMdInput } from "./generate-skill-md.js";
 export { generateSkillMd } from "./generate-skill-md.js";
@@ -75,6 +81,8 @@ export type { IntegrityMismatch, IntegrityOk, IntegrityResult } from "./integrit
 export { loadAndVerify, verifyBrickIntegrity } from "./integrity.js";
 // runtime values — storage
 export { createInMemoryForgeStore } from "./memory-store.js";
+// runtime values — store change notification
+export { createMemoryStoreChangeNotifier } from "./store-notifier.js";
 export { createComposeForgeTool } from "./tools/compose-forge.js";
 export type { OnForgeAgentSpawn } from "./tools/forge-agent.js";
 export { createForgeAgentTool } from "./tools/forge-agent.js";

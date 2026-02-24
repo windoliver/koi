@@ -107,6 +107,7 @@ export function createInMemoryForgeStore(): ForgeStore {
       ...(updates.trustTier !== undefined ? { trustTier: updates.trustTier } : {}),
       ...(updates.scope !== undefined ? { scope: updates.scope } : {}),
       ...(updates.usageCount !== undefined ? { usageCount: updates.usageCount } : {}),
+      ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
     };
     bricks.set(id, updated);
     return { ok: true, value: undefined };
