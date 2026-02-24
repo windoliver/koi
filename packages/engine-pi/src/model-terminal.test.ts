@@ -134,6 +134,44 @@ describe("assistantEventToModelChunk", () => {
     expect(chunk).toBeUndefined();
   });
 
+  test("maps toolcall_start at contentIndex 1 when thinking block is at index 0", () => {
+    // Simulates thinking(index=0) + tool_use(index=1) — contentIndex is raw Anthropic block index
+    const partial = makePartialMessage({
+      content: [
+        { type: "thinking", thinking: "I should call the tool" } as unknown as {
+          type: string;
+        },
+        { type: "toolCall", id: "tc-42", name: "browser_navigate", arguments: {} },
+      ] as AssistantMessage["content"],
+    });
+    const chunk = assistantEventToModelChunk({
+      type: "toolcall_start",
+      contentIndex: 1,
+      partial,
+    });
+    expect(chunk).toEqual({
+      kind: "tool_call_start",
+      toolName: "browser_navigate",
+      callId: "tc-42",
+    });
+  });
+
+  test("maps toolcall_delta at contentIndex 1 when thinking block is at index 0", () => {
+    const partial = makePartialMessage({
+      content: [
+        { type: "thinking", thinking: "..." } as unknown as { type: string },
+        { type: "toolCall", id: "tc-42", name: "browser_navigate", arguments: {} },
+      ] as AssistantMessage["content"],
+    });
+    const chunk = assistantEventToModelChunk({
+      type: "toolcall_delta",
+      contentIndex: 1,
+      delta: '{"url":',
+      partial,
+    });
+    expect(chunk).toEqual({ kind: "tool_call_delta", callId: "tc-42", delta: '{"url":' });
+  });
+
   test("maps toolcall_delta with callId from partial content", () => {
     const partial = makePartialMessage({
       content: [{ type: "toolCall", id: "tc-1", name: "search", arguments: {} }],

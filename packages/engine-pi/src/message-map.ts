@@ -62,10 +62,12 @@ export function engineInputToPrompt(input: EngineInput): string {
     case "text":
       return input.text;
     case "messages": {
-      // Search backwards for last user message — O(1) allocation, typically O(1) iteration
+      // Search backwards for the last non-assistant message with text content.
+      // senderId is channel-specific and not always "user" — only "assistant" is
+      // a reliable sentinel for skipping model-generated messages.
       for (let i = input.messages.length - 1; i >= 0; i--) {
         const msg = input.messages[i];
-        if (msg?.senderId === "user") {
+        if (msg && msg.senderId !== "assistant") {
           const textBlock = msg.content.find((c) => c.kind === "text");
           if (textBlock?.kind === "text") {
             return textBlock.text;

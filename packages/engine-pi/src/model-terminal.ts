@@ -54,21 +54,19 @@ export const piParamsStore: WeakMap<ModelRequest, PiNativeParams> = new WeakMap<
  * Returns undefined for events with no Koi equivalent.
  */
 /**
- * Find the nth toolCall in a content array without allocating a filtered copy.
- * O(n) scan but zero allocation — called on every streaming chunk.
+ * Look up the toolCall at a raw content block index.
+ *
+ * pi-ai's contentIndex is the Anthropic content block index (0-based), which includes
+ * thinking blocks at lower indices. Counting only toolCall items would give the wrong
+ * result when thinking blocks precede the tool_use block (e.g. thinking=0, tool_use=1).
  */
-function findToolCallByIndex(
+function findToolCallAtContentIndex(
   content: readonly { readonly type: string }[],
-  index: number,
+  contentIndex: number,
 ): { readonly type: "toolCall"; readonly id: string; readonly name: string } | undefined {
-  let toolCallCount = 0;
-  for (const c of content) {
-    if (c.type === "toolCall") {
-      if (toolCallCount === index) {
-        return c as { readonly type: "toolCall"; readonly id: string; readonly name: string };
-      }
-      toolCallCount++;
-    }
+  const item = content[contentIndex];
+  if (item !== undefined && item.type === "toolCall") {
+    return item as { readonly type: "toolCall"; readonly id: string; readonly name: string };
   }
   return undefined;
 }
@@ -82,7 +80,7 @@ export function assistantEventToModelChunk(event: AssistantMessageEvent): ModelC
       return { kind: "thinking_delta", delta: event.delta };
 
     case "toolcall_start": {
-      const toolCall = findToolCallByIndex(event.partial.content, event.contentIndex);
+      const toolCall = findToolCallAtContentIndex(event.partial.content, event.contentIndex);
       if (toolCall) {
         return {
           kind: "tool_call_start",
@@ -94,7 +92,7 @@ export function assistantEventToModelChunk(event: AssistantMessageEvent): ModelC
     }
 
     case "toolcall_delta": {
-      const toolCall = findToolCallByIndex(event.partial.content, event.contentIndex);
+      const toolCall = findToolCallAtContentIndex(event.partial.content, event.contentIndex);
       return {
         kind: "tool_call_delta",
         callId: toolCallId(toolCall?.id ?? ""),
