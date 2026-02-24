@@ -236,6 +236,69 @@ describe("createEventSubscriber", () => {
     });
   });
 
+  test("resolves toolcall_start at contentIndex 1 when thinking block at index 0", async () => {
+    const queue = new AsyncQueue<EngineEvent>();
+    const metrics = createMetricsAccumulator();
+    const subscriber = createEventSubscriber(queue, metrics);
+
+    // Simulates thinking(index=0) + tool_use(index=1) — raw Anthropic block ordering
+    const partial = makePartialMessage({
+      content: [
+        { type: "thinking", thinking: "I should use the tool" } as unknown as {
+          type: string;
+        },
+        { type: "toolCall", id: "call-99", name: "browser_navigate", arguments: {} },
+      ] as AssistantMessage["content"],
+    });
+
+    subscriber(
+      makeMessageUpdate({
+        type: "toolcall_start",
+        contentIndex: 1,
+        partial,
+      }),
+    );
+    subscriber({ type: "agent_end", messages: [] });
+
+    const events = await collectEvents(queue);
+    expect(events[0]).toEqual({
+      kind: "tool_call_start",
+      toolName: "browser_navigate",
+      callId: toolCallId("call-99"),
+      args: {},
+    });
+  });
+
+  test("resolves toolcall_delta callId at contentIndex 1 when thinking block at index 0", async () => {
+    const queue = new AsyncQueue<EngineEvent>();
+    const metrics = createMetricsAccumulator();
+    const subscriber = createEventSubscriber(queue, metrics);
+
+    const partial = makePartialMessage({
+      content: [
+        { type: "thinking", thinking: "..." } as unknown as { type: string },
+        { type: "toolCall", id: "call-99", name: "browser_navigate", arguments: {} },
+      ] as AssistantMessage["content"],
+    });
+
+    subscriber(
+      makeMessageUpdate({
+        type: "toolcall_delta",
+        contentIndex: 1,
+        delta: '{"url":"https://example.com"}',
+        partial,
+      }),
+    );
+    subscriber({ type: "agent_end", messages: [] });
+
+    const events = await collectEvents(queue);
+    expect(events[0]).toEqual({
+      kind: "tool_call_delta",
+      callId: toolCallId("call-99"),
+      delta: '{"url":"https://example.com"}',
+    });
+  });
+
   test("deduplicates tool_call_start between toolcall_start and tool_execution_start", async () => {
     const queue = new AsyncQueue<EngineEvent>();
     const metrics = createMetricsAccumulator();
@@ -314,26 +377,45 @@ describe("createEventSubscriber", () => {
     });
   });
 
-  test("maps turn_end to turn_end event with incrementing index", async () => {
+  test("maps turn_end to turn_end event with incrementing index and accumulates usage", async () => {
     const queue = new AsyncQueue<EngineEvent>();
     const metrics = createMetricsAccumulator();
     const subscriber = createEventSubscriber(queue, metrics);
 
-    subscriber({
-      type: "turn_end",
-      message: makePartialMessage(),
-      toolResults: [],
+    const msg1 = makePartialMessage({
+      usage: {
+        input: 10,
+        output: 5,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 15,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
     });
-    subscriber({
-      type: "turn_end",
-      message: makePartialMessage(),
-      toolResults: [],
+    const msg2 = makePartialMessage({
+      usage: {
+        input: 20,
+        output: 8,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 28,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
     });
+    subscriber({ type: "turn_end", message: msg1, toolResults: [] });
+    subscriber({ type: "turn_end", message: msg2, toolResults: [] });
     subscriber({ type: "agent_end", messages: [] });
 
     const events = await collectEvents(queue);
     expect(events[0]).toEqual({ kind: "turn_end", turnIndex: 0 });
     expect(events[1]).toEqual({ kind: "turn_end", turnIndex: 1 });
+
+    const doneEvent = events.find((e) => e.kind === "done");
+    if (doneEvent?.kind === "done") {
+      expect(doneEvent.output.metrics.inputTokens).toBe(30);
+      expect(doneEvent.output.metrics.outputTokens).toBe(13);
+      expect(doneEvent.output.metrics.turns).toBe(2);
+    }
   });
 
   test("maps agent_end to done event with metrics", async () => {
@@ -341,8 +423,9 @@ describe("createEventSubscriber", () => {
     const metrics = createMetricsAccumulator();
     const subscriber = createEventSubscriber(queue, metrics);
 
-    // Accumulate some usage
-    const doneMsg = makePartialMessage({
+    // Pi fires turn_end with the final AssistantMessage — usage comes from event.message.usage.
+    // This is the real pi behavior: message_update { type: "done" } is never fired.
+    const turnMsg = makePartialMessage({
       usage: {
         input: 100,
         output: 50,
@@ -352,14 +435,11 @@ describe("createEventSubscriber", () => {
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
       },
     });
-    subscriber(
-      makeMessageUpdate({
-        type: "done",
-        reason: "stop",
-        message: doneMsg,
-      }),
-    );
-    metrics.addTurn();
+    subscriber({
+      type: "turn_end",
+      message: turnMsg,
+      toolResults: [],
+    });
 
     subscriber({ type: "agent_end", messages: [] });
 
@@ -375,11 +455,12 @@ describe("createEventSubscriber", () => {
     }
   });
 
-  test("accumulates usage from done events across turns", async () => {
+  test("accumulates usage from turn_end events across turns", async () => {
     const queue = new AsyncQueue<EngineEvent>();
     const metrics = createMetricsAccumulator();
     const subscriber = createEventSubscriber(queue, metrics);
 
+    // Real pi fires turn_end (not message_update { type: "done" }) with per-turn usage.
     const msg1 = makePartialMessage({
       usage: {
         input: 100,
@@ -390,7 +471,7 @@ describe("createEventSubscriber", () => {
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
       },
     });
-    subscriber(makeMessageUpdate({ type: "done", reason: "toolUse", message: msg1 }));
+    subscriber({ type: "turn_end", message: msg1, toolResults: [] });
 
     const msg2 = makePartialMessage({
       usage: {
@@ -402,7 +483,7 @@ describe("createEventSubscriber", () => {
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
       },
     });
-    subscriber(makeMessageUpdate({ type: "done", reason: "stop", message: msg2 }));
+    subscriber({ type: "turn_end", message: msg2, toolResults: [] });
 
     subscriber({ type: "agent_end", messages: [] });
 

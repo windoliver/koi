@@ -327,6 +327,113 @@ describe("createBridgeStreamFn", () => {
     expect(streamSimpleCalled).toBe(true);
   });
 
+  test("reconstructs tool calls in final message from streaming chunks", async () => {
+    const mockModelStream: ModelStreamHandler = async function* (_request: ModelRequest) {
+      yield { kind: "text_delta" as const, delta: "Using tool" };
+      yield {
+        kind: "tool_call_start" as const,
+        toolName: "browser_navigate",
+        callId: toolCallId("c1"),
+      };
+      yield { kind: "tool_call_delta" as const, callId: toolCallId("c1"), delta: '{"url":"' };
+      yield {
+        kind: "tool_call_delta" as const,
+        callId: toolCallId("c1"),
+        delta: 'https://example.com"}',
+      };
+      yield { kind: "tool_call_end" as const, callId: toolCallId("c1") };
+      yield { kind: "usage" as const, inputTokens: 20, outputTokens: 10 };
+      yield {
+        kind: "done" as const,
+        response: {
+          content: "Using tool",
+          model: "test-model",
+          usage: { inputTokens: 20, outputTokens: 10 },
+        },
+      };
+    };
+
+    const realStreamSimple: StreamFn = () => createAssistantMessageEventStream();
+
+    const bridgeFn = createBridgeStreamFn(mockModelStream, realStreamSimple);
+    const stream = bridgeFn(makeModel(), makeContext());
+    const events = await collectStreamEvents(stream);
+
+    // toolcall_end event should be emitted
+    const toolEndEvents = events.filter((e) => e.type === "toolcall_end");
+    expect(toolEndEvents).toHaveLength(1);
+
+    // final done message should include the tool call in content
+    const doneEvents = events.filter((e) => e.type === "done");
+    expect(doneEvents).toHaveLength(1);
+    if (doneEvents[0]?.type === "done") {
+      const content = doneEvents[0].message.content;
+      const toolCalls = content.filter((c) => c.type === "toolCall");
+      expect(toolCalls).toHaveLength(1);
+      if (toolCalls[0]?.type === "toolCall") {
+        expect(toolCalls[0].id).toBe("c1");
+        expect(toolCalls[0].name).toBe("browser_navigate");
+        expect(toolCalls[0].arguments).toEqual({ url: "https://example.com" });
+      }
+    }
+  });
+
+  test("handles multiple tool calls in one turn", async () => {
+    const mockModelStream: ModelStreamHandler = async function* (_request: ModelRequest) {
+      yield { kind: "tool_call_start" as const, toolName: "tool_a", callId: toolCallId("a1") };
+      yield { kind: "tool_call_delta" as const, callId: toolCallId("a1"), delta: '{"x":1}' };
+      yield { kind: "tool_call_end" as const, callId: toolCallId("a1") };
+      yield { kind: "tool_call_start" as const, toolName: "tool_b", callId: toolCallId("b2") };
+      yield { kind: "tool_call_delta" as const, callId: toolCallId("b2"), delta: '{"y":2}' };
+      yield { kind: "tool_call_end" as const, callId: toolCallId("b2") };
+      yield {
+        kind: "done" as const,
+        response: { content: "", model: "test", usage: { inputTokens: 0, outputTokens: 0 } },
+      };
+    };
+
+    const realStreamSimple: StreamFn = () => createAssistantMessageEventStream();
+
+    const bridgeFn = createBridgeStreamFn(mockModelStream, realStreamSimple);
+    const stream = bridgeFn(makeModel(), makeContext());
+    const events = await collectStreamEvents(stream);
+
+    const doneEvent = events.find((e) => e.type === "done");
+    if (doneEvent?.type === "done") {
+      const toolCalls = doneEvent.message.content.filter((c) => c.type === "toolCall");
+      expect(toolCalls).toHaveLength(2);
+      expect(toolCalls[0]?.name).toBe("tool_a");
+      expect(toolCalls[1]?.name).toBe("tool_b");
+    }
+  });
+
+  test("handles malformed JSON in tool call delta with empty args", async () => {
+    const mockModelStream: ModelStreamHandler = async function* (_request: ModelRequest) {
+      yield { kind: "tool_call_start" as const, toolName: "my_tool", callId: toolCallId("x1") };
+      yield { kind: "tool_call_delta" as const, callId: toolCallId("x1"), delta: "not-valid-json" };
+      yield { kind: "tool_call_end" as const, callId: toolCallId("x1") };
+      yield {
+        kind: "done" as const,
+        response: { content: "", model: "test", usage: { inputTokens: 0, outputTokens: 0 } },
+      };
+    };
+
+    const realStreamSimple: StreamFn = () => createAssistantMessageEventStream();
+
+    const bridgeFn = createBridgeStreamFn(mockModelStream, realStreamSimple);
+    const stream = bridgeFn(makeModel(), makeContext());
+    const events = await collectStreamEvents(stream);
+
+    const doneEvent = events.find((e) => e.type === "done");
+    if (doneEvent?.type === "done") {
+      const toolCalls = doneEvent.message.content.filter((c) => c.type === "toolCall");
+      expect(toolCalls).toHaveLength(1);
+      if (toolCalls[0]?.type === "toolCall") {
+        expect(toolCalls[0].arguments).toEqual({});
+      }
+    }
+  });
+
   test("handles non-Error throw in modelStream", async () => {
     // biome-ignore lint/correctness/useYield: intentionally throws before yielding to test error path
     const mockModelStream: ModelStreamHandler = async function* (_request: ModelRequest) {

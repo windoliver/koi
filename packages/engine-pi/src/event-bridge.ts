@@ -111,11 +111,15 @@ export function mapStopReason(piReason: StopReason): EngineStopReason {
 // ---------------------------------------------------------------------------
 
 /**
- * Find the nth toolCall in a content array without allocating a filtered copy.
+ * Look up the toolCall at a raw content block index.
+ *
+ * pi-ai's contentIndex is the Anthropic content block index (0-based), which includes
+ * thinking blocks at lower indices. Counting only toolCall items would give the wrong
+ * result when thinking blocks precede the tool_use block (e.g. thinking=0, tool_use=1).
  */
 function findToolCallByContentIndex(
   content: readonly { readonly type: string }[],
-  index: number,
+  contentIndex: number,
 ):
   | {
       readonly type: "toolCall";
@@ -124,19 +128,14 @@ function findToolCallByContentIndex(
       readonly arguments?: Record<string, unknown>;
     }
   | undefined {
-  let count = 0;
-  for (const c of content) {
-    if (c.type === "toolCall") {
-      if (count === index) {
-        return c as {
-          readonly type: "toolCall";
-          readonly id: string;
-          readonly name: string;
-          readonly arguments?: Record<string, unknown>;
-        };
-      }
-      count++;
-    }
+  const item = content[contentIndex];
+  if (item !== undefined && item.type === "toolCall") {
+    return item as {
+      readonly type: "toolCall";
+      readonly id: string;
+      readonly name: string;
+      readonly arguments?: Record<string, unknown>;
+    };
   }
   return undefined;
 }
@@ -250,6 +249,14 @@ export function createEventSubscriber(
       }
 
       case "turn_end": {
+        // Pi fires turn_end with the completed AssistantMessage — this is the authoritative
+        // source of per-turn token usage. Pi does NOT fire message_update { type: "done" }
+        // in practice, so usage must be accumulated here from event.message.usage.
+        // Narrow AgentMessage → AssistantMessage before accessing usage (which only exists
+        // on AssistantMessage, not UserMessage/ToolResultMessage/CustomAgentMessages).
+        if ("role" in event.message && event.message.role === "assistant") {
+          metrics.addUsage(event.message.usage.input, event.message.usage.output);
+        }
         metrics.addTurn();
         queue.push({ kind: "turn_end", turnIndex });
         turnIndex += 1;
