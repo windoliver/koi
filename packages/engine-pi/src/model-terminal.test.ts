@@ -152,7 +152,7 @@ describe("assistantEventToModelChunk", () => {
     expect(chunk).toEqual({
       kind: "tool_call_start",
       toolName: "browser_navigate",
-      callId: "tc-42",
+      callId: toolCallId("tc-42"),
     });
   });
 
@@ -169,7 +169,11 @@ describe("assistantEventToModelChunk", () => {
       delta: '{"url":',
       partial,
     });
-    expect(chunk).toEqual({ kind: "tool_call_delta", callId: "tc-42", delta: '{"url":' });
+    expect(chunk).toEqual({
+      kind: "tool_call_delta",
+      callId: toolCallId("tc-42"),
+      delta: '{"url":',
+    });
   });
 
   test("maps toolcall_delta with callId from partial content", () => {

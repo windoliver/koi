@@ -48,6 +48,29 @@ export type {
   TestCase,
   ToolArtifact,
 } from "./brick-store.js";
+// browser driver — cross-engine abstraction for browser automation
+export type {
+  BrowserActionOptions,
+  BrowserDriver,
+  BrowserEvaluateOptions,
+  BrowserEvaluateResult,
+  BrowserFormField,
+  BrowserNavigateOptions,
+  BrowserNavigateResult,
+  BrowserRefInfo,
+  BrowserScreenshotOptions,
+  BrowserScreenshotResult,
+  BrowserScrollOptions,
+  BrowserSnapshotOptions,
+  BrowserSnapshotResult,
+  BrowserTabCloseOptions,
+  BrowserTabFocusOptions,
+  BrowserTabInfo,
+  BrowserTabNewOptions,
+  BrowserTypeOptions,
+  BrowserWaitOptions,
+  BrowserWaitUntil,
+} from "./browser-driver.js";
 // channel
 export type {
   ChannelAdapter,
@@ -122,6 +145,7 @@ export type {
 // ecs — runtime values (token factories + well-known constants)
 export {
   agentId,
+  BROWSER,
   CREDENTIALS,
   channelToken,
   DELEGATION,

@@ -252,7 +252,11 @@ export function createEventSubscriber(
         // Pi fires turn_end with the completed AssistantMessage — this is the authoritative
         // source of per-turn token usage. Pi does NOT fire message_update { type: "done" }
         // in practice, so usage must be accumulated here from event.message.usage.
-        metrics.addUsage(event.message.usage.input, event.message.usage.output);
+        // Narrow AgentMessage → AssistantMessage before accessing usage (which only exists
+        // on AssistantMessage, not UserMessage/ToolResultMessage/CustomAgentMessages).
+        if ("role" in event.message && event.message.role === "assistant") {
+          metrics.addUsage(event.message.usage.input, event.message.usage.output);
+        }
         metrics.addTurn();
         queue.push({ kind: "turn_end", turnIndex });
         turnIndex += 1;

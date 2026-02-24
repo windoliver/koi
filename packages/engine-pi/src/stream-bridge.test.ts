@@ -330,10 +330,18 @@ describe("createBridgeStreamFn", () => {
   test("reconstructs tool calls in final message from streaming chunks", async () => {
     const mockModelStream: ModelStreamHandler = async function* (_request: ModelRequest) {
       yield { kind: "text_delta" as const, delta: "Using tool" };
-      yield { kind: "tool_call_start" as const, toolName: "browser_navigate", callId: "c1" };
-      yield { kind: "tool_call_delta" as const, callId: "c1", delta: '{"url":"' };
-      yield { kind: "tool_call_delta" as const, callId: "c1", delta: 'https://example.com"}' };
-      yield { kind: "tool_call_end" as const, callId: "c1" };
+      yield {
+        kind: "tool_call_start" as const,
+        toolName: "browser_navigate",
+        callId: toolCallId("c1"),
+      };
+      yield { kind: "tool_call_delta" as const, callId: toolCallId("c1"), delta: '{"url":"' };
+      yield {
+        kind: "tool_call_delta" as const,
+        callId: toolCallId("c1"),
+        delta: 'https://example.com"}',
+      };
+      yield { kind: "tool_call_end" as const, callId: toolCallId("c1") };
       yield { kind: "usage" as const, inputTokens: 20, outputTokens: 10 };
       yield {
         kind: "done" as const,
@@ -372,12 +380,12 @@ describe("createBridgeStreamFn", () => {
 
   test("handles multiple tool calls in one turn", async () => {
     const mockModelStream: ModelStreamHandler = async function* (_request: ModelRequest) {
-      yield { kind: "tool_call_start" as const, toolName: "tool_a", callId: "a1" };
-      yield { kind: "tool_call_delta" as const, callId: "a1", delta: '{"x":1}' };
-      yield { kind: "tool_call_end" as const, callId: "a1" };
-      yield { kind: "tool_call_start" as const, toolName: "tool_b", callId: "b2" };
-      yield { kind: "tool_call_delta" as const, callId: "b2", delta: '{"y":2}' };
-      yield { kind: "tool_call_end" as const, callId: "b2" };
+      yield { kind: "tool_call_start" as const, toolName: "tool_a", callId: toolCallId("a1") };
+      yield { kind: "tool_call_delta" as const, callId: toolCallId("a1"), delta: '{"x":1}' };
+      yield { kind: "tool_call_end" as const, callId: toolCallId("a1") };
+      yield { kind: "tool_call_start" as const, toolName: "tool_b", callId: toolCallId("b2") };
+      yield { kind: "tool_call_delta" as const, callId: toolCallId("b2"), delta: '{"y":2}' };
+      yield { kind: "tool_call_end" as const, callId: toolCallId("b2") };
       yield {
         kind: "done" as const,
         response: { content: "", model: "test", usage: { inputTokens: 0, outputTokens: 0 } },
@@ -401,9 +409,9 @@ describe("createBridgeStreamFn", () => {
 
   test("handles malformed JSON in tool call delta with empty args", async () => {
     const mockModelStream: ModelStreamHandler = async function* (_request: ModelRequest) {
-      yield { kind: "tool_call_start" as const, toolName: "my_tool", callId: "x1" };
-      yield { kind: "tool_call_delta" as const, callId: "x1", delta: "not-valid-json" };
-      yield { kind: "tool_call_end" as const, callId: "x1" };
+      yield { kind: "tool_call_start" as const, toolName: "my_tool", callId: toolCallId("x1") };
+      yield { kind: "tool_call_delta" as const, callId: toolCallId("x1"), delta: "not-valid-json" };
+      yield { kind: "tool_call_end" as const, callId: toolCallId("x1") };
       yield {
         kind: "done" as const,
         response: { content: "", model: "test", usage: { inputTokens: 0, outputTokens: 0 } },

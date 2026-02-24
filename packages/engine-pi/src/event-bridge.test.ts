@@ -264,7 +264,7 @@ describe("createEventSubscriber", () => {
     expect(events[0]).toEqual({
       kind: "tool_call_start",
       toolName: "browser_navigate",
-      callId: "call-99",
+      callId: toolCallId("call-99"),
       args: {},
     });
   });
@@ -294,7 +294,7 @@ describe("createEventSubscriber", () => {
     const events = await collectEvents(queue);
     expect(events[0]).toEqual({
       kind: "tool_call_delta",
-      callId: "call-99",
+      callId: toolCallId("call-99"),
       delta: '{"url":"https://example.com"}',
     });
   });

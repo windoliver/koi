@@ -8,6 +8,7 @@
  */
 
 import type { AgentManifest } from "./assembly.js";
+import type { BrowserDriver } from "./browser-driver.js";
 import type { ChannelAdapter } from "./channel.js";
 import type { JsonObject } from "./common.js";
 import type { DelegationComponent } from "./delegation.js";
@@ -303,3 +304,4 @@ export const EVENTS: SubsystemToken<EventComponent> = token<EventComponent>("eve
 export const DELEGATION: SubsystemToken<DelegationComponent> =
   token<DelegationComponent>("delegation");
 export const FILESYSTEM: SubsystemToken<FileSystemBackend> = token<FileSystemBackend>("filesystem");
+export const BROWSER: SubsystemToken<BrowserDriver> = token<BrowserDriver>("browser");
