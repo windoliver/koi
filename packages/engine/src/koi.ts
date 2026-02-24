@@ -34,6 +34,7 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { agentId, runId, sessionId, toolToken, turnId } from "@koi/core";
+import { KoiRuntimeError } from "@koi/errors";
 import { AgentEntity } from "./agent-entity.js";
 import {
   composeModelChain,
@@ -43,7 +44,6 @@ import {
   runSessionHooks,
   runTurnHooks,
 } from "./compose.js";
-import { KoiEngineError } from "./errors.js";
 import { createIterationGuard, createLoopDetector, createSpawnGuard } from "./guards.js";
 import { createInMemorySpawnLedger } from "./spawn-ledger.js";
 import type { CreateKoiOptions, KoiRuntime } from "./types.js";
@@ -88,12 +88,12 @@ function createTurnContext(opts: {
 export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> {
   // --- 0. Input validation at the factory boundary ---
   if (!options.manifest?.name) {
-    throw KoiEngineError.from("VALIDATION", "manifest.name is required", {
+    throw KoiRuntimeError.from("VALIDATION", "manifest.name is required", {
       context: { manifest: options.manifest },
     });
   }
   if (typeof options.adapter?.stream !== "function") {
-    throw KoiEngineError.from("VALIDATION", "adapter must implement stream()", {
+    throw KoiRuntimeError.from("VALIDATION", "adapter must implement stream()", {
       context: { adapterId: options.adapter?.engineId },
     });
   }
@@ -135,7 +135,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       agent.component(toolToken(request.toolId)) ?? (await forge?.resolveTool(request.toolId));
 
     if (tool === undefined) {
-      throw KoiEngineError.from("NOT_FOUND", `Tool not found: "${request.toolId}"`, {
+      throw KoiRuntimeError.from("NOT_FOUND", `Tool not found: "${request.toolId}"`, {
         context: { toolId: request.toolId },
       });
     }
@@ -156,7 +156,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     run(input: EngineInput): AsyncIterable<EngineEvent> {
       // Guard concurrent run() calls
       if (running) {
-        throw KoiEngineError.from("VALIDATION", "Agent is already running");
+        throw KoiRuntimeError.from("VALIDATION", "Agent is already running");
       }
       running = true;
 
@@ -444,7 +444,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 runSignal.removeEventListener("abort", onAbort);
 
                 // If it's a guard error, convert to a done event
-                if (error instanceof KoiEngineError) {
+                if (error instanceof KoiRuntimeError) {
                   const stopReason = error.code === "TIMEOUT" ? "max_turns" : "error";
                   agent.transition({ kind: "complete", stopReason });
                   try {

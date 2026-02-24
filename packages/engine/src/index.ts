@@ -6,6 +6,8 @@
  * Depends on @koi/core only.
  */
 
+// errors
+export { KoiRuntimeError } from "@koi/errors";
 // agent entity
 export { AgentEntity } from "./agent-entity.js";
 // swarm
@@ -25,8 +27,6 @@ export {
 } from "./compose.js";
 // dispose
 export { disposeAll } from "./dispose.js";
-// errors
-export { KoiEngineError } from "./errors.js";
 // eviction policies
 export { lruPolicy, qosPolicy } from "./eviction-policies.js";
 // guards

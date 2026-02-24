@@ -18,8 +18,8 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { GOVERNANCE } from "@koi/core";
+import { KoiRuntimeError } from "@koi/errors";
 import { fnv1a } from "@koi/hash";
-import { KoiEngineError } from "./errors.js";
 import { createInMemorySpawnLedger } from "./spawn-ledger.js";
 import type {
   IterationLimits,
@@ -49,7 +49,7 @@ function validateWarningThreshold(
   limitValue: number,
 ): void {
   if (warningValue !== undefined && warningValue >= limitValue) {
-    throw KoiEngineError.from(
+    throw KoiRuntimeError.from(
       "VALIDATION",
       `${warningName} (${warningValue}) must be less than ${limitName} (${limitValue})`,
       { context: { [warningName]: warningValue, [limitName]: limitValue } },
@@ -74,27 +74,30 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
 
   function checkLimits(): void {
     if (turns >= limits.maxTurns) {
-      throw KoiEngineError.from("TIMEOUT", `Max turns exceeded: ${turns}/${limits.maxTurns}`, {
+      throw KoiRuntimeError.from("TIMEOUT", `Max turns exceeded: ${turns}/${limits.maxTurns}`, {
+        retryable: false,
         context: { turns, maxTurns: limits.maxTurns },
       });
     }
 
     const elapsed = Date.now() - startedAt;
     if (elapsed >= limits.maxDurationMs) {
-      throw KoiEngineError.from(
+      throw KoiRuntimeError.from(
         "TIMEOUT",
         `Duration limit exceeded: ${elapsed}ms/${limits.maxDurationMs}ms`,
         {
+          retryable: false,
           context: { elapsedMs: elapsed, maxDurationMs: limits.maxDurationMs },
         },
       );
     }
 
     if (totalTokens >= limits.maxTokens) {
-      throw KoiEngineError.from(
+      throw KoiRuntimeError.from(
         "TIMEOUT",
         `Token budget exhausted: ${totalTokens}/${limits.maxTokens}`,
         {
+          retryable: false,
           context: { totalTokens, maxTokens: limits.maxTokens },
         },
       );
@@ -186,10 +189,11 @@ function checkRepeatLoop(
   windowSize: number,
 ): void {
   if (newCount >= threshold) {
-    throw KoiEngineError.from(
+    throw KoiRuntimeError.from(
       "TIMEOUT",
       `Loop detected: tool "${toolId}" called with identical arguments ${newCount} times in last ${windowSize} calls`,
       {
+        retryable: false,
         context: {
           toolId,
           repeatCount: newCount,
@@ -258,7 +262,7 @@ function checkPingPong(
     requiredRepetitions,
   );
   if (patLen > 0) {
-    throw KoiEngineError.from(
+    throw KoiRuntimeError.from(
       "VALIDATION",
       `Ping-pong loop detected: repeating pattern of length ${patLen} found after ${requiredRepetitions} repetitions (last tool: "${toolId}")`,
       {
@@ -285,7 +289,7 @@ function checkNoProgress(
     const newCount = prev.count + 1;
     noProgressState.set(toolId, { hash: outputHash, count: newCount });
     if (newCount >= noProgressThreshold) {
-      throw KoiEngineError.from(
+      throw KoiRuntimeError.from(
         "VALIDATION",
         `No-progress loop detected: tool "${toolId}" returned identical output ${newCount} consecutive times`,
         {
@@ -611,7 +615,7 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
       // 1. Check depth (structural, PERMISSION — not retryable)
       const childDepth = agentDepth + 1;
       if (childDepth > policy.maxDepth) {
-        throw KoiEngineError.from(
+        throw KoiRuntimeError.from(
           "PERMISSION",
           `Max spawn depth exceeded: child would be at depth ${childDepth}, limit is ${policy.maxDepth}`,
           {
@@ -624,7 +628,7 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
       if (governance !== undefined) {
         const check = governance.checkSpawn(childDepth);
         if (!check.allowed) {
-          throw KoiEngineError.from("PERMISSION", check.reason, {
+          throw KoiRuntimeError.from("PERMISSION", check.reason, {
             context: { childDepth, source: "GovernanceComponent" },
           });
         }
@@ -632,7 +636,7 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
 
       // 3. Check fan-out (transient, RATE_LIMIT — retryable when child completes)
       if (directChildren >= policy.maxFanOut) {
-        throw KoiEngineError.from(
+        throw KoiRuntimeError.from(
           "RATE_LIMIT",
           `Max fan-out exceeded: ${directChildren}/${policy.maxFanOut} children`,
           {
@@ -652,7 +656,7 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
         directChildren--;
         const active = ledger.activeCount();
         const cap = ledger.capacity();
-        throw KoiEngineError.from("RATE_LIMIT", `Max total processes exceeded: ${active}/${cap}`, {
+        throw KoiRuntimeError.from("RATE_LIMIT", `Max total processes exceeded: ${active}/${cap}`, {
           retryable: true,
           context: { activeProcesses: active, maxTotalProcesses: cap },
         });

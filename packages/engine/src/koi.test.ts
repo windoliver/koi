@@ -469,8 +469,8 @@ describe("createKoi terminal injection", () => {
 
 describe("createKoi duration fix", () => {
   test("duration is non-zero in error events", async () => {
-    // Create adapter that throws a KoiEngineError
-    const { KoiEngineError } = await import("./errors.js");
+    // Create adapter that throws a KoiRuntimeError
+    const { KoiRuntimeError } = await import("@koi/errors");
     const adapter: EngineAdapter = {
       engineId: "slow-crash",
       stream: () => ({
@@ -479,7 +479,7 @@ describe("createKoi duration fix", () => {
             async next(): Promise<IteratorResult<EngineEvent>> {
               // Small delay to ensure non-zero duration
               await new Promise((r) => setTimeout(r, 5));
-              throw KoiEngineError.from("TIMEOUT", "max turns exceeded");
+              throw KoiRuntimeError.from("TIMEOUT", "max turns exceeded");
             },
           };
         },
@@ -813,7 +813,7 @@ describe("createKoi HITL approval handler", () => {
 
 describe("createKoi tool not found", () => {
   test("default tool terminal throws NOT_FOUND for missing tool", async () => {
-    const { KoiEngineError } = await import("./errors.js");
+    const { KoiRuntimeError } = await import("@koi/errors");
     const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
 
     let caughtError: unknown;
@@ -844,8 +844,8 @@ describe("createKoi tool not found", () => {
     });
 
     await collectEvents(runtime.run({ kind: "text", text: "test" }));
-    expect(caughtError).toBeInstanceOf(KoiEngineError);
-    if (caughtError instanceof KoiEngineError) {
+    expect(caughtError).toBeInstanceOf(KoiRuntimeError);
+    if (caughtError instanceof KoiRuntimeError) {
       expect(caughtError.code).toBe("NOT_FOUND");
       expect(caughtError.message).toContain("nonexistent");
     }
@@ -1075,7 +1075,7 @@ describe("createKoi live forge resolution", () => {
   });
 
   test("NOT_FOUND when neither entity nor forge has the tool", async () => {
-    const { KoiEngineError } = await import("./errors.js");
+    const { KoiRuntimeError } = await import("@koi/errors");
     const forge = mockForgeRuntime();
 
     let caughtError: unknown;
@@ -1099,8 +1099,8 @@ describe("createKoi live forge resolution", () => {
 
     await collectEvents(runtime.run({ kind: "text", text: "test" }));
 
-    expect(caughtError).toBeInstanceOf(KoiEngineError);
-    if (caughtError instanceof KoiEngineError) {
+    expect(caughtError).toBeInstanceOf(KoiRuntimeError);
+    if (caughtError instanceof KoiRuntimeError) {
       expect(caughtError.code).toBe("NOT_FOUND");
       expect(caughtError.message).toContain("nonexistent");
     }
@@ -1768,14 +1768,14 @@ describe("createKoi turn_start emission", () => {
   });
 
   test("error stream: turn_start emitted before error", async () => {
-    const { KoiEngineError } = await import("./errors.js");
+    const { KoiRuntimeError } = await import("@koi/errors");
     const adapter: EngineAdapter = {
       engineId: "crash-adapter",
       stream: () => ({
         [Symbol.asyncIterator]() {
           return {
             async next(): Promise<IteratorResult<EngineEvent>> {
-              throw KoiEngineError.from("TIMEOUT", "max turns");
+              throw KoiRuntimeError.from("TIMEOUT", "max turns");
             },
           };
         },
@@ -2020,7 +2020,7 @@ describe("createKoi concurrent run guard", () => {
       runtime.run({ kind: "text", text: "second" });
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      const { KoiEngineError: KoiErr } = await import("./errors.js");
+      const { KoiRuntimeError: KoiErr } = await import("@koi/errors");
       expect(e).toBeInstanceOf(KoiErr);
       if (e instanceof KoiErr) {
         expect(e.code).toBe("VALIDATION");
