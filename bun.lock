@@ -551,6 +551,21 @@
         "zod": "4.3.6",
       },
     },
+    "tests/e2e": {
+      "name": "@koi/e2e-contracts",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/middleware-audit": "workspace:*",
+        "@koi/middleware-memory": "workspace:*",
+        "@koi/middleware-turn-ack": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
   },
   "trustedDependencies": [
     "esbuild",
@@ -783,6 +798,8 @@
     "@koi/delegation": ["@koi/delegation@workspace:packages/delegation"],
 
     "@koi/deploy": ["@koi/deploy@workspace:packages/deploy"],
+
+    "@koi/e2e-contracts": ["@koi/e2e-contracts@workspace:tests/e2e"],
 
     "@koi/engine": ["@koi/engine@workspace:packages/engine"],
 

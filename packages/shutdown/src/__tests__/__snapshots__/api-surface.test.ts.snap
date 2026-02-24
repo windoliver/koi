@@ -1,0 +1,58 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/shutdown API surface . has stable type surface 1`] = `
+"export { EXIT_CONFIG, EXIT_ERROR, EXIT_OK, EXIT_UNAVAILABLE } from './exit-codes.js';
+
+/**
+ * Graceful shutdown handler — coordinates orderly process termination.
+ *
+ * Listens for SIGTERM, SIGINT, SIGHUP. Prevents duplicate triggers.
+ * Sequence: stop accepting → drain work → cleanup → exit.
+ */
+/** Callback to emit shutdown lifecycle events. */
+type ShutdownEmit = (type: string, data?: unknown) => void;
+interface ShutdownHandler {
+    /** Register the shutdown handler on process signals. */
+    readonly install: () => void;
+    /** Trigger shutdown programmatically. */
+    readonly shutdown: () => Promise<void>;
+    /** Whether shutdown is in progress. */
+    readonly isShuttingDown: () => boolean;
+    /** Remove signal handlers (for testing). */
+    readonly uninstall: () => void;
+}
+interface ShutdownCallbacks {
+    /** Called first — stop accepting new work. */
+    readonly onStopAccepting: () => void;
+    /** Called to wait for active work to complete. */
+    readonly onDrainAgents: () => Promise<void>;
+    /** Called to disconnect and clean up resources. */
+    readonly onCleanup: () => Promise<void>;
+}
+declare function createShutdownHandler(callbacks: ShutdownCallbacks, emit: ShutdownEmit, timeoutMs?: number): ShutdownHandler;
+
+export { type ShutdownCallbacks, type ShutdownEmit, type ShutdownHandler, createShutdownHandler };
+"
+`;
+
+exports[`@koi/shutdown API surface ./exit-codes has stable type surface 1`] = `
+"/**
+ * Process exit codes — sysexits.h-inspired constants.
+ *
+ * Used by service managers to decide restart behavior.
+ * - EXIT_CONFIG (78) → RestartPreventExitStatus in systemd (won't restart on config errors)
+ * - EXIT_ERROR (1) → restart appropriate
+ * - EXIT_UNAVAILABLE (69) → retry later
+ */
+/** Clean exit — no errors. */
+declare const EXIT_OK = 0;
+/** Runtime error — restart may help. */
+declare const EXIT_ERROR = 1;
+/** Dependency unavailable — retry later. */
+declare const EXIT_UNAVAILABLE = 69;
+/** Configuration error — restart won't help. */
+declare const EXIT_CONFIG = 78;
+
+export { EXIT_CONFIG, EXIT_ERROR, EXIT_OK, EXIT_UNAVAILABLE };
+"
+`;

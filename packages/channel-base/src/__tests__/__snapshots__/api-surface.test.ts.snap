@@ -1,0 +1,165 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/channel-base API surface . has stable type surface 1`] = `
+"import { ChannelCapabilities, OutboundMessage, InboundMessage, ChannelStatus, ChannelAdapter, ButtonBlock, CustomBlock, FileBlock, ImageBlock, TextBlock, KoiError, ContentBlock } from '@koi/core';
+export { ContentBlock } from '@koi/core';
+
+/**
+ * Generic channel adapter factory.
+ *
+ * createChannelAdapter<E>() accepts platform-specific callbacks and returns a
+ * complete ChannelAdapter that handles all shared channel behavior:
+ *
+ * - Connection state (idempotent connect)
+ * - Handler registration with double-unsubscribe guard
+ * - Parallel handler dispatch via Promise.allSettled()
+ * - Capability-aware block rendering (renderBlocks) before platformSend
+ * - Conditional sendStatus inclusion (absent when not supported)
+ * - Observability hooks: onHandlerError, onIgnoredEvent
+ *
+ * Backpressure note: this factory fires events as they arrive. If the platform
+ * sends events faster than handlers can process them, handlers receive calls
+ * concurrently. Turn-level sequencing is the engine adapter's responsibility,
+ * not the channel's.
+ *
+ * Queue-on-disconnect: when queueWhenDisconnected is true, send() buffers
+ * outbound messages while the channel is disconnected and flushes them in
+ * order on the next connect(). When false (default), send() throws if called
+ * while disconnected.
+ */
+
+/**
+ * Maps a raw platform event to an InboundMessage, or null to ignore the event.
+ * May return a Promise for platforms that need an async API call during normalization
+ * (e.g., resolving a file URL from a file_id before building an ImageBlock).
+ *
+ * Returning null is the correct response for platform system events that should
+ * not trigger agent turns: typing indicators, delivery receipts, poll votes, etc.
+ * The factory calls onIgnoredEvent when null is returned — wire this to a debug
+ * logger to trace "why didn't the agent respond?" in production.
+ */
+type MessageNormalizer<E> = (event: E) => InboundMessage | null | Promise<InboundMessage | null>;
+/**
+ * Configuration for createChannelAdapter<E>().
+ *
+ * Platform adapters provide the platform-specific callbacks. All shared
+ * channel behavior is handled by the factory.
+ *
+ * onPlatformEvent is called inside connect() after platformConnect() completes,
+ * so the platform event source is guaranteed to be ready when the listener
+ * is registered. The returned unsubscribe function is called inside disconnect()
+ * before platformDisconnect() runs.
+ */
+interface ChannelAdapterConfig<E> {
+    readonly name: string;
+    readonly capabilities: ChannelCapabilities;
+    /** Called once during connect(). Set up the platform connection here. */
+    readonly platformConnect: () => Promise<void>;
+    /** Called once during disconnect(). Tear down the platform connection here. */
+    readonly platformDisconnect: () => Promise<void>;
+    /**
+     * Sends a rendered OutboundMessage to the platform.
+     * Blocks passed in have already been downgraded by renderBlocks() to match
+     * this channel's declared capabilities.
+     */
+    readonly platformSend: (message: OutboundMessage) => Promise<void>;
+    /**
+     * Registers a callback to receive raw platform events.
+     * Called inside connect() after platformConnect() completes.
+     * Returns an unsubscribe function called inside disconnect().
+     */
+    readonly onPlatformEvent: (handler: (event: E) => void) => () => void;
+    /** Converts a raw platform event to an InboundMessage, or null to ignore it. */
+    readonly normalize: MessageNormalizer<E>;
+    /**
+     * If provided, the returned ChannelAdapter will include a sendStatus method.
+     * If absent, sendStatus will be omitted from the adapter — consumers can
+     * check \`adapter.sendStatus !== undefined\` to detect support.
+     */
+    readonly platformSendStatus?: (status: ChannelStatus) => Promise<void>;
+    /**
+     * Called when a registered message handler throws or rejects.
+     * Defaults to console.error. The channel continues processing events
+     * even if a handler fails (isolation guarantee).
+     *
+     * Note: this callback should not throw itself; unhandled errors in it
+     * are not caught.
+     */
+    readonly onHandlerError?: (err: unknown, message: InboundMessage) => void;
+    /**
+     * Called when normalize() returns null (platform event ignored).
+     * Defaults to no-op. Wire to a debug logger to trace missed responses.
+     */
+    readonly onIgnoredEvent?: (event: E) => void;
+    /**
+     * When true, send() called while disconnected buffers the message and
+     * flushes it in order on the next connect(). Drain errors are logged to
+     * console.error but do not fail connect() — the platform connected successfully.
+     *
+     * When false (default), send() throws if called while disconnected.
+     */
+    readonly queueWhenDisconnected?: boolean;
+}
+/**
+ * Builds a complete ChannelAdapter from platform-specific callbacks.
+ *
+ * @param config - Platform callbacks and optional observability hooks.
+ * @returns A ChannelAdapter satisfying the @koi/core contract.
+ */
+declare function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): ChannelAdapter;
+
+/**
+ * ContentBlock factory utilities — typed builders for each block kind.
+ *
+ * Use these in MessageNormalizer<E> implementations to build InboundMessage
+ * content blocks from platform-specific event data.
+ */
+
+declare function text(content: string): TextBlock;
+declare function file(url: string, mimeType: string, name?: string): FileBlock;
+declare function image(url: string, alt?: string): ImageBlock;
+declare function button(label: string, action: string, payload?: unknown): ButtonBlock;
+declare function custom(type: string, data: unknown): CustomBlock;
+
+/**
+ * User-facing error message formatting for channel adapters.
+ *
+ * Maps KoiErrorCode to safe, user-friendly messages that never leak
+ * internal details (cause, context, stack traces).
+ */
+
+interface FormatErrorOptions {
+    readonly verbose?: boolean;
+}
+/**
+ * Formats a KoiError into a user-safe string suitable for channel output.
+ *
+ * - VALIDATION always shows the original message (it's user-relevant input feedback)
+ * - All other codes use a fixed user-friendly message
+ * - Verbose mode appends technical details for developer-facing channels (CLI)
+ * - Never leaks error.cause, error.context, or stack traces
+ */
+declare function formatErrorForChannel(error: KoiError, options?: FormatErrorOptions): string;
+
+/**
+ * Capability-aware ContentBlock renderer.
+ *
+ * Downgrades unsupported block types to TextBlock fallbacks based on the
+ * channel's declared capabilities. Returns the same array reference if no
+ * downgrade is needed (fast path — zero allocation).
+ *
+ * Note: audio, video, and threads capabilities currently have no corresponding
+ * ContentBlock types. Custom blocks are always passed through unchanged.
+ */
+
+/**
+ * Downgrades blocks that exceed the channel's declared capabilities.
+ *
+ * Fast path: if all capabilities with corresponding block types are true
+ * (images, files, buttons), returns the original array reference unchanged.
+ */
+declare function renderBlocks(blocks: readonly ContentBlock[], capabilities: ChannelCapabilities): readonly ContentBlock[];
+
+export { type ChannelAdapterConfig, type FormatErrorOptions, type MessageNormalizer, button, createChannelAdapter, custom, file, formatErrorForChannel, image, renderBlocks, text };
+"
+`;

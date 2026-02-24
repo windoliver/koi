@@ -18,6 +18,7 @@ export {
   createMockStatefulEngine,
 } from "./agents.js";
 export { assertKoiError } from "./assert-koi-error.js";
+export { assertErr, assertOk } from "./assert-result.js";
 export type { CapturedOutput } from "./capture-output.js";
 export { captureOutput } from "./capture-output.js";
 export type { ChannelContractOptions } from "./channel-contract.js";
@@ -31,6 +32,7 @@ export { testEngineAdapter } from "./engine-contract.js";
 export { runEventBackendContractTests } from "./event-backend-contract.js";
 export type { MockEventBackend } from "./event-backend-mock.js";
 export { createMockEventBackend } from "./event-backend-mock.js";
+export { createFactory } from "./factory.js";
 export type { SpyModelHandler, SpyToolHandler } from "./handlers.js";
 export {
   createMockModelHandler,
@@ -38,6 +40,10 @@ export {
   createSpyModelHandler,
   createSpyToolHandler,
 } from "./handlers.js";
+export type { MiddlewareContractOptions } from "./middleware-contract/index.js";
+export { testMiddlewareContract } from "./middleware-contract/index.js";
+export type { ResolverContractOptions } from "./resolver-contract.js";
+export { testResolverContract } from "./resolver-contract.js";
 export { runSessionPersistenceContractTests } from "./session-persistence-contract.js";
 export { runSnapshotChainStoreContractTests } from "./snapshot-chain-contract.js";
 export { runForgeStoreContractTests } from "./store-contract.js";

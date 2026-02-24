@@ -1,0 +1,105 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/errors API surface . has stable type surface 1`] = `
+"import { KoiError, KoiErrorCode, JsonObject } from '@koi/core';
+
+/**
+ * Shared error utilities for converting unknown values to KoiError.
+ *
+ * Centralizes extractMessage, extractCode, isKoiError, toKoiError, and
+ * swallowError — previously duplicated across @koi/model-router and @koi/mcp.
+ */
+
+/** Extract a message string from an unknown error value. */
+declare function extractMessage(error: unknown): string;
+/** Extract an OS/system error code (e.g., ENOENT, SQLITE_BUSY) from an error. */
+declare function extractCode(error: unknown): string | undefined;
+/** Type guard — validates value has all required KoiError fields with a valid code. */
+declare function isKoiError(error: unknown): error is KoiError;
+/** Convert any thrown value to a KoiError. Returns as-is if already valid. */
+declare function toKoiError(error: unknown): KoiError;
+/** Log a non-critical error at warn level, then discard. Makes intent explicit. */
+declare function swallowError(error: unknown, context: {
+    readonly package: string;
+    readonly operation: string;
+}): void;
+
+/**
+ * Filesystem error mapper — maps native FS errors to KoiError.
+ *
+ * Moved from @koi/store-fs to @koi/errors so all L2 packages can
+ * use filesystem error mapping without violating peer-import rules.
+ */
+
+/** Map a native filesystem error to a typed KoiError. */
+declare function mapFsError(err: unknown, context: string): KoiError;
+/** Map a JSON parse error to a typed KoiError. */
+declare function mapParseError(err: unknown, filePath: string): KoiError;
+
+/**
+ * Retry with exponential backoff and jitter.
+ *
+ * Handles transient failures (rate limits, timeouts, server errors)
+ * by retrying with increasing delays.
+ */
+
+interface RetryConfig {
+    readonly maxRetries: number;
+    readonly backoffMultiplier: number;
+    readonly initialDelayMs: number;
+    readonly maxBackoffMs: number;
+    readonly jitter: boolean;
+}
+declare const DEFAULT_RETRY_CONFIG: RetryConfig;
+/**
+ * Determines whether an error should be retried based on its code.
+ */
+declare function isRetryable(error: KoiError): boolean;
+/**
+ * Calculates the backoff delay for a given retry attempt.
+ *
+ * @param attempt - Zero-based attempt index (0 = first retry)
+ * @param config - Retry configuration
+ * @param retryAfterMs - Optional provider-specified retry delay (overrides calculation)
+ * @param random - Injectable random function for deterministic jitter testing
+ */
+declare function calculateBackoff(attempt: number, config: RetryConfig, retryAfterMs?: number, random?: () => number): number;
+/**
+ * Executes \`fn\` with retry logic. On failure, retries up to \`config.maxRetries\` times
+ * with exponential backoff.
+ *
+ * @param fn - The async function to execute
+ * @param config - Retry configuration
+ * @param clock - Injectable clock for deterministic delay testing
+ */
+declare function withRetry<T>(fn: () => Promise<T>, config?: RetryConfig, clock?: () => number): Promise<T>;
+
+/**
+ * KoiRuntimeError — concrete Error subclass wrapping KoiError for L2 packages.
+ *
+ * Provides:
+ * - Stack traces for debugging
+ * - instanceof checks in catch blocks
+ * - Structured KoiError fields (code, retryable, context)
+ */
+
+declare class KoiRuntimeError extends Error {
+    readonly code: KoiErrorCode;
+    readonly retryable: boolean;
+    readonly context: JsonObject | undefined;
+    readonly retryAfterMs: number | undefined;
+    constructor(error: KoiError);
+    /** Convenience factory: create from code + message with RETRYABLE_DEFAULTS. */
+    static from(code: KoiErrorCode, message: string, options?: {
+        readonly cause?: unknown;
+        readonly retryable?: boolean;
+        readonly context?: JsonObject;
+        readonly retryAfterMs?: number;
+    }): KoiRuntimeError;
+    /** Convert to a plain KoiError data object. */
+    toKoiError(): KoiError;
+}
+
+export { DEFAULT_RETRY_CONFIG, KoiRuntimeError, type RetryConfig, calculateBackoff, extractCode, extractMessage, isKoiError, isRetryable, mapFsError, mapParseError, swallowError, toKoiError, withRetry };
+"
+`;
