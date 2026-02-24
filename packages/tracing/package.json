@@ -1,0 +1,27 @@
+{
+  "name": "@koi/tracing",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@opentelemetry/api": "^1.9.0"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*",
+    "@opentelemetry/sdk-trace-base": "^2.5.0",
+    "@opentelemetry/sdk-trace-node": "^2.5.0"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  }
+}
