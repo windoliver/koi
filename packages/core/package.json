@@ -84,6 +84,10 @@
       "types": "./dist/brick-store.d.ts",
       "import": "./dist/brick-store.js"
     },
+    "./sandbox-adapter": {
+      "types": "./dist/sandbox-adapter.d.ts",
+      "import": "./dist/sandbox-adapter.js"
+    },
     "./sandbox-executor": {
       "types": "./dist/sandbox-executor.d.ts",
       "import": "./dist/sandbox-executor.js"

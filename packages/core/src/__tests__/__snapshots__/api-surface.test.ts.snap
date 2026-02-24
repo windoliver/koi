@@ -26,6 +26,7 @@ export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundM
 export { ApprovalDecision, ApprovalHandler, ApprovalRequest, KoiMiddleware, ModelChunk, ModelHandler, ModelRequest, ModelResponse, ModelStreamHandler, SessionContext, ToolHandler, ToolRequest, ToolResponse, TurnContext } from './middleware.js';
 export { ModelCapabilities, ModelProvider, ModelTarget } from './model-provider.js';
 export { Resolver, SourceBundle, SourceLanguage } from './resolver.js';
+export { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance } from './sandbox-adapter.js';
 export { SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, TierResolution, TieredSandboxExecutor } from './sandbox-executor.js';
 export { FilesystemPolicy, NetworkPolicy, ResourceLimits, SandboxProfile } from './sandbox-profile.js';
 
@@ -1857,6 +1858,78 @@ interface AdvisoryLock {
 }
 
 export type { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, CompositeArtifact, ForgeQuery, ForgeStore, LockHandle, LockMode, LockRequest, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, ToolArtifact };
+"
+`;
+
+exports[`@koi/core API surface ./sandbox-adapter has stable type surface 1`] = `
+"import { SandboxProfile } from './sandbox-profile.js';
+import './ecs-B8ezO44s.js';
+import './assembly-DuMs8y-i.js';
+import './common.js';
+import './errors.js';
+import './channel.js';
+import './message.js';
+import './filesystem-backend.js';
+
+/**
+ * Sandbox adapter contract — pluggable sandbox backends for isolated execution.
+ *
+ * Defines the extension point for sandbox providers (OS-level, cloud, WASM).
+ * Each backend implements SandboxAdapter to create SandboxInstance environments.
+ *
+ * Note: These types describe OS/container-level process execution (exitCode, stdout, stderr).
+ * The SandboxResult in sandbox-executor.ts describes code-level return values (output, durationMs).
+ */
+
+/** Options for executing a command inside a sandbox instance. */
+interface SandboxExecOptions {
+    readonly cwd?: string;
+    readonly env?: Readonly<Record<string, string>>;
+    readonly stdin?: string;
+    readonly timeoutMs?: number;
+    /** Streaming callback for stdout chunks. */
+    readonly onStdout?: (chunk: string) => void;
+    /** Streaming callback for stderr chunks. */
+    readonly onStderr?: (chunk: string) => void;
+    /** Maximum bytes to capture for stdout+stderr. Default: 10 MB. */
+    readonly maxOutputBytes?: number;
+}
+/** Result of a completed sandboxed execution (process-level). */
+interface SandboxAdapterResult {
+    readonly exitCode: number;
+    readonly stdout: string;
+    readonly stderr: string;
+    readonly signal?: string;
+    readonly durationMs: number;
+    readonly timedOut: boolean;
+    readonly oomKilled: boolean;
+    /** Whether stdout or stderr was truncated due to maxOutputBytes. */
+    readonly truncated?: boolean;
+}
+/**
+ * A running sandbox environment. Stateful — must be destroyed when done.
+ *
+ * For OS-level backends, the instance wraps per-command process isolation.
+ * For cloud backends, the instance represents a live microVM or container.
+ */
+interface SandboxInstance {
+    readonly exec: (command: string, args: readonly string[], options?: SandboxExecOptions) => Promise<SandboxAdapterResult>;
+    readonly readFile: (path: string) => Promise<Uint8Array>;
+    readonly writeFile: (path: string, content: Uint8Array) => Promise<void>;
+    readonly destroy: () => Promise<void>;
+}
+/**
+ * Backend that creates sandbox instances from a profile.
+ *
+ * Each backend (OS-level, E2B, Vercel, Cloudflare, Daytona, K8s)
+ * implements this contract as an independent L2 package.
+ */
+interface SandboxAdapter {
+    readonly name: string;
+    readonly create: (profile: SandboxProfile) => Promise<SandboxInstance>;
+}
+
+export type { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance };
 "
 `;
 

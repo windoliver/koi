@@ -1,66 +1,30 @@
 /**
- * Sandbox types — OS-level process isolation contracts.
- * Types only, zero runtime code.
+ * Sandbox types — re-exports from @koi/core (L0) + local aliases.
  *
- * Owned by @koi/sandbox (L2). These types define the sandbox
- * extension point and are not part of the @koi/core kernel.
+ * Adapter types (SandboxAdapter, SandboxInstance, SandboxExecOptions, SandboxAdapterResult)
+ * are canonical in @koi/core. This module re-exports them for backward compatibility
+ * and adds the SandboxTier alias.
  */
 
-import type { SandboxProfile, TrustTier } from "@koi/core";
+import type { TrustTier } from "@koi/core";
 
 /** Sandbox-specific alias for the L0 TrustTier. */
 export type SandboxTier = TrustTier;
 
 // Sandbox profile — canonical definitions live in @koi/core (L0)
-export type { FilesystemPolicy, NetworkPolicy, ResourceLimits, SandboxProfile } from "@koi/core";
-
-/** Result of a completed sandboxed execution. */
-export interface SandboxResult {
-  readonly exitCode: number;
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly signal?: string;
-  readonly durationMs: number;
-  readonly timedOut: boolean;
-  readonly oomKilled: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// Adapter contract — pluggable sandbox backends
-// ---------------------------------------------------------------------------
-
-/** Options for executing a command inside a sandbox instance. */
-export interface SandboxExecOptions {
-  readonly cwd?: string;
-  readonly env?: Readonly<Record<string, string>>;
-  readonly stdin?: string;
-  readonly timeoutMs?: number;
-}
-
+// Sandbox adapter types — canonical definitions live in @koi/core (L0)
 /**
- * A running sandbox environment. Stateful — must be destroyed when done.
- *
- * For OS-level backends, the instance wraps per-command process isolation.
- * For cloud backends, the instance represents a live microVM or container.
+ * Backward-compatible alias for SandboxAdapterResult.
+ * New code should use SandboxAdapterResult directly from @koi/core.
  */
-export interface SandboxInstance {
-  readonly exec: (
-    command: string,
-    args: readonly string[],
-    options?: SandboxExecOptions,
-  ) => Promise<SandboxResult>;
-  readonly readFile: (path: string) => Promise<Uint8Array>;
-  readonly writeFile: (path: string, content: Uint8Array) => Promise<void>;
-  readonly destroy: () => Promise<void>;
-}
-
-/**
- * Backend that creates sandbox instances from a profile.
- *
- * Each backend (OS-level, E2B, Vercel, Cloudflare, Daytona, K8s)
- * implements this contract as an independent L2 package.
- */
-export interface SandboxAdapter {
-  readonly name: string;
-  readonly create: (profile: SandboxProfile) => Promise<SandboxInstance>;
-}
+export type {
+  FilesystemPolicy,
+  NetworkPolicy,
+  ResourceLimits,
+  SandboxAdapter,
+  SandboxAdapterResult,
+  SandboxAdapterResult as SandboxResult,
+  SandboxExecOptions,
+  SandboxInstance,
+  SandboxProfile,
+} from "@koi/core";

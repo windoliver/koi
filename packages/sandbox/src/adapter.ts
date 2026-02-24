@@ -9,16 +9,17 @@
  * host filesystem (the OS sandbox restricts what the process can access).
  */
 
-import type { KoiError, Result } from "@koi/core";
-import type { ExecuteOptions } from "./execute.js";
-import { execute } from "./execute.js";
 import type {
+  KoiError,
+  Result,
   SandboxAdapter,
+  SandboxAdapterResult,
   SandboxExecOptions,
   SandboxInstance,
   SandboxProfile,
-  SandboxResult,
-} from "./types.js";
+} from "@koi/core";
+import type { ExecuteOptions } from "./execute.js";
+import { execute } from "./execute.js";
 
 /**
  * Create an OS-level SandboxAdapter.
@@ -54,12 +55,12 @@ function createInstance(profile: SandboxProfile): SandboxInstance {
       command: string,
       args: readonly string[],
       options?: SandboxExecOptions,
-    ): Promise<SandboxResult> => {
+    ): Promise<SandboxAdapterResult> => {
       if (destroyed) {
         throw new Error("SandboxInstance has been destroyed");
       }
 
-      const result: Result<SandboxResult, KoiError> = await execute(
+      const result: Result<SandboxAdapterResult, KoiError> = await execute(
         profile,
         command,
         args,
