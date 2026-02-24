@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import type { SandboxExecutor, SkillArtifact, TieredSandboxExecutor, ToolArtifact } from "@koi/core";
+import type {
+  SandboxExecutor,
+  SkillArtifact,
+  TieredSandboxExecutor,
+  ToolArtifact,
+} from "@koi/core";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import type { ForgeResult, ManifestParser } from "../types.js";
