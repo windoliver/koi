@@ -238,8 +238,14 @@ describe("IPv6 private range blocking", () => {
   test("allows [2002:0102:0304::] (6to4 wrapping public 1.2.3.4)", () =>
     expect(allowed("https://[2002:0102:0304::]/")).toBe(true));
 
-  // Global unicast — must be allowed
-  test("allows [2001:db8::1] (documentation prefix)", () =>
+  // Teredo (2001:0000::/32)
+  test("blocks [2001:0:4136:e378::8007:8] (Teredo)", () =>
+    expect(blocked("https://[2001:0:4136:e378::8007:8]/")).toBe(true));
+  test("blocks [2001:0000:4136:e378::8007:8] (Teredo full-form)", () =>
+    expect(blocked("https://[2001:0000:4136:e378::8007:8]/")).toBe(true));
+
+  // Global unicast — must be allowed (2001:db8 is documentation, NOT Teredo)
+  test("allows [2001:db8::1] (documentation prefix, not Teredo)", () =>
     expect(allowed("https://[2001:db8::1]/")).toBe(true));
   test("allows [2606:4700::1] (Cloudflare)", () =>
     expect(allowed("https://[2606:4700::1]/")).toBe(true));

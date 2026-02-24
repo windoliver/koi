@@ -169,6 +169,16 @@ function isIpv4MappedIpv6(raw: string): boolean {
   return raw.startsWith("::ffff:") || raw.startsWith("0:0:0:0:0:ffff:");
 }
 
+function isTeredo(raw: string): boolean {
+  // 2001:0000::/32 — Teredo tunneling (IPv6-over-UDP through NATs, embeds arbitrary IPv4)
+  // First group must be 0x2001, second must be 0x0000.
+  // Normalized forms: "2001:0:" / "2001:0000:" / "2001::" (when second group is also 0)
+  const parts = raw.split(":");
+  if (parts[0]?.toLowerCase() !== "2001") return false;
+  const second = parts[1]?.toLowerCase();
+  return second === "0" || second === "0000" || second === "" || second === undefined;
+}
+
 /**
  * Extract the embedded IPv4 from a 6to4 address (2002::/16).
  * Groups 1+2 encode the IPv4: 2002:XXYY:AABB:: → XX.YY.AA.BB
@@ -279,6 +289,13 @@ function classifyHost(host: string): BlockedReason | undefined {
           guidance: ipv4Result.guidance,
         };
       }
+    }
+    if (isTeredo(raw)) {
+      return {
+        category: `Teredo tunneling address (2001:0000::/32): ${raw}`,
+        guidance:
+          "Teredo tunnels IPv6 over UDP and can embed arbitrary IPv4 addresses, bypassing network controls.",
+      };
     }
     return undefined; // Global unicast IPv6 — allowed
   }
