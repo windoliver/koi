@@ -34,7 +34,7 @@ import type {
 import { internal, notFound, validation } from "@koi/core";
 import type { Browser, BrowserContext, Locator, Page } from "playwright";
 import { chromium } from "playwright";
-import { type A11yNode, serializeA11yTree } from "./a11y-serializer.js";
+import { parseAriaYaml } from "./a11y-serializer.js";
 
 export interface PlaywrightDriverConfig {
   /**
@@ -192,33 +192,20 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       try {
         const page = await ensurePage();
 
-        // let justified: page.accessibility was removed in Playwright 1.44; pending
-        // migration to page.ariaSnapshot() + custom serializer. Preserve original
-        // runtime behavior via a compat shim until the migration is complete.
-        type LegacyAccessibility = {
-          snapshot: (opts?: Record<string, unknown>) => Promise<A11yNode | null>;
-        };
-        const pageCompat = page as Page & { accessibility?: LegacyAccessibility };
-        let rawNode: A11yNode | null;
-        if (options?.selector) {
-          // Scope to a CSS-selected element
-          const el = page.locator(options.selector).first();
-          const handle = await el.elementHandle();
-          const snap = handle ? await pageCompat.accessibility?.snapshot({ root: handle }) : null;
-          rawNode = snap ?? null;
-        } else {
-          const snap = await pageCompat.accessibility?.snapshot();
-          rawNode = snap ?? null;
-        }
+        // Use Playwright 1.44+ locator.ariaSnapshot() — page.accessibility was removed.
+        const locator = options?.selector
+          ? page.locator(options.selector).first()
+          : page.locator("body");
+        const yamlText = await locator.ariaSnapshot();
 
-        if (!rawNode) {
+        if (!yamlText) {
           return {
             ok: false,
-            error: internal("Accessibility snapshot returned null — page may not be fully loaded"),
+            error: internal("Accessibility snapshot returned empty — page may not be fully loaded"),
           };
         }
 
-        const { text, refs, truncated } = serializeA11yTree(rawNode, options);
+        const { text, refs, truncated } = parseAriaYaml(yamlText, options);
 
         const snapshotId = newSnapshotId();
         currentSnapshotId = snapshotId;

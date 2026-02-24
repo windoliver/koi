@@ -1,9 +1,11 @@
 /**
- * Accessibility-tree serializer for Playwright AccessibilityNode trees.
+ * Accessibility-tree serializer for Playwright accessibility snapshots.
  *
- * Converts Playwright's AccessibilityNode tree into compact text with
- * [ref=eN] inline markers on interactive elements.
+ * Two entry-points:
+ *  - parseAriaYaml()   — parses Playwright 1.44+ locator.ariaSnapshot() YAML output
+ *  - serializeA11yTree() — converts the legacy AccessibilityNode tree format
  *
+ * Both produce the same SerializeResult: compact text + refs map with [ref=eN] markers.
  * ~800 tokens per typical page vs 5000+ for screenshots.
  * Compatible with any LLM — plain text, zero vision required.
  */
@@ -160,4 +162,86 @@ export function serializeA11yTree(
     refs,
     truncated,
   };
+}
+
+/**
+ * Parse Playwright 1.44+ ARIA snapshot YAML (from `locator.ariaSnapshot()`) into compact
+ * text with [ref=eN] markers — the same format as serializeA11yTree().
+ *
+ * Input example:
+ *   - heading "Example Domain" [level=1]
+ *   - paragraph: This domain is for use in examples.
+ *   - paragraph:
+ *     - link "Learn more":
+ *       - /url: https://iana.org/domains/example
+ *
+ * Lines starting with `- /key:` are metadata properties (e.g. /url) and are skipped.
+ */
+export function parseAriaYaml(yaml: string, options?: BrowserSnapshotOptions): SerializeResult {
+  const maxTokens = options?.maxTokens ?? 4000;
+  const maxDepth = options?.maxDepth ?? 8;
+  const maxChars = maxTokens * CHARS_PER_TOKEN;
+
+  let refCounter = 0;
+  const refs: Record<string, BrowserRefInfo> = {};
+  const lines: string[] = [];
+  let charCount = 0;
+  let truncated = false;
+
+  // Matches: `  - role "name" [attrs]: inline-text`
+  // Groups: [1]=indent, [2]=role, [3]=name (opt), [4]=attrs (opt), [5]=inline (opt)
+  const LINE_RE = /^( *)- ([a-z][\w-]*)(?:\s+"([^"]*)")?(?:\s+\[([^\]]*)\])?(?::\s*(.*))?$/;
+
+  for (const rawLine of yaml.split("\n")) {
+    const trimmed = rawLine.trimEnd();
+    if (!trimmed.trim()) continue;
+    // Skip metadata properties emitted by Playwright like `- /url: ...`
+    if (/^ *- \//.test(trimmed)) continue;
+
+    const m = LINE_RE.exec(trimmed);
+    if (!m) continue;
+
+    const depth = (m[1]?.length ?? 0) / 2;
+    if (depth > maxDepth) {
+      truncated = true;
+      continue;
+    }
+    if (charCount >= maxChars) {
+      truncated = true;
+      break;
+    }
+
+    const role = m[2] ?? "";
+    const name = m[3] ?? "";
+    const rawAttrs = m[4] ?? "";
+    const isInteractive = INTERACTIVE_ROLES.has(role);
+
+    let outLine = `${"  ".repeat(depth)}${role}`;
+    if (name) outLine += ` "${name}"`;
+
+    const attrs: string[] = rawAttrs
+      ? rawAttrs
+          .split(",")
+          .map((a) => a.trim())
+          .filter(Boolean)
+      : [];
+
+    if (isInteractive) {
+      const refKey = `e${++refCounter}`;
+      refs[refKey] = { role, ...(name ? { name } : {}) };
+      attrs.push(`ref=${refKey}`);
+    }
+
+    if (attrs.length > 0) outLine += ` [${attrs.join(", ")}]`;
+
+    const lineLen = outLine.length + 1;
+    if (charCount + lineLen > maxChars) {
+      truncated = true;
+      break;
+    }
+    charCount += lineLen;
+    lines.push(outLine);
+  }
+
+  return { text: lines.join("\n"), refs, truncated };
 }
