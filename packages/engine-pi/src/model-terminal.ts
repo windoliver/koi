@@ -5,11 +5,12 @@
  * Provides both modelCall (collect all) and modelStream (async iterable) terminals.
  *
  * Pi-native parameters (including the bound streamSimple function) are passed via
- * a WeakMap side-channel keyed by ModelRequest, avoiding the need to smuggle
- * functions through the JsonObject metadata field.
+ * a nonce-based Map side-channel. The nonce is stored in ModelRequest.metadata so
+ * it survives object spread by middleware (e.g., compactor creating { ...request, messages }).
  */
 
 import { toolCallId } from "@koi/core/ecs";
+import type { InboundMessage } from "@koi/core/message";
 import type {
   ModelChunk,
   ModelHandler,
@@ -17,17 +18,28 @@ import type {
   ModelResponse,
   ModelStreamHandler,
 } from "@koi/core/middleware";
-import type { AssistantMessageEvent, AssistantMessageEventStream } from "@mariozechner/pi-ai";
+import type {
+  AssistantMessageEvent,
+  AssistantMessageEventStream,
+  Message,
+} from "@mariozechner/pi-ai";
+import { inboundToPiMessages } from "./message-map.js";
+
+/** Metadata key for the nonce stored in ModelRequest.metadata. */
+export const PI_PARAMS_NONCE_KEY = "piParamsNonce";
 
 /**
  * Pi-native parameters for the terminal.
- * Stored in a WeakMap keyed by ModelRequest to avoid smuggling functions via metadata.
+ * Stored in a Map keyed by nonce string (survives middleware object spread).
  */
 export interface PiNativeParams {
-  /** Pre-bound streamSimple function (model + context already captured). */
+  /** Pre-bound streamSimple function. Accepts optional message override for middleware-modified messages. */
   readonly callBoundStream: (
     options?: Record<string, unknown>,
+    messageOverride?: readonly Message[],
   ) => AssistantMessageEventStream | Promise<AssistantMessageEventStream>;
+  /** Original messages at bridge creation time — used for change detection. */
+  readonly originalMessages: readonly InboundMessage[];
   /** Temperature override (may be modified by middleware). */
   readonly temperature?: number;
   /** Max tokens override (may be modified by middleware). */
@@ -42,12 +54,23 @@ export interface PiNativeParams {
 
 /**
  * Side-channel for passing pi-native params from stream-bridge to model-terminal.
- * WeakMap ensures no memory leaks — entries are GC'd when the ModelRequest is collected.
+ * Nonce-based Map — entries are auto-deleted after one-shot lookup (equivalent GC to WeakMap).
  */
-export const piParamsStore: WeakMap<ModelRequest, PiNativeParams> = new WeakMap<
-  ModelRequest,
-  PiNativeParams
->();
+export const piParamsStore: Map<string, PiNativeParams> = new Map<string, PiNativeParams>();
+
+/**
+ * Look up pi-native params by nonce from ModelRequest.metadata.
+ * Auto-deletes the entry after retrieval (one-shot cleanup prevents memory leaks).
+ */
+export function getPiParams(request: ModelRequest): PiNativeParams | undefined {
+  const raw = request.metadata?.[PI_PARAMS_NONCE_KEY];
+  if (typeof raw !== "string") return undefined;
+  const params = piParamsStore.get(raw);
+  if (params !== undefined) {
+    piParamsStore.delete(raw);
+  }
+  return params;
+}
 
 /**
  * Convert a pi AssistantMessageEvent to a Koi ModelChunk.
@@ -144,7 +167,7 @@ function assembleResponse(
  */
 export function createModelStreamTerminal(): ModelStreamHandler {
   return async function* modelStreamTerminal(request: ModelRequest): AsyncIterable<ModelChunk> {
-    const piParams = piParamsStore.get(request);
+    const piParams = getPiParams(request);
 
     if (!piParams?.callBoundStream) {
       throw new Error(
@@ -165,7 +188,13 @@ export function createModelStreamTerminal(): ModelStreamHandler {
     if (piParams.apiKey) streamOptions.apiKey = piParams.apiKey;
     if (piParams.reasoning) streamOptions.reasoning = piParams.reasoning;
 
-    const eventStream = await piParams.callBoundStream(streamOptions);
+    // Detect middleware-modified messages (e.g., compactor replaced the array)
+    // Relies on Koi's immutability contract: middleware returns a new array
+    // reference when modifying messages. Reference equality avoids O(n) comparison.
+    const messagesChanged = request.messages !== piParams.originalMessages;
+    const messageOverride = messagesChanged ? inboundToPiMessages(request.messages) : undefined;
+
+    const eventStream = await piParams.callBoundStream(streamOptions, messageOverride);
 
     // let justified: accumulate text for final response
     let text = "";

@@ -6,7 +6,13 @@ import type {
   ToolResultMessage,
   UserMessage,
 } from "@mariozechner/pi-ai";
-import { engineInputToPrompt, piMessagesToInbound, piMessageToInbound } from "./message-map.js";
+import {
+  engineInputToPrompt,
+  inboundToPiMessage,
+  inboundToPiMessages,
+  piMessagesToInbound,
+  piMessageToInbound,
+} from "./message-map.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -163,6 +169,135 @@ describe("piMessagesToInbound", () => {
 
   test("handles empty array", () => {
     expect(piMessagesToInbound([])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// inboundToPiMessage — reverse converter
+// ---------------------------------------------------------------------------
+
+describe("inboundToPiMessage", () => {
+  test("converts user text message to UserMessage", () => {
+    const inbound = piMessageToInbound(makeUserMessage("hello"));
+    const result = inboundToPiMessage(inbound);
+
+    expect(result.role).toBe("user");
+    expect((result as UserMessage).content).toBe("hello");
+    expect(result.timestamp).toBe(now);
+  });
+
+  test("converts user message with content parts to UserMessage", () => {
+    const inbound = piMessageToInbound(
+      makeUserMessage([
+        { type: "text", text: "look at this" },
+        { type: "image", data: "base64data", mimeType: "image/png" },
+      ]),
+    );
+    const result = inboundToPiMessage(inbound) as UserMessage;
+
+    expect(result.role).toBe("user");
+    expect(Array.isArray(result.content)).toBe(true);
+    const parts = result.content as (
+      | { readonly type: "text"; readonly text: string }
+      | { readonly type: "image"; readonly data: string; readonly mimeType: string }
+    )[];
+    expect(parts).toHaveLength(2);
+    expect(parts[0]).toEqual({ type: "text", text: "look at this" });
+    expect(parts[1]).toEqual({ type: "image", data: "base64data", mimeType: "image/png" });
+  });
+
+  test("converts system:compactor message to UserMessage", () => {
+    const inbound = {
+      content: [{ kind: "text" as const, text: "Summary of previous conversation." }],
+      senderId: "system:compactor",
+      timestamp: now,
+      metadata: { compacted: true },
+    };
+    const result = inboundToPiMessage(inbound) as UserMessage;
+
+    expect(result.role).toBe("user");
+    expect(result.content).toBe("Summary of previous conversation.");
+    expect(result.timestamp).toBe(now);
+  });
+
+  test("converts assistant text message to AssistantMessage", () => {
+    const inbound = piMessageToInbound(
+      makeAssistantMessage([{ type: "text", text: "I can help" }]),
+    );
+    const result = inboundToPiMessage(inbound) as AssistantMessage;
+
+    expect(result.role).toBe("assistant");
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0]).toEqual({ type: "text", text: "I can help" });
+    expect(result.timestamp).toBe(now);
+  });
+
+  test("converts assistant message with tool calls to AssistantMessage", () => {
+    const inbound = piMessageToInbound(
+      makeAssistantMessage([
+        { type: "text", text: "Let me search" },
+        { type: "toolCall", id: "call-1", name: "search", arguments: { q: "test" } },
+      ]),
+    );
+    const result = inboundToPiMessage(inbound) as AssistantMessage;
+
+    expect(result.role).toBe("assistant");
+    expect(result.content).toHaveLength(2);
+    expect(result.content[0]).toEqual({ type: "text", text: "Let me search" });
+    expect(result.content[1]).toEqual({
+      type: "toolCall",
+      id: "call-1",
+      name: "search",
+      arguments: { q: "test" },
+    });
+  });
+
+  test("converts tool result message to ToolResultMessage", () => {
+    const inbound = piMessageToInbound(makeToolResultMessage());
+    const result = inboundToPiMessage(inbound) as ToolResultMessage;
+
+    expect(result.role).toBe("toolResult");
+    expect(result.toolCallId).toBe("call-1");
+    expect(result.toolName).toBe("search");
+    expect(result.isError).toBe(false);
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0]).toEqual({ type: "text", text: "result" });
+  });
+
+  test("converts tool result with image content", () => {
+    const inbound = piMessageToInbound(
+      makeToolResultMessage({
+        content: [{ type: "image", data: "imgdata", mimeType: "image/jpeg" }],
+      }),
+    );
+    const result = inboundToPiMessage(inbound) as ToolResultMessage;
+
+    expect(result.role).toBe("toolResult");
+    expect(result.content[0]).toEqual({ type: "image", data: "imgdata", mimeType: "image/jpeg" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// inboundToPiMessages — array reverse converter
+// ---------------------------------------------------------------------------
+
+describe("inboundToPiMessages", () => {
+  test("converts array of mixed inbound messages", () => {
+    const messages = piMessagesToInbound([
+      makeUserMessage("hello"),
+      makeAssistantMessage([{ type: "text", text: "hi" }]),
+      makeToolResultMessage(),
+    ]);
+    const result = inboundToPiMessages(messages);
+
+    expect(result).toHaveLength(3);
+    expect(result[0]?.role).toBe("user");
+    expect(result[1]?.role).toBe("assistant");
+    expect(result[2]?.role).toBe("toolResult");
+  });
+
+  test("handles empty array", () => {
+    expect(inboundToPiMessages([])).toEqual([]);
   });
 });
 

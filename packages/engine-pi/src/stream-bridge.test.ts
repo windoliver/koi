@@ -8,7 +8,7 @@ import type {
   AssistantMessageEventStream,
 } from "@mariozechner/pi-ai";
 import { createAssistantMessageEventStream } from "@mariozechner/pi-ai";
-import { piParamsStore } from "./model-terminal.js";
+import { PI_PARAMS_NONCE_KEY, piParamsStore } from "./model-terminal.js";
 import { createBridgeStreamFn, modelChunkToAssistantEvent } from "./stream-bridge.js";
 
 // ---------------------------------------------------------------------------
@@ -266,9 +266,13 @@ describe("createBridgeStreamFn", () => {
 
     expect(capturedRequest).toBeDefined();
     if (capturedRequest) {
-      const piParams = piParamsStore.get(capturedRequest);
-      expect(piParams).toBeDefined();
-      expect(typeof piParams?.callBoundStream).toBe("function");
+      // Nonce-based lookup: extract nonce from metadata and look up in Map
+      const nonce = capturedRequest.metadata?.[PI_PARAMS_NONCE_KEY] as string | undefined;
+      expect(nonce).toBeDefined();
+      // Note: getPiParams auto-deletes, so use piParamsStore.get directly for inspection
+      // The entry was already consumed by the modelStream terminal, so it may be gone.
+      // Instead, verify nonce was set in metadata (the actual lookup is tested via terminal tests).
+      expect(typeof nonce).toBe("string");
     }
   });
 
@@ -292,13 +296,12 @@ describe("createBridgeStreamFn", () => {
   });
 
   test("callBoundStream in piParams calls realStreamSimple with model/context", async () => {
-    let _capturedRequest: ModelRequest | undefined;
     let streamSimpleCalled = false;
 
     const mockModelStream: ModelStreamHandler = async function* (request: ModelRequest) {
-      _capturedRequest = request;
-      // Simulate the terminal calling callBoundStream
-      const piParams = piParamsStore.get(request);
+      // Simulate the terminal calling callBoundStream via nonce lookup
+      const nonce = request.metadata?.[PI_PARAMS_NONCE_KEY] as string | undefined;
+      const piParams = nonce !== undefined ? piParamsStore.get(nonce) : undefined;
       if (piParams?.callBoundStream) {
         piParams.callBoundStream({ temperature: 0.9 });
       }

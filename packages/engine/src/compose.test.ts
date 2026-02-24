@@ -238,6 +238,45 @@ describe("composeModelChain error propagation", () => {
     const chain = composeModelChain([], terminal);
     await expect(chain(mockTurnContext(), mockModelRequest())).rejects.toThrow("async rejection");
   });
+
+  test("next() can be called again after inner chain rejects (retry-on-error)", async () => {
+    let callCount = 0;
+    const mw: KoiMiddleware = {
+      name: "retry-mw",
+      wrapModelCall: async (_ctx, req, next) => {
+        try {
+          return await next(req);
+        } catch {
+          // Retry once after error
+          return next(req);
+        }
+      },
+    };
+    const terminal = mock(() => {
+      callCount++;
+      if (callCount === 1) return Promise.reject(new Error("transient error"));
+      return Promise.resolve(mockModelResponse("recovered"));
+    });
+    const chain = composeModelChain([mw], terminal);
+    const result = await chain(mockTurnContext(), mockModelRequest());
+    expect(result.content).toBe("recovered");
+    expect(callCount).toBe(2);
+  });
+
+  test("next() still throws on double-call after success (not error)", async () => {
+    const mw: KoiMiddleware = {
+      name: "double-after-success",
+      wrapModelCall: async (_ctx, req, next) => {
+        await next(req); // succeeds
+        return next(req); // should still throw
+      },
+    };
+    const terminal = mock(() => Promise.resolve(mockModelResponse()));
+    const chain = composeModelChain([mw], terminal);
+    await expect(chain(mockTurnContext(), mockModelRequest())).rejects.toThrow(
+      /called next\(\) multiple times/,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -811,6 +850,47 @@ describe("composeModelStreamChain", () => {
       "stream crash",
     );
     expect(order).toEqual(["before", "after"]);
+  });
+
+  test("next() can be called again after inner stream throws (retry-on-error)", async () => {
+    let callCount = 0;
+    const mw: KoiMiddleware = {
+      name: "stream-retry",
+      wrapModelStream: async function* (_ctx, req, next) {
+        try {
+          yield* next(req);
+        } catch {
+          // Retry once after error
+          yield* next(req);
+        }
+      },
+    };
+    const terminal: ModelStreamHandler = () => ({
+      async *[Symbol.asyncIterator]() {
+        callCount++;
+        if (callCount === 1) throw new Error("transient stream error");
+        yield* sampleChunks;
+      },
+    });
+    const chain = composeModelStreamChain([mw], terminal);
+    const chunks = await collectChunks(chain(mockTurnContext(), mockModelRequest()));
+    expect(callCount).toBe(2);
+    expect(chunks).toEqual(sampleChunks);
+  });
+
+  test("next() still throws on double-call after successful stream (not error)", async () => {
+    const mw: KoiMiddleware = {
+      name: "double-after-success-stream",
+      wrapModelStream: async function* (_ctx, req, next) {
+        yield* next(req); // succeeds
+        yield* next(req); // should still throw
+      },
+    };
+    const terminal = mockStreamChunks(sampleChunks);
+    const chain = composeModelStreamChain([mw], terminal);
+    await expect(collectChunks(chain(mockTurnContext(), mockModelRequest()))).rejects.toThrow(
+      /called next\(\) multiple times/,
+    );
   });
 });
 
