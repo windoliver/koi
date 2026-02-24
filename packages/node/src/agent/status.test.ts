@@ -114,7 +114,7 @@ describe("StatusReporter", () => {
       expect(sentFrames.length).toBeGreaterThanOrEqual(1);
       // Verify batched format
       const frame = sentFrames[0];
-      expect(frame?.type).toBe("agent:status");
+      expect(frame?.kind).toBe("agent:status");
       expect(frame?.agentId).toBe("");
 
       const payload = frame?.payload as { agents: unknown[] };

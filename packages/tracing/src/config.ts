@@ -25,7 +25,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null;
 }
 
-export function validateConfig(config: unknown): Result<TracingConfig, KoiError> {
+export function validateTracingConfig(config: unknown): Result<TracingConfig, KoiError> {
   if (!isRecord(config)) {
     return {
       ok: false,

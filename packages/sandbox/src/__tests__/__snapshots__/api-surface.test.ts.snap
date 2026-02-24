@@ -1,0 +1,152 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/sandbox API surface . has stable type surface 1`] = `
+"import { SandboxProfile, TrustTier, Result, KoiError } from '@koi/core';
+export { FilesystemPolicy, NetworkPolicy, ResourceLimits, SandboxProfile } from '@koi/core';
+
+/**
+ * Sandbox types — OS-level process isolation contracts.
+ * Types only, zero runtime code.
+ *
+ * Owned by @koi/sandbox (L2). These types define the sandbox
+ * extension point and are not part of the @koi/core kernel.
+ */
+
+/** Sandbox-specific alias for the L0 TrustTier. */
+type SandboxTier = TrustTier;
+
+/** Result of a completed sandboxed execution. */
+interface SandboxResult {
+    readonly exitCode: number;
+    readonly stdout: string;
+    readonly stderr: string;
+    readonly signal?: string;
+    readonly durationMs: number;
+    readonly timedOut: boolean;
+    readonly oomKilled: boolean;
+}
+/** Options for executing a command inside a sandbox instance. */
+interface SandboxExecOptions {
+    readonly cwd?: string;
+    readonly env?: Readonly<Record<string, string>>;
+    readonly stdin?: string;
+    readonly timeoutMs?: number;
+}
+/**
+ * A running sandbox environment. Stateful — must be destroyed when done.
+ *
+ * For OS-level backends, the instance wraps per-command process isolation.
+ * For cloud backends, the instance represents a live microVM or container.
+ */
+interface SandboxInstance {
+    readonly exec: (command: string, args: readonly string[], options?: SandboxExecOptions) => Promise<SandboxResult>;
+    readonly readFile: (path: string) => Promise<Uint8Array>;
+    readonly writeFile: (path: string, content: Uint8Array) => Promise<void>;
+    readonly destroy: () => Promise<void>;
+}
+/**
+ * Backend that creates sandbox instances from a profile.
+ *
+ * Each backend (OS-level, E2B, Vercel, Cloudflare, Daytona, K8s)
+ * implements this contract as an independent L2 package.
+ */
+interface SandboxAdapter {
+    readonly name: string;
+    readonly create: (profile: SandboxProfile) => Promise<SandboxInstance>;
+}
+
+/**
+ * OS-level SandboxAdapter implementation.
+ *
+ * Wraps the stateless execute()/spawn() APIs into the stateful
+ * SandboxAdapter/SandboxInstance contract from @koi/core.
+ *
+ * For OS-level sandboxing there is no persistent VM — each exec() call
+ * creates a new sandboxed process. readFile/writeFile operate on the
+ * host filesystem (the OS sandbox restricts what the process can access).
+ */
+
+/**
+ * Create an OS-level SandboxAdapter.
+ *
+ * The returned adapter uses macOS Seatbelt or Linux bubblewrap
+ * depending on the current platform.
+ */
+declare function createOsAdapter(): SandboxAdapter;
+
+/**
+ * createSandboxCommand() — shared sandbox command construction.
+ *
+ * Extracts the duplicated platform-detection + args-building logic
+ * from execute.ts and spawn.ts into a single reusable function.
+ */
+
+interface SandboxCommand {
+    readonly executable: string;
+    readonly args: readonly string[];
+}
+/**
+ * Create the platform-appropriate sandbox command for a given profile.
+ *
+ * Detects the current platform (macOS → seatbelt, Linux → bwrap),
+ * constructs the full argument list, and validates the result.
+ */
+declare function createSandboxCommand(profile: SandboxProfile, command: string, args: readonly string[]): Result<SandboxCommand, KoiError>;
+
+/**
+ * Platform detection and sandbox availability checking.
+ */
+
+type SandboxPlatform = "seatbelt" | "bwrap";
+interface PlatformInfo {
+    readonly platform: SandboxPlatform;
+    readonly available: boolean;
+    readonly reason?: string;
+}
+declare function checkAvailability(): Result<PlatformInfo, KoiError>;
+
+/**
+ * execute() — Buffered sandbox execution API.
+ * Runs a command in a sandboxed process and collects output.
+ */
+
+interface ExecuteOptions {
+    readonly cwd?: string;
+    readonly env?: Readonly<Record<string, string>>;
+    readonly stdin?: string;
+}
+declare function execute(profile: SandboxProfile, command: string, args: readonly string[], options?: ExecuteOptions): Promise<Result<SandboxResult, KoiError>>;
+
+/**
+ * Preset sandbox profile constructors.
+ */
+
+declare function restrictiveProfile(overrides?: Partial<SandboxProfile>): SandboxProfile;
+declare function permissiveProfile(overrides?: Partial<SandboxProfile>): SandboxProfile;
+declare function profileForTier(tier: TrustTier): SandboxProfile;
+
+/**
+ * spawn() — Streaming sandbox process API.
+ * Spawns a sandboxed process with direct stream access.
+ */
+
+interface SpawnOptions {
+    readonly cwd?: string;
+    readonly env?: Readonly<Record<string, string>>;
+}
+interface SandboxProcess {
+    readonly pid: number;
+    readonly stdout: ReadableStream<Uint8Array>;
+    readonly stderr: ReadableStream<Uint8Array>;
+    readonly stdin: {
+        write(data: string | Uint8Array): number | Promise<number>;
+        end(): void;
+    };
+    readonly exited: Promise<number>;
+    readonly kill: (signal?: number) => void;
+}
+declare function spawn(profile: SandboxProfile, command: string, args: readonly string[], options?: SpawnOptions): Result<SandboxProcess, KoiError>;
+
+export { type ExecuteOptions, type PlatformInfo, type SandboxAdapter, type SandboxCommand, type SandboxExecOptions, type SandboxInstance, type SandboxProcess, type SandboxResult, type SandboxTier, type SpawnOptions, checkAvailability, createOsAdapter, createSandboxCommand, execute, permissiveProfile, profileForTier, restrictiveProfile, spawn };
+"
+`;

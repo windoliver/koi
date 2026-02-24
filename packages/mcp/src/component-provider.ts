@@ -14,7 +14,7 @@ import type { McpProviderConfig, ResolvedMcpServerConfig } from "./config.js";
 import { resolveProviderConfig } from "./config.js";
 import { createExecuteTool } from "./discover/execute-tool.js";
 import { createSearchTool } from "./discover/search-tool.js";
-import { mcpToolToKoiTool } from "./tool-adapter.js";
+import { mapMcpToolToKoi } from "./tool-adapter.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -102,7 +102,7 @@ async function connectAndDiscoverTools(
       }
 
       for (const toolInfo of listResult.value) {
-        const tool = mcpToolToKoiTool(toolInfo, client, serverConfig.name);
+        const tool = mapMcpToolToKoi(toolInfo, client, serverConfig.name);
         tools.set(toolToken(tool.descriptor.name) as string, tool);
       }
     }
@@ -122,7 +122,7 @@ async function connectAndDiscoverTools(
  * Failed servers produce warnings in `failures` — they don't prevent
  * successful servers from working.
  */
-export async function createMcpComponentProviderAsync(
+export async function createMcpComponentProvider(
   config: McpProviderConfig,
   createManager: CreateManagerFn = createMcpClientManager,
 ): Promise<McpComponentProviderResult> {

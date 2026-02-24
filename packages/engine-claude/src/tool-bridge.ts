@@ -26,11 +26,11 @@ export interface ToolBridgeDescriptor {
 }
 
 /**
- * Build a tool registry from an agent's tool components.
+ * Create a tool registry from an agent's tool components.
  *
- * Queries the agent for all tool components and builds a lookup map.
+ * Queries the agent for all tool components and creates a lookup map.
  */
-export function buildToolRegistry(agent: Agent): ToolRegistry {
+export function createToolRegistry(agent: Agent): ToolRegistry {
   const toolComponents = agent.query("tool:");
   const tools = new Map<string, Tool>();
   const descriptors: ToolBridgeDescriptor[] = [];
@@ -104,7 +104,7 @@ export function createToolBridgeMcpServer(
     handler: (args: Readonly<Record<string, unknown>>) => Promise<unknown>,
   ) => unknown,
 ): { readonly config: McpBridgeConfig; readonly registry: ToolRegistry } | undefined {
-  const registry = buildToolRegistry(agent);
+  const registry = createToolRegistry(agent);
 
   if (registry.descriptors.length === 0) {
     return undefined;

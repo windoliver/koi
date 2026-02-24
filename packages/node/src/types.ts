@@ -179,8 +179,8 @@ export function parseNodeConfig(raw: unknown): Result<NodeConfig, KoiError> {
 // Node frame protocol types (Nexus-inspired envelope)
 // ---------------------------------------------------------------------------
 
-/** Discriminated union of all frame types flowing over the Node <-> Gateway WS. */
-export type NodeFrameType =
+/** Discriminated union of all frame kinds flowing over the Node <-> Gateway WS. */
+export type NodeFrameKind =
   | "agent:dispatch"
   | "agent:message"
   | "agent:status"
@@ -205,7 +205,7 @@ export interface NodeFrame {
   readonly correlationId: string;
   /** Milliseconds until the frame expires. Undefined = no expiry. */
   readonly ttl?: number | undefined;
-  readonly type: NodeFrameType;
+  readonly kind: NodeFrameKind;
   readonly payload: unknown;
 }
 

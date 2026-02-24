@@ -49,7 +49,7 @@ const IPC_TO_SANDBOX_CODE: Readonly<Record<IpcErrorCode, SandboxErrorCode>> = {
   DISPOSED: "CRASH",
 };
 
-export function ipcErrorToSandboxError(error: IpcError): SandboxError {
+export function mapIpcErrorToSandbox(error: IpcError): SandboxError {
   return {
     code: IPC_TO_SANDBOX_CODE[error.code],
     message: error.message,
@@ -83,7 +83,7 @@ const IPC_TO_KOI_RETRYABLE: Readonly<Record<IpcErrorCode, boolean>> = {
   DISPOSED: false, // matches RETRYABLE_DEFAULTS.INTERNAL
 };
 
-export function ipcErrorToKoiError(error: IpcError): KoiError {
+export function mapIpcErrorToKoi(error: IpcError): KoiError {
   return {
     code: IPC_TO_KOI_CODE[error.code],
     message: `IPC bridge error [${error.code}]: ${error.message}`,

@@ -15,7 +15,7 @@ import type { McpClientManager, McpToolInfo } from "./client-manager.js";
  * The tool delegates execution to the client manager's `callTool()`,
  * which handles reconnection and error mapping.
  */
-export function mcpToolToKoiTool(
+export function mapMcpToolToKoi(
   toolInfo: McpToolInfo,
   client: McpClientManager,
   serverName: string,

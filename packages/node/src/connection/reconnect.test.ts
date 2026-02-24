@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { GatewayConnectionConfig } from "../types.js";
 import {
-  calculateReconnectDelay,
+  computeReconnectDelay,
   createReconnectState,
   isCleanClose,
   nextAttempt,
@@ -17,28 +17,28 @@ const config: GatewayConnectionConfig = {
   maxRetries: 5,
 };
 
-describe("calculateReconnectDelay", () => {
+describe("computeReconnectDelay", () => {
   it("returns base delay for attempt 0 (approximately)", () => {
-    const delay = calculateReconnectDelay(0, { ...config, reconnectJitter: 0 });
+    const delay = computeReconnectDelay(0, { ...config, reconnectJitter: 0 });
     expect(delay).toBe(1_000);
   });
 
   it("doubles delay per attempt (no jitter)", () => {
     const noJitter = { ...config, reconnectJitter: 0 };
-    expect(calculateReconnectDelay(0, noJitter)).toBe(1_000);
-    expect(calculateReconnectDelay(1, noJitter)).toBe(2_000);
-    expect(calculateReconnectDelay(2, noJitter)).toBe(4_000);
-    expect(calculateReconnectDelay(3, noJitter)).toBe(8_000);
+    expect(computeReconnectDelay(0, noJitter)).toBe(1_000);
+    expect(computeReconnectDelay(1, noJitter)).toBe(2_000);
+    expect(computeReconnectDelay(2, noJitter)).toBe(4_000);
+    expect(computeReconnectDelay(3, noJitter)).toBe(8_000);
   });
 
   it("caps at maxDelay", () => {
     const noJitter = { ...config, reconnectJitter: 0 };
-    expect(calculateReconnectDelay(10, noJitter)).toBe(30_000);
-    expect(calculateReconnectDelay(20, noJitter)).toBe(30_000);
+    expect(computeReconnectDelay(10, noJitter)).toBe(30_000);
+    expect(computeReconnectDelay(20, noJitter)).toBe(30_000);
   });
 
   it("applies jitter within expected range", () => {
-    const delays = Array.from({ length: 100 }, () => calculateReconnectDelay(0, config));
+    const delays = Array.from({ length: 100 }, () => computeReconnectDelay(0, config));
     const min = Math.min(...delays);
     const max = Math.max(...delays);
     // With 10% jitter on 1000ms: range is [900, 1100]
@@ -47,7 +47,7 @@ describe("calculateReconnectDelay", () => {
   });
 
   it("never returns negative", () => {
-    const delays = Array.from({ length: 100 }, () => calculateReconnectDelay(0, config));
+    const delays = Array.from({ length: 100 }, () => computeReconnectDelay(0, config));
     for (const d of delays) {
       expect(d).toBeGreaterThanOrEqual(0);
     }

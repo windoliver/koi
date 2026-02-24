@@ -247,10 +247,10 @@ export function createTestAuthenticator(
 /** Build a JSON-encoded connect frame string for tests (range format). */
 export function createConnectMessage(
   token = "test-token",
-  overrides?: Partial<Omit<ConnectFrame, "type">>,
+  overrides?: Partial<Omit<ConnectFrame, "kind">>,
 ): string {
   const frame: ConnectFrame = {
-    type: "connect",
+    kind: "connect",
     minProtocol: overrides?.minProtocol ?? 1,
     maxProtocol: overrides?.maxProtocol ?? 1,
     auth: overrides?.auth ?? { token },
@@ -262,7 +262,7 @@ export function createConnectMessage(
 /** Build a JSON-encoded connect frame string in legacy format (single protocol field). */
 export function createLegacyConnectMessage(token = "test-token", protocol = 1): string {
   return JSON.stringify({
-    type: "connect",
+    kind: "connect",
     protocol,
     auth: { token },
   });

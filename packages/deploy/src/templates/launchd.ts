@@ -36,7 +36,7 @@ function escapeXml(s: string): string {
 // Template
 // ---------------------------------------------------------------------------
 
-export function renderLaunchdPlist(config: LaunchdTemplateConfig): string {
+export function generateLaunchdPlist(config: LaunchdTemplateConfig): string {
   if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535) {
     throw new Error(`Invalid port: ${config.port}`);
   }

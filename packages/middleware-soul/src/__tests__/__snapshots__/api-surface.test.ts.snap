@@ -1,0 +1,107 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-soul API surface . has stable type surface 1`] = `
+"import { Result, KoiError } from '@koi/core/errors';
+import { InboundMessage } from '@koi/core/message';
+import { KoiMiddleware, ModelRequest } from '@koi/core/middleware';
+
+/**
+ * Soul middleware configuration and validation.
+ */
+
+/** Manifest-level soul/user config: string path/inline or object with path + maxTokens. */
+type SoulUserInput = string | {
+    readonly path: string;
+    readonly maxTokens?: number;
+};
+/** Options for creating the soul middleware. */
+interface CreateSoulOptions {
+    readonly soul?: SoulUserInput | undefined;
+    readonly user?: SoulUserInput | undefined;
+    readonly basePath: string;
+    readonly refreshUser?: boolean | undefined;
+}
+/** Default token budgets. */
+declare const DEFAULT_SOUL_MAX_TOKENS = 4000;
+declare const DEFAULT_USER_MAX_TOKENS = 2000;
+/** Validates the CreateSoulOptions, returning a Result. */
+declare function validateSoulConfig(config: unknown): Result<CreateSoulOptions, KoiError>;
+
+/**
+ * Soul/user content resolution — reads markdown files or inline text,
+ * concatenates directory contents, and enforces token budgets.
+ */
+/** Resolved soul/user content ready for injection. */
+interface ResolvedContent {
+    readonly text: string;
+    readonly tokens: number;
+    readonly sources: readonly string[];
+    readonly warnings: readonly string[];
+}
+/** Options for resolving a soul or user field from manifest config. */
+interface ResolveOptions {
+    readonly input: string;
+    readonly maxTokens: number;
+    readonly label: "soul" | "user";
+    readonly basePath: string;
+}
+/**
+ * Resolves soul content from a manifest config value.
+ *
+ * Supports three input modes:
+ * - Inline: string containing newlines → used directly
+ * - File: path to a single .md file
+ * - Directory: path to a directory with SOUL.md (required), STYLE.md, INSTRUCTIONS.md (optional)
+ */
+declare function resolveSoulContent(options: ResolveOptions): Promise<ResolvedContent>;
+/**
+ * Resolves user content from a manifest config value.
+ *
+ * Same as soul resolution but:
+ * - No directory mode (user is always a single file or inline)
+ * - Missing file → warning + empty result (not an error)
+ */
+declare function resolveUserContent(options: ResolveOptions): Promise<ResolvedContent>;
+
+/**
+ * Soul middleware factory — markdown-based agent character + user context injection.
+ */
+
+/**
+ * Extended middleware with a \`reload()\` method for HITL-approved soul updates.
+ *
+ * Automatically reloads when \`fs_write\` targets a tracked soul/user file
+ * (the write must pass through the middleware chain, including permissions/HITL).
+ * Manual \`reload()\` is also available for programmatic use.
+ */
+interface SoulMiddleware extends KoiMiddleware {
+    /**
+     * Re-resolves all soul and user content from original source paths.
+     * Called automatically after successful \`fs_write\` to tracked files.
+     * Can also be called manually after HITL-approved writes.
+     * Updates the running middleware atomically — takes effect on next model call.
+     */
+    readonly reload: () => Promise<void>;
+}
+/**
+ * Enriches a model request by prepending a soul system message.
+ * Pure function — does not mutate the input request.
+ */
+declare function enrichRequest(request: ModelRequest, soulMessage: InboundMessage | undefined): ModelRequest;
+/**
+ * Creates a soul middleware that injects agent personality and user context
+ * into model calls as a system message prefix.
+ *
+ * Returns \`SoulMiddleware\` — a \`KoiMiddleware\` with \`reload()\` and auto-reload
+ * via \`wrapToolCall\`. When \`fs_write\` targets a tracked soul/user file and
+ * succeeds (meaning it passed permissions/HITL), the middleware auto-reloads.
+ *
+ * Soul and user content are resolved at factory time and cached in the closure.
+ * User content can optionally be refreshed per-call with \`refreshUser: true\`.
+ * Both soul and user are re-resolved atomically when \`reload()\` is called.
+ */
+declare function createSoulMiddleware(options: CreateSoulOptions): Promise<SoulMiddleware>;
+
+export { type CreateSoulOptions, DEFAULT_SOUL_MAX_TOKENS, DEFAULT_USER_MAX_TOKENS, type ResolveOptions, type ResolvedContent, type SoulMiddleware, type SoulUserInput, createSoulMiddleware, enrichRequest, resolveSoulContent, resolveUserContent, validateSoulConfig };
+"
+`;

@@ -1,0 +1,70 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-permissions API surface . has stable type surface 1`] = `
+"import { Result, KoiError } from '@koi/core/errors';
+import { JsonObject } from '@koi/core/common';
+import { KoiMiddleware } from '@koi/core/middleware';
+
+/**
+ * Permission engine interfaces and default implementations.
+ */
+
+type PermissionDecision = {
+    readonly allowed: true;
+} | {
+    readonly allowed: false;
+    readonly reason: string;
+} | {
+    readonly allowed: "ask";
+    readonly reason: string;
+};
+interface PermissionRules {
+    readonly allow: readonly string[];
+    readonly deny: readonly string[];
+    readonly ask: readonly string[];
+}
+interface PermissionEngine {
+    readonly check: (toolId: string, input: JsonObject, rules: PermissionRules) => PermissionDecision;
+}
+interface ApprovalHandler {
+    readonly requestApproval: (toolId: string, input: JsonObject, reason: string) => Promise<boolean>;
+}
+/**
+ * Pattern-based permission engine.
+ * Evaluation order: deny-first, then ask, then allow, then defaultDeny.
+ */
+declare function createPatternPermissionEngine(defaultDeny?: boolean): PermissionEngine;
+/**
+ * Auto-approval handler for testing and development.
+ * Always approves all requests.
+ */
+declare function createAutoApprovalHandler(): ApprovalHandler;
+
+/**
+ * Permissions middleware configuration and validation.
+ */
+
+interface ApprovalCacheConfig {
+    readonly maxEntries?: number;
+}
+declare const DEFAULT_APPROVAL_CACHE_MAX_ENTRIES = 256;
+interface PermissionsMiddlewareConfig {
+    readonly engine: PermissionEngine;
+    readonly rules: PermissionRules;
+    readonly approvalHandler?: ApprovalHandler;
+    readonly approvalTimeoutMs?: number;
+    readonly defaultDeny?: boolean;
+    /** Enable approval caching. false/undefined = disabled, true = defaults, object = custom. */
+    readonly approvalCache?: boolean | ApprovalCacheConfig;
+}
+declare function validatePermissionsConfig(config: unknown): Result<PermissionsMiddlewareConfig, KoiError>;
+
+/**
+ * Permissions middleware factory — tool-level access control + HITL approval.
+ */
+
+declare function createPermissionsMiddleware(config: PermissionsMiddlewareConfig): KoiMiddleware;
+
+export { type ApprovalCacheConfig, type ApprovalHandler, DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, type PermissionDecision, type PermissionEngine, type PermissionRules, type PermissionsMiddlewareConfig, createAutoApprovalHandler, createPatternPermissionEngine, createPermissionsMiddleware, validatePermissionsConfig };
+"
+`;

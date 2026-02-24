@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createMockMcpClientManager } from "./__tests__/mock-mcp-server.js";
 import type { McpToolInfo } from "./client-manager.js";
-import { mcpToolToKoiTool } from "./tool-adapter.js";
+import { mapMcpToolToKoi } from "./tool-adapter.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -25,11 +25,11 @@ function createTestToolInfo(): McpToolInfo {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("mcpToolToKoiTool", () => {
+describe("mapMcpToolToKoi", () => {
   test("creates tool with namespaced name", () => {
     const toolInfo = createTestToolInfo();
     const client = createMockMcpClientManager({ name: "filesystem" });
-    const tool = mcpToolToKoiTool(toolInfo, client, "filesystem");
+    const tool = mapMcpToolToKoi(toolInfo, client, "filesystem");
 
     expect(tool.descriptor.name).toBe("mcp/filesystem/read_file");
   });
@@ -37,7 +37,7 @@ describe("mcpToolToKoiTool", () => {
   test("preserves description and inputSchema", () => {
     const toolInfo = createTestToolInfo();
     const client = createMockMcpClientManager({ name: "filesystem" });
-    const tool = mcpToolToKoiTool(toolInfo, client, "filesystem");
+    const tool = mapMcpToolToKoi(toolInfo, client, "filesystem");
 
     expect(tool.descriptor.description).toBe("Reads a file from the filesystem");
     expect(tool.descriptor.inputSchema).toEqual(toolInfo.inputSchema);
@@ -46,7 +46,7 @@ describe("mcpToolToKoiTool", () => {
   test("sets trust tier to promoted", () => {
     const toolInfo = createTestToolInfo();
     const client = createMockMcpClientManager({ name: "filesystem" });
-    const tool = mcpToolToKoiTool(toolInfo, client, "filesystem");
+    const tool = mapMcpToolToKoi(toolInfo, client, "filesystem");
 
     expect(tool.trustTier).toBe("promoted");
   });
@@ -59,7 +59,7 @@ describe("mcpToolToKoiTool", () => {
         read_file: [{ type: "text", text: "file contents" }],
       },
     });
-    const tool = mcpToolToKoiTool(toolInfo, client, "filesystem");
+    const tool = mapMcpToolToKoi(toolInfo, client, "filesystem");
 
     const result = await tool.execute({ path: "/test.txt" });
     expect(result).toEqual([{ type: "text", text: "file contents" }]);
@@ -71,7 +71,7 @@ describe("mcpToolToKoiTool", () => {
       name: "filesystem",
       callResults: {},
     });
-    const tool = mcpToolToKoiTool(toolInfo, client, "filesystem");
+    const tool = mapMcpToolToKoi(toolInfo, client, "filesystem");
 
     const result = await tool.execute({ path: "/missing.txt" });
     expect(result).toHaveProperty("ok", false);
@@ -82,8 +82,8 @@ describe("mcpToolToKoiTool", () => {
     const client1 = createMockMcpClientManager({ name: "server-a" });
     const client2 = createMockMcpClientManager({ name: "server-b" });
 
-    const tool1 = mcpToolToKoiTool(toolInfo, client1, "server-a");
-    const tool2 = mcpToolToKoiTool(toolInfo, client2, "server-b");
+    const tool1 = mapMcpToolToKoi(toolInfo, client1, "server-a");
+    const tool2 = mapMcpToolToKoi(toolInfo, client2, "server-b");
 
     expect(tool1.descriptor.name).toBe("mcp/server-a/read_file");
     expect(tool2.descriptor.name).toBe("mcp/server-b/read_file");
@@ -92,7 +92,7 @@ describe("mcpToolToKoiTool", () => {
   test("execute function is async", () => {
     const toolInfo = createTestToolInfo();
     const client = createMockMcpClientManager({ name: "test" });
-    const tool = mcpToolToKoiTool(toolInfo, client, "test");
+    const tool = mapMcpToolToKoi(toolInfo, client, "test");
 
     const result = tool.execute({});
     expect(result).toBeInstanceOf(Promise);

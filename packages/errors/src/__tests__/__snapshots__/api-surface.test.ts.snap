@@ -73,7 +73,7 @@ declare function isRetryable(error: KoiError): boolean;
  * @param retryAfterMs - Optional provider-specified retry delay (overrides calculation)
  * @param random - Injectable random function for deterministic jitter testing
  */
-declare function calculateBackoff(attempt: number, config: RetryConfig, retryAfterMs?: number, random?: () => number): number;
+declare function computeBackoff(attempt: number, config: RetryConfig, retryAfterMs?: number, random?: () => number): number;
 /**
  * Executes \`fn\` with retry logic. On failure, retries up to \`config.maxRetries\` times
  * with exponential backoff.
@@ -119,6 +119,6 @@ declare class KoiRuntimeError extends Error {
     toKoiError(): KoiError;
 }
 
-export { DEFAULT_RETRY_CONFIG, KoiRuntimeError, type RetryConfig, calculateBackoff, extractCode, extractMessage, isContextOverflowError, isKoiError, isRetryable, mapFsError, mapParseError, swallowError, toKoiError, withRetry };
+export { DEFAULT_RETRY_CONFIG, KoiRuntimeError, type RetryConfig, computeBackoff, extractCode, extractMessage, isContextOverflowError, isKoiError, isRetryable, mapFsError, mapParseError, swallowError, toKoiError, withRetry };
 "
 `;

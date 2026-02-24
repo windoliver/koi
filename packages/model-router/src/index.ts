@@ -98,7 +98,7 @@ export { createModelRouterMiddleware } from "./middleware.js";
 
 // Provider
 export type { ProviderAdapter, ProviderAdapterConfig, StreamChunk } from "./provider-adapter.js";
-export { calculateBackoff, type RetryConfig, withRetry } from "./retry.js";
+export { computeBackoff, type RetryConfig, withRetry } from "./retry.js";
 // Router
 export {
   createModelRouter,

@@ -1,0 +1,572 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/engine-claude API surface . has stable type surface 1`] = `
+"import { EngineEvent, EngineStopReason, ApprovalHandler, EngineAdapter, JsonObject, EngineMetrics, Tool, Agent } from '@koi/core';
+
+/**
+ * SDKMessage → EngineEvent mapping.
+ *
+ * Converts Claude Agent SDK streaming messages into Koi EngineEvents.
+ * Separated into text, tool, and result mappers for testability.
+ */
+
+/** Partial content block element (for array-shaped tool_result content). */
+interface SdkContentBlockElement {
+    readonly type: string;
+    readonly text?: string;
+}
+/** Partial assistant message content block. */
+interface SdkContentBlock {
+    readonly type: string;
+    readonly id?: string;
+    readonly name?: string;
+    readonly text?: string;
+    readonly input?: Readonly<Record<string, unknown>>;
+    readonly partial_json?: string;
+    /** tool_result blocks: the ID of the tool_use this result corresponds to. */
+    readonly tool_use_id?: string;
+    /** tool_result blocks: the result content (string or structured array). */
+    readonly content?: string | readonly SdkContentBlockElement[];
+}
+/** Partial assistant message from SDK streaming. */
+interface SdkAssistantMessage {
+    readonly type: "assistant";
+    readonly message?: {
+        readonly content?: readonly SdkContentBlock[];
+    };
+    readonly parent_tool_use_id?: string;
+}
+/** Streaming event from SDK (content_block_start/delta/stop). */
+interface SdkStreamEvent {
+    readonly type: string;
+    readonly index?: number;
+    readonly content_block?: SdkContentBlock;
+    readonly delta?: {
+        readonly type?: string;
+        readonly text?: string;
+        readonly partial_json?: string;
+    };
+}
+/** SDK result message. */
+interface SdkResultMessage {
+    readonly type: "result";
+    readonly subtype: string;
+    readonly session_id?: string;
+    readonly result?: string;
+    readonly errors?: readonly string[];
+    readonly permission_denials?: readonly {
+        readonly tool_name: string;
+        readonly tool_use_id: string;
+    }[];
+    readonly num_turns?: number;
+    readonly duration_ms?: number;
+    readonly duration_api_ms?: number;
+    readonly total_cost_usd?: number;
+    readonly usage?: {
+        readonly input_tokens?: number;
+        readonly output_tokens?: number;
+        readonly cache_read_input_tokens?: number;
+        readonly cache_creation_input_tokens?: number;
+    };
+    readonly modelUsage?: Readonly<Record<string, unknown>>;
+}
+/** SDK user message (contains tool results). */
+interface SdkUserMessage {
+    readonly type: "user";
+    readonly message?: {
+        readonly content?: readonly SdkContentBlock[];
+    };
+    readonly parent_tool_use_id?: string;
+}
+/** SDK system message. */
+interface SdkSystemMessage {
+    readonly type: "system";
+    readonly subtype?: string;
+    readonly session_id?: string;
+    readonly compact_metadata?: {
+        readonly trigger: string;
+        readonly pre_tokens: number;
+    };
+}
+/** SDK partial assistant message with streaming event (includePartialMessages: true). */
+interface SdkStreamEventMessage {
+    readonly type: "stream_event";
+    readonly event?: SdkStreamEvent;
+    readonly session_id?: string;
+}
+/** Union of SDK message types we handle. */
+type SdkMessage = SdkAssistantMessage | SdkUserMessage | SdkResultMessage | SdkSystemMessage | SdkStreamEventMessage | {
+    readonly type: string;
+};
+/**
+ * Map SDK result subtype to EngineStopReason with exhaustive switch.
+ */
+declare function mapStopReason(subtype: string): EngineStopReason;
+/**
+ * Extract EngineEvents from a complete assistant message (non-streaming).
+ *
+ * For each text block → text_delta event.
+ * For each tool_use block → tool_call_start (with args) event.
+ */
+declare function mapAssistantMessage(msg: SdkAssistantMessage): readonly EngineEvent[];
+/**
+ * Map SDK result message to a \`done\` EngineEvent.
+ */
+declare function mapResultMessage(msg: SdkResultMessage): EngineEvent;
+/**
+ * Stateful event mapper for SDK streaming messages.
+ *
+ * Tracks tool call context across content_block_start/delta/stop events
+ * and emits corresponding EngineEvents.
+ */
+interface StreamEventMapper {
+    /** Map a single SDK stream event to zero or more EngineEvents. */
+    readonly map: (event: SdkStreamEvent) => readonly EngineEvent[];
+}
+/**
+ * Create a streaming event mapper that converts SDK content block events
+ * to EngineEvents.
+ */
+declare function createStreamEventMapper(): StreamEventMapper;
+/**
+ * Map a full SDK message to EngineEvents.
+ *
+ * Returns the events plus optional session_id if this was an init message.
+ */
+interface MapResult {
+    readonly events: readonly EngineEvent[];
+    readonly sessionId?: string;
+    readonly isDone: boolean;
+}
+/**
+ * Map a single SDK message to EngineEvents and metadata.
+ */
+declare function mapSdkMessage(msg: SdkMessage): MapResult;
+/**
+ * Stateful message mapper that routes \`stream_event\` messages to
+ * the internal \`StreamEventMapper\` and suppresses duplicate \`assistant\`
+ * messages when streaming is active.
+ */
+interface MessageMapper {
+    /** Map a single SDK message to EngineEvents and metadata. */
+    readonly map: (msg: SdkMessage) => MapResult;
+}
+/**
+ * Create a stateful message mapper.
+ *
+ * Holds a \`StreamEventMapper\` internally and tracks whether streaming
+ * is active. When streaming is active, complete \`assistant\` messages
+ * are suppressed to avoid duplicate events (the stream events already
+ * emitted the granular version).
+ */
+declare function createMessageMapper(): MessageMapper;
+
+/**
+ * Configuration and extended types for the Claude Agent SDK engine adapter.
+ */
+
+/**
+ * Custom event type constants for human-in-the-loop signaling.
+ *
+ * Emitted as \`{ kind: "custom", type: HITL_EVENTS.*, data: HitlRequestData }\`.
+ * Observable for telemetry/UI — never required for correctness.
+ */
+declare const HITL_EVENTS: {
+    /** Emitted when a tool approval request is sent to the handler. */
+    readonly REQUEST: "hitl_request";
+    /** Emitted when an approval response is received from the handler. */
+    readonly RESPONSE_RECEIVED: "hitl_response_received";
+    /** Emitted when the approval handler throws (fail-closed: denied). */
+    readonly ERROR: "hitl_error";
+};
+/**
+ * Typed data payload for HITL custom events.
+ */
+interface HitlRequestData {
+    readonly kind: "tool_approval" | "question";
+    readonly toolName?: string;
+    readonly input?: JsonObject;
+    readonly question?: string;
+    readonly metadata?: JsonObject;
+}
+/**
+ * SDK permission result shape (structural — avoids importing SDK types).
+ */
+interface SdkPermissionResult {
+    readonly behavior: "allow" | "deny";
+    readonly updatedInput?: Readonly<Record<string, unknown>>;
+    readonly message?: string;
+}
+/**
+ * SDK canUseTool options — contextual metadata the SDK passes alongside each
+ * permission request. Structurally typed to avoid importing SDK types.
+ */
+interface SdkCanUseToolOptions {
+    readonly signal: AbortSignal;
+    readonly toolUseID: string;
+    readonly agentID?: string;
+    readonly decisionReason?: string;
+    readonly blockedPath?: string;
+}
+/**
+ * SDK canUseTool callback shape (structural — avoids importing SDK types).
+ */
+type SdkCanUseTool = (toolName: string, input: Readonly<Record<string, unknown>>, options: SdkCanUseToolOptions) => Promise<SdkPermissionResult>;
+/**
+ * Configuration for creating a Claude Agent SDK engine adapter.
+ *
+ * Uses Koi-native naming with an opaque \`sdkOverrides\` escape hatch
+ * for advanced SDK-specific tuning.
+ */
+interface ClaudeAdapterConfig {
+    /** Model identifier (e.g., "claude-sonnet-4-5-20250929"). */
+    readonly model?: string;
+    /** Maximum conversation turns before stopping. */
+    readonly maxTurns?: number;
+    /** Maximum budget in USD for the query. */
+    readonly maxBudgetUsd?: number;
+    /** Working directory for the SDK subprocess. */
+    readonly cwd?: string;
+    /** Custom system prompt. */
+    readonly systemPrompt?: string;
+    /** SDK permission mode. Mapped from Koi permissions config. */
+    readonly permissionMode?: "default" | "acceptEdits" | "bypassPermissions";
+    /** Allowed built-in SDK tools (e.g., ["Read", "Edit", "Bash", "Glob", "Grep"]). */
+    readonly allowedTools?: readonly string[];
+    /** Disallowed built-in SDK tools. */
+    readonly disallowedTools?: readonly string[];
+    /**
+     * Opaque SDK-specific overrides. Merged last into SDK Options.
+     * Use for advanced tuning without leaking SDK types into the adapter API.
+     */
+    readonly sdkOverrides?: Readonly<Record<string, unknown>>;
+    /**
+     * Koi approval handler for tool-use gating (HITL).
+     * When provided, the adapter bridges this to the SDK's \`canUseTool\` callback.
+     * Fail-closed: handler errors result in deny.
+     */
+    readonly approvalHandler?: ApprovalHandler;
+    /**
+     * HITL configuration options.
+     */
+    readonly hitl?: {
+        /** Maximum message queue size (default: 100). */
+        readonly maxQueueSize?: number;
+    };
+}
+/**
+ * Internal state tracked across calls for session resumption.
+ */
+interface ClaudeSessionState {
+    readonly sessionId: string | undefined;
+}
+/**
+ * Control methods available on an active Claude SDK query.
+ *
+ * These proxy the real SDK \`Query\` object's control methods.
+ * Only available while a \`stream()\` call is active.
+ */
+interface ClaudeQueryControls {
+    /** Interrupt the current turn (keeps the session alive). */
+    readonly interrupt: () => Promise<void>;
+    /** Change the model for subsequent turns. */
+    readonly setModel: (model?: string) => Promise<void>;
+    /** Change the SDK permission mode. */
+    readonly setPermissionMode: (mode: string) => Promise<void>;
+    /** Stop a specific background task by ID. */
+    readonly stopTask: (taskId: string) => Promise<void>;
+}
+/**
+ * Extended engine adapter that exposes Claude SDK query controls
+ * and human-in-the-loop message injection.
+ *
+ * L0 consumers see plain \`EngineAdapter\` — no vendor leak.
+ * L2 consumers importing from \`@koi/engine-claude\` get the wider type
+ * with \`.controls\` and \`.saveHumanMessage()\` available.
+ */
+interface ClaudeEngineAdapter extends EngineAdapter {
+    /** Available only while a stream() is active. undefined otherwise. */
+    readonly controls: ClaudeQueryControls | undefined;
+    /**
+     * Inject a human message into the active conversation.
+     *
+     * - If streaming: pushes to the active message queue (delivered to SDK).
+     * - If idle: buffers for the next stream() call.
+     * - If disposed: no-op with console.warn.
+     *
+     * Fire-and-forget — returns void.
+     */
+    readonly saveHumanMessage: (text: string) => void;
+}
+
+/**
+ * Koi config → Claude Agent SDK Options mapping.
+ *
+ * Translates ClaudeAdapterConfig fields into the SDK Options shape,
+ * with MCP bridge server integration and sdkOverrides applied last.
+ */
+
+/**
+ * Minimal SDK Options shape — avoids importing SDK types into adapter API.
+ * The real SDK Options type is a superset of this.
+ */
+interface SdkOptions {
+    readonly model?: string;
+    readonly maxTurns?: number;
+    readonly maxBudgetUsd?: number;
+    readonly cwd?: string;
+    readonly systemPrompt?: string;
+    readonly permissionMode?: string;
+    readonly allowedTools?: readonly string[];
+    readonly disallowedTools?: readonly string[];
+    readonly includePartialMessages?: boolean;
+    readonly mcpServers?: Readonly<Record<string, unknown>>;
+    readonly resume?: string;
+    readonly abortController?: AbortController;
+    readonly canUseTool?: SdkCanUseTool;
+    readonly [key: string]: unknown;
+}
+/**
+ * MCP server config for the in-process Koi tool bridge.
+ */
+interface McpBridgeConfig {
+    readonly type: "sdk";
+    readonly name: string;
+    readonly instance: unknown;
+}
+/**
+ * Create SDK Options from Koi adapter config.
+ *
+ * @param config - The Koi adapter configuration
+ * @param mcpBridge - Optional MCP bridge server config for Koi tools
+ * @param resumeSessionId - Optional session ID for resuming a conversation
+ * @param abortController - Optional AbortController for cancellation
+ * @param canUseTool - Optional canUseTool callback for HITL approval
+ * @returns SDK-compatible options object
+ */
+declare function createSdkOptions(config: ClaudeAdapterConfig, mcpBridge: McpBridgeConfig | undefined, resumeSessionId: string | undefined, abortController: AbortController | undefined, canUseTool?: SdkCanUseTool): SdkOptions;
+
+/**
+ * Claude Agent SDK engine adapter — main factory function.
+ *
+ * Creates an EngineAdapter that delegates to the Claude Agent SDK's query()
+ * function, mapping SDK messages to Koi EngineEvents via streaming passthrough.
+ *
+ * Uses V1 Streaming Input mode: the prompt is always an AsyncIterable<SdkInputMessage>,
+ * enabling human-in-the-loop message injection via saveHumanMessage().
+ */
+
+/**
+ * Message shape for streaming input to the Claude SDK (V1 Streaming Input).
+ * This is what we SEND to the SDK as prompt items.
+ */
+interface SdkInputMessage {
+    readonly type: "user";
+    readonly message: {
+        readonly role: "user";
+        readonly content: string;
+    };
+}
+/**
+ * SDK query result — extends AsyncIterable with optional control methods
+ * that proxy the real SDK Query object.
+ *
+ * All control methods are optional so callers returning a bare
+ * AsyncIterable still satisfy this interface.
+ */
+interface SdkQuery extends AsyncIterable<SdkMessage> {
+    readonly interrupt?: () => Promise<void>;
+    readonly setModel?: (model?: string) => Promise<void>;
+    readonly setPermissionMode?: (mode: string) => Promise<void>;
+    readonly stopTask?: (taskId: string) => Promise<void>;
+    readonly close?: () => void;
+}
+/**
+ * SDK query function shape. Accepts prompt (string or streaming input) + options,
+ * returns an SdkQuery (AsyncIterable with optional control methods).
+ */
+type SdkQueryFn = (params: {
+    readonly prompt: string | AsyncIterable<SdkInputMessage>;
+    readonly options?: SdkOptions;
+}) => SdkQuery;
+/**
+ * Optional SDK functions for MCP bridge creation.
+ */
+interface SdkFunctions {
+    readonly query: SdkQueryFn;
+    readonly createSdkMcpServer?: (config: {
+        readonly name: string;
+        readonly version: string;
+        readonly tools: readonly unknown[];
+    }) => unknown;
+    readonly tool?: (name: string, description: string, schema: unknown, handler: (args: Readonly<Record<string, unknown>>) => Promise<unknown>) => unknown;
+}
+/**
+ * Create a Claude Agent SDK engine adapter.
+ *
+ * @param config - Adapter configuration (Koi-native)
+ * @param sdk - SDK function bindings (query, createSdkMcpServer, tool)
+ * @param mcpBridge - Optional pre-built MCP bridge for Koi tools
+ * @returns EngineAdapter implementation with HITL support
+ */
+declare function createClaudeAdapter(config: ClaudeAdapterConfig, sdk: SdkFunctions, mcpBridge?: McpBridgeConfig): ClaudeEngineAdapter;
+
+/**
+ * Approval bridge — maps Koi ApprovalHandler to SDK canUseTool callback.
+ *
+ * Fail-closed: if the handler throws, the tool call is denied.
+ * Emits HITL custom events via an optional callback for UI signaling.
+ */
+
+/**
+ * Event emitter callback shape for HITL bridge signaling.
+ */
+interface HitlEventEmitter {
+    readonly emit: (event: {
+        readonly type: string;
+        readonly data: unknown;
+    }) => void;
+}
+/**
+ * Create a \`canUseTool\` callback that bridges to a Koi ApprovalHandler.
+ *
+ * @param handler - Koi approval handler (async, returns ApprovalDecision)
+ * @param emitter - Optional event emitter for HITL custom events
+ * @returns SDK-compatible canUseTool callback
+ */
+declare function createApprovalBridge(handler: ApprovalHandler, emitter?: HitlEventEmitter): SdkCanUseTool;
+
+/**
+ * Bounded async iterable message queue for streaming input to the Claude SDK.
+ *
+ * Pattern from Anthropic's claude-agent-sdk-demos: single-pending-Promise
+ * blocking with bounded buffer and drop-oldest overflow policy.
+ */
+interface MessageQueueOptions {
+    readonly maxSize?: number;
+}
+interface MessageQueue<T> extends AsyncIterable<T> {
+    /** Push an item into the queue. No-op after close(). */
+    readonly push: (item: T) => void;
+    /** Close the queue — signals iteration to end. */
+    readonly close: () => void;
+    /** Current number of buffered items. */
+    readonly size: number;
+    /** Whether the queue has been closed. */
+    readonly closed: boolean;
+}
+/**
+ * Create a bounded async iterable queue.
+ *
+ * - When a consumer is waiting (via \`for await\`), \`push()\` resolves immediately.
+ * - When no consumer is waiting, items buffer up to \`maxSize\`.
+ * - On overflow: drops oldest message and emits a warning.
+ * - \`close()\` signals the async iterator to stop.
+ * - \`push()\` after \`close()\` is a no-op with a warning.
+ */
+declare function createMessageQueue<T>(options?: MessageQueueOptions): MessageQueue<T>;
+
+/**
+ * SDKResultMessage → EngineMetrics mapping.
+ *
+ * Maps the Claude Agent SDK's result format to Koi's EngineMetrics + rich metadata.
+ */
+
+/**
+ * SDK result shape — only the fields we consume.
+ * Avoids importing SDK types directly into our public surface.
+ */
+interface SdkResultFields {
+    readonly num_turns?: number;
+    readonly duration_ms?: number;
+    readonly duration_api_ms?: number;
+    readonly total_cost_usd?: number;
+    readonly usage?: {
+        readonly input_tokens?: number;
+        readonly output_tokens?: number;
+        readonly cache_read_input_tokens?: number;
+        readonly cache_creation_input_tokens?: number;
+    };
+    readonly modelUsage?: Readonly<Record<string, unknown>>;
+    readonly errors?: readonly string[];
+    readonly permission_denials?: readonly {
+        readonly tool_name: string;
+        readonly tool_use_id: string;
+    }[];
+}
+/**
+ * Map SDK result fields to Koi EngineMetrics.
+ *
+ * \`inputTokens\` is the total tokens processed (cached + uncached), matching
+ * the OpenAI / LangChain / LiteLLM convention. Anthropic's \`input_tokens\`
+ * field only counts uncached tokens — we add cache_read and cache_creation
+ * to get the true total. Cache breakdowns remain in \`mapRichMetadata\`.
+ */
+declare function mapMetrics(result: SdkResultFields): EngineMetrics;
+/**
+ * Map SDK result fields to rich metadata for EngineOutput.metadata.
+ */
+declare function mapRichMetadata(result: SdkResultFields): JsonObject;
+
+/**
+ * Koi tools → MCP server bridge.
+ *
+ * Creates an in-process MCP server that exposes Koi tool components
+ * to the Claude Agent SDK, enabling the SDK to call Koi-registered tools.
+ */
+
+/**
+ * Tool registry for the MCP bridge — maps tool names to Koi Tool components.
+ */
+interface ToolRegistry {
+    readonly tools: ReadonlyMap<string, Tool>;
+    readonly descriptors: readonly ToolBridgeDescriptor[];
+}
+/**
+ * A tool descriptor suitable for MCP tool definition.
+ */
+interface ToolBridgeDescriptor {
+    readonly name: string;
+    readonly description: string;
+    readonly inputSchema: Readonly<Record<string, unknown>>;
+}
+/**
+ * Create a tool registry from an agent's tool components.
+ *
+ * Queries the agent for all tool components and creates a lookup map.
+ */
+declare function createToolRegistry(agent: Agent): ToolRegistry;
+/**
+ * Execute a tool from the registry by name.
+ *
+ * Returns the result as an MCP-compatible text content response.
+ */
+declare function executeBridgedTool(registry: ToolRegistry, toolName: string, args: Readonly<Record<string, unknown>>): Promise<{
+    readonly content: readonly {
+        readonly type: "text";
+        readonly text: string;
+    }[];
+}>;
+/**
+ * Create an in-process MCP server config that bridges Koi tools to the SDK.
+ *
+ * Returns \`undefined\` if the agent has no tool components,
+ * meaning no MCP bridge is needed.
+ *
+ * @param agent - The Koi agent to bridge tools from
+ * @param createMcpServerFn - The SDK's createSdkMcpServer function
+ * @param toolFn - The SDK's tool() helper function
+ * @returns MCP server config or undefined if no tools
+ */
+declare function createToolBridgeMcpServer(agent: Agent, createMcpServerFn: (config: {
+    readonly name: string;
+    readonly version: string;
+    readonly tools: readonly unknown[];
+}) => unknown, toolFn: (name: string, description: string, schema: unknown, handler: (args: Readonly<Record<string, unknown>>) => Promise<unknown>) => unknown): {
+    readonly config: McpBridgeConfig;
+    readonly registry: ToolRegistry;
+} | undefined;
+
+export { type ClaudeAdapterConfig, type ClaudeEngineAdapter, type ClaudeQueryControls, type ClaudeSessionState, HITL_EVENTS, type HitlEventEmitter, type HitlRequestData, type MapResult, type McpBridgeConfig, type MessageMapper, type MessageQueue, type MessageQueueOptions, type SdkAssistantMessage, type SdkCanUseTool, type SdkCanUseToolOptions, type SdkContentBlock, type SdkFunctions, type SdkInputMessage, type SdkMessage, type SdkOptions, type SdkPermissionResult, type SdkQuery, type SdkQueryFn, type SdkResultFields, type SdkResultMessage, type SdkStreamEvent, type SdkStreamEventMessage, type SdkSystemMessage, type StreamEventMapper, type ToolBridgeDescriptor, type ToolRegistry, createApprovalBridge, createClaudeAdapter, createMessageMapper, createMessageQueue, createSdkOptions, createStreamEventMapper, createToolBridgeMcpServer, createToolRegistry, executeBridgedTool, mapAssistantMessage, mapMetrics, mapResultMessage, mapRichMetadata, mapSdkMessage, mapStopReason };
+"
+`;

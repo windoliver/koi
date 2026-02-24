@@ -287,7 +287,7 @@ function makeNodeFrame(overrides: Partial<NodeFrame> = {}): NodeFrame {
     nodeId: "node-1",
     agentId: "agent-1",
     correlationId: "corr-1",
-    type: "agent:message",
+    kind: "agent:message",
     payload: { text: "hello" },
     ...overrides,
   };

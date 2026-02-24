@@ -13,7 +13,7 @@
 import { formatErrorForChannel } from "../packages/channel-base/src/format-error.js";
 import type { EngineEvent, KoiError, ModelRequest } from "../packages/core/src/index.js";
 import { createLoopAdapter } from "../packages/engine-loop/src/loop-adapter.js";
-import { calculateBackoff, isRetryable, withRetry } from "../packages/errors/src/retry.js";
+import { computeBackoff, isRetryable, withRetry } from "../packages/errors/src/retry.js";
 import { createOpenAIAdapter } from "../packages/model-router/src/adapters/openai.js";
 import { createOpenRouterAdapter } from "../packages/model-router/src/adapters/openrouter.js";
 
@@ -293,11 +293,11 @@ async function testWithRetryTransient(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: calculateBackoff produces expected delays
+// Test 6: computeBackoff produces expected delays
 // ---------------------------------------------------------------------------
 
 function testCalculateBackoff(): void {
-  console.log("\n--- Test 6: calculateBackoff ---");
+  console.log("\n--- Test 6: computeBackoff ---");
 
   const config = {
     maxRetries: 3,
@@ -307,9 +307,9 @@ function testCalculateBackoff(): void {
     jitter: false,
   };
 
-  const d0 = calculateBackoff(0, config);
-  const d1 = calculateBackoff(1, config);
-  const d2 = calculateBackoff(2, config);
+  const d0 = computeBackoff(0, config);
+  const d1 = computeBackoff(1, config);
+  const d2 = computeBackoff(2, config);
 
   if (d0 === 1000 && d1 === 2000 && d2 === 4000) {
     ok(`exponential: ${d0}ms → ${d1}ms → ${d2}ms`);
@@ -318,7 +318,7 @@ function testCalculateBackoff(): void {
   }
 
   // retryAfterMs override
-  const override = calculateBackoff(0, config, 5000);
+  const override = computeBackoff(0, config, 5000);
   if (override === 5000) {
     ok(`retryAfterMs override: ${override}ms`);
   } else {
@@ -329,7 +329,7 @@ function testCalculateBackoff(): void {
   const jitterConfig = { ...config, jitter: true };
   let allInRange = true;
   for (let i = 0; i < 50; i++) {
-    const d = calculateBackoff(0, jitterConfig);
+    const d = computeBackoff(0, jitterConfig);
     if (d < 0 || d > 1000) {
       allInRange = false;
       break;

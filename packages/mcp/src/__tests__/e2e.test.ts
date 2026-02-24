@@ -16,10 +16,10 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { McpClientManager, McpToolInfo } from "../client-manager.js";
-import { createMcpComponentProviderAsync } from "../component-provider.js";
+import { createMcpComponentProvider } from "../component-provider.js";
 import type { ResolvedMcpServerConfig } from "../config.js";
 import { createMcpResolver } from "../resolver.js";
-import { mcpToolToKoiTool } from "../tool-adapter.js";
+import { mapMcpToolToKoi } from "../tool-adapter.js";
 
 // ---------------------------------------------------------------------------
 // Test server setup
@@ -256,7 +256,7 @@ describe("E2E: real MCP protocol via InMemoryTransport", () => {
 });
 
 describe("E2E: Koi adapter layers with real MCP server", () => {
-  test("mcpToolToKoiTool wraps real MCP tool and executes it", async () => {
+  test("mapMcpToolToKoi wraps real MCP tool and executes it", async () => {
     activePair = await createTestServerPair();
     const manager = wrapClientAsManager(activePair.client, "e2e-server");
 
@@ -268,7 +268,7 @@ describe("E2E: Koi adapter layers with real MCP server", () => {
     expect(echoInfo).toBeDefined();
     if (echoInfo === undefined) return;
 
-    const tool = mcpToolToKoiTool(echoInfo, manager, "e2e-server");
+    const tool = mapMcpToolToKoi(echoInfo, manager, "e2e-server");
     expect(tool.descriptor.name).toBe("mcp/e2e-server/echo");
     expect(tool.trustTier).toBe("promoted");
 
@@ -276,7 +276,7 @@ describe("E2E: Koi adapter layers with real MCP server", () => {
     expect(result).toEqual([{ type: "text", text: "E2E test" }]);
   });
 
-  test("mcpToolToKoiTool returns error for failing tool", async () => {
+  test("mapMcpToolToKoi returns error for failing tool", async () => {
     activePair = await createTestServerPair();
     const manager = wrapClientAsManager(activePair.client, "e2e-server");
 
@@ -286,7 +286,7 @@ describe("E2E: Koi adapter layers with real MCP server", () => {
     const failInfo = toolsResult.value.find((t) => t.name === "fail");
     if (failInfo === undefined) return;
 
-    const tool = mcpToolToKoiTool(failInfo, manager, "e2e-server");
+    const tool = mapMcpToolToKoi(failInfo, manager, "e2e-server");
     const result = (await tool.execute({})) as { ok: boolean };
     expect(result.ok).toBe(false);
   });
@@ -313,7 +313,7 @@ describe("E2E: Koi adapter layers with real MCP server", () => {
     expect(execResult).toEqual([{ type: "text", text: "42" }]);
   });
 
-  test("createMcpComponentProviderAsync attaches real tools via DI", async () => {
+  test("createMcpComponentProvider attaches real tools via DI", async () => {
     activePair = await createTestServerPair();
     const manager = wrapClientAsManager(activePair.client, "e2e-test");
 
@@ -324,7 +324,7 @@ describe("E2E: Koi adapter layers with real MCP server", () => {
       _attempts: number,
     ): McpClientManager => manager;
 
-    const result = await createMcpComponentProviderAsync(
+    const result = await createMcpComponentProvider(
       {
         servers: [
           {

@@ -1,5 +1,5 @@
 /**
- * Mock-based tests for createMcpComponentProviderAsync.
+ * Mock-based tests for createMcpComponentProvider.
  *
  * Uses the optional createManager parameter (dependency injection) to test
  * both "tools" and "discover" mode success paths without real MCP servers.
@@ -9,7 +9,7 @@ import { describe, expect, test } from "bun:test";
 import type { Agent, Tool } from "@koi/core";
 import { agentId, toolToken } from "@koi/core";
 import type { McpClientManager } from "./client-manager.js";
-import { createMcpComponentProviderAsync } from "./component-provider.js";
+import { createMcpComponentProvider } from "./component-provider.js";
 import type { McpProviderConfig, ResolvedMcpServerConfig } from "./config.js";
 
 // ---------------------------------------------------------------------------
@@ -184,7 +184,7 @@ function createMockFactory(
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("createMcpComponentProviderAsync (with mock factory)", () => {
+describe("createMcpComponentProvider (with mock factory)", () => {
   // ---- tools mode ----
 
   test("tools mode: creates individual tool components on success", async () => {
@@ -217,7 +217,7 @@ describe("createMcpComponentProviderAsync (with mock factory)", () => {
       ],
     };
 
-    const result = await createMcpComponentProviderAsync(config, createMockFactory(registry));
+    const result = await createMcpComponentProvider(config, createMockFactory(registry));
     expect(result.failures).toHaveLength(0);
     expect(result.clients).toHaveLength(1);
 
@@ -250,7 +250,7 @@ describe("createMcpComponentProviderAsync (with mock factory)", () => {
       servers: [{ name: "fs", transport: "stdio", command: "echo", mode: "tools" }],
     };
 
-    const result = await createMcpComponentProviderAsync(config, createMockFactory(registry));
+    const result = await createMcpComponentProvider(config, createMockFactory(registry));
     const agent = createMockAgent();
     const components = await result.provider.attach(agent);
 
@@ -293,7 +293,7 @@ describe("createMcpComponentProviderAsync (with mock factory)", () => {
       ],
     };
 
-    const result = await createMcpComponentProviderAsync(config, createMockFactory(registry));
+    const result = await createMcpComponentProvider(config, createMockFactory(registry));
     expect(result.failures).toHaveLength(0);
     expect(result.clients).toHaveLength(1);
 
@@ -315,7 +315,7 @@ describe("createMcpComponentProviderAsync (with mock factory)", () => {
       servers: [{ name: "bad-server", transport: "stdio", command: "echo" }],
     };
 
-    const result = await createMcpComponentProviderAsync(config, createMockFactory(registry));
+    const result = await createMcpComponentProvider(config, createMockFactory(registry));
     expect(result.failures).toHaveLength(1);
     expect(result.failures[0]?.serverName).toBe("bad-server");
     expect(result.clients).toHaveLength(0);
@@ -337,7 +337,7 @@ describe("createMcpComponentProviderAsync (with mock factory)", () => {
       ],
     };
 
-    const result = await createMcpComponentProviderAsync(config, createMockFactory(registry));
+    const result = await createMcpComponentProvider(config, createMockFactory(registry));
     expect(result.failures).toHaveLength(1);
     expect(result.failures[0]?.serverName).toBe("broken-tools");
     expect(result.clients).toHaveLength(0);
@@ -359,7 +359,7 @@ describe("createMcpComponentProviderAsync (with mock factory)", () => {
       ],
     };
 
-    const result = await createMcpComponentProviderAsync(config, createMockFactory(registry));
+    const result = await createMcpComponentProvider(config, createMockFactory(registry));
     expect(result.failures).toHaveLength(1);
     expect(result.failures[0]?.serverName).toBe("broken-discover");
   });
@@ -396,7 +396,7 @@ describe("createMcpComponentProviderAsync (with mock factory)", () => {
       ],
     };
 
-    const result = await createMcpComponentProviderAsync(config, createMockFactory(registry));
+    const result = await createMcpComponentProvider(config, createMockFactory(registry));
     expect(result.clients).toHaveLength(1);
     expect(result.failures).toHaveLength(1);
     expect(result.failures[0]?.serverName).toBe("broken");
@@ -410,7 +410,7 @@ describe("createMcpComponentProviderAsync (with mock factory)", () => {
   test("returns empty results when no servers configured", async () => {
     const config: McpProviderConfig = { servers: [] };
 
-    const result = await createMcpComponentProviderAsync(config, createMockFactory(new Map()));
+    const result = await createMcpComponentProvider(config, createMockFactory(new Map()));
     expect(result.clients).toHaveLength(0);
     expect(result.failures).toHaveLength(0);
 
@@ -427,7 +427,7 @@ describe("createMcpComponentProviderAsync (with mock factory)", () => {
       servers: [{ name: "crashy", transport: "stdio", command: "echo", mode: "tools" }],
     };
 
-    const result = await createMcpComponentProviderAsync(config, createMockFactory(registry));
+    const result = await createMcpComponentProvider(config, createMockFactory(registry));
     expect(result.failures).toHaveLength(1);
     // Promise.allSettled rejected path uses serverName "unknown"
     expect(result.failures[0]?.serverName).toBe("unknown");
@@ -444,7 +444,7 @@ describe("createMcpComponentProviderAsync (with mock factory)", () => {
       servers: [{ name: "crashy-discover", transport: "stdio", command: "echo", mode: "discover" }],
     };
 
-    const result = await createMcpComponentProviderAsync(config, createMockFactory(registry));
+    const result = await createMcpComponentProvider(config, createMockFactory(registry));
     expect(result.failures).toHaveLength(1);
     expect(result.clients).toHaveLength(0);
     expect(manager.isConnected()).toBe(false);
@@ -464,7 +464,7 @@ describe("createMcpComponentProviderAsync (with mock factory)", () => {
       servers: [{ name: "stable", transport: "stdio", command: "echo", mode: "tools" }],
     };
 
-    const result = await createMcpComponentProviderAsync(config, createMockFactory(registry));
+    const result = await createMcpComponentProvider(config, createMockFactory(registry));
     const agent = createMockAgent();
     const first = await result.provider.attach(agent);
     const second = await result.provider.attach(agent);
@@ -510,7 +510,7 @@ describe("createMcpComponentProviderAsync (with mock factory)", () => {
       ],
     };
 
-    const result = await createMcpComponentProviderAsync(config, createMockFactory(registry));
+    const result = await createMcpComponentProvider(config, createMockFactory(registry));
     expect(result.clients).toHaveLength(2);
     expect(result.failures).toHaveLength(0);
 

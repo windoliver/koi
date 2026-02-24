@@ -1,0 +1,428 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/model-router API surface . has stable type surface 1`] = `
+"import { JsonObject, ModelRequest, ModelResponse, KoiError, Result, KoiMiddleware } from '@koi/core';
+import { RetryConfig } from '@koi/errors';
+export { RetryConfig, computeBackoff, withRetry } from '@koi/errors';
+
+/**
+ * Provider adapter interface for multi-provider LLM routing.
+ *
+ * Each provider (OpenAI, Anthropic, etc.) implements this interface
+ * to normalize request/response formats.
+ */
+
+interface ProviderAdapterConfig {
+    readonly apiKey: string;
+    readonly baseUrl?: string | undefined;
+    readonly timeoutMs?: number | undefined;
+    readonly headers?: Readonly<Record<string, string>> | undefined;
+}
+type StreamChunk = {
+    readonly kind: "text_delta";
+    readonly text: string;
+} | {
+    readonly kind: "tool_call";
+    readonly toolName: string;
+    readonly callId: string;
+    readonly args: JsonObject;
+} | {
+    readonly kind: "usage";
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+} | {
+    readonly kind: "finish";
+    readonly reason: string;
+} | {
+    readonly kind: "error";
+    readonly message: string;
+    readonly statusCode?: number;
+};
+interface ProviderAdapter {
+    readonly id: string;
+    readonly complete: (request: ModelRequest) => Promise<ModelResponse>;
+    readonly stream: (request: ModelRequest) => AsyncGenerator<StreamChunk>;
+    readonly checkHealth?: () => Promise<boolean>;
+}
+
+/**
+ * Anthropic provider adapter.
+ *
+ * Normalizes Anthropic messages API to the ProviderAdapter interface.
+ * Uses raw fetch — no SDK dependency.
+ */
+
+/**
+ * Creates an Anthropic provider adapter.
+ */
+declare function createAnthropicAdapter(config: ProviderAdapterConfig): ProviderAdapter;
+
+/**
+ * OpenAI provider adapter.
+ *
+ * Normalizes OpenAI chat completion API to the ProviderAdapter interface.
+ * Uses raw fetch — no SDK dependency.
+ */
+
+/**
+ * Creates an OpenAI provider adapter.
+ */
+declare function createOpenAIAdapter(config: ProviderAdapterConfig): ProviderAdapter;
+
+/**
+ * OpenRouter provider adapter.
+ *
+ * OpenRouter exposes an OpenAI-compatible API, so we reuse the OpenAI
+ * request/response transforms. Only the auth headers and base URL differ.
+ */
+
+interface OpenRouterAdapterConfig extends ProviderAdapterConfig {
+    /** Sent as \`HTTP-Referer\` — OpenRouter uses this for app ranking/analytics. */
+    readonly referer?: string | undefined;
+    /** Sent as \`X-Title\` — human-readable app name shown on openrouter.ai. */
+    readonly appName?: string | undefined;
+}
+/**
+ * Creates an OpenRouter provider adapter.
+ *
+ * OpenRouter is OpenAI-compatible, so this adapter delegates request/response
+ * transformation to the shared OpenAI helpers and adds OpenRouter-specific
+ * headers (\`HTTP-Referer\`, \`X-Title\`).
+ */
+declare function createOpenRouterAdapter(config: OpenRouterAdapterConfig): ProviderAdapter;
+
+/**
+ * Types for the cascade routing strategy.
+ *
+ * Cascade tries the cheapest model first, evaluates response quality
+ * via a pluggable confidence evaluator, and escalates to progressively
+ * more expensive models only when confidence is insufficient.
+ */
+
+/**
+ * Result of evaluating a model response for confidence.
+ * Confidence is a number between 0.0 (no confidence) and 1.0 (full confidence).
+ */
+interface CascadeEvaluationResult {
+    readonly confidence: number;
+    readonly reason?: string;
+    readonly metadata?: JsonObject;
+}
+/**
+ * Evaluates a model response and returns a confidence score.
+ * May be sync (keyword matching) or async (LLM-based evaluation).
+ */
+type CascadeEvaluator = (request: ModelRequest, response: ModelResponse) => CascadeEvaluationResult | Promise<CascadeEvaluationResult>;
+interface CascadeTierConfig {
+    readonly targetId: string;
+    readonly costPerInputToken?: number;
+    readonly costPerOutputToken?: number;
+    readonly timeoutMs?: number;
+}
+interface CascadeConfig {
+    readonly tiers: readonly CascadeTierConfig[];
+    readonly confidenceThreshold: number;
+    readonly maxEscalations?: number;
+    readonly budgetLimitTokens?: number;
+    readonly evaluatorTimeoutMs?: number;
+}
+interface ResolvedCascadeConfig {
+    readonly tiers: readonly CascadeTierConfig[];
+    readonly confidenceThreshold: number;
+    readonly maxEscalations: number;
+    readonly budgetLimitTokens: number;
+    readonly evaluatorTimeoutMs: number;
+}
+interface CascadeAttempt {
+    readonly tierId: string;
+    readonly success: boolean;
+    readonly confidence?: number;
+    readonly escalated: boolean;
+    readonly error?: string;
+    readonly durationMs: number;
+    readonly inputTokens?: number;
+    readonly outputTokens?: number;
+}
+interface CascadeResult {
+    readonly response: ModelResponse;
+    readonly tierId: string;
+    readonly tierIndex: number;
+    readonly confidence: number;
+    readonly attempts: readonly CascadeAttempt[];
+    readonly totalEscalations: number;
+}
+interface TierCostMetrics {
+    readonly tierId: string;
+    readonly requests: number;
+    readonly escalations: number;
+    readonly totalInputTokens: number;
+    readonly totalOutputTokens: number;
+    readonly estimatedCost: number;
+}
+interface CascadeCostMetrics {
+    readonly tiers: readonly TierCostMetrics[];
+    readonly totalRequests: number;
+    readonly totalEscalations: number;
+    readonly totalEstimatedCost: number;
+}
+type ComplexityTier = "LIGHT" | "MEDIUM" | "HEAVY";
+interface ClassificationResult {
+    readonly score: number;
+    /** Sigmoid-mapped confidence in the tier assignment (0.0–1.0). Low values indicate the score is near a tier boundary. */
+    readonly confidence: number;
+    readonly tier: ComplexityTier;
+    readonly recommendedTierIndex: number;
+    readonly reason: string;
+    readonly dimensions?: JsonObject;
+}
+/**
+ * Synchronous pre-request classifier that scores request complexity.
+ * Must complete in <1ms — pure heuristics, zero LLM calls.
+ * Receives \`tierCount\` so it can compute \`recommendedTierIndex\` without knowing config internals.
+ */
+type CascadeClassifier = (request: ModelRequest, tierCount: number) => ClassificationResult;
+
+/**
+ * Cost tracking for cascade routing.
+ *
+ * Tracks per-tier request counts, escalations, token usage,
+ * and estimated costs.
+ */
+
+interface CascadeMetricsTracker {
+    readonly record: (tierId: string, response: ModelResponse, escalated: boolean) => void;
+    readonly getMetrics: () => CascadeCostMetrics;
+}
+declare function createCascadeMetricsTracker(tiers: readonly CascadeTierConfig[]): CascadeMetricsTracker;
+
+/**
+ * Pre-request complexity classifier for cascade routing.
+ *
+ * Scores request complexity using 14 heuristic dimensions in <1ms
+ * (pure text analysis, zero LLM calls). The cascade router uses
+ * the result to skip cheap tiers for obviously complex requests.
+ */
+
+type DimensionKey = "reasoning" | "code" | "multiStep" | "technical" | "outputFormat" | "domain" | "tokenCount" | "questionComplexity" | "imperativeVerbs" | "constraints" | "creative" | "simpleIndicators" | "relay" | "agentic";
+interface ComplexityClassifierOptions {
+    readonly tierThresholds?: {
+        readonly medium?: number;
+        readonly heavy?: number;
+    };
+    readonly weights?: Partial<Readonly<Record<DimensionKey, number>>>;
+    readonly keywords?: Partial<Readonly<Record<DimensionKey, readonly string[]>>>;
+    readonly charsPerToken?: number;
+    readonly heavyTokenThreshold?: number;
+    readonly heavyReasoningKeywordCount?: number;
+    /** Steepness of the sigmoid curve for confidence mapping. Higher = sharper transition. Default: 15. */
+    readonly sigmoidSteepness?: number;
+    /** Confidence below this threshold triggers MEDIUM fallback. Default: 0.70. Set to 0 to disable. */
+    readonly confidenceThreshold?: number;
+}
+/**
+ * Creates a synchronous complexity classifier for pre-request cascade routing.
+ * All scoring is heuristic-based and completes in <1ms.
+ */
+declare function createComplexityClassifier(options?: ComplexityClassifierOptions): CascadeClassifier;
+
+/**
+ * Confidence evaluator factory functions for cascade routing.
+ *
+ * Three built-in evaluators + a compositor:
+ * - Length heuristic: scores based on response content length
+ * - Keyword: penalizes uncertainty/refusal markers
+ * - Verbalized: asks an LLM to self-rate confidence
+ * - Compose: aggregates multiple evaluators
+ */
+
+interface LengthHeuristicOptions {
+    readonly minLength?: number;
+    readonly targetLength?: number;
+}
+declare function createLengthHeuristicEvaluator(options?: LengthHeuristicOptions): CascadeEvaluator;
+interface KeywordEvaluatorOptions {
+    readonly uncertaintyMarkers?: readonly string[];
+    readonly penaltyPerMarker?: number;
+}
+declare function createKeywordEvaluator(options?: KeywordEvaluatorOptions): CascadeEvaluator;
+interface VerbalizedEvaluatorOptions {
+    readonly timeoutMs?: number;
+    readonly model?: string;
+}
+declare function createVerbalizedEvaluator(adapter: ProviderAdapter, options?: VerbalizedEvaluatorOptions): CascadeEvaluator;
+type CompositionStrategy = "min" | "average" | "weighted";
+interface WeightedEvaluator {
+    readonly evaluator: CascadeEvaluator;
+    readonly weight: number;
+}
+declare function composeEvaluators(evaluators: readonly (CascadeEvaluator | WeightedEvaluator)[], strategy?: CompositionStrategy): CascadeEvaluator;
+
+/**
+ * Circuit breaker state machine with fixed-size ring buffer.
+ *
+ * Tracks failure rates per provider and prevents traffic to unhealthy providers.
+ * Uses encapsulated mutable state with immutable public snapshots.
+ *
+ * States: CLOSED (normal) → OPEN (failing) → HALF_OPEN (probing) → CLOSED
+ *
+ * Note: assumes single-threaded runtime (Bun/Node). Synchronous state operations
+ * are atomic between await points — no mutex needed.
+ */
+type CircuitState = "CLOSED" | "OPEN" | "HALF_OPEN";
+interface CircuitBreakerConfig {
+    readonly failureThreshold: number;
+    readonly cooldownMs: number;
+    readonly failureWindowMs: number;
+    readonly failureStatusCodes: readonly number[];
+}
+interface CircuitBreakerSnapshot {
+    readonly state: CircuitState;
+    readonly failureCount: number;
+    readonly lastFailureAt: number | undefined;
+    readonly lastTransitionAt: number;
+}
+interface CircuitBreaker {
+    readonly isAllowed: () => boolean;
+    readonly recordSuccess: () => CircuitBreakerSnapshot;
+    readonly recordFailure: (statusCode?: number) => CircuitBreakerSnapshot;
+    readonly getSnapshot: () => CircuitBreakerSnapshot;
+    readonly reset: () => void;
+}
+/**
+ * Creates a circuit breaker with encapsulated mutable state.
+ *
+ * @param config - Circuit breaker configuration
+ * @param clock - Injectable clock for deterministic testing
+ */
+declare function createCircuitBreaker(config?: CircuitBreakerConfig, clock?: () => number): CircuitBreaker;
+
+/**
+ * Model router configuration types and Zod validation.
+ */
+
+type RoutingStrategy = "fallback" | "round-robin" | "weighted" | "cascade";
+interface ModelTargetConfig {
+    readonly provider: string;
+    readonly model: string;
+    readonly weight?: number;
+    readonly enabled?: boolean;
+    readonly adapterConfig: ProviderAdapterConfig;
+}
+interface ModelRouterConfig {
+    readonly targets: readonly ModelTargetConfig[];
+    readonly strategy: RoutingStrategy;
+    readonly retry?: Partial<RetryConfig>;
+    readonly circuitBreaker?: Partial<CircuitBreakerConfig>;
+    readonly cascade?: CascadeConfig;
+}
+interface ResolvedRouterConfig {
+    readonly targets: readonly ResolvedTargetConfig[];
+    readonly strategy: RoutingStrategy;
+    readonly retry: RetryConfig;
+    readonly circuitBreaker: CircuitBreakerConfig;
+    readonly cascade?: ResolvedCascadeConfig;
+}
+interface ResolvedTargetConfig {
+    readonly provider: string;
+    readonly model: string;
+    readonly weight: number;
+    readonly enabled: boolean;
+    readonly adapterConfig: ProviderAdapterConfig;
+}
+
+/**
+ * Fallback chain orchestration.
+ *
+ * Tries targets in order, skipping those with open circuit breakers.
+ * If all targets fail, returns an aggregated error.
+ * If all circuit breakers are open, bypasses them (graceful degradation).
+ */
+
+interface FallbackTarget {
+    readonly id: string;
+    readonly enabled: boolean;
+}
+interface FallbackAttempt {
+    readonly targetId: string;
+    readonly success: boolean;
+    readonly error?: KoiError;
+    readonly durationMs: number;
+}
+interface FallbackResult<T> {
+    readonly value: T;
+    readonly targetIndex: number;
+    readonly attempts: readonly FallbackAttempt[];
+}
+/**
+ * Executes \`fn\` against targets in order with circuit breaker awareness.
+ *
+ * Strategy:
+ * 1. Filter enabled targets
+ * 2. Skip targets with open circuit breakers
+ * 3. If all targets are circuit-broken, bypass breakers (prefer degraded over none)
+ * 4. Execute fn against each remaining target until one succeeds
+ * 5. Record success/failure in circuit breakers
+ *
+ * @param targets - Ordered list of fallback targets
+ * @param fn - Function to execute against a target
+ * @param circuitBreakers - Map of target ID → CircuitBreaker
+ * @param clock - Injectable clock for timing
+ */
+declare function withFallback<T>(targets: readonly FallbackTarget[], fn: (target: FallbackTarget) => Promise<T>, circuitBreakers: ReadonlyMap<string, CircuitBreaker>, clock?: () => number): Promise<Result<FallbackResult<T>, KoiError>>;
+
+/**
+ * Main ModelRouter service — routes model calls across providers
+ * with retry, fallback, cascade, and circuit breaker resilience.
+ */
+
+interface RouterMetrics {
+    readonly totalRequests: number;
+    readonly totalFailures: number;
+    readonly requestsByTarget: Readonly<Record<string, number>>;
+    readonly failuresByTarget: Readonly<Record<string, number>>;
+    readonly cascade?: CascadeCostMetrics;
+}
+interface ModelRouter {
+    readonly route: (request: ModelRequest) => Promise<Result<ModelResponse, KoiError>>;
+    readonly routeStream: (request: ModelRequest) => AsyncGenerator<StreamChunk>;
+    readonly getHealth: () => ReadonlyMap<string, CircuitBreakerSnapshot>;
+    readonly getMetrics: () => RouterMetrics;
+    readonly dispose: () => void;
+}
+interface ModelRouterOptions {
+    readonly evaluator?: CascadeEvaluator;
+    readonly classifier?: CascadeClassifier;
+    readonly clock?: () => number;
+}
+/**
+ * Creates a model router with the given config and provider adapters.
+ *
+ * Eagerly validates config (fail fast). Lazily connects to providers (on first request).
+ *
+ * @param config - Resolved router configuration
+ * @param adapters - Map of provider ID → ProviderAdapter
+ * @param clockOrOptions - Injectable clock (deprecated) or options object
+ */
+declare function createModelRouter(config: ResolvedRouterConfig, adapters: ReadonlyMap<string, ProviderAdapter>, clockOrOptions?: (() => number) | ModelRouterOptions): ModelRouter;
+
+/**
+ * Thin KoiMiddleware adapter for ModelRouter.
+ *
+ * Wraps the ModelRouter service as middleware so it can be plugged
+ * into the middleware chain via wrapModelCall.
+ */
+
+/**
+ * Creates a KoiMiddleware that delegates model calls to the ModelRouter.
+ *
+ * The middleware intercepts wrapModelCall and routes the request through
+ * the router's retry/fallback/circuit-breaker pipeline. If routing fails,
+ * the error is thrown (unexpected failure — the router exhausted all options).
+ *
+ * @param router - The ModelRouter service instance
+ */
+declare function createModelRouterMiddleware(router: ModelRouter): KoiMiddleware;
+
+export { type CascadeAttempt, type CascadeClassifier, type CascadeConfig, type CascadeCostMetrics, type CascadeEvaluationResult, type CascadeEvaluator, type CascadeResult, type CascadeTierConfig, type CircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerSnapshot, type CircuitState, type ClassificationResult, type ComplexityClassifierOptions, type ComplexityTier, type CompositionStrategy, type DimensionKey, type FallbackAttempt, type FallbackResult, type FallbackTarget, type KeywordEvaluatorOptions, type LengthHeuristicOptions, type ModelRouter, type ModelRouterConfig, type ModelRouterOptions, type ModelTargetConfig, type OpenRouterAdapterConfig, type ProviderAdapter, type ProviderAdapterConfig, type ResolvedCascadeConfig, type ResolvedRouterConfig, type RouterMetrics, type RoutingStrategy, type StreamChunk, type TierCostMetrics, type VerbalizedEvaluatorOptions, type WeightedEvaluator, composeEvaluators, createAnthropicAdapter, createCascadeMetricsTracker, createCircuitBreaker, createComplexityClassifier, createKeywordEvaluator, createLengthHeuristicEvaluator, createModelRouter, createModelRouterMiddleware, createOpenAIAdapter, createOpenRouterAdapter, createVerbalizedEvaluator, withFallback };
+"
+`;

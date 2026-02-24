@@ -1,0 +1,40 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/tracing API surface . has stable type surface 1`] = `
+"import { Result, KoiError } from '@koi/core/errors';
+import { Tracer } from '@opentelemetry/api';
+import { KoiMiddleware } from '@koi/core/middleware';
+
+/**
+ * Tracing middleware configuration and validation.
+ */
+
+interface TracingConfig {
+    /** OTel service name. Default: "@koi/agent". Ignored when \`tracer\` is provided. */
+    readonly serviceName?: string;
+    /** When true, attach request/response content as span attributes. Default: false. */
+    readonly captureContent?: boolean;
+    /** Optional filter applied to content before attaching. Only used when captureContent is true. */
+    readonly contentFilter?: (data: unknown) => unknown;
+    /** Bring your own OTel Tracer instance. Overrides serviceName. */
+    readonly tracer?: Tracer;
+    /** Extra root-level attributes added to every span. */
+    readonly attributes?: Readonly<Record<string, string>>;
+    /** Called when tracing itself errors. Tracing errors never propagate to the application. */
+    readonly onError?: (error: unknown) => void;
+}
+declare function validateTracingConfig(config: unknown): Result<TracingConfig, KoiError>;
+
+/**
+ * Tracing middleware factory — bridges Koi middleware hooks to OpenTelemetry spans.
+ *
+ * Creates a span hierarchy: Session → Turn → Model Call / Model Stream / Tool Call.
+ * Zero-cost when no TracerProvider is registered (OTel API returns noop spans).
+ * Tracing errors are isolated — they never propagate to the application.
+ */
+
+declare function createTracingMiddleware(config?: TracingConfig): KoiMiddleware;
+
+export { type TracingConfig, createTracingMiddleware, validateTracingConfig };
+"
+`;

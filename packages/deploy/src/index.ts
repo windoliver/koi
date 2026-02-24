@@ -35,9 +35,9 @@ export {
 } from "./platform.js";
 // Templates
 export type { LaunchdTemplateConfig } from "./templates/launchd.js";
-export { renderLaunchdPlist } from "./templates/launchd.js";
+export { generateLaunchdPlist } from "./templates/launchd.js";
 export type { SystemdTemplateConfig } from "./templates/systemd.js";
-export { renderSystemdUnit } from "./templates/systemd.js";
+export { generateSystemdUnit } from "./templates/systemd.js";
 // Shared types
 export type { DeployConfig } from "./types.js";
 export type { UninstallConfig, UninstallResult } from "./uninstall.js";

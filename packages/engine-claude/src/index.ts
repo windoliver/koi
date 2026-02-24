@@ -36,9 +36,13 @@ export { createMessageQueue } from "./message-queue.js";
 export type { SdkResultFields } from "./metrics.js";
 export { mapMetrics, mapRichMetadata } from "./metrics.js";
 export type { McpBridgeConfig, SdkOptions } from "./policy-map.js";
-export { buildSdkOptions } from "./policy-map.js";
+export { createSdkOptions } from "./policy-map.js";
 export type { ToolBridgeDescriptor, ToolRegistry } from "./tool-bridge.js";
-export { buildToolRegistry, createToolBridgeMcpServer, executeBridgedTool } from "./tool-bridge.js";
+export {
+  createToolBridgeMcpServer,
+  createToolRegistry,
+  executeBridgedTool,
+} from "./tool-bridge.js";
 export type {
   ClaudeAdapterConfig,
   ClaudeEngineAdapter,

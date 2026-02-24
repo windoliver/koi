@@ -1,49 +1,49 @@
 import { describe, expect, test } from "bun:test";
-import { validateConfig } from "./config.js";
+import { validateAuditConfig } from "./config.js";
 import { createInMemoryAuditSink } from "./sink.js";
 
-describe("validateConfig", () => {
+describe("validateAuditConfig", () => {
   const sink = createInMemoryAuditSink();
 
   test("accepts valid config with required fields", () => {
-    const result = validateConfig({ sink });
+    const result = validateAuditConfig({ sink });
     expect(result.ok).toBe(true);
   });
 
   test("rejects null config", () => {
-    const result = validateConfig(null);
+    const result = validateAuditConfig(null);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("VALIDATION");
   });
 
   test("rejects undefined config", () => {
-    const result = validateConfig(undefined);
+    const result = validateAuditConfig(undefined);
     expect(result.ok).toBe(false);
   });
 
   test("rejects config without sink", () => {
-    const result = validateConfig({});
+    const result = validateAuditConfig({});
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.message).toContain("sink");
   });
 
   test("rejects invalid maxEntrySize (zero)", () => {
-    const result = validateConfig({ sink, maxEntrySize: 0 });
+    const result = validateAuditConfig({ sink, maxEntrySize: 0 });
     expect(result.ok).toBe(false);
   });
 
   test("rejects negative maxEntrySize", () => {
-    const result = validateConfig({ sink, maxEntrySize: -100 });
+    const result = validateAuditConfig({ sink, maxEntrySize: -100 });
     expect(result.ok).toBe(false);
   });
 
   test("accepts positive maxEntrySize", () => {
-    const result = validateConfig({ sink, maxEntrySize: 5000 });
+    const result = validateAuditConfig({ sink, maxEntrySize: 5000 });
     expect(result.ok).toBe(true);
   });
 
   test("accepts config with redaction rules", () => {
-    const result = validateConfig({
+    const result = validateAuditConfig({
       sink,
       redactionRules: [{ pattern: /secret/g, replacement: "[REDACTED]" }],
     });
@@ -51,7 +51,7 @@ describe("validateConfig", () => {
   });
 
   test("accepts config with all optional fields", () => {
-    const result = validateConfig({
+    const result = validateAuditConfig({
       sink,
       redactionRules: [],
       redactRequestBodies: true,
@@ -62,7 +62,7 @@ describe("validateConfig", () => {
   });
 
   test("all errors are non-retryable", () => {
-    const result = validateConfig(null);
+    const result = validateAuditConfig(null);
     if (!result.ok) expect(result.error.retryable).toBe(false);
   });
 });

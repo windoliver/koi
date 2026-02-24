@@ -8,7 +8,7 @@ import { swallowError } from "@koi/errors";
 import type { GatewayAuthenticator, HandshakeOptions } from "./auth.js";
 import { handleHandshake, startHeartbeatSweep } from "./auth.js";
 import { createBackpressureMonitor } from "./backpressure.js";
-import { buildAckFrame, buildErrorFrame, encodeFrame, parseFrame } from "./protocol.js";
+import { createAckFrame, createErrorFrame, encodeFrame, parseFrame } from "./protocol.js";
 import { resolveRoute } from "./routing.js";
 import type { GatewayScheduler } from "./scheduler.js";
 import { createScheduler } from "./scheduler.js";
@@ -131,7 +131,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
 
     const result = parseFrame(data);
     if (!result.ok) {
-      conn.send(buildErrorFrame(session.seq, result.error.code, result.error.message));
+      conn.send(createErrorFrame(session.seq, result.error.code, result.error.message));
       return;
     }
 
@@ -148,12 +148,12 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
 
     if (acceptance.result === "duplicate") {
       // Send ack for duplicate (idempotent)
-      conn.send(buildAckFrame(session.seq, frame.id));
+      conn.send(createAckFrame(session.seq, frame.id));
       return;
     }
 
     if (acceptance.result === "out_of_window") {
-      conn.send(buildErrorFrame(session.seq, "VALIDATION", "Sequence out of window"));
+      conn.send(createErrorFrame(session.seq, "VALIDATION", "Sequence out of window"));
       return;
     }
 
@@ -175,7 +175,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
           : { ...currentSession, remoteSeq: readyFrame.seq, lastHeartbeat: Date.now() };
       currentSession = routedSession;
       dispatchFrame(currentSession, readyFrame);
-      conn.send(buildAckFrame(currentSession.seq, readyFrame.id));
+      conn.send(createAckFrame(currentSession.seq, readyFrame.id));
     }
     // Persist final session state once (dispatch/ack use in-memory state)
     if (acceptance.ready.length > 0) {

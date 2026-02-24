@@ -1,0 +1,55 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-audit API surface . has stable type surface 1`] = `
+"import { AuditSink, RedactionRule, AuditEntry } from '@koi/core';
+export { AuditEntry, AuditSink, RedactionRule } from '@koi/core';
+import { KoiMiddleware } from '@koi/core/middleware';
+import { Result, KoiError } from '@koi/core/errors';
+
+/**
+ * Audit middleware configuration and validation.
+ */
+
+interface AuditMiddlewareConfig {
+    readonly sink: AuditSink;
+    readonly redactionRules?: readonly RedactionRule[];
+    readonly redactRequestBodies?: boolean;
+    readonly maxEntrySize?: number;
+    readonly onError?: (error: unknown, entry: AuditEntry) => void;
+}
+declare function validateAuditConfig(config: unknown): Result<AuditMiddlewareConfig, KoiError>;
+
+/**
+ * Audit middleware factory — compliance logging and PII redaction.
+ */
+
+declare function createAuditMiddleware(config: AuditMiddlewareConfig): KoiMiddleware;
+
+/**
+ * Audit sink default implementations and utilities.
+ *
+ * Types (AuditEntry, AuditSink, RedactionRule) are defined in @koi/core.
+ */
+
+/**
+ * In-memory audit sink. Stores entries in an array for testing/dev.
+ */
+declare function createInMemoryAuditSink(): AuditSink & {
+    readonly entries: readonly AuditEntry[];
+};
+/**
+ * Console audit sink. Outputs structured JSON to stdout.
+ */
+declare function createConsoleAuditSink(): AuditSink;
+/**
+ * Apply redaction rules to a serialized string.
+ */
+declare function applyRedaction(text: string, rules: readonly RedactionRule[]): string;
+/**
+ * Truncate a string to a maximum length.
+ */
+declare function truncate(text: string, maxLength: number): string;
+
+export { type AuditMiddlewareConfig, applyRedaction, createAuditMiddleware, createConsoleAuditSink, createInMemoryAuditSink, truncate, validateAuditConfig };
+"
+`;

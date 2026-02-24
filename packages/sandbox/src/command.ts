@@ -1,5 +1,5 @@
 /**
- * buildSandboxCommand() — shared sandbox command construction.
+ * createSandboxCommand() — shared sandbox command construction.
  *
  * Extracts the duplicated platform-detection + args-building logic
  * from execute.ts and spawn.ts into a single reusable function.
@@ -17,12 +17,12 @@ export interface SandboxCommand {
 }
 
 /**
- * Build the platform-appropriate sandbox command for a given profile.
+ * Create the platform-appropriate sandbox command for a given profile.
  *
  * Detects the current platform (macOS → seatbelt, Linux → bwrap),
  * constructs the full argument list, and validates the result.
  */
-export function buildSandboxCommand(
+export function createSandboxCommand(
   profile: SandboxProfile,
   command: string,
   args: readonly string[],

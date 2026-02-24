@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { validateConfig } from "./config.js";
+import { validatePermissionsConfig } from "./config.js";
 import { createAutoApprovalHandler, createPatternPermissionEngine } from "./engine.js";
 
-describe("validateConfig", () => {
+describe("validatePermissionsConfig", () => {
   const engine = createPatternPermissionEngine();
   const rules = { allow: ["*"], deny: [], ask: [] } as const;
 
   test("accepts valid config with required fields", () => {
-    const result = validateConfig({ engine, rules });
+    const result = validatePermissionsConfig({ engine, rules });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.engine).toBe(engine);
@@ -16,7 +16,7 @@ describe("validateConfig", () => {
   });
 
   test("rejects null config", () => {
-    const result = validateConfig(null);
+    const result = validatePermissionsConfig(null);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
@@ -24,12 +24,12 @@ describe("validateConfig", () => {
   });
 
   test("rejects undefined config", () => {
-    const result = validateConfig(undefined);
+    const result = validatePermissionsConfig(undefined);
     expect(result.ok).toBe(false);
   });
 
   test("rejects config without engine", () => {
-    const result = validateConfig({ rules });
+    const result = validatePermissionsConfig({ rules });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("engine");
@@ -37,7 +37,7 @@ describe("validateConfig", () => {
   });
 
   test("rejects config without rules", () => {
-    const result = validateConfig({ engine });
+    const result = validatePermissionsConfig({ engine });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("rules");
@@ -45,23 +45,23 @@ describe("validateConfig", () => {
   });
 
   test("rejects rules missing allow array", () => {
-    const result = validateConfig({ engine, rules: { deny: [], ask: [] } });
+    const result = validatePermissionsConfig({ engine, rules: { deny: [], ask: [] } });
     expect(result.ok).toBe(false);
   });
 
   test("rejects rules missing deny array", () => {
-    const result = validateConfig({ engine, rules: { allow: [], ask: [] } });
+    const result = validatePermissionsConfig({ engine, rules: { allow: [], ask: [] } });
     expect(result.ok).toBe(false);
   });
 
   test("rejects rules missing ask array", () => {
-    const result = validateConfig({ engine, rules: { allow: [], deny: [] } });
+    const result = validatePermissionsConfig({ engine, rules: { allow: [], deny: [] } });
     expect(result.ok).toBe(false);
   });
 
   test("requires approvalHandler when ask rules exist", () => {
     const rulesWithAsk = { allow: [], deny: [], ask: ["dangerous:*"] } as const;
-    const result = validateConfig({ engine, rules: rulesWithAsk });
+    const result = validatePermissionsConfig({ engine, rules: rulesWithAsk });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("approvalHandler");
@@ -71,12 +71,16 @@ describe("validateConfig", () => {
   test("accepts ask rules with approvalHandler", () => {
     const rulesWithAsk = { allow: [], deny: [], ask: ["dangerous:*"] } as const;
     const handler = createAutoApprovalHandler();
-    const result = validateConfig({ engine, rules: rulesWithAsk, approvalHandler: handler });
+    const result = validatePermissionsConfig({
+      engine,
+      rules: rulesWithAsk,
+      approvalHandler: handler,
+    });
     expect(result.ok).toBe(true);
   });
 
   test("rejects negative approvalTimeoutMs", () => {
-    const result = validateConfig({ engine, rules, approvalTimeoutMs: -1 });
+    const result = validatePermissionsConfig({ engine, rules, approvalTimeoutMs: -1 });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("approvalTimeoutMs");
@@ -84,17 +88,17 @@ describe("validateConfig", () => {
   });
 
   test("rejects zero approvalTimeoutMs", () => {
-    const result = validateConfig({ engine, rules, approvalTimeoutMs: 0 });
+    const result = validatePermissionsConfig({ engine, rules, approvalTimeoutMs: 0 });
     expect(result.ok).toBe(false);
   });
 
   test("accepts positive approvalTimeoutMs", () => {
-    const result = validateConfig({ engine, rules, approvalTimeoutMs: 5000 });
+    const result = validatePermissionsConfig({ engine, rules, approvalTimeoutMs: 5000 });
     expect(result.ok).toBe(true);
   });
 
   test("applies default values for optional fields", () => {
-    const result = validateConfig({ engine, rules });
+    const result = validatePermissionsConfig({ engine, rules });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.approvalHandler).toBeUndefined();
@@ -104,17 +108,17 @@ describe("validateConfig", () => {
   });
 
   test("accepts approvalCache: true", () => {
-    const result = validateConfig({ engine, rules, approvalCache: true });
+    const result = validatePermissionsConfig({ engine, rules, approvalCache: true });
     expect(result.ok).toBe(true);
   });
 
   test("accepts approvalCache: { maxEntries: 100 }", () => {
-    const result = validateConfig({ engine, rules, approvalCache: { maxEntries: 100 } });
+    const result = validatePermissionsConfig({ engine, rules, approvalCache: { maxEntries: 100 } });
     expect(result.ok).toBe(true);
   });
 
   test("rejects approvalCache with negative maxEntries", () => {
-    const result = validateConfig({ engine, rules, approvalCache: { maxEntries: -1 } });
+    const result = validatePermissionsConfig({ engine, rules, approvalCache: { maxEntries: -1 } });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("maxEntries");
@@ -122,7 +126,7 @@ describe("validateConfig", () => {
   });
 
   test("rejects approvalCache with zero maxEntries", () => {
-    const result = validateConfig({ engine, rules, approvalCache: { maxEntries: 0 } });
+    const result = validatePermissionsConfig({ engine, rules, approvalCache: { maxEntries: 0 } });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("maxEntries");
@@ -130,7 +134,7 @@ describe("validateConfig", () => {
   });
 
   test("all errors are non-retryable", () => {
-    const result = validateConfig(null);
+    const result = validatePermissionsConfig(null);
     if (!result.ok) {
       expect(result.error.retryable).toBe(false);
     }

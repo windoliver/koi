@@ -6,7 +6,7 @@
  */
 
 import type { SandboxError, SandboxExecutor, SandboxResult } from "@koi/core";
-import { ipcErrorToSandboxError } from "./errors.js";
+import { mapIpcErrorToSandbox } from "./errors.js";
 import type { SandboxBridge } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -35,7 +35,7 @@ export function bridgeToExecutor(bridge: SandboxBridge): SandboxExecutor {
       if (!result.ok) {
         return {
           ok: false,
-          error: ipcErrorToSandboxError(result.error),
+          error: mapIpcErrorToSandbox(result.error),
         };
       }
 

@@ -1,0 +1,157 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/sandbox-ipc API surface . has stable type surface 1`] = `
+"import { SandboxProfile, Result, KoiError, JsonObject, SandboxExecutor, SandboxError } from '@koi/core';
+
+/**
+ * Core types for @koi/sandbox-ipc — IPC bridge between host and sandboxed workers.
+ *
+ * Types only, zero runtime code.
+ */
+
+interface SandboxCommand {
+    readonly executable: string;
+    readonly args: readonly string[];
+}
+type CommandBuilder = (profile: SandboxProfile, command: string, args: readonly string[]) => Result<SandboxCommand, KoiError>;
+interface BridgeConfig {
+    readonly profile: SandboxProfile;
+    /** Injected command builder — translates profile + command into sandboxed invocation. */
+    readonly buildCommand: CommandBuilder;
+    /** Serialization format for Bun IPC. Default: "advanced" (JSC structured clone). */
+    readonly serialization?: "advanced" | "json";
+    /** Grace period (ms) added to sandbox timeout for bridge-level timeout. Default: 5000. */
+    readonly graceMs?: number;
+    /** Maximum IPC result size in bytes. Default: 10_485_760 (10 MB). */
+    readonly maxResultBytes?: number;
+}
+interface BridgeExecOptions {
+    readonly timeoutMs?: number;
+    readonly maxResultBytes?: number;
+}
+interface BridgeResult {
+    readonly output: unknown;
+    readonly durationMs: number;
+    readonly memoryUsedBytes?: number;
+    readonly exitCode: number;
+    /** Time from bridge.execute() entry to IPC process spawn completion (ms). */
+    readonly spawnDurationMs?: number;
+}
+interface SandboxBridge {
+    readonly execute: (code: string, input: JsonObject, options?: BridgeExecOptions) => Promise<Result<BridgeResult, IpcError>>;
+    readonly dispose: () => Promise<void>;
+}
+type IpcErrorCode = "TIMEOUT" | "OOM" | "CRASH" | "SPAWN_FAILED" | "DESERIALIZE" | "RESULT_TOO_LARGE" | "WORKER_ERROR" | "DISPOSED";
+interface IpcError {
+    readonly code: IpcErrorCode;
+    readonly message: string;
+    readonly exitCode?: number;
+    readonly signal?: string;
+    readonly durationMs?: number;
+}
+interface IpcProcess {
+    readonly pid: number;
+    readonly exited: Promise<number>;
+    readonly kill: (signal?: number) => void;
+    readonly send: (message: unknown) => void;
+    readonly onMessage: (handler: (message: unknown) => void) => void;
+    readonly onExit: (handler: (code: number) => void) => void;
+}
+type SpawnFn = (cmd: readonly string[], options: {
+    readonly serialization: "advanced" | "json";
+}) => IpcProcess;
+
+/**
+ * bridgeToExecutor() — Adapts SandboxBridge to forge's SandboxExecutor interface.
+ *
+ * This adapter allows the IPC bridge to be used as a drop-in replacement
+ * for the SandboxExecutor dependency in @koi/forge's verification pipeline.
+ */
+
+declare function bridgeToExecutor(bridge: SandboxBridge): SandboxExecutor;
+
+/**
+ * createSandboxBridge() — Core IPC bridge for sandboxed code execution.
+ *
+ * Spawns a sandboxed Bun child process, sends code over IPC, and returns
+ * validated results. Per-request spawn model (one process per execute call).
+ *
+ * Security properties:
+ * - All worker responses validated with Zod schemas before processing
+ * - Bridge-level timeout = sandbox timeout + grace period
+ * - Result size limit enforced before returning to caller
+ * - Process killed on any error path (no zombie processes)
+ */
+
+interface CreateBridgeOptions {
+    readonly config: BridgeConfig;
+    /** Injected spawn function for testing. Uses Bun.spawn with IPC by default. */
+    readonly spawnFn?: SpawnFn;
+}
+declare function createSandboxBridge(configOrOptions: BridgeConfig | CreateBridgeOptions): Promise<SandboxBridge>;
+
+/**
+ * IPC error creation and adapter functions.
+ *
+ * Maps IpcError to both SandboxError (forge) and KoiError (core).
+ */
+
+declare function createIpcError(code: IpcErrorCode, message: string, details?: {
+    readonly exitCode?: number;
+    readonly signal?: string;
+    readonly durationMs?: number;
+}): IpcError;
+declare function mapIpcErrorToSandbox(error: IpcError): SandboxError;
+declare function mapIpcErrorToKoi(error: IpcError): KoiError;
+
+/**
+ * IPC message protocol — Zod schemas for messages crossing the IPC boundary.
+ *
+ * Every message from the sandboxed child is potentially hostile.
+ * All messages are validated with Zod before processing.
+ *
+ * Schemas and Zod types are fully encapsulated. Only plain TypeScript types
+ * and validation functions are exported (isolatedDeclarations compatible).
+ */
+interface ExecuteMessage {
+    readonly kind: "execute";
+    readonly code: string;
+    readonly input: Readonly<Record<string, unknown>>;
+    readonly timeoutMs: number;
+}
+interface ReadyMessage {
+    readonly kind: "ready";
+}
+interface ResultMessage {
+    readonly kind: "result";
+    readonly output: unknown;
+    readonly durationMs: number;
+    readonly memoryUsedBytes?: number;
+}
+interface ErrorMessage {
+    readonly kind: "error";
+    readonly code: "TIMEOUT" | "OOM" | "PERMISSION" | "CRASH";
+    readonly message: string;
+    readonly durationMs: number;
+}
+type WorkerMessage = ReadyMessage | ResultMessage | ErrorMessage;
+type ParseResult<T> = {
+    readonly success: true;
+    readonly data: T;
+} | {
+    readonly success: false;
+    readonly error: {
+        readonly issues: ReadonlyArray<{
+            readonly message: string;
+        }>;
+    };
+};
+declare function parseExecuteMessage(raw: unknown): ParseResult<ExecuteMessage>;
+declare function parseWorkerMessage(raw: unknown): ParseResult<WorkerMessage>;
+declare function parseReadyMessage(raw: unknown): ParseResult<ReadyMessage>;
+declare function parseResultMessage(raw: unknown): ParseResult<ResultMessage>;
+declare function parseErrorMessage(raw: unknown): ParseResult<ErrorMessage>;
+
+export { type BridgeConfig, type BridgeExecOptions, type BridgeResult, type CommandBuilder, type CreateBridgeOptions, type ErrorMessage, type ExecuteMessage, type IpcError, type IpcErrorCode, type IpcProcess, type ParseResult, type ReadyMessage, type ResultMessage, type SandboxBridge, type SandboxCommand, type SpawnFn, type WorkerMessage, bridgeToExecutor, createIpcError, createSandboxBridge, mapIpcErrorToKoi, mapIpcErrorToSandbox, parseErrorMessage, parseExecuteMessage, parseReadyMessage, parseResultMessage, parseWorkerMessage };
+"
+`;

@@ -115,8 +115,8 @@ export function parseConnectFrame(raw: string): Result<ConnectFrame, KoiError> {
 
   const obj = parsed as Record<string, unknown>;
 
-  if (obj.type !== "connect") {
-    return makeError('First message must be a connect frame (type: "connect")');
+  if (obj.kind !== "connect") {
+    return makeError('First message must be a connect frame (kind: "connect")');
   }
 
   // Protocol version: accept range format or legacy single-value format
@@ -180,7 +180,7 @@ export function parseConnectFrame(raw: string): Result<ConnectFrame, KoiError> {
   }
 
   const frame: ConnectFrame = {
-    type: "connect",
+    kind: "connect",
     minProtocol,
     maxProtocol,
     auth: { token: auth.token as string },
@@ -209,9 +209,9 @@ function nextFrameId(): string {
 }
 
 /**
- * Build a JSON-encoded error frame string for server-generated error responses.
+ * Create a JSON-encoded error frame string for server-generated error responses.
  */
-export function buildErrorFrame(seq: number, code: string, message: string): string {
+export function createErrorFrame(seq: number, code: string, message: string): string {
   return encodeFrame({
     kind: "error",
     id: nextFrameId(),
@@ -222,9 +222,9 @@ export function buildErrorFrame(seq: number, code: string, message: string): str
 }
 
 /**
- * Build a JSON-encoded ack frame string for server-generated acknowledgements.
+ * Create a JSON-encoded ack frame string for server-generated acknowledgements.
  */
-export function buildAckFrame(seq: number, ref?: string, payload?: unknown): string {
+export function createAckFrame(seq: number, ref?: string, payload?: unknown): string {
   return encodeFrame({
     kind: "ack",
     id: nextFrameId(),

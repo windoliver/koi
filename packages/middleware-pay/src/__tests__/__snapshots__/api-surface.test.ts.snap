@@ -1,0 +1,65 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-pay API surface . has stable type surface 1`] = `
+"import { Result, KoiError } from '@koi/core/errors';
+import { KoiMiddleware } from '@koi/core/middleware';
+
+/**
+ * Budget tracking interfaces and default implementations.
+ */
+interface CostEntry {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly model: string;
+    readonly costUsd: number;
+    readonly timestamp: number;
+}
+interface CostCalculator {
+    readonly calculate: (model: string, inputTokens: number, outputTokens: number) => number;
+}
+interface BudgetTracker {
+    readonly record: (sessionId: string, entry: CostEntry) => Promise<void>;
+    readonly totalSpend: (sessionId: string) => Promise<number>;
+    readonly remaining: (sessionId: string, budget: number) => Promise<number>;
+}
+/**
+ * In-memory budget tracker. Map-backed, sums costs per session.
+ */
+declare function createInMemoryBudgetTracker(): BudgetTracker;
+/**
+ * Default cost calculator with simple per-token pricing.
+ */
+declare function createDefaultCostCalculator(rates?: Partial<Record<string, {
+    readonly input: number;
+    readonly output: number;
+}>>): CostCalculator;
+
+/**
+ * Pay middleware configuration and validation.
+ */
+
+interface UsageInfo {
+    readonly entry: CostEntry;
+    readonly totalSpent: number;
+    readonly remaining: number;
+}
+interface PayMiddlewareConfig {
+    readonly tracker: BudgetTracker;
+    readonly calculator: CostCalculator;
+    readonly budget: number;
+    readonly alertThresholds?: readonly number[];
+    readonly onAlert?: (pctUsed: number, remaining: number) => void;
+    readonly onUsage?: (info: UsageInfo) => void;
+    readonly hardKill?: boolean;
+}
+declare function validatePayConfig(config: unknown): Result<PayMiddlewareConfig, KoiError>;
+
+/**
+ * Pay middleware factory — token budget enforcement.
+ */
+
+declare function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware;
+
+export { type BudgetTracker, type CostCalculator, type CostEntry, type PayMiddlewareConfig, type UsageInfo, createDefaultCostCalculator, createInMemoryBudgetTracker, createPayMiddleware, validatePayConfig };
+"
+`;

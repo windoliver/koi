@@ -4,7 +4,7 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
-import { buildSandboxCommand } from "./command.js";
+import { createSandboxCommand } from "./command.js";
 import type { SandboxProfile } from "./types.js";
 
 export interface SpawnOptions {
@@ -27,7 +27,7 @@ export function spawn(
   args: readonly string[],
   options?: SpawnOptions,
 ): Result<SandboxProcess, KoiError> {
-  const cmd = buildSandboxCommand(profile, command, args);
+  const cmd = createSandboxCommand(profile, command, args);
   if (!cmd.ok) {
     return cmd;
   }

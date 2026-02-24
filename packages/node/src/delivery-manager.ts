@@ -33,7 +33,7 @@ export interface DeliveryManagerConfig {
   readonly maxRecoveryMs: number;
 }
 
-export const DELIVERY_DEFAULTS: DeliveryManagerConfig = {
+export const DEFAULT_DELIVERY_CONFIG: DeliveryManagerConfig = {
   maxRetries: 5, // ~63s total retry window (1+2+4+8+16+30...)
   baseDelayMs: 1_000, // matches reconnect backoff
   maxDelayMs: 30_000, // cap to avoid indefinite waits
@@ -70,10 +70,10 @@ export interface DeliveryManagerDeps {
 }
 
 // ---------------------------------------------------------------------------
-// Backoff calculation
+// Backoff computation
 // ---------------------------------------------------------------------------
 
-function calculateBackoffDelay(retryCount: number, config: DeliveryManagerConfig): number {
+function computeBackoffDelay(retryCount: number, config: DeliveryManagerConfig): number {
   const exponential = Math.min(
     config.baseDelayMs * config.multiplier ** retryCount,
     config.maxDelayMs,
@@ -91,13 +91,13 @@ export function createDeliveryManager(
   deps: DeliveryManagerDeps,
   config?: Partial<DeliveryManagerConfig>,
 ): DeliveryManager {
-  const cfg: DeliveryManagerConfig = { ...DELIVERY_DEFAULTS, ...config };
+  const cfg: DeliveryManagerConfig = { ...DEFAULT_DELIVERY_CONFIG, ...config };
   const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
   // let: toggled once by dispose() to prevent timer callbacks from running
   let disposed = false;
 
   function scheduleRetry(sessionId: string, frame: PendingFrame): void {
-    const delay = calculateBackoffDelay(frame.retryCount, cfg);
+    const delay = computeBackoffDelay(frame.retryCount, cfg);
     const timer = setTimeout(() => {
       pendingTimers.delete(timer);
       if (disposed) return;
@@ -201,7 +201,7 @@ export function createDeliveryManager(
       frameId: `pf-${frame.correlationId}`,
       sessionId: toSessionId(sessionId),
       agentId: toAgentId(frame.agentId),
-      frameType: frame.type,
+      frameType: frame.kind,
       payload: frame.payload,
       orderIndex: Date.now(),
       createdAt: Date.now(),

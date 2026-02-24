@@ -7,7 +7,7 @@
 
 export { createOsAdapter } from "./adapter.js";
 export type { SandboxCommand } from "./command.js";
-export { buildSandboxCommand } from "./command.js";
+export { createSandboxCommand } from "./command.js";
 export type { PlatformInfo } from "./detect.js";
 export { checkAvailability } from "./detect.js";
 export type { ExecuteOptions } from "./execute.js";

@@ -3,8 +3,8 @@
  */
 
 import {
-  buildAckFrame,
-  buildErrorFrame,
+  createAckFrame,
+  createErrorFrame,
   negotiateProtocol,
   parseConnectFrame,
 } from "./protocol.js";
@@ -76,7 +76,7 @@ export function handleHandshake(
       // Parse the structured connect frame
       const parseResult = parseConnectFrame(data);
       if (!parseResult.ok) {
-        conn.send(buildErrorFrame(0, parseResult.error.code, parseResult.error.message));
+        conn.send(createErrorFrame(0, parseResult.error.code, parseResult.error.message));
         conn.close(4002, "Invalid connect frame");
         reject(new Error(`Invalid connect frame: ${parseResult.error.message}`));
         return;
@@ -92,7 +92,7 @@ export function handleHandshake(
         options.maxProtocolVersion,
       );
       if (!versionResult.ok) {
-        conn.send(buildErrorFrame(0, "PROTOCOL_MISMATCH", versionResult.error.message));
+        conn.send(createErrorFrame(0, "PROTOCOL_MISMATCH", versionResult.error.message));
         conn.close(4010, "Protocol version mismatch");
         reject(new Error(`Protocol mismatch: ${versionResult.error.message}`));
         return;
@@ -104,7 +104,7 @@ export function handleHandshake(
         .authenticate(connectFrame)
         .then((result) => {
           if (!result.ok) {
-            conn.send(buildErrorFrame(0, result.code, result.message));
+            conn.send(createErrorFrame(0, result.code, result.message));
             conn.close(4003, result.code);
             reject(new Error(`Auth failed: ${result.code}`));
             return;
@@ -127,11 +127,11 @@ export function handleHandshake(
             capabilities: options.capabilities,
             ...(options.snapshot !== undefined ? { snapshot: options.snapshot } : {}),
           };
-          conn.send(buildAckFrame(0, undefined, ackPayload));
+          conn.send(createAckFrame(0, undefined, ackPayload));
           resolve({ session, connectFrame });
         })
         .catch((err: unknown) => {
-          conn.send(buildErrorFrame(0, "INTERNAL", "Authentication service error"));
+          conn.send(createErrorFrame(0, "INTERNAL", "Authentication service error"));
           conn.close(4003, "INTERNAL");
           reject(new Error("Auth service error", { cause: err }));
         });

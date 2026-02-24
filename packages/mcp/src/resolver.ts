@@ -11,7 +11,7 @@
 import type { KoiError, Resolver, Result, Tool, ToolDescriptor } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core";
 import type { McpClientManager, McpToolInfo } from "./client-manager.js";
-import { mcpToolToKoiTool } from "./tool-adapter.js";
+import { mapMcpToolToKoi } from "./tool-adapter.js";
 
 /**
  * Creates a Resolver that discovers and loads MCP tools across managers.
@@ -108,7 +108,7 @@ export function createMcpResolver(
 
     return {
       ok: true,
-      value: mcpToolToKoiTool(toolInfo, manager, parsed.serverName),
+      value: mapMcpToolToKoi(toolInfo, manager, parsed.serverName),
     };
   };
 

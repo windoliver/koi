@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { McpBridgeConfig } from "./policy-map.js";
-import { buildSdkOptions } from "./policy-map.js";
+import { createSdkOptions } from "./policy-map.js";
 import type { ClaudeAdapterConfig } from "./types.js";
 
-describe("buildSdkOptions", () => {
+describe("createSdkOptions", () => {
   test("maps all config fields to SDK options", () => {
     const config: ClaudeAdapterConfig = {
       model: "claude-sonnet-4-5-20250929",
@@ -16,7 +16,7 @@ describe("buildSdkOptions", () => {
       disallowedTools: ["Bash"],
     };
 
-    const options = buildSdkOptions(config, undefined, undefined, undefined);
+    const options = createSdkOptions(config, undefined, undefined, undefined);
 
     expect(options.model).toBe("claude-sonnet-4-5-20250929");
     expect(options.maxTurns).toBe(10);
@@ -31,7 +31,7 @@ describe("buildSdkOptions", () => {
   test("always sets includePartialMessages to true", () => {
     const config: ClaudeAdapterConfig = {};
 
-    const options = buildSdkOptions(config, undefined, undefined, undefined);
+    const options = createSdkOptions(config, undefined, undefined, undefined);
 
     expect(options.includePartialMessages).toBe(true);
   });
@@ -44,7 +44,7 @@ describe("buildSdkOptions", () => {
       instance: {},
     };
 
-    const options = buildSdkOptions(config, mcpBridge, undefined, undefined);
+    const options = createSdkOptions(config, mcpBridge, undefined, undefined);
 
     expect(options.mcpServers).toBeDefined();
     const servers = options.mcpServers as Record<string, unknown>;
@@ -54,7 +54,7 @@ describe("buildSdkOptions", () => {
   test("excludes MCP bridge when not provided", () => {
     const config: ClaudeAdapterConfig = {};
 
-    const options = buildSdkOptions(config, undefined, undefined, undefined);
+    const options = createSdkOptions(config, undefined, undefined, undefined);
 
     expect(options.mcpServers).toBeUndefined();
   });
@@ -62,7 +62,7 @@ describe("buildSdkOptions", () => {
   test("includes resume session ID when provided", () => {
     const config: ClaudeAdapterConfig = {};
 
-    const options = buildSdkOptions(config, undefined, "sess-123", undefined);
+    const options = createSdkOptions(config, undefined, "sess-123", undefined);
 
     expect(options.resume).toBe("sess-123");
   });
@@ -70,7 +70,7 @@ describe("buildSdkOptions", () => {
   test("excludes resume when not provided", () => {
     const config: ClaudeAdapterConfig = {};
 
-    const options = buildSdkOptions(config, undefined, undefined, undefined);
+    const options = createSdkOptions(config, undefined, undefined, undefined);
 
     expect(options.resume).toBeUndefined();
   });
@@ -79,7 +79,7 @@ describe("buildSdkOptions", () => {
     const config: ClaudeAdapterConfig = {};
     const controller = new AbortController();
 
-    const options = buildSdkOptions(config, undefined, undefined, controller);
+    const options = createSdkOptions(config, undefined, undefined, controller);
 
     expect(options.abortController).toBe(controller);
   });
@@ -94,7 +94,7 @@ describe("buildSdkOptions", () => {
       },
     };
 
-    const options = buildSdkOptions(config, undefined, undefined, undefined);
+    const options = createSdkOptions(config, undefined, undefined, undefined);
 
     // sdkOverrides take precedence
     expect(options.model).toBe("claude-opus-4-6");
@@ -107,7 +107,7 @@ describe("buildSdkOptions", () => {
       model: "test-model",
     };
 
-    const options = buildSdkOptions(config, undefined, undefined, undefined);
+    const options = createSdkOptions(config, undefined, undefined, undefined);
 
     expect(options.model).toBe("test-model");
     expect(options.maxTurns).toBeUndefined();

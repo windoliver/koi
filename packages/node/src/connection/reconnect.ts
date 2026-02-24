@@ -18,7 +18,7 @@ import type { GatewayConnectionConfig } from "../types.js";
  * @param config - Gateway connection settings (base, max, multiplier, jitter).
  * @returns Delay in milliseconds (always >= 0).
  */
-export function calculateReconnectDelay(attempt: number, config: GatewayConnectionConfig): number {
+export function computeReconnectDelay(attempt: number, config: GatewayConnectionConfig): number {
   const exponential = Math.min(
     config.reconnectBaseDelay * config.reconnectMultiplier ** attempt,
     config.reconnectMaxDelay,

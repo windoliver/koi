@@ -7,7 +7,7 @@
  */
 
 export type { FeedbackLoopConfig, ForgeHealthConfig } from "./config.js";
-export { validateConfig } from "./config.js";
+export { validateFeedbackLoopConfig } from "./config.js";
 export { createFeedbackLoopMiddleware } from "./feedback-loop.js";
 export type { ForgeRepairConfig } from "./forge-repair.js";
 export { createForgeRepairStrategy } from "./forge-repair.js";

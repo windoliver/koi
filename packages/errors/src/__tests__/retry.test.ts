@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { KoiError } from "@koi/core";
 import { isKoiError } from "../error-utils.js";
-import { calculateBackoff, DEFAULT_RETRY_CONFIG, isRetryable, withRetry } from "../retry.js";
+import { computeBackoff, DEFAULT_RETRY_CONFIG, isRetryable, withRetry } from "../retry.js";
 
 function makeError(code: KoiError["code"], retryable = false, retryAfterMs?: number): KoiError {
   return {
@@ -12,44 +12,44 @@ function makeError(code: KoiError["code"], retryable = false, retryAfterMs?: num
   };
 }
 
-describe("calculateBackoff", () => {
+describe("computeBackoff", () => {
   const noJitterConfig = { ...DEFAULT_RETRY_CONFIG, jitter: false };
 
   test("returns initial delay for attempt 0", () => {
-    const delay = calculateBackoff(0, noJitterConfig);
+    const delay = computeBackoff(0, noJitterConfig);
     expect(delay).toBe(1_000);
   });
 
   test("doubles delay on each attempt (multiplier=2)", () => {
-    expect(calculateBackoff(0, noJitterConfig)).toBe(1_000);
-    expect(calculateBackoff(1, noJitterConfig)).toBe(2_000);
-    expect(calculateBackoff(2, noJitterConfig)).toBe(4_000);
-    expect(calculateBackoff(3, noJitterConfig)).toBe(8_000);
+    expect(computeBackoff(0, noJitterConfig)).toBe(1_000);
+    expect(computeBackoff(1, noJitterConfig)).toBe(2_000);
+    expect(computeBackoff(2, noJitterConfig)).toBe(4_000);
+    expect(computeBackoff(3, noJitterConfig)).toBe(8_000);
   });
 
   test("respects maxBackoffMs ceiling", () => {
     const config = { ...noJitterConfig, maxBackoffMs: 5_000 };
-    expect(calculateBackoff(10, config)).toBe(5_000);
+    expect(computeBackoff(10, config)).toBe(5_000);
   });
 
   test("uses retryAfterMs when provided (overrides calculation)", () => {
-    const delay = calculateBackoff(0, noJitterConfig, 3_000);
+    const delay = computeBackoff(0, noJitterConfig, 3_000);
     expect(delay).toBe(3_000);
   });
 
   test("clamps retryAfterMs to maxBackoffMs", () => {
     const config = { ...noJitterConfig, maxBackoffMs: 2_000 };
-    const delay = calculateBackoff(0, config, 10_000);
+    const delay = computeBackoff(0, config, 10_000);
     expect(delay).toBe(2_000);
   });
 
   test("ignores retryAfterMs when zero", () => {
-    const delay = calculateBackoff(0, noJitterConfig, 0);
+    const delay = computeBackoff(0, noJitterConfig, 0);
     expect(delay).toBe(1_000);
   });
 
   test("ignores negative retryAfterMs", () => {
-    const delay = calculateBackoff(0, noJitterConfig, -100);
+    const delay = computeBackoff(0, noJitterConfig, -100);
     expect(delay).toBe(1_000);
   });
 
@@ -57,7 +57,7 @@ describe("calculateBackoff", () => {
     const config = { ...DEFAULT_RETRY_CONFIG, jitter: true };
     // Run multiple times to verify jitter produces values in range
     for (let i = 0; i < 20; i++) {
-      const delay = calculateBackoff(0, config);
+      const delay = computeBackoff(0, config);
       expect(delay).toBeGreaterThanOrEqual(0);
       expect(delay).toBeLessThanOrEqual(config.initialDelayMs);
     }
@@ -66,16 +66,16 @@ describe("calculateBackoff", () => {
   test("injectable random produces deterministic jitter", () => {
     const config = { ...DEFAULT_RETRY_CONFIG, jitter: true };
     const fixedRandom = () => 0.5;
-    const delay = calculateBackoff(0, config, undefined, fixedRandom);
+    const delay = computeBackoff(0, config, undefined, fixedRandom);
     // 0.5 * 1000 = 500
     expect(delay).toBe(500);
   });
 
   test("custom backoff multiplier", () => {
     const config = { ...noJitterConfig, backoffMultiplier: 3 };
-    expect(calculateBackoff(0, config)).toBe(1_000);
-    expect(calculateBackoff(1, config)).toBe(3_000);
-    expect(calculateBackoff(2, config)).toBe(9_000);
+    expect(computeBackoff(0, config)).toBe(1_000);
+    expect(computeBackoff(1, config)).toBe(3_000);
+    expect(computeBackoff(2, config)).toBe(9_000);
   });
 });
 

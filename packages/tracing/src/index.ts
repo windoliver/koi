@@ -7,5 +7,5 @@
  */
 
 export type { TracingConfig } from "./config.js";
-export { validateConfig } from "./config.js";
+export { validateTracingConfig } from "./config.js";
 export { createTracingMiddleware } from "./tracing.js";

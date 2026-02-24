@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { bridgeToExecutor } from "./adapter.js";
-import { ipcErrorToSandboxError } from "./errors.js";
+import { mapIpcErrorToSandbox } from "./errors.js";
 import type { IpcError, IpcErrorCode, SandboxBridge } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -163,19 +163,19 @@ describe("bridgeToExecutor success mapping", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ipcErrorToSandboxError direct tests
+// mapIpcErrorToSandbox direct tests
 // ---------------------------------------------------------------------------
 
-describe("ipcErrorToSandboxError", () => {
+describe("mapIpcErrorToSandbox", () => {
   test("uses 0 for missing durationMs", () => {
     const error: IpcError = { code: "CRASH", message: "boom" };
-    const sandboxError = ipcErrorToSandboxError(error);
+    const sandboxError = mapIpcErrorToSandbox(error);
     expect(sandboxError.durationMs).toBe(0);
   });
 
   test("preserves provided durationMs", () => {
     const error: IpcError = { code: "TIMEOUT", message: "slow", durationMs: 999 };
-    const sandboxError = ipcErrorToSandboxError(error);
+    const sandboxError = mapIpcErrorToSandbox(error);
     expect(sandboxError.durationMs).toBe(999);
   });
 });

@@ -1,0 +1,33 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-turn-ack API surface . has stable type surface 1`] = `
+"import { Result, KoiError, KoiMiddleware } from '@koi/core';
+
+/**
+ * Configuration for TurnAckMiddleware.
+ */
+
+interface TurnAckConfig {
+    /** Debounce threshold in ms. Ack is skipped if turn completes within this time. Default: 100. */
+    readonly debounceMs?: number;
+    /** Send "processing" status with tool name detail on each tool call. Default: true. */
+    readonly toolStatus?: boolean;
+    /** Called when sendStatus fails (e.g., channel disconnected). Default: console.warn. */
+    readonly onError?: (error: unknown) => void;
+}
+declare function validateTurnAckConfig(config: TurnAckConfig): Result<TurnAckConfig, KoiError>;
+
+/**
+ * TurnAckMiddleware — two-stage acknowledgement for long-running agent turns.
+ *
+ * Stage 1: "processing" status sent after a debounce delay (skipped for fast turns).
+ * Stage 2: "idle" status sent when the turn completes.
+ *
+ * sendStatus calls are fire-and-forget — they never block the turn.
+ */
+
+declare function createTurnAckMiddleware(config?: TurnAckConfig): KoiMiddleware;
+
+export { type TurnAckConfig, createTurnAckMiddleware, validateTurnAckConfig };
+"
+`;

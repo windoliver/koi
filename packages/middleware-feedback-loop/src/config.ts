@@ -110,7 +110,7 @@ function checkValidatorArray(arr: unknown, fieldName: string): KoiError | undefi
 // ---------------------------------------------------------------------------
 
 /** Validates a config object and returns a typed Result. */
-export function validateConfig(config: unknown): Result<FeedbackLoopConfig, KoiError> {
+export function validateFeedbackLoopConfig(config: unknown): Result<FeedbackLoopConfig, KoiError> {
   if (config === null || config === undefined || typeof config !== "object") {
     return { ok: false, error: validationError("Config must be a non-null object") };
   }

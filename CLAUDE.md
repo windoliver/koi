@@ -179,6 +179,30 @@ When writing any code in this repo:
 - Pure by default; label side effects explicitly
 - No hardcoded values — use constants or config
 
+## API Naming Conventions
+
+| Pattern | Prefix | Examples |
+|---------|--------|---------|
+| Factory functions | `create*` | `createGateway`, `createAuditMiddleware` |
+| Template/string output | `generate*` | `generateLaunchdPlist`, `generateSystemdUnit` |
+| Type transformations | `map*` | `mapMcpToolToKoi`, `mapSdkMessage` |
+| Config validation | `validate<Domain>Config` | `validatePayConfig`, `validateAuditConfig` |
+| Algorithms | `compute*` | `computeBackoff`, `computeContentHash` |
+| Type guards | `is*` | `isKoiError`, `isRetryable` |
+| Config loading | `load*` | `loadManifest`, `loadConfig` |
+| System inspection | `detect*` | `detectPlatform`, `detectBunPath` |
+| Discriminated unions | `kind` field | `GatewayFrame.kind`, `NodeFrame.kind`, `EngineEvent.kind` |
+| Default configs | `DEFAULT_*` | `DEFAULT_GATEWAY_CONFIG` |
+| Branded ID constructors | `<concept>Id()` | `agentId()`, `sessionId()` |
+
+Banned naming patterns:
+- `build*` for factories (use `create*`)
+- `calculate*` for algorithms (use `compute*`)
+- `render*` for templates (use `generate*`)
+- `*Async` suffix on factories (async is implementation detail)
+- Bare `validateConfig` (qualify with domain: `validate<Domain>Config`)
+- `*To*` for transforms (use `map*` verb-first)
+
 ## Error Handling
 
 When writing error handling code:

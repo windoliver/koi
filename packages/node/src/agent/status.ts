@@ -56,7 +56,7 @@ export function createStatusReporter(
       nodeId,
       agentId: "",
       correlationId: generateCorrelationId(nodeId),
-      type: "agent:status",
+      kind: "agent:status",
       payload: { agents: statuses },
     });
   }
