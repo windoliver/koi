@@ -155,6 +155,11 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
     changeListeners.add(listener);
     return () => {
       changeListeners.delete(listener);
+      // Clear pending debounce when no listeners remain to prevent timer leak
+      if (changeListeners.size === 0 && debounceTimer !== undefined) {
+        clearTimeout(debounceTimer);
+        debounceTimer = undefined;
+      }
     };
   };
 

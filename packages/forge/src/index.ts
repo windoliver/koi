@@ -41,7 +41,6 @@ export {
 // runtime values — manifest assembly
 export type { AssembleManifestOptions, AssembleManifestResult } from "./assemble-manifest.js";
 export { assembleManifest } from "./assemble-manifest.js";
-export { brickToTool } from "./brick-conversion.js";
 export type {
   AutoPromotionConfig,
   ForgeConfig,

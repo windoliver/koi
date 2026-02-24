@@ -127,6 +127,7 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
     }
     externalListeners.clear();
     invalidateCache();
+    store.dispose?.();
   };
 
   return {

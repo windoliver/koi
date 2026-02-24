@@ -16,6 +16,8 @@ export interface TierDescriptor {
   readonly name: TierName;
   readonly access: TierAccess;
   readonly baseDir: string;
+  /** Enable filesystem watcher for cross-process change detection. Default: false. */
+  readonly watch?: boolean;
 }
 
 /** Tier search order — highest priority first. */

@@ -42,6 +42,8 @@ export interface OverlayForgeStore extends ForgeStore {
   readonly promoteTier: (id: string, toTier: TierName) => Promise<Result<void, KoiError>>;
   /** Find which tier currently owns a brick. */
   readonly locateTier: (id: string) => Promise<Result<TierName, KoiError>>;
+  /** Dispose all underlying tier stores (close watchers, timers, listeners). */
+  readonly dispose: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +112,10 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
   // Initialize all tier stores in parallel
   const tierEntries: TierEntry[] = await Promise.all(
     config.tiers.map(async (descriptor) => {
-      const store = await createFsForgeStore({ baseDir: descriptor.baseDir });
+      const store = await createFsForgeStore({
+        baseDir: descriptor.baseDir,
+        ...(descriptor.watch === true ? { watch: true } : {}),
+      });
       return { descriptor, store };
     }),
   );
@@ -395,6 +400,15 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
     return { ok: false, error: notFound(id, `Brick not found in any tier: ${id}`) };
   };
 
+  // --- Dispose ---------------------------------------------------------------
+
+  const dispose = (): void => {
+    for (const entry of sorted) {
+      entry.store.dispose();
+    }
+    changeListeners.clear();
+  };
+
   return {
     save,
     load,
@@ -406,6 +420,7 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
     promoteTier,
     locateTier,
     onChange,
+    dispose,
   };
 }
 

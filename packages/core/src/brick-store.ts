@@ -130,6 +130,8 @@ export interface ForgeStore {
   readonly promote?: (id: string, targetScope: ForgeScope) => Promise<Result<void, KoiError>>;
   /** Optional push notification when store contents change (save/remove/update). Returns unsubscribe. */
   readonly onChange?: (listener: () => void) => () => void;
+  /** Clean up resources (filesystem watchers, timers). Not all backends hold resources. */
+  readonly dispose?: () => void;
 }
 
 // ---------------------------------------------------------------------------

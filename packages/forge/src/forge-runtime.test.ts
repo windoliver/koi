@@ -148,4 +148,24 @@ describe("createForgeRuntime", () => {
 
     unsub?.();
   });
+
+  test("dispose calls store.dispose when available", () => {
+    const store = createInMemoryForgeStore();
+    const disposeSpy = mock(() => {});
+    // Attach a dispose method to the store
+    const storeWithDispose = { ...store, dispose: disposeSpy };
+
+    const runtime = createForgeRuntime({ store: storeWithDispose, executor: mockTiered() });
+    runtime.dispose?.();
+
+    expect(disposeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("dispose works when store has no dispose method", () => {
+    const store = createInMemoryForgeStore();
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+
+    // Should not throw even though store has no dispose
+    expect(() => runtime.dispose?.()).not.toThrow();
+  });
 });
