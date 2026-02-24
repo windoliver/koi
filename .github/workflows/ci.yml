@@ -38,10 +38,10 @@ jobs:
         run: bun run check
 
       - name: Build
-        run: bun run build
+        run: turbo run build --force
 
       - name: Typecheck
-        run: bun run typecheck
+        run: turbo run typecheck --force
 
       - name: Test
-        run: bun run test
+        run: turbo run test --force
