@@ -175,33 +175,39 @@ export function parseFormFields(
         err: { error: `${key}[${i}] must be an object`, code: "VALIDATION" },
       };
     }
-    const field = item as Record<string, unknown>;
-    if (typeof field.ref !== "string" || !/^e\d+$/.test(field.ref)) {
+    // item is object & non-null — destructure to let TypeScript narrow via typeof guards
+    const { ref, value: fieldValue, clear } = item as Record<string, unknown>;
+    if (typeof ref !== "string" || !/^e\d+$/.test(ref)) {
       return {
         ok: false,
         err: { error: `${key}[${i}].ref must be a ref key like "e1"`, code: "VALIDATION" },
       };
     }
-    if (typeof field.value !== "string") {
+    if (typeof fieldValue !== "string") {
       return {
         ok: false,
         err: { error: `${key}[${i}].value must be a string`, code: "VALIDATION" },
       };
     }
-    const clear = field.clear;
     if (clear !== undefined && typeof clear !== "boolean") {
       return {
         ok: false,
         err: { error: `${key}[${i}].clear must be a boolean`, code: "VALIDATION" },
       };
     }
+    // At this point ref: string, fieldValue: string, clear: boolean | undefined
     fields.push({
-      ref: field.ref as string,
-      value: field.value as string,
-      ...(clear !== undefined && { clear: clear as boolean }),
+      ref,
+      value: fieldValue,
+      ...(clear !== undefined && { clear }),
     });
   }
   return { ok: true, value: fields };
+}
+
+/** Type guard that narrows `unknown` to a member of a string literal union, avoiding `as` casts. */
+function memberOf<T extends string>(set: readonly T[], value: unknown): value is T {
+  return (set as readonly unknown[]).includes(value);
 }
 
 type ScrollDirection = "up" | "down" | "left" | "right";
@@ -213,7 +219,7 @@ export function parseOptionalScrollDirection(
 ): ParseResult<ScrollDirection | undefined> {
   const value = args[key];
   if (value === undefined) return { ok: true, value: undefined };
-  if (!SCROLL_DIRECTIONS.includes(value as ScrollDirection)) {
+  if (!memberOf(SCROLL_DIRECTIONS, value)) {
     return {
       ok: false,
       err: {
@@ -222,7 +228,7 @@ export function parseOptionalScrollDirection(
       },
     };
   }
-  return { ok: true, value: value as ScrollDirection };
+  return { ok: true, value };
 }
 
 type WaitKind = "timeout" | "selector" | "navigation";
@@ -230,7 +236,7 @@ const WAIT_KINDS: readonly WaitKind[] = ["timeout", "selector", "navigation"];
 
 export function parseWaitKind(args: JsonObject, key: string): ParseResult<WaitKind> {
   const value = args[key];
-  if (!WAIT_KINDS.includes(value as WaitKind)) {
+  if (!memberOf(WAIT_KINDS, value)) {
     return {
       ok: false,
       err: {
@@ -239,7 +245,7 @@ export function parseWaitKind(args: JsonObject, key: string): ParseResult<WaitKi
       },
     };
   }
-  return { ok: true, value: value as WaitKind };
+  return { ok: true, value };
 }
 
 type SelectorState = "visible" | "hidden" | "attached" | "detached";
@@ -251,7 +257,7 @@ export function parseOptionalSelectorState(
 ): ParseResult<SelectorState | undefined> {
   const value = args[key];
   if (value === undefined) return { ok: true, value: undefined };
-  if (!SELECTOR_STATES.includes(value as SelectorState)) {
+  if (!memberOf(SELECTOR_STATES, value)) {
     return {
       ok: false,
       err: {
@@ -260,7 +266,7 @@ export function parseOptionalSelectorState(
       },
     };
   }
-  return { ok: true, value: value as SelectorState };
+  return { ok: true, value };
 }
 
 type WaitUntil = "load" | "networkidle" | "commit" | "domcontentloaded";
@@ -277,7 +283,7 @@ export function parseOptionalWaitUntil(
 ): ParseResult<WaitUntil | undefined> {
   const value = args[key];
   if (value === undefined) return { ok: true, value: undefined };
-  if (!WAIT_UNTIL_VALUES.includes(value as WaitUntil)) {
+  if (!memberOf(WAIT_UNTIL_VALUES, value)) {
     return {
       ok: false,
       err: {
@@ -286,5 +292,5 @@ export function parseOptionalWaitUntil(
       },
     };
   }
-  return { ok: true, value: value as WaitUntil };
+  return { ok: true, value };
 }
