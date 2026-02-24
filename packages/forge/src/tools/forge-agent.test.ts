@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type {
+  AgentArtifact,
   SandboxExecutor,
   SkillArtifact,
   TieredSandboxExecutor,
@@ -8,6 +9,7 @@ import type {
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import type { ForgeResult, ManifestParser } from "../types.js";
+import type { OnForgeAgentSpawn } from "./forge-agent.js";
 import { createForgeAgentTool } from "./forge-agent.js";
 import type { ForgeDeps } from "./shared.js";
 
@@ -499,5 +501,114 @@ describe("createForgeAgentTool", () => {
       expect(loadResult.value.manifestYaml).toContain("model: claude-sonnet");
       expect(loadResult.value.manifestYaml).toContain("agentType: research");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// onSpawn callback tests
+// ---------------------------------------------------------------------------
+
+describe("createForgeAgentTool onSpawn", () => {
+  test("calls onSpawn after successful artifact creation", async () => {
+    const store = createInMemoryForgeStore();
+    const onSpawn = mock<OnForgeAgentSpawn>(() => {});
+    const tool = createForgeAgentTool(createDeps({ store }), onSpawn);
+
+    const result = (await tool.execute({
+      name: "spawnAgent",
+      description: "An agent that triggers onSpawn",
+      manifestYaml: VALID_MANIFEST_YAML,
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    expect(onSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  test("onSpawn receives the saved AgentArtifact with manifestYaml", async () => {
+    const store = createInMemoryForgeStore();
+    let receivedArtifact: AgentArtifact | undefined;
+
+    const onSpawn: OnForgeAgentSpawn = (artifact) => {
+      receivedArtifact = artifact;
+    };
+    const tool = createForgeAgentTool(createDeps({ store }), onSpawn);
+
+    const result = (await tool.execute({
+      name: "spawnAgent",
+      description: "An agent that triggers onSpawn",
+      manifestYaml: VALID_MANIFEST_YAML,
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    expect(receivedArtifact).toBeDefined();
+    expect(receivedArtifact?.kind).toBe("agent");
+    expect(receivedArtifact?.manifestYaml).toBe(VALID_MANIFEST_YAML);
+    expect(receivedArtifact?.name).toBe("spawnAgent");
+    expect(receivedArtifact?.id).toBe(result.value.id);
+  });
+
+  test("backward compatible: works without onSpawn", async () => {
+    const store = createInMemoryForgeStore();
+    const tool = createForgeAgentTool(createDeps({ store }));
+
+    const result = (await tool.execute({
+      name: "noCallbackAgent",
+      description: "An agent without onSpawn callback",
+      manifestYaml: VALID_MANIFEST_YAML,
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    expect(result.value.kind).toBe("agent");
+    expect(result.value.name).toBe("noCallbackAgent");
+
+    // Artifact is saved normally
+    const loadResult = await store.load(result.value.id);
+    expect(loadResult.ok).toBe(true);
+  });
+
+  test("onSpawn failure does not prevent artifact save", async () => {
+    const store = createInMemoryForgeStore();
+    const onSpawn: OnForgeAgentSpawn = () => {
+      throw new Error("Spawn orchestration failed");
+    };
+    const tool = createForgeAgentTool(createDeps({ store }), onSpawn);
+
+    const result = (await tool.execute({
+      name: "failSpawnAgent",
+      description: "Agent whose onSpawn throws",
+      manifestYaml: VALID_MANIFEST_YAML,
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    // Result is still ok — artifact creation succeeded
+    expect(result.ok).toBe(true);
+    expect(result.value.kind).toBe("agent");
+
+    // Artifact is still in the store despite onSpawn failure
+    const loadResult = await store.load(result.value.id);
+    expect(loadResult.ok).toBe(true);
+    if (loadResult.ok) {
+      expect(loadResult.value.kind).toBe("agent");
+    }
+  });
+
+  test("onSpawn not called on forge failure", async () => {
+    const onSpawn = mock<OnForgeAgentSpawn>(() => {});
+    const tool = createForgeAgentTool(
+      createDeps({ manifestParser: createFailingParser("bad yaml") }),
+      onSpawn,
+    );
+
+    const result = (await tool.execute({
+      name: "failAgent",
+      description: "Agent with bad manifest",
+      manifestYaml: "invalid: [yaml: broken",
+    })) as {
+      readonly ok: false;
+      readonly error: { readonly stage: string; readonly code: string };
+    };
+
+    expect(result.ok).toBe(false);
+    expect(result.error.code).toBe("MANIFEST_PARSE_FAILED");
+    expect(onSpawn).toHaveBeenCalledTimes(0);
   });
 });

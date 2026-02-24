@@ -14,13 +14,11 @@ import type {
   ModelChunk,
   ModelRequest,
   ModelResponse,
-  SpawnLedger,
   TurnContext,
 } from "@koi/core";
 import { GOVERNANCE } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
 import { fnv1a } from "@koi/hash";
-import { createInMemorySpawnLedger } from "./spawn-ledger.js";
 import type {
   IterationLimits,
   LoopDetectionConfig,
@@ -551,14 +549,20 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
 
 /**
  * Options for creating a spawn guard middleware.
+ *
+ * The spawn guard enforces:
+ * - Depth limits (structural, PERMISSION error)
+ * - GovernanceComponent checks (PERMISSION error)
+ * - Fan-out limits (transient, RATE_LIMIT error)
+ *
+ * Ledger management (tree-wide process slots) is handled by `spawnChildAgent()`,
+ * which ties slot lifetime to child termination rather than tool call duration.
  */
 export interface CreateSpawnGuardOptions {
   /** Spawn governance policy. Merged with DEFAULT_SPAWN_POLICY. */
   readonly policy?: Partial<SpawnPolicy>;
   /** Depth of the current agent in the process tree (0 = root). */
   readonly agentDepth?: number;
-  /** Shared spawn ledger for tree-wide concurrency tracking. */
-  readonly ledger?: SpawnLedger;
   /** Agent entity — if present, GovernanceComponent will be consulted. */
   readonly agent?: Agent;
 }
@@ -571,26 +575,16 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
     ...configOverrides,
   };
 
-  // Validate warning thresholds at construction time
+  // Validate warning threshold at construction time
   validateWarningThreshold(
     "fanOutWarningAt",
     policy.fanOutWarningAt,
     "maxFanOut",
     policy.maxFanOut,
   );
-  validateWarningThreshold(
-    "totalProcessWarningAt",
-    policy.totalProcessWarningAt,
-    "maxTotalProcesses",
-    policy.maxTotalProcesses,
-  );
 
   // Build spawn tool ID set for O(1) lookup
   const spawnToolIds = new Set<string>(policy.spawnToolIds ?? DEFAULT_SPAWN_TOOL_IDS);
-
-  // Shared ledger — use provided or create in-memory default
-  const ledger: SpawnLedger =
-    options?.ledger ?? createInMemorySpawnLedger(policy.maxTotalProcesses);
 
   // Cache GovernanceComponent lookup — fixed after assembly, no need to look up per-call
   const governance = agent?.component<GovernanceComponent>(GOVERNANCE);
@@ -598,9 +592,8 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
   // let justified: mutable per-agent fan-out counter
   let directChildren = 0;
 
-  // let justified: mutable flags to fire warnings at most once per kind
+  // let justified: mutable flag to fire fan-out warning at most once
   let firedFanOutWarning = false;
-  let firedTotalWarning = false;
 
   return {
     name: "koi:spawn-guard",
@@ -649,20 +642,7 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
       // 4. Optimistic: increment fan-out before next()
       directChildren++;
 
-      // 5. Acquire ledger slot (total processes)
-      const acquired = await ledger.acquire();
-      if (!acquired) {
-        // Rollback fan-out
-        directChildren--;
-        const active = ledger.activeCount();
-        const cap = ledger.capacity();
-        throw KoiRuntimeError.from("RATE_LIMIT", `Max total processes exceeded: ${active}/${cap}`, {
-          retryable: true,
-          context: { activeProcesses: active, maxTotalProcesses: cap },
-        });
-      }
-
-      // 6. Fire warnings (synchronous, at most once per kind)
+      // 5. Fire fan-out warning (synchronous, at most once)
       if (
         !firedFanOutWarning &&
         policy.fanOutWarningAt !== undefined &&
@@ -678,28 +658,11 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
         });
       }
 
-      const currentActive = ledger.activeCount();
-      if (
-        !firedTotalWarning &&
-        policy.totalProcessWarningAt !== undefined &&
-        policy.onWarning !== undefined &&
-        currentActive >= policy.totalProcessWarningAt
-      ) {
-        firedTotalWarning = true;
-        policy.onWarning({
-          kind: "total_processes",
-          current: currentActive,
-          limit: ledger.capacity(),
-          warningAt: policy.totalProcessWarningAt,
-        });
-      }
-
-      // 7. Execute spawn — release slots when child completes (success or failure)
+      // 6. Execute spawn — release fan-out slot when child completes (success or failure)
       try {
         return await next(request);
       } finally {
         directChildren--;
-        await ledger.release();
       }
     },
   };

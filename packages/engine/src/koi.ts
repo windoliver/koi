@@ -45,17 +45,22 @@ import {
   runTurnHooks,
 } from "./compose.js";
 import { createIterationGuard, createLoopDetector, createSpawnGuard } from "./guards.js";
-import { createInMemorySpawnLedger } from "./spawn-ledger.js";
 import type { CreateKoiOptions, KoiRuntime } from "./types.js";
-import { DEFAULT_SPAWN_POLICY } from "./types.js";
 
 /** Generate a unique process ID for a new agent. */
-function generatePid(manifest: CreateKoiOptions["manifest"]): ProcessId {
+function generatePid(
+  manifest: { readonly name: string },
+  options?: {
+    readonly parent?: ProcessId;
+    readonly agentType?: "copilot" | "worker";
+  },
+): ProcessId {
   return {
     id: agentId(crypto.randomUUID()),
     name: manifest.name,
-    type: "copilot",
-    depth: 0,
+    type: options?.agentType ?? (options?.parent !== undefined ? "worker" : "copilot"),
+    depth: options?.parent !== undefined ? options.parent.depth + 1 : 0,
+    ...(options?.parent !== undefined ? { parent: options.parent.id } : {}),
   };
 }
 
@@ -101,13 +106,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   const { manifest, adapter, middleware = [], providers = [], forge } = options;
 
   // --- 1. Assemble the agent entity ---
-  const pid = generatePid(manifest);
+  const pid = generatePid(manifest, {
+    ...(options.parentPid !== undefined ? { parent: options.parentPid } : {}),
+    ...(options.agentType !== undefined ? { agentType: options.agentType } : {}),
+  });
   const agent = await AgentEntity.assemble(pid, manifest, providers);
 
   // --- 2. Create L1 guards (declarative, no mutation) ---
   const spawnPolicy = { ...options.spawn };
-  const effectiveMaxTotal = spawnPolicy.maxTotalProcesses ?? DEFAULT_SPAWN_POLICY.maxTotalProcesses;
-  const spawnLedger = options.spawnLedger ?? createInMemorySpawnLedger(effectiveMaxTotal);
   const guards: readonly KoiMiddleware[] = [
     createIterationGuard(options.limits),
     ...(options.loopDetection !== false
@@ -120,7 +126,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     createSpawnGuard({
       policy: spawnPolicy,
       agentDepth: pid.depth,
-      ledger: spawnLedger,
       agent,
     }),
   ];

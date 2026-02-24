@@ -23,6 +23,20 @@ import {
 } from "./shared.js";
 
 // ---------------------------------------------------------------------------
+// onSpawn callback type
+// ---------------------------------------------------------------------------
+
+/**
+ * Callback invoked after a successful forge_agent artifact creation.
+ * The caller (typically L3 or consumer code) uses this to trigger
+ * child agent assembly via `spawnChildAgent()`.
+ *
+ * Returns void — spawn orchestration results are captured by the caller
+ * through closure, keeping L2 independent of L1 types.
+ */
+export type OnForgeAgentSpawn = (artifact: AgentArtifact) => void | Promise<void>;
+
+// ---------------------------------------------------------------------------
 // Tool config
 // ---------------------------------------------------------------------------
 
@@ -161,6 +175,32 @@ async function forgeAgentHandler(
 // Public API
 // ---------------------------------------------------------------------------
 
-export function createForgeAgentTool(deps: ForgeDeps): Tool {
-  return createForgeTool(FORGE_AGENT_CONFIG, deps);
+export function createForgeAgentTool(deps: ForgeDeps, onSpawn?: OnForgeAgentSpawn): Tool {
+  if (onSpawn === undefined) {
+    return createForgeTool(FORGE_AGENT_CONFIG, deps);
+  }
+
+  // Wrap handler to call onSpawn after successful artifact creation
+  const wrappedConfig: ForgeToolConfig = {
+    ...FORGE_AGENT_CONFIG,
+    handler: async (input: unknown, handlerDeps: ForgeDeps) => {
+      const result = await forgeAgentHandler(input, handlerDeps);
+      if (result.ok) {
+        // Load the saved artifact and invoke the spawn callback
+        const loadResult = await handlerDeps.store.load(result.value.id);
+        if (loadResult.ok && loadResult.value.kind === "agent") {
+          // onSpawn failure should not prevent artifact save from succeeding
+          try {
+            await onSpawn(loadResult.value as AgentArtifact);
+          } catch {
+            // Swallow spawn errors — artifact is already saved.
+            // The caller can detect spawn failure through the callback closure.
+          }
+        }
+      }
+      return result;
+    },
+  };
+
+  return createForgeTool(wrappedConfig, deps);
 }

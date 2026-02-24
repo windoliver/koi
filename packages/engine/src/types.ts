@@ -5,14 +5,18 @@
 import type {
   Agent,
   AgentManifest,
+  AgentRegistry,
   ApprovalHandler,
   ChannelStatus,
+  ChildHandle,
   ComponentProvider,
   EngineAdapter,
   EngineEvent,
   EngineInput,
+  ForgeScope,
   KoiMiddleware,
   ProcessAccounter,
+  ProcessId,
   SpawnLedger,
   Tool,
   ToolDescriptor,
@@ -216,6 +220,12 @@ export interface CreateKoiOptions {
   readonly processAccounter?: ProcessAccounter;
   /** Optional status handler for turn lifecycle notifications. L1 threads this into TurnContext. */
   readonly sendStatus?: (status: ChannelStatus) => Promise<void>;
+  /** Parent process ID. When provided, child PID is generated with parent reference. */
+  readonly parentPid?: ProcessId;
+  /** Agent type override. Defaults to "worker" when parentPid is set, "copilot" otherwise. */
+  readonly agentType?: "copilot" | "worker";
+  /** Registry for agent lifecycle tracking. If provided, agent is registered on creation. */
+  readonly registry?: AgentRegistry;
 }
 
 export interface KoiRuntime {
@@ -225,4 +235,54 @@ export interface KoiRuntime {
   readonly run: (input: EngineInput) => AsyncIterable<EngineEvent>;
   /** Dispose the runtime and release resources. */
   readonly dispose: () => Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Spawn child types
+// ---------------------------------------------------------------------------
+
+/**
+ * Options for spawning a child agent via `spawnChildAgent()`.
+ *
+ * Ledger management is tied to child lifetime (released on termination),
+ * unlike the spawn guard's fan-out which is tied to tool call duration.
+ */
+export interface SpawnChildOptions {
+  /** The parsed agent manifest for the child. */
+  readonly manifest: AgentManifest;
+  /** The engine adapter for the child's agent loop. Caller provides explicitly. */
+  readonly adapter: EngineAdapter;
+  /** The parent agent entity (used for component inheritance). */
+  readonly parentAgent: Agent;
+  /** Shared spawn ledger for tree-wide process tracking. */
+  readonly spawnLedger: SpawnLedger;
+  /** Spawn governance policy. Used for depth/fan-out validation. */
+  readonly spawnPolicy: SpawnPolicy;
+  /** Registry for lifecycle tracking. If provided, child is registered with parentId. */
+  readonly registry?: AgentRegistry;
+  /** Additional middleware for the child. */
+  readonly middleware?: readonly KoiMiddleware[];
+  /** Additional component providers for the child (beyond inherited). */
+  readonly providers?: readonly ComponentProvider[];
+  /** Optional forge runtime for the child. */
+  readonly forge?: ForgeRuntime;
+  /** Optional scope checker for filtering inherited tools. */
+  readonly scopeChecker?: (toolName: string) => ForgeScope | undefined;
+  /** Iteration limits for the child. */
+  readonly limits?: Partial<IterationLimits>;
+  /** Loop detection config for the child. Set to false to disable. */
+  readonly loopDetection?: Partial<LoopDetectionConfig> | false;
+}
+
+/**
+ * Result of spawning a child agent.
+ * The caller decides whether to run the child synchronously or asynchronously.
+ */
+export interface SpawnResult {
+  /** The child's KoiRuntime. Caller invokes `runtime.run()` to start execution. */
+  readonly runtime: KoiRuntime;
+  /** Lifecycle handle for monitoring the child. Fires events on start/terminate. */
+  readonly handle: ChildHandle;
+  /** The child's process ID (convenience — also available as runtime.agent.pid). */
+  readonly childPid: ProcessId;
 }
