@@ -13,7 +13,7 @@ export { RetryConfig, computeBackoff, withRetry } from '@koi/errors';
  */
 
 interface ProviderAdapterConfig {
-    readonly apiKey: string;
+    readonly apiKey?: string | undefined;
     readonly baseUrl?: string | undefined;
     readonly timeoutMs?: number | undefined;
     readonly headers?: Readonly<Record<string, string>> | undefined;
@@ -58,6 +58,122 @@ interface ProviderAdapter {
 declare function createAnthropicAdapter(config: ProviderAdapterConfig): ProviderAdapter;
 
 /**
+ * Auto-discovery of local inference servers.
+ *
+ * Probes well-known local endpoints (Ollama, vLLM, LM Studio) in parallel
+ * and returns which providers are running and what models they serve.
+ */
+type LocalProviderKind = "ollama" | "vllm" | "lm-studio";
+interface DiscoveredProvider {
+    readonly kind: LocalProviderKind;
+    readonly baseUrl: string;
+    readonly models: readonly string[];
+}
+interface DiscoverOptions {
+    readonly timeoutMs?: number | undefined;
+    readonly providers?: readonly LocalProviderKind[] | undefined;
+}
+/**
+ * Discovers locally running inference servers.
+ *
+ * Probes Ollama, vLLM, and LM Studio in parallel. Returns only healthy
+ * providers. The caller decides which adapters to create from the results.
+ */
+declare function discoverLocalProviders(options?: DiscoverOptions): Promise<readonly DiscoveredProvider[]>;
+
+/**
+ * LM Studio provider adapter.
+ *
+ * Connects to a local LM Studio instance via its OpenAI-compatible API.
+ * No authentication required. Implements health checking via /v1/models.
+ */
+
+interface LMStudioAdapterConfig {
+    readonly baseUrl?: string | undefined;
+    readonly timeoutMs?: number | undefined;
+    readonly headers?: Readonly<Record<string, string>> | undefined;
+    readonly healthCheckTimeoutMs?: number | undefined;
+}
+/**
+ * Creates an LM Studio provider adapter.
+ *
+ * Uses the OpenAI-compatible API at \`/v1/chat/completions\`.
+ * No API key required. Implements \`checkHealth()\` via \`GET /v1/models\`.
+ */
+declare function createLMStudioAdapter(config?: LMStudioAdapterConfig): ProviderAdapter;
+
+/**
+ * Ollama provider adapter.
+ *
+ * Connects to a local Ollama instance via its OpenAI-compatible API.
+ * No authentication required. Implements health checking via /api/tags.
+ */
+
+interface OllamaAdapterConfig {
+    readonly baseUrl?: string | undefined;
+    readonly timeoutMs?: number | undefined;
+    readonly headers?: Readonly<Record<string, string>> | undefined;
+    readonly healthCheckTimeoutMs?: number | undefined;
+}
+/**
+ * Creates an Ollama provider adapter.
+ *
+ * Uses the OpenAI-compatible API at \`/v1/chat/completions\`.
+ * No API key required. Implements \`checkHealth()\` via \`GET /api/tags\`.
+ */
+declare function createOllamaAdapter(config?: OllamaAdapterConfig): ProviderAdapter;
+
+/**
+ * Shared HTTP + SSE utilities for provider adapters.
+ *
+ * Consolidates fetch-with-timeout, SSE stream parsing, retry-after parsing,
+ * and abort error handling to eliminate duplication across adapters.
+ */
+
+interface FetchWithTimeoutOptions {
+    readonly url: string;
+    readonly method: "GET" | "POST";
+    readonly headers: Readonly<Record<string, string>>;
+    readonly body?: string | undefined;
+    readonly timeoutMs: number;
+    readonly signal?: AbortSignal | undefined;
+}
+interface FetchWithTimeoutResult {
+    readonly response: Response;
+    readonly clearTimer: () => void;
+}
+/**
+ * Fetches a URL with a timeout and optional caller-provided AbortSignal.
+ *
+ * Composes the caller signal with an internal timeout AbortController via
+ * \`AbortSignal.any()\`. Returns the response and a \`clearTimer\` callback
+ * that the caller must invoke to prevent timer leaks.
+ */
+declare function fetchWithTimeout(options: FetchWithTimeoutOptions): Promise<FetchWithTimeoutResult>;
+/**
+ * Discriminates caller-initiated abort from internal timeout and returns
+ * a typed KoiError.
+ */
+declare function handleAbortError(error: unknown, providerName: string, timeoutMs: number, callerSignal?: AbortSignal | undefined): KoiError;
+/**
+ * Maps an HTTP status code to a KoiErrorCode.
+ */
+declare function mapStatusToErrorCode(status: number): KoiError["code"];
+/**
+ * Extracts Retry-After header value as milliseconds.
+ */
+declare function parseRetryAfter(headers: Headers): number | undefined;
+/**
+ * Generic SSE stream parser. Reads chunks from a ReadableStream, buffers
+ * lines, and yields parsed events via the provided \`parseLine\` callback.
+ *
+ * @param body - The response body stream
+ * @param parseLine - Parses a \`data: ...\` payload string into T, or undefined to skip
+ * @param onChunk - Called on each raw chunk for idle timeout reset
+ */
+declare function parseSSEStream<T>(body: ReadableStream<Uint8Array>, parseLine: (data: string) => T | undefined, onChunk?: () => void): AsyncGenerator<T>;
+
+/**
  * OpenAI provider adapter.
  *
  * Normalizes OpenAI chat completion API to the ProviderAdapter interface.
@@ -66,14 +182,40 @@ declare function createAnthropicAdapter(config: ProviderAdapterConfig): Provider
 
 /**
  * Creates an OpenAI provider adapter.
+ *
+ * Delegates to the shared OpenAI-compatible base adapter with OpenAI-specific defaults.
  */
 declare function createOpenAIAdapter(config: ProviderAdapterConfig): ProviderAdapter;
 
 /**
+ * OpenAI-compatible base adapter.
+ *
+ * Creates a ProviderAdapter that speaks the OpenAI chat completions API format.
+ * Used by OpenAI, OpenRouter, and Ollama adapters — each configures provider-specific
+ * defaults (base URL, auth, headers) and delegates here.
+ */
+
+interface OpenAICompatibleConfig {
+    readonly baseUrl: string;
+    readonly timeoutMs?: number | undefined;
+    readonly apiKey?: string | undefined;
+    readonly headers?: Readonly<Record<string, string>> | undefined;
+    readonly providerName: string;
+    readonly defaultModel?: string | undefined;
+}
+/**
+ * Creates a ProviderAdapter using the OpenAI-compatible chat completions API.
+ *
+ * Reuses \`toOpenAIRequest\`/\`fromOpenAIResponse\` from the OpenAI adapter for
+ * request/response transformation. Auth is optional for local providers (Ollama).
+ */
+declare function createOpenAICompatibleAdapter(config: OpenAICompatibleConfig): Pick<ProviderAdapter, "complete" | "stream">;
+
+/**
  * OpenRouter provider adapter.
  *
- * OpenRouter exposes an OpenAI-compatible API, so we reuse the OpenAI
- * request/response transforms. Only the auth headers and base URL differ.
+ * OpenRouter exposes an OpenAI-compatible API, so we delegate to the shared
+ * OpenAI-compatible base adapter with OpenRouter-specific headers.
  */
 
 interface OpenRouterAdapterConfig extends ProviderAdapterConfig {
@@ -85,11 +227,31 @@ interface OpenRouterAdapterConfig extends ProviderAdapterConfig {
 /**
  * Creates an OpenRouter provider adapter.
  *
- * OpenRouter is OpenAI-compatible, so this adapter delegates request/response
- * transformation to the shared OpenAI helpers and adds OpenRouter-specific
- * headers (\`HTTP-Referer\`, \`X-Title\`).
+ * Delegates to the shared OpenAI-compatible base adapter with
+ * OpenRouter-specific headers (\`HTTP-Referer\`, \`X-Title\`).
  */
 declare function createOpenRouterAdapter(config: OpenRouterAdapterConfig): ProviderAdapter;
+
+/**
+ * vLLM provider adapter.
+ *
+ * Connects to a local vLLM instance via its OpenAI-compatible API.
+ * No authentication required. Implements health checking via /health.
+ */
+
+interface VLLMAdapterConfig {
+    readonly baseUrl?: string | undefined;
+    readonly timeoutMs?: number | undefined;
+    readonly headers?: Readonly<Record<string, string>> | undefined;
+    readonly healthCheckTimeoutMs?: number | undefined;
+}
+/**
+ * Creates a vLLM provider adapter.
+ *
+ * Uses the OpenAI-compatible API at \`/v1/chat/completions\`.
+ * No API key required. Implements \`checkHealth()\` via \`GET /health\`.
+ */
+declare function createVLLMAdapter(config?: VLLMAdapterConfig): ProviderAdapter;
 
 /**
  * Types for the cascade routing strategy.
@@ -164,6 +326,7 @@ interface CascadeCostMetrics {
     readonly totalRequests: number;
     readonly totalEscalations: number;
     readonly totalEstimatedCost: number;
+    readonly estimatedCostSavings: number;
 }
 type ComplexityTier = "LIGHT" | "MEDIUM" | "HEAVY";
 interface ClassificationResult {
@@ -307,6 +470,21 @@ interface ModelTargetConfig {
     readonly weight?: number;
     readonly enabled?: boolean;
     readonly adapterConfig: ProviderAdapterConfig;
+    readonly capabilities?: ModelCapabilitiesPartial | undefined;
+    readonly costPerInputToken?: number | undefined;
+    readonly costPerOutputToken?: number | undefined;
+}
+interface ModelCapabilitiesPartial {
+    readonly streaming?: boolean | undefined;
+    readonly functionCalling?: boolean | undefined;
+    readonly vision?: boolean | undefined;
+    readonly jsonMode?: boolean | undefined;
+    readonly maxContextTokens?: number | undefined;
+    readonly maxOutputTokens?: number | undefined;
+}
+interface HealthProbeConfig {
+    readonly intervalMs?: number | undefined;
+    readonly onlyLocal?: boolean | undefined;
 }
 interface ModelRouterConfig {
     readonly targets: readonly ModelTargetConfig[];
@@ -314,6 +492,7 @@ interface ModelRouterConfig {
     readonly retry?: Partial<RetryConfig>;
     readonly circuitBreaker?: Partial<CircuitBreakerConfig>;
     readonly cascade?: CascadeConfig;
+    readonly healthProbe?: HealthProbeConfig;
 }
 interface ResolvedRouterConfig {
     readonly targets: readonly ResolvedTargetConfig[];
@@ -321,6 +500,7 @@ interface ResolvedRouterConfig {
     readonly retry: RetryConfig;
     readonly circuitBreaker: CircuitBreakerConfig;
     readonly cascade?: ResolvedCascadeConfig;
+    readonly healthProbe?: HealthProbeConfig;
 }
 interface ResolvedTargetConfig {
     readonly provider: string;
@@ -328,6 +508,9 @@ interface ResolvedTargetConfig {
     readonly weight: number;
     readonly enabled: boolean;
     readonly adapterConfig: ProviderAdapterConfig;
+    readonly capabilities?: ModelCapabilitiesPartial | undefined;
+    readonly costPerInputToken?: number | undefined;
+    readonly costPerOutputToken?: number | undefined;
 }
 
 /**
@@ -380,6 +563,7 @@ interface RouterMetrics {
     readonly totalFailures: number;
     readonly requestsByTarget: Readonly<Record<string, number>>;
     readonly failuresByTarget: Readonly<Record<string, number>>;
+    readonly totalEstimatedCost: number;
     readonly cascade?: CascadeCostMetrics;
 }
 interface ModelRouter {
@@ -423,6 +607,6 @@ declare function createModelRouter(config: ResolvedRouterConfig, adapters: Reado
  */
 declare function createModelRouterMiddleware(router: ModelRouter): KoiMiddleware;
 
-export { type CascadeAttempt, type CascadeClassifier, type CascadeConfig, type CascadeCostMetrics, type CascadeEvaluationResult, type CascadeEvaluator, type CascadeResult, type CascadeTierConfig, type CircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerSnapshot, type CircuitState, type ClassificationResult, type ComplexityClassifierOptions, type ComplexityTier, type CompositionStrategy, type DimensionKey, type FallbackAttempt, type FallbackResult, type FallbackTarget, type KeywordEvaluatorOptions, type LengthHeuristicOptions, type ModelRouter, type ModelRouterConfig, type ModelRouterOptions, type ModelTargetConfig, type OpenRouterAdapterConfig, type ProviderAdapter, type ProviderAdapterConfig, type ResolvedCascadeConfig, type ResolvedRouterConfig, type RouterMetrics, type RoutingStrategy, type StreamChunk, type TierCostMetrics, type VerbalizedEvaluatorOptions, type WeightedEvaluator, composeEvaluators, createAnthropicAdapter, createCascadeMetricsTracker, createCircuitBreaker, createComplexityClassifier, createKeywordEvaluator, createLengthHeuristicEvaluator, createModelRouter, createModelRouterMiddleware, createOpenAIAdapter, createOpenRouterAdapter, createVerbalizedEvaluator, withFallback };
+export { type CascadeAttempt, type CascadeClassifier, type CascadeConfig, type CascadeCostMetrics, type CascadeEvaluationResult, type CascadeEvaluator, type CascadeResult, type CascadeTierConfig, type CircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerSnapshot, type CircuitState, type ClassificationResult, type ComplexityClassifierOptions, type ComplexityTier, type CompositionStrategy, type DimensionKey, type DiscoverOptions, type DiscoveredProvider, type FallbackAttempt, type FallbackResult, type FallbackTarget, type FetchWithTimeoutOptions, type FetchWithTimeoutResult, type HealthProbeConfig, type KeywordEvaluatorOptions, type LMStudioAdapterConfig, type LengthHeuristicOptions, type LocalProviderKind, type ModelCapabilitiesPartial, type ModelRouter, type ModelRouterConfig, type ModelRouterOptions, type ModelTargetConfig, type OllamaAdapterConfig, type OpenAICompatibleConfig, type OpenRouterAdapterConfig, type ProviderAdapter, type ProviderAdapterConfig, type ResolvedCascadeConfig, type ResolvedRouterConfig, type RouterMetrics, type RoutingStrategy, type StreamChunk, type TierCostMetrics, type VLLMAdapterConfig, type VerbalizedEvaluatorOptions, type WeightedEvaluator, composeEvaluators, createAnthropicAdapter, createCascadeMetricsTracker, createCircuitBreaker, createComplexityClassifier, createKeywordEvaluator, createLMStudioAdapter, createLengthHeuristicEvaluator, createModelRouter, createModelRouterMiddleware, createOllamaAdapter, createOpenAIAdapter, createOpenAICompatibleAdapter, createOpenRouterAdapter, createVLLMAdapter, createVerbalizedEvaluator, discoverLocalProviders, fetchWithTimeout, handleAbortError, mapStatusToErrorCode, parseRetryAfter, parseSSEStream, withFallback };
 "
 `;
