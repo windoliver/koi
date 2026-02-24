@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { type A11yNode, serializeA11yTree } from "./a11y-serializer.js";
+import { type A11yNode, parseAriaYaml, serializeA11yTree } from "./a11y-serializer.js";
 
 describe("serializeA11yTree", () => {
   describe("basic structure", () => {
@@ -247,6 +247,172 @@ describe("serializeA11yTree", () => {
       const node: A11yNode = { role: "WebArea", name: "Test" };
       const result = serializeA11yTree(node);
       expect(result.truncated).toBe(false);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseAriaYaml
+// ---------------------------------------------------------------------------
+
+describe("parseAriaYaml", () => {
+  describe("basic parsing", () => {
+    it("parses a single non-interactive element", () => {
+      const yaml = '- heading "Example Domain" [level=1]';
+      const result = parseAriaYaml(yaml);
+      expect(result.text).toContain('heading "Example Domain"');
+      expect(result.text).toContain("level=1");
+      expect(result.refs).toEqual({});
+      expect(result.truncated).toBe(false);
+    });
+
+    it("parses a link and assigns a ref", () => {
+      const yaml = '- link "Learn more"';
+      const result = parseAriaYaml(yaml);
+      expect(result.text).toContain('link "Learn more"');
+      expect(result.text).toContain("[ref=e1]");
+      expect(result.refs).toEqual({ e1: { role: "link", name: "Learn more" } });
+    });
+
+    it("parses multiple interactive elements with sequential refs", () => {
+      const yaml = ['- button "Submit"', '- link "Home"', '- textbox "Email"'].join("\n");
+      const result = parseAriaYaml(yaml);
+      expect(Object.keys(result.refs)).toEqual(["e1", "e2", "e3"]);
+      expect(result.refs.e1).toEqual({ role: "button", name: "Submit" });
+      expect(result.refs.e2).toEqual({ role: "link", name: "Home" });
+      expect(result.refs.e3).toEqual({ role: "textbox", name: "Email" });
+    });
+
+    it("non-interactive elements get no ref", () => {
+      const yaml = [
+        '- heading "Title" [level=1]',
+        "- paragraph: some text",
+        '- link "Click me"',
+      ].join("\n");
+      const result = parseAriaYaml(yaml);
+      expect(Object.keys(result.refs)).toEqual(["e1"]);
+      expect(result.refs.e1).toEqual({ role: "link", name: "Click me" });
+    });
+
+    it("skips metadata lines starting with - /", () => {
+      const yaml = [
+        '- link "Learn more":',
+        "  - /url: https://iana.org/domains/example",
+        '- button "Submit"',
+      ].join("\n");
+      const result = parseAriaYaml(yaml);
+      expect(result.text).not.toContain("/url");
+      expect(Object.keys(result.refs)).toHaveLength(2);
+    });
+
+    it("skips blank lines", () => {
+      const yaml = ['- button "A"', "", "  ", '- button "B"'].join("\n");
+      const result = parseAriaYaml(yaml);
+      expect(Object.keys(result.refs)).toHaveLength(2);
+    });
+
+    it("handles elements without a name", () => {
+      const yaml = "- button";
+      const result = parseAriaYaml(yaml);
+      expect(result.text).toBe("button [ref=e1]");
+      expect(result.refs.e1).toEqual({ role: "button" });
+      expect(result.refs.e1).not.toHaveProperty("name");
+    });
+  });
+
+  describe("indentation / depth", () => {
+    it("preserves indentation as depth in output", () => {
+      const yaml = ["- document:", '  - heading "Title"', '    - link "Nested"'].join("\n");
+      const result = parseAriaYaml(yaml);
+      const lines = result.text.split("\n");
+      expect(lines[0]).toMatch(/^document/);
+      expect(lines[1]).toMatch(/^ {2}heading/);
+      expect(lines[2]).toMatch(/^ {4}link/);
+    });
+
+    it("real example.com ariaSnapshot YAML produces refs for links", () => {
+      const yaml = [
+        '- heading "Example Domain" [level=1]',
+        "- paragraph: This domain is for use in examples.",
+        "- paragraph:",
+        '  - link "Learn more":',
+        "    - /url: https://iana.org/domains/example",
+      ].join("\n");
+      const result = parseAriaYaml(yaml);
+      expect(result.refs).toEqual({ e1: { role: "link", name: "Learn more" } });
+      expect(result.text).toContain('link "Learn more"');
+      expect(result.text).toContain("[ref=e1]");
+      expect(result.text).not.toContain("/url");
+    });
+  });
+
+  describe("attribute parsing", () => {
+    it("preserves bracket attributes in output", () => {
+      const yaml = '- heading "Title" [level=2]';
+      const result = parseAriaYaml(yaml);
+      expect(result.text).toContain("level=2");
+    });
+
+    it("preserves multiple bracket attributes", () => {
+      const yaml = '- textbox "Name" [required, disabled]';
+      const result = parseAriaYaml(yaml);
+      expect(result.text).toContain("required");
+      expect(result.text).toContain("disabled");
+    });
+
+    it("appends ref after other attributes for interactive elements", () => {
+      const yaml = '- checkbox "Subscribe" [checked]';
+      const result = parseAriaYaml(yaml);
+      const line = result.text;
+      const checkIdx = line.indexOf("checked");
+      const refIdx = line.indexOf("ref=e1");
+      expect(checkIdx).toBeGreaterThan(-1);
+      expect(refIdx).toBeGreaterThan(checkIdx);
+    });
+  });
+
+  describe("truncation", () => {
+    it("truncates at maxDepth and sets truncated=true", () => {
+      const yaml = ["- document:", "  - main:", "    - section:", '      - button "Deep"'].join(
+        "\n",
+      );
+      // maxDepth=1 means only depth 0 and 1 visible
+      const result = parseAriaYaml(yaml, { maxDepth: 1 });
+      expect(result.truncated).toBe(true);
+      expect(result.text).not.toContain("button");
+      expect(result.text).toContain("main");
+    });
+
+    it("truncates at maxTokens and sets truncated=true", () => {
+      const lines = Array.from(
+        { length: 50 },
+        (_, i) => `- button "Button number ${i} with a longer name"`,
+      );
+      const result = parseAriaYaml(lines.join("\n"), { maxTokens: 20 });
+      expect(result.truncated).toBe(true);
+      expect(Object.keys(result.refs).length).toBeGreaterThan(0);
+      expect(Object.keys(result.refs).length).toBeLessThan(50);
+    });
+
+    it("does not truncate within default limits", () => {
+      const yaml = ['- heading "Welcome" [level=1]', '- button "Go"', '- link "Back"'].join("\n");
+      const result = parseAriaYaml(yaml);
+      expect(result.truncated).toBe(false);
+    });
+  });
+
+  describe("empty input", () => {
+    it("returns empty result for empty string", () => {
+      const result = parseAriaYaml("");
+      expect(result.text).toBe("");
+      expect(result.refs).toEqual({});
+      expect(result.truncated).toBe(false);
+    });
+
+    it("returns empty result for whitespace-only string", () => {
+      const result = parseAriaYaml("   \n  \n");
+      expect(result.text).toBe("");
+      expect(result.refs).toEqual({});
     });
   });
 });
