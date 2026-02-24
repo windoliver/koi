@@ -31,8 +31,11 @@ export interface A11yNode {
   readonly children?: readonly A11yNode[];
 }
 
-/** Roles that receive [ref=eN] markers and can be targeted by interaction tools. */
-const INTERACTIVE_ROLES = new Set<string>([
+/**
+ * Roles that receive [ref=eN] markers and can be targeted by interaction tools.
+ * Also used as the valid AriaRole set for type-safe getByRole() calls.
+ */
+export const VALID_ROLES: ReadonlySet<string> = new Set<string>([
   "button",
   "link",
   "textbox",
@@ -57,10 +60,17 @@ const INTERACTIVE_ROLES = new Set<string>([
   "rowheader",
 ]);
 
+/** Type guard: narrows a string to a valid ARIA role for getByRole(). */
+export function isAriaRole(role: string): role is string & { readonly __ariaRole: true } {
+  return VALID_ROLES.has(role);
+}
+
 export interface SerializeResult {
   readonly text: string;
   readonly refs: Readonly<Record<string, BrowserRefInfo>>;
   readonly truncated: boolean;
+  /** Page title extracted from the first document/WebArea node, if present. */
+  readonly title?: string;
 }
 
 // 1 token ≈ 4 chars (conservative estimate for structured text)
@@ -89,6 +99,10 @@ export function serializeA11yTree(
   const lines: string[] = [];
   let charCount = 0;
   let truncated = false;
+  let title: string | undefined;
+
+  // Track occurrence counts for nthIndex: key = "role\0name"
+  const occurrenceCount = new Map<string, number>();
 
   function visit(node: A11yNode, depth: number): boolean {
     if (truncated) return false;
@@ -101,8 +115,13 @@ export function serializeA11yTree(
       return false;
     }
 
+    // Extract title from root WebArea/document node
+    if (depth === 0 && (node.role === "WebArea" || node.role === "document") && node.name) {
+      title = node.name;
+    }
+
     const indent = "  ".repeat(depth);
-    const isInteractive = INTERACTIVE_ROLES.has(node.role);
+    const isInteractive = VALID_ROLES.has(node.role);
 
     let line = `${indent}${node.role}`;
     if (node.name) {
@@ -124,10 +143,15 @@ export function serializeA11yTree(
     if (node.description) attrs.push(`desc="${node.description}"`);
 
     if (isInteractive) {
+      const occKey = `${node.role}\0${node.name ?? ""}`;
+      const nthIndex = occurrenceCount.get(occKey) ?? 0;
+      occurrenceCount.set(occKey, nthIndex + 1);
+
       const refKey = `e${++refCounter}`;
       refs[refKey] = {
         role: node.role,
         ...(node.name ? { name: node.name } : {}),
+        nthIndex,
       };
       attrs.push(`ref=${refKey}`);
     }
@@ -161,6 +185,7 @@ export function serializeA11yTree(
     text: lines.join("\n"),
     refs,
     truncated,
+    ...(title !== undefined ? { title } : {}),
   };
 }
 
@@ -169,13 +194,15 @@ export function serializeA11yTree(
  * text with [ref=eN] markers — the same format as serializeA11yTree().
  *
  * Input example:
+ *   - document "Page Title"
  *   - heading "Example Domain" [level=1]
  *   - paragraph: This domain is for use in examples.
  *   - paragraph:
- *     - link "Learn more":
+ *     - link "Learn more" [aria-ref=e12]:
  *       - /url: https://iana.org/domains/example
  *
  * Lines starting with `- /key:` are metadata properties (e.g. /url) and are skipped.
+ * Native `aria-ref` attributes from Playwright are captured in BrowserRefInfo.ariaRef.
  */
 export function parseAriaYaml(yaml: string, options?: BrowserSnapshotOptions): SerializeResult {
   const maxTokens = options?.maxTokens ?? 4000;
@@ -187,6 +214,10 @@ export function parseAriaYaml(yaml: string, options?: BrowserSnapshotOptions): S
   const lines: string[] = [];
   let charCount = 0;
   let truncated = false;
+  let title: string | undefined;
+
+  // Track occurrence counts for nthIndex: key = "role\0name"
+  const occurrenceCount = new Map<string, number>();
 
   // Matches: `  - role "name" [attrs]: inline-text`
   // Groups: [1]=indent, [2]=role, [3]=name (opt), [4]=attrs (opt), [5]=inline (opt)
@@ -214,25 +245,53 @@ export function parseAriaYaml(yaml: string, options?: BrowserSnapshotOptions): S
     const role = m[2] ?? "";
     const name = m[3] ?? "";
     const rawAttrs = m[4] ?? "";
-    const isInteractive = INTERACTIVE_ROLES.has(role);
+    const isInteractive = VALID_ROLES.has(role);
+
+    // Extract page title from root document/WebArea node
+    if (depth === 0 && (role === "document" || role === "WebArea") && name) {
+      title = name;
+    }
 
     let outLine = `${"  ".repeat(depth)}${role}`;
     if (name) outLine += ` "${name}"`;
 
-    const attrs: string[] = rawAttrs
+    // Parse raw attrs — look for native aria-ref from Playwright
+    const attrParts: string[] = rawAttrs
       ? rawAttrs
           .split(",")
           .map((a) => a.trim())
           .filter(Boolean)
       : [];
 
-    if (isInteractive) {
-      const refKey = `e${++refCounter}`;
-      refs[refKey] = { role, ...(name ? { name } : {}) };
-      attrs.push(`ref=${refKey}`);
+    // Extract native aria-ref if present (e.g. "aria-ref=e12")
+    let nativeAriaRef: string | undefined;
+    const outAttrs: string[] = [];
+    for (const part of attrParts) {
+      const ariaRefMatch = /^aria-ref=(.+)$/.exec(part);
+      if (ariaRefMatch) {
+        nativeAriaRef = ariaRefMatch[1];
+        // Don't pass the native aria-ref through to output — we'll re-emit as ref=eN
+      } else {
+        outAttrs.push(part);
+      }
     }
 
-    if (attrs.length > 0) outLine += ` [${attrs.join(", ")}]`;
+    if (isInteractive) {
+      const occKey = `${role}\0${name}`;
+      const nthIndex = occurrenceCount.get(occKey) ?? 0;
+      occurrenceCount.set(occKey, nthIndex + 1);
+
+      const refKey = `e${++refCounter}`;
+      refs[refKey] = {
+        role,
+        ...(name ? { name } : {}),
+        ...(nativeAriaRef !== undefined ? { ariaRef: nativeAriaRef } : {}),
+        nthIndex,
+      };
+      outAttrs.push(`ref=${refKey}`);
+    }
+
+    if (outAttrs.length > 0) outLine += ` [${outAttrs.join(", ")}]`;
 
     const lineLen = outLine.length + 1;
     if (charCount + lineLen > maxChars) {
@@ -243,5 +302,10 @@ export function parseAriaYaml(yaml: string, options?: BrowserSnapshotOptions): S
     lines.push(outLine);
   }
 
-  return { text: lines.join("\n"), refs, truncated };
+  return {
+    text: lines.join("\n"),
+    refs,
+    truncated,
+    ...(title !== undefined ? { title } : {}),
+  };
 }
