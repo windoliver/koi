@@ -252,6 +252,16 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-context-editing": {
+      "name": "@koi/middleware-context-editing",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-event-trace": {
       "name": "@koi/middleware-event-trace",
       "version": "0.0.0",
@@ -799,6 +809,8 @@
     "@koi/mcp": ["@koi/mcp@workspace:packages/mcp"],
 
     "@koi/middleware-audit": ["@koi/middleware-audit@workspace:packages/middleware-audit"],
+
+    "@koi/middleware-context-editing": ["@koi/middleware-context-editing@workspace:packages/middleware-context-editing"],
 
     "@koi/middleware-event-trace": ["@koi/middleware-event-trace@workspace:packages/middleware-event-trace"],
 
