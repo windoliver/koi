@@ -11,7 +11,7 @@ export type { CreateSoulOptions, SoulUserInput } from "./config.js";
 export {
   DEFAULT_SOUL_MAX_TOKENS,
   DEFAULT_USER_MAX_TOKENS,
-  validateConfig,
+  validateSoulConfig,
 } from "./config.js";
 export type { ResolvedContent, ResolveOptions } from "./resolve.js";
 export { resolveSoulContent, resolveUserContent } from "./resolve.js";

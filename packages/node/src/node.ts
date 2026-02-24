@@ -47,7 +47,7 @@ import type {
   NodeEvent,
   NodeEventListener,
   NodeFrame,
-  NodeFrameType,
+  NodeFrameKind,
   NodeSessionStore,
   NodeState,
 } from "./types.js";
@@ -186,7 +186,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
                 nodeId,
                 agentId: String(frame.agentId),
                 correlationId: generateCorrelationId(nodeId),
-                type: frame.frameType as NodeFrame["type"],
+                kind: frame.frameType as NodeFrame["kind"],
                 payload: frame.payload,
               });
             },
@@ -204,7 +204,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
   const discovery: DiscoveryService = createDiscoveryService(config.discovery);
   const monitor: MemoryMonitor = createMemoryMonitor(config.resources, host, emit);
   // Business frame types that should be persisted for crash recovery
-  const PERSISTENT_FRAME_TYPES: ReadonlySet<NodeFrameType> = new Set([
+  const PERSISTENT_FRAME_KINDS: ReadonlySet<NodeFrameKind> = new Set([
     "agent:message",
     "tool_result",
     "tool_error",
@@ -220,7 +220,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
       deliveryMgr !== undefined &&
       checkpointMgr !== undefined &&
       frame.agentId.length > 0 &&
-      PERSISTENT_FRAME_TYPES.has(frame.type)
+      PERSISTENT_FRAME_KINDS.has(frame.kind)
     ) {
       const sessionId = checkpointMgr.getSessionId(frame.agentId);
       if (sessionId !== undefined) {
@@ -277,7 +277,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
       frameCounters.updateRemote(frame.agentId, currentState.remoteSeq + 1);
     }
 
-    switch (frame.type) {
+    switch (frame.kind) {
       case "agent:terminate": {
         const agentId = frame.agentId;
         if (agentId.length > 0) {
@@ -291,7 +291,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
         break;
       }
       default:
-        // Other frame types handled by specific subsystems
+        // Other frame kinds handled by specific subsystems
         break;
     }
   });
@@ -387,7 +387,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
           nodeId,
           agentId: "",
           correlationId: generateCorrelationId(nodeId),
-          type: "node:handshake",
+          kind: "node:handshake",
           payload: {
             nodeId,
             version: "0.0.0",
@@ -404,7 +404,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
           nodeId,
           agentId: "",
           correlationId: generateCorrelationId(nodeId),
-          type: "node:capabilities",
+          kind: "node:capabilities",
           payload: {
             nodeType: config.mode,
             tools,

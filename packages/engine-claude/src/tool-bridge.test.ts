@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { Agent, JsonObject, Tool, ToolDescriptor } from "@koi/core";
 import type { ToolRegistry } from "./tool-bridge.js";
-import { buildToolRegistry, createToolBridgeMcpServer, executeBridgedTool } from "./tool-bridge.js";
+import {
+  createToolBridgeMcpServer,
+  createToolRegistry,
+  executeBridgedTool,
+} from "./tool-bridge.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -34,10 +38,10 @@ function createMockAgent(tools: ReadonlyMap<string, Tool>): Agent {
 }
 
 // ---------------------------------------------------------------------------
-// buildToolRegistry
+// createToolRegistry
 // ---------------------------------------------------------------------------
 
-describe("buildToolRegistry", () => {
+describe("createToolRegistry", () => {
   test("builds registry from agent tool components", () => {
     const tools = new Map<string, Tool>();
     tools.set(
@@ -64,7 +68,7 @@ describe("buildToolRegistry", () => {
     );
 
     const agent = createMockAgent(tools);
-    const registry = buildToolRegistry(agent);
+    const registry = createToolRegistry(agent);
 
     expect(registry.tools.size).toBe(2);
     expect(registry.descriptors).toHaveLength(2);
@@ -76,7 +80,7 @@ describe("buildToolRegistry", () => {
 
   test("returns empty registry when agent has no tools", () => {
     const agent = createMockAgent(new Map());
-    const registry = buildToolRegistry(agent);
+    const registry = createToolRegistry(agent);
 
     expect(registry.tools.size).toBe(0);
     expect(registry.descriptors).toHaveLength(0);
@@ -94,7 +98,7 @@ describe("buildToolRegistry", () => {
     );
 
     const agent = createMockAgent(tools);
-    const registry = buildToolRegistry(agent);
+    const registry = createToolRegistry(agent);
 
     expect(registry.descriptors).toHaveLength(1);
     expect(registry.descriptors[0]?.inputSchema).toEqual({
@@ -115,7 +119,7 @@ describe("buildToolRegistry", () => {
     );
 
     const agent = createMockAgent(tools);
-    const registry = buildToolRegistry(agent);
+    const registry = createToolRegistry(agent);
 
     expect(registry.descriptors[0]?.description).toBe("My tool description");
   });

@@ -22,7 +22,7 @@ import { createHeartbeatMonitor } from "./heartbeat.js";
 import { decodeFrame, encodeFrame, generateCorrelationId } from "./protocol.js";
 import {
   AUTH_FAILURE_CLOSE_CODE,
-  calculateReconnectDelay,
+  computeReconnectDelay,
   createReconnectState,
   isAuthFailure,
   isCleanClose,
@@ -139,7 +139,7 @@ export function createTransport(
     setState("reconnecting");
     emit("reconnecting", { attempt: reconnectState.attempt });
 
-    const delay = calculateReconnectDelay(reconnectState.attempt, gatewayConfig);
+    const delay = computeReconnectDelay(reconnectState.attempt, gatewayConfig);
     reconnectTimer = setTimeout(() => {
       void connectInternal();
     }, delay);
@@ -153,7 +153,7 @@ export function createTransport(
             nodeId,
             agentId: "",
             correlationId: generateCorrelationId(nodeId),
-            type: "node:heartbeat",
+            kind: "node:heartbeat",
             payload: { kind: "ping" },
           };
           ws.send(encodeFrame(pingFrame));
@@ -242,14 +242,14 @@ export function createTransport(
 
         // Route auth frames to active handshake
         if (activeAuth !== undefined) {
-          if (frame.type === "node:auth_ack" || frame.type === "node:auth_challenge") {
+          if (frame.kind === "node:auth_ack" || frame.kind === "node:auth_challenge") {
             activeAuth.handleFrame(frame);
             return;
           }
         }
 
         // Handle heartbeat pong internally
-        if (frame.type === "node:heartbeat") {
+        if (frame.kind === "node:heartbeat") {
           const payload = frame.payload;
           if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
             // Safe: null/array excluded, typeof "object" confirmed

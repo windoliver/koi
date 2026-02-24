@@ -15,7 +15,7 @@ export interface MemoryMiddlewareConfig {
   readonly onStoreError?: (error: unknown) => void;
 }
 
-export function validateConfig(config: unknown): Result<MemoryMiddlewareConfig, KoiError> {
+export function validateMemoryConfig(config: unknown): Result<MemoryMiddlewareConfig, KoiError> {
   if (config === null || config === undefined || typeof config !== "object") {
     return {
       ok: false,

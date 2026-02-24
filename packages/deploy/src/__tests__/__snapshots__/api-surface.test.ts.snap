@@ -1,0 +1,212 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/deploy API surface . has stable type surface 1`] = `
+"/**
+ * Platform detection and path resolution for service deployment.
+ */
+type Platform = "linux" | "darwin";
+/** Detects the current OS platform. Throws on unsupported platforms. */
+declare function detectPlatform(): Platform;
+/** Finds the path to the \`bun\` binary. */
+declare function detectBunPath(): string;
+/**
+ * Finds the path to the \`koi\` CLI entry point.
+ *
+ * Resolution order:
+ * 1. Bun.which("koi") — globally installed or in PATH
+ * 2. node_modules/.bin/koi relative to workDir — npm/bun linked binary
+ * 3. @koi/cli dist/bin.js relative to workDir — monorepo dev layout
+ *
+ * Throws if no koi binary can be found.
+ */
+declare function detectKoiPath(workDir: string): string;
+/** Converts an agent name to a service name: "my-agent" → "koi-my-agent". */
+declare function resolveServiceName(agentName: string): string;
+/** Converts an agent name to a launchd label: "my-agent" → "com.koi.my-agent". */
+declare function resolveLaunchdLabel(agentName: string): string;
+/** Resolves the service file directory for the given platform and scope. */
+declare function resolveServiceDir(platform: Platform, system: boolean): string;
+/** Resolves the default log directory for a service. */
+declare function resolveLogDir(platform: Platform, serviceName: string): string;
+
+/**
+ * Service health diagnostics — \`koi doctor\` implementation.
+ *
+ * Runs a series of checks against a deployed service and reports issues.
+ * Inspired by OpenClaw's \`openclaw doctor\`.
+ */
+
+type CheckStatus = "pass" | "warn" | "fail";
+interface DiagnosticCheck {
+    readonly name: string;
+    readonly status: CheckStatus;
+    readonly message: string;
+    readonly fix?: string | undefined;
+}
+interface DiagnosticReport {
+    readonly platform: Platform;
+    readonly serviceName: string;
+    readonly checks: readonly DiagnosticCheck[];
+    readonly passing: number;
+    readonly warnings: number;
+    readonly failures: number;
+}
+interface DoctorConfig {
+    readonly agentName: string;
+    readonly system: boolean;
+    readonly port: number;
+    readonly logDir?: string | undefined;
+}
+declare function runDiagnostics(config: DoctorConfig): Promise<DiagnosticReport>;
+
+/**
+ * HTTP health check server for deployed Koi agents.
+ *
+ * Provides:
+ * - GET /health       → 200 "ok" (liveness, instant)
+ * - GET /health/ready → 200 "ready" or 503 "not ready" (readiness check)
+ *
+ * All responses include \`Connection: close\` to minimize memory usage.
+ */
+interface HealthServerConfig {
+    readonly port: number;
+    readonly onReady?: (() => boolean | Promise<boolean>) | undefined;
+}
+interface HealthServer {
+    readonly start: () => Promise<{
+        readonly url: string;
+        readonly port: number;
+    }>;
+    readonly stop: () => void;
+}
+declare function createHealthHandler(onReady?: (() => boolean | Promise<boolean>) | undefined): (req: Request) => Response | Promise<Response>;
+declare function createHealthServer(config: HealthServerConfig): HealthServer;
+
+/**
+ * Shared types for @koi/deploy — re-export DeployConfig shape.
+ *
+ * This mirrors @koi/manifest's DeployConfig but is defined locally to avoid
+ * depending on @koi/manifest (L2 packages cannot depend on peer L2).
+ */
+interface DeployConfig {
+    readonly port: number;
+    readonly restart: "on-failure" | "always" | "no";
+    readonly restartDelaySec: number;
+    readonly envFile?: string | undefined;
+    readonly logDir?: string | undefined;
+    readonly system: boolean;
+}
+
+/**
+ * Service installation orchestrator.
+ *
+ * Sequence: detect platform → resolve paths → generate template → install → verify health.
+ */
+
+interface InstallConfig {
+    readonly agentName: string;
+    readonly manifestPath: string;
+    readonly deploy: DeployConfig;
+    readonly workDir?: string | undefined;
+}
+interface InstallResult {
+    readonly platform: Platform;
+    readonly serviceName: string;
+    readonly serviceFilePath: string;
+    readonly healthUrl: string;
+}
+declare function installService(config: InstallConfig): Promise<InstallResult>;
+
+/**
+ * Service manager interface — abstracts OS service operations.
+ */
+type ServiceStatus = "running" | "stopped" | "failed" | "not-installed";
+interface ServiceInfo {
+    readonly status: ServiceStatus;
+    readonly pid?: number | undefined;
+    readonly uptimeMs?: number | undefined;
+    readonly memoryBytes?: number | undefined;
+}
+interface LogOptions {
+    readonly follow: boolean;
+    readonly lines: number;
+}
+interface ServiceManager {
+    readonly install: (serviceName: string, content: string) => Promise<void>;
+    readonly uninstall: (serviceName: string) => Promise<void>;
+    readonly start: (serviceName: string) => Promise<void>;
+    readonly stop: (serviceName: string) => Promise<void>;
+    readonly status: (serviceName: string) => Promise<ServiceInfo>;
+    readonly logs: (serviceName: string, opts: LogOptions) => AsyncIterable<string>;
+}
+
+/**
+ * launchd service manager — wraps launchctl for macOS.
+ */
+
+declare function createLaunchdManager(system: boolean, logDir: string): ServiceManager;
+
+/**
+ * systemd service manager — wraps systemctl and journalctl via Bun.spawn().
+ */
+
+/** Checks whether lingering is enabled for the current user. */
+declare function isLingerEnabled(): Promise<boolean>;
+declare function createSystemdManager(system: boolean): ServiceManager;
+
+/**
+ * launchd plist template generator for macOS.
+ */
+interface LaunchdTemplateConfig {
+    readonly label: string;
+    readonly name: string;
+    readonly bunPath: string;
+    readonly koiPath: string;
+    readonly manifestPath: string;
+    readonly workDir: string;
+    readonly port: number;
+    readonly restartDelaySec: number;
+    readonly logDir: string;
+    readonly envFile?: string | undefined;
+}
+declare function generateLaunchdPlist(config: LaunchdTemplateConfig): string;
+
+/**
+ * systemd unit file template generator.
+ */
+interface SystemdTemplateConfig {
+    readonly name: string;
+    readonly bunPath: string;
+    readonly koiPath: string;
+    readonly manifestPath: string;
+    readonly workDir: string;
+    readonly port: number;
+    readonly restart: "on-failure" | "always" | "no";
+    readonly restartDelaySec: number;
+    readonly system: boolean;
+    readonly envFile?: string | undefined;
+    readonly dataDir?: string | undefined;
+    readonly user?: string | undefined;
+}
+declare function generateSystemdUnit(config: SystemdTemplateConfig): string;
+
+/**
+ * Service uninstallation orchestrator.
+ *
+ * Sequence: detect platform → stop service → disable → remove service file.
+ */
+
+interface UninstallConfig {
+    readonly agentName: string;
+    readonly system: boolean;
+    readonly logDir?: string | undefined;
+}
+interface UninstallResult {
+    readonly platform: Platform;
+    readonly serviceName: string;
+}
+declare function uninstallService(config: UninstallConfig): Promise<UninstallResult>;
+
+export { type CheckStatus, type DeployConfig, type DiagnosticCheck, type DiagnosticReport, type DoctorConfig, type HealthServer, type HealthServerConfig, type InstallConfig, type InstallResult, type LaunchdTemplateConfig, type LogOptions, type Platform, type ServiceInfo, type ServiceManager, type ServiceStatus, type SystemdTemplateConfig, type UninstallConfig, type UninstallResult, createHealthHandler, createHealthServer, createLaunchdManager, createSystemdManager, detectBunPath, detectKoiPath, detectPlatform, generateLaunchdPlist, generateSystemdUnit, installService, isLingerEnabled, resolveLaunchdLabel, resolveLogDir, resolveServiceDir, resolveServiceName, runDiagnostics, uninstallService };
+"
+`;

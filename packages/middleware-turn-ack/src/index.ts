@@ -7,5 +7,5 @@
  */
 
 export type { TurnAckConfig } from "./config.js";
-export { validateConfig } from "./config.js";
+export { validateTurnAckConfig } from "./config.js";
 export { createTurnAckMiddleware } from "./turn-ack.js";

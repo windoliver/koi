@@ -22,7 +22,7 @@ import { createMessageMapper } from "./event-map.js";
 import type { MessageQueue } from "./message-queue.js";
 import { createMessageQueue } from "./message-queue.js";
 import type { McpBridgeConfig, SdkOptions } from "./policy-map.js";
-import { buildSdkOptions } from "./policy-map.js";
+import { createSdkOptions } from "./policy-map.js";
 import type {
   ClaudeAdapterConfig,
   ClaudeEngineAdapter,
@@ -299,7 +299,7 @@ export function createClaudeAdapter(
           ? (extractSessionIdFromState(input.state) ?? sessionState.sessionId)
           : undefined;
 
-      const options = buildSdkOptions(
+      const options = createSdkOptions(
         config,
         mcpBridge,
         resumeSessionId,

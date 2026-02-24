@@ -57,7 +57,7 @@ export function isRetryable(error: KoiError): boolean {
  * @param retryAfterMs - Optional provider-specified retry delay (overrides calculation)
  * @param random - Injectable random function for deterministic jitter testing
  */
-export function calculateBackoff(
+export function computeBackoff(
   attempt: number,
   config: RetryConfig,
   retryAfterMs?: number,
@@ -104,7 +104,7 @@ export async function withRetry<T>(
         throw koiError;
       }
 
-      const delay = calculateBackoff(attempt, config, koiError.retryAfterMs);
+      const delay = computeBackoff(attempt, config, koiError.retryAfterMs);
       await sleep(delay, clock);
     }
   }

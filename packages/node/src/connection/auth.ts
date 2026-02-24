@@ -152,7 +152,7 @@ export function createAuthHandshake(nodeId: string, config: AuthHandshakeConfig)
           nodeId,
           agentId: "",
           correlationId: generateCorrelationId(nodeId),
-          type: "node:auth_response",
+          kind: "node:auth_response",
           payload: { response } satisfies { readonly response: string },
         });
       })
@@ -175,7 +175,7 @@ export function createAuthHandshake(nodeId: string, config: AuthHandshakeConfig)
         nodeId,
         agentId: "",
         correlationId: generateCorrelationId(nodeId),
-        type: "node:auth",
+        kind: "node:auth",
         payload: createAuthPayload(config.token),
       });
 
@@ -193,7 +193,7 @@ export function createAuthHandshake(nodeId: string, config: AuthHandshakeConfig)
     handleFrame(frame) {
       if (state !== "authenticating") return;
 
-      switch (frame.type) {
+      switch (frame.kind) {
         case "node:auth_ack":
           handleAck(frame.payload);
           break;
@@ -201,7 +201,7 @@ export function createAuthHandshake(nodeId: string, config: AuthHandshakeConfig)
           handleChallenge(frame.payload);
           break;
         default:
-          // Ignore unrelated frame types
+          // Ignore unrelated frame kinds
           break;
       }
     },

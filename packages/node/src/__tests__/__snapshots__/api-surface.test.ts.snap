@@ -1,0 +1,670 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/node API surface . has stable type surface 1`] = `
+"import { SessionPersistence, SessionCheckpoint, PendingFrame, RecoveryPlan, SessionRecord, Result, KoiError, ProcessId, AgentManifest, EngineAdapter, ComponentProvider, Agent, AgentId, Tool, SourceBundle } from '@koi/core';
+export { ShutdownCallbacks, ShutdownEmit, ShutdownHandler, createShutdownHandler } from '@koi/shutdown';
+
+/**
+ * @koi/node — Configuration schema (Zod) and domain types.
+ *
+ * NodeConfig is the sole configuration surface for createNode().
+ * All sub-configs have sane defaults; only \`gateway.url\` is required.
+ *
+ * Schemas are module-private. Only types and parseNodeConfig() are exported,
+ * keeping the public API compatible with isolatedDeclarations.
+ */
+
+interface GatewayConnectionConfig {
+    readonly url: string;
+    readonly reconnectBaseDelay: number;
+    readonly reconnectMaxDelay: number;
+    readonly reconnectMultiplier: number;
+    readonly reconnectJitter: number;
+    readonly maxRetries: number;
+}
+interface HeartbeatConfig {
+    readonly interval: number;
+    readonly timeout: number;
+}
+interface DiscoveryConfig {
+    readonly enabled: boolean;
+    readonly serviceType: string;
+}
+interface ToolResolverConfig {
+    readonly directories: readonly string[];
+    readonly builtins: {
+        readonly filesystem: boolean;
+        readonly shell: boolean;
+    };
+}
+interface ResourcesConfig {
+    readonly maxAgents: number;
+    readonly memoryWarningPercent: number;
+    readonly memoryEvictionPercent: number;
+    readonly monitorInterval: number;
+}
+interface AuthConfig {
+    /** Bearer token sent during initial auth handshake. */
+    readonly token: string;
+    /** HMAC-SHA256 secret for challenge/response. Omit for token-only auth. */
+    readonly secret?: string | undefined;
+    /** Milliseconds to wait for auth to complete (default 10 000). */
+    readonly timeoutMs: number;
+}
+/** Node mode: "full" runs engines + exposes tools; "thin" exposes tools only (no engine). */
+type NodeMode = "full" | "thin";
+interface NodeConfig {
+    readonly nodeId?: string | undefined;
+    /** Node mode. Default: "full". Thin nodes skip engine/agent host, only handle tool_call frames. */
+    readonly mode: NodeMode;
+    readonly gateway: GatewayConnectionConfig;
+    readonly heartbeat: HeartbeatConfig;
+    readonly discovery: DiscoveryConfig;
+    readonly tools: ToolResolverConfig;
+    readonly resources: ResourcesConfig;
+    /** Optional auth config. Omit for unauthenticated connections. */
+    readonly auth?: AuthConfig | undefined;
+}
+/** Parse and validate raw config into a typed NodeConfig. */
+declare function parseNodeConfig(raw: unknown): Result<NodeConfig, KoiError>;
+/** Discriminated union of all frame kinds flowing over the Node <-> Gateway WS. */
+type NodeFrameKind = "agent:dispatch" | "agent:message" | "agent:status" | "agent:terminate" | "node:auth" | "node:auth_challenge" | "node:auth_response" | "node:auth_ack" | "node:handshake" | "node:heartbeat" | "node:capacity" | "node:capabilities" | "node:error" | "tool_call" | "tool_result" | "tool_error";
+/** Wire frame sent over the multiplexed WebSocket. */
+interface NodeFrame {
+    readonly nodeId: string;
+    readonly agentId: string;
+    readonly correlationId: string;
+    /** Milliseconds until the frame expires. Undefined = no expiry. */
+    readonly ttl?: number | undefined;
+    readonly kind: NodeFrameKind;
+    readonly payload: unknown;
+}
+/** Node → Gateway: initial authentication. */
+interface AuthPayload {
+    readonly token: string;
+    readonly timestamp: number;
+}
+/** Gateway → Node: challenge for HMAC verification. */
+interface AuthChallengePayload {
+    readonly challenge: string;
+}
+/** Node → Gateway: signed response to challenge. */
+interface AuthResponsePayload {
+    readonly response: string;
+}
+/** Gateway → Node: auth result. */
+interface AuthAckPayload {
+    readonly success: boolean;
+    readonly reason?: string | undefined;
+}
+/** Gateway → Node: execute a tool on this Node (may originate from a remote agent). */
+interface ToolCallPayload {
+    readonly toolName: string;
+    readonly args: Readonly<Record<string, unknown>>;
+    /** Agent requesting the tool call (for permission checks). */
+    readonly callerAgentId: string;
+    /** Zone scope for permission enforcement (backend-dependent). */
+    readonly zone?: string | undefined;
+}
+/** Node → Gateway: tool execution result returned to calling agent. */
+interface ToolResultPayload {
+    readonly toolName: string;
+    readonly result: unknown;
+}
+/** Node → Gateway: tool execution failed or permission denied. */
+interface ToolErrorPayload {
+    readonly toolName: string;
+    readonly code: "permission_denied" | "not_found" | "execution_error" | "timeout";
+    readonly message: string;
+}
+/** Descriptor for a single tool advertised by a Node. */
+interface AdvertisedTool {
+    readonly name: string;
+    readonly description?: string | undefined;
+    /** JSON Schema for the tool's arguments. */
+    readonly schema?: Readonly<Record<string, unknown>> | undefined;
+}
+/** Node → Gateway: advertise this Node's tool surface. */
+interface CapabilitiesPayload {
+    readonly nodeType: "full" | "thin";
+    readonly tools: readonly AdvertisedTool[];
+}
+interface HandshakePayload {
+    readonly nodeId: string;
+    readonly version: string;
+    readonly capacity: CapacityReport;
+}
+interface CapacityReport {
+    readonly current: number;
+    readonly max: number;
+    readonly available: number;
+}
+interface AgentStatusPayload {
+    readonly agentId: string;
+    readonly state: string;
+    readonly turnCount: number;
+    readonly lastActivityMs: number;
+}
+type NodeState = "starting" | "connected" | "reconnecting" | "stopping" | "stopped";
+type NodeEventType = "connected" | "disconnected" | "reconnecting" | "reconnected" | "reconnect_exhausted" | "heartbeat_timeout" | "auth_started" | "auth_success" | "auth_failed" | "agent_dispatched" | "agent_terminated" | "agent_crashed" | "agent_recovered" | "memory_warning" | "memory_eviction" | "shutdown_started" | "shutdown_complete" | "pending_frame_sent" | "pending_frame_expired" | "pending_frame_dead_letter";
+interface NodeEvent {
+    readonly type: NodeEventType;
+    readonly timestamp: number;
+    readonly data?: unknown;
+}
+/** Listener for node events. */
+type NodeEventListener = (event: NodeEvent) => void;
+/** @deprecated Use \`SessionRecord\` from \`@koi/core\` directly. */
+type NodeSessionRecord = SessionRecord;
+/** @deprecated Use \`SessionCheckpoint\` from \`@koi/core\` directly. */
+type NodeCheckpoint = SessionCheckpoint;
+/** @deprecated Use \`PendingFrame\` from \`@koi/core\` directly. */
+type NodePendingFrame = PendingFrame;
+/** @deprecated Use \`RecoveryPlan\` from \`@koi/core\` directly. */
+type NodeRecoveryPlan = RecoveryPlan;
+/**
+ * Session persistence interface accepted by the node for crash recovery.
+ *
+ * Subset of \`SessionPersistence\` from \`@koi/core\` — only the methods
+ * the node actually uses. Any \`SessionPersistence\` implementation
+ * (sqlite, in-memory) is structurally assignable to this type.
+ */
+type NodeSessionStore = Pick<SessionPersistence, "saveSession" | "removeSession" | "saveCheckpoint" | "loadLatestCheckpoint" | "savePendingFrame" | "loadPendingFrames" | "clearPendingFrames" | "removePendingFrame" | "recover" | "close">;
+
+/**
+ * Agent host — registry, lifecycle, and capacity management.
+ *
+ * Hosts N agent ECS entities in a single event loop. Enforces maxAgents
+ * admission control and provides dispatch/terminate/query operations.
+ */
+
+interface AgentHost {
+    /** Dispatch (create) a new agent on this node. */
+    readonly dispatch: (pid: ProcessId, manifest: AgentManifest, engine: EngineAdapter, providers: readonly ComponentProvider[]) => Promise<Result<Agent, KoiError>>;
+    /** Terminate an agent by ID. */
+    readonly terminate: (agentId: AgentId | string) => Result<void, KoiError>;
+    /** Get an agent by ID. */
+    readonly get: (agentId: AgentId | string) => Agent | undefined;
+    /** List all hosted agents. */
+    readonly list: () => readonly Agent[];
+    /** Iterate agents without allocating a snapshot array. */
+    readonly agents: () => IterableIterator<Agent>;
+    /** Return the least-recently-active agent (for eviction). */
+    readonly leastActive: () => Agent | undefined;
+    /** Current capacity report. */
+    readonly capacity: () => CapacityReport;
+    /** Register an event listener. */
+    readonly onEvent: (listener: NodeEventListener) => () => void;
+    /** Terminate all agents (used during shutdown). */
+    readonly terminateAll: () => void;
+}
+declare function createAgentHost(config: ResourcesConfig): AgentHost;
+
+/**
+ * Agent status reporter — Nexus-inspired spec/status reporting.
+ *
+ * Periodically collects agent status from the host and sends
+ * status frames to the Gateway via the transport.
+ */
+
+interface StatusReporter {
+    /** Start periodic status reporting. */
+    readonly start: () => void;
+    /** Stop reporting and clean up timers. */
+    readonly stop: () => void;
+    /** Collect status for all agents (on-demand). */
+    readonly collect: () => readonly AgentStatusPayload[];
+}
+declare function createStatusReporter(nodeId: string, host: AgentHost, sendFrame: (frame: NodeFrame) => void, intervalMs?: number): StatusReporter;
+
+/**
+ * Per-agent outbound/inbound frame sequence counters.
+ *
+ * Used to populate \`seq\` and \`remoteSeq\` in session records so that
+ * crash recovery can resume from the correct position.
+ */
+interface FrameCounterState {
+    readonly seq: number;
+    readonly remoteSeq: number;
+}
+interface FrameCounters {
+    /** Increment outbound sequence for an agent. Returns the new seq. */
+    readonly increment: (agentId: string) => number;
+    /** Update the latest known remote (inbound) sequence for an agent. */
+    readonly updateRemote: (agentId: string, remoteSeq: number) => void;
+    /** Get current counters for an agent. Returns 0/0 for unknown agents. */
+    readonly get: (agentId: string) => FrameCounterState;
+    /** Remove counters for an agent. */
+    readonly remove: (agentId: string) => void;
+    /** Restore counters from a recovered session record. */
+    readonly restore: (agentId: string, seq: number, remoteSeq: number) => void;
+}
+declare function createFrameCounters(): FrameCounters;
+
+/**
+ * Write queue — batches checkpoint writes to reduce SQLite transaction overhead.
+ *
+ * Only keeps the latest checkpoint per agent (overwrites on enqueue).
+ * Flushes on a configurable interval and on dispose.
+ */
+
+interface WriteQueueConfig {
+    /** Milliseconds between automatic flushes. Default: 5000. */
+    readonly flushIntervalMs: number;
+}
+interface WriteQueue {
+    /** Enqueue a checkpoint for batched write. Keeps only the latest per agent. */
+    readonly enqueue: (agentId: string, checkpoint: SessionCheckpoint) => void;
+    /** Flush all pending checkpoints to the store immediately. */
+    readonly flush: () => Promise<void>;
+    /** Stop the auto-flush timer and flush remaining checkpoints. */
+    readonly dispose: () => Promise<void>;
+}
+declare function createWriteQueue(store: NodeSessionStore, config?: Partial<WriteQueueConfig>): WriteQueue;
+
+/**
+ * Checkpoint manager — event-driven session persistence for crash recovery.
+ *
+ * Subscribes to agent host events and saves/removes session records
+ * and engine state checkpoints to a pluggable \`NodeSessionStore\`.
+ *
+ * Checkpoint triggers:
+ *   - \`agent_dispatched\` → save initial SessionRecord
+ *   - \`checkpointAgent(agentId)\` → engine.saveState() → store.saveCheckpoint()
+ *   - \`agent_terminated\` → removeSession (clears record + checkpoints)
+ *
+ * Recovery:
+ *   - \`recover()\` loads all sessions + latest checkpoints from the store
+ */
+
+interface CheckpointManager {
+    /** Save an engine state checkpoint for the given agent. */
+    readonly checkpointAgent: (agentId: AgentId | string, sessionId: string) => Promise<Result<void, KoiError>>;
+    /** Look up the session ID for a given agent. */
+    readonly getSessionId: (agentId: string) => string | undefined;
+    /** Load recovery plan from the store. */
+    readonly recover: () => Promise<Result<RecoveryPlan, KoiError>>;
+    /** Flush any pending writes (no-op when write queue is absent). */
+    readonly flush: () => Promise<void>;
+    /** Stop listening to host events. */
+    readonly dispose: () => void;
+}
+/** Optional dependencies for checkpoint manager. */
+interface CheckpointManagerDeps {
+    readonly frameCounters?: FrameCounters;
+    readonly writeQueue?: WriteQueue;
+    /** Emit a node event. Used to surface fire-and-forget store errors. */
+    readonly emit?: (type: string, data?: unknown) => void;
+}
+/**
+ * Create a checkpoint manager wired to the agent host and session store.
+ *
+ * The manager subscribes to host events automatically. Call \`dispose()\` to
+ * unsubscribe when the node shuts down.
+ */
+declare function createCheckpointManager(store: NodeSessionStore, host: AgentHost, getEngine: (agentId: string) => EngineAdapter | undefined, deps?: CheckpointManagerDeps): CheckpointManager;
+
+/**
+ * Checkpointing engine decorator — wraps an EngineAdapter to auto-checkpoint
+ * on \`turn_end\` and \`done\` events.
+ *
+ * The checkpoint callback is fire-and-forget: failures are swallowed (logged
+ * via catch) so they never block the event stream.
+ */
+
+interface CheckpointingEngineConfig {
+    readonly agentId: string;
+    readonly sessionId: string;
+    readonly onCheckpoint: (agentId: string, sessionId: string) => Promise<void>;
+}
+/**
+ * Wrap an engine adapter so that \`turn_end\` and \`done\` events automatically
+ * trigger a checkpoint callback.
+ */
+declare function createCheckpointingEngine(inner: EngineAdapter, config: CheckpointingEngineConfig): EngineAdapter;
+
+/**
+ * WebSocket auth handshake — token + optional HMAC challenge/response.
+ *
+ * Auth flow:
+ * 1. Node sends \`node:auth\` with { token, timestamp }
+ * 2. Gateway responds with either:
+ *    - \`node:auth_ack\` { success: true }  — token-only auth accepted
+ *    - \`node:auth_challenge\` { challenge } — HMAC verification required
+ * 3. If challenged, Node sends \`node:auth_response\` { response: HMAC-SHA256(challenge, secret) }
+ * 4. Gateway sends \`node:auth_ack\` { success: true/false }
+ *
+ * Uses Web Crypto API (available natively in Bun) for HMAC-SHA256.
+ */
+
+/** Auth config accepted by the handshake (secret is optional). */
+type AuthHandshakeConfig = Pick<AuthConfig, "token" | "timeoutMs"> & {
+    readonly secret?: string | undefined;
+};
+interface AuthHandshake {
+    /** Start the auth handshake. Resolves on success, rejects on failure/timeout. */
+    readonly start: (sendFrame: (frame: NodeFrame) => void) => Promise<void>;
+    /** Feed a received frame into the auth state machine. */
+    readonly handleFrame: (frame: NodeFrame) => void;
+    /** Cancel the handshake and clean up timers. */
+    readonly dispose: () => void;
+}
+/** Sign a challenge string with HMAC-SHA256, returning a lowercase hex string. */
+declare function signChallenge(challenge: string, secret: string): Promise<string>;
+/** Create the initial auth payload with token and current timestamp. */
+declare function createAuthPayload(token: string): AuthPayload;
+declare function createAuthHandshake(nodeId: string, config: AuthHandshakeConfig): AuthHandshake;
+
+/**
+ * Heartbeat monitor — detects dead WebSocket connections.
+ *
+ * Sends ping frames at a configurable interval, expects pong responses
+ * within a timeout. Fires a callback when the connection appears dead.
+ */
+
+interface HeartbeatMonitor {
+    /** Start the ping/pong cycle. */
+    readonly start: () => void;
+    /** Record that a pong was received. */
+    readonly receivedPong: () => void;
+    /** Stop monitoring (cleans up timers). */
+    readonly stop: () => void;
+    /** Whether the monitor is currently active. */
+    readonly isActive: () => boolean;
+}
+interface HeartbeatCallbacks {
+    /** Called every interval — the caller should send a ping frame. */
+    readonly onPing: () => void;
+    /** Called when pong is not received within timeout. */
+    readonly onTimeout: () => void;
+}
+declare function createHeartbeatMonitor(config: HeartbeatConfig, callbacks: HeartbeatCallbacks): HeartbeatMonitor;
+
+/**
+ * Frame codec for the Node ↔ Gateway multiplexed WebSocket protocol.
+ *
+ * Encodes NodeFrame to JSON string, decodes JSON string to NodeFrame.
+ * All validation happens at decode time — encode trusts the caller.
+ */
+
+/** Serialize a NodeFrame to a JSON string for transmission. */
+declare function encodeFrame(frame: NodeFrame): string;
+/** Parse and validate a raw WebSocket message into a NodeFrame. */
+declare function decodeFrame(raw: string | ArrayBuffer): Result<NodeFrame, KoiError>;
+/** Generate a unique correlation ID for outbound frames. */
+declare function generateCorrelationId(nodeId: string): string;
+
+/**
+ * Exponential backoff with jitter for WebSocket reconnection.
+ *
+ * Computes delay using: min(base × multiplier^attempt, maxDelay) ± jitter.
+ * Jitter reduces thundering-herd effects when many Nodes reconnect simultaneously.
+ */
+
+/**
+ * Calculate the reconnection delay for a given attempt number.
+ *
+ * @param attempt - Zero-based attempt counter.
+ * @param config - Gateway connection settings (base, max, multiplier, jitter).
+ * @returns Delay in milliseconds (always >= 0).
+ */
+declare function computeReconnectDelay(attempt: number, config: GatewayConnectionConfig): number;
+interface ReconnectState {
+    readonly attempt: number;
+    readonly exhausted: boolean;
+}
+/** Create a fresh reconnect tracker. */
+declare function createReconnectState(): ReconnectState;
+/** Advance to the next attempt. Returns new state (may be exhausted). */
+declare function nextAttempt(state: ReconnectState, maxRetries: number): ReconnectState;
+/** Reset state after a successful reconnection. */
+declare function resetReconnectState(): ReconnectState;
+/** Returns true if the close code indicates a clean shutdown (no retry). */
+declare function isCleanClose(code: number): boolean;
+
+/**
+ * WebSocket transport — manages the connection to the Koi Gateway.
+ *
+ * Responsibilities:
+ * - Establish and maintain a single multiplexed WS connection
+ * - Queue outbound frames during disconnection
+ * - Integrate heartbeat monitoring and reconnection
+ * - Emit NodeEvents for connection lifecycle changes
+ */
+
+type TransportState = "disconnected" | "connecting" | "connected" | "reconnecting" | "closed";
+interface Transport {
+    /** Current connection state. */
+    readonly state: () => TransportState;
+    /** Connect to the Gateway. */
+    readonly connect: () => Promise<void>;
+    /** Send a frame (queued if disconnected). */
+    readonly send: (frame: NodeFrame) => void;
+    /** Register a frame handler. Returns unsubscribe function. */
+    readonly onFrame: (handler: (frame: NodeFrame) => void) => () => void;
+    /** Register an event listener. Returns unsubscribe function. */
+    readonly onEvent: (listener: NodeEventListener) => () => void;
+    /** Gracefully close the connection. */
+    readonly close: () => Promise<void>;
+}
+declare function createTransport(nodeId: string, gatewayConfig: GatewayConnectionConfig, heartbeatConfig: HeartbeatConfig, authConfig?: AuthConfig | undefined): Transport;
+
+/**
+ * DeliveryManager — retry lifecycle for pending outbound frames.
+ *
+ * Loads pending frames from the session store, checks TTL/max-retries,
+ * attempts delivery via transport, and schedules retries with exponential
+ * backoff when transport is unavailable.
+ */
+
+interface DeliveryManagerConfig {
+    /** Maximum delivery attempts before dead-lettering. Default: 5. */
+    readonly maxRetries: number;
+    /** Base delay in ms for exponential backoff. Default: 1000. */
+    readonly baseDelayMs: number;
+    /** Maximum delay cap in ms. Default: 30000. */
+    readonly maxDelayMs: number;
+    /** Backoff multiplier. Default: 2. */
+    readonly multiplier: number;
+    /** Jitter factor (0–1). Default: 0.1. */
+    readonly jitter: number;
+    /**
+     * Maximum time in ms to spend replaying frames per call.
+     * Remaining frames stay in the store for the next replay cycle.
+     * 0 = no limit. Default: 60000 (60s).
+     */
+    readonly maxRecoveryMs: number;
+}
+declare const DEFAULT_DELIVERY_CONFIG: DeliveryManagerConfig;
+interface DeliveryManager {
+    /** Replay all pending frames for a session with retry/backoff. */
+    readonly replayPendingFrames: (sessionId: string) => Promise<void>;
+    /** Persist an outbound frame (write-ahead) and send if connected. */
+    readonly enqueueSend: (frame: NodeFrame, sessionId: string) => Promise<void>;
+    /** Cancel all pending retry timers and release resources. */
+    readonly dispose: () => void;
+}
+interface DeliveryManagerDeps {
+    readonly store: NodeSessionStore;
+    /** Returns true when the transport is connected and can send. */
+    readonly isConnected: () => boolean;
+    /** Send a pending frame over the transport. */
+    readonly sendFrame: (frame: PendingFrame) => void;
+    /** Emit a node event. */
+    readonly emit: (type: NodeEvent["type"], data?: unknown) => void;
+}
+declare function createDeliveryManager(deps: DeliveryManagerDeps, config?: Partial<DeliveryManagerConfig>): DeliveryManager;
+
+/**
+ * mDNS/Bonjour service discovery — publish and discover Koi nodes.
+ *
+ * Publishes this node as a discoverable service on the local network.
+ * Discovery of peer nodes is optional for local routing.
+ *
+ * Uses lazy loading to avoid penalizing startup when disabled.
+ */
+
+interface ServiceInfo {
+    readonly name: string;
+    readonly type: string;
+    readonly port: number;
+    readonly txt: Readonly<Record<string, string>>;
+}
+interface DiscoveryService {
+    /** Publish this node as a discoverable service. */
+    readonly publish: (info: ServiceInfo) => Promise<void>;
+    /** Stop advertising and clean up. */
+    readonly unpublish: () => Promise<void>;
+    /** Whether the service is currently published. */
+    readonly isPublished: () => boolean;
+}
+declare function createDiscoveryService(config: DiscoveryConfig): DiscoveryService;
+
+/**
+ * Frame deduplicator — bounded Set + FIFO ring buffer for inbound frame dedup.
+ *
+ * Tracks frame IDs (correlationIds) to detect and drop duplicate inbound
+ * frames caused by Gateway retransmits on reconnect.
+ */
+interface FrameDeduplicator {
+    /** Returns true if this ID was already seen (duplicate). */
+    readonly isDuplicate: (id: string) => boolean;
+    /** Clear all tracked state. */
+    readonly reset: () => void;
+    /** Number of currently tracked IDs. */
+    readonly size: () => number;
+}
+declare function createFrameDeduplicator(maxSize?: number): FrameDeduplicator;
+
+/**
+ * Memory monitor — periodic heap monitoring with eviction.
+ *
+ * Checks process.memoryUsage().heapUsed at a configurable interval.
+ * Emits warnings at the warning threshold and triggers agent eviction
+ * at the eviction threshold.
+ */
+
+interface MemoryMetrics {
+    readonly heapUsedBytes: number;
+    readonly heapTotalBytes: number;
+    readonly rssBytes: number;
+    readonly usagePercent: number;
+}
+interface MemoryMonitor {
+    /** Start periodic monitoring. */
+    readonly start: () => void;
+    /** Stop monitoring and clean up timers. */
+    readonly stop: () => void;
+    /** Get current memory metrics (on-demand). */
+    readonly metrics: () => MemoryMetrics;
+    /** Whether the monitor is currently active. */
+    readonly isActive: () => boolean;
+}
+declare function createMemoryMonitor(config: ResourcesConfig, host: AgentHost, emit: (type: Parameters<NodeEventListener>[0]["type"], data?: unknown) => void): MemoryMonitor;
+
+/**
+ * Local tool resolver — discovers tools from directories + built-in defaults.
+ *
+ * Implements the Resolver<ToolMeta, Tool> contract from @koi/core.
+ * Priority: local config > built-in defaults (first-wins).
+ */
+
+interface ToolMeta {
+    readonly name: string;
+    readonly description: string;
+    readonly source: "builtin" | "directory";
+}
+interface LocalResolver {
+    readonly discover: () => Promise<readonly ToolMeta[]>;
+    /** Synchronous list of already-discovered tools. Empty if discover() hasn't been called. */
+    readonly list: () => readonly ToolMeta[];
+    readonly load: (id: string) => Promise<Result<Tool, KoiError>>;
+    readonly source: (id: string) => Promise<Result<SourceBundle, KoiError>>;
+    readonly onChange?: (listener: () => void) => () => void;
+}
+declare function createLocalResolver(config: ToolResolverConfig): LocalResolver;
+
+/**
+ * createNode() — main entry point for the Koi Node runtime.
+ *
+ * Parses config → parallel startup [connect, mDNS, tools] → returns KoiNode handle.
+ * The Node is a stateless host — agent state lives in Engine/Components.
+ */
+
+interface KoiNode {
+    /** Unique node identifier. */
+    readonly nodeId: string;
+    /** Current node state. */
+    readonly state: () => NodeState;
+    /** Start the node (connect, discover, scan tools). */
+    readonly start: () => Promise<void>;
+    /** Stop the node gracefully. */
+    readonly stop: () => Promise<void>;
+    /** Dispatch a new agent onto this node. */
+    readonly dispatch: (pid: ProcessId, manifest: AgentManifest, engine: EngineAdapter, providers?: readonly ComponentProvider[]) => Promise<Result<Agent, KoiError>>;
+    /** Terminate an agent by ID. */
+    readonly terminate: (agentId: string) => Result<void, KoiError>;
+    /** Get an agent by ID. */
+    readonly getAgent: (agentId: string) => Agent | undefined;
+    /** List all hosted agents. */
+    readonly listAgents: () => readonly Agent[];
+    /** Current capacity report. */
+    readonly capacity: () => CapacityReport;
+    /** Register a node event listener. */
+    readonly onEvent: (listener: NodeEventListener) => () => void;
+    /** Access the local tool resolver. */
+    readonly toolResolver: LocalResolver;
+    /** Checkpoint manager (available when sessionStore is provided). */
+    readonly checkpoint: CheckpointManager | undefined;
+}
+/**
+ * Result returned by \`onRecover\` for each session during startup recovery.
+ *
+ * The caller controls which agents to recover (return \`null\` to skip),
+ * which engine adapter to use per manifest, what \`ProcessId\` to assign,
+ * and which \`ComponentProvider\`s to attach. This avoids the node needing
+ * to know about engine types (L2 constraint).
+ */
+interface RecoveryResult {
+    readonly pid: ProcessId;
+    readonly engine: EngineAdapter;
+    readonly providers?: readonly ComponentProvider[];
+}
+/** Optional dependencies injected into the node. */
+interface NodeDeps {
+    /** Session persistence for crash recovery. When provided, enables checkpointing. */
+    readonly sessionStore?: NodeSessionStore;
+    /**
+     * Called once per session during startup recovery.
+     * Return a \`RecoveryResult\` to re-dispatch the agent, or \`null\` to skip it.
+     */
+    readonly onRecover?: (session: SessionRecord, checkpoint: SessionCheckpoint | undefined) => RecoveryResult | null | Promise<RecoveryResult | null>;
+}
+declare function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode, KoiError>;
+
+/**
+ * Built-in filesystem tool — read, write, list files.
+ *
+ * Uses Bun.file() APIs for performance. Respects allowed paths
+ * to prevent directory traversal attacks.
+ */
+
+declare function createFilesystemTool(allowedPaths?: readonly string[]): Tool;
+
+/**
+ * Built-in shell tool — execute commands with timeout enforcement.
+ *
+ * Runs commands via Bun.spawn() with configurable timeout.
+ * Output is captured and truncated to prevent memory issues.
+ *
+ * SECURITY: This tool passes commands to \`sh -c\`. It relies on the
+ * middleware-sandbox layer (L2) for OS-level isolation. Defense-in-depth
+ * is provided by: env scrubbing, output limits, and timeout enforcement.
+ * Full sandboxing is enforced by @koi/middleware-sandbox wrapping tool.execute().
+ */
+
+declare function createShellTool(): Tool;
+
+export { type AdvertisedTool, type AgentHost, type AgentStatusPayload, type AuthAckPayload, type AuthChallengePayload, type AuthConfig, type AuthHandshake, type AuthHandshakeConfig, type AuthPayload, type AuthResponsePayload, type CapabilitiesPayload, type CapacityReport, type CheckpointManager, type CheckpointManagerDeps, type CheckpointingEngineConfig, DEFAULT_DELIVERY_CONFIG, type DeliveryManager, type DeliveryManagerConfig, type DeliveryManagerDeps, type DiscoveryConfig, type DiscoveryService, type FrameCounterState, type FrameCounters, type FrameDeduplicator, type GatewayConnectionConfig, type HandshakePayload, type HeartbeatCallbacks, type HeartbeatConfig, type HeartbeatMonitor, type KoiNode, type LocalResolver, type MemoryMetrics, type MemoryMonitor, type NodeCheckpoint, type NodeConfig, type NodeDeps, type NodeEvent, type NodeEventListener, type NodeEventType, type NodeFrame, type NodeFrameKind, type NodeMode, type NodePendingFrame, type NodeRecoveryPlan, type NodeSessionRecord, type NodeSessionStore, type NodeState, type ReconnectState, type RecoveryResult, type ResourcesConfig, type ServiceInfo, type StatusReporter, type ToolCallPayload, type ToolErrorPayload, type ToolMeta, type ToolResolverConfig, type ToolResultPayload, type Transport, type TransportState, type WriteQueue, type WriteQueueConfig, computeReconnectDelay, createAgentHost, createAuthHandshake, createAuthPayload, createCheckpointManager, createCheckpointingEngine, createDeliveryManager, createDiscoveryService, createFilesystemTool, createFrameCounters, createFrameDeduplicator, createHeartbeatMonitor, createLocalResolver, createMemoryMonitor, createNode, createReconnectState, createShellTool, createStatusReporter, createTransport, createWriteQueue, decodeFrame, encodeFrame, generateCorrelationId, isCleanClose, nextAttempt, parseNodeConfig, resetReconnectState, signChallenge };
+"
+`;

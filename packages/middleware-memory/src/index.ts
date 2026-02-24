@@ -7,7 +7,7 @@
  */
 
 export type { MemoryMiddlewareConfig } from "./config.js";
-export { validateConfig } from "./config.js";
+export { validateMemoryConfig } from "./config.js";
 export { createMemoryMiddleware } from "./memory.js";
 export type { MemoryEntry, MemoryStore } from "./store.js";
 export { createInMemoryStore } from "./store.js";

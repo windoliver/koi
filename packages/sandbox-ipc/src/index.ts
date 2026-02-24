@@ -14,7 +14,7 @@ export { bridgeToExecutor } from "./adapter.js";
 export type { CreateBridgeOptions } from "./bridge.js";
 export { createSandboxBridge } from "./bridge.js";
 // Errors
-export { createIpcError, ipcErrorToKoiError, ipcErrorToSandboxError } from "./errors.js";
+export { createIpcError, mapIpcErrorToKoi, mapIpcErrorToSandbox } from "./errors.js";
 // Protocol types
 export type {
   ErrorMessage,

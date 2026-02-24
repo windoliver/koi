@@ -22,7 +22,7 @@ export interface PayMiddlewareConfig {
   readonly hardKill?: boolean;
 }
 
-export function validateConfig(config: unknown): Result<PayMiddlewareConfig, KoiError> {
+export function validatePayConfig(config: unknown): Result<PayMiddlewareConfig, KoiError> {
   if (config === null || config === undefined || typeof config !== "object") {
     return {
       ok: false,

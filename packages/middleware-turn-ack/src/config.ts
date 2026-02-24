@@ -13,7 +13,7 @@ export interface TurnAckConfig {
   readonly onError?: (error: unknown) => void;
 }
 
-export function validateConfig(config: TurnAckConfig): Result<TurnAckConfig, KoiError> {
+export function validateTurnAckConfig(config: TurnAckConfig): Result<TurnAckConfig, KoiError> {
   if (
     config.debounceMs !== undefined &&
     (config.debounceMs < 0 || !Number.isFinite(config.debounceMs))

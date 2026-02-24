@@ -7,7 +7,7 @@
  */
 
 export type { PayMiddlewareConfig, UsageInfo } from "./config.js";
-export { validateConfig } from "./config.js";
+export { validatePayConfig } from "./config.js";
 export { createPayMiddleware } from "./pay.js";
 export type { BudgetTracker, CostCalculator, CostEntry } from "./tracker.js";
 export {

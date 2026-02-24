@@ -22,7 +22,9 @@ export interface PermissionsMiddlewareConfig {
   readonly approvalCache?: boolean | ApprovalCacheConfig;
 }
 
-export function validateConfig(config: unknown): Result<PermissionsMiddlewareConfig, KoiError> {
+export function validatePermissionsConfig(
+  config: unknown,
+): Result<PermissionsMiddlewareConfig, KoiError> {
   if (config === null || config === undefined || typeof config !== "object") {
     return {
       ok: false,

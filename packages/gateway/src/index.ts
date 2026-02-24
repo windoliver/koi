@@ -22,8 +22,8 @@ export type { Gateway, GatewayDeps } from "./gateway.js";
 export { createGateway } from "./gateway.js";
 // protocol
 export {
-  buildAckFrame,
-  buildErrorFrame,
+  createAckFrame,
+  createErrorFrame,
   encodeFrame,
   negotiateProtocol,
   parseConnectFrame,

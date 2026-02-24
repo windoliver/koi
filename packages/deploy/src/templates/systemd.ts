@@ -44,7 +44,7 @@ function assertValidPort(port: number): void {
 // Template
 // ---------------------------------------------------------------------------
 
-export function renderSystemdUnit(config: SystemdTemplateConfig): string {
+export function generateSystemdUnit(config: SystemdTemplateConfig): string {
   // Validate all interpolated values before template generation
   assertSafePath(config.bunPath, "bunPath");
   assertSafePath(config.koiPath, "koiPath");

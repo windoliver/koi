@@ -137,7 +137,7 @@ describe("Transport", () => {
       nodeId: "node-1",
       agentId: "agent-1",
       correlationId: "corr-1",
-      type: "agent:message",
+      kind: "agent:message",
       payload: { text: "hello" },
     };
 
@@ -154,7 +154,7 @@ describe("Transport", () => {
 
       expect(server.received.length).toBeGreaterThanOrEqual(1);
       const parsed = JSON.parse(server.received[0] ?? "{}");
-      expect(parsed.type).toBe("agent:message");
+      expect(parsed.kind).toBe("agent:message");
 
       await transport.close();
     });
@@ -198,7 +198,7 @@ describe("Transport", () => {
         nodeId: "node-1",
         agentId: "a1",
         correlationId: "c1",
-        type: "agent:dispatch",
+        kind: "agent:dispatch",
         payload: {},
       };
       for (const client of server.clients) {
@@ -207,7 +207,7 @@ describe("Transport", () => {
 
       await new Promise((r) => setTimeout(r, 50));
       expect(received.length).toBeGreaterThanOrEqual(1);
-      expect(received[0]?.type).toBe("agent:dispatch");
+      expect(received[0]?.kind).toBe("agent:dispatch");
 
       await transport.close();
     });
@@ -232,7 +232,7 @@ describe("Transport", () => {
             nodeId: "n",
             agentId: "a",
             correlationId: "c",
-            type: "agent:message",
+            kind: "agent:message",
             payload: {},
           }),
         );
@@ -339,7 +339,7 @@ function startAuthServer(mode: AuthMode, challengeNonce = "test-nonce"): AuthSer
         const text = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
         received.push(text);
 
-        let frame: { type?: string; nodeId?: string; payload?: unknown } | undefined;
+        let frame: { kind?: string; nodeId?: string; payload?: unknown } | undefined;
         try {
           frame = JSON.parse(text) as typeof frame;
         } catch {
@@ -347,7 +347,7 @@ function startAuthServer(mode: AuthMode, challengeNonce = "test-nonce"): AuthSer
         }
         if (frame === undefined) return;
 
-        if (frame.type === "node:auth") {
+        if (frame.kind === "node:auth") {
           if (mode === "reject") {
             // Reject auth
             ws.send(
@@ -355,7 +355,7 @@ function startAuthServer(mode: AuthMode, challengeNonce = "test-nonce"): AuthSer
                 nodeId: frame.nodeId ?? "",
                 agentId: "",
                 correlationId: "gw-ack",
-                type: "node:auth_ack",
+                kind: "node:auth_ack",
                 payload: { success: false, reason: "access denied" },
               }),
             );
@@ -366,7 +366,7 @@ function startAuthServer(mode: AuthMode, challengeNonce = "test-nonce"): AuthSer
                 nodeId: frame.nodeId ?? "",
                 agentId: "",
                 correlationId: "gw-challenge",
-                type: "node:auth_challenge",
+                kind: "node:auth_challenge",
                 payload: { challenge: challengeNonce },
               }),
             );
@@ -377,19 +377,19 @@ function startAuthServer(mode: AuthMode, challengeNonce = "test-nonce"): AuthSer
                 nodeId: frame.nodeId ?? "",
                 agentId: "",
                 correlationId: "gw-ack",
-                type: "node:auth_ack",
+                kind: "node:auth_ack",
                 payload: { success: true },
               }),
             );
           }
-        } else if (frame.type === "node:auth_response") {
+        } else if (frame.kind === "node:auth_response") {
           // Accept after challenge response
           ws.send(
             JSON.stringify({
               nodeId: frame.nodeId ?? "",
               agentId: "",
               correlationId: "gw-ack",
-              type: "node:auth_ack",
+              kind: "node:auth_ack",
               payload: { success: true },
             }),
           );
@@ -455,7 +455,7 @@ describe("Transport with auth", () => {
       // Verify auth frame was sent
       expect(authServer.received.length).toBeGreaterThanOrEqual(1);
       const authFrame = JSON.parse(authServer.received[0] ?? "{}");
-      expect(authFrame.type).toBe("node:auth");
+      expect(authFrame.kind).toBe("node:auth");
       expect(authFrame.payload?.token).toBe("test-token-123");
 
       await transport.close();
@@ -474,7 +474,7 @@ describe("Transport with auth", () => {
         nodeId: "node-1",
         agentId: "a1",
         correlationId: "c1",
-        type: "agent:message",
+        kind: "agent:message",
         payload: { text: "queued" },
       };
       transport.send(testFrame);
@@ -483,12 +483,12 @@ describe("Transport with auth", () => {
       await new Promise((r) => setTimeout(r, 50));
 
       // Should have auth frame + queued frame
-      const types = authServer.received.map((r) => {
+      const kinds = authServer.received.map((r) => {
         const parsed = JSON.parse(r);
-        return parsed.type as string;
+        return parsed.kind as string;
       });
-      expect(types).toContain("node:auth");
-      expect(types).toContain("agent:message");
+      expect(kinds).toContain("node:auth");
+      expect(kinds).toContain("agent:message");
 
       await transport.close();
     });
@@ -525,17 +525,17 @@ describe("Transport with auth", () => {
 
       // Should have sent: node:auth, node:auth_response
       await new Promise((r) => setTimeout(r, 50));
-      const types = authServer.received.map((r) => {
+      const kinds = authServer.received.map((r) => {
         const parsed = JSON.parse(r);
-        return parsed.type as string;
+        return parsed.kind as string;
       });
-      expect(types).toContain("node:auth");
-      expect(types).toContain("node:auth_response");
+      expect(kinds).toContain("node:auth");
+      expect(kinds).toContain("node:auth_response");
 
       // Verify HMAC
       const responseFrame = authServer.received.find((r) => {
         const parsed = JSON.parse(r);
-        return parsed.type === "node:auth_response";
+        return parsed.kind === "node:auth_response";
       });
       const parsed = JSON.parse(responseFrame ?? "{}");
       const expectedHmac = await signChallenge(nonce, "my-secret-key");
@@ -634,7 +634,7 @@ describe("Transport with auth", () => {
       const hasAuth = plainServer.received.some((r) => {
         try {
           const parsed = JSON.parse(r);
-          return parsed.type === "node:auth";
+          return parsed.kind === "node:auth";
         } catch {
           return false;
         }

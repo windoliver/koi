@@ -94,7 +94,7 @@ describe("KoiNode integration", () => {
     // Gateway should have received a handshake frame
     await gateway.waitForFrames(1);
     const handshake = gateway.receivedFrames[0];
-    expect(handshake?.type).toBe("node:handshake");
+    expect(handshake?.kind).toBe("node:handshake");
 
     await node.stop();
     expect(node.state()).toBe("stopped");
@@ -237,7 +237,7 @@ describe("KoiNode integration", () => {
       nodeId: node.nodeId,
       agentId: "a1",
       correlationId: "gw-1",
-      type: "agent:terminate",
+      kind: "agent:terminate",
       payload: {},
     });
 

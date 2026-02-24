@@ -7,13 +7,13 @@
 
 import type { KoiError, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core";
-import type { NodeFrame, NodeFrameType } from "../types.js";
+import type { NodeFrame, NodeFrameKind } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const VALID_FRAME_TYPES: ReadonlySet<string> = new Set<NodeFrameType>([
+const VALID_FRAME_KINDS: ReadonlySet<string> = new Set<NodeFrameKind>([
   "agent:dispatch",
   "agent:message",
   "agent:status",
@@ -130,13 +130,13 @@ export function decodeFrame(raw: string | ArrayBuffer): Result<NodeFrame, KoiErr
     };
   }
 
-  const type = obj.type;
-  if (typeof type !== "string" || !VALID_FRAME_TYPES.has(type)) {
+  const kind = obj.kind;
+  if (typeof kind !== "string" || !VALID_FRAME_KINDS.has(kind)) {
     return {
       ok: false,
       error: {
         code: "VALIDATION",
-        message: `Frame has invalid 'type': ${String(type)}`,
+        message: `Frame has invalid 'kind': ${String(kind)}`,
         retryable: RETRYABLE_DEFAULTS.VALIDATION,
       },
     };
@@ -158,7 +158,7 @@ export function decodeFrame(raw: string | ArrayBuffer): Result<NodeFrame, KoiErr
     nodeId,
     agentId,
     correlationId,
-    type: type as NodeFrameType,
+    kind: kind as NodeFrameKind,
     payload: obj.payload,
     ...(typeof ttl === "number" ? { ttl } : {}),
   };

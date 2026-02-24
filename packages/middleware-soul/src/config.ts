@@ -32,7 +32,7 @@ export function extractMaxTokens(value: SoulUserInput, defaultTokens: number): n
 }
 
 /** Validates the CreateSoulOptions, returning a Result. */
-export function validateConfig(config: unknown): Result<CreateSoulOptions, KoiError> {
+export function validateSoulConfig(config: unknown): Result<CreateSoulOptions, KoiError> {
   if (config === null || config === undefined || typeof config !== "object") {
     return {
       ok: false,

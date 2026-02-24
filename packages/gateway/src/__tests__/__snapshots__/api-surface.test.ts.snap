@@ -1,0 +1,412 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/gateway API surface . has stable type surface 1`] = `
+"import { Result, KoiError } from '@koi/core';
+
+/**
+ * Gateway-specific types. No runtime code.
+ */
+interface ConnectClient {
+    /** Client instance identifier. */
+    readonly id?: string;
+    /** Client version string (e.g. "1.2.0"). */
+    readonly version?: string;
+    /** Platform hint (e.g. "web", "ios", "cli", "node"). */
+    readonly platform?: string;
+}
+interface ConnectFrame {
+    readonly kind: "connect";
+    /** Minimum protocol version the client supports (positive integer). */
+    readonly minProtocol: number;
+    /** Maximum protocol version the client supports (positive integer, >= minProtocol). */
+    readonly maxProtocol: number;
+    readonly auth: {
+        readonly token: string;
+    };
+    readonly client?: ConnectClient;
+}
+type GatewayFrameKind = "request" | "response" | "event" | "ack" | "error";
+interface GatewayFrame {
+    readonly kind: GatewayFrameKind;
+    /** Unique message ID (dedup key). */
+    readonly id: string;
+    /** Monotonic sequence number. */
+    readonly seq: number;
+    /** Correlates a response to its originating request. */
+    readonly ref?: string;
+    readonly payload: unknown;
+    readonly timestamp: number;
+}
+interface RoutingContext {
+    readonly channel?: string;
+    readonly account?: string;
+    readonly peer?: string;
+}
+interface Session {
+    readonly id: string;
+    readonly agentId: string;
+    readonly connectedAt: number;
+    readonly lastHeartbeat: number;
+    /** Local outbound sequence counter. */
+    readonly seq: number;
+    /** Last accepted inbound sequence from remote. */
+    readonly remoteSeq: number;
+    readonly metadata: Readonly<Record<string, unknown>>;
+    readonly routing?: RoutingContext;
+}
+type AuthResult = {
+    readonly ok: true;
+    readonly sessionId: string;
+    readonly agentId: string;
+    readonly metadata: Readonly<Record<string, unknown>>;
+    readonly routing?: RoutingContext;
+} | {
+    readonly ok: false;
+    readonly code: "INVALID_TOKEN" | "EXPIRED" | "FORBIDDEN";
+    readonly message: string;
+};
+interface GatewayCapabilities {
+    /** Whether the server supports per-message compression. */
+    readonly compression: boolean;
+    /** Whether the server supports session resumption after disconnect. */
+    readonly resumption: boolean;
+    /** Maximum frame payload size in bytes the server will accept. */
+    readonly maxFrameBytes: number;
+}
+interface HandshakeSnapshot {
+    /** Server's current timestamp (ms). Enables client clock-skew detection. */
+    readonly serverTime: number;
+    /** Current number of active connections. Coarse load signal. */
+    readonly activeConnections: number;
+}
+interface HandshakeAckPayload {
+    readonly sessionId: string;
+    /** Negotiated protocol version (highest mutually supported). */
+    readonly protocol: number;
+    readonly capabilities: GatewayCapabilities;
+    readonly snapshot?: HandshakeSnapshot;
+}
+type ScopingMode = "main" | "per-peer" | "per-channel-peer" | "per-account-channel-peer";
+interface RouteBinding {
+    readonly pattern: string;
+    readonly agentId: string;
+}
+interface RoutingConfig {
+    readonly scopingMode: ScopingMode;
+    readonly bindings?: readonly RouteBinding[];
+}
+interface SchedulerDef {
+    readonly id: string;
+    readonly intervalMs: number;
+    readonly agentId: string;
+    readonly payload?: unknown;
+}
+interface GatewayConfig {
+    /** Minimum protocol version the server supports. Default: 1. */
+    readonly minProtocolVersion: number;
+    /** Maximum protocol version the server supports. Default: 1. */
+    readonly maxProtocolVersion: number;
+    /** Capabilities advertised to clients during handshake. */
+    readonly capabilities: GatewayCapabilities;
+    /** Whether to include a runtime snapshot in the handshake ack. Default: true. */
+    readonly includeSnapshot: boolean;
+    /** Maximum concurrent connections. Default: 10_000. */
+    readonly maxConnections: number;
+    /** Buffer utilization ratio that triggers warning state. Default: 0.8. */
+    readonly backpressureHighWatermark: number;
+    /** Maximum buffered bytes per connection. Default: 1_048_576 (1MB). */
+    readonly maxBufferBytesPerConnection: number;
+    /** Global buffer limit in bytes across all connections. Default: 500MB. */
+    readonly globalBufferLimitBytes: number;
+    /** Sliding window size for dedup. Default: 128. */
+    readonly dedupWindowSize: number;
+    /** Heartbeat interval in ms. Default: 30_000. */
+    readonly heartbeatIntervalMs: number;
+    /** Auth handshake timeout in ms. Default: 5_000. */
+    readonly authTimeoutMs: number;
+    /** Time in ms before a connection in critical backpressure is force-closed. Default: 30_000. */
+    readonly backpressureCriticalTimeoutMs: number;
+    /** Timer sweep interval in ms. Default: 10_000. */
+    readonly sweepIntervalMs: number;
+    /** Optional routing configuration for session dispatch. */
+    readonly routing?: RoutingConfig;
+    /** Port for webhook HTTP server. Undefined = disabled. */
+    readonly webhookPort?: number;
+    /** URL path prefix for webhook endpoints. Default: "/webhook". */
+    readonly webhookPath?: string;
+    /** Scheduler definitions for periodic frame dispatch. */
+    readonly schedulers?: readonly SchedulerDef[];
+}
+declare const DEFAULT_GATEWAY_CONFIG: GatewayConfig;
+type BackpressureState = "normal" | "warning" | "critical";
+
+/**
+ * SessionStore: pluggable session persistence.
+ * Default in-memory implementation provided.
+ *
+ * All mutating/querying methods return \`Result<T, KoiError>\` (or a Promise
+ * thereof) so implementations can be sync (in-memory) or async (network)
+ * without interface changes.
+ */
+
+interface SessionStore {
+    readonly get: (id: string) => Result<Session, KoiError> | Promise<Result<Session, KoiError>>;
+    readonly set: (session: Session) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly delete: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
+    readonly has: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
+    readonly size: () => number;
+    readonly entries: () => IterableIterator<readonly [string, Session]>;
+}
+declare function createInMemorySessionStore(): SessionStore;
+
+/**
+ * Transport abstraction over WebSocket server lifecycle.
+ */
+/**
+ * Matches Bun's ServerWebSocket.send() semantics:
+ * -1 = backpressure (queued), 0 = dropped/closed, >0 = bytes sent.
+ */
+type TransportSendResult = -1 | 0 | number;
+interface TransportConnection {
+    readonly id: string;
+    readonly send: (data: string) => TransportSendResult;
+    readonly close: (code?: number, reason?: string) => void;
+    readonly remoteAddress: string;
+}
+interface TransportHandler {
+    readonly onOpen: (conn: TransportConnection) => void;
+    readonly onMessage: (conn: TransportConnection, data: string) => void;
+    readonly onClose: (conn: TransportConnection, code: number, reason: string) => void;
+    readonly onDrain: (conn: TransportConnection) => void;
+}
+interface Transport {
+    readonly listen: (port: number, handler: TransportHandler) => Promise<void>;
+    readonly close: () => void;
+    readonly connections: () => number;
+}
+interface BunTransport extends Transport {
+    /** The actual port the server is listening on (useful when binding to port 0). */
+    readonly port: () => number;
+}
+declare function createBunTransport(): BunTransport;
+
+/**
+ * Authentication: handshake + periodic heartbeat re-validation.
+ */
+
+interface GatewayAuthenticator {
+    /** Authenticate based on a structured connect frame. */
+    readonly authenticate: (frame: ConnectFrame) => Promise<AuthResult>;
+    /** Re-validate an existing session (heartbeat check). */
+    readonly validate: (sessionId: string) => Promise<boolean>;
+}
+interface HandshakeOptions {
+    readonly minProtocolVersion: number;
+    readonly maxProtocolVersion: number;
+    readonly capabilities: GatewayCapabilities;
+    readonly snapshot?: HandshakeSnapshot;
+}
+interface HandshakeResult {
+    readonly session: Session;
+    readonly connectFrame: ConnectFrame;
+}
+/**
+ * Wait for the first message on a connection to be a structured ConnectFrame.
+ * Negotiates protocol version, then delegates to the authenticator.
+ * Resolves with a new Session on success, rejects on failure/timeout.
+ */
+declare function handleHandshake(conn: TransportConnection, authenticator: GatewayAuthenticator, timeoutMs: number, options: HandshakeOptions, onMessage: (handler: (data: string) => void) => void): Promise<HandshakeResult>;
+/** Contextual information passed to the sweep error handler. */
+interface SweepError {
+    readonly sessionId: string;
+    readonly cause: unknown;
+}
+declare function startHeartbeatSweep(store: SessionStore, authenticator: GatewayAuthenticator, heartbeatIntervalMs: number, sweepIntervalMs: number, onExpired: (sessionId: string) => void, onError?: (error: SweepError) => void): () => void;
+
+/**
+ * Backpressure monitor: per-connection buffer tracking with watermarks.
+ *
+ * Tracks buffered bytes per connection and globally. Transitions through
+ * normal → warning → critical states based on configured watermarks.
+ */
+
+interface BackpressureMonitor {
+    /** Record bytes buffered for a connection. Returns the new state. */
+    readonly record: (connId: string, bytes: number) => BackpressureState;
+    /** Record bytes drained for a connection. Returns the new state. */
+    readonly drain: (connId: string, bytes: number) => BackpressureState;
+    /** Current state for a connection. */
+    readonly state: (connId: string) => BackpressureState;
+    /** Remove tracking for a closed connection. */
+    readonly remove: (connId: string) => void;
+    /** Current global buffer usage in bytes. */
+    readonly globalUsage: () => number;
+    /** Whether a new connection can be accepted (global limit not exceeded). */
+    readonly canAccept: () => boolean;
+    /** Timestamp when connection entered critical state (undefined if not critical). */
+    readonly criticalSince: (connId: string) => number | undefined;
+}
+declare function createBackpressureMonitor(config: Pick<GatewayConfig, "maxBufferBytesPerConnection" | "backpressureHighWatermark" | "globalBufferLimitBytes">): BackpressureMonitor;
+
+/**
+ * Webhook ingestion: HTTP server that converts POST requests
+ * into GatewayFrames dispatched through the gateway pipeline.
+ */
+
+interface WebhookConfig {
+    readonly port: number;
+    readonly pathPrefix: string;
+    /** Maximum request body size in bytes. Default: 1 MB. */
+    readonly maxBodyBytes?: number;
+}
+interface WebhookServer {
+    readonly start: () => Promise<void>;
+    readonly stop: () => void;
+    readonly port: () => number;
+}
+type WebhookDispatcher = (session: Session, frame: GatewayFrame) => void;
+type WebhookAuthenticator = (request: Request, rawBody: string) => Promise<Result<WebhookAuthResult, KoiError>>;
+interface WebhookAuthResult {
+    readonly agentId: string;
+    readonly routing?: RoutingContext;
+    readonly metadata?: Readonly<Record<string, unknown>>;
+}
+declare function createWebhookServer(config: WebhookConfig, dispatcher: WebhookDispatcher, authenticator?: WebhookAuthenticator): WebhookServer;
+
+/**
+ * Gateway factory: wires transport, auth, sessions, sequencing,
+ * and backpressure into a single control-plane entry point.
+ */
+
+interface Gateway {
+    readonly start: (port: number) => Promise<void>;
+    readonly stop: () => Promise<void>;
+    readonly sessions: () => SessionStore;
+    readonly onFrame: (handler: (session: Session, frame: GatewayFrame) => void) => () => void;
+    readonly send: (sessionId: string, frame: GatewayFrame) => Result<number, KoiError>;
+    /** Inject a frame into the dispatch pipeline with route resolution. */
+    readonly dispatch: (session: Session, frame: GatewayFrame) => void;
+    /** Returns the webhook server port, or undefined if webhook is not configured. */
+    readonly webhookPort: () => number | undefined;
+}
+interface GatewayDeps {
+    readonly transport: Transport;
+    readonly auth: GatewayAuthenticator;
+    readonly store?: SessionStore;
+    readonly webhookAuth?: WebhookAuthenticator;
+}
+declare function createGateway(configOverrides: Partial<GatewayConfig>, deps: GatewayDeps): Gateway;
+
+/**
+ * Wire protocol: parse and encode GatewayFrame.
+ */
+
+/**
+ * Parse a raw JSON string into a validated GatewayFrame.
+ * Rejects early on malformed JSON or missing/invalid fields.
+ */
+declare function parseFrame(raw: string): Result<GatewayFrame, KoiError>;
+/**
+ * Negotiate the highest mutually supported protocol version between client and server.
+ * Returns the highest version in the overlap, or an error if no overlap exists.
+ */
+declare function negotiateProtocol(clientMin: number, clientMax: number, serverMin: number, serverMax: number): Result<number, KoiError>;
+/**
+ * Parse the first message on a connection as a structured ConnectFrame.
+ * Accepts both new range format (minProtocol/maxProtocol) and legacy format (protocol).
+ * Rejects if the message is not a valid connect frame.
+ */
+declare function parseConnectFrame(raw: string): Result<ConnectFrame, KoiError>;
+/**
+ * Encode a GatewayFrame to its JSON wire representation.
+ */
+declare function encodeFrame(frame: GatewayFrame): string;
+/**
+ * Create a JSON-encoded error frame string for server-generated error responses.
+ */
+declare function createErrorFrame(seq: number, code: string, message: string): string;
+/**
+ * Create a JSON-encoded ack frame string for server-generated acknowledgements.
+ */
+declare function createAckFrame(seq: number, ref?: string, payload?: unknown): string;
+
+/**
+ * Routing: dispatch key computation, pattern matching, and route resolution.
+ * All functions are pure — no side effects.
+ */
+
+/**
+ * Compute a dispatch key from a scoping mode and routing context.
+ * Missing segments default to \`"_"\`.
+ */
+declare function computeDispatchKey(mode: ScopingMode, routing?: RoutingContext): string;
+/**
+ * Validate a binding pattern. Returns an error message if invalid, undefined if ok.
+ * Rules: \`**\` may only appear as the last segment.
+ */
+declare function validateBindingPattern(pattern: string): string | undefined;
+/**
+ * Match a dispatch key against a list of route bindings.
+ * Patterns are split by \`":"\` and compared segment-by-segment:
+ * - \`"*"\` matches any single segment
+ * - \`"**"\` at the end matches all remaining segments
+ * First match wins. Returns the matched \`agentId\` or \`undefined\`.
+ *
+ * Throws if a pattern has \`**\` in a non-terminal position.
+ */
+declare function resolveBinding(dispatchKey: string, bindings: readonly RouteBinding[]): string | undefined;
+interface ResolvedRoute {
+    readonly agentId: string;
+    readonly dispatchKey: string;
+}
+/**
+ * Resolve the target agent for a routing context.
+ * - If no routing config is provided, returns the fallback immediately (backward compat).
+ * - Otherwise, computes the dispatch key, matches bindings, and falls back to \`fallbackAgentId\`.
+ */
+declare function resolveRoute(config: RoutingConfig | undefined, routing: RoutingContext | undefined, fallbackAgentId: string): ResolvedRoute;
+
+/**
+ * Scheduler: timer-based periodic frame generation.
+ * Each SchedulerDef produces GatewayFrames at a fixed interval.
+ */
+
+type SchedulerDispatcher = (session: Session, frame: GatewayFrame) => void;
+interface GatewayScheduler {
+    readonly start: () => void;
+    readonly stop: () => void;
+    readonly count: () => number;
+}
+declare function createScheduler(defs: readonly SchedulerDef[], dispatcher: SchedulerDispatcher): GatewayScheduler;
+
+/**
+ * SequenceTracker: ordering + deduplication via a sliding window.
+ *
+ * Maintains a window of expected sequence numbers. Frames arriving
+ * in-order are accepted immediately. Out-of-order frames within the
+ * window are buffered and released once the gap fills. Duplicates
+ * (same seq already seen) are rejected.
+ */
+
+type AcceptResult = "accepted" | "duplicate" | "out_of_window" | "buffered";
+interface SequenceTracker {
+    /**
+     * Submit a frame for ordering/dedup.
+     * Returns the disposition and any frames that became ready (in order).
+     */
+    readonly accept: (frame: GatewayFrame) => {
+        readonly result: AcceptResult;
+        readonly ready: readonly GatewayFrame[];
+    };
+    /** The next expected sequence number. */
+    readonly expectedSeq: () => number;
+    /** Number of frames currently buffered (waiting for gap fill). */
+    readonly bufferedCount: () => number;
+    /** Reset tracker state (e.g. on reconnect). */
+    readonly reset: (startSeq?: number) => void;
+}
+declare function createSequenceTracker(windowSize: number): SequenceTracker;
+
+export { type AcceptResult, type AuthResult, type BackpressureMonitor, type BackpressureState, type BunTransport, type ConnectClient, type ConnectFrame, DEFAULT_GATEWAY_CONFIG, type Gateway, type GatewayAuthenticator, type GatewayCapabilities, type GatewayConfig, type GatewayDeps, type GatewayFrame, type GatewayFrameKind, type GatewayScheduler, type HandshakeAckPayload, type HandshakeOptions, type HandshakeResult, type HandshakeSnapshot, type ResolvedRoute, type RouteBinding, type RoutingConfig, type RoutingContext, type SchedulerDef, type SchedulerDispatcher, type ScopingMode, type SequenceTracker, type Session, type SessionStore, type SweepError, type Transport, type TransportConnection, type TransportHandler, type TransportSendResult, type WebhookAuthResult, type WebhookAuthenticator, type WebhookConfig, type WebhookDispatcher, type WebhookServer, computeDispatchKey, createAckFrame, createBackpressureMonitor, createBunTransport, createErrorFrame, createGateway, createInMemorySessionStore, createScheduler, createSequenceTracker, createWebhookServer, encodeFrame, handleHandshake, negotiateProtocol, parseConnectFrame, parseFrame, resolveBinding, resolveRoute, startHeartbeatSweep, validateBindingPattern };
+"
+`;

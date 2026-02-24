@@ -20,7 +20,7 @@ export interface ConnectClient {
 }
 
 export interface ConnectFrame {
-  readonly type: "connect";
+  readonly kind: "connect";
   /** Minimum protocol version the client supports (positive integer). */
   readonly minProtocol: number;
   /** Maximum protocol version the client supports (positive integer, >= minProtocol). */

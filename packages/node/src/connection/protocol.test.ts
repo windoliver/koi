@@ -6,7 +6,7 @@ const validFrame: NodeFrame = {
   nodeId: "node-1",
   agentId: "agent-1",
   correlationId: "corr-1",
-  type: "agent:message",
+  kind: "agent:message",
   payload: { text: "hello" },
 };
 
@@ -16,7 +16,7 @@ describe("encodeFrame", () => {
     const parsed = JSON.parse(encoded);
     expect(parsed.nodeId).toBe("node-1");
     expect(parsed.agentId).toBe("agent-1");
-    expect(parsed.type).toBe("agent:message");
+    expect(parsed.kind).toBe("agent:message");
   });
 
   it("includes optional ttl when provided", () => {
@@ -35,7 +35,7 @@ describe("decodeFrame", () => {
     if (result.ok) {
       expect(result.value.nodeId).toBe("node-1");
       expect(result.value.agentId).toBe("agent-1");
-      expect(result.value.type).toBe("agent:message");
+      expect(result.value.kind).toBe("agent:message");
     }
   });
 
@@ -70,7 +70,7 @@ describe("decodeFrame", () => {
 
   it("rejects missing nodeId", () => {
     const result = decodeFrame(
-      JSON.stringify({ agentId: "a", correlationId: "c", type: "agent:message", payload: {} }),
+      JSON.stringify({ agentId: "a", correlationId: "c", kind: "agent:message", payload: {} }),
     );
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -80,37 +80,37 @@ describe("decodeFrame", () => {
 
   it("rejects empty nodeId", () => {
     const result = decodeFrame(
-      JSON.stringify({ nodeId: "", agentId: "a", correlationId: "c", type: "agent:message" }),
+      JSON.stringify({ nodeId: "", agentId: "a", correlationId: "c", kind: "agent:message" }),
     );
     expect(result.ok).toBe(false);
   });
 
   it("rejects missing agentId", () => {
     const result = decodeFrame(
-      JSON.stringify({ nodeId: "n", correlationId: "c", type: "agent:message" }),
+      JSON.stringify({ nodeId: "n", correlationId: "c", kind: "agent:message" }),
     );
     expect(result.ok).toBe(false);
   });
 
   it("rejects missing correlationId", () => {
     const result = decodeFrame(
-      JSON.stringify({ nodeId: "n", agentId: "a", type: "agent:message" }),
+      JSON.stringify({ nodeId: "n", agentId: "a", kind: "agent:message" }),
     );
     expect(result.ok).toBe(false);
   });
 
-  it("rejects invalid frame type", () => {
+  it("rejects invalid frame kind", () => {
     const result = decodeFrame(
-      JSON.stringify({ nodeId: "n", agentId: "a", correlationId: "c", type: "invalid:type" }),
+      JSON.stringify({ nodeId: "n", agentId: "a", correlationId: "c", kind: "invalid:kind" }),
     );
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error.message).toContain("invalid:type");
+      expect(result.error.message).toContain("invalid:kind");
     }
   });
 
-  it("accepts all valid frame types", () => {
-    const types = [
+  it("accepts all valid frame kinds", () => {
+    const kinds = [
       "agent:dispatch",
       "agent:message",
       "agent:status",
@@ -120,9 +120,9 @@ describe("decodeFrame", () => {
       "node:capacity",
       "node:error",
     ] as const;
-    for (const type of types) {
+    for (const kind of kinds) {
       const result = decodeFrame(
-        JSON.stringify({ nodeId: "n", agentId: "a", correlationId: "c", type }),
+        JSON.stringify({ nodeId: "n", agentId: "a", correlationId: "c", kind }),
       );
       expect(result.ok).toBe(true);
     }

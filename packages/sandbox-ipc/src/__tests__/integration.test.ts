@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { buildSandboxCommand, restrictiveProfile } from "@koi/sandbox";
+import { createSandboxCommand, restrictiveProfile } from "@koi/sandbox";
 import { createSandboxBridge } from "../bridge.js";
 import type { BridgeConfig } from "../types.js";
 
@@ -17,7 +17,7 @@ function integrationConfig(overrides?: Partial<BridgeConfig>): BridgeConfig {
     profile: restrictiveProfile({
       resources: { timeoutMs: 10_000, maxMemoryMb: 256 },
     }),
-    buildCommand: buildSandboxCommand,
+    buildCommand: createSandboxCommand,
     serialization: "json",
     graceMs: 5_000,
     maxResultBytes: 10_485_760,

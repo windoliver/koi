@@ -25,7 +25,7 @@ export { createHeartbeatMonitor } from "./connection/heartbeat.js";
 export { decodeFrame, encodeFrame, generateCorrelationId } from "./connection/protocol.js";
 export type { ReconnectState } from "./connection/reconnect.js";
 export {
-  calculateReconnectDelay,
+  computeReconnectDelay,
   createReconnectState,
   isCleanClose,
   nextAttempt,
@@ -39,7 +39,7 @@ export type {
   DeliveryManagerDeps,
 } from "./delivery-manager.js";
 // -- Delivery manager -------------------------------------------------------
-export { createDeliveryManager, DELIVERY_DEFAULTS } from "./delivery-manager.js";
+export { createDeliveryManager, DEFAULT_DELIVERY_CONFIG } from "./delivery-manager.js";
 export type { DiscoveryService, ServiceInfo } from "./discovery.js";
 // -- Discovery & monitoring -------------------------------------------------
 export { createDiscoveryService } from "./discovery.js";
@@ -82,7 +82,7 @@ export type {
   NodeEventListener,
   NodeEventType,
   NodeFrame,
-  NodeFrameType,
+  NodeFrameKind,
   NodeMode,
   NodePendingFrame,
   NodeRecoveryPlan,

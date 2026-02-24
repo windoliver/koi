@@ -19,7 +19,7 @@ export {
 } from "./error-utils.js";
 export { mapFsError, mapParseError } from "./fs-errors.js";
 export {
-  calculateBackoff,
+  computeBackoff,
   DEFAULT_RETRY_CONFIG,
   isRetryable,
   type RetryConfig,

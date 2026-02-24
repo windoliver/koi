@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { agentId } from "@koi/core";
-import { createMcpComponentProviderAsync } from "./component-provider.js";
+import { createMcpComponentProvider } from "./component-provider.js";
 import type { McpProviderConfig } from "./config.js";
 
 /**
@@ -8,7 +8,7 @@ import type { McpProviderConfig } from "./config.js";
  * Full lifecycle tests are in __tests__/integration.test.ts with mock managers.
  */
 
-describe("createMcpComponentProviderAsync", () => {
+describe("createMcpComponentProvider", () => {
   test("returns provider with name 'mcp'", async () => {
     const config: McpProviderConfig = {
       servers: [
@@ -22,7 +22,7 @@ describe("createMcpComponentProviderAsync", () => {
       maxReconnectAttempts: 0,
     };
 
-    const result = await createMcpComponentProviderAsync(config);
+    const result = await createMcpComponentProvider(config);
     expect(result.provider.name).toBe("mcp");
   });
 
@@ -39,7 +39,7 @@ describe("createMcpComponentProviderAsync", () => {
       maxReconnectAttempts: 0,
     };
 
-    const result = await createMcpComponentProviderAsync(config);
+    const result = await createMcpComponentProvider(config);
     expect(result.failures).toHaveLength(1);
     expect(result.failures[0]?.serverName).toBe("bad-server");
     expect(result.clients).toHaveLength(0);
@@ -63,7 +63,7 @@ describe("createMcpComponentProviderAsync", () => {
       maxReconnectAttempts: 0,
     };
 
-    const result = await createMcpComponentProviderAsync(config);
+    const result = await createMcpComponentProvider(config);
     expect(result.failures).toHaveLength(2);
 
     const agent = createMockAgent();
@@ -84,7 +84,7 @@ describe("createMcpComponentProviderAsync", () => {
       maxReconnectAttempts: 0,
     };
 
-    const result = await createMcpComponentProviderAsync(config);
+    const result = await createMcpComponentProvider(config);
     expect(result).toHaveProperty("provider");
     expect(result).toHaveProperty("clients");
     expect(result).toHaveProperty("failures");

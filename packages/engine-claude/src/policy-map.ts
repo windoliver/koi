@@ -38,7 +38,7 @@ export interface McpBridgeConfig {
 }
 
 /**
- * Build SDK Options from Koi adapter config.
+ * Create SDK Options from Koi adapter config.
  *
  * @param config - The Koi adapter configuration
  * @param mcpBridge - Optional MCP bridge server config for Koi tools
@@ -47,7 +47,7 @@ export interface McpBridgeConfig {
  * @param canUseTool - Optional canUseTool callback for HITL approval
  * @returns SDK-compatible options object
  */
-export function buildSdkOptions(
+export function createSdkOptions(
   config: ClaudeAdapterConfig,
   mcpBridge: McpBridgeConfig | undefined,
   resumeSessionId: string | undefined,

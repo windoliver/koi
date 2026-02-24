@@ -149,7 +149,7 @@ describe("Agent crash isolation", () => {
       nodeId: node.nodeId,
       agentId: "to-kill",
       correlationId: "gw-terminate-1",
-      type: "agent:terminate",
+      kind: "agent:terminate",
       payload: {},
     });
 

@@ -1,14 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { validateConfig } from "./config.js";
+import { validateTracingConfig } from "./config.js";
 
-describe("validateConfig", () => {
+describe("validateTracingConfig", () => {
   test("returns ok for valid empty config object", () => {
-    const result = validateConfig({});
+    const result = validateTracingConfig({});
     expect(result.ok).toBe(true);
   });
 
   test("returns ok for config with all valid fields", () => {
-    const result = validateConfig({
+    const result = validateTracingConfig({
       serviceName: "my-service",
       captureContent: true,
     });
@@ -20,7 +20,7 @@ describe("validateConfig", () => {
   });
 
   test("returns error for null config", () => {
-    const result = validateConfig(null);
+    const result = validateTracingConfig(null);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
@@ -29,7 +29,7 @@ describe("validateConfig", () => {
   });
 
   test("returns error for undefined config", () => {
-    const result = validateConfig(undefined);
+    const result = validateTracingConfig(undefined);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
@@ -37,7 +37,7 @@ describe("validateConfig", () => {
   });
 
   test("returns error for non-string serviceName", () => {
-    const result = validateConfig({ serviceName: 42 });
+    const result = validateTracingConfig({ serviceName: 42 });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
@@ -46,7 +46,7 @@ describe("validateConfig", () => {
   });
 
   test("returns error for non-boolean captureContent", () => {
-    const result = validateConfig({ captureContent: "yes" });
+    const result = validateTracingConfig({ captureContent: "yes" });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
@@ -55,7 +55,7 @@ describe("validateConfig", () => {
   });
 
   test("returns error for non-object config (number)", () => {
-    const result = validateConfig(42);
+    const result = validateTracingConfig(42);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");

@@ -14,7 +14,7 @@ export interface AuditMiddlewareConfig {
   readonly onError?: (error: unknown, entry: AuditEntry) => void;
 }
 
-export function validateConfig(config: unknown): Result<AuditMiddlewareConfig, KoiError> {
+export function validateAuditConfig(config: unknown): Result<AuditMiddlewareConfig, KoiError> {
   if (config === null || config === undefined || typeof config !== "object") {
     return {
       ok: false,

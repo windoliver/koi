@@ -76,7 +76,7 @@ describe("createAuthHandshake", () => {
 
       // Should have sent node:auth frame
       expect(sentFrames.length).toBe(1);
-      expect(sentFrames[0]?.type).toBe("node:auth");
+      expect(sentFrames[0]?.kind).toBe("node:auth");
       const authPayload = sentFrames[0]?.payload as { token: string; timestamp: number };
       expect(authPayload.token).toBe("tok-123");
       expect(typeof authPayload.timestamp).toBe("number");
@@ -87,7 +87,7 @@ describe("createAuthHandshake", () => {
         nodeId,
         agentId: "",
         correlationId: "gw-1",
-        type: "node:auth_ack",
+        kind: "node:auth_ack",
         payload: ackPayload,
       });
 
@@ -107,7 +107,7 @@ describe("createAuthHandshake", () => {
         nodeId,
         agentId: "",
         correlationId: "gw-1",
-        type: "node:auth_ack",
+        kind: "node:auth_ack",
         payload: ackPayload,
       });
 
@@ -130,7 +130,7 @@ describe("createAuthHandshake", () => {
 
       // Initial auth frame sent
       expect(sentFrames.length).toBe(1);
-      expect(sentFrames[0]?.type).toBe("node:auth");
+      expect(sentFrames[0]?.kind).toBe("node:auth");
 
       // Simulate Gateway challenge
       const challengePayload: AuthChallengePayload = { challenge: "nonce-abc-123" };
@@ -138,7 +138,7 @@ describe("createAuthHandshake", () => {
         nodeId,
         agentId: "",
         correlationId: "gw-2",
-        type: "node:auth_challenge",
+        kind: "node:auth_challenge",
         payload: challengePayload,
       });
 
@@ -147,7 +147,7 @@ describe("createAuthHandshake", () => {
 
       // Should have sent node:auth_response
       expect(sentFrames.length).toBe(2);
-      expect(sentFrames[1]?.type).toBe("node:auth_response");
+      expect(sentFrames[1]?.kind).toBe("node:auth_response");
       const responsePayload = sentFrames[1]?.payload as { response: string };
       expect(responsePayload.response).toMatch(/^[0-9a-f]{64}$/);
 
@@ -161,7 +161,7 @@ describe("createAuthHandshake", () => {
         nodeId,
         agentId: "",
         correlationId: "gw-3",
-        type: "node:auth_ack",
+        kind: "node:auth_ack",
         payload: ackPayload,
       });
 
@@ -209,7 +209,7 @@ describe("createAuthHandshake", () => {
         nodeId,
         agentId: "",
         correlationId: "gw-1",
-        type: "node:auth_ack",
+        kind: "node:auth_ack",
         payload: { success: true } satisfies AuthAckPayload,
       });
 
@@ -220,7 +220,7 @@ describe("createAuthHandshake", () => {
         nodeId,
         agentId: "",
         correlationId: "gw-2",
-        type: "node:auth_ack",
+        kind: "node:auth_ack",
         payload: { success: false, reason: "late" } satisfies AuthAckPayload,
       });
     });
@@ -238,7 +238,7 @@ describe("createAuthHandshake", () => {
         nodeId,
         agentId: "",
         correlationId: "gw-1",
-        type: "node:heartbeat",
+        kind: "node:heartbeat",
         payload: { kind: "pong" },
       });
 
@@ -247,7 +247,7 @@ describe("createAuthHandshake", () => {
         nodeId,
         agentId: "",
         correlationId: "gw-2",
-        type: "node:auth_ack",
+        kind: "node:auth_ack",
         payload: { success: true } satisfies AuthAckPayload,
       });
 

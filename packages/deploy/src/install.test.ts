@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { resolveServiceName } from "./platform.js";
-import { renderLaunchdPlist } from "./templates/launchd.js";
-import { renderSystemdUnit } from "./templates/systemd.js";
+import { generateLaunchdPlist } from "./templates/launchd.js";
+import { generateSystemdUnit } from "./templates/systemd.js";
 
 /**
  * Install orchestration tests — verifies the end-to-end flow
@@ -18,7 +18,7 @@ describe("install orchestration", () => {
   });
 
   it("generates valid systemd unit for install", () => {
-    const unit = renderSystemdUnit({
+    const unit = generateSystemdUnit({
       name: "test-agent",
       bunPath: "/usr/local/bin/bun",
       koiPath: "/app/node_modules/.bin/koi",
@@ -36,7 +36,7 @@ describe("install orchestration", () => {
   });
 
   it("generates valid launchd plist for install", () => {
-    const plist = renderLaunchdPlist({
+    const plist = generateLaunchdPlist({
       label: "com.koi.test-agent",
       name: "test-agent",
       bunPath: "/usr/local/bin/bun",
@@ -54,7 +54,7 @@ describe("install orchestration", () => {
   });
 
   it("uses correct port in generated files", () => {
-    const unit = renderSystemdUnit({
+    const unit = generateSystemdUnit({
       name: "test",
       bunPath: "/bin/bun",
       koiPath: "/bin/koi",

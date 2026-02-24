@@ -1,7 +1,7 @@
 /**
  * Service installation orchestrator.
  *
- * Sequence: detect platform → resolve paths → render template → install → verify health.
+ * Sequence: detect platform → resolve paths → generate template → install → verify health.
  */
 
 import { resolve } from "node:path";
@@ -17,8 +17,8 @@ import {
   resolveLogDir,
   resolveServiceName,
 } from "./platform.js";
-import { renderLaunchdPlist } from "./templates/launchd.js";
-import { renderSystemdUnit } from "./templates/systemd.js";
+import { generateLaunchdPlist } from "./templates/launchd.js";
+import { generateSystemdUnit } from "./templates/systemd.js";
 import type { DeployConfig } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -59,7 +59,7 @@ export async function installService(config: InstallConfig): Promise<InstallResu
   let manager: ServiceManager;
 
   if (platform === "linux") {
-    serviceContent = renderSystemdUnit({
+    serviceContent = generateSystemdUnit({
       name: config.agentName,
       bunPath,
       koiPath,
@@ -76,7 +76,7 @@ export async function installService(config: InstallConfig): Promise<InstallResu
     manager = createSystemdManager(system);
   } else {
     const label = resolveLaunchdLabel(config.agentName);
-    serviceContent = renderLaunchdPlist({
+    serviceContent = generateLaunchdPlist({
       label,
       name: config.agentName,
       bunPath,

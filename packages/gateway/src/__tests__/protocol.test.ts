@@ -135,7 +135,7 @@ describe("parseFrame", () => {
 describe("parseConnectFrame", () => {
   test("parses valid range format (minProtocol/maxProtocol)", () => {
     const raw = JSON.stringify({
-      type: "connect",
+      kind: "connect",
       minProtocol: 1,
       maxProtocol: 3,
       auth: { token: "my-token" },
@@ -143,7 +143,7 @@ describe("parseConnectFrame", () => {
     const result = parseConnectFrame(raw);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.type).toBe("connect");
+      expect(result.value.kind).toBe("connect");
       expect(result.value.minProtocol).toBe(1);
       expect(result.value.maxProtocol).toBe(3);
       expect(result.value.auth.token).toBe("my-token");
@@ -152,7 +152,7 @@ describe("parseConnectFrame", () => {
 
   test("parses legacy protocol field normalized to range", () => {
     const raw = JSON.stringify({
-      type: "connect",
+      kind: "connect",
       protocol: 2,
       auth: { token: "my-token" },
     });
@@ -166,7 +166,7 @@ describe("parseConnectFrame", () => {
 
   test("parses connect frame with client metadata", () => {
     const raw = JSON.stringify({
-      type: "connect",
+      kind: "connect",
       minProtocol: 1,
       maxProtocol: 1,
       auth: { token: "tok" },
@@ -181,9 +181,9 @@ describe("parseConnectFrame", () => {
     }
   });
 
-  test("rejects non-connect type", () => {
+  test("rejects non-connect kind", () => {
     const raw = JSON.stringify({
-      type: "request",
+      kind: "request",
       minProtocol: 1,
       maxProtocol: 1,
       auth: { token: "t" },
@@ -195,13 +195,13 @@ describe("parseConnectFrame", () => {
     }
   });
 
-  test("rejects missing type", () => {
+  test("rejects missing kind", () => {
     const raw = JSON.stringify({ minProtocol: 1, maxProtocol: 1, auth: { token: "t" } });
     expect(parseConnectFrame(raw).ok).toBe(false);
   });
 
   test("rejects missing both protocol formats", () => {
-    const raw = JSON.stringify({ type: "connect", auth: { token: "t" } });
+    const raw = JSON.stringify({ kind: "connect", auth: { token: "t" } });
     const result = parseConnectFrame(raw);
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -211,7 +211,7 @@ describe("parseConnectFrame", () => {
 
   test("rejects minProtocol > maxProtocol", () => {
     const raw = JSON.stringify({
-      type: "connect",
+      kind: "connect",
       minProtocol: 5,
       maxProtocol: 2,
       auth: { token: "t" },
@@ -225,7 +225,7 @@ describe("parseConnectFrame", () => {
 
   test("rejects non-integer minProtocol", () => {
     const raw = JSON.stringify({
-      type: "connect",
+      kind: "connect",
       minProtocol: 1.5,
       maxProtocol: 2,
       auth: { token: "t" },
@@ -235,7 +235,7 @@ describe("parseConnectFrame", () => {
 
   test("rejects minProtocol < 1", () => {
     const raw = JSON.stringify({
-      type: "connect",
+      kind: "connect",
       minProtocol: 0,
       maxProtocol: 2,
       auth: { token: "t" },
@@ -245,7 +245,7 @@ describe("parseConnectFrame", () => {
 
   test("rejects non-integer maxProtocol", () => {
     const raw = JSON.stringify({
-      type: "connect",
+      kind: "connect",
       minProtocol: 1,
       maxProtocol: 2.5,
       auth: { token: "t" },
@@ -254,18 +254,18 @@ describe("parseConnectFrame", () => {
   });
 
   test("rejects legacy protocol < 1", () => {
-    const raw = JSON.stringify({ type: "connect", protocol: 0, auth: { token: "t" } });
+    const raw = JSON.stringify({ kind: "connect", protocol: 0, auth: { token: "t" } });
     expect(parseConnectFrame(raw).ok).toBe(false);
   });
 
   test("rejects missing auth", () => {
-    const raw = JSON.stringify({ type: "connect", minProtocol: 1, maxProtocol: 1 });
+    const raw = JSON.stringify({ kind: "connect", minProtocol: 1, maxProtocol: 1 });
     expect(parseConnectFrame(raw).ok).toBe(false);
   });
 
   test("rejects empty token", () => {
     const raw = JSON.stringify({
-      type: "connect",
+      kind: "connect",
       minProtocol: 1,
       maxProtocol: 1,
       auth: { token: "" },
@@ -288,7 +288,7 @@ describe("parseConnectFrame", () => {
 
   test("accepts partial client object", () => {
     const raw = JSON.stringify({
-      type: "connect",
+      kind: "connect",
       minProtocol: 1,
       maxProtocol: 1,
       auth: { token: "t" },

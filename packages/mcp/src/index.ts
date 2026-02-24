@@ -19,7 +19,7 @@ export type {
   McpServerFailure,
 } from "./component-provider.js";
 // runtime values — component provider
-export { createMcpComponentProviderAsync } from "./component-provider.js";
+export { createMcpComponentProvider } from "./component-provider.js";
 // types — config
 export type {
   HttpTransportConfig,
@@ -53,4 +53,4 @@ export {
 // runtime values — resolver
 export { createMcpResolver } from "./resolver.js";
 // runtime values — tool adapter
-export { mcpToolToKoiTool } from "./tool-adapter.js";
+export { mapMcpToolToKoi } from "./tool-adapter.js";

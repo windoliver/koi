@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { buildSandboxCommand, restrictiveProfile } from "@koi/sandbox";
+import { createSandboxCommand, restrictiveProfile } from "@koi/sandbox";
 import type { BridgeConfig, SandboxBridge } from "@koi/sandbox-ipc";
 import { bridgeToExecutor, createSandboxBridge } from "@koi/sandbox-ipc";
 import { createTieredExecutor } from "../tiered-executor.js";
@@ -19,7 +19,7 @@ function integrationBridgeConfig(overrides?: Partial<BridgeConfig>): BridgeConfi
     profile: restrictiveProfile({
       resources: { timeoutMs: 10_000, maxMemoryMb: 256 },
     }),
-    buildCommand: buildSandboxCommand,
+    buildCommand: createSandboxCommand,
     serialization: "json",
     graceMs: 5_000,
     maxResultBytes: 10_485_760,

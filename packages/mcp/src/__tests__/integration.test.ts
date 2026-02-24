@@ -4,7 +4,7 @@ import { toolToken } from "@koi/core";
 import { createExecuteTool } from "../discover/execute-tool.js";
 import { createSearchTool } from "../discover/search-tool.js";
 import { createMcpResolver } from "../resolver.js";
-import { mcpToolToKoiTool } from "../tool-adapter.js";
+import { mapMcpToolToKoi } from "../tool-adapter.js";
 import { createMockMcpClientManager } from "./mock-mcp-server.js";
 
 // ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@ describe("integration: tools mode", () => {
     // Wrap as Koi tools
     const tools = new Map<string, unknown>();
     for (const toolInfo of listResult.value) {
-      const tool = mcpToolToKoiTool(toolInfo, manager, "filesystem");
+      const tool = mapMcpToolToKoi(toolInfo, manager, "filesystem");
       tools.set(toolToken(tool.descriptor.name) as string, tool);
     }
 

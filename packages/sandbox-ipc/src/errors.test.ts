@@ -1,10 +1,10 @@
 /**
- * Error creation and adapter tests — covers createIpcError() and ipcErrorToKoiError().
+ * Error creation and adapter tests — covers createIpcError() and mapIpcErrorToKoi().
  */
 
 import { describe, expect, test } from "bun:test";
 import type { KoiErrorCode } from "@koi/core";
-import { createIpcError, ipcErrorToKoiError } from "./errors.js";
+import { createIpcError, mapIpcErrorToKoi } from "./errors.js";
 import type { IpcError, IpcErrorCode } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -41,10 +41,10 @@ describe("createIpcError", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ipcErrorToKoiError — all IpcErrorCode variants
+// mapIpcErrorToKoi — all IpcErrorCode variants
 // ---------------------------------------------------------------------------
 
-describe("ipcErrorToKoiError", () => {
+describe("mapIpcErrorToKoi", () => {
   const expectedMapping: Readonly<
     Record<IpcErrorCode, { koiCode: KoiErrorCode; retryable: boolean }>
   > = {
@@ -79,7 +79,7 @@ describe("ipcErrorToKoiError", () => {
         durationMs: 42,
       };
 
-      const koiError = ipcErrorToKoiError(ipcError);
+      const koiError = mapIpcErrorToKoi(ipcError);
 
       expect(koiError.code).toBe(expected.koiCode);
       expect(koiError.retryable).toBe(expected.retryable);
@@ -92,7 +92,7 @@ describe("ipcErrorToKoiError", () => {
       message: "execution exceeded 5000ms",
     };
 
-    const koiError = ipcErrorToKoiError(ipcError);
+    const koiError = mapIpcErrorToKoi(ipcError);
 
     expect(koiError.message).toContain("TIMEOUT");
     expect(koiError.message).toContain("execution exceeded 5000ms");
@@ -100,7 +100,7 @@ describe("ipcErrorToKoiError", () => {
 
   test("message format is 'IPC bridge error [CODE]: original'", () => {
     const ipcError: IpcError = { code: "OOM", message: "out of memory" };
-    const koiError = ipcErrorToKoiError(ipcError);
+    const koiError = mapIpcErrorToKoi(ipcError);
     expect(koiError.message).toBe("IPC bridge error [OOM]: out of memory");
   });
 });

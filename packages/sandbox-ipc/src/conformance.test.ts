@@ -14,7 +14,7 @@ import type {
   SandboxResult as CoreSandboxResult,
 } from "@koi/core";
 import { bridgeToExecutor } from "./adapter.js";
-import { ipcErrorToSandboxError } from "./errors.js";
+import { mapIpcErrorToSandbox } from "./errors.js";
 import type { SandboxBridge } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -43,8 +43,8 @@ const _checkSandboxResult = assertAssignable<CoreSandboxResult>();
 // ---------------------------------------------------------------------------
 
 describe("type conformance: sandbox-ipc ↔ core", () => {
-  test("ipcErrorToSandboxError returns a core-compatible SandboxError", () => {
-    const result = ipcErrorToSandboxError({
+  test("mapIpcErrorToSandbox returns a core-compatible SandboxError", () => {
+    const result = mapIpcErrorToSandbox({
       code: "TIMEOUT",
       message: "timed out",
       durationMs: 100,
