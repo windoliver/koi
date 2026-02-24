@@ -38,10 +38,16 @@ jobs:
         run: bun run check
 
       - name: Build
-        run: turbo run build --force
+        run: bun run build
+        env:
+          TURBO_FORCE: "true"
 
       - name: Typecheck
-        run: turbo run typecheck --force
+        run: bun run typecheck
+        env:
+          TURBO_FORCE: "true"
 
       - name: Test
-        run: turbo run test --force
+        run: bun run test
+        env:
+          TURBO_FORCE: "true"
