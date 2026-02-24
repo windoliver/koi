@@ -20,6 +20,7 @@ export type {
   NetworkPolicy,
   ResourceLimits,
   SandboxAdapter,
+  SandboxAdapterResult,
   SandboxExecOptions,
   SandboxInstance,
   SandboxProfile,

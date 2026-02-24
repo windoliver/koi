@@ -20,6 +20,9 @@ export function buildBwrapArgs(
   result.push("--unshare-all");
 
   // Network isolation
+  // Note: bwrap only supports binary --unshare-net. allowedHosts is not
+  // enforced because bwrap has no host filtering and iptables in a namespace
+  // requires root. Use Docker adapter for host filtering.
   if (!profile.network.allow) {
     result.push("--unshare-net");
   }

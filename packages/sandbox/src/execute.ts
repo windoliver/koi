@@ -5,7 +5,7 @@
 
 import type { KoiError, Result } from "@koi/core";
 import { buildSandboxCommand } from "./command.js";
-import type { SandboxProfile, SandboxResult } from "./types.js";
+import type { SandboxAdapterResult, SandboxProfile } from "./types.js";
 
 export interface ExecuteOptions {
   readonly cwd?: string;
@@ -18,7 +18,7 @@ export async function execute(
   command: string,
   args: readonly string[],
   options?: ExecuteOptions,
-): Promise<Result<SandboxResult, KoiError>> {
+): Promise<Result<SandboxAdapterResult, KoiError>> {
   const cmd = buildSandboxCommand(profile, command, args);
   if (!cmd.ok) {
     return cmd;
@@ -85,7 +85,7 @@ export async function execute(
     const oomKilled = !timedOut && exitCode === 137;
     const signalNum = exitCode > 128 ? signalName(exitCode - 128) : null;
 
-    const result: SandboxResult =
+    const result: SandboxAdapterResult =
       signalNum !== null
         ? { exitCode, stdout, stderr, signal: signalNum, durationMs, timedOut, oomKilled }
         : { exitCode, stdout, stderr, durationMs, timedOut, oomKilled };

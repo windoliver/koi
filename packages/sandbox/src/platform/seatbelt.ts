@@ -54,6 +54,9 @@ export function generateSeatbeltProfile(profile: SandboxProfile, _command: strin
   }
 
   // Network rules
+  // Note: Seatbelt only supports binary network on/off. allowedHosts is not
+  // enforced because Seatbelt requires IP addresses (not hostnames), and
+  // resolving at profile time is fragile. Use Docker adapter for host filtering.
   if (!profile.network.allow) {
     lines.push("(deny network*)");
   } else {
