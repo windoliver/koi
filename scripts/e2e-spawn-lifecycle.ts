@@ -475,6 +475,122 @@ await registry2[Symbol.asyncDispose]();
 await parent2.dispose();
 
 // ===========================================================================
+// Test 8: Runtime disposal on termination (adapter resource cleanup)
+// ===========================================================================
+
+console.log("[test 8] Runtime disposal on termination");
+
+const registry3 = createInMemoryRegistry();
+const ledger3 = createInMemorySpawnLedger(20);
+
+// Fresh parent for disposal test
+const parent3Adapter = makeLoopAdapter(1);
+const parent3 = await createKoi({
+  manifest: {
+    name: "e2e-parent-3",
+    version: "0.1.0",
+    model: { name: MODEL },
+  },
+  adapter: parent3Adapter,
+  registry: registry3,
+  spawnLedger: ledger3,
+  loopDetection: false,
+});
+
+registry3.register({
+  agentId: parent3.agent.pid.id,
+  status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
+  agentType: "copilot",
+  metadata: {},
+  registeredAt: Date.now(),
+});
+registry3.transition(parent3.agent.pid.id, "running", 0, { kind: "assembly_complete" });
+
+// Track disposal via a wrapper
+// let justified: mutable flag to track dispose call from termination handler
+let disposeCalledByTermination = false;
+const childAdapterForDisposal = makeLoopAdapter(1);
+const originalDispose = childAdapterForDisposal.dispose;
+childAdapterForDisposal.dispose = async () => {
+  disposeCalledByTermination = true;
+  await originalDispose?.();
+};
+
+const disposalChild = await spawnChildAgent({
+  manifest: {
+    name: "e2e-child-disposal",
+    version: "0.1.0",
+    model: { name: MODEL },
+  },
+  adapter: childAdapterForDisposal,
+  parentAgent: parent3.agent,
+  spawnLedger: ledger3,
+  spawnPolicy: DEFAULT_SPAWN_POLICY,
+  registry: registry3,
+});
+
+registry3.transition(disposalChild.childPid.id, "running", 0, { kind: "assembly_complete" });
+
+assert("dispose not called before termination", !disposeCalledByTermination);
+
+// Terminate child — should trigger automatic disposal
+registry3.transition(disposalChild.childPid.id, "terminated", 1, { kind: "completed" });
+
+// Allow async dispose to settle
+await new Promise((resolve) => setTimeout(resolve, 50));
+
+assert("runtime.dispose() called on child termination", disposeCalledByTermination);
+assert("ledger released after disposal", ledger3.activeCount() === 0);
+
+console.log(`  Dispose called: ${disposeCalledByTermination}`);
+console.log(`  Ledger active: ${ledger3.activeCount()}`);
+console.log();
+
+// Test cascade disposal too
+// let justified: mutable flag to track cascade dispose
+let cascadeDisposeCalled = false;
+const cascadeChildAdapter = makeLoopAdapter(1);
+const cascadeOrigDispose = cascadeChildAdapter.dispose;
+cascadeChildAdapter.dispose = async () => {
+  cascadeDisposeCalled = true;
+  await cascadeOrigDispose?.();
+};
+
+const cascadeDisposalChild = await spawnChildAgent({
+  manifest: {
+    name: "e2e-child-cascade-disposal",
+    version: "0.1.0",
+    model: { name: MODEL },
+  },
+  adapter: cascadeChildAdapter,
+  parentAgent: parent3.agent,
+  spawnLedger: ledger3,
+  spawnPolicy: DEFAULT_SPAWN_POLICY,
+  registry: registry3,
+});
+
+registry3.transition(cascadeDisposalChild.childPid.id, "running", 0, { kind: "assembly_complete" });
+
+assert("cascade dispose not called before parent death", !cascadeDisposeCalled);
+
+// Kill parent — cascade should dispose child
+registry3.transition(parent3.agent.pid.id, "terminated", 1, { kind: "completed" });
+
+// Allow async dispose to settle
+await new Promise((resolve) => setTimeout(resolve, 50));
+
+assert("runtime.dispose() called on cascade termination", cascadeDisposeCalled);
+assert("ledger released after cascade disposal", ledger3.activeCount() === 0);
+
+console.log(`  Cascade dispose called: ${cascadeDisposeCalled}`);
+console.log(`  Ledger active: ${ledger3.activeCount()}`);
+console.log();
+
+// Cleanup
+await registry3[Symbol.asyncDispose]();
+await parent3.dispose();
+
+// ===========================================================================
 // Cleanup
 // ===========================================================================
 
