@@ -2,6 +2,7 @@
  * Audit middleware factory — compliance logging and PII redaction.
  */
 
+import type { AuditEntry } from "@koi/core";
 import type {
   KoiMiddleware,
   ModelHandler,
@@ -15,7 +16,6 @@ import type {
 } from "@koi/core/middleware";
 import { swallowError } from "@koi/errors";
 import type { AuditMiddlewareConfig } from "./config.js";
-import type { AuditEntry } from "./sink.js";
 import { applyRedaction, truncate } from "./sink.js";
 
 const DEFAULT_MAX_ENTRY_SIZE = 10_000;
