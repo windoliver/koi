@@ -15,53 +15,17 @@ import type {
   ComponentProvider,
   ForgeScope,
   ForgeStore,
-  JsonObject,
-  SandboxExecutor,
   StoreChangeNotifier,
   TieredSandboxExecutor,
-  Tool,
-  ToolArtifact,
-  ToolDescriptor,
 } from "@koi/core";
 import { toolToken } from "@koi/core";
+import { brickToTool } from "./brick-conversion.js";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const DEFAULT_SANDBOX_TIMEOUT_MS = 5_000;
-
-// ---------------------------------------------------------------------------
-// Brick → Tool conversion
-// ---------------------------------------------------------------------------
-
-function brickToTool(brick: ToolArtifact, executor: SandboxExecutor, timeoutMs: number): Tool {
-  const descriptor: ToolDescriptor = {
-    name: brick.name,
-    description: brick.description,
-    inputSchema: brick.inputSchema,
-  };
-
-  const execute = async (input: JsonObject): Promise<unknown> => {
-    const result = await executor.execute(brick.implementation, input, timeoutMs);
-    if (!result.ok) {
-      return {
-        ok: false,
-        error: {
-          code: result.error.code,
-          message: `Forged tool "${brick.name}" failed: ${result.error.message}`,
-        },
-      };
-    }
-    return result.value.output;
-  };
-
-  return {
-    descriptor,
-    trustTier: brick.trustTier,
-    execute,
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -247,4 +211,4 @@ export function createForgeComponentProvider(
   };
 }
 
-export { brickToTool };
+export { brickToTool } from "./brick-conversion.js";

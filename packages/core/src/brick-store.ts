@@ -128,6 +128,8 @@ export interface ForgeStore {
    * When available, promote_forge wires scope metadata changes to physical tier moves.
    */
   readonly promote?: (id: string, targetScope: ForgeScope) => Promise<Result<void, KoiError>>;
+  /** Optional push notification when store contents change (save/remove/update). Returns unsubscribe. */
+  readonly onChange?: (listener: () => void) => () => void;
 }
 
 // ---------------------------------------------------------------------------

@@ -118,6 +118,31 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
   // Sort by priority for consistent iteration
   const sorted = sortByPriority(tierEntries);
 
+  // --- onChange notification -------------------------------------------------
+  // Forward onChange from all underlying tier stores into a single listener set.
+  const changeListeners = new Set<() => void>();
+
+  const notifyListeners = (): void => {
+    for (const listener of changeListeners) {
+      listener();
+    }
+  };
+
+  // Subscribe to each tier store's onChange (if available).
+  // Tier stores already debounce, so no additional debounce needed here.
+  for (const entry of sorted) {
+    if (entry.store.onChange !== undefined) {
+      entry.store.onChange(notifyListeners);
+    }
+  }
+
+  const onChange = (listener: () => void): (() => void) => {
+    changeListeners.add(listener);
+    return () => {
+      changeListeners.delete(listener);
+    };
+  };
+
   // -- ForgeStore methods ---------------------------------------------------
 
   /**
@@ -380,6 +405,7 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
     promote: promoteByScope,
     promoteTier,
     locateTier,
+    onChange,
   };
 }
 

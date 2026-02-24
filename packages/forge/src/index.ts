@@ -41,6 +41,7 @@ export {
 // runtime values — manifest assembly
 export type { AssembleManifestOptions, AssembleManifestResult } from "./assemble-manifest.js";
 export { assembleManifest } from "./assemble-manifest.js";
+export { brickToTool } from "./brick-conversion.js";
 export type {
   AutoPromotionConfig,
   ForgeConfig,
@@ -68,6 +69,8 @@ export type {
 export { brickToTool, createForgeComponentProvider } from "./forge-component-provider.js";
 export type { ForgeResolverContext } from "./forge-resolver.js";
 export { createForgeResolver } from "./forge-resolver.js";
+export type { CreateForgeRuntimeOptions, ForgeRuntimeInstance } from "./forge-runtime.js";
+export { createForgeRuntime } from "./forge-runtime.js";
 // runtime values — usage tracking middleware
 export type { ForgeUsageMiddlewareConfig } from "./forge-usage-middleware.js";
 export { createForgeUsageMiddleware } from "./forge-usage-middleware.js";

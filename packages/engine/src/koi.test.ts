@@ -2409,3 +2409,282 @@ describe("Canonical ID hierarchy", () => {
     expect(parts[2]?.length).toBeGreaterThan(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// createKoi — forge onChange subscription (hot-attach)
+// ---------------------------------------------------------------------------
+
+describe("createKoi forge onChange", () => {
+  test("forged tool descriptors update mid-session when forge.onChange fires", async () => {
+    const initialDescriptor: ToolDescriptor = {
+      name: "initial-tool",
+      description: "Initial",
+      inputSchema: {},
+    };
+    const newDescriptor: ToolDescriptor = {
+      name: "hot-attached-tool",
+      description: "Hot attached",
+      inputSchema: {},
+    };
+
+    // let justified: mutable state simulating forge store changes
+    let currentDescriptors: readonly ToolDescriptor[] = [initialDescriptor];
+    // let justified: onChange listener ref for triggering mid-session
+    let onChangeListener: (() => void) | undefined;
+
+    const forge: ForgeRuntime = {
+      resolveTool: mock(async () => undefined),
+      toolDescriptors: mock(async () => currentDescriptors),
+      onChange: (listener: () => void): (() => void) => {
+        onChangeListener = listener;
+        return () => {
+          onChangeListener = undefined;
+        };
+      },
+    };
+
+    const descriptorSnapshots: Array<readonly ToolDescriptor[]> = [];
+
+    const adapter: EngineAdapter = {
+      engineId: "onchange-descriptor-adapter",
+      terminals: {
+        modelCall: mock(() => Promise.resolve({ content: "ok", model: "test" })),
+      },
+      stream: (input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          if (!input.callHandlers) {
+            yield { kind: "done" as const, output: doneOutput() };
+            return;
+          }
+
+          // Snapshot 1: initial descriptors
+          descriptorSnapshots.push([...input.callHandlers.tools]);
+
+          // Simulate forge store change: add new tool + fire onChange
+          currentDescriptors = [initialDescriptor, newDescriptor];
+          onChangeListener?.();
+
+          // Wait for fire-and-forget descriptor refresh
+          await new Promise((r) => setTimeout(r, 20));
+
+          // Snapshot 2: after onChange fired (should include new tool eagerly)
+          descriptorSnapshots.push([...input.callHandlers.tools]);
+
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    // Snapshot 1: only initial tool
+    expect(descriptorSnapshots[0]?.map((t) => t.name)).toEqual(["initial-tool"]);
+    // Snapshot 2: both tools (eager refresh via onChange)
+    const names = descriptorSnapshots[1]?.map((t) => t.name) ?? [];
+    expect(names).toContain("initial-tool");
+    expect(names).toContain("hot-attached-tool");
+  });
+
+  test("forged tool callable via callHandlers.toolCall after forge.onChange", async () => {
+    const hotTool = mockTool("hot-tool", async () => "hot-result");
+
+    // let justified: mutable state simulating forge store changes
+    let resolveHotTool = false;
+    // let justified: onChange listener ref
+    let onChangeListener: (() => void) | undefined;
+
+    const forge: ForgeRuntime = {
+      resolveTool: mock(async (toolId: string) => {
+        if (resolveHotTool && toolId === "hot-tool") return hotTool;
+        return undefined;
+      }),
+      toolDescriptors: mock(async () => (resolveHotTool ? [hotTool.descriptor] : [])),
+      onChange: (listener: () => void): (() => void) => {
+        onChangeListener = listener;
+        return () => {
+          onChangeListener = undefined;
+        };
+      },
+    };
+
+    let toolResult: unknown;
+    const adapter = forgeTestAdapter(async function* (input) {
+      if (!input.callHandlers) {
+        yield { kind: "done" as const, output: doneOutput() };
+        return;
+      }
+
+      // Make the tool available and fire onChange
+      resolveHotTool = true;
+      onChangeListener?.();
+      await new Promise((r) => setTimeout(r, 20));
+
+      // Call the hot-attached tool
+      const res = await input.callHandlers.toolCall({
+        toolId: "hot-tool",
+        input: {},
+      });
+      toolResult = res.output;
+
+      yield { kind: "done" as const, output: doneOutput() };
+    });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    expect(toolResult).toBe("hot-result");
+    expect(hotTool.execute).toHaveBeenCalledTimes(1);
+  });
+
+  test("subscription cleaned up on normal session completion", async () => {
+    let unsubCalled = false;
+    const forge: ForgeRuntime = {
+      resolveTool: mock(async () => undefined),
+      toolDescriptors: mock(async () => []),
+      onChange: (_listener: () => void): (() => void) => {
+        return () => {
+          unsubCalled = true;
+        };
+      },
+    };
+
+    const adapter = forgeTestAdapter(async function* (_input) {
+      yield { kind: "done" as const, output: doneOutput() };
+    });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    expect(unsubCalled).toBe(true);
+  });
+
+  test("subscription cleaned up on abort", async () => {
+    let unsubCalled = false;
+    const forge: ForgeRuntime = {
+      resolveTool: mock(async () => undefined),
+      toolDescriptors: mock(async () => []),
+      onChange: (_listener: () => void): (() => void) => {
+        return () => {
+          unsubCalled = true;
+        };
+      },
+    };
+
+    const controller = new AbortController();
+
+    const adapter: EngineAdapter = {
+      engineId: "abort-forge-adapter",
+      terminals: {
+        modelCall: mock(() => Promise.resolve({ content: "ok", model: "test" })),
+      },
+      stream: (_input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          // Yield something then get aborted
+          yield { kind: "text_delta" as const, delta: "hello" };
+          await new Promise((r) => setTimeout(r, 50));
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    let count = 0;
+    for await (const _event of runtime.run({
+      kind: "text",
+      text: "test",
+      signal: controller.signal,
+    })) {
+      count++;
+      if (count >= 2) {
+        controller.abort();
+        break;
+      }
+    }
+
+    expect(unsubCalled).toBe(true);
+  });
+
+  test("no error when forge.onChange is undefined (backward compat)", async () => {
+    // ForgeRuntime without onChange — should work exactly as before
+    const forge = mockForgeRuntime();
+    expect(forge.onChange).toBeUndefined();
+
+    const adapter = forgeTestAdapter(async function* (_input) {
+      yield { kind: "done" as const, output: doneOutput() };
+    });
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    // Should not throw
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    expect(runtime.agent.state).toBe("terminated");
+  });
+
+  test("dirty flag skips unnecessary turn-boundary refresh when no changes", async () => {
+    const toolDescriptors = mock(async () => []);
+    const forge: ForgeRuntime = {
+      resolveTool: mock(async () => undefined),
+      toolDescriptors,
+      onChange: (_listener: () => void): (() => void) => {
+        return () => {};
+      },
+    };
+
+    const adapter: EngineAdapter = {
+      engineId: "dirty-flag-adapter",
+      terminals: {
+        modelCall: mock(() => Promise.resolve({ content: "ok", model: "test" })),
+      },
+      stream: (_input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          yield { kind: "turn_end" as const, turnIndex: 0 };
+          yield { kind: "turn_end" as const, turnIndex: 1 };
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    // toolDescriptors called once at session start (initial refreshForgeState),
+    // but NOT again at turn boundaries because onChange is active and dirty flag is false
+    expect(toolDescriptors).toHaveBeenCalledTimes(1);
+  });
+});

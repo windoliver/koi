@@ -22,6 +22,12 @@ import { mapSqliteError, wrapSqlite } from "./errors.js";
 import { applyMigrations } from "./schema.js";
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const DEBOUNCE_MS = 50;
+
+// ---------------------------------------------------------------------------
 // Config types
 // ---------------------------------------------------------------------------
 
@@ -130,6 +136,28 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
      WHERE id = ?`,
   );
 
+  // --- onChange notification -------------------------------------------------
+  const changeListeners = new Set<() => void>();
+  // let justified: mutable timer ref for debounce
+  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const notifyListeners = (): void => {
+    if (debounceTimer !== undefined) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = undefined;
+      for (const listener of changeListeners) {
+        listener();
+      }
+    }, DEBOUNCE_MS);
+  };
+
+  const onChange = (listener: () => void): (() => void) => {
+    changeListeners.add(listener);
+    return () => {
+      changeListeners.delete(listener);
+    };
+  };
+
   // -- ForgeStore methods ---------------------------------------------------
 
   const saveBrickAndTags = db.transaction((brick: BrickArtifact, dataJson: string) => {
@@ -156,7 +184,9 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
 
   const save = async (brick: BrickArtifact): Promise<Result<void, KoiError>> => {
     const dataJson = JSON.stringify(brick);
-    return wrapSqlite(() => saveBrickAndTags(brick, dataJson), `save(${brick.id})`);
+    const result = wrapSqlite(() => saveBrickAndTags(brick, dataJson), `save(${brick.id})`);
+    if (result.ok) notifyListeners();
+    return result;
   };
 
   const load = async (id: string): Promise<Result<BrickArtifact, KoiError>> => {
@@ -245,9 +275,11 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
     if (row === null) {
       return { ok: false, error: notFound(id, `Brick not found: ${id}`) };
     }
-    return wrapSqlite(() => {
+    const result = wrapSqlite(() => {
       deleteStmt.run(id);
     }, `remove(${id})`);
+    if (result.ok) notifyListeners();
+    return result;
   };
 
   const updateBrick = db.transaction((id: string, updates: BrickUpdate): Result<void, KoiError> => {
@@ -289,7 +321,9 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
 
   const update = async (id: string, updates: BrickUpdate): Promise<Result<void, KoiError>> => {
     try {
-      return updateBrick(id, updates);
+      const result = updateBrick(id, updates);
+      if (result.ok) notifyListeners();
+      return result;
     } catch (e: unknown) {
       return { ok: false, error: mapSqliteError(e, `update(${id})`) };
     }
@@ -311,5 +345,5 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
     }
   };
 
-  return { save, load, search, remove, update, exists, close };
+  return { save, load, search, remove, update, exists, close, onChange };
 }

@@ -117,7 +117,7 @@ export function mapStopReason(piReason: StopReason): EngineStopReason {
  * thinking blocks at lower indices. Counting only toolCall items would give the wrong
  * result when thinking blocks precede the tool_use block (e.g. thinking=0, tool_use=1).
  */
-function findToolCallByContentIndex(
+function findNthToolCall(
   content: readonly { readonly type: string }[],
   contentIndex: number,
 ):
@@ -177,7 +177,7 @@ export function createEventSubscriber(
             });
             break;
           case "toolcall_start": {
-            const toolCall = findToolCallByContentIndex(
+            const toolCall = findNthToolCall(
               assistantEvent.partial.content,
               assistantEvent.contentIndex,
             );
@@ -207,7 +207,7 @@ export function createEventSubscriber(
               kind: "tool_call_delta",
               callId: toolCallId(
                 (() => {
-                  const tc = findToolCallByContentIndex(
+                  const tc = findNthToolCall(
                     assistantEvent.partial.content,
                     assistantEvent.contentIndex,
                   );

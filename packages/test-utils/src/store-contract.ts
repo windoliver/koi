@@ -241,4 +241,146 @@ export function runForgeStoreContractTests(
       }
     });
   });
+
+  // --- onChange contract (optional — skipped if store doesn't implement it) ---
+
+  describe("ForgeStore onChange contract", () => {
+    test("onChange fires after successful save", async () => {
+      const store = await createStore();
+      if (store.onChange === undefined) {
+        return; // skip — store doesn't implement onChange
+      }
+
+      let called = false;
+      store.onChange(() => {
+        called = true;
+      });
+
+      await store.save(createBrick({ id: "oc_save" }));
+
+      // Wait for debounce (stores use 50ms)
+      await new Promise((r) => setTimeout(r, 100));
+      expect(called).toBe(true);
+    });
+
+    test("onChange fires after successful remove", async () => {
+      const store = await createStore();
+      if (store.onChange === undefined) {
+        return;
+      }
+
+      await store.save(createBrick({ id: "oc_rm" }));
+      // Wait for save notification to flush
+      await new Promise((r) => setTimeout(r, 100));
+
+      let called = false;
+      store.onChange(() => {
+        called = true;
+      });
+
+      await store.remove("oc_rm");
+      await new Promise((r) => setTimeout(r, 100));
+      expect(called).toBe(true);
+    });
+
+    test("onChange fires after successful update", async () => {
+      const store = await createStore();
+      if (store.onChange === undefined) {
+        return;
+      }
+
+      await store.save(createBrick({ id: "oc_up", usageCount: 0 }));
+      await new Promise((r) => setTimeout(r, 100));
+
+      let called = false;
+      store.onChange(() => {
+        called = true;
+      });
+
+      await store.update("oc_up", { usageCount: 5 });
+      await new Promise((r) => setTimeout(r, 100));
+      expect(called).toBe(true);
+    });
+
+    test("onChange does NOT fire after failed operations", async () => {
+      const store = await createStore();
+      if (store.onChange === undefined) {
+        return;
+      }
+
+      let callCount = 0;
+      store.onChange(() => {
+        callCount++;
+      });
+
+      // These should fail (NOT_FOUND) and NOT trigger onChange
+      await store.remove("nonexistent");
+      await store.update("nonexistent", { usageCount: 1 });
+      await new Promise((r) => setTimeout(r, 100));
+      expect(callCount).toBe(0);
+    });
+
+    test("debounce coalesces rapid mutations", async () => {
+      const store = await createStore();
+      if (store.onChange === undefined) {
+        return;
+      }
+
+      let callCount = 0;
+      store.onChange(() => {
+        callCount++;
+      });
+
+      // Rapid-fire 3 saves within debounce window
+      await store.save(createBrick({ id: "oc_d1" }));
+      await store.save(createBrick({ id: "oc_d2" }));
+      await store.save(createBrick({ id: "oc_d3" }));
+
+      await new Promise((r) => setTimeout(r, 100));
+      expect(callCount).toBe(1);
+    });
+
+    test("unsubscribe prevents further notifications", async () => {
+      const store = await createStore();
+      if (store.onChange === undefined) {
+        return;
+      }
+
+      let callCount = 0;
+      const unsub = store.onChange(() => {
+        callCount++;
+      });
+
+      await store.save(createBrick({ id: "oc_unsub1" }));
+      await new Promise((r) => setTimeout(r, 100));
+      expect(callCount).toBe(1);
+
+      unsub();
+
+      await store.save(createBrick({ id: "oc_unsub2" }));
+      await new Promise((r) => setTimeout(r, 100));
+      expect(callCount).toBe(1); // unchanged
+    });
+
+    test("multiple listeners all receive notifications", async () => {
+      const store = await createStore();
+      if (store.onChange === undefined) {
+        return;
+      }
+
+      let count1 = 0;
+      let count2 = 0;
+      store.onChange(() => {
+        count1++;
+      });
+      store.onChange(() => {
+        count2++;
+      });
+
+      await store.save(createBrick({ id: "oc_multi" }));
+      await new Promise((r) => setTimeout(r, 100));
+      expect(count1).toBe(1);
+      expect(count2).toBe(1);
+    });
+  });
 }

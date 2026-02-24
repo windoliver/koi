@@ -184,6 +184,8 @@ export interface ForgeRuntime {
   readonly toolDescriptors: () => Promise<readonly ToolDescriptor[]>;
   /** Get currently active forged middleware. Re-queried at turn boundaries. */
   readonly middleware?: () => Promise<readonly KoiMiddleware[]>;
+  /** Push notification when forged capabilities change. Returns unsubscribe. */
+  readonly onChange?: (listener: () => void) => () => void;
 }
 
 // ---------------------------------------------------------------------------

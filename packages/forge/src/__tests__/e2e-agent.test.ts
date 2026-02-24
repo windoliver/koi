@@ -836,3 +836,129 @@ describe("forge → reuse: agent self-extends", () => {
     expect(interceptedToolIds).toEqual(["adder"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Test 9: Hot-attach — agent forges tool mid-session, visible in next turn
+// ---------------------------------------------------------------------------
+
+describe("forge → hot-attach: mid-session tool visibility", () => {
+  test("agent forges tool mid-session, tool visible in next turn without restart", async () => {
+    const store = createInMemoryForgeStore();
+    const executor = adderExecutor();
+    const deps = defaultDeps(store, executor);
+
+    // Attach forge_tool as primordial
+    const forgeTool = createForgeToolTool(deps);
+    const primordialProvider: ComponentProvider = {
+      name: "forge-primordials",
+      attach: async (): Promise<ReadonlyMap<string, unknown>> =>
+        new Map<string, unknown>([[toolToken("forge_tool") as string, forgeTool]]),
+    };
+
+    // Create ForgeRuntime (not ForgeComponentProvider) — enables hot-attach
+    const { createForgeRuntime } = await import("../forge-runtime.js");
+    const forgeRuntime = createForgeRuntime({
+      store,
+      executor: mockTiered(executor),
+    });
+
+    // Multi-turn adapter:
+    // Turn 0: calls forge_tool to create "adder"
+    // Turn 1: reads callHandlers.tools (should see "adder") and calls it
+    const turn0ToolNames: string[] = [];
+    const turn1ToolNames: string[] = [];
+    const adderResults: unknown[] = [];
+
+    const adapter: EngineAdapter = {
+      engineId: "hot-attach-adapter",
+      terminals: {
+        modelCall: async (): Promise<ModelResponse> => ({
+          content: "ok",
+          model: "test",
+        }),
+      },
+      stream: (input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          if (!input.callHandlers) {
+            yield { kind: "done" as const, output: doneOutput() };
+            return;
+          }
+
+          // --- Turn 0: forge "adder" ---
+          for (const t of input.callHandlers.tools) {
+            turn0ToolNames.push(t.name);
+          }
+
+          await input.callHandlers.toolCall({
+            toolId: "forge_tool",
+            input: {
+              name: "adder",
+              description: "Adds two numbers",
+              inputSchema: {
+                type: "object",
+                properties: { a: { type: "number" }, b: { type: "number" } },
+              },
+              implementation: "return { sum: input.a + input.b };",
+            },
+          });
+
+          // Wait for store onChange → forgeRuntime cache invalidation + eager descriptor refresh
+          await new Promise((r) => setTimeout(r, 100));
+
+          yield { kind: "turn_end" as const, turnIndex: 0 };
+
+          // --- Turn 1: "adder" should now be visible ---
+          for (const t of input.callHandlers.tools) {
+            turn1ToolNames.push(t.name);
+          }
+
+          // Call the forged adder tool
+          const result = await input.callHandlers.toolCall({
+            toolId: "adder",
+            input: { a: 10, b: 7 },
+          });
+          adderResults.push(result.output);
+
+          yield {
+            kind: "done" as const,
+            output: doneOutput({
+              metrics: {
+                totalTokens: 0,
+                inputTokens: 0,
+                outputTokens: 0,
+                turns: 2,
+                durationMs: 0,
+              },
+            }),
+          };
+        },
+      }),
+    };
+
+    // Single createKoi, single run — no invalidate(), no restart
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      providers: [primordialProvider],
+      forge: forgeRuntime,
+      loopDetection: false,
+    });
+
+    const events = await collectEvents(runtime.run({ kind: "text", text: "forge and use" }));
+
+    // Assertions
+    expect(events.some((e) => e.kind === "done")).toBe(true);
+
+    // Turn 0: "adder" was NOT in the tool list (hasn't been forged yet)
+    expect(turn0ToolNames).toContain("forge_tool");
+    expect(turn0ToolNames).not.toContain("adder");
+
+    // Turn 1: "adder" IS in the tool list (hot-attached via onChange)
+    expect(turn1ToolNames).toContain("forge_tool");
+    expect(turn1ToolNames).toContain("adder");
+
+    // Adder was callable and returned correct result
+    expect(adderResults).toHaveLength(1);
+    expect(adderResults[0]).toEqual({ sum: 17 });
+  });
+});

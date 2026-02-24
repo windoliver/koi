@@ -26,6 +26,12 @@ import { brickPath, shardDir, tmpPath } from "./paths.js";
 import { matchesQuery } from "./query.js";
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const DEBOUNCE_MS = 50;
+
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
@@ -171,6 +177,28 @@ export async function createFsForgeStore(
   // Build metadata index from existing files
   const index = await scanAndBuildIndex(baseDir, cleanOrphanedTmp);
 
+  // --- onChange notification -------------------------------------------------
+  const changeListeners = new Set<() => void>();
+  // let justified: mutable timer ref for debounce
+  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const notifyListeners = (): void => {
+    if (debounceTimer !== undefined) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = undefined;
+      for (const listener of changeListeners) {
+        listener();
+      }
+    }, DEBOUNCE_MS);
+  };
+
+  const onChange = (listener: () => void): (() => void) => {
+    changeListeners.add(listener);
+    return () => {
+      changeListeners.delete(listener);
+    };
+  };
+
   // -- ForgeStore methods ---------------------------------------------------
 
   const save = async (brick: BrickArtifact): Promise<Result<void, KoiError>> => {
@@ -183,6 +211,7 @@ export async function createFsForgeStore(
       const json = JSON.stringify(brick, null, 2);
       await atomicWrite(final, temp, json);
       index.set(brick.id, extractMetadata(brick));
+      notifyListeners();
       return { ok: true, value: undefined };
     } catch (err: unknown) {
       return { ok: false, error: mapFsError(err, final) };
@@ -236,6 +265,7 @@ export async function createFsForgeStore(
     try {
       await rm(filePath);
       index.delete(id);
+      notifyListeners();
       return { ok: true, value: undefined };
     } catch (err: unknown) {
       return { ok: false, error: mapFsError(err, filePath) };
@@ -270,6 +300,7 @@ export async function createFsForgeStore(
       const json = JSON.stringify(updated, null, 2);
       await atomicWrite(filePath, temp, json);
       index.set(id, extractMetadata(updated));
+      notifyListeners();
       return { ok: true, value: undefined };
     } catch (err: unknown) {
       return { ok: false, error: mapFsError(err, filePath) };
@@ -301,5 +332,5 @@ export async function createFsForgeStore(
     return readBrick(brickPath(baseDir, id));
   };
 
-  return { save, load, search, remove, update, exists, searchIndex, loadFromDisk };
+  return { save, load, search, remove, update, exists, onChange, searchIndex, loadFromDisk };
 }

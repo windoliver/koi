@@ -59,11 +59,41 @@ function matchesQuery(brick: BrickArtifact, query: ForgeQuery): boolean {
 // Public API
 // ---------------------------------------------------------------------------
 
+const DEBOUNCE_MS = 50;
+
 export function createInMemoryForgeStore(): ForgeStore {
   const bricks = new Map<string, BrickArtifact>();
 
+  // --- onChange notification ---
+  const changeListeners = new Set<() => void>();
+  // let justified: mutable timer ref for debounce
+  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const notifyListeners = (): void => {
+    if (debounceTimer !== undefined) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = undefined;
+      for (const listener of changeListeners) {
+        listener();
+      }
+    }, DEBOUNCE_MS);
+  };
+
+  const onChange = (listener: () => void): (() => void) => {
+    changeListeners.add(listener);
+    return () => {
+      changeListeners.delete(listener);
+      // Clear pending debounce when no listeners remain to prevent timer leak
+      if (changeListeners.size === 0 && debounceTimer !== undefined) {
+        clearTimeout(debounceTimer);
+        debounceTimer = undefined;
+      }
+    };
+  };
+
   const save = async (brick: BrickArtifact): Promise<Result<void, KoiError>> => {
     bricks.set(brick.id, brick);
+    notifyListeners();
     return { ok: true, value: undefined };
   };
 
@@ -93,6 +123,7 @@ export function createInMemoryForgeStore(): ForgeStore {
       return { ok: false, error: notFoundError(id) };
     }
     bricks.delete(id);
+    notifyListeners();
     return { ok: true, value: undefined };
   };
 
@@ -110,6 +141,7 @@ export function createInMemoryForgeStore(): ForgeStore {
       ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
     };
     bricks.set(id, updated);
+    notifyListeners();
     return { ok: true, value: undefined };
   };
 
@@ -117,5 +149,5 @@ export function createInMemoryForgeStore(): ForgeStore {
     return { ok: true, value: bricks.has(id) };
   };
 
-  return { save, load, search, remove, update, exists };
+  return { save, load, search, remove, update, exists, onChange };
 }

@@ -187,6 +187,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             if (!done) {
               done = true;
               running = false;
+              cleanupForgeSubscription();
               agent.transition({ kind: "complete", stopReason: "interrupted" });
             }
           };
@@ -198,6 +199,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           // let justified: mutable flag to defer forge refresh until next iteration,
           // giving the consumer a chance to inject tools/middleware between turns
           let pendingForgeRefresh = false;
+
+          // let justified: dirty flag — true when onChange fired since last turn-boundary refresh
+          let forgeStateDirty = false;
+
+          // let justified: mutable ref for forge onChange unsubscribe
+          let unsubForgeChange: (() => void) | undefined;
 
           // let justified: mutable flag — true when a turn_start event should be emitted
           let shouldEmitTurnStart = true;
@@ -231,6 +238,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             runId: rid,
             metadata: {},
           };
+
+          /** Unsubscribe from forge onChange and clear the ref. */
+          function cleanupForgeSubscription(): void {
+            if (unsubForgeChange !== undefined) {
+              unsubForgeChange();
+              unsubForgeChange = undefined;
+            }
+          }
 
           /** Refresh forged descriptors and re-compose middleware if forge runtime is provided. */
           async function refreshForgeState(terminals: {
@@ -321,6 +336,25 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                     // Initial forge state (descriptors + forged middleware)
                     await refreshForgeState(cachedTerminals);
 
+                    // Subscribe to forge push notifications for mid-session tool visibility
+                    if (forge?.onChange !== undefined) {
+                      unsubForgeChange = forge.onChange(() => {
+                        // Eagerly refresh descriptor cache (fire-and-forget)
+                        void forge
+                          .toolDescriptors()
+                          .then((d) => {
+                            forgedDescriptorsCache = d;
+                          })
+                          .catch((_err: unknown) => {
+                            // Stale cache is graceful degradation — descriptor
+                            // refresh failure is non-fatal; next turn boundary
+                            // will retry via refreshForgeState.
+                          });
+                        // Set dirty flag for turn-boundary middleware recomposition
+                        forgeStateDirty = true;
+                      });
+                    }
+
                     // Extract entity tool descriptors (static, from assembly)
                     const entityTools = agent.query<Tool>("tool:");
                     const entityDescriptors: readonly ToolDescriptor[] = [
@@ -366,7 +400,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 // so tools/middleware injected between turns take effect next turn
                 if (pendingForgeRefresh) {
                   pendingForgeRefresh = false;
-                  if (forge !== undefined && cachedTerminals !== undefined) {
+                  // Skip refresh if onChange is active and nothing changed since last notification
+                  const shouldRefresh = forge?.onChange === undefined || forgeStateDirty;
+                  if (shouldRefresh && forge !== undefined && cachedTerminals !== undefined) {
+                    forgeStateDirty = false;
                     await refreshForgeState(cachedTerminals);
                   }
                 }
@@ -392,6 +429,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 if (!iterator) {
                   done = true;
                   running = false;
+                  cleanupForgeSubscription();
                   return { done: true, value: undefined };
                 }
 
@@ -400,6 +438,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 if (result.done) {
                   done = true;
                   running = false;
+                  cleanupForgeSubscription();
                   runSignal.removeEventListener("abort", onAbort);
                   agent.transition({ kind: "complete", stopReason: "completed" });
                   await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
@@ -433,6 +472,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                   done = true;
                   pendingForgeRefresh = false;
                   running = false;
+                  cleanupForgeSubscription();
                   runSignal.removeEventListener("abort", onAbort);
                   agent.transition({
                     kind: "complete",
@@ -446,6 +486,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
               } catch (error: unknown) {
                 done = true;
                 running = false;
+                cleanupForgeSubscription();
                 runSignal.removeEventListener("abort", onAbort);
 
                 // If it's a guard error, convert to a done event
@@ -488,6 +529,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             async return(): Promise<IteratorResult<EngineEvent>> {
               done = true;
               running = false;
+              cleanupForgeSubscription();
               runSignal.removeEventListener("abort", onAbort);
               if (iterator?.return) {
                 await iterator.return();
