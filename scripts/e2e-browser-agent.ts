@@ -8,13 +8,21 @@
  *   → real Anthropic API call → agent uses browser tools → verify outcomes
  *
  * Tests (in order):
- *   1. navigate      — agent navigates to example.com
- *   2. snapshot      — agent calls browser_snapshot and sees the accessibility tree
- *   3. hover         — agent hovers over a link
- *   4. press         — agent presses Tab to advance focus
- *   5. screenshot    — agent takes a screenshot and returns image data
- *   6. tab_new       — agent opens a second tab
- *   7. tab_close     — agent closes the second tab
+ *   1.  navigate      — agent navigates to example.com
+ *   2.  snapshot      — agent calls browser_snapshot and sees the accessibility tree
+ *   3.  hover         — agent hovers over a link
+ *   4.  press         — agent presses Tab to advance focus
+ *   5.  screenshot    — agent takes a screenshot and returns image data
+ *   6.  tab_new       — agent opens a second tab
+ *   7.  tab_close     — agent closes the second tab
+ *   8.  click         — agent clicks the "Learn more" link on example.com
+ *   9.  type          — agent types into the DuckDuckGo search box
+ *   10. fill_form     — agent fills multiple fields on httpbin.org/forms/post
+ *   11. scroll        — agent scrolls the page
+ *   12. select        — agent selects a delivery time on httpbin.org/forms/post
+ *   13. evaluate      — agent evaluates JavaScript to read document.title
+ *   14. wait          — agent waits 1 second using browser_wait
+ *   15. tab_focus     — agent opens a new tab then switches focus back to original
  *
  * Usage:
  *   ANTHROPIC_API_KEY=sk-... bun scripts/e2e-browser-agent.ts
@@ -25,7 +33,7 @@ import { createPlaywrightBrowserDriver } from "../packages/browser-playwright/sr
 import { createKoi } from "../packages/engine/src/koi.js";
 import { createPiAdapter } from "../packages/engine-pi/src/adapter.js";
 import { createBrowserProvider } from "../packages/tool-browser/src/browser-component-provider.js";
-import { OPERATIONS } from "../packages/tool-browser/src/constants.js";
+import { ALL_OPERATIONS } from "../packages/tool-browser/src/constants.js";
 
 // ---------------------------------------------------------------------------
 // Preflight
@@ -132,7 +140,7 @@ async function main(): Promise<void> {
   const browserProvider = createBrowserProvider({
     backend: driver,
     trustTier: "verified",
-    operations: OPERATIONS, // all 14 non-evaluate ops
+    operations: ALL_OPERATIONS, // all 15 ops including evaluate (promoted tier)
   });
 
   // ── Pi adapter ────────────────────────────────────────────────────────────
@@ -249,6 +257,113 @@ async function main(): Promise<void> {
     totalTokens += tokens;
     assert("agent completed", stopReason === "completed", stopReason);
     assert("browser_press was called", toolNames.includes("browser_press"));
+  }
+  console.log();
+
+  // ── Test 7: click ─────────────────────────────────────────────────────────
+  console.log("── Test 7: click ──");
+  {
+    const { toolNames, stopReason, tokens } = await runAgent(
+      runtime,
+      "Navigate to https://example.com, take a snapshot, then click on the 'Learn more' link.",
+    );
+    totalTokens += tokens;
+    assert("agent completed", stopReason === "completed", stopReason);
+    assert("browser_click was called", toolNames.includes("browser_click"));
+  }
+  console.log();
+
+  // ── Test 8: type ──────────────────────────────────────────────────────────
+  console.log("── Test 8: type ──");
+  {
+    const { toolNames, stopReason, tokens } = await runAgent(
+      runtime,
+      "Navigate to https://duckduckgo.com, take a snapshot, find the search input, click it to focus it, then type 'playwright automation' into it.",
+    );
+    totalTokens += tokens;
+    assert("agent completed", stopReason === "completed", stopReason);
+    assert("browser_navigate was called", toolNames.includes("browser_navigate"));
+    assert("browser_type was called", toolNames.includes("browser_type"));
+  }
+  console.log();
+
+  // ── Test 9: fill_form ─────────────────────────────────────────────────────
+  console.log("── Test 9: fill_form ──");
+  {
+    const { toolNames, stopReason, tokens } = await runAgent(
+      runtime,
+      "Navigate to https://httpbin.org/forms/post, take a snapshot, then use browser_fill_form to fill in the customer name field with 'Alice' and the comments/instructions field with 'No onions please'.",
+    );
+    totalTokens += tokens;
+    assert("agent completed", stopReason === "completed", stopReason);
+    assert("browser_fill_form was called", toolNames.includes("browser_fill_form"));
+  }
+  console.log();
+
+  // ── Test 10: scroll ───────────────────────────────────────────────────────
+  console.log("── Test 10: scroll ──");
+  {
+    const { toolNames, stopReason, tokens } = await runAgent(
+      runtime,
+      "Scroll down the current page by 500 pixels, then scroll back up.",
+    );
+    totalTokens += tokens;
+    assert("agent completed", stopReason === "completed", stopReason);
+    assert("browser_scroll was called", toolNames.includes("browser_scroll"));
+  }
+  console.log();
+
+  // ── Test 11: select ───────────────────────────────────────────────────────
+  console.log("── Test 11: select ──");
+  {
+    const { toolNames, stopReason, tokens } = await runAgent(
+      runtime,
+      "Navigate to https://httpbin.org/forms/post, take a snapshot, then use browser_select to choose '12pm' from the delivery time dropdown (the <select> element for delivery time).",
+    );
+    totalTokens += tokens;
+    assert("agent completed", stopReason === "completed", stopReason);
+    assert("browser_select was called", toolNames.includes("browser_select"));
+  }
+  console.log();
+
+  // ── Test 12: evaluate ─────────────────────────────────────────────────────
+  console.log("── Test 12: evaluate ──");
+  {
+    const { toolNames, stopReason, tokens, text } = await runAgent(
+      runtime,
+      "Use browser_evaluate to run the JavaScript expression `document.title` and tell me what it returns.",
+    );
+    totalTokens += tokens;
+    assert("agent completed", stopReason === "completed", stopReason);
+    assert("browser_evaluate was called", toolNames.includes("browser_evaluate"));
+    assert("response contains a title", text.length > 0);
+  }
+  console.log();
+
+  // ── Test 13: wait ─────────────────────────────────────────────────────────
+  console.log("── Test 13: wait ──");
+  {
+    const { toolNames, stopReason, tokens } = await runAgent(
+      runtime,
+      "Use browser_wait to wait for 1000 milliseconds, then confirm you have waited.",
+    );
+    totalTokens += tokens;
+    assert("agent completed", stopReason === "completed", stopReason);
+    assert("browser_wait was called", toolNames.includes("browser_wait"));
+  }
+  console.log();
+
+  // ── Test 14: tab_focus ────────────────────────────────────────────────────
+  console.log("── Test 14: tab_focus ──");
+  {
+    const { toolNames, stopReason, tokens } = await runAgent(
+      runtime,
+      "Open a new tab and navigate it to https://example.com. Then switch focus back to the previous tab using browser_tab_focus.",
+    );
+    totalTokens += tokens;
+    assert("agent completed", stopReason === "completed", stopReason);
+    assert("browser_tab_new was called", toolNames.includes("browser_tab_new"));
+    assert("browser_tab_focus was called", toolNames.includes("browser_tab_focus"));
   }
   console.log();
 
