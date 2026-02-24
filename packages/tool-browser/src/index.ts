@@ -47,7 +47,11 @@ export type {
   BrowserWaitUntil,
 } from "@koi/core";
 // provider
-export type { BrowserProviderConfig } from "./browser-component-provider.js";
+export type {
+  BrowserProviderConfig,
+  CompiledNavigationSecurity,
+  NavigationSecurityConfig,
+} from "./browser-component-provider.js";
 export { createBrowserProvider } from "./browser-component-provider.js";
 // constants
 export type { BrowserOperation } from "./constants.js";
@@ -76,3 +80,5 @@ export { createBrowserTabFocusTool } from "./tools/tab-focus.js";
 export { createBrowserTabNewTool } from "./tools/tab-new.js";
 export { createBrowserTypeTool } from "./tools/type.js";
 export { createBrowserWaitTool } from "./tools/wait.js";
+// url security
+export { compileNavigationSecurity } from "./url-security.js";
