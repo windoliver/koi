@@ -1,0 +1,167 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/webhook-delivery API surface . has stable type surface 1`] = `
+"import { RetryConfig, CircuitBreakerConfig } from '@koi/errors';
+import { WebhookDeliveryStatus, EventBackend, OutboundWebhookConfig, KoiMiddleware } from '@koi/core';
+
+/**
+ * Webhook delivery configuration and validation.
+ */
+
+interface WebhookDeliveryConfig {
+    /** Maximum concurrent HTTP deliveries. Default: 10. */
+    readonly maxConcurrentDeliveries: number;
+    /** HTTP request timeout in milliseconds. Default: 10_000. */
+    readonly requestTimeoutMs: number;
+    /** Maximum retry attempts per delivery. Default: 5. */
+    readonly maxRetries: number;
+    /** Maximum response body bytes to read for diagnostics. Default: 4096. */
+    readonly maxResponseBodyBytes: number;
+    /** Retry configuration from @koi/errors. */
+    readonly retryConfig: RetryConfig;
+    /** Circuit breaker configuration from @koi/errors. */
+    readonly circuitBreakerConfig: CircuitBreakerConfig;
+}
+declare const DEFAULT_WEBHOOK_DELIVERY_CONFIG: WebhookDeliveryConfig;
+interface WebhookDeliveryConfigError {
+    readonly field: string;
+    readonly message: string;
+}
+/**
+ * Validates webhook delivery config. Returns list of errors (empty = valid).
+ */
+declare function validateWebhookDeliveryConfig(config: Partial<WebhookDeliveryConfig>): readonly WebhookDeliveryConfigError[];
+
+/**
+ * HTTP webhook delivery — single POST with timeout and diagnostics.
+ */
+
+interface DeliverOptions {
+    /** HTTP request timeout in milliseconds. */
+    readonly timeoutMs: number;
+    /** Maximum response body bytes to read for error diagnostics. */
+    readonly maxResponseBodyBytes: number;
+}
+/**
+ * Delivers a webhook payload via HTTP POST.
+ *
+ * @param url - Target webhook URL
+ * @param body - Pre-serialized JSON string (Decision #16: serialize once)
+ * @param headers - Signature headers + content-type
+ * @param options - Timeout and body limit config
+ * @param fetcher - Injectable fetch function for testing (Decision #9: DI via config)
+ */
+declare function deliverWebhook(url: string, body: string, headers: Readonly<Record<string, string>>, options: DeliverOptions, fetcher?: typeof fetch): Promise<WebhookDeliveryStatus>;
+
+/**
+ * Webhook delivery service — subscribes to EventBackend and delivers to endpoints.
+ *
+ * Core loop: subscribe → filter → serialize → sign → fan-out → retry → dead-letter.
+ */
+
+interface WebhookDeliveryServiceDeps {
+    readonly eventBackend: EventBackend;
+    readonly webhooks: readonly OutboundWebhookConfig[];
+    readonly agentId: string;
+    readonly config?: WebhookDeliveryConfig | undefined;
+    readonly fetcher?: typeof fetch | undefined;
+    readonly clock?: (() => number) | undefined;
+    readonly logger?: WebhookDeliveryServiceLogger | undefined;
+}
+interface WebhookDeliveryServiceLogger {
+    readonly warn: (msg: string) => void;
+    readonly info: (msg: string) => void;
+}
+interface WebhookDeliveryService {
+    readonly start: () => Promise<void>;
+    readonly dispose: () => void;
+}
+/**
+ * Creates a webhook delivery service that subscribes to an EventBackend stream
+ * and delivers matching events to registered webhook endpoints.
+ */
+declare function createWebhookDeliveryService(deps: WebhookDeliveryServiceDeps): WebhookDeliveryService;
+
+/**
+ * WebhookMiddleware — captures agent events and emits them to EventBackend.
+ *
+ * Fire-and-forget pattern (Decision #14): appends don't block the middleware chain.
+ * Priority 900 — outer layer, runs after most middleware to capture final results.
+ */
+
+interface WebhookMiddlewareConfig {
+    /** Stream name prefix for webhook events. Default: "webhook". */
+    readonly streamPrefix?: string | undefined;
+}
+interface WebhookMiddlewareLogger {
+    readonly warn: (msg: string) => void;
+}
+/**
+ * Creates a middleware that emits webhook events to an EventBackend stream.
+ *
+ * @param eventBackend - Event storage backend for webhook events
+ * @param config - Optional stream prefix config
+ * @param logger - Optional logger for fire-and-forget error reporting
+ */
+declare function createWebhookMiddleware(eventBackend: EventBackend, config?: WebhookMiddlewareConfig, logger?: WebhookMiddlewareLogger): KoiMiddleware;
+
+/**
+ * Standard Webhooks HMAC-SHA256 signing and verification.
+ *
+ * Implements the Standard Webhooks spec:
+ * - Signed content: "\${webhookId}.\${timestamp}.\${body}"
+ * - Header: webhook-signature: "v1,\${base64(HMAC-SHA256(secret, signedContent))}"
+ *
+ * Uses Bun/Node native crypto.
+ */
+/**
+ * Headers set on outbound webhook requests.
+ */
+interface WebhookSignatureHeaders {
+    readonly "webhook-id": string;
+    readonly "webhook-timestamp": string;
+    readonly "webhook-signature": string;
+    readonly "content-type": string;
+}
+/**
+ * Creates Standard Webhooks signature headers for an outbound delivery.
+ *
+ * @param webhookId - Unique delivery ID (ULID)
+ * @param timestampSeconds - Unix seconds when the event was sent
+ * @param body - Serialized JSON body string
+ * @param secret - HMAC signing key
+ */
+declare function createSignatureHeaders(webhookId: string, timestampSeconds: number, body: string, secret: string): WebhookSignatureHeaders;
+/**
+ * Verifies a Standard Webhooks signature against a received body.
+ *
+ * @param webhookId - The webhook-id header value
+ * @param timestampSeconds - The webhook-timestamp header value (as number)
+ * @param body - The raw request body string
+ * @param signature - The webhook-signature header value (e.g., "v1,base64...")
+ * @param secret - The signing key
+ * @param toleranceSeconds - Maximum allowed clock skew. Default: 300 (5 minutes).
+ * @param clock - Injectable clock for testing. Default: Date.now.
+ */
+declare function verifySignature(webhookId: string, timestampSeconds: number, body: string, signature: string, secret: string, toleranceSeconds?: number, clock?: () => number): boolean;
+
+/**
+ * SSRF prevention — validates webhook URLs at registration time.
+ *
+ * Rejects private IP ranges, link-local addresses, and non-HTTPS URLs.
+ */
+interface WebhookUrlValidationResult {
+    readonly ok: boolean;
+    readonly error?: string | undefined;
+}
+/**
+ * Validates a webhook URL for SSRF safety.
+ *
+ * @param url - The webhook URL to validate
+ * @param allowInsecureLocalhost - Allow HTTP for localhost (dev mode). Default: false.
+ */
+declare function validateWebhookUrl(url: string, allowInsecureLocalhost?: boolean): WebhookUrlValidationResult;
+
+export { DEFAULT_WEBHOOK_DELIVERY_CONFIG, type WebhookDeliveryConfig, type WebhookDeliveryService, type WebhookDeliveryServiceDeps, createSignatureHeaders, createWebhookDeliveryService, createWebhookMiddleware, deliverWebhook, validateWebhookDeliveryConfig, validateWebhookUrl, verifySignature };
+"
+`;

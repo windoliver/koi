@@ -9,6 +9,15 @@
  * toKoiError, etc.) and filesystem error mapping shared across L2 packages.
  */
 
+// circuit breaker — resilience primitive shared across L2 packages
+export {
+  type CircuitBreaker,
+  type CircuitBreakerConfig,
+  type CircuitBreakerSnapshot,
+  type CircuitState,
+  createCircuitBreaker,
+  DEFAULT_CIRCUIT_BREAKER_CONFIG,
+} from "./circuit-breaker.js";
 export {
   extractCode,
   extractMessage,

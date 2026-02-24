@@ -9,8 +9,10 @@ import type {
   JsonObject,
   MiddlewareConfig,
   ModelConfig,
+  OutboundWebhookConfig,
   PermissionConfig,
   ToolConfig,
+  WebhookEventKind,
 } from "@koi/core";
 import type { RawManifest } from "./schema.js";
 import type { DeployConfig, LoadedManifest } from "./types.js";
@@ -179,6 +181,19 @@ export function transformToLoadedManifest(raw: RawManifest): LoadedManifest {
       ? { permissions: normalizePermissions(raw.permissions) }
       : {}),
     ...(raw.metadata !== undefined ? { metadata: raw.metadata } : {}),
+    ...(raw.outboundWebhooks !== undefined
+      ? {
+          outboundWebhooks: raw.outboundWebhooks.map(
+            (w): OutboundWebhookConfig => ({
+              url: w.url,
+              events: w.events as readonly WebhookEventKind[],
+              secret: w.secret,
+              ...(w.description !== undefined ? { description: w.description } : {}),
+              ...(w.enabled !== undefined ? { enabled: w.enabled } : {}),
+            }),
+          ),
+        }
+      : {}),
     // Extension fields (engine, schedule, webhooks, forge, context, deploy)
     ...extractExtensions(raw as unknown as Readonly<Record<string, unknown>>),
     ...(raw.deploy !== undefined ? { deploy: raw.deploy as DeployConfig } : {}),

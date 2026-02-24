@@ -24,6 +24,7 @@ const KNOWN_FIELDS = [
   "engine",
   "schedule",
   "webhooks",
+  "outboundWebhooks",
   "forge",
   "context",
   "soul",

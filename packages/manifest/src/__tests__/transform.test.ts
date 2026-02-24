@@ -79,6 +79,70 @@ describe("transformToLoadedManifest", () => {
     ]);
   });
 
+  test("transforms outboundWebhooks with all fields", () => {
+    const raw = {
+      name: "my-agent",
+      version: "1.0.0",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+      outboundWebhooks: [
+        {
+          url: "https://hooks.example.com/events",
+          events: ["session.started", "tool.failed"],
+          secret: "wh-secret",
+          description: "Notify on failures",
+          enabled: true,
+        },
+      ],
+    };
+    const result = transformToLoadedManifest(raw);
+    expect(result.outboundWebhooks).toEqual([
+      {
+        url: "https://hooks.example.com/events",
+        events: ["session.started", "tool.failed"],
+        secret: "wh-secret",
+        description: "Notify on failures",
+        enabled: true,
+      },
+    ]);
+  });
+
+  test("transforms outboundWebhooks with required fields only", () => {
+    const raw = {
+      name: "my-agent",
+      version: "1.0.0",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+      outboundWebhooks: [
+        {
+          url: "https://hooks.example.com/events",
+          events: ["session.ended"],
+          secret: "s3cret",
+        },
+      ],
+    };
+    const result = transformToLoadedManifest(raw);
+    expect(result.outboundWebhooks).toEqual([
+      {
+        url: "https://hooks.example.com/events",
+        events: ["session.ended"],
+        secret: "s3cret",
+      },
+    ]);
+    // Optional fields should not be present (exactOptionalPropertyTypes)
+    const hook = result.outboundWebhooks?.[0];
+    expect("description" in (hook ?? {})).toBe(false);
+    expect("enabled" in (hook ?? {})).toBe(false);
+  });
+
+  test("omits outboundWebhooks when not present in raw", () => {
+    const raw = {
+      name: "my-agent",
+      version: "1.0.0",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+    };
+    const result = transformToLoadedManifest(raw);
+    expect("outboundWebhooks" in result).toBe(false);
+  });
+
   test("passes through extension fields", () => {
     const raw = {
       name: "my-agent",

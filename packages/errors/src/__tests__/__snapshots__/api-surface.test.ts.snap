@@ -119,6 +119,46 @@ declare class KoiRuntimeError extends Error {
     toKoiError(): KoiError;
 }
 
-export { DEFAULT_RETRY_CONFIG, KoiRuntimeError, type RetryConfig, computeBackoff, extractCode, extractMessage, isContextOverflowError, isKoiError, isRetryable, mapFsError, mapParseError, swallowError, toKoiError, withRetry };
+/**
+ * Circuit breaker state machine with fixed-size ring buffer.
+ *
+ * Tracks failure rates per provider and prevents traffic to unhealthy providers.
+ * Uses encapsulated mutable state with immutable public snapshots.
+ *
+ * States: CLOSED (normal) → OPEN (failing) → HALF_OPEN (probing) → CLOSED
+ *
+ * Note: assumes single-threaded runtime (Bun/Node). Synchronous state operations
+ * are atomic between await points — no mutex needed.
+ */
+type CircuitState = "CLOSED" | "OPEN" | "HALF_OPEN";
+interface CircuitBreakerConfig {
+    readonly failureThreshold: number;
+    readonly cooldownMs: number;
+    readonly failureWindowMs: number;
+    readonly failureStatusCodes: readonly number[];
+}
+declare const DEFAULT_CIRCUIT_BREAKER_CONFIG: CircuitBreakerConfig;
+interface CircuitBreakerSnapshot {
+    readonly state: CircuitState;
+    readonly failureCount: number;
+    readonly lastFailureAt: number | undefined;
+    readonly lastTransitionAt: number;
+}
+interface CircuitBreaker {
+    readonly isAllowed: () => boolean;
+    readonly recordSuccess: () => CircuitBreakerSnapshot;
+    readonly recordFailure: (statusCode?: number) => CircuitBreakerSnapshot;
+    readonly getSnapshot: () => CircuitBreakerSnapshot;
+    readonly reset: () => void;
+}
+/**
+ * Creates a circuit breaker with encapsulated mutable state.
+ *
+ * @param config - Circuit breaker configuration
+ * @param clock - Injectable clock for deterministic testing
+ */
+declare function createCircuitBreaker(config?: CircuitBreakerConfig, clock?: () => number): CircuitBreaker;
+
+export { type CircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerSnapshot, type CircuitState, DEFAULT_CIRCUIT_BREAKER_CONFIG, DEFAULT_RETRY_CONFIG, KoiRuntimeError, type RetryConfig, computeBackoff, createCircuitBreaker, extractCode, extractMessage, isContextOverflowError, isKoiError, isRetryable, mapFsError, mapParseError, swallowError, toKoiError, withRetry };
 "
 `;
