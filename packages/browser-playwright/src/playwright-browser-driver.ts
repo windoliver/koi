@@ -17,6 +17,10 @@
 
 import type {
   BrowserActionOptions,
+  BrowserConsoleEntry,
+  BrowserConsoleLevel,
+  BrowserConsoleOptions,
+  BrowserConsoleResult,
   BrowserDriver,
   BrowserEvaluateOptions,
   BrowserEvaluateResult,
@@ -38,10 +42,11 @@ import type {
   KoiError,
   Result,
 } from "@koi/core";
-import { internal, notFound, validation } from "@koi/core";
+import { internal, notFound, staleRef, validation } from "@koi/core";
 import type { Browser, BrowserContext, FrameLocator, Locator, Page } from "playwright";
 import { chromium } from "playwright";
 import { parseAriaYaml, VALID_ROLES } from "./a11y-serializer.js";
+import { translatePlaywrightError } from "./error-translator.js";
 
 /** Playwright-typed role guard — same validation as isAriaRole, returns Playwright's AriaRole. */
 type AriaRole = Parameters<Page["getByRole"]>[0];
@@ -94,6 +99,54 @@ const WAIT_MAX_MS = 30_000;
 const EVALUATE_DEFAULT_MS = 5_000;
 const EVALUATE_MAX_MS = 10_000;
 const LAUNCH_DEFAULT_MS = 30_000;
+
+/** Maximum entries per tab before FIFO eviction kicks in. */
+const CONSOLE_BUFFER_CAP = 1_000;
+
+// ---------------------------------------------------------------------------
+// Console helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize a Playwright ConsoleMessage type string to a BrowserConsoleLevel.
+ * Returns null for structural/grouping types that carry no signal for agents.
+ */
+function normalizeConsoleType(type: string): BrowserConsoleLevel | null {
+  switch (type) {
+    case "log":
+    case "trace":
+      return "log";
+    case "warning":
+      return "warning";
+    case "error":
+      return "error";
+    case "debug":
+      return "debug";
+    case "info":
+      return "info";
+    case "assert":
+      // assert fires when assertion fails — map to error for agent visibility
+      return "error";
+    case "dir":
+    case "dirxml":
+    case "table":
+    case "group":
+    case "groupCollapsed":
+    case "groupEnd":
+    case "count":
+    case "countReset":
+    case "time":
+    case "timeLog":
+    case "timeEnd":
+    case "clear":
+    case "startGroup":
+    case "startGroupCollapsed":
+    case "endGroup":
+      return null;
+    default:
+      return "log";
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Stealth init script — injected at BrowserContext level
@@ -180,6 +233,9 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
   // Per-tab snapshot state — replaces the old single global currentSnapshotId / currentRefs
   const tabSnapshots = new Map<string, TabSnapshot>();
 
+  // Per-tab console log buffer (FIFO, capped at CONSOLE_BUFFER_CAP entries per tab)
+  const tabConsoleLogs = new Map<string, BrowserConsoleEntry[]>();
+
   // ---------------------------------------------------------------------------
   // Internal helpers
   // ---------------------------------------------------------------------------
@@ -190,6 +246,25 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 
   function invalidateTabSnapshot(tabId: string): void {
     tabSnapshots.delete(tabId);
+  }
+
+  function attachConsoleListener(page: Page, tabId: string): void {
+    tabConsoleLogs.set(tabId, []);
+    page.on("console", (msg) => {
+      const level = normalizeConsoleType(msg.type());
+      if (level === null) return;
+      const loc = msg.location();
+      const entry: BrowserConsoleEntry = {
+        level,
+        text: msg.text(),
+        ...(loc.url ? { url: loc.url } : {}),
+        ...(loc.lineNumber ? { line: loc.lineNumber } : {}),
+      };
+      const buf = tabConsoleLogs.get(tabId);
+      if (buf === undefined) return;
+      buf.push(entry);
+      if (buf.length > CONSOLE_BUFFER_CAP) buf.shift(); // FIFO eviction
+    });
   }
 
   async function ensureBrowser(): Promise<Browser> {
@@ -260,6 +335,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       const tabId = newTabId();
       tabs.set(tabId, page);
       currentTabId = tabId;
+      attachConsoleListener(page, tabId);
     }
     const page = tabs.get(currentTabId);
     if (!page) {
@@ -272,7 +348,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
     return currentTabId;
   }
 
-  /** Returns a stale-snapshot error if snapshotId is provided but doesn't match the active tab's. */
+  /** Returns a STALE_REF error if snapshotId is provided but doesn't match the active tab's. */
   function checkSnapshotId(snapshotId: string | undefined): Result<void, KoiError> | null {
     if (snapshotId === undefined) return null;
     const tabId = getActiveTabId();
@@ -281,7 +357,10 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
     if (!snap || snapshotId !== snap.snapshotId) {
       return {
         ok: false,
-        error: notFound("Snapshot is stale — call browser_snapshot to refresh refs"),
+        error: staleRef(
+          snapshotId,
+          "call browser_snapshot to get fresh refs — the page changed since this snapshot was taken",
+        ),
       };
     }
     return null;
@@ -322,7 +401,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
     return root.getByRole(role).nth(nthIndex);
   }
 
-  /** Get a Locator or return a NOT_FOUND error Result. */
+  /** Get a Locator or return a STALE_REF/NOT_FOUND error Result. */
   function requireLocator(
     page: Page,
     ref: string,
@@ -333,8 +412,9 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       return {
         error: {
           ok: false,
-          error: notFound(
-            `ref "${ref}" not found in current snapshot — call browser_snapshot to refresh refs`,
+          error: staleRef(
+            ref,
+            "call browser_snapshot to refresh refs — this ref is not in the current snapshot",
           ),
         },
       };
@@ -396,7 +476,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
           },
         };
       } catch (e: unknown) {
-        return { ok: false, error: internal("browser_snapshot failed", e) };
+        return { ok: false, error: translatePlaywrightError("browser_snapshot", e) };
       }
     },
 
@@ -432,7 +512,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
           },
         };
       } catch (e: unknown) {
-        return { ok: false, error: internal("browser_navigate failed", e) };
+        return { ok: false, error: translatePlaywrightError("browser_navigate", e) };
       }
     },
 
@@ -451,7 +531,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         await found.locator.click({ timeout: t.value });
         return { ok: true, value: undefined };
       } catch (e: unknown) {
-        return { ok: false, error: internal("browser_click failed", e) };
+        return { ok: false, error: translatePlaywrightError("browser_click", e) };
       }
     },
 
@@ -470,7 +550,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         await found.locator.hover({ timeout: t.value });
         return { ok: true, value: undefined };
       } catch (e: unknown) {
-        return { ok: false, error: internal("browser_hover failed", e) };
+        return { ok: false, error: translatePlaywrightError("browser_hover", e) };
       }
     },
 
@@ -483,7 +563,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         await page.keyboard.press(key);
         return { ok: true, value: undefined };
       } catch (e: unknown) {
-        return { ok: false, error: internal("browser_press failed", e) };
+        return { ok: false, error: translatePlaywrightError("browser_press", e) };
       }
     },
 
@@ -509,7 +589,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         await found.locator.fill(value, { timeout: t.value });
         return { ok: true, value: undefined };
       } catch (e: unknown) {
-        return { ok: false, error: internal("browser_type failed", e) };
+        return { ok: false, error: translatePlaywrightError("browser_type", e) };
       }
     },
 
@@ -532,7 +612,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         await found.locator.selectOption(value, { timeout: t.value });
         return { ok: true, value: undefined };
       } catch (e: unknown) {
-        return { ok: false, error: internal("browser_select failed", e) };
+        return { ok: false, error: translatePlaywrightError("browser_select", e) };
       }
     },
 
@@ -573,7 +653,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 
         return { ok: true, value: undefined };
       } catch (e: unknown) {
-        return { ok: false, error: internal("browser_fill_form failed", e) };
+        return { ok: false, error: translatePlaywrightError("browser_fill_form", e) };
       }
     },
 
@@ -606,7 +686,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 
         return { ok: true, value: undefined };
       } catch (e: unknown) {
-        return { ok: false, error: internal("browser_scroll failed", e) };
+        return { ok: false, error: translatePlaywrightError("browser_scroll", e) };
       }
     },
 
@@ -643,7 +723,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
           },
         };
       } catch (e: unknown) {
-        return { ok: false, error: internal("browser_screenshot failed", e) };
+        return { ok: false, error: translatePlaywrightError("browser_screenshot", e) };
       }
     },
 
@@ -673,7 +753,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 
         return { ok: true, value: undefined };
       } catch (e: unknown) {
-        return { ok: false, error: internal("browser_wait failed", e) };
+        return { ok: false, error: translatePlaywrightError("browser_wait", e) };
       }
     },
 
@@ -683,6 +763,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         const page = await ctx.newPage();
         const tabId = newTabId();
         tabs.set(tabId, page);
+        attachConsoleListener(page, tabId);
         // New tab becomes the active tab (matches real browser behaviour).
         currentTabId = tabId;
 
@@ -710,7 +791,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
           },
         };
       } catch (e: unknown) {
-        return { ok: false, error: internal("browser_tab_new failed", e) };
+        return { ok: false, error: translatePlaywrightError("browser_tab_new", e) };
       }
     },
 
@@ -730,6 +811,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         await page.close();
         tabs.delete(targetId);
         invalidateTabSnapshot(targetId);
+        tabConsoleLogs.delete(targetId);
 
         if (currentTabId === targetId) {
           // Single-pass iterator — avoids allocating a full array just to get the last key.
@@ -740,7 +822,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 
         return { ok: true, value: undefined };
       } catch (e: unknown) {
-        return { ok: false, error: internal("browser_tab_close failed", e) };
+        return { ok: false, error: translatePlaywrightError("browser_tab_close", e) };
       }
     },
 
@@ -780,7 +862,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
           },
         };
       } catch (e: unknown) {
-        return { ok: false, error: internal("browser_tab_focus failed", e) };
+        return { ok: false, error: translatePlaywrightError("browser_tab_focus", e) };
       }
     },
 
@@ -797,8 +879,24 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         );
         return { ok: true, value };
       } catch (e: unknown) {
-        return { ok: false, error: internal("browser_tab_list failed", e) };
+        return { ok: false, error: translatePlaywrightError("browser_tab_list", e) };
       }
+    },
+
+    async console(
+      options?: BrowserConsoleOptions,
+    ): Promise<Result<BrowserConsoleResult, KoiError>> {
+      const buf = currentTabId !== null ? (tabConsoleLogs.get(currentTabId) ?? []) : [];
+      const MAX_LIMIT = 200;
+      const limit = Math.min(options?.limit ?? 50, MAX_LIMIT);
+      const levels = options?.levels;
+      const filtered = levels ? buf.filter((e) => levels.includes(e.level)) : buf;
+      const total = filtered.length;
+      const entries = filtered.slice(-limit);
+      if (options?.clear === true && currentTabId !== null) {
+        tabConsoleLogs.set(currentTabId, []);
+      }
+      return { ok: true, value: { entries, total } };
     },
 
     async evaluate(
@@ -818,13 +916,14 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         const value: unknown = await page.evaluate(script);
         return { ok: true, value: { value } };
       } catch (e: unknown) {
-        return { ok: false, error: internal("browser_evaluate failed", e) };
+        return { ok: false, error: translatePlaywrightError("browser_evaluate", e) };
       }
     },
 
     async dispose(): Promise<void> {
-      // Invalidate all tab snapshots
+      // Invalidate all tab snapshots and console buffers
       tabSnapshots.clear();
+      tabConsoleLogs.clear();
 
       for (const page of tabs.values()) {
         await page.close().catch(() => undefined);

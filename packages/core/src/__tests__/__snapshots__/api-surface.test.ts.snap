@@ -3,10 +3,10 @@
 exports[`@koi/core API surface . has stable type surface 1`] = `
 "import { BrickRef } from './brick-snapshot.js';
 export { BrickId, BrickSnapshot, BrickSource, SnapshotEvent, SnapshotId, SnapshotQuery, SnapshotStore, brickId, snapshotId } from './brick-snapshot.js';
-import { A as AgentId, P as ProcessState, S as SessionId, T as ToolCallId } from './ecs-B8ezO44s.js';
-export { a as Agent, B as BROWSER, b as BrowserActionOptions, c as BrowserDriver, d as BrowserEvaluateOptions, e as BrowserEvaluateResult, f as BrowserFormField, g as BrowserNavigateOptions, h as BrowserNavigateResult, i as BrowserRefInfo, j as BrowserScreenshotOptions, k as BrowserScreenshotResult, l as BrowserScrollOptions, m as BrowserSnapshotOptions, n as BrowserSnapshotResult, o as BrowserTabCloseOptions, p as BrowserTabFocusOptions, q as BrowserTabInfo, r as BrowserTabNewOptions, s as BrowserTypeOptions, t as BrowserWaitOptions, u as BrowserWaitUntil, C as CREDENTIALS, v as ChildHandle, w as ChildLifecycleEvent, x as ComponentProvider, y as CredentialComponent, D as DELEGATION, E as EVENTS, z as EventComponent, F as FILESYSTEM, G as GOVERNANCE, H as GovernanceComponent, I as GovernanceUsage, M as MEMORY, J as MemoryComponent, K as MemoryResult, L as ProcessAccounter, N as ProcessId, R as RunId, O as SkillMetadata, Q as SpawnCheck, U as SpawnLedger, V as SubsystemToken, W as Tool, X as ToolDescriptor, Y as TrustTier, Z as TurnId, _ as agentId, $ as channelToken, a0 as runId, a1 as sessionId, a2 as skillToken, a3 as token, a4 as toolCallId, a5 as toolToken, a6 as turnId } from './ecs-B8ezO44s.js';
-import { E as EngineState, a as EngineInput } from './engine-DND0bmV7.js';
-export { A as AbortReason, C as ComposedCallHandlers, b as CorrelationIds, c as EngineAdapter, d as EngineEvent, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, h as EngineStopReason } from './engine-DND0bmV7.js';
+import { A as AgentId, P as ProcessState, S as SessionId, T as ToolCallId } from './ecs-piGm96or.js';
+export { a as Agent, B as BROWSER, b as BrowserActionOptions, c as BrowserConsoleEntry, d as BrowserConsoleLevel, e as BrowserConsoleOptions, f as BrowserConsoleResult, g as BrowserDriver, h as BrowserEvaluateOptions, i as BrowserEvaluateResult, j as BrowserFormField, k as BrowserNavigateOptions, l as BrowserNavigateResult, m as BrowserRefInfo, n as BrowserScreenshotOptions, o as BrowserScreenshotResult, p as BrowserScrollOptions, q as BrowserSnapshotOptions, r as BrowserSnapshotResult, s as BrowserTabCloseOptions, t as BrowserTabFocusOptions, u as BrowserTabInfo, v as BrowserTabNewOptions, w as BrowserTypeOptions, x as BrowserWaitOptions, y as BrowserWaitUntil, C as CREDENTIALS, z as ChildHandle, D as ChildLifecycleEvent, E as ComponentProvider, F as CredentialComponent, G as DELEGATION, H as EVENTS, I as EventComponent, J as FILESYSTEM, K as GOVERNANCE, L as GovernanceComponent, M as GovernanceUsage, N as MEMORY, O as MemoryComponent, Q as MemoryResult, R as ProcessAccounter, U as ProcessId, V as RunId, W as SkillMetadata, X as SpawnCheck, Y as SpawnLedger, Z as SubsystemToken, _ as Tool, $ as ToolDescriptor, a0 as TrustTier, a1 as TurnId, a2 as agentId, a3 as channelToken, a4 as runId, a5 as sessionId, a6 as skillToken, a7 as token, a8 as toolCallId, a9 as toolToken, aa as turnId } from './ecs-piGm96or.js';
+import { E as EngineState, a as EngineInput } from './engine-jr9uuAwQ.js';
+export { A as AbortReason, C as ComposedCallHandlers, b as CorrelationIds, c as EngineAdapter, d as EngineEvent, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, h as EngineStopReason } from './engine-jr9uuAwQ.js';
 import { Result, KoiError } from './errors.js';
 export { BackendErrorMapper, KoiErrorCode, RETRYABLE_DEFAULTS } from './errors.js';
 import { A as AgentManifest } from './assembly-DuMs8y-i.js';
@@ -227,11 +227,19 @@ declare function internal(message: string, cause?: unknown): KoiError;
 /** Rate limit exceeded. Retryable (with backoff). */
 declare function rateLimit(message: string, context?: JsonObject): KoiError;
 /** Operation timed out. Retryable (with backoff). */
-declare function timeout(message: string): KoiError;
+declare function timeout(message: string, retryAfterMs?: number): KoiError;
 /** Third-party service failure. Not retryable by default. */
 declare function external(message: string, cause?: unknown): KoiError;
 /** Unauthorized action. Non-retryable. */
 declare function permission(message: string): KoiError;
+/**
+ * A cached reference has become invalid because the underlying resource changed.
+ * Non-retryable as-is — the caller must re-acquire a fresh reference first.
+ *
+ * @param refId - The stale reference identifier (e.g., "e1", "cursor-42").
+ * @param hint - Optional actionable hint for the caller (e.g., "call browser_snapshot").
+ */
+declare function staleRef(refId: string, hint?: string): KoiError;
 
 /**
  * Scheduler contract — pluggable task scheduling, priority queue, cron,
@@ -646,7 +654,7 @@ declare function isProcessState(value: string): value is ProcessState;
  */
 declare function validateNonEmpty(value: string, name: string): Result<void, KoiError>;
 
-export { AgentId, AgentManifest, type AgentSnapshot, type AgentSnapshotStore, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickRef, type ChainCompactor, type ChainId, type CompensatingOp, type CronSchedule, DEFAULT_SCHEDULER_CONFIG, EngineInput, EngineState, type EventCursor, type FileOpKind, type FileOpRecord, type ForkRef, JsonObject, KoiError, type NodeId, type PendingFrame, ProcessState, type PruningPolicy, type PutOptions, type RecoveryPlan, type RedactionRule, Result, type ScheduleId, type ScheduleStore, type ScheduledTask, type SchedulerConfig, type SchedulerEvent, type SchedulerStats, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, type TaskFilter, type TaskId, type TaskOptions, type TaskScheduler, type TaskStatus, type TaskStore, ToolCallId, type TraceEvent, type TraceEventKind, type TurnTrace, chainId, conflict, external, internal, isProcessState, nodeId, notFound, permission, rateLimit, scheduleId, taskId, timeout, validateNonEmpty, validation };
+export { AgentId, AgentManifest, type AgentSnapshot, type AgentSnapshotStore, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickRef, type ChainCompactor, type ChainId, type CompensatingOp, type CronSchedule, DEFAULT_SCHEDULER_CONFIG, EngineInput, EngineState, type EventCursor, type FileOpKind, type FileOpRecord, type ForkRef, JsonObject, KoiError, type NodeId, type PendingFrame, ProcessState, type PruningPolicy, type PutOptions, type RecoveryPlan, type RedactionRule, Result, type ScheduleId, type ScheduleStore, type ScheduledTask, type SchedulerConfig, type SchedulerEvent, type SchedulerStats, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, type TaskFilter, type TaskId, type TaskOptions, type TaskScheduler, type TaskStatus, type TaskStore, ToolCallId, type TraceEvent, type TraceEventKind, type TurnTrace, chainId, conflict, external, internal, isProcessState, nodeId, notFound, permission, rateLimit, scheduleId, staleRef, taskId, timeout, validateNonEmpty, validation };
 "
 `;
 
@@ -854,7 +862,7 @@ import './common.js';
 
 exports[`@koi/core API surface ./ecs has stable type surface 1`] = `
 "import './assembly-DuMs8y-i.js';
-export { a as Agent, A as AgentId, B as BROWSER, C as CREDENTIALS, v as ChildHandle, w as ChildLifecycleEvent, x as ComponentProvider, y as CredentialComponent, D as DELEGATION, E as EVENTS, z as EventComponent, F as FILESYSTEM, G as GOVERNANCE, H as GovernanceComponent, I as GovernanceUsage, M as MEMORY, J as MemoryComponent, K as MemoryResult, L as ProcessAccounter, N as ProcessId, P as ProcessState, R as RunId, S as SessionId, O as SkillMetadata, Q as SpawnCheck, U as SpawnLedger, V as SubsystemToken, W as Tool, T as ToolCallId, X as ToolDescriptor, Y as TrustTier, Z as TurnId, _ as agentId, $ as channelToken, a0 as runId, a1 as sessionId, a2 as skillToken, a3 as token, a4 as toolCallId, a5 as toolToken, a6 as turnId } from './ecs-B8ezO44s.js';
+export { a as Agent, A as AgentId, B as BROWSER, C as CREDENTIALS, z as ChildHandle, D as ChildLifecycleEvent, E as ComponentProvider, F as CredentialComponent, G as DELEGATION, H as EVENTS, I as EventComponent, J as FILESYSTEM, K as GOVERNANCE, L as GovernanceComponent, M as GovernanceUsage, N as MEMORY, O as MemoryComponent, Q as MemoryResult, R as ProcessAccounter, U as ProcessId, P as ProcessState, V as RunId, S as SessionId, W as SkillMetadata, X as SpawnCheck, Y as SpawnLedger, Z as SubsystemToken, _ as Tool, T as ToolCallId, $ as ToolDescriptor, a0 as TrustTier, a1 as TurnId, a2 as agentId, a3 as channelToken, a4 as runId, a5 as sessionId, a6 as skillToken, a7 as token, a8 as toolCallId, a9 as toolToken, aa as turnId } from './ecs-piGm96or.js';
 import './channel.js';
 import './common.js';
 import './filesystem-backend.js';
@@ -865,8 +873,8 @@ import './message.js';
 
 exports[`@koi/core API surface ./engine has stable type surface 1`] = `
 "import './common.js';
-export { A as AbortReason, C as ComposedCallHandlers, c as EngineAdapter, d as EngineEvent, a as EngineInput, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, E as EngineState, h as EngineStopReason } from './engine-DND0bmV7.js';
-import './ecs-B8ezO44s.js';
+export { A as AbortReason, C as ComposedCallHandlers, c as EngineAdapter, d as EngineEvent, a as EngineInput, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, E as EngineState, h as EngineStopReason } from './engine-jr9uuAwQ.js';
+import './ecs-piGm96or.js';
 import './message.js';
 import './middleware.js';
 import './assembly-DuMs8y-i.js';
@@ -1033,7 +1041,7 @@ exports[`@koi/core API surface ./errors has stable type surface 1`] = `
  *   switch (code) {
  *     case "VALIDATION": return "bad input";
  *     case "NOT_FOUND":  return "missing";
- *     // ... all 8 codes ...
+ *     // ... all 9 codes ...
  *     default: {
  *       const _exhaustive: never = code;
  *       throw new Error(\`Unhandled code: \${String(_exhaustive)}\`);
@@ -1043,7 +1051,20 @@ exports[`@koi/core API surface ./errors has stable type surface 1`] = `
  * \`\`\`
  */
 
-type KoiErrorCode = "VALIDATION" | "NOT_FOUND" | "PERMISSION" | "CONFLICT" | "RATE_LIMIT" | "TIMEOUT" | "EXTERNAL" | "INTERNAL";
+type KoiErrorCode = "VALIDATION" | "NOT_FOUND" | "PERMISSION" | "CONFLICT" | "RATE_LIMIT" | "TIMEOUT" | "EXTERNAL" | "INTERNAL"
+/**
+ * A cached reference (browser element ref, DB cursor, WebSocket token, etc.)
+ * has become invalid because the underlying resource changed or was replaced.
+ * The caller must re-acquire a fresh reference before retrying the operation.
+ *
+ * Distinct from NOT_FOUND (which means the resource never existed or was
+ * permanently deleted). STALE_REF means the resource likely still exists
+ * but the handle pointing to it is no longer valid.
+ *
+ * Common browser automation pattern: call browser_snapshot to obtain fresh
+ * [ref=eN] markers, then retry the action with the new ref.
+ */
+ | "STALE_REF";
 interface KoiError {
     readonly code: KoiErrorCode;
     readonly message: string;
@@ -1131,7 +1152,7 @@ export type { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, Inb
 exports[`@koi/core API surface ./middleware has stable type surface 1`] = `
 "import { ChannelStatus } from './channel.js';
 import { JsonObject } from './common.js';
-import { T as ToolCallId, S as SessionId, R as RunId, Z as TurnId } from './ecs-B8ezO44s.js';
+import { T as ToolCallId, S as SessionId, V as RunId, a1 as TurnId } from './ecs-piGm96or.js';
 import { InboundMessage } from './message.js';
 import './assembly-DuMs8y-i.js';
 import './errors.js';
@@ -1254,7 +1275,7 @@ export type { ApprovalDecision, ApprovalHandler, ApprovalRequest, KoiMiddleware,
 `;
 
 exports[`@koi/core API surface ./eviction has stable type surface 1`] = `
-"import { A as AgentId, P as ProcessState } from './ecs-B8ezO44s.js';
+"import { A as AgentId, P as ProcessState } from './ecs-piGm96or.js';
 import './assembly-DuMs8y-i.js';
 import './common.js';
 import './errors.js';
@@ -1307,7 +1328,7 @@ export type { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult 
 `;
 
 exports[`@koi/core API surface ./health has stable type surface 1`] = `
-"import { A as AgentId } from './ecs-B8ezO44s.js';
+"import { A as AgentId } from './ecs-piGm96or.js';
 import './assembly-DuMs8y-i.js';
 import './common.js';
 import './errors.js';
@@ -1378,7 +1399,7 @@ export { DEFAULT_HEALTH_MONITOR_CONFIG, type HealthMonitor, type HealthMonitorCo
 `;
 
 exports[`@koi/core API surface ./lifecycle has stable type surface 1`] = `
-"import { A as AgentId, P as ProcessState } from './ecs-B8ezO44s.js';
+"import { A as AgentId, P as ProcessState } from './ecs-piGm96or.js';
 import { Result, KoiError } from './errors.js';
 import './assembly-DuMs8y-i.js';
 import './common.js';
@@ -1718,7 +1739,7 @@ export { type BrickId, type BrickRef, type BrickSnapshot, type BrickSource, type
 `;
 
 exports[`@koi/core API surface ./brick-store has stable type surface 1`] = `
-"import { Y as TrustTier } from './ecs-B8ezO44s.js';
+"import { a0 as TrustTier } from './ecs-piGm96or.js';
 import { Result, KoiError } from './errors.js';
 import { B as BrickKind, F as ForgeScope, a as BrickLifecycle } from './forge-types-4-HydRtT.js';
 import './assembly-DuMs8y-i.js';
@@ -1863,7 +1884,7 @@ export type { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, Bri
 
 exports[`@koi/core API surface ./sandbox-adapter has stable type surface 1`] = `
 "import { SandboxProfile } from './sandbox-profile.js';
-import './ecs-B8ezO44s.js';
+import './ecs-piGm96or.js';
 import './assembly-DuMs8y-i.js';
 import './common.js';
 import './errors.js';
@@ -1934,7 +1955,7 @@ export type { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxI
 `;
 
 exports[`@koi/core API surface ./sandbox-executor has stable type surface 1`] = `
-"import { Y as TrustTier } from './ecs-B8ezO44s.js';
+"import { a0 as TrustTier } from './ecs-piGm96or.js';
 import './assembly-DuMs8y-i.js';
 import './common.js';
 import './errors.js';
@@ -1997,7 +2018,7 @@ export type { SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, Ti
 `;
 
 exports[`@koi/core API surface ./sandbox-profile has stable type surface 1`] = `
-"import { Y as TrustTier } from './ecs-B8ezO44s.js';
+"import { a0 as TrustTier } from './ecs-piGm96or.js';
 import './assembly-DuMs8y-i.js';
 import './common.js';
 import './errors.js';

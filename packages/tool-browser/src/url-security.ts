@@ -6,7 +6,9 @@
  *   - Private IP blocking: RFC 1918, loopback, link-local, cloud metadata
  *   - IPv6 private range blocking: loopback (::1), link-local (fe80::/10),
  *     unique-local (fc00::/7), IPv4-mapped (::ffff:0:0/96), 6to4 (2002::/16)
- *   - Encoded IP bypass detection: decimal, hex, octal representations
+ *   - Encoded IP bypass (decimal, hex, octal) — handled automatically by the
+ *     WHATWG URL parser (`new URL()`), which normalises these to dotted-quad
+ *     before the checks below run.
  *   - Domain allowlist with exact and wildcard (*.example.com) matching
  *
  * NOTE: This is static URL analysis only. DNS rebinding attacks — where a
@@ -97,36 +99,6 @@ function isPrivateRfc1918(host: string): boolean {
     if (n >= 16 && n <= 31) return true;
   }
   return /^192\.168\./.test(host);
-}
-
-// ---------------------------------------------------------------------------
-// Encoded IP bypass detection (decimal, hex, octal representations)
-// ---------------------------------------------------------------------------
-
-function decimalToIp(host: string): string | undefined {
-  if (!/^\d+$/.test(host)) return undefined;
-  const n = Number(host);
-  if (!Number.isFinite(n) || n < 0 || n > 0xffffffff) return undefined;
-  return `${(n >>> 24) & 0xff}.${(n >>> 16) & 0xff}.${(n >>> 8) & 0xff}.${n & 0xff}`;
-}
-
-function hexToIp(host: string): string | undefined {
-  if (!/^0x[0-9a-f]+$/i.test(host)) return undefined;
-  const n = Number(host);
-  if (!Number.isFinite(n) || n < 0 || n > 0xffffffff) return undefined;
-  return `${(n >>> 24) & 0xff}.${(n >>> 16) & 0xff}.${(n >>> 8) & 0xff}.${n & 0xff}`;
-}
-
-function octalToIp(host: string): string | undefined {
-  const parts = host.split(".");
-  if (parts.length !== 4) return undefined;
-  const hasOctal = parts.some((p) => p.length > 1 && p.startsWith("0") && /^0[0-7]+$/.test(p));
-  if (!hasOctal) return undefined;
-  const octets = parts.map((p) =>
-    p.length > 1 && p.startsWith("0") ? Number.parseInt(p, 8) : Number.parseInt(p, 10),
-  );
-  if (octets.some((o) => Number.isNaN(o) || o < 0 || o > 255)) return undefined;
-  return octets.join(".");
 }
 
 // ---------------------------------------------------------------------------
@@ -300,23 +272,11 @@ function classifyHost(host: string): BlockedReason | undefined {
     return undefined; // Global unicast IPv6 — allowed
   }
 
-  // IPv4 dotted-quad or plain hostname
-  const directResult = classifyIpv4(lower);
-  if (directResult !== undefined) return directResult;
-
-  // Encoded IP bypass detection (decimal, hex, octal representations)
-  const decoded = decimalToIp(lower) ?? hexToIp(lower) ?? octalToIp(lower);
-  if (decoded !== undefined) {
-    const decodedResult = classifyIpv4(decoded);
-    if (decodedResult !== undefined) {
-      return {
-        category: `encoded ${decodedResult.category} — "${lower}" decodes to ${decoded}`,
-        guidance: decodedResult.guidance,
-      };
-    }
-  }
-
-  return undefined;
+  // IPv4 dotted-quad or plain hostname.
+  // Note: decimal (2130706433), hex (0x7f000001), and octal (0177.0.0.1)
+  // representations are normalised to dotted-quad by `new URL()` before
+  // reaching this function, so no additional decode step is needed.
+  return classifyIpv4(lower);
 }
 
 // ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@
  * on raw JsonObject args from the LLM.
  */
 
-import type { JsonObject } from "@koi/core";
+import type { BrowserConsoleLevel, JsonObject } from "@koi/core";
 
 interface ValidationError {
   readonly error: string;
@@ -293,4 +293,32 @@ export function parseOptionalWaitUntil(
     };
   }
   return { ok: true, value };
+}
+
+const CONSOLE_LEVELS: readonly BrowserConsoleLevel[] = ["log", "warning", "error", "debug", "info"];
+
+/** Parse an optional array of BrowserConsoleLevel values. */
+export function parseOptionalConsoleLevels(
+  args: JsonObject,
+  key: string,
+): ParseResult<readonly BrowserConsoleLevel[] | undefined> {
+  const raw = args[key];
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  if (!Array.isArray(raw)) {
+    return { ok: false, err: { error: `${key} must be an array`, code: "VALIDATION" } };
+  }
+  const result: BrowserConsoleLevel[] = [];
+  for (const item of raw) {
+    if (!memberOf<BrowserConsoleLevel>(CONSOLE_LEVELS, item)) {
+      return {
+        ok: false,
+        err: {
+          error: `${key} contains unknown level "${String(item)}". Valid: ${CONSOLE_LEVELS.join(", ")}`,
+          code: "VALIDATION",
+        },
+      };
+    }
+    result.push(item);
+  }
+  return { ok: true, value: result };
 }

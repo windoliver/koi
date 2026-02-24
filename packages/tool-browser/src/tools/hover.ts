@@ -18,8 +18,9 @@ export function createBrowserHoverTool(
       name: `${prefix}_hover`,
       description:
         "Hover over an element to trigger hover effects such as dropdowns, tooltips, and " +
-        "context menus. Use browser_snapshot first to get ref values, then call " +
-        "browser_snapshot again after hovering if new elements appear.",
+        "context menus. Always pass snapshotId from the last browser_snapshot call — " +
+        "a STALE_REF error means the ref is outdated and you must re-snapshot. " +
+        "Call browser_snapshot again after hovering if new elements appear.",
       inputSchema: {
         type: "object",
         properties: {

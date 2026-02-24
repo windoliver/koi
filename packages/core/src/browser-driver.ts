@@ -218,6 +218,36 @@ export interface BrowserEvaluateResult {
 }
 
 // ---------------------------------------------------------------------------
+// Console
+// ---------------------------------------------------------------------------
+
+export type BrowserConsoleLevel = "log" | "warning" | "error" | "debug" | "info";
+
+export interface BrowserConsoleEntry {
+  readonly level: BrowserConsoleLevel;
+  readonly text: string;
+  /** Source URL (from ConsoleMessage.location()). */
+  readonly url?: string;
+  /** Source line number. */
+  readonly line?: number;
+}
+
+export interface BrowserConsoleOptions {
+  /** Filter by level(s). Default: all levels. */
+  readonly levels?: readonly BrowserConsoleLevel[];
+  /** Max entries to return, from most recent (default: 50, max: 200). */
+  readonly limit?: number;
+  /** Clear the console buffer after reading (default: false). */
+  readonly clear?: boolean;
+}
+
+export interface BrowserConsoleResult {
+  readonly entries: readonly BrowserConsoleEntry[];
+  /** Total buffered entries before limit/filter was applied. */
+  readonly total: number;
+}
+
+// ---------------------------------------------------------------------------
 // Backend contract
 // ---------------------------------------------------------------------------
 
@@ -331,6 +361,11 @@ export interface BrowserDriver {
   readonly tabList: () =>
     | Result<readonly BrowserTabInfo[], KoiError>
     | Promise<Result<readonly BrowserTabInfo[], KoiError>>;
+
+  /** Read buffered console messages from the current page. */
+  readonly console: (
+    options?: BrowserConsoleOptions,
+  ) => Result<BrowserConsoleResult, KoiError> | Promise<Result<BrowserConsoleResult, KoiError>>;
 
   readonly dispose?: () => void | Promise<void>;
 }

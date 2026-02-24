@@ -20,6 +20,7 @@ const USER_MESSAGES: Readonly<Record<KoiErrorCode, string>> = {
   TIMEOUT: "The operation timed out. Please try again.",
   EXTERNAL: "An external service is temporarily unavailable.",
   INTERNAL: "Something went wrong. Please try again later.",
+  STALE_REF: "The referenced element is no longer valid. Please try again.",
 } as const;
 
 /**

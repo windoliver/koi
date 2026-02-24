@@ -24,7 +24,9 @@ export function createBrowserScrollTool(
       name: `${prefix}_scroll`,
       description:
         "Scroll the page in a direction, or scroll to bring an element into view. " +
-        "Provide ref to scroll to an element; provide direction to scroll the page.",
+        "Provide ref to scroll to an element; provide direction to scroll the page. " +
+        "When using ref, always pass snapshotId — a STALE_REF error means " +
+        "the ref is outdated and you must call browser_snapshot first.",
       inputSchema: {
         type: "object",
         properties: {

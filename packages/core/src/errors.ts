@@ -10,7 +10,7 @@
  *   switch (code) {
  *     case "VALIDATION": return "bad input";
  *     case "NOT_FOUND":  return "missing";
- *     // ... all 8 codes ...
+ *     // ... all 9 codes ...
  *     default: {
  *       const _exhaustive: never = code;
  *       throw new Error(`Unhandled code: ${String(_exhaustive)}`);
@@ -30,7 +30,20 @@ export type KoiErrorCode =
   | "RATE_LIMIT"
   | "TIMEOUT"
   | "EXTERNAL"
-  | "INTERNAL";
+  | "INTERNAL"
+  /**
+   * A cached reference (browser element ref, DB cursor, WebSocket token, etc.)
+   * has become invalid because the underlying resource changed or was replaced.
+   * The caller must re-acquire a fresh reference before retrying the operation.
+   *
+   * Distinct from NOT_FOUND (which means the resource never existed or was
+   * permanently deleted). STALE_REF means the resource likely still exists
+   * but the handle pointing to it is no longer valid.
+   *
+   * Common browser automation pattern: call browser_snapshot to obtain fresh
+   * [ref=eN] markers, then retry the action with the new ref.
+   */
+  | "STALE_REF";
 
 export interface KoiError {
   readonly code: KoiErrorCode;
@@ -57,6 +70,7 @@ export const RETRYABLE_DEFAULTS: Readonly<Record<KoiErrorCode, boolean>> = Objec
   TIMEOUT: true,
   EXTERNAL: false,
   INTERNAL: false,
+  STALE_REF: false,
 });
 
 export type Result<T, E = KoiError> =

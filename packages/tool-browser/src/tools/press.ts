@@ -22,7 +22,8 @@ export function createBrowserPressTool(
         "ArrowDown/ArrowUp (navigate dropdowns and lists), " +
         "Control+a (select all), Control+c/v (copy/paste), Shift+Tab (reverse focus). " +
         "Key names follow Playwright conventions — single keys or combinations with " +
-        'Control, Shift, Alt, Meta separated by "+".',
+        'Control, Shift, Alt, Meta separated by "+". ' +
+        "Key presses may trigger DOM changes: re-snapshot if the page content changes.",
       inputSchema: {
         type: "object",
         properties: {

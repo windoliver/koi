@@ -15,8 +15,11 @@ export function createBrowserSnapshotTool(
       name: `${prefix}_snapshot`,
       description:
         "Capture the current page as an accessibility-tree text snapshot. " +
-        "Interactive elements get [ref=eN] markers. Pass snapshotId back to " +
-        "interaction tools to guard against stale refs.",
+        "Interactive elements get [ref=eN] markers (e.g., [button] Submit [ref=e3]). " +
+        "Always call this before interacting with the page. Pass the returned " +
+        "snapshotId to every interaction tool — if the page changes and a ref " +
+        "becomes stale, you will receive a STALE_REF error telling you to " +
+        "re-snapshot. Loop: snapshot → act → snapshot (after DOM-changing actions).",
       inputSchema: {
         type: "object",
         properties: {

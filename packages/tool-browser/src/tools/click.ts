@@ -18,7 +18,10 @@ export function createBrowserClickTool(
       name: `${prefix}_click`,
       description:
         "Click an element identified by its snapshot ref. " +
-        "Pass snapshotId from the last browser_snapshot call to detect stale refs.",
+        "Always pass snapshotId from the last browser_snapshot call — if the ref " +
+        "is stale you receive STALE_REF, meaning you must call browser_snapshot " +
+        "again before retrying. Clicking may change the DOM: re-snapshot if you " +
+        "need to interact with elements that appear or move after the click.",
       inputSchema: {
         type: "object",
         properties: {
