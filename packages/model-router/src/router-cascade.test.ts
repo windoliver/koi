@@ -346,6 +346,56 @@ describe("cascade strategy", () => {
     expect(result.value.content).toBe("cheap answer");
   });
 
+  test("classifier-based streaming selects correct starting tier", async () => {
+    const evaluator: CascadeEvaluator = () => ({ confidence: 0.9 });
+    const cheapStreamFn = mock(async function* (): AsyncGenerator<StreamChunk> {
+      yield { kind: "text_delta", text: "cheap stream" };
+      yield { kind: "finish", reason: "completed" };
+    });
+    const expensiveStreamFn = mock(async function* (): AsyncGenerator<StreamChunk> {
+      yield { kind: "text_delta", text: "expensive stream" };
+      yield { kind: "finish", reason: "completed" };
+    });
+
+    const classifier: CascadeClassifier = (_req, _tierCount) => ({
+      score: 0.8,
+      confidence: 0.95,
+      tier: "HEAVY",
+      recommendedTierIndex: 1,
+      reason: "test: forced HEAVY",
+    });
+
+    const config = makeCascadeConfig([
+      makeTarget("openai", "gpt-4o-mini"),
+      makeTarget("openai", "gpt-4o"),
+    ]);
+    const adapters = new Map<string, ProviderAdapter>([
+      [
+        "openai",
+        {
+          id: "openai",
+          complete: () => Promise.resolve(makeResponse("hi", "gpt-4o")),
+          stream: (req: ModelRequest) =>
+            req.model === "gpt-4o-mini" ? cheapStreamFn() : expensiveStreamFn(),
+        },
+      ],
+    ]);
+
+    const router = createModelRouter(config, adapters, { evaluator, classifier });
+
+    const chunks: StreamChunk[] = [];
+    for await (const chunk of router.routeStream(makeRequest())) {
+      chunks.push(chunk);
+    }
+
+    const textChunk = chunks.find((c) => c.kind === "text_delta");
+    if (textChunk?.kind === "text_delta") {
+      expect(textChunk.text).toBe("expensive stream");
+    }
+    expect(cheapStreamFn).not.toHaveBeenCalled();
+    expect(expensiveStreamFn).toHaveBeenCalledTimes(1);
+  });
+
   test("classifier + evaluator together: classifier starts at MEDIUM, evaluator escalates", async () => {
     let evalCount = 0;
     const evaluator: CascadeEvaluator = () => {

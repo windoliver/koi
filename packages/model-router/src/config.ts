@@ -22,6 +22,23 @@ export interface ModelTargetConfig {
   readonly weight?: number;
   readonly enabled?: boolean;
   readonly adapterConfig: ProviderAdapterConfig;
+  readonly capabilities?: ModelCapabilitiesPartial | undefined;
+  readonly costPerInputToken?: number | undefined;
+  readonly costPerOutputToken?: number | undefined;
+}
+
+export interface ModelCapabilitiesPartial {
+  readonly streaming?: boolean | undefined;
+  readonly functionCalling?: boolean | undefined;
+  readonly vision?: boolean | undefined;
+  readonly jsonMode?: boolean | undefined;
+  readonly maxContextTokens?: number | undefined;
+  readonly maxOutputTokens?: number | undefined;
+}
+
+export interface HealthProbeConfig {
+  readonly intervalMs?: number | undefined;
+  readonly onlyLocal?: boolean | undefined;
 }
 
 export interface ModelRouterConfig {
@@ -30,6 +47,7 @@ export interface ModelRouterConfig {
   readonly retry?: Partial<RetryConfig>;
   readonly circuitBreaker?: Partial<CircuitBreakerConfig>;
   readonly cascade?: CascadeConfig;
+  readonly healthProbe?: HealthProbeConfig;
 }
 
 export interface ResolvedRouterConfig {
@@ -38,6 +56,7 @@ export interface ResolvedRouterConfig {
   readonly retry: RetryConfig;
   readonly circuitBreaker: CircuitBreakerConfig;
   readonly cascade?: ResolvedCascadeConfig;
+  readonly healthProbe?: HealthProbeConfig;
 }
 
 export interface ResolvedTargetConfig {
@@ -46,6 +65,9 @@ export interface ResolvedTargetConfig {
   readonly weight: number;
   readonly enabled: boolean;
   readonly adapterConfig: ProviderAdapterConfig;
+  readonly capabilities?: ModelCapabilitiesPartial | undefined;
+  readonly costPerInputToken?: number | undefined;
+  readonly costPerOutputToken?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -53,11 +75,22 @@ export interface ResolvedTargetConfig {
 // ---------------------------------------------------------------------------
 
 const adapterConfigSchema = z.object({
-  apiKey: z.string().min(1),
+  apiKey: z.string().min(1).optional(),
   baseUrl: z.string().url().optional(),
   timeoutMs: z.number().int().positive().optional(),
   headers: z.record(z.string(), z.string()).optional(),
 });
+
+const capabilitiesSchema = z
+  .object({
+    streaming: z.boolean().optional(),
+    functionCalling: z.boolean().optional(),
+    vision: z.boolean().optional(),
+    jsonMode: z.boolean().optional(),
+    maxContextTokens: z.number().int().positive().optional(),
+    maxOutputTokens: z.number().int().positive().optional(),
+  })
+  .optional();
 
 const targetSchema = z.object({
   provider: z.string().min(1),
@@ -65,6 +98,9 @@ const targetSchema = z.object({
   weight: z.number().min(0).max(1).optional(),
   enabled: z.boolean().optional(),
   adapterConfig: adapterConfigSchema,
+  capabilities: capabilitiesSchema,
+  costPerInputToken: z.number().min(0).optional(),
+  costPerOutputToken: z.number().min(0).optional(),
 });
 
 const retrySchema = z.object({
@@ -97,6 +133,13 @@ const cascadeSchema = z.object({
   evaluatorTimeoutMs: z.number().int().positive().optional(),
 });
 
+const healthProbeSchema = z
+  .object({
+    intervalMs: z.number().int().positive().optional(),
+    onlyLocal: z.boolean().optional(),
+  })
+  .optional();
+
 const routerConfigSchema = z.object({
   targets: z.array(targetSchema).min(1),
   strategy: z.union([
@@ -108,6 +151,7 @@ const routerConfigSchema = z.object({
   retry: retrySchema.optional(),
   circuitBreaker: circuitBreakerSchema.optional(),
   cascade: cascadeSchema.optional(),
+  healthProbe: healthProbeSchema,
 });
 
 // ---------------------------------------------------------------------------
@@ -134,6 +178,9 @@ export function validateRouterConfig(raw: unknown): Result<ResolvedRouterConfig,
       timeoutMs: t.adapterConfig.timeoutMs,
       headers: t.adapterConfig.headers,
     },
+    ...(t.capabilities !== undefined ? { capabilities: t.capabilities } : {}),
+    ...(t.costPerInputToken !== undefined ? { costPerInputToken: t.costPerInputToken } : {}),
+    ...(t.costPerOutputToken !== undefined ? { costPerOutputToken: t.costPerOutputToken } : {}),
   }));
 
   const resolvedRetry: RetryConfig = {
@@ -210,6 +257,7 @@ export function validateRouterConfig(raw: unknown): Result<ResolvedRouterConfig,
       retry: resolvedRetry,
       circuitBreaker: resolvedCB,
       ...(resolvedCascade !== undefined ? { cascade: resolvedCascade } : {}),
+      ...(config.healthProbe !== undefined ? { healthProbe: config.healthProbe } : {}),
     },
   };
 }

@@ -26,6 +26,10 @@ export function createCascadeMetricsTracker(
   const tierMetrics = new Map<string, TierMetricsSnapshot>();
   const tierConfigs = new Map<string, CascadeTierConfig>();
 
+  // Precompute max cost rates — tiers is immutable, so this is stable
+  let maxInputRate = 0;
+  let maxOutputRate = 0;
+
   for (const tier of tiers) {
     tierMetrics.set(tier.targetId, {
       requests: 0,
@@ -34,6 +38,11 @@ export function createCascadeMetricsTracker(
       totalOutputTokens: 0,
     });
     tierConfigs.set(tier.targetId, tier);
+
+    const inputRate = tier.costPerInputToken ?? 0;
+    const outputRate = tier.costPerOutputToken ?? 0;
+    if (inputRate > maxInputRate) maxInputRate = inputRate;
+    if (outputRate > maxOutputRate) maxOutputRate = outputRate;
   }
 
   return {
@@ -53,6 +62,8 @@ export function createCascadeMetricsTracker(
       let totalRequests = 0;
       let totalEscalations = 0;
       let totalEstimatedCost = 0;
+      let totalInputTokens = 0;
+      let totalOutputTokens = 0;
 
       const tierSnapshots: TierCostMetrics[] = [];
 
@@ -77,13 +88,20 @@ export function createCascadeMetricsTracker(
         totalRequests += metrics.requests;
         totalEscalations += metrics.escalations;
         totalEstimatedCost += estimatedCost;
+        totalInputTokens += metrics.totalInputTokens;
+        totalOutputTokens += metrics.totalOutputTokens;
       }
+
+      // Cost savings: hypothetical cost if all tokens used the most expensive tier
+      const hypotheticalCost = totalInputTokens * maxInputRate + totalOutputTokens * maxOutputRate;
+      const estimatedCostSavings = Math.max(hypotheticalCost - totalEstimatedCost, 0);
 
       return {
         tiers: tierSnapshots,
         totalRequests,
         totalEscalations,
         totalEstimatedCost,
+        estimatedCostSavings,
       };
     },
   };

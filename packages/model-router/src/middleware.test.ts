@@ -29,6 +29,7 @@ function makeRouter(routeFn: ModelRouter["route"]): ModelRouter {
       totalFailures: 0,
       requestsByTarget: {},
       failuresByTarget: {},
+      totalEstimatedCost: 0,
     }),
     dispose: () => {},
   };

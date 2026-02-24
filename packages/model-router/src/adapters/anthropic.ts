@@ -8,6 +8,14 @@
 import type { KoiError, ModelRequest, ModelResponse } from "@koi/core";
 import { normalizeToPlainText } from "../normalize.js";
 import type { ProviderAdapter, ProviderAdapterConfig, StreamChunk } from "../provider-adapter.js";
+import {
+  fetchWithTimeout,
+  handleAbortError,
+  handleStreamAbortError,
+  parseRetryAfter,
+  parseSSEStream,
+  streamFetch,
+} from "./shared.js";
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com";
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -95,6 +103,15 @@ export function createAnthropicAdapter(config: ProviderAdapterConfig): ProviderA
   const baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
+  function buildHeaders(): Record<string, string> {
+    return {
+      "Content-Type": "application/json",
+      ...(config.apiKey !== undefined ? { "x-api-key": config.apiKey } : {}),
+      "anthropic-version": ANTHROPIC_VERSION,
+      ...config.headers,
+    };
+  }
+
   return {
     id: "anthropic",
 
@@ -102,69 +119,62 @@ export function createAnthropicAdapter(config: ProviderAdapterConfig): ProviderA
       const body = toAnthropicRequest(request);
       const url = `${baseUrl}/v1/messages`;
 
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      // Compose caller signal with local timeout controller
-      const effectiveSignal =
-        request.signal !== undefined
-          ? AbortSignal.any([request.signal, controller.signal])
-          : controller.signal;
-
+      let clearTimer: (() => void) | undefined;
       try {
-        const response = await fetch(url, {
+        const result = await fetchWithTimeout({
+          url,
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-api-key": config.apiKey,
-            "anthropic-version": ANTHROPIC_VERSION,
-            ...config.headers,
-          },
+          headers: buildHeaders(),
           body: JSON.stringify(body),
-          signal: effectiveSignal,
+          timeoutMs,
+          signal: request.signal,
         });
+        clearTimer = result.clearTimer;
 
-        if (!response.ok) {
-          const errorBody = await response.text().catch(() => "");
+        if (!result.response.ok) {
+          const errorBody = await result.response.text().catch(() => "");
           let errorType: string | undefined;
           try {
-            const parsed = JSON.parse(errorBody) as { readonly error?: { readonly type?: string } };
+            const parsed = JSON.parse(errorBody) as {
+              readonly error?: { readonly type?: string };
+            };
             errorType = parsed.error?.type;
           } catch {
             // ignore parse error
           }
 
-          const retryAfterStr = response.headers.get("retry-after");
-          const retryAfterMs = retryAfterStr
-            ? Math.ceil(Number.parseFloat(retryAfterStr) * 1000)
-            : undefined;
-
+          const retryAfterMs = parseRetryAfter(result.response.headers);
           const retryAfterValue =
-            retryAfterMs && !Number.isNaN(retryAfterMs) ? retryAfterMs : undefined;
+            retryAfterMs !== undefined && !Number.isNaN(retryAfterMs) ? retryAfterMs : undefined;
+
           throw {
-            code: mapAnthropicError(response.status, errorType),
-            message: `Anthropic API error ${response.status}: ${errorBody}`,
-            retryable: response.status === 429 || response.status === 529 || response.status >= 500,
+            code: mapAnthropicError(result.response.status, errorType),
+            message: `Anthropic API error ${result.response.status}: ${errorBody}`,
+            retryable:
+              result.response.status === 429 ||
+              result.response.status === 529 ||
+              result.response.status >= 500,
             ...(retryAfterValue !== undefined && { retryAfterMs: retryAfterValue }),
-            context: { statusCode: response.status, errorType },
+            context: { statusCode: result.response.status, errorType },
           } satisfies KoiError;
         }
 
-        const json = (await response.json()) as AnthropicResponse;
+        const json = (await result.response.json()) as AnthropicResponse;
         return fromAnthropicResponse(json);
       } catch (error: unknown) {
-        if (error instanceof DOMException && error.name === "AbortError") {
-          const isCallerAbort = request.signal?.aborted === true;
-          throw {
-            code: isCallerAbort ? "EXTERNAL" : "TIMEOUT",
-            message: isCallerAbort
-              ? "Anthropic request cancelled"
-              : `Anthropic request timed out after ${timeoutMs}ms`,
-            retryable: !isCallerAbort,
-          } satisfies KoiError;
+        // KoiError objects thrown above should pass through
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          "message" in error &&
+          "retryable" in error
+        ) {
+          throw error;
         }
-        throw error;
+        throw handleAbortError(error, "Anthropic", timeoutMs, request.signal);
       } finally {
-        clearTimeout(timer);
+        clearTimer?.();
       }
     },
 
@@ -172,65 +182,35 @@ export function createAnthropicAdapter(config: ProviderAdapterConfig): ProviderA
       const body = { ...toAnthropicRequest(request), stream: true };
       const url = `${baseUrl}/v1/messages`;
 
-      const controller = new AbortController();
-      // Idle timeout: resets on each chunk so long-running healthy streams aren't killed
-      let timer = setTimeout(() => controller.abort(), timeoutMs);
-      const resetTimer = (): void => {
-        clearTimeout(timer);
-        timer = setTimeout(() => controller.abort(), timeoutMs);
-      };
-      // Compose caller signal with local timeout controller
-      const effectiveSignal =
-        request.signal !== undefined
-          ? AbortSignal.any([request.signal, controller.signal])
-          : controller.signal;
-
+      let clearTimer: (() => void) | undefined;
       try {
-        const response = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-api-key": config.apiKey,
-            "anthropic-version": ANTHROPIC_VERSION,
-            ...config.headers,
-          },
+        const result = await streamFetch({
+          url,
+          headers: buildHeaders(),
           body: JSON.stringify(body),
-          signal: effectiveSignal,
+          timeoutMs,
+          signal: request.signal,
         });
+        clearTimer = result.clearTimer;
 
-        if (!response.ok) {
-          const errorBody = await response.text().catch(() => "");
+        if (!result.response.ok) {
+          const errorBody = await result.response.text().catch(() => "");
           yield {
             kind: "error",
-            message: `Anthropic API error ${response.status}: ${errorBody}`,
-            statusCode: response.status,
+            message: `Anthropic API error ${result.response.status}: ${errorBody}`,
+            statusCode: result.response.status,
           };
           return;
         }
 
-        if (!response.body) {
+        if (!result.response.body) {
           yield { kind: "error", message: "No response body for streaming" };
           return;
         }
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          resetTimer();
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || !trimmed.startsWith("data: ")) continue;
-            const data = trimmed.slice(6);
-
+        const chunks = parseSSEStream<StreamChunk>(
+          result.response.body,
+          (data) => {
             try {
               const event = JSON.parse(data) as {
                 readonly type: string;
@@ -239,34 +219,28 @@ export function createAnthropicAdapter(config: ProviderAdapterConfig): ProviderA
               };
 
               if (event.type === "content_block_delta" && event.delta?.text) {
-                yield { kind: "text_delta", text: event.delta.text };
-              } else if (event.type === "message_delta") {
-                yield { kind: "finish", reason: "completed" };
-              } else if (event.type === "message_start" && event.usage) {
-                // message_start contains initial usage (input tokens)
+                return { kind: "text_delta", text: event.delta.text };
               }
+              if (event.type === "message_delta") {
+                return { kind: "finish", reason: "completed" };
+              }
+              // message_start contains initial usage (input tokens) — no chunk emitted
             } catch {
               // Ignore malformed SSE data
             }
-          }
+            return undefined;
+          },
+          result.resetTimer,
+        );
+
+        for await (const chunk of chunks) {
+          yield chunk;
         }
       } catch (error: unknown) {
-        if (error instanceof DOMException && error.name === "AbortError") {
-          const isCallerAbort = request.signal?.aborted === true;
-          yield {
-            kind: "error",
-            message: isCallerAbort
-              ? "Anthropic stream cancelled"
-              : `Anthropic stream idle timeout after ${timeoutMs}ms`,
-          };
-        } else {
-          yield {
-            kind: "error",
-            message: error instanceof Error ? error.message : String(error),
-          };
-        }
+        const message = handleStreamAbortError(error, "Anthropic", timeoutMs, request.signal);
+        yield { kind: "error", message };
       } finally {
-        clearTimeout(timer);
+        clearTimer?.();
       }
     },
   };

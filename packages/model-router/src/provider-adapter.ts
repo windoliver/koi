@@ -8,7 +8,7 @@
 import type { JsonObject, ModelRequest, ModelResponse } from "@koi/core";
 
 export interface ProviderAdapterConfig {
-  readonly apiKey: string;
+  readonly apiKey?: string | undefined;
   readonly baseUrl?: string | undefined;
   readonly timeoutMs?: number | undefined;
   readonly headers?: Readonly<Record<string, string>> | undefined;

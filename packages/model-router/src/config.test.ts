@@ -130,13 +130,13 @@ describe("validateRouterConfig", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("rejects target without apiKey", () => {
+  test("accepts target without apiKey (for local providers)", () => {
     const result = validateRouterConfig({
-      targets: [{ provider: "openai", model: "gpt-4o", adapterConfig: {} }],
+      targets: [{ provider: "ollama", model: "llama3.2", adapterConfig: {} }],
       strategy: "fallback",
     });
 
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(true);
   });
 
   test("rejects null input", () => {
@@ -365,5 +365,141 @@ describe("cascade config", () => {
     expect(result.value.cascade?.maxEscalations).toBe(5);
     expect(result.value.cascade?.budgetLimitTokens).toBe(100_000);
     expect(result.value.cascade?.evaluatorTimeoutMs).toBe(5_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// capabilities config
+// ---------------------------------------------------------------------------
+
+describe("capabilities config", () => {
+  test("accepts target with capabilities", () => {
+    const result = validateRouterConfig({
+      targets: [
+        {
+          ...validTarget,
+          capabilities: {
+            streaming: true,
+            functionCalling: true,
+            vision: false,
+            maxContextTokens: 128_000,
+          },
+        },
+      ],
+      strategy: "fallback",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected ok");
+    expect(result.value.targets[0]?.capabilities?.streaming).toBe(true);
+    expect(result.value.targets[0]?.capabilities?.vision).toBe(false);
+    expect(result.value.targets[0]?.capabilities?.maxContextTokens).toBe(128_000);
+  });
+
+  test("capabilities are optional (not present by default)", () => {
+    const result = validateRouterConfig({
+      targets: [validTarget],
+      strategy: "fallback",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected ok");
+    expect(result.value.targets[0]?.capabilities).toBeUndefined();
+  });
+
+  test("rejects invalid capability values", () => {
+    const result = validateRouterConfig({
+      targets: [
+        {
+          ...validTarget,
+          capabilities: { maxContextTokens: -1 },
+        },
+      ],
+      strategy: "fallback",
+    });
+
+    expect(result.ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// health probe config
+// ---------------------------------------------------------------------------
+
+describe("health probe config", () => {
+  test("accepts health probe configuration", () => {
+    const result = validateRouterConfig({
+      targets: [validTarget],
+      strategy: "fallback",
+      healthProbe: {
+        intervalMs: 15_000,
+        onlyLocal: true,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected ok");
+    expect(result.value.healthProbe?.intervalMs).toBe(15_000);
+    expect(result.value.healthProbe?.onlyLocal).toBe(true);
+  });
+
+  test("health probe is optional", () => {
+    const result = validateRouterConfig({
+      targets: [validTarget],
+      strategy: "fallback",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected ok");
+    expect(result.value.healthProbe).toBeUndefined();
+  });
+
+  test("accepts empty health probe (uses defaults)", () => {
+    const result = validateRouterConfig({
+      targets: [validTarget],
+      strategy: "fallback",
+      healthProbe: {},
+    });
+
+    expect(result.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cost config
+// ---------------------------------------------------------------------------
+
+describe("cost config", () => {
+  test("accepts costPerInputToken and costPerOutputToken on targets", () => {
+    const result = validateRouterConfig({
+      targets: [{ ...validTarget, costPerInputToken: 0.001, costPerOutputToken: 0.002 }],
+      strategy: "fallback",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected ok");
+    expect(result.value.targets[0]?.costPerInputToken).toBe(0.001);
+    expect(result.value.targets[0]?.costPerOutputToken).toBe(0.002);
+  });
+
+  test("rejects negative cost values", () => {
+    const result = validateRouterConfig({
+      targets: [{ ...validTarget, costPerInputToken: -0.001 }],
+      strategy: "fallback",
+    });
+
+    expect(result.ok).toBe(false);
+  });
+
+  test("cost fields are optional", () => {
+    const result = validateRouterConfig({
+      targets: [validTarget],
+      strategy: "fallback",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected ok");
+    expect(result.value.targets[0]?.costPerInputToken).toBeUndefined();
+    expect(result.value.targets[0]?.costPerOutputToken).toBeUndefined();
   });
 });

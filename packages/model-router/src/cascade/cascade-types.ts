@@ -104,6 +104,7 @@ export interface CascadeCostMetrics {
   readonly totalRequests: number;
   readonly totalEscalations: number;
   readonly totalEstimatedCost: number;
+  readonly estimatedCostSavings: number;
 }
 
 // ---------------------------------------------------------------------------

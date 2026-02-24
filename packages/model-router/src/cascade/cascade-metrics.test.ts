@@ -120,4 +120,60 @@ describe("createCascadeMetricsTracker", () => {
     const metrics = tracker.getMetrics();
     expect(metrics.totalRequests).toBe(0);
   });
+
+  // ---------------------------------------------------------------------------
+  // estimatedCostSavings
+  // ---------------------------------------------------------------------------
+
+  test("computes estimatedCostSavings when cheap tier handles most requests", () => {
+    const tracker = createCascadeMetricsTracker([
+      { targetId: "openai:gpt-4o-mini", costPerInputToken: 0.001, costPerOutputToken: 0.002 },
+      { targetId: "openai:gpt-4o", costPerInputToken: 0.01, costPerOutputToken: 0.03 },
+    ]);
+
+    // Cheap tier handles a request
+    tracker.record(
+      "openai:gpt-4o-mini",
+      makeResponse({ inputTokens: 1000, outputTokens: 500 }),
+      false,
+    );
+
+    const metrics = tracker.getMetrics();
+    // Actual cost: 1000 * 0.001 + 500 * 0.002 = 1.0 + 1.0 = 2.0
+    // Hypothetical (all at max rate): 1000 * 0.01 + 500 * 0.03 = 10.0 + 15.0 = 25.0
+    // Savings: 25.0 - 2.0 = 23.0
+    expect(metrics.estimatedCostSavings).toBeCloseTo(23.0, 5);
+  });
+
+  test("estimatedCostSavings is zero when all requests go to most expensive tier", () => {
+    const tracker = createCascadeMetricsTracker([
+      { targetId: "openai:gpt-4o-mini", costPerInputToken: 0.001, costPerOutputToken: 0.002 },
+      { targetId: "openai:gpt-4o", costPerInputToken: 0.01, costPerOutputToken: 0.03 },
+    ]);
+
+    // Expensive tier handles the request
+    tracker.record("openai:gpt-4o", makeResponse({ inputTokens: 1000, outputTokens: 500 }), false);
+
+    const metrics = tracker.getMetrics();
+    // Actual cost: 1000 * 0.01 + 500 * 0.03 = 10.0 + 15.0 = 25.0
+    // Hypothetical: same = 25.0
+    // Savings: 0
+    expect(metrics.estimatedCostSavings).toBeCloseTo(0, 5);
+  });
+
+  test("estimatedCostSavings is zero when no cost config set", () => {
+    const tracker = createCascadeMetricsTracker([
+      { targetId: "openai:gpt-4o-mini" },
+      { targetId: "openai:gpt-4o" },
+    ]);
+
+    tracker.record(
+      "openai:gpt-4o-mini",
+      makeResponse({ inputTokens: 1000, outputTokens: 500 }),
+      false,
+    );
+
+    const metrics = tracker.getMetrics();
+    expect(metrics.estimatedCostSavings).toBe(0);
+  });
 });
