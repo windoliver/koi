@@ -15,4 +15,5 @@ export {
 } from "./config.js";
 export type { ResolvedContent, ResolveOptions } from "./resolve.js";
 export { resolveSoulContent, resolveUserContent } from "./resolve.js";
+export type { SoulMiddleware } from "./soul.js";
 export { createSoulMiddleware, enrichRequest } from "./soul.js";

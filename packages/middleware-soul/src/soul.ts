@@ -21,6 +21,22 @@ import {
 import { resolveSoulContent, resolveUserContent } from "./resolve.js";
 
 /**
+ * Extended middleware with a `reload()` method for HITL-approved soul updates.
+ *
+ * When forge + permissions approves a write to SOUL.md/USER.md, call `reload()`
+ * to re-resolve all markdown content from disk. Without `reload()`, the closure
+ * cache protects the running agent against unauthorized modifications.
+ */
+export interface SoulMiddleware extends KoiMiddleware {
+  /**
+   * Re-resolves all soul and user content from original source paths.
+   * Call after HITL-approved writes to personality/user markdown files.
+   * Updates the running middleware atomically — takes effect on next model call.
+   */
+  readonly reload: () => Promise<void>;
+}
+
+/**
  * Enriches a model request by prepending a soul system message.
  * Pure function — does not mutate the input request.
  */
@@ -47,71 +63,102 @@ function buildSoulMessage(soulText: string, userText: string): InboundMessage | 
 }
 
 /**
+ * Resolves soul content from options, returning text and warnings.
+ * Shared between initial load and reload.
+ */
+async function resolveSoul(
+  options: CreateSoulOptions,
+): Promise<{ readonly text: string; readonly warnings: readonly string[] }> {
+  if (options.soul === undefined) return { text: "", warnings: [] };
+  const input = extractInput(options.soul);
+  const maxTokens = extractMaxTokens(options.soul, DEFAULT_SOUL_MAX_TOKENS);
+  const resolved = await resolveSoulContent({
+    input,
+    maxTokens,
+    label: "soul",
+    basePath: options.basePath,
+  });
+  return { text: resolved.text, warnings: resolved.warnings };
+}
+
+/**
+ * Resolves user content from options, returning text and warnings.
+ * Shared between initial load, reload, and per-call refresh.
+ */
+async function resolveUser(
+  options: CreateSoulOptions,
+): Promise<{ readonly text: string; readonly warnings: readonly string[] }> {
+  if (options.user === undefined) return { text: "", warnings: [] };
+  const input = extractInput(options.user);
+  const maxTokens = extractMaxTokens(options.user, DEFAULT_USER_MAX_TOKENS);
+  const resolved = await resolveUserContent({
+    input,
+    maxTokens,
+    label: "user",
+    basePath: options.basePath,
+  });
+  return { text: resolved.text, warnings: resolved.warnings };
+}
+
+function emitWarnings(warnings: readonly string[]): void {
+  for (const w of warnings) {
+    console.warn(`[soul middleware] ${w}`);
+  }
+}
+
+/**
  * Creates a soul middleware that injects agent personality and user context
  * into model calls as a system message prefix.
  *
- * Soul content is resolved once at factory time and cached.
- * User content is resolved once unless `refreshUser: true`, in which case
- * it is re-read on each model call.
+ * Returns `SoulMiddleware` — a `KoiMiddleware` with an additional `reload()` method.
+ * Call `reload()` after HITL-approved writes to soul/user markdown files.
+ *
+ * Soul and user content are resolved at factory time and cached in the closure.
+ * User content can optionally be refreshed per-call with `refreshUser: true`.
+ * Both soul and user are re-resolved atomically when `reload()` is called.
  */
-export async function createSoulMiddleware(options: CreateSoulOptions): Promise<KoiMiddleware> {
-  const { basePath, refreshUser = false } = options;
+export async function createSoulMiddleware(options: CreateSoulOptions): Promise<SoulMiddleware> {
+  const { refreshUser = false } = options;
 
-  // Resolve soul content (cached for lifetime of middleware)
-  let soulText = "";
-  if (options.soul !== undefined) {
-    const soulInput = extractInput(options.soul);
-    const soulMaxTokens = extractMaxTokens(options.soul, DEFAULT_SOUL_MAX_TOKENS);
-    const resolved = await resolveSoulContent({
-      input: soulInput,
-      maxTokens: soulMaxTokens,
-      label: "soul",
-      basePath,
-    });
-    soulText = resolved.text;
-    for (const w of resolved.warnings) {
-      console.warn(`[soul middleware] ${w}`);
-    }
-  }
+  // Mutable closure state — updated atomically by reload()
+  // let: reassigned by reload()
+  let soulText = ""; // let: reassigned by reload()
+  let userText = ""; // let: reassigned by reload()
+  let cachedMessage: InboundMessage | undefined; // let: reassigned by reload()
 
-  // Resolve user content (may be refreshed per-call)
-  let userText = "";
-  if (options.user !== undefined) {
-    const userInput = extractInput(options.user);
-    const userMaxTokens = extractMaxTokens(options.user, DEFAULT_USER_MAX_TOKENS);
-    const resolved = await resolveUserContent({
-      input: userInput,
-      maxTokens: userMaxTokens,
-      label: "user",
-      basePath,
-    });
-    userText = resolved.text;
-    for (const w of resolved.warnings) {
-      console.warn(`[soul middleware] ${w}`);
-    }
-  }
+  // Initial resolution
+  const soulResult = await resolveSoul(options);
+  soulText = soulResult.text;
+  emitWarnings(soulResult.warnings);
 
-  // Pre-build message for non-refresh case
-  const cachedMessage = buildSoulMessage(soulText, userText);
+  const userResult = await resolveUser(options);
+  userText = userResult.text;
+  emitWarnings(userResult.warnings);
+
+  cachedMessage = buildSoulMessage(soulText, userText);
 
   async function getSoulMessage(): Promise<InboundMessage | undefined> {
     if (!refreshUser || options.user === undefined) return cachedMessage;
 
-    // Re-resolve user content
-    const userInput = extractInput(options.user);
-    const userMaxTokens = extractMaxTokens(options.user, DEFAULT_USER_MAX_TOKENS);
-    const resolved = await resolveUserContent({
-      input: userInput,
-      maxTokens: userMaxTokens,
-      label: "user",
-      basePath,
-    });
+    // Re-resolve user content only (soul stays cached until reload())
+    const resolved = await resolveUser(options);
     return buildSoulMessage(soulText, resolved.text);
   }
 
   return {
     name: "soul",
     priority: 500,
+
+    async reload(): Promise<void> {
+      const [newSoul, newUser] = await Promise.all([resolveSoul(options), resolveUser(options)]);
+      emitWarnings(newSoul.warnings);
+      emitWarnings(newUser.warnings);
+
+      // Atomic update — both change together
+      soulText = newSoul.text;
+      userText = newUser.text;
+      cachedMessage = buildSoulMessage(soulText, userText);
+    },
 
     async wrapModelCall(
       _ctx: TurnContext,
