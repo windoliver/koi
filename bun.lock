@@ -664,6 +664,15 @@
         "zod": "4.3.6",
       },
     },
+    "packages/webhook-delivery": {
+      "name": "@koi/webhook-delivery",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+    },
     "tests/e2e": {
       "name": "@koi/e2e-contracts",
       "version": "0.0.0",
@@ -1026,6 +1035,8 @@
     "@koi/tracing": ["@koi/tracing@workspace:packages/tracing"],
 
     "@koi/validation": ["@koi/validation@workspace:packages/validation"],
+
+    "@koi/webhook-delivery": ["@koi/webhook-delivery@workspace:packages/webhook-delivery"],
 
     "@mariozechner/pi-agent-core": ["@mariozechner/pi-agent-core@0.54.0", "", { "dependencies": { "@mariozechner/pi-ai": "^0.54.0" } }, "sha512-LsPoudpOJLj7JjSpjlAdLM5uA2iy8nP+4nA6Si1ASD3tMqXdjHzNaKNloGSODKJO+3O3yhwPMSbuk78CCnZteQ=="],
 

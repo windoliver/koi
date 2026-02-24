@@ -2,8 +2,8 @@
 
 exports[`@koi/model-router API surface . has stable type surface 1`] = `
 "import { JsonObject, ModelRequest, ModelResponse, KoiError, Result, KoiMiddleware } from '@koi/core';
-import { RetryConfig } from '@koi/errors';
-export { RetryConfig, computeBackoff, withRetry } from '@koi/errors';
+import { RetryConfig, CircuitBreakerConfig, CircuitBreaker, CircuitBreakerSnapshot } from '@koi/errors';
+export { CircuitBreaker, CircuitBreakerConfig, CircuitBreakerSnapshot, CircuitState, RetryConfig, computeBackoff, createCircuitBreaker, withRetry } from '@koi/errors';
 
 /**
  * Provider adapter interface for multi-provider LLM routing.
@@ -421,45 +421,6 @@ interface WeightedEvaluator {
 declare function composeEvaluators(evaluators: readonly (CascadeEvaluator | WeightedEvaluator)[], strategy?: CompositionStrategy): CascadeEvaluator;
 
 /**
- * Circuit breaker state machine with fixed-size ring buffer.
- *
- * Tracks failure rates per provider and prevents traffic to unhealthy providers.
- * Uses encapsulated mutable state with immutable public snapshots.
- *
- * States: CLOSED (normal) → OPEN (failing) → HALF_OPEN (probing) → CLOSED
- *
- * Note: assumes single-threaded runtime (Bun/Node). Synchronous state operations
- * are atomic between await points — no mutex needed.
- */
-type CircuitState = "CLOSED" | "OPEN" | "HALF_OPEN";
-interface CircuitBreakerConfig {
-    readonly failureThreshold: number;
-    readonly cooldownMs: number;
-    readonly failureWindowMs: number;
-    readonly failureStatusCodes: readonly number[];
-}
-interface CircuitBreakerSnapshot {
-    readonly state: CircuitState;
-    readonly failureCount: number;
-    readonly lastFailureAt: number | undefined;
-    readonly lastTransitionAt: number;
-}
-interface CircuitBreaker {
-    readonly isAllowed: () => boolean;
-    readonly recordSuccess: () => CircuitBreakerSnapshot;
-    readonly recordFailure: (statusCode?: number) => CircuitBreakerSnapshot;
-    readonly getSnapshot: () => CircuitBreakerSnapshot;
-    readonly reset: () => void;
-}
-/**
- * Creates a circuit breaker with encapsulated mutable state.
- *
- * @param config - Circuit breaker configuration
- * @param clock - Injectable clock for deterministic testing
- */
-declare function createCircuitBreaker(config?: CircuitBreakerConfig, clock?: () => number): CircuitBreaker;
-
-/**
  * Model router configuration types and Zod validation.
  */
 
@@ -607,6 +568,6 @@ declare function createModelRouter(config: ResolvedRouterConfig, adapters: Reado
  */
 declare function createModelRouterMiddleware(router: ModelRouter): KoiMiddleware;
 
-export { type CascadeAttempt, type CascadeClassifier, type CascadeConfig, type CascadeCostMetrics, type CascadeEvaluationResult, type CascadeEvaluator, type CascadeResult, type CascadeTierConfig, type CircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerSnapshot, type CircuitState, type ClassificationResult, type ComplexityClassifierOptions, type ComplexityTier, type CompositionStrategy, type DimensionKey, type DiscoverOptions, type DiscoveredProvider, type FallbackAttempt, type FallbackResult, type FallbackTarget, type FetchWithTimeoutOptions, type FetchWithTimeoutResult, type HealthProbeConfig, type KeywordEvaluatorOptions, type LMStudioAdapterConfig, type LengthHeuristicOptions, type LocalProviderKind, type ModelCapabilitiesPartial, type ModelRouter, type ModelRouterConfig, type ModelRouterOptions, type ModelTargetConfig, type OllamaAdapterConfig, type OpenAICompatibleConfig, type OpenRouterAdapterConfig, type ProviderAdapter, type ProviderAdapterConfig, type ResolvedCascadeConfig, type ResolvedRouterConfig, type RouterMetrics, type RoutingStrategy, type StreamChunk, type TierCostMetrics, type VLLMAdapterConfig, type VerbalizedEvaluatorOptions, type WeightedEvaluator, composeEvaluators, createAnthropicAdapter, createCascadeMetricsTracker, createCircuitBreaker, createComplexityClassifier, createKeywordEvaluator, createLMStudioAdapter, createLengthHeuristicEvaluator, createModelRouter, createModelRouterMiddleware, createOllamaAdapter, createOpenAIAdapter, createOpenAICompatibleAdapter, createOpenRouterAdapter, createVLLMAdapter, createVerbalizedEvaluator, discoverLocalProviders, fetchWithTimeout, handleAbortError, mapStatusToErrorCode, parseRetryAfter, parseSSEStream, withFallback };
+export { type CascadeAttempt, type CascadeClassifier, type CascadeConfig, type CascadeCostMetrics, type CascadeEvaluationResult, type CascadeEvaluator, type CascadeResult, type CascadeTierConfig, type ClassificationResult, type ComplexityClassifierOptions, type ComplexityTier, type CompositionStrategy, type DimensionKey, type DiscoverOptions, type DiscoveredProvider, type FallbackAttempt, type FallbackResult, type FallbackTarget, type FetchWithTimeoutOptions, type FetchWithTimeoutResult, type HealthProbeConfig, type KeywordEvaluatorOptions, type LMStudioAdapterConfig, type LengthHeuristicOptions, type LocalProviderKind, type ModelCapabilitiesPartial, type ModelRouter, type ModelRouterConfig, type ModelRouterOptions, type ModelTargetConfig, type OllamaAdapterConfig, type OpenAICompatibleConfig, type OpenRouterAdapterConfig, type ProviderAdapter, type ProviderAdapterConfig, type ResolvedCascadeConfig, type ResolvedRouterConfig, type RouterMetrics, type RoutingStrategy, type StreamChunk, type TierCostMetrics, type VLLMAdapterConfig, type VerbalizedEvaluatorOptions, type WeightedEvaluator, composeEvaluators, createAnthropicAdapter, createCascadeMetricsTracker, createComplexityClassifier, createKeywordEvaluator, createLMStudioAdapter, createLengthHeuristicEvaluator, createModelRouter, createModelRouterMiddleware, createOllamaAdapter, createOpenAIAdapter, createOpenAICompatibleAdapter, createOpenRouterAdapter, createVLLMAdapter, createVerbalizedEvaluator, discoverLocalProviders, fetchWithTimeout, handleAbortError, mapStatusToErrorCode, parseRetryAfter, parseSSEStream, withFallback };
 "
 `;

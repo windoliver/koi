@@ -40,11 +40,20 @@ interface RawForge {
   readonly scopePromotion?: RawScopePromotion | undefined;
 }
 
-/** Webhook config in the manifest. */
+/** Webhook config in the manifest (inbound). */
 interface RawWebhook {
   readonly path: string;
   readonly events?: readonly string[] | undefined;
   readonly secret?: string | undefined;
+}
+
+/** Outbound webhook config in the manifest. */
+interface RawOutboundWebhook {
+  readonly url: string;
+  readonly events: readonly string[];
+  readonly secret: string;
+  readonly description?: string | undefined;
+  readonly enabled?: boolean | undefined;
 }
 
 /** Deploy config in the manifest. */
@@ -80,6 +89,7 @@ export interface RawManifest {
   readonly engine?: string | NamedConfig | undefined;
   readonly schedule?: string | undefined;
   readonly webhooks?: readonly RawWebhook[] | undefined;
+  readonly outboundWebhooks?: readonly RawOutboundWebhook[] | undefined;
   readonly forge?: RawForge | undefined;
   readonly context?: unknown;
   readonly soul?: string | RawSoulUserConfig | undefined;
@@ -155,6 +165,29 @@ const webhookSchema = z.object({
 /** Array of webhook configs. */
 const webhooksSchema = z.array(webhookSchema);
 
+/** Valid outbound webhook event kinds. */
+const webhookEventKindSchema = z.enum([
+  "session.started",
+  "session.ended",
+  "tool.failed",
+  "tool.succeeded",
+  "budget.warning",
+  "budget.exhausted",
+  "security.violation",
+]);
+
+/** Single outbound webhook config. */
+const outboundWebhookSchema = z.object({
+  url: z.string().url(),
+  events: z.array(webhookEventKindSchema).min(1),
+  secret: z.string().min(1),
+  description: z.string().optional(),
+  enabled: z.boolean().optional(),
+});
+
+/** Array of outbound webhook configs. */
+const outboundWebhooksSchema = z.array(outboundWebhookSchema);
+
 /** Trust tier values used in forge config. */
 const trustTierSchema = z.enum(["sandbox", "verified", "promoted"]);
 
@@ -214,6 +247,7 @@ export const rawManifestSchema: z.ZodType<RawManifest> = z
     engine: engineSchema.optional(),
     schedule: scheduleSchema.optional(),
     webhooks: webhooksSchema.optional(),
+    outboundWebhooks: outboundWebhooksSchema.optional(),
     forge: forgeSchema.optional(),
     context: z.unknown().optional(),
     soul: soulUserSchema.optional(),

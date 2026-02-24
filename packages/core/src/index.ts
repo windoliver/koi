@@ -372,3 +372,10 @@ export type {
 export { BACKTRACK_REASON_KEY } from "./snapshot-time-travel.js";
 // validation utilities — runtime type guards and validators
 export { isProcessState, validateNonEmpty } from "./validation-utils.js";
+// webhook — outbound webhook delivery contract
+export type {
+  OutboundWebhookConfig,
+  WebhookDeliveryStatus,
+  WebhookEventKind,
+  WebhookPayload,
+} from "./webhook.js";

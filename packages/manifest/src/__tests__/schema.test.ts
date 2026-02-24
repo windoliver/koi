@@ -397,6 +397,142 @@ describe("rawManifestSchema — user", () => {
 });
 
 // ---------------------------------------------------------------------------
+// outboundWebhooks field
+// ---------------------------------------------------------------------------
+
+describe("rawManifestSchema — outboundWebhooks", () => {
+  test("accepts valid outbound webhook array", () => {
+    expect(
+      parse({
+        outboundWebhooks: [
+          {
+            url: "https://hooks.example.com/events",
+            events: ["session.started", "session.ended"],
+            secret: "s3cret",
+          },
+        ],
+      }).success,
+    ).toBe(true);
+  });
+
+  test("accepts all valid event kinds", () => {
+    expect(
+      parse({
+        outboundWebhooks: [
+          {
+            url: "https://hooks.example.com/events",
+            events: [
+              "session.started",
+              "session.ended",
+              "tool.failed",
+              "tool.succeeded",
+              "budget.warning",
+              "budget.exhausted",
+              "security.violation",
+            ],
+            secret: "my-secret",
+          },
+        ],
+      }).success,
+    ).toBe(true);
+  });
+
+  test("accepts optional description and enabled fields", () => {
+    const result = parse({
+      outboundWebhooks: [
+        {
+          url: "https://hooks.example.com/events",
+          events: ["session.started"],
+          secret: "s3cret",
+          description: "Notify Slack on session start",
+          enabled: false,
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const hooks = (result.data as Record<string, unknown>).outboundWebhooks as readonly Record<
+        string,
+        unknown
+      >[];
+      expect(hooks[0]?.description).toBe("Notify Slack on session start");
+      expect(hooks[0]?.enabled).toBe(false);
+    }
+  });
+
+  test("accepts multiple outbound webhooks", () => {
+    expect(
+      parse({
+        outboundWebhooks: [
+          { url: "https://a.com/hook", events: ["session.started"], secret: "key-a" },
+          { url: "https://b.com/hook", events: ["tool.failed"], secret: "key-b" },
+        ],
+      }).success,
+    ).toBe(true);
+  });
+
+  test("rejects invalid URL", () => {
+    expect(
+      parse({
+        outboundWebhooks: [{ url: "not-a-url", events: ["session.started"], secret: "s3cret" }],
+      }).success,
+    ).toBe(false);
+  });
+
+  test("rejects empty events array", () => {
+    expect(
+      parse({
+        outboundWebhooks: [{ url: "https://hooks.example.com", events: [], secret: "s3cret" }],
+      }).success,
+    ).toBe(false);
+  });
+
+  test("rejects invalid event kind", () => {
+    expect(
+      parse({
+        outboundWebhooks: [
+          { url: "https://hooks.example.com", events: ["invalid.event"], secret: "s3cret" },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  test("rejects empty secret", () => {
+    expect(
+      parse({
+        outboundWebhooks: [
+          { url: "https://hooks.example.com", events: ["session.started"], secret: "" },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  test("rejects missing secret", () => {
+    expect(
+      parse({
+        outboundWebhooks: [{ url: "https://hooks.example.com", events: ["session.started"] }],
+      }).success,
+    ).toBe(false);
+  });
+
+  test("rejects outboundWebhooks as string", () => {
+    expect(parse({ outboundWebhooks: "https://hooks.example.com" }).success).toBe(false);
+  });
+
+  test("rejects outboundWebhooks as object (not array)", () => {
+    expect(
+      parse({
+        outboundWebhooks: {
+          url: "https://hooks.example.com",
+          events: ["session.started"],
+          secret: "s3cret",
+        },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // zodToKoiError
 // ---------------------------------------------------------------------------
 
