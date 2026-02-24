@@ -47,6 +47,25 @@ export class KoiRuntimeError extends Error {
     return new KoiRuntimeError(koiError);
   }
 
+  /** Serialize to a JSON-safe object for logging and transport. */
+  toJSON(): {
+    readonly code: KoiErrorCode;
+    readonly message: string;
+    readonly retryable: boolean;
+    readonly context?: JsonObject;
+    readonly retryAfterMs?: number;
+    readonly stack?: string;
+  } {
+    return {
+      code: this.code,
+      message: this.message,
+      retryable: this.retryable,
+      ...(this.context !== undefined ? { context: this.context } : {}),
+      ...(this.retryAfterMs !== undefined ? { retryAfterMs: this.retryAfterMs } : {}),
+      ...(this.stack !== undefined ? { stack: this.stack } : {}),
+    };
+  }
+
   /** Convert to a plain KoiError data object. */
   toKoiError(): KoiError {
     const base: KoiError = {

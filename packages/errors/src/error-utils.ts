@@ -58,3 +58,42 @@ export function swallowError(
   const message = extractMessage(error);
   console.warn(`[${context.package}] ${context.operation} failed (swallowed): ${message}`);
 }
+
+/**
+ * Detect whether an error indicates the model's context window was exceeded.
+ *
+ * Checks provider-specific patterns:
+ * - Anthropic: `type === "invalid_request_error"` + message contains "prompt is too long"
+ * - OpenAI / OpenRouter: `code === "context_length_exceeded"`
+ *
+ * Accepts `unknown` so callers don't need to narrow first.
+ */
+export function isContextOverflowError(error: unknown): boolean {
+  return checkContextOverflow(error, 0);
+}
+
+function checkContextOverflow(error: unknown, depth: number): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  if (depth > 1) return false; // cap nesting to prevent circular-reference stack overflow
+
+  const err = error as Record<string, unknown>;
+
+  // OpenAI / OpenRouter: { code: "context_length_exceeded" }
+  if (err.code === "context_length_exceeded") return true;
+
+  // Anthropic: { type: "invalid_request_error", message: "...prompt is too long..." }
+  if (
+    err.type === "invalid_request_error" &&
+    typeof err.message === "string" &&
+    err.message.includes("prompt is too long")
+  ) {
+    return true;
+  }
+
+  // Nested error.error shape (common in raw API responses)
+  if (typeof err.error === "object" && err.error !== null) {
+    return checkContextOverflow(err.error, depth + 1);
+  }
+
+  return false;
+}

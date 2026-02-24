@@ -116,6 +116,56 @@ describe("toKoiError", () => {
   });
 });
 
+describe("toJSON", () => {
+  test("serializes required fields", () => {
+    const err = KoiRuntimeError.from("VALIDATION", "bad input");
+    const json = err.toJSON();
+    expect(json.code).toBe("VALIDATION");
+    expect(json.message).toBe("bad input");
+    expect(json.retryable).toBe(false);
+    expect(json.stack).toBeDefined();
+  });
+
+  test("includes optional fields when present", () => {
+    const err = KoiRuntimeError.from("TIMEOUT", "slow", {
+      context: { toolId: "search" },
+      retryAfterMs: 5000,
+    });
+    const json = err.toJSON();
+    expect(json.context).toEqual({ toolId: "search" });
+    expect(json.retryAfterMs).toBe(5000);
+  });
+
+  test("omits optional fields when absent", () => {
+    const err = KoiRuntimeError.from("INTERNAL", "oops");
+    const json = err.toJSON();
+    expect("context" in json).toBe(false);
+    expect("retryAfterMs" in json).toBe(false);
+  });
+
+  test("produces valid JSON via JSON.stringify", () => {
+    const err = KoiRuntimeError.from("RATE_LIMIT", "slow down", {
+      context: { remaining: 0 },
+      retryAfterMs: 3000,
+    });
+    const str = JSON.stringify(err);
+    const parsed = JSON.parse(str);
+    expect(parsed.code).toBe("RATE_LIMIT");
+    expect(parsed.message).toBe("slow down");
+    expect(parsed.retryable).toBe(true);
+    expect(parsed.context).toEqual({ remaining: 0 });
+    expect(parsed.retryAfterMs).toBe(3000);
+  });
+
+  test("does not include cause (non-serializable)", () => {
+    const err = KoiRuntimeError.from("EXTERNAL", "fail", {
+      cause: new Error("root"),
+    });
+    const json = err.toJSON();
+    expect("cause" in json).toBe(false);
+  });
+});
+
 describe("catch compatibility", () => {
   test("caught by instanceof Error", () => {
     try {
