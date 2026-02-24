@@ -1,0 +1,87 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-call-limits API surface . has stable type surface 1`] = `
+"import { Result, KoiError } from '@koi/core/errors';
+import { KoiMiddleware } from '@koi/core/middleware';
+
+/**
+ * Call limit types — store interface, exit behaviors, limit info.
+ */
+/**
+ * Key-value counter store for tracking call counts.
+ * Implementations may be sync (in-memory) or async (network).
+ */
+interface CallLimitStore {
+    readonly get: (key: string) => number | Promise<number>;
+    readonly increment: (key: string) => number | Promise<number>;
+    readonly reset: (key: string) => void | Promise<void>;
+}
+/** Exit behavior when model call limit is reached. Both throw RATE_LIMIT. */
+type ModelExitBehavior = "end" | "error";
+/** Exit behavior when tool call limit is reached. */
+type ToolExitBehavior = "continue" | "end" | "error";
+/** Info passed to onLimitReached callbacks. */
+interface LimitReachedInfo {
+    readonly kind: "model" | "tool";
+    readonly sessionId: string;
+    readonly count: number;
+    readonly limit: number;
+    readonly toolId?: string | undefined;
+}
+
+/**
+ * Call limit middleware configuration and validation.
+ */
+
+interface ModelCallLimitConfig {
+    readonly limit: number;
+    readonly store?: CallLimitStore;
+    readonly exitBehavior?: ModelExitBehavior;
+    readonly onLimitReached?: (info: LimitReachedInfo) => void;
+}
+interface ToolCallLimitConfig {
+    readonly limits?: Readonly<Record<string, number>>;
+    readonly globalLimit?: number;
+    readonly store?: CallLimitStore;
+    readonly exitBehavior?: ToolExitBehavior;
+    readonly onLimitReached?: (info: LimitReachedInfo) => void;
+}
+declare function validateModelCallLimitConfig(config: unknown): Result<ModelCallLimitConfig, KoiError>;
+declare function validateToolCallLimitConfig(config: unknown): Result<ToolCallLimitConfig, KoiError>;
+
+/**
+ * Model call limit middleware — caps the number of model calls per session.
+ *
+ * Counts on attempt (before execution). Both "end" and "error" exit behaviors
+ * throw RATE_LIMIT with retryable: false.
+ *
+ * Priority 175: runs before pay (200) and compactor (225).
+ */
+
+declare function createModelCallLimitMiddleware(config: ModelCallLimitConfig): KoiMiddleware;
+
+/**
+ * In-memory call limit store — Map-backed, sync returns.
+ */
+
+/**
+ * Creates a Map-backed call limit store.
+ * All operations are synchronous (no async overhead for the common case).
+ */
+declare function createInMemoryCallLimitStore(): CallLimitStore;
+
+/**
+ * Tool call limit middleware — caps tool calls per session with per-tool and global limits.
+ *
+ * Counts on attempt (before execution).
+ * - "continue": returns a blocked ToolResponse instead of executing
+ * - "end" / "error": throw RATE_LIMIT
+ *
+ * Priority 175: runs before pay (200) and compactor (225).
+ */
+
+declare function createToolCallLimitMiddleware(config: ToolCallLimitConfig): KoiMiddleware;
+
+export { type CallLimitStore, type LimitReachedInfo, type ModelCallLimitConfig, type ModelExitBehavior, type ToolCallLimitConfig, type ToolExitBehavior, createInMemoryCallLimitStore, createModelCallLimitMiddleware, createToolCallLimitMiddleware, validateModelCallLimitConfig, validateToolCallLimitConfig };
+"
+`;
