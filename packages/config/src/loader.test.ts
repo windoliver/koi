@@ -1,33 +1,39 @@
 import { describe, expect, test } from "bun:test";
 import { interpolateEnv, loadConfig, loadConfigFromString } from "./loader.js";
 
+// Helper to build env-var reference strings without triggering Biome's noTemplateCurlyInString
+function envRef(name: string, defaultVal?: string): string {
+  const dollar = "$";
+  return defaultVal !== undefined ? `${dollar}{${name}:-${defaultVal}}` : `${dollar}{${name}}`;
+}
+
 // ---------------------------------------------------------------------------
 // interpolateEnv
 // ---------------------------------------------------------------------------
 
 describe("interpolateEnv", () => {
-  test("replaces ${VAR} with env value", () => {
-    const result = interpolateEnv("hello ${NAME}", { NAME: "world" });
+  test("replaces env var with value", () => {
+    const result = interpolateEnv(`hello ${envRef("NAME")}`, { NAME: "world" });
     expect(result).toBe("hello world");
   });
 
-  test("replaces ${VAR:-default} with env value when set", () => {
-    const result = interpolateEnv("${PORT:-3000}", { PORT: "8080" });
+  test("replaces env var with default when set", () => {
+    const result = interpolateEnv(envRef("PORT", "3000"), { PORT: "8080" });
     expect(result).toBe("8080");
   });
 
   test("uses default when env var is unset", () => {
-    const result = interpolateEnv("${PORT:-3000}", {});
+    const result = interpolateEnv(envRef("PORT", "3000"), {});
     expect(result).toBe("3000");
   });
 
   test("replaces with empty string when unset and no default", () => {
-    const result = interpolateEnv("${MISSING}", {});
+    const result = interpolateEnv(envRef("MISSING"), {});
     expect(result).toBe("");
   });
 
   test("handles multiple interpolations", () => {
-    const result = interpolateEnv("${A}-${B}", { A: "x", B: "y" });
+    const result = interpolateEnv(`${envRef("A")}-${envRef("B")}`, { A: "x", B: "y" });
     expect(result).toBe("x-y");
   });
 
@@ -51,7 +57,7 @@ describe("loadConfigFromString (YAML)", () => {
   });
 
   test("interpolates env vars in YAML", () => {
-    const yaml = "logLevel: ${LOG_LEVEL:-warn}\n";
+    const yaml = `logLevel: ${envRef("LOG_LEVEL", "warn")}\n`;
     const result = loadConfigFromString(yaml, "koi.yaml", {
       env: { LOG_LEVEL: "debug" },
     });
@@ -99,7 +105,7 @@ describe("loadConfigFromString (JSON)", () => {
   });
 
   test("interpolates env vars in JSON", () => {
-    const json = '{"apiKey": "${API_KEY:-none}"}';
+    const json = `{"apiKey": "${envRef("API_KEY", "none")}"}`;
     const result = loadConfigFromString(json, "koi.json", {
       env: { API_KEY: "secret123" },
     });
