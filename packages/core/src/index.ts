@@ -16,6 +16,8 @@ export type {
   PermissionConfig,
   ToolConfig,
 } from "./assembly.js";
+// audit backend — structured audit logging contract
+export type { AuditEntry, AuditSink, RedactionRule } from "./audit-backend.js";
 // brick snapshot — version history, provenance, audit
 export type {
   BrickId,

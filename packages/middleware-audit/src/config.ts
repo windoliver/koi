@@ -2,9 +2,9 @@
  * Audit middleware configuration and validation.
  */
 
+import type { AuditEntry, AuditSink, RedactionRule } from "@koi/core";
 import type { KoiError, Result } from "@koi/core/errors";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
-import type { AuditEntry, AuditSink, RedactionRule } from "./sink.js";
 
 export interface AuditMiddlewareConfig {
   readonly sink: AuditSink;

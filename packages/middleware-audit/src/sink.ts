@@ -1,31 +1,13 @@
 /**
- * Audit sink interfaces and default implementations.
+ * Audit sink default implementations and utilities.
+ *
+ * Types (AuditEntry, AuditSink, RedactionRule) are defined in @koi/core.
  */
 
-import type { JsonObject } from "@koi/core/common";
+import type { AuditEntry, AuditSink, RedactionRule } from "@koi/core";
 
-export interface AuditEntry {
-  readonly timestamp: number;
-  readonly sessionId: string;
-  readonly agentId: string;
-  readonly turnIndex: number;
-  readonly kind: "model_call" | "tool_call" | "session_start" | "session_end";
-  readonly request?: unknown;
-  readonly response?: unknown;
-  readonly error?: unknown;
-  readonly durationMs: number;
-  readonly metadata?: JsonObject;
-}
-
-export interface AuditSink {
-  readonly log: (entry: AuditEntry) => Promise<void>;
-  readonly flush?: () => Promise<void>;
-}
-
-export interface RedactionRule {
-  readonly pattern: RegExp;
-  readonly replacement: string;
-}
+// Re-export L0 types for backwards compatibility
+export type { AuditEntry, AuditSink, RedactionRule } from "@koi/core";
 
 /**
  * In-memory audit sink. Stores entries in an array for testing/dev.
