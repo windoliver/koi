@@ -3,7 +3,9 @@
  */
 
 import type { BrowserDriver, JsonObject, Tool, TrustTier } from "@koi/core";
-import { parseOptionalTimeout, parseOptionalWaitUntil, parseString } from "../parse-args.js";
+import { parseOptionalTimeout, parseOptionalWaitUntil } from "../parse-args.js";
+import type { CompiledNavigationSecurity } from "../url-security.js";
+import { parseSecureUrl } from "../url-security.js";
 
 const MIN_TIMEOUT_MS = 1000;
 const MAX_TIMEOUT_MS = 60_000;
@@ -12,6 +14,7 @@ export function createBrowserNavigateTool(
   driver: BrowserDriver,
   prefix: string,
   trustTier: TrustTier,
+  security?: CompiledNavigationSecurity,
 ): Tool {
   return {
     descriptor: {
@@ -38,7 +41,7 @@ export function createBrowserNavigateTool(
     },
     trustTier,
     execute: async (args: JsonObject): Promise<unknown> => {
-      const urlResult = parseString(args, "url");
+      const urlResult = parseSecureUrl(args, "url", security);
       if (!urlResult.ok) return urlResult.err;
       const waitUntilResult = parseOptionalWaitUntil(args, "waitUntil");
       if (!waitUntilResult.ok) return waitUntilResult.err;

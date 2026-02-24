@@ -3,7 +3,9 @@
  */
 
 import type { BrowserDriver, JsonObject, Tool, TrustTier } from "@koi/core";
-import { parseOptionalString, parseOptionalTimeout } from "../parse-args.js";
+import { parseOptionalTimeout } from "../parse-args.js";
+import type { CompiledNavigationSecurity } from "../url-security.js";
+import { parseSecureOptionalUrl } from "../url-security.js";
 
 const MIN_TIMEOUT_MS = 1000;
 const MAX_TIMEOUT_MS = 60_000;
@@ -12,6 +14,7 @@ export function createBrowserTabNewTool(
   driver: BrowserDriver,
   prefix: string,
   trustTier: TrustTier,
+  security?: CompiledNavigationSecurity,
 ): Tool {
   return {
     descriptor: {
@@ -34,7 +37,7 @@ export function createBrowserTabNewTool(
     },
     trustTier,
     execute: async (args: JsonObject): Promise<unknown> => {
-      const urlResult = parseOptionalString(args, "url");
+      const urlResult = parseSecureOptionalUrl(args, "url", security);
       if (!urlResult.ok) return urlResult.err;
       const timeoutResult = parseOptionalTimeout(args, "timeout", MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
       if (!timeoutResult.ok) return timeoutResult.err;

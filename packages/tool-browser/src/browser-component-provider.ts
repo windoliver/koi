@@ -29,6 +29,11 @@ import { createBrowserTabFocusTool } from "./tools/tab-focus.js";
 import { createBrowserTabNewTool } from "./tools/tab-new.js";
 import { createBrowserTypeTool } from "./tools/type.js";
 import { createBrowserWaitTool } from "./tools/wait.js";
+import {
+  type CompiledNavigationSecurity,
+  compileNavigationSecurity,
+  type NavigationSecurityConfig,
+} from "./url-security.js";
 
 export interface BrowserProviderConfig {
   readonly backend: BrowserDriver;
@@ -41,13 +46,35 @@ export interface BrowserProviderConfig {
    * of the trustTier option.
    */
   readonly operations?: readonly BrowserOperation[];
+  /**
+   * URL security configuration for browser_navigate and browser_tab_new.
+   * When set, navigation to blocked URLs (private IPs, disallowed protocols,
+   * domains outside the allowlist) returns a PERMISSION error with an
+   * AI-friendly explanation instead of forwarding to the driver.
+   *
+   * Can be populated from koi.yaml via manifest.metadata.browser.security:
+   * ```yaml
+   * metadata:
+   *   browser:
+   *     security:
+   *       allowedDomains: ["example.com", "*.api.example.com"]
+   *       allowedProtocols: ["https:"]
+   * ```
+   */
+  readonly security?: NavigationSecurityConfig;
 }
 
+// Re-export for callers using tool factories directly.
+export type { CompiledNavigationSecurity, NavigationSecurityConfig };
+
+// navigate and tab_new are handled separately in createBrowserProvider
+// because they accept an optional security config (4th arg).
 type ToolFactory = (driver: BrowserDriver, prefix: string, trustTier: TrustTier) => Tool;
 
-const TOOL_FACTORIES: Readonly<Record<BrowserOperation, ToolFactory>> = {
+const TOOL_FACTORIES: Readonly<
+  Omit<Record<BrowserOperation, ToolFactory>, "navigate" | "tab_new">
+> = {
   snapshot: createBrowserSnapshotTool,
-  navigate: createBrowserNavigateTool,
   click: createBrowserClickTool,
   hover: createBrowserHoverTool,
   press: createBrowserPressTool,
@@ -57,24 +84,43 @@ const TOOL_FACTORIES: Readonly<Record<BrowserOperation, ToolFactory>> = {
   scroll: createBrowserScrollTool,
   screenshot: createBrowserScreenshotTool,
   wait: createBrowserWaitTool,
-  tab_new: createBrowserTabNewTool,
   tab_close: createBrowserTabCloseTool,
   tab_focus: createBrowserTabFocusTool,
   evaluate: createBrowserEvaluateTool,
 };
 
 export function createBrowserProvider(config: BrowserProviderConfig): ComponentProvider {
-  const { backend, trustTier = "verified", prefix = "browser", operations = OPERATIONS } = config;
+  const {
+    backend,
+    trustTier = "verified",
+    prefix = "browser",
+    operations = OPERATIONS,
+    security,
+  } = config;
+
+  // Compile security config once at construction time for efficient per-call use.
+  const compiledSecurity: CompiledNavigationSecurity | undefined =
+    security !== undefined ? compileNavigationSecurity(security) : undefined;
 
   return {
     name: `browser:${backend.name}`,
 
     attach: async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
       const toolEntries = operations.map((op) => {
-        const factory = TOOL_FACTORIES[op];
         // evaluate always uses promoted tier regardless of config
         const tier: TrustTier = op === EVALUATE_OPERATION ? EVALUATE_TRUST_TIER : trustTier;
-        const tool = factory(backend, prefix, tier);
+
+        // navigate and tab_new accept an optional security config (4th arg).
+        // All other tools use the standard 3-arg factory signature.
+        let tool: Tool;
+        if (op === "navigate") {
+          tool = createBrowserNavigateTool(backend, prefix, tier, compiledSecurity);
+        } else if (op === "tab_new") {
+          tool = createBrowserTabNewTool(backend, prefix, tier, compiledSecurity);
+        } else {
+          const factory = TOOL_FACTORIES[op];
+          tool = factory(backend, prefix, tier);
+        }
         return [toolToken(tool.descriptor.name) as string, tool] as const;
       });
 
