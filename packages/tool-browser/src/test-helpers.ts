@@ -11,6 +11,8 @@
 import type {
   Agent,
   BrowserActionOptions,
+  BrowserConsoleOptions,
+  BrowserConsoleResult,
   BrowserDriver,
   BrowserEvaluateOptions,
   BrowserEvaluateResult,
@@ -54,7 +56,7 @@ function makeError(code: KoiErrorCode): KoiError {
 
 function makeStaleError(): KoiError {
   return {
-    code: "NOT_FOUND",
+    code: "STALE_REF",
     message:
       "Snapshot is stale — the page has changed since this snapshot was taken. " +
       "Call browser_snapshot to get fresh refs.",
@@ -218,6 +220,13 @@ export function createMockDriver(options: MockDriverOptions = {}): BrowserDriver
         ok: true,
         value: [{ tabId: "tab-1", url: "https://example.com", title: "Example Page" }],
       };
+    },
+
+    console: async (
+      _options?: BrowserConsoleOptions,
+    ): Promise<Result<BrowserConsoleResult, KoiError>> => {
+      if (failWith) return fail();
+      return { ok: true, value: { entries: [], total: 0 } };
     },
   };
 }

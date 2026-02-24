@@ -28,8 +28,10 @@ describe("browser_hover", () => {
     const driver = createMockDriver({ staleSnapshotId: "snap-old" });
     const tool = createBrowserHoverTool(driver, "browser", "verified");
     const result = await tool.execute({ ref: "e1", snapshotId: "snap-old" });
-    expect(result).toMatchObject({ code: "NOT_FOUND" });
-    expect((result as { error: string }).error).toContain("stale");
+    expect(result).toMatchObject({
+      code: "STALE_REF",
+      error: expect.stringContaining("stale"),
+    });
   });
 
   test("rejects timeout above maximum", async () => {

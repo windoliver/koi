@@ -15,6 +15,7 @@ import {
   OPERATIONS,
 } from "./constants.js";
 import { createBrowserClickTool } from "./tools/click.js";
+import { createBrowserConsoleTool } from "./tools/console.js";
 import { createBrowserEvaluateTool } from "./tools/evaluate.js";
 import { createBrowserFillFormTool } from "./tools/fill-form.js";
 import { createBrowserHoverTool } from "./tools/hover.js";
@@ -86,6 +87,7 @@ const TOOL_FACTORIES: Readonly<
   wait: createBrowserWaitTool,
   tab_close: createBrowserTabCloseTool,
   tab_focus: createBrowserTabFocusTool,
+  console: createBrowserConsoleTool,
   evaluate: createBrowserEvaluateTool,
 };
 

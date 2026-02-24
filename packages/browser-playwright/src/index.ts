@@ -9,6 +9,7 @@ export type { A11yNode, SerializeResult } from "./a11y-serializer.js";
 export { isAriaRole, parseAriaYaml, serializeA11yTree, VALID_ROLES } from "./a11y-serializer.js";
 export type { DetectedBrowser } from "./browser-detection.js";
 export { detectInstalledBrowsers } from "./browser-detection.js";
+export { translatePlaywrightError } from "./error-translator.js";
 
 export type { PlaywrightDriverConfig } from "./playwright-browser-driver.js";
 export { createPlaywrightBrowserDriver, STEALTH_INIT_SCRIPT } from "./playwright-browser-driver.js";

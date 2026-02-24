@@ -54,6 +54,10 @@ export type {
 // browser driver — cross-engine abstraction for browser automation
 export type {
   BrowserActionOptions,
+  BrowserConsoleEntry,
+  BrowserConsoleLevel,
+  BrowserConsoleOptions,
+  BrowserConsoleResult,
   BrowserDriver,
   BrowserEvaluateOptions,
   BrowserEvaluateResult,
@@ -185,6 +189,7 @@ export {
   notFound,
   permission,
   rateLimit,
+  staleRef,
   timeout,
   validation,
 } from "./error-factories.js";

@@ -63,12 +63,13 @@ export function rateLimit(message: string, context?: JsonObject): KoiError {
 }
 
 /** Operation timed out. Retryable (with backoff). */
-export function timeout(message: string): KoiError {
-  return {
+export function timeout(message: string, retryAfterMs?: number): KoiError {
+  const base: KoiError = {
     code: "TIMEOUT",
     message,
     retryable: RETRYABLE_DEFAULTS.TIMEOUT,
   };
+  return retryAfterMs !== undefined ? { ...base, retryAfterMs } : base;
 }
 
 /** Third-party service failure. Not retryable by default. */
@@ -87,5 +88,22 @@ export function permission(message: string): KoiError {
     code: "PERMISSION",
     message,
     retryable: RETRYABLE_DEFAULTS.PERMISSION,
+  };
+}
+
+/**
+ * A cached reference has become invalid because the underlying resource changed.
+ * Non-retryable as-is — the caller must re-acquire a fresh reference first.
+ *
+ * @param refId - The stale reference identifier (e.g., "e1", "cursor-42").
+ * @param hint - Optional actionable hint for the caller (e.g., "call browser_snapshot").
+ */
+export function staleRef(refId: string, hint?: string): KoiError {
+  const base = hint ?? "re-acquire a fresh reference before retrying";
+  return {
+    code: "STALE_REF",
+    message: `Ref "${refId}" is stale — ${base}`,
+    retryable: RETRYABLE_DEFAULTS.STALE_REF,
+    context: { refId },
   };
 }

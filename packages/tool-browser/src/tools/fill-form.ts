@@ -18,7 +18,10 @@ export function createBrowserFillFormTool(
       name: `${prefix}_fill_form`,
       description:
         "Fill multiple form fields in one call. More efficient than calling " +
-        "browser_type/browser_select per field for multi-field forms.",
+        "browser_type/browser_select per field for multi-field forms. " +
+        "Always pass snapshotId from the last browser_snapshot call — " +
+        "a STALE_REF error on any field means the snapshot is outdated: " +
+        "re-snapshot and retry with fresh refs.",
       inputSchema: {
         type: "object",
         properties: {

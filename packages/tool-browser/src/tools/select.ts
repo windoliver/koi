@@ -21,7 +21,11 @@ export function createBrowserSelectTool(
   return {
     descriptor: {
       name: `${prefix}_select`,
-      description: "Select an option in a combobox or listbox identified by its snapshot ref.",
+      description:
+        "Select an option in a combobox or listbox identified by its snapshot ref. " +
+        "Always pass snapshotId from the last browser_snapshot call — " +
+        "a STALE_REF error means the ref is outdated and you must re-snapshot. " +
+        "Selecting an option may trigger DOM changes: re-snapshot if needed.",
       inputSchema: {
         type: "object",
         properties: {

@@ -26,6 +26,10 @@
 // types — re-exported from @koi/core for convenience
 export type {
   BrowserActionOptions,
+  BrowserConsoleEntry,
+  BrowserConsoleLevel,
+  BrowserConsoleOptions,
+  BrowserConsoleResult,
   BrowserDriver,
   BrowserEvaluateOptions,
   BrowserEvaluateResult,
@@ -57,6 +61,7 @@ export { createBrowserProvider } from "./browser-component-provider.js";
 export type { BrowserOperation } from "./constants.js";
 export {
   ALL_OPERATIONS,
+  BROWSER_SYSTEM_PROMPT,
   DEFAULT_PREFIX,
   EVALUATE_OPERATION,
   EVALUATE_TRUST_TIER,
@@ -66,6 +71,7 @@ export {
 export { createMockAgent, createMockDriver } from "./test-helpers.js";
 // tool factories — for advanced usage (custom tool composition)
 export { createBrowserClickTool } from "./tools/click.js";
+export { createBrowserConsoleTool } from "./tools/console.js";
 export { createBrowserEvaluateTool } from "./tools/evaluate.js";
 export { createBrowserFillFormTool } from "./tools/fill-form.js";
 export { createBrowserHoverTool } from "./tools/hover.js";

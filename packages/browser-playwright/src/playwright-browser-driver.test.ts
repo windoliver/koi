@@ -42,8 +42,10 @@ interface MockPage {
   readonly evaluate: MockFn;
   readonly bringToFront: MockFn;
   readonly close: MockFn;
-  // Test helper — exposed by makeMockPage
+  readonly on: MockFn;
+  // Test helpers — exposed by makeMockPage
   readonly _locator: MockLocator;
+  readonly _triggerConsole: (msg: MockConsoleMessage) => void;
 }
 
 interface MockBrowserContext {
@@ -56,6 +58,26 @@ interface MockBrowser {
   readonly newContext: MockFn;
   readonly close: MockFn;
   readonly contexts: MockFn;
+}
+
+/** Minimal Playwright ConsoleMessage shape used by the driver's console listener. */
+interface MockConsoleMessage {
+  type(): string;
+  text(): string;
+  location(): { url: string; lineNumber: number; columnNumber: number };
+}
+
+function makeConsoleMsg(
+  type: string,
+  text: string,
+  url?: string,
+  lineNumber?: number,
+): MockConsoleMessage {
+  return {
+    type: () => type,
+    text: () => text,
+    location: () => ({ url: url ?? "", lineNumber: lineNumber ?? 0, columnNumber: 0 }),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +120,9 @@ function makeMockPage(opts?: {
     })),
     elementHandle: mock(() => Promise.resolve(null)),
   };
+  // let: required to capture the handler registered by the driver's attachConsoleListener
+  // biome-ignore lint/suspicious/noExplicitAny: captures Playwright ConsoleMessage handler
+  let _consoleHandler: ((msg: any) => void) | undefined;
   return {
     url: mock(() => opts?.urlValue ?? "https://example.com"),
     title: mock(() => Promise.resolve(opts?.titleValue ?? "Test Page")),
@@ -131,7 +156,16 @@ function makeMockPage(opts?: {
     evaluate: mock((_script: string) => Promise.resolve("eval-result")),
     bringToFront: mock(() => Promise.resolve()),
     close: mock(() => Promise.resolve()),
+    on: mock((event: string, handler: (msg: unknown) => void) => {
+      if (event === "console") {
+        // biome-ignore lint/suspicious/noExplicitAny: test injection boundary
+        _consoleHandler = handler as (msg: any) => void;
+      }
+    }),
     _locator: locator,
+    _triggerConsole: (msg: MockConsoleMessage) => {
+      if (_consoleHandler !== undefined) _consoleHandler(msg);
+    },
   };
 }
 
@@ -220,7 +254,7 @@ describe("createPlaywrightBrowserDriver", () => {
       const result = await driver.click("e1", { snapshotId: "snap-999" });
       expect(result.ok).toBe(false);
       if (result.ok) return;
-      expect(result.error.code).toBe("NOT_FOUND");
+      expect(result.error.code).toBe("STALE_REF");
       expect(result.error.message).toContain("stale");
     });
 
@@ -260,7 +294,7 @@ describe("createPlaywrightBrowserDriver", () => {
       const click = await driver.click("e1", { snapshotId });
       expect(click.ok).toBe(false);
       if (click.ok) return;
-      expect(click.error.code).toBe("NOT_FOUND");
+      expect(click.error.code).toBe("STALE_REF");
     });
 
     it("returns VALIDATION error when timeout exceeds cap", async () => {
@@ -351,13 +385,13 @@ describe("createPlaywrightBrowserDriver", () => {
       expect(result.ok).toBe(true);
     });
 
-    it("returns NOT_FOUND for unknown ref", async () => {
+    it("returns STALE_REF for unknown ref", async () => {
       const { driver } = buildDriver();
       await driver.snapshot();
       const result = await driver.type("e99", "hello");
       expect(result.ok).toBe(false);
       if (result.ok) return;
-      expect(result.error.code).toBe("NOT_FOUND");
+      expect(result.error.code).toBe("STALE_REF");
     });
 
     it("returns VALIDATION when timeout exceeds cap", async () => {
@@ -375,7 +409,7 @@ describe("createPlaywrightBrowserDriver", () => {
       const result = await driver.type("e1", "hello", { snapshotId: "snap-999" });
       expect(result.ok).toBe(false);
       if (result.ok) return;
-      expect(result.error.code).toBe("NOT_FOUND");
+      expect(result.error.code).toBe("STALE_REF");
     });
 
     it("clears before filling when clear=true", async () => {
@@ -395,13 +429,13 @@ describe("createPlaywrightBrowserDriver", () => {
       expect(result.ok).toBe(true);
     });
 
-    it("returns NOT_FOUND for unknown ref", async () => {
+    it("returns STALE_REF for unknown ref", async () => {
       const { driver } = buildDriver();
       await driver.snapshot();
       const result = await driver.select("e99", "opt-value");
       expect(result.ok).toBe(false);
       if (result.ok) return;
-      expect(result.error.code).toBe("NOT_FOUND");
+      expect(result.error.code).toBe("STALE_REF");
     });
 
     it("rejects stale snapshotId", async () => {
@@ -410,7 +444,7 @@ describe("createPlaywrightBrowserDriver", () => {
       const result = await driver.select("e1", "v", { snapshotId: "stale-id" });
       expect(result.ok).toBe(false);
       if (result.ok) return;
-      expect(result.error.code).toBe("NOT_FOUND");
+      expect(result.error.code).toBe("STALE_REF");
     });
   });
 
@@ -425,7 +459,7 @@ describe("createPlaywrightBrowserDriver", () => {
       expect(result.ok).toBe(true);
     });
 
-    it("returns NOT_FOUND when any field ref is missing", async () => {
+    it("returns STALE_REF when any field ref is missing", async () => {
       const { driver } = buildDriver();
       await driver.snapshot();
       const result = await driver.fillForm([
@@ -434,7 +468,7 @@ describe("createPlaywrightBrowserDriver", () => {
       ]);
       expect(result.ok).toBe(false);
       if (result.ok) return;
-      expect(result.error.code).toBe("NOT_FOUND");
+      expect(result.error.code).toBe("STALE_REF");
     });
 
     it("returns VALIDATION when timeout exceeds cap", async () => {
@@ -463,13 +497,13 @@ describe("createPlaywrightBrowserDriver", () => {
       expect(result.ok).toBe(true);
     });
 
-    it("element scroll returns NOT_FOUND for unknown ref", async () => {
+    it("element scroll returns STALE_REF for unknown ref", async () => {
       const { driver } = buildDriver();
       await driver.snapshot();
       const result = await driver.scroll({ kind: "element", ref: "e99" });
       expect(result.ok).toBe(false);
       if (result.ok) return;
-      expect(result.error.code).toBe("NOT_FOUND");
+      expect(result.error.code).toBe("STALE_REF");
     });
 
     it("scroll up direction inverts Y axis", async () => {
@@ -629,13 +663,13 @@ describe("createPlaywrightBrowserDriver", () => {
       expect(result.ok).toBe(true);
     });
 
-    it("returns NOT_FOUND for unknown ref", async () => {
+    it("returns STALE_REF for unknown ref", async () => {
       const { driver } = buildDriver();
       await driver.snapshot();
       const result = await driver.hover("e99");
       expect(result.ok).toBe(false);
       if (result.ok) return;
-      expect(result.error.code).toBe("NOT_FOUND");
+      expect(result.error.code).toBe("STALE_REF");
     });
 
     it("rejects stale snapshotId", async () => {
@@ -644,7 +678,7 @@ describe("createPlaywrightBrowserDriver", () => {
       const result = await driver.hover("e1", { snapshotId: "snap-999" });
       expect(result.ok).toBe(false);
       if (result.ok) return;
-      expect(result.error.code).toBe("NOT_FOUND");
+      expect(result.error.code).toBe("STALE_REF");
     });
 
     it("returns VALIDATION when timeout exceeds cap", async () => {
@@ -786,7 +820,7 @@ describe("createPlaywrightBrowserDriver", () => {
 
       expect(result.ok).toBe(false);
       if (result.ok) return;
-      expect(result.error.code).toBe("NOT_FOUND");
+      expect(result.error.code).toBe("STALE_REF");
 
       // Regression: fill() must NOT have been called at all
       expect(page._locator.fill.mock.calls.length).toBe(0);
@@ -823,8 +857,8 @@ describe("createPlaywrightBrowserDriver", () => {
       const contextHolder = { current: context };
       browserMock.contexts.mockImplementation(() => [contextHolder.current]);
 
-      // biome-ignore lint/suspicious/noExplicitAny: test injection boundary
       const driver = createPlaywrightBrowserDriver({
+        // biome-ignore lint/suspicious/noExplicitAny: test injection boundary
         browser: browserMock as any,
         cdpEndpoint: "ws://localhost:9222",
       });
@@ -1042,6 +1076,95 @@ describe("createPlaywrightBrowserDriver", () => {
       expect(
         (page.frameLocator.mock.calls as string[][]).some((args) => args[0] === "#form-frame"),
       ).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // console() — per-tab console buffer
+  // ---------------------------------------------------------------------------
+
+  describe("console()", () => {
+    it("returns empty entries for new tab", async () => {
+      const { driver } = buildDriver();
+      await driver.snapshot(); // creates tab-1 with empty buffer
+      const result = await driver.console();
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.entries.length).toBe(0);
+      expect(result.value.total).toBe(0);
+    });
+
+    it("captures log, warning, and error entries", async () => {
+      const { driver, page } = buildDriver();
+      await driver.snapshot();
+      page._triggerConsole(makeConsoleMsg("log", "hello world", "https://example.com/app.js", 10));
+      page._triggerConsole(makeConsoleMsg("warning", "deprecated api"));
+      page._triggerConsole(makeConsoleMsg("error", "something broke"));
+      const result = await driver.console();
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.total).toBe(3);
+      expect(result.value.entries.map((e) => e.level)).toEqual(["log", "warning", "error"]);
+    });
+
+    it("filters by level", async () => {
+      const { driver, page } = buildDriver();
+      await driver.snapshot();
+      page._triggerConsole(makeConsoleMsg("log", "info message"));
+      page._triggerConsole(makeConsoleMsg("error", "error message"));
+      page._triggerConsole(makeConsoleMsg("warning", "warning message"));
+      const result = await driver.console({ levels: ["error"] });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.total).toBe(1);
+      expect(result.value.entries[0]?.level).toBe("error");
+      expect(result.value.entries[0]?.text).toBe("error message");
+    });
+
+    it("respects limit returning most recent N", async () => {
+      const { driver, page } = buildDriver();
+      await driver.snapshot();
+      for (let i = 0; i < 10; i++) {
+        page._triggerConsole(makeConsoleMsg("log", `message ${i}`));
+      }
+      const result = await driver.console({ limit: 3 });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      // total reflects all 10 entries; entries is the last 3
+      expect(result.value.total).toBe(10);
+      expect(result.value.entries.length).toBe(3);
+      expect(result.value.entries[2]?.text).toBe("message 9");
+    });
+
+    it("clears buffer when clear: true", async () => {
+      const { driver, page } = buildDriver();
+      await driver.snapshot();
+      page._triggerConsole(makeConsoleMsg("log", "before clear"));
+      await driver.console({ clear: true });
+      // Second call should return empty buffer
+      const result = await driver.console();
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.entries.length).toBe(0);
+    });
+
+    it("buffers up to 1000 entries with FIFO eviction", async () => {
+      const { driver, page } = buildDriver();
+      await driver.snapshot();
+      // Push 1001 messages — cap is 1000, first message should be evicted
+      for (let i = 0; i < 1001; i++) {
+        page._triggerConsole(makeConsoleMsg("log", `msg-${i}`));
+      }
+      const result = await driver.console({ limit: 200 });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      // Buffer holds exactly 1000 after eviction (msg-0 evicted, buf contains msg-1..msg-1000)
+      // total = all 1000 matching entries before the limit is applied
+      expect(result.value.total).toBe(1000);
+      // entries = last 200 of 1000-entry buffer = msg-801 through msg-1000 (0-indexed: buf[800..999])
+      expect(result.value.entries.length).toBe(200);
+      expect(result.value.entries[0]?.text).toBe("msg-801");
+      expect(result.value.entries[199]?.text).toBe("msg-1000");
     });
   });
 });

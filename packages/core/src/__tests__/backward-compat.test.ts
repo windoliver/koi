@@ -36,6 +36,7 @@ import {
   scheduleId,
   sessionId,
   snapshotId,
+  staleRef,
   taskId,
   timeout,
   toolCallId,
@@ -58,16 +59,17 @@ describe("RETRYABLE_DEFAULTS backward compatibility", () => {
     ["TIMEOUT", true],
     ["EXTERNAL", false],
     ["INTERNAL", false],
+    ["STALE_REF", false],
   ] as const;
 
-  test("all 8 error codes exist with expected retryability", () => {
+  test("all 9 error codes exist with expected retryability", () => {
     for (const [code, retryable] of expectedEntries) {
       expect(RETRYABLE_DEFAULTS).toHaveProperty(code, retryable);
     }
   });
 
-  test("has exactly 8 codes (no unexpected additions)", () => {
-    expect(Object.keys(RETRYABLE_DEFAULTS)).toHaveLength(8);
+  test("has exactly 9 codes (no unexpected additions)", () => {
+    expect(Object.keys(RETRYABLE_DEFAULTS)).toHaveLength(9);
   });
 });
 
@@ -182,6 +184,13 @@ describe("error factory backward compatibility", () => {
     expect(err.retryable).toBe(true);
   });
 
+  test("timeout with retryAfterMs surfaces wait time", () => {
+    const err = timeout("timed out", 2_000);
+    expect(err.code).toBe("TIMEOUT");
+    expect(err.retryable).toBe(true);
+    expect(err.retryAfterMs).toBe(2_000);
+  });
+
   test("external produces EXTERNAL code", () => {
     const err = external("third-party down");
     expect(err.code).toBe("EXTERNAL");
@@ -192,6 +201,13 @@ describe("error factory backward compatibility", () => {
     const err = permission("denied");
     expect(err.code).toBe("PERMISSION");
     expect(err.retryable).toBe(false);
+  });
+
+  test("staleRef produces STALE_REF code", () => {
+    const err = staleRef("e42");
+    expect(err.code).toBe("STALE_REF");
+    expect(err.retryable).toBe(false);
+    expect(err.message).toContain("e42");
   });
 });
 

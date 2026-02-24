@@ -22,7 +22,11 @@ export function createBrowserTypeTool(
   return {
     descriptor: {
       name: `${prefix}_type`,
-      description: "Type text into an element identified by its snapshot ref.",
+      description:
+        "Type text into an element identified by its snapshot ref. " +
+        "Always pass snapshotId from the last browser_snapshot call — " +
+        "a STALE_REF error means the ref is outdated and you must re-snapshot. " +
+        "Typing may trigger DOM changes (e.g., autocomplete): re-snapshot if needed.",
       inputSchema: {
         type: "object",
         properties: {
