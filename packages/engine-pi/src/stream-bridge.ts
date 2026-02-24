@@ -14,13 +14,14 @@ import type {
   AssistantMessageEvent,
   AssistantMessageEventStream,
   Context,
+  Message,
   Model,
   SimpleStreamOptions,
 } from "@mariozechner/pi-ai";
 import { createAssistantMessageEventStream } from "@mariozechner/pi-ai";
 import { piMessagesToInbound } from "./message-map.js";
 import type { PiNativeParams } from "./model-terminal.js";
-import { piParamsStore } from "./model-terminal.js";
+import { PI_PARAMS_NONCE_KEY, piParamsStore } from "./model-terminal.js";
 
 /**
  * A completed tool call accumulated from streaming chunks.
@@ -118,15 +119,23 @@ export function createBridgeStreamFn(
     const stream = createAssistantMessageEventStream();
 
     // Build a bound streamSimple that captures model + context.
-    // Return type is AssistantMessageEventStream | Promise<...> because StreamFn supports both.
+    // Accepts optional messageOverride to apply middleware-modified messages.
     const callBoundStream = (
       overrides?: Record<string, unknown>,
-    ): AssistantMessageEventStream | Promise<AssistantMessageEventStream> =>
-      realStreamSimpleFn(model, context, { ...options, ...overrides });
+      messageOverride?: readonly Message[],
+    ): AssistantMessageEventStream | Promise<AssistantMessageEventStream> => {
+      const effectiveContext =
+        messageOverride !== undefined ? { ...context, messages: [...messageOverride] } : context;
+      return realStreamSimpleFn(model, effectiveContext, { ...options, ...overrides });
+    };
+
+    // Convert messages for the ModelRequest and store as originalMessages for change detection
+    const originalMessages = piMessagesToInbound(context.messages);
 
     // Build pi-native params for the terminal side-channel
     const piNativeParams: PiNativeParams = {
       callBoundStream,
+      originalMessages,
       ...(options?.temperature !== undefined ? { temperature: options.temperature } : {}),
       ...(options?.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
       ...(options?.signal !== undefined ? { signal: options.signal } : {}),
@@ -134,16 +143,20 @@ export function createBridgeStreamFn(
       ...(options?.reasoning !== undefined ? { reasoning: options.reasoning } : {}),
     };
 
-    // Build ModelRequest
+    // Generate nonce for the nonce-based piParamsStore (survives middleware object spread)
+    const nonce = crypto.randomUUID();
+
+    // Build ModelRequest with nonce in metadata
     const modelRequest: ModelRequest = {
-      messages: piMessagesToInbound(context.messages),
+      messages: originalMessages,
       model: model.id,
       ...(options?.temperature !== undefined ? { temperature: options.temperature } : {}),
       ...(options?.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+      metadata: { [PI_PARAMS_NONCE_KEY]: nonce },
     };
 
-    // Store pi-native params in WeakMap side-channel (avoids smuggling via metadata)
-    piParamsStore.set(modelRequest, piNativeParams);
+    // Store pi-native params in nonce-based Map (auto-deleted on one-shot lookup)
+    piParamsStore.set(nonce, piNativeParams);
 
     // Build a mutable partial AssistantMessage for streaming
     const partial: AssistantMessage = {
@@ -278,6 +291,8 @@ export function createBridgeStreamFn(
         stream.push({ type: "done", reason: "stop", message: finalMessage });
         stream.end(finalMessage);
       } catch (error: unknown) {
+        // Clean up nonce entry if terminal was never reached (prevents memory leak)
+        piParamsStore.delete(nonce);
         const errMessage: AssistantMessage = {
           ...partial,
           stopReason: "error",

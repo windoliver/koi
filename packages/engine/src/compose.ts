@@ -37,11 +37,18 @@ interface OnionEntry<Req, Res> {
 /**
  * Builds an onion-style dispatch chain from a list of hook entries and a terminal.
  * Each hook wraps the next, with double-call detection on every layer.
+ *
+ * The optional `wrapNextResult` callback enables retry-on-error: it hooks into
+ * the result of the inner chain and resets the double-call guard when that result
+ * signals an error. This allows middleware (e.g., overflow recovery) to call
+ * `next()` again after catching an error, while still preventing accidental
+ * double-calls on the success path.
  */
 function composeOnion<Req, Res>(
   entries: readonly OnionEntry<Req, Res>[],
   hookLabel: string,
   terminal: (req: Req) => Res,
+  wrapNextResult?: (result: Res, resetGuard: () => void) => Res,
 ): (ctx: TurnContext, request: Req) => Res {
   return (ctx: TurnContext, request: Req): Res => {
     const dispatch = (i: number, req: Req): Res => {
@@ -49,6 +56,7 @@ function composeOnion<Req, Res>(
       if (entry === undefined) {
         return terminal(req);
       }
+      // let required: toggled by next(), reset on error by wrapNextResult
       let called = false;
       const next = (nextReq: Req): Res => {
         if (called) {
@@ -57,11 +65,53 @@ function composeOnion<Req, Res>(
           );
         }
         called = true;
-        return dispatch(i + 1, nextReq);
+        const result = dispatch(i + 1, nextReq);
+        if (wrapNextResult !== undefined) {
+          return wrapNextResult(result, () => {
+            called = false;
+          });
+        }
+        return result;
       };
       return entry.hook(ctx, req, next);
     };
     return dispatch(0, request);
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Async iterable wrapper for retry-on-error
+// ---------------------------------------------------------------------------
+
+/**
+ * Wraps an AsyncIterable to call `onError` when iteration throws.
+ * Used by composeModelStreamChain to reset the double-call guard,
+ * enabling middleware retry patterns (e.g., overflow recovery).
+ */
+function wrapAsyncIterableWithErrorReset<T>(
+  iterable: AsyncIterable<T>,
+  onError: () => void,
+): AsyncIterable<T> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<T> {
+      const inner = iterable[Symbol.asyncIterator]();
+      return {
+        async next(): Promise<IteratorResult<T>> {
+          try {
+            return await inner.next();
+          } catch (error: unknown) {
+            onError();
+            throw error;
+          }
+        },
+        async return(value?: unknown): Promise<IteratorResult<T>> {
+          if (inner.return !== undefined) {
+            return inner.return(value) as Promise<IteratorResult<T>>;
+          }
+          return { done: true as const, value: undefined as T };
+        },
+      };
+    },
   };
 }
 
@@ -79,7 +129,15 @@ export function composeModelChain(
       entries.push({ name: mw.name, hook: mw.wrapModelCall });
     }
   }
-  return composeOnion(entries, "wrapModelCall", terminal);
+  return composeOnion(entries, "wrapModelCall", terminal, (result, resetGuard) => {
+    // Reset double-call guard on rejection to allow retry-on-error.
+    // The .catch() handler runs before the caller's await-catch (Promise microtask ordering:
+    // handlers registered first are invoked first for the same rejected Promise).
+    void result.catch(() => {
+      resetGuard();
+    });
+    return result;
+  });
 }
 
 export function composeModelStreamChain(
@@ -92,7 +150,12 @@ export function composeModelStreamChain(
       entries.push({ name: mw.name, hook: mw.wrapModelStream });
     }
   }
-  return composeOnion(entries, "wrapModelStream", terminal);
+  return composeOnion(entries, "wrapModelStream", terminal, (result, resetGuard) => {
+    // Wrap the iterable to reset the double-call guard when iteration fails.
+    // This allows middleware (e.g., overflow recovery) to retry after catching
+    // a stream error, while still blocking accidental double-calls on success.
+    return wrapAsyncIterableWithErrorReset(result, resetGuard);
+  });
 }
 
 export function composeToolChain(

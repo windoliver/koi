@@ -254,6 +254,17 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-compactor": {
+      "name": "@koi/middleware-compactor",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-context-editing": {
       "name": "@koi/middleware-context-editing",
       "version": "0.0.0",
@@ -901,6 +912,8 @@
     "@koi/mcp": ["@koi/mcp@workspace:packages/mcp"],
 
     "@koi/middleware-audit": ["@koi/middleware-audit@workspace:packages/middleware-audit"],
+
+    "@koi/middleware-compactor": ["@koi/middleware-compactor@workspace:packages/middleware-compactor"],
 
     "@koi/middleware-context-editing": ["@koi/middleware-context-editing@workspace:packages/middleware-context-editing"],
 

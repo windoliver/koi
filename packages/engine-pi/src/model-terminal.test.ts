@@ -12,6 +12,7 @@ import {
   assistantEventToModelChunk,
   createModelCallTerminal,
   createModelStreamTerminal,
+  PI_PARAMS_NONCE_KEY,
   piParamsStore,
 } from "./model-terminal.js";
 
@@ -64,13 +65,17 @@ function makeRequest(
   piParams: Partial<PiNativeParams>,
   overrides?: Partial<ModelRequest>,
 ): ModelRequest {
+  const nonce = crypto.randomUUID();
+  const messages = overrides?.messages ?? [];
   const request: ModelRequest = {
-    messages: [],
+    messages,
     model: "test-model",
     ...overrides,
+    metadata: { [PI_PARAMS_NONCE_KEY]: nonce, ...overrides?.metadata },
   };
-  piParamsStore.set(request, {
+  piParamsStore.set(nonce, {
     callBoundStream: piParams.callBoundStream ?? (() => createAssistantMessageEventStream()),
+    originalMessages: messages,
     ...piParams,
   });
   return request;
