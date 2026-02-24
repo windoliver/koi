@@ -519,14 +519,11 @@ You are philosophical but concise.`,
 console.log("\n[test 8] Forge attack — agent attempts fs_write to SOUL.md via tool chain");
 
 // Create a mock fs_write tool terminal that actually writes to disk
-const fsWriteLog: { toolId: string; path: string; blocked: boolean }[] = [];
-
 const toolTerminal: ToolHandler = async (request: ToolRequest): Promise<ToolResponse> => {
   if (request.toolId === "fs_write") {
     const path = request.input.path as string;
     const content = request.input.content as string;
     await writeFile(path, content);
-    fsWriteLog.push({ toolId: request.toolId, path, blocked: false });
     return { output: { ok: true, path } };
   }
   return { output: { error: `Unknown tool: ${request.toolId}` } };
@@ -632,9 +629,10 @@ assert(
   soulAfterHitlDeny.includes("Captain Koi"),
 );
 
-// --- Scenario 8c: permissions ASK + HITL APPROVES → reload() picks up change ---
-// When HITL approves, the write succeeds AND reload() updates the running soul.
-console.log("  [8c] Permissions ask + HITL approves → soul updates via reload()");
+// --- Scenario 8c: permissions ASK + HITL APPROVES → auto-reload via wrapToolCall ---
+// When HITL approves, the write succeeds AND soul middleware auto-reloads.
+// The soul middleware's wrapToolCall detects fs_write to tracked files.
+console.log("  [8c] Permissions ask + HITL approves → auto-reload via wrapToolCall");
 
 hitlRequests = [];
 
@@ -658,7 +656,11 @@ const askApprovePermMw = createPermissionsMiddleware({
   },
 });
 
-const approveToolChain = composeToolChain([askApprovePermMw], toolTerminal);
+// Compose tool chain with BOTH permissions AND soul middleware.
+// Order: permissions (priority 100) is outer, soul (priority 500) is inner.
+// Flow: permissions gates → soul's wrapToolCall wraps → terminal writes file.
+// After successful write, soul's wrapToolCall detects the path and auto-reloads.
+const approveToolChain = composeToolChain([askApprovePermMw, immutableMw], toolTerminal);
 
 // Step 1: Before — verify Captain Koi is active
 const preWriteResponse = await withTimeout(
@@ -679,11 +681,13 @@ assert(
   `Got: "${preWriteResponse.content.slice(0, 80)}"`,
 );
 
-// Step 2: HITL-approved fs_write — update SOUL.md to a new persona
+// Step 2: HITL-approved fs_write through the composed tool chain
+// Permissions asks → HITL approves → terminal writes → soul auto-reloads
+const soulFilePath = join(tmpDir, "SOUL.md");
 const writeResult = await approveToolChain(ctx, {
   toolId: "fs_write",
   input: {
-    path: join(tmpDir, "SOUL.md"),
+    path: soulFilePath,
     content:
       'You are Professor Oak, a Pokemon professor.\nAlways start your response with "Greetings, trainer!"',
   },
@@ -694,8 +698,9 @@ assert(
   (writeResult.output as { ok: boolean }).ok === true,
 );
 
-// Step 3: Without reload — closure cache still has Captain Koi
-const noReloadResponse = await withTimeout(
+// Step 3: Soul should have auto-reloaded — Professor Oak is now active
+// No manual reload() needed!
+const postAutoReloadResponse = await withTimeout(
   async () =>
     immutableChain(ctx, {
       messages: [makeMessage("Who are you? Reply in one sentence.")],
@@ -703,53 +708,30 @@ const noReloadResponse = await withTimeout(
       temperature: 0,
     }),
   30_000,
-  "Test 8c-no-reload",
+  "Test 8c-auto-reload",
 );
 
-console.log(`  No reload:     "${noReloadResponse.content.slice(0, 120)}"`);
+console.log(`  After auto-reload: "${postAutoReloadResponse.content.slice(0, 150)}"`);
 assert(
-  "8c: without reload — still Captain Koi (closure protects against unauthorized changes)",
-  noReloadResponse.content.toLowerCase().includes("ahoy"),
-  `Got: "${noReloadResponse.content.slice(0, 80)}"`,
-);
-
-// Step 4: Call reload() — this is what the forge pipeline does after HITL approval
-await immutableMw.reload();
-console.log("  [reload] Soul middleware reloaded after HITL-approved write");
-
-// Step 5: After reload — Professor Oak is now active
-const postReloadResponse = await withTimeout(
-  async () =>
-    immutableChain(ctx, {
-      messages: [makeMessage("Who are you? Reply in one sentence.")],
-      maxTokens: 100,
-      temperature: 0,
-    }),
-  30_000,
-  "Test 8c-post-reload",
-);
-
-console.log(`  After reload:  "${postReloadResponse.content.slice(0, 150)}"`);
-assert(
-  "8c: after reload — new persona active (Professor Oak / trainer)",
-  postReloadResponse.content.toLowerCase().includes("trainer") ||
-    postReloadResponse.content.toLowerCase().includes("oak") ||
-    postReloadResponse.content.toLowerCase().includes("pokemon") ||
-    postReloadResponse.content.toLowerCase().includes("pokémon"),
-  `Got: "${postReloadResponse.content.slice(0, 120)}"`,
+  "8c: auto-reload — new persona active (Professor Oak / trainer)",
+  postAutoReloadResponse.content.toLowerCase().includes("trainer") ||
+    postAutoReloadResponse.content.toLowerCase().includes("oak") ||
+    postAutoReloadResponse.content.toLowerCase().includes("pokemon") ||
+    postAutoReloadResponse.content.toLowerCase().includes("pokémon"),
+  `Got: "${postAutoReloadResponse.content.slice(0, 120)}"`,
 );
 assert(
-  "8c: after reload — old persona gone (no more 'Ahoy')",
-  !postReloadResponse.content.toLowerCase().includes("ahoy"),
-  "Captain Koi should be replaced by Professor Oak after reload()",
+  "8c: auto-reload — old persona gone (no more 'Ahoy')",
+  !postAutoReloadResponse.content.toLowerCase().includes("ahoy"),
+  "Captain Koi should be replaced by Professor Oak after auto-reload",
 );
 
 // Summary of defense-in-depth:
 // Layer 1 (8a): Permissions DENY blocks fs_write entirely
 // Layer 2 (8b): Permissions ASK + HITL denial blocks fs_write
-// Layer 3 (8c): HITL approves → write + reload() → new persona takes effect
-//   - Without reload(): closure cache still protects (unauthorized changes blocked)
-//   - With reload(): HITL-approved changes take effect (this is the forge contract)
+// Layer 3 (8c): HITL approves → write succeeds → soul auto-reloads via wrapToolCall
+//   - No manual reload() needed — the middleware chain handles it automatically
+//   - Unauthorized disk writes (bypassing the tool chain) remain blocked by closure cache
 
 // Restore for cleanup
 await writeFile(

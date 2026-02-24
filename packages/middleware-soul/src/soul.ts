@@ -9,6 +9,9 @@ import type {
   ModelRequest,
   ModelResponse,
   ModelStreamHandler,
+  ToolHandler,
+  ToolRequest,
+  ToolResponse,
   TurnContext,
 } from "@koi/core/middleware";
 import type { CreateSoulOptions } from "./config.js";
@@ -18,19 +21,21 @@ import {
   extractInput,
   extractMaxTokens,
 } from "./config.js";
+import type { ResolvedContent } from "./resolve.js";
 import { resolveSoulContent, resolveUserContent } from "./resolve.js";
 
 /**
  * Extended middleware with a `reload()` method for HITL-approved soul updates.
  *
- * When forge + permissions approves a write to SOUL.md/USER.md, call `reload()`
- * to re-resolve all markdown content from disk. Without `reload()`, the closure
- * cache protects the running agent against unauthorized modifications.
+ * Automatically reloads when `fs_write` targets a tracked soul/user file
+ * (the write must pass through the middleware chain, including permissions/HITL).
+ * Manual `reload()` is also available for programmatic use.
  */
 export interface SoulMiddleware extends KoiMiddleware {
   /**
    * Re-resolves all soul and user content from original source paths.
-   * Call after HITL-approved writes to personality/user markdown files.
+   * Called automatically after successful `fs_write` to tracked files.
+   * Can also be called manually after HITL-approved writes.
    * Updates the running middleware atomically — takes effect on next model call.
    */
   readonly reload: () => Promise<void>;
@@ -62,42 +67,45 @@ function buildSoulMessage(soulText: string, userText: string): InboundMessage | 
   };
 }
 
+/** Result of resolving soul or user content, including source file paths. */
+interface ResolveResult {
+  readonly text: string;
+  readonly sources: readonly string[];
+  readonly warnings: readonly string[];
+}
+
 /**
- * Resolves soul content from options, returning text and warnings.
+ * Resolves soul content from options, returning text, sources, and warnings.
  * Shared between initial load and reload.
  */
-async function resolveSoul(
-  options: CreateSoulOptions,
-): Promise<{ readonly text: string; readonly warnings: readonly string[] }> {
-  if (options.soul === undefined) return { text: "", warnings: [] };
+async function resolveSoul(options: CreateSoulOptions): Promise<ResolveResult> {
+  if (options.soul === undefined) return { text: "", sources: [], warnings: [] };
   const input = extractInput(options.soul);
   const maxTokens = extractMaxTokens(options.soul, DEFAULT_SOUL_MAX_TOKENS);
-  const resolved = await resolveSoulContent({
+  const resolved: ResolvedContent = await resolveSoulContent({
     input,
     maxTokens,
     label: "soul",
     basePath: options.basePath,
   });
-  return { text: resolved.text, warnings: resolved.warnings };
+  return { text: resolved.text, sources: resolved.sources, warnings: resolved.warnings };
 }
 
 /**
- * Resolves user content from options, returning text and warnings.
+ * Resolves user content from options, returning text, sources, and warnings.
  * Shared between initial load, reload, and per-call refresh.
  */
-async function resolveUser(
-  options: CreateSoulOptions,
-): Promise<{ readonly text: string; readonly warnings: readonly string[] }> {
-  if (options.user === undefined) return { text: "", warnings: [] };
+async function resolveUser(options: CreateSoulOptions): Promise<ResolveResult> {
+  if (options.user === undefined) return { text: "", sources: [], warnings: [] };
   const input = extractInput(options.user);
   const maxTokens = extractMaxTokens(options.user, DEFAULT_USER_MAX_TOKENS);
-  const resolved = await resolveUserContent({
+  const resolved: ResolvedContent = await resolveUserContent({
     input,
     maxTokens,
     label: "user",
     basePath: options.basePath,
   });
-  return { text: resolved.text, warnings: resolved.warnings };
+  return { text: resolved.text, sources: resolved.sources, warnings: resolved.warnings };
 }
 
 function emitWarnings(warnings: readonly string[]): void {
@@ -107,11 +115,30 @@ function emitWarnings(warnings: readonly string[]): void {
 }
 
 /**
+ * Builds a Set of tracked file paths from resolved sources.
+ * Excludes "inline" (no file to watch).
+ */
+function buildWatchedPaths(
+  soulSources: readonly string[],
+  userSources: readonly string[],
+): Set<string> {
+  const paths = new Set<string>();
+  for (const s of soulSources) {
+    if (s !== "inline") paths.add(s);
+  }
+  for (const s of userSources) {
+    if (s !== "inline") paths.add(s);
+  }
+  return paths;
+}
+
+/**
  * Creates a soul middleware that injects agent personality and user context
  * into model calls as a system message prefix.
  *
- * Returns `SoulMiddleware` — a `KoiMiddleware` with an additional `reload()` method.
- * Call `reload()` after HITL-approved writes to soul/user markdown files.
+ * Returns `SoulMiddleware` — a `KoiMiddleware` with `reload()` and auto-reload
+ * via `wrapToolCall`. When `fs_write` targets a tracked soul/user file and
+ * succeeds (meaning it passed permissions/HITL), the middleware auto-reloads.
  *
  * Soul and user content are resolved at factory time and cached in the closure.
  * User content can optionally be refreshed per-call with `refreshUser: true`.
@@ -121,10 +148,10 @@ export async function createSoulMiddleware(options: CreateSoulOptions): Promise<
   const { refreshUser = false } = options;
 
   // Mutable closure state — updated atomically by reload()
-  // let: reassigned by reload()
   let soulText = ""; // let: reassigned by reload()
   let userText = ""; // let: reassigned by reload()
   let cachedMessage: InboundMessage | undefined; // let: reassigned by reload()
+  let watchedPaths: Set<string>; // let: rebuilt on reload() when directory contents change
 
   // Initial resolution
   const soulResult = await resolveSoul(options);
@@ -136,6 +163,7 @@ export async function createSoulMiddleware(options: CreateSoulOptions): Promise<
   emitWarnings(userResult.warnings);
 
   cachedMessage = buildSoulMessage(soulText, userText);
+  watchedPaths = buildWatchedPaths(soulResult.sources, userResult.sources);
 
   async function getSoulMessage(): Promise<InboundMessage | undefined> {
     if (!refreshUser || options.user === undefined) return cachedMessage;
@@ -145,19 +173,40 @@ export async function createSoulMiddleware(options: CreateSoulOptions): Promise<
     return buildSoulMessage(soulText, resolved.text);
   }
 
+  async function reload(): Promise<void> {
+    const [newSoul, newUser] = await Promise.all([resolveSoul(options), resolveUser(options)]);
+    emitWarnings(newSoul.warnings);
+    emitWarnings(newUser.warnings);
+
+    // Atomic update — text, message, and watched paths all change together
+    soulText = newSoul.text;
+    userText = newUser.text;
+    cachedMessage = buildSoulMessage(soulText, userText);
+    watchedPaths = buildWatchedPaths(newSoul.sources, newUser.sources);
+  }
+
   return {
     name: "soul",
     priority: 500,
 
-    async reload(): Promise<void> {
-      const [newSoul, newUser] = await Promise.all([resolveSoul(options), resolveUser(options)]);
-      emitWarnings(newSoul.warnings);
-      emitWarnings(newUser.warnings);
+    reload,
 
-      // Atomic update — both change together
-      soulText = newSoul.text;
-      userText = newUser.text;
-      cachedMessage = buildSoulMessage(soulText, userText);
+    async wrapToolCall(
+      _ctx: TurnContext,
+      request: ToolRequest,
+      next: ToolHandler,
+    ): Promise<ToolResponse> {
+      const response = await next(request);
+
+      // Auto-reload after successful fs_write to a tracked soul/user file
+      if (request.toolId === "fs_write" && watchedPaths.size > 0) {
+        const writtenPath = typeof request.input.path === "string" ? request.input.path : undefined;
+        if (writtenPath !== undefined && watchedPaths.has(writtenPath)) {
+          await reload();
+        }
+      }
+
+      return response;
     },
 
     async wrapModelCall(

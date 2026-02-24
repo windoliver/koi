@@ -74,9 +74,9 @@ describe("createSoulMiddleware", () => {
     expect(mw.priority).toBe(500);
   });
 
-  test("does not define wrapToolCall", async () => {
+  test("defines wrapToolCall for auto-reload", async () => {
     const mw = await createSoulMiddleware({ basePath: tmpDir });
-    expect(mw.wrapToolCall).toBeUndefined();
+    expect(mw.wrapToolCall).toBeDefined();
   });
 
   test("no-op when no soul or user configured", async () => {
@@ -465,6 +465,165 @@ describe("createSoulMiddleware — reload", () => {
     const mw: SoulMiddleware = await createSoulMiddleware({ basePath: tmpDir });
     expect(mw.name).toBe("soul");
     expect(typeof mw.reload).toBe("function");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createSoulMiddleware — wrapToolCall auto-reload
+// ---------------------------------------------------------------------------
+
+describe("createSoulMiddleware — wrapToolCall auto-reload", () => {
+  test("auto-reloads after fs_write to tracked soul file", async () => {
+    await writeFile(join(tmpDir, "SOUL.md"), "Original soul");
+
+    const mw = await createSoulMiddleware({
+      soul: "SOUL.md",
+      basePath: tmpDir,
+    });
+    const ctx = createMockTurnContext();
+    const spy = createSpyModelHandler();
+    const request: ModelRequest = {
+      messages: [{ senderId: "user", timestamp: 1, content: [{ kind: "text", text: "hi" }] }],
+    };
+
+    // Before — Original soul
+    await mw.wrapModelCall?.(ctx, request, spy.handler);
+    const before = spy.calls[0]?.messages[0];
+    if (before?.content[0]?.kind === "text") {
+      expect(before.content[0].text).toContain("Original soul");
+    }
+
+    // Simulate fs_write to SOUL.md (as if HITL approved it)
+    await writeFile(join(tmpDir, "SOUL.md"), "Updated soul via forge");
+    const soulPath = join(tmpDir, "SOUL.md");
+
+    // Pass fs_write through wrapToolCall
+    const toolNext = async (_req: import("@koi/core").ToolRequest) => ({
+      output: { ok: true },
+    });
+    await mw.wrapToolCall?.(ctx, { toolId: "fs_write", input: { path: soulPath } }, toolNext);
+
+    // After auto-reload — sees updated soul
+    await mw.wrapModelCall?.(ctx, request, spy.handler);
+    const after = spy.calls[1]?.messages[0];
+    if (after?.content[0]?.kind === "text") {
+      expect(after.content[0].text).toContain("Updated soul via forge");
+    }
+  });
+
+  test("auto-reloads after fs_write to tracked user file", async () => {
+    await writeFile(join(tmpDir, "SOUL.md"), "Soul");
+    await writeFile(join(tmpDir, "USER.md"), "User v1");
+
+    const mw = await createSoulMiddleware({
+      soul: "SOUL.md",
+      user: "USER.md",
+      basePath: tmpDir,
+    });
+    const ctx = createMockTurnContext();
+    const spy = createSpyModelHandler();
+    const request: ModelRequest = {
+      messages: [{ senderId: "user", timestamp: 1, content: [{ kind: "text", text: "hi" }] }],
+    };
+
+    // Simulate fs_write to USER.md
+    await writeFile(join(tmpDir, "USER.md"), "User v2 updated");
+    const userPath = join(tmpDir, "USER.md");
+
+    const toolNext = async (_req: import("@koi/core").ToolRequest) => ({
+      output: { ok: true },
+    });
+    await mw.wrapToolCall?.(ctx, { toolId: "fs_write", input: { path: userPath } }, toolNext);
+
+    // After auto-reload — sees User v2
+    await mw.wrapModelCall?.(ctx, request, spy.handler);
+    const msg = spy.calls[0]?.messages[0];
+    if (msg?.content[0]?.kind === "text") {
+      expect(msg.content[0].text).toContain("User v2 updated");
+    }
+  });
+
+  test("does NOT reload for fs_write to unrelated file", async () => {
+    await writeFile(join(tmpDir, "SOUL.md"), "Original");
+
+    const mw = await createSoulMiddleware({
+      soul: "SOUL.md",
+      basePath: tmpDir,
+    });
+    const ctx = createMockTurnContext();
+    const spy = createSpyModelHandler();
+    const request: ModelRequest = {
+      messages: [{ senderId: "user", timestamp: 1, content: [{ kind: "text", text: "hi" }] }],
+    };
+
+    // Write to SOUL.md on disk (but trigger fs_write for a DIFFERENT path)
+    await writeFile(join(tmpDir, "SOUL.md"), "Sneaky update");
+
+    const toolNext = async (_req: import("@koi/core").ToolRequest) => ({
+      output: { ok: true },
+    });
+    await mw.wrapToolCall?.(
+      ctx,
+      { toolId: "fs_write", input: { path: "/some/other/file.txt" } },
+      toolNext,
+    );
+
+    // Should still see Original (no reload for unrelated path)
+    await mw.wrapModelCall?.(ctx, request, spy.handler);
+    const msg = spy.calls[0]?.messages[0];
+    if (msg?.content[0]?.kind === "text") {
+      expect(msg.content[0].text).toContain("Original");
+    }
+  });
+
+  test("does NOT reload for non-fs_write tool calls", async () => {
+    await writeFile(join(tmpDir, "SOUL.md"), "Original");
+
+    const mw = await createSoulMiddleware({
+      soul: "SOUL.md",
+      basePath: tmpDir,
+    });
+    const ctx = createMockTurnContext();
+
+    // Modify file on disk, then trigger a different tool
+    await writeFile(join(tmpDir, "SOUL.md"), "Sneaky update");
+
+    const toolNext = async (_req: import("@koi/core").ToolRequest) => ({
+      output: { ok: true },
+    });
+    await mw.wrapToolCall?.(ctx, { toolId: "search", input: { query: "test" } }, toolNext);
+
+    const spy = createSpyModelHandler();
+    await mw.wrapModelCall?.(
+      ctx,
+      { messages: [{ senderId: "user", timestamp: 1, content: [{ kind: "text", text: "hi" }] }] },
+      spy.handler,
+    );
+
+    const msg = spy.calls[0]?.messages[0];
+    if (msg?.content[0]?.kind === "text") {
+      expect(msg.content[0].text).toContain("Original");
+    }
+  });
+
+  test("passes tool call through to next handler", async () => {
+    const mw = await createSoulMiddleware({ basePath: tmpDir });
+    const ctx = createMockTurnContext();
+
+    let nextCalled = false;
+    const toolNext = async (_req: import("@koi/core").ToolRequest) => {
+      nextCalled = true;
+      return { output: { result: "ok" } };
+    };
+
+    const response = await mw.wrapToolCall?.(
+      ctx,
+      { toolId: "search", input: { query: "test" } },
+      toolNext,
+    );
+
+    expect(nextCalled).toBe(true);
+    expect((response?.output as { result: string }).result).toBe("ok");
   });
 });
 
