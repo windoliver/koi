@@ -30,6 +30,7 @@ import type {
   MessageHandler,
   OutboundMessage,
 } from "@koi/core";
+import { swallowError } from "@koi/errors";
 import { renderBlocks } from "./render-blocks.js";
 
 /**
@@ -199,7 +200,7 @@ export function createChannelAdapter<E>(config: ChannelAdapterConfig<E>): Channe
         try {
           await platformSend(msg);
         } catch (e: unknown) {
-          console.error(`[channel:${name}] failed to drain queued message:`, e);
+          swallowError(e, { package: "channel-base", operation: `drain[${name}]` });
         }
       }
     }

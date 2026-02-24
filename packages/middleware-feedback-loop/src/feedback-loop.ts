@@ -12,7 +12,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core/middleware";
-import { KoiRuntimeError } from "@koi/errors";
+import { extractMessage, KoiRuntimeError } from "@koi/errors";
 import type { FeedbackLoopConfig } from "./config.js";
 import { runGates } from "./gate.js";
 import { defaultRepairStrategy } from "./repair.js";
@@ -142,11 +142,7 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
         // Record failure for forged tools
         if (isForgedTool && healthTracker !== undefined) {
           const latencyMs = healthClock() - start;
-          healthTracker.recordFailure(
-            toolId,
-            latencyMs,
-            e instanceof Error ? e.message : String(e),
-          );
+          healthTracker.recordFailure(toolId, latencyMs, extractMessage(e));
           await healthTracker.checkAndQuarantine(toolId);
         }
         throw e;

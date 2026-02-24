@@ -3,21 +3,27 @@
  * When maxTokens is set, reads only the needed bytes via Bun.file().slice().
  */
 
+import { mapFsError } from "@koi/errors";
 import { CHARS_PER_TOKEN } from "../estimator.js";
 import type { FileSource, SourceResult } from "../types.js";
 
 /** Resolves a file source by reading from the filesystem. */
 export async function resolveFileSource(source: FileSource): Promise<SourceResult> {
-  const file = Bun.file(source.path);
-  const content =
-    source.maxTokens !== undefined
-      ? await file.slice(0, source.maxTokens * CHARS_PER_TOKEN).text()
-      : await file.text();
+  try {
+    const file = Bun.file(source.path);
+    const content =
+      source.maxTokens !== undefined
+        ? await file.slice(0, source.maxTokens * CHARS_PER_TOKEN).text()
+        : await file.text();
 
-  return {
-    label: source.label ?? source.path,
-    content,
-    tokens: 0,
-    source,
-  };
+    return {
+      label: source.label ?? source.path,
+      content,
+      tokens: 0,
+      source,
+    };
+  } catch (e: unknown) {
+    const koiError = mapFsError(e, source.path);
+    throw koiError;
+  }
 }

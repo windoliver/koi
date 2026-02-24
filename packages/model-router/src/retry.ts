@@ -6,7 +6,7 @@
  */
 
 import type { KoiError, KoiErrorCode } from "@koi/core";
-import { toKoiError } from "./error-utils.js";
+import { toKoiError } from "@koi/errors";
 
 export interface RetryConfig {
   readonly maxRetries: number;

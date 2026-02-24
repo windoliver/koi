@@ -73,14 +73,14 @@ const IPC_TO_KOI_CODE: Readonly<Record<IpcErrorCode, KoiError["code"]>> = {
 };
 
 const IPC_TO_KOI_RETRYABLE: Readonly<Record<IpcErrorCode, boolean>> = {
-  TIMEOUT: true,
-  OOM: false,
-  CRASH: false,
-  SPAWN_FAILED: true,
-  DESERIALIZE: false,
-  RESULT_TOO_LARGE: false,
-  WORKER_ERROR: false,
-  DISPOSED: false,
+  TIMEOUT: true, // matches RETRYABLE_DEFAULTS.TIMEOUT
+  OOM: false, // matches RETRYABLE_DEFAULTS.EXTERNAL
+  CRASH: false, // matches RETRYABLE_DEFAULTS.EXTERNAL
+  SPAWN_FAILED: true, // override: transient — worker restart may succeed
+  DESERIALIZE: false, // matches RETRYABLE_DEFAULTS.INTERNAL
+  RESULT_TOO_LARGE: false, // matches RETRYABLE_DEFAULTS.VALIDATION
+  WORKER_ERROR: false, // matches RETRYABLE_DEFAULTS.EXTERNAL
+  DISPOSED: false, // matches RETRYABLE_DEFAULTS.INTERNAL
 };
 
 export function ipcErrorToKoiError(error: IpcError): KoiError {

@@ -7,8 +7,8 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
+import { toKoiError } from "@koi/errors";
 import type { CircuitBreaker } from "./circuit-breaker.js";
-import { toKoiError } from "./error-utils.js";
 
 export interface FallbackTarget {
   readonly id: string;

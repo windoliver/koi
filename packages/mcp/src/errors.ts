@@ -7,6 +7,7 @@
 
 import type { KoiError, KoiErrorCode } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core";
+import { extractMessage } from "@koi/errors";
 
 // ---------------------------------------------------------------------------
 // Error message patterns
@@ -42,17 +43,6 @@ const ERROR_PATTERNS: readonly ErrorPattern[] = [
 // ---------------------------------------------------------------------------
 // Core mapping function
 // ---------------------------------------------------------------------------
-
-/** Extracts a message string from an unknown error value. */
-function extractMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (typeof error === "string") {
-    return error;
-  }
-  return String(error);
-}
 
 /**
  * Maps an MCP SDK error to a KoiError.

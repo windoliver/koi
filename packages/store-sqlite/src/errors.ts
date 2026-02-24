@@ -2,32 +2,88 @@
  * SQLite error mapping utilities.
  *
  * Maps bun:sqlite error messages to KoiError codes with proper
- * retryability and context. Provides wrapSqlite for ergonomic
- * try/catch → Result conversion.
+ * retryability and context. Uses a pattern table for exhaustive coverage.
  */
 
-import type { KoiError, Result } from "@koi/core";
-import { conflict, internal, permission, timeout } from "@koi/core";
+import type { KoiError, KoiErrorCode, Result } from "@koi/core";
+import { RETRYABLE_DEFAULTS } from "@koi/core";
+import { extractMessage } from "@koi/errors";
+
+// ---------------------------------------------------------------------------
+// Pattern table
+// ---------------------------------------------------------------------------
+
+interface SqlitePattern {
+  readonly pattern: RegExp;
+  readonly code: KoiErrorCode;
+  readonly retryable: boolean;
+}
+
+const SQLITE_PATTERNS: readonly SqlitePattern[] = [
+  {
+    pattern: /UNIQUE constraint|SQLITE_CONSTRAINT_UNIQUE/i,
+    code: "CONFLICT",
+    retryable: RETRYABLE_DEFAULTS.CONFLICT,
+  },
+  {
+    pattern: /PRIMARY KEY constraint|SQLITE_CONSTRAINT_PRIMARYKEY/i,
+    code: "CONFLICT",
+    retryable: RETRYABLE_DEFAULTS.CONFLICT,
+  },
+  { pattern: /SQLITE_CONSTRAINT/i, code: "CONFLICT", retryable: RETRYABLE_DEFAULTS.CONFLICT },
+  {
+    pattern: /database is locked|SQLITE_BUSY/i,
+    code: "TIMEOUT",
+    retryable: RETRYABLE_DEFAULTS.TIMEOUT,
+  },
+  {
+    pattern: /SQLITE_READONLY|readonly database/i,
+    code: "PERMISSION",
+    retryable: RETRYABLE_DEFAULTS.PERMISSION,
+  },
+  {
+    pattern: /SQLITE_CORRUPT|database disk image/i,
+    code: "INTERNAL",
+    retryable: RETRYABLE_DEFAULTS.INTERNAL,
+  },
+  { pattern: /SQLITE_CANTOPEN/i, code: "NOT_FOUND", retryable: RETRYABLE_DEFAULTS.NOT_FOUND },
+  { pattern: /SQLITE_FULL/i, code: "INTERNAL", retryable: RETRYABLE_DEFAULTS.INTERNAL },
+  { pattern: /SQLITE_IOERR/i, code: "INTERNAL", retryable: RETRYABLE_DEFAULTS.INTERNAL },
+  { pattern: /SQLITE_NOTADB/i, code: "INTERNAL", retryable: RETRYABLE_DEFAULTS.INTERNAL },
+];
+
+// ---------------------------------------------------------------------------
+// Core mapping function
+// ---------------------------------------------------------------------------
 
 /** Map a caught SQLite error to a KoiError with appropriate code. */
 export function mapSqliteError(e: unknown, context: string): KoiError {
-  const message = e instanceof Error ? e.message : String(e);
+  const message = extractMessage(e);
 
-  if (message.includes("UNIQUE constraint") || message.includes("SQLITE_CONSTRAINT")) {
-    return conflict(context, `SQLite constraint violation: ${context}`);
-  }
-  if (message.includes("database is locked") || message.includes("SQLITE_BUSY")) {
-    return timeout(`SQLite busy: ${context}`);
-  }
-  if (message.includes("SQLITE_READONLY") || message.includes("readonly database")) {
-    return permission(`SQLite readonly: ${context}`);
-  }
-  if (message.includes("SQLITE_CORRUPT") || message.includes("database disk image")) {
-    return internal(`SQLite corrupt: ${context}`, e);
+  for (const { pattern, code, retryable } of SQLITE_PATTERNS) {
+    if (pattern.test(message)) {
+      return {
+        code,
+        message: `SQLite [${context}]: ${message}`,
+        retryable,
+        cause: e instanceof Error ? e : undefined,
+        context: { operation: context },
+      };
+    }
   }
 
-  return internal(`SQLite error in ${context}: ${message}`, e);
+  return {
+    code: "INTERNAL",
+    message: `SQLite error in ${context}: ${message}`,
+    retryable: RETRYABLE_DEFAULTS.INTERNAL,
+    cause: e instanceof Error ? e : undefined,
+    context: { operation: context },
+  };
 }
+
+// ---------------------------------------------------------------------------
+// Result wrapper
+// ---------------------------------------------------------------------------
 
 /** Execute a synchronous SQLite operation and return a Result. */
 export function wrapSqlite<T>(fn: () => T, context: string): Result<T, KoiError> {

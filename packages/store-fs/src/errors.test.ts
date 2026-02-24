@@ -26,6 +26,7 @@ describe("mapFsError", () => {
     const result = mapFsError(err, "test.json");
     expect(result.code).toBe("INTERNAL");
     expect(result.message).toContain("Disk full");
+    expect(result.message).toContain("test.json");
   });
 
   test("EISDIR maps to INTERNAL", () => {
@@ -33,6 +34,7 @@ describe("mapFsError", () => {
     const result = mapFsError(err, "test.json");
     expect(result.code).toBe("INTERNAL");
     expect(result.message).toContain("directory");
+    expect(result.message).toContain("test.json");
   });
 
   test("unknown error maps to INTERNAL", () => {

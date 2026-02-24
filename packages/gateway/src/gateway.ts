@@ -4,6 +4,7 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
+import { swallowError } from "@koi/errors";
 import type { GatewayAuthenticator, HandshakeOptions } from "./auth.js";
 import { handleHandshake, startHeartbeatSweep } from "./auth.js";
 import { createBackpressureMonitor } from "./backpressure.js";
@@ -89,8 +90,10 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
     for (const handler of frameHandlers) {
       try {
         handler(session, frame);
-      } catch (_err: unknown) {
-        // Isolate handler exceptions so one bad handler doesn't break others
+      } catch (err: unknown) {
+        // Isolate handler exceptions so one bad handler doesn't break others.
+        // Log for observability — swallowing completely hides bugs.
+        swallowError(err, { package: "gateway", operation: "dispatchFrame" });
       }
     }
   }

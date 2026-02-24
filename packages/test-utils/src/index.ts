@@ -17,6 +17,7 @@ export {
   createMockEngineAdapter,
   createMockStatefulEngine,
 } from "./agents.js";
+export { assertKoiError } from "./assert-koi-error.js";
 export type { CapturedOutput } from "./capture-output.js";
 export { captureOutput } from "./capture-output.js";
 export type { ChannelContractOptions } from "./channel-contract.js";
