@@ -27,13 +27,28 @@ function makeMockLocator(opts?: { fails?: boolean }) {
   };
 }
 
+// Default ARIA snapshot YAML returned by the mock locator when no override is given.
+const DEFAULT_ARIA_YAML = '- button "Submit"\n- link "Home"';
+
 function makeMockPage(opts?: {
-  a11ySnapshotResult?: object | null;
+  /** YAML string returned by locator.ariaSnapshot(). Pass null to simulate empty snapshot. */
+  a11ySnapshotResult?: string | null;
   gotoFails?: boolean;
   titleValue?: string;
   urlValue?: string;
 }) {
   const locator = makeMockLocator();
+  const ariaYaml =
+    opts?.a11ySnapshotResult !== undefined ? opts.a11ySnapshotResult : DEFAULT_ARIA_YAML;
+  // Locator returned by page.locator(selector) — used for ariaSnapshot and scoped snaps.
+  const bodyLocator = {
+    ariaSnapshot: mock(() => Promise.resolve(ariaYaml ?? "")),
+    first: mock(() => ({
+      ariaSnapshot: mock(() => Promise.resolve(ariaYaml ?? "")),
+      elementHandle: mock(() => Promise.resolve(null)),
+    })),
+    elementHandle: mock(() => Promise.resolve(null)),
+  };
   const page = {
     url: mock(() => opts?.urlValue ?? "https://example.com"),
     title: mock(() => Promise.resolve(opts?.titleValue ?? "Test Page")),
@@ -42,31 +57,13 @@ function makeMockPage(opts?: {
         ? Promise.reject(new Error("navigation failed"))
         : Promise.resolve({ ok: () => true, status: () => 200 }),
     ),
-    accessibility: {
-      snapshot: mock(() =>
-        Promise.resolve(
-          opts?.a11ySnapshotResult !== undefined
-            ? opts.a11ySnapshotResult
-            : {
-                role: "WebArea",
-                name: "Test Page",
-                children: [
-                  { role: "button", name: "Submit", children: [] },
-                  { role: "link", name: "Home", children: [] },
-                ],
-              },
-        ),
-      ),
-    },
     getByRole: mock((_role: string, _opts?: object) => {
       return {
         first: () => locator,
         ...locator,
       };
     }),
-    locator: mock(() => ({
-      first: () => ({ elementHandle: mock(() => Promise.resolve(null)) }),
-    })),
+    locator: mock(() => bodyLocator),
     mouse: { wheel: mock(() => Promise.resolve()) },
     keyboard: { press: mock(() => Promise.resolve()) },
     waitForTimeout: mock(() => Promise.resolve()),
@@ -101,7 +98,7 @@ function makeMockBrowser(context: BrowserContext) {
 // ---------------------------------------------------------------------------
 
 function buildDriver(opts?: {
-  a11ySnapshotResult?: object | null;
+  a11ySnapshotResult?: string | null;
   gotoFails?: boolean;
   titleValue?: string;
 }) {
@@ -123,7 +120,7 @@ describe("createPlaywrightBrowserDriver", () => {
       const result = await driver.snapshot();
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      expect(result.value.snapshot).toContain("WebArea");
+      expect(result.value.snapshot).toContain("button");
       expect(result.value.snapshotId).toMatch(/^snap-\d+$/);
       expect(result.value.url).toBe("https://example.com");
       expect(result.value.title).toBe("Test Page");
