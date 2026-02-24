@@ -1,0 +1,48 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/validation API surface . has stable type surface 1`] = `
+"import { Result, BrickArtifact, KoiError } from '@koi/core';
+import { z } from 'zod';
+
+/**
+ * Lightweight type guard for BrickArtifact loaded from storage.
+ *
+ * Validates discriminant fields and kind-specific properties
+ * without external dependencies. Returns Result<BrickArtifact, KoiError>.
+ */
+
+/**
+ * Validate parsed JSON data as a BrickArtifact.
+ * Returns the validated artifact or an INTERNAL error describing the issue.
+ *
+ * @param data - Parsed JSON to validate
+ * @param source - Backend-agnostic context for error messages (file path, DB row id, etc.)
+ */
+declare function validateBrickArtifact(data: unknown, source: string): Result<BrickArtifact, KoiError>;
+
+/**
+ * Shared Zod → KoiError validation utilities.
+ *
+ * Eliminates duplication of \`zodToKoiError\` across L2 packages.
+ */
+
+/**
+ * Converts a Zod validation error into a \`KoiError\` with code \`VALIDATION\`.
+ *
+ * @param zodError - The Zod error to convert.
+ * @param prefix - Optional prefix for the error message (e.g., "MCP config validation failed").
+ *                 Defaults to "Validation failed".
+ */
+declare function zodToKoiError(zodError: z.core.$ZodError, prefix?: string): KoiError;
+/**
+ * Validates \`raw\` input against a Zod schema and returns a \`Result<T, KoiError>\`.
+ *
+ * @param schema - Zod schema to validate against.
+ * @param raw - Unknown input to validate.
+ * @param prefix - Optional error message prefix.
+ */
+declare function validateWith<T>(schema: z.ZodType<T>, raw: unknown, prefix?: string): Result<T, KoiError>;
+
+export { validateBrickArtifact, validateWith, zodToKoiError };
+"
+`;

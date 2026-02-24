@@ -1,0 +1,82 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/manifest API surface . has stable type surface 1`] = `
+"import { AgentManifest, Result, KoiError } from '@koi/core';
+
+/**
+ * Types for the manifest loader output.
+ *
+ * \`LoadedManifest\` extends L0's \`AgentManifest\` with extension fields
+ * that exist in koi.yaml but are not part of the core contract.
+ */
+
+/**
+ * Typed deploy configuration after validation and defaults.
+ */
+interface DeployConfig {
+    readonly port: number;
+    readonly restart: "on-failure" | "always" | "no";
+    readonly restartDelaySec: number;
+    readonly envFile?: string | undefined;
+    readonly logDir?: string | undefined;
+    readonly system: boolean;
+}
+/**
+ * Extension fields that exist in koi.yaml but are outside L0 core contracts.
+ * All values are validated by the schema layer.
+ */
+interface ManifestExtensions {
+    readonly engine?: unknown;
+    readonly schedule?: unknown;
+    readonly webhooks?: unknown;
+    readonly forge?: unknown;
+    readonly context?: unknown;
+    readonly soul?: unknown;
+    readonly user?: unknown;
+    readonly deploy?: DeployConfig | undefined;
+}
+/**
+ * The fully loaded and validated agent manifest.
+ * Combines L0 \`AgentManifest\` with extension fields.
+ */
+type LoadedManifest = AgentManifest & ManifestExtensions;
+/** A warning produced during manifest loading (non-fatal). */
+interface ManifestWarning {
+    readonly path: string;
+    readonly message: string;
+    readonly suggestion?: string;
+}
+/** Successful result of loading a manifest. */
+interface LoadResult {
+    readonly manifest: LoadedManifest;
+    readonly warnings: readonly ManifestWarning[];
+}
+
+/**
+ * Main loader — reads, interpolates, parses, validates, and transforms koi.yaml manifests.
+ */
+
+/**
+ * Loads and validates a koi.yaml manifest from a file path.
+ *
+ * Pipeline: read file → interpolate env → parse YAML → validate → transform → return.
+ *
+ * @param filePath - Absolute or relative path to the koi.yaml file
+ * @param env - Environment variables map (defaults to \`process.env\`)
+ * @returns \`Result<LoadResult, KoiError>\` — success with manifest + warnings, or validation error
+ */
+declare function loadManifest(filePath: string, env?: Readonly<Record<string, string | undefined>>): Promise<Result<LoadResult, KoiError>>;
+/**
+ * Loads and validates a koi.yaml manifest from a raw YAML string.
+ *
+ * Synchronous variant — same pipeline minus file I/O. Useful for testing and embedding.
+ *
+ * @param yaml - Raw YAML string (may contain \`\${VAR}\` references)
+ * @param env - Environment variables map (defaults to \`process.env\`)
+ * @returns \`Result<LoadResult, KoiError>\` — success with manifest + warnings, or validation error
+ */
+declare function loadManifestFromString(yaml: string, env?: Readonly<Record<string, string | undefined>>): Result<LoadResult, KoiError>;
+
+export { type DeployConfig, type LoadResult, type LoadedManifest, type ManifestWarning, loadManifest, loadManifestFromString };
+"
+`;

@@ -1,0 +1,35 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/hash API surface . has stable type surface 1`] = `
+"/**
+ * Deterministic SHA-256 content hash for arbitrary data.
+ *
+ * Produces identical hashes for semantically equivalent objects regardless
+ * of key insertion order. Uses Bun.CryptoHasher (sync, no Web Crypto overhead).
+ */
+/**
+ * Compute a deterministic SHA-256 content hash for arbitrary data.
+ *
+ * @param data - Any JSON-serializable value.
+ * @returns 64-character lowercase hex digest.
+ */
+declare function computeContentHash(data: unknown): string;
+
+/**
+ * FNV-1a 32-bit hash — shared utility for L1 and L2 packages.
+ *
+ * Pure function with zero dependencies.
+ */
+declare function fnv1a(input: string): number;
+
+/**
+ * ULID generator — crypto-random, time-sortable, 26-char Crockford Base32.
+ *
+ * No external dependencies. Uses crypto.getRandomValues() for randomness.
+ */
+/** Generate a ULID — 26-char, time-sortable, crypto-random unique ID. */
+declare function generateUlid(): string;
+
+export { computeContentHash, fnv1a, generateUlid };
+"
+`;

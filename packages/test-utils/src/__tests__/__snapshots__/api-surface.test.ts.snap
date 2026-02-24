@@ -1,0 +1,463 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/test-utils API surface . has stable type surface 1`] = `
+"import { ProcessId, AgentManifest, ProcessState, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, ChannelAdapter, MemoryResult, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, SessionPersistence, SnapshotChainStore, ForgeStore } from '@koi/core';
+import { Result, KoiError } from '@koi/core/errors';
+import { SessionContext, TurnContext, ModelHandler, ModelRequest, ToolHandler, ToolRequest, ModelResponse, ToolResponse, KoiMiddleware } from '@koi/core/middleware';
+import { Resolver } from '@koi/core/resolver';
+
+/**
+ * Mock agent and engine adapter factories for testing.
+ *
+ * Provides configurable mocks for the ECS Agent entity and EngineAdapter,
+ * usable across all packages that depend on @koi/core.
+ */
+
+/**
+ * Deterministic, JSON-serializable state for the mock stateful engine.
+ *
+ * Used by \`createMockStatefulEngine\` to track calls and provide verifiable
+ * state for round-trip persistence tests.
+ */
+interface MockEngineData {
+    readonly turnCount: number;
+    readonly lastInput: string | null;
+    readonly customData: unknown;
+}
+interface MockAgentOptions {
+    readonly pid?: Partial<ProcessId>;
+    readonly manifest?: Partial<AgentManifest>;
+    readonly state?: ProcessState;
+    readonly components?: ReadonlyMap<string, unknown>;
+}
+/**
+ * Creates a mock Agent ECS entity for testing.
+ *
+ * Returns an immutable Agent that satisfies the @koi/core Agent interface.
+ * All ECS query methods operate on the provided components map.
+ */
+declare function createMockAgent(options?: MockAgentOptions): Agent;
+interface MockEngineAdapterOptions {
+    readonly engineId?: string;
+    /** Events to yield from stream(). Defaults to a single "done" event. */
+    readonly events?: readonly EngineEvent[];
+    /** Whether saveState/loadState are available. */
+    readonly stateful?: boolean;
+    /** Custom dispose behavior. */
+    readonly onDispose?: () => Promise<void>;
+}
+/**
+ * Creates a mock EngineAdapter for testing.
+ *
+ * The stream() method yields the provided events sequence (defaults to a
+ * single "done" event). Tracks dispose() calls for assertion purposes.
+ */
+declare function createMockEngineAdapter(options?: MockEngineAdapterOptions): EngineAdapter & {
+    readonly disposeCalls: readonly unknown[];
+    readonly streamCalls: readonly EngineInput[];
+};
+interface MockStatefulEngineOptions {
+    readonly engineId?: string;
+    /** Initial custom data stored alongside turn tracking. Defaults to \`null\`. */
+    readonly initialCustomData?: unknown;
+}
+/**
+ * A stateful engine adapter whose state is fully deterministic and
+ * JSON-round-trip safe. Designed for testing session-store persistence,
+ * checkpoint save/load, and crash recovery flows.
+ *
+ * Behavior:
+ * - \`stream()\` increments \`turnCount\` and captures the input text (or "resume"
+ *   for resume inputs, "messages" for message inputs).
+ * - \`saveState()\` returns the current \`MockEngineData\` as \`EngineState.data\`.
+ * - \`loadState()\` restores from a previously saved \`EngineState\`.
+ * - State survives \`JSON.parse(JSON.stringify(state))\` without data loss.
+ */
+declare function createMockStatefulEngine(options?: MockStatefulEngineOptions): EngineAdapter & {
+    /** Read current state without going through saveState(). */
+    readonly currentData: () => MockEngineData;
+};
+
+/**
+ * Test assertion helper for KoiError validation.
+ *
+ * Provides a reusable assertion that verifies a value conforms to the
+ * KoiError shape with valid code, message, and retryable fields.
+ */
+
+/** Assert a value is a valid KoiError with expected properties. */
+declare function assertKoiError(error: unknown, expected?: {
+    readonly code?: KoiErrorCode;
+    readonly retryable?: boolean;
+}): void;
+
+/**
+ * Assertion helpers for Result<T, KoiError> type narrowing in tests.
+ *
+ * These TypeScript assertion functions eliminate nested \`if (result.ok)\`
+ * guard clauses, making test code more readable and providing better
+ * error messages on failure.
+ */
+
+/**
+ * Assert that a Result is ok and narrow its type.
+ *
+ * @throws Error if the result is an error, including the error code and message.
+ */
+declare function assertOk<T>(result: Result<T, KoiError>): asserts result is {
+    readonly ok: true;
+    readonly value: T;
+};
+/**
+ * Assert that a Result is an error and narrow its type.
+ *
+ * @throws Error if the result is ok, including a JSON representation of the value.
+ */
+declare function assertErr<T>(result: Result<T, KoiError>): asserts result is {
+    readonly ok: false;
+    readonly error: KoiError;
+};
+
+/**
+ * Output capture helper for tests.
+ *
+ * Intercepts process.stdout/stderr writes during test execution.
+ */
+interface CapturedOutput {
+    readonly stdout: string;
+    readonly stderr: string;
+    readonly restore: () => void;
+}
+/**
+ * Captures writes to process.stdout and process.stderr.
+ *
+ * Call \`restore()\` when done to re-attach original streams.
+ * Best used in a try/finally block or beforeEach/afterEach.
+ */
+declare function captureOutput(): CapturedOutput;
+
+/**
+ * Channel adapter contract test suite.
+ *
+ * Validates that any ChannelAdapter implementation satisfies the L0 contract.
+ * Usage: import { testChannelAdapter } from "@koi/test-utils" and call it
+ * inside a describe() block with a factory function.
+ */
+
+interface ChannelContractOptions {
+    /** Factory that creates a fresh adapter instance for each test. */
+    readonly createAdapter: () => ChannelAdapter | Promise<ChannelAdapter>;
+    /**
+     * Optional: injects a simulated inbound message to test handler dispatch.
+     * Required for event-delivery contract tests (handler-throws isolation,
+     * reconnect cycle, pre-connect handler registration, idempotent connect).
+     * If not provided, those tests are skipped.
+     */
+    readonly injectMessage?: (adapter: ChannelAdapter) => Promise<void>;
+    /** Timeout for each test in milliseconds. Defaults to 5_000. */
+    readonly timeoutMs?: number;
+}
+/**
+ * Runs the channel adapter contract test suite.
+ *
+ * Call this inside a \`describe()\` block. It will register tests that verify
+ * the adapter satisfies all L0 contract invariants.
+ */
+declare function testChannelAdapter(options: ChannelContractOptions): void;
+
+/**
+ * Mock component factories for testing.
+ *
+ * Provides configurable mock implementations of singleton components
+ * defined in @koi/core's ECS layer.
+ */
+
+interface MockMemoryComponentOptions {
+    /** Results to return from recall(). Defaults to empty array. */
+    readonly results?: readonly MemoryResult[];
+    /** If provided, recall() will throw this error. */
+    readonly recallError?: Error;
+}
+/**
+ * Creates a mock MemoryComponent for testing.
+ *
+ * By default returns empty recall results. Configure via options
+ * to return specific results or simulate errors.
+ *
+ * Returns the component plus tracking arrays for assertions.
+ */
+declare function createMockMemoryComponent(options?: MockMemoryComponentOptions): MemoryComponent & {
+    readonly recallCalls: readonly string[];
+    readonly storeCalls: readonly string[];
+};
+
+/**
+ * Config test helpers — factory functions for test fixtures.
+ */
+
+/**
+ * Creates a KoiConfig for testing with optional overrides.
+ *
+ * Uses minimal/safe defaults (logLevel=silent, low limits, forge disabled).
+ */
+declare function createTestConfig(overrides?: Partial<KoiConfig>): KoiConfig;
+/**
+ * Creates a fake ConfigStore<KoiConfig> for testing.
+ *
+ * Returns a fixed config and a no-op subscribe. Useful when code requires
+ * a ConfigStore but you don't need reactivity in tests.
+ */
+declare function createTestConfigStore(overrides?: Partial<KoiConfig>): ConfigStore<KoiConfig>;
+
+/**
+ * Mock context factories for middleware testing.
+ */
+
+declare function createMockSessionContext(overrides?: Partial<SessionContext>): SessionContext;
+declare function createMockTurnContext(overrides?: Partial<TurnContext> & {
+    readonly session?: Partial<SessionContext>;
+}): TurnContext;
+
+/**
+ * Engine adapter contract test suite.
+ *
+ * Validates that any EngineAdapter implementation satisfies the L0 contract.
+ * Usage: import { testEngineAdapter } from "@koi/test-utils" and call it
+ * inside a describe() block with a factory function.
+ */
+
+interface EngineContractOptions {
+    /** Factory that creates a fresh adapter instance for each test. */
+    readonly createAdapter: () => EngineAdapter | Promise<EngineAdapter>;
+    /** Input to feed the adapter during tests. Defaults to a simple text input. */
+    readonly input?: EngineInput;
+    /** Timeout for each test in milliseconds. Defaults to 10_000. */
+    readonly timeoutMs?: number;
+}
+/**
+ * Runs the engine adapter contract test suite.
+ *
+ * Call this inside a \`describe()\` block. It will register tests that verify
+ * the adapter satisfies all L0 contract invariants.
+ */
+declare function testEngineAdapter(options: EngineContractOptions): void;
+
+/**
+ * Reusable contract test suite for EventBackend implementations.
+ *
+ * Accepts a factory that returns an EventBackend (sync or async).
+ * Each test creates a fresh backend instance for isolation.
+ */
+
+/**
+ * Run the EventBackend contract test suite against any implementation.
+ *
+ * The factory can return sync or async. Called once per test for isolation.
+ */
+declare function runEventBackendContractTests(createBackend: () => EventBackend | Promise<EventBackend>): void;
+
+/**
+ * Mock EventBackend for downstream testing.
+ *
+ * Records all operations for assertion. No real subscription delivery.
+ */
+
+interface MockEventBackend extends EventBackend {
+    /** All events successfully appended. */
+    readonly appendedEvents: () => readonly EventEnvelope[];
+    /** Active subscription names. */
+    readonly activeSubscriptions: () => readonly string[];
+    /** All dead-letter entries. */
+    readonly deadLetterEntries: () => readonly DeadLetterEntry[];
+}
+/**
+ * Create a mock EventBackend that records operations.
+ *
+ * Append works (stores in memory), subscribe is a no-op, DLQ is empty.
+ * Use for testing code that *depends on* an EventBackend without needing
+ * real subscription delivery.
+ */
+declare function createMockEventBackend(): MockEventBackend;
+
+/**
+ * Generic factory helper for test fixtures.
+ *
+ * Creates a factory function that returns a new object from defaults,
+ * merged with optional overrides. Eliminates repeated
+ * \`{ ...DEFAULT, ...overrides }\` patterns across test suites.
+ */
+/**
+ * Create a factory function that produces \`T\` instances from defaults + overrides.
+ *
+ * @example
+ * \`\`\`ts
+ * const createUser = createFactory({ name: "Alice", age: 30 });
+ * const user = createUser({ age: 25 }); // { name: "Alice", age: 25 }
+ * \`\`\`
+ */
+declare function createFactory<T extends Record<string, unknown>>(defaults: T): (overrides?: Partial<T>) => T;
+
+/**
+ * Mock and spy handler factories for middleware testing.
+ */
+
+declare function createMockModelHandler(response?: Partial<ModelResponse>): ModelHandler;
+declare function createMockToolHandler(response?: Partial<ToolResponse>): ToolHandler;
+interface SpyModelHandler {
+    readonly handler: ModelHandler;
+    readonly calls: readonly ModelRequest[];
+}
+declare function createSpyModelHandler(response?: Partial<ModelResponse>): SpyModelHandler;
+interface SpyToolHandler {
+    readonly handler: ToolHandler;
+    readonly calls: readonly ToolRequest[];
+}
+declare function createSpyToolHandler(response?: Partial<ToolResponse>): SpyToolHandler;
+
+/**
+ * Middleware contract test suite.
+ *
+ * Validates that any KoiMiddleware implementation satisfies the L0 contract.
+ * Usage: import { testMiddlewareContract } from "@koi/test-utils" and call it
+ * inside a describe() block with a factory function.
+ */
+
+interface MiddlewareContractOptions {
+    /** Factory that creates a fresh middleware instance for each test. */
+    readonly createMiddleware: () => KoiMiddleware | Promise<KoiMiddleware>;
+    /** Optional custom session context factory. */
+    readonly createSessionContext?: (() => SessionContext) | undefined;
+    /** Optional custom turn context factory. */
+    readonly createTurnContext?: (() => TurnContext) | undefined;
+}
+/**
+ * Runs the middleware contract test suite.
+ *
+ * Call this inside a \`describe()\` block. It will register tests that verify
+ * the middleware satisfies all L0 contract invariants.
+ */
+declare function testMiddlewareContract(options: MiddlewareContractOptions): void;
+
+/**
+ * Resolver contract test suite.
+ *
+ * Validates that any Resolver<TMeta, TFull> implementation satisfies the L0 contract.
+ * Usage: import { testResolverContract } from "@koi/test-utils" and call it
+ * inside a describe() block with a factory function.
+ */
+
+interface ResolverContractOptions<TMeta, TFull> {
+    /** Factory that creates a fresh resolver instance for each test. */
+    readonly createResolver: () => Resolver<TMeta, TFull> | Promise<Resolver<TMeta, TFull>>;
+    /** Items the resolver should be seeded with for testing. */
+    readonly seedItems?: readonly TMeta[] | undefined;
+    /** Extract the string ID from a metadata object. */
+    readonly getId: (meta: TMeta) => string;
+}
+/**
+ * Runs the resolver contract test suite.
+ *
+ * Call this inside a \`describe()\` block. It will register tests that verify
+ * the resolver satisfies all L0 contract invariants.
+ */
+declare function testResolverContract<TMeta, TFull>(options: ResolverContractOptions<TMeta, TFull>): void;
+
+/**
+ * Reusable contract test suite for any SessionPersistence implementation.
+ *
+ * Call \`runSessionPersistenceContractTests(factory)\` with a factory that
+ * creates a fresh store per test group.
+ */
+
+declare function runSessionPersistenceContractTests(createStore: () => SessionPersistence): void;
+
+/**
+ * Reusable contract test suite for any SnapshotChainStore<T> implementation.
+ *
+ * Call \`runSnapshotChainStoreContractTests(createStore, createData, createDifferentData)\`
+ * with factories that create a fresh store and test data per test group.
+ */
+
+declare function runSnapshotChainStoreContractTests<T>(createStore: () => SnapshotChainStore<T> | Promise<SnapshotChainStore<T>>, createData: () => T, createDifferentData: () => T): void;
+
+/**
+ * Reusable contract test suite for ForgeStore implementations.
+ *
+ * Accepts a factory that returns a ForgeStore (sync or async).
+ * Each test creates a fresh store instance for isolation.
+ */
+
+/**
+ * Run the ForgeStore contract test suite against any implementation.
+ *
+ * The factory can be sync or async — async factories are useful for
+ * filesystem/database stores that need setup (e.g., temp directory creation).
+ */
+declare function runForgeStoreContractTests(createStore: () => ForgeStore | Promise<ForgeStore>): void;
+
+/**
+ * Temporary directory helpers for tests.
+ *
+ * Creates unique temp dirs for test isolation and ensures cleanup.
+ */
+/**
+ * Creates a unique temporary directory prefixed with "koi-test-".
+ * Caller is responsible for cleanup (use \`withTempDir\` for auto-cleanup).
+ */
+declare function makeTempDir(): Promise<string>;
+/**
+ * Creates a koi.yaml manifest file in the given directory.
+ *
+ * @param dir - Target directory
+ * @param content - YAML content (defaults to a minimal valid manifest)
+ * @param filename - Filename (defaults to "koi.yaml")
+ * @returns Absolute path to the created file
+ */
+declare function createManifestFile(dir: string, content?: string, filename?: string): Promise<string>;
+/**
+ * Runs a callback with a fresh temp directory, cleaning up afterwards.
+ *
+ * @param fn - Callback receiving the temp dir path
+ */
+declare function withTempDir(fn: (dir: string) => Promise<void>): Promise<void>;
+
+/**
+ * Mock validator factories for testing validation middleware.
+ *
+ * Types are structurally compatible with @koi/middleware-feedback-loop's
+ * Validator interface without importing it (avoids circular dependency).
+ */
+
+/** Structurally matches ValidationError from middleware-feedback-loop. */
+interface MockValidationError {
+    readonly validator: string;
+    readonly message: string;
+    readonly path?: string;
+    readonly retryable?: boolean;
+}
+/** Structurally matches ValidationResult from middleware-feedback-loop. */
+type MockValidationResult = {
+    readonly valid: true;
+} | {
+    readonly valid: false;
+    readonly errors: readonly MockValidationError[];
+};
+/** Structurally matches Validator from middleware-feedback-loop. */
+interface MockValidator {
+    readonly name: string;
+    readonly validate: (output: unknown, ctx: TurnContext) => MockValidationResult | Promise<MockValidationResult>;
+}
+/** Creates a validator that always passes. */
+declare function createMockValidator(name?: string): MockValidator;
+/** Creates a validator that always fails with the given errors. */
+declare function createFailingValidator(errors: readonly MockValidationError[], name?: string): MockValidator;
+/** Creates a validator that resolves after a delay. */
+declare function createAsyncValidator(delayMs: number, result: MockValidationResult, name?: string): MockValidator;
+/** Creates a validator that throws the given error. */
+declare function createThrowingValidator(error: Error, name?: string): MockValidator;
+/** Creates a validator that passes or fails based on a predicate. */
+declare function createConditionalValidator(fn: (output: unknown) => boolean, name?: string): MockValidator;
+
+export { type CapturedOutput, type ChannelContractOptions, type EngineContractOptions, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type ResolverContractOptions, type SpyModelHandler, type SpyToolHandler, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createManifestFile, createMockAgent, createMockEngineAdapter, createMockEventBackend, createMockMemoryComponent, createMockModelHandler, createMockSessionContext, createMockStatefulEngine, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyToolHandler, createTestConfig, createTestConfigStore, createThrowingValidator, makeTempDir, runEventBackendContractTests, runForgeStoreContractTests, runSessionPersistenceContractTests, runSnapshotChainStoreContractTests, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, withTempDir };
+"
+`;

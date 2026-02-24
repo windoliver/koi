@@ -1,0 +1,17 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/snapshot-chain-store API surface . has stable type surface 1`] = `
+"import { SnapshotChainStore } from '@koi/core';
+
+/**
+ * InMemorySnapshotChainStore — Map-based store for tests and development.
+ *
+ * No persistence across restarts. Supports full DAG topology,
+ * content-hash deduplication, ancestor walking, forking, and pruning.
+ */
+
+declare function createInMemorySnapshotChainStore<T>(): SnapshotChainStore<T>;
+
+export { createInMemorySnapshotChainStore };
+"
+`;

@@ -1,0 +1,21 @@
+{
+  "name": "@koi/e2e-contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/engine": "workspace:*",
+    "@koi/engine-loop": "workspace:*",
+    "@koi/engine-pi": "workspace:*",
+    "@koi/middleware-audit": "workspace:*",
+    "@koi/middleware-memory": "workspace:*",
+    "@koi/middleware-turn-ack": "workspace:*",
+    "@koi/model-router": "workspace:*",
+    "@koi/test-utils": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test",
+    "test:e2e": "bun test e2e-contracts.test.ts"
+  }
+}
