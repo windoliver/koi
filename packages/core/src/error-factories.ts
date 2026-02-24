@@ -44,12 +44,12 @@ export function validation(message: string): KoiError {
 
 /** Unexpected internal error. Non-retryable. */
 export function internal(message: string, cause?: unknown): KoiError {
-  return {
+  const base: KoiError = {
     code: "INTERNAL",
     message,
     retryable: RETRYABLE_DEFAULTS.INTERNAL,
-    cause,
   };
+  return cause !== undefined ? { ...base, cause } : base;
 }
 
 /** Rate limit exceeded. Retryable (with backoff). */
@@ -73,12 +73,12 @@ export function timeout(message: string): KoiError {
 
 /** Third-party service failure. Not retryable by default. */
 export function external(message: string, cause?: unknown): KoiError {
-  return {
+  const base: KoiError = {
     code: "EXTERNAL",
     message,
     retryable: RETRYABLE_DEFAULTS.EXTERNAL,
-    cause,
   };
+  return cause !== undefined ? { ...base, cause } : base;
 }
 
 /** Unauthorized action. Non-retryable. */

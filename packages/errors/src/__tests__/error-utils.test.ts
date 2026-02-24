@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   extractCode,
   extractMessage,
+  isContextOverflowError,
   isKoiError,
   swallowError,
   toKoiError,
@@ -187,5 +188,89 @@ describe("swallowError", () => {
     } finally {
       console.warn = originalWarn;
     }
+  });
+});
+
+describe("isContextOverflowError", () => {
+  test("detects OpenAI context_length_exceeded", () => {
+    expect(isContextOverflowError({ code: "context_length_exceeded" })).toBe(true);
+  });
+
+  test("detects nested OpenAI error (raw API response)", () => {
+    expect(
+      isContextOverflowError({
+        error: { code: "context_length_exceeded", message: "max tokens" },
+      }),
+    ).toBe(true);
+  });
+
+  test("detects Anthropic invalid_request_error with prompt too long", () => {
+    expect(
+      isContextOverflowError({
+        type: "invalid_request_error",
+        message: "Your prompt is too long. Please reduce the number of messages.",
+      }),
+    ).toBe(true);
+  });
+
+  test("detects nested Anthropic error (raw API response)", () => {
+    expect(
+      isContextOverflowError({
+        error: {
+          type: "invalid_request_error",
+          message: "prompt is too long",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  test("rejects Anthropic invalid_request_error without prompt-too-long message", () => {
+    expect(
+      isContextOverflowError({
+        type: "invalid_request_error",
+        message: "temperature must be between 0 and 1",
+      }),
+    ).toBe(false);
+  });
+
+  test("rejects null and primitives", () => {
+    expect(isContextOverflowError(null)).toBe(false);
+    expect(isContextOverflowError(undefined)).toBe(false);
+    expect(isContextOverflowError("string")).toBe(false);
+    expect(isContextOverflowError(42)).toBe(false);
+  });
+
+  test("rejects unrelated error objects", () => {
+    expect(isContextOverflowError({ code: "rate_limit_exceeded" })).toBe(false);
+    expect(isContextOverflowError({ type: "api_error", message: "server error" })).toBe(false);
+    expect(isContextOverflowError(new Error("generic error"))).toBe(false);
+  });
+
+  test("rejects empty objects", () => {
+    expect(isContextOverflowError({})).toBe(false);
+  });
+
+  test("follows one level of nesting", () => {
+    expect(
+      isContextOverflowError({
+        error: { code: "context_length_exceeded" },
+      }),
+    ).toBe(true);
+  });
+
+  test("stops at depth limit (2+ levels)", () => {
+    expect(
+      isContextOverflowError({
+        error: {
+          error: { code: "context_length_exceeded" },
+        },
+      }),
+    ).toBe(false);
+  });
+
+  test("handles circular references without stack overflow", () => {
+    const circular: Record<string, unknown> = { type: "error" };
+    circular.error = circular;
+    expect(isContextOverflowError(circular)).toBe(false);
   });
 });

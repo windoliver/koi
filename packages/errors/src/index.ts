@@ -12,6 +12,7 @@
 export {
   extractCode,
   extractMessage,
+  isContextOverflowError,
   isKoiError,
   swallowError,
   toKoiError,

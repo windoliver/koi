@@ -13,8 +13,8 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { GOVERNANCE, runId, sessionId, turnId } from "@koi/core";
+import { KoiRuntimeError } from "@koi/errors";
 import { fnv1a } from "@koi/hash";
-import { KoiEngineError } from "./errors.js";
 import {
   createIterationGuard,
   createLoopDetector,
@@ -137,7 +137,7 @@ describe("createIterationGuard", () => {
     expect(next).toHaveBeenCalledTimes(2);
   });
 
-  test("throws KoiEngineError when turn limit reached", async () => {
+  test("throws KoiRuntimeError when turn limit reached", async () => {
     const guard = createIterationGuard({ maxTurns: 2 });
     const wrap = getModelWrap(guard);
     const next: ModelNext = mock(() => Promise.resolve(mockModelResponse()));
@@ -152,8 +152,8 @@ describe("createIterationGuard", () => {
       await wrap(ctx, mockModelRequest(), next);
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("TIMEOUT");
         expect(e.message).toContain("Max turns exceeded");
       }
@@ -170,7 +170,7 @@ describe("createIterationGuard", () => {
     await wrap(ctx, mockModelRequest(), next);
 
     // Second call fails (turns = 1 = maxTurns)
-    await expect(wrap(ctx, mockModelRequest(), next)).rejects.toBeInstanceOf(KoiEngineError);
+    await expect(wrap(ctx, mockModelRequest(), next)).rejects.toBeInstanceOf(KoiRuntimeError);
   });
 
   test("tracks token usage across calls", async () => {
@@ -189,8 +189,8 @@ describe("createIterationGuard", () => {
       await wrap(ctx, mockModelRequest(), next);
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("TIMEOUT");
         expect(e.message).toContain("Token budget exhausted");
       }
@@ -215,7 +215,7 @@ describe("createIterationGuard", () => {
     // Should not throw on first call with defaults (maxTurns: 25)
   });
 
-  test("throws KoiEngineError when duration limit exceeded", async () => {
+  test("throws KoiRuntimeError when duration limit exceeded", async () => {
     // Very short duration limit
     const guard = createIterationGuard({ maxDurationMs: 1 });
     const wrap = getModelWrap(guard);
@@ -234,8 +234,8 @@ describe("createIterationGuard", () => {
       await wrap(ctx, mockModelRequest(), next);
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("TIMEOUT");
         expect(e.message).toContain("Duration limit exceeded");
       }
@@ -291,8 +291,8 @@ describe("createLoopDetector", () => {
       await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("TIMEOUT");
         expect(e.message).toContain("Loop detected");
         expect(e.message).toContain("calc");
@@ -403,7 +403,7 @@ describe("createLoopDetector", () => {
       await wrap(ctx, mockToolRequest("calc", { a: 1 }), next);
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
+      expect(e).toBeInstanceOf(KoiRuntimeError);
     }
   });
 
@@ -430,8 +430,8 @@ describe("createLoopDetector", () => {
       createLoopDetector({ warningThreshold: 3, threshold: 3 });
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("VALIDATION");
         expect(e.message).toContain("warningThreshold");
       }
@@ -443,8 +443,8 @@ describe("createLoopDetector", () => {
       createLoopDetector({ warningThreshold: 5, threshold: 5 });
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("VALIDATION");
       }
     }
@@ -490,8 +490,8 @@ describe("createLoopDetector", () => {
       await wrap(ctx, mockToolRequest("calc", { p: 1, q: 2, r: 3 }), next);
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("TIMEOUT");
         expect(e.message).toContain("Loop detected");
       }
@@ -848,8 +848,8 @@ describe("createSpawnGuard", () => {
       await wrap(ctx, mockToolRequest("forge_agent"), next);
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("PERMISSION");
         expect(e.message).toContain("Max spawn depth exceeded");
         expect(e.message).toContain("depth 3");
@@ -899,8 +899,8 @@ describe("createSpawnGuard", () => {
       await wrap(ctx, mockToolRequest("forge_agent"), () => Promise.resolve(mockToolResponse()));
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("RATE_LIMIT");
         expect(e.retryable).toBe(true);
         expect(e.message).toContain("Max fan-out exceeded");
@@ -943,7 +943,7 @@ describe("createSpawnGuard", () => {
       await wrap(ctx, mockToolRequest("forge_agent"), () => Promise.resolve(mockToolResponse()));
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
+      expect(e).toBeInstanceOf(KoiRuntimeError);
     }
 
     // Complete child 1 — fan-out back to 0
@@ -972,8 +972,8 @@ describe("createSpawnGuard", () => {
       await wrap(ctx, mockToolRequest("forge_agent"), next);
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("RATE_LIMIT");
         expect(e.retryable).toBe(true);
         expect(e.message).toContain("Max total processes exceeded");
@@ -1029,8 +1029,8 @@ describe("createSpawnGuard", () => {
       await wrap(ctx, mockToolRequest("forge_agent"), () => Promise.resolve(mockToolResponse()));
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("RATE_LIMIT");
       }
     }
@@ -1069,8 +1069,8 @@ describe("createSpawnGuard", () => {
       await wrap(ctx, mockToolRequest("forge_agent"), () => Promise.resolve(mockToolResponse()));
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("RATE_LIMIT");
         expect(e.message).toContain("Max fan-out exceeded");
       }
@@ -1095,8 +1095,8 @@ describe("createSpawnGuard", () => {
       await wrap(ctx, mockToolRequest("forge_agent"), next);
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("RATE_LIMIT");
         expect(e.message).toContain("Max total processes exceeded");
       }
@@ -1328,8 +1328,8 @@ describe("createSpawnGuard", () => {
       createSpawnGuard({ policy: { fanOutWarningAt: 5, maxFanOut: 5 } });
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("VALIDATION");
         expect(e.message).toContain("fanOutWarningAt");
       }
@@ -1343,8 +1343,8 @@ describe("createSpawnGuard", () => {
       });
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("VALIDATION");
         expect(e.message).toContain("totalProcessWarningAt");
       }
@@ -1373,8 +1373,8 @@ describe("createSpawnGuard", () => {
       await wrap(ctx, mockToolRequest("forge_agent"), next);
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("PERMISSION");
         expect(e.message).toContain("Custom governance denies");
       }
@@ -1476,8 +1476,8 @@ describe("createLoopDetector — ping-pong", () => {
       await wrap(ctx, mockToolRequest("toolB", { x: 2 }), next);
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("VALIDATION");
         expect(e.message).toContain("Ping-pong");
       }
@@ -1506,8 +1506,8 @@ describe("createLoopDetector — ping-pong", () => {
       await wrap(ctx, mockToolRequest("c", { v: 3 }), next);
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.message).toContain("Ping-pong");
       }
     }
@@ -1597,8 +1597,8 @@ describe("createLoopDetector — ping-pong", () => {
       await wrap(ctx, mockToolRequest("b", { v: 2 }), next);
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.message).toContain("Ping-pong");
       }
     }
@@ -1650,8 +1650,8 @@ describe("createLoopDetector — no-progress", () => {
       await wrap(ctx, mockToolRequest("calc", { a: 3 }), next);
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("VALIDATION");
         expect(e.message).toContain("No-progress");
         expect(e.message).toContain("3 consecutive");
@@ -1727,8 +1727,8 @@ describe("createLoopDetector — no-progress", () => {
       await wrap(ctx, mockToolRequest("calc", { a: 5 }), next);
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.message).toContain("No-progress");
       }
     }
@@ -1770,8 +1770,8 @@ describe("createLoopDetector — no-progress", () => {
       await wrap(ctx, mockToolRequest("calc", { a: 2 }), next);
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.context).toBeDefined();
         expect((e.context as Record<string, unknown>).detectionKind).toBe("no_progress");
       }
@@ -1882,8 +1882,8 @@ describe("createIterationGuard streaming", () => {
       await collectChunks(wrap(ctx, mockModelRequest(), next));
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("TIMEOUT");
         expect(e.message).toContain("Max turns exceeded");
       }
@@ -1904,8 +1904,8 @@ describe("createIterationGuard streaming", () => {
       await collectChunks(wrap(ctx, mockModelRequest(), next));
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("TIMEOUT");
         expect(e.message).toContain("Token budget exhausted");
       }
@@ -1936,7 +1936,7 @@ describe("createIterationGuard streaming", () => {
       await collectChunks(streamWrap(ctx, mockModelRequest(), streamNext));
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
+      expect(e).toBeInstanceOf(KoiRuntimeError);
     }
   });
 
@@ -1976,7 +1976,7 @@ describe("createIterationGuard streaming", () => {
       await collectChunks(streamWrap(ctx, mockModelRequest(), thinkingNext));
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
+      expect(e).toBeInstanceOf(KoiRuntimeError);
     }
   });
 
@@ -2032,7 +2032,7 @@ describe("createIterationGuard streaming", () => {
       await collectChunks(streamWrap(ctx, mockModelRequest(), normalNext));
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
+      expect(e).toBeInstanceOf(KoiRuntimeError);
     }
   });
 });
@@ -2103,8 +2103,8 @@ describe("composed guards interaction", () => {
       await toolChain(mockToolRequest("calc", { a: 1 }));
       expect.unreachable("loop should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("TIMEOUT");
       }
     }
@@ -2114,7 +2114,7 @@ describe("composed guards interaction", () => {
     await modelChain(mockModelRequest());
 
     // 3rd model call should throw (turns exhausted)
-    await expect(modelChain(mockModelRequest())).rejects.toBeInstanceOf(KoiEngineError);
+    await expect(modelChain(mockModelRequest())).rejects.toBeInstanceOf(KoiRuntimeError);
   });
 
   test("IterationGuard throw does not affect LoopDetector window", async () => {
@@ -2132,7 +2132,7 @@ describe("composed guards interaction", () => {
 
     // Use up the iteration budget
     await modelChain(mockModelRequest());
-    await expect(modelChain(mockModelRequest())).rejects.toBeInstanceOf(KoiEngineError);
+    await expect(modelChain(mockModelRequest())).rejects.toBeInstanceOf(KoiRuntimeError);
 
     // LoopDetector should still be tracking independently —
     // 2 calls with same args should be under threshold 3
@@ -2167,8 +2167,8 @@ describe("composed guards interaction", () => {
       await toolChain(mockToolRequest("search", { q: "same" }));
       expect.unreachable("loop should have thrown");
     } catch (e: unknown) {
-      expect(e).toBeInstanceOf(KoiEngineError);
-      if (e instanceof KoiEngineError) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
         expect(e.code).toBe("TIMEOUT");
         expect(e.message).toContain("Loop detected");
       }
