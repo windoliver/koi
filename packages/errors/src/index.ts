@@ -17,4 +17,11 @@ export {
   toKoiError,
 } from "./error-utils.js";
 export { mapFsError, mapParseError } from "./fs-errors.js";
+export {
+  calculateBackoff,
+  DEFAULT_RETRY_CONFIG,
+  isRetryable,
+  type RetryConfig,
+  withRetry,
+} from "./retry.js";
 export { KoiRuntimeError } from "./runtime-error.js";

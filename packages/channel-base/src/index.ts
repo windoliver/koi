@@ -14,4 +14,6 @@ export type { ChannelAdapterConfig, MessageNormalizer } from "./channel-adapter-
 export { createChannelAdapter } from "./channel-adapter-factory.js";
 export type { ContentBlock } from "./content-block-builders.js";
 export { button, custom, file, image, text } from "./content-block-builders.js";
+export type { FormatErrorOptions } from "./format-error.js";
+export { formatErrorForChannel } from "./format-error.js";
 export { renderBlocks } from "./render-blocks.js";

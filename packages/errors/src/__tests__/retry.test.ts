@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { KoiError } from "@koi/core";
-import { calculateBackoff, DEFAULT_RETRY_CONFIG, isRetryable, withRetry } from "./retry.js";
+import { isKoiError } from "../error-utils.js";
+import { calculateBackoff, DEFAULT_RETRY_CONFIG, isRetryable, withRetry } from "../retry.js";
 
 function makeError(code: KoiError["code"], retryable = false, retryAfterMs?: number): KoiError {
   return {
@@ -103,6 +104,10 @@ describe("isRetryable", () => {
     expect(isRetryable(makeError("PERMISSION"))).toBe(false);
   });
 
+  test("CONFLICT is retryable (matches RETRYABLE_DEFAULTS)", () => {
+    expect(isRetryable(makeError("CONFLICT"))).toBe(true);
+  });
+
   test("INTERNAL is not retryable", () => {
     expect(isRetryable(makeError("INTERNAL"))).toBe(false);
   });
@@ -148,8 +153,8 @@ describe("withRetry", () => {
       }, fastConfig);
       throw new Error("Should have thrown");
     } catch (error: unknown) {
-      const e = error as KoiError;
-      expect(e.code).toBe("VALIDATION");
+      if (!isKoiError(error)) throw new Error("Expected KoiError");
+      expect(error.code).toBe("VALIDATION");
       expect(attempts).toBe(1);
     }
   });
@@ -166,8 +171,8 @@ describe("withRetry", () => {
       );
       throw new Error("Should have thrown");
     } catch (error: unknown) {
-      const e = error as KoiError;
-      expect(e.code).toBe("TIMEOUT");
+      if (!isKoiError(error)) throw new Error("Expected KoiError");
+      expect(error.code).toBe("TIMEOUT");
       expect(attempts).toBe(3); // 1 initial + 2 retries
     }
   });
@@ -182,9 +187,9 @@ describe("withRetry", () => {
       );
       throw new Error("Should have thrown");
     } catch (error: unknown) {
-      const e = error as KoiError;
-      expect(e.code).toBe("EXTERNAL");
-      expect(e.message).toContain("network failure");
+      if (!isKoiError(error)) throw new Error("Expected KoiError");
+      expect(error.code).toBe("EXTERNAL");
+      expect(error.message).toContain("network failure");
     }
   });
 
