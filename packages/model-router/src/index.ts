@@ -8,12 +8,36 @@
  */
 
 export { createAnthropicAdapter } from "./adapters/anthropic.js";
+// Auto-discovery
+export {
+  type DiscoveredProvider,
+  type DiscoverOptions,
+  discoverLocalProviders,
+  type LocalProviderKind,
+} from "./adapters/discover.js";
 // Provider adapters
+export { createLMStudioAdapter, type LMStudioAdapterConfig } from "./adapters/lm-studio.js";
+export { createOllamaAdapter, type OllamaAdapterConfig } from "./adapters/ollama.js";
 export { createOpenAIAdapter } from "./adapters/openai.js";
+export {
+  createOpenAICompatibleAdapter,
+  type OpenAICompatibleConfig,
+} from "./adapters/openai-compat.js";
 export {
   createOpenRouterAdapter,
   type OpenRouterAdapterConfig,
 } from "./adapters/openrouter.js";
+// Shared adapter utilities
+export {
+  type FetchWithTimeoutOptions,
+  type FetchWithTimeoutResult,
+  fetchWithTimeout,
+  handleAbortError,
+  mapStatusToErrorCode,
+  parseRetryAfter,
+  parseSSEStream,
+} from "./adapters/shared.js";
+export { createVLLMAdapter, type VLLMAdapterConfig } from "./adapters/vllm.js";
 export { createCascadeMetricsTracker } from "./cascade/cascade-metrics.js";
 // Cascade
 export type {
@@ -56,6 +80,8 @@ export {
 } from "./circuit-breaker.js";
 // Config
 export type {
+  HealthProbeConfig,
+  ModelCapabilitiesPartial,
   ModelRouterConfig,
   ModelTargetConfig,
   ResolvedRouterConfig,

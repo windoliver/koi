@@ -83,12 +83,7 @@ async function collectStream(
 // Block 1: Individual adapters
 // ---------------------------------------------------------------------------
 
-const describeOpenAI = HAS_OPENAI ? describe : describe.skip;
-const describeAnthropic = HAS_ANTHROPIC ? describe : describe.skip;
-const describeOpenRouter = HAS_OPENROUTER ? describe : describe.skip;
-const describeAll = HAS_ALL ? describe : describe.skip;
-
-describeOpenAI("e2e: OpenAI adapter", () => {
+describe.skipIf(!HAS_OPENAI)("e2e: OpenAI adapter", () => {
   const adapter = createOpenAIAdapter({ apiKey: OPENAI_KEY });
 
   test(
@@ -118,7 +113,7 @@ describeOpenAI("e2e: OpenAI adapter", () => {
   );
 });
 
-describeAnthropic("e2e: Anthropic adapter", () => {
+describe.skipIf(!HAS_ANTHROPIC)("e2e: Anthropic adapter", () => {
   const adapter = createAnthropicAdapter({ apiKey: ANTHROPIC_KEY });
 
   test(
@@ -156,7 +151,7 @@ describeAnthropic("e2e: Anthropic adapter", () => {
   );
 });
 
-describeOpenRouter("e2e: OpenRouter adapter", () => {
+describe.skipIf(!HAS_OPENROUTER)("e2e: OpenRouter adapter", () => {
   const adapter = createOpenRouterAdapter({
     apiKey: OPENROUTER_KEY,
     appName: "koi-e2e-test",
@@ -214,7 +209,7 @@ describeOpenRouter("e2e: OpenRouter adapter", () => {
 // Block 2: Full router pipeline (needs all 3 keys)
 // ---------------------------------------------------------------------------
 
-describeAll("e2e: router pipeline", () => {
+describe.skipIf(!HAS_ALL)("e2e: router pipeline", () => {
   test(
     "primary target succeeds on first try",
     async () => {

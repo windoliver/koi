@@ -5,6 +5,7 @@
 
 import type { KoiError, ModelRequest, ModelResponse, Result } from "@koi/core";
 import { withCascade } from "./cascade/cascade.js";
+import { createCascadeMetricsTracker } from "./cascade/cascade-metrics.js";
 import type {
   CascadeClassifier,
   CascadeCostMetrics,
@@ -25,6 +26,7 @@ export interface RouterMetrics {
   readonly totalFailures: number;
   readonly requestsByTarget: Readonly<Record<string, number>>;
   readonly failuresByTarget: Readonly<Record<string, number>>;
+  readonly totalEstimatedCost: number;
   readonly cascade?: CascadeCostMetrics;
 }
 
@@ -44,6 +46,16 @@ export interface ModelRouterOptions {
 
 function targetId(t: ResolvedTargetConfig): string {
   return `${t.provider}:${t.model}`;
+}
+
+/**
+ * Checks whether a URL is a local/loopback address.
+ */
+function isLocalUrl(url?: string): boolean {
+  return (
+    url !== undefined &&
+    (url.includes("localhost") || url.includes("127.0.0.1") || url.includes("[::1]"))
+  );
 }
 
 /**
@@ -105,14 +117,65 @@ export function createModelRouter(
     circuitBreakers.set(t.id, createCircuitBreaker(config.circuitBreaker, clock));
   }
 
-  // Mutable metrics (encapsulated)
+  // Mutable metrics (encapsulated — justified per circuit-breaker.ts precedent:
+  // internal mutation behind immutable public interface, single-threaded runtime)
   const requestsByTarget: Record<string, number> = {};
   const failuresByTarget: Record<string, number> = {};
+  // let: perf counters, encapsulated behind immutable RouterMetrics
   let totalRequests = 0;
   let totalFailures = 0;
+  let fallbackCostTotal = 0;
 
-  // Cascade metrics tracking
-  let cascadeEscalations = 0;
+  // Cascade metrics tracking — wired to CascadeMetricsTracker
+  const cascadeTracker =
+    config.strategy === "cascade" && config.cascade
+      ? createCascadeMetricsTracker(config.cascade.tiers)
+      : undefined;
+
+  // Health probe timer for local targets
+  let healthProbeTimer: ReturnType<typeof setInterval> | undefined;
+
+  if (config.healthProbe) {
+    const intervalMs = config.healthProbe.intervalMs ?? 30_000;
+    const onlyLocal = config.healthProbe.onlyLocal !== false;
+
+    // Identify targets that support health checks
+    const probeTargets = config.targets.filter((t) => {
+      if (onlyLocal && !isLocalUrl(t.adapterConfig.baseUrl)) {
+        return false;
+      }
+      const adapter = adapters.get(t.provider);
+      return adapter?.checkHealth !== undefined;
+    });
+
+    if (probeTargets.length > 0) {
+      const probe = async (): Promise<void> => {
+        await Promise.allSettled(
+          probeTargets.map(async (target) => {
+            const id = targetId(target);
+            const adapter = adapters.get(target.provider);
+            const cb = circuitBreakers.get(id);
+            if (!adapter?.checkHealth || !cb) return;
+
+            try {
+              const healthy = await adapter.checkHealth();
+              if (healthy) {
+                cb.recordSuccess();
+              } else {
+                cb.recordFailure();
+              }
+            } catch {
+              cb.recordFailure();
+            }
+          }),
+        );
+      };
+
+      // Initial probe
+      void probe();
+      healthProbeTimer = setInterval(probe, intervalMs);
+    }
+  }
 
   async function executeForTargetId(id: string, request: ModelRequest): Promise<ModelResponse> {
     const targetConfig = targetConfigById.get(id);
@@ -141,7 +204,49 @@ export function createModelRouter(
       model: targetConfig.model,
     };
 
-    return withRetry(() => adapter.complete(modelRequest), config.retry, clock);
+    try {
+      return await withRetry(() => adapter.complete(modelRequest), config.retry, clock);
+    } catch (error: unknown) {
+      failuresByTarget[id] = (failuresByTarget[id] ?? 0) + 1;
+      throw error;
+    }
+  }
+
+  /**
+   * Determines ordered target list for streaming, taking cascade
+   * classification into account when available.
+   */
+  function getStreamTargets(request: ModelRequest): readonly FallbackTarget[] {
+    if (config.strategy === "cascade" && config.cascade && options.classifier) {
+      const allTiers = config.cascade.tiers;
+      const classification = options.classifier(request, allTiers.length);
+      const startIndex = classification.recommendedTierIndex;
+      const tierTargets: readonly FallbackTarget[] = allTiers.slice(startIndex).map((t) => ({
+        id: t.targetId,
+        enabled: true,
+      }));
+      return tierTargets.length > 0 ? tierTargets : enabledFallbackTargets;
+    }
+    return enabledFallbackTargets;
+  }
+
+  /**
+   * Checks whether a target can handle the features required by the request.
+   * If the target has no declared capabilities, it is assumed to support everything
+   * (fail-open to prevent false negatives).
+   */
+  function targetSupportsRequest(
+    targetConfig: ResolvedTargetConfig,
+    request: ModelRequest,
+  ): boolean {
+    const caps = targetConfig.capabilities;
+    if (!caps) return true; // No capabilities declared → assume compatible
+
+    // Check vision: if request contains image blocks, target needs vision
+    const needsVision = request.messages.some((m) => m.content.some((b) => b.kind === "image"));
+    if (needsVision && caps.vision === false) return false;
+
+    return true;
   }
 
   return {
@@ -173,7 +278,27 @@ export function createModelRouter(
           return result;
         }
 
-        cascadeEscalations += result.value.totalEscalations;
+        // Record cascade metrics via tracker
+        if (cascadeTracker) {
+          for (const attempt of result.value.attempts) {
+            if (attempt.success) {
+              const tierResponse: ModelResponse = {
+                content: result.value.response.content,
+                model: result.value.response.model,
+                ...(attempt.inputTokens !== undefined || attempt.outputTokens !== undefined
+                  ? {
+                      usage: {
+                        inputTokens: attempt.inputTokens ?? 0,
+                        outputTokens: attempt.outputTokens ?? 0,
+                      },
+                    }
+                  : {}),
+              };
+              cascadeTracker.record(attempt.tierId, tierResponse, attempt.escalated);
+            }
+          }
+        }
+
         return { ok: true, value: result.value.response };
       }
 
@@ -189,19 +314,34 @@ export function createModelRouter(
         return result;
       }
 
+      // Accumulate fallback cost from target's cost config + usage
+      const successAttempt = result.value.attempts.find((a) => a.success);
+      const successTargetConfig = successAttempt
+        ? targetConfigById.get(successAttempt.targetId)
+        : undefined;
+      const usage = result.value.value.usage;
+      if (successTargetConfig && usage) {
+        fallbackCostTotal +=
+          (usage.inputTokens ?? 0) * (successTargetConfig.costPerInputToken ?? 0) +
+          (usage.outputTokens ?? 0) * (successTargetConfig.costPerOutputToken ?? 0);
+      }
+
       return { ok: true, value: result.value.value };
     },
 
     async *routeStream(request: ModelRequest): AsyncGenerator<StreamChunk> {
-      // Stream uses fallback behavior for all strategies (cascade v1 limitation)
+      const orderedTargets = getStreamTargets(request);
       const errors: KoiError[] = [];
 
-      for (const target of enabledFallbackTargets) {
+      for (const target of orderedTargets) {
         const cb = circuitBreakers.get(target.id);
         if (cb && !cb.isAllowed()) continue;
 
         const targetConfig = targetConfigById.get(target.id);
         if (!targetConfig) continue;
+
+        // Capability matching: skip incompatible targets
+        if (!targetSupportsRequest(targetConfig, request)) continue;
 
         const adapter = adapters.get(targetConfig.provider);
         if (!adapter) continue;
@@ -243,36 +383,32 @@ export function createModelRouter(
     },
 
     getMetrics(): RouterMetrics {
-      const base: RouterMetrics = {
+      if (cascadeTracker) {
+        const cascadeMetrics = cascadeTracker.getMetrics();
+        return {
+          totalRequests,
+          totalFailures,
+          requestsByTarget: { ...requestsByTarget },
+          failuresByTarget: { ...failuresByTarget },
+          totalEstimatedCost: cascadeMetrics.totalEstimatedCost,
+          cascade: cascadeMetrics,
+        };
+      }
+
+      return {
         totalRequests,
         totalFailures,
         requestsByTarget: { ...requestsByTarget },
         failuresByTarget: { ...failuresByTarget },
+        totalEstimatedCost: fallbackCostTotal,
       };
-
-      if (config.strategy === "cascade" && config.cascade) {
-        return {
-          ...base,
-          cascade: {
-            tiers: config.cascade.tiers.map((t) => ({
-              tierId: t.targetId,
-              requests: requestsByTarget[t.targetId] ?? 0,
-              escalations: 0,
-              totalInputTokens: 0,
-              totalOutputTokens: 0,
-              estimatedCost: 0,
-            })),
-            totalRequests,
-            totalEscalations: cascadeEscalations,
-            totalEstimatedCost: 0,
-          },
-        };
-      }
-
-      return base;
     },
 
     dispose(): void {
+      if (healthProbeTimer) {
+        clearInterval(healthProbeTimer);
+        healthProbeTimer = undefined;
+      }
       for (const cb of circuitBreakers.values()) {
         cb.reset();
       }
