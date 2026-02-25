@@ -4,11 +4,12 @@
  * Validates that the contract test suites (middleware, resolver, engine)
  * work correctly against real implementations wired to actual API providers.
  *
- * Gated on ANTHROPIC_API_KEY / OPENAI_API_KEY — tests are skipped
- * when the respective key is not set.
+ * Gated on API key + E2E_TESTS=1 — tests are skipped when either
+ * is missing. E2E tests require API keys AND explicit opt-in via E2E_TESTS=1
+ * to avoid rate-limit failures when 500+ test files run simultaneously.
  *
  * Run:
- *   bun test tests/e2e/e2e-contracts.test.ts
+ *   E2E_TESTS=1 ANTHROPIC_API_KEY=... OPENAI_API_KEY=... bun test tests/e2e/e2e-contracts.test.ts
  *
  * Cost: ~$0.02-0.05 per run (haiku + gpt-4o-mini, minimal prompts).
  */
@@ -41,11 +42,14 @@ import { testEngineAdapter, testMiddlewareContract, testResolverContract } from 
 
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const HAS_ANTHROPIC = ANTHROPIC_KEY.length > 0;
-const describeAnthropic = HAS_ANTHROPIC ? describe : describe.skip;
+// E2E tests require API key AND explicit opt-in via E2E_TESTS=1 to avoid
+// rate-limit failures when 500+ test files run in parallel.
+const E2E_OPTED_IN = process.env.E2E_TESTS === "1";
+const describeAnthropic = HAS_ANTHROPIC && E2E_OPTED_IN ? describe : describe.skip;
 
 const OPENAI_KEY = process.env.OPENAI_API_KEY ?? "";
 const HAS_OPENAI = OPENAI_KEY.length > 0;
-const describeOpenAI = HAS_OPENAI ? describe : describe.skip;
+const describeOpenAI = HAS_OPENAI && E2E_OPTED_IN ? describe : describe.skip;
 
 const TIMEOUT_MS = 60_000;
 const ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";

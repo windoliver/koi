@@ -71,11 +71,18 @@ export function parseModelName(name: string): ParsedModel {
 // Main export
 // ---------------------------------------------------------------------------
 
-export function resolveModelCall(manifest: AgentManifest): ModelHandler {
+/** @internal Exposed for testing without mock.module — DO NOT use in production code. */
+export type AdapterFactory = (config: ProviderAdapterConfig) => ProviderAdapter;
+
+export function resolveModelCall(
+  manifest: AgentManifest,
+  factoryOverrides?: Readonly<Record<string, AdapterFactory>>,
+): ModelHandler {
   const { provider, model } = parseModelName(manifest.model.name);
+  const factories = factoryOverrides ?? PROVIDER_FACTORIES;
 
   // Validate provider
-  const factory = PROVIDER_FACTORIES[provider];
+  const factory = factories[provider];
   if (factory === undefined) {
     throw new Error(
       `Unknown model provider "${provider}". Supported providers: ${SUPPORTED_PROVIDERS.join(", ")}.`,

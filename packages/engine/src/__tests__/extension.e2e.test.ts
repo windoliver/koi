@@ -9,10 +9,11 @@
  *   - Default guards (iteration, spawn) compose with custom extensions
  *   - Middleware chain executes in correct order
  *
- * Gated on ANTHROPIC_API_KEY — tests are skipped when the key is not set.
+ * Gated on ANTHROPIC_API_KEY + E2E_TESTS=1 — skipped during parallel `bun test --recursive`
+ * to avoid rate-limit failures when 500+ test files run simultaneously.
  *
  * Run:
- *   ANTHROPIC_API_KEY=sk-ant-... bun test src/__tests__/extension.e2e.test.ts
+ *   E2E_TESTS=1 ANTHROPIC_API_KEY=sk-ant-... bun test src/__tests__/extension.e2e.test.ts
  */
 
 import { describe, expect, test } from "bun:test";
@@ -33,7 +34,10 @@ import { createKoi } from "../koi.js";
 
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const HAS_KEY = ANTHROPIC_KEY.length > 0;
-const describeE2E = HAS_KEY ? describe : describe.skip;
+// E2E tests require API key AND explicit opt-in via E2E_TESTS=1 to avoid
+// rate-limit failures when 500+ test files run in parallel.
+const E2E_ENABLED = HAS_KEY && process.env.E2E_TESTS === "1";
+const describeE2E = E2E_ENABLED ? describe : describe.skip;
 
 const TIMEOUT_MS = 60_000;
 

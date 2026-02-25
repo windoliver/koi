@@ -83,8 +83,11 @@ describe("Transport", () => {
     server = startServer();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     server.close();
+    // Let Bun's internal WebSocket close handshake settle before next test.
+    // Prevents stochastic DOMException: TimeoutError during parallel execution.
+    await Bun.sleep(10);
   });
 
   describe("state machine", () => {
@@ -150,7 +153,7 @@ describe("Transport", () => {
       await transport.connect();
 
       transport.send(testFrame);
-      await new Promise((r) => setTimeout(r, 50));
+      await Bun.sleep(50);
 
       expect(server.received.length).toBeGreaterThanOrEqual(1);
       const parsed = JSON.parse(server.received[0] ?? "{}");
@@ -172,7 +175,7 @@ describe("Transport", () => {
 
       // Connect — should drain queue
       await transport.connect();
-      await new Promise((r) => setTimeout(r, 50));
+      await Bun.sleep(50);
 
       expect(server.received.length).toBeGreaterThanOrEqual(1);
       await transport.close();
@@ -191,7 +194,7 @@ describe("Transport", () => {
       transport.onFrame((f) => received.push(f));
 
       await transport.connect();
-      await new Promise((r) => setTimeout(r, 30));
+      await Bun.sleep(30);
 
       // Send a frame from server
       const frame: NodeFrame = {
@@ -205,7 +208,7 @@ describe("Transport", () => {
         client.send(JSON.stringify(frame));
       }
 
-      await new Promise((r) => setTimeout(r, 50));
+      await Bun.sleep(50);
       expect(received.length).toBeGreaterThanOrEqual(1);
       expect(received[0]?.kind).toBe("agent:dispatch");
 
@@ -224,7 +227,7 @@ describe("Transport", () => {
       unsub();
 
       await transport.connect();
-      await new Promise((r) => setTimeout(r, 30));
+      await Bun.sleep(30);
 
       for (const client of server.clients) {
         client.send(
@@ -238,7 +241,7 @@ describe("Transport", () => {
         );
       }
 
-      await new Promise((r) => setTimeout(r, 50));
+      await Bun.sleep(50);
       expect(received.length).toBe(0);
 
       await transport.close();
@@ -281,7 +284,7 @@ describe("Transport", () => {
         client.close(1000, "test close");
       }
 
-      await new Promise((r) => setTimeout(r, 50));
+      await Bun.sleep(50);
 
       const types = events.map((e) => e.type);
       expect(types).toContain("disconnected");
@@ -430,8 +433,9 @@ describe("Transport with auth", () => {
     beforeEach(() => {
       authServer = startAuthServer("token_only");
     });
-    afterEach(() => {
+    afterEach(async () => {
       authServer.close();
+      await Bun.sleep(10);
     });
 
     it("connects and authenticates with token", async () => {
@@ -480,7 +484,7 @@ describe("Transport with auth", () => {
       transport.send(testFrame);
 
       await transport.connect();
-      await new Promise((r) => setTimeout(r, 50));
+      await Bun.sleep(50);
 
       // Should have auth frame + queued frame
       const kinds = authServer.received.map((r) => {
@@ -501,8 +505,9 @@ describe("Transport with auth", () => {
     beforeEach(() => {
       authServer = startAuthServer("challenge", nonce);
     });
-    afterEach(() => {
+    afterEach(async () => {
       authServer.close();
+      await Bun.sleep(10);
     });
 
     it("handles challenge and sends HMAC response", async () => {
@@ -524,7 +529,7 @@ describe("Transport with auth", () => {
       expect(transport.state()).toBe("connected");
 
       // Should have sent: node:auth, node:auth_response
-      await new Promise((r) => setTimeout(r, 50));
+      await Bun.sleep(50);
       const kinds = authServer.received.map((r) => {
         const parsed = JSON.parse(r);
         return parsed.kind as string;
@@ -555,8 +560,9 @@ describe("Transport with auth", () => {
     beforeEach(() => {
       authServer = startAuthServer("reject");
     });
-    afterEach(() => {
+    afterEach(async () => {
       authServer.close();
+      await Bun.sleep(10);
     });
 
     it("rejects connection when Gateway denies auth", async () => {
@@ -586,8 +592,9 @@ describe("Transport with auth", () => {
       // Server that never responds — simulates Gateway not supporting auth
       silentServer = startServer();
     });
-    afterEach(() => {
+    afterEach(async () => {
       silentServer.close();
+      await Bun.sleep(10);
     });
 
     it("rejects when auth times out", async () => {
@@ -614,8 +621,9 @@ describe("Transport with auth", () => {
     beforeEach(() => {
       plainServer = startServer();
     });
-    afterEach(() => {
+    afterEach(async () => {
       plainServer.close();
+      await Bun.sleep(10);
     });
 
     it("connects without auth when authConfig is undefined", async () => {
@@ -630,7 +638,7 @@ describe("Transport with auth", () => {
       expect(transport.state()).toBe("connected");
 
       // No auth frames sent
-      await new Promise((r) => setTimeout(r, 30));
+      await Bun.sleep(30);
       const hasAuth = plainServer.received.some((r) => {
         try {
           const parsed = JSON.parse(r);

@@ -9,10 +9,12 @@
  *     → Output flows back as tool result
  *     → Parent incorporates result
  *
- * Gated on OPENROUTER_API_KEY — skipped when the key is not set.
+ * Gated on API key + E2E_TESTS=1 — skipped when either is missing.
+ * E2E tests require API keys AND explicit opt-in via E2E_TESTS=1 to avoid
+ * rate-limit failures when 500+ test files run in parallel.
  *
  * Run:
- *   OPENROUTER_API_KEY=... bun test src/__tests__/e2e.test.ts
+ *   E2E_TESTS=1 OPENROUTER_API_KEY=... bun test src/__tests__/e2e.test.ts
  */
 
 import { describe, expect, test } from "bun:test";
@@ -36,7 +38,8 @@ const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY ?? "";
 const OPENAI_KEY = process.env.OPENAI_API_KEY ?? "";
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const HAS_KEY = OPENROUTER_KEY.length > 0 || OPENAI_KEY.length > 0 || ANTHROPIC_KEY.length > 0;
-const describeE2E = HAS_KEY ? describe : describe.skip;
+const E2E_OPTED_IN = process.env.E2E_TESTS === "1";
+const describeE2E = HAS_KEY && E2E_OPTED_IN ? describe : describe.skip;
 
 const TIMEOUT_MS = 120_000;
 

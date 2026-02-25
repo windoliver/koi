@@ -202,7 +202,7 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       if (resolvedBrickId === undefined) return false;
 
       // Update forge store: lifecycle → "failed" (terminal)
-      const updateResult = await config.forgeStore.update(resolvedBrickId, {
+      const updateResult = await config.forgeStore.update(brickId(resolvedBrickId), {
         lifecycle: "failed",
       });
       if (!updateResult.ok) {
@@ -229,7 +229,6 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
           failureCount: ts.recentFailures.length,
         },
         artifact: {},
-        contentHash: "",
         createdAt: now,
       };
       const recordResult = await config.snapshotStore.record(snapshot);

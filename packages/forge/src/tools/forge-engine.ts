@@ -3,12 +3,12 @@
  */
 
 import type { Result, Tool } from "@koi/core";
+import { brickId } from "@koi/core";
 import type { ForgeError } from "../errors.js";
 import type { ForgeEngineInput, ForgeResult, ImplementationArtifact } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import {
   buildBaseFields,
-  computeContentHash,
   createForgeTool,
   parseImplementationInput,
   runForgePipeline,
@@ -112,10 +112,9 @@ async function forgeEngineHandler(
       : {}),
   };
 
-  return runForgePipeline(forgeInput, deps, (id, report) => {
-    const contentHash = computeContentHash(forgeInput.implementation, forgeInput.files);
+  return runForgePipeline(forgeInput, deps, (report) => {
     const artifact: ImplementationArtifact = {
-      ...buildBaseFields(id, forgeInput, report, deps, contentHash),
+      ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
       kind: "engine",
       implementation: forgeInput.implementation,
       ...(forgeInput.testCases !== undefined ? { testCases: forgeInput.testCases } : {}),

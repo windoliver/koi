@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type {
+  BrickId,
   BrickLifecycle,
   SandboxExecutor,
   StoreChangeEvent,
   TieredSandboxExecutor,
 } from "@koi/core";
-import { VALID_LIFECYCLE_TRANSITIONS } from "@koi/core";
+import { brickId, VALID_LIFECYCLE_TRANSITIONS } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
@@ -16,7 +17,7 @@ import type { ForgeDeps } from "./shared.js";
 
 function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
-    id: "brick_test",
+    id: brickId("brick_test"),
     kind: "tool",
     name: "test-brick",
     description: "A test brick",
@@ -27,7 +28,6 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "test-hash",
     implementation: "return 1;",
     inputSchema: { type: "object" },
     ...overrides,
@@ -70,7 +70,9 @@ describe("createPromoteForgeTool", () => {
 
   test("promotes scope from agent to zone", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1", scope: "agent", trustTier: "verified" }));
+    await store.save(
+      createToolBrick({ id: brickId("brick_1"), scope: "agent", trustTier: "verified" }),
+    );
 
     const config = createDefaultForgeConfig({
       scopePromotion: {
@@ -92,7 +94,7 @@ describe("createPromoteForgeTool", () => {
     expect(result.value.changes.scope).toEqual({ from: "agent", to: "zone" });
 
     // Verify store updated
-    const loadResult = await store.load("brick_1");
+    const loadResult = await store.load(brickId("brick_1"));
     if (loadResult.ok) {
       expect(loadResult.value.scope).toBe("zone");
     }
@@ -100,7 +102,9 @@ describe("createPromoteForgeTool", () => {
 
   test("returns requiresHumanApproval for scope promotion when configured", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1", scope: "agent", trustTier: "verified" }));
+    await store.save(
+      createToolBrick({ id: brickId("brick_1"), scope: "agent", trustTier: "verified" }),
+    );
 
     const config = createDefaultForgeConfig({
       scopePromotion: {
@@ -122,7 +126,7 @@ describe("createPromoteForgeTool", () => {
     expect(result.value.message).toContain("human approval");
 
     // Verify store NOT updated
-    const loadResult = await store.load("brick_1");
+    const loadResult = await store.load(brickId("brick_1"));
     if (loadResult.ok) {
       expect(loadResult.value.scope).toBe("agent");
     }
@@ -130,7 +134,9 @@ describe("createPromoteForgeTool", () => {
 
   test("rejects scope promotion with insufficient trust tier", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1", scope: "agent", trustTier: "sandbox" }));
+    await store.save(
+      createToolBrick({ id: brickId("brick_1"), scope: "agent", trustTier: "sandbox" }),
+    );
 
     const config = createDefaultForgeConfig({
       scopePromotion: {
@@ -156,7 +162,7 @@ describe("createPromoteForgeTool", () => {
 
   test("allows same-scope (no-op)", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1", scope: "agent" }));
+    await store.save(createToolBrick({ id: brickId("brick_1"), scope: "agent" }));
 
     const tool = createPromoteForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -173,7 +179,7 @@ describe("createPromoteForgeTool", () => {
 
   test("promotes trust tier from sandbox to verified", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1", trustTier: "sandbox" }));
+    await store.save(createToolBrick({ id: brickId("brick_1"), trustTier: "sandbox" }));
 
     const tool = createPromoteForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -186,7 +192,7 @@ describe("createPromoteForgeTool", () => {
     expect(result.value.changes.trustTier).toEqual({ from: "sandbox", to: "verified" });
 
     // Verify store updated
-    const loadResult = await store.load("brick_1");
+    const loadResult = await store.load(brickId("brick_1"));
     if (loadResult.ok) {
       expect(loadResult.value.trustTier).toBe("verified");
     }
@@ -194,7 +200,7 @@ describe("createPromoteForgeTool", () => {
 
   test("rejects trust tier demotion with dedicated error code", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1", trustTier: "verified" }));
+    await store.save(createToolBrick({ id: brickId("brick_1"), trustTier: "verified" }));
 
     const tool = createPromoteForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -213,7 +219,7 @@ describe("createPromoteForgeTool", () => {
 
   test("allows same trust tier (no-op)", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1", trustTier: "sandbox" }));
+    await store.save(createToolBrick({ id: brickId("brick_1"), trustTier: "sandbox" }));
 
     const tool = createPromoteForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -230,7 +236,7 @@ describe("createPromoteForgeTool", () => {
 
   test("transitions lifecycle from active to deprecated", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1", lifecycle: "active" }));
+    await store.save(createToolBrick({ id: brickId("brick_1"), lifecycle: "active" }));
 
     const tool = createPromoteForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -245,7 +251,7 @@ describe("createPromoteForgeTool", () => {
 
   test("rejects transition from failed with LIFECYCLE_INVALID_TRANSITION code", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1", lifecycle: "failed" }));
+    await store.save(createToolBrick({ id: brickId("brick_1"), lifecycle: "failed" }));
 
     const tool = createPromoteForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -283,7 +289,7 @@ describe("createPromoteForgeTool", () => {
 
         test(`${from} → ${to}: ${shouldSucceed ? "allowed" : "rejected"}`, async () => {
           const store = createInMemoryForgeStore();
-          await store.save(createToolBrick({ id: "brick_lc", lifecycle: from }));
+          await store.save(createToolBrick({ id: brickId("brick_lc"), lifecycle: from }));
 
           const tool = createPromoteForgeTool(createDeps({ store }));
           const result = (await tool.execute({
@@ -311,7 +317,9 @@ describe("createPromoteForgeTool", () => {
 
   test("applies scope and trust tier promotion together", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1", scope: "agent", trustTier: "sandbox" }));
+    await store.save(
+      createToolBrick({ id: brickId("brick_1"), scope: "agent", trustTier: "sandbox" }),
+    );
 
     const config = createDefaultForgeConfig({
       scopePromotion: {
@@ -340,7 +348,7 @@ describe("createPromoteForgeTool", () => {
     const store = createInMemoryForgeStore();
     await store.save(
       createToolBrick({
-        id: "brick_hitl",
+        id: brickId("brick_hitl"),
         scope: "agent",
         trustTier: "sandbox",
         lifecycle: "active",
@@ -372,7 +380,7 @@ describe("createPromoteForgeTool", () => {
     expect(result.value.changes.lifecycle).toEqual({ from: "active", to: "deprecated" });
 
     // Verify trust and lifecycle were updated in store, but scope was NOT
-    const loadResult = await store.load("brick_hitl");
+    const loadResult = await store.load(brickId("brick_hitl"));
     if (loadResult.ok) {
       expect(loadResult.value.scope).toBe("agent"); // NOT promoted (HITL pending)
       expect(loadResult.value.trustTier).toBe("verified"); // applied
@@ -386,7 +394,7 @@ describe("createPromoteForgeTool", () => {
     const store = createInMemoryForgeStore();
     await store.save(
       createToolBrick({
-        id: "brick_3d",
+        id: brickId("brick_3d"),
         scope: "agent",
         trustTier: "sandbox",
         lifecycle: "draft",
@@ -420,7 +428,7 @@ describe("createPromoteForgeTool", () => {
     const store = createInMemoryForgeStore();
     await store.save(
       createToolBrick({
-        id: "brick_mixed",
+        id: brickId("brick_mixed"),
         scope: "agent",
         trustTier: "verified",
         lifecycle: "active",
@@ -454,7 +462,7 @@ describe("createPromoteForgeTool", () => {
     const store = createInMemoryForgeStore();
     await store.save(
       createToolBrick({
-        id: "brick_mixed2",
+        id: brickId("brick_mixed2"),
         scope: "agent",
         trustTier: "sandbox",
         lifecycle: "failed",
@@ -488,13 +496,15 @@ describe("createPromoteForgeTool", () => {
 
   test("calls store.promote() for scope changes when available", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_wire", scope: "agent", trustTier: "verified" }));
+    await store.save(
+      createToolBrick({ id: brickId("brick_wire"), scope: "agent", trustTier: "verified" }),
+    );
 
     let promoteCalled = false;
-    let promoteArgs: { id: string; scope: string } | undefined;
+    let promoteArgs: { id: BrickId; scope: string } | undefined;
     const storeWithPromote = {
       ...store,
-      promote: async (id: string, targetScope: string) => {
+      promote: async (id: BrickId, targetScope: string) => {
         promoteCalled = true;
         promoteArgs = { id, scope: targetScope };
         // Just update the scope in the underlying store
@@ -518,7 +528,7 @@ describe("createPromoteForgeTool", () => {
 
     expect(result.ok).toBe(true);
     expect(promoteCalled).toBe(true);
-    expect(promoteArgs).toEqual({ id: "brick_wire", scope: "zone" });
+    expect(promoteArgs).toEqual({ id: brickId("brick_wire"), scope: "zone" });
   });
 
   // --- Input validation ---
@@ -549,7 +559,7 @@ describe("createPromoteForgeTool", () => {
 
   test("rejects when no promotion target specified", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1" }));
+    await store.save(createToolBrick({ id: brickId("brick_1") }));
 
     const tool = createPromoteForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -566,7 +576,7 @@ describe("createPromoteForgeTool", () => {
 
   test("rejects invalid scope value", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1" }));
+    await store.save(createToolBrick({ id: brickId("brick_1") }));
 
     const tool = createPromoteForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -584,7 +594,7 @@ describe("createPromoteForgeTool", () => {
 
   test("rejects invalid trust tier value", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1" }));
+    await store.save(createToolBrick({ id: brickId("brick_1") }));
 
     const tool = createPromoteForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -619,7 +629,7 @@ describe("createPromoteForgeTool", () => {
 
   test("returns error when store update fails", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1", trustTier: "sandbox" }));
+    await store.save(createToolBrick({ id: brickId("brick_1"), trustTier: "sandbox" }));
 
     const failingUpdateStore = {
       ...store,
@@ -646,7 +656,7 @@ describe("createPromoteForgeTool", () => {
   test("returns SAVE_FAILED when store.promote() fails", async () => {
     const store = createInMemoryForgeStore();
     await store.save(
-      createToolBrick({ id: "brick_prfail", scope: "agent", trustTier: "verified" }),
+      createToolBrick({ id: brickId("brick_prfail"), scope: "agent", trustTier: "verified" }),
     );
 
     const failingPromoteStore = {
@@ -718,7 +728,7 @@ describe("createPromoteForgeTool", () => {
       },
     });
 
-    const brick = createToolBrick({ id: "brick_zone_tag", tags: ["existing"] });
+    const brick = createToolBrick({ id: brickId("brick_zone_tag"), tags: ["existing"] });
     await deps.store.save(brick);
 
     const tool = createPromoteForgeTool(deps);
@@ -731,7 +741,7 @@ describe("createPromoteForgeTool", () => {
     expect(result.value?.applied).toBe(true);
 
     // Verify the brick now has the zone tag
-    const loaded = await deps.store.load("brick_zone_tag");
+    const loaded = await deps.store.load(brickId("brick_zone_tag"));
     expect(loaded.ok).toBe(true);
     if (loaded.ok) {
       expect(loaded.value.tags).toContain("zone:team-alpha");
@@ -758,7 +768,7 @@ describe("createPromoteForgeTool", () => {
     });
 
     const brick = createToolBrick({
-      id: "brick_dup_tag",
+      id: brickId("brick_dup_tag"),
       tags: ["zone:team-alpha"],
     });
     await deps.store.save(brick);
@@ -772,7 +782,7 @@ describe("createPromoteForgeTool", () => {
     expect(result.ok).toBe(true);
 
     // Verify no duplicate tag
-    const loaded = await deps.store.load("brick_dup_tag");
+    const loaded = await deps.store.load(brickId("brick_dup_tag"));
     expect(loaded.ok).toBe(true);
     if (loaded.ok) {
       const zoneTags = loaded.value.tags.filter((t) => t === "zone:team-alpha");
@@ -792,7 +802,7 @@ describe("createPromoteForgeTool", () => {
       // no zoneId in context
     });
 
-    const brick = createToolBrick({ id: "brick_no_zone", tags: [] });
+    const brick = createToolBrick({ id: brickId("brick_no_zone"), tags: [] });
     await deps.store.save(brick);
 
     const tool = createPromoteForgeTool(deps);
@@ -801,7 +811,7 @@ describe("createPromoteForgeTool", () => {
       targetScope: "zone",
     });
 
-    const loaded = await deps.store.load("brick_no_zone");
+    const loaded = await deps.store.load(brickId("brick_no_zone"));
     expect(loaded.ok).toBe(true);
     if (loaded.ok) {
       expect(loaded.value.tags.length).toBe(0);
@@ -826,7 +836,7 @@ describe("createPromoteForgeTool", () => {
       },
     });
 
-    const brick = createToolBrick({ id: "brick_global_no_tag", tags: [] });
+    const brick = createToolBrick({ id: brickId("brick_global_no_tag"), tags: [] });
     await deps.store.save(brick);
 
     const tool = createPromoteForgeTool(deps);
@@ -835,7 +845,7 @@ describe("createPromoteForgeTool", () => {
       targetScope: "global",
     });
 
-    const loaded = await deps.store.load("brick_global_no_tag");
+    const loaded = await deps.store.load(brickId("brick_global_no_tag"));
     expect(loaded.ok).toBe(true);
     if (loaded.ok) {
       expect(loaded.value.tags.length).toBe(0);
@@ -849,7 +859,7 @@ describe("createPromoteForgeTool", () => {
   test("fires 'promoted' notification when store.promote() is used", async () => {
     const store = createInMemoryForgeStore();
     await store.save(
-      createToolBrick({ id: "brick_notify", scope: "agent", trustTier: "verified" }),
+      createToolBrick({ id: brickId("brick_notify"), scope: "agent", trustTier: "verified" }),
     );
 
     const notifier = createMemoryStoreChangeNotifier();
@@ -858,7 +868,7 @@ describe("createPromoteForgeTool", () => {
 
     const storeWithPromote = {
       ...store,
-      promote: async (id: string, targetScope: string) => {
+      promote: async (id: BrickId, targetScope: string) => {
         return store.update(id, { scope: targetScope as "agent" | "zone" | "global" });
       },
     };
@@ -884,13 +894,13 @@ describe("createPromoteForgeTool", () => {
 
     expect(events.length).toBe(1);
     expect(events[0]?.kind).toBe("promoted");
-    expect(events[0]?.brickId).toBe("brick_notify");
+    expect(events[0]?.brickId).toBe(brickId("brick_notify"));
     expect(events[0]?.scope).toBe("zone");
   });
 
   test("fires 'updated' notification when store.promote() is not available", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_upd_notify", trustTier: "sandbox" }));
+    await store.save(createToolBrick({ id: brickId("brick_upd_notify"), trustTier: "sandbox" }));
 
     const notifier = createMemoryStoreChangeNotifier();
     const events: StoreChangeEvent[] = [];
@@ -909,12 +919,12 @@ describe("createPromoteForgeTool", () => {
 
     expect(events.length).toBe(1);
     expect(events[0]?.kind).toBe("updated");
-    expect(events[0]?.brickId).toBe("brick_upd_notify");
+    expect(events[0]?.brickId).toBe(brickId("brick_upd_notify"));
   });
 
   test("does not fire notification when no changes are made", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_noop", scope: "agent" }));
+    await store.save(createToolBrick({ id: brickId("brick_noop"), scope: "agent" }));
 
     const notifier = createMemoryStoreChangeNotifier();
     const events: StoreChangeEvent[] = [];
@@ -935,7 +945,7 @@ describe("createPromoteForgeTool", () => {
 
   test("no notification when notifier is not provided", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_no_notifier", trustTier: "sandbox" }));
+    await store.save(createToolBrick({ id: brickId("brick_no_notifier"), trustTier: "sandbox" }));
 
     // No notifier — should not throw
     const tool = createPromoteForgeTool(createDeps({ store }));
@@ -952,7 +962,7 @@ describe("createPromoteForgeTool", () => {
     const store = createInMemoryForgeStore();
     await store.save(
       createToolBrick({
-        id: "brick_foreign",
+        id: brickId("brick_foreign"),
         provenance: {
           ...DEFAULT_PROVENANCE,
           metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-2" },
@@ -975,7 +985,7 @@ describe("createPromoteForgeTool", () => {
     const store = createInMemoryForgeStore();
     await store.save(
       createToolBrick({
-        id: "brick_own",
+        id: brickId("brick_own"),
         provenance: {
           ...DEFAULT_PROVENANCE,
           metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-1" },
@@ -998,7 +1008,7 @@ describe("createPromoteForgeTool", () => {
     const store = createInMemoryForgeStore();
     await store.save(
       createToolBrick({
-        id: "brick_global",
+        id: brickId("brick_global"),
         provenance: {
           ...DEFAULT_PROVENANCE,
           metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-2" },

@@ -79,7 +79,7 @@ describe("Forge lifecycle — end-to-end", () => {
     expect(toolResult.value.forgesConsumed).toBe(1);
 
     const toolId = toolResult.value.id;
-    expect(toolId).toMatch(/^brick_[0-9a-f-]{36}$/);
+    expect(toolId).toMatch(/^sha256:[0-9a-f]{64}$/);
 
     // --- Step 2: Search — find the forged tool ---
     const searchAll = (await searchForge.execute({})) as {

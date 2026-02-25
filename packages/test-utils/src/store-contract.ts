@@ -7,11 +7,12 @@
 
 import { describe, expect, test } from "bun:test";
 import type { ForgeStore, StoreChangeEvent } from "@koi/core";
+import { brickId } from "@koi/core";
 import { createTestSkillArtifact, createTestToolArtifact } from "./brick-artifacts.js";
 
 function createBrick(overrides?: Partial<Parameters<typeof createTestToolArtifact>[0]>) {
   return createTestToolArtifact({
-    id: `brick_${Math.random().toString(36).slice(2, 10)}`,
+    id: brickId(`brick_${Math.random().toString(36).slice(2, 10)}`),
     name: "test-brick",
     description: "A test brick",
     ...overrides,
@@ -20,7 +21,7 @@ function createBrick(overrides?: Partial<Parameters<typeof createTestToolArtifac
 
 function createSkillBrick(overrides?: Partial<Parameters<typeof createTestSkillArtifact>[0]>) {
   return createTestSkillArtifact({
-    id: `brick_${Math.random().toString(36).slice(2, 10)}`,
+    id: brickId(`brick_${Math.random().toString(36).slice(2, 10)}`),
     ...overrides,
   });
 }
@@ -37,21 +38,21 @@ export function runForgeStoreContractTests(
   describe("ForgeStore contract", () => {
     test("save and load round-trip", async () => {
       const store = await createStore();
-      const brick = createBrick({ id: "brick_rt" });
+      const brick = createBrick({ id: brickId("brick_rt") });
       const saveResult = await store.save(brick);
       expect(saveResult.ok).toBe(true);
 
-      const loadResult = await store.load("brick_rt");
+      const loadResult = await store.load(brickId("brick_rt"));
       expect(loadResult.ok).toBe(true);
       if (loadResult.ok) {
-        expect(loadResult.value.id).toBe("brick_rt");
+        expect(loadResult.value.id).toBe(brickId("brick_rt"));
         expect(loadResult.value.name).toBe("test-brick");
       }
     });
 
     test("load returns NOT_FOUND for missing id", async () => {
       const store = await createStore();
-      const result = await store.load("nonexistent");
+      const result = await store.load(brickId("nonexistent"));
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.error.code).toBe("NOT_FOUND");
@@ -60,8 +61,8 @@ export function runForgeStoreContractTests(
 
     test("search with empty query returns all", async () => {
       const store = await createStore();
-      await store.save(createBrick({ id: "b1" }));
-      await store.save(createBrick({ id: "b2" }));
+      await store.save(createBrick({ id: brickId("b1") }));
+      await store.save(createBrick({ id: brickId("b2") }));
 
       const result = await store.search({});
       expect(result.ok).toBe(true);
@@ -72,8 +73,8 @@ export function runForgeStoreContractTests(
 
     test("search filters by kind", async () => {
       const store = await createStore();
-      await store.save(createBrick({ id: "b1" }));
-      await store.save(createSkillBrick({ id: "b2" }));
+      await store.save(createBrick({ id: brickId("b1") }));
+      await store.save(createSkillBrick({ id: brickId("b2") }));
 
       const result = await store.search({ kind: "tool" });
       expect(result.ok).toBe(true);
@@ -85,8 +86,8 @@ export function runForgeStoreContractTests(
 
     test("search filters by scope", async () => {
       const store = await createStore();
-      await store.save(createBrick({ id: "b1", scope: "agent" }));
-      await store.save(createBrick({ id: "b2", scope: "global" }));
+      await store.save(createBrick({ id: brickId("b1"), scope: "agent" }));
+      await store.save(createBrick({ id: brickId("b2"), scope: "global" }));
 
       const result = await store.search({ scope: "global" });
       expect(result.ok).toBe(true);
@@ -98,23 +99,23 @@ export function runForgeStoreContractTests(
 
     test("search filters by tags (AND match)", async () => {
       const store = await createStore();
-      await store.save(createBrick({ id: "b1", tags: ["math", "calc"] }));
-      await store.save(createBrick({ id: "b2", tags: ["math"] }));
-      await store.save(createBrick({ id: "b3", tags: ["text"] }));
+      await store.save(createBrick({ id: brickId("b1"), tags: ["math", "calc"] }));
+      await store.save(createBrick({ id: brickId("b2"), tags: ["math"] }));
+      await store.save(createBrick({ id: brickId("b3"), tags: ["text"] }));
 
       const result = await store.search({ tags: ["math", "calc"] });
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value.length).toBe(1);
-        expect(result.value[0]?.id).toBe("b1");
+        expect(result.value[0]?.id).toBe(brickId("b1"));
       }
     });
 
     test("search respects limit", async () => {
       const store = await createStore();
-      await store.save(createBrick({ id: "b1" }));
-      await store.save(createBrick({ id: "b2" }));
-      await store.save(createBrick({ id: "b3" }));
+      await store.save(createBrick({ id: brickId("b1") }));
+      await store.save(createBrick({ id: brickId("b2") }));
+      await store.save(createBrick({ id: brickId("b3") }));
 
       const result = await store.search({ limit: 2 });
       expect(result.ok).toBe(true);
@@ -125,8 +126,8 @@ export function runForgeStoreContractTests(
 
     test("remove deletes from results", async () => {
       const store = await createStore();
-      await store.save(createBrick({ id: "b1" }));
-      await store.remove("b1");
+      await store.save(createBrick({ id: brickId("b1") }));
+      await store.remove(brickId("b1"));
 
       const result = await store.search({});
       expect(result.ok).toBe(true);
@@ -137,7 +138,7 @@ export function runForgeStoreContractTests(
 
     test("remove returns NOT_FOUND for missing", async () => {
       const store = await createStore();
-      const result = await store.remove("nonexistent");
+      const result = await store.remove(brickId("nonexistent"));
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.error.code).toBe("NOT_FOUND");
@@ -146,12 +147,15 @@ export function runForgeStoreContractTests(
 
     test("update modifies specific fields", async () => {
       const store = await createStore();
-      await store.save(createBrick({ id: "b1", lifecycle: "active", usageCount: 0 }));
+      await store.save(createBrick({ id: brickId("b1"), lifecycle: "active", usageCount: 0 }));
 
-      const updateResult = await store.update("b1", { lifecycle: "deprecated", usageCount: 5 });
+      const updateResult = await store.update(brickId("b1"), {
+        lifecycle: "deprecated",
+        usageCount: 5,
+      });
       expect(updateResult.ok).toBe(true);
 
-      const loadResult = await store.load("b1");
+      const loadResult = await store.load(brickId("b1"));
       expect(loadResult.ok).toBe(true);
       if (loadResult.ok) {
         expect(loadResult.value.lifecycle).toBe("deprecated");
@@ -162,12 +166,12 @@ export function runForgeStoreContractTests(
 
     test("update modifies tags", async () => {
       const store = await createStore();
-      await store.save(createBrick({ id: "b1", tags: ["original"] }));
+      await store.save(createBrick({ id: brickId("b1"), tags: ["original"] }));
 
-      const updateResult = await store.update("b1", { tags: ["original", "zone:team-a"] });
+      const updateResult = await store.update(brickId("b1"), { tags: ["original", "zone:team-a"] });
       expect(updateResult.ok).toBe(true);
 
-      const loadResult = await store.load("b1");
+      const loadResult = await store.load(brickId("b1"));
       expect(loadResult.ok).toBe(true);
       if (loadResult.ok) {
         expect(loadResult.value.tags).toContain("original");
@@ -178,7 +182,7 @@ export function runForgeStoreContractTests(
 
     test("update returns NOT_FOUND for missing id", async () => {
       const store = await createStore();
-      const result = await store.update("nonexistent", { usageCount: 1 });
+      const result = await store.update(brickId("nonexistent"), { usageCount: 1 });
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.error.code).toBe("NOT_FOUND");
@@ -187,9 +191,9 @@ export function runForgeStoreContractTests(
 
     test("exists returns true for saved brick", async () => {
       const store = await createStore();
-      await store.save(createBrick({ id: "b1" }));
+      await store.save(createBrick({ id: brickId("b1") }));
 
-      const result = await store.exists("b1");
+      const result = await store.exists(brickId("b1"));
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value).toBe(true);
@@ -198,7 +202,7 @@ export function runForgeStoreContractTests(
 
     test("exists returns false for missing id", async () => {
       const store = await createStore();
-      const result = await store.exists("nonexistent");
+      const result = await store.exists(brickId("nonexistent"));
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value).toBe(false);
@@ -207,10 +211,10 @@ export function runForgeStoreContractTests(
 
     test("save with existing id overwrites", async () => {
       const store = await createStore();
-      await store.save(createBrick({ id: "b1", name: "original" }));
-      await store.save(createBrick({ id: "b1", name: "updated" }));
+      await store.save(createBrick({ id: brickId("b1"), name: "original" }));
+      await store.save(createBrick({ id: brickId("b1"), name: "updated" }));
 
-      const result = await store.load("b1");
+      const result = await store.load(brickId("b1"));
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value.name).toBe("updated");
@@ -232,18 +236,18 @@ export function runForgeStoreContractTests(
         events.push(event);
       });
 
-      const brickId = "oc_typed";
-      await store.save(createBrick({ id: brickId, usageCount: 0 }));
-      await store.update(brickId, { usageCount: 5 });
-      await store.remove(brickId);
+      const testId = brickId("oc_typed");
+      await store.save(createBrick({ id: testId, usageCount: 0 }));
+      await store.update(testId, { usageCount: 5 });
+      await store.remove(testId);
 
       // Events fire immediately (no debounce)
-      await new Promise((r) => setTimeout(r, 10));
+      await Bun.sleep(10);
 
       expect(events).toHaveLength(3);
-      expect(events[0]).toEqual({ kind: "saved", brickId });
-      expect(events[1]).toEqual({ kind: "updated", brickId });
-      expect(events[2]).toEqual({ kind: "removed", brickId });
+      expect(events[0]).toEqual({ kind: "saved", brickId: testId });
+      expect(events[1]).toEqual({ kind: "updated", brickId: testId });
+      expect(events[2]).toEqual({ kind: "removed", brickId: testId });
     });
 
     test("watch fires after successful save", async () => {
@@ -257,8 +261,8 @@ export function runForgeStoreContractTests(
         events.push(event);
       });
 
-      await store.save(createBrick({ id: "oc_save" }));
-      await new Promise((r) => setTimeout(r, 10));
+      await store.save(createBrick({ id: brickId("oc_save") }));
+      await Bun.sleep(10);
       expect(events).toHaveLength(1);
       expect(events[0]?.kind).toBe("saved");
     });
@@ -269,15 +273,15 @@ export function runForgeStoreContractTests(
         return;
       }
 
-      await store.save(createBrick({ id: "oc_rm" }));
+      await store.save(createBrick({ id: brickId("oc_rm") }));
 
       const events: StoreChangeEvent[] = [];
       store.watch((event) => {
         events.push(event);
       });
 
-      await store.remove("oc_rm");
-      await new Promise((r) => setTimeout(r, 10));
+      await store.remove(brickId("oc_rm"));
+      await Bun.sleep(10);
       expect(events).toHaveLength(1);
       expect(events[0]?.kind).toBe("removed");
     });
@@ -288,15 +292,15 @@ export function runForgeStoreContractTests(
         return;
       }
 
-      await store.save(createBrick({ id: "oc_up", usageCount: 0 }));
+      await store.save(createBrick({ id: brickId("oc_up"), usageCount: 0 }));
 
       const events: StoreChangeEvent[] = [];
       store.watch((event) => {
         events.push(event);
       });
 
-      await store.update("oc_up", { usageCount: 5 });
-      await new Promise((r) => setTimeout(r, 10));
+      await store.update(brickId("oc_up"), { usageCount: 5 });
+      await Bun.sleep(10);
       expect(events).toHaveLength(1);
       expect(events[0]?.kind).toBe("updated");
     });
@@ -313,9 +317,9 @@ export function runForgeStoreContractTests(
       });
 
       // These should fail (NOT_FOUND) and NOT trigger watch
-      await store.remove("nonexistent");
-      await store.update("nonexistent", { usageCount: 1 });
-      await new Promise((r) => setTimeout(r, 10));
+      await store.remove(brickId("nonexistent"));
+      await store.update(brickId("nonexistent"), { usageCount: 1 });
+      await Bun.sleep(10);
       expect(events).toHaveLength(0);
     });
 
@@ -331,11 +335,11 @@ export function runForgeStoreContractTests(
       });
 
       // Rapid-fire 3 saves — each fires immediately
-      await store.save(createBrick({ id: "oc_d1" }));
-      await store.save(createBrick({ id: "oc_d2" }));
-      await store.save(createBrick({ id: "oc_d3" }));
+      await store.save(createBrick({ id: brickId("oc_d1") }));
+      await store.save(createBrick({ id: brickId("oc_d2") }));
+      await store.save(createBrick({ id: brickId("oc_d3") }));
 
-      await new Promise((r) => setTimeout(r, 10));
+      await Bun.sleep(10);
       expect(events).toHaveLength(3);
       expect(events.every((e) => e.kind === "saved")).toBe(true);
     });
@@ -351,14 +355,14 @@ export function runForgeStoreContractTests(
         events.push(event);
       });
 
-      await store.save(createBrick({ id: "oc_unsub1" }));
-      await new Promise((r) => setTimeout(r, 10));
+      await store.save(createBrick({ id: brickId("oc_unsub1") }));
+      await Bun.sleep(10);
       expect(events).toHaveLength(1);
 
       unsub();
 
-      await store.save(createBrick({ id: "oc_unsub2" }));
-      await new Promise((r) => setTimeout(r, 10));
+      await store.save(createBrick({ id: brickId("oc_unsub2") }));
+      await Bun.sleep(10);
       expect(events).toHaveLength(1); // unchanged
     });
 
@@ -377,8 +381,8 @@ export function runForgeStoreContractTests(
         events2.push(event);
       });
 
-      await store.save(createBrick({ id: "oc_multi" }));
-      await new Promise((r) => setTimeout(r, 10));
+      await store.save(createBrick({ id: brickId("oc_multi") }));
+      await Bun.sleep(10);
       expect(events1).toHaveLength(1);
       expect(events2).toHaveLength(1);
     });

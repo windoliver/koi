@@ -14,6 +14,7 @@ import { join } from "node:path";
 import type {
   BrickArtifact,
   BrickArtifactBase,
+  BrickId,
   BrickUpdate,
   ForgeQuery,
   ForgeStore,
@@ -64,7 +65,6 @@ function extractMetadata(brick: BrickArtifact): BrickArtifactBase {
     version: brick.version,
     tags: brick.tags,
     usageCount: brick.usageCount,
-    contentHash: brick.contentHash,
     // Include requires (small, useful for resolver filtering) but NOT files (large, on-demand only)
     ...(brick.requires !== undefined ? { requires: brick.requires } : {}),
   };
@@ -100,8 +100,8 @@ async function ensureDir(dirPath: string): Promise<void> {
 
 /** Compute per-brick diff events between two metadata indexes. */
 function computeIndexDiff(
-  prev: ReadonlyMap<string, BrickArtifactBase>,
-  next: ReadonlyMap<string, BrickArtifactBase>,
+  prev: ReadonlyMap<BrickId, BrickArtifactBase>,
+  next: ReadonlyMap<BrickId, BrickArtifactBase>,
 ): readonly StoreChangeEvent[] {
   const events: StoreChangeEvent[] = [];
 
@@ -111,7 +111,6 @@ function computeIndexDiff(
     if (prevMeta === undefined) {
       events.push({ kind: "saved", brickId: id });
     } else if (
-      prevMeta.contentHash !== meta.contentHash ||
       prevMeta.lifecycle !== meta.lifecycle ||
       prevMeta.trustTier !== meta.trustTier ||
       prevMeta.scope !== meta.scope ||
@@ -135,8 +134,8 @@ function computeIndexDiff(
 async function scanAndBuildIndex(
   baseDir: string,
   cleanTmp: boolean,
-): Promise<Map<string, BrickArtifactBase>> {
-  const index = new Map<string, BrickArtifactBase>();
+): Promise<Map<BrickId, BrickArtifactBase>> {
+  const index = new Map<BrickId, BrickArtifactBase>();
 
   // List shard directories
   let shardDirs: string[];
@@ -188,7 +187,7 @@ export interface FsForgeStoreExtended extends ForgeStore {
   /** Search the in-memory index without loading full artifacts from disk. */
   readonly searchIndex: (query: ForgeQuery) => readonly BrickArtifactBase[];
   /** Load a single brick from disk by ID (bypasses index check). */
-  readonly loadFromDisk: (id: string) => Promise<Result<BrickArtifact, KoiError>>;
+  readonly loadFromDisk: (id: BrickId) => Promise<Result<BrickArtifact, KoiError>>;
   /** Clean up filesystem watcher, timers, and listeners. */
   readonly dispose: () => void;
 }
@@ -306,7 +305,7 @@ export async function createFsForgeStore(
     }
   };
 
-  const load = async (id: string): Promise<Result<BrickArtifact, KoiError>> => {
+  const load = async (id: BrickId): Promise<Result<BrickArtifact, KoiError>> => {
     if (!index.has(id)) {
       return { ok: false, error: notFound(id, `Brick not found: ${id}`) };
     }
@@ -316,7 +315,7 @@ export async function createFsForgeStore(
 
   const search = async (query: ForgeQuery): Promise<Result<readonly BrickArtifact[], KoiError>> => {
     // Filter metadata index in memory
-    const matchingIds: string[] = [];
+    const matchingIds: BrickId[] = [];
     for (const [id, meta] of index) {
       if (matchesQuery(meta, query)) {
         matchingIds.push(id);
@@ -345,7 +344,7 @@ export async function createFsForgeStore(
     return { ok: true, value: bricks };
   };
 
-  const remove = async (id: string): Promise<Result<void, KoiError>> => {
+  const remove = async (id: BrickId): Promise<Result<void, KoiError>> => {
     if (!index.has(id)) {
       return { ok: false, error: notFound(id, `Brick not found: ${id}`) };
     }
@@ -360,7 +359,7 @@ export async function createFsForgeStore(
     }
   };
 
-  const update = async (id: string, updates: BrickUpdate): Promise<Result<void, KoiError>> => {
+  const update = async (id: BrickId, updates: BrickUpdate): Promise<Result<void, KoiError>> => {
     if (!index.has(id)) {
       return { ok: false, error: notFound(id, `Brick not found: ${id}`) };
     }
@@ -395,7 +394,7 @@ export async function createFsForgeStore(
     }
   };
 
-  const exists = async (id: string): Promise<Result<boolean, KoiError>> => {
+  const exists = async (id: BrickId): Promise<Result<boolean, KoiError>> => {
     return { ok: true, value: index.has(id) };
   };
 
@@ -416,7 +415,7 @@ export async function createFsForgeStore(
   };
 
   /** Load a single brick from disk by ID (bypasses index check for overlay use). */
-  const loadFromDisk = async (id: string): Promise<Result<BrickArtifact, KoiError>> => {
+  const loadFromDisk = async (id: BrickId): Promise<Result<BrickArtifact, KoiError>> => {
     return readBrick(brickPath(baseDir, id));
   };
 

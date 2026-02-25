@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolArtifact } from "@koi/core";
+import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE, runForgeStoreContractTests } from "@koi/test-utils";
 import type { FsForgeStoreExtended } from "./fs-store.js";
 import { createFsForgeStore } from "./fs-store.js";
@@ -23,7 +24,7 @@ async function freshDir(): Promise<string> {
 
 function createTestBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
-    id: `brick_${Math.random().toString(36).slice(2, 10)}`,
+    id: brickId(`brick_${Math.random().toString(36).slice(2, 10)}`),
     kind: "tool",
     name: "test-brick",
     description: "A test brick",
@@ -34,7 +35,6 @@ function createTestBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "test-hash",
     implementation: "return 1;",
     inputSchema: { type: "object" },
     ...overrides,
@@ -65,15 +65,15 @@ describe("FsForgeStore edge cases", () => {
   test("load returns INTERNAL for corrupted JSON file", async () => {
     const store = await createFsForgeStore({ baseDir: testDir });
     // Save a valid brick to create the shard directory and index entry
-    const brick = createTestBrick({ id: "brick_corrupt" });
+    const brick = createTestBrick({ id: brickId("brick_corrupt") });
     await store.save(brick);
 
     // Manually corrupt the file on disk
-    const filePath = brickPath(testDir, "brick_corrupt");
+    const filePath = brickPath(testDir, brickId("brick_corrupt"));
     await writeFile(filePath, "{ invalid json !!!");
 
     // Load should fail with INTERNAL error (corrupted)
-    const result = await store.load("brick_corrupt");
+    const result = await store.load(brickId("brick_corrupt"));
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("INTERNAL");
@@ -84,14 +84,14 @@ describe("FsForgeStore edge cases", () => {
   // 2. Schema mismatch (valid JSON, wrong shape)
   test("load returns INTERNAL for valid JSON with wrong schema", async () => {
     const store = await createFsForgeStore({ baseDir: testDir });
-    const brick = createTestBrick({ id: "brick_schema" });
+    const brick = createTestBrick({ id: brickId("brick_schema") });
     await store.save(brick);
 
     // Overwrite with valid JSON but missing required fields
-    const filePath = brickPath(testDir, "brick_schema");
+    const filePath = brickPath(testDir, brickId("brick_schema"));
     await writeFile(filePath, JSON.stringify({ name: "incomplete" }));
 
-    const result = await store.load("brick_schema");
+    const result = await store.load(brickId("brick_schema"));
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("INTERNAL");
@@ -108,7 +108,7 @@ describe("FsForgeStore edge cases", () => {
 
     // Also write a valid brick to ensure it's preserved
     const validBrickPath = brickPath(testDir, "brick_valid1");
-    const validBrick = createTestBrick({ id: "brick_valid1" });
+    const validBrick = createTestBrick({ id: brickId("brick_valid1") });
     await writeFile(validBrickPath, JSON.stringify(validBrick));
 
     const store = await createFsForgeStore({ baseDir: testDir });
@@ -118,7 +118,7 @@ describe("FsForgeStore edge cases", () => {
     expect(await tmpFile.exists()).toBe(false);
 
     // Valid brick should be loaded
-    const result = await store.exists("brick_valid1");
+    const result = await store.exists(brickId("brick_valid1"));
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value).toBe(true);
@@ -130,19 +130,19 @@ describe("FsForgeStore edge cases", () => {
     const nestedDir = join(testDir, "deep", "nested", "store");
     const store = await createFsForgeStore({ baseDir: nestedDir });
 
-    const brick = createTestBrick({ id: "brick_nested" });
+    const brick = createTestBrick({ id: brickId("brick_nested") });
     const result = await store.save(brick);
     expect(result.ok).toBe(true);
 
-    const loadResult = await store.load("brick_nested");
+    const loadResult = await store.load(brickId("brick_nested"));
     expect(loadResult.ok).toBe(true);
   });
 
   // 5. Concurrent save to same ID — last-write-wins
   test("concurrent saves to same ID result in last-write-wins", async () => {
     const store = await createFsForgeStore({ baseDir: testDir });
-    const brick1 = createTestBrick({ id: "brick_concurrent", name: "first" });
-    const brick2 = createTestBrick({ id: "brick_concurrent", name: "second" });
+    const brick1 = createTestBrick({ id: brickId("brick_concurrent"), name: "first" });
+    const brick2 = createTestBrick({ id: brickId("brick_concurrent"), name: "second" });
 
     // Fire both saves concurrently
     const [r1, r2] = await Promise.all([store.save(brick1), store.save(brick2)]);
@@ -150,7 +150,7 @@ describe("FsForgeStore edge cases", () => {
     expect(r2.ok).toBe(true);
 
     // One of them should win — the file should be valid JSON either way
-    const loadResult = await store.load("brick_concurrent");
+    const loadResult = await store.load(brickId("brick_concurrent"));
     expect(loadResult.ok).toBe(true);
     if (loadResult.ok) {
       expect(["first", "second"]).toContain(loadResult.value.name);
@@ -160,7 +160,7 @@ describe("FsForgeStore edge cases", () => {
   // 6. Hash shard directory auto-creation
   test("auto-creates shard directory on first write", async () => {
     const store = await createFsForgeStore({ baseDir: testDir });
-    const brick = createTestBrick({ id: "zz_new_shard" });
+    const brick = createTestBrick({ id: brickId("zz_new_shard") });
 
     const result = await store.save(brick);
     expect(result.ok).toBe(true);
@@ -184,15 +184,15 @@ describe("FsForgeStore edge cases", () => {
   // 8. Data survives re-creation (persistence test)
   test("data persists across store re-creation", async () => {
     const store1 = await createFsForgeStore({ baseDir: testDir });
-    const brick = createTestBrick({ id: "brick_persist" });
+    const brick = createTestBrick({ id: brickId("brick_persist") });
     await store1.save(brick);
 
     // Create a new store instance pointing at the same directory
     const store2 = await createFsForgeStore({ baseDir: testDir });
-    const result = await store2.load("brick_persist");
+    const result = await store2.load(brickId("brick_persist"));
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.id).toBe("brick_persist");
+      expect(result.value.id).toBe(brickId("brick_persist"));
       expect(result.value.name).toBe("test-brick");
     }
   });
@@ -253,7 +253,7 @@ describe("FsForgeStore watcher", () => {
 
     // Store B (non-watching) writes a brick to the same directory
     const storeB = await plainStore();
-    const brick = createTestBrick({ id: "brick_ext_write" });
+    const brick = createTestBrick({ id: brickId("brick_ext_write") });
     await storeB.save(brick);
 
     // Wait for watcher debounce (100ms) + margin
@@ -262,7 +262,7 @@ describe("FsForgeStore watcher", () => {
     expect(listener).toHaveBeenCalled();
 
     // Store A should see the brick now
-    const result = await storeA.exists("brick_ext_write");
+    const result = await storeA.exists(brickId("brick_ext_write"));
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value).toBe(true);
@@ -275,7 +275,7 @@ describe("FsForgeStore watcher", () => {
     store.watch?.(listener);
 
     // Single programmatic save
-    const brick = createTestBrick({ id: "brick_no_double" });
+    const brick = createTestBrick({ id: brickId("brick_no_double") });
     await store.save(brick);
 
     // Wait for watcher debounce to settle
@@ -293,7 +293,7 @@ describe("FsForgeStore watcher", () => {
     store.watch?.(listener);
 
     // Manually write a valid brick JSON to the correct shard path
-    const brick = createTestBrick({ id: "brick_dropped" });
+    const brick = createTestBrick({ id: brickId("brick_dropped") });
     const shard = shardDir(testDir, brick.id);
     await mkdir(shard, { recursive: true });
     const filePath = brickPath(testDir, brick.id);
@@ -305,7 +305,7 @@ describe("FsForgeStore watcher", () => {
     expect(listener).toHaveBeenCalled();
 
     // Store should now see the brick
-    const result = await store.exists("brick_dropped");
+    const result = await store.exists(brickId("brick_dropped"));
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value).toBe(true);
@@ -325,7 +325,7 @@ describe("FsForgeStore watcher", () => {
 
     // External write after dispose
     const storeB = await plainStore();
-    const brick = createTestBrick({ id: "brick_after_dispose" });
+    const brick = createTestBrick({ id: brickId("brick_after_dispose") });
     await storeB.save(brick);
 
     // Wait for watcher
@@ -343,7 +343,7 @@ describe("FsForgeStore watcher", () => {
 
     // Store B saves a brick
     const storeB = await plainStore();
-    const brick = createTestBrick({ id: "brick_no_watch" });
+    const brick = createTestBrick({ id: brickId("brick_no_watch") });
     await storeB.save(brick);
 
     // Wait generously
@@ -353,7 +353,7 @@ describe("FsForgeStore watcher", () => {
     expect(listener).not.toHaveBeenCalled();
 
     // Store A should NOT see the brick (no rescan)
-    const result = await storeA.exists("brick_no_watch");
+    const result = await storeA.exists(brickId("brick_no_watch"));
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value).toBe(false);

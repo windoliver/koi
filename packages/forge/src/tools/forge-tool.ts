@@ -3,16 +3,11 @@
  */
 
 import type { Result, Tool } from "@koi/core";
+import { brickId } from "@koi/core";
 import type { ForgeError } from "../errors.js";
 import type { ForgeResult, ForgeToolInput, ToolArtifact } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
-import {
-  buildBaseFields,
-  computeContentHash,
-  createForgeTool,
-  parseToolInput,
-  runForgePipeline,
-} from "./shared.js";
+import { buildBaseFields, createForgeTool, parseToolInput, runForgePipeline } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Tool config
@@ -112,10 +107,10 @@ async function forgeToolHandler(
       : {}),
   };
 
-  return runForgePipeline(forgeInput, deps, (id, report) => {
-    const contentHash = computeContentHash(forgeInput.implementation, forgeInput.files);
+  // Placeholder id — pipeline replaces with content-addressed hash
+  return runForgePipeline(forgeInput, deps, (report) => {
     const artifact: ToolArtifact = {
-      ...buildBaseFields(id, forgeInput, report, deps, contentHash),
+      ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
       kind: "tool",
       implementation: forgeInput.implementation,
       inputSchema: forgeInput.inputSchema,

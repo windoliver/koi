@@ -56,8 +56,10 @@ export function createAsyncValidator(
 ): MockValidator {
   return {
     name: name ?? "async-validator",
-    validate: () =>
-      new Promise<MockValidationResult>((resolve) => setTimeout(() => resolve(result), delayMs)),
+    validate: async () => {
+      await Bun.sleep(delayMs);
+      return result;
+    },
   };
 }
 

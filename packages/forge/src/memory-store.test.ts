@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { StoreChangeEvent, ToolArtifact } from "@koi/core";
+import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE, runForgeStoreContractTests } from "@koi/test-utils";
 import { createInMemoryForgeStore } from "./memory-store.js";
 
@@ -12,7 +13,7 @@ runForgeStoreContractTests(createInMemoryForgeStore);
 
 function testToolArtifact(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
-    id: crypto.randomUUID(),
+    id: brickId(crypto.randomUUID()),
     kind: "tool",
     name: "test-tool",
     description: "A test tool",
@@ -23,7 +24,6 @@ function testToolArtifact(overrides?: Partial<ToolArtifact>): ToolArtifact {
     version: "1.0.0",
     tags: [],
     usageCount: 0,
-    contentHash: "abc123",
     implementation: "return input;",
     inputSchema: { type: "object" },
     ...overrides,
@@ -95,7 +95,7 @@ describe("InMemoryForgeStore watch", () => {
 
     store.watch?.(listener);
 
-    const result = await store.remove("non-existent-id");
+    const result = await store.remove(brickId("non-existent-id"));
     expect(result.ok).toBe(false);
 
     await new Promise((r) => setTimeout(r, 10));
@@ -109,8 +109,8 @@ describe("InMemoryForgeStore watch", () => {
 
     store.watch?.(listener);
 
-    await store.save(testToolArtifact({ id: "tool-1", name: "tool-1" }));
-    await store.save(testToolArtifact({ id: "tool-2", name: "tool-2" }));
+    await store.save(testToolArtifact({ id: brickId("tool-1"), name: "tool-1" }));
+    await store.save(testToolArtifact({ id: brickId("tool-2"), name: "tool-2" }));
 
     await new Promise((r) => setTimeout(r, 10));
 
@@ -123,14 +123,14 @@ describe("InMemoryForgeStore watch", () => {
 
     const unsubscribe = store.watch?.(listener);
 
-    await store.save(testToolArtifact({ id: "tool-1" }));
+    await store.save(testToolArtifact({ id: brickId("tool-1") }));
     await new Promise((r) => setTimeout(r, 10));
     expect(listener).toHaveBeenCalledTimes(1);
 
     // Unsubscribe
     unsubscribe?.();
 
-    await store.save(testToolArtifact({ id: "tool-2" }));
+    await store.save(testToolArtifact({ id: brickId("tool-2") }));
     await new Promise((r) => setTimeout(r, 10));
 
     // Still just 1 call (no new notifications)

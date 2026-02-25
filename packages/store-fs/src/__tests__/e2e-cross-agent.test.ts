@@ -3,10 +3,10 @@
  *
  * Validates that two agents sharing a "shared" tier can:
  * 1. Each forge bricks into their own agent tier
- * 2. Promote a brick from agent → shared tier
+ * 2. Promote a brick from agent -> shared tier
  * 3. The other agent can discover and use the promoted brick
  * 4. Agent-scoped bricks remain isolated (not visible to other agent)
- * 5. Scope-based promotion (ForgeScope → tier mapping) works end-to-end
+ * 5. Scope-based promotion (ForgeScope -> tier mapping) works end-to-end
  *
  * @koi/forge is a devDependency (test-only, no layer violation).
  */
@@ -23,6 +23,7 @@ import type {
   TieredSandboxExecutor,
   ToolArtifact,
 } from "@koi/core";
+import { brickId } from "@koi/core";
 import type { ForgeDeps } from "@koi/forge";
 import {
   createDefaultForgeConfig,
@@ -68,7 +69,7 @@ function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
 
 function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
-    id: `brick_${crypto.randomUUID()}`,
+    id: brickId(`brick_${crypto.randomUUID()}`),
     kind: "tool",
     name: "test-brick",
     description: "A test brick",
@@ -79,7 +80,6 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: `hash-${crypto.randomUUID()}`,
     implementation: "return input;",
     inputSchema: { type: "object" },
     ...overrides,
@@ -175,41 +175,41 @@ describe("cross-agent brick reuse e2e", () => {
 
     // Alpha saves a brick to its agent tier
     const alphaBrick = createToolBrick({
-      id: "brick_alpha_private",
+      id: brickId("brick_alpha_private"),
       name: "alpha-private",
       provenance: provenanceFor("alpha"),
     });
     await agentAlphaStore.save(alphaBrick);
 
     // Alpha can see it
-    const alphaExists = await agentAlphaStore.exists("brick_alpha_private");
+    const alphaExists = await agentAlphaStore.exists(brickId("brick_alpha_private"));
     expect(alphaExists.ok && alphaExists.value).toBe(true);
 
     // Beta cannot see it (different agent tier directory)
-    const betaExists = await agentBetaStore.exists("brick_alpha_private");
+    const betaExists = await agentBetaStore.exists(brickId("brick_alpha_private"));
     expect(betaExists.ok && betaExists.value).toBe(false);
 
     // Alpha search returns it
     const alphaSearch = await agentAlphaStore.search({ kind: "tool" });
     expect(alphaSearch.ok).toBe(true);
     if (alphaSearch.ok) {
-      expect(alphaSearch.value.some((b: BrickArtifact) => b.id === "brick_alpha_private")).toBe(
-        true,
-      );
+      expect(
+        alphaSearch.value.some((b: BrickArtifact) => b.id === brickId("brick_alpha_private")),
+      ).toBe(true);
     }
 
     // Beta search does not return it
     const betaSearch = await agentBetaStore.search({ kind: "tool" });
     expect(betaSearch.ok).toBe(true);
     if (betaSearch.ok) {
-      expect(betaSearch.value.some((b: BrickArtifact) => b.id === "brick_alpha_private")).toBe(
-        false,
-      );
+      expect(
+        betaSearch.value.some((b: BrickArtifact) => b.id === brickId("brick_alpha_private")),
+      ).toBe(false);
     }
   });
 
   // -----------------------------------------------------------------------
-  // Test 2: Promote brick from agent → shared tier, other agent can see it
+  // Test 2: Promote brick from agent -> shared tier, other agent can see it
   // -----------------------------------------------------------------------
 
   test("promoted brick becomes visible to other agent via shared tier", async () => {
@@ -217,7 +217,7 @@ describe("cross-agent brick reuse e2e", () => {
 
     // Alpha saves a brick to agent tier
     const sharedBrick = createToolBrick({
-      id: "brick_to_share",
+      id: brickId("brick_to_share"),
       name: "shared-calculator",
       provenance: provenanceFor("alpha"),
       trustTier: "verified",
@@ -225,15 +225,15 @@ describe("cross-agent brick reuse e2e", () => {
     await agentAlphaStore.save(sharedBrick);
 
     // Before promotion: beta cannot see it
-    const beforeBeta = await agentBetaStore.exists("brick_to_share");
+    const beforeBeta = await agentBetaStore.exists(brickId("brick_to_share"));
     expect(beforeBeta.ok && beforeBeta.value).toBe(false);
 
     // Alpha promotes to shared tier
-    const promoteResult = await agentAlphaStore.promoteTier("brick_to_share", "shared");
+    const promoteResult = await agentAlphaStore.promoteTier(brickId("brick_to_share"), "shared");
     expect(promoteResult.ok).toBe(true);
 
     // Verify brick moved from agent to shared
-    const locateAlpha = await agentAlphaStore.locateTier("brick_to_share");
+    const locateAlpha = await agentAlphaStore.locateTier(brickId("brick_to_share"));
     expect(locateAlpha.ok).toBe(true);
     if (locateAlpha.ok) {
       expect(locateAlpha.value).toBe("shared");
@@ -253,11 +253,11 @@ describe("cross-agent brick reuse e2e", () => {
     });
 
     // After promotion: beta can see it through the shared tier
-    const afterBeta = await betaRefreshed.exists("brick_to_share");
+    const afterBeta = await betaRefreshed.exists(brickId("brick_to_share"));
     expect(afterBeta.ok && afterBeta.value).toBe(true);
 
     // Beta can load the full brick
-    const betaLoad = await betaRefreshed.load("brick_to_share");
+    const betaLoad = await betaRefreshed.load(brickId("brick_to_share"));
     expect(betaLoad.ok).toBe(true);
     if (betaLoad.ok) {
       expect(betaLoad.value.name).toBe("shared-calculator");
@@ -268,33 +268,35 @@ describe("cross-agent brick reuse e2e", () => {
     const betaSearch = await betaRefreshed.search({ kind: "tool" });
     expect(betaSearch.ok).toBe(true);
     if (betaSearch.ok) {
-      expect(betaSearch.value.some((b: BrickArtifact) => b.id === "brick_to_share")).toBe(true);
+      expect(betaSearch.value.some((b: BrickArtifact) => b.id === brickId("brick_to_share"))).toBe(
+        true,
+      );
     }
   });
 
   // -----------------------------------------------------------------------
-  // Test 3: Scope-based promote (ForgeScope → tier mapping)
+  // Test 3: Scope-based promote (ForgeScope -> tier mapping)
   // -----------------------------------------------------------------------
 
   test("scope-based promote maps zone scope to shared tier", async () => {
     const { agentAlphaStore } = setup;
 
     const brick = createToolBrick({
-      id: "brick_scope_promote",
+      id: brickId("brick_scope_promote"),
       name: "scope-promoted",
       provenance: provenanceFor("alpha"),
     });
     await agentAlphaStore.save(brick);
 
-    // Use scope-based promote (zone → shared)
+    // Use scope-based promote (zone -> shared)
     const promoteResult = await agentAlphaStore.promote(
-      "brick_scope_promote",
+      brickId("brick_scope_promote"),
       "zone" as ForgeScope,
     );
     expect(promoteResult.ok).toBe(true);
 
     // Verify it ended up in the shared tier
-    const locate = await agentAlphaStore.locateTier("brick_scope_promote");
+    const locate = await agentAlphaStore.locateTier(brickId("brick_scope_promote"));
     expect(locate.ok).toBe(true);
     if (locate.ok) {
       expect(locate.value).toBe("shared");
@@ -309,7 +311,7 @@ describe("cross-agent brick reuse e2e", () => {
     const { agentAlphaStore } = setup;
 
     const brick = createToolBrick({
-      id: "brick_tool_promote",
+      id: brickId("brick_tool_promote"),
       name: "tool-promoted",
       scope: "agent",
       trustTier: "verified",
@@ -335,7 +337,7 @@ describe("cross-agent brick reuse e2e", () => {
     expect(typed.value?.changes.scope).toEqual({ from: "agent", to: "zone" });
 
     // Verify the brick was physically moved to shared tier
-    const locate = await agentAlphaStore.locateTier("brick_tool_promote");
+    const locate = await agentAlphaStore.locateTier(brickId("brick_tool_promote"));
     expect(locate.ok).toBe(true);
     if (locate.ok) {
       expect(locate.value).toBe("shared");
@@ -351,12 +353,12 @@ describe("cross-agent brick reuse e2e", () => {
 
     // Each agent forges a brick
     const alphaBrick = createToolBrick({
-      id: "brick_alpha_1",
+      id: brickId("brick_alpha_1"),
       name: "alpha-tool",
       provenance: provenanceFor("alpha"),
     });
     const betaBrick = createToolBrick({
-      id: "brick_beta_1",
+      id: brickId("brick_beta_1"),
       name: "beta-tool",
       provenance: provenanceFor("beta"),
     });
@@ -365,8 +367,8 @@ describe("cross-agent brick reuse e2e", () => {
     await agentBetaStore.save(betaBrick);
 
     // Each promotes to shared
-    const alphaPromote = await agentAlphaStore.promoteTier("brick_alpha_1", "shared");
-    const betaPromote = await agentBetaStore.promoteTier("brick_beta_1", "shared");
+    const alphaPromote = await agentAlphaStore.promoteTier(brickId("brick_alpha_1"), "shared");
+    const betaPromote = await agentBetaStore.promoteTier(brickId("brick_beta_1"), "shared");
 
     expect(alphaPromote.ok).toBe(true);
     expect(betaPromote.ok).toBe(true);
@@ -388,8 +390,8 @@ describe("cross-agent brick reuse e2e", () => {
     expect(alphaSearch.ok).toBe(true);
     if (alphaSearch.ok) {
       const ids = alphaSearch.value.map((b: BrickArtifact) => b.id);
-      expect(ids).toContain("brick_alpha_1");
-      expect(ids).toContain("brick_beta_1");
+      expect(ids).toContain(brickId("brick_alpha_1"));
+      expect(ids).toContain(brickId("brick_beta_1"));
     }
   });
 
@@ -402,7 +404,7 @@ describe("cross-agent brick reuse e2e", () => {
 
     // Save bricks at different scopes
     const agentBrick = createToolBrick({
-      id: "brick_agent_scope",
+      id: brickId("brick_agent_scope"),
       name: "agent-only",
       scope: "agent",
     });
@@ -410,7 +412,7 @@ describe("cross-agent brick reuse e2e", () => {
 
     // Promote one to shared
     const sharedBrick = createToolBrick({
-      id: "brick_shared_scope",
+      id: brickId("brick_shared_scope"),
       name: "shared-tool",
       scope: "zone",
     });

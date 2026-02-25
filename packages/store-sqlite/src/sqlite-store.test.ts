@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolArtifact } from "@koi/core";
+import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE, runForgeStoreContractTests } from "@koi/test-utils";
 import { createSqliteForgeStore, openForgeDb } from "./sqlite-store.js";
 
@@ -23,7 +24,7 @@ runForgeStoreContractTests(() => {
 
 function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
-    id: `brick_${Math.random().toString(36).slice(2, 10)}`,
+    id: brickId(`brick_${Math.random().toString(36).slice(2, 10)}`),
     kind: "tool",
     name: "test-tool",
     description: "A test tool",
@@ -34,7 +35,6 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "test-hash",
     implementation: "return 1;",
     inputSchema: { type: "object" },
     ...overrides,
@@ -63,18 +63,18 @@ describe("SQLite-specific", () => {
 
     // Save with first store
     const store1 = createSqliteForgeStore({ dbPath });
-    const brick = createToolBrick({ id: "brick_persist" });
+    const brick = createToolBrick({ id: brickId("brick_persist") });
     await store1.save(brick);
     store1.close();
 
     // Reopen and load
     const store2 = createSqliteForgeStore({ dbPath });
-    const result = await store2.load("brick_persist");
+    const result = await store2.load(brickId("brick_persist"));
     store2.close();
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.id).toBe("brick_persist");
+      expect(result.value.id).toBe(brickId("brick_persist"));
       expect(result.value.name).toBe("test-tool");
     }
   });
@@ -103,13 +103,13 @@ describe("SQLite-specific", () => {
     }
   });
 
-  test("schema migration sets user_version = 1 and creates tables", () => {
+  test("schema migration sets user_version = 2 and creates tables", () => {
     const db = new Database(":memory:");
     db.run("PRAGMA foreign_keys = ON");
     createSqliteForgeStore({ db });
 
     const row = db.query<{ user_version: number }, []>("PRAGMA user_version").get();
-    expect(row?.user_version).toBe(1);
+    expect(row?.user_version).toBe(2);
 
     // Verify tables exist by querying sqlite_master
     const tables = db
@@ -129,14 +129,14 @@ describe("SQLite-specific", () => {
 
     const largeImpl = "x".repeat(100_000);
     const brick = createToolBrick({
-      id: "brick_large",
+      id: brickId("brick_large"),
       implementation: largeImpl,
     });
 
     const saveResult = await store.save(brick);
     expect(saveResult.ok).toBe(true);
 
-    const loadResult = await store.load("brick_large");
+    const loadResult = await store.load(brickId("brick_large"));
     expect(loadResult.ok).toBe(true);
     if (loadResult.ok) {
       expect((loadResult.value as ToolArtifact).implementation.length).toBe(100_000);
@@ -150,16 +150,16 @@ describe("SQLite-specific", () => {
     db.run("PRAGMA foreign_keys = ON");
     const store = createSqliteForgeStore({ db });
 
-    await store.save(createToolBrick({ id: "b_ab", tags: ["alpha", "beta"] }));
-    await store.save(createToolBrick({ id: "b_a", tags: ["alpha"] }));
-    await store.save(createToolBrick({ id: "b_abc", tags: ["alpha", "beta", "gamma"] }));
-    await store.save(createToolBrick({ id: "b_g", tags: ["gamma"] }));
+    await store.save(createToolBrick({ id: brickId("b_ab"), tags: ["alpha", "beta"] }));
+    await store.save(createToolBrick({ id: brickId("b_a"), tags: ["alpha"] }));
+    await store.save(createToolBrick({ id: brickId("b_abc"), tags: ["alpha", "beta", "gamma"] }));
+    await store.save(createToolBrick({ id: brickId("b_g"), tags: ["gamma"] }));
 
     const result = await store.search({ tags: ["alpha", "beta"] });
     expect(result.ok).toBe(true);
     if (result.ok) {
       const ids = result.value.map((b) => b.id).sort();
-      expect(ids).toEqual(["b_ab", "b_abc"]);
+      expect(ids).toEqual([brickId("b_ab"), brickId("b_abc")]);
     }
 
     db.close();
@@ -171,16 +171,16 @@ describe("SQLite-specific", () => {
 
     // Writer
     const writer = createSqliteForgeStore({ dbPath });
-    const brick = createToolBrick({ id: "brick_wal" });
+    const brick = createToolBrick({ id: brickId("brick_wal") });
     await writer.save(brick);
 
     // Reader (separate connection via new store)
     const reader = createSqliteForgeStore({ dbPath });
-    const result = await reader.load("brick_wal");
+    const result = await reader.load(brickId("brick_wal"));
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.id).toBe("brick_wal");
+      expect(result.value.id).toBe(brickId("brick_wal"));
     }
 
     reader.close();
@@ -192,16 +192,18 @@ describe("SQLite-specific", () => {
     db.run("PRAGMA foreign_keys = ON");
     const store = createSqliteForgeStore({ db });
 
-    await store.save(createToolBrick({ id: "b1", name: "Math Calculator", description: "calc" }));
     await store.save(
-      createToolBrick({ id: "b2", name: "text-tool", description: "processes text" }),
+      createToolBrick({ id: brickId("b1"), name: "Math Calculator", description: "calc" }),
+    );
+    await store.save(
+      createToolBrick({ id: brickId("b2"), name: "text-tool", description: "processes text" }),
     );
 
     const result = await store.search({ text: "math" });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.length).toBe(1);
-      expect(result.value[0]?.id).toBe("b1");
+      expect(result.value[0]?.id).toBe(brickId("b1"));
     }
 
     db.close();

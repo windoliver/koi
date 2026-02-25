@@ -32,7 +32,6 @@ function minimalBrick(id: string): Record<string, unknown> {
     version: "1.0.0",
     tags: [],
     usageCount: 0,
-    contentHash: "hash-abc",
     implementation: "return 1;",
     inputSchema: { type: "object" },
   };

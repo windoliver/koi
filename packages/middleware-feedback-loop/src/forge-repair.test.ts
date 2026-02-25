@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { BrickArtifact, ForgeStore, KoiError, Result, ToolArtifact } from "@koi/core";
+import { brickId } from "@koi/core";
 import type { ModelRequest, ModelResponse } from "@koi/core/middleware";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import type { ForgeRepairConfig } from "./forge-repair.js";
@@ -32,7 +33,7 @@ const sampleErrors: readonly ValidationError[] = [
 
 const defaultToolArtifact: ToolArtifact = {
   kind: "tool",
-  id: "brick-1",
+  id: brickId("brick-1"),
   name: "my-tool",
   implementation: "function run(input) { return input; }",
   inputSchema: {},
@@ -45,7 +46,6 @@ const defaultToolArtifact: ToolArtifact = {
   version: "1.0.0",
   tags: [],
   usageCount: 0,
-  contentHash: "abc",
 };
 
 function createMockForgeStore(loadResult?: Result<BrickArtifact, KoiError>): ForgeStore {

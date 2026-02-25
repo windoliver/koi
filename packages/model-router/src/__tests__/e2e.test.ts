@@ -30,12 +30,15 @@ const OPENAI_KEY = process.env.OPENAI_API_KEY ?? "";
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY ?? "";
 
-const HAS_OPENAI = OPENAI_KEY.length > 0;
-const HAS_ANTHROPIC = ANTHROPIC_KEY.length > 0;
-const HAS_OPENROUTER = OPENROUTER_KEY.length > 0;
+// E2E tests require API keys AND explicit opt-in via E2E_TESTS=1 to avoid
+// rate-limit failures when 500+ test files run in parallel.
+const E2E_GATE = process.env.E2E_TESTS === "1";
+const HAS_OPENAI = E2E_GATE && OPENAI_KEY.length > 0;
+const HAS_ANTHROPIC = E2E_GATE && ANTHROPIC_KEY.length > 0;
+const HAS_OPENROUTER = E2E_GATE && OPENROUTER_KEY.length > 0;
 const HAS_ALL = HAS_OPENAI && HAS_ANTHROPIC && HAS_OPENROUTER;
 
-const TIMEOUT_MS = 30_000;
+const TIMEOUT_MS = 60_000;
 
 function makeRequest(text = "Reply with exactly one word: hello"): ModelRequest {
   return {
@@ -121,7 +124,7 @@ describe.skipIf(!HAS_ANTHROPIC)("e2e: Anthropic adapter", () => {
     async () => {
       const request: ModelRequest = {
         ...makeRequest(),
-        model: "claude-haiku-3-5-20241022",
+        model: "claude-haiku-4-5-20251001",
       };
       const response = await adapter.complete(request);
 
@@ -139,7 +142,7 @@ describe.skipIf(!HAS_ANTHROPIC)("e2e: Anthropic adapter", () => {
     async () => {
       const request: ModelRequest = {
         ...makeRequest(),
-        model: "claude-haiku-3-5-20241022",
+        model: "claude-haiku-4-5-20251001",
       };
       const result = await collectStream(adapter, request);
 
@@ -194,7 +197,7 @@ describe.skipIf(!HAS_OPENROUTER)("e2e: OpenRouter adapter", () => {
     async () => {
       const request: ModelRequest = {
         ...makeRequest(),
-        model: "anthropic/claude-haiku-3-5-20241022",
+        model: "anthropic/claude-haiku-4-5-20251001",
       };
       const response = await adapter.complete(request);
 
@@ -222,7 +225,7 @@ describe.skipIf(!HAS_ALL)("e2e: router pipeline", () => {
           },
           {
             provider: "anthropic",
-            model: "claude-haiku-3-5-20241022",
+            model: "claude-haiku-4-5-20251001",
             adapterConfig: { apiKey: ANTHROPIC_KEY },
           },
         ],
@@ -260,7 +263,7 @@ describe.skipIf(!HAS_ALL)("e2e: router pipeline", () => {
           },
           {
             provider: "anthropic",
-            model: "claude-haiku-3-5-20241022",
+            model: "claude-haiku-4-5-20251001",
             adapterConfig: { apiKey: ANTHROPIC_KEY },
           },
         ],

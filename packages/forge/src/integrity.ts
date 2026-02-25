@@ -1,13 +1,13 @@
 /**
- * Content integrity verification — recomputes SHA-256 hash and compares
- * to the stored `contentHash` on a brick artifact.
+ * Content integrity verification — recomputes content-addressed BrickId
+ * and compares to the stored `id`. Identity IS integrity.
  */
 
-import type { BrickArtifact, ForgeStore, Result, SigningBackend } from "@koi/core";
+import type { BrickArtifact, BrickId, ForgeStore, Result, SigningBackend } from "@koi/core";
+import { computeBrickId, computeCompositeBrickId } from "@koi/hash";
 import { verifyAttestation } from "./attestation.js";
 import type { ForgeError } from "./errors.js";
 import { storeError } from "./errors.js";
-import { computeContentHash } from "./tools/shared.js";
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -15,15 +15,15 @@ import { computeContentHash } from "./tools/shared.js";
 
 export interface IntegrityOk {
   readonly ok: true;
-  readonly brickId: string;
-  readonly hash: string;
+  readonly brickId: BrickId;
+  readonly id: BrickId;
 }
 
 export interface IntegrityMismatch {
   readonly ok: false;
-  readonly brickId: string;
-  readonly expectedHash: string;
-  readonly actualHash: string;
+  readonly brickId: BrickId;
+  readonly expectedId: BrickId;
+  readonly actualId: BrickId;
 }
 
 export type IntegrityResult = IntegrityOk | IntegrityMismatch;
@@ -46,36 +46,34 @@ function extractContentForHash(brick: BrickArtifact): string {
     case "agent":
       return brick.manifestYaml;
     case "composite":
-      return brick.brickIds.join(",");
+      // Composite uses computeCompositeBrickId — sentinel here
+      return "";
   }
 }
 
 // ---------------------------------------------------------------------------
-// Pure — recomputes hash and compares to stored
+// Pure — recomputes ID from content and compares to stored id
 // ---------------------------------------------------------------------------
 
 /**
  * Verifies that a brick's content has not been tampered with by recomputing
- * the SHA-256 content hash and comparing it to the stored `contentHash`.
- *
- * Current implementation is synchronous; return type is `IntegrityResult | Promise<IntegrityResult>`
- * to allow future async backends (await on a non-Promise is a no-op).
+ * the content-addressed BrickId and comparing it to the stored `id`.
  */
-export function verifyBrickIntegrity(
-  brick: BrickArtifact,
-): IntegrityResult | Promise<IntegrityResult> {
-  const content = extractContentForHash(brick);
-  const actualHash = computeContentHash(content, brick.files);
+export function verifyBrickIntegrity(brick: BrickArtifact): IntegrityResult {
+  const recomputedId: BrickId =
+    brick.kind === "composite"
+      ? computeCompositeBrickId(brick.brickIds, brick.files)
+      : computeBrickId(brick.kind, extractContentForHash(brick), brick.files);
 
-  if (actualHash === brick.contentHash) {
-    return { ok: true, brickId: brick.id, hash: actualHash };
+  if (recomputedId === brick.id) {
+    return { ok: true, brickId: brick.id, id: recomputedId };
   }
 
   return {
     ok: false,
     brickId: brick.id,
-    expectedHash: brick.contentHash,
-    actualHash,
+    expectedId: brick.id,
+    actualId: recomputedId,
   };
 }
 
@@ -90,7 +88,7 @@ export async function verifyBrickAttestation(
   signer: SigningBackend,
 ): Promise<IntegrityResult> {
   // First verify content hash
-  const hashResult = await verifyBrickIntegrity(brick);
+  const hashResult = verifyBrickIntegrity(brick);
   if (!hashResult.ok) {
     return hashResult;
   }
@@ -102,8 +100,8 @@ export async function verifyBrickAttestation(
       return {
         ok: false,
         brickId: brick.id,
-        expectedHash: brick.contentHash,
-        actualHash: `attestation-invalid:${brick.contentHash}`,
+        expectedId: brick.id,
+        actualId: brick.id, // Content matches but attestation is invalid
       };
     }
   }
@@ -123,7 +121,7 @@ export async function verifyBrickAttestation(
  */
 export async function loadAndVerify(
   store: ForgeStore,
-  id: string,
+  id: BrickId,
 ): Promise<
   Result<{ readonly brick: BrickArtifact; readonly integrity: IntegrityResult }, ForgeError>
 > {
@@ -133,7 +131,7 @@ export async function loadAndVerify(
   }
 
   const brick = loadResult.value;
-  const integrity = await verifyBrickIntegrity(brick);
+  const integrity = verifyBrickIntegrity(brick);
 
   return { ok: true, value: { brick, integrity } };
 }

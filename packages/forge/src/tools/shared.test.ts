@@ -1,16 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { SandboxExecutor, TieredSandboxExecutor } from "@koi/core";
+import { brickId } from "@koi/core";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import type { ForgeContext } from "../types.js";
 import type { ForgeDeps } from "./shared.js";
-import {
-  buildBaseFields,
-  computeContentHash,
-  createForgeTool,
-  parseSkillInput,
-  parseToolInput,
-} from "./shared.js";
+import { buildBaseFields, createForgeTool, parseSkillInput, parseToolInput } from "./shared.js";
 
 function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
   return {
@@ -111,46 +106,6 @@ describe("createForgeTool — factory", () => {
   });
 });
 
-describe("computeContentHash", () => {
-  test("returns consistent hash for same content", () => {
-    const h1 = computeContentHash("hello");
-    const h2 = computeContentHash("hello");
-    expect(h1).toBe(h2);
-  });
-
-  test("returns different hash for different content", () => {
-    const h1 = computeContentHash("hello");
-    const h2 = computeContentHash("world");
-    expect(h1).not.toBe(h2);
-  });
-
-  test("without files, hash is unchanged from content-only", () => {
-    const withoutFiles = computeContentHash("hello");
-    const withUndefined = computeContentHash("hello", undefined);
-    expect(withoutFiles).toBe(withUndefined);
-  });
-
-  test("with files, hash differs from content-only", () => {
-    const withoutFiles = computeContentHash("hello");
-    const withFiles = computeContentHash("hello", { "lib/a.ts": "export const a = 1;" });
-    expect(withoutFiles).not.toBe(withFiles);
-  });
-
-  test("file order does not affect hash (deterministic sort)", () => {
-    const files1 = { "b.ts": "b content", "a.ts": "a content" };
-    const files2 = { "a.ts": "a content", "b.ts": "b content" };
-    const h1 = computeContentHash("hello", files1);
-    const h2 = computeContentHash("hello", files2);
-    expect(h1).toBe(h2);
-  });
-
-  test("different file content produces different hash", () => {
-    const h1 = computeContentHash("hello", { "a.ts": "v1" });
-    const h2 = computeContentHash("hello", { "a.ts": "v2" });
-    expect(h1).not.toBe(h2);
-  });
-});
-
 describe("parseForgeInput", () => {
   test("parses valid tool input", () => {
     const result = parseToolInput({
@@ -226,13 +181,12 @@ describe("buildBaseFields", () => {
       passed: true,
     };
     const base = buildBaseFields(
-      "brick_123",
+      brickId("brick_123"),
       { name: "myBrick", description: "A brick", tags: ["tag1"] },
       report,
       deps,
-      "abc123",
     );
-    expect(base.id).toBe("brick_123");
+    expect(base.id).toBe(brickId("brick_123"));
     expect(base.name).toBe("myBrick");
     expect(base.description).toBe("A brick");
     expect(base.tags).toEqual(["tag1"]);
@@ -242,7 +196,6 @@ describe("buildBaseFields", () => {
     expect(base.provenance.metadata.agentId).toBe("agent-1");
     expect(base.version).toBe("0.0.1");
     expect(base.usageCount).toBe(0);
-    expect(base.contentHash).toBe("abc123");
   });
 
   test("defaults tags to empty array when undefined", () => {
@@ -254,11 +207,10 @@ describe("buildBaseFields", () => {
       passed: true,
     };
     const base = buildBaseFields(
-      "brick_456",
+      brickId("brick_456"),
       { name: "myBrick", description: "A brick" },
       report,
       deps,
-      "hash",
     );
     expect(base.tags).toEqual([]);
   });

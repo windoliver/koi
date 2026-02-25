@@ -15,7 +15,6 @@ function validTool(): Record<string, unknown> {
     version: "0.0.1",
     tags: ["math"],
     usageCount: 0,
-    contentHash: "abc123",
     implementation: "return 1;",
     inputSchema: { type: "object" },
   };

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { CompositeArtifact, SkillArtifact, ToolArtifact } from "@koi/core";
+import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import type { AssembleManifestOptions } from "./assemble-manifest.js";
 import { assembleManifest } from "./assemble-manifest.js";
@@ -17,13 +18,12 @@ const BASE_FIELDS = {
   version: "0.0.1",
   tags: [],
   usageCount: 0,
-  contentHash: "abc123",
 } as const;
 
 function toolBrick(id: string, name: string): ToolArtifact {
   return {
     ...BASE_FIELDS,
-    id,
+    id: brickId(id),
     kind: "tool",
     name,
     description: `Tool: ${name}`,
@@ -35,7 +35,7 @@ function toolBrick(id: string, name: string): ToolArtifact {
 function skillBrick(id: string, name: string): SkillArtifact {
   return {
     ...BASE_FIELDS,
-    id,
+    id: brickId(id),
     kind: "skill",
     name,
     description: `Skill: ${name}`,
@@ -46,11 +46,11 @@ function skillBrick(id: string, name: string): SkillArtifact {
 function compositeBrick(id: string, name: string, brickIds: readonly string[]): CompositeArtifact {
   return {
     ...BASE_FIELDS,
-    id,
+    id: brickId(id),
     kind: "composite",
     name,
     description: `Composite: ${name}`,
-    brickIds,
+    brickIds: brickIds.map((b) => brickId(b)),
   };
 }
 

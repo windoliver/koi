@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { SandboxExecutor, TieredSandboxExecutor } from "@koi/core";
+import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "../config.js";
 import type { ForgeError } from "../errors.js";
@@ -190,7 +191,7 @@ describe("Edge case 7: Concurrent forge attempts — no shared state corruption"
   test("concurrent saves to same store do not corrupt data", async () => {
     const store = createInMemoryForgeStore();
     const bricks: readonly ToolArtifact[] = Array.from({ length: 10 }, (_, i) => ({
-      id: `brick_${i}`,
+      id: brickId(`brick_${i}`),
       kind: "tool" as const,
       name: `tool-${i}`,
       description: `Tool ${i}`,
@@ -201,7 +202,6 @@ describe("Edge case 7: Concurrent forge attempts — no shared state corruption"
       version: "0.0.1",
       tags: [],
       usageCount: 0,
-      contentHash: "test-hash",
       implementation: `return ${i};`,
       inputSchema: { type: "object" },
     }));
@@ -222,7 +222,7 @@ describe("Edge case 8: Duplicate brick name in same scope", () => {
   test("second save overwrites first (store allows by id)", async () => {
     const store = createInMemoryForgeStore();
     const brick1: ToolArtifact = {
-      id: "same-id",
+      id: brickId("same-id"),
       kind: "tool",
       name: "duplicate",
       description: "First",
@@ -233,7 +233,6 @@ describe("Edge case 8: Duplicate brick name in same scope", () => {
       version: "0.0.1",
       tags: [],
       usageCount: 0,
-      contentHash: "test-hash",
       implementation: "return 1;",
       inputSchema: { type: "object" },
     };
@@ -245,7 +244,7 @@ describe("Edge case 8: Duplicate brick name in same scope", () => {
     await store.save(brick1);
     await store.save(brick2);
 
-    const result = await store.load("same-id");
+    const result = await store.load(brickId("same-id"));
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.description).toBe("Second");
@@ -339,7 +338,7 @@ describe("Edge case 12: Only valid BrickLifecycle transitions", () => {
   test("store update changes lifecycle from active to deprecated", async () => {
     const store = createInMemoryForgeStore();
     const brick: ToolArtifact = {
-      id: "b1",
+      id: brickId("b1"),
       kind: "tool",
       name: "myTool",
       description: "A tool",
@@ -350,14 +349,13 @@ describe("Edge case 12: Only valid BrickLifecycle transitions", () => {
       version: "0.0.1",
       tags: [],
       usageCount: 0,
-      contentHash: "test-hash",
       implementation: "return 1;",
       inputSchema: { type: "object" },
     };
     await store.save(brick);
 
-    await store.update("b1", { lifecycle: "deprecated" });
-    const result = await store.load("b1");
+    await store.update(brickId("b1"), { lifecycle: "deprecated" });
+    const result = await store.load(brickId("b1"));
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.lifecycle).toBe("deprecated");
@@ -367,7 +365,7 @@ describe("Edge case 12: Only valid BrickLifecycle transitions", () => {
   test("store update changes lifecycle from draft to verifying", async () => {
     const store = createInMemoryForgeStore();
     const brick: ToolArtifact = {
-      id: "b1",
+      id: brickId("b1"),
       kind: "tool",
       name: "myTool",
       description: "A tool",
@@ -378,14 +376,13 @@ describe("Edge case 12: Only valid BrickLifecycle transitions", () => {
       version: "0.0.1",
       tags: [],
       usageCount: 0,
-      contentHash: "test-hash",
       implementation: "return 1;",
       inputSchema: { type: "object" },
     };
     await store.save(brick);
 
-    await store.update("b1", { lifecycle: "verifying" });
-    const result = await store.load("b1");
+    await store.update(brickId("b1"), { lifecycle: "verifying" });
+    const result = await store.load(brickId("b1"));
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.lifecycle).toBe("verifying");

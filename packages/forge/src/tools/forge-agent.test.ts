@@ -6,6 +6,7 @@ import type {
   TieredSandboxExecutor,
   ToolArtifact,
 } from "@koi/core";
+import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
@@ -347,7 +348,7 @@ describe("createForgeAgentTool", () => {
   test("forges agent from brickIds with tool bricks", async () => {
     const store = createInMemoryForgeStore();
     const toolBrick: ToolArtifact = {
-      id: "brick_tool_1",
+      id: brickId("brick_tool_1"),
       kind: "tool",
       name: "calculator",
       description: "Calculates things",
@@ -358,7 +359,6 @@ describe("createForgeAgentTool", () => {
       version: "0.0.1",
       tags: [],
       usageCount: 0,
-      contentHash: "hash1",
       implementation: "return 1;",
       inputSchema: { type: "object" },
     };
@@ -433,7 +433,7 @@ describe("createForgeAgentTool", () => {
   test("propagates tags from brickIds path", async () => {
     const store = createInMemoryForgeStore();
     const toolBrick: ToolArtifact = {
-      id: "brick_tag_1",
+      id: brickId("brick_tag_1"),
       kind: "tool",
       name: "tagger",
       description: "A tool",
@@ -444,7 +444,6 @@ describe("createForgeAgentTool", () => {
       version: "0.0.1",
       tags: [],
       usageCount: 0,
-      contentHash: "hash",
       implementation: "return 1;",
       inputSchema: { type: "object" },
     };
@@ -468,7 +467,7 @@ describe("createForgeAgentTool", () => {
   test("propagates model and agentType to assembled manifest", async () => {
     const store = createInMemoryForgeStore();
     const skillBrick: SkillArtifact = {
-      id: "brick_skill_1",
+      id: brickId("brick_skill_1"),
       kind: "skill",
       name: "math-skill",
       description: "Math",
@@ -479,7 +478,6 @@ describe("createForgeAgentTool", () => {
       version: "0.0.1",
       tags: [],
       usageCount: 0,
-      contentHash: "hash",
       content: "# Math",
     };
     await store.save(skillBrick);

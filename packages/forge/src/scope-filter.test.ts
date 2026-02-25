@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { ToolArtifact } from "@koi/core";
+import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { filterByAgentScope, isVisibleToAgent } from "./scope-filter.js";
 
 function createBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
-    id: "brick_test",
+    id: brickId("brick_test"),
     kind: "tool",
     name: "test-brick",
     description: "A test brick",
@@ -16,7 +17,6 @@ function createBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "test-hash",
     implementation: "return 1;",
     inputSchema: { type: "object" },
     ...overrides,
@@ -73,7 +73,7 @@ describe("filterByAgentScope", () => {
   test("filters mixed-scope array correctly", () => {
     const bricks = [
       createBrick({
-        id: "b1",
+        id: brickId("b1"),
         scope: "global",
         provenance: {
           ...DEFAULT_PROVENANCE,
@@ -81,7 +81,7 @@ describe("filterByAgentScope", () => {
         },
       }),
       createBrick({
-        id: "b2",
+        id: brickId("b2"),
         scope: "agent",
         provenance: {
           ...DEFAULT_PROVENANCE,
@@ -89,7 +89,7 @@ describe("filterByAgentScope", () => {
         },
       }),
       createBrick({
-        id: "b3",
+        id: brickId("b3"),
         scope: "agent",
         provenance: {
           ...DEFAULT_PROVENANCE,
@@ -97,7 +97,7 @@ describe("filterByAgentScope", () => {
         },
       }),
       createBrick({
-        id: "b4",
+        id: brickId("b4"),
         scope: "zone",
         provenance: {
           ...DEFAULT_PROVENANCE,
@@ -107,7 +107,7 @@ describe("filterByAgentScope", () => {
     ];
     const filtered = filterByAgentScope(bricks, "agent-1");
     expect(filtered).toHaveLength(3);
-    expect(filtered.map((b) => b.id)).toEqual(["b1", "b2", "b4"]);
+    expect(filtered.map((b) => b.id)).toEqual([brickId("b1"), brickId("b2"), brickId("b4")]);
   });
 
   test("returns empty array for empty input", () => {

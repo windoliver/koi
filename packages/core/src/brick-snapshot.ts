@@ -46,7 +46,6 @@ export interface BrickRef {
   readonly id: BrickId;
   readonly version: string;
   readonly kind: BrickKind;
-  readonly contentHash: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,7 +120,6 @@ export interface BrickSnapshot {
   readonly event: SnapshotEvent;
   /** Opaque artifact data — like EngineState.data, zero assumptions about structure. */
   readonly artifact: Readonly<Record<string, unknown>>;
-  readonly contentHash: string;
   readonly createdAt: number;
 }
 

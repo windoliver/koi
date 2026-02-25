@@ -4,6 +4,7 @@
  */
 
 import type { ForgeStore } from "@koi/core";
+import { brickId as toBrickId } from "@koi/core";
 import type { InboundMessage } from "@koi/core/message";
 import type { ModelRequest, ModelResponse } from "@koi/core/middleware";
 import { formatErrors } from "./repair.js";
@@ -63,7 +64,7 @@ export function createForgeRepairStrategy(config: ForgeRepairConfig): RepairStra
       const enrichmentParts: string[] = [];
 
       if (brickId !== undefined) {
-        const loadResult = await forgeStore.load(brickId);
+        const loadResult = await forgeStore.load(toBrickId(brickId));
         if (loadResult.ok && loadResult.value.kind === "tool") {
           const artifact = loadResult.value;
           enrichmentParts.push(

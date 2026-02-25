@@ -5,11 +5,13 @@
  *   Session 1: model+tool calls → trajectory → curation → auto-consolidation
  *   Session 2: playbooks from session 1 injected into model context
  *
- * Gated on OPENROUTER_API_KEY or ANTHROPIC_API_KEY — tests skip when neither is set.
+ * Gated on API key + E2E_TESTS=1 — tests skip when either is missing.
+ * E2E tests require API keys AND explicit opt-in via E2E_TESTS=1 to avoid
+ * rate-limit failures when 500+ test files run in parallel.
  *
  * Run:
- *   OPENROUTER_API_KEY=... bun test src/__tests__/e2e.test.ts
- *   ANTHROPIC_API_KEY=... bun test src/__tests__/e2e.test.ts
+ *   E2E_TESTS=1 OPENROUTER_API_KEY=... bun test src/__tests__/e2e.test.ts
+ *   E2E_TESTS=1 ANTHROPIC_API_KEY=... bun test src/__tests__/e2e.test.ts
  */
 
 import { describe, expect, test } from "bun:test";
@@ -28,7 +30,8 @@ import type { CurationCandidate, Playbook, TrajectoryEntry } from "../types.js";
 const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY ?? "";
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const HAS_KEY = OPENROUTER_KEY.length > 0 || ANTHROPIC_KEY.length > 0;
-const describeE2E = HAS_KEY ? describe : describe.skip;
+const E2E_OPTED_IN = process.env.E2E_TESTS === "1";
+const describeE2E = HAS_KEY && E2E_OPTED_IN ? describe : describe.skip;
 
 const TIMEOUT_MS = 60_000;
 

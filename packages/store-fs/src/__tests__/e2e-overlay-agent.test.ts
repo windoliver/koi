@@ -1,8 +1,8 @@
 /**
  * E2E agent integration tests for the 4-tier overlay store.
  *
- * Exercises the complete flow: overlay store (filesystem-backed) → forge
- * component provider → engine middleware chain → tool execution.
+ * Exercises the complete flow: overlay store (filesystem-backed) -> forge
+ * component provider -> engine middleware chain -> tool execution.
  *
  * Validates that agents can:
  * 1. Discover and execute bundled bricks from read-only tiers
@@ -33,7 +33,7 @@ import type {
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { brickId, toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import type { ForgeDeps, ForgeResult } from "@koi/forge";
 import {
@@ -182,7 +182,7 @@ function createDeps(
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("overlay store → agent e2e", () => {
+describe("overlay store -> agent e2e", () => {
   let config: OverlayConfig;
   let dirs: { agent: string; shared: string; extensions: string; bundled: string };
 
@@ -202,7 +202,7 @@ describe("overlay store → agent e2e", () => {
     // Pre-seed "adder" tool in the bundled tier
     const bundledStore = await createFsForgeStore({ baseDir: dirs.bundled });
     await bundledStore.save({
-      id: "brick_bundled_adder",
+      id: brickId("brick_bundled_adder"),
       kind: "tool",
       name: "adder",
       description: "Adds two numbers",
@@ -213,7 +213,6 @@ describe("overlay store → agent e2e", () => {
       version: "1.0.0",
       tags: ["math"],
       usageCount: 0,
-      contentHash: "bundled-hash",
       implementation: "return { sum: input.a + input.b };",
       inputSchema: {
         type: "object",
@@ -266,7 +265,7 @@ describe("overlay store → agent e2e", () => {
     expect(toolResults[0]?.output).toEqual({ sum: 30 });
 
     // Verify it's still in the bundled tier (not copied/promoted)
-    const tierResult = await overlayStore.locateTier("brick_bundled_adder");
+    const tierResult = await overlayStore.locateTier(brickId("brick_bundled_adder"));
     expect(tierResult.ok).toBe(true);
     if (tierResult.ok) {
       expect(tierResult.value).toBe("bundled");
@@ -274,10 +273,10 @@ describe("overlay store → agent e2e", () => {
   });
 
   // -----------------------------------------------------------------------
-  // Test 2: Agent forges a new tool → saved to agent tier → reusable
+  // Test 2: Agent forges a new tool -> saved to agent tier -> reusable
   // -----------------------------------------------------------------------
 
-  test("agent forges tool → saved to agent tier → reusable in next run", async () => {
+  test("agent forges tool -> saved to agent tier -> reusable in next run", async () => {
     const executor = multiplierExecutor();
     const overlayStore = await createOverlayForgeStore(config);
     const deps = createDeps(overlayStore, mockTiered(executor));
@@ -384,7 +383,7 @@ describe("overlay store → agent e2e", () => {
   });
 
   // -----------------------------------------------------------------------
-  // Test 3: Search across tiers — deduplicates, agent tier wins
+  // Test 3: Search across tiers -- deduplicates, agent tier wins
   // -----------------------------------------------------------------------
 
   test("search across tiers deduplicates with agent tier winning", async () => {
@@ -393,7 +392,7 @@ describe("overlay store → agent e2e", () => {
     // Pre-seed same-name bricks in bundled and agent tiers
     const bundledStore = await createFsForgeStore({ baseDir: dirs.bundled });
     await bundledStore.save({
-      id: "brick_calc",
+      id: brickId("brick_calc"),
       kind: "tool",
       name: "calculator",
       description: "Bundled calculator v1",
@@ -404,14 +403,13 @@ describe("overlay store → agent e2e", () => {
       version: "1.0.0",
       tags: ["math"],
       usageCount: 0,
-      contentHash: "bundled-hash",
       implementation: "return input;",
       inputSchema: { type: "object" },
     });
 
     const agentStore = await createFsForgeStore({ baseDir: dirs.agent });
     await agentStore.save({
-      id: "brick_calc",
+      id: brickId("brick_calc"),
       kind: "tool",
       name: "calculator",
       description: "Agent-forged calculator v2",
@@ -434,7 +432,6 @@ describe("overlay store → agent e2e", () => {
       version: "2.0.0",
       tags: ["math"],
       usageCount: 5,
-      contentHash: "agent-hash",
       implementation: "return input;",
       inputSchema: { type: "object" },
     });
@@ -442,7 +439,7 @@ describe("overlay store → agent e2e", () => {
     // Also seed a unique tool in shared tier
     const sharedStore = await createFsForgeStore({ baseDir: dirs.shared });
     await sharedStore.save({
-      id: "brick_logger",
+      id: brickId("brick_logger"),
       kind: "tool",
       name: "logger",
       description: "Shared logging utility",
@@ -453,18 +450,17 @@ describe("overlay store → agent e2e", () => {
       version: "1.0.0",
       tags: ["util"],
       usageCount: 0,
-      contentHash: "shared-hash",
       implementation: "return input;",
       inputSchema: { type: "object" },
     });
 
     const overlayStore = await createOverlayForgeStore(config);
 
-    // Search via forge tool — exercises overlay search through the real pipeline
+    // Search via forge tool -- exercises overlay search through the real pipeline
     const deps = createDeps(overlayStore, mockTiered(executor));
     const searchTool = createSearchForgeTool(deps);
 
-    // Search all — should find 2 (calculator deduped, + logger)
+    // Search all -- should find 2 (calculator deduped, + logger)
     const allResult = (await searchTool.execute({})) as {
       readonly ok: true;
       readonly value: readonly unknown[];
@@ -474,20 +470,20 @@ describe("overlay store → agent e2e", () => {
 
     // The calculator should be the agent-tier version
     const calcBrick = (allResult.value as readonly { id: string; description: string }[]).find(
-      (b) => b.id === "brick_calc",
+      (b) => b.id === brickId("brick_calc"),
     );
     expect(calcBrick?.description).toBe("Agent-forged calculator v2");
   });
 
   // -----------------------------------------------------------------------
-  // Test 4: Update bundled brick → auto-promotes to agent tier
+  // Test 4: Update bundled brick -> auto-promotes to agent tier
   // -----------------------------------------------------------------------
 
   test("update on bundled brick auto-promotes to agent tier", async () => {
     // Pre-seed in bundled tier
     const bundledStore = await createFsForgeStore({ baseDir: dirs.bundled });
     await bundledStore.save({
-      id: "brick_autopromote",
+      id: brickId("brick_autopromote"),
       kind: "tool",
       name: "auto-promote-target",
       description: "Will be auto-promoted",
@@ -498,7 +494,6 @@ describe("overlay store → agent e2e", () => {
       version: "1.0.0",
       tags: [],
       usageCount: 0,
-      contentHash: "original-hash",
       implementation: "return input;",
       inputSchema: { type: "object" },
     });
@@ -506,21 +501,23 @@ describe("overlay store → agent e2e", () => {
     const overlayStore = await createOverlayForgeStore(config);
 
     // Starts in bundled tier
-    const before = await overlayStore.locateTier("brick_autopromote");
+    const before = await overlayStore.locateTier(brickId("brick_autopromote"));
     expect(before.ok).toBe(true);
     if (before.ok) expect(before.value).toBe("bundled");
 
-    // Update usageCount — triggers auto-promote since bundled is read-only
-    const updateResult = await overlayStore.update("brick_autopromote", { usageCount: 10 });
+    // Update usageCount -- triggers auto-promote since bundled is read-only
+    const updateResult = await overlayStore.update(brickId("brick_autopromote"), {
+      usageCount: 10,
+    });
     expect(updateResult.ok).toBe(true);
 
     // Now in agent tier (auto-promoted)
-    const after = await overlayStore.locateTier("brick_autopromote");
+    const after = await overlayStore.locateTier(brickId("brick_autopromote"));
     expect(after.ok).toBe(true);
     if (after.ok) expect(after.value).toBe("agent");
 
     // Verify updated data is correct
-    const loaded = await overlayStore.load("brick_autopromote");
+    const loaded = await overlayStore.load(brickId("brick_autopromote"));
     expect(loaded.ok).toBe(true);
     if (loaded.ok) {
       expect(loaded.value.usageCount).toBe(10);
@@ -529,16 +526,16 @@ describe("overlay store → agent e2e", () => {
   });
 
   // -----------------------------------------------------------------------
-  // Test 5: Full lifecycle — bundled → forge override → promote → search
+  // Test 5: Full lifecycle -- bundled -> forge override -> promote -> search
   // -----------------------------------------------------------------------
 
-  test("full lifecycle: bundled tool → agent overrides → promote → search", async () => {
+  test("full lifecycle: bundled tool -> agent overrides -> promote -> search", async () => {
     const executor = adderExecutor();
 
     // Pre-seed bundled "adder" v1
     const bundledStore = await createFsForgeStore({ baseDir: dirs.bundled });
     await bundledStore.save({
-      id: "brick_adder_v1",
+      id: brickId("brick_adder_v1"),
       kind: "tool",
       name: "adder",
       description: "Bundled adder v1",
@@ -549,7 +546,6 @@ describe("overlay store → agent e2e", () => {
       version: "1.0.0",
       tags: ["math"],
       usageCount: 100,
-      contentHash: "v1-hash",
       implementation: "return { sum: input.a + input.b };",
       inputSchema: {
         type: "object",
@@ -560,7 +556,7 @@ describe("overlay store → agent e2e", () => {
     const overlayStore = await createOverlayForgeStore(config);
     const deps = createDeps(overlayStore, mockTiered(executor));
 
-    // --- Step 1: Agent forges an improved "adder" v2 → saved to agent tier ---
+    // --- Step 1: Agent forges an improved "adder" v2 -> saved to agent tier ---
     const forgeTool = createForgeToolTool(deps);
     const forgeResult = (await forgeTool.execute({
       name: "adder-v2",
@@ -580,7 +576,7 @@ describe("overlay store → agent e2e", () => {
     expect(tierResult.ok).toBe(true);
     if (tierResult.ok) expect(tierResult.value).toBe("agent");
 
-    // --- Step 2: Promote from agent → shared ---
+    // --- Step 2: Promote from agent -> shared ---
     const promoteResult = await overlayStore.promoteTier(forgedId, "shared");
     expect(promoteResult.ok).toBe(true);
 
@@ -662,7 +658,7 @@ describe("overlay store → agent e2e", () => {
     // Seed different tools in different tiers
     const bundledStore = await createFsForgeStore({ baseDir: dirs.bundled });
     await bundledStore.save({
-      id: "brick_bundled_tool",
+      id: brickId("brick_bundled_tool"),
       kind: "tool",
       name: "bundled-tool",
       description: "From bundled tier",
@@ -673,14 +669,13 @@ describe("overlay store → agent e2e", () => {
       version: "1.0.0",
       tags: [],
       usageCount: 0,
-      contentHash: "b-hash",
       implementation: "return input;",
       inputSchema: { type: "object" },
     });
 
     const sharedStore = await createFsForgeStore({ baseDir: dirs.shared });
     await sharedStore.save({
-      id: "brick_shared_tool",
+      id: brickId("brick_shared_tool"),
       kind: "tool",
       name: "shared-tool",
       description: "From shared tier",
@@ -691,14 +686,13 @@ describe("overlay store → agent e2e", () => {
       version: "1.0.0",
       tags: [],
       usageCount: 0,
-      contentHash: "s-hash",
       implementation: "return input;",
       inputSchema: { type: "object" },
     });
 
     const agentStore = await createFsForgeStore({ baseDir: dirs.agent });
     await agentStore.save({
-      id: "brick_agent_tool",
+      id: brickId("brick_agent_tool"),
       kind: "tool",
       name: "agent-tool",
       description: "From agent tier",
@@ -709,7 +703,6 @@ describe("overlay store → agent e2e", () => {
       version: "1.0.0",
       tags: [],
       usageCount: 0,
-      contentHash: "a-hash",
       implementation: "return input;",
       inputSchema: { type: "object" },
     });

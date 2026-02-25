@@ -5,6 +5,7 @@
 
 import type {
   BrickArtifact,
+  BrickId,
   BrickUpdate,
   ForgeQuery,
   ForgeStore,
@@ -15,7 +16,7 @@ import type {
 import { notFound } from "@koi/core";
 
 // Error helpers use shared factories from @koi/core.
-function notFoundError(id: string): KoiError {
+function notFoundError(id: BrickId): KoiError {
   return notFound(id, `Brick not found: ${id}`);
 }
 
@@ -74,7 +75,7 @@ function matchesQuery(brick: BrickArtifact, query: ForgeQuery): boolean {
 // ---------------------------------------------------------------------------
 
 export function createInMemoryForgeStore(): ForgeStore {
-  const bricks = new Map<string, BrickArtifact>();
+  const bricks = new Map<BrickId, BrickArtifact>();
 
   // --- watch notification ---
   const changeListeners = new Set<(event: StoreChangeEvent) => void>();
@@ -102,7 +103,7 @@ export function createInMemoryForgeStore(): ForgeStore {
     return { ok: true, value: undefined };
   };
 
-  const load = async (id: string): Promise<Result<BrickArtifact, KoiError>> => {
+  const load = async (id: BrickId): Promise<Result<BrickArtifact, KoiError>> => {
     const brick = bricks.get(id);
     if (brick === undefined) {
       return { ok: false, error: notFoundError(id) };
@@ -123,7 +124,7 @@ export function createInMemoryForgeStore(): ForgeStore {
     return { ok: true, value: results };
   };
 
-  const remove = async (id: string): Promise<Result<void, KoiError>> => {
+  const remove = async (id: BrickId): Promise<Result<void, KoiError>> => {
     if (!bricks.has(id)) {
       return { ok: false, error: notFoundError(id) };
     }
@@ -132,7 +133,7 @@ export function createInMemoryForgeStore(): ForgeStore {
     return { ok: true, value: undefined };
   };
 
-  const update = async (id: string, updates: BrickUpdate): Promise<Result<void, KoiError>> => {
+  const update = async (id: BrickId, updates: BrickUpdate): Promise<Result<void, KoiError>> => {
     const existing = bricks.get(id);
     if (existing === undefined) {
       return { ok: false, error: notFoundError(id) };
@@ -150,7 +151,7 @@ export function createInMemoryForgeStore(): ForgeStore {
     return { ok: true, value: undefined };
   };
 
-  const exists = async (id: string): Promise<Result<boolean, KoiError>> => {
+  const exists = async (id: BrickId): Promise<Result<boolean, KoiError>> => {
     return { ok: true, value: bricks.has(id) };
   };
 

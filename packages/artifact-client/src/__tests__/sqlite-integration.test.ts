@@ -231,7 +231,7 @@ describe("SqliteArtifactStore persistence", () => {
   test("content hash persists correctly", async () => {
     dbPath = makeTmpPath();
     const content = "hash-persistence-test";
-    const hash = await computeContentHash(content);
+    const hash = computeContentHash(content);
 
     const store1 = createSqliteArtifactStore({ dbPath });
     await store1.save(

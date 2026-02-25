@@ -4,7 +4,8 @@
  * Computes trust as min(component trusts) for trust propagation.
  */
 
-import type { BrickArtifact, Result, Tool, TrustTier } from "@koi/core";
+import type { BrickArtifact, BrickId, Result, Tool, TrustTier } from "@koi/core";
+import { brickId } from "@koi/core";
 import type { ForgeError } from "../errors.js";
 import { staticError, storeError } from "../errors.js";
 import { TRUST_ORDER } from "../governance.js";
@@ -19,7 +20,6 @@ import type {
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import {
   buildBaseFields,
-  computeContentHash,
   createForgeTool,
   parseCompositeInput,
   runForgePipeline,
@@ -98,7 +98,9 @@ async function composeForgeHandler(
   }
 
   // Validate all referenced bricks exist and are visible (parallel loading — 14A)
-  const loadResults = await Promise.all(compositeInput.brickIds.map((id) => deps.store.load(id)));
+  const loadResults = await Promise.all(
+    compositeInput.brickIds.map((id) => deps.store.load(brickId(id))),
+  );
 
   const loadedBricks: BrickArtifact[] = [];
   const missingIds: string[] = [];
@@ -171,15 +173,17 @@ async function composeForgeHandler(
       : {}),
   };
 
-  return runForgePipeline(forgeInput, deps, (id, report) => {
-    const contentHash = computeContentHash(forgeInput.brickIds.join(","), forgeInput.files);
+  // Cast string[] brickIds to BrickId[] — they are content-addressed IDs from the store
+  const typedBrickIds: readonly BrickId[] = compositeInput.brickIds.map((id) => brickId(id));
+
+  return runForgePipeline(forgeInput, deps, (report) => {
     // Trust tier = min(pipeline trust, component trusts)
     const effectiveTrust = minTrustTier(report.finalTrustTier, componentMinTrust);
     const artifact: CompositeArtifact = {
-      ...buildBaseFields(id, forgeInput, report, deps, contentHash),
+      ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
       kind: "composite",
       trustTier: effectiveTrust,
-      brickIds: forgeInput.brickIds,
+      brickIds: typedBrickIds,
       files: {
         ...(forgeInput.files ?? {}),
         "_composition.json": JSON.stringify(compositionMetadata),

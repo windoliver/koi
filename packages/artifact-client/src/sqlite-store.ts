@@ -386,7 +386,7 @@ export function createSqliteArtifactStore(
       const contentChanged = updates.content !== undefined && updates.content !== existing.content;
 
       const newHash: ContentHash | undefined = contentChanged
-        ? await computeContentHash(newContent)
+        ? computeContentHash(newContent)
         : existing.contentHash;
       const newSizeBytes = contentChanged
         ? new TextEncoder().encode(newContent).byteLength

@@ -11,6 +11,7 @@ import type {
   Result,
   SourceBundle,
 } from "@koi/core";
+import { brickId } from "@koi/core";
 import { filterByAgentScope, isVisibleToAgent } from "./scope-filter.js";
 
 // ---------------------------------------------------------------------------
@@ -75,14 +76,14 @@ export function createForgeResolver(
   };
 
   const load = async (id: string): Promise<Result<BrickArtifact, KoiError>> => {
-    const result = await store.load(id);
+    const result = await store.load(brickId(id));
     if (!result.ok) return result;
     if (!isVisibleToAgent(result.value, agentId)) return notFoundError(id);
     return result;
   };
 
   const source = async (id: string): Promise<Result<SourceBundle, KoiError>> => {
-    const result = await store.load(id);
+    const result = await store.load(brickId(id));
     if (!result.ok) return result;
     if (!isVisibleToAgent(result.value, agentId)) return notFoundError(id);
     return { ok: true, value: extractSource(result.value) };

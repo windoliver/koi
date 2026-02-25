@@ -11,8 +11,8 @@ import { brickId, snapshotId } from "./brick-snapshot.js";
 
 describe("brick-snapshot branded types", () => {
   test("brickId() creates a branded BrickId", () => {
-    const id: BrickId = brickId("brick_abc123");
-    expect(id).toBe(brickId("brick_abc123"));
+    const id: BrickId = brickId("sha256:abc123");
+    expect(id).toBe(brickId("sha256:abc123"));
     // Branded type is structurally a string
     expect(typeof id).toBe("string");
   });
@@ -25,12 +25,11 @@ describe("brick-snapshot branded types", () => {
 
   test("BrickRef interface compiles with correct shape", () => {
     const ref: BrickRef = {
-      id: brickId("brick_1"),
+      id: brickId("sha256:aaa111"),
       version: "1.0.0",
       kind: "tool",
-      contentHash: "abc123",
     };
-    expect(ref.id).toBe(brickId("brick_1"));
+    expect(ref.id).toBe(brickId("sha256:aaa111"));
     expect(ref.version).toBe("1.0.0");
   });
 
@@ -75,29 +74,27 @@ describe("brick-snapshot branded types", () => {
   test("BrickSnapshot interface compiles with all fields", () => {
     const snapshot: BrickSnapshot = {
       snapshotId: snapshotId("snap_1"),
-      brickId: brickId("brick_1"),
+      brickId: brickId("sha256:abc001"),
       version: "1.0.0",
       parentSnapshotId: snapshotId("snap_0"),
       source: { origin: "forged", forgedBy: "agent-1" },
       event: { kind: "created", actor: "agent-1", timestamp: Date.now() },
       artifact: { implementation: "return 1;" },
-      contentHash: "sha256-abc",
       createdAt: Date.now(),
     };
     expect(snapshot.snapshotId).toBe(snapshotId("snap_1"));
-    expect(snapshot.brickId).toBe(brickId("brick_1"));
+    expect(snapshot.brickId).toBe(brickId("sha256:abc001"));
     expect(snapshot.parentSnapshotId).toBe(snapshotId("snap_0"));
   });
 
   test("BrickSnapshot without optional parentSnapshotId", () => {
     const snapshot: BrickSnapshot = {
       snapshotId: snapshotId("snap_1"),
-      brickId: brickId("brick_1"),
+      brickId: brickId("sha256:def002"),
       version: "1.0.0",
       source: { origin: "bundled", bundleName: "core", bundleVersion: "0.1.0" },
       event: { kind: "created", actor: "system", timestamp: Date.now() },
       artifact: {},
-      contentHash: "sha256-def",
       createdAt: Date.now(),
     };
     expect(snapshot.parentSnapshotId).toBeUndefined();

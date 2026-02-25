@@ -27,10 +27,13 @@ import type { SelfTestScenario } from "../types.js";
 
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const HAS_KEY = ANTHROPIC_KEY.length > 0;
-const describeE2E = HAS_KEY ? describe : describe.skip;
+// E2E tests require API key AND explicit opt-in via E2E_TESTS=1 to avoid
+// rate-limit failures when 500+ test files run in parallel.
+const E2E_ENABLED = HAS_KEY && process.env.E2E_TESTS === "1";
+const describeE2E = E2E_ENABLED ? describe : describe.skip;
 
-const TIMEOUT_MS = 60_000;
-const CHECK_TIMEOUT_MS = 30_000;
+const TIMEOUT_MS = 120_000;
+const CHECK_TIMEOUT_MS = 60_000;
 
 // Use haiku for speed + cost
 const E2E_MODEL = "anthropic:claude-haiku-4-5-20251001";

@@ -15,6 +15,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
+import { brickId as toBrickId } from "@koi/core";
 import type { ForgeConfig } from "./config.js";
 import { recordBrickUsage } from "./usage.js";
 
@@ -70,9 +71,9 @@ export function createForgeUsageMiddleware(cfg: ForgeUsageMiddlewareConfig): Koi
             }
             // Notify after successful usage recording (trust tier may have changed)
             if (cfg.notifier !== undefined) {
-              void Promise.resolve(cfg.notifier.notify({ kind: "updated", brickId })).catch(
-                () => {},
-              );
+              void Promise.resolve(
+                cfg.notifier.notify({ kind: "updated", brickId: toBrickId(brickId) }),
+              ).catch(() => {});
             }
           })
           .catch((error: unknown) => {

@@ -3,6 +3,7 @@
  */
 
 import type {
+  BrickId,
   BrickKind,
   BrickLifecycle,
   BrickRequires,
@@ -29,7 +30,7 @@ export interface ForgeResultMetadata {
 }
 
 export interface ForgeResult {
-  readonly id: string;
+  readonly id: BrickId;
   readonly kind: BrickKind;
   readonly name: string;
   readonly descriptor: ToolDescriptor;
@@ -282,7 +283,7 @@ export interface PromoteChange<T> {
 }
 
 export interface PromoteResult {
-  readonly brickId: string;
+  readonly brickId: BrickId;
   readonly applied: boolean;
   readonly requiresHumanApproval: boolean;
   readonly changes: {
@@ -310,7 +311,7 @@ export interface ManifestParser {
 // ---------------------------------------------------------------------------
 
 export interface CompositionBrickInfo {
-  readonly id: string;
+  readonly id: BrickId;
   readonly name: string;
   readonly kind: BrickKind;
   readonly trustTier: TrustTier;

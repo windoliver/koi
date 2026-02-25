@@ -5,6 +5,7 @@
 import type {
   BrickArtifact,
   BrickArtifactBase,
+  BrickId,
   ForgeStore,
   JsonObject,
   Result,
@@ -13,6 +14,7 @@ import type {
   Tool,
   ToolDescriptor,
 } from "@koi/core";
+import { computeBrickId, computeCompositeBrickId } from "@koi/hash";
 import { z } from "zod";
 import { createForgeProvenance, signAttestation } from "../attestation.js";
 import type { ForgeConfig } from "../config.js";
@@ -282,7 +284,7 @@ export function parseImplementationInput(
  * through the `ArtifactBuilder` callback signature.
  */
 export function buildBaseFields(
-  id: string,
+  id: BrickId,
   input: {
     readonly name: string;
     readonly description: string;
@@ -290,7 +292,6 @@ export function buildBaseFields(
   },
   report: VerificationReport,
   deps: ForgeDeps,
-  contentHash: string,
 ): Omit<BrickArtifactBase, "kind"> {
   // Placeholder provenance — overwritten by runForgePipeline after signing
   const placeholderProvenance: import("@koi/core").ForgeProvenance = {
@@ -317,7 +318,7 @@ export function buildBaseFields(
     },
     classification: "public",
     contentMarkers: [],
-    contentHash,
+    contentHash: id, // Placeholder — overwritten by runForgePipeline
   };
 
   return {
@@ -331,42 +332,56 @@ export function buildBaseFields(
     version: "0.0.1",
     tags: input.tags ?? [],
     usageCount: 0,
-    contentHash,
   };
 }
 
 // ---------------------------------------------------------------------------
-// Content hash (SHA-256 hex digest for integrity verification)
+// Content extraction — maps brick kind to hashable primary content
 // ---------------------------------------------------------------------------
 
-export function computeContentHash(
-  content: string,
-  files?: Readonly<Record<string, string>>,
-): string {
-  const hasher = new Bun.CryptoHasher("sha256");
-  hasher.update(content);
-  if (files !== undefined) {
-    const sortedKeys = Object.keys(files).sort();
-    for (const key of sortedKeys) {
-      hasher.update(key);
-      const value = files[key];
-      if (value !== undefined) {
-        hasher.update(value);
-      }
-    }
+function extractContentForHash(artifact: BrickArtifact): {
+  readonly kind: string;
+  readonly content: string;
+} {
+  switch (artifact.kind) {
+    case "tool":
+    case "engine":
+    case "resolver":
+    case "provider":
+    case "middleware":
+    case "channel":
+      return { kind: artifact.kind, content: artifact.implementation };
+    case "skill":
+      return { kind: artifact.kind, content: artifact.content };
+    case "agent":
+      return { kind: artifact.kind, content: artifact.manifestYaml };
+    case "composite":
+      // Composite ID is computed via computeCompositeBrickId — sentinel here
+      return { kind: artifact.kind, content: "" };
   }
-  return hasher.digest("hex");
+}
+
+/**
+ * Compute a content-addressed BrickId for any artifact (without an id yet).
+ * Composites use sorted child IDs for order-independent Merkle identity.
+ */
+function computeArtifactId(artifact: BrickArtifact): BrickId {
+  if (artifact.kind === "composite") {
+    return computeCompositeBrickId(artifact.brickIds, artifact.files);
+  }
+  const { kind, content } = extractContentForHash(artifact);
+  return computeBrickId(kind, content, artifact.files);
 }
 
 // ---------------------------------------------------------------------------
-// Shared forge pipeline (verify → generate ID → build artifact → save → result)
+// Shared forge pipeline (verify → build artifact → compute ID → dedup → save → result)
 // ---------------------------------------------------------------------------
 
-export type ArtifactBuilder = (
-  id: string,
-  report: VerificationReport,
-  deps: ForgeDeps,
-) => BrickArtifact;
+/**
+ * Builder returns a BrickArtifact body. The `id` field will be a placeholder
+ * — the pipeline replaces it with the content-addressed hash.
+ */
+export type ArtifactBuilder = (report: VerificationReport, deps: ForgeDeps) => BrickArtifact;
 
 export async function runForgePipeline(
   forgeInput: ForgeInput,
@@ -388,9 +403,43 @@ export async function runForgePipeline(
   }
 
   const report = verifyResult.value;
-  const id = `brick_${crypto.randomUUID()}`;
 
-  const artifact = buildArtifact(id, report, deps);
+  // Builder uses a placeholder ID — we'll replace it with the content hash
+  const placeholderArtifact = buildArtifact(report, deps);
+
+  // Compute content-addressed ID
+  const id = computeArtifactId(placeholderArtifact);
+
+  // Replace placeholder id with content-addressed id
+  const artifact: BrickArtifact = { ...placeholderArtifact, id };
+
+  // Dedup check: if brick with this ID already exists, return early
+  const existsResult = await deps.store.exists(id);
+  if (existsResult.ok && existsResult.value) {
+    const forgeResult: ForgeResult = {
+      id,
+      kind: forgeInput.kind,
+      name: forgeInput.name,
+      descriptor: {
+        name: forgeInput.name,
+        description: forgeInput.description,
+        inputSchema: forgeInput.kind === "tool" ? forgeInput.inputSchema : {},
+      },
+      trustTier: report.finalTrustTier,
+      scope: deps.config.defaultScope,
+      lifecycle: "active",
+      verificationReport: report,
+      metadata: {
+        forgedAt: startedAt,
+        forgedBy: deps.context.agentId,
+        sessionId: deps.context.sessionId,
+        depth: deps.context.depth,
+      },
+      forgesConsumed: 0,
+    };
+    return { ok: true, value: forgeResult };
+  }
+
   const finishedAt = Date.now();
 
   // Build provenance from pipeline outputs
@@ -413,7 +462,7 @@ export async function runForgePipeline(
     context: deps.context,
     report,
     config: deps.config,
-    contentHash: artifact.contentHash,
+    contentHash: id, // Content-addressed ID IS the hash
     invocationId: id,
     startedAt,
     finishedAt,

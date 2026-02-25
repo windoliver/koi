@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SandboxExecutor, TieredSandboxExecutor } from "@koi/core";
+import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
@@ -9,7 +10,7 @@ import type { ForgeDeps } from "./shared.js";
 
 function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
-    id: `brick_${Math.random().toString(36).slice(2, 10)}`,
+    id: brickId(`brick_${Math.random().toString(36).slice(2, 10)}`),
     kind: "tool",
     name: "test-brick",
     description: "A test brick",
@@ -20,7 +21,6 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "test-hash",
     implementation: "return 1;",
     inputSchema: { type: "object" },
     ...overrides,
@@ -29,7 +29,7 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
 
 function createSkillBrick(overrides?: Partial<SkillArtifact>): SkillArtifact {
   return {
-    id: `brick_${Math.random().toString(36).slice(2, 10)}`,
+    id: brickId(`brick_${Math.random().toString(36).slice(2, 10)}`),
     kind: "skill",
     name: "test-skill",
     description: "A test skill",
@@ -40,7 +40,6 @@ function createSkillBrick(overrides?: Partial<SkillArtifact>): SkillArtifact {
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "test-hash",
     content: "# Test Skill",
     ...overrides,
   };
@@ -78,8 +77,8 @@ describe("createSearchForgeTool", () => {
 
   test("returns all bricks with empty query", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "b1" }));
-    await store.save(createToolBrick({ id: "b2" }));
+    await store.save(createToolBrick({ id: brickId("b1") }));
+    await store.save(createToolBrick({ id: brickId("b2") }));
 
     const tool = createSearchForgeTool(createDeps({ store }));
     const result = (await tool.execute({})) as {
@@ -92,8 +91,8 @@ describe("createSearchForgeTool", () => {
 
   test("filters by kind", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "b1" }));
-    await store.save(createSkillBrick({ id: "b2" }));
+    await store.save(createToolBrick({ id: brickId("b1") }));
+    await store.save(createSkillBrick({ id: brickId("b2") }));
 
     const tool = createSearchForgeTool(createDeps({ store }));
     const result = (await tool.execute({ kind: "skill" })) as {
@@ -107,8 +106,8 @@ describe("createSearchForgeTool", () => {
 
   test("filters by scope", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "b1", scope: "agent" }));
-    await store.save(createToolBrick({ id: "b2", scope: "global" }));
+    await store.save(createToolBrick({ id: brickId("b1"), scope: "agent" }));
+    await store.save(createToolBrick({ id: brickId("b2"), scope: "global" }));
 
     const tool = createSearchForgeTool(createDeps({ store }));
     const result = (await tool.execute({ scope: "global" })) as {
@@ -132,9 +131,11 @@ describe("createSearchForgeTool", () => {
 
   test("filters by text (case-insensitive substring on name)", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "b1", name: "calculator", description: "basic math" }));
     await store.save(
-      createToolBrick({ id: "b2", name: "formatter", description: "text formatting" }),
+      createToolBrick({ id: brickId("b1"), name: "calculator", description: "basic math" }),
+    );
+    await store.save(
+      createToolBrick({ id: brickId("b2"), name: "formatter", description: "text formatting" }),
     );
 
     const tool = createSearchForgeTool(createDeps({ store }));
@@ -150,10 +151,10 @@ describe("createSearchForgeTool", () => {
   test("filters by text matching description", async () => {
     const store = createInMemoryForgeStore();
     await store.save(
-      createToolBrick({ id: "b1", name: "tool-a", description: "handles JSON parsing" }),
+      createToolBrick({ id: brickId("b1"), name: "tool-a", description: "handles JSON parsing" }),
     );
     await store.save(
-      createToolBrick({ id: "b2", name: "tool-b", description: "handles CSV export" }),
+      createToolBrick({ id: brickId("b2"), name: "tool-b", description: "handles CSV export" }),
     );
 
     const tool = createSearchForgeTool(createDeps({ store }));
@@ -168,8 +169,12 @@ describe("createSearchForgeTool", () => {
 
   test("text search combined with kind filter", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "b1", name: "math-tool", description: "math" }));
-    await store.save(createSkillBrick({ id: "b2", name: "math-skill", description: "math" }));
+    await store.save(
+      createToolBrick({ id: brickId("b1"), name: "math-tool", description: "math" }),
+    );
+    await store.save(
+      createSkillBrick({ id: brickId("b2"), name: "math-skill", description: "math" }),
+    );
 
     const tool = createSearchForgeTool(createDeps({ store }));
     const result = (await tool.execute({ text: "math", kind: "skill" })) as {
@@ -219,7 +224,7 @@ describe("createSearchForgeTool", () => {
     const store = createInMemoryForgeStore();
     await store.save(
       createToolBrick({
-        id: "b1",
+        id: brickId("b1"),
         scope: "agent",
         provenance: {
           ...DEFAULT_PROVENANCE,
@@ -241,7 +246,7 @@ describe("createSearchForgeTool", () => {
     const store = createInMemoryForgeStore();
     await store.save(
       createToolBrick({
-        id: "b1",
+        id: brickId("b1"),
         scope: "agent",
         provenance: {
           ...DEFAULT_PROVENANCE,
@@ -268,7 +273,7 @@ describe("createSearchForgeTool", () => {
     const store = createInMemoryForgeStore();
     await store.save(
       createToolBrick({
-        id: "b1",
+        id: brickId("b1"),
         scope: "global",
         provenance: {
           ...DEFAULT_PROVENANCE,
@@ -295,7 +300,7 @@ describe("createSearchForgeTool", () => {
     const store = createInMemoryForgeStore();
     await store.save(
       createToolBrick({
-        id: "b1",
+        id: brickId("b1"),
         scope: "global",
         provenance: {
           ...DEFAULT_PROVENANCE,
@@ -305,7 +310,7 @@ describe("createSearchForgeTool", () => {
     );
     await store.save(
       createToolBrick({
-        id: "b2",
+        id: brickId("b2"),
         scope: "agent",
         provenance: {
           ...DEFAULT_PROVENANCE,
@@ -315,7 +320,7 @@ describe("createSearchForgeTool", () => {
     );
     await store.save(
       createToolBrick({
-        id: "b3",
+        id: brickId("b3"),
         scope: "agent",
         provenance: {
           ...DEFAULT_PROVENANCE,
@@ -332,7 +337,7 @@ describe("createSearchForgeTool", () => {
     expect(result.ok).toBe(true);
     expect(result.value).toHaveLength(2);
     const ids = result.value.map((b) => b.id);
-    expect(ids).toContain("b1");
-    expect(ids).toContain("b2");
+    expect(ids).toContain(brickId("b1"));
+    expect(ids).toContain(brickId("b2"));
   });
 });

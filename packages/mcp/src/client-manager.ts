@@ -97,6 +97,7 @@ export function createMcpClientManager(
   connectTimeoutMs: number,
   maxReconnectAttempts: number,
   deps: ClientManagerDeps = DEFAULT_DEPS,
+  initialBackoffMs: number = INITIAL_BACKOFF_MS,
 ): McpClientManager {
   // Mutable connection state (justified: tracks connection lifecycle)
   let client: SdkClientLike | undefined;
@@ -113,22 +114,38 @@ export function createMcpClientManager(
       const transport = deps.createTransport(config.transport);
       newClient = deps.createClient({ name: `koi-mcp-${config.name}`, version: "1.0.0" });
 
-      // Race connection against timeout, clearing timer on either outcome
-      let timer: ReturnType<typeof setTimeout> | undefined;
+      // Race connection against timeout using a single-promise wrapper.
+      // Avoids Promise.race which leaves the losing promise as an orphaned
+      // rejection that Bun's test runner reports as "Unhandled error between tests".
       const connectPromise = newClient.connect(transport);
-      const timeoutPromise = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => {
-          reject(connectionTimeoutError(config.name, connectTimeoutMs));
-        }, connectTimeoutMs);
-      });
+      await new Promise<void>((resolve, reject) => {
+        // let justified: prevent double-settle from concurrent resolve paths
+        let settled = false;
 
-      try {
-        await Promise.race([connectPromise, timeoutPromise]);
-      } finally {
-        if (timer !== undefined) {
-          clearTimeout(timer);
-        }
-      }
+        const timer = setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            reject(connectionTimeoutError(config.name, connectTimeoutMs));
+          }
+        }, connectTimeoutMs);
+
+        connectPromise.then(
+          () => {
+            if (!settled) {
+              settled = true;
+              clearTimeout(timer);
+              resolve();
+            }
+          },
+          (error: unknown) => {
+            if (!settled) {
+              settled = true;
+              clearTimeout(timer);
+              reject(error);
+            }
+          },
+        );
+      });
 
       // Close old client before replacing to prevent resource leak
       if (client !== undefined) {
@@ -178,7 +195,7 @@ export function createMcpClientManager(
       while (reconnectAttempt < maxReconnectAttempts) {
         reconnectAttempt += 1;
         const backoffMs = Math.min(
-          INITIAL_BACKOFF_MS * BACKOFF_FACTOR ** (reconnectAttempt - 1),
+          initialBackoffMs * BACKOFF_FACTOR ** (reconnectAttempt - 1),
           MAX_BACKOFF_MS,
         );
         await sleep(backoffMs);

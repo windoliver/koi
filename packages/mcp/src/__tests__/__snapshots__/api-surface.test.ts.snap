@@ -124,7 +124,7 @@ interface ClientManagerDeps {
     }) => SdkClientLike;
     readonly createTransport: (config: Readonly<McpTransportConfig>) => unknown;
 }
-declare function createMcpClientManager(config: ResolvedMcpServerConfig, connectTimeoutMs: number, maxReconnectAttempts: number, deps?: ClientManagerDeps): McpClientManager;
+declare function createMcpClientManager(config: ResolvedMcpServerConfig, connectTimeoutMs: number, maxReconnectAttempts: number, deps?: ClientManagerDeps, initialBackoffMs?: number): McpClientManager;
 
 /**
  * McpComponentProvider — attaches MCP tools as components to agents.

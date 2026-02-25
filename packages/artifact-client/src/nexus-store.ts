@@ -282,7 +282,7 @@ export function createNexusArtifactStore(config: NexusStoreConfig): ArtifactClie
     const newContent = updates.content ?? existing.content;
     const contentChanged = updates.content !== undefined && updates.content !== existing.content;
 
-    const newHash = contentChanged ? await computeContentHash(newContent) : existing.contentHash;
+    const newHash = contentChanged ? computeContentHash(newContent) : existing.contentHash;
     const newSizeBytes = contentChanged
       ? new TextEncoder().encode(newContent).byteLength
       : existing.sizeBytes;

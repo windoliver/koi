@@ -96,20 +96,20 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
       return undefined;
     }
 
-    // On-load integrity verification (cached by content hash)
-    const cached = integrityCache.get(artifact.contentHash);
+    // On-load integrity verification (cached by content-addressed id)
+    const cached = integrityCache.get(artifact.id);
     if (cached !== undefined) {
       if (!cached.valid) {
         return undefined;
       }
     } else {
-      // Verify integrity: content hash + attestation signature (if signer provided)
+      // Verify integrity: content-addressed ID + attestation signature (if signer provided)
       const integrityResult =
         signer !== undefined
           ? await verifyBrickAttestation(artifact, signer)
-          : await verifyBrickIntegrity(artifact);
+          : verifyBrickIntegrity(artifact);
 
-      integrityCache.set(artifact.contentHash, integrityResult.ok);
+      integrityCache.set(artifact.id, integrityResult.ok);
       if (!integrityResult.ok) {
         return undefined;
       }

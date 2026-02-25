@@ -10,6 +10,7 @@ import { join } from "node:path";
 import type {
   BrickArtifact,
   BrickArtifactBase,
+  BrickId,
   BrickUpdate,
   ForgeQuery,
   ForgeScope,
@@ -18,7 +19,7 @@ import type {
   Result,
   StoreChangeEvent,
 } from "@koi/core";
-import { conflict, notFound, permission, validation } from "@koi/core";
+import { notFound, permission, validation } from "@koi/core";
 import type { FsForgeStoreExtended } from "./fs-store.js";
 import { createFsForgeStore } from "./fs-store.js";
 import type { TierDescriptor, TierName } from "./tier.js";
@@ -36,13 +37,13 @@ export interface OverlayForgeStore extends ForgeStore {
   /**
    * Scope-based promote: maps ForgeScope → filesystem tier.
    * Implements the L0 ForgeStore.promote optional method.
-   * Idempotent: same contentHash in target tier is a no-op.
+   * Idempotent: same brick ID in target tier is a no-op (ID is content-addressed).
    */
-  readonly promote: (id: string, targetScope: ForgeScope) => Promise<Result<void, KoiError>>;
+  readonly promote: (id: BrickId, targetScope: ForgeScope) => Promise<Result<void, KoiError>>;
   /** Move a brick between named tiers directly (lower-level than scope-based promote). */
-  readonly promoteTier: (id: string, toTier: TierName) => Promise<Result<void, KoiError>>;
+  readonly promoteTier: (id: BrickId, toTier: TierName) => Promise<Result<void, KoiError>>;
   /** Find which tier currently owns a brick. */
-  readonly locateTier: (id: string) => Promise<Result<TierName, KoiError>>;
+  readonly locateTier: (id: BrickId) => Promise<Result<TierName, KoiError>>;
   /** Dispose all underlying tier stores (close watchers, timers, listeners). */
   readonly dispose: () => void;
 }
@@ -171,7 +172,7 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
   /**
    * Load: searches tiers in priority order, returns first match.
    */
-  const load = async (id: string): Promise<Result<BrickArtifact, KoiError>> => {
+  const load = async (id: BrickId): Promise<Result<BrickArtifact, KoiError>> => {
     for (const entry of sorted) {
       const result = await entry.store.load(id);
       if (result.ok) {
@@ -231,7 +232,7 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
    * Remove: only removes from writable tiers.
    * Returns NOT_FOUND if brick only exists in a read-only tier.
    */
-  const remove = async (id: string): Promise<Result<void, KoiError>> => {
+  const remove = async (id: BrickId): Promise<Result<void, KoiError>> => {
     for (const entry of sorted) {
       const existsResult = await entry.store.exists(id);
       if (!existsResult.ok) {
@@ -256,7 +257,7 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
    * Update: if brick is in a read-only tier, auto-promotes to the first
    * writable tier before applying the update.
    */
-  const update = async (id: string, updates: BrickUpdate): Promise<Result<void, KoiError>> => {
+  const update = async (id: BrickId, updates: BrickUpdate): Promise<Result<void, KoiError>> => {
     // Find which tier owns the brick
     for (const entry of sorted) {
       const existsResult = await entry.store.exists(id);
@@ -294,7 +295,7 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
   /**
    * Exists: checks all tiers in priority order, returns true on first match.
    */
-  const exists = async (id: string): Promise<Result<boolean, KoiError>> => {
+  const exists = async (id: BrickId): Promise<Result<boolean, KoiError>> => {
     for (const entry of sorted) {
       const result = await entry.store.exists(id);
       if (!result.ok) {
@@ -311,10 +312,10 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
 
   /**
    * Promote: move a brick from its current tier to a target writable tier.
-   * Idempotent: if the brick already exists in the target tier with the same
-   * contentHash, this is a no-op. Conflicting contentHash returns CONFLICT.
+   * Idempotent: if the brick already exists in the target tier, this is a
+   * no-op (BrickId is content-addressed, so same ID = same content).
    */
-  const promoteTier = async (id: string, toTier: TierName): Promise<Result<void, KoiError>> => {
+  const promoteTier = async (id: BrickId, toTier: TierName): Promise<Result<void, KoiError>> => {
     const targetEntry = findTier(sorted, toTier);
     if (targetEntry === undefined) {
       return { ok: false, error: validation(`Unknown target tier: ${toTier}`) };
@@ -339,26 +340,15 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
         if (!loadResult.ok) {
           return loadResult;
         }
-        // Idempotency check: if brick already exists in target, compare contentHash
+        // Idempotency check: BrickId is content-addressed, so same ID = same content.
+        // If brick already exists in target, it's identical — clean up source and return.
         const targetExistsResult = await targetEntry.store.exists(id);
         if (targetExistsResult.ok && targetExistsResult.value) {
-          const targetLoadResult = await targetEntry.store.load(id);
-          if (targetLoadResult.ok) {
-            if (targetLoadResult.value.contentHash === loadResult.value.contentHash) {
-              // Same content already in target — idempotent no-op, clean up source if writable
-              if (isTierWritable(entry.descriptor)) {
-                await entry.store.remove(id);
-              }
-              return { ok: true, value: undefined };
-            }
-            // Different content — conflict
-            return {
-              ok: false,
-              error: conflict(
-                `Brick '${id}' already exists in tier '${toTier}' with different content`,
-              ),
-            };
+          // Same content already in target — idempotent no-op, clean up source if writable
+          if (isTierWritable(entry.descriptor)) {
+            await entry.store.remove(id);
           }
+          return { ok: true, value: undefined };
         }
         // Save to target
         const saveResult = await targetEntry.store.save(loadResult.value);
@@ -383,7 +373,7 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
    * This implements the optional ForgeStore.promote() for scope-aware promotion.
    */
   const promoteByScope = async (
-    id: string,
+    id: BrickId,
     targetScope: ForgeScope,
   ): Promise<Result<void, KoiError>> => {
     const targetTier = SCOPE_TO_TIER[targetScope];
@@ -393,7 +383,7 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
   /**
    * LocateTier: scan tiers in priority order, return first tier containing the brick.
    */
-  const locateTier = async (id: string): Promise<Result<TierName, KoiError>> => {
+  const locateTier = async (id: BrickId): Promise<Result<TierName, KoiError>> => {
     for (const entry of sorted) {
       const existsResult = await entry.store.exists(id);
       if (!existsResult.ok) {
