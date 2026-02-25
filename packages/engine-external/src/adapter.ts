@@ -490,7 +490,12 @@ export function createExternalAdapter(config: ExternalAdapterConfig): ExternalEn
       if (!isExternalProcessState(state.data)) {
         throw new Error("Invalid ExternalProcessState shape");
       }
-      outputHistory = [...state.data.outputHistory];
+      const loaded = [...state.data.outputHistory];
+      // Enforce cap on loaded state to prevent untrusted snapshots from consuming unbounded memory
+      outputHistory =
+        loaded.length > DEFAULT_MAX_HISTORY_ENTRIES
+          ? loaded.slice(loaded.length - DEFAULT_MAX_HISTORY_ENTRIES)
+          : loaded;
     },
 
     async dispose(): Promise<void> {
@@ -571,7 +576,9 @@ function isExternalProcessState(value: unknown): value is ExternalProcessState {
   return (
     typeof record.command === "string" &&
     Array.isArray(record.args) &&
+    record.args.every((a: unknown) => typeof a === "string") &&
     typeof record.cwd === "string" &&
-    Array.isArray(record.outputHistory)
+    Array.isArray(record.outputHistory) &&
+    record.outputHistory.every((h: unknown) => typeof h === "string")
   );
 }
