@@ -3,9 +3,11 @@
  */
 
 import type {
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -59,4 +61,44 @@ export function createSpyToolHandler(response?: Partial<ToolResponse>): SpyToolH
     return merged;
   };
   return { handler, calls };
+}
+
+// ---------------------------------------------------------------------------
+// Model stream handlers
+// ---------------------------------------------------------------------------
+
+export interface SpyModelStreamHandler {
+  readonly handler: ModelStreamHandler;
+  readonly calls: readonly ModelRequest[];
+}
+
+/**
+ * Creates a spy model stream handler that yields provided chunks and records calls.
+ */
+export function createSpyModelStreamHandler(chunks: readonly ModelChunk[]): SpyModelStreamHandler {
+  const calls: ModelRequest[] = [];
+  const handler: ModelStreamHandler = (request: ModelRequest): AsyncIterable<ModelChunk> => {
+    calls.push(request);
+    return {
+      [Symbol.asyncIterator]: async function* () {
+        for (const chunk of chunks) {
+          yield chunk;
+        }
+      },
+    };
+  };
+  return { handler, calls };
+}
+
+/**
+ * Creates a mock model stream handler that yields provided chunks.
+ */
+export function createMockModelStreamHandler(chunks: readonly ModelChunk[]): ModelStreamHandler {
+  return (_request: ModelRequest): AsyncIterable<ModelChunk> => ({
+    [Symbol.asyncIterator]: async function* () {
+      for (const chunk of chunks) {
+        yield chunk;
+      }
+    },
+  });
 }

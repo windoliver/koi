@@ -34,3 +34,23 @@ export function createMockTurnContext(
     ...(overrides?.session ? { session } : {}),
   };
 }
+
+/**
+ * Creates a mock InboundMessage with sensible defaults.
+ * Pass `text` for a quick single-text-block message, or override `content` for custom blocks.
+ */
+export function createMockInboundMessage(
+  overrides?: Partial<InboundMessage> & { readonly text?: string },
+): InboundMessage {
+  const text = overrides?.text ?? "mock message";
+  return {
+    senderId: "user-test-1",
+    timestamp: Date.now(),
+    content: [{ kind: "text" as const, text }],
+    ...overrides,
+    // If text was provided but content wasn't, ensure content uses the text
+    ...(overrides?.text !== undefined && overrides?.content === undefined
+      ? { content: [{ kind: "text" as const, text: overrides.text }] }
+      : {}),
+  };
+}

@@ -3,7 +3,8 @@
 exports[`@koi/test-utils API surface . has stable type surface 1`] = `
 "import { ProcessId, AgentManifest, ProcessState, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, ChannelAdapter, MemoryResult, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, SessionPersistence, SnapshotChainStore, ForgeStore } from '@koi/core';
 import { Result, KoiError } from '@koi/core/errors';
-import { SessionContext, TurnContext, ModelHandler, ModelRequest, ToolHandler, ToolRequest, ModelResponse, ToolResponse, KoiMiddleware } from '@koi/core/middleware';
+import { InboundMessage } from '@koi/core/message';
+import { SessionContext, TurnContext, ModelHandler, ModelRequest, ModelStreamHandler, ToolHandler, ToolRequest, ModelResponse, ModelChunk, ToolResponse, KoiMiddleware } from '@koi/core/middleware';
 import { Resolver } from '@koi/core/resolver';
 
 /**
@@ -217,6 +218,13 @@ declare function createMockSessionContext(overrides?: Partial<SessionContext>): 
 declare function createMockTurnContext(overrides?: Partial<TurnContext> & {
     readonly session?: Partial<SessionContext>;
 }): TurnContext;
+/**
+ * Creates a mock InboundMessage with sensible defaults.
+ * Pass \`text\` for a quick single-text-block message, or override \`content\` for custom blocks.
+ */
+declare function createMockInboundMessage(overrides?: Partial<InboundMessage> & {
+    readonly text?: string;
+}): InboundMessage;
 
 /**
  * Engine adapter contract test suite.
@@ -313,6 +321,18 @@ interface SpyToolHandler {
     readonly calls: readonly ToolRequest[];
 }
 declare function createSpyToolHandler(response?: Partial<ToolResponse>): SpyToolHandler;
+interface SpyModelStreamHandler {
+    readonly handler: ModelStreamHandler;
+    readonly calls: readonly ModelRequest[];
+}
+/**
+ * Creates a spy model stream handler that yields provided chunks and records calls.
+ */
+declare function createSpyModelStreamHandler(chunks: readonly ModelChunk[]): SpyModelStreamHandler;
+/**
+ * Creates a mock model stream handler that yields provided chunks.
+ */
+declare function createMockModelStreamHandler(chunks: readonly ModelChunk[]): ModelStreamHandler;
 
 /**
  * Middleware contract test suite.
@@ -458,6 +478,6 @@ declare function createThrowingValidator(error: Error, name?: string): MockValid
 /** Creates a validator that passes or fails based on a predicate. */
 declare function createConditionalValidator(fn: (output: unknown) => boolean, name?: string): MockValidator;
 
-export { type CapturedOutput, type ChannelContractOptions, type EngineContractOptions, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type ResolverContractOptions, type SpyModelHandler, type SpyToolHandler, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createManifestFile, createMockAgent, createMockEngineAdapter, createMockEventBackend, createMockMemoryComponent, createMockModelHandler, createMockSessionContext, createMockStatefulEngine, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyToolHandler, createTestConfig, createTestConfigStore, createThrowingValidator, makeTempDir, runEventBackendContractTests, runForgeStoreContractTests, runSessionPersistenceContractTests, runSnapshotChainStoreContractTests, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, withTempDir };
+export { type CapturedOutput, type ChannelContractOptions, type EngineContractOptions, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type ResolverContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createManifestFile, createMockAgent, createMockEngineAdapter, createMockEventBackend, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTestConfig, createTestConfigStore, createThrowingValidator, makeTempDir, runEventBackendContractTests, runForgeStoreContractTests, runSessionPersistenceContractTests, runSnapshotChainStoreContractTests, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, withTempDir };
 "
 `;

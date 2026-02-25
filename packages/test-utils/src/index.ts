@@ -26,18 +26,24 @@ export { testChannelAdapter } from "./channel-contract.js";
 export type { MockMemoryComponentOptions } from "./components.js";
 export { createMockMemoryComponent } from "./components.js";
 export { createTestConfig, createTestConfigStore } from "./config.js";
-export { createMockSessionContext, createMockTurnContext } from "./contexts.js";
+export {
+  createMockInboundMessage,
+  createMockSessionContext,
+  createMockTurnContext,
+} from "./contexts.js";
 export type { EngineContractOptions } from "./engine-contract.js";
 export { testEngineAdapter } from "./engine-contract.js";
 export { runEventBackendContractTests } from "./event-backend-contract.js";
 export type { MockEventBackend } from "./event-backend-mock.js";
 export { createMockEventBackend } from "./event-backend-mock.js";
 export { createFactory } from "./factory.js";
-export type { SpyModelHandler, SpyToolHandler } from "./handlers.js";
+export type { SpyModelHandler, SpyModelStreamHandler, SpyToolHandler } from "./handlers.js";
 export {
   createMockModelHandler,
+  createMockModelStreamHandler,
   createMockToolHandler,
   createSpyModelHandler,
+  createSpyModelStreamHandler,
   createSpyToolHandler,
 } from "./handlers.js";
 export type { MiddlewareContractOptions } from "./middleware-contract/index.js";

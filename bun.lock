@@ -408,6 +408,17 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-sanitize": {
+      "name": "@koi/middleware-sanitize",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-soul": {
       "name": "@koi/middleware-soul",
       "version": "0.0.0",
@@ -983,6 +994,8 @@
     "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/middleware-permissions"],
 
     "@koi/middleware-sandbox": ["@koi/middleware-sandbox@workspace:packages/middleware-sandbox"],
+
+    "@koi/middleware-sanitize": ["@koi/middleware-sanitize@workspace:packages/middleware-sanitize"],
 
     "@koi/middleware-soul": ["@koi/middleware-soul@workspace:packages/middleware-soul"],
 
