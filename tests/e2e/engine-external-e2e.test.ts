@@ -1,7 +1,7 @@
 /**
  * Engine-external end-to-end validation.
  *
- * Tests @koi/engine-external through three tiers:
+ * Tests @koi/engine-external through four tiers:
  *
  * 1. **Standalone**: createExternalAdapter with real processes (echo, cat, sh)
  *    to validate adapter mechanics in isolation.
@@ -10,19 +10,26 @@
  *    assembly (middleware composition, lifecycle hooks, guards) to validate
  *    that engine-external satisfies the EngineAdapter contract end-to-end.
  *
- * 3. **With real LLM**: A shell script that calls the Anthropic API via curl,
- *    wired through createKoi, proving that engine-external can wrap a real
- *    LLM-backed CLI tool as an agent backend.
+ * 3. **With real LLM via curl**: A shell script that calls the Anthropic API
+ *    via curl, wired through createKoi.
  *
- * Tier 3 is gated on ANTHROPIC_API_KEY — skipped when the key is not set.
+ * 4. **With real Pi agent**: A Bun subprocess that runs createPiAdapter (the
+ *    real L2 engine-pi adapter), streaming EngineEvents as JSON-lines to
+ *    stdout — wrapped by engine-external + createJsonLinesParser through
+ *    createKoi. Proves engine-external can wrap a real LLM-backed agent
+ *    process as an external engine adapter.
+ *
+ * Tiers 3-4 are gated on ANTHROPIC_API_KEY — skipped when the key is not set.
  *
  * Run:
  *   bun test tests/e2e/engine-external-e2e.test.ts
  *
- * Cost: ~$0.01 per run (single haiku call via curl).
+ * Cost: ~$0.02 per run (haiku calls via curl + Pi adapter).
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { EngineEvent, KoiMiddleware } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import {
@@ -333,7 +340,7 @@ describe("e2e: engine-external through createKoi", () => {
 // Tier 3: External adapter wrapping a real LLM CLI call via curl
 // ---------------------------------------------------------------------------
 
-describeLLM("e2e: engine-external with real LLM via curl", () => {
+describeLLM("e2e: engine-external with real LLM via curl (Tier 3)", () => {
   test(
     "curl-based Anthropic call through createKoi produces real LLM response",
     async () => {
@@ -456,6 +463,191 @@ describeLLM("e2e: engine-external with real LLM via curl", () => {
         expect(hookLog.at(0)).toBe("session:start");
         expect(hookLog.at(-1)).toBe("session:end");
         expect(hookLog).toContain("turn:before");
+      } finally {
+        await runtime.dispose?.();
+      }
+    },
+    TIMEOUT_MS,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Tier 4: External adapter wrapping a real Pi agent subprocess
+// ---------------------------------------------------------------------------
+
+/**
+ * Bun script source that runs createPiAdapter inside a child process.
+ *
+ * Reads a prompt from stdin, creates a Pi adapter with haiku, streams all
+ * EngineEvents as JSON-lines to stdout. The parent wraps this with
+ * engine-external + createJsonLinesParser, proving the full chain:
+ *
+ *   User → createKoi(engine-external) → Bun subprocess → createPiAdapter → Claude API
+ *
+ * Written to a temp file and executed via `bun run <path>` from the tests/e2e
+ * directory so that Bun can resolve workspace dependencies (@koi/engine-pi).
+ */
+const PI_AGENT_SCRIPT_SOURCE = `
+import { createKoi } from "@koi/engine";
+import { createPiAdapter } from "@koi/engine-pi";
+
+const prompt = await new Response(Bun.stdin.stream()).text();
+
+const adapter = createPiAdapter({
+  model: "anthropic:claude-haiku-4-5-20251001",
+  systemPrompt: "You are a helpful assistant. Be very concise.",
+});
+
+const runtime = await createKoi({
+  manifest: { name: "pi-subprocess", version: "0.0.1", model: { name: "claude-haiku-4-5-20251001" } },
+  adapter,
+});
+
+try {
+  for await (const event of runtime.run({ kind: "text", text: prompt })) {
+    process.stdout.write(JSON.stringify(event) + "\\n");
+  }
+} finally {
+  await runtime.dispose?.();
+}
+`;
+
+// Script path inside the e2e package so Bun resolves workspace deps correctly
+const E2E_DIR = new URL(".", import.meta.url).pathname;
+// let justified: script written once per suite, cleaned up after
+let piAgentScriptPath: string;
+
+describeLLM("e2e: engine-external wrapping real Pi agent subprocess (Tier 4)", () => {
+  beforeAll(() => {
+    piAgentScriptPath = join(E2E_DIR, ".pi-agent-worker.ts");
+    writeFileSync(piAgentScriptPath, PI_AGENT_SCRIPT_SOURCE);
+  });
+
+  afterAll(() => {
+    if (existsSync(piAgentScriptPath)) {
+      rmSync(piAgentScriptPath);
+    }
+  });
+
+  test(
+    "Pi agent subprocess through engine-external + createKoi produces real LLM response",
+    async () => {
+      const adapter = createExternalAdapter({
+        command: "bun",
+        args: ["run", piAgentScriptPath],
+        cwd: E2E_DIR,
+        parser: createJsonLinesParser(),
+        timeoutMs: 60_000,
+        env: {
+          kind: "explicit",
+          env: {
+            PATH: process.env.PATH ?? "",
+            HOME: process.env.HOME ?? "",
+            ANTHROPIC_API_KEY: ANTHROPIC_KEY,
+          },
+        },
+      });
+
+      const runtime = await createKoi({
+        manifest: {
+          name: "e2e-external-pi-agent",
+          version: "0.0.1",
+          model: { name: MODEL_NAME },
+        },
+        adapter,
+      });
+
+      try {
+        const events = await collectEvents(
+          runtime.run({ kind: "text", text: "Reply with exactly: pi-agent-ok" }),
+        );
+
+        // Got a done event with successful completion
+        const done = findDone(events);
+        expect(done).toBeDefined();
+        if (done === undefined) return;
+        expect(done.output.stopReason).toBe("completed");
+
+        // Got text output from the real LLM via Pi adapter
+        const textDeltas = events.filter((e) => e.kind === "text_delta");
+        expect(textDeltas.length).toBeGreaterThan(0);
+
+        const fullText = textDeltas
+          .map((e) => (e.kind === "text_delta" ? e.delta : ""))
+          .join("")
+          .toLowerCase();
+        expect(fullText).toContain("pi-agent-ok");
+      } finally {
+        await runtime.dispose?.();
+      }
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "Pi agent subprocess with middleware composition through createKoi",
+    async () => {
+      const hookLog: string[] = []; // let justified: test accumulator
+
+      const lifecycle: KoiMiddleware = {
+        name: "e2e-pi-subprocess-lifecycle",
+        priority: 100,
+        onSessionStart: async () => {
+          hookLog.push("session:start");
+        },
+        onBeforeTurn: async () => {
+          hookLog.push("turn:before");
+        },
+        onAfterTurn: async () => {
+          hookLog.push("turn:after");
+        },
+        onSessionEnd: async () => {
+          hookLog.push("session:end");
+        },
+      };
+
+      const adapter = createExternalAdapter({
+        command: "bun",
+        args: ["run", piAgentScriptPath],
+        cwd: E2E_DIR,
+        parser: createJsonLinesParser(),
+        timeoutMs: 60_000,
+        env: {
+          kind: "explicit",
+          env: {
+            PATH: process.env.PATH ?? "",
+            HOME: process.env.HOME ?? "",
+            ANTHROPIC_API_KEY: ANTHROPIC_KEY,
+          },
+        },
+      });
+
+      const runtime = await createKoi({
+        manifest: {
+          name: "e2e-external-pi-hooks",
+          version: "0.0.1",
+          model: { name: MODEL_NAME },
+        },
+        adapter,
+        middleware: [lifecycle],
+      });
+
+      try {
+        const events = await collectEvents(runtime.run({ kind: "text", text: "Say hello" }));
+
+        // Completed successfully
+        const done = findDone(events);
+        expect(done).toBeDefined();
+        expect(done?.output.stopReason).toBe("completed");
+
+        // L1 lifecycle hooks fired
+        expect(hookLog.at(0)).toBe("session:start");
+        expect(hookLog.at(-1)).toBe("session:end");
+        expect(hookLog).toContain("turn:before");
+
+        // Got real text from Pi agent
+        const textDeltas = events.filter((e) => e.kind === "text_delta");
+        expect(textDeltas.length).toBeGreaterThan(0);
       } finally {
         await runtime.dispose?.();
       }
