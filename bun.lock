@@ -338,6 +338,21 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-guardrails": {
+      "name": "@koi/middleware-guardrails",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-guided-retry": {
       "name": "@koi/middleware-guided-retry",
       "version": "0.0.0",
@@ -1024,6 +1039,8 @@
     "@koi/middleware-feedback-loop": ["@koi/middleware-feedback-loop@workspace:packages/middleware-feedback-loop"],
 
     "@koi/middleware-fs-rollback": ["@koi/middleware-fs-rollback@workspace:packages/middleware-fs-rollback"],
+
+    "@koi/middleware-guardrails": ["@koi/middleware-guardrails@workspace:packages/middleware-guardrails"],
 
     "@koi/middleware-guided-retry": ["@koi/middleware-guided-retry@workspace:packages/middleware-guided-retry"],
 
