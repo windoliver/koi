@@ -18,9 +18,19 @@ export interface ToolConfig {
   readonly options?: JsonObject;
 }
 
+export interface ChannelIdentity {
+  /** Display name for this channel persona — injected as "You are <name>." in the system prompt. */
+  readonly name?: string;
+  /** Avatar URL or path — display metadata for the channel UI layer, not injected into the LLM prompt. */
+  readonly avatar?: string;
+  /** Behavioral instructions — injected verbatim into the system prompt. */
+  readonly instructions?: string;
+}
+
 export interface ChannelConfig {
   readonly name: string;
   readonly options?: JsonObject;
+  readonly identity?: ChannelIdentity;
 }
 
 export interface MiddlewareConfig {

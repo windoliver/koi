@@ -202,7 +202,7 @@ export async function createSoulMiddleware(options: CreateSoulOptions): Promise<
       if (request.toolId === "fs_write" && watchedPaths.size > 0) {
         const writtenPath = typeof request.input.path === "string" ? request.input.path : undefined;
         if (writtenPath !== undefined && watchedPaths.has(writtenPath)) {
-          await reload();
+          await reload().catch((err: unknown) => console.error("[soul] reload failed:", err));
         }
       }
 

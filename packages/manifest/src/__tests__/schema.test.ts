@@ -533,6 +533,61 @@ describe("rawManifestSchema — outboundWebhooks", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Channel identity
+// ---------------------------------------------------------------------------
+
+describe("rawManifestSchema — channel identity", () => {
+  test("accepts channel with full identity block", () => {
+    const result = parse({
+      channels: [
+        {
+          name: "@koi/channel-telegram",
+          identity: {
+            name: "Alex",
+            avatar: "casual.png",
+            instructions: "Be casual and friendly.",
+          },
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("accepts channel with partial identity (name only)", () => {
+    const result = parse({
+      channels: [{ name: "@koi/channel-telegram", identity: { name: "Alex" } }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("accepts channel without identity block", () => {
+    const result = parse({
+      channels: [{ name: "@koi/channel-cli" }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("preserves identity fields in parsed result", () => {
+    const result = parse({
+      channels: [
+        {
+          name: "@koi/channel-slack",
+          identity: { name: "Research Bot", instructions: "Be formal." },
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const data = result.data as { channels?: unknown[] };
+      const ch = data.channels?.[0] as Record<string, unknown>;
+      const identity = ch.identity as Record<string, unknown>;
+      expect(identity.name).toBe("Research Bot");
+      expect(identity.instructions).toBe("Be formal.");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // zodToKoiError
 // ---------------------------------------------------------------------------
 

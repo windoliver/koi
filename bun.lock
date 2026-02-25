@@ -241,6 +241,19 @@
       "name": "@koi/hash",
       "version": "0.0.0",
     },
+    "packages/identity": {
+      "name": "@koi/identity",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/manifest": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/manifest": {
       "name": "@koi/manifest",
       "version": "0.0.0",
@@ -1049,6 +1062,8 @@
     "@koi/gateway": ["@koi/gateway@workspace:packages/gateway"],
 
     "@koi/hash": ["@koi/hash@workspace:packages/hash"],
+
+    "@koi/identity": ["@koi/identity@workspace:packages/identity"],
 
     "@koi/manifest": ["@koi/manifest@workspace:packages/manifest"],
 

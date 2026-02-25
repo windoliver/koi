@@ -255,6 +255,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             agentId: pid.id,
             sessionId: sid,
             runId: rid,
+            ...(options.channelId !== undefined ? { channelId: options.channelId } : {}),
             metadata: {},
           };
 

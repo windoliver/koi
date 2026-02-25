@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  normalizeChannelConfig,
   normalizeConfigItem,
   normalizeModelConfig,
   transformToLoadedManifest,
@@ -35,6 +36,44 @@ describe("normalizeConfigItem", () => {
     const input = { "@koi/middleware-log": {} };
     const result = normalizeConfigItem(input);
     expect(result).toEqual({ name: "@koi/middleware-log", options: {} });
+  });
+});
+
+describe("normalizeChannelConfig", () => {
+  test("passes through channel without identity", () => {
+    const result = normalizeChannelConfig({ name: "@koi/channel-cli" });
+    expect(result).toEqual({ name: "@koi/channel-cli" });
+  });
+
+  test("preserves identity block on channel config", () => {
+    const input = {
+      name: "@koi/channel-telegram",
+      identity: { name: "Alex", instructions: "Be casual." },
+    };
+    const result = normalizeChannelConfig(input);
+    expect(result.name).toBe("@koi/channel-telegram");
+    expect(result.identity).toEqual({ name: "Alex", instructions: "Be casual." });
+  });
+
+  test("preserves full identity with avatar", () => {
+    const input = {
+      name: "@koi/channel-slack",
+      identity: { name: "Bot", avatar: "bot.png", instructions: "Be helpful." },
+    };
+    const result = normalizeChannelConfig(input);
+    expect(result.identity).toEqual({
+      name: "Bot",
+      avatar: "bot.png",
+      instructions: "Be helpful.",
+    });
+  });
+
+  test("omits identity properties not present in source", () => {
+    const input = { name: "@koi/channel-telegram", identity: { name: "Alex" } };
+    const result = normalizeChannelConfig(input);
+    expect(result.identity).toEqual({ name: "Alex" });
+    expect("avatar" in (result.identity ?? {})).toBe(false);
+    expect("instructions" in (result.identity ?? {})).toBe(false);
   });
 });
 
@@ -154,6 +193,25 @@ describe("transformToLoadedManifest", () => {
     const result = transformToLoadedManifest(raw);
     expect(result.engine).toBe("deepagents");
     expect(result.schedule).toBe("0 9 * * *");
+  });
+
+  test("transforms channels with identity block", () => {
+    const raw = {
+      name: "my-agent",
+      version: "1.0.0",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+      channels: [
+        {
+          name: "@koi/channel-telegram",
+          identity: { name: "Alex", instructions: "Be casual." },
+        },
+        { name: "@koi/channel-cli" }, // no identity
+      ],
+    };
+    const result = transformToLoadedManifest(raw);
+    expect(result.channels).toHaveLength(2);
+    expect(result.channels?.[0]?.identity).toEqual({ name: "Alex", instructions: "Be casual." });
+    expect(result.channels?.[1]?.identity).toBeUndefined();
   });
 
   test("transforms permissions", () => {

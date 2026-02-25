@@ -236,6 +236,8 @@ export interface CreateKoiOptions {
   readonly agentType?: "copilot" | "worker";
   /** Registry for agent lifecycle tracking. If provided, agent is registered on creation. */
   readonly registry?: AgentRegistry;
+  /** Channel adapter package name (e.g. "@koi/channel-telegram"). Injected into SessionContext. */
+  readonly channelId?: string;
 }
 
 export interface KoiRuntime {
