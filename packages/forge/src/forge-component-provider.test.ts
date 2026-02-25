@@ -978,15 +978,18 @@ describe("createForgeComponentProvider — implementation kinds", () => {
 
   test("attaches all 5 implementation kinds", async () => {
     const store = createInMemoryForgeStore();
-    const kinds: readonly ImplementationArtifact["kind"][] = [
+    // engine/resolver/provider require "verified"; middleware/channel require "promoted"
+    const verifiedKinds: readonly ImplementationArtifact["kind"][] = [
       "engine",
       "resolver",
       "provider",
-      "middleware",
-      "channel",
     ];
-    for (const kind of kinds) {
+    const promotedKinds: readonly ImplementationArtifact["kind"][] = ["middleware", "channel"];
+    for (const kind of verifiedKinds) {
       await store.save(createImplementationBrick(kind));
+    }
+    for (const kind of promotedKinds) {
+      await store.save(createImplementationBrick(kind, { trustTier: "promoted" }));
     }
 
     const provider = createForgeComponentProvider({
@@ -1075,7 +1078,13 @@ describe("createForgeComponentProvider — implementation kinds", () => {
 
   test("lookupBrickId works for implementation names", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createImplementationBrick("middleware", { id: "brick_mw1", name: "audit" }));
+    await store.save(
+      createImplementationBrick("middleware", {
+        id: "brick_mw1",
+        name: "audit",
+        trustTier: "promoted",
+      }),
+    );
 
     const provider = createForgeComponentProvider({
       store,

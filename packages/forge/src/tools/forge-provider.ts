@@ -1,16 +1,16 @@
 /**
- * forge_tool — Creates a new tool through the verification pipeline.
+ * forge_provider — Creates a new provider brick through the verification pipeline.
  */
 
 import type { Result, Tool } from "@koi/core";
 import type { ForgeError } from "../errors.js";
-import type { ForgeResult, ForgeToolInput, ToolArtifact } from "../types.js";
+import type { ForgeProviderInput, ForgeResult, ImplementationArtifact } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import {
   buildBaseFields,
   computeContentHash,
   createForgeTool,
-  parseToolInput,
+  parseImplementationInput,
   runForgePipeline,
 } from "./shared.js";
 
@@ -18,15 +18,16 @@ import {
 // Tool config
 // ---------------------------------------------------------------------------
 
-const FORGE_TOOL_CONFIG: ForgeToolConfig = {
-  name: "forge_tool",
-  description: "Creates a new tool by running it through the 4-stage verification pipeline",
+const FORGE_PROVIDER_CONFIG: ForgeToolConfig = {
+  name: "forge_provider",
+  description:
+    "Creates a new provider brick by running it through the 4-stage verification pipeline. " +
+    "Providers require 'verified' trust before attachment.",
   inputSchema: {
     type: "object",
     properties: {
       name: { type: "string" },
       description: { type: "string" },
-      inputSchema: { type: "object" },
       implementation: { type: "string" },
       testCases: {
         type: "array",
@@ -54,29 +55,28 @@ const FORGE_TOOL_CONFIG: ForgeToolConfig = {
       },
       configSchema: { type: "object", description: "JSON Schema for brick config parameters" },
     },
-    required: ["name", "description", "inputSchema", "implementation"],
+    required: ["name", "description", "implementation"],
   },
-  handler: forgeToolHandler,
+  handler: forgeProviderHandler,
 };
 
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
-async function forgeToolHandler(
+async function forgeProviderHandler(
   input: unknown,
   deps: ForgeDeps,
 ): Promise<Result<ForgeResult, ForgeError>> {
-  const parsed = parseToolInput(input);
+  const parsed = parseImplementationInput(input);
   if (!parsed.ok) {
     return parsed;
   }
 
-  const forgeInput: ForgeToolInput = {
-    kind: "tool",
+  const forgeInput: ForgeProviderInput = {
+    kind: "provider",
     name: parsed.value.name,
     description: parsed.value.description,
-    inputSchema: parsed.value.inputSchema,
     implementation: parsed.value.implementation,
     ...(parsed.value.testCases !== undefined
       ? {
@@ -108,11 +108,10 @@ async function forgeToolHandler(
 
   return runForgePipeline(forgeInput, deps, (id, report) => {
     const contentHash = computeContentHash(forgeInput.implementation, forgeInput.files);
-    const artifact: ToolArtifact = {
+    const artifact: ImplementationArtifact = {
       ...buildBaseFields(id, forgeInput, report, deps, contentHash),
-      kind: "tool",
+      kind: "provider",
       implementation: forgeInput.implementation,
-      inputSchema: forgeInput.inputSchema,
       ...(forgeInput.testCases !== undefined ? { testCases: forgeInput.testCases } : {}),
       ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
       ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
@@ -126,6 +125,6 @@ async function forgeToolHandler(
 // Public API
 // ---------------------------------------------------------------------------
 
-export function createForgeToolTool(deps: ForgeDeps): Tool {
-  return createForgeTool(FORGE_TOOL_CONFIG, deps);
+export function createForgeProviderTool(deps: ForgeDeps): Tool {
+  return createForgeTool(FORGE_PROVIDER_CONFIG, deps);
 }

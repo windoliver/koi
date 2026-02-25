@@ -109,8 +109,18 @@ export async function verifySelfTest(
   const start = performance.now();
   const failures: TestFailure[] = [];
 
-  // Run test cases for tools
-  if (input.kind === "tool" && input.testCases !== undefined && input.testCases.length > 0) {
+  // Run test cases for implementation-bearing kinds
+  const hasTestCases =
+    (input.kind === "tool" ||
+      input.kind === "middleware" ||
+      input.kind === "channel" ||
+      input.kind === "engine" ||
+      input.kind === "resolver" ||
+      input.kind === "provider") &&
+    input.testCases !== undefined &&
+    input.testCases.length > 0;
+
+  if (hasTestCases) {
     if (config.failFast) {
       // Sequential with early exit
       for (const testCase of input.testCases) {

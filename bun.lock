@@ -208,6 +208,8 @@
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/model-router": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },

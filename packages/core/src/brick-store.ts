@@ -57,6 +57,8 @@ export interface BrickArtifactBase {
   readonly files?: Readonly<Record<string, string>>;
   /** Runtime requirements for this brick to be usable. */
   readonly requires?: BrickRequires;
+  /** Optional JSON Schema describing brick instantiation config parameters. */
+  readonly configSchema?: Readonly<Record<string, unknown>>;
 }
 
 export interface ToolArtifact extends BrickArtifactBase {
@@ -84,6 +86,7 @@ export interface CompositeArtifact extends BrickArtifactBase {
 export interface ImplementationArtifact extends BrickArtifactBase {
   readonly kind: "engine" | "resolver" | "provider" | "middleware" | "channel";
   readonly implementation: string;
+  readonly testCases?: readonly TestCase[];
 }
 
 export type BrickArtifact =

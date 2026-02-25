@@ -39,7 +39,7 @@ export async function verifySandbox(
     };
   }
 
-  // Tool kind — run implementation in sandbox
+  // Implementation-bearing kinds: tool, middleware, channel, engine, resolver, provider — run in sandbox
   const result = await executor.execute(input.implementation, {}, config.sandboxTimeoutMs);
 
   if (!result.ok) {
