@@ -1,0 +1,50 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-tool-selector API surface . has stable type surface 1`] = `
+"import { ToolDescriptor } from '@koi/core';
+import { Result, KoiError } from '@koi/core/errors';
+import { InboundMessage } from '@koi/core/message';
+import { KoiMiddleware } from '@koi/core/middleware';
+
+/**
+ * Configuration for the tool-selector middleware.
+ */
+
+interface ToolSelectorConfig {
+    /** Caller-provided function that selects relevant tool names for a query. */
+    readonly selectTools: (query: string, tools: readonly ToolDescriptor[]) => Promise<readonly string[]>;
+    /** Tool names always included regardless of selection. */
+    readonly alwaysInclude?: readonly string[];
+    /** Max tools to return from selector (default: 10). */
+    readonly maxTools?: number;
+    /** Min tools threshold to activate filtering (default: 5). */
+    readonly minTools?: number;
+    /** Custom query extraction from messages (default: last message text). */
+    readonly extractQuery?: (messages: readonly InboundMessage[]) => string;
+}
+declare function validateToolSelectorConfig(config: unknown): Result<ToolSelectorConfig, KoiError>;
+
+/**
+ * Default query extraction — extracts text from the last inbound message.
+ */
+
+/**
+ * Extracts text content from the last message in the list.
+ * Returns empty string if no messages or no text blocks found.
+ */
+declare function extractLastUserText(messages: readonly InboundMessage[]): string;
+
+/**
+ * Tool-selector middleware — pre-filters tools before each model call.
+ */
+
+/**
+ * Creates a middleware that filters tools before each model call using a
+ * caller-provided selector function. When the agent has many tools (20+),
+ * this reduces token usage and improves model selection accuracy.
+ */
+declare function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMiddleware;
+
+export { type ToolSelectorConfig, createToolSelectorMiddleware, extractLastUserText, validateToolSelectorConfig };
+"
+`;

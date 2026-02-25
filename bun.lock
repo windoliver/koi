@@ -431,6 +431,17 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-tool-selector": {
+      "name": "@koi/middleware-tool-selector",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-turn-ack": {
       "name": "@koi/middleware-turn-ack",
       "version": "0.0.0",
@@ -1026,6 +1037,8 @@
     "@koi/middleware-sanitize": ["@koi/middleware-sanitize@workspace:packages/middleware-sanitize"],
 
     "@koi/middleware-soul": ["@koi/middleware-soul@workspace:packages/middleware-soul"],
+
+    "@koi/middleware-tool-selector": ["@koi/middleware-tool-selector@workspace:packages/middleware-tool-selector"],
 
     "@koi/middleware-turn-ack": ["@koi/middleware-turn-ack@workspace:packages/middleware-turn-ack"],
 
