@@ -657,6 +657,65 @@ describe("createComposedCallHandlers", () => {
     expect(handlers.tools).toHaveLength(2);
     expect(handlers.tools.map((t) => t.name)).toEqual(expect.arrayContaining(["calc", "search"]));
   });
+
+  test("injects tools into ModelRequest when not already set", async () => {
+    const agent = await createStartedAgent();
+    let receivedRequest: ModelRequest | undefined;
+
+    const mw: KoiMiddleware = {
+      name: "spy",
+      wrapModelCall: async (_ctx, req, next) => {
+        receivedRequest = req;
+        return next(req);
+      },
+    };
+
+    const rawModel = mock(() => Promise.resolve(mockModelResponse()));
+    const rawTool = mock(() => Promise.resolve(mockToolResponse()));
+
+    const handlers = createComposedCallHandlers(
+      [mw],
+      () => mockTurnContext(),
+      agent,
+      rawModel,
+      rawTool,
+    );
+
+    await handlers.modelCall(mockModelRequest());
+
+    expect(receivedRequest).toBeDefined();
+    expect(receivedRequest?.tools).toEqual([]);
+  });
+
+  test("preserves existing tools on ModelRequest", async () => {
+    const agent = await createStartedAgent();
+    const customTools = [{ name: "custom", description: "Custom tool", inputSchema: {} }];
+    let receivedRequest: ModelRequest | undefined;
+
+    const mw: KoiMiddleware = {
+      name: "spy",
+      wrapModelCall: async (_ctx, req, next) => {
+        receivedRequest = req;
+        return next(req);
+      },
+    };
+
+    const rawModel = mock(() => Promise.resolve(mockModelResponse()));
+    const rawTool = mock(() => Promise.resolve(mockToolResponse()));
+
+    const handlers = createComposedCallHandlers(
+      [mw],
+      () => mockTurnContext(),
+      agent,
+      rawModel,
+      rawTool,
+    );
+
+    await handlers.modelCall({ ...mockModelRequest(), tools: customTools });
+
+    expect(receivedRequest).toBeDefined();
+    expect(receivedRequest?.tools).toEqual(customTools);
+  });
 });
 
 // ---------------------------------------------------------------------------
