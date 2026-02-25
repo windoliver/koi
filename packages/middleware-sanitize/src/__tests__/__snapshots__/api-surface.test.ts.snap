@@ -1,0 +1,201 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-sanitize API surface . has stable type surface 1`] = `
+"import { Result, KoiError } from '@koi/core/errors';
+import { ContentBlock, InboundMessage } from '@koi/core/message';
+import { KoiMiddleware } from '@koi/core/middleware';
+
+/**
+ * Core types for the sanitize middleware.
+ */
+/**
+ * Content block kinds that rules can target.
+ * Matches the ContentBlock discriminated union from @koi/core/message.
+ */
+type ContentBlockKind = "text" | "file" | "image" | "button" | "custom";
+/**
+ * Discriminated union describing what to do when a rule matches.
+ *
+ * - \`strip\`: Replace the matched text with \`replacement\` (default: empty string).
+ * - \`block\`: Reject the entire message/request. In streaming output, downgraded to \`strip\`.
+ * - \`flag\`: Replace with \`replacement\` and tag the event for observability.
+ */
+type SanitizeAction = {
+    readonly kind: "strip";
+    readonly replacement: string;
+} | {
+    readonly kind: "block";
+    readonly reason: string;
+} | {
+    readonly kind: "flag";
+    readonly replacement: string;
+    readonly tag: string;
+};
+/** Severity levels for sanitization rules. */
+type SanitizeSeverity = "LOW" | "MEDIUM" | "HIGH";
+/**
+ * A single sanitization rule — independent from RedactionRule.
+ *
+ * Each rule has a RegExp pattern that MUST NOT use the \`g\` flag
+ * (patterns are applied via \`String.replace\` with a fresh match per call).
+ */
+interface SanitizeRule {
+    readonly name: string;
+    /** Pattern to match. Must NOT have the \`g\` flag — pre-compiled at factory creation. */
+    readonly pattern: RegExp;
+    readonly action: SanitizeAction;
+    /** Block kinds this rule applies to. Default: all block kinds. */
+    readonly targets?: readonly ContentBlockKind[];
+    readonly severity?: SanitizeSeverity;
+}
+/** Built-in rule preset identifiers. */
+type RulePreset = "prompt-injection" | "control-chars" | "html-tags" | "zero-width";
+/** Location where sanitization occurred — used in callbacks and events. */
+type SanitizationLocation = "input" | "output" | "tool-input" | "tool-output";
+/** Event emitted when a sanitization rule fires. */
+interface SanitizationEvent {
+    readonly rule: SanitizeRule;
+    readonly original: string;
+    readonly sanitized: string;
+    readonly location: SanitizationLocation;
+}
+
+/**
+ * Sanitize middleware configuration and validation.
+ */
+
+/** Default stream buffer size in characters. */
+declare const DEFAULT_STREAM_BUFFER_SIZE = 256;
+/** Default max recursion depth for JSON walking. */
+declare const DEFAULT_JSON_WALK_MAX_DEPTH = 10;
+interface SanitizeMiddlewareConfig {
+    /** Explicit rules to apply. At least one of \`rules\` or \`presets\` required. */
+    readonly rules?: readonly SanitizeRule[] | undefined;
+    /** Named preset rule sets. At least one of \`rules\` or \`presets\` required. */
+    readonly presets?: readonly RulePreset[] | undefined;
+    /** Sliding window buffer size for streaming output (default: 256 chars). */
+    readonly streamBufferSize?: number | undefined;
+    /** Called when a sanitization rule fires. */
+    readonly onSanitization?: ((event: SanitizationEvent) => void) | undefined;
+    /** Whether to sanitize tool call input (default: true). */
+    readonly sanitizeToolInput?: boolean | undefined;
+    /** Whether to sanitize tool call output (default: true). */
+    readonly sanitizeToolOutput?: boolean | undefined;
+    /** Max recursion depth for JSON walking in tool I/O (default: 10). */
+    readonly jsonWalkMaxDepth?: number | undefined;
+}
+declare function validateSanitizeConfig(config: unknown): Result<SanitizeMiddlewareConfig, KoiError>;
+
+/**
+ * Built-in rule presets for content sanitization.
+ *
+ * Patterns are sourced from @koi/skill-scanner prompt-injection rules
+ * but adapted as SanitizeRule[] with appropriate actions.
+ */
+
+declare const PROMPT_INJECTION_RULES: readonly SanitizeRule[];
+declare const CONTROL_CHAR_RULES: readonly SanitizeRule[];
+declare const HTML_TAG_RULES: readonly SanitizeRule[];
+declare const ZERO_WIDTH_RULES: readonly SanitizeRule[];
+declare const DEFAULT_RULES: readonly SanitizeRule[];
+/** Resolve named presets to their constituent rules. */
+declare function resolvePresets(presets: readonly RulePreset[]): readonly SanitizeRule[];
+
+/**
+ * Content block traversal — sanitize strings within ContentBlock and InboundMessage.
+ */
+
+/** Result of sanitizing a single string. */
+interface SanitizeStringResult {
+    readonly text: string;
+    readonly blocked: boolean;
+    readonly events: readonly SanitizationEvent[];
+}
+/** Result of sanitizing a content block. */
+interface SanitizeBlockResult {
+    readonly block: ContentBlock;
+    readonly blocked: boolean;
+    readonly events: readonly SanitizationEvent[];
+}
+/** Result of sanitizing a full message. */
+interface SanitizeMessageResult {
+    readonly message: InboundMessage;
+    readonly blocked: boolean;
+    readonly events: readonly SanitizationEvent[];
+}
+/**
+ * Apply sanitization rules to a single string.
+ * Returns the sanitized text, whether a block rule fired, and all events.
+ */
+declare function sanitizeString(text: string, rules: readonly SanitizeRule[], location: SanitizationLocation, blockKind?: ContentBlockKind, onSanitization?: (event: SanitizationEvent) => void): SanitizeStringResult;
+/**
+ * Sanitize string fields within a single ContentBlock.
+ * Exhaustive switch on block kind — custom blocks are passed through unchanged.
+ */
+declare function sanitizeBlock(block: ContentBlock, rules: readonly SanitizeRule[], location: SanitizationLocation, onSanitization?: (event: SanitizationEvent) => void): SanitizeBlockResult;
+/**
+ * Sanitize all content blocks within an InboundMessage.
+ * Returns a new immutable message with sanitized blocks.
+ */
+declare function sanitizeMessage(message: InboundMessage, rules: readonly SanitizeRule[], location: SanitizationLocation, onSanitization?: (event: SanitizationEvent) => void): SanitizeMessageResult;
+
+/**
+ * Recursive string-field walker for sanitizing JSON objects (tool I/O).
+ * Depth-limited to prevent stack overflow on deeply nested structures.
+ */
+
+/** Result of walking and sanitizing a JSON value. */
+interface WalkJsonResult {
+    readonly value: unknown;
+    readonly blocked: boolean;
+    readonly events: readonly SanitizationEvent[];
+}
+/**
+ * Recursively traverse a value, sanitizing all string leaves.
+ * Returns a new immutable structure — the original is never mutated.
+ * Arrays and objects are reconstructed only if a string leaf changes.
+ */
+declare function walkJsonStrings(value: unknown, rules: readonly SanitizeRule[], location: SanitizationLocation, onSanitization?: (event: SanitizationEvent) => void, maxDepth?: number): WalkJsonResult;
+
+/**
+ * Sanitize middleware factory — content sanitization for model inputs,
+ * model outputs, and tool I/O.
+ *
+ * Priority 350: runs after sandbox (200), compactor (225), context-editing (250),
+ * but before memory (400) and default (500).
+ */
+
+declare function createSanitizeMiddleware(config: SanitizeMiddlewareConfig): KoiMiddleware;
+
+/**
+ * Sliding window buffer for streaming output sanitization.
+ *
+ * Text chunks are appended to an internal buffer. The buffer is scanned
+ * for patterns, and confirmed-safe prefix text (everything before the
+ * danger zone of \`bufferSize\` chars) is yielded. On flush, all remaining
+ * buffered content is sanitized and returned.
+ */
+
+/** Result from push() or flush(). */
+interface StreamBufferResult {
+    readonly safe: string;
+    readonly events: readonly SanitizationEvent[];
+}
+/** Stream buffer interface returned by createStreamBuffer(). */
+interface StreamBuffer {
+    /** Append text to the buffer, returning confirmed-safe prefix content. */
+    readonly push: (text: string) => StreamBufferResult;
+    /** Flush all remaining buffered content through sanitization. */
+    readonly flush: () => StreamBufferResult;
+}
+/**
+ * Create a sliding window stream buffer for sanitizing streaming output.
+ *
+ * Rules with \`block\` action are downgraded to \`strip\` in stream context
+ * (since we can't retract already-yielded content).
+ */
+declare function createStreamBuffer(rules: readonly SanitizeRule[], bufferSize?: number): StreamBuffer;
+
+export { CONTROL_CHAR_RULES, type ContentBlockKind, DEFAULT_JSON_WALK_MAX_DEPTH, DEFAULT_RULES, DEFAULT_STREAM_BUFFER_SIZE, HTML_TAG_RULES, PROMPT_INJECTION_RULES, type RulePreset, type SanitizationEvent, type SanitizationLocation, type SanitizeAction, type SanitizeMiddlewareConfig, type SanitizeRule, type SanitizeSeverity, ZERO_WIDTH_RULES, createSanitizeMiddleware, createStreamBuffer, resolvePresets, sanitizeBlock, sanitizeMessage, sanitizeString, validateSanitizeConfig, walkJsonStrings };
+"
+`;
