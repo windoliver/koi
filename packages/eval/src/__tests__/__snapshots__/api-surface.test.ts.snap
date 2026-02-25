@@ -1,0 +1,325 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/eval API surface . has stable type surface 1`] = `
+"import { EngineInput, EngineEvent, EngineMetrics, JsonObject, Result, KoiError } from '@koi/core';
+
+/**
+ * @koi/eval — type definitions for the agent evaluation framework.
+ *
+ * Follows Anthropic's task/trial/run hierarchy.
+ * All properties readonly, no class, no enum.
+ */
+
+interface EvalGrader {
+    readonly id: string;
+    readonly name: string;
+    readonly grade: (transcript: readonly EngineEvent[], expected: EvalExpectation | undefined, metrics: EngineMetrics) => EvalScore | Promise<EvalScore>;
+}
+type EvalExpectation = {
+    readonly kind: "text";
+    readonly pattern: string | RegExp;
+} | {
+    readonly kind: "tool_calls";
+    readonly calls: readonly ExpectedToolCall[];
+} | {
+    readonly kind: "composite";
+    readonly expectations: readonly EvalExpectation[];
+} | {
+    readonly kind: "custom";
+    readonly assert: (events: readonly EngineEvent[]) => void | Promise<void>;
+};
+interface ExpectedToolCall {
+    readonly toolName: string;
+    readonly args?: Readonly<Record<string, unknown>>;
+    /** Whether tool call order must match. Default: "any". */
+    readonly order?: "strict" | "any";
+}
+interface EvalTask {
+    readonly id: string;
+    readonly name: string;
+    readonly input: EngineInput;
+    readonly expected?: EvalExpectation;
+    readonly graders: readonly EvalGrader[];
+    /** Number of trials per task. Default: 1. */
+    readonly trialCount?: number;
+    /** Per-trial timeout in ms. Default: 60_000. */
+    readonly timeoutMs?: number;
+    readonly tags?: readonly string[];
+    readonly metadata?: JsonObject;
+}
+interface EvalTrial {
+    readonly taskId: string;
+    readonly trialIndex: number;
+    readonly transcript: readonly EngineEvent[];
+    readonly scores: readonly EvalScore[];
+    readonly metrics: EngineMetrics;
+    readonly status: "pass" | "fail" | "error";
+    readonly error?: string;
+}
+interface EvalScore {
+    readonly graderId: string;
+    readonly score: number;
+    readonly pass: boolean;
+    readonly reasoning?: string;
+    readonly metadata?: JsonObject;
+}
+interface EvalRun {
+    readonly id: string;
+    readonly name: string;
+    readonly timestamp: string;
+    readonly config: EvalRunConfigSnapshot;
+    readonly trials: readonly EvalTrial[];
+    readonly summary: EvalSummary;
+}
+/**
+ * Serializable subset of EvalRunConfig preserved for reproducibility.
+ * Excludes functions (agentFactory, onTrialComplete) that cannot be serialized.
+ */
+interface EvalRunConfigSnapshot {
+    readonly name: string;
+    readonly concurrency: number;
+    readonly timeoutMs: number;
+    readonly passThreshold: number;
+    readonly taskCount: number;
+}
+interface EvalSummary {
+    readonly taskCount: number;
+    readonly trialCount: number;
+    readonly passRate: number;
+    readonly passAtK: number;
+    readonly passToTheK: number;
+    readonly meanScore: number;
+    readonly latencyP50Ms: number;
+    readonly latencyP95Ms: number;
+    readonly totalCostUsd: number;
+    readonly byTask: readonly TaskSummary[];
+}
+interface TaskSummary {
+    readonly taskId: string;
+    readonly taskName: string;
+    readonly passRate: number;
+    readonly passAtK: number;
+    readonly passToTheK: number;
+    readonly meanScore: number;
+    readonly trials: number;
+}
+interface EvalRunConfig {
+    readonly name: string;
+    readonly tasks: readonly EvalTask[];
+    readonly agentFactory: () => Promise<AgentHandle>;
+    /** Max concurrent trials. Default: 5. */
+    readonly concurrency?: number;
+    /** Per-trial timeout fallback in ms. Default: 60_000. */
+    readonly timeoutMs?: number;
+    /** Score >= this = pass. Default: 0.5. */
+    readonly passThreshold?: number;
+    readonly onTrialComplete?: (trial: EvalTrial) => void;
+}
+interface AgentHandle {
+    readonly stream: (input: EngineInput) => AsyncIterable<EngineEvent>;
+    readonly dispose?: () => Promise<void>;
+}
+interface EvalStore {
+    readonly save: (run: EvalRun) => Promise<void>;
+    readonly load: (runId: string) => Promise<EvalRun | undefined>;
+    readonly latest: (evalName: string) => Promise<EvalRun | undefined>;
+    readonly list: (evalName: string) => Promise<readonly EvalRunMeta[]>;
+}
+interface EvalRunMeta {
+    readonly id: string;
+    readonly name: string;
+    readonly timestamp: string;
+    readonly passRate: number;
+    readonly taskCount: number;
+}
+type RegressionResult = {
+    readonly kind: "pass";
+    readonly baseline: EvalSummary;
+    readonly current: EvalSummary;
+} | {
+    readonly kind: "fail";
+    readonly regressions: readonly RegressionDetail[];
+    readonly baseline: EvalSummary;
+    readonly current: EvalSummary;
+} | {
+    readonly kind: "no_baseline";
+};
+interface RegressionDetail {
+    readonly taskId: string;
+    readonly metric: string;
+    readonly baseline: number;
+    readonly current: number;
+    readonly delta: number;
+}
+interface RegressionThresholds {
+    /** Max acceptable pass rate drop. Default: 0.05 (5%). */
+    readonly passRateDelta?: number;
+    /** Max acceptable score drop. Default: 0.1. */
+    readonly scoreDelta?: number;
+    /** Max acceptable latency multiplier. Default: 2.0. */
+    readonly latencyMultiplier?: number;
+}
+type TranscriptMode = "full" | "summary" | "last-n";
+interface LlmJudgeConfig {
+    readonly modelCall: (prompt: string) => Promise<string>;
+    readonly rubric: string;
+    readonly transcriptMode?: TranscriptMode;
+    /** For "last-n" mode. Default: 5. */
+    readonly lastN?: number;
+    readonly parseScore?: (response: string) => number;
+}
+interface CiReport {
+    readonly exitCode: 0 | 1;
+    readonly json: string;
+    readonly summary: string;
+}
+interface ToolCallSummary {
+    readonly toolName: string;
+    readonly callId: string;
+    readonly args?: JsonObject;
+}
+interface EvalRunner {
+    readonly run: () => Promise<EvalRun>;
+}
+
+/**
+ * Eval config validation and defaults.
+ */
+
+declare const DEFAULT_CONCURRENCY = 5;
+declare const DEFAULT_TIMEOUT_MS = 60000;
+declare const DEFAULT_PASS_THRESHOLD = 0.5;
+declare function validateEvalConfig(config: unknown): Result<EvalRunConfig, KoiError>;
+
+/**
+ * Exact match grader — scores against text expectations.
+ */
+
+interface ExactMatchConfig {
+    readonly caseSensitive?: boolean;
+}
+declare function createExactMatchGrader(config?: ExactMatchConfig): EvalGrader;
+
+/**
+ * JSON schema grader — validates agent output against a schema.
+ *
+ * Simple recursive validation without external dependencies.
+ */
+
+interface JsonSchemaGraderConfig {
+    readonly schema: JsonObject;
+}
+declare function createJsonSchemaGrader(config: JsonSchemaGraderConfig): EvalGrader;
+
+/**
+ * LLM-as-judge grader — uses a model call to evaluate agent output.
+ */
+
+declare function createLlmJudgeGrader(config: LlmJudgeConfig): EvalGrader;
+
+/**
+ * Tool call grader — scores based on expected vs actual tool usage.
+ */
+
+interface ToolCallGraderConfig {
+    /** Whether tool calls must appear in expected order. Default: false. */
+    readonly orderStrict?: boolean;
+}
+declare function createToolCallGrader(config?: ToolCallGraderConfig): EvalGrader;
+
+/**
+ * Regression detection — compares current eval run against a baseline.
+ */
+
+/**
+ * Compares current summary against baseline, returning regression details.
+ */
+declare function detectRegression(baseline: EvalSummary, current: EvalSummary, thresholds?: RegressionThresholds): RegressionResult;
+
+/**
+ * Reporter — CI-friendly output formatting.
+ */
+
+/**
+ * Formats a summary as an ASCII table for human reading.
+ */
+declare function formatSummaryTable(summary: EvalSummary): string;
+/**
+ * Formats a CI report with exit code, JSON output, and human summary.
+ */
+declare function formatCiReport(run: EvalRun, regression?: RegressionResult): CiReport;
+
+/**
+ * Eval runner — orchestrates task execution, grading, and summary computation.
+ */
+
+/**
+ * Creates an eval runner from a validated config.
+ */
+declare function createEvalRunner(config: EvalRunConfig): EvalRunner;
+
+/**
+ * Scoring aggregation — pass@k, pass^k, percentiles, summary computation.
+ */
+
+/**
+ * Computes a full EvalSummary from trial results and task definitions.
+ */
+declare function computeSummary(trials: readonly EvalTrial[], tasks: readonly EvalTask[]): EvalSummary;
+/**
+ * pass@k — probability of at least one pass in k samples.
+ * Formula: 1 - C(n-c, k) / C(n, k) where n = total, c = passing.
+ */
+declare function computePassAtK(trialResults: readonly boolean[], k: number): number;
+/**
+ * pass^k — probability of all k trials passing. Measures consistency.
+ * Formula: (c/n)^k
+ */
+declare function computePassToTheK(trialResults: readonly boolean[], k: number): number;
+/**
+ * Computes a percentile value from a sorted array of numbers.
+ */
+declare function computePercentile(values: readonly number[], percentile: number): number;
+
+/**
+ * Filesystem-based eval store — saves/loads eval runs as JSON files.
+ */
+
+interface FsEvalStoreConfig {
+    readonly baseDir: string;
+}
+declare function createFsEvalStore(config: FsEvalStoreConfig): EvalStore;
+
+/**
+ * Transcript collection and extraction helpers.
+ */
+
+/**
+ * Collects all events from an async iterable into an array.
+ */
+declare function collectTranscript(stream: AsyncIterable<EngineEvent>): Promise<readonly EngineEvent[]>;
+/**
+ * Extracts concatenated text from text_delta events.
+ */
+declare function extractText(events: readonly EngineEvent[]): string;
+/**
+ * Extracts tool call summaries from tool_call_start events.
+ */
+declare function extractToolCalls(events: readonly EngineEvent[]): readonly ToolCallSummary[];
+/**
+ * Extracts metrics from events and measured duration.
+ */
+declare function extractMetrics(events: readonly EngineEvent[], durationMs: number): EngineMetrics;
+/**
+ * Creates a brief text summary of a transcript.
+ * Shows first message, tool call names, and last message.
+ */
+declare function summarizeTranscript(events: readonly EngineEvent[]): string;
+/**
+ * Returns the last N turn-bounded event groups.
+ */
+declare function lastNTurns(events: readonly EngineEvent[], n: number): readonly EngineEvent[];
+
+export { type AgentHandle, type CiReport, DEFAULT_CONCURRENCY, DEFAULT_PASS_THRESHOLD, DEFAULT_TIMEOUT_MS, type EvalExpectation, type EvalGrader, type EvalRun, type EvalRunConfig, type EvalRunConfigSnapshot, type EvalRunMeta, type EvalRunner, type EvalScore, type EvalStore, type EvalSummary, type EvalTask, type EvalTrial, type ExpectedToolCall, type LlmJudgeConfig, type RegressionDetail, type RegressionResult, type RegressionThresholds, type TaskSummary, type ToolCallSummary, type TranscriptMode, collectTranscript, computePassAtK, computePassToTheK, computePercentile, computeSummary, createEvalRunner, createExactMatchGrader, createFsEvalStore, createJsonSchemaGrader, createLlmJudgeGrader, createToolCallGrader, detectRegression, extractMetrics, extractText, extractToolCalls, formatCiReport, formatSummaryTable, lastNTurns, summarizeTranscript, validateEvalConfig };
+"
+`;
