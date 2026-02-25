@@ -6,6 +6,7 @@
 
 import type {
   ChannelConfig,
+  ChannelIdentity,
   JsonObject,
   MiddlewareConfig,
   ModelConfig,
@@ -101,6 +102,24 @@ export function normalizeConfigItem(raw: Readonly<Record<string, unknown>>): Nor
 }
 
 /**
+ * Normalizes a channel config item, preserving the `identity` block if present.
+ * Extends `normalizeConfigItem` with identity passthrough.
+ */
+export function normalizeChannelConfig(raw: Readonly<Record<string, unknown>>): ChannelConfig {
+  const base = normalizeConfigItem(raw);
+  if (typeof raw.identity === "object" && raw.identity !== null) {
+    const id = raw.identity as Readonly<Record<string, unknown>>;
+    const identity: ChannelIdentity = {
+      ...(typeof id.name === "string" ? { name: id.name } : {}),
+      ...(typeof id.avatar === "string" ? { avatar: id.avatar } : {}),
+      ...(typeof id.instructions === "string" ? { instructions: id.instructions } : {}),
+    };
+    return { ...base, identity };
+  }
+  return base;
+}
+
+/**
  * Flattens a keyed tools section into a flat `ToolConfig[]`.
  *
  * Input: `{ mcp: [{ name: "fs", command: "..." }] }`
@@ -162,9 +181,9 @@ export function transformToLoadedManifest(raw: RawManifest): LoadedManifest {
     (m): MiddlewareConfig => normalizeConfigItem(m),
   );
 
-  // Transform channels
+  // Transform channels — preserve identity block if present
   const channels: readonly ChannelConfig[] | undefined = raw.channels?.map(
-    (c): ChannelConfig => normalizeConfigItem(c),
+    (c): ChannelConfig => normalizeChannelConfig(c),
   );
 
   // Build base manifest with required fields

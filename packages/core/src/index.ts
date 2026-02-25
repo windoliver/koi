@@ -11,6 +11,7 @@ export type { AgentSnapshot, AgentSnapshotStore } from "./agent-snapshot.js";
 export type {
   AgentManifest,
   ChannelConfig,
+  ChannelIdentity,
   MiddlewareConfig,
   ModelConfig,
   PermissionConfig,

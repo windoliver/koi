@@ -11,6 +11,8 @@ export interface SessionContext {
   readonly agentId: string;
   readonly sessionId: SessionId;
   readonly runId: RunId;
+  /** Injected by L1 at session start — package name of the active channel adapter (e.g. "@koi/channel-telegram"). */
+  readonly channelId?: string;
   readonly metadata: JsonObject;
 }
 

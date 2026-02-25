@@ -114,6 +114,31 @@ const namedConfigSchema = z.union([
   jsonObjectSchema,
 ]);
 
+// ── Channel identity schema ──
+
+/** Per-channel persona config embedded in the channel config block. */
+const channelIdentitySchema = z
+  .object({
+    name: z.string().optional(),
+    avatar: z.string().optional(),
+    instructions: z.string().optional(),
+  })
+  .optional();
+
+/**
+ * Channel config item — same as namedConfigSchema but also supports `identity` block.
+ * Accepts either `{ name: string, options?: object, identity?: ChannelIdentity }` or a
+ * key-value map `{ "@koi/pkg": { ... } }` (identity not supported in shorthand form).
+ */
+const rawChannelSchema = z.union([
+  z.object({
+    name: z.string(),
+    options: jsonObjectSchema.optional(),
+    identity: channelIdentitySchema,
+  }),
+  jsonObjectSchema,
+]);
+
 // ── Model schema ──
 
 /** Model can be a string shorthand or a full config object. */
@@ -239,7 +264,7 @@ export const rawManifestSchema: z.ZodType<RawManifest> = z
     description: z.string().optional(),
     model: modelSchema,
     tools: toolsSchema.optional(),
-    channels: z.array(namedConfigSchema).optional(),
+    channels: z.array(rawChannelSchema).optional(),
     middleware: z.array(namedConfigSchema).optional(),
     permissions: permissionsSchema.optional(),
     metadata: jsonObjectSchema.optional(),
