@@ -13,6 +13,7 @@
     "@koi/middleware-memory": "workspace:*",
     "@koi/middleware-turn-ack": "workspace:*",
     "@koi/model-router": "workspace:*",
+    "@koi/delegation": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },
   "scripts": {

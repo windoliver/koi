@@ -40,15 +40,39 @@ export interface AttenuateParams {
 // ---------------------------------------------------------------------------
 
 /** Creates a root delegation grant (chainDepth=0) with HMAC signature. */
-export function createGrant(params: CreateGrantParams): DelegationGrant {
+export function createGrant(params: CreateGrantParams): Result<DelegationGrant, KoiError> {
   if (params.issuerId.length === 0 || params.delegateeId.length === 0) {
-    throw new Error("createGrant: issuerId and delegateeId must be non-empty");
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "createGrant: issuerId and delegateeId must be non-empty",
+        retryable: false,
+        context: { issuerId: params.issuerId, delegateeId: params.delegateeId },
+      },
+    };
   }
   if (params.ttlMs <= 0) {
-    throw new Error("createGrant: ttlMs must be positive");
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "createGrant: ttlMs must be positive",
+        retryable: false,
+        context: { ttlMs: params.ttlMs },
+      },
+    };
   }
   if (params.maxChainDepth < 0) {
-    throw new Error("createGrant: maxChainDepth must be >= 0");
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "createGrant: maxChainDepth must be >= 0",
+        retryable: false,
+        context: { maxChainDepth: params.maxChainDepth },
+      },
+    };
   }
 
   const now = Date.now();
@@ -63,7 +87,7 @@ export function createGrant(params: CreateGrantParams): DelegationGrant {
     expiresAt: now + params.ttlMs,
   };
   const signature = signGrant(unsigned, params.secret);
-  return { ...unsigned, signature };
+  return { ok: true, value: { ...unsigned, signature } };
 }
 
 // ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ import type {
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
+import { delegationId } from "@koi/core";
 import { verifyGrant } from "./verify.js";
 
 export interface DelegationMiddlewareConfig {
@@ -43,17 +44,19 @@ export function createDelegationMiddleware(config: DelegationMiddlewareConfig): 
   return {
     name: "koi:delegation",
     wrapToolCall: async (ctx, request, next) => {
-      const delegationId = ctx.metadata.delegationId as string | undefined;
+      const rawDelegationId = ctx.metadata.delegationId;
 
       // No delegation context → pass through (own permissions)
-      if (delegationId === undefined) {
+      if (typeof rawDelegationId !== "string") {
         return next(request);
       }
 
+      const grantId = delegationId(rawDelegationId);
+
       // Look up grant
-      const grant = config.grantStore.get(delegationId as DelegationId);
+      const grant = config.grantStore.get(grantId);
       if (grant === undefined) {
-        return makeDeniedResponse(request, "unknown_grant", delegationId);
+        return makeDeniedResponse(request, "unknown_grant", rawDelegationId);
       }
 
       // Full verification (with optional pluggable scope checker)
@@ -67,7 +70,7 @@ export function createDelegationMiddleware(config: DelegationMiddlewareConfig): 
       );
 
       if (!result.ok) {
-        return makeDeniedResponse(request, result.reason, delegationId);
+        return makeDeniedResponse(request, result.reason, rawDelegationId);
       }
 
       return next(request);

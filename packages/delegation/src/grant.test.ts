@@ -7,7 +7,7 @@ const SECRET = "test-secret-key-32-bytes-minimum";
 
 describe("createGrant", () => {
   test("creates a root grant with chainDepth=0 and valid signature", () => {
-    const grant = createGrant({
+    const result = createGrant({
       issuerId: "agent-1",
       delegateeId: "agent-2",
       scope: { permissions: { allow: ["read_file", "write_file"] } },
@@ -15,6 +15,10 @@ describe("createGrant", () => {
       ttlMs: 3600000,
       secret: SECRET,
     });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const grant = result.value;
 
     expect(grant.chainDepth).toBe(0);
     expect(grant.parentId).toBeUndefined();
@@ -26,43 +30,55 @@ describe("createGrant", () => {
     expect(verifySignature(grant, SECRET)).toBe(true);
   });
 
-  test("throws on empty issuerId", () => {
-    expect(() =>
-      createGrant({
-        issuerId: "",
-        delegateeId: "agent-2",
-        scope: { permissions: { allow: ["read_file"] } },
-        maxChainDepth: 3,
-        ttlMs: 3600000,
-        secret: SECRET,
-      }),
-    ).toThrow("issuerId and delegateeId must be non-empty");
+  test("returns error on empty issuerId", () => {
+    const result = createGrant({
+      issuerId: "",
+      delegateeId: "agent-2",
+      scope: { permissions: { allow: ["read_file"] } },
+      maxChainDepth: 3,
+      ttlMs: 3600000,
+      secret: SECRET,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("issuerId and delegateeId must be non-empty");
+    }
   });
 
-  test("throws on non-positive ttlMs", () => {
-    expect(() =>
-      createGrant({
-        issuerId: "agent-1",
-        delegateeId: "agent-2",
-        scope: { permissions: { allow: ["read_file"] } },
-        maxChainDepth: 3,
-        ttlMs: 0,
-        secret: SECRET,
-      }),
-    ).toThrow("ttlMs must be positive");
+  test("returns error on non-positive ttlMs", () => {
+    const result = createGrant({
+      issuerId: "agent-1",
+      delegateeId: "agent-2",
+      scope: { permissions: { allow: ["read_file"] } },
+      maxChainDepth: 3,
+      ttlMs: 0,
+      secret: SECRET,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("ttlMs must be positive");
+    }
   });
 
-  test("throws on negative maxChainDepth", () => {
-    expect(() =>
-      createGrant({
-        issuerId: "agent-1",
-        delegateeId: "agent-2",
-        scope: { permissions: { allow: ["read_file"] } },
-        maxChainDepth: -1,
-        ttlMs: 3600000,
-        secret: SECRET,
-      }),
-    ).toThrow("maxChainDepth must be >= 0");
+  test("returns error on negative maxChainDepth", () => {
+    const result = createGrant({
+      issuerId: "agent-1",
+      delegateeId: "agent-2",
+      scope: { permissions: { allow: ["read_file"] } },
+      maxChainDepth: -1,
+      ttlMs: 3600000,
+      secret: SECRET,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("maxChainDepth must be >= 0");
+    }
   });
 
   test("each grant gets a unique DelegationId", () => {
@@ -74,16 +90,20 @@ describe("createGrant", () => {
       ttlMs: 3600000,
       secret: SECRET,
     };
-    const g1 = createGrant(params);
-    const g2 = createGrant(params);
+    const r1 = createGrant(params);
+    const r2 = createGrant(params);
 
-    expect(g1.id).not.toBe(g2.id);
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(true);
+    if (r1.ok && r2.ok) {
+      expect(r1.value.id).not.toBe(r2.value.id);
+    }
   });
 });
 
 describe("attenuateGrant", () => {
   function makeParent(): DelegationGrant {
-    return createGrant({
+    const result = createGrant({
       issuerId: "agent-1",
       delegateeId: "agent-2",
       scope: {
@@ -94,6 +114,8 @@ describe("attenuateGrant", () => {
       ttlMs: 3600000,
       secret: SECRET,
     });
+    if (!result.ok) throw new Error("Failed to create parent grant");
+    return result.value;
   }
 
   test("attenuate with narrower scope succeeds", () => {
@@ -185,7 +207,7 @@ describe("attenuateGrant", () => {
 
   test("attenuate with depth exceeded is rejected", () => {
     // Create parent at maxChainDepth=1, chainDepth=0
-    const parent = createGrant({
+    const parentResult = createGrant({
       issuerId: "agent-1",
       delegateeId: "agent-2",
       scope: { permissions: { allow: ["read_file"] } },
@@ -193,6 +215,9 @@ describe("attenuateGrant", () => {
       ttlMs: 3600000,
       secret: SECRET,
     });
+    expect(parentResult.ok).toBe(true);
+    if (!parentResult.ok) return;
+    const parent = parentResult.value;
 
     // First attenuation: depth 0 → 1 (== maxChainDepth 1)
     const child = attenuateGrant(

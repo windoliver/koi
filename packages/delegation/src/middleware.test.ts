@@ -50,6 +50,13 @@ const passthrough = async (req: ToolRequest): Promise<ToolResponse> => ({
   output: { success: true, tool: req.toolId },
 });
 
+/** Helper to create a grant or throw in tests. */
+function mustCreateGrant(params: Parameters<typeof createGrant>[0]): DelegationGrant {
+  const result = createGrant(params);
+  if (!result.ok) throw new Error(`Failed to create grant: ${result.error.message}`);
+  return result.value;
+}
+
 /** Calls wrapToolCall, asserting it is defined (all delegation middleware has it). */
 async function callWrapToolCall(
   mw: KoiMiddleware,
@@ -77,7 +84,7 @@ describe("createDelegationMiddleware", () => {
   });
 
   test("case 1: tool call with valid delegation passes through", async () => {
-    const grant = createGrant({
+    const grant = mustCreateGrant({
       issuerId: "agent-1",
       delegateeId: "agent-2",
       scope: { permissions: { allow: ["read_file"] } },
@@ -134,7 +141,7 @@ describe("createDelegationMiddleware", () => {
   });
 
   test("case 3: tool call with revoked delegation returns PERMISSION error", async () => {
-    const grant = createGrant({
+    const grant = mustCreateGrant({
       issuerId: "agent-1",
       delegateeId: "agent-2",
       scope: { permissions: { allow: ["read_file"] } },
@@ -160,7 +167,7 @@ describe("createDelegationMiddleware", () => {
   });
 
   test("case 4: tool call outside delegated scope returns PERMISSION error", async () => {
-    const grant = createGrant({
+    const grant = mustCreateGrant({
       issuerId: "agent-1",
       delegateeId: "agent-2",
       scope: { permissions: { allow: ["read_file"] } },
@@ -215,7 +222,7 @@ describe("createDelegationMiddleware", () => {
 
   test("case 7: custom ScopeChecker overrides default scope matching", async () => {
     // Grant only allows read_file, but custom checker allows everything
-    const grant = createGrant({
+    const grant = mustCreateGrant({
       issuerId: "agent-1",
       delegateeId: "agent-2",
       scope: { permissions: { allow: ["read_file"] } },
@@ -241,7 +248,7 @@ describe("createDelegationMiddleware", () => {
   });
 
   test("case 8: custom ScopeChecker can deny normally-allowed tools", async () => {
-    const grant = createGrant({
+    const grant = mustCreateGrant({
       issuerId: "agent-1",
       delegateeId: "agent-2",
       scope: { permissions: { allow: ["read_file"] } },

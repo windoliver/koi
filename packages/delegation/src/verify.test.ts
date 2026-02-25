@@ -46,7 +46,7 @@ function makeGrant(
     return { ...unsigned, signature };
   }
 
-  return createGrant({
+  const result = createGrant({
     issuerId: "agent-1",
     delegateeId: "agent-2",
     scope: overrides?.scope ?? {
@@ -56,6 +56,8 @@ function makeGrant(
     ttlMs: 3600000,
     secret: SECRET,
   });
+  if (!result.ok) throw new Error("Failed to create grant in test helper");
+  return result.value;
 }
 
 describe("verifyGrant — 12-case matrix", () => {
@@ -162,7 +164,7 @@ describe("verifyGrant — 12-case matrix", () => {
 
   // Case 7: Self-delegation (agent → itself) — valid, just unusual
   test("case 7: self-delegation returns ok: true", async () => {
-    const grant = createGrant({
+    const grantResult = createGrant({
       issuerId: "agent-1",
       delegateeId: "agent-1",
       scope: { permissions: { allow: ["read_file"] } },
@@ -170,8 +172,10 @@ describe("verifyGrant — 12-case matrix", () => {
       ttlMs: 3600000,
       secret: SECRET,
     });
+    expect(grantResult.ok).toBe(true);
+    if (!grantResult.ok) return;
     const registry = makeRegistry();
-    const result = await verifyGrant(grant, "read_file", registry, SECRET);
+    const result = await verifyGrant(grantResult.value, "read_file", registry, SECRET);
 
     expect(result.ok).toBe(true);
   });
@@ -256,7 +260,7 @@ describe("verifyGrant — 12-case matrix", () => {
 
   // Case 12: Delegation to non-existent agent — verification is stateless
   test("case 12: delegation to non-existent agent returns ok: true", async () => {
-    const grant = createGrant({
+    const grantResult = createGrant({
       issuerId: "agent-1",
       delegateeId: "non-existent-agent",
       scope: { permissions: { allow: ["read_file"] } },
@@ -264,8 +268,10 @@ describe("verifyGrant — 12-case matrix", () => {
       ttlMs: 3600000,
       secret: SECRET,
     });
+    expect(grantResult.ok).toBe(true);
+    if (!grantResult.ok) return;
     const registry = makeRegistry();
-    const result = await verifyGrant(grant, "read_file", registry, SECRET);
+    const result = await verifyGrant(grantResult.value, "read_file", registry, SECRET);
 
     expect(result.ok).toBe(true);
   });
