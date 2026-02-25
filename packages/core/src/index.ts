@@ -156,6 +156,7 @@ export type {
 export {
   agentId,
   BROWSER,
+  COMPONENT_PRIORITY,
   CREDENTIALS,
   channelToken,
   DELEGATION,

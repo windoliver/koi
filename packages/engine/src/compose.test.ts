@@ -466,7 +466,7 @@ const testManifest: AgentManifest = {
 
 async function createStartedAgent(): Promise<AgentEntity> {
   const pid = { id: agentId("a1"), name: "Test", type: "copilot" as const, depth: 0 };
-  const agent = await AgentEntity.assemble(pid, testManifest, []);
+  const { agent } = await AgentEntity.assemble(pid, testManifest, []);
   agent.transition({ kind: "start" });
   return agent;
 }
@@ -640,7 +640,7 @@ describe("createComposedCallHandlers", () => {
       },
     };
     const pid = { id: agentId("a1"), name: "Test", type: "copilot" as const, depth: 0 };
-    const agent = await AgentEntity.assemble(pid, testManifest, [toolProvider]);
+    const { agent } = await AgentEntity.assemble(pid, testManifest, [toolProvider]);
     agent.transition({ kind: "start" });
 
     const rawModel = mock(() => Promise.resolve(mockModelResponse()));

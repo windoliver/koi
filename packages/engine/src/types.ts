@@ -22,6 +22,7 @@ import type {
   Tool,
   ToolDescriptor,
 } from "@koi/core";
+import type { AssemblyConflict } from "./agent-entity.js";
 
 // ---------------------------------------------------------------------------
 // Guard configuration
@@ -234,6 +235,8 @@ export interface CreateKoiOptions {
 export interface KoiRuntime {
   /** The assembled agent entity. */
   readonly agent: Agent;
+  /** Component key conflicts detected during assembly. Empty when no keys collide. */
+  readonly conflicts: readonly AssemblyConflict[];
   /** Run the agent with the given input. Returns an async iterable of engine events. */
   readonly run: (input: EngineInput) => AsyncIterable<EngineEvent>;
   /** Dispose the runtime and release resources. */

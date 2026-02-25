@@ -13,8 +13,24 @@ import type {
   ProcessState,
   SubsystemToken,
 } from "@koi/core";
+import { COMPONENT_PRIORITY } from "@koi/core";
 import type { AgentLifecycle, LifecycleEvent } from "./lifecycle.js";
 import { createLifecycle, transition } from "./lifecycle.js";
+
+// ---------------------------------------------------------------------------
+// Assembly result types
+// ---------------------------------------------------------------------------
+
+export interface AssemblyConflict {
+  readonly key: string;
+  readonly winner: string;
+  readonly shadowed: readonly string[];
+}
+
+export interface AssemblyResult {
+  readonly agent: AgentEntity;
+  readonly conflicts: readonly AssemblyConflict[];
+}
 
 export class AgentEntity implements Agent {
   readonly pid: ProcessId;
@@ -96,19 +112,51 @@ export class AgentEntity implements Agent {
     pid: ProcessId,
     manifest: AgentManifest,
     providers: readonly ComponentProvider[],
-  ): Promise<AgentEntity> {
+  ): Promise<AssemblyResult> {
     const agent = new AgentEntity(pid, manifest);
     const merged = new Map<string, unknown>();
 
-    for (const provider of providers) {
+    // Sort providers by priority ascending (lower = higher precedence).
+    // Stable sort preserves registration order for same-priority providers.
+    const sorted = [...providers].sort(
+      (a, b) =>
+        (a.priority ?? COMPONENT_PRIORITY.BUNDLED) - (b.priority ?? COMPONENT_PRIORITY.BUNDLED),
+    );
+
+    // Track which provider won each key and which were shadowed
+    const winnerByKey = new Map<string, string>();
+    const shadowedByKey = new Map<string, string[]>();
+
+    for (const provider of sorted) {
       const components = await provider.attach(agent);
       for (const [key, value] of components) {
-        merged.set(key, value);
+        if (!merged.has(key)) {
+          // First-write-wins: highest-priority provider claims the key
+          merged.set(key, value);
+          winnerByKey.set(key, provider.name);
+        } else {
+          // Record conflict: this provider was shadowed
+          const existing = shadowedByKey.get(key);
+          if (existing !== undefined) {
+            existing.push(provider.name);
+          } else {
+            shadowedByKey.set(key, [provider.name]);
+          }
+        }
       }
     }
 
+    // Build conflict list
+    const conflicts: readonly AssemblyConflict[] = [...shadowedByKey.entries()].map(
+      ([key, shadowed]) => ({
+        key,
+        winner: winnerByKey.get(key) ?? "unknown",
+        shadowed,
+      }),
+    );
+
     agent._components = merged;
     agent._queryCache.clear();
-    return agent;
+    return { agent, conflicts };
   }
 }

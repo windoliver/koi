@@ -14,6 +14,7 @@
  */
 
 import type { Agent, ComponentProvider, ForgeScope, Tool } from "@koi/core";
+import { COMPONENT_PRIORITY } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -42,6 +43,7 @@ export function createInheritedComponentProvider(
 
   return {
     name: "inherited",
+    priority: COMPONENT_PRIORITY.BUNDLED,
 
     attach: async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
       if (cached !== undefined) return cached;

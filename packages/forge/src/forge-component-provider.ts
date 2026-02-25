@@ -23,6 +23,7 @@ import type {
   TieredSandboxExecutor,
 } from "@koi/core";
 import {
+  COMPONENT_PRIORITY,
   channelToken,
   engineToken,
   middlewareToken,
@@ -117,6 +118,13 @@ function isScopeVisible(brickScope: ForgeScope, callerScope: ForgeScope | undefi
   if (callerScope === undefined) return true;
   return SCOPE_LEVEL[brickScope] >= SCOPE_LEVEL[callerScope];
 }
+
+/** Map forge scope to component priority for assembly ordering. */
+const SCOPE_PRIORITY: Readonly<Record<ForgeScope, number>> = {
+  agent: COMPONENT_PRIORITY.AGENT_FORGED,
+  zone: COMPONENT_PRIORITY.ZONE_FORGED,
+  global: COMPONENT_PRIORITY.GLOBAL_FORGED,
+} as const;
 
 /**
  * Creates a ComponentProvider that lazily loads forged tools on first attach().
@@ -239,6 +247,7 @@ export function createForgeComponentProvider(
 
   return {
     name: "forge",
+    priority: SCOPE_PRIORITY[config.scope ?? "agent"],
     attach: loadComponents,
     invalidate,
     invalidateByScope,

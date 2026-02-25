@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { Agent, AgentManifest, ForgeScope, ProcessId, SubsystemToken, Tool } from "@koi/core";
-import { agentId } from "@koi/core";
+import { agentId, COMPONENT_PRIORITY } from "@koi/core";
 import { createInheritedComponentProvider } from "./inherited-component-provider.js";
 
 // ---------------------------------------------------------------------------
@@ -218,6 +218,12 @@ describe("createInheritedComponentProvider", () => {
     expect(first).toBe(second);
     // query() called only once (on first attach)
     expect(queryFn).toHaveBeenCalledTimes(1);
+  });
+
+  test("priority defaults to BUNDLED (100)", () => {
+    const parent = mockParentAgent(new Map());
+    const provider = createInheritedComponentProvider({ parent });
+    expect(provider.priority).toBe(COMPONENT_PRIORITY.BUNDLED);
   });
 
   test("tool trust tier is preserved in inherited tools", async () => {

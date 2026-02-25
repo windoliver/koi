@@ -132,9 +132,10 @@ describe("CreateKoiOptions", () => {
 // ---------------------------------------------------------------------------
 
 describe("KoiRuntime", () => {
-  test("has agent, run, and dispose", () => {
+  test("has agent, conflicts, run, and dispose", () => {
     // Type-level check that KoiRuntime has the expected shape
     type _AssertAgent = KoiRuntime["agent"];
+    type _AssertConflicts = KoiRuntime["conflicts"];
     type _AssertRun = KoiRuntime["run"];
     type _AssertDispose = KoiRuntime["dispose"];
     expect(true).toBe(true);
