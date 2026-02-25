@@ -72,6 +72,22 @@ export function skillToken(name: string): SubsystemToken<SkillMetadata> {
   return `skill:${name}` as SubsystemToken<SkillMetadata>;
 }
 
+export function engineToken(name: string): SubsystemToken<unknown> {
+  return `engine:${name}` as SubsystemToken<unknown>;
+}
+
+export function resolverToken(name: string): SubsystemToken<unknown> {
+  return `resolver:${name}` as SubsystemToken<unknown>;
+}
+
+export function providerToken(name: string): SubsystemToken<unknown> {
+  return `provider:${name}` as SubsystemToken<unknown>;
+}
+
+export function middlewareToken(name: string): SubsystemToken<unknown> {
+  return `middleware:${name}` as SubsystemToken<unknown>;
+}
+
 /** Create a branded AgentId from a plain string. */
 export function agentId(id: string): AgentId {
   return id as AgentId;

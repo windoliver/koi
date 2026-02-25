@@ -81,7 +81,17 @@ export interface CompositeArtifact extends BrickArtifactBase {
   readonly brickIds: readonly string[];
 }
 
-export type BrickArtifact = ToolArtifact | SkillArtifact | AgentArtifact | CompositeArtifact;
+export interface ImplementationArtifact extends BrickArtifactBase {
+  readonly kind: "engine" | "resolver" | "provider" | "middleware" | "channel";
+  readonly implementation: string;
+}
+
+export type BrickArtifact =
+  | ToolArtifact
+  | SkillArtifact
+  | AgentArtifact
+  | CompositeArtifact
+  | ImplementationArtifact;
 
 // ---------------------------------------------------------------------------
 // Forge query (structured search)

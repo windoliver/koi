@@ -3,8 +3,12 @@ import {
   CREDENTIALS,
   channelToken,
   EVENTS,
+  engineToken,
   GOVERNANCE,
   MEMORY,
+  middlewareToken,
+  providerToken,
+  resolverToken,
   skillToken,
   token,
   toolToken,
@@ -81,6 +85,78 @@ describe("skillToken()", () => {
 
   test("empty name produces skill: prefix only", () => {
     expect(str(skillToken(""))).toBe("skill:");
+  });
+});
+
+describe("engineToken()", () => {
+  test("prefixes with engine:", () => {
+    expect(str(engineToken("langGraph"))).toBe("engine:langGraph");
+  });
+
+  test("contains namespace separator", () => {
+    expect(str(engineToken("openai"))).toContain(":");
+  });
+
+  test("empty name produces engine: prefix only", () => {
+    expect(str(engineToken(""))).toBe("engine:");
+  });
+
+  test("name with colon produces double colon", () => {
+    expect(str(engineToken("v2:beta"))).toBe("engine:v2:beta");
+  });
+});
+
+describe("resolverToken()", () => {
+  test("prefixes with resolver:", () => {
+    expect(str(resolverToken("npm"))).toBe("resolver:npm");
+  });
+
+  test("contains namespace separator", () => {
+    expect(str(resolverToken("local"))).toContain(":");
+  });
+
+  test("empty name produces resolver: prefix only", () => {
+    expect(str(resolverToken(""))).toBe("resolver:");
+  });
+
+  test("name with colon produces double colon", () => {
+    expect(str(resolverToken("v2:beta"))).toBe("resolver:v2:beta");
+  });
+});
+
+describe("providerToken()", () => {
+  test("prefixes with provider:", () => {
+    expect(str(providerToken("openai"))).toBe("provider:openai");
+  });
+
+  test("contains namespace separator", () => {
+    expect(str(providerToken("anthropic"))).toContain(":");
+  });
+
+  test("empty name produces provider: prefix only", () => {
+    expect(str(providerToken(""))).toBe("provider:");
+  });
+
+  test("name with colon produces double colon", () => {
+    expect(str(providerToken("v2:beta"))).toBe("provider:v2:beta");
+  });
+});
+
+describe("middlewareToken()", () => {
+  test("prefixes with middleware:", () => {
+    expect(str(middlewareToken("audit"))).toBe("middleware:audit");
+  });
+
+  test("contains namespace separator", () => {
+    expect(str(middlewareToken("rateLimit"))).toContain(":");
+  });
+
+  test("empty name produces middleware: prefix only", () => {
+    expect(str(middlewareToken(""))).toBe("middleware:");
+  });
+
+  test("name with colon produces double colon", () => {
+    expect(str(middlewareToken("v2:beta"))).toBe("middleware:v2:beta");
   });
 });
 

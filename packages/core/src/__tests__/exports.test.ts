@@ -47,6 +47,7 @@ import type {
   HealthSnapshot,
   HealthStatus,
   ImageBlock,
+  ImplementationArtifact,
   InboundMessage,
   // common
   JsonObject,
@@ -96,16 +97,21 @@ import type {
   TrustTier,
   TurnContext,
 } from "../index.js";
-
 import {
+  ALL_BRICK_KINDS,
   agentId,
   CREDENTIALS,
   channelToken,
   DEFAULT_HEALTH_MONITOR_CONFIG,
   EVENTS,
+  engineToken,
   GOVERNANCE,
   MEMORY,
+  MIN_TRUST_BY_KIND,
+  middlewareToken,
+  providerToken,
   RETRYABLE_DEFAULTS,
+  resolverToken,
   skillToken,
   token,
   toolToken,
@@ -196,7 +202,8 @@ type _TypeGuard =
   | AssertDefined<EvictionPolicy>
   // resolver source types
   | AssertDefined<SourceBundle>
-  | AssertDefined<SourceLanguage>;
+  | AssertDefined<SourceLanguage>
+  | AssertDefined<ImplementationArtifact>;
 
 describe("export inventory", () => {
   test("all runtime values are defined", () => {
@@ -204,6 +211,10 @@ describe("export inventory", () => {
     expect(toolToken).toBeDefined();
     expect(channelToken).toBeDefined();
     expect(skillToken).toBeDefined();
+    expect(engineToken).toBeDefined();
+    expect(resolverToken).toBeDefined();
+    expect(providerToken).toBeDefined();
+    expect(middlewareToken).toBeDefined();
     expect(agentId).toBeDefined();
     expect(MEMORY).toBeDefined();
     expect(GOVERNANCE).toBeDefined();
@@ -212,6 +223,8 @@ describe("export inventory", () => {
     expect(RETRYABLE_DEFAULTS).toBeDefined();
     expect(VALID_TRANSITIONS).toBeDefined();
     expect(DEFAULT_HEALTH_MONITOR_CONFIG).toBeDefined();
+    expect(ALL_BRICK_KINDS).toBeDefined();
+    expect(MIN_TRUST_BY_KIND).toBeDefined();
   });
 
   test("runtime values are functions, strings, or objects", () => {
@@ -219,6 +232,10 @@ describe("export inventory", () => {
     expect(typeof toolToken).toBe("function");
     expect(typeof channelToken).toBe("function");
     expect(typeof skillToken).toBe("function");
+    expect(typeof engineToken).toBe("function");
+    expect(typeof resolverToken).toBe("function");
+    expect(typeof providerToken).toBe("function");
+    expect(typeof middlewareToken).toBe("function");
     expect(typeof agentId).toBe("function");
     expect(typeof MEMORY).toBe("string");
     expect(typeof GOVERNANCE).toBe("string");
