@@ -572,6 +572,19 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/redaction": {
+      "name": "@koi/redaction",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/middleware-audit": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/sandbox": {
       "name": "@koi/sandbox",
       "version": "0.0.0",
@@ -1161,6 +1174,8 @@
     "@koi/node": ["@koi/node@workspace:packages/node"],
 
     "@koi/parallel-minions": ["@koi/parallel-minions@workspace:packages/parallel-minions"],
+
+    "@koi/redaction": ["@koi/redaction@workspace:packages/redaction"],
 
     "@koi/sandbox": ["@koi/sandbox@workspace:packages/sandbox"],
 
