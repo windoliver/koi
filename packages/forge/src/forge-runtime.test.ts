@@ -154,6 +154,21 @@ describe("createForgeRuntime", () => {
     unsub?.();
   });
 
+  test("throws when external listener limit is exceeded", () => {
+    const store = createInMemoryForgeStore();
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+
+    expect(runtime.watch).toBeDefined();
+
+    // Register up to the limit (64)
+    for (let i = 0; i < 64; i++) {
+      runtime.watch?.(() => {});
+    }
+
+    // The 65th listener should throw
+    expect(() => runtime.watch?.(() => {})).toThrow(/external listener limit.*64.*reached/);
+  });
+
   test("dispose calls store.dispose when available", () => {
     const store = createInMemoryForgeStore();
     const disposeSpy = mock(() => {});

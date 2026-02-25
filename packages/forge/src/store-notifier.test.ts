@@ -86,6 +86,18 @@ describe("createMemoryStoreChangeNotifier", () => {
     unsubscribe(); // Should not throw
   });
 
+  test("throws when subscriber limit is exceeded", () => {
+    const notifier = createMemoryStoreChangeNotifier();
+
+    // Subscribe up to the limit (64)
+    for (let i = 0; i < 64; i++) {
+      notifier.subscribe(() => {});
+    }
+
+    // The 65th subscriber should throw
+    expect(() => notifier.subscribe(() => {})).toThrow(/subscriber limit.*64.*reached/);
+  });
+
   test("events without scope are delivered correctly", () => {
     const notifier = createMemoryStoreChangeNotifier();
     const received: StoreChangeEvent[] = [];
