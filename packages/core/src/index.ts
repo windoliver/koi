@@ -384,6 +384,22 @@ export type {
   SessionRecord,
   SkippedRecoveryEntry,
 } from "./session.js";
+// skill registry — types
+export type {
+  SkillId,
+  SkillPage,
+  SkillPublishRequest,
+  SkillRegistryBackend,
+  SkillRegistryChangeEvent,
+  SkillRegistryChangeKind,
+  SkillRegistryEntry,
+  SkillRegistryReader,
+  SkillRegistryWriter,
+  SkillSearchQuery,
+  SkillVersion,
+} from "./skill-registry.js";
+// skill registry — runtime values
+export { DEFAULT_SKILL_SEARCH_LIMIT, skillId } from "./skill-registry.js";
 // snapshot chain — immutable DAG for time travel, fork, and recovery
 export type {
   AncestorQuery,

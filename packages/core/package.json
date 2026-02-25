@@ -95,6 +95,10 @@
     "./sandbox-profile": {
       "types": "./dist/sandbox-profile.d.ts",
       "import": "./dist/sandbox-profile.js"
+    },
+    "./skill-registry": {
+      "types": "./dist/skill-registry.d.ts",
+      "import": "./dist/skill-registry.js"
     }
   },
   "scripts": {
