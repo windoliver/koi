@@ -17,6 +17,7 @@
     "@koi/hash": "workspace:*",
     "@koi/node": "workspace:*",
     "@koi/delegation": "workspace:*",
+    "@koi/engine-external": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },
   "scripts": {

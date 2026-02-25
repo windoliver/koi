@@ -1,0 +1,135 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/engine-external API surface . has stable type surface 1`] = `
+"import { EngineEvent, EngineAdapter, Result, KoiError } from '@koi/core';
+
+/**
+ * Type definitions for the external process engine adapter.
+ */
+
+/**
+ * Result of parsing a stdout chunk. Events are emitted immediately;
+ * \`turnComplete\` signals end-of-response in long-lived mode.
+ */
+interface OutputParseResult {
+    readonly events: readonly EngineEvent[];
+    /** If true, the adapter treats this as end-of-response (long-lived mode). */
+    readonly turnComplete?: boolean | undefined;
+}
+/**
+ * Stateful parser for a single stream() call. Created fresh per invocation
+ * to avoid cross-call state leaking.
+ */
+interface OutputParser {
+    /** Parse a chunk of stdout data. Return EngineEvents + whether turn is complete. */
+    readonly parseStdout: (chunk: string) => OutputParseResult;
+    /** Parse a chunk of stderr data. */
+    readonly parseStderr: (chunk: string) => readonly EngineEvent[];
+    /** Called when process exits or turn ends. Return any buffered events. */
+    readonly flush: () => readonly EngineEvent[];
+}
+/** Factory that creates a fresh OutputParser per stream() call. */
+type OutputParserFactory = () => OutputParser;
+/** Controls which environment variables are passed to the child process. */
+type EnvStrategy = {
+    readonly kind: "inherit";
+} | {
+    readonly kind: "allowlist";
+    readonly keys: readonly string[];
+} | {
+    readonly kind: "explicit";
+    readonly env: Readonly<Record<string, string>>;
+};
+interface ShutdownConfig {
+    /** Signal to send first. Default: 15 (SIGTERM). */
+    readonly signal?: number | undefined;
+    /** Milliseconds to wait before SIGKILL. Default: 5000. */
+    readonly gracePeriodMs?: number | undefined;
+}
+interface ExternalAdapterConfig {
+    readonly command: string;
+    readonly args?: readonly string[] | undefined;
+    readonly cwd?: string | undefined;
+    readonly env?: EnvStrategy | undefined;
+    readonly parser?: OutputParserFactory | undefined;
+    /** Total wall-clock timeout per stream() call. Default: 300_000 (5 min). 0 = none. */
+    readonly timeoutMs?: number | undefined;
+    /** Kill process if no stdout/stderr output for this many ms. Default: 0 (disabled). */
+    readonly noOutputTimeoutMs?: number | undefined;
+    readonly maxOutputBytes?: number | undefined;
+    readonly shutdown?: ShutdownConfig | undefined;
+    readonly mode?: "single-shot" | "long-lived" | undefined;
+}
+/** Engine adapter with additional methods for external process interaction. */
+interface ExternalEngineAdapter extends EngineAdapter {
+    /** Write data to the running process's stdin (long-lived mode). */
+    readonly write: (data: string) => void;
+    /** Whether a child process is currently running. */
+    readonly isRunning: () => boolean;
+}
+interface ExternalProcessState {
+    readonly command: string;
+    readonly args: readonly string[];
+    readonly cwd: string;
+    readonly outputHistory: readonly string[];
+}
+
+/**
+ * External process engine adapter factory.
+ *
+ * Wraps any external process (CLI tool, domain expert, research bot) as an
+ * EngineAdapter via Bun.spawn(). Maps stdout/stderr to EngineEvent stream,
+ * process lifecycle to agent lifecycle, stdin to mid-task redirection.
+ *
+ * Supports two modes:
+ * - single-shot: spawn per stream() call, stdin closed after input, process exit = done
+ * - long-lived: persistent process across stream() calls, parser-driven turn completion
+ */
+
+/**
+ * Creates an external process engine adapter.
+ */
+declare function createExternalAdapter(config: ExternalAdapterConfig): ExternalEngineAdapter;
+
+/**
+ * Output parsers for external process stdout/stderr.
+ *
+ * Each factory returns a fresh OutputParser (stateful per stream() call).
+ */
+
+/**
+ * Simplest parser: each stdout chunk becomes a text_delta event,
+ * stderr becomes a custom(stderr) event. Never signals turnComplete.
+ */
+declare function createTextDeltaParser(): OutputParserFactory;
+/**
+ * Line-buffered JSON parser. Each complete line on stdout is parsed as JSON:
+ * - If it's a valid EngineEvent shape, emit it directly
+ * - If the parsed object has \`kind: "done"\`, set \`turnComplete: true\`
+ * - Invalid JSON falls back to text_delta
+ *
+ * stderr always maps to custom(stderr) events.
+ * flush() emits any remaining partial line as text_delta.
+ */
+declare function createJsonLinesParser(): OutputParserFactory;
+/**
+ * Generic line-buffered parser with a user-provided mapping function.
+ * Each complete line is passed to \`mapLine\`; returning \`undefined\` skips it.
+ */
+declare function createLineParser(mapLine: (line: string, source: "stdout" | "stderr") => OutputParseResult | undefined): OutputParserFactory;
+
+/**
+ * Manual config validation for ExternalAdapterConfig.
+ *
+ * Returns Result<T, KoiError> — never throws.
+ * Follows the pattern from packages/trust-router/src/config.ts.
+ */
+
+/**
+ * Validate an ExternalAdapterConfig from untrusted input.
+ */
+declare function validateExternalAdapterConfig(config: unknown): Result<ExternalAdapterConfig, KoiError>;
+
+export { type EnvStrategy, type ExternalAdapterConfig, type ExternalEngineAdapter, type ExternalProcessState, type OutputParseResult, type OutputParser, type OutputParserFactory, type ShutdownConfig, createExternalAdapter, createJsonLinesParser, createLineParser, createTextDeltaParser, validateExternalAdapterConfig };
+"
+`;
