@@ -1,0 +1,99 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/self-test API surface . has stable type surface 1`] = `
+"import { KoiError, JsonObject, AgentManifest, EngineAdapter, KoiMiddleware, ToolDescriptor, ToolResponse, EngineInput, EngineEvent } from '@koi/core';
+
+/**
+ * @koi/self-test — Public types for agent self-verification.
+ */
+
+/** Status of a single check. */
+type CheckStatus = "pass" | "fail" | "skip";
+/** Built-in check categories plus user-defined custom. */
+type CheckCategory = "manifest" | "middleware" | "tools" | "engine" | "scenarios" | "custom";
+/** Result of a single check. */
+interface CheckResult {
+    readonly name: string;
+    readonly category: CheckCategory;
+    readonly status: CheckStatus;
+    readonly durationMs: number;
+    readonly error?: KoiError;
+    /** Human-readable detail (e.g., "manifest.name is empty string"). */
+    readonly message?: string;
+    /** Machine-readable context for CI tools (e.g., { field: "name" }). */
+    readonly metadata?: JsonObject;
+}
+/** Aggregated self-test report. */
+interface SelfTestReport {
+    readonly passed: number;
+    readonly failed: number;
+    readonly skipped: number;
+    readonly totalDurationMs: number;
+    readonly checks: readonly CheckResult[];
+    /** True when failed === 0. */
+    readonly healthy: boolean;
+}
+/** A tool descriptor + optional mock handler for self-test verification. */
+interface SelfTestTool {
+    readonly descriptor: ToolDescriptor;
+    /** If provided, handler is invoked with empty input to verify it returns valid ToolResponse. */
+    readonly handler?: (args: JsonObject) => Promise<ToolResponse>;
+}
+/** An E2E smoke-test scenario. */
+interface SelfTestScenario {
+    readonly name: string;
+    readonly input: EngineInput;
+    /** Expected text pattern (regex or string) in streamed text_delta output. */
+    readonly expectedPattern?: string | RegExp;
+    /** Custom assertion function run against the collected events. */
+    readonly assert?: (events: readonly EngineEvent[]) => void | Promise<void>;
+}
+/** A user-defined custom check. */
+interface SelfTestCustomCheck {
+    readonly name: string;
+    readonly fn: () => void | Promise<void>;
+}
+/** Configuration for createSelfTest. */
+interface SelfTestConfig {
+    readonly manifest: AgentManifest;
+    /**
+     * Engine adapter instance or factory function.
+     * - Function: self-test owns lifecycle (creates, uses, disposes).
+     * - Object: caller owns lifecycle (dispose check is skipped).
+     */
+    readonly adapter?: EngineAdapter | (() => EngineAdapter | Promise<EngineAdapter>);
+    readonly middleware?: readonly KoiMiddleware[];
+    readonly tools?: readonly SelfTestTool[];
+    readonly scenarios?: readonly SelfTestScenario[];
+    readonly customChecks?: readonly SelfTestCustomCheck[];
+    /** Whitelist of categories to run. undefined = all categories. */
+    readonly categories?: readonly CheckCategory[];
+    /** Per-check timeout in ms. Default: 5000. */
+    readonly checkTimeoutMs?: number;
+    /** Global run timeout in ms. Default: 30000. */
+    readonly timeoutMs?: number;
+    /** Stop on first category failure. Default: false. */
+    readonly failFast?: boolean;
+}
+/** The self-test runner returned by createSelfTest. */
+interface SelfTest {
+    readonly run: () => Promise<SelfTestReport>;
+}
+
+/**
+ * createSelfTest — factory for the self-test runner.
+ *
+ * Orchestrates check categories sequentially, aggregates results,
+ * and returns a machine-readable SelfTestReport.
+ */
+
+/**
+ * Create a self-test runner from the given config.
+ *
+ * @throws KoiRuntimeError with code VALIDATION if config is structurally invalid.
+ */
+declare function createSelfTest(config: SelfTestConfig): SelfTest;
+
+export { type CheckCategory, type CheckResult, type CheckStatus, type SelfTest, type SelfTestConfig, type SelfTestCustomCheck, type SelfTestReport, type SelfTestScenario, type SelfTestTool, createSelfTest };
+"
+`;

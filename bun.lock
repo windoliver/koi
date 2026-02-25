@@ -581,6 +581,19 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/self-test": {
+      "name": "@koi/self-test",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+      },
+    },
     "packages/session-store": {
       "name": "@koi/session-store",
       "version": "0.0.0",
@@ -1028,6 +1041,8 @@
     "@koi/scheduler": ["@koi/scheduler@workspace:packages/scheduler"],
 
     "@koi/search": ["@koi/search@workspace:packages/search"],
+
+    "@koi/self-test": ["@koi/self-test@workspace:packages/self-test"],
 
     "@koi/session-store": ["@koi/session-store@workspace:packages/session-store"],
 
