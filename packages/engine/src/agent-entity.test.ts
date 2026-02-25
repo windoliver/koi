@@ -388,4 +388,40 @@ describe("lifecycle transitions", () => {
     agent.transition({ kind: "start" });
     expect(agent.lifecycle.state).toBe("running");
   });
+
+  test("validator blocks transition — state unchanged", () => {
+    const agent = new AgentEntity(testPid(), testManifest());
+    agent.setTransitionValidator(() => false);
+    agent.transition({ kind: "start" });
+    expect(agent.state).toBe("created"); // Blocked
+  });
+
+  test("validator allows transition — state changes normally", () => {
+    const agent = new AgentEntity(testPid(), testManifest());
+    agent.setTransitionValidator(() => true);
+    agent.transition({ kind: "start" });
+    expect(agent.state).toBe("running");
+  });
+
+  test("no state change (no-op event) — validator not called", () => {
+    const agent = new AgentEntity(testPid(), testManifest());
+    let called = false;
+    agent.setTransitionValidator(() => {
+      called = true;
+      return false;
+    });
+    // "resume" from "created" is a no-op (state doesn't change)
+    agent.transition({ kind: "resume" });
+    expect(called).toBe(false);
+    expect(agent.state).toBe("created");
+  });
+
+  test("no validator set — transitions work as before", () => {
+    const agent = new AgentEntity(testPid(), testManifest());
+    // No setTransitionValidator called
+    agent.transition({ kind: "start" });
+    expect(agent.state).toBe("running");
+    agent.transition({ kind: "complete", stopReason: "completed" });
+    expect(agent.state).toBe("terminated");
+  });
 });

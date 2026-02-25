@@ -14,6 +14,7 @@ import type {
   EngineEvent,
   EngineInput,
   ForgeScope,
+  KernelExtension,
   KoiMiddleware,
   ProcessAccounter,
   ProcessId,
@@ -210,6 +211,11 @@ export interface CreateKoiOptions {
   /** Spawn governance policy. Defaults to DEFAULT_SPAWN_POLICY. */
   readonly spawn?: Partial<SpawnPolicy>;
   /**
+   * Kernel extensions for pluggable guards, lifecycle validation, and assembly validation.
+   * Extensions are composed with the default guard extension (created from limits/loopDetection/spawn).
+   */
+  readonly extensions?: readonly KernelExtension[];
+  /**
    * Shared spawn ledger for tree-wide concurrency tracking.
    * The root agent creates a ledger; children share the same instance.
    * Defaults to an in-memory counter (single-Node scope).
@@ -278,6 +284,8 @@ export interface SpawnChildOptions {
   readonly limits?: Partial<IterationLimits>;
   /** Loop detection config for the child. Set to false to disable. */
   readonly loopDetection?: Partial<LoopDetectionConfig> | false;
+  /** Kernel extensions for the child. */
+  readonly extensions?: readonly KernelExtension[];
 }
 
 /**

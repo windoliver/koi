@@ -74,6 +74,7 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
       ...(options.registry !== undefined ? { registry: options.registry } : {}),
       ...(options.limits !== undefined ? { limits: options.limits } : {}),
       ...(options.loopDetection !== undefined ? { loopDetection: options.loopDetection } : {}),
+      ...(options.extensions !== undefined ? { extensions: options.extensions } : {}),
     });
   } catch (e: unknown) {
     // Release ledger slot on assembly failure — no leak

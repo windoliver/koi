@@ -44,7 +44,7 @@ import {
   runSessionHooks,
   runTurnHooks,
 } from "./compose.js";
-import { createIterationGuard, createLoopDetector, createSpawnGuard } from "./guards.js";
+import { composeExtensions, createDefaultGuardExtension } from "./extension-composer.js";
 import type { CreateKoiOptions, KoiRuntime } from "./types.js";
 
 /** Generate a unique process ID for a new agent. */
@@ -112,26 +112,41 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   });
   const { agent, conflicts } = await AgentEntity.assemble(pid, manifest, providers);
 
-  // --- 2. Create L1 guards (declarative, no mutation) ---
-  const spawnPolicy = { ...options.spawn };
-  const guards: readonly KoiMiddleware[] = [
-    createIterationGuard(options.limits),
-    ...(options.loopDetection !== false
-      ? [
-          createLoopDetector(
-            options.loopDetection === undefined ? undefined : options.loopDetection,
-          ),
-        ]
-      : []),
-    createSpawnGuard({
-      policy: spawnPolicy,
-      agentDepth: pid.depth,
-      agent,
-    }),
-  ];
+  // --- 2. Compose kernel extensions ---
+  const defaultGuardExt = createDefaultGuardExtension({
+    ...(options.limits !== undefined ? { limits: options.limits } : {}),
+    ...(options.loopDetection !== undefined ? { loopDetection: options.loopDetection } : {}),
+    ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
+  });
+  const allExtensions = [defaultGuardExt, ...(options.extensions ?? [])];
 
-  // --- 3. Compose middleware chain: guards + user middleware, sorted by priority ---
-  const allMiddleware: readonly KoiMiddleware[] = sortByPriority([...guards, ...middleware]);
+  const guardCtx = {
+    agentDepth: pid.depth,
+    manifest,
+    components: agent.components(),
+    agent,
+  };
+  const composed = await composeExtensions(allExtensions, guardCtx);
+
+  // --- 2b. Run assembly validators ---
+  const assemblyResult = await composed.validateAssembly(agent.components(), manifest);
+  if (!assemblyResult.ok) {
+    const messages = assemblyResult.diagnostics
+      .filter((d) => d.severity === "error")
+      .map((d) => `[${d.source}] ${d.message}`);
+    throw KoiRuntimeError.from("VALIDATION", `Assembly validation failed: ${messages.join("; ")}`, {
+      context: { diagnostics: assemblyResult.diagnostics },
+    });
+  }
+
+  // --- 2c. Wire transition validator into agent entity ---
+  agent.setTransitionValidator(composed.validateTransition);
+
+  // --- 3. Compose middleware chain: guard middleware + user middleware, sorted by priority ---
+  const allMiddleware: readonly KoiMiddleware[] = sortByPriority([
+    ...composed.guardMiddleware,
+    ...middleware,
+  ]);
 
   // --- 4. Default tool terminal (forge first, then entity fallback) ---
   const defaultToolTerminal = async (request: ToolRequest): Promise<ToolResponse> => {
