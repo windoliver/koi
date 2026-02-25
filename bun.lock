@@ -291,6 +291,20 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/lsp": {
+      "name": "@koi/lsp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+      },
+    },
     "packages/manifest": {
       "name": "@koi/manifest",
       "version": "0.0.0",
@@ -1182,6 +1196,8 @@
     "@koi/hash": ["@koi/hash@workspace:packages/hash"],
 
     "@koi/identity": ["@koi/identity@workspace:packages/identity"],
+
+    "@koi/lsp": ["@koi/lsp@workspace:packages/lsp"],
 
     "@koi/manifest": ["@koi/manifest@workspace:packages/manifest"],
 

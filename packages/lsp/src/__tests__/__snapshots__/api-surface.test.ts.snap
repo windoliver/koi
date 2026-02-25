@@ -1,0 +1,303 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/lsp API surface . has stable type surface 1`] = `
+"import { Result, KoiError, ComponentProvider, Tool } from '@koi/core';
+import { ChildProcess } from 'node:child_process';
+import { Writable, Readable } from 'node:stream';
+
+/**
+ * LSP server configuration types and Zod validation.
+ *
+ * Defines per-server config (command, args, rootUri) and provider-level
+ * config for timeouts and reconnection. Auto-detects languageId from
+ * file extension if omitted.
+ */
+
+interface LspServerConfig {
+    readonly name: string;
+    readonly command: string;
+    readonly args?: readonly string[] | undefined;
+    readonly env?: Readonly<Record<string, string>> | undefined;
+    readonly rootUri: string;
+    readonly languageId?: string | undefined;
+    readonly initializationOptions?: unknown;
+    readonly timeoutMs?: number | undefined;
+}
+interface LspProviderConfig {
+    readonly servers: readonly LspServerConfig[];
+    readonly autoDetect?: boolean | undefined;
+    readonly connectTimeoutMs?: number | undefined;
+    readonly maxReconnectAttempts?: number | undefined;
+    readonly maxReferences?: number | undefined;
+    readonly maxSymbols?: number | undefined;
+}
+interface ResolvedLspServerConfig {
+    readonly name: string;
+    readonly command: string;
+    readonly args: readonly string[];
+    readonly env: Readonly<Record<string, string>>;
+    readonly rootUri: string;
+    readonly languageId: string | undefined;
+    readonly initializationOptions: unknown;
+    readonly timeoutMs: number;
+}
+interface ResolvedLspProviderConfig {
+    readonly servers: readonly ResolvedLspServerConfig[];
+    readonly autoDetect: boolean;
+    readonly connectTimeoutMs: number;
+    readonly maxReconnectAttempts: number;
+    readonly maxReferences: number;
+    readonly maxSymbols: number;
+}
+/** Validates raw LSP provider config. Returns Result. */
+declare function validateLspConfig(raw: unknown): Result<LspProviderConfig, KoiError>;
+/** Resolves a single server config by applying defaults. */
+declare function resolveServerConfig(server: LspServerConfig): ResolvedLspServerConfig;
+/** Validates and resolves provider config with defaults applied. */
+declare function resolveProviderConfig(config: LspProviderConfig): ResolvedLspProviderConfig;
+
+/**
+ * Stdio transport for LSP server communication.
+ *
+ * Spawns an LSP server as a subprocess and provides access to its
+ * stdin/stdout streams for JSON-RPC communication.
+ */
+
+interface LspTransport {
+    readonly stdin: Writable;
+    readonly stdout: Readable;
+    readonly process: ChildProcess;
+    readonly dispose: () => void;
+}
+/**
+ * Creates a stdio transport by spawning the LSP server as a subprocess.
+ *
+ * Throws if the process cannot be spawned or has no stdin/stdout.
+ */
+declare function createStdioTransport(config: ResolvedLspServerConfig): LspTransport;
+
+/**
+ * LSP type subset — only the types used by @koi/lsp.
+ *
+ * Hand-rolled to avoid external LSP protocol dependencies.
+ * All properties are readonly per Koi immutability rules.
+ */
+interface Position {
+    readonly line: number;
+    readonly character: number;
+}
+interface Range {
+    readonly start: Position;
+    readonly end: Position;
+}
+interface Location {
+    readonly uri: string;
+    readonly range: Range;
+}
+interface TextDocumentIdentifier {
+    readonly uri: string;
+}
+interface TextDocumentPositionParams {
+    readonly textDocument: TextDocumentIdentifier;
+    readonly position: Position;
+}
+interface TextDocumentItem {
+    readonly uri: string;
+    readonly languageId: string;
+    readonly version: number;
+    readonly text: string;
+}
+interface MarkupContent {
+    readonly kind: "plaintext" | "markdown";
+    readonly value: string;
+}
+interface HoverResult {
+    readonly contents: MarkupContent | string;
+    readonly range?: Range;
+}
+/** LSP SymbolKind — subset of values we care about. */
+type SymbolKind = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26;
+interface SymbolInfo {
+    readonly name: string;
+    readonly kind: SymbolKind;
+    readonly location: Location;
+    readonly containerName?: string;
+}
+/** DocumentSymbol (tree-shaped, used when server returns hierarchical symbols). */
+interface DocumentSymbol {
+    readonly name: string;
+    readonly kind: SymbolKind;
+    readonly range: Range;
+    readonly selectionRange: Range;
+    readonly children?: readonly DocumentSymbol[];
+}
+interface ServerCapabilities {
+    readonly hoverProvider?: boolean | object;
+    readonly definitionProvider?: boolean | object;
+    readonly referencesProvider?: boolean | object;
+    readonly documentSymbolProvider?: boolean | object;
+    readonly workspaceSymbolProvider?: boolean | object;
+    readonly textDocumentSync?: number | {
+        readonly openClose?: boolean;
+        readonly change?: number;
+    };
+}
+/** LSP DiagnosticSeverity: 1 = Error, 2 = Warning, 3 = Information, 4 = Hint */
+type DiagnosticSeverity = 1 | 2 | 3 | 4;
+/** LSP DiagnosticTag: 1 = Unnecessary, 2 = Deprecated */
+type DiagnosticTag = 1 | 2;
+interface Diagnostic {
+    readonly range: Range;
+    readonly severity?: DiagnosticSeverity;
+    readonly code?: string | number;
+    readonly source?: string;
+    readonly message: string;
+    readonly tags?: readonly DiagnosticTag[];
+}
+interface PublishDiagnosticsParams {
+    readonly uri: string;
+    readonly diagnostics: readonly Diagnostic[];
+}
+interface ReferenceContext {
+    readonly includeDeclaration: boolean;
+}
+interface ReferenceParams extends TextDocumentPositionParams {
+    readonly context: ReferenceContext;
+}
+
+/**
+ * LspClient — lifecycle management and LSP method wrappers.
+ *
+ * Manages the connection lifecycle (connect → initialize → operate → shutdown),
+ * document state tracking, capability negotiation, and reconnection with
+ * document re-sync.
+ */
+
+interface LspClient {
+    readonly connect: () => Promise<Result<void, KoiError>>;
+    readonly hover: (uri: string, line: number, character: number) => Promise<Result<HoverResult | null, KoiError>>;
+    readonly gotoDefinition: (uri: string, line: number, character: number) => Promise<Result<readonly Location[], KoiError>>;
+    readonly findReferences: (uri: string, line: number, character: number, limit?: number) => Promise<Result<readonly Location[], KoiError>>;
+    readonly documentSymbols: (uri: string, limit?: number) => Promise<Result<readonly SymbolInfo[], KoiError>>;
+    readonly workspaceSymbols: (query: string, limit?: number) => Promise<Result<readonly SymbolInfo[], KoiError>>;
+    readonly openDocument: (uri: string, content: string, languageId?: string) => Promise<Result<void, KoiError>>;
+    readonly closeDocument: (uri: string) => Promise<Result<void, KoiError>>;
+    readonly getDiagnostics: (uri?: string) => ReadonlyMap<string, readonly Diagnostic[]>;
+    readonly capabilities: () => ServerCapabilities | undefined;
+    readonly close: () => Promise<void>;
+    readonly isConnected: () => boolean;
+    readonly serverName: () => string;
+}
+type CreateTransportFn = (config: ResolvedLspServerConfig) => LspTransport;
+/**
+ * Creates an LSP client for a specific server configuration.
+ *
+ * The client manages the full lifecycle: spawn → initialize → operate → shutdown.
+ * Supports reconnection with document re-sync on connection loss.
+ */
+declare function createLspClient(config: ResolvedLspServerConfig, maxReconnectAttempts?: number, connectTimeoutMs?: number, createTransport?: CreateTransportFn): LspClient;
+
+/**
+ * LspComponentProvider — attaches LSP tools as components to agents.
+ *
+ * Async factory that connects to all LSP servers in parallel, negotiates
+ * capabilities, and wraps supported operations as Koi Tool components.
+ */
+
+interface LspServerFailure {
+    readonly serverName: string;
+    readonly error: KoiError;
+}
+interface LspComponentProviderResult {
+    readonly provider: ComponentProvider;
+    readonly clients: readonly LspClient[];
+    readonly failures: readonly LspServerFailure[];
+}
+/** Factory function signature for creating LSP clients (DI for testing). */
+type CreateClientFn = (config: ResolvedLspServerConfig, maxReconnectAttempts: number, connectTimeoutMs: number, createTransport?: CreateTransportFn) => LspClient;
+/**
+ * Async factory that connects to LSP servers, negotiates capabilities, and
+ * returns a ComponentProvider that attaches tools to agents.
+ *
+ * Failed servers produce warnings in \`failures\` — they don't prevent
+ * successful servers from working.
+ */
+declare function createLspComponentProvider(config: LspProviderConfig, createClient?: CreateClientFn): Promise<LspComponentProviderResult>;
+
+/**
+ * Error factories and mapping for LSP errors.
+ *
+ * Maps LSP JSON-RPC error codes and common failure modes to KoiError.
+ */
+
+/**
+ * Maps an LSP / JSON-RPC error to a KoiError.
+ *
+ * Pattern-matches the error message to determine the appropriate code
+ * and retryability. Falls back to EXTERNAL for unrecognized errors.
+ */
+declare function mapLspError(error: unknown, serverName: string): KoiError;
+/** Creates a connection timeout error for a specific server. */
+declare function connectionTimeoutError(serverName: string, timeoutMs: number): KoiError;
+/** Creates a server start error for a specific server. */
+declare function serverStartError(serverName: string, cause: unknown): KoiError;
+/** Creates an error for when a server is not connected. */
+declare function notConnectedError(serverName: string): KoiError;
+/** Creates an error for exhausted reconnection attempts. */
+declare function reconnectExhaustedError(serverName: string, attempts: number): KoiError;
+/** Creates an error for a JSON-RPC error response. */
+declare function jsonRpcError(serverName: string, code: number, message: string): KoiError;
+/** Creates an error for capability not supported. */
+declare function capabilityNotSupportedError(serverName: string, capability: string): KoiError;
+
+/**
+ * File extension to LSP languageId mapping.
+ *
+ * Used to auto-detect languageId when opening documents.
+ */
+/**
+ * Detects the LSP languageId from a file URI or path.
+ *
+ * Extracts the file extension and looks it up in the mapping.
+ * Returns \`undefined\` if the extension is not recognized.
+ */
+declare function detectLanguageId(uri: string): string | undefined;
+
+/**
+ * Auto-detection of installed LSP server binaries.
+ *
+ * Scans PATH for known LSP binaries using Bun.which() and returns
+ * DetectedLspServer entries ready to merge with user configuration.
+ */
+interface DetectedLspServer {
+    readonly name: string;
+    readonly command: string;
+    readonly args: readonly string[];
+    readonly languageIds: readonly string[];
+}
+/**
+ * Detects installed LSP servers by scanning PATH for known binaries.
+ *
+ * Returns one entry per known server, using the first binary found from
+ * each server's candidate list. Pure and synchronous.
+ */
+declare function detectLspServers(): readonly DetectedLspServer[];
+
+/**
+ * Tool adapter — creates Koi Tool components from LSP client capabilities.
+ *
+ * Tools are namespaced as \`lsp/{serverName}/{operation}\` to avoid collisions.
+ * Tools are capability-gated: only created if the server advertises support.
+ */
+
+/**
+ * Creates Koi Tool components from an LSP client.
+ *
+ * Always includes open_document and close_document tools.
+ * Other tools are only created if the server advertises the capability.
+ */
+declare function createLspTools(client: LspClient, serverName: string, maxReferences?: number, maxSymbols?: number): readonly Tool[];
+
+export { type CreateClientFn, type CreateTransportFn, type DetectedLspServer, type Diagnostic, type DiagnosticSeverity, type DiagnosticTag, type DocumentSymbol, type HoverResult, type Location, type LspClient, type LspComponentProviderResult, type LspProviderConfig, type LspServerConfig, type LspServerFailure, type LspTransport, type MarkupContent, type Position, type PublishDiagnosticsParams, type Range, type ReferenceContext, type ReferenceParams, type ResolvedLspProviderConfig, type ResolvedLspServerConfig, type ServerCapabilities, type SymbolInfo, type SymbolKind, type TextDocumentIdentifier, type TextDocumentItem, type TextDocumentPositionParams, capabilityNotSupportedError, connectionTimeoutError, createLspClient, createLspComponentProvider, createLspTools, createStdioTransport, detectLanguageId, detectLspServers, jsonRpcError, mapLspError, notConnectedError, reconnectExhaustedError, resolveProviderConfig, resolveServerConfig, serverStartError, validateLspConfig };
+"
+`;

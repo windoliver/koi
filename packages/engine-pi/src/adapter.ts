@@ -94,7 +94,6 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
     stream(input: EngineInput): AsyncIterable<EngineEvent> {
       const queue = new AsyncQueue<EngineEvent>();
       const metrics = createMetricsAccumulator();
-      const subscriber = createEventSubscriber(queue, metrics);
 
       const callHandlers = input.callHandlers;
       if (!callHandlers) {
@@ -115,10 +114,27 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
       const bridgeStreamFn = createBridgeStreamFn(modelStream, realStreamSimple);
 
       // Wrap Koi tool descriptors as pi AgentTools, routing execution through middleware.
+      // Build a reverse map from sanitized API names → original Koi names for event bridging.
+      const toolNameMap = new Map<string, string>();
       const agentTools =
         input.kind === "resume"
           ? []
-          : callHandlers.tools.map((desc: ToolDescriptor) => wrapTool(desc, callHandlers.toolCall));
+          : callHandlers.tools.map((desc: ToolDescriptor) => {
+              const tool = wrapTool(desc, callHandlers.toolCall);
+              const existing = toolNameMap.get(tool.name);
+              if (existing !== undefined) {
+                throw new Error(
+                  `Tool name collision: "${desc.name}" sanitizes to "${tool.name}" ` +
+                    `which is already used by "${existing}".`,
+                );
+              }
+              if (tool.name !== desc.name) {
+                toolNameMap.set(tool.name, desc.name);
+              }
+              return tool;
+            });
+
+      const subscriber = createEventSubscriber(queue, metrics, toolNameMap);
 
       // Build pi Agent options immutably with conditional spread.
       // Captures transformContext in a local const to satisfy TypeScript narrowing in closures.

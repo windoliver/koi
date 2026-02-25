@@ -153,7 +153,10 @@ function findNthToolCall(
 export function createEventSubscriber(
   queue: AsyncQueue<EngineEvent>,
   metrics: MetricsAccumulator,
+  toolNameMap?: ReadonlyMap<string, string>,
 ): (event: AgentEvent) => void {
+  /** Reverse-map a sanitized tool name back to the original Koi name. */
+  const resolveToolName = (name: string): string => toolNameMap?.get(name) ?? name;
   // Track emitted tool call starts to deduplicate between
   // message_update(toolcall_start) and tool_execution_start events.
   // Cleared on turn_end to prevent unbounded growth.
@@ -185,7 +188,7 @@ export function createEventSubscriber(
               emittedToolCalls.add(toolCall.id);
               queue.push({
                 kind: "tool_call_start",
-                toolName: toolCall.name,
+                toolName: resolveToolName(toolCall.name),
                 callId: toolCallId(toolCall.id),
                 args: (toolCall.arguments ?? {}) as Readonly<Record<string, unknown>>,
               });
@@ -231,7 +234,7 @@ export function createEventSubscriber(
           emittedToolCalls.add(event.toolCallId);
           queue.push({
             kind: "tool_call_start",
-            toolName: event.toolName,
+            toolName: resolveToolName(event.toolName),
             callId: toolCallId(event.toolCallId),
             args: (event.args ?? {}) as Readonly<Record<string, unknown>>,
           });

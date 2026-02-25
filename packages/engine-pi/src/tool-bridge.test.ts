@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { Agent, Tool, ToolDescriptor } from "@koi/core/ecs";
 import type { ToolHandler, ToolRequest, ToolResponse } from "@koi/core/middleware";
-import { createPiTools } from "./tool-bridge.js";
+import { createPiTools, sanitizeToolName } from "./tool-bridge.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -61,6 +61,43 @@ function makeMockAgent(tools: readonly Tool[]): Agent {
 }
 
 // ---------------------------------------------------------------------------
+// sanitizeToolName
+// ---------------------------------------------------------------------------
+
+describe("sanitizeToolName", () => {
+  test("passes through simple names unchanged", () => {
+    expect(sanitizeToolName("search")).toBe("search");
+    expect(sanitizeToolName("add_numbers")).toBe("add_numbers");
+    expect(sanitizeToolName("my-tool")).toBe("my-tool");
+  });
+
+  test("replaces forward slashes with underscores", () => {
+    expect(sanitizeToolName("lsp/ts/hover")).toBe("lsp_ts_hover");
+    expect(sanitizeToolName("lsp/ts/get_diagnostics")).toBe("lsp_ts_get_diagnostics");
+  });
+
+  test("replaces other invalid characters with underscores", () => {
+    expect(sanitizeToolName("tool.name")).toBe("tool_name");
+    expect(sanitizeToolName("tool:name")).toBe("tool_name");
+    expect(sanitizeToolName("tool name")).toBe("tool_name");
+  });
+
+  test("preserves hyphens and underscores", () => {
+    expect(sanitizeToolName("my-tool_v2")).toBe("my-tool_v2");
+  });
+
+  test("throws when sanitized name exceeds 64 characters", () => {
+    const longName = "a".repeat(65);
+    expect(() => sanitizeToolName(longName)).toThrow("exceeds 64 characters");
+  });
+
+  test("accepts name at exactly 64 characters", () => {
+    const name = "a".repeat(64);
+    expect(sanitizeToolName(name)).toBe(name);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // createPiTools
 // ---------------------------------------------------------------------------
 
@@ -79,6 +116,36 @@ describe("createPiTools", () => {
     expect(piTools[0]?.description).toBe("Search the web");
     expect(piTools[0]?.label).toBe("search");
     expect(piTools[1]?.name).toBe("write");
+  });
+
+  test("sanitizes tool names with slashes for the API", () => {
+    const agent = makeMockAgent([
+      makeTool("lsp/ts/hover", "Hover info"),
+      makeTool("lsp/ts/get_diagnostics", "Get diagnostics"),
+    ]);
+
+    const toolCall: ToolHandler = async (_request) => ({ output: "ok" });
+    const piTools = createPiTools(agent, toolCall);
+
+    expect(piTools[0]?.name).toBe("lsp_ts_hover");
+    expect(piTools[0]?.label).toBe("lsp/ts/hover");
+    expect(piTools[1]?.name).toBe("lsp_ts_get_diagnostics");
+  });
+
+  test("routes execute through toolCall with original name as toolId", async () => {
+    const agent = makeMockAgent([makeTool("lsp/ts/hover", "Hover")]);
+    const toolCallFn = mock(
+      async (_request: ToolRequest): Promise<ToolResponse> => ({
+        output: { contents: "string" },
+      }),
+    );
+
+    const piTools = createPiTools(agent, toolCallFn);
+    await piTools[0]?.execute("call-1", { uri: "file:///test.ts", line: 1, character: 1 });
+
+    // toolId uses the original Koi name, not the sanitized API name
+    const callArg = toolCallFn.mock.calls[0]?.[0];
+    expect(callArg?.toolId).toBe("lsp/ts/hover");
   });
 
   test("routes execute through toolCall handler", async () => {
