@@ -80,7 +80,7 @@ describe("readStream", () => {
     // Generate output larger than the limit
     const result = spawnProcess(
       "sh",
-      ["-c", "printf '%0.s_' {1..200}"],
+      ["-c", "dd if=/dev/zero bs=200 count=1 2>/dev/null | tr '\\0' '_'"],
       { PATH: process.env.PATH ?? "" },
       process.cwd(),
     );

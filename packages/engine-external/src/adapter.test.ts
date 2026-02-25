@@ -355,7 +355,7 @@ describe("createExternalAdapter — maxOutputBytes", () => {
   test("large output is truncated", async () => {
     const adapter = createExternalAdapter({
       command: "sh",
-      args: ["-c", "printf '%0.s_' {1..10000}"],
+      args: ["-c", "dd if=/dev/zero bs=10000 count=1 2>/dev/null | tr '\\0' '_'"],
       maxOutputBytes: 100,
     });
 
