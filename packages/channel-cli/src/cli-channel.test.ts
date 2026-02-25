@@ -42,11 +42,14 @@ function readStream(stream: PassThrough): string {
 // Track streams to clean up after each test
 let activeStreams: PassThrough[] = [];
 
-afterEach(() => {
+afterEach(async () => {
   for (const stream of activeStreams) {
     stream.destroy();
   }
   activeStreams = [];
+  // Let Bun's internal readline/stream cleanup settle before next test.
+  // Prevents stochastic DOMException: TimeoutError during parallel execution.
+  await Bun.sleep(10);
 });
 
 describe("createCliChannel", () => {
@@ -69,7 +72,7 @@ describe("createCliChannel", () => {
       },
       injectMessage: async (_adapter) => {
         contractStreams?.input.write("contract-inject\n");
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await Bun.sleep(50);
       },
     });
   });
@@ -254,7 +257,7 @@ describe("createCliChannel", () => {
     streams.input.write("hello\n");
 
     // Give the event loop a tick to process
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await Bun.sleep(50);
 
     expect(received).toHaveLength(1);
     expect(received[0]?.content).toEqual([{ kind: "text", text: "hello" }]);
@@ -286,7 +289,7 @@ describe("createCliChannel", () => {
     await channel.connect();
 
     streams.input.write("multi\n");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await Bun.sleep(50);
 
     expect(received1).toHaveLength(1);
     expect(received2).toHaveLength(1);
@@ -327,7 +330,7 @@ describe("createCliChannel", () => {
 
     // Send a message, handler should receive it
     streams.input.write("before\n");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await Bun.sleep(50);
     expect(received).toHaveLength(1);
 
     // Unsubscribe
@@ -335,7 +338,7 @@ describe("createCliChannel", () => {
 
     // Send another message, handler should NOT receive it
     streams.input.write("after\n");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await Bun.sleep(50);
     expect(received).toHaveLength(1);
 
     await channel.disconnect();
@@ -445,7 +448,7 @@ describe("createCliChannel", () => {
 
     await channel.connect();
     streams.input.write("hello\n");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await Bun.sleep(50);
 
     expect(received).toHaveLength(1); // second handler still received the message
     // Error written to errorOutput by onHandlerError
@@ -471,7 +474,7 @@ describe("createCliChannel", () => {
 
     await channel.connect();
     streams.input.write("first\n");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await Bun.sleep(50);
     expect(received).toHaveLength(1);
 
     await channel.disconnect();
@@ -489,7 +492,7 @@ describe("createCliChannel", () => {
     });
     await channel2.connect();
     streams2.input.write("second\n");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await Bun.sleep(50);
 
     expect(received).toHaveLength(2); // both messages received
     await channel2.disconnect();
@@ -513,7 +516,7 @@ describe("createCliChannel", () => {
     });
 
     streams.input.write("test\n");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await Bun.sleep(50);
 
     // Should only receive one message, not duplicated
     expect(received).toHaveLength(1);

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { StoreChangeEvent } from "@koi/core";
+import { brickId } from "@koi/core";
 import { createMemoryStoreChangeNotifier } from "./store-notifier.js";
 
 describe("createMemoryStoreChangeNotifier", () => {
@@ -11,9 +12,9 @@ describe("createMemoryStoreChangeNotifier", () => {
       received.push(event);
     });
 
-    notifier.notify({ kind: "saved", brickId: "brick_1", scope: "agent" });
+    notifier.notify({ kind: "saved", brickId: brickId("brick_1"), scope: "agent" });
 
-    expect(received).toEqual([{ kind: "saved", brickId: "brick_1", scope: "agent" }]);
+    expect(received).toEqual([{ kind: "saved", brickId: brickId("brick_1"), scope: "agent" }]);
   });
 
   test("notifies multiple listeners", () => {
@@ -24,7 +25,7 @@ describe("createMemoryStoreChangeNotifier", () => {
     notifier.subscribe((event) => received1.push(event));
     notifier.subscribe((event) => received2.push(event));
 
-    notifier.notify({ kind: "promoted", brickId: "brick_2", scope: "zone" });
+    notifier.notify({ kind: "promoted", brickId: brickId("brick_2"), scope: "zone" });
 
     expect(received1.length).toBe(1);
     expect(received2.length).toBe(1);
@@ -37,11 +38,11 @@ describe("createMemoryStoreChangeNotifier", () => {
     const received: StoreChangeEvent[] = [];
 
     const unsubscribe = notifier.subscribe((event) => received.push(event));
-    notifier.notify({ kind: "saved", brickId: "brick_1" });
+    notifier.notify({ kind: "saved", brickId: brickId("brick_1") });
     expect(received.length).toBe(1);
 
     unsubscribe();
-    notifier.notify({ kind: "updated", brickId: "brick_1" });
+    notifier.notify({ kind: "updated", brickId: brickId("brick_1") });
     expect(received.length).toBe(1); // no new events
   });
 
@@ -61,21 +62,21 @@ describe("createMemoryStoreChangeNotifier", () => {
       received.push("second");
     });
 
-    notifier.notify({ kind: "saved", brickId: "brick_1" });
+    notifier.notify({ kind: "saved", brickId: brickId("brick_1") });
 
     // Both should fire because snapshot was taken before iteration
     expect(received).toEqual(["first", "second"]);
 
     // But second is now unsubscribed
     received.length = 0;
-    notifier.notify({ kind: "saved", brickId: "brick_2" });
+    notifier.notify({ kind: "saved", brickId: brickId("brick_2") });
     expect(received).toEqual(["first"]);
   });
 
   test("notify with no subscribers is a no-op", () => {
     const notifier = createMemoryStoreChangeNotifier();
     // Should not throw
-    notifier.notify({ kind: "removed", brickId: "brick_1" });
+    notifier.notify({ kind: "removed", brickId: brickId("brick_1") });
   });
 
   test("multiple unsubscribe calls are safe", () => {
@@ -103,9 +104,9 @@ describe("createMemoryStoreChangeNotifier", () => {
     const received: StoreChangeEvent[] = [];
 
     notifier.subscribe((event) => received.push(event));
-    notifier.notify({ kind: "removed", brickId: "brick_1" });
+    notifier.notify({ kind: "removed", brickId: brickId("brick_1") });
 
-    expect(received).toEqual([{ kind: "removed", brickId: "brick_1" }]);
+    expect(received).toEqual([{ kind: "removed", brickId: brickId("brick_1") }]);
     expect(received[0]?.scope).toBeUndefined();
   });
 });

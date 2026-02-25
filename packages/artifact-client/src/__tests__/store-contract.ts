@@ -50,7 +50,7 @@ export function runArtifactStoreContractTests(createStore: () => ArtifactClient)
     test("save with content hash verification", async () => {
       const store = createStore();
       const content = "hash-me-please";
-      const hash = await computeContentHash(content);
+      const hash = computeContentHash(content);
       const artifact = makeArtifact({
         id: artifactId("crud-hash"),
         content,

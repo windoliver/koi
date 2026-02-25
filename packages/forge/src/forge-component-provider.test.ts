@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { Agent, SubsystemToken, TieredSandboxExecutor } from "@koi/core";
 import {
   agentId,
+  brickId,
   COMPONENT_PRIORITY,
   channelToken,
   engineToken,
@@ -47,7 +48,7 @@ function createMockAgent(): Agent {
 
 function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
-    id: `brick_${crypto.randomUUID()}`,
+    id: brickId(`brick_${crypto.randomUUID()}`),
     kind: "tool",
     name: "calc",
     description: "A calculator",
@@ -58,7 +59,6 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "test-hash",
     implementation: "return input.a + input.b;",
     inputSchema: { type: "object" },
     ...overrides,
@@ -183,7 +183,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
     const store = createInMemoryForgeStore();
     await store.save(createToolBrick({ name: "myTool" }));
     const skillBrick: SkillArtifact = {
-      id: `brick_${crypto.randomUUID()}`,
+      id: brickId(`brick_${crypto.randomUUID()}`),
       kind: "skill",
       name: "mySkill",
       description: "A skill",
@@ -194,7 +194,6 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
       version: "0.0.1",
       tags: [],
       usageCount: 0,
-      contentHash: "test-hash",
       content: "# Skill",
     };
     await store.save(skillBrick);
@@ -210,8 +209,10 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
 
   test("only loads active bricks", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "b1", name: "active" }));
-    await store.save(createToolBrick({ id: "b2", name: "deprecated", lifecycle: "deprecated" }));
+    await store.save(createToolBrick({ id: brickId("b1"), name: "active" }));
+    await store.save(
+      createToolBrick({ id: brickId("b2"), name: "deprecated", lifecycle: "deprecated" }),
+    );
 
     const provider = createForgeComponentProvider({
       store,
@@ -452,9 +453,9 @@ describe("createForgeComponentProvider", () => {
 describe("createForgeComponentProvider — scope filtering", () => {
   test("filters out agent-scoped bricks when provider scope is zone", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "b1", name: "agentTool", scope: "agent" }));
-    await store.save(createToolBrick({ id: "b2", name: "zoneTool", scope: "zone" }));
-    await store.save(createToolBrick({ id: "b3", name: "globalTool", scope: "global" }));
+    await store.save(createToolBrick({ id: brickId("b1"), name: "agentTool", scope: "agent" }));
+    await store.save(createToolBrick({ id: brickId("b2"), name: "zoneTool", scope: "zone" }));
+    await store.save(createToolBrick({ id: brickId("b3"), name: "globalTool", scope: "global" }));
 
     const provider = createForgeComponentProvider({
       store,
@@ -472,9 +473,9 @@ describe("createForgeComponentProvider — scope filtering", () => {
 
   test("agent scope sees all scopes", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "b1", name: "agentTool", scope: "agent" }));
-    await store.save(createToolBrick({ id: "b2", name: "zoneTool", scope: "zone" }));
-    await store.save(createToolBrick({ id: "b3", name: "globalTool", scope: "global" }));
+    await store.save(createToolBrick({ id: brickId("b1"), name: "agentTool", scope: "agent" }));
+    await store.save(createToolBrick({ id: brickId("b2"), name: "zoneTool", scope: "zone" }));
+    await store.save(createToolBrick({ id: brickId("b3"), name: "globalTool", scope: "global" }));
 
     const provider = createForgeComponentProvider({
       store,
@@ -488,9 +489,9 @@ describe("createForgeComponentProvider — scope filtering", () => {
 
   test("global scope sees only global bricks", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "b1", name: "agentTool", scope: "agent" }));
-    await store.save(createToolBrick({ id: "b2", name: "zoneTool", scope: "zone" }));
-    await store.save(createToolBrick({ id: "b3", name: "globalTool", scope: "global" }));
+    await store.save(createToolBrick({ id: brickId("b1"), name: "agentTool", scope: "agent" }));
+    await store.save(createToolBrick({ id: brickId("b2"), name: "zoneTool", scope: "zone" }));
+    await store.save(createToolBrick({ id: brickId("b3"), name: "globalTool", scope: "global" }));
 
     const provider = createForgeComponentProvider({
       store,
@@ -505,8 +506,8 @@ describe("createForgeComponentProvider — scope filtering", () => {
 
   test("no scope filter returns all bricks (backward-compatible)", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "b1", name: "agentTool", scope: "agent" }));
-    await store.save(createToolBrick({ id: "b2", name: "zoneTool", scope: "zone" }));
+    await store.save(createToolBrick({ id: brickId("b1"), name: "agentTool", scope: "agent" }));
+    await store.save(createToolBrick({ id: brickId("b2"), name: "zoneTool", scope: "zone" }));
 
     const provider = createForgeComponentProvider({
       store,
@@ -520,12 +521,22 @@ describe("createForgeComponentProvider — scope filtering", () => {
   test("zone-scoped brick filtered by zoneId tag", async () => {
     const store = createInMemoryForgeStore();
     await store.save(
-      createToolBrick({ id: "b1", name: "myZoneTool", scope: "zone", tags: ["zone:team-alpha"] }),
+      createToolBrick({
+        id: brickId("b1"),
+        name: "myZoneTool",
+        scope: "zone",
+        tags: ["zone:team-alpha"],
+      }),
     );
     await store.save(
-      createToolBrick({ id: "b2", name: "otherZoneTool", scope: "zone", tags: ["zone:team-beta"] }),
+      createToolBrick({
+        id: brickId("b2"),
+        name: "otherZoneTool",
+        scope: "zone",
+        tags: ["zone:team-beta"],
+      }),
     );
-    await store.save(createToolBrick({ id: "b3", name: "globalTool", scope: "global" }));
+    await store.save(createToolBrick({ id: brickId("b3"), name: "globalTool", scope: "global" }));
 
     const provider = createForgeComponentProvider({
       store,
@@ -552,7 +563,7 @@ describe("createForgeComponentProvider — delta invalidation", () => {
   test("invalidateByScope clears cache when matching scope exists", async () => {
     let searchCount = 0;
     const realStore = createInMemoryForgeStore();
-    await realStore.save(createToolBrick({ id: "b1", name: "tool1", scope: "agent" }));
+    await realStore.save(createToolBrick({ id: brickId("b1"), name: "tool1", scope: "agent" }));
 
     const countingStore = {
       ...realStore,
@@ -581,7 +592,7 @@ describe("createForgeComponentProvider — delta invalidation", () => {
   test("invalidateByScope is no-op when scope not in cache", async () => {
     let searchCount = 0;
     const realStore = createInMemoryForgeStore();
-    await realStore.save(createToolBrick({ id: "b1", name: "tool1", scope: "agent" }));
+    await realStore.save(createToolBrick({ id: brickId("b1"), name: "tool1", scope: "agent" }));
 
     const countingStore = {
       ...realStore,
@@ -610,7 +621,7 @@ describe("createForgeComponentProvider — delta invalidation", () => {
   test("invalidateByBrickId clears cache when brick is cached", async () => {
     let searchCount = 0;
     const realStore = createInMemoryForgeStore();
-    await realStore.save(createToolBrick({ id: "b1", name: "tool1" }));
+    await realStore.save(createToolBrick({ id: brickId("b1"), name: "tool1" }));
 
     const countingStore = {
       ...realStore,
@@ -637,7 +648,7 @@ describe("createForgeComponentProvider — delta invalidation", () => {
   test("invalidateByBrickId is no-op for unknown brick", async () => {
     let searchCount = 0;
     const realStore = createInMemoryForgeStore();
-    await realStore.save(createToolBrick({ id: "b1", name: "tool1" }));
+    await realStore.save(createToolBrick({ id: brickId("b1"), name: "tool1" }));
 
     const countingStore = {
       ...realStore,
@@ -679,7 +690,7 @@ describe("createForgeComponentProvider — lookupBrickId", () => {
 
   test("resolves tool name to brick ID after attach", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_abc", name: "calc" }));
+    await store.save(createToolBrick({ id: brickId("brick_abc"), name: "calc" }));
 
     const provider = createForgeComponentProvider({
       store,
@@ -692,7 +703,7 @@ describe("createForgeComponentProvider — lookupBrickId", () => {
 
   test("returns undefined for non-forged tool names", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_abc", name: "calc" }));
+    await store.save(createToolBrick({ id: brickId("brick_abc"), name: "calc" }));
 
     const provider = createForgeComponentProvider({
       store,
@@ -705,7 +716,7 @@ describe("createForgeComponentProvider — lookupBrickId", () => {
 
   test("returns undefined after invalidation", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_abc", name: "calc" }));
+    await store.save(createToolBrick({ id: brickId("brick_abc"), name: "calc" }));
 
     const provider = createForgeComponentProvider({
       store,
@@ -728,7 +739,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
   test("auto-invalidates on 'saved' event", async () => {
     let searchCount = 0;
     const realStore = createInMemoryForgeStore();
-    await realStore.save(createToolBrick({ id: "b1", name: "tool1" }));
+    await realStore.save(createToolBrick({ id: brickId("b1"), name: "tool1" }));
 
     const countingStore = {
       ...realStore,
@@ -749,7 +760,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
     expect(searchCount).toBe(1);
 
     // Simulate a new brick being saved elsewhere
-    notifier.notify({ kind: "saved", brickId: "b2", scope: "agent" });
+    notifier.notify({ kind: "saved", brickId: brickId("b2"), scope: "agent" });
 
     // Cache should be invalidated — next attach re-queries
     await provider.attach(createMockAgent());
@@ -759,7 +770,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
   test("auto-invalidates on 'removed' event", async () => {
     let searchCount = 0;
     const realStore = createInMemoryForgeStore();
-    await realStore.save(createToolBrick({ id: "b1", name: "tool1" }));
+    await realStore.save(createToolBrick({ id: brickId("b1"), name: "tool1" }));
 
     const countingStore = {
       ...realStore,
@@ -779,7 +790,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
     await provider.attach(createMockAgent());
     expect(searchCount).toBe(1);
 
-    notifier.notify({ kind: "removed", brickId: "b1" });
+    notifier.notify({ kind: "removed", brickId: brickId("b1") });
 
     await provider.attach(createMockAgent());
     expect(searchCount).toBe(2);
@@ -788,7 +799,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
   test("targeted invalidation on 'updated' for cached brick", async () => {
     let searchCount = 0;
     const realStore = createInMemoryForgeStore();
-    await realStore.save(createToolBrick({ id: "b1", name: "tool1" }));
+    await realStore.save(createToolBrick({ id: brickId("b1"), name: "tool1" }));
 
     const countingStore = {
       ...realStore,
@@ -809,7 +820,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
     expect(searchCount).toBe(1);
 
     // Update event for cached brick
-    notifier.notify({ kind: "updated", brickId: "b1" });
+    notifier.notify({ kind: "updated", brickId: brickId("b1") });
 
     await provider.attach(createMockAgent());
     expect(searchCount).toBe(2);
@@ -818,7 +829,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
   test("no invalidation on 'updated' for unknown brick", async () => {
     let searchCount = 0;
     const realStore = createInMemoryForgeStore();
-    await realStore.save(createToolBrick({ id: "b1", name: "tool1" }));
+    await realStore.save(createToolBrick({ id: brickId("b1"), name: "tool1" }));
 
     const countingStore = {
       ...realStore,
@@ -839,7 +850,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
     expect(searchCount).toBe(1);
 
     // Update event for a brick NOT in cache
-    notifier.notify({ kind: "updated", brickId: "b_unknown" });
+    notifier.notify({ kind: "updated", brickId: brickId("b_unknown") });
 
     await provider.attach(createMockAgent());
     expect(searchCount).toBe(1); // Cache NOT invalidated
@@ -848,7 +859,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
   test("promoted event with scope triggers scope-based invalidation", async () => {
     let searchCount = 0;
     const realStore = createInMemoryForgeStore();
-    await realStore.save(createToolBrick({ id: "b1", name: "tool1", scope: "agent" }));
+    await realStore.save(createToolBrick({ id: brickId("b1"), name: "tool1", scope: "agent" }));
 
     const countingStore = {
       ...realStore,
@@ -869,7 +880,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
     expect(searchCount).toBe(1);
 
     // Promoted event with matching scope
-    notifier.notify({ kind: "promoted", brickId: "b_other", scope: "agent" });
+    notifier.notify({ kind: "promoted", brickId: brickId("b_other"), scope: "agent" });
 
     await provider.attach(createMockAgent());
     expect(searchCount).toBe(2);
@@ -878,7 +889,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
   test("dispose unsubscribes from notifier", async () => {
     let searchCount = 0;
     const realStore = createInMemoryForgeStore();
-    await realStore.save(createToolBrick({ id: "b1", name: "tool1" }));
+    await realStore.save(createToolBrick({ id: brickId("b1"), name: "tool1" }));
 
     const countingStore = {
       ...realStore,
@@ -902,7 +913,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
     provider.dispose();
 
     // Events after dispose should NOT invalidate
-    notifier.notify({ kind: "saved", brickId: "b2", scope: "agent" });
+    notifier.notify({ kind: "saved", brickId: brickId("b2"), scope: "agent" });
 
     await provider.attach(createMockAgent());
     expect(searchCount).toBe(1); // Still cached
@@ -939,7 +950,7 @@ function createImplementationBrick(
   overrides?: Partial<ImplementationArtifact>,
 ): ImplementationArtifact {
   return {
-    id: `brick_${crypto.randomUUID()}`,
+    id: brickId(`brick_${crypto.randomUUID()}`),
     kind,
     name: `my-${kind}`,
     description: `A ${kind} implementation`,
@@ -950,7 +961,6 @@ function createImplementationBrick(
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "test-hash",
     implementation: `// ${kind} code`,
     ...overrides,
   } as ImplementationArtifact;
@@ -1025,7 +1035,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
     await store.save(createToolBrick({ name: "myTool" }));
     await store.save(createImplementationBrick("engine", { name: "myEngine" }));
     const skillBrick: SkillArtifact = {
-      id: `brick_${crypto.randomUUID()}`,
+      id: brickId(`brick_${crypto.randomUUID()}`),
       kind: "skill",
       name: "mySkill",
       description: "A skill",
@@ -1036,7 +1046,6 @@ describe("createForgeComponentProvider — implementation kinds", () => {
       version: "0.0.1",
       tags: [],
       usageCount: 0,
-      contentHash: "test-hash",
       content: "# Skill",
     };
     await store.save(skillBrick);
@@ -1077,7 +1086,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
     const store = createInMemoryForgeStore();
     await store.save(
       createImplementationBrick("middleware", {
-        id: "brick_mw1",
+        id: brickId("brick_mw1"),
         name: "audit",
         trustTier: "promoted",
       }),
@@ -1142,7 +1151,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
     await realStore.save(createImplementationBrick("resolver", { name: "myResolver" }));
 
     // Simulate notifier event
-    notifier.notify({ kind: "saved", brickId: "b2", scope: "agent" });
+    notifier.notify({ kind: "saved", brickId: brickId("b2"), scope: "agent" });
 
     // Cache should be invalidated — next attach re-queries
     const second = await provider.attach(createMockAgent());

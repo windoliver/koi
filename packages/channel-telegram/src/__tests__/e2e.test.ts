@@ -12,6 +12,10 @@
  * Prerequisites (auto-loaded from .env by Bun):
  *   ANTHROPIC_API_KEY  — Claude API key (required; skips all tests if absent)
  *   TELEGRAM_BOT_TOKEN — Bot token from @BotFather (required; skips if absent)
+ *   E2E_TESTS=1        — explicit opt-in (required; skips if absent)
+ *
+ * E2E tests require API keys AND explicit opt-in via E2E_TESTS=1 to avoid
+ * rate-limit failures when 500+ test files run in parallel.
  *
  * Telegram API calls (sendMessage, setWebhook, etc.) are stubbed so the
  * tests run without any Telegram network access. Only the Claude API is real.
@@ -40,7 +44,8 @@ import { createTelegramChannel } from "../telegram-channel.js";
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 
-const SUITE_ENABLED = BOT_TOKEN.length > 0 && ANTHROPIC_API_KEY.length > 0;
+const E2E_OPTED_IN = process.env.E2E_TESTS === "1";
+const SUITE_ENABLED = BOT_TOKEN.length > 0 && ANTHROPIC_API_KEY.length > 0 && E2E_OPTED_IN;
 
 // E2E tests are slow — Claude SDK subprocess can take 10–40 s
 const E2E_TIMEOUT_MS = 60_000;

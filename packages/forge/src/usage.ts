@@ -4,6 +4,7 @@
  */
 
 import type { BrickArtifact, ForgeStore, KoiError, Result, TrustTier } from "@koi/core";
+import { brickId as toBrickId } from "@koi/core";
 import type { AutoPromotionConfig, ForgeConfig } from "./config.js";
 import type { ForgeError } from "./errors.js";
 import { storeError } from "./errors.js";
@@ -84,7 +85,7 @@ export async function recordBrickUsage(
   brickId: string,
   config: ForgeConfig,
 ): Promise<Result<UsageResult, ForgeError>> {
-  const loadResult = await store.load(brickId);
+  const loadResult = await store.load(toBrickId(brickId));
   if (!loadResult.ok) {
     return { ok: false, error: toForgeError(loadResult.error) };
   }
@@ -93,7 +94,7 @@ export async function recordBrickUsage(
   const newUsageCount = brick.usageCount + 1;
   const promotedTier = computeAutoPromotion(brick.trustTier, newUsageCount, config.autoPromotion);
 
-  const updateResult = await store.update(brickId, {
+  const updateResult = await store.update(toBrickId(brickId), {
     usageCount: newUsageCount,
     ...(promotedTier !== undefined ? { trustTier: promotedTier } : {}),
   });

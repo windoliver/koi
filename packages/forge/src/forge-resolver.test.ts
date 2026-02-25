@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createForgeResolver, extractSource } from "./forge-resolver.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
@@ -6,7 +7,7 @@ import type { AgentArtifact, CompositeArtifact, SkillArtifact, ToolArtifact } fr
 
 function createBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
-    id: `brick_${Math.random().toString(36).slice(2, 10)}`,
+    id: brickId(`brick_${Math.random().toString(36).slice(2, 10)}`),
     kind: "tool",
     name: "test-brick",
     description: "A test brick",
@@ -17,7 +18,6 @@ function createBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "test-hash",
     implementation: "return 1;",
     inputSchema: { type: "object" },
     ...overrides,
@@ -26,7 +26,7 @@ function createBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
 
 function createSkillBrick(overrides?: Partial<SkillArtifact>): SkillArtifact {
   return {
-    id: `brick_${Math.random().toString(36).slice(2, 10)}`,
+    id: brickId(`brick_${Math.random().toString(36).slice(2, 10)}`),
     kind: "skill",
     name: "test-skill",
     description: "A test skill",
@@ -37,7 +37,6 @@ function createSkillBrick(overrides?: Partial<SkillArtifact>): SkillArtifact {
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "test-hash",
     content: "# How to greet\nSay hello.",
     ...overrides,
   };
@@ -45,7 +44,7 @@ function createSkillBrick(overrides?: Partial<SkillArtifact>): SkillArtifact {
 
 function createAgentBrick(overrides?: Partial<AgentArtifact>): AgentArtifact {
   return {
-    id: `brick_${Math.random().toString(36).slice(2, 10)}`,
+    id: brickId(`brick_${Math.random().toString(36).slice(2, 10)}`),
     kind: "agent",
     name: "test-agent",
     description: "A test agent",
@@ -56,7 +55,6 @@ function createAgentBrick(overrides?: Partial<AgentArtifact>): AgentArtifact {
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "test-hash",
     manifestYaml: "name: test-agent\nversion: 0.0.1",
     ...overrides,
   };
@@ -64,7 +62,7 @@ function createAgentBrick(overrides?: Partial<AgentArtifact>): AgentArtifact {
 
 function createCompositeBrick(overrides?: Partial<CompositeArtifact>): CompositeArtifact {
   return {
-    id: `brick_${Math.random().toString(36).slice(2, 10)}`,
+    id: brickId(`brick_${Math.random().toString(36).slice(2, 10)}`),
     kind: "composite",
     name: "test-composite",
     description: "A test composite",
@@ -75,8 +73,7 @@ function createCompositeBrick(overrides?: Partial<CompositeArtifact>): Composite
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "test-hash",
-    brickIds: ["brick_a", "brick_b"],
+    brickIds: [brickId("brick_a"), brickId("brick_b")],
     ...overrides,
   };
 }
@@ -84,8 +81,8 @@ function createCompositeBrick(overrides?: Partial<CompositeArtifact>): Composite
 describe("createForgeResolver", () => {
   test("discover returns all bricks", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createBrick({ id: "b1" }));
-    await store.save(createBrick({ id: "b2" }));
+    await store.save(createBrick({ id: brickId("b1") }));
+    await store.save(createBrick({ id: brickId("b2") }));
 
     const resolver = createForgeResolver(store, { agentId: "agent-1" });
     const results = await resolver.discover();
@@ -101,7 +98,7 @@ describe("createForgeResolver", () => {
 
   test("load returns brick by id", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createBrick({ id: "b1", name: "my-tool" }));
+    await store.save(createBrick({ id: brickId("b1"), name: "my-tool" }));
 
     const resolver = createForgeResolver(store, { agentId: "agent-1" });
     const result = await resolver.load("b1");
@@ -151,10 +148,10 @@ describe("createForgeResolver", () => {
 
   test("discover excludes agent-scoped bricks not owned by caller", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createBrick({ id: "b1", scope: "agent" }));
+    await store.save(createBrick({ id: brickId("b1"), scope: "agent" }));
     await store.save(
       createBrick({
-        id: "b2",
+        id: brickId("b2"),
         scope: "agent",
         provenance: {
           ...DEFAULT_PROVENANCE,
@@ -166,14 +163,14 @@ describe("createForgeResolver", () => {
     const resolver = createForgeResolver(store, { agentId: "agent-1" });
     const results = await resolver.discover();
     expect(results).toHaveLength(1);
-    expect(results[0]?.id).toBe("b1");
+    expect(results[0]?.id).toBe(brickId("b1"));
   });
 
   test("discover includes global-scoped bricks for any caller", async () => {
     const store = createInMemoryForgeStore();
     await store.save(
       createBrick({
-        id: "b1",
+        id: brickId("b1"),
         scope: "global",
         provenance: {
           ...DEFAULT_PROVENANCE,
@@ -191,7 +188,7 @@ describe("createForgeResolver", () => {
     const store = createInMemoryForgeStore();
     await store.save(
       createBrick({
-        id: "b1",
+        id: brickId("b1"),
         scope: "agent",
         provenance: {
           ...DEFAULT_PROVENANCE,
@@ -210,7 +207,7 @@ describe("createForgeResolver", () => {
 
   test("load succeeds for own agent-scoped brick", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createBrick({ id: "b1", scope: "agent" }));
+    await store.save(createBrick({ id: brickId("b1"), scope: "agent" }));
 
     const resolver = createForgeResolver(store, { agentId: "agent-1" });
     const result = await resolver.load("b1");
@@ -221,7 +218,7 @@ describe("createForgeResolver", () => {
     const store = createInMemoryForgeStore();
     await store.save(
       createBrick({
-        id: "b1",
+        id: brickId("b1"),
         scope: "agent",
         provenance: {
           ...DEFAULT_PROVENANCE,
@@ -242,7 +239,7 @@ describe("createForgeResolver", () => {
 
   test("source succeeds for own agent-scoped brick", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createBrick({ id: "b1", scope: "agent" }));
+    await store.save(createBrick({ id: brickId("b1"), scope: "agent" }));
 
     const resolver = createForgeResolver(store, { agentId: "agent-1" });
     const result = await resolver.source?.("b1");
@@ -280,7 +277,7 @@ describe("extractSource", () => {
   });
 
   test("composite brick returns JSON brickIds as json", () => {
-    const brick = createCompositeBrick({ brickIds: ["a", "b", "c"] });
+    const brick = createCompositeBrick({ brickIds: [brickId("a"), brickId("b"), brickId("c")] });
     const bundle = extractSource(brick);
     expect(bundle.language).toBe("json");
     expect(JSON.parse(bundle.content)).toEqual(["a", "b", "c"]);
@@ -307,7 +304,7 @@ describe("extractSource", () => {
 describe("ForgeResolver.source()", () => {
   test("source returns content for tool brick", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createBrick({ id: "t1", implementation: "return 42;" }));
+    await store.save(createBrick({ id: brickId("t1"), implementation: "return 42;" }));
 
     const resolver = createForgeResolver(store, { agentId: "agent-1" });
     expect(resolver.source).toBeDefined();

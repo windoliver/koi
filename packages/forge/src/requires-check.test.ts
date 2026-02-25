@@ -11,8 +11,8 @@ describe("checkBrickRequires", () => {
 
   test("returns satisfied when all requirements are met", () => {
     const requires: BrickRequires = {
-      // "bun" should be available in test environment
-      bins: ["bun"],
+      // "sh" is universally available on all Unix-like systems
+      bins: ["sh"],
       env: ["PATH"],
       tools: ["myTool"],
     };
@@ -68,7 +68,7 @@ describe("checkBrickRequires", () => {
 
   test("returns satisfied when only bins are specified and all present", () => {
     const requires: BrickRequires = {
-      bins: ["bun"],
+      bins: ["sh"],
     };
     const result = checkBrickRequires(requires, new Set());
     expect(result.satisfied).toBe(true);

@@ -1,12 +1,17 @@
 /**
  * Tests for model-resolve — shared model resolution logic.
+ *
+ * Uses dependency injection (factoryOverrides) instead of mock.module()
+ * to avoid global mock bleeding across test files during parallel runs.
  */
 
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import type { AgentManifest } from "@koi/core";
+import type { AdapterFactory } from "./model-resolve.js";
+import { parseModelName, resolveModelCall } from "./model-resolve.js";
 
 // ---------------------------------------------------------------------------
-// Mock @koi/model-router adapters
+// Mock adapter (injected via DI, not mock.module)
 // ---------------------------------------------------------------------------
 
 const mockComplete = mock(async () => ({
@@ -21,13 +26,11 @@ const mockAdapter = {
   stream: async function* () {},
 };
 
-mock.module("@koi/model-router", () => ({
-  createAnthropicAdapter: () => mockAdapter,
-  createOpenAIAdapter: () => mockAdapter,
-  createOpenRouterAdapter: () => mockAdapter,
-}));
-
-const { parseModelName, resolveModelCall } = await import("./model-resolve.js");
+const mockFactories: Readonly<Record<string, AdapterFactory>> = {
+  anthropic: () => mockAdapter,
+  openai: () => mockAdapter,
+  openrouter: () => mockAdapter,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -110,34 +113,37 @@ describe("parseModelName", () => {
 describe("resolveModelCall", () => {
   test("throws on unknown provider", () => {
     setEnv("FAKE_API_KEY", "sk-test");
-    expect(() => resolveModelCall(makeManifest("fake:some-model"))).toThrow(
+    expect(() => resolveModelCall(makeManifest("fake:some-model"), mockFactories)).toThrow(
       /Unknown model provider "fake".*Supported providers/,
     );
   });
 
   test("throws when API key is missing", () => {
     setEnv("ANTHROPIC_API_KEY", undefined);
-    expect(() => resolveModelCall(makeManifest("anthropic:claude-sonnet-4-5-20250929"))).toThrow(
-      /Missing API key.*ANTHROPIC_API_KEY/,
-    );
+    expect(() =>
+      resolveModelCall(makeManifest("anthropic:claude-sonnet-4-5-20250929"), mockFactories),
+    ).toThrow(/Missing API key.*ANTHROPIC_API_KEY/);
   });
 
   test("throws when API key is empty string", () => {
     setEnv("OPENAI_API_KEY", "");
-    expect(() => resolveModelCall(makeManifest("openai:gpt-4o"))).toThrow(
+    expect(() => resolveModelCall(makeManifest("openai:gpt-4o"), mockFactories)).toThrow(
       /Missing API key.*OPENAI_API_KEY/,
     );
   });
 
   test("returns a ModelHandler when API key is set", () => {
     setEnv("ANTHROPIC_API_KEY", "sk-test-key");
-    const handler = resolveModelCall(makeManifest("anthropic:claude-sonnet-4-5-20250929"));
+    const handler = resolveModelCall(
+      makeManifest("anthropic:claude-sonnet-4-5-20250929"),
+      mockFactories,
+    );
     expect(typeof handler).toBe("function");
   });
 
   test("returned ModelHandler calls adapter.complete with correct model", async () => {
     setEnv("OPENAI_API_KEY", "sk-test-key");
-    const handler = resolveModelCall(makeManifest("openai:gpt-4o"));
+    const handler = resolveModelCall(makeManifest("openai:gpt-4o"), mockFactories);
 
     const request = {
       messages: [

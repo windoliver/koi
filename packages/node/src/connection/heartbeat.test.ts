@@ -25,7 +25,7 @@ describe("heartbeat monitor", () => {
     });
 
     hb.start();
-    await new Promise((r) => setTimeout(r, 130));
+    await Bun.sleep(130);
     hb.stop();
 
     // With 50ms interval over 130ms, expect 2 pings
@@ -43,7 +43,7 @@ describe("heartbeat monitor", () => {
     });
 
     hb.start();
-    await new Promise((r) => setTimeout(r, 130));
+    await Bun.sleep(130);
     hb.stop();
 
     expect(onTimeout).not.toHaveBeenCalled();
@@ -59,7 +59,7 @@ describe("heartbeat monitor", () => {
     });
 
     hb.start();
-    await new Promise((r) => setTimeout(r, 100));
+    await Bun.sleep(100);
     hb.stop();
 
     expect(onTimeout).toHaveBeenCalledTimes(1);
@@ -86,7 +86,7 @@ describe("heartbeat monitor", () => {
 
     hb.start();
     hb.stop();
-    await new Promise((r) => setTimeout(r, 100));
+    await Bun.sleep(100);
 
     expect(onPing).toHaveBeenCalledTimes(0);
   });

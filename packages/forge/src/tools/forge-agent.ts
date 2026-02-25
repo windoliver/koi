@@ -9,18 +9,13 @@
  */
 
 import type { BrickArtifact, Result, Tool } from "@koi/core";
+import { brickId } from "@koi/core";
 import { assembleManifest } from "../assemble-manifest.js";
 import type { ForgeError } from "../errors.js";
 import { staticError } from "../errors.js";
 import type { AgentArtifact, ForgeAgentInput, ForgeResult } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
-import {
-  buildBaseFields,
-  computeContentHash,
-  createForgeTool,
-  parseAgentInput,
-  runForgePipeline,
-} from "./shared.js";
+import { buildBaseFields, createForgeTool, parseAgentInput, runForgePipeline } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // onSpawn callback type
@@ -164,10 +159,9 @@ async function forgeAgentHandler(
       : {}),
   };
 
-  return runForgePipeline(forgeInput, deps, (id, report) => {
-    const contentHash = computeContentHash(manifestYaml, forgeInput.files);
+  return runForgePipeline(forgeInput, deps, (report) => {
     const artifact: AgentArtifact = {
-      ...buildBaseFields(id, forgeInput, report, deps, contentHash),
+      ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
       kind: "agent",
       manifestYaml,
       ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),

@@ -4,23 +4,23 @@
 
 import { describe, expect, mock, test } from "bun:test";
 import type { SigningBackend, ToolArtifact } from "@koi/core";
+import { brickId } from "@koi/core";
+import { computeBrickId } from "@koi/hash";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { signAttestation } from "./attestation.js";
 import { createForgeRuntime } from "./forge-runtime.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
-import { computeContentHash } from "./tools/shared.js";
 import type { SandboxExecutor, TieredSandboxExecutor } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
-const DEFAULT_IMPLEMENTATION = "return input;";
-const VALID_CONTENT_HASH = computeContentHash(DEFAULT_IMPLEMENTATION);
-
 function testToolArtifact(overrides?: Partial<ToolArtifact>): ToolArtifact {
+  const implementation = overrides?.implementation ?? "return input;";
+  const id = overrides?.id ?? computeBrickId("tool", implementation, overrides?.files);
   return {
-    id: crypto.randomUUID(),
+    id,
     kind: "tool",
     name: "test-tool",
     description: "A test tool",
@@ -31,10 +31,15 @@ function testToolArtifact(overrides?: Partial<ToolArtifact>): ToolArtifact {
     version: "1.0.0",
     tags: [],
     usageCount: 0,
-    contentHash: VALID_CONTENT_HASH,
-    implementation: DEFAULT_IMPLEMENTATION,
+    implementation,
     inputSchema: { type: "object" },
     ...overrides,
+    // Recompute id if overrides changed content but not id
+    ...(overrides !== undefined && overrides.id === undefined
+      ? {
+          id: computeBrickId("tool", overrides.implementation ?? implementation, overrides.files),
+        }
+      : {}),
   };
 }
 
@@ -96,9 +101,11 @@ describe("createForgeRuntime", () => {
 
   test("toolDescriptors returns descriptors for all active tools", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(testToolArtifact({ id: "t1", name: "tool-a" }));
-    await store.save(testToolArtifact({ id: "t2", name: "tool-b" }));
-    await store.save(testToolArtifact({ id: "t3", name: "draft-tool", lifecycle: "draft" }));
+    await store.save(testToolArtifact({ id: brickId("t1"), name: "tool-a" }));
+    await store.save(testToolArtifact({ id: brickId("t2"), name: "tool-b" }));
+    await store.save(
+      testToolArtifact({ id: brickId("t3"), name: "draft-tool", lifecycle: "draft" }),
+    );
 
     const runtime = createForgeRuntime({ store, executor: mockTiered() });
     const descriptors = await runtime.toolDescriptors();
@@ -200,12 +207,13 @@ describe("createForgeRuntime", () => {
 // ---------------------------------------------------------------------------
 
 describe("createForgeRuntime — integrity verification", () => {
-  test("resolveTool returns undefined when content hash is tampered", async () => {
+  test("resolveTool returns undefined when content id is tampered", async () => {
     const store = createInMemoryForgeStore();
+    // Save with a bogus id that doesn't match the content
     await store.save(
       testToolArtifact({
+        id: brickId("wrong-id-that-does-not-match"),
         name: "tampered",
-        contentHash: "wrong-hash-that-does-not-match",
       }),
     );
 
@@ -215,7 +223,7 @@ describe("createForgeRuntime — integrity verification", () => {
     expect(tool).toBeUndefined();
   });
 
-  test("resolveTool succeeds when content hash is valid", async () => {
+  test("resolveTool succeeds when content id is valid", async () => {
     const store = createInMemoryForgeStore();
     await store.save(testToolArtifact({ name: "valid-tool" }));
 
@@ -257,7 +265,6 @@ describe("createForgeRuntime — integrity verification", () => {
       testToolArtifact({
         name: "evolving-tool",
         implementation: newImpl,
-        contentHash: computeContentHash(newImpl),
       }),
     );
 
@@ -272,8 +279,8 @@ describe("createForgeRuntime — integrity verification", () => {
     const store = createInMemoryForgeStore();
     await store.save(
       testToolArtifact({
+        id: brickId("tampered-hash"),
         name: "bad-tool",
-        contentHash: "tampered-hash",
       }),
     );
 
@@ -359,7 +366,7 @@ describe("createForgeRuntime — attestation verification", () => {
     const signer = createTestSigner();
     const store = createInMemoryForgeStore();
 
-    // Save a brick with no attestation — content hash is still valid
+    // Save a brick with no attestation — content id is still valid
     await store.save(testToolArtifact({ name: "unsigned-tool" }));
 
     const runtime = createForgeRuntime({ store, executor: mockTiered(), signer });

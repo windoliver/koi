@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SandboxExecutor, TieredSandboxExecutor, ToolArtifact } from "@koi/core";
+import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
@@ -9,7 +10,7 @@ import type { ForgeDeps } from "./shared.js";
 
 function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
-    id: `brick_${Math.random().toString(36).slice(2, 10)}`,
+    id: brickId(`brick_${Math.random().toString(36).slice(2, 10)}`),
     kind: "tool",
     name: "test-brick",
     description: "A test brick",
@@ -20,7 +21,6 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "test-hash",
     implementation: "return 1;",
     inputSchema: { type: "object" },
     ...overrides,
@@ -59,8 +59,8 @@ describe("createComposeForgeTool", () => {
 
   test("composes bricks and saves to store", async () => {
     const store = createInMemoryForgeStore();
-    const brick1 = createToolBrick({ id: "brick_aaa" });
-    const brick2 = createToolBrick({ id: "brick_bbb", name: "second-brick" });
+    const brick1 = createToolBrick({ id: brickId("brick_aaa") });
+    const brick2 = createToolBrick({ id: brickId("brick_bbb"), name: "second-brick" });
     await store.save(brick1);
     await store.save(brick2);
 
@@ -82,14 +82,14 @@ describe("createComposeForgeTool", () => {
     if (loadResult.ok) {
       expect(loadResult.value.kind).toBe("composite");
       if (loadResult.value.kind === "composite") {
-        expect(loadResult.value.brickIds).toEqual(["brick_aaa", "brick_bbb"]);
+        expect(loadResult.value.brickIds).toEqual([brickId("brick_aaa"), brickId("brick_bbb")]);
       }
     }
   });
 
   test("returns verification report in result", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_aaa" }));
+    await store.save(createToolBrick({ id: brickId("brick_aaa") }));
 
     const tool = createComposeForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -105,7 +105,7 @@ describe("createComposeForgeTool", () => {
 
   test("includes metadata in result", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_aaa" }));
+    await store.save(createToolBrick({ id: brickId("brick_aaa") }));
 
     const tool = createComposeForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -121,7 +121,7 @@ describe("createComposeForgeTool", () => {
 
   test("returns forgesConsumed = 1 on success", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_aaa" }));
+    await store.save(createToolBrick({ id: brickId("brick_aaa") }));
 
     const tool = createComposeForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -179,7 +179,7 @@ describe("createComposeForgeTool", () => {
 
   test("returns error for invalid name", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_aaa" }));
+    await store.save(createToolBrick({ id: brickId("brick_aaa") }));
 
     const tool = createComposeForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -216,7 +216,7 @@ describe("createComposeForgeTool", () => {
 
   test("returns error when one of multiple bricks does not exist", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_exists" }));
+    await store.save(createToolBrick({ id: brickId("brick_exists") }));
 
     const tool = createComposeForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -236,7 +236,7 @@ describe("createComposeForgeTool", () => {
 
   test("returns error for duplicate brick IDs", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_dup" }));
+    await store.save(createToolBrick({ id: brickId("brick_dup") }));
 
     const tool = createComposeForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -257,7 +257,7 @@ describe("createComposeForgeTool", () => {
 
   test("returns store error on save failure", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_aaa" }));
+    await store.save(createToolBrick({ id: brickId("brick_aaa") }));
 
     // Override save to fail after loading succeeds
     const failingSaveStore = {
@@ -324,8 +324,8 @@ describe("createComposeForgeTool", () => {
 
   test("sandbox + sandbox → sandbox trust", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_s1", trustTier: "sandbox" }));
-    await store.save(createToolBrick({ id: "brick_s2", trustTier: "sandbox" }));
+    await store.save(createToolBrick({ id: brickId("brick_s1"), trustTier: "sandbox" }));
+    await store.save(createToolBrick({ id: brickId("brick_s2"), trustTier: "sandbox" }));
 
     const tool = createComposeForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -340,8 +340,8 @@ describe("createComposeForgeTool", () => {
 
   test("sandbox + verified → sandbox (min)", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_s3", trustTier: "sandbox" }));
-    await store.save(createToolBrick({ id: "brick_v1", trustTier: "verified" }));
+    await store.save(createToolBrick({ id: brickId("brick_s3"), trustTier: "sandbox" }));
+    await store.save(createToolBrick({ id: brickId("brick_v1"), trustTier: "verified" }));
 
     const tool = createComposeForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -356,8 +356,8 @@ describe("createComposeForgeTool", () => {
 
   test("verified + promoted → verified (min)", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_v2", trustTier: "verified" }));
-    await store.save(createToolBrick({ id: "brick_p1", trustTier: "promoted" }));
+    await store.save(createToolBrick({ id: brickId("brick_v2"), trustTier: "verified" }));
+    await store.save(createToolBrick({ id: brickId("brick_p1"), trustTier: "promoted" }));
 
     const tool = createComposeForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -377,7 +377,9 @@ describe("createComposeForgeTool", () => {
 
   test("stores composition metadata in _composition.json", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_m1", name: "calc", trustTier: "sandbox" }));
+    await store.save(
+      createToolBrick({ id: brickId("brick_m1"), name: "calc", trustTier: "sandbox" }),
+    );
 
     const tool = createComposeForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -407,7 +409,7 @@ describe("createComposeForgeTool", () => {
 
   test("propagates tags to composite artifact", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_t1" }));
+    await store.save(createToolBrick({ id: brickId("brick_t1") }));
 
     const tool = createComposeForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -428,7 +430,7 @@ describe("createComposeForgeTool", () => {
     const store = createInMemoryForgeStore();
     await store.save(
       createToolBrick({
-        id: "brick_own",
+        id: brickId("brick_own"),
         provenance: {
           ...DEFAULT_PROVENANCE,
           metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-1" },
@@ -437,7 +439,7 @@ describe("createComposeForgeTool", () => {
     );
     await store.save(
       createToolBrick({
-        id: "brick_foreign",
+        id: brickId("brick_foreign"),
         provenance: {
           ...DEFAULT_PROVENANCE,
           metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-2" },
@@ -461,7 +463,7 @@ describe("createComposeForgeTool", () => {
     const store = createInMemoryForgeStore();
     await store.save(
       createToolBrick({
-        id: "brick_own",
+        id: brickId("brick_own"),
         provenance: {
           ...DEFAULT_PROVENANCE,
           metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-1" },
@@ -470,7 +472,7 @@ describe("createComposeForgeTool", () => {
     );
     await store.save(
       createToolBrick({
-        id: "brick_global",
+        id: brickId("brick_global"),
         provenance: {
           ...DEFAULT_PROVENANCE,
           metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-2" },

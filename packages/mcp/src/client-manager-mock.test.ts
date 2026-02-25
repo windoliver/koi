@@ -32,6 +32,8 @@ let callToolCalls: Array<{
   name: string;
   arguments: Record<string, unknown>;
 }> = [];
+// Track pending "hang" resolve callbacks for cleanup (justified: mutable state for test lifecycle)
+let pendingHangResolvers: Array<() => void> = [];
 
 function resetMockState(): void {
   mockConnectBehavior = "succeed";
@@ -42,6 +44,11 @@ function resetMockState(): void {
   connectCallCount = 0;
   closeCallCount = 0;
   callToolCalls = [];
+  // Resolve any lingering hang promises from previous tests
+  for (const resolve of pendingHangResolvers) {
+    resolve();
+  }
+  pendingHangResolvers = [];
 }
 
 // ---------------------------------------------------------------------------
@@ -50,34 +57,50 @@ function resetMockState(): void {
 
 function createMockDeps(): ClientManagerDeps {
   return {
-    createClient: (_info) => ({
-      async connect(_transport: unknown): Promise<void> {
-        connectCallCount += 1;
-        if (mockConnectBehavior === "fail") {
-          throw new Error("Connection refused");
-        }
-        if (mockConnectBehavior === "hang") {
-          // Never resolve — rely on timeout to fire
-          return new Promise<void>(() => {});
-        }
-      },
-      async close(): Promise<void> {
-        closeCallCount += 1;
-        if (mockCloseShouldThrow) {
-          throw new Error("Close error");
-        }
-      },
-      async listTools() {
-        return mockListToolsResult;
-      },
-      async callTool(params: { name: string; arguments: Record<string, unknown> }) {
-        callToolCalls.push(params);
-        if (mockCallToolShouldThrow) {
-          throw new Error("Tool execution error");
-        }
-        return mockCallToolResult;
-      },
-    }),
+    createClient: (_info) => {
+      // Manual resolve callback to cancel pending "hang" connects when close() is called.
+      // Avoids AbortController and setTimeout — bare promise prevents DOMException leaks
+      // that Bun's test runner reports as "Unhandled error between tests" under parallel load.
+      // let justified: mutable ref to settle pending hang promise from close()
+      let hangResolve: (() => void) | undefined;
+
+      return {
+        async connect(_transport: unknown): Promise<void> {
+          connectCallCount += 1;
+          if (mockConnectBehavior === "fail") {
+            throw new Error("Connection refused");
+          }
+          if (mockConnectBehavior === "hang") {
+            // Bare promise — never resolves naturally; settled via close() or resetMockState
+            return new Promise<void>((resolve) => {
+              hangResolve = resolve;
+              pendingHangResolvers.push(resolve);
+            });
+          }
+        },
+        async close(): Promise<void> {
+          // Settle any pending "hang" connect promise so it doesn't leak
+          if (hangResolve !== undefined) {
+            hangResolve();
+            hangResolve = undefined;
+          }
+          closeCallCount += 1;
+          if (mockCloseShouldThrow) {
+            throw new Error("Close error");
+          }
+        },
+        async listTools() {
+          return mockListToolsResult;
+        },
+        async callTool(params: { name: string; arguments: Record<string, unknown> }) {
+          callToolCalls.push(params);
+          if (mockCallToolShouldThrow) {
+            throw new Error("Tool execution error");
+          }
+          return mockCallToolResult;
+        },
+      };
+    },
     createTransport: (_config) => ({}),
   };
 }
@@ -138,7 +161,7 @@ describe("createMcpClientManager (mocked SDK)", () => {
     mockConnectBehavior = "hang";
     const manager = createMcpClientManager(
       createTestConfig("slow-server"),
-      100,
+      500,
       0,
       createMockDeps(),
     );
@@ -149,7 +172,8 @@ describe("createMcpClientManager (mocked SDK)", () => {
       expect(result.error.code).toBe("TIMEOUT");
       expect(result.error.message).toContain("slow-server");
     }
-  });
+    await manager.close();
+  }, 30_000);
 
   test("connect resets reconnect attempt counter on success", async () => {
     const manager = createMcpClientManager(createTestConfig(), 10_000, 3, createMockDeps());
@@ -354,7 +378,8 @@ describe("createMcpClientManager (mocked SDK)", () => {
 
   test("ensureConnected triggers reconnect when disconnected", async () => {
     // Start connected, then simulate disconnect
-    const manager = createMcpClientManager(createTestConfig(), 10_000, 1, createMockDeps());
+    // Use short backoff (50ms) to avoid timing issues under parallel load
+    const manager = createMcpClientManager(createTestConfig(), 10_000, 1, createMockDeps(), 50);
     await manager.connect();
 
     // Simulate disconnect
@@ -370,7 +395,7 @@ describe("createMcpClientManager (mocked SDK)", () => {
     const result = await manager.callTool("tool", {});
     expect(result.ok).toBe(true);
     expect(manager.isConnected()).toBe(true);
-  }, 10_000);
+  }, 30_000);
 
   test("ensureConnected returns error when reconnect exhausted", async () => {
     mockConnectBehavior = "fail";
@@ -393,7 +418,7 @@ describe("createMcpClientManager (mocked SDK)", () => {
     mockConnectBehavior = "hang";
     const manager = createMcpClientManager(
       createTestConfig("timeout-server"),
-      50,
+      500,
       0,
       createMockDeps(),
     );
@@ -405,5 +430,6 @@ describe("createMcpClientManager (mocked SDK)", () => {
       expect(result.error.code).toBe("TIMEOUT");
       expect(result.error.retryable).toBe(true);
     }
-  });
+    await manager.close();
+  }, 30_000);
 });

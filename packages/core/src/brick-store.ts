@@ -6,6 +6,7 @@
  * `@koi/core`.
  */
 
+import type { BrickId } from "./brick-snapshot.js";
 import type { TrustTier } from "./ecs.js";
 import type { KoiError, Result } from "./errors.js";
 import type { BrickKind, BrickLifecycle, ForgeScope } from "./forge-types.js";
@@ -40,7 +41,8 @@ export interface BrickRequires {
 // ---------------------------------------------------------------------------
 
 export interface BrickArtifactBase {
-  readonly id: string;
+  /** Content-addressed ID: `sha256:<64-hex-chars>`. Identity IS integrity. */
+  readonly id: BrickId;
   readonly kind: BrickKind;
   readonly name: string;
   readonly description: string;
@@ -51,8 +53,6 @@ export interface BrickArtifactBase {
   readonly version: string;
   readonly tags: readonly string[];
   readonly usageCount: number;
-  /** SHA-256 hex digest of the brick's primary content for integrity verification. */
-  readonly contentHash: string;
   /** Optional companion files: relative path → content. */
   readonly files?: Readonly<Record<string, string>>;
   /** Runtime requirements for this brick to be usable. */
@@ -80,7 +80,7 @@ export interface AgentArtifact extends BrickArtifactBase {
 
 export interface CompositeArtifact extends BrickArtifactBase {
   readonly kind: "composite";
-  readonly brickIds: readonly string[];
+  readonly brickIds: readonly BrickId[];
 }
 
 export interface ImplementationArtifact extends BrickArtifactBase {
@@ -133,17 +133,17 @@ export interface BrickUpdate {
 
 export interface ForgeStore {
   readonly save: (brick: BrickArtifact) => Promise<Result<void, KoiError>>;
-  readonly load: (id: string) => Promise<Result<BrickArtifact, KoiError>>;
+  readonly load: (id: BrickId) => Promise<Result<BrickArtifact, KoiError>>;
   readonly search: (query: ForgeQuery) => Promise<Result<readonly BrickArtifact[], KoiError>>;
-  readonly remove: (id: string) => Promise<Result<void, KoiError>>;
-  readonly update: (id: string, updates: BrickUpdate) => Promise<Result<void, KoiError>>;
-  readonly exists: (id: string) => Promise<Result<boolean, KoiError>>;
+  readonly remove: (id: BrickId) => Promise<Result<void, KoiError>>;
+  readonly update: (id: BrickId, updates: BrickUpdate) => Promise<Result<void, KoiError>>;
+  readonly exists: (id: BrickId) => Promise<Result<boolean, KoiError>>;
   /**
    * Optional scope-aware promotion — moves a brick between storage tiers.
    * Not all backends support tiered storage; filesystem overlay stores do.
    * When available, promote_forge wires scope metadata changes to physical tier moves.
    */
-  readonly promote?: (id: string, targetScope: ForgeScope) => Promise<Result<void, KoiError>>;
+  readonly promote?: (id: BrickId, targetScope: ForgeScope) => Promise<Result<void, KoiError>>;
   /** Optional typed watch for store mutations. Returns unsubscribe. */
   readonly watch?: (listener: (event: StoreChangeEvent) => void) => () => void;
   /** Clean up resources (filesystem watchers, timers). Not all backends hold resources. */
@@ -160,7 +160,7 @@ export type StoreChangeKind = "saved" | "updated" | "removed" | "promoted";
 /** Notification payload for store mutations. */
 export interface StoreChangeEvent {
   readonly kind: StoreChangeKind;
-  readonly brickId: string;
+  readonly brickId: BrickId;
   /** The scope after the change (if applicable). */
   readonly scope?: ForgeScope;
 }

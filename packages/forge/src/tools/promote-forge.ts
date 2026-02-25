@@ -8,8 +8,16 @@
  * Wires scope promotion to store.promote() if available (Issue 1A).
  */
 
-import type { BrickLifecycle, BrickUpdate, ForgeScope, Result, Tool, TrustTier } from "@koi/core";
-import { VALID_LIFECYCLE_TRANSITIONS } from "@koi/core";
+import type {
+  BrickId,
+  BrickLifecycle,
+  BrickUpdate,
+  ForgeScope,
+  Result,
+  Tool,
+  TrustTier,
+} from "@koi/core";
+import { brickId, VALID_LIFECYCLE_TRANSITIONS } from "@koi/core";
 import { z } from "zod";
 import type { ForgeError } from "../errors.js";
 import { governanceError, storeError } from "../errors.js";
@@ -150,9 +158,10 @@ async function promoteForgeHandler(
   }
 
   const obj = parsed.value;
+  const typedBrickId: BrickId = brickId(obj.brickId);
 
   // Load the brick (returns NOT_FOUND for invisible bricks to avoid leaking existence)
-  const loadResult = await deps.store.load(obj.brickId);
+  const loadResult = await deps.store.load(typedBrickId);
   if (!loadResult.ok) {
     return {
       ok: false,
@@ -235,7 +244,7 @@ async function promoteForgeHandler(
     // NOTE: promote() + update() are NOT atomic. If update() fails after promote()
     // succeeds, the brick is in the new tier with stale trust/lifecycle metadata.
     if (scopeChange !== undefined && deps.store.promote !== undefined) {
-      const promoteResult = await deps.store.promote(obj.brickId, scopeChange.to);
+      const promoteResult = await deps.store.promote(typedBrickId, scopeChange.to);
       if (!promoteResult.ok) {
         return {
           ok: false,
@@ -254,7 +263,7 @@ async function promoteForgeHandler(
       const hasNonScopeUpdates =
         trustChange !== undefined || lifecycleChange !== undefined || tagUpdate !== undefined;
       if (hasNonScopeUpdates) {
-        const updateResult = await deps.store.update(obj.brickId, nonScopeUpdates);
+        const updateResult = await deps.store.update(typedBrickId, nonScopeUpdates);
         if (!updateResult.ok) {
           return {
             ok: false,
@@ -271,14 +280,14 @@ async function promoteForgeHandler(
         void Promise.resolve(
           deps.notifier.notify({
             kind: "promoted",
-            brickId: obj.brickId,
+            brickId: typedBrickId,
             scope: scopeChange.to,
           }),
         ).catch(() => {});
       }
     } else {
       // No store.promote — update all fields via store.update()
-      const updateResult = await deps.store.update(obj.brickId, updates);
+      const updateResult = await deps.store.update(typedBrickId, updates);
       if (!updateResult.ok) {
         return {
           ok: false,
@@ -291,7 +300,7 @@ async function promoteForgeHandler(
         void Promise.resolve(
           deps.notifier.notify({
             kind: "updated",
-            brickId: obj.brickId,
+            brickId: typedBrickId,
             ...(scopeChange !== undefined ? { scope: scopeChange.to } : {}),
           }),
         ).catch(() => {});
@@ -315,7 +324,7 @@ async function promoteForgeHandler(
     return {
       ok: true,
       value: {
-        brickId: obj.brickId,
+        brickId: typedBrickId,
         applied: hasNonHitlChanges,
         requiresHumanApproval: true,
         changes: {
@@ -330,7 +339,7 @@ async function promoteForgeHandler(
   return {
     ok: true,
     value: {
-      brickId: obj.brickId,
+      brickId: typedBrickId,
       applied: true,
       requiresHumanApproval: false,
       changes: appliedChanges,

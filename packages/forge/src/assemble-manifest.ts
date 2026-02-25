@@ -7,6 +7,7 @@
  */
 
 import type { BrickArtifact, ForgeStore, Result } from "@koi/core";
+import { brickId } from "@koi/core";
 import type { ForgeError } from "./errors.js";
 import { staticError } from "./errors.js";
 
@@ -54,7 +55,7 @@ export async function assembleManifest(
   }
 
   // Load all bricks in parallel (14A)
-  const loadResults = await Promise.all(brickIds.map((id) => store.load(id)));
+  const loadResults = await Promise.all(brickIds.map((id) => store.load(brickId(id))));
 
   // Validate all exist, collect missing IDs
   const loadedBricks: BrickArtifact[] = [];

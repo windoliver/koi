@@ -5,10 +5,12 @@
  * Anthropic API calls. Validates the full middleware chain, circuit
  * breaker, grant lifecycle, verify cache, and event emission.
  *
- * Run:
- *   bun test tests/e2e/e2e-delegation-manager.test.ts
+ * Gated on ANTHROPIC_API_KEY + E2E_TESTS=1 — skipped during parallel `bun test --recursive`
+ * to avoid rate-limit failures when 500+ test files run simultaneously.
  *
- * Requires: ANTHROPIC_API_KEY in .env
+ * Run:
+ *   E2E_TESTS=1 ANTHROPIC_API_KEY=sk-ant-... bun test tests/e2e/e2e-delegation-manager.test.ts
+ *
  * Cost: ~$0.01 per run (haiku, minimal prompts, maxTokens: 30).
  */
 
@@ -39,7 +41,10 @@ import { createAnthropicAdapter } from "@koi/model-router";
 
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const HAS_ANTHROPIC = ANTHROPIC_KEY.length > 0;
-const describeE2E = HAS_ANTHROPIC ? describe : describe.skip;
+// E2E tests require API key AND explicit opt-in via E2E_TESTS=1 to avoid
+// rate-limit failures when 500+ test files run in parallel.
+const E2E_ENABLED = HAS_ANTHROPIC && process.env.E2E_TESTS === "1";
+const describeE2E = E2E_ENABLED ? describe : describe.skip;
 
 const MODEL = "claude-haiku-4-5-20251001";
 const TIMEOUT = 60_000;

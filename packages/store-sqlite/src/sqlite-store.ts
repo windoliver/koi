@@ -10,6 +10,7 @@
 import { Database } from "bun:sqlite";
 import type {
   BrickArtifact,
+  BrickId,
   BrickUpdate,
   ForgeQuery,
   ForgeStore,
@@ -97,25 +98,11 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
 
   const insertBrickStmt = db.query<
     void,
-    [
-      string,
-      string,
-      string,
-      string,
-      string,
-      string,
-      string,
-      number,
-      string,
-      number,
-      string,
-      string,
-      string,
-    ]
+    [string, string, string, string, string, string, number, string, number, string, string, string]
   >(
     `INSERT OR REPLACE INTO bricks
-       (id, kind, name, scope, trust_tier, lifecycle, content_hash, usage_count, created_by, created_at, version, description, data)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, kind, name, scope, trust_tier, lifecycle, usage_count, created_by, created_at, version, description, data)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   /** Extract created_by and created_at from provenance for indexed columns. */
@@ -177,7 +164,6 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
       brick.scope,
       brick.trustTier,
       brick.lifecycle,
-      brick.contentHash,
       brick.usageCount,
       createdBy,
       createdAt,
@@ -198,7 +184,7 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
     return result;
   };
 
-  const load = async (id: string): Promise<Result<BrickArtifact, KoiError>> => {
+  const load = async (id: BrickId): Promise<Result<BrickArtifact, KoiError>> => {
     const row = loadDataStmt.get(id);
     if (row === null) {
       return { ok: false, error: notFound(id, `Brick not found: ${id}`) };
@@ -279,7 +265,7 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
     }
   };
 
-  const remove = async (id: string): Promise<Result<void, KoiError>> => {
+  const remove = async (id: BrickId): Promise<Result<void, KoiError>> => {
     const row = existsStmt.get(id);
     if (row === null) {
       return { ok: false, error: notFound(id, `Brick not found: ${id}`) };
@@ -291,44 +277,46 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
     return result;
   };
 
-  const updateBrick = db.transaction((id: string, updates: BrickUpdate): Result<void, KoiError> => {
-    const row = loadDataStmt.get(id);
-    if (row === null) {
-      return { ok: false, error: notFound(id, `Brick not found: ${id}`) };
-    }
-
-    const existing = JSON.parse(row.data) as Record<string, unknown>;
-    const updated = {
-      ...existing,
-      ...(updates.lifecycle !== undefined ? { lifecycle: updates.lifecycle } : {}),
-      ...(updates.trustTier !== undefined ? { trustTier: updates.trustTier } : {}),
-      ...(updates.scope !== undefined ? { scope: updates.scope } : {}),
-      ...(updates.usageCount !== undefined ? { usageCount: updates.usageCount } : {}),
-      ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
-    };
-    const dataJson = JSON.stringify(updated);
-
-    updateStmt.run(
-      updated.lifecycle as string,
-      updated.trustTier as string,
-      updated.scope as string,
-      updated.usageCount as number,
-      dataJson,
-      id,
-    );
-
-    // Sync brick_tags when tags are updated
-    if (updates.tags !== undefined) {
-      deleteTagsStmt.run(id);
-      for (const tag of updates.tags) {
-        insertTagStmt.run(id, tag);
+  const updateBrick = db.transaction(
+    (id: BrickId, updates: BrickUpdate): Result<void, KoiError> => {
+      const row = loadDataStmt.get(id);
+      if (row === null) {
+        return { ok: false, error: notFound(id, `Brick not found: ${id}`) };
       }
-    }
 
-    return { ok: true, value: undefined };
-  });
+      const existing = JSON.parse(row.data) as Record<string, unknown>;
+      const updated = {
+        ...existing,
+        ...(updates.lifecycle !== undefined ? { lifecycle: updates.lifecycle } : {}),
+        ...(updates.trustTier !== undefined ? { trustTier: updates.trustTier } : {}),
+        ...(updates.scope !== undefined ? { scope: updates.scope } : {}),
+        ...(updates.usageCount !== undefined ? { usageCount: updates.usageCount } : {}),
+        ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
+      };
+      const dataJson = JSON.stringify(updated);
 
-  const update = async (id: string, updates: BrickUpdate): Promise<Result<void, KoiError>> => {
+      updateStmt.run(
+        updated.lifecycle as string,
+        updated.trustTier as string,
+        updated.scope as string,
+        updated.usageCount as number,
+        dataJson,
+        id,
+      );
+
+      // Sync brick_tags when tags are updated
+      if (updates.tags !== undefined) {
+        deleteTagsStmt.run(id);
+        for (const tag of updates.tags) {
+          insertTagStmt.run(id, tag);
+        }
+      }
+
+      return { ok: true, value: undefined };
+    },
+  );
+
+  const update = async (id: BrickId, updates: BrickUpdate): Promise<Result<void, KoiError>> => {
     try {
       const result = updateBrick(id, updates);
       if (result.ok) notifyListeners({ kind: "updated", brickId: id });
@@ -338,7 +326,7 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
     }
   };
 
-  const exists = async (id: string): Promise<Result<boolean, KoiError>> => {
+  const exists = async (id: BrickId): Promise<Result<boolean, KoiError>> => {
     const row = existsStmt.get(id);
     return { ok: true, value: row !== null };
   };

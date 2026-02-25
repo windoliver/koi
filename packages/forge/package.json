@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
+    "@koi/hash": "workspace:*",
     "@koi/validation": "workspace:*",
     "zod": "4.3.6"
   },

@@ -1,7 +1,36 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/hash API surface . has stable type surface 1`] = `
-"import { SigningBackend } from '@koi/core';
+"import { BrickId, SigningBackend } from '@koi/core';
+
+/**
+ * Content-addressed BrickId computation.
+ *
+ * BrickId = SHA-256(kind + primary content + sorted files).
+ * Format: "sha256:<64-char-hex>"
+ *
+ * Identical content always produces the same BrickId — free deduplication.
+ * Composite bricks use sorted child IDs for order-independent Merkle identity.
+ */
+
+/**
+ * Compute a content-addressed BrickId from brick content.
+ *
+ * Hash inputs: \`kind + ":" + content\`, then sorted file keys and values.
+ * Format: \`sha256:<64-char-hex>\`.
+ */
+declare function computeBrickId(kind: string, content: string, files?: Readonly<Record<string, string>>): BrickId;
+/**
+ * Compute a content-addressed BrickId for a composite (Merkle hash of children).
+ *
+ * Child IDs are sorted lexicographically for order-independent identity.
+ * Format: \`sha256:<64-char-hex>\`.
+ */
+declare function computeCompositeBrickId(childIds: readonly BrickId[], files?: Readonly<Record<string, string>>): BrickId;
+/**
+ * Type guard — validates that a string has the \`sha256:<64-hex-chars>\` format.
+ */
+declare function isBrickId(value: string): value is BrickId;
 
 /**
  * Deterministic SHA-256 content hash for arbitrary data.
@@ -47,6 +76,6 @@ declare function createHmacSigner(secretKey: Uint8Array): SigningBackend;
 /** Generate a ULID — 26-char, time-sortable, crypto-random unique ID. */
 declare function generateUlid(): string;
 
-export { computeContentHash, createHmacSigner, fnv1a, generateUlid };
+export { computeBrickId, computeCompositeBrickId, computeContentHash, createHmacSigner, fnv1a, generateUlid, isBrickId };
 "
 `;

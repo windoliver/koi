@@ -4,17 +4,12 @@
  */
 
 import type { Result, Tool } from "@koi/core";
+import { brickId } from "@koi/core";
 import type { ForgeError } from "../errors.js";
 import { generateSkillMd } from "../generate-skill-md.js";
 import type { ForgeResult, ForgeSkillInput, SkillArtifact } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
-import {
-  buildBaseFields,
-  computeContentHash,
-  createForgeTool,
-  parseSkillInput,
-  runForgePipeline,
-} from "./shared.js";
+import { buildBaseFields, createForgeTool, parseSkillInput, runForgePipeline } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Tool config
@@ -97,10 +92,9 @@ async function forgeSkillHandler(
     body: forgeInput.body,
   });
 
-  return runForgePipeline(forgeInput, deps, (id, report) => {
-    const contentHash = computeContentHash(generatedContent, forgeInput.files);
+  return runForgePipeline(forgeInput, deps, (report) => {
     const artifact: SkillArtifact = {
-      ...buildBaseFields(id, forgeInput, report, deps, contentHash),
+      ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
       kind: "skill",
       content: generatedContent,
       ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ForgeStore, KoiError, Result } from "@koi/core";
+import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "./config.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
@@ -12,7 +13,7 @@ import { computeAutoPromotion, recordBrickUsage } from "./usage.js";
 
 function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
-    id: "brick_test",
+    id: brickId("brick_test"),
     kind: "tool",
     name: "test-brick",
     description: "A test brick",
@@ -23,7 +24,6 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "test-hash",
     implementation: "return 1;",
     inputSchema: { type: "object" },
     ...overrides,
@@ -87,7 +87,7 @@ describe("computeAutoPromotion", () => {
 describe("recordBrickUsage", () => {
   test("increments usageCount and returns 'recorded'", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1", usageCount: 0 }));
+    await store.save(createToolBrick({ id: brickId("brick_1"), usageCount: 0 }));
 
     const config = createDefaultForgeConfig({
       autoPromotion: {
@@ -107,7 +107,9 @@ describe("recordBrickUsage", () => {
 
   test("promotes sandbox→verified when threshold crossed", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1", usageCount: 4, trustTier: "sandbox" }));
+    await store.save(
+      createToolBrick({ id: brickId("brick_1"), usageCount: 4, trustTier: "sandbox" }),
+    );
 
     const config = createDefaultForgeConfig({
       autoPromotion: {
@@ -131,7 +133,9 @@ describe("recordBrickUsage", () => {
 
   test("promotes verified→promoted when threshold crossed", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1", usageCount: 19, trustTier: "verified" }));
+    await store.save(
+      createToolBrick({ id: brickId("brick_1"), usageCount: 19, trustTier: "verified" }),
+    );
 
     const config = createDefaultForgeConfig({
       autoPromotion: {
@@ -155,7 +159,9 @@ describe("recordBrickUsage", () => {
 
   test("persists both usageCount and trustTier to store", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1", usageCount: 4, trustTier: "sandbox" }));
+    await store.save(
+      createToolBrick({ id: brickId("brick_1"), usageCount: 4, trustTier: "sandbox" }),
+    );
 
     const config = createDefaultForgeConfig({
       autoPromotion: {
@@ -167,7 +173,7 @@ describe("recordBrickUsage", () => {
 
     await recordBrickUsage(store, "brick_1", config);
 
-    const loaded = await store.load("brick_1");
+    const loaded = await store.load(brickId("brick_1"));
     expect(loaded.ok).toBe(true);
     if (loaded.ok) {
       expect(loaded.value.usageCount).toBe(5);
@@ -189,7 +195,7 @@ describe("recordBrickUsage", () => {
 
   test("returns error when store update fails", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1" }));
+    await store.save(createToolBrick({ id: brickId("brick_1") }));
 
     // Replace update to simulate failure
     const failingStore: ForgeStore = {
@@ -218,7 +224,9 @@ describe("recordBrickUsage", () => {
 
   test("does not promote when disabled", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_1", usageCount: 4, trustTier: "sandbox" }));
+    await store.save(
+      createToolBrick({ id: brickId("brick_1"), usageCount: 4, trustTier: "sandbox" }),
+    );
 
     // autoPromotion disabled by default
     const config = createDefaultForgeConfig();
@@ -231,7 +239,7 @@ describe("recordBrickUsage", () => {
     }
 
     // Verify trust tier unchanged
-    const loaded = await store.load("brick_1");
+    const loaded = await store.load(brickId("brick_1"));
     expect(loaded.ok).toBe(true);
     if (loaded.ok) {
       expect(loaded.value.trustTier).toBe("sandbox");

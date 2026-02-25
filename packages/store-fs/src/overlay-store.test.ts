@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolArtifact } from "@koi/core";
+import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE, runForgeStoreContractTests } from "@koi/test-utils";
 import { createFsForgeStore } from "./fs-store.js";
 import type { OverlayConfig } from "./overlay-store.js";
@@ -23,7 +24,7 @@ async function freshDir(): Promise<string> {
 
 function createBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
-    id: `brick_${Math.random().toString(36).slice(2, 10)}`,
+    id: brickId(`brick_${Math.random().toString(36).slice(2, 10)}`),
     kind: "tool",
     name: "test-brick",
     description: "A test brick",
@@ -34,7 +35,6 @@ function createBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "test-hash",
     implementation: "return 1;",
     inputSchema: { type: "object" },
     ...overrides,
@@ -100,14 +100,14 @@ describe("OverlayForgeStore", () => {
 
   describe("load", () => {
     test("returns highest-priority tier brick when duplicates exist", async () => {
-      const bundledBrick = createBrick({ id: "brick_dup", name: "bundled-version" });
-      const agentBrick = createBrick({ id: "brick_dup", name: "agent-version" });
+      const bundledBrick = createBrick({ id: brickId("brick_dup"), name: "bundled-version" });
+      const agentBrick = createBrick({ id: brickId("brick_dup"), name: "agent-version" });
 
       await seedTier(tiers.bundled, bundledBrick);
       await seedTier(tiers.agent, agentBrick);
 
       const store = await createOverlayForgeStore(config);
-      const result = await store.load("brick_dup");
+      const result = await store.load(brickId("brick_dup"));
 
       expect(result.ok).toBe(true);
       if (result.ok) {
@@ -116,11 +116,11 @@ describe("OverlayForgeStore", () => {
     });
 
     test("falls through to lower-priority tier", async () => {
-      const bundledBrick = createBrick({ id: "brick_lower", name: "bundled-only" });
+      const bundledBrick = createBrick({ id: brickId("brick_lower"), name: "bundled-only" });
       await seedTier(tiers.bundled, bundledBrick);
 
       const store = await createOverlayForgeStore(config);
-      const result = await store.load("brick_lower");
+      const result = await store.load(brickId("brick_lower"));
 
       expect(result.ok).toBe(true);
       if (result.ok) {
@@ -130,7 +130,7 @@ describe("OverlayForgeStore", () => {
 
     test("returns NOT_FOUND when brick is in no tier", async () => {
       const store = await createOverlayForgeStore(config);
-      const result = await store.load("nonexistent");
+      const result = await store.load(brickId("nonexistent"));
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -144,13 +144,13 @@ describe("OverlayForgeStore", () => {
   describe("save", () => {
     test("writes to agent tier (first writable)", async () => {
       const store = await createOverlayForgeStore(config);
-      const brick = createBrick({ id: "brick_save" });
+      const brick = createBrick({ id: brickId("brick_save") });
 
       const result = await store.save(brick);
       expect(result.ok).toBe(true);
 
       // Verify it's in the agent tier
-      const tierResult = await store.locateTier("brick_save");
+      const tierResult = await store.locateTier(brickId("brick_save"));
       expect(tierResult.ok).toBe(true);
       if (tierResult.ok) {
         expect(tierResult.value).toBe("agent");
@@ -165,7 +165,7 @@ describe("OverlayForgeStore", () => {
         ],
       };
       const store = await createOverlayForgeStore(readOnlyConfig);
-      const brick = createBrick({ id: "brick_nowrite" });
+      const brick = createBrick({ id: brickId("brick_nowrite") });
 
       const result = await store.save(brick);
       expect(result.ok).toBe(false);
@@ -179,9 +179,9 @@ describe("OverlayForgeStore", () => {
 
   describe("search", () => {
     test("deduplicates across tiers, highest priority wins", async () => {
-      const bundledBrick = createBrick({ id: "brick_dup", name: "bundled" });
-      const agentBrick = createBrick({ id: "brick_dup", name: "agent" });
-      const sharedBrick = createBrick({ id: "brick_shared_only", name: "shared" });
+      const bundledBrick = createBrick({ id: brickId("brick_dup"), name: "bundled" });
+      const agentBrick = createBrick({ id: brickId("brick_dup"), name: "agent" });
+      const sharedBrick = createBrick({ id: brickId("brick_shared_only"), name: "shared" });
 
       await seedTier(tiers.bundled, bundledBrick);
       await seedTier(tiers.agent, agentBrick);
@@ -193,15 +193,15 @@ describe("OverlayForgeStore", () => {
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value).toHaveLength(2);
-        const dupBrick = result.value.find((b) => b.id === "brick_dup");
+        const dupBrick = result.value.find((b) => b.id === brickId("brick_dup"));
         expect(dupBrick?.name).toBe("agent");
       }
     });
 
     test("applies limit after deduplication", async () => {
-      await seedTier(tiers.agent, createBrick({ id: "brick_a1" }));
-      await seedTier(tiers.agent, createBrick({ id: "brick_a2" }));
-      await seedTier(tiers.agent, createBrick({ id: "brick_a3" }));
+      await seedTier(tiers.agent, createBrick({ id: brickId("brick_a1") }));
+      await seedTier(tiers.agent, createBrick({ id: brickId("brick_a2") }));
+      await seedTier(tiers.agent, createBrick({ id: brickId("brick_a3") }));
 
       const store = await createOverlayForgeStore(config);
       const result = await store.search({ limit: 2 });
@@ -218,13 +218,13 @@ describe("OverlayForgeStore", () => {
   describe("remove", () => {
     test("removes brick from writable tier", async () => {
       const store = await createOverlayForgeStore(config);
-      const brick = createBrick({ id: "brick_rm" });
+      const brick = createBrick({ id: brickId("brick_rm") });
       await store.save(brick);
 
-      const result = await store.remove("brick_rm");
+      const result = await store.remove(brickId("brick_rm"));
       expect(result.ok).toBe(true);
 
-      const exists = await store.exists("brick_rm");
+      const exists = await store.exists(brickId("brick_rm"));
       expect(exists.ok).toBe(true);
       if (exists.ok) {
         expect(exists.value).toBe(false);
@@ -232,10 +232,10 @@ describe("OverlayForgeStore", () => {
     });
 
     test("returns PERMISSION error for brick in read-only tier", async () => {
-      await seedTier(tiers.bundled, createBrick({ id: "brick_bundled_rm" }));
+      await seedTier(tiers.bundled, createBrick({ id: brickId("brick_bundled_rm") }));
 
       const store = await createOverlayForgeStore(config);
-      const result = await store.remove("brick_bundled_rm");
+      const result = await store.remove(brickId("brick_bundled_rm"));
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -246,7 +246,7 @@ describe("OverlayForgeStore", () => {
 
     test("returns NOT_FOUND for nonexistent brick", async () => {
       const store = await createOverlayForgeStore(config);
-      const result = await store.remove("nonexistent");
+      const result = await store.remove(brickId("nonexistent"));
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -260,12 +260,12 @@ describe("OverlayForgeStore", () => {
   describe("update", () => {
     test("updates brick in writable tier in place", async () => {
       const store = await createOverlayForgeStore(config);
-      await store.save(createBrick({ id: "brick_upd", usageCount: 0 }));
+      await store.save(createBrick({ id: brickId("brick_upd"), usageCount: 0 }));
 
-      const result = await store.update("brick_upd", { usageCount: 5 });
+      const result = await store.update(brickId("brick_upd"), { usageCount: 5 });
       expect(result.ok).toBe(true);
 
-      const loaded = await store.load("brick_upd");
+      const loaded = await store.load(brickId("brick_upd"));
       expect(loaded.ok).toBe(true);
       if (loaded.ok) {
         expect(loaded.value.usageCount).toBe(5);
@@ -273,20 +273,23 @@ describe("OverlayForgeStore", () => {
     });
 
     test("auto-promotes from read-only tier before updating", async () => {
-      await seedTier(tiers.bundled, createBrick({ id: "brick_autopromote", usageCount: 0 }));
+      await seedTier(
+        tiers.bundled,
+        createBrick({ id: brickId("brick_autopromote"), usageCount: 0 }),
+      );
 
       const store = await createOverlayForgeStore(config);
-      const result = await store.update("brick_autopromote", { usageCount: 10 });
+      const result = await store.update(brickId("brick_autopromote"), { usageCount: 10 });
       expect(result.ok).toBe(true);
 
       // Should now be in agent tier (auto-promoted)
-      const tierResult = await store.locateTier("brick_autopromote");
+      const tierResult = await store.locateTier(brickId("brick_autopromote"));
       expect(tierResult.ok).toBe(true);
       if (tierResult.ok) {
         expect(tierResult.value).toBe("agent");
       }
 
-      const loaded = await store.load("brick_autopromote");
+      const loaded = await store.load(brickId("brick_autopromote"));
       expect(loaded.ok).toBe(true);
       if (loaded.ok) {
         expect(loaded.value.usageCount).toBe(10);
@@ -295,7 +298,7 @@ describe("OverlayForgeStore", () => {
 
     test("returns NOT_FOUND for nonexistent brick", async () => {
       const store = await createOverlayForgeStore(config);
-      const result = await store.update("nonexistent", { usageCount: 1 });
+      const result = await store.update(brickId("nonexistent"), { usageCount: 1 });
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -308,23 +311,23 @@ describe("OverlayForgeStore", () => {
 
   describe("exists", () => {
     test("finds brick in any tier", async () => {
-      await seedTier(tiers.bundled, createBrick({ id: "brick_exists_bundled" }));
-      await seedTier(tiers.agent, createBrick({ id: "brick_exists_agent" }));
+      await seedTier(tiers.bundled, createBrick({ id: brickId("brick_exists_bundled") }));
+      await seedTier(tiers.agent, createBrick({ id: brickId("brick_exists_agent") }));
 
       const store = await createOverlayForgeStore(config);
 
-      const r1 = await store.exists("brick_exists_bundled");
+      const r1 = await store.exists(brickId("brick_exists_bundled"));
       expect(r1.ok).toBe(true);
       if (r1.ok) expect(r1.value).toBe(true);
 
-      const r2 = await store.exists("brick_exists_agent");
+      const r2 = await store.exists(brickId("brick_exists_agent"));
       expect(r2.ok).toBe(true);
       if (r2.ok) expect(r2.value).toBe(true);
     });
 
     test("returns false for nonexistent brick", async () => {
       const store = await createOverlayForgeStore(config);
-      const result = await store.exists("nonexistent");
+      const result = await store.exists(brickId("nonexistent"));
       expect(result.ok).toBe(true);
       if (result.ok) expect(result.value).toBe(false);
     });
@@ -334,21 +337,24 @@ describe("OverlayForgeStore", () => {
 
   describe("promoteTier", () => {
     test("moves brick from shared to agent tier", async () => {
-      await seedTier(tiers.shared, createBrick({ id: "brick_promote", name: "shared-brick" }));
+      await seedTier(
+        tiers.shared,
+        createBrick({ id: brickId("brick_promote"), name: "shared-brick" }),
+      );
 
       const store = await createOverlayForgeStore(config);
-      const result = await store.promoteTier("brick_promote", "agent");
+      const result = await store.promoteTier(brickId("brick_promote"), "agent");
       expect(result.ok).toBe(true);
 
       // Should be in agent tier now
-      const tierResult = await store.locateTier("brick_promote");
+      const tierResult = await store.locateTier(brickId("brick_promote"));
       expect(tierResult.ok).toBe(true);
       if (tierResult.ok) {
         expect(tierResult.value).toBe("agent");
       }
 
       // Data preserved
-      const loaded = await store.load("brick_promote");
+      const loaded = await store.load(brickId("brick_promote"));
       expect(loaded.ok).toBe(true);
       if (loaded.ok) {
         expect(loaded.value.name).toBe("shared-brick");
@@ -356,14 +362,14 @@ describe("OverlayForgeStore", () => {
     });
 
     test("copies brick from read-only tier (source not deleted)", async () => {
-      await seedTier(tiers.bundled, createBrick({ id: "brick_promote_ro" }));
+      await seedTier(tiers.bundled, createBrick({ id: brickId("brick_promote_ro") }));
 
       const store = await createOverlayForgeStore(config);
-      const result = await store.promoteTier("brick_promote_ro", "agent");
+      const result = await store.promoteTier(brickId("brick_promote_ro"), "agent");
       expect(result.ok).toBe(true);
 
       // Now in agent tier
-      const tierResult = await store.locateTier("brick_promote_ro");
+      const tierResult = await store.locateTier(brickId("brick_promote_ro"));
       expect(tierResult.ok).toBe(true);
       if (tierResult.ok) {
         expect(tierResult.value).toBe("agent");
@@ -371,7 +377,7 @@ describe("OverlayForgeStore", () => {
 
       // Bundled copy still exists (read-only, not deleted)
       const bundledStore = await createFsForgeStore({ baseDir: tiers.bundled });
-      const bundledResult = await bundledStore.exists("brick_promote_ro");
+      const bundledResult = await bundledStore.exists(brickId("brick_promote_ro"));
       expect(bundledResult.ok).toBe(true);
       if (bundledResult.ok) {
         expect(bundledResult.value).toBe(true);
@@ -379,18 +385,18 @@ describe("OverlayForgeStore", () => {
     });
 
     test("no-op when brick is already in target tier", async () => {
-      await seedTier(tiers.agent, createBrick({ id: "brick_noop" }));
+      await seedTier(tiers.agent, createBrick({ id: brickId("brick_noop") }));
 
       const store = await createOverlayForgeStore(config);
-      const result = await store.promoteTier("brick_noop", "agent");
+      const result = await store.promoteTier(brickId("brick_noop"), "agent");
       expect(result.ok).toBe(true);
     });
 
     test("returns PERMISSION error for read-only target tier", async () => {
-      await seedTier(tiers.agent, createBrick({ id: "brick_bad_target" }));
+      await seedTier(tiers.agent, createBrick({ id: brickId("brick_bad_target") }));
 
       const store = await createOverlayForgeStore(config);
-      const result = await store.promoteTier("brick_bad_target", "bundled");
+      const result = await store.promoteTier(brickId("brick_bad_target"), "bundled");
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -400,7 +406,7 @@ describe("OverlayForgeStore", () => {
 
     test("returns NOT_FOUND for nonexistent brick", async () => {
       const store = await createOverlayForgeStore(config);
-      const result = await store.promoteTier("nonexistent", "agent");
+      const result = await store.promoteTier(brickId("nonexistent"), "agent");
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -411,7 +417,7 @@ describe("OverlayForgeStore", () => {
     test("returns VALIDATION error for unknown tier", async () => {
       const store = await createOverlayForgeStore(config);
       // @ts-expect-error — intentionally passing invalid tier name
-      const result = await store.promoteTier("brick_x", "nonexistent");
+      const result = await store.promoteTier(brickId("brick_x"), "nonexistent");
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -419,29 +425,26 @@ describe("OverlayForgeStore", () => {
       }
     });
 
-    test("idempotent when brick already exists in target with same contentHash", async () => {
-      const brick = createBrick({ id: "brick_idemp", contentHash: "hash_abc" });
+    test("idempotent when brick already exists in target with same id", async () => {
+      const brick = createBrick({ id: brickId("brick_idemp") });
       await seedTier(tiers.shared, brick);
       await seedTier(tiers.agent, brick);
 
       const store = await createOverlayForgeStore(config);
-      const result = await store.promoteTier("brick_idemp", "agent");
+      const result = await store.promoteTier(brickId("brick_idemp"), "agent");
       expect(result.ok).toBe(true);
     });
 
-    test("returns CONFLICT when brick exists in target with different contentHash", async () => {
-      // Source brick in agent tier (higher priority), target is shared tier
-      const sourceBrick = createBrick({ id: "brick_conflict", contentHash: "hash_v1" });
-      const targetBrick = createBrick({ id: "brick_conflict", contentHash: "hash_v2" });
+    test("idempotent when brick exists in both source and target (same ID)", async () => {
+      // Same ID in both tiers — content-addressed, so same ID = same content
+      const sourceBrick = createBrick({ id: brickId("brick_both_tiers"), name: "same" });
+      const targetBrick = createBrick({ id: brickId("brick_both_tiers"), name: "same" });
       await seedTier(tiers.agent, sourceBrick);
       await seedTier(tiers.shared, targetBrick);
 
       const store = await createOverlayForgeStore(config);
-      const result = await store.promoteTier("brick_conflict", "shared");
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.error.code).toBe("CONFLICT");
-      }
+      const result = await store.promoteTier(brickId("brick_both_tiers"), "shared");
+      expect(result.ok).toBe(true);
     });
   });
 
@@ -449,15 +452,15 @@ describe("OverlayForgeStore", () => {
 
   describe("promote (scope-based)", () => {
     test("promotes agent-scoped brick to zone (shared tier)", async () => {
-      const brick = createBrick({ id: "brick_scope_zone" });
+      const brick = createBrick({ id: brickId("brick_scope_zone") });
       await seedTier(tiers.agent, brick);
 
       const store = await createOverlayForgeStore(config);
-      const result = await store.promote("brick_scope_zone", "zone");
+      const result = await store.promote(brickId("brick_scope_zone"), "zone");
       expect(result.ok).toBe(true);
 
       // Should now be in the shared tier
-      const tierResult = await store.locateTier("brick_scope_zone");
+      const tierResult = await store.locateTier(brickId("brick_scope_zone"));
       expect(tierResult.ok).toBe(true);
       if (tierResult.ok) {
         expect(tierResult.value).toBe("shared");
@@ -465,15 +468,15 @@ describe("OverlayForgeStore", () => {
     });
 
     test("promotes agent-scoped brick to global (shared tier, since bundled is read-only)", async () => {
-      const brick = createBrick({ id: "brick_scope_global" });
+      const brick = createBrick({ id: brickId("brick_scope_global") });
       await seedTier(tiers.agent, brick);
 
       const store = await createOverlayForgeStore(config);
-      const result = await store.promote("brick_scope_global", "global");
+      const result = await store.promote(brickId("brick_scope_global"), "global");
       expect(result.ok).toBe(true);
 
       // Should be in the shared tier (bundled is read-only, so global routes to shared)
-      const tierResult = await store.locateTier("brick_scope_global");
+      const tierResult = await store.locateTier(brickId("brick_scope_global"));
       expect(tierResult.ok).toBe(true);
       if (tierResult.ok) {
         expect(tierResult.value).toBe("shared");
@@ -481,16 +484,16 @@ describe("OverlayForgeStore", () => {
     });
 
     test("no-op when brick is already at agent scope in agent tier", async () => {
-      await seedTier(tiers.agent, createBrick({ id: "brick_scope_noop" }));
+      await seedTier(tiers.agent, createBrick({ id: brickId("brick_scope_noop") }));
 
       const store = await createOverlayForgeStore(config);
-      const result = await store.promote("brick_scope_noop", "agent");
+      const result = await store.promote(brickId("brick_scope_noop"), "agent");
       expect(result.ok).toBe(true);
     });
 
     test("returns NOT_FOUND for nonexistent brick", async () => {
       const store = await createOverlayForgeStore(config);
-      const result = await store.promote("nonexistent", "zone");
+      const result = await store.promote(brickId("nonexistent"), "zone");
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -503,29 +506,29 @@ describe("OverlayForgeStore", () => {
 
   describe("locateTier", () => {
     test("returns correct tier name for each tier", async () => {
-      await seedTier(tiers.agent, createBrick({ id: "brick_in_agent" }));
-      await seedTier(tiers.shared, createBrick({ id: "brick_in_shared" }));
-      await seedTier(tiers.extensions, createBrick({ id: "brick_in_ext" }));
-      await seedTier(tiers.bundled, createBrick({ id: "brick_in_bundled" }));
+      await seedTier(tiers.agent, createBrick({ id: brickId("brick_in_agent") }));
+      await seedTier(tiers.shared, createBrick({ id: brickId("brick_in_shared") }));
+      await seedTier(tiers.extensions, createBrick({ id: brickId("brick_in_ext") }));
+      await seedTier(tiers.bundled, createBrick({ id: brickId("brick_in_bundled") }));
 
       const store = await createOverlayForgeStore(config);
 
-      const r1 = await store.locateTier("brick_in_agent");
+      const r1 = await store.locateTier(brickId("brick_in_agent"));
       expect(r1.ok && r1.value).toBe("agent");
 
-      const r2 = await store.locateTier("brick_in_shared");
+      const r2 = await store.locateTier(brickId("brick_in_shared"));
       expect(r2.ok && r2.value).toBe("shared");
 
-      const r3 = await store.locateTier("brick_in_ext");
+      const r3 = await store.locateTier(brickId("brick_in_ext"));
       expect(r3.ok && r3.value).toBe("extensions");
 
-      const r4 = await store.locateTier("brick_in_bundled");
+      const r4 = await store.locateTier(brickId("brick_in_bundled"));
       expect(r4.ok && r4.value).toBe("bundled");
     });
 
     test("returns NOT_FOUND for nonexistent brick", async () => {
       const store = await createOverlayForgeStore(config);
-      const result = await store.locateTier("nonexistent");
+      const result = await store.locateTier(brickId("nonexistent"));
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -541,7 +544,7 @@ describe("OverlayForgeStore", () => {
       const store = await createOverlayForgeStore(config);
 
       // Save a brick to exercise a tier store
-      const brick = createBrick({ id: "brick_dispose_test" });
+      const brick = createBrick({ id: brickId("brick_dispose_test") });
       await store.save(brick);
 
       // Dispose should not throw

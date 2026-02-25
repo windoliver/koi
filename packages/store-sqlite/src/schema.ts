@@ -7,7 +7,7 @@
 
 import type { Database } from "bun:sqlite";
 
-const LATEST_VERSION = 1;
+const LATEST_VERSION = 2;
 
 const V1_UP = `
 CREATE TABLE IF NOT EXISTS bricks (
@@ -17,7 +17,6 @@ CREATE TABLE IF NOT EXISTS bricks (
   scope        TEXT NOT NULL,
   trust_tier   TEXT NOT NULL,
   lifecycle    TEXT NOT NULL,
-  content_hash TEXT NOT NULL,
   usage_count  INTEGER NOT NULL DEFAULT 0,
   created_by   TEXT NOT NULL,
   created_at   INTEGER NOT NULL,
@@ -36,6 +35,9 @@ CREATE INDEX IF NOT EXISTS idx_bricks_kind_scope ON bricks(kind, scope, lifecycl
 CREATE INDEX IF NOT EXISTS idx_brick_tags_tag ON brick_tags(tag);
 `;
 
+/** V2: Drop content_hash column — id is now a BrickId (content-addressed). */
+const V2_UP = `ALTER TABLE bricks DROP COLUMN content_hash;`;
+
 interface UserVersionRow {
   readonly user_version: number;
 }
@@ -51,7 +53,10 @@ export function applyMigrations(db: Database): void {
     if (currentVersion < 1) {
       db.exec(V1_UP);
     }
-    // Future migrations: if (currentVersion < 2) { ... }
+    // V2: drop content_hash — only needed when upgrading from V1 (column existed)
+    if (currentVersion >= 1 && currentVersion < 2) {
+      db.exec(V2_UP);
+    }
     db.exec(`PRAGMA user_version = ${LATEST_VERSION}`);
   })();
 }

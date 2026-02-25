@@ -9,10 +9,12 @@
  *   4. Requires enforcement: brick with missing env skipped by ComponentProvider
  *   5. configSchema: stored and retrievable on artifact
  *
- * Gated on ANTHROPIC_API_KEY — tests skip when not set.
+ * Gated on ANTHROPIC_API_KEY + E2E_TESTS=1 — tests skip when either is missing.
+ * E2E tests require API keys AND explicit opt-in via E2E_TESTS=1 to avoid
+ * rate-limit failures when 500+ test files run in parallel.
  *
  * Run:
- *   ANTHROPIC_API_KEY=... bun test packages/forge/src/__tests__/e2e.test.ts
+ *   E2E_TESTS=1 ANTHROPIC_API_KEY=... bun test packages/forge/src/__tests__/e2e.test.ts
  */
 
 import { describe, expect, test } from "bun:test";
@@ -38,7 +40,6 @@ import { createForgeMiddlewareTool } from "../tools/forge-middleware.js";
 import { createForgeToolTool } from "../tools/forge-tool.js";
 import { createPromoteForgeTool } from "../tools/promote-forge.js";
 import type { ForgeDeps } from "../tools/shared.js";
-import { computeContentHash } from "../tools/shared.js";
 import type { ForgeResult, SandboxExecutor, TieredSandboxExecutor } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -47,7 +48,8 @@ import type { ForgeResult, SandboxExecutor, TieredSandboxExecutor } from "../typ
 
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const HAS_KEY = ANTHROPIC_KEY.length > 0;
-const describeE2E = HAS_KEY ? describe : describe.skip;
+const E2E_OPTED_IN = process.env.E2E_TESTS === "1";
+const describeE2E = HAS_KEY && E2E_OPTED_IN ? describe : describe.skip;
 
 const TIMEOUT_MS = 120_000;
 
@@ -365,7 +367,7 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
         name: "ungated-tool",
         description: "A tool with no requirements",
         inputSchema: { type: "object" },
-        implementation: "return input;",
+        implementation: "return { ...input, ungated: true };",
       });
 
       // Step 3: ComponentProvider should skip the gated tool
@@ -620,10 +622,9 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
       expect(provenance.classification).toBe("internal");
       expect(provenance.contentMarkers).toEqual(["pii"]);
 
-      // Content hash matches actual implementation
-      const expectedHash = computeContentHash("return { sum: input.a + input.b };");
-      expect(brick.contentHash).toBe(expectedHash);
-      expect(provenance.contentHash).toBe(expectedHash);
+      // Content-addressed ID — id IS the hash
+      expect(brick.id).toMatch(/^sha256:[0-9a-f]{64}$/);
+      expect(provenance.contentHash).toBe(brick.id);
 
       // Step 3: Wire through createForgeRuntime with integrity verification
       const forgeRuntime = createForgeRuntime({
@@ -694,11 +695,11 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
       const original = loadResult.value;
       expect(original.kind).toBe("tool");
 
-      // Overwrite with tampered implementation (contentHash still points to original)
+      // Overwrite with tampered implementation (id still points to original content hash)
       const tampered = {
         ...original,
         implementation: "return { status: 'HACKED' };",
-        // contentHash is stale — doesn't match new implementation
+        // id is stale — doesn't match new implementation
       };
       // Save tampered version (bypasses forge pipeline — simulates store corruption)
       await store.save(tampered as import("@koi/core").BrickArtifact);

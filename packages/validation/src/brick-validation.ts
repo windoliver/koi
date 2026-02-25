@@ -6,12 +6,19 @@
  */
 
 import type { BrickArtifact, KoiError, Result } from "@koi/core";
-import { internal } from "@koi/core";
+import { ALL_BRICK_KINDS, internal } from "@koi/core";
 
-const VALID_KINDS = new Set(["tool", "skill", "agent", "composite", "middleware", "channel"]);
+const VALID_KINDS: ReadonlySet<string> = new Set(ALL_BRICK_KINDS);
 const VALID_SCOPES = new Set(["agent", "zone", "global"]);
 const VALID_TRUST_TIERS = new Set(["sandbox", "verified", "promoted"]);
-const VALID_LIFECYCLES = new Set(["draft", "verifying", "active", "failed", "deprecated"]);
+const VALID_LIFECYCLES = new Set([
+  "draft",
+  "verifying",
+  "active",
+  "failed",
+  "deprecated",
+  "quarantined",
+]);
 
 /** Return a typed error result. `never` value makes it assignable to any Result<T, KoiError>. */
 function fail(reason: string, source: string): Result<never, KoiError> {
@@ -45,8 +52,6 @@ function validateBase(data: Record<string, unknown>, source: string): Result<voi
   if (!Array.isArray(data.tags)) return fail("missing or non-array 'tags'", source);
   if (typeof data.usageCount !== "number")
     return fail("missing or non-number 'usageCount'", source);
-  if (typeof data.contentHash !== "string")
-    return fail("missing or non-string 'contentHash'", source);
   return { ok: true, value: undefined };
 }
 
@@ -82,8 +87,15 @@ function validateKindFields(data: Record<string, unknown>, source: string): Resu
     case "composite":
       if (!Array.isArray(data.brickIds)) return fail("composite missing 'brickIds' array", source);
       break;
+    case "engine":
+    case "resolver":
+    case "provider":
+    case "middleware":
+    case "channel":
+      if (typeof data.implementation !== "string")
+        return fail(`${String(data.kind)} missing 'implementation'`, source);
+      break;
     default:
-      // middleware and channel kinds have no additional required fields in the current schema
       break;
   }
   return { ok: true, value: undefined };

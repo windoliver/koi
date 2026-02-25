@@ -30,8 +30,10 @@ import { createModelRouter } from "../router.js";
 
 const OPENAI_KEY = process.env.OPENAI_API_KEY ?? "";
 const HAS_KEYS = OPENAI_KEY.length > 0;
-
-const describeE2E = HAS_KEYS ? describe : describe.skip;
+// E2E tests require API key AND explicit opt-in via E2E_TESTS=1 to avoid
+// rate-limit failures when 500+ test files run in parallel.
+const E2E_OPTED_IN = process.env.E2E_TESTS === "1";
+const describeE2E = HAS_KEYS && E2E_OPTED_IN ? describe : describe.skip;
 
 const TIMEOUT_MS = 60_000;
 
@@ -291,7 +293,7 @@ describeE2E("e2e: cascade with complexity classifier", () => {
     console.log("\n[CONFIDENCE test] Classification results:");
     console.log("─".repeat(90));
     console.log(
-      "Prompt".padEnd(55) + "Score".padEnd(8) + "Conf".padEnd(8) + "Tier".padEnd(8) + "Expected",
+      `${"Prompt".padEnd(55) + "Score".padEnd(8) + "Conf".padEnd(8) + "Tier".padEnd(8)}Expected`,
     );
     console.log("─".repeat(90));
 

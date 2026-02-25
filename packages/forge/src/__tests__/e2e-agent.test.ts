@@ -343,7 +343,7 @@ describe("forge → agent e2e", () => {
       name: "tool-2",
       description: "Second tool",
       inputSchema: { type: "object" },
-      implementation: "return input;",
+      implementation: "return { ...input, tool: 2 };",
     });
 
     // Invalidate cache so next attach() re-queries the store

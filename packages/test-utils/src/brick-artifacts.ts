@@ -13,6 +13,7 @@ import type {
   SkillArtifact,
   ToolArtifact,
 } from "@koi/core";
+import { brickId } from "@koi/core";
 import { createFactory } from "./factory.js";
 
 // ---------------------------------------------------------------------------
@@ -59,7 +60,7 @@ export const DEFAULT_PROVENANCE: ForgeProvenance = {
 
 export const createTestToolArtifact: (overrides?: Partial<ToolArtifact>) => ToolArtifact =
   createFactory<ToolArtifact>({
-    id: "brick_test-tool",
+    id: brickId("brick_test-tool"),
     kind: "tool",
     name: "test-tool",
     description: "A test tool",
@@ -70,14 +71,13 @@ export const createTestToolArtifact: (overrides?: Partial<ToolArtifact>) => Tool
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "test-hash",
     implementation: "return 1;",
     inputSchema: { type: "object" },
   });
 
 export const createTestSkillArtifact: (overrides?: Partial<SkillArtifact>) => SkillArtifact =
   createFactory<SkillArtifact>({
-    id: "brick_test-skill",
+    id: brickId("brick_test-skill"),
     kind: "skill",
     name: "test-skill",
     description: "A test skill",
@@ -88,13 +88,12 @@ export const createTestSkillArtifact: (overrides?: Partial<SkillArtifact>) => Sk
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "test-hash",
     content: "# Test Skill",
   });
 
 export const createTestAgentArtifact: (overrides?: Partial<AgentArtifact>) => AgentArtifact =
   createFactory<AgentArtifact>({
-    id: "brick_test-agent",
+    id: brickId("brick_test-agent"),
     kind: "agent",
     name: "test-agent",
     description: "A test agent",
@@ -105,14 +104,13 @@ export const createTestAgentArtifact: (overrides?: Partial<AgentArtifact>) => Ag
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "test-hash",
     manifestYaml: "name: test-agent\ntype: assistant",
   });
 
 export const createTestCompositeArtifact: (
   overrides?: Partial<CompositeArtifact>,
 ) => CompositeArtifact = createFactory<CompositeArtifact>({
-  id: "brick_test-composite",
+  id: brickId("brick_test-composite"),
   kind: "composite",
   name: "test-composite",
   description: "A test composite",
@@ -123,14 +121,13 @@ export const createTestCompositeArtifact: (
   version: "0.0.1",
   tags: [],
   usageCount: 0,
-  contentHash: "test-hash",
-  brickIds: ["brick_a", "brick_b"],
+  brickIds: [brickId("brick_a"), brickId("brick_b")],
 });
 
 export const createTestImplementationArtifact: (
   overrides?: Partial<ImplementationArtifact>,
 ) => ImplementationArtifact = createFactory<ImplementationArtifact>({
-  id: "brick_test-impl",
+  id: brickId("brick_test-impl"),
   kind: "middleware",
   name: "test-impl",
   description: "A test implementation",
@@ -141,6 +138,5 @@ export const createTestImplementationArtifact: (
   version: "0.0.1",
   tags: [],
   usageCount: 0,
-  contentHash: "test-hash",
   implementation: "return middleware;",
 });

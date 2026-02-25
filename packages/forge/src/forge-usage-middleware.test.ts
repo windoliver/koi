@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { StoreChangeEvent, ToolRequest, ToolResponse, TurnContext } from "@koi/core";
+import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "./config.js";
 import { createForgeUsageMiddleware } from "./forge-usage-middleware.js";
@@ -13,7 +14,7 @@ import type { ToolArtifact } from "./types.js";
 
 function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
-    id: `brick_${crypto.randomUUID()}`,
+    id: brickId(`brick_${crypto.randomUUID()}`),
     kind: "tool",
     name: "calc",
     description: "A calculator",
@@ -24,7 +25,6 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "test-hash",
     implementation: "return input.a + input.b;",
     inputSchema: { type: "object" },
     ...overrides,
@@ -73,7 +73,7 @@ describe("createForgeUsageMiddleware", () => {
 
   test("records usage for forged tool after successful call", async () => {
     const store = createInMemoryForgeStore();
-    const brick = createToolBrick({ id: "brick_calc", name: "calc" });
+    const brick = createToolBrick({ id: brickId("brick_calc"), name: "calc" });
     await store.save(brick);
 
     const mw = createForgeUsageMiddleware({
@@ -95,7 +95,7 @@ describe("createForgeUsageMiddleware", () => {
     // Allow fire-and-forget to complete
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    const loaded = await store.load("brick_calc");
+    const loaded = await store.load(brickId("brick_calc"));
     expect(loaded.ok).toBe(true);
     if (loaded.ok) {
       expect(loaded.value.usageCount).toBe(1);
@@ -124,7 +124,7 @@ describe("createForgeUsageMiddleware", () => {
 
   test("propagates tool call errors without recording usage", async () => {
     const store = createInMemoryForgeStore();
-    const brick = createToolBrick({ id: "brick_fail", name: "fail_tool" });
+    const brick = createToolBrick({ id: brickId("brick_fail"), name: "fail_tool" });
     await store.save(brick);
 
     const mw = createForgeUsageMiddleware({
@@ -143,7 +143,7 @@ describe("createForgeUsageMiddleware", () => {
     await expect(getWrapToolCall(mw)(ctx, request, next)).rejects.toThrow("Tool execution failed");
 
     // Usage should NOT be recorded for failed calls
-    const loaded = await store.load("brick_fail");
+    const loaded = await store.load(brickId("brick_fail"));
     expect(loaded.ok).toBe(true);
     if (loaded.ok) {
       expect(loaded.value.usageCount).toBe(0);
@@ -207,7 +207,7 @@ describe("createForgeUsageMiddleware", () => {
   test("auto-promotes brick when threshold is crossed", async () => {
     const store = createInMemoryForgeStore();
     const brick = createToolBrick({
-      id: "brick_promo",
+      id: brickId("brick_promo"),
       name: "promo_tool",
       trustTier: "sandbox",
       usageCount: 4, // One more will cross the threshold
@@ -240,7 +240,7 @@ describe("createForgeUsageMiddleware", () => {
     // Allow fire-and-forget to complete
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    const loaded = await store.load("brick_promo");
+    const loaded = await store.load(brickId("brick_promo"));
     expect(loaded.ok).toBe(true);
     if (loaded.ok) {
       expect(loaded.value.usageCount).toBe(5);
@@ -250,7 +250,7 @@ describe("createForgeUsageMiddleware", () => {
 
   test("fires 'updated' notification after successful usage recording", async () => {
     const store = createInMemoryForgeStore();
-    const brick = createToolBrick({ id: "brick_notify", name: "notify_tool" });
+    const brick = createToolBrick({ id: brickId("brick_notify"), name: "notify_tool" });
     await store.save(brick);
 
     const notifier = createMemoryStoreChangeNotifier();
@@ -275,7 +275,7 @@ describe("createForgeUsageMiddleware", () => {
 
     expect(events.length).toBe(1);
     expect(events[0]?.kind).toBe("updated");
-    expect(events[0]?.brickId).toBe("brick_notify");
+    expect(events[0]?.brickId).toBe(brickId("brick_notify"));
   });
 
   test("does not notify when usage recording fails", async () => {

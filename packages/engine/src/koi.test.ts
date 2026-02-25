@@ -16,7 +16,7 @@ import type {
   ToolRequest,
   TurnContext,
 } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { brickId, toolToken } from "@koi/core";
 import { createKoi } from "./koi.js";
 import type { ForgeRuntime } from "./types.js";
 
@@ -2592,7 +2592,7 @@ describe("createKoi forge watch", () => {
 
           // Simulate forge store change: add new tool + fire watch
           currentDescriptors = [initialDescriptor, newDescriptor];
-          watchListener?.({ kind: "saved", brickId: "hot-attached-tool" });
+          watchListener?.({ kind: "saved", brickId: brickId("hot-attached-tool") });
 
           // Wait for fire-and-forget descriptor refresh
           await new Promise((r) => setTimeout(r, 20));
@@ -2653,7 +2653,7 @@ describe("createKoi forge watch", () => {
 
       // Make the tool available and fire watch
       resolveHotTool = true;
-      watchListener?.({ kind: "saved", brickId: "hot-tool" });
+      watchListener?.({ kind: "saved", brickId: brickId("hot-tool") });
       await new Promise((r) => setTimeout(r, 20));
 
       // Call the hot-attached tool

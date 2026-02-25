@@ -17,7 +17,7 @@ import type {
   SkillSearchQuery,
   SkillVersion,
 } from "@koi/core";
-import { conflict, DEFAULT_SKILL_SEARCH_LIMIT, notFound, validation } from "@koi/core";
+import { brickId, conflict, DEFAULT_SKILL_SEARCH_LIMIT, notFound, validation } from "@koi/core";
 import type { BrickRequires, SkillArtifact } from "@koi/core/brick-store";
 import { DEFAULT_PROVENANCE } from "./brick-artifacts.js";
 
@@ -186,7 +186,7 @@ export function createInMemorySkillRegistry(): SkillRegistryBackend {
     downloads.set(id, (downloads.get(id) ?? 0) + 1);
 
     const artifact: SkillArtifact = {
-      id,
+      id: brickId(id),
       kind: "skill",
       name: record.name,
       description: record.description,
@@ -197,7 +197,6 @@ export function createInMemorySkillRegistry(): SkillRegistryBackend {
       version: versionRecord.version,
       tags: [...record.tags],
       usageCount: 0,
-      contentHash: "", // not computed in in-memory registry; L2 implementations should hash content
       content: versionRecord.content,
     };
 

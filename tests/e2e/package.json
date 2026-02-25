@@ -13,6 +13,8 @@
     "@koi/middleware-memory": "workspace:*",
     "@koi/middleware-turn-ack": "workspace:*",
     "@koi/model-router": "workspace:*",
+    "@koi/forge": "workspace:*",
+    "@koi/hash": "workspace:*",
     "@koi/delegation": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },

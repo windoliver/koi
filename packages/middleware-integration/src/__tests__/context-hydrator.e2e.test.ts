@@ -1,14 +1,16 @@
 /**
  * E2E test for @koi/context hydrator with a real LLM.
  *
- * Gated on the OPENROUTER_API_KEY environment variable — skipped when not set.
+ * Gated on OPENROUTER_API_KEY + E2E_TESTS=1 — skipped when either is missing.
+ * E2E tests require API keys AND explicit opt-in via E2E_TESTS=1 to avoid
+ * rate-limit failures when 500+ test files run simultaneously.
  *
  * Tests two levels:
  * 1. Direct middleware: hydrator wraps a real model call, LLM sees injected context
  * 2. Full pipeline: createKoi + engine-loop + hydrator middleware + real LLM
  *
  * Run:
- *   OPENROUTER_API_KEY=... bun test src/__tests__/context-hydrator.e2e.test.ts
+ *   E2E_TESTS=1 OPENROUTER_API_KEY=... bun test src/__tests__/context-hydrator.e2e.test.ts
  */
 
 import { describe, expect, test } from "bun:test";
@@ -26,7 +28,10 @@ import { createMockAgent, createMockTurnContext } from "@koi/test-utils";
 
 const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY ?? "";
 const HAS_KEY = OPENROUTER_KEY.length > 0;
-const describeE2E = HAS_KEY ? describe : describe.skip;
+// E2E tests require API key AND explicit opt-in via E2E_TESTS=1 to avoid
+// rate-limit failures when 500+ test files run in parallel.
+const E2E_ENABLED = HAS_KEY && process.env.E2E_TESTS === "1";
+const describeE2E = E2E_ENABLED ? describe : describe.skip;
 
 const TIMEOUT_MS = 60_000;
 const MODEL = "openai/gpt-4o-mini";

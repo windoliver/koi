@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge API surface . has stable type surface 1`] = `
-"import { BrickKind, TrustTier, TestCase, BrickRequires, DataClassification, ContentMarker, ToolDescriptor, ForgeScope, BrickLifecycle, SandboxExecutor, BrickArtifact, ForgeStore, Result, KoiError, ForgeProvenance, SigningBackend, ToolArtifact, Tool, TieredSandboxExecutor, StoreChangeNotifier, ComponentProvider, Resolver, StoreChangeEvent, KoiMiddleware, AgentArtifact } from '@koi/core';
+"import { BrickId, BrickKind, TrustTier, TestCase, BrickRequires, DataClassification, ContentMarker, ToolDescriptor, ForgeScope, BrickLifecycle, SandboxExecutor, BrickArtifact, ForgeStore, Result, KoiError, ForgeProvenance, SigningBackend, ToolArtifact, Tool, TieredSandboxExecutor, StoreChangeNotifier, ComponentProvider, Resolver, StoreChangeEvent, KoiMiddleware, AgentArtifact } from '@koi/core';
 export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, CompositeArtifact, ContentMarker, DataClassification, ForgeAttestationSignature, ForgeBuildDefinition, ForgeBuilder, ForgeProvenance, ForgeQuery, ForgeResourceRef, ForgeRunMetadata, ForgeStageDigest, ForgeStore, ForgeVerificationSummary, LockHandle, LockMode, LockRequest, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, SigningBackend, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, TierResolution, TieredSandboxExecutor, ToolArtifact } from '@koi/core';
 
 /**
@@ -15,7 +15,7 @@ interface ForgeResultMetadata {
     readonly depth: number;
 }
 interface ForgeResult {
-    readonly id: string;
+    readonly id: BrickId;
     readonly kind: BrickKind;
     readonly name: string;
     readonly descriptor: ToolDescriptor;
@@ -198,7 +198,7 @@ interface PromoteChange<T> {
     readonly to: T;
 }
 interface PromoteResult {
-    readonly brickId: string;
+    readonly brickId: BrickId;
     readonly applied: boolean;
     readonly requiresHumanApproval: boolean;
     readonly changes: {
@@ -219,7 +219,7 @@ interface ManifestParser {
     readonly parse: (yaml: string) => ManifestParseResult | Promise<ManifestParseResult>;
 }
 interface CompositionBrickInfo {
-    readonly id: string;
+    readonly id: BrickId;
     readonly name: string;
     readonly kind: BrickKind;
     readonly trustTier: TrustTier;
@@ -607,30 +607,27 @@ declare function checkGovernance(context: ForgeContext, config: ForgeConfig, too
 declare function checkScopePromotion(currentScope: ForgeScope, targetScope: ForgeScope, trustTier: TrustTier, config: ForgeConfig): Result<GovernanceResult, ForgeError>;
 
 /**
- * Content integrity verification — recomputes SHA-256 hash and compares
- * to the stored \`contentHash\` on a brick artifact.
+ * Content integrity verification — recomputes content-addressed BrickId
+ * and compares to the stored \`id\`. Identity IS integrity.
  */
 
 interface IntegrityOk {
     readonly ok: true;
-    readonly brickId: string;
-    readonly hash: string;
+    readonly brickId: BrickId;
+    readonly id: BrickId;
 }
 interface IntegrityMismatch {
     readonly ok: false;
-    readonly brickId: string;
-    readonly expectedHash: string;
-    readonly actualHash: string;
+    readonly brickId: BrickId;
+    readonly expectedId: BrickId;
+    readonly actualId: BrickId;
 }
 type IntegrityResult = IntegrityOk | IntegrityMismatch;
 /**
  * Verifies that a brick's content has not been tampered with by recomputing
- * the SHA-256 content hash and comparing it to the stored \`contentHash\`.
- *
- * Current implementation is synchronous; return type is \`IntegrityResult | Promise<IntegrityResult>\`
- * to allow future async backends (await on a non-Promise is a no-op).
+ * the content-addressed BrickId and comparing it to the stored \`id\`.
  */
-declare function verifyBrickIntegrity(brick: BrickArtifact): IntegrityResult | Promise<IntegrityResult>;
+declare function verifyBrickIntegrity(brick: BrickArtifact): IntegrityResult;
 /**
  * Verifies both content hash integrity AND attestation signature.
  *
@@ -644,7 +641,7 @@ declare function verifyBrickAttestation(brick: BrickArtifact, signer: SigningBac
  * Returns the brick alongside the integrity result even when integrity fails.
  * Only store-level failures produce a \`ForgeError\`.
  */
-declare function loadAndVerify(store: ForgeStore, id: string): Promise<Result<{
+declare function loadAndVerify(store: ForgeStore, id: BrickId): Promise<Result<{
     readonly brick: BrickArtifact;
     readonly integrity: IntegrityResult;
 }, ForgeError>>;

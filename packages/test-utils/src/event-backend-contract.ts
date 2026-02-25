@@ -185,7 +185,7 @@ export function runEventBackendContractTests(
       await backend.append("s", { type: "b", data: 2 });
 
       // Allow microtask delivery
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await Bun.sleep(50);
 
       expect(received).toHaveLength(2);
       expect(received[0]?.type).toBe("a");
@@ -208,7 +208,7 @@ export function runEventBackendContractTests(
       });
 
       await backend.append("s", { type: "new", data: 1 });
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await Bun.sleep(50);
 
       expect(received).toHaveLength(1);
       expect(received[0]?.type).toBe("new");
@@ -236,7 +236,7 @@ export function runEventBackendContractTests(
       });
 
       await backend.append("s", { type: "fail-evt", data: 1 });
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await Bun.sleep(100);
 
       expect(deadLetters).toHaveLength(1);
       expect(deadLetters[0]?.error).toContain("handler boom");
@@ -266,7 +266,7 @@ export function runEventBackendContractTests(
       });
 
       await backend.append("s", { type: "reject-evt", data: 1 });
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await Bun.sleep(100);
 
       expect(deadLetters).toHaveLength(1);
       expect(deadLetters[0]?.error).toContain("async boom");
@@ -295,7 +295,7 @@ export function runEventBackendContractTests(
       });
 
       await backend.append("s", { type: "shape-evt", data: { val: 42 } });
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await Bun.sleep(100);
 
       expect(deadLetters).toHaveLength(1);
       const entry = deadLetters[0];
@@ -330,7 +330,7 @@ export function runEventBackendContractTests(
       });
 
       await backend.append("s", { type: "first", data: 1 });
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await Bun.sleep(50);
 
       // Second subscriber starts after first event
       const h2 = await backend.subscribe({
@@ -343,7 +343,7 @@ export function runEventBackendContractTests(
       });
 
       await backend.append("s", { type: "second", data: 2 });
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await Bun.sleep(50);
 
       expect(received1).toHaveLength(2); // got both events
       expect(received2).toHaveLength(1); // got only second
@@ -368,7 +368,7 @@ export function runEventBackendContractTests(
       });
 
       await backend.append("s1", { type: "e", data: 1 });
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await Bun.sleep(100);
       handle.unsubscribe();
 
       // Query with matching filter
@@ -418,7 +418,7 @@ export function runEventBackendContractTests(
       });
 
       await backend.append("s", { type: "retry-evt", data: 1 });
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await Bun.sleep(100);
 
       // Event should be in DLQ now
       const dlq = await backend.queryDeadLetters({ subscriptionName: "sub-retry" });
@@ -430,7 +430,7 @@ export function runEventBackendContractTests(
         const retryResult = await backend.retryDeadLetter(firstEntry.id);
         expect(retryResult.ok).toBe(true);
 
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await Bun.sleep(100);
 
         // Handler should have succeeded on retry
         expect(received).toHaveLength(1);
@@ -463,7 +463,7 @@ export function runEventBackendContractTests(
       });
 
       await backend.append("s", { type: "purge-evt", data: 1 });
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await Bun.sleep(100);
       handle.unsubscribe();
 
       const purgeResult = await backend.purgeDeadLetters({ subscriptionName: "sub-purge" });
@@ -551,7 +551,7 @@ export function runEventBackendContractTests(
       await backend.append("s", { type: "important", data: 2 });
       await backend.append("s", { type: "noise", data: 3 });
       await backend.append("s", { type: "important", data: 4 });
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await Bun.sleep(50);
 
       expect(received).toHaveLength(2);
       expect(received[0]?.data).toBe(2);
@@ -609,7 +609,7 @@ export function runEventBackendContractTests(
 
       await backend.append("s", { type: "a", data: 1 });
       await backend.append("s", { type: "b", data: 2 });
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await Bun.sleep(50);
 
       const posAfterTwo = h1.position();
       h1.unsubscribe();
@@ -628,7 +628,7 @@ export function runEventBackendContractTests(
         },
       });
 
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await Bun.sleep(50);
 
       expect(received2).toHaveLength(1);
       expect(received2[0]?.type).toBe("c");

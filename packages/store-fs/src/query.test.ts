@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { BrickArtifactBase } from "@koi/core";
+import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { matchesQuery } from "./query.js";
 
 function baseBrick(overrides?: Partial<BrickArtifactBase>): BrickArtifactBase {
   return {
-    id: "test-id",
+    id: brickId("test-id"),
     kind: "tool",
     name: "test-brick",
     description: "A test brick",
@@ -16,7 +17,6 @@ function baseBrick(overrides?: Partial<BrickArtifactBase>): BrickArtifactBase {
     version: "0.0.1",
     tags: [],
     usageCount: 0,
-    contentHash: "hash",
     ...overrides,
   };
 }
