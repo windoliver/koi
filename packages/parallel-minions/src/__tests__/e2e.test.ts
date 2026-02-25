@@ -444,4 +444,124 @@ describeE2E("@koi/parallel-minions E2E with real LLM", () => {
     },
     TIMEOUT_MS,
   );
+
+  // -------------------------------------------------------------------------
+  // Test 5: Model-in-the-loop — parent LLM autonomously calls parallel_task
+  //
+  // Uses createPiAdapter for the parent because it correctly passes tool
+  // descriptors to the model. (createLoopAdapter has a known gap — it omits
+  // callHandlers.tools from the ModelRequest.)
+  // -------------------------------------------------------------------------
+  test(
+    "parent LLM autonomously discovers and calls parallel_task tool",
+    async () => {
+      const spawnCalls: string[] = [];
+
+      const spawn = async (request: MinionSpawnRequest): Promise<MinionSpawnResult> => {
+        spawnCalls.push(request.agentName);
+        const childAdapter = createLoopAdapter({ modelCall, maxTurns: 1 });
+
+        try {
+          const events = await collectEvents(
+            childAdapter.stream({ kind: "text", text: request.description }),
+          );
+          const output = findDoneOutput(events);
+          if (output === undefined) {
+            return { ok: false, error: "No done event" };
+          }
+          const text = extractTextFromOutput(output);
+          return { ok: true, output: text.length > 0 ? text : "(empty)" };
+        } finally {
+          await childAdapter.dispose?.();
+        }
+      };
+
+      const config: ParallelMinionsConfig = {
+        agents: new Map([
+          [
+            "researcher",
+            {
+              name: "research-worker",
+              description: "Researches topics",
+              manifest: RESEARCHER_MANIFEST,
+            },
+          ],
+        ]),
+        spawn,
+        defaultAgent: "researcher",
+        maxConcurrency: 3,
+      };
+
+      const provider = createParallelMinionsProvider(config);
+
+      // Pi adapter correctly passes tool descriptors to the model
+      const parentPiAdapter = createPiAdapter({
+        model: `anthropic:${MODEL}`,
+        systemPrompt:
+          "You are a coordinator. When asked to research topics, " +
+          "always use the parallel_task tool to delegate each topic " +
+          "to a subagent. After receiving results, summarize them.",
+        getApiKey: async () => ANTHROPIC_KEY,
+      });
+
+      const parentRuntime = await createKoi({
+        manifest: {
+          name: "coordinator",
+          version: "0.0.1",
+          model: { name: MODEL },
+        },
+        adapter: parentPiAdapter,
+        providers: [provider],
+        loopDetection: false,
+        limits: { maxTurns: 3, maxDurationMs: 90_000, maxTokens: 50_000 },
+      });
+
+      // Model-in-the-loop: prompt triggers autonomous tool discovery + call
+      const events = await collectEvents(
+        parentRuntime.run({
+          kind: "text",
+          text:
+            "Use the parallel_task tool to answer these 3 questions " +
+            "in parallel:\n" +
+            "1. What is the capital of France?\n" +
+            "2. What is the capital of Japan?\n" +
+            "3. What is the capital of Brazil?",
+        }),
+      );
+
+      // Collect all text from text_delta events (Pi adapter streams deltas)
+      const deltas = events
+        .filter((e) => e.kind === "text_delta")
+        .map((e) => (e as { readonly kind: "text_delta"; readonly delta: string }).delta)
+        .join("");
+
+      // Also check done output for text blocks
+      const doneOutput = findDoneOutput(events);
+      expect(doneOutput).toBeDefined();
+
+      const doneText = doneOutput !== undefined ? extractTextFromOutput(doneOutput) : "";
+      const allText = `${deltas}\n${doneText}`.trim();
+
+      console.log("\n--- model-in-the-loop output ---");
+      console.log(allText);
+      console.log(`Spawn calls: ${JSON.stringify(spawnCalls)}`);
+      console.log("---\n");
+
+      // Model should have autonomously called parallel_task → spawned children
+      expect(spawnCalls.length).toBeGreaterThanOrEqual(3);
+
+      // Verify tool_call_start event for parallel_task exists
+      const toolStarts = events.filter((e) => e.kind === "tool_call_start");
+      expect(toolStarts.length).toBeGreaterThanOrEqual(1);
+
+      // Combined output (deltas + done) should reference the capitals
+      const lower = allText.toLowerCase();
+      expect(lower).toContain("paris");
+      expect(lower).toContain("tokyo");
+      expect(lower.includes("brasilia") || lower.includes("brasília")).toBe(true);
+
+      await parentRuntime.dispose();
+    },
+    TIMEOUT_MS,
+  );
 });
