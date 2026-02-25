@@ -89,7 +89,7 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
 function provenanceFor(agentId: string): ForgeProvenance {
   return {
     ...DEFAULT_PROVENANCE,
-    source: { ...DEFAULT_PROVENANCE.source, forgedBy: agentId },
+    source: { origin: "forged", forgedBy: agentId },
     metadata: { ...DEFAULT_PROVENANCE.metadata, agentId },
   };
 }

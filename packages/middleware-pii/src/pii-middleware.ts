@@ -6,6 +6,7 @@
  */
 
 import type { JsonObject } from "@koi/core/common";
+import type { InboundMessage } from "@koi/core/message";
 import type {
   KoiMiddleware,
   ModelChunk,
@@ -204,7 +205,7 @@ function scanRequestMessages(
   // let justified: tracks whether any message was modified
   let anyChanged = false;
 
-  const scannedMessages = request.messages.map((msg) => {
+  const scannedMessages = request.messages.map((msg: InboundMessage) => {
     const result = scanMessage(msg, detectors, strategy as PIIStrategy, createHasher);
 
     if (result.changed) {

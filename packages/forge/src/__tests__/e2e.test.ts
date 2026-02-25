@@ -591,10 +591,12 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
       const brick = loadResult.value;
       const { provenance } = brick;
 
-      // Provenance source
+      // Provenance source (narrow to "forged" variant)
       expect(provenance.source.origin).toBe("forged");
-      expect(provenance.source.forgedBy).toBe("e2e-agent");
-      expect(provenance.source.sessionId).toBe("e2e-session");
+      if (provenance.source.origin === "forged") {
+        expect(provenance.source.forgedBy).toBe("e2e-agent");
+        expect(provenance.source.sessionId).toBe("e2e-session");
+      }
 
       // Build definition
       expect(provenance.buildDefinition.buildType).toBe("koi.forge/tool/v1");
