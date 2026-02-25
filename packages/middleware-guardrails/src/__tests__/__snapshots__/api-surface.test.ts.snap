@@ -1,0 +1,121 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-guardrails API surface . has stable type surface 1`] = `
+"import { Result, KoiError } from '@koi/core/errors';
+import { z } from 'zod';
+import { KoiMiddleware } from '@koi/core/middleware';
+
+/**
+ * Type definitions for @koi/middleware-guardrails.
+ *
+ * Defines guardrail rules, config, and violation events for
+ * Zod-based output validation of model and tool responses.
+ */
+
+/** Target of a guardrail rule — which output to validate. */
+type GuardrailTarget = "modelOutput" | "toolOutput";
+/** Action to take when validation fails. */
+type GuardrailAction = "block" | "warn" | "retry";
+/** How to parse model output content before schema validation. */
+type GuardrailParseMode = "json" | "text";
+/** A single guardrail rule binding a Zod schema to an output target. */
+interface GuardrailRule {
+    /** Human-readable rule name (unique within a config). */
+    readonly name: string;
+    /** Zod schema to validate the output against. */
+    readonly schema: z.ZodType;
+    /** Which output this rule applies to. */
+    readonly target: GuardrailTarget;
+    /** What to do when the output fails validation. */
+    readonly action: GuardrailAction;
+    /** How to parse model output content (default: "json"). Ignored for toolOutput. */
+    readonly parseMode?: GuardrailParseMode | undefined;
+}
+/** Retry configuration for rules with action "retry". */
+interface GuardrailRetryConfig {
+    /** Maximum number of retry attempts (default: 2). */
+    readonly maxAttempts?: number | undefined;
+}
+/** Full middleware configuration. */
+interface GuardrailsConfig {
+    /** Guardrail rules to enforce. Must be non-empty. */
+    readonly rules: readonly GuardrailRule[];
+    /** Retry settings for rules with action "retry". */
+    readonly retry?: GuardrailRetryConfig | undefined;
+    /** Max characters to buffer for streaming validation (default: 262144). */
+    readonly maxBufferSize?: number | undefined;
+    /** Called whenever a rule violation is detected. */
+    readonly onViolation?: ((event: GuardrailViolationEvent) => void) | undefined;
+}
+/** Event fired when a guardrail rule detects a violation. */
+interface GuardrailViolationEvent {
+    /** Name of the rule that was violated. */
+    readonly rule: string;
+    /** Which output the violation was detected in. */
+    readonly target: GuardrailTarget;
+    /** Action taken (or to be taken) for this violation. */
+    readonly action: GuardrailAction;
+    /** Zod validation errors. */
+    readonly errors: readonly GuardrailError[];
+    /** Current retry attempt (1-indexed), present when action is "retry". */
+    readonly attempt?: number | undefined;
+}
+/** A single validation error detail from Zod. */
+interface GuardrailError {
+    /** Dot-separated path to the failing field (empty string for root). */
+    readonly path: string;
+    /** Human-readable error message. */
+    readonly message: string;
+    /** Zod issue code. */
+    readonly code: string;
+}
+
+/**
+ * Guardrails middleware configuration and validation.
+ */
+
+/** Default max buffer size for streaming validation (256KB). */
+declare const DEFAULT_MAX_BUFFER_SIZE = 262144;
+/** Default max retry attempts for "retry" action. */
+declare const DEFAULT_MAX_RETRY_ATTEMPTS = 2;
+declare function validateGuardrailsConfig(config: unknown): Result<GuardrailsConfig, KoiError>;
+
+/**
+ * Guardrails middleware factory — Zod-based output validation for model
+ * and tool responses.
+ *
+ * Priority 375: runs after sanitize (350), before memory (400).
+ */
+
+declare function createGuardrailsMiddleware(config: GuardrailsConfig): KoiMiddleware;
+
+/**
+ * Output validation — parse content and apply Zod schemas.
+ *
+ * Pure functions with no side effects. Handles both JSON and text parse modes.
+ */
+
+/** Result of validating output against guardrail rules. */
+interface GuardrailValidationResult {
+    readonly valid: boolean;
+    readonly errors: readonly GuardrailError[];
+    /** The first failing rule name, if any. */
+    readonly failedRule?: string | undefined;
+}
+/**
+ * Validates model output content against guardrail rules.
+ *
+ * JSON mode: parses content as JSON, then applies schema.safeParse.
+ * Text mode: wraps content as \`{ text: content }\` before schema.safeParse.
+ */
+declare function validateModelOutput(content: string, rules: readonly GuardrailRule[], parseMode?: GuardrailParseMode): GuardrailValidationResult;
+/**
+ * Validates tool output against guardrail rules.
+ *
+ * No JSON parsing needed — tool output is already structured data.
+ */
+declare function validateToolOutput(output: unknown, rules: readonly GuardrailRule[]): GuardrailValidationResult;
+
+export { DEFAULT_MAX_BUFFER_SIZE, DEFAULT_MAX_RETRY_ATTEMPTS, type GuardrailAction, type GuardrailError, type GuardrailParseMode, type GuardrailRetryConfig, type GuardrailRule, type GuardrailTarget, type GuardrailValidationResult, type GuardrailViolationEvent, type GuardrailsConfig, createGuardrailsMiddleware, validateGuardrailsConfig, validateModelOutput, validateToolOutput };
+"
+`;
