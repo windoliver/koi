@@ -81,6 +81,7 @@ export interface ForgeToolInput {
   readonly testCases?: readonly TestCase[];
   readonly files?: Readonly<Record<string, string>>;
   readonly requires?: BrickRequires;
+  readonly configSchema?: Readonly<Record<string, unknown>>;
 }
 
 export interface ForgeSkillInput {
@@ -130,7 +131,76 @@ export interface ForgeCompositeInput {
   readonly requires?: BrickRequires;
 }
 
-export type ForgeInput = ForgeToolInput | ForgeSkillInput | ForgeAgentInput | ForgeCompositeInput;
+export interface ForgeMiddlewareInput {
+  readonly kind: "middleware";
+  readonly name: string;
+  readonly description: string;
+  readonly tags?: readonly string[];
+  readonly implementation: string;
+  readonly testCases?: readonly TestCase[];
+  readonly files?: Readonly<Record<string, string>>;
+  readonly requires?: BrickRequires;
+  readonly configSchema?: Readonly<Record<string, unknown>>;
+}
+
+export interface ForgeChannelInput {
+  readonly kind: "channel";
+  readonly name: string;
+  readonly description: string;
+  readonly tags?: readonly string[];
+  readonly implementation: string;
+  readonly testCases?: readonly TestCase[];
+  readonly files?: Readonly<Record<string, string>>;
+  readonly requires?: BrickRequires;
+  readonly configSchema?: Readonly<Record<string, unknown>>;
+}
+
+export interface ForgeEngineInput {
+  readonly kind: "engine";
+  readonly name: string;
+  readonly description: string;
+  readonly tags?: readonly string[];
+  readonly implementation: string;
+  readonly testCases?: readonly TestCase[];
+  readonly files?: Readonly<Record<string, string>>;
+  readonly requires?: BrickRequires;
+  readonly configSchema?: Readonly<Record<string, unknown>>;
+}
+
+export interface ForgeResolverInput {
+  readonly kind: "resolver";
+  readonly name: string;
+  readonly description: string;
+  readonly tags?: readonly string[];
+  readonly implementation: string;
+  readonly testCases?: readonly TestCase[];
+  readonly files?: Readonly<Record<string, string>>;
+  readonly requires?: BrickRequires;
+  readonly configSchema?: Readonly<Record<string, unknown>>;
+}
+
+export interface ForgeProviderInput {
+  readonly kind: "provider";
+  readonly name: string;
+  readonly description: string;
+  readonly tags?: readonly string[];
+  readonly implementation: string;
+  readonly testCases?: readonly TestCase[];
+  readonly files?: Readonly<Record<string, string>>;
+  readonly requires?: BrickRequires;
+  readonly configSchema?: Readonly<Record<string, unknown>>;
+}
+
+export type ForgeInput =
+  | ForgeToolInput
+  | ForgeSkillInput
+  | ForgeAgentInput
+  | ForgeCompositeInput
+  | ForgeMiddlewareInput
+  | ForgeChannelInput
+  | ForgeEngineInput
+  | ForgeResolverInput
+  | ForgeProviderInput;
 
 // ---------------------------------------------------------------------------
 // Pluggable verifier (Stage 3)

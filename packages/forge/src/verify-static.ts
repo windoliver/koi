@@ -159,6 +159,31 @@ function validateCompositeInput(
   return undefined;
 }
 
+type ImplementationForgeInput =
+  | Extract<ForgeInput, { readonly kind: "middleware" }>
+  | Extract<ForgeInput, { readonly kind: "channel" }>
+  | Extract<ForgeInput, { readonly kind: "engine" }>
+  | Extract<ForgeInput, { readonly kind: "resolver" }>
+  | Extract<ForgeInput, { readonly kind: "provider" }>;
+
+function validateImplementationInput(
+  input: ImplementationForgeInput,
+  config: VerificationConfig,
+): ForgeError | undefined {
+  if (input.implementation.length === 0) {
+    return staticError("MISSING_FIELD", `${input.kind} implementation must not be empty`);
+  }
+  const sizeErr = validateSize(input.implementation, config.maxBrickSizeBytes, "Implementation");
+  if (sizeErr !== undefined) {
+    return sizeErr;
+  }
+  const syntaxDetail = extractSyntaxError(input.implementation, "ts");
+  if (syntaxDetail !== undefined) {
+    return staticError("SYNTAX_ERROR", `Syntax error in implementation: ${syntaxDetail}`);
+  }
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Universal validators (files + requires — apply to all brick kinds)
 // ---------------------------------------------------------------------------
@@ -267,6 +292,13 @@ export function verifyStatic(
     case "composite":
       kindErr = validateCompositeInput(input);
       break;
+    case "middleware":
+    case "channel":
+    case "engine":
+    case "resolver":
+    case "provider":
+      kindErr = validateImplementationInput(input, config);
+      break;
   }
 
   if (kindErr !== undefined) {
@@ -286,6 +318,20 @@ export function verifyStatic(
     const requiresErr = validateRequires(input.requires);
     if (requiresErr !== undefined) {
       return { ok: false, error: requiresErr };
+    }
+  }
+
+  // Universal: validate configSchema if present (structure only — no value validation)
+  if ("configSchema" in input && input.configSchema !== undefined) {
+    const schemaErr = validateSchema(input.configSchema);
+    if (schemaErr !== undefined) {
+      return {
+        ok: false,
+        error: staticError(
+          "INVALID_SCHEMA",
+          `configSchema validation failed: ${schemaErr.message}`,
+        ),
+      };
     }
   }
 

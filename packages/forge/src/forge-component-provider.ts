@@ -21,17 +21,20 @@ import type {
   ImplementationArtifact,
   StoreChangeNotifier,
   TieredSandboxExecutor,
+  TrustTier,
 } from "@koi/core";
 import {
   COMPONENT_PRIORITY,
   channelToken,
   engineToken,
+  MIN_TRUST_BY_KIND,
   middlewareToken,
   providerToken,
   resolverToken,
   toolToken,
 } from "@koi/core";
 import { brickToTool } from "./brick-conversion.js";
+import { checkBrickRequires } from "./requires-check.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -47,6 +50,18 @@ const IMPLEMENTATION_KINDS: ReadonlySet<BrickKind> = new Set([
   "middleware",
   "channel",
 ]);
+
+/** Trust tier ordering: sandbox < verified < promoted. */
+const TRUST_TIER_LEVEL: Readonly<Record<TrustTier, number>> = {
+  sandbox: 0,
+  verified: 1,
+  promoted: 2,
+} as const;
+
+/** Returns true if `actual` meets or exceeds `required` trust tier. */
+function meetsMinTrust(actual: TrustTier, required: TrustTier): boolean {
+  return TRUST_TIER_LEVEL[actual] >= TRUST_TIER_LEVEL[required];
+}
 
 /** Maps an implementation brick kind + name to the correct namespaced token string. */
 function implementationToken(kind: ImplementationArtifact["kind"], name: string): string {
@@ -193,6 +208,20 @@ export function createForgeComponentProvider(
     const scopeTracker: Map<string, ForgeScope> = new Map();
     const nameTracker: Map<string, string> = new Map();
 
+    // Pass 1: Build available tool names set for requires.tools checking
+    const availableToolNames: Set<string> = new Set();
+    for (const brick of searchResult.value) {
+      if (brick.kind === "tool" && brick.lifecycle === "active") {
+        if (!isScopeVisible(brick.scope, config.scope)) continue;
+        if (brick.scope === "zone" && config.zoneId !== undefined) {
+          const zoneTag = `zone:${config.zoneId}`;
+          if (!brick.tags.includes(zoneTag)) continue;
+        }
+        availableToolNames.add(brick.name);
+      }
+    }
+
+    // Pass 2: Register components with requires enforcement
     for (const brick of searchResult.value) {
       // Scope filtering (Issue 8A)
       if (!isScopeVisible(brick.scope, config.scope)) continue;
@@ -203,6 +232,12 @@ export function createForgeComponentProvider(
         if (!brick.tags.includes(zoneTag)) continue;
       }
 
+      // Requires enforcement: skip bricks with unsatisfied requirements
+      const requiresResult = checkBrickRequires(brick.requires, availableToolNames);
+      if (!requiresResult.satisfied) {
+        continue;
+      }
+
       if (brick.kind === "tool") {
         // Tool path: wrap as executable Tool under toolToken(name)
         const tok = toolToken(brick.name);
@@ -210,6 +245,11 @@ export function createForgeComponentProvider(
         const tool = brickToTool(brick, tierExecutor, timeoutMs);
         components.set(tok as string, tool);
       } else if (IMPLEMENTATION_KINDS.has(brick.kind)) {
+        // Trust enforcement: implementation bricks must meet minimum trust tier
+        const minTrust = MIN_TRUST_BY_KIND[brick.kind];
+        if (!meetsMinTrust(brick.trustTier, minTrust)) {
+          continue; // Skip under-trusted bricks
+        }
         // Implementation path: register raw artifact under kind-specific token
         const tok = implementationToken(brick.kind as ImplementationArtifact["kind"], brick.name);
         components.set(tok, brick);

@@ -71,6 +71,7 @@ export interface ParsedBaseInput {
         readonly tools?: readonly string[] | undefined;
       }
     | undefined;
+  readonly configSchema?: Readonly<Record<string, unknown>> | undefined;
 }
 
 export interface ParsedToolInput extends ParsedBaseInput {
@@ -101,6 +102,18 @@ export interface ParsedCompositeInput extends ParsedBaseInput {
   readonly brickIds: readonly string[];
 }
 
+export interface ParsedImplementationInput extends ParsedBaseInput {
+  readonly implementation: string;
+  readonly testCases?:
+    | readonly {
+        readonly name: string;
+        readonly input: unknown;
+        readonly expectedOutput?: unknown | undefined;
+        readonly shouldThrow?: boolean | undefined;
+      }[]
+    | undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Zod input schemas
 // ---------------------------------------------------------------------------
@@ -117,6 +130,7 @@ const baseInputFields = {
       tools: z.array(z.string()).optional(),
     })
     .optional(),
+  configSchema: z.record(z.string(), z.unknown()).optional(),
 };
 
 const forgeToolInputSchema = z.object({
@@ -155,6 +169,21 @@ const forgeAgentInputSchema = z
 const forgeCompositeInputSchema = z.object({
   ...baseInputFields,
   brickIds: z.array(z.string()),
+});
+
+const forgeImplementationInputSchema = z.object({
+  ...baseInputFields,
+  implementation: z.string(),
+  testCases: z
+    .array(
+      z.object({
+        name: z.string(),
+        input: z.unknown(),
+        expectedOutput: z.unknown().optional(),
+        shouldThrow: z.boolean().optional(),
+      }),
+    )
+    .optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -225,6 +254,12 @@ export function parseAgentInput(input: unknown): Result<ParsedAgentInput, ForgeE
 
 export function parseCompositeInput(input: unknown): Result<ParsedCompositeInput, ForgeError> {
   return zodParse(forgeCompositeInputSchema, input);
+}
+
+export function parseImplementationInput(
+  input: unknown,
+): Result<ParsedImplementationInput, ForgeError> {
+  return zodParse(forgeImplementationInputSchema, input);
 }
 
 // ---------------------------------------------------------------------------

@@ -1805,6 +1805,8 @@ interface BrickArtifactBase {
     readonly files?: Readonly<Record<string, string>>;
     /** Runtime requirements for this brick to be usable. */
     readonly requires?: BrickRequires;
+    /** Optional JSON Schema describing brick instantiation config parameters. */
+    readonly configSchema?: Readonly<Record<string, unknown>>;
 }
 interface ToolArtifact extends BrickArtifactBase {
     readonly kind: "tool";
@@ -1827,6 +1829,7 @@ interface CompositeArtifact extends BrickArtifactBase {
 interface ImplementationArtifact extends BrickArtifactBase {
     readonly kind: "engine" | "resolver" | "provider" | "middleware" | "channel";
     readonly implementation: string;
+    readonly testCases?: readonly TestCase[];
 }
 type BrickArtifact = ToolArtifact | SkillArtifact | AgentArtifact | CompositeArtifact | ImplementationArtifact;
 interface ForgeQuery {
