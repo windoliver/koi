@@ -5,6 +5,7 @@
     "noEmit": true
   },
   "references": [
+    { "path": "packages/agui" },
     { "path": "packages/artifact-client" },
     { "path": "packages/bootstrap" },
     { "path": "packages/channel-base" },

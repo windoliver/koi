@@ -6,6 +6,7 @@
   "type": "module",
   "workspaces": [
     "packages/*",
+    "apps/*",
     "tests/e2e"
   ],
   "scripts": {
