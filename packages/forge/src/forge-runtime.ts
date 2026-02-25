@@ -16,6 +16,9 @@ import type { TieredSandboxExecutor } from "./types.js";
 
 const DEFAULT_SANDBOX_TIMEOUT_MS = 5_000;
 
+/** Safety cap — catches leaked listeners before they accumulate unboundedly. */
+const MAX_EXTERNAL_LISTENERS = 64;
+
 export interface CreateForgeRuntimeOptions {
   readonly store: ForgeStore;
   readonly executor: TieredSandboxExecutor;
@@ -104,8 +107,14 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
   if (store.watch !== undefined) {
     unsubStore = store.watch((event) => {
       invalidateCache();
-      for (const listener of externalListeners) {
-        listener(event);
+      // Snapshot to avoid issues if a listener unsubscribes during iteration
+      const snapshot = [...externalListeners];
+      for (const listener of snapshot) {
+        try {
+          listener(event);
+        } catch (_: unknown) {
+          // Never let one listener break others — silently continue
+        }
       }
     });
   }
@@ -113,6 +122,12 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
   const watch =
     store.watch !== undefined
       ? (listener: (event: StoreChangeEvent) => void): (() => void) => {
+          if (externalListeners.size >= MAX_EXTERNAL_LISTENERS) {
+            throw new Error(
+              `ForgeRuntime: external listener limit (${String(MAX_EXTERNAL_LISTENERS)}) reached — likely a listener leak. ` +
+                `Ensure returned unsubscribe functions are called.`,
+            );
+          }
           externalListeners.add(listener);
           return () => {
             externalListeners.delete(listener);

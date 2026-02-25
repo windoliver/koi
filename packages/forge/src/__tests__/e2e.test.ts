@@ -30,7 +30,9 @@ import { createLoopAdapter } from "@koi/engine-loop";
 import { createAnthropicAdapter } from "@koi/model-router";
 import { createDefaultForgeConfig } from "../config.js";
 import { createForgeComponentProvider } from "../forge-component-provider.js";
+import { createForgeRuntime } from "../forge-runtime.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
+import { createMemoryStoreChangeNotifier } from "../store-notifier.js";
 import { createForgeEngineTool } from "../tools/forge-engine.js";
 import { createForgeMiddlewareTool } from "../tools/forge-middleware.js";
 import { createForgeToolTool } from "../tools/forge-tool.js";
@@ -429,6 +431,124 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
         expect(loadResult.value.kind).toBe("middleware");
         expect(loadResult.value.name).toBe("retry-mw");
       }
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "listener guard: StoreChangeNotifier rejects subscribers beyond limit",
+    async () => {
+      const notifier = createMemoryStoreChangeNotifier();
+
+      // Fill to the limit (64 subscribers)
+      const unsubs: (() => void)[] = [];
+      for (let i = 0; i < 64; i++) {
+        unsubs.push(notifier.subscribe(() => {}));
+      }
+
+      // 65th must throw
+      expect(() => notifier.subscribe(() => {})).toThrow(/subscriber limit.*64.*reached/);
+
+      // After unsubscribing one, a new subscriber should succeed
+      unsubs[0]?.();
+      expect(() => notifier.subscribe(() => {})).not.toThrow();
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "listener guard: ForgeRuntime.watch rejects listeners beyond limit",
+    async () => {
+      const store = createInMemoryForgeStore();
+      const executor = mockExecutor();
+
+      const runtime = createForgeRuntime({
+        store,
+        executor: mockTiered(executor),
+      });
+
+      expect(runtime.watch).toBeDefined();
+
+      // Fill to the limit (64 external listeners)
+      const unsubs: (() => void)[] = [];
+      for (let i = 0; i < 64; i++) {
+        const unsub = runtime.watch?.(() => {});
+        if (unsub !== undefined) {
+          unsubs.push(unsub);
+        }
+      }
+
+      // 65th must throw
+      expect(() => runtime.watch?.(() => {})).toThrow(/external listener limit.*64.*reached/);
+
+      // After unsubscribing one, a new listener should succeed
+      unsubs[0]?.();
+      expect(() => runtime.watch?.(() => {})).not.toThrow();
+
+      // Clean up
+      runtime.dispose?.();
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "listener guard: notifier + ForgeComponentProvider within full createKoi assembly",
+    async () => {
+      const store = createInMemoryForgeStore();
+      const executor = adderExecutor();
+      const deps = defaultDeps(store, executor);
+      const notifier = createMemoryStoreChangeNotifier();
+
+      // Forge an adder tool so the runtime has something to work with
+      const forgeTool = createForgeToolTool(deps);
+      await forgeTool.execute({
+        name: "guard-adder",
+        description: "Adds two numbers.",
+        inputSchema: {
+          type: "object",
+          properties: { a: { type: "number" }, b: { type: "number" } },
+          required: ["a", "b"],
+        },
+        implementation: "return { sum: input.a + input.b };",
+      });
+
+      // Create provider wired to the notifier — this subscribes 1 listener
+      const forgeProvider = createForgeComponentProvider({
+        store,
+        executor: mockTiered(executor),
+        notifier,
+      });
+
+      // Full L1 assembly with real LLM
+      const modelCall = createModelCall();
+      const loopAdapter = createLoopAdapter({ modelCall, maxTurns: 1 });
+
+      const koiRuntime = await createKoi({
+        manifest: testManifest(),
+        adapter: loopAdapter,
+        providers: [forgeProvider],
+        loopDetection: false,
+      });
+
+      // Run one turn to prove the assembly works
+      const events = await collectEvents(koiRuntime.run({ kind: "text", text: "Say hello." }));
+      const output = findDoneOutput(events);
+      expect(output).toBeDefined();
+
+      // The notifier already has 1 subscriber (from forgeProvider).
+      // Fill remaining capacity: subscribe 63 more to reach 64.
+      const unsubs: (() => void)[] = [];
+      for (let i = 0; i < 63; i++) {
+        unsubs.push(notifier.subscribe(() => {}));
+      }
+
+      // 65th total subscriber (provider + 63 + 1) must throw
+      expect(() => notifier.subscribe(() => {})).toThrow(/subscriber limit.*64.*reached/);
+
+      // Clean up
+      for (const u of unsubs) u();
+      forgeProvider.dispose();
+      await koiRuntime.dispose();
     },
     TIMEOUT_MS,
   );

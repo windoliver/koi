@@ -6,11 +6,15 @@
 
 import type { StoreChangeEvent, StoreChangeNotifier } from "@koi/core";
 
+/** Safety cap — catches leaked listeners before they accumulate unboundedly. */
+const MAX_SUBSCRIBERS = 64;
+
 /**
  * Creates an in-memory `StoreChangeNotifier` backed by a simple listener map.
  *
  * - `notify()` snapshots the listener array and calls each synchronously.
  * - `subscribe()` returns an unsubscribe function.
+ * - Throws if subscriber count reaches `MAX_SUBSCRIBERS` (likely a leak).
  */
 export function createMemoryStoreChangeNotifier(): StoreChangeNotifier {
   let nextId = 0;
@@ -29,6 +33,12 @@ export function createMemoryStoreChangeNotifier(): StoreChangeNotifier {
   };
 
   const subscribe = (listener: (event: StoreChangeEvent) => void): (() => void) => {
+    if (listeners.size >= MAX_SUBSCRIBERS) {
+      throw new Error(
+        `StoreChangeNotifier: subscriber limit (${String(MAX_SUBSCRIBERS)}) reached — likely a listener leak. ` +
+          `Ensure dispose()/unsubscribe() is called when providers are torn down.`,
+      );
+    }
     const id = nextId++;
     listeners.set(id, listener);
     return (): void => {
