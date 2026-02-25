@@ -7,13 +7,16 @@ import type { ToolCallSummary } from "./types.js";
 
 /**
  * Collects all events from an async iterable into an array.
+ * When an AbortSignal is provided, stops collection early on abort.
  */
 export async function collectTranscript(
   stream: AsyncIterable<EngineEvent>,
+  signal?: AbortSignal,
 ): Promise<readonly EngineEvent[]> {
   // Local mutable array for accumulation — not shared state
   const events: EngineEvent[] = [];
   for await (const event of stream) {
+    if (signal?.aborted) break;
     events.push(event);
   }
   return events;

@@ -53,7 +53,7 @@ export function createEvalRunner(config: EvalRunConfig): EvalRunner {
       );
 
       const trials = await runPool(trialTasks, concurrency, config.onTrialComplete);
-      const summary = computeSummary(trials, [...config.tasks]);
+      const summary = computeSummary(trials, config.tasks);
 
       return {
         id: runId,
@@ -115,7 +115,7 @@ async function collectWithTimeout(
   const timeoutRejection = new Promise<never>((_, reject) => {
     signal.addEventListener("abort", () => reject(signal.reason), { once: true });
   });
-  return Promise.race([collectTranscript(agent.stream(task.input)), timeoutRejection]);
+  return Promise.race([collectTranscript(agent.stream(task.input), signal), timeoutRejection]);
 }
 
 function makeErrorTrial(
