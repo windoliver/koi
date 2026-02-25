@@ -34,6 +34,11 @@ export type IntegrityResult = IntegrityOk | IntegrityMismatch;
 function extractContentForHash(brick: BrickArtifact): string {
   switch (brick.kind) {
     case "tool":
+    case "engine":
+    case "resolver":
+    case "provider":
+    case "middleware":
+    case "channel":
       return brick.implementation;
     case "skill":
       return brick.content;

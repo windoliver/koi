@@ -21,6 +21,11 @@ export function extractSource(brick: BrickArtifact): SourceBundle {
   const files = brick.files !== undefined ? { files: brick.files } : {};
   switch (brick.kind) {
     case "tool":
+    case "engine":
+    case "resolver":
+    case "provider":
+    case "middleware":
+    case "channel":
       return { content: brick.implementation, language: "typescript", ...files };
     case "skill":
       return { content: brick.content, language: "markdown", ...files };

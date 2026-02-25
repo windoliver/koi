@@ -1,24 +1,35 @@
 /**
- * ForgeComponentProvider — attaches forged tools as components to agents.
+ * ForgeComponentProvider — attaches forged bricks as components to agents.
  *
  * Implements the L0 ComponentProvider interface. On first attach(), it discovers
- * all active tool bricks from the ForgeStore and wraps each as an executable
- * Tool that runs in the sandbox. Results are cached for subsequent attach() calls.
+ * all active bricks from the ForgeStore: tool bricks are wrapped as executable
+ * Tools; implementation bricks (engine, resolver, provider, middleware, channel)
+ * are registered as raw ImplementationArtifact values under kind-specific tokens.
+ * Results are cached for subsequent attach() calls.
  *
- * Lazy loading (decision 13A): tools are loaded on first attach(), not at creation.
+ * Lazy loading (decision 13A): bricks are loaded on first attach(), not at creation.
  * Scope + zoneId filtering (Issue 8A): only agent-scoped + zone-scoped bricks visible.
  * Delta-based invalidation (Issue 15A): invalidate by scope or brick ID.
  */
 
 import type {
   Agent,
+  BrickKind,
   ComponentProvider,
   ForgeScope,
   ForgeStore,
+  ImplementationArtifact,
   StoreChangeNotifier,
   TieredSandboxExecutor,
 } from "@koi/core";
-import { toolToken } from "@koi/core";
+import {
+  channelToken,
+  engineToken,
+  middlewareToken,
+  providerToken,
+  resolverToken,
+  toolToken,
+} from "@koi/core";
 import { brickToTool } from "./brick-conversion.js";
 
 // ---------------------------------------------------------------------------
@@ -26,6 +37,31 @@ import { brickToTool } from "./brick-conversion.js";
 // ---------------------------------------------------------------------------
 
 const DEFAULT_SANDBOX_TIMEOUT_MS = 5_000;
+
+/** Brick kinds that represent implementation artifacts (discoverable as ECS components). */
+const IMPLEMENTATION_KINDS: ReadonlySet<BrickKind> = new Set([
+  "engine",
+  "resolver",
+  "provider",
+  "middleware",
+  "channel",
+]);
+
+/** Maps an implementation brick kind + name to the correct namespaced token string. */
+function implementationToken(kind: ImplementationArtifact["kind"], name: string): string {
+  switch (kind) {
+    case "engine":
+      return engineToken(name) as string;
+    case "resolver":
+      return resolverToken(name) as string;
+    case "provider":
+      return providerToken(name) as string;
+    case "middleware":
+      return middlewareToken(name) as string;
+    case "channel":
+      return channelToken(name) as string;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -60,8 +96,8 @@ export interface ForgeComponentProviderInstance extends ComponentProvider {
   readonly invalidateByScope: (scope: ForgeScope) => void;
   /** Invalidate cache if the specific brick ID is cached. */
   readonly invalidateByBrickId: (brickId: string) => void;
-  /** Resolves a tool name to its brick ID. Returns `undefined` for non-forged tools or before first `attach()`. */
-  readonly lookupBrickId: (toolName: string) => string | undefined;
+  /** Resolves a brick name to its brick ID. Returns `undefined` for non-forged bricks or before first `attach()`. */
+  readonly lookupBrickId: (brickName: string) => string | undefined;
   /** Unsubscribes from the notifier (if one was provided). */
   readonly dispose: () => void;
 }
@@ -98,7 +134,7 @@ export function createForgeComponentProvider(
   let cached: ReadonlyMap<string, unknown> | undefined;
   // Track cached brick metadata for delta invalidation
   let cachedBrickScopes: ReadonlyMap<string, ForgeScope> | undefined;
-  // Reverse map: tool name → brick ID (populated during loadTools)
+  // Reverse map: brick name → brick ID (populated during loadComponents)
   let nameToBrickId: ReadonlyMap<string, string> | undefined;
 
   const invalidate = (): void => {
@@ -124,7 +160,7 @@ export function createForgeComponentProvider(
     }
   };
 
-  const loadTools = async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
+  const loadComponents = async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
     if (cached !== undefined) {
       return cached;
     }
@@ -132,26 +168,24 @@ export function createForgeComponentProvider(
     // Optimize store query when possible (Issue M1).
     // ForgeQuery.scope is exact-match, but the provider needs "at scope or broader".
     // Only "global" callers can use exact-match (they only see global-scoped bricks).
+    // No kind filter — we load tools AND implementation bricks in one pass.
     const searchResult = await config.store.search({
-      kind: "tool",
       lifecycle: "active",
       ...(config.scope === "global" ? { scope: "global" } : {}),
     });
 
     if (!searchResult.ok) {
       throw new Error(
-        `ForgeComponentProvider: failed to load tools: ${searchResult.error.message}`,
+        `ForgeComponentProvider: failed to load bricks: ${searchResult.error.message}`,
         { cause: searchResult.error },
       );
     }
 
-    const tools: Map<string, unknown> = new Map();
+    const components: Map<string, unknown> = new Map();
     const scopeTracker: Map<string, ForgeScope> = new Map();
     const nameTracker: Map<string, string> = new Map();
 
     for (const brick of searchResult.value) {
-      if (brick.kind !== "tool") continue;
-
       // Scope filtering (Issue 8A)
       if (!isScopeVisible(brick.scope, config.scope)) continue;
 
@@ -161,15 +195,26 @@ export function createForgeComponentProvider(
         if (!brick.tags.includes(zoneTag)) continue;
       }
 
-      const token = toolToken(brick.name);
-      const { executor: tierExecutor } = config.executor.forTier(brick.trustTier);
-      const tool = brickToTool(brick, tierExecutor, timeoutMs);
-      tools.set(token as string, tool);
+      if (brick.kind === "tool") {
+        // Tool path: wrap as executable Tool under toolToken(name)
+        const tok = toolToken(brick.name);
+        const { executor: tierExecutor } = config.executor.forTier(brick.trustTier);
+        const tool = brickToTool(brick, tierExecutor, timeoutMs);
+        components.set(tok as string, tool);
+      } else if (IMPLEMENTATION_KINDS.has(brick.kind)) {
+        // Implementation path: register raw artifact under kind-specific token
+        const tok = implementationToken(brick.kind as ImplementationArtifact["kind"], brick.name);
+        components.set(tok, brick);
+      } else {
+        // skill, agent, composite — skip (different attachment semantics)
+        continue;
+      }
+
       scopeTracker.set(brick.id, brick.scope);
       nameTracker.set(brick.name, brick.id);
     }
 
-    cached = tools;
+    cached = components;
     cachedBrickScopes = scopeTracker;
     nameToBrickId = nameTracker;
     return cached;
@@ -194,7 +239,7 @@ export function createForgeComponentProvider(
 
   return {
     name: "forge",
-    attach: loadTools,
+    attach: loadComponents,
     invalidate,
     invalidateByScope,
     invalidateByBrickId,

@@ -41,6 +41,7 @@ export type {
   CompositeArtifact,
   ForgeQuery,
   ForgeStore,
+  ImplementationArtifact,
   LockHandle,
   LockMode,
   LockRequest,
@@ -159,9 +160,13 @@ export {
   channelToken,
   DELEGATION,
   EVENTS,
+  engineToken,
   FILESYSTEM,
   GOVERNANCE,
   MEMORY,
+  middlewareToken,
+  providerToken,
+  resolverToken,
   runId,
   sessionId,
   skillToken,
@@ -239,7 +244,7 @@ export type {
 } from "./filesystem-backend.js";
 // forge types
 export type { BrickKind, BrickLifecycle, ForgeScope } from "./forge-types.js";
-export { VALID_LIFECYCLE_TRANSITIONS } from "./forge-types.js";
+export { ALL_BRICK_KINDS, MIN_TRUST_BY_KIND, VALID_LIFECYCLE_TRANSITIONS } from "./forge-types.js";
 // health
 export type {
   HealthMonitor,

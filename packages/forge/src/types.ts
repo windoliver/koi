@@ -175,6 +175,7 @@ export type {
   BrickArtifact,
   BrickArtifactBase,
   CompositeArtifact,
+  ImplementationArtifact,
   SkillArtifact,
   ToolArtifact,
 } from "@koi/core";

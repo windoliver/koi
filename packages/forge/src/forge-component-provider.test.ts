@@ -1,10 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import type { Agent, SubsystemToken, TieredSandboxExecutor } from "@koi/core";
-import { agentId, toolToken } from "@koi/core";
+import {
+  agentId,
+  channelToken,
+  engineToken,
+  middlewareToken,
+  providerToken,
+  resolverToken,
+  toolToken,
+} from "@koi/core";
 import { brickToTool, createForgeComponentProvider } from "./forge-component-provider.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
 import { createMemoryStoreChangeNotifier } from "./store-notifier.js";
-import type { SandboxExecutor, SkillArtifact, ToolArtifact } from "./types.js";
+import type {
+  ImplementationArtifact,
+  SandboxExecutor,
+  SkillArtifact,
+  ToolArtifact,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -914,5 +927,219 @@ describe("createForgeComponentProvider — notifier integration", () => {
     });
 
     provider.dispose(); // Should not throw
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Implementation kinds (engine, resolver, provider, middleware, channel)
+// ---------------------------------------------------------------------------
+
+function createImplementationBrick(
+  kind: ImplementationArtifact["kind"],
+  overrides?: Partial<ImplementationArtifact>,
+): ImplementationArtifact {
+  return {
+    id: `brick_${crypto.randomUUID()}`,
+    kind,
+    name: `my-${kind}`,
+    description: `A ${kind} implementation`,
+    scope: "agent",
+    trustTier: "verified",
+    lifecycle: "active",
+    createdBy: "agent-1",
+    createdAt: Date.now(),
+    version: "0.0.1",
+    tags: [],
+    usageCount: 0,
+    contentHash: "test-hash",
+    implementation: `// ${kind} code`,
+    ...overrides,
+  } as ImplementationArtifact;
+}
+
+describe("createForgeComponentProvider — implementation kinds", () => {
+  test("attaches engine brick as ImplementationArtifact", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createImplementationBrick("engine", { name: "myEngine" }));
+
+    const provider = createForgeComponentProvider({
+      store,
+      executor: mockTiered(echoExecutor()),
+    });
+
+    const components = await provider.attach(createMockAgent());
+    expect(components.has(engineToken("myEngine") as string)).toBe(true);
+
+    const artifact = components.get(engineToken("myEngine") as string) as ImplementationArtifact;
+    expect(artifact.kind).toBe("engine");
+    expect(artifact.name).toBe("myEngine");
+  });
+
+  test("attaches all 5 implementation kinds", async () => {
+    const store = createInMemoryForgeStore();
+    const kinds: readonly ImplementationArtifact["kind"][] = [
+      "engine",
+      "resolver",
+      "provider",
+      "middleware",
+      "channel",
+    ];
+    for (const kind of kinds) {
+      await store.save(createImplementationBrick(kind));
+    }
+
+    const provider = createForgeComponentProvider({
+      store,
+      executor: mockTiered(echoExecutor()),
+    });
+
+    const components = await provider.attach(createMockAgent());
+    expect(components.size).toBe(5);
+    expect(components.has(engineToken("my-engine") as string)).toBe(true);
+    expect(components.has(resolverToken("my-resolver") as string)).toBe(true);
+    expect(components.has(providerToken("my-provider") as string)).toBe(true);
+    expect(components.has(middlewareToken("my-middleware") as string)).toBe(true);
+    expect(components.has(channelToken("my-channel") as string)).toBe(true);
+  });
+
+  test("tools and implementations coexist", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ name: "calc" }));
+    await store.save(createImplementationBrick("engine", { name: "myEngine" }));
+
+    const provider = createForgeComponentProvider({
+      store,
+      executor: mockTiered(echoExecutor()),
+    });
+
+    const components = await provider.attach(createMockAgent());
+    expect(components.size).toBe(2);
+    expect(components.has(toolToken("calc") as string)).toBe(true);
+    expect(components.has(engineToken("myEngine") as string)).toBe(true);
+  });
+
+  test("skips skill/agent/composite bricks", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ name: "myTool" }));
+    await store.save(createImplementationBrick("engine", { name: "myEngine" }));
+    const skillBrick: SkillArtifact = {
+      id: `brick_${crypto.randomUUID()}`,
+      kind: "skill",
+      name: "mySkill",
+      description: "A skill",
+      scope: "agent",
+      trustTier: "sandbox",
+      lifecycle: "active",
+      createdBy: "agent-1",
+      createdAt: Date.now(),
+      version: "0.0.1",
+      tags: [],
+      usageCount: 0,
+      contentHash: "test-hash",
+      content: "# Skill",
+    };
+    await store.save(skillBrick);
+
+    const provider = createForgeComponentProvider({
+      store,
+      executor: mockTiered(echoExecutor()),
+    });
+
+    const components = await provider.attach(createMockAgent());
+    // tool + engine = 2, skill is skipped
+    expect(components.size).toBe(2);
+    expect(components.has(toolToken("myTool") as string)).toBe(true);
+    expect(components.has(engineToken("myEngine") as string)).toBe(true);
+  });
+
+  test("scope filtering works for implementations", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createImplementationBrick("engine", { name: "agentEngine", scope: "agent" }));
+    await store.save(
+      createImplementationBrick("engine", { name: "globalEngine", scope: "global" }),
+    );
+
+    const provider = createForgeComponentProvider({
+      store,
+      executor: mockTiered(echoExecutor()),
+      scope: "global",
+    });
+
+    const components = await provider.attach(createMockAgent());
+    // Global scope sees only global bricks
+    expect(components.size).toBe(1);
+    expect(components.has(engineToken("globalEngine") as string)).toBe(true);
+    expect(components.has(engineToken("agentEngine") as string)).toBe(false);
+  });
+
+  test("lookupBrickId works for implementation names", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createImplementationBrick("middleware", { id: "brick_mw1", name: "audit" }));
+
+    const provider = createForgeComponentProvider({
+      store,
+      executor: mockTiered(echoExecutor()),
+    });
+
+    await provider.attach(createMockAgent());
+    expect(provider.lookupBrickId("audit")).toBe("brick_mw1");
+  });
+
+  test("inactive implementations are skipped", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      createImplementationBrick("engine", { name: "activeEngine", lifecycle: "active" }),
+    );
+    await store.save(
+      createImplementationBrick("engine", {
+        name: "deprecatedEngine",
+        lifecycle: "deprecated",
+      }),
+    );
+
+    const provider = createForgeComponentProvider({
+      store,
+      executor: mockTiered(echoExecutor()),
+    });
+
+    const components = await provider.attach(createMockAgent());
+    expect(components.size).toBe(1);
+    expect(components.has(engineToken("activeEngine") as string)).toBe(true);
+  });
+
+  test("cache invalidation works for implementation bricks", async () => {
+    let searchCount = 0;
+    const realStore = createInMemoryForgeStore();
+    await realStore.save(createImplementationBrick("engine", { name: "myEngine" }));
+
+    const countingStore = {
+      ...realStore,
+      search: async (...args: readonly unknown[]) => {
+        searchCount++;
+        return realStore.search(...(args as Parameters<typeof realStore.search>));
+      },
+    };
+
+    const notifier = createMemoryStoreChangeNotifier();
+    const provider = createForgeComponentProvider({
+      store: countingStore,
+      executor: mockTiered(echoExecutor()),
+      notifier,
+    });
+
+    const first = await provider.attach(createMockAgent());
+    expect(first.size).toBe(1);
+    expect(searchCount).toBe(1);
+
+    // Add a new engine brick to the store
+    await realStore.save(createImplementationBrick("resolver", { name: "myResolver" }));
+
+    // Simulate notifier event
+    notifier.notify({ kind: "saved", brickId: "b2", scope: "agent" });
+
+    // Cache should be invalidated — next attach re-queries
+    const second = await provider.attach(createMockAgent());
+    expect(second.size).toBe(2);
+    expect(searchCount).toBe(2);
   });
 });
