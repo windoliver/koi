@@ -20,6 +20,7 @@
     { "path": "packages/engine-loop" },
     { "path": "packages/engine-pi" },
     { "path": "packages/errors" },
+    { "path": "packages/eval" },
     { "path": "packages/events-memory" },
     { "path": "packages/filesystem" },
     { "path": "packages/forge" },

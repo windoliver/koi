@@ -296,8 +296,9 @@ declare function createFsEvalStore(config: FsEvalStoreConfig): EvalStore;
 
 /**
  * Collects all events from an async iterable into an array.
+ * When an AbortSignal is provided, stops collection early on abort.
  */
-declare function collectTranscript(stream: AsyncIterable<EngineEvent>): Promise<readonly EngineEvent[]>;
+declare function collectTranscript(stream: AsyncIterable<EngineEvent>, signal?: AbortSignal): Promise<readonly EngineEvent[]>;
 /**
  * Extracts concatenated text from text_delta events.
  */

@@ -117,7 +117,7 @@ function logCombination(n: number, k: number): number {
   // let justified: accumulating log sum
   let logResult = 0;
   const effectiveK = Math.min(k, n - k);
-  for (const i of Array.from({ length: effectiveK }, (_, idx) => idx)) {
+  for (let i = 0; i < effectiveK; i++) {
     logResult += Math.log(n - i) - Math.log(i + 1);
   }
   return logResult;
