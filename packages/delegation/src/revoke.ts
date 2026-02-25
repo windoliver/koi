@@ -5,7 +5,7 @@
  * (children, grandchildren, etc.) and revokes them all.
  */
 
-import type { DelegationGrant, DelegationId, RevocationRegistry } from "@koi/core";
+import type { DelegationId, RevocationRegistry } from "@koi/core";
 import type { GrantIndex } from "./registry.js";
 
 /**
@@ -13,23 +13,24 @@ import type { GrantIndex } from "./registry.js";
  * descendants in the delegation chain.
  *
  * Returns the list of all revoked DelegationIds.
+ *
+ * Async because RevocationRegistry.revoke() / isRevoked() may be
+ * backed by a network store.
  */
-export function revokeGrant(
+export async function revokeGrant(
   id: DelegationId,
   registry: RevocationRegistry,
-  _grants: ReadonlyMap<DelegationId, DelegationGrant>,
   index: GrantIndex,
   cascade: boolean,
-): readonly DelegationId[] {
+): Promise<readonly DelegationId[]> {
   const revoked: DelegationId[] = [];
 
   // Revoke the target
-  registry.revoke(id, false);
+  await registry.revoke(id, false);
   revoked.push(id);
 
   // Cascade: BFS through children
   if (cascade) {
-    // BFS through children (no mutation of external state)
     const pending = [...index.childrenOf(id)];
     let i = 0;
     while (i < pending.length) {
@@ -37,8 +38,8 @@ export function revokeGrant(
       i++;
       if (childId === undefined) continue;
 
-      if (!registry.isRevoked(childId)) {
-        registry.revoke(childId, false);
+      if (!(await registry.isRevoked(childId))) {
+        await registry.revoke(childId, false);
         revoked.push(childId);
       }
 

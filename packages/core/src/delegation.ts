@@ -20,6 +20,11 @@ declare const __delegationBrand: unique symbol;
  */
 export type DelegationId = string & { readonly [__delegationBrand]: "DelegationId" };
 
+/** Create a branded DelegationId from a plain string. */
+export function delegationId(raw: string): DelegationId {
+  return raw as DelegationId;
+}
+
 // ---------------------------------------------------------------------------
 // Delegation scope (wraps PermissionConfig — DRY)
 // ---------------------------------------------------------------------------
@@ -134,4 +139,64 @@ export interface DelegationComponent {
   readonly revoke: (id: DelegationId, cascade?: boolean) => Promise<void>;
   readonly verify: (id: DelegationId, toolId: string) => Promise<DelegationVerifyResult>;
   readonly list: () => Promise<readonly DelegationGrant[]>;
+}
+
+// ---------------------------------------------------------------------------
+// Delegation events (DelegationManager lifecycle)
+// ---------------------------------------------------------------------------
+
+/**
+ * Events emitted by DelegationManager during grant lifecycle operations.
+ * Follows the RegistryEvent / SchedulerEvent discriminated union pattern.
+ */
+export type DelegationEvent =
+  | { readonly kind: "delegation:granted"; readonly grant: DelegationGrant }
+  | {
+      readonly kind: "delegation:revoked";
+      readonly grantId: DelegationId;
+      readonly cascade: boolean;
+      readonly revokedIds: readonly DelegationId[];
+    }
+  | { readonly kind: "delegation:expired"; readonly grantId: DelegationId }
+  | {
+      readonly kind: "delegation:denied";
+      readonly grantId: DelegationId;
+      readonly toolId: string;
+      readonly reason: DelegationDenyReason;
+    }
+  | {
+      readonly kind: "delegation:circuit_opened";
+      readonly delegateeId: string;
+      readonly failureCount: number;
+    }
+  | { readonly kind: "delegation:circuit_closed"; readonly delegateeId: string };
+
+// ---------------------------------------------------------------------------
+// Circuit breaker configuration
+// ---------------------------------------------------------------------------
+
+/** Configuration for per-delegatee circuit breaker in DelegationManager. */
+export interface CircuitBreakerConfig {
+  readonly failureThreshold: number;
+  readonly resetTimeoutMs: number;
+  readonly halfOpenMaxProbes: number;
+}
+
+/** Default circuit breaker settings. */
+export const DEFAULT_CIRCUIT_BREAKER_CONFIG: CircuitBreakerConfig = Object.freeze({
+  failureThreshold: 5,
+  resetTimeoutMs: 30_000,
+  halfOpenMaxProbes: 1,
+});
+
+// ---------------------------------------------------------------------------
+// DelegationManager configuration
+// ---------------------------------------------------------------------------
+
+/** Full configuration for the DelegationManager coordinator. */
+export interface DelegationManagerConfig {
+  readonly secret: string;
+  readonly maxChainDepth: number;
+  readonly defaultTtlMs: number;
+  readonly circuitBreaker: CircuitBreakerConfig;
 }

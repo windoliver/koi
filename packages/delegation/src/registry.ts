@@ -37,16 +37,23 @@ export function createInMemoryRegistry(config?: {
 
   const entries = new Map<DelegationId, RegistryEntry>();
 
-  // Periodic cleanup — remove oldest entries when over capacity
-  const timer = setInterval(() => {
-    evictIfOverCapacity(entries, maxEntries);
-  }, cleanupIntervalMs);
+  // Lazy timer — started on first revoke(), avoids leaks when registry is unused
+  let timer: ReturnType<typeof setInterval> | undefined;
+
+  function ensureTimer(): void {
+    if (timer === undefined) {
+      timer = setInterval(() => {
+        evictIfOverCapacity(entries, maxEntries);
+      }, cleanupIntervalMs);
+    }
+  }
 
   function isRevoked(id: DelegationId): boolean {
     return entries.has(id);
   }
 
   function revoke(id: DelegationId, _cascade: boolean): void {
+    ensureTimer();
     entries.set(id, { revokedAt: Date.now() });
     evictIfOverCapacity(entries, maxEntries);
   }
@@ -56,7 +63,10 @@ export function createInMemoryRegistry(config?: {
   }
 
   function dispose(): void {
-    clearInterval(timer);
+    if (timer !== undefined) {
+      clearInterval(timer);
+      timer = undefined;
+    }
   }
 
   return { isRevoked, revoke, revokedIds, dispose };
@@ -95,7 +105,7 @@ export function createGrantIndex(): GrantIndex {
 
     const existing = parentToChildren.get(grant.parentId);
     if (existing !== undefined) {
-      existing.push(grant.id);
+      parentToChildren.set(grant.parentId, [...existing, grant.id]);
     } else {
       parentToChildren.set(grant.parentId, [grant.id]);
     }

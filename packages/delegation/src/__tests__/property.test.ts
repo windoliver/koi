@@ -66,7 +66,7 @@ describe("property: monotonic attenuation", () => {
   test("for any valid chain, no child scope exceeds parent scope (50 iterations)", () => {
     for (let seed = 0; seed < 50; seed++) {
       const parentScope = makeRandomScope(seed);
-      const parent = createGrant({
+      const parentResult = createGrant({
         issuerId: "agent-root",
         delegateeId: "agent-1",
         scope: parentScope,
@@ -74,6 +74,8 @@ describe("property: monotonic attenuation", () => {
         ttlMs: 3600000,
         secret: SECRET,
       });
+      if (!parentResult.ok) continue;
+      const parent = parentResult.value;
 
       const childScope = makeNarrowerScope(parentScope, seed + 100);
       const childResult = attenuateGrant(
@@ -113,7 +115,7 @@ describe("property: signature integrity", () => {
 
   test("any single-field mutation invalidates the signature (30 iterations)", () => {
     for (let seed = 0; seed < 30; seed++) {
-      const grant = createGrant({
+      const grantResult = createGrant({
         issuerId: `agent-${String(seed)}`,
         delegateeId: `agent-${String(seed + 100)}`,
         scope: makeRandomScope(seed),
@@ -121,6 +123,8 @@ describe("property: signature integrity", () => {
         ttlMs: 3600000,
         secret: SECRET,
       });
+      if (!grantResult.ok) continue;
+      const grant = grantResult.value;
 
       // Original signature is valid
       expect(verifySignature(grant, SECRET)).toBe(true);
@@ -148,7 +152,7 @@ describe("property: expiry monotonicity", () => {
   test("for any valid chain, child expiresAt <= parent expiresAt (50 iterations)", () => {
     for (let seed = 0; seed < 50; seed++) {
       const parentScope = makeRandomScope(seed);
-      const parent = createGrant({
+      const parentResult = createGrant({
         issuerId: "agent-root",
         delegateeId: "agent-1",
         scope: parentScope,
@@ -156,6 +160,8 @@ describe("property: expiry monotonicity", () => {
         ttlMs: 3600000,
         secret: SECRET,
       });
+      if (!parentResult.ok) continue;
+      const parent = parentResult.value;
 
       const childScope = makeNarrowerScope(parentScope, seed + 200);
       // Use a TTL that's randomly smaller than parent

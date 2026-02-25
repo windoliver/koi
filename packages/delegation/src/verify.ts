@@ -55,8 +55,8 @@ export async function verifyGrant(
     return { ok: false, reason: "expired" };
   }
 
-  // 3. Check revocation
-  if (registry.isRevoked(grant.id)) {
+  // 3. Check revocation (async — registry may be backed by network)
+  if (await registry.isRevoked(grant.id)) {
     return { ok: false, reason: "revoked" };
   }
 
@@ -118,21 +118,37 @@ export function matchToolAgainstScope(toolId: string, scope: DelegationScope): b
  * Simple glob-style pattern matching.
  * Supports `**` (match any path segments) and `*` (match within one segment).
  *
- * Compiled regexes are cached — same pattern string reuses the same RegExp
- * instance across calls (hot path: every tool call).
+ * Compiled regexes are cached with LRU eviction (max 512 entries).
+ * Same pattern string reuses the same RegExp instance across calls
+ * (hot path: every tool call).
  */
+const GLOB_CACHE_MAX = 512;
 const globCache = new Map<string, RegExp>();
 
 function matchGlob(pattern: string, value: string): boolean {
   let regex = globCache.get(pattern);
-  if (regex === undefined) {
-    const regexStr = pattern
-      .replace(/[.+^${}()|[\]\\]/g, "\\$&") // escape regex special chars
-      .replace(/\*\*/g, "\0") // temp placeholder for **
-      .replace(/\*/g, "[^/]*") // * matches non-slash
-      .replace(/\0/g, ".*"); // ** matches anything
-    regex = new RegExp(`^${regexStr}$`);
+  if (regex !== undefined) {
+    // Move to end for LRU ordering (delete + re-insert)
+    globCache.delete(pattern);
     globCache.set(pattern, regex);
+    return regex.test(value);
   }
+
+  const regexStr = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&") // escape regex special chars
+    .replace(/\*\*/g, "\0") // temp placeholder for **
+    .replace(/\*/g, "[^/]*") // * matches non-slash
+    .replace(/\0/g, ".*"); // ** matches anything
+  regex = new RegExp(`^${regexStr}$`);
+
+  // Evict oldest entry if at capacity
+  if (globCache.size >= GLOB_CACHE_MAX) {
+    const oldest = globCache.keys().next().value;
+    if (oldest !== undefined) {
+      globCache.delete(oldest);
+    }
+  }
+
+  globCache.set(pattern, regex);
   return regex.test(value);
 }

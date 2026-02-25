@@ -8,10 +8,16 @@
  * - Cascading revocation
  * - Pluggable revocation registry
  * - KoiMiddleware integration
+ * - DelegationManager coordinator with circuit breaker
  */
 
+// circuit breaker
+export type { CircuitBreaker, CircuitState } from "./circuit-breaker.js";
+export { createCircuitBreaker } from "./circuit-breaker.js";
+// delegation manager
+export type { CreateDelegationManagerParams, DelegationManager } from "./delegation-manager.js";
+export { createDelegationManager } from "./delegation-manager.js";
 export type { AttenuateParams, CreateGrantParams } from "./grant.js";
-
 // grant creation & attenuation
 export { attenuateGrant, createGrant } from "./grant.js";
 // middleware
@@ -23,5 +29,14 @@ export { createGrantIndex, createInMemoryRegistry } from "./registry.js";
 export { revokeGrant } from "./revoke.js";
 // signing
 export { signGrant, verifySignature } from "./sign.js";
+// test helpers
+export {
+  createAsyncRevocationRegistry,
+  createRegistryCleanup,
+  mustCreateGrant,
+} from "./test-helpers.js";
 // verification
 export { defaultScopeChecker, matchToolAgainstScope, verifyGrant } from "./verify.js";
+// verify cache
+export type { VerifyCache } from "./verify-cache.js";
+export { createVerifyCache } from "./verify-cache.js";

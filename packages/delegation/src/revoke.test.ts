@@ -18,7 +18,7 @@ function makeRegistry(): RevocationRegistry & { readonly _revoked: Set<Delegatio
 }
 
 function makeGrant(issuerId: string, delegateeId: string): DelegationGrant {
-  return createGrant({
+  const result = createGrant({
     issuerId,
     delegateeId,
     scope: { permissions: { allow: ["read_file"] } },
@@ -26,22 +26,23 @@ function makeGrant(issuerId: string, delegateeId: string): DelegationGrant {
     ttlMs: 3600000,
     secret: SECRET,
   });
+  if (!result.ok) throw new Error("Failed to create grant");
+  return result.value;
 }
 
 describe("revokeGrant", () => {
-  test("revokes a single grant without cascade", () => {
+  test("revokes a single grant without cascade", async () => {
     const grant = makeGrant("a1", "a2");
     const registry = makeRegistry();
-    const grants = new Map<DelegationId, DelegationGrant>([[grant.id, grant]]);
     const index = createGrantIndex();
 
-    const revoked = revokeGrant(grant.id, registry, grants, index, false);
+    const revoked = await revokeGrant(grant.id, registry, index, false);
 
     expect(revoked).toEqual([grant.id]);
     expect(registry.isRevoked(grant.id)).toBe(true);
   });
 
-  test("cascade revokes parent and all children", () => {
+  test("cascade revokes parent and all children", async () => {
     const parent = makeGrant("a1", "a2");
 
     // Simulate children by creating grants with parentId
@@ -68,13 +69,6 @@ describe("revokeGrant", () => {
       chainDepth: 2,
     };
 
-    const grants = new Map<DelegationId, DelegationGrant>([
-      [parent.id, parent],
-      [child1Id, child1],
-      [child2Id, child2],
-      [grandchildId, grandchild],
-    ]);
-
     const index = createGrantIndex();
     index.addGrant(parent);
     index.addGrant(child1);
@@ -82,7 +76,7 @@ describe("revokeGrant", () => {
     index.addGrant(grandchild);
 
     const registry = makeRegistry();
-    const revoked = revokeGrant(parent.id, registry, grants, index, true);
+    const revoked = await revokeGrant(parent.id, registry, index, true);
 
     expect(revoked).toHaveLength(4);
     expect(registry.isRevoked(parent.id)).toBe(true);
@@ -91,26 +85,24 @@ describe("revokeGrant", () => {
     expect(registry.isRevoked(grandchildId)).toBe(true);
   });
 
-  test("cascade with no children only revokes the target", () => {
+  test("cascade with no children only revokes the target", async () => {
     const grant = makeGrant("a1", "a2");
     const registry = makeRegistry();
-    const grants = new Map<DelegationId, DelegationGrant>([[grant.id, grant]]);
     const index = createGrantIndex();
     index.addGrant(grant);
 
-    const revoked = revokeGrant(grant.id, registry, grants, index, true);
+    const revoked = await revokeGrant(grant.id, registry, index, true);
 
     expect(revoked).toEqual([grant.id]);
   });
 
-  test("revoking already-revoked grant is idempotent", () => {
+  test("revoking already-revoked grant is idempotent", async () => {
     const grant = makeGrant("a1", "a2");
     const registry = makeRegistry();
-    const grants = new Map<DelegationId, DelegationGrant>([[grant.id, grant]]);
     const index = createGrantIndex();
 
-    revokeGrant(grant.id, registry, grants, index, false);
-    const revoked = revokeGrant(grant.id, registry, grants, index, false);
+    await revokeGrant(grant.id, registry, index, false);
+    const revoked = await revokeGrant(grant.id, registry, index, false);
 
     expect(revoked).toEqual([grant.id]);
     expect(registry.isRevoked(grant.id)).toBe(true);

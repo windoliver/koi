@@ -39,6 +39,13 @@ const SECRET = "e2e-test-secret-key-32-bytes-min";
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Creates a grant or throws in test context. */
+function mustCreateGrant(params: Parameters<typeof createGrant>[0]): DelegationGrant {
+  const result = createGrant(params);
+  if (!result.ok) throw new Error(`Failed to create grant: ${result.error.message}`);
+  return result.value;
+}
+
 function makeTurnContext(delegationId?: string): TurnContext {
   const rid = runId("test-run");
   return {
@@ -89,12 +96,11 @@ describe("e2e: three-agent delegation chain lifecycle", () => {
   test("create → attenuate → verify → revoke → deny", async () => {
     const registry = createInMemoryRegistry();
     const index = createGrantIndex();
-    const grantStore = new Map<DelegationId, DelegationGrant>();
 
     // ------------------------------------------------------------------
     // Step 1: Orchestrator creates root grant for Worker
     // ------------------------------------------------------------------
-    const rootGrant = createGrant({
+    const rootGrant = mustCreateGrant({
       issuerId: "orchestrator",
       delegateeId: "worker",
       scope: {
@@ -106,7 +112,6 @@ describe("e2e: three-agent delegation chain lifecycle", () => {
       secret: SECRET,
     });
 
-    grantStore.set(rootGrant.id, rootGrant);
     index.addGrant(rootGrant);
 
     // Root grant is valid
@@ -132,7 +137,6 @@ describe("e2e: three-agent delegation chain lifecycle", () => {
     if (!childResult.ok) return;
 
     const childGrant = childResult.value;
-    grantStore.set(childGrant.id, childGrant);
     index.addGrant(childGrant);
 
     // Child grant chain metadata is correct
@@ -188,7 +192,7 @@ describe("e2e: three-agent delegation chain lifecycle", () => {
     // ------------------------------------------------------------------
     // Step 4: Revoke root grant — cascade invalidates entire chain
     // ------------------------------------------------------------------
-    const revokedIds = revokeGrant(rootGrant.id, registry, grantStore, index, true);
+    const revokedIds = await revokeGrant(rootGrant.id, registry, index, true);
 
     expect(revokedIds).toContain(rootGrant.id);
     expect(revokedIds).toContain(childGrant.id);
@@ -227,7 +231,7 @@ describe("e2e: middleware integration", () => {
     const registry = createInMemoryRegistry();
     const grantStore = new Map<DelegationId, DelegationGrant>();
 
-    const grant = createGrant({
+    const grant = mustCreateGrant({
       issuerId: "orchestrator",
       delegateeId: "worker",
       scope: { permissions: { allow: ["read_file", "search"] } },
@@ -294,7 +298,7 @@ describe("e2e: pluggable ScopeChecker", () => {
     const grantStore = new Map<DelegationId, DelegationGrant>();
 
     // Grant with empty allow — default checker would deny everything
-    const grant = createGrant({
+    const grant = mustCreateGrant({
       issuerId: "orchestrator",
       delegateeId: "worker",
       scope: { permissions: {} },
@@ -344,7 +348,7 @@ describe("e2e: pluggable ScopeChecker", () => {
 
 describe("e2e: deny list monotonicity", () => {
   test("child must preserve all parent deny rules", () => {
-    const rootGrant = createGrant({
+    const rootGrant = mustCreateGrant({
       issuerId: "orchestrator",
       delegateeId: "worker",
       scope: {

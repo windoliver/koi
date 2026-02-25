@@ -110,18 +110,23 @@ export type {
 export type { CompactionResult, ContextCompactor, TokenEstimator } from "./context.js";
 // correlation
 export type { CorrelationIds } from "./correlation.js";
-// delegation
+// delegation — types
 export type {
+  CircuitBreakerConfig,
   DelegationComponent,
   DelegationConfig,
   DelegationDenyReason,
+  DelegationEvent,
   DelegationGrant,
   DelegationId,
+  DelegationManagerConfig,
   DelegationScope,
   DelegationVerifyResult,
   RevocationRegistry,
   ScopeChecker,
 } from "./delegation.js";
+// delegation — runtime values
+export { DEFAULT_CIRCUIT_BREAKER_CONFIG, delegationId } from "./delegation.js";
 // ecs — types
 export type {
   Agent,
