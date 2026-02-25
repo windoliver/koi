@@ -7,6 +7,7 @@
  * Depends on @koi/core only — never on L1 or peer L2 packages.
  */
 
+// provenance types from L0
 // Advisory lock types (for persistent backends)
 // types — brick artifacts & query from L0
 export type {
@@ -17,11 +18,22 @@ export type {
   BrickRequires,
   BrickUpdate,
   CompositeArtifact,
+  ContentMarker,
+  DataClassification,
+  ForgeAttestationSignature,
+  ForgeBuildDefinition,
+  ForgeBuilder,
+  ForgeProvenance,
   ForgeQuery,
+  ForgeResourceRef,
+  ForgeRunMetadata,
+  ForgeStageDigest,
   ForgeStore,
+  ForgeVerificationSummary,
   LockHandle,
   LockMode,
   LockRequest,
+  SigningBackend,
   SkillArtifact,
   StoreChangeEvent,
   StoreChangeKind,
@@ -41,6 +53,12 @@ export {
 // runtime values — manifest assembly
 export type { AssembleManifestOptions, AssembleManifestResult } from "./assemble-manifest.js";
 export { assembleManifest } from "./assemble-manifest.js";
+// runtime values — attestation
+export type { CreateProvenanceOptions } from "./attestation.js";
+export { createForgeProvenance, signAttestation, verifyAttestation } from "./attestation.js";
+// runtime values — attestation cache
+export type { AttestationCache } from "./attestation-cache.js";
+export { createAttestationCache } from "./attestation-cache.js";
 export type {
   AutoPromotionConfig,
   ForgeConfig,
@@ -81,12 +99,22 @@ export type { GovernanceResult } from "./governance.js";
 export { checkGovernance, checkScopePromotion } from "./governance.js";
 // runtime values — integrity verification
 export type { IntegrityMismatch, IntegrityOk, IntegrityResult } from "./integrity.js";
-export { loadAndVerify, verifyBrickIntegrity } from "./integrity.js";
+export { loadAndVerify, verifyBrickAttestation, verifyBrickIntegrity } from "./integrity.js";
 // runtime values — storage
 export { createInMemoryForgeStore } from "./memory-store.js";
 export type { RequiresCheckResult } from "./requires-check.js";
 export { checkBrickRequires } from "./requires-check.js";
 export { filterByAgentScope, isVisibleToAgent } from "./scope-filter.js";
+// runtime values — SLSA serializer
+export type {
+  SlsaBuildDefinition,
+  SlsaBuilder,
+  SlsaBuildMetadata,
+  SlsaProvenanceV1,
+  SlsaResourceDescriptor,
+  SlsaRunDetails,
+} from "./slsa-serializer.js";
+export { mapProvenanceToSlsa } from "./slsa-serializer.js";
 // runtime values — store change notification
 export { createMemoryStoreChangeNotifier } from "./store-notifier.js";
 export { createComposeForgeTool } from "./tools/compose-forge.js";

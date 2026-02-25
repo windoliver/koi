@@ -19,6 +19,14 @@ export {
 } from "./agents.js";
 export { assertKoiError } from "./assert-koi-error.js";
 export { assertErr, assertOk } from "./assert-result.js";
+export {
+  createTestAgentArtifact,
+  createTestCompositeArtifact,
+  createTestImplementationArtifact,
+  createTestSkillArtifact,
+  createTestToolArtifact,
+  DEFAULT_PROVENANCE,
+} from "./brick-artifacts.js";
 export type { CapturedOutput } from "./capture-output.js";
 export { captureOutput } from "./capture-output.js";
 export type { ChannelContractOptions } from "./channel-contract.js";

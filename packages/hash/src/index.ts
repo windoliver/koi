@@ -5,4 +5,5 @@
  */
 export { computeContentHash } from "./content-hash.js";
 export { fnv1a } from "./fnv1a.js";
+export { createHmacSigner } from "./hmac-signing.js";
 export { generateUlid } from "./ulid.js";

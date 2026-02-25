@@ -6,6 +6,8 @@ import type {
   BrickKind,
   BrickLifecycle,
   BrickRequires,
+  ContentMarker,
+  DataClassification,
   ForgeScope,
   TestCase,
   ToolDescriptor,
@@ -82,6 +84,8 @@ export interface ForgeToolInput {
   readonly files?: Readonly<Record<string, string>>;
   readonly requires?: BrickRequires;
   readonly configSchema?: Readonly<Record<string, unknown>>;
+  readonly classification?: DataClassification;
+  readonly contentMarkers?: readonly ContentMarker[];
 }
 
 export interface ForgeSkillInput {
@@ -93,6 +97,8 @@ export interface ForgeSkillInput {
   readonly tags?: readonly string[];
   readonly files?: Readonly<Record<string, string>>;
   readonly requires?: BrickRequires;
+  readonly classification?: DataClassification;
+  readonly contentMarkers?: readonly ContentMarker[];
 }
 
 export interface ForgeAgentInputWithManifest {
@@ -104,6 +110,8 @@ export interface ForgeAgentInputWithManifest {
   readonly brickIds?: undefined;
   readonly files?: Readonly<Record<string, string>>;
   readonly requires?: BrickRequires;
+  readonly classification?: DataClassification;
+  readonly contentMarkers?: readonly ContentMarker[];
 }
 
 export interface ForgeAgentInputWithBricks {
@@ -117,6 +125,8 @@ export interface ForgeAgentInputWithBricks {
   readonly agentType?: string;
   readonly files?: Readonly<Record<string, string>>;
   readonly requires?: BrickRequires;
+  readonly classification?: DataClassification;
+  readonly contentMarkers?: readonly ContentMarker[];
 }
 
 export type ForgeAgentInput = ForgeAgentInputWithManifest | ForgeAgentInputWithBricks;
@@ -129,6 +139,8 @@ export interface ForgeCompositeInput {
   readonly brickIds: readonly string[];
   readonly files?: Readonly<Record<string, string>>;
   readonly requires?: BrickRequires;
+  readonly classification?: DataClassification;
+  readonly contentMarkers?: readonly ContentMarker[];
 }
 
 export interface ForgeMiddlewareInput {
@@ -141,6 +153,8 @@ export interface ForgeMiddlewareInput {
   readonly files?: Readonly<Record<string, string>>;
   readonly requires?: BrickRequires;
   readonly configSchema?: Readonly<Record<string, unknown>>;
+  readonly classification?: DataClassification;
+  readonly contentMarkers?: readonly ContentMarker[];
 }
 
 export interface ForgeChannelInput {
@@ -153,6 +167,8 @@ export interface ForgeChannelInput {
   readonly files?: Readonly<Record<string, string>>;
   readonly requires?: BrickRequires;
   readonly configSchema?: Readonly<Record<string, unknown>>;
+  readonly classification?: DataClassification;
+  readonly contentMarkers?: readonly ContentMarker[];
 }
 
 export interface ForgeEngineInput {
@@ -165,6 +181,8 @@ export interface ForgeEngineInput {
   readonly files?: Readonly<Record<string, string>>;
   readonly requires?: BrickRequires;
   readonly configSchema?: Readonly<Record<string, unknown>>;
+  readonly classification?: DataClassification;
+  readonly contentMarkers?: readonly ContentMarker[];
 }
 
 export interface ForgeResolverInput {
@@ -177,6 +195,8 @@ export interface ForgeResolverInput {
   readonly files?: Readonly<Record<string, string>>;
   readonly requires?: BrickRequires;
   readonly configSchema?: Readonly<Record<string, unknown>>;
+  readonly classification?: DataClassification;
+  readonly contentMarkers?: readonly ContentMarker[];
 }
 
 export interface ForgeProviderInput {
@@ -189,6 +209,8 @@ export interface ForgeProviderInput {
   readonly files?: Readonly<Record<string, string>>;
   readonly requires?: BrickRequires;
   readonly configSchema?: Readonly<Record<string, unknown>>;
+  readonly classification?: DataClassification;
+  readonly contentMarkers?: readonly ContentMarker[];
 }
 
 export type ForgeInput =

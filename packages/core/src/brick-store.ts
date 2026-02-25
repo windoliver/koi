@@ -9,6 +9,7 @@
 import type { TrustTier } from "./ecs.js";
 import type { KoiError, Result } from "./errors.js";
 import type { BrickKind, BrickLifecycle, ForgeScope } from "./forge-types.js";
+import type { ContentMarker, DataClassification, ForgeProvenance } from "./provenance.js";
 
 // ---------------------------------------------------------------------------
 // Test case (used by ToolArtifact)
@@ -46,8 +47,7 @@ export interface BrickArtifactBase {
   readonly scope: ForgeScope;
   readonly trustTier: TrustTier;
   readonly lifecycle: BrickLifecycle;
-  readonly createdBy: string;
-  readonly createdAt: number;
+  readonly provenance: ForgeProvenance;
   readonly version: string;
   readonly tags: readonly string[];
   readonly usageCount: number;
@@ -106,7 +106,10 @@ export interface ForgeQuery {
   readonly trustTier?: TrustTier;
   readonly lifecycle?: BrickLifecycle;
   readonly tags?: readonly string[];
+  /** Matches against `provenance.metadata.agentId`. */
   readonly createdBy?: string;
+  readonly classification?: DataClassification;
+  readonly contentMarkers?: readonly ContentMarker[];
   /** Case-insensitive substring match against brick name and description. */
   readonly text?: string;
   readonly limit?: number;

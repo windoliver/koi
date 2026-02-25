@@ -6,6 +6,7 @@ import type {
   TieredSandboxExecutor,
   ToolArtifact,
 } from "@koi/core";
+import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import type { ForgeResult, ManifestParser } from "../types.js";
@@ -353,8 +354,7 @@ describe("createForgeAgentTool", () => {
       scope: "agent",
       trustTier: "sandbox",
       lifecycle: "active",
-      createdBy: "agent-1",
-      createdAt: Date.now(),
+      provenance: DEFAULT_PROVENANCE,
       version: "0.0.1",
       tags: [],
       usageCount: 0,
@@ -440,8 +440,7 @@ describe("createForgeAgentTool", () => {
       scope: "agent",
       trustTier: "sandbox",
       lifecycle: "active",
-      createdBy: "agent-1",
-      createdAt: Date.now(),
+      provenance: DEFAULT_PROVENANCE,
       version: "0.0.1",
       tags: [],
       usageCount: 0,
@@ -476,8 +475,7 @@ describe("createForgeAgentTool", () => {
       scope: "agent",
       trustTier: "sandbox",
       lifecycle: "active",
-      createdBy: "agent-1",
-      createdAt: Date.now(),
+      provenance: DEFAULT_PROVENANCE,
       version: "0.0.1",
       tags: [],
       usageCount: 0,

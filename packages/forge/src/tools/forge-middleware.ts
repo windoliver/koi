@@ -104,6 +104,12 @@ async function forgeMiddlewareHandler(
         }
       : {}),
     ...(parsed.value.configSchema !== undefined ? { configSchema: parsed.value.configSchema } : {}),
+    ...(parsed.value.classification !== undefined
+      ? { classification: parsed.value.classification }
+      : {}),
+    ...(parsed.value.contentMarkers !== undefined
+      ? { contentMarkers: parsed.value.contentMarkers }
+      : {}),
   };
 
   return runForgePipeline(forgeInput, deps, (id, report) => {

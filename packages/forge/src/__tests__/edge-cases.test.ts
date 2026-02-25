@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { SandboxExecutor, TieredSandboxExecutor } from "@koi/core";
+import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "../config.js";
 import type { ForgeError } from "../errors.js";
 import { checkGovernance } from "../governance.js";
@@ -196,8 +197,7 @@ describe("Edge case 7: Concurrent forge attempts — no shared state corruption"
       scope: "agent" as const,
       trustTier: "sandbox" as const,
       lifecycle: "active" as const,
-      createdBy: "agent-1",
-      createdAt: Date.now(),
+      provenance: DEFAULT_PROVENANCE,
       version: "0.0.1",
       tags: [],
       usageCount: 0,
@@ -229,8 +229,7 @@ describe("Edge case 8: Duplicate brick name in same scope", () => {
       scope: "agent",
       trustTier: "sandbox",
       lifecycle: "active",
-      createdBy: "agent-1",
-      createdAt: Date.now(),
+      provenance: DEFAULT_PROVENANCE,
       version: "0.0.1",
       tags: [],
       usageCount: 0,
@@ -347,8 +346,7 @@ describe("Edge case 12: Only valid BrickLifecycle transitions", () => {
       scope: "agent",
       trustTier: "sandbox",
       lifecycle: "active",
-      createdBy: "agent-1",
-      createdAt: Date.now(),
+      provenance: DEFAULT_PROVENANCE,
       version: "0.0.1",
       tags: [],
       usageCount: 0,
@@ -376,8 +374,7 @@ describe("Edge case 12: Only valid BrickLifecycle transitions", () => {
       scope: "agent",
       trustTier: "sandbox",
       lifecycle: "draft",
-      createdBy: "agent-1",
-      createdAt: Date.now(),
+      provenance: DEFAULT_PROVENANCE,
       version: "0.0.1",
       tags: [],
       usageCount: 0,

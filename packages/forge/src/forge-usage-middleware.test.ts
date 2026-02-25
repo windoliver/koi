@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { StoreChangeEvent, ToolRequest, ToolResponse, TurnContext } from "@koi/core";
+import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "./config.js";
 import { createForgeUsageMiddleware } from "./forge-usage-middleware.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
@@ -19,8 +20,7 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,

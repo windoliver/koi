@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolArtifact } from "@koi/core";
-import { runForgeStoreContractTests } from "@koi/test-utils";
+import { DEFAULT_PROVENANCE, runForgeStoreContractTests } from "@koi/test-utils";
 import { createFsForgeStore } from "./fs-store.js";
 import type { OverlayConfig } from "./overlay-store.js";
 import { createOverlayForgeStore, overlayConfigFromHome } from "./overlay-store.js";
@@ -30,8 +30,7 @@ function createBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,

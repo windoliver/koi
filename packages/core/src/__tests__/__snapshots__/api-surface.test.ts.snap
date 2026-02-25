@@ -1,25 +1,24 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/core API surface . has stable type surface 1`] = `
-"import { BrickRef } from './brick-snapshot.js';
-export { BrickId, BrickSnapshot, BrickSource, SnapshotEvent, SnapshotId, SnapshotQuery, SnapshotStore, brickId, snapshotId } from './brick-snapshot.js';
-import { A as AgentId, P as ProcessState, a as Agent, S as SessionId, T as ToolCallId } from './ecs-DM4-kRhl.js';
-export { B as BROWSER, b as BrowserActionOptions, c as BrowserConsoleEntry, d as BrowserConsoleLevel, e as BrowserConsoleOptions, f as BrowserConsoleResult, g as BrowserDriver, h as BrowserEvaluateOptions, i as BrowserEvaluateResult, j as BrowserFormField, k as BrowserNavigateOptions, l as BrowserNavigateResult, m as BrowserRefInfo, n as BrowserScreenshotOptions, o as BrowserScreenshotResult, p as BrowserScrollOptions, q as BrowserSnapshotOptions, r as BrowserSnapshotResult, s as BrowserTabCloseOptions, t as BrowserTabFocusOptions, u as BrowserTabInfo, v as BrowserTabNewOptions, w as BrowserTraceOptions, x as BrowserTraceResult, y as BrowserTypeOptions, z as BrowserUploadFile, C as BrowserUploadOptions, D as BrowserWaitOptions, E as BrowserWaitUntil, F as COMPONENT_PRIORITY, G as CREDENTIALS, H as ChildHandle, I as ChildLifecycleEvent, J as ComponentEvent, K as ComponentEventKind, L as ComponentProvider, M as CredentialComponent, N as DELEGATION, O as EVENTS, Q as EventComponent, R as FILESYSTEM, U as GOVERNANCE, V as GovernanceComponent, W as GovernanceUsage, X as MEMORY, Y as MemoryComponent, Z as MemoryResult, _ as ProcessAccounter, $ as ProcessId, a0 as RunId, a1 as SkillMetadata, a2 as SpawnCheck, a3 as SpawnLedger, a4 as SubsystemToken, a5 as Tool, a6 as ToolDescriptor, a7 as TrustTier, a8 as TurnId, a9 as agentId, aa as channelToken, ab as engineToken, ac as middlewareToken, ad as providerToken, ae as resolverToken, af as runId, ag as sessionId, ah as skillToken, ai as token, aj as toolCallId, ak as toolToken, al as turnId } from './ecs-DM4-kRhl.js';
-import { E as EngineState, a as EngineInput } from './engine-pB71jm_G.js';
-export { A as AbortReason, C as ComposedCallHandlers, b as CorrelationIds, c as EngineAdapter, d as EngineEvent, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, h as EngineStopReason } from './engine-pB71jm_G.js';
+"import { B as BrickRef } from './brick-snapshot-C7ZsUpw6.js';
+export { A as ALL_BRICK_KINDS, a as BrickId, b as BrickKind, c as BrickLifecycle, d as BrickSnapshot, e as BrickSource, F as ForgeScope, M as MIN_TRUST_BY_KIND, S as SnapshotEvent, f as SnapshotId, g as SnapshotQuery, h as SnapshotStore, V as VALID_LIFECYCLE_TRANSITIONS, i as brickId, s as snapshotId } from './brick-snapshot-C7ZsUpw6.js';
+import { A as AgentId, P as ProcessState, a as Agent, S as SessionId, T as ToolCallId } from './ecs-DQiYwmx6.js';
+export { B as BROWSER, b as BrowserActionOptions, c as BrowserConsoleEntry, d as BrowserConsoleLevel, e as BrowserConsoleOptions, f as BrowserConsoleResult, g as BrowserDriver, h as BrowserEvaluateOptions, i as BrowserEvaluateResult, j as BrowserFormField, k as BrowserNavigateOptions, l as BrowserNavigateResult, m as BrowserRefInfo, n as BrowserScreenshotOptions, o as BrowserScreenshotResult, p as BrowserScrollOptions, q as BrowserSnapshotOptions, r as BrowserSnapshotResult, s as BrowserTabCloseOptions, t as BrowserTabFocusOptions, u as BrowserTabInfo, v as BrowserTabNewOptions, w as BrowserTraceOptions, x as BrowserTraceResult, y as BrowserTypeOptions, z as BrowserUploadFile, C as BrowserUploadOptions, D as BrowserWaitOptions, E as BrowserWaitUntil, F as COMPONENT_PRIORITY, G as CREDENTIALS, H as ChildHandle, I as ChildLifecycleEvent, J as ComponentEvent, K as ComponentEventKind, L as ComponentProvider, M as CredentialComponent, N as DELEGATION, O as EVENTS, Q as EventComponent, R as FILESYSTEM, U as GOVERNANCE, V as GovernanceComponent, W as GovernanceUsage, X as MEMORY, Y as MemoryComponent, Z as MemoryResult, _ as ProcessAccounter, $ as ProcessId, a0 as RunId, a1 as SkillMetadata, a2 as SpawnCheck, a3 as SpawnLedger, a4 as SubsystemToken, a5 as Tool, a6 as ToolDescriptor, a7 as TrustTier, a8 as TurnId, a9 as agentId, aa as channelToken, ab as engineToken, ac as middlewareToken, ad as providerToken, ae as resolverToken, af as runId, ag as sessionId, ah as skillToken, ai as token, aj as toolCallId, ak as toolToken, al as turnId } from './ecs-DQiYwmx6.js';
+import { E as EngineState, a as EngineInput } from './engine-DLEvsQgw.js';
+export { A as AbortReason, C as ComposedCallHandlers, b as CorrelationIds, c as EngineAdapter, d as EngineEvent, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, h as EngineStopReason } from './engine-DLEvsQgw.js';
 import { Result, KoiError } from './errors.js';
 export { BackendErrorMapper, KoiErrorCode, RETRYABLE_DEFAULTS } from './errors.js';
-import { A as AgentManifest } from './assembly-Bp5WuiM8.js';
-export { C as ChannelConfig, a as ChannelIdentity, b as CircuitBreakerConfig, D as DEFAULT_CIRCUIT_BREAKER_CONFIG, c as DelegationComponent, d as DelegationConfig, e as DelegationDenyReason, f as DelegationEvent, g as DelegationGrant, h as DelegationId, i as DelegationManagerConfig, j as DelegationScope, k as DelegationVerifyResult, M as MiddlewareConfig, l as ModelConfig, P as PermissionConfig, R as RevocationRegistry, S as ScopeChecker, T as ToolConfig, m as delegationId } from './assembly-Bp5WuiM8.js';
+import { A as AgentManifest } from './assembly-CFhPkvga.js';
+export { C as ChannelConfig, a as CircuitBreakerConfig, D as DEFAULT_CIRCUIT_BREAKER_CONFIG, b as DelegationComponent, c as DelegationConfig, d as DelegationDenyReason, e as DelegationEvent, f as DelegationGrant, g as DelegationId, h as DelegationManagerConfig, i as DelegationScope, j as DelegationVerifyResult, M as MiddlewareConfig, k as ModelConfig, P as PermissionConfig, R as RevocationRegistry, S as ScopeChecker, T as ToolConfig, l as delegationId } from './assembly-CFhPkvga.js';
 import { JsonObject } from './common.js';
-export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, CompositeArtifact, ForgeQuery, ForgeStore, ImplementationArtifact, LockHandle, LockMode, LockRequest, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, ToolArtifact } from './brick-store.js';
+export { A as AdvisoryLock, a as AgentArtifact, B as BrickArtifact, b as BrickArtifactBase, c as BrickRequires, d as BrickUpdate, C as CompositeArtifact, e as ContentMarker, D as DataClassification, F as ForgeAttestationSignature, f as ForgeBuildDefinition, g as ForgeBuilder, h as ForgeProvenance, i as ForgeQuery, j as ForgeResourceRef, k as ForgeRunMetadata, l as ForgeStageDigest, m as ForgeStore, n as ForgeVerificationSummary, I as ImplementationArtifact, L as LockHandle, o as LockMode, p as LockRequest, S as SigningBackend, q as SkillArtifact, r as StoreChangeEvent, s as StoreChangeKind, t as StoreChangeNotifier, T as TestCase, u as ToolArtifact } from './brick-store-VTMh6aji.js';
 export { ChannelAdapter, ChannelCapabilities, ChannelStatus, ChannelStatusKind, MessageHandler } from './channel.js';
 export { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, FeatureFlags, ForgeConfigSection, KoiConfig, LimitsConfig, LogLevel, LoopDetectionConfigSection, ModelRouterConfigSection, ModelTargetConfigEntry, SpawnConfig, TelemetryConfig } from './config.js';
 export { CompactionResult, ContextCompactor, TokenEstimator } from './context.js';
 export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, EventEnvelope, EventInput, ReadOptions, ReadResult, SubscribeOptions, SubscriptionHandle } from './event-backend.js';
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
 export { FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-backend.js';
-export { A as ALL_BRICK_KINDS, B as BrickKind, a as BrickLifecycle, F as ForgeScope, M as MIN_TRUST_BY_KIND, V as VALID_LIFECYCLE_TRANSITIONS } from './forge-types-DnKwM4xv.js';
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
 import { KoiMiddleware } from './middleware.js';
 export { ApprovalDecision, ApprovalHandler, ApprovalRequest, ModelChunk, ModelHandler, ModelRequest, ModelResponse, ModelStreamHandler, SessionContext, ToolHandler, ToolRequest, ToolResponse, TurnContext } from './middleware.js';
@@ -852,7 +851,7 @@ export type { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, Feat
 
 exports[`@koi/core API surface ./assembly has stable type surface 1`] = `
 "import './common.js';
-export { A as AgentManifest, C as ChannelConfig, a as ChannelIdentity, M as MiddlewareConfig, l as ModelConfig, P as PermissionConfig, T as ToolConfig } from './assembly-Bp5WuiM8.js';
+export { A as AgentManifest, C as ChannelConfig, M as MiddlewareConfig, k as ModelConfig, P as PermissionConfig, T as ToolConfig } from './assembly-CFhPkvga.js';
 import './webhook.js';
 "
 `;
@@ -956,15 +955,15 @@ export type { CompactionResult, ContextCompactor, TokenEstimator };
 `;
 
 exports[`@koi/core API surface ./delegation has stable type surface 1`] = `
-"export { b as CircuitBreakerConfig, D as DEFAULT_CIRCUIT_BREAKER_CONFIG, c as DelegationComponent, d as DelegationConfig, e as DelegationDenyReason, f as DelegationEvent, g as DelegationGrant, h as DelegationId, i as DelegationManagerConfig, j as DelegationScope, k as DelegationVerifyResult, R as RevocationRegistry, S as ScopeChecker, m as delegationId } from './assembly-Bp5WuiM8.js';
+"export { a as CircuitBreakerConfig, D as DEFAULT_CIRCUIT_BREAKER_CONFIG, b as DelegationComponent, c as DelegationConfig, d as DelegationDenyReason, e as DelegationEvent, f as DelegationGrant, g as DelegationId, h as DelegationManagerConfig, i as DelegationScope, j as DelegationVerifyResult, R as RevocationRegistry, S as ScopeChecker, l as delegationId } from './assembly-CFhPkvga.js';
 import './common.js';
 import './webhook.js';
 "
 `;
 
 exports[`@koi/core API surface ./ecs has stable type surface 1`] = `
-"import './assembly-Bp5WuiM8.js';
-export { a as Agent, A as AgentId, B as BROWSER, F as COMPONENT_PRIORITY, G as CREDENTIALS, H as ChildHandle, I as ChildLifecycleEvent, J as ComponentEvent, K as ComponentEventKind, L as ComponentProvider, M as CredentialComponent, N as DELEGATION, O as EVENTS, Q as EventComponent, R as FILESYSTEM, U as GOVERNANCE, V as GovernanceComponent, W as GovernanceUsage, X as MEMORY, Y as MemoryComponent, Z as MemoryResult, _ as ProcessAccounter, $ as ProcessId, P as ProcessState, a0 as RunId, S as SessionId, a1 as SkillMetadata, a2 as SpawnCheck, a3 as SpawnLedger, a4 as SubsystemToken, a5 as Tool, T as ToolCallId, a6 as ToolDescriptor, a7 as TrustTier, a8 as TurnId, a9 as agentId, aa as channelToken, ab as engineToken, ac as middlewareToken, ad as providerToken, ae as resolverToken, af as runId, ag as sessionId, ah as skillToken, ai as token, aj as toolCallId, ak as toolToken, al as turnId } from './ecs-DM4-kRhl.js';
+"import './assembly-CFhPkvga.js';
+export { a as Agent, A as AgentId, B as BROWSER, F as COMPONENT_PRIORITY, G as CREDENTIALS, H as ChildHandle, I as ChildLifecycleEvent, J as ComponentEvent, K as ComponentEventKind, L as ComponentProvider, M as CredentialComponent, N as DELEGATION, O as EVENTS, Q as EventComponent, R as FILESYSTEM, U as GOVERNANCE, V as GovernanceComponent, W as GovernanceUsage, X as MEMORY, Y as MemoryComponent, Z as MemoryResult, _ as ProcessAccounter, $ as ProcessId, P as ProcessState, a0 as RunId, S as SessionId, a1 as SkillMetadata, a2 as SpawnCheck, a3 as SpawnLedger, a4 as SubsystemToken, a5 as Tool, T as ToolCallId, a6 as ToolDescriptor, a7 as TrustTier, a8 as TurnId, a9 as agentId, aa as channelToken, ab as engineToken, ac as middlewareToken, ad as providerToken, ae as resolverToken, af as runId, ag as sessionId, ah as skillToken, ai as token, aj as toolCallId, ak as toolToken, al as turnId } from './ecs-DQiYwmx6.js';
 import './channel.js';
 import './common.js';
 import './filesystem-backend.js';
@@ -976,11 +975,11 @@ import './message.js';
 
 exports[`@koi/core API surface ./engine has stable type surface 1`] = `
 "import './common.js';
-export { A as AbortReason, C as ComposedCallHandlers, c as EngineAdapter, d as EngineEvent, a as EngineInput, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, E as EngineState, h as EngineStopReason } from './engine-pB71jm_G.js';
-import './ecs-DM4-kRhl.js';
+export { A as AbortReason, C as ComposedCallHandlers, c as EngineAdapter, d as EngineEvent, a as EngineInput, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, E as EngineState, h as EngineStopReason } from './engine-DLEvsQgw.js';
+import './ecs-DQiYwmx6.js';
 import './message.js';
 import './middleware.js';
-import './assembly-Bp5WuiM8.js';
+import './assembly-CFhPkvga.js';
 import './webhook.js';
 import './errors.js';
 import './channel.js';
@@ -1256,9 +1255,9 @@ export type { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, Inb
 exports[`@koi/core API surface ./middleware has stable type surface 1`] = `
 "import { ChannelStatus } from './channel.js';
 import { JsonObject } from './common.js';
-import { a6 as ToolDescriptor, T as ToolCallId, S as SessionId, a0 as RunId, a8 as TurnId } from './ecs-DM4-kRhl.js';
+import { a6 as ToolDescriptor, T as ToolCallId, S as SessionId, a0 as RunId, a8 as TurnId } from './ecs-DQiYwmx6.js';
 import { InboundMessage } from './message.js';
-import './assembly-Bp5WuiM8.js';
+import './assembly-CFhPkvga.js';
 import './webhook.js';
 import './errors.js';
 import './filesystem-backend.js';
@@ -1271,8 +1270,6 @@ interface SessionContext {
     readonly agentId: string;
     readonly sessionId: SessionId;
     readonly runId: RunId;
-    /** Injected by L1 at session start — package name of the active channel adapter (e.g. "@koi/channel-telegram"). */
-    readonly channelId?: string;
     readonly metadata: JsonObject;
 }
 interface TurnContext {
@@ -1384,8 +1381,8 @@ export type { ApprovalDecision, ApprovalHandler, ApprovalRequest, KoiMiddleware,
 `;
 
 exports[`@koi/core API surface ./eviction has stable type surface 1`] = `
-"import { A as AgentId, P as ProcessState } from './ecs-DM4-kRhl.js';
-import './assembly-Bp5WuiM8.js';
+"import { A as AgentId, P as ProcessState } from './ecs-DQiYwmx6.js';
+import './assembly-CFhPkvga.js';
 import './common.js';
 import './webhook.js';
 import './errors.js';
@@ -1438,8 +1435,8 @@ export type { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult 
 `;
 
 exports[`@koi/core API surface ./health has stable type surface 1`] = `
-"import { A as AgentId } from './ecs-DM4-kRhl.js';
-import './assembly-Bp5WuiM8.js';
+"import { A as AgentId } from './ecs-DQiYwmx6.js';
+import './assembly-CFhPkvga.js';
 import './common.js';
 import './webhook.js';
 import './errors.js';
@@ -1510,9 +1507,9 @@ export { DEFAULT_HEALTH_MONITOR_CONFIG, type HealthMonitor, type HealthMonitorCo
 `;
 
 exports[`@koi/core API surface ./lifecycle has stable type surface 1`] = `
-"import { A as AgentId, P as ProcessState } from './ecs-DM4-kRhl.js';
+"import { A as AgentId, P as ProcessState } from './ecs-DQiYwmx6.js';
 import { Result, KoiError } from './errors.js';
-import './assembly-Bp5WuiM8.js';
+import './assembly-CFhPkvga.js';
 import './common.js';
 import './webhook.js';
 import './channel.js';
@@ -1737,285 +1734,36 @@ export type { Resolver, SourceBundle, SourceLanguage };
 `;
 
 exports[`@koi/core API surface ./brick-snapshot has stable type surface 1`] = `
-"import { Result, KoiError } from './errors.js';
-import { B as BrickKind } from './forge-types-DnKwM4xv.js';
+"import './errors.js';
+export { a as BrickId, B as BrickRef, d as BrickSnapshot, e as BrickSource, S as SnapshotEvent, f as SnapshotId, g as SnapshotQuery, h as SnapshotStore, i as brickId, s as snapshotId } from './brick-snapshot-C7ZsUpw6.js';
 import './common.js';
-import './ecs-DM4-kRhl.js';
-import './assembly-Bp5WuiM8.js';
+import './ecs-DQiYwmx6.js';
+import './assembly-CFhPkvga.js';
 import './webhook.js';
 import './channel.js';
 import './message.js';
 import './filesystem-backend.js';
-
-/**
- * Brick snapshot types — version history, provenance tracking, and diff.
- *
- * Orthogonal to ForgeStore (like AdvisoryLock). Enables versioning,
- * rollback, and audit trails for all forged/bundled/extension bricks.
- */
-
-declare const __brickIdBrand: unique symbol;
-/**
- * Branded string for brick identity.
- * Prevents mixing brick IDs with other string-typed IDs at compile time.
- */
-type BrickId = string & {
-    readonly [__brickIdBrand]: "BrickId";
-};
-/** Create a BrickId from a raw string. */
-declare function brickId(raw: string): BrickId;
-declare const __snapshotIdBrand: unique symbol;
-/**
- * Branded string for snapshot identity.
- * Each snapshot is a unique immutable version record.
- */
-type SnapshotId = string & {
-    readonly [__snapshotIdBrand]: "SnapshotId";
-};
-/** Create a SnapshotId from a raw string. */
-declare function snapshotId(raw: string): SnapshotId;
-interface BrickRef {
-    readonly id: BrickId;
-    readonly version: string;
-    readonly kind: BrickKind;
-    readonly contentHash: string;
-}
-type BrickSource = {
-    readonly origin: "forged";
-    readonly forgedBy: string;
-    readonly sessionId?: string;
-} | {
-    readonly origin: "bundled";
-    readonly bundleName: string;
-    readonly bundleVersion: string;
-} | {
-    readonly origin: "external";
-    readonly registry: string;
-    readonly packageRef: string;
-};
-type SnapshotEvent = {
-    readonly kind: "created";
-    readonly actor: string;
-    readonly timestamp: number;
-} | {
-    readonly kind: "updated";
-    readonly actor: string;
-    readonly timestamp: number;
-    readonly fieldsChanged: readonly string[];
-} | {
-    readonly kind: "promoted";
-    readonly actor: string;
-    readonly timestamp: number;
-    readonly fromTier: string;
-    readonly toTier: string;
-} | {
-    readonly kind: "deprecated";
-    readonly actor: string;
-    readonly timestamp: number;
-    readonly reason: string;
-} | {
-    readonly kind: "quarantined";
-    readonly actor: string;
-    readonly timestamp: number;
-    readonly reason: string;
-    readonly errorRate: number;
-    readonly failureCount: number;
-};
-interface BrickSnapshot {
-    readonly snapshotId: SnapshotId;
-    readonly brickId: BrickId;
-    readonly version: string;
-    readonly parentSnapshotId?: SnapshotId;
-    readonly source: BrickSource;
-    readonly event: SnapshotEvent;
-    /** Opaque artifact data — like EngineState.data, zero assumptions about structure. */
-    readonly artifact: Readonly<Record<string, unknown>>;
-    readonly contentHash: string;
-    readonly createdAt: number;
-}
-interface SnapshotQuery {
-    readonly brickId?: BrickId;
-    readonly version?: string;
-    readonly afterTimestamp?: number;
-    readonly beforeTimestamp?: number;
-    readonly limit?: number;
-}
-/**
- * @deprecated Use \`SnapshotChainStore<BrickSnapshot>\` from \`snapshot-chain.ts\` instead.
- * This interface lacks DAG/fork/history semantics. Retained for backward compatibility.
- */
-interface SnapshotStore {
-    readonly record: (snapshot: BrickSnapshot) => Promise<Result<void, KoiError>>;
-    readonly get: (id: SnapshotId) => Promise<Result<BrickSnapshot, KoiError>>;
-    readonly list: (query: SnapshotQuery) => Promise<Result<readonly BrickSnapshot[], KoiError>>;
-    readonly history: (brickId: BrickId) => Promise<Result<readonly BrickSnapshot[], KoiError>>;
-    readonly latest: (brickId: BrickId) => Promise<Result<BrickSnapshot, KoiError>>;
-}
-
-export { type BrickId, type BrickRef, type BrickSnapshot, type BrickSource, type SnapshotEvent, type SnapshotId, type SnapshotQuery, type SnapshotStore, brickId, snapshotId };
 "
 `;
 
 exports[`@koi/core API surface ./brick-store has stable type surface 1`] = `
-"import { a7 as TrustTier } from './ecs-DM4-kRhl.js';
-import { Result, KoiError } from './errors.js';
-import { B as BrickKind, F as ForgeScope, a as BrickLifecycle } from './forge-types-DnKwM4xv.js';
-import './assembly-Bp5WuiM8.js';
+"import './ecs-DQiYwmx6.js';
+import './errors.js';
+import './brick-snapshot-C7ZsUpw6.js';
+export { A as AdvisoryLock, a as AgentArtifact, B as BrickArtifact, b as BrickArtifactBase, c as BrickRequires, d as BrickUpdate, C as CompositeArtifact, i as ForgeQuery, m as ForgeStore, I as ImplementationArtifact, L as LockHandle, o as LockMode, p as LockRequest, q as SkillArtifact, r as StoreChangeEvent, s as StoreChangeKind, t as StoreChangeNotifier, T as TestCase, u as ToolArtifact } from './brick-store-VTMh6aji.js';
+import './assembly-CFhPkvga.js';
 import './common.js';
 import './webhook.js';
 import './channel.js';
 import './message.js';
 import './filesystem-backend.js';
-
-/**
- * Brick store — persistence contracts for forged artifacts.
- *
- * Backend-agnostic interfaces. Any L2 package can provide a concrete
- * implementation (in-memory, SQLite, Nexus, etc.) by importing only from
- * \`@koi/core\`.
- */
-
-interface TestCase {
-    readonly name: string;
-    readonly input: unknown;
-    readonly expectedOutput?: unknown;
-    readonly shouldThrow?: boolean;
-}
-interface BrickRequires {
-    /** CLI binaries that must exist on PATH (ALL required). */
-    readonly bins?: readonly string[];
-    /** Environment variables that must be set (ALL required). */
-    readonly env?: readonly string[];
-    /** Koi tool brick names that must be resolvable. */
-    readonly tools?: readonly string[];
-}
-interface BrickArtifactBase {
-    readonly id: string;
-    readonly kind: BrickKind;
-    readonly name: string;
-    readonly description: string;
-    readonly scope: ForgeScope;
-    readonly trustTier: TrustTier;
-    readonly lifecycle: BrickLifecycle;
-    readonly createdBy: string;
-    readonly createdAt: number;
-    readonly version: string;
-    readonly tags: readonly string[];
-    readonly usageCount: number;
-    /** SHA-256 hex digest of the brick's primary content for integrity verification. */
-    readonly contentHash: string;
-    /** Optional companion files: relative path → content. */
-    readonly files?: Readonly<Record<string, string>>;
-    /** Runtime requirements for this brick to be usable. */
-    readonly requires?: BrickRequires;
-    /** Optional JSON Schema describing brick instantiation config parameters. */
-    readonly configSchema?: Readonly<Record<string, unknown>>;
-}
-interface ToolArtifact extends BrickArtifactBase {
-    readonly kind: "tool";
-    readonly implementation: string;
-    readonly inputSchema: Readonly<Record<string, unknown>>;
-    readonly testCases?: readonly TestCase[];
-}
-interface SkillArtifact extends BrickArtifactBase {
-    readonly kind: "skill";
-    readonly content: string;
-}
-interface AgentArtifact extends BrickArtifactBase {
-    readonly kind: "agent";
-    readonly manifestYaml: string;
-}
-interface CompositeArtifact extends BrickArtifactBase {
-    readonly kind: "composite";
-    readonly brickIds: readonly string[];
-}
-interface ImplementationArtifact extends BrickArtifactBase {
-    readonly kind: "engine" | "resolver" | "provider" | "middleware" | "channel";
-    readonly implementation: string;
-    readonly testCases?: readonly TestCase[];
-}
-type BrickArtifact = ToolArtifact | SkillArtifact | AgentArtifact | CompositeArtifact | ImplementationArtifact;
-interface ForgeQuery {
-    readonly kind?: BrickKind;
-    readonly scope?: ForgeScope;
-    readonly trustTier?: TrustTier;
-    readonly lifecycle?: BrickLifecycle;
-    readonly tags?: readonly string[];
-    readonly createdBy?: string;
-    /** Case-insensitive substring match against brick name and description. */
-    readonly text?: string;
-    readonly limit?: number;
-}
-interface BrickUpdate {
-    readonly lifecycle?: BrickLifecycle;
-    readonly trustTier?: TrustTier;
-    readonly scope?: ForgeScope;
-    readonly usageCount?: number;
-    readonly tags?: readonly string[] | undefined;
-}
-interface ForgeStore {
-    readonly save: (brick: BrickArtifact) => Promise<Result<void, KoiError>>;
-    readonly load: (id: string) => Promise<Result<BrickArtifact, KoiError>>;
-    readonly search: (query: ForgeQuery) => Promise<Result<readonly BrickArtifact[], KoiError>>;
-    readonly remove: (id: string) => Promise<Result<void, KoiError>>;
-    readonly update: (id: string, updates: BrickUpdate) => Promise<Result<void, KoiError>>;
-    readonly exists: (id: string) => Promise<Result<boolean, KoiError>>;
-    /**
-     * Optional scope-aware promotion — moves a brick between storage tiers.
-     * Not all backends support tiered storage; filesystem overlay stores do.
-     * When available, promote_forge wires scope metadata changes to physical tier moves.
-     */
-    readonly promote?: (id: string, targetScope: ForgeScope) => Promise<Result<void, KoiError>>;
-    /** Optional typed watch for store mutations. Returns unsubscribe. */
-    readonly watch?: (listener: (event: StoreChangeEvent) => void) => () => void;
-    /** Clean up resources (filesystem watchers, timers). Not all backends hold resources. */
-    readonly dispose?: () => void;
-}
-/** Describes what changed in the store. */
-type StoreChangeKind = "saved" | "updated" | "removed" | "promoted";
-/** Notification payload for store mutations. */
-interface StoreChangeEvent {
-    readonly kind: StoreChangeKind;
-    readonly brickId: string;
-    /** The scope after the change (if applicable). */
-    readonly scope?: ForgeScope;
-}
-/**
- * Pluggable notification interface for cross-agent cache invalidation.
- *
- * Sync implementations (in-memory event bus) return void.
- * Async implementations (Nexus pub/sub, Redis) return Promise<void>.
- * Subscribers receive targeted change events for delta-based invalidation.
- */
-interface StoreChangeNotifier {
-    /** Emit a change event after a store mutation. */
-    readonly notify: (event: StoreChangeEvent) => void | Promise<void>;
-    /** Subscribe to change events. Returns unsubscribe function. */
-    readonly subscribe: (listener: (event: StoreChangeEvent) => void) => () => void;
-}
-declare const __lockBrand: unique symbol;
-type LockHandle = string & {
-    readonly [__lockBrand]: "LockHandle";
-};
-type LockMode = "shared" | "exclusive";
-interface LockRequest {
-    readonly resource: string;
-    readonly mode: LockMode;
-    readonly ttlMs: number;
-}
-interface AdvisoryLock {
-    readonly acquire: (request: LockRequest) => Promise<Result<LockHandle, KoiError>>;
-    readonly release: (handle: LockHandle) => Promise<Result<void, KoiError>>;
-}
-
-export type { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, CompositeArtifact, ForgeQuery, ForgeStore, ImplementationArtifact, LockHandle, LockMode, LockRequest, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, ToolArtifact };
 "
 `;
 
 exports[`@koi/core API surface ./sandbox-adapter has stable type surface 1`] = `
 "import { SandboxProfile } from './sandbox-profile.js';
-import './ecs-DM4-kRhl.js';
-import './assembly-Bp5WuiM8.js';
+import './ecs-DQiYwmx6.js';
+import './assembly-CFhPkvga.js';
 import './common.js';
 import './webhook.js';
 import './errors.js';
@@ -2086,8 +1834,8 @@ export type { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxI
 `;
 
 exports[`@koi/core API surface ./sandbox-executor has stable type surface 1`] = `
-"import { a7 as TrustTier } from './ecs-DM4-kRhl.js';
-import './assembly-Bp5WuiM8.js';
+"import { a7 as TrustTier } from './ecs-DQiYwmx6.js';
+import './assembly-CFhPkvga.js';
 import './common.js';
 import './webhook.js';
 import './errors.js';
@@ -2150,8 +1898,8 @@ export type { SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, Ti
 `;
 
 exports[`@koi/core API surface ./sandbox-profile has stable type surface 1`] = `
-"import { a7 as TrustTier } from './ecs-DM4-kRhl.js';
-import './assembly-Bp5WuiM8.js';
+"import { a7 as TrustTier } from './ecs-DQiYwmx6.js';
+import './assembly-CFhPkvga.js';
 import './common.js';
 import './webhook.js';
 import './errors.js';

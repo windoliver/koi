@@ -6,47 +6,23 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { ForgeStore, SkillArtifact, StoreChangeEvent, ToolArtifact } from "@koi/core";
+import type { ForgeStore, StoreChangeEvent } from "@koi/core";
+import { createTestSkillArtifact, createTestToolArtifact } from "./brick-artifacts.js";
 
-function createBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
-  return {
+function createBrick(overrides?: Partial<Parameters<typeof createTestToolArtifact>[0]>) {
+  return createTestToolArtifact({
     id: `brick_${Math.random().toString(36).slice(2, 10)}`,
-    kind: "tool",
     name: "test-brick",
     description: "A test brick",
-    scope: "agent",
-    trustTier: "sandbox",
-    lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
-    version: "0.0.1",
-    tags: [],
-    usageCount: 0,
-    contentHash: "test-hash",
-    implementation: "return 1;",
-    inputSchema: { type: "object" },
     ...overrides,
-  };
+  });
 }
 
-function createSkillBrick(overrides?: Partial<SkillArtifact>): SkillArtifact {
-  return {
+function createSkillBrick(overrides?: Partial<Parameters<typeof createTestSkillArtifact>[0]>) {
+  return createTestSkillArtifact({
     id: `brick_${Math.random().toString(36).slice(2, 10)}`,
-    kind: "skill",
-    name: "test-skill",
-    description: "A test skill",
-    scope: "agent",
-    trustTier: "sandbox",
-    lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
-    version: "0.0.1",
-    tags: [],
-    usageCount: 0,
-    contentHash: "test-hash",
-    content: "# Test Skill",
     ...overrides,
-  };
+  });
 }
 
 /**

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { validateBrickArtifact } from "./brick-validation.js";
 
 function validTool(): Record<string, unknown> {
@@ -10,8 +11,7 @@ function validTool(): Record<string, unknown> {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: ["math"],
     usageCount: 0,
@@ -124,9 +124,9 @@ describe("validateBrickArtifact", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("rejects non-number createdAt", () => {
+  test("rejects non-object provenance", () => {
     const result = validateBrickArtifact(
-      { ...validTool(), createdAt: "not a number" },
+      { ...validTool(), provenance: "not an object" },
       "test-source",
     );
     expect(result.ok).toBe(false);

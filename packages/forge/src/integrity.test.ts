@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { loadAndVerify, verifyBrickIntegrity } from "./integrity.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
 import { computeContentHash } from "./tools/shared.js";
@@ -19,8 +20,7 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -51,8 +51,7 @@ function createSkillBrick(overrides?: Partial<SkillArtifact>): SkillArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -76,8 +75,7 @@ function createAgentBrick(overrides?: Partial<AgentArtifact>): AgentArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -106,8 +104,7 @@ function createCompositeBrick(overrides?: Partial<CompositeArtifact>): Composite
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,

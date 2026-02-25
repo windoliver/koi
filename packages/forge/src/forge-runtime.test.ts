@@ -3,14 +3,20 @@
  */
 
 import { describe, expect, mock, test } from "bun:test";
-import type { ToolArtifact } from "@koi/core";
+import type { SigningBackend, ToolArtifact } from "@koi/core";
+import { DEFAULT_PROVENANCE } from "@koi/test-utils";
+import { signAttestation } from "./attestation.js";
 import { createForgeRuntime } from "./forge-runtime.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
+import { computeContentHash } from "./tools/shared.js";
 import type { SandboxExecutor, TieredSandboxExecutor } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
+
+const DEFAULT_IMPLEMENTATION = "return input;";
+const VALID_CONTENT_HASH = computeContentHash(DEFAULT_IMPLEMENTATION);
 
 function testToolArtifact(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
@@ -21,13 +27,12 @@ function testToolArtifact(overrides?: Partial<ToolArtifact>): ToolArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "test-agent",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "1.0.0",
     tags: [],
     usageCount: 0,
-    contentHash: "abc123",
-    implementation: "return input;",
+    contentHash: VALID_CONTENT_HASH,
+    implementation: DEFAULT_IMPLEMENTATION,
     inputSchema: { type: "object" },
     ...overrides,
   };
@@ -187,5 +192,180 @@ describe("createForgeRuntime", () => {
 
     // Should not throw even though store has no dispose
     expect(() => runtime.dispose?.()).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// On-load integrity verification
+// ---------------------------------------------------------------------------
+
+describe("createForgeRuntime — integrity verification", () => {
+  test("resolveTool returns undefined when content hash is tampered", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      testToolArtifact({
+        name: "tampered",
+        contentHash: "wrong-hash-that-does-not-match",
+      }),
+    );
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const tool = await runtime.resolveTool("tampered");
+
+    expect(tool).toBeUndefined();
+  });
+
+  test("resolveTool succeeds when content hash is valid", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(testToolArtifact({ name: "valid-tool" }));
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const tool = await runtime.resolveTool("valid-tool");
+
+    expect(tool).toBeDefined();
+    expect(tool?.descriptor.name).toBe("valid-tool");
+  });
+
+  test("integrity result is cached — second resolve skips re-verification", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(testToolArtifact({ name: "cached-tool" }));
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+
+    // First resolve — verifies integrity
+    const first = await runtime.resolveTool("cached-tool");
+    expect(first).toBeDefined();
+
+    // Second resolve — uses cached integrity result (same content hash)
+    const second = await runtime.resolveTool("cached-tool");
+    expect(second).toBeDefined();
+  });
+
+  test("integrity cache is cleared on store change", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(testToolArtifact({ name: "evolving-tool" }));
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+
+    // First resolve caches integrity
+    const first = await runtime.resolveTool("evolving-tool");
+    expect(first).toBeDefined();
+
+    // Save a new version — triggers cache invalidation
+    const newImpl = "return input.x + 1;";
+    await store.save(
+      testToolArtifact({
+        name: "evolving-tool",
+        implementation: newImpl,
+        contentHash: computeContentHash(newImpl),
+      }),
+    );
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    // After cache invalidation, re-verifies with new content
+    const second = await runtime.resolveTool("evolving-tool");
+    expect(second).toBeDefined();
+  });
+
+  test("failed integrity is cached — tampered tool stays rejected", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      testToolArtifact({
+        name: "bad-tool",
+        contentHash: "tampered-hash",
+      }),
+    );
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+
+    // First resolve — detects tamper, caches failure
+    const first = await runtime.resolveTool("bad-tool");
+    expect(first).toBeUndefined();
+
+    // Second resolve — uses cached failure
+    const second = await runtime.resolveTool("bad-tool");
+    expect(second).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// On-load attestation verification (with signer)
+// ---------------------------------------------------------------------------
+
+describe("createForgeRuntime — attestation verification", () => {
+  function createTestSigner(): SigningBackend {
+    const key = new Uint8Array(32).fill(42);
+    const hmac = (data: Uint8Array): Uint8Array => {
+      const hasher = new Bun.CryptoHasher("sha256");
+      hasher.update(key);
+      hasher.update(data);
+      return new Uint8Array(hasher.digest());
+    };
+    return {
+      algorithm: "hmac-sha256",
+      sign: (data: Uint8Array): Uint8Array => hmac(data),
+      verify: (data: Uint8Array, signature: Uint8Array): boolean => {
+        const expected = hmac(data);
+        if (expected.length !== signature.length) return false;
+        // let justified: mutable accumulator for constant-time comparison
+        let diff = 0;
+        for (let i = 0; i < expected.length; i++) {
+          diff |= (expected[i] ?? 0) ^ (signature[i] ?? 0);
+        }
+        return diff === 0;
+      },
+    };
+  }
+
+  test("resolveTool succeeds with valid attestation", async () => {
+    const signer = createTestSigner();
+    const store = createInMemoryForgeStore();
+
+    const brick = testToolArtifact({ name: "signed-tool" });
+    // Sign the provenance
+    const signedProvenance = await signAttestation(brick.provenance, signer);
+    await store.save({ ...brick, provenance: signedProvenance });
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered(), signer });
+    const tool = await runtime.resolveTool("signed-tool");
+
+    expect(tool).toBeDefined();
+    expect(tool?.descriptor.name).toBe("signed-tool");
+  });
+
+  test("resolveTool returns undefined with invalid attestation signature", async () => {
+    const signer = createTestSigner();
+    const store = createInMemoryForgeStore();
+
+    const brick = testToolArtifact({ name: "forged-sig" });
+    // Attach a fake attestation with wrong signature
+    const fakeProvenance = {
+      ...brick.provenance,
+      attestation: {
+        algorithm: "hmac-sha256",
+        signature: "0".repeat(64),
+      },
+    };
+    await store.save({ ...brick, provenance: fakeProvenance });
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered(), signer });
+    const tool = await runtime.resolveTool("forged-sig");
+
+    expect(tool).toBeUndefined();
+  });
+
+  test("resolveTool succeeds without attestation when signer provided (attestation optional)", async () => {
+    const signer = createTestSigner();
+    const store = createInMemoryForgeStore();
+
+    // Save a brick with no attestation — content hash is still valid
+    await store.save(testToolArtifact({ name: "unsigned-tool" }));
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered(), signer });
+    const tool = await runtime.resolveTool("unsigned-tool");
+
+    // verifyBrickAttestation passes when no attestation present (only checks hash)
+    expect(tool).toBeDefined();
   });
 });

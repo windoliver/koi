@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/test-utils API surface . has stable type surface 1`] = `
-"import { ProcessId, AgentManifest, ProcessState, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, ChannelAdapter, MemoryResult, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, SessionPersistence, SnapshotChainStore, ForgeStore } from '@koi/core';
+"import { ProcessId, AgentManifest, ProcessState, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, ForgeProvenance, AgentArtifact, CompositeArtifact, ImplementationArtifact, SkillArtifact, ToolArtifact, ChannelAdapter, MemoryResult, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, SessionPersistence, SnapshotChainStore, ForgeStore } from '@koi/core';
 import { Result, KoiError } from '@koi/core/errors';
 import { InboundMessage } from '@koi/core/message';
 import { SessionContext, TurnContext, ModelHandler, ModelRequest, ModelStreamHandler, ToolHandler, ToolRequest, ModelResponse, ModelChunk, ToolResponse, KoiMiddleware } from '@koi/core/middleware';
@@ -118,6 +118,20 @@ declare function assertErr<T>(result: Result<T, KoiError>): asserts result is {
     readonly ok: false;
     readonly error: KoiError;
 };
+
+/**
+ * Test artifact factories for forged bricks.
+ *
+ * Provides reusable defaults with a valid ForgeProvenance, eliminating
+ * repeated fixture construction across test suites.
+ */
+
+declare const DEFAULT_PROVENANCE: ForgeProvenance;
+declare const createTestToolArtifact: (overrides?: Partial<ToolArtifact>) => ToolArtifact;
+declare const createTestSkillArtifact: (overrides?: Partial<SkillArtifact>) => SkillArtifact;
+declare const createTestAgentArtifact: (overrides?: Partial<AgentArtifact>) => AgentArtifact;
+declare const createTestCompositeArtifact: (overrides?: Partial<CompositeArtifact>) => CompositeArtifact;
+declare const createTestImplementationArtifact: (overrides?: Partial<ImplementationArtifact>) => ImplementationArtifact;
 
 /**
  * Output capture helper for tests.
@@ -303,7 +317,7 @@ declare function createMockEventBackend(): MockEventBackend;
  * const user = createUser({ age: 25 }); // { name: "Alice", age: 25 }
  * \`\`\`
  */
-declare function createFactory<T extends Record<string, unknown>>(defaults: T): (overrides?: Partial<T>) => T;
+declare function createFactory<T extends object>(defaults: T): (overrides?: Partial<T>) => T;
 
 /**
  * Mock and spy handler factories for middleware testing.
@@ -478,6 +492,6 @@ declare function createThrowingValidator(error: Error, name?: string): MockValid
 /** Creates a validator that passes or fails based on a predicate. */
 declare function createConditionalValidator(fn: (output: unknown) => boolean, name?: string): MockValidator;
 
-export { type CapturedOutput, type ChannelContractOptions, type EngineContractOptions, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type ResolverContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createManifestFile, createMockAgent, createMockEngineAdapter, createMockEventBackend, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTestConfig, createTestConfigStore, createThrowingValidator, makeTempDir, runEventBackendContractTests, runForgeStoreContractTests, runSessionPersistenceContractTests, runSnapshotChainStoreContractTests, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, withTempDir };
+export { type CapturedOutput, type ChannelContractOptions, DEFAULT_PROVENANCE, type EngineContractOptions, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type ResolverContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createManifestFile, createMockAgent, createMockEngineAdapter, createMockEventBackend, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTestAgentArtifact, createTestCompositeArtifact, createTestConfig, createTestConfigStore, createTestImplementationArtifact, createTestSkillArtifact, createTestToolArtifact, createThrowingValidator, makeTempDir, runEventBackendContractTests, runForgeStoreContractTests, runSessionPersistenceContractTests, runSnapshotChainStoreContractTests, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, withTempDir };
 "
 `;

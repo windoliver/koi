@@ -3,7 +3,8 @@
  * to the stored `contentHash` on a brick artifact.
  */
 
-import type { BrickArtifact, ForgeStore, Result } from "@koi/core";
+import type { BrickArtifact, ForgeStore, Result, SigningBackend } from "@koi/core";
+import { verifyAttestation } from "./attestation.js";
 import type { ForgeError } from "./errors.js";
 import { storeError } from "./errors.js";
 import { computeContentHash } from "./tools/shared.js";
@@ -56,8 +57,13 @@ function extractContentForHash(brick: BrickArtifact): string {
 /**
  * Verifies that a brick's content has not been tampered with by recomputing
  * the SHA-256 content hash and comparing it to the stored `contentHash`.
+ *
+ * Current implementation is synchronous; return type is `IntegrityResult | Promise<IntegrityResult>`
+ * to allow future async backends (await on a non-Promise is a no-op).
  */
-export function verifyBrickIntegrity(brick: BrickArtifact): IntegrityResult {
+export function verifyBrickIntegrity(
+  brick: BrickArtifact,
+): IntegrityResult | Promise<IntegrityResult> {
   const content = extractContentForHash(brick);
   const actualHash = computeContentHash(content, brick.files);
 
@@ -71,6 +77,38 @@ export function verifyBrickIntegrity(brick: BrickArtifact): IntegrityResult {
     expectedHash: brick.contentHash,
     actualHash,
   };
+}
+
+/**
+ * Verifies both content hash integrity AND attestation signature.
+ *
+ * Returns the integrity result. If the brick has an attestation and a signer
+ * is provided, also verifies the cryptographic signature.
+ */
+export async function verifyBrickAttestation(
+  brick: BrickArtifact,
+  signer: SigningBackend,
+): Promise<IntegrityResult> {
+  // First verify content hash
+  const hashResult = await verifyBrickIntegrity(brick);
+  if (!hashResult.ok) {
+    return hashResult;
+  }
+
+  // If attestation is present, verify signature
+  if (brick.provenance.attestation !== undefined) {
+    const signatureValid = await verifyAttestation(brick.provenance, signer);
+    if (!signatureValid) {
+      return {
+        ok: false,
+        brickId: brick.id,
+        expectedHash: brick.contentHash,
+        actualHash: `attestation-invalid:${brick.contentHash}`,
+      };
+    }
+  }
+
+  return hashResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,7 +133,7 @@ export async function loadAndVerify(
   }
 
   const brick = loadResult.value;
-  const integrity = verifyBrickIntegrity(brick);
+  const integrity = await verifyBrickIntegrity(brick);
 
   return { ok: true, value: { brick, integrity } };
 }

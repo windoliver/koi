@@ -1,7 +1,9 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/hash API surface . has stable type surface 1`] = `
-"/**
+"import { SigningBackend } from '@koi/core';
+
+/**
  * Deterministic SHA-256 content hash for arbitrary data.
  *
  * Produces identical hashes for semantically equivalent objects regardless
@@ -23,6 +25,21 @@ declare function computeContentHash(data: unknown): string;
 declare function fnv1a(input: string): number;
 
 /**
+ * HMAC-SHA256 signing backend — default pluggable signer for forge attestation.
+ *
+ * Uses Bun.CryptoHasher for HMAC computation. Implements the SigningBackend
+ * contract from @koi/core.
+ */
+
+/**
+ * Create an HMAC-SHA256 signing backend from a secret key.
+ *
+ * @param secretKey - The HMAC secret key (any length; will be hashed if > 64 bytes).
+ * @returns A SigningBackend that signs/verifies using HMAC-SHA256.
+ */
+declare function createHmacSigner(secretKey: Uint8Array): SigningBackend;
+
+/**
  * ULID generator — crypto-random, time-sortable, 26-char Crockford Base32.
  *
  * No external dependencies. Uses crypto.getRandomValues() for randomness.
@@ -30,6 +47,6 @@ declare function fnv1a(input: string): number;
 /** Generate a ULID — 26-char, time-sortable, crypto-random unique ID. */
 declare function generateUlid(): string;
 
-export { computeContentHash, fnv1a, generateUlid };
+export { computeContentHash, createHmacSigner, fnv1a, generateUlid };
 "
 `;

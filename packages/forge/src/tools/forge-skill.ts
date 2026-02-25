@@ -79,6 +79,12 @@ async function forgeSkillHandler(
           },
         }
       : {}),
+    ...(parsed.value.classification !== undefined
+      ? { classification: parsed.value.classification }
+      : {}),
+    ...(parsed.value.contentMarkers !== undefined
+      ? { contentMarkers: parsed.value.contentMarkers }
+      : {}),
   };
 
   // Generate full SKILL.md with YAML frontmatter

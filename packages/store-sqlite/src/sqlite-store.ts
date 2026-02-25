@@ -118,6 +118,17 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
+  /** Extract created_by and created_at from provenance for indexed columns. */
+  function extractCreatedFields(brick: BrickArtifact): {
+    readonly createdBy: string;
+    readonly createdAt: number;
+  } {
+    return {
+      createdBy: brick.provenance.metadata.agentId,
+      createdAt: brick.provenance.metadata.startedAt,
+    };
+  }
+
   const loadDataStmt = db.query<BrickRow, [string]>("SELECT data FROM bricks WHERE id = ?");
 
   const existsStmt = db.query<ExistsRow, [string]>("SELECT 1 AS found FROM bricks WHERE id = ?");
@@ -158,6 +169,7 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
   // -- ForgeStore methods ---------------------------------------------------
 
   const saveBrickAndTags = db.transaction((brick: BrickArtifact, dataJson: string) => {
+    const { createdBy, createdAt } = extractCreatedFields(brick);
     insertBrickStmt.run(
       brick.id,
       brick.kind,
@@ -167,8 +179,8 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
       brick.lifecycle,
       brick.contentHash,
       brick.usageCount,
-      brick.createdBy,
-      brick.createdAt,
+      createdBy,
+      createdAt,
       brick.version,
       brick.description,
       dataJson,

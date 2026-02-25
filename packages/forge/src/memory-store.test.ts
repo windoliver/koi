@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { StoreChangeEvent, ToolArtifact } from "@koi/core";
-import { runForgeStoreContractTests } from "@koi/test-utils";
+import { DEFAULT_PROVENANCE, runForgeStoreContractTests } from "@koi/test-utils";
 import { createInMemoryForgeStore } from "./memory-store.js";
 
 // Run the full contract test suite against InMemoryForgeStore
@@ -19,8 +19,7 @@ function testToolArtifact(overrides?: Partial<ToolArtifact>): ToolArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "test-agent",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "1.0.0",
     tags: [],
     usageCount: 0,

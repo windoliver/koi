@@ -6,6 +6,7 @@ import type {
   TieredSandboxExecutor,
 } from "@koi/core";
 import { VALID_LIFECYCLE_TRANSITIONS } from "@koi/core";
+import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import { createMemoryStoreChangeNotifier } from "../store-notifier.js";
@@ -22,8 +23,7 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -951,7 +951,14 @@ describe("createPromoteForgeTool", () => {
   test("rejects promoting another agent's agent-scoped brick", async () => {
     const store = createInMemoryForgeStore();
     await store.save(
-      createToolBrick({ id: "brick_foreign", createdBy: "agent-2", scope: "agent" }),
+      createToolBrick({
+        id: "brick_foreign",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-2" },
+        },
+        scope: "agent",
+      }),
     );
 
     const tool = createPromoteForgeTool(createDeps({ store }));
@@ -966,7 +973,16 @@ describe("createPromoteForgeTool", () => {
 
   test("allows promoting own agent-scoped brick", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_own", createdBy: "agent-1", scope: "agent" }));
+    await store.save(
+      createToolBrick({
+        id: "brick_own",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-1" },
+        },
+        scope: "agent",
+      }),
+    );
 
     const tool = createPromoteForgeTool(createDeps({ store }));
     const result = (await tool.execute({
@@ -981,7 +997,14 @@ describe("createPromoteForgeTool", () => {
   test("allows promoting another agent's global-scoped brick", async () => {
     const store = createInMemoryForgeStore();
     await store.save(
-      createToolBrick({ id: "brick_global", createdBy: "agent-2", scope: "global" }),
+      createToolBrick({
+        id: "brick_global",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-2" },
+        },
+        scope: "global",
+      }),
     );
 
     const tool = createPromoteForgeTool(createDeps({ store }));

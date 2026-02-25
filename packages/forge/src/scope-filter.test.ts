@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ToolArtifact } from "@koi/core";
+import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { filterByAgentScope, isVisibleToAgent } from "./scope-filter.js";
 
 function createBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
@@ -11,8 +12,7 @@ function createBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -25,22 +25,46 @@ function createBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
 
 describe("isVisibleToAgent", () => {
   test("returns true for global-scoped bricks", () => {
-    const brick = createBrick({ scope: "global", createdBy: "other-agent" });
+    const brick = createBrick({
+      scope: "global",
+      provenance: {
+        ...DEFAULT_PROVENANCE,
+        metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "other-agent" },
+      },
+    });
     expect(isVisibleToAgent(brick, "agent-1")).toBe(true);
   });
 
   test("returns true for zone-scoped bricks (Phase 2 passthrough)", () => {
-    const brick = createBrick({ scope: "zone", createdBy: "other-agent" });
+    const brick = createBrick({
+      scope: "zone",
+      provenance: {
+        ...DEFAULT_PROVENANCE,
+        metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "other-agent" },
+      },
+    });
     expect(isVisibleToAgent(brick, "agent-1")).toBe(true);
   });
 
   test("returns true for agent-scoped brick matching creator", () => {
-    const brick = createBrick({ scope: "agent", createdBy: "agent-1" });
+    const brick = createBrick({
+      scope: "agent",
+      provenance: {
+        ...DEFAULT_PROVENANCE,
+        metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-1" },
+      },
+    });
     expect(isVisibleToAgent(brick, "agent-1")).toBe(true);
   });
 
   test("returns false for agent-scoped brick from different agent", () => {
-    const brick = createBrick({ scope: "agent", createdBy: "agent-2" });
+    const brick = createBrick({
+      scope: "agent",
+      provenance: {
+        ...DEFAULT_PROVENANCE,
+        metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-2" },
+      },
+    });
     expect(isVisibleToAgent(brick, "agent-1")).toBe(false);
   });
 });
@@ -48,10 +72,38 @@ describe("isVisibleToAgent", () => {
 describe("filterByAgentScope", () => {
   test("filters mixed-scope array correctly", () => {
     const bricks = [
-      createBrick({ id: "b1", scope: "global", createdBy: "other" }),
-      createBrick({ id: "b2", scope: "agent", createdBy: "agent-1" }),
-      createBrick({ id: "b3", scope: "agent", createdBy: "agent-2" }),
-      createBrick({ id: "b4", scope: "zone", createdBy: "other" }),
+      createBrick({
+        id: "b1",
+        scope: "global",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "other" },
+        },
+      }),
+      createBrick({
+        id: "b2",
+        scope: "agent",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-1" },
+        },
+      }),
+      createBrick({
+        id: "b3",
+        scope: "agent",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-2" },
+        },
+      }),
+      createBrick({
+        id: "b4",
+        scope: "zone",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "other" },
+        },
+      }),
     ];
     const filtered = filterByAgentScope(bricks, "agent-1");
     expect(filtered).toHaveLength(3);

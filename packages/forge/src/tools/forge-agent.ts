@@ -156,6 +156,12 @@ async function forgeAgentHandler(
           },
         }
       : {}),
+    ...(parsed.value.classification !== undefined
+      ? { classification: parsed.value.classification }
+      : {}),
+    ...(parsed.value.contentMarkers !== undefined
+      ? { contentMarkers: parsed.value.contentMarkers }
+      : {}),
   };
 
   return runForgePipeline(forgeInput, deps, (id, report) => {

@@ -19,5 +19,8 @@
   "dependencies": {
     "@koi/core": "workspace:*",
     "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*"
   }
 }
