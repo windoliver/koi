@@ -37,6 +37,7 @@ import type {
 const ENGINE_ID = "external" as const;
 const DEFAULT_TIMEOUT_MS = 300_000 as const; // 5 minutes
 const DEFAULT_MAX_OUTPUT_BYTES = 1_048_576 as const; // 1 MiB
+const DEFAULT_MAX_HISTORY_ENTRIES = 10_000 as const;
 const TEXT_ENCODER = new TextEncoder();
 
 // ---------------------------------------------------------------------------
@@ -130,10 +131,12 @@ export function createExternalAdapter(config: ExternalAdapterConfig): ExternalEn
           const text = stdoutDecoder.decode(value, { stream: true });
           onStdoutChunk?.(text);
         }
+      } catch {
+        // Stream read error (process crashed, fd closed) — treated as process exit
       } finally {
         reader.releaseLock();
       }
-      // stdout closed = process exited
+      // stdout closed or errored = process exited
       onProcessExit?.();
     })();
 
@@ -147,6 +150,8 @@ export function createExternalAdapter(config: ExternalAdapterConfig): ExternalEn
           const text = stderrDecoder.decode(value, { stream: true });
           onStderrChunk?.(text);
         }
+      } catch {
+        // Stream read error (process crashed, fd closed) — no action needed
       } finally {
         reader.releaseLock();
       }
@@ -237,6 +242,7 @@ export function createExternalAdapter(config: ExternalAdapterConfig): ExternalEn
         (text) => {
           watchdog?.reset();
           outputHistory.push(text);
+          trimHistory(outputHistory, DEFAULT_MAX_HISTORY_ENTRIES);
           const result = parser.parseStdout(text);
           for (const event of result.events) {
             queue.push(event);
@@ -387,6 +393,7 @@ export function createExternalAdapter(config: ExternalAdapterConfig): ExternalEn
         if (queueEnded) return;
         watchdog?.reset();
         outputHistory.push(text);
+        trimHistory(outputHistory, DEFAULT_MAX_HISTORY_ENTRIES);
         const result = parser.parseStdout(text);
         for (const event of result.events) {
           queue.push(event);
@@ -537,6 +544,16 @@ function createWatchdog(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Trim output history to prevent unbounded growth in long-lived mode.
+ * Drops the oldest entries when the cap is exceeded.
+ */
+function trimHistory(history: string[], maxEntries: number): void {
+  if (history.length > maxEntries) {
+    history.splice(0, history.length - maxEntries);
+  }
+}
 
 function createZeroMetrics(durationMs: number): EngineMetrics {
   return {
