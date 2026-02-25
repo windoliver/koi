@@ -535,6 +535,24 @@ describe("OverlayForgeStore", () => {
     });
   });
 
+  // -- dispose ---------------------------------------------------------------
+
+  describe("dispose", () => {
+    test("propagates to all tier stores without error", async () => {
+      const store = await createOverlayForgeStore(config);
+
+      // Save a brick to exercise a tier store
+      const brick = createBrick({ id: "brick_dispose_test" });
+      await store.save(brick);
+
+      // Dispose should not throw
+      expect(() => store.dispose()).not.toThrow();
+
+      // Double dispose should also not throw
+      expect(() => store.dispose()).not.toThrow();
+    });
+  });
+
   // -- overlayConfigFromHome -----------------------------------------------
 
   describe("overlayConfigFromHome", () => {

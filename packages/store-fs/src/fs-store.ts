@@ -8,6 +8,7 @@
  * - Git-style hash-sharded directory layout
  */
 
+import { type FSWatcher, watch as fsWatch } from "node:fs";
 import { mkdir, readdir, rename, rm, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import type {
@@ -18,12 +19,19 @@ import type {
   ForgeStore,
   KoiError,
   Result,
+  StoreChangeEvent,
 } from "@koi/core";
 import { notFound } from "@koi/core";
 import { validateBrickArtifact } from "@koi/validation";
 import { mapFsError, mapParseError } from "./errors.js";
 import { brickPath, shardDir, tmpPath } from "./paths.js";
 import { matchesQuery } from "./query.js";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const WATCHER_DEBOUNCE_MS = 100;
 
 // ---------------------------------------------------------------------------
 // Config
@@ -34,6 +42,8 @@ export interface FsForgeStoreConfig {
   readonly baseDir: string;
   /** Delete orphaned .tmp files on startup. Default: true. */
   readonly cleanOrphanedTmp?: boolean;
+  /** Watch the store directory for external changes (cross-process notification). Default: false. */
+  readonly watch?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +97,39 @@ async function atomicWrite(finalPath: string, tempPath: string, content: string)
 /** Ensure a directory exists (mkdir -p). */
 async function ensureDir(dirPath: string): Promise<void> {
   await mkdir(dirPath, { recursive: true });
+}
+
+/** Compute per-brick diff events between two metadata indexes. */
+function computeIndexDiff(
+  prev: ReadonlyMap<string, BrickArtifactBase>,
+  next: ReadonlyMap<string, BrickArtifactBase>,
+): readonly StoreChangeEvent[] {
+  const events: StoreChangeEvent[] = [];
+
+  // Detect additions and updates
+  for (const [id, meta] of next) {
+    const prevMeta = prev.get(id);
+    if (prevMeta === undefined) {
+      events.push({ kind: "saved", brickId: id });
+    } else if (
+      prevMeta.contentHash !== meta.contentHash ||
+      prevMeta.lifecycle !== meta.lifecycle ||
+      prevMeta.trustTier !== meta.trustTier ||
+      prevMeta.scope !== meta.scope ||
+      prevMeta.usageCount !== meta.usageCount
+    ) {
+      events.push({ kind: "updated", brickId: id });
+    }
+  }
+
+  // Detect removals
+  for (const id of prev.keys()) {
+    if (!next.has(id)) {
+      events.push({ kind: "removed", brickId: id });
+    }
+  }
+
+  return events;
 }
 
 /** Scan all .json files under baseDir and build the metadata index. */
@@ -147,6 +190,8 @@ export interface FsForgeStoreExtended extends ForgeStore {
   readonly searchIndex: (query: ForgeQuery) => readonly BrickArtifactBase[];
   /** Load a single brick from disk by ID (bypasses index check). */
   readonly loadFromDisk: (id: string) => Promise<Result<BrickArtifact, KoiError>>;
+  /** Clean up filesystem watcher, timers, and listeners. */
+  readonly dispose: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,6 +216,78 @@ export async function createFsForgeStore(
   // Build metadata index from existing files
   const index = await scanAndBuildIndex(baseDir, cleanOrphanedTmp);
 
+  // --- watch notification ---------------------------------------------------
+  const changeListeners = new Set<(event: StoreChangeEvent) => void>();
+
+  const notifyListeners = (event: StoreChangeEvent): void => {
+    for (const listener of changeListeners) {
+      try {
+        listener(event);
+      } catch (_err: unknown) {
+        // Listener errors must not break the mutation return path or skip other listeners.
+      }
+    }
+  };
+
+  const watch = (listener: (event: StoreChangeEvent) => void): (() => void) => {
+    changeListeners.add(listener);
+    return () => {
+      changeListeners.delete(listener);
+    };
+  };
+
+  // --- Filesystem watcher (opt-in) ------------------------------------------
+  // let justified: mutable watcher handle for cleanup
+  let fsWatcher: FSWatcher | undefined;
+  // let justified: mutable timer for watcher debounce
+  let watcherTimer: ReturnType<typeof setTimeout> | undefined;
+
+  if (config.watch === true) {
+    fsWatcher = fsWatch(baseDir, { recursive: true }, () => {
+      if (watcherTimer !== undefined) clearTimeout(watcherTimer);
+      watcherTimer = setTimeout(() => {
+        watcherTimer = undefined;
+        void rescanDisk();
+      }, WATCHER_DEBOUNCE_MS);
+    });
+    fsWatcher.on("error", () => {
+      /* watcher errors are non-fatal */
+    });
+  }
+
+  async function rescanDisk(): Promise<void> {
+    try {
+      const snapshot = new Map(index); // shallow copy for comparison
+      const fresh = await scanAndBuildIndex(baseDir, false); // don't clean .tmp on rescan
+      const events = computeIndexDiff(snapshot, fresh);
+      if (events.length > 0) {
+        index.clear();
+        for (const [k, v] of fresh) {
+          index.set(k, v);
+        }
+        for (const event of events) {
+          notifyListeners(event);
+        }
+      }
+    } catch (_err: unknown) {
+      // Rescan failure is non-fatal — index stays stale until next event
+    }
+  }
+
+  // --- Dispose ---------------------------------------------------------------
+
+  const dispose = (): void => {
+    if (fsWatcher !== undefined) {
+      fsWatcher.close();
+      fsWatcher = undefined;
+    }
+    if (watcherTimer !== undefined) {
+      clearTimeout(watcherTimer);
+      watcherTimer = undefined;
+    }
+    changeListeners.clear();
+  };
+
   // -- ForgeStore methods ---------------------------------------------------
 
   const save = async (brick: BrickArtifact): Promise<Result<void, KoiError>> => {
@@ -183,6 +300,7 @@ export async function createFsForgeStore(
       const json = JSON.stringify(brick, null, 2);
       await atomicWrite(final, temp, json);
       index.set(brick.id, extractMetadata(brick));
+      notifyListeners({ kind: "saved", brickId: brick.id });
       return { ok: true, value: undefined };
     } catch (err: unknown) {
       return { ok: false, error: mapFsError(err, final) };
@@ -236,6 +354,7 @@ export async function createFsForgeStore(
     try {
       await rm(filePath);
       index.delete(id);
+      notifyListeners({ kind: "removed", brickId: id });
       return { ok: true, value: undefined };
     } catch (err: unknown) {
       return { ok: false, error: mapFsError(err, filePath) };
@@ -270,6 +389,7 @@ export async function createFsForgeStore(
       const json = JSON.stringify(updated, null, 2);
       await atomicWrite(filePath, temp, json);
       index.set(id, extractMetadata(updated));
+      notifyListeners({ kind: "updated", brickId: id });
       return { ok: true, value: undefined };
     } catch (err: unknown) {
       return { ok: false, error: mapFsError(err, filePath) };
@@ -301,5 +421,16 @@ export async function createFsForgeStore(
     return readBrick(brickPath(baseDir, id));
   };
 
-  return { save, load, search, remove, update, exists, searchIndex, loadFromDisk };
+  return {
+    save,
+    load,
+    search,
+    remove,
+    update,
+    exists,
+    watch,
+    searchIndex,
+    loadFromDisk,
+    dispose,
+  };
 }

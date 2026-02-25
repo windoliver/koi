@@ -168,6 +168,19 @@ export interface ComponentProvider {
   readonly name: string;
   readonly attach: (agent: Agent) => Promise<ReadonlyMap<string, unknown>>;
   readonly detach?: (agent: Agent) => Promise<void>;
+  readonly watch?: (listener: (event: ComponentEvent) => void) => () => void;
+}
+
+// ---------------------------------------------------------------------------
+// Component events
+// ---------------------------------------------------------------------------
+
+export type ComponentEventKind = "attached" | "detached";
+
+export interface ComponentEvent {
+  readonly kind: ComponentEventKind;
+  readonly agentId: AgentId;
+  readonly componentKey: string;
 }
 
 // ---------------------------------------------------------------------------

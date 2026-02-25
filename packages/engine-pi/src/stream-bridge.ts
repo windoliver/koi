@@ -4,6 +4,10 @@
  * This is the CORE of full cooperation. When pi calls streamFn(model, context, options),
  * we convert to ModelRequest, invoke callHandlers.modelStream() (which fires middleware),
  * and pump the resulting ModelChunks back as AssistantMessageEvents.
+ *
+ * The bridge maintains a mutable partial AssistantMessage that mirrors what pi-ai's
+ * real streamSimple builds. This is critical because pi-agent-core reads tool calls
+ * from `partial.content` to decide whether to execute tools after the LLM response.
  */
 
 import type { ModelChunk, ModelRequest, ModelStreamHandler } from "@koi/core/middleware";
@@ -17,22 +21,138 @@ import type {
   Message,
   Model,
   SimpleStreamOptions,
+  TextContent,
+  ThinkingContent,
+  ToolCall,
 } from "@mariozechner/pi-ai";
 import { createAssistantMessageEventStream } from "@mariozechner/pi-ai";
 import { piMessagesToInbound } from "./message-map.js";
 import type { PiNativeParams } from "./model-terminal.js";
 import { PI_PARAMS_NONCE_KEY, piParamsStore } from "./model-terminal.js";
 
-/**
- * A completed tool call accumulated from streaming chunks.
- * Shape matches pi-ai ToolCall — used to populate AssistantMessage.content.
- */
-type CompletedToolCall = {
-  readonly type: "toolCall";
-  readonly id: string;
-  readonly name: string;
-  readonly arguments: Record<string, unknown>;
-};
+// ---------------------------------------------------------------------------
+// Partial message builder — accumulates streaming chunks into content blocks
+// ---------------------------------------------------------------------------
+
+interface PartialBuilder {
+  /** The current partial message (mutated in place). */
+  readonly partial: AssistantMessage;
+  /** Process a ModelChunk, updating partial.content accordingly. */
+  readonly processChunk: (chunk: ModelChunk) => void;
+  /** Build the final AssistantMessage with accumulated usage. */
+  readonly finalize: (inputTokens: number, outputTokens: number) => AssistantMessage;
+}
+
+function createPartialBuilder(initial: AssistantMessage): PartialBuilder {
+  // Mutable content array — pi-agent-core reads partial.content for tool calls.
+  // SAFETY: items are cast to the union type when pushed; mutation is required
+  // because pi-agent-core reads partial.content in-place to detect tool calls.
+  const content: (TextContent | ThinkingContent | ToolCall)[] = [];
+  // let justified: mutable text accumulator for text content block
+  let textBlock: { type: "text"; text: string } | undefined;
+  // let justified: mutable thinking accumulator
+  let thinkingBlock: { type: "thinking"; thinking: string } | undefined;
+  // let justified: tool call being built — tracks both the ToolCall (pushed to content)
+  // and the raw JSON accumulator (for incremental argument parsing)
+  let currentToolCallEntry: ToolCall | undefined;
+  // let justified: mutable JSON accumulator for incremental argument parsing
+  let currentArgsJson = "";
+
+  const partial: AssistantMessage = {
+    ...initial,
+    content,
+  };
+
+  return {
+    partial,
+    processChunk(chunk: ModelChunk): void {
+      switch (chunk.kind) {
+        case "text_delta":
+          if (textBlock === undefined) {
+            textBlock = { type: "text", text: chunk.delta };
+            content.push(textBlock);
+          } else {
+            textBlock.text += chunk.delta;
+          }
+          break;
+
+        case "thinking_delta":
+          if (thinkingBlock === undefined) {
+            thinkingBlock = { type: "thinking", thinking: chunk.delta };
+            content.push(thinkingBlock);
+          } else {
+            thinkingBlock.thinking += chunk.delta;
+          }
+          break;
+
+        case "tool_call_start":
+          currentToolCallEntry = {
+            type: "toolCall",
+            id: chunk.callId,
+            name: chunk.toolName,
+            arguments: {},
+          };
+          currentArgsJson = "";
+          content.push(currentToolCallEntry);
+          break;
+
+        case "tool_call_delta":
+          if (currentToolCallEntry !== undefined) {
+            currentArgsJson += chunk.delta;
+          }
+          break;
+
+        case "tool_call_end":
+          if (currentToolCallEntry !== undefined) {
+            try {
+              currentToolCallEntry.arguments = JSON.parse(currentArgsJson || "{}") as Record<
+                string,
+                unknown
+              >;
+            } catch {
+              currentToolCallEntry.arguments = {};
+            }
+            currentToolCallEntry = undefined;
+            currentArgsJson = "";
+          }
+          break;
+
+        // usage, done — handled by the pump loop, not content
+        default:
+          break;
+      }
+    },
+    finalize(inputTokens: number, outputTokens: number): AssistantMessage {
+      // Finalize any in-flight tool call (shouldn't happen with well-formed streams)
+      if (currentToolCallEntry !== undefined) {
+        try {
+          currentToolCallEntry.arguments = JSON.parse(currentArgsJson || "{}") as Record<
+            string,
+            unknown
+          >;
+        } catch {
+          currentToolCallEntry.arguments = {};
+        }
+      }
+      return {
+        ...partial,
+        content: [...content],
+        usage: {
+          input: inputTokens,
+          output: outputTokens,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: inputTokens + outputTokens,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Chunk → AssistantMessageEvent conversion
+// ---------------------------------------------------------------------------
 
 /**
  * Convert a Koi ModelChunk back to a pi AssistantMessageEvent.
@@ -70,36 +190,9 @@ export function modelChunkToAssistantEvent(
   }
 }
 
-/**
- * Build a final AssistantMessage from accumulated streaming data.
- * Includes both text content and any completed tool calls.
- */
-function buildFinalMessage(
-  partial: AssistantMessage,
-  text: string,
-  toolCalls: readonly CompletedToolCall[],
-  inputTokens: number,
-  outputTokens: number,
-): AssistantMessage {
-  // Build content preserving order: text first (if any), then tool calls.
-  // pi-agent-core filters content for { type: "toolCall" } to execute tools.
-  const content = [
-    ...(text ? [{ type: "text" as const, text }] : []),
-    ...toolCalls,
-  ] as AssistantMessage["content"];
-  return {
-    ...partial,
-    content,
-    usage: {
-      input: inputTokens,
-      output: outputTokens,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: inputTokens + outputTokens,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-  };
-}
+// ---------------------------------------------------------------------------
+// Bridge factory
+// ---------------------------------------------------------------------------
 
 /**
  * Create a bridge streamFn that routes through Koi's middleware via callHandlers.modelStream().
@@ -158,8 +251,9 @@ export function createBridgeStreamFn(
     // Store pi-native params in nonce-based Map (auto-deleted on one-shot lookup)
     piParamsStore.set(nonce, piNativeParams);
 
-    // Build a mutable partial AssistantMessage for streaming
-    const partial: AssistantMessage = {
+    // Build a mutable partial AssistantMessage with content tracking.
+    // pi-agent-core reads partial.content to detect tool calls after the stream ends.
+    const builder = createPartialBuilder({
       role: "assistant",
       content: [],
       api: model.api,
@@ -175,126 +269,70 @@ export function createBridgeStreamFn(
       },
       stopReason: "stop",
       timestamp: Date.now(),
-    };
+    });
 
     // Pump ModelChunks → AssistantMessageEvents asynchronously
     void (async () => {
       try {
-        // let justified: accumulate text for final message
-        let text = "";
+        // let justified: accumulate usage from stream
         let inputTokens = 0;
         let outputTokens = 0;
-        // let justified: track whether "start" has been emitted — pi-agent-core requires it
-        // to initialize partialMessage before processing any text/tool events.
-        let startEmitted = false;
 
-        // let justified: mutable Maps/arrays for streaming tool call reconstruction.
-        // Tool calls stream as (tool_call_start → tool_call_delta* → tool_call_end).
-        // We accumulate the JSON delta and reconstruct the full ToolCall on end.
-        const activeCalls = new Map<string, { name: string; deltaAcc: string }>();
-        const completedCalls: CompletedToolCall[] = [];
+        // Push initial "start" event — pi-agent-core's streamAssistantResponse
+        // requires this to set partialMessage, without which all subsequent
+        // message_update events (text_delta, toolcall_start, etc.) are silently dropped.
+        stream.push({ type: "start", partial: builder.partial });
 
         for await (const chunk of modelStream(modelRequest)) {
-          // Emit "start" before the first content chunk so pi sets partialMessage.
-          // Without this, pi silently drops all text_delta / toolcall_start events.
-          if (!startEmitted && chunk.kind !== "done" && chunk.kind !== "usage") {
-            startEmitted = true;
-            stream.push({ type: "start", partial });
-          }
+          // Update partial content for all chunk types
+          builder.processChunk(chunk);
 
-          if (chunk.kind === "text_delta") {
-            text += chunk.delta;
-          }
           if (chunk.kind === "usage") {
             inputTokens = chunk.inputTokens;
             outputTokens = chunk.outputTokens;
           }
 
-          // Track tool call JSON accumulation across start/delta/end chunks.
-          if (chunk.kind === "tool_call_start") {
-            activeCalls.set(chunk.callId, { name: chunk.toolName, deltaAcc: "" });
-          }
-          if (chunk.kind === "tool_call_delta") {
-            const tc = activeCalls.get(chunk.callId);
-            if (tc) {
-              tc.deltaAcc += chunk.delta;
-            }
-          }
-
-          // Handle done chunk explicitly — skip modelChunkToAssistantEvent to avoid double emission
+          // Handle done chunk explicitly — build final message with proper content + usage
           if (chunk.kind === "done") {
-            const finalMessage = buildFinalMessage(
-              partial,
-              text,
-              completedCalls,
-              inputTokens,
-              outputTokens,
-            );
+            const finalMessage = builder.finalize(inputTokens, outputTokens);
             stream.push({ type: "done", reason: "stop", message: finalMessage });
             stream.end(finalMessage);
             return;
           }
 
-          // Handle tool_call_end specially: reconstruct full ToolCall and emit toolcall_end.
-          // pi-agent-core uses the final AssistantMessage.content (from stream.end()) to execute
-          // tools — not the streaming events — so completedCalls must be populated here.
+          // Handle tool_call_end: builder has already parsed arguments into partial.content.
+          // Emit toolcall_end so pi-agent-core updates its partialMessage for UI streaming.
           if (chunk.kind === "tool_call_end") {
-            const tc = activeCalls.get(chunk.callId);
-            activeCalls.delete(chunk.callId);
-            if (tc) {
-              // let justified: args starts as empty object, overwritten on successful parse
-              let args: Record<string, unknown> = {};
-              try {
-                const parsed = JSON.parse(tc.deltaAcc || "{}") as unknown;
-                if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-                  args = parsed as Record<string, unknown>;
-                }
-              } catch {
-                // Keep empty args on malformed JSON — tool will receive {} and can handle it
-              }
-              const toolCall: CompletedToolCall = {
-                type: "toolCall",
-                id: chunk.callId,
-                name: tc.name,
-                arguments: args,
-              };
-              completedCalls.push(toolCall);
-              // Emit toolcall_end so pi-agent-core updates its partialMessage for UI streaming.
-              // Boundary cast: CompletedToolCall is structurally compatible with pi-ai ToolCall
-              // (arguments: Record<string,unknown> satisfies Record<string,any>).
+            // Find the completed toolCall in partial.content by callId
+            const toolCall = builder.partial.content.find(
+              (c) => c.type === "toolCall" && (c as { readonly id: string }).id === chunk.callId,
+            );
+            if (toolCall !== undefined) {
               stream.push({
                 type: "toolcall_end",
                 contentIndex: 0,
                 toolCall,
-                partial,
+                partial: builder.partial,
               } as unknown as AssistantMessageEvent);
             }
-            // tool_call_end is fully handled above; modelChunkToAssistantEvent returns
-            // undefined for it anyway, so skip the call below.
             continue;
           }
 
-          const event = modelChunkToAssistantEvent(chunk, partial);
+          const event = modelChunkToAssistantEvent(chunk, builder.partial);
           if (event) {
             stream.push(event);
           }
         }
 
         // If we got here without a done chunk, end the stream
-        const finalMessage = buildFinalMessage(
-          partial,
-          text,
-          completedCalls,
-          inputTokens,
-          outputTokens,
-        );
+        const finalMessage = builder.finalize(inputTokens, outputTokens);
         stream.push({ type: "done", reason: "stop", message: finalMessage });
         stream.end(finalMessage);
       } catch (error: unknown) {
         // Clean up nonce entry if terminal was never reached (prevents memory leak)
         piParamsStore.delete(nonce);
         const errMessage: AssistantMessage = {
-          ...partial,
+          ...builder.partial,
           stopReason: "error",
           errorMessage: error instanceof Error ? error.message : String(error),
         };

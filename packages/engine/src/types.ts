@@ -18,6 +18,7 @@ import type {
   ProcessAccounter,
   ProcessId,
   SpawnLedger,
+  StoreChangeEvent,
   Tool,
   ToolDescriptor,
 } from "@koi/core";
@@ -184,6 +185,8 @@ export interface ForgeRuntime {
   readonly toolDescriptors: () => Promise<readonly ToolDescriptor[]>;
   /** Get currently active forged middleware. Re-queried at turn boundaries. */
   readonly middleware?: () => Promise<readonly KoiMiddleware[]>;
+  /** Push notification when forged capabilities change. Returns unsubscribe. */
+  readonly watch?: (listener: (event: StoreChangeEvent) => void) => () => void;
 }
 
 // ---------------------------------------------------------------------------

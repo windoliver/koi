@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolArtifact } from "@koi/core";
 import { runForgeStoreContractTests } from "@koi/test-utils";
+import type { FsForgeStoreExtended } from "./fs-store.js";
 import { createFsForgeStore } from "./fs-store.js";
 import { brickPath, shardDir } from "./paths.js";
 
@@ -208,5 +209,155 @@ describe("FsForgeStore edge cases", () => {
 
     const tmpFile = Bun.file(orphanedTmp);
     expect(await tmpFile.exists()).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Filesystem watcher tests
+// ---------------------------------------------------------------------------
+
+describe("FsForgeStore watcher", () => {
+  let testDir: string;
+  // let justified: mutable store refs for cleanup in afterEach
+  let storesToDispose: FsForgeStoreExtended[];
+
+  beforeEach(async () => {
+    testDir = await freshDir();
+    storesToDispose = [];
+  });
+
+  afterEach(() => {
+    for (const store of storesToDispose) {
+      store.dispose();
+    }
+  });
+
+  /** Create a watching store and track it for cleanup. */
+  async function watchingStore(dir?: string): Promise<FsForgeStoreExtended> {
+    const store = await createFsForgeStore({ baseDir: dir ?? testDir, watch: true });
+    storesToDispose.push(store);
+    return store;
+  }
+
+  /** Create a non-watching store and track it for cleanup. */
+  async function plainStore(dir?: string): Promise<FsForgeStoreExtended> {
+    const store = await createFsForgeStore({ baseDir: dir ?? testDir });
+    storesToDispose.push(store);
+    return store;
+  }
+
+  test("external file write triggers watch", async () => {
+    // Store A watches the directory
+    const storeA = await watchingStore();
+    const listener = mock(() => {});
+    storeA.watch?.(listener);
+
+    // Store B (non-watching) writes a brick to the same directory
+    const storeB = await plainStore();
+    const brick = createTestBrick({ id: "brick_ext_write" });
+    await storeB.save(brick);
+
+    // Wait for watcher debounce (100ms) + margin
+    await new Promise((r) => setTimeout(r, 300));
+
+    expect(listener).toHaveBeenCalled();
+
+    // Store A should see the brick now
+    const result = await storeA.exists("brick_ext_write");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toBe(true);
+    }
+  });
+
+  test("programmatic save does not double-fire watch", async () => {
+    const store = await watchingStore();
+    const listener = mock(() => {});
+    store.watch?.(listener);
+
+    // Single programmatic save
+    const brick = createTestBrick({ id: "brick_no_double" });
+    await store.save(brick);
+
+    // Wait for watcher debounce to settle
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Should fire exactly once (the programmatic mutation's immediate notification).
+    // The watcher rescan may also detect the change, but the index is already updated
+    // so computeIndexDiff returns no events → no duplicate.
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  test("manually dropped valid JSON triggers watch", async () => {
+    const store = await watchingStore();
+    const listener = mock(() => {});
+    store.watch?.(listener);
+
+    // Manually write a valid brick JSON to the correct shard path
+    const brick = createTestBrick({ id: "brick_dropped" });
+    const shard = shardDir(testDir, brick.id);
+    await mkdir(shard, { recursive: true });
+    const filePath = brickPath(testDir, brick.id);
+    await Bun.write(filePath, JSON.stringify(brick));
+
+    // Wait for watcher
+    await new Promise((r) => setTimeout(r, 300));
+
+    expect(listener).toHaveBeenCalled();
+
+    // Store should now see the brick
+    const result = await store.exists("brick_dropped");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toBe(true);
+    }
+  });
+
+  test("dispose stops watcher (no further notifications)", async () => {
+    const store = await watchingStore();
+    const listener = mock(() => {});
+    store.watch?.(listener);
+
+    // Dispose the store
+    store.dispose();
+
+    // Remove from cleanup list since already disposed
+    storesToDispose = storesToDispose.filter((s) => s !== store);
+
+    // External write after dispose
+    const storeB = await plainStore();
+    const brick = createTestBrick({ id: "brick_after_dispose" });
+    await storeB.save(brick);
+
+    // Wait for watcher
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Listener should NOT have been called
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  test("watch: false (default) does not detect external changes", async () => {
+    // Store A without watcher
+    const storeA = await plainStore();
+    const listener = mock(() => {});
+    storeA.watch?.(listener);
+
+    // Store B saves a brick
+    const storeB = await plainStore();
+    const brick = createTestBrick({ id: "brick_no_watch" });
+    await storeB.save(brick);
+
+    // Wait generously
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Store A's listener should NOT be called (no watcher)
+    expect(listener).not.toHaveBeenCalled();
+
+    // Store A should NOT see the brick (no rescan)
+    const result = await storeA.exists("brick_no_watch");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toBe(false);
+    }
   });
 });

@@ -10,6 +10,7 @@ import type {
   ForgeStore,
   KoiError,
   Result,
+  StoreChangeEvent,
 } from "@koi/core";
 import { notFound } from "@koi/core";
 
@@ -62,8 +63,29 @@ function matchesQuery(brick: BrickArtifact, query: ForgeQuery): boolean {
 export function createInMemoryForgeStore(): ForgeStore {
   const bricks = new Map<string, BrickArtifact>();
 
+  // --- watch notification ---
+  const changeListeners = new Set<(event: StoreChangeEvent) => void>();
+
+  const notifyListeners = (event: StoreChangeEvent): void => {
+    for (const listener of changeListeners) {
+      try {
+        listener(event);
+      } catch (_err: unknown) {
+        // Listener errors must not break the mutation return path or skip other listeners.
+      }
+    }
+  };
+
+  const watch = (listener: (event: StoreChangeEvent) => void): (() => void) => {
+    changeListeners.add(listener);
+    return () => {
+      changeListeners.delete(listener);
+    };
+  };
+
   const save = async (brick: BrickArtifact): Promise<Result<void, KoiError>> => {
     bricks.set(brick.id, brick);
+    notifyListeners({ kind: "saved", brickId: brick.id });
     return { ok: true, value: undefined };
   };
 
@@ -93,6 +115,7 @@ export function createInMemoryForgeStore(): ForgeStore {
       return { ok: false, error: notFoundError(id) };
     }
     bricks.delete(id);
+    notifyListeners({ kind: "removed", brickId: id });
     return { ok: true, value: undefined };
   };
 
@@ -110,6 +133,7 @@ export function createInMemoryForgeStore(): ForgeStore {
       ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
     };
     bricks.set(id, updated);
+    notifyListeners({ kind: "updated", brickId: id });
     return { ok: true, value: undefined };
   };
 
@@ -117,5 +141,5 @@ export function createInMemoryForgeStore(): ForgeStore {
     return { ok: true, value: bricks.has(id) };
   };
 
-  return { save, load, search, remove, update, exists };
+  return { save, load, search, remove, update, exists, watch };
 }
