@@ -1,5 +1,5 @@
 {
-  "name": "@koi/skill-scanner",
+  "name": "@koi/doctor",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,8 +10,14 @@
     }
   },
   "dependencies": {
-    "@koi/validation": "workspace:*",
-    "oxc-parser": "0.114.0"
+    "@koi/core": "workspace:*",
+    "@koi/errors": "workspace:*",
+    "@koi/validation": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/engine": "workspace:*",
+    "@koi/engine-pi": "workspace:*",
+    "@koi/test-utils": "workspace:*"
   },
   "scripts": {
     "build": "tsup",

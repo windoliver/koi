@@ -10,6 +10,10 @@ import type { Program } from "oxc-parser";
 // Severity & category
 // ---------------------------------------------------------------------------
 
+/**
+ * Severity levels — mirrored from @koi/validation.
+ * Kept local to avoid tsup DTS cross-package re-export resolution issues.
+ */
 export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
 
 export type ScanCategory =

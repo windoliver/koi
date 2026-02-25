@@ -130,6 +130,20 @@
       "name": "@koi/deploy",
       "version": "0.0.0",
     },
+    "packages/doctor": {
+      "name": "@koi/doctor",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/engine": {
       "name": "@koi/engine",
       "version": "0.0.0",
@@ -706,6 +720,7 @@
       "name": "@koi/skill-scanner",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/validation": "workspace:*",
         "oxc-parser": "0.114.0",
       },
     },
@@ -1060,6 +1075,8 @@
     "@koi/delegation": ["@koi/delegation@workspace:packages/delegation"],
 
     "@koi/deploy": ["@koi/deploy@workspace:packages/deploy"],
+
+    "@koi/doctor": ["@koi/doctor@workspace:packages/doctor"],
 
     "@koi/e2e-contracts": ["@koi/e2e-contracts@workspace:tests/e2e"],
 
