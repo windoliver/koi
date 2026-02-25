@@ -21,7 +21,7 @@ export function isVisibleToAgent(brick: BrickArtifact, agentId: string): boolean
     case "zone":
       return true; // Phase 2: add zone-level check
     case "agent":
-      return brick.createdBy === agentId;
+      return brick.provenance.metadata.agentId === agentId;
     default: {
       // Fail closed: unknown scope denies access
       const _exhaustive: never = brick.scope;

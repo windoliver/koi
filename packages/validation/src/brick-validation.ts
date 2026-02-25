@@ -40,8 +40,7 @@ function validateBase(data: Record<string, unknown>, source: string): Result<voi
     return fail(`invalid trustTier '${String(data.trustTier)}'`, source);
   if (!VALID_LIFECYCLES.has(data.lifecycle as string))
     return fail(`invalid lifecycle '${String(data.lifecycle)}'`, source);
-  if (!isNonEmptyString(data.createdBy)) return fail("missing or empty 'createdBy'", source);
-  if (typeof data.createdAt !== "number") return fail("missing or non-number 'createdAt'", source);
+  if (!isRecord(data.provenance)) return fail("missing or non-object 'provenance'", source);
   if (!isNonEmptyString(data.version)) return fail("missing or empty 'version'", source);
   if (!Array.isArray(data.tags)) return fail("missing or non-array 'tags'", source);
   if (typeof data.usageCount !== "number")

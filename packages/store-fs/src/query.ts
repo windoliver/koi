@@ -22,7 +22,7 @@ export function matchesQuery(brick: BrickArtifactBase, query: ForgeQuery): boole
   if (query.lifecycle !== undefined && brick.lifecycle !== query.lifecycle) {
     return false;
   }
-  if (query.createdBy !== undefined && brick.createdBy !== query.createdBy) {
+  if (query.createdBy !== undefined && brick.provenance.metadata.agentId !== query.createdBy) {
     return false;
   }
   // Tags use AND-subset matching: brick must contain all query tags

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { extractBundled } from "./extract-bundled.js";
 import { brickPath } from "./paths.js";
 
@@ -27,8 +28,7 @@ function minimalBrick(id: string): Record<string, unknown> {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "system",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "1.0.0",
     tags: [],
     usageCount: 0,

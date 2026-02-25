@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
   BrickArtifact,
+  ForgeProvenance,
   ForgeScope,
   SandboxExecutor,
   TieredSandboxExecutor,
@@ -28,6 +29,7 @@ import {
   createForgeComponentProvider,
   createPromoteForgeTool,
 } from "@koi/forge";
+import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import type { OverlayConfig, OverlayForgeStore } from "../overlay-store.js";
 import { createOverlayForgeStore } from "../overlay-store.js";
 
@@ -73,8 +75,7 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -82,6 +83,14 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     implementation: "return input;",
     inputSchema: { type: "object" },
     ...overrides,
+  };
+}
+
+function provenanceFor(agentId: string): ForgeProvenance {
+  return {
+    ...DEFAULT_PROVENANCE,
+    source: { origin: "forged", forgedBy: agentId },
+    metadata: { ...DEFAULT_PROVENANCE.metadata, agentId },
   };
 }
 
@@ -168,7 +177,7 @@ describe("cross-agent brick reuse e2e", () => {
     const alphaBrick = createToolBrick({
       id: "brick_alpha_private",
       name: "alpha-private",
-      createdBy: "alpha",
+      provenance: provenanceFor("alpha"),
     });
     await agentAlphaStore.save(alphaBrick);
 
@@ -210,7 +219,7 @@ describe("cross-agent brick reuse e2e", () => {
     const sharedBrick = createToolBrick({
       id: "brick_to_share",
       name: "shared-calculator",
-      createdBy: "alpha",
+      provenance: provenanceFor("alpha"),
       trustTier: "verified",
     });
     await agentAlphaStore.save(sharedBrick);
@@ -252,7 +261,7 @@ describe("cross-agent brick reuse e2e", () => {
     expect(betaLoad.ok).toBe(true);
     if (betaLoad.ok) {
       expect(betaLoad.value.name).toBe("shared-calculator");
-      expect(betaLoad.value.createdBy).toBe("alpha");
+      expect(betaLoad.value.provenance.metadata.agentId).toBe("alpha");
     }
 
     // Beta search returns it
@@ -273,7 +282,7 @@ describe("cross-agent brick reuse e2e", () => {
     const brick = createToolBrick({
       id: "brick_scope_promote",
       name: "scope-promoted",
-      createdBy: "alpha",
+      provenance: provenanceFor("alpha"),
     });
     await agentAlphaStore.save(brick);
 
@@ -304,7 +313,7 @@ describe("cross-agent brick reuse e2e", () => {
       name: "tool-promoted",
       scope: "agent",
       trustTier: "verified",
-      createdBy: "alpha",
+      provenance: provenanceFor("alpha"),
     });
     await agentAlphaStore.save(brick);
 
@@ -344,12 +353,12 @@ describe("cross-agent brick reuse e2e", () => {
     const alphaBrick = createToolBrick({
       id: "brick_alpha_1",
       name: "alpha-tool",
-      createdBy: "alpha",
+      provenance: provenanceFor("alpha"),
     });
     const betaBrick = createToolBrick({
       id: "brick_beta_1",
       name: "beta-tool",
-      createdBy: "beta",
+      provenance: provenanceFor("beta"),
     });
 
     await agentAlphaStore.save(alphaBrick);

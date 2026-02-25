@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createForgeResolver, extractSource } from "./forge-resolver.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
 import type { AgentArtifact, CompositeArtifact, SkillArtifact, ToolArtifact } from "./types.js";
@@ -12,8 +13,7 @@ function createBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -33,8 +33,7 @@ function createSkillBrick(overrides?: Partial<SkillArtifact>): SkillArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -53,8 +52,7 @@ function createAgentBrick(overrides?: Partial<AgentArtifact>): AgentArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -73,8 +71,7 @@ function createCompositeBrick(overrides?: Partial<CompositeArtifact>): Composite
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -154,8 +151,17 @@ describe("createForgeResolver", () => {
 
   test("discover excludes agent-scoped bricks not owned by caller", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createBrick({ id: "b1", scope: "agent", createdBy: "agent-1" }));
-    await store.save(createBrick({ id: "b2", scope: "agent", createdBy: "agent-2" }));
+    await store.save(createBrick({ id: "b1", scope: "agent" }));
+    await store.save(
+      createBrick({
+        id: "b2",
+        scope: "agent",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-2" },
+        },
+      }),
+    );
 
     const resolver = createForgeResolver(store, { agentId: "agent-1" });
     const results = await resolver.discover();
@@ -165,7 +171,16 @@ describe("createForgeResolver", () => {
 
   test("discover includes global-scoped bricks for any caller", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createBrick({ id: "b1", scope: "global", createdBy: "other-agent" }));
+    await store.save(
+      createBrick({
+        id: "b1",
+        scope: "global",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "other-agent" },
+        },
+      }),
+    );
 
     const resolver = createForgeResolver(store, { agentId: "agent-1" });
     const results = await resolver.discover();
@@ -174,7 +189,16 @@ describe("createForgeResolver", () => {
 
   test("load returns NOT_FOUND for another agent's agent-scoped brick", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createBrick({ id: "b1", scope: "agent", createdBy: "agent-2" }));
+    await store.save(
+      createBrick({
+        id: "b1",
+        scope: "agent",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-2" },
+        },
+      }),
+    );
 
     const resolver = createForgeResolver(store, { agentId: "agent-1" });
     const result = await resolver.load("b1");
@@ -186,7 +210,7 @@ describe("createForgeResolver", () => {
 
   test("load succeeds for own agent-scoped brick", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createBrick({ id: "b1", scope: "agent", createdBy: "agent-1" }));
+    await store.save(createBrick({ id: "b1", scope: "agent" }));
 
     const resolver = createForgeResolver(store, { agentId: "agent-1" });
     const result = await resolver.load("b1");
@@ -195,7 +219,16 @@ describe("createForgeResolver", () => {
 
   test("source returns NOT_FOUND for another agent's agent-scoped brick", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createBrick({ id: "b1", scope: "agent", createdBy: "agent-2" }));
+    await store.save(
+      createBrick({
+        id: "b1",
+        scope: "agent",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-2" },
+        },
+      }),
+    );
 
     const resolver = createForgeResolver(store, { agentId: "agent-1" });
     const result = await resolver.source?.("b1");
@@ -209,7 +242,7 @@ describe("createForgeResolver", () => {
 
   test("source succeeds for own agent-scoped brick", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createBrick({ id: "b1", scope: "agent", createdBy: "agent-1" }));
+    await store.save(createBrick({ id: "b1", scope: "agent" }));
 
     const resolver = createForgeResolver(store, { agentId: "agent-1" });
     const result = await resolver.source?.("b1");

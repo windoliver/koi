@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SandboxExecutor, TieredSandboxExecutor } from "@koi/core";
+import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import type { BrickArtifact, SkillArtifact, ToolArtifact } from "../types.js";
@@ -15,8 +16,7 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -36,8 +36,7 @@ function createSkillBrick(overrides?: Partial<SkillArtifact>): SkillArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -218,7 +217,16 @@ describe("createSearchForgeTool", () => {
 
   test("agent-scoped brick only visible to creator", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "b1", scope: "agent", createdBy: "agent-1" }));
+    await store.save(
+      createToolBrick({
+        id: "b1",
+        scope: "agent",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-1" },
+        },
+      }),
+    );
 
     const tool = createSearchForgeTool(createDeps({ store }));
     const result = (await tool.execute({})) as {
@@ -231,7 +239,16 @@ describe("createSearchForgeTool", () => {
 
   test("agent-scoped brick hidden from different agent", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "b1", scope: "agent", createdBy: "agent-2" }));
+    await store.save(
+      createToolBrick({
+        id: "b1",
+        scope: "agent",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-2" },
+        },
+      }),
+    );
 
     const tool = createSearchForgeTool(
       createDeps({
@@ -249,7 +266,16 @@ describe("createSearchForgeTool", () => {
 
   test("global-scoped brick visible regardless of agentId", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "b1", scope: "global", createdBy: "agent-2" }));
+    await store.save(
+      createToolBrick({
+        id: "b1",
+        scope: "global",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-2" },
+        },
+      }),
+    );
 
     const tool = createSearchForgeTool(
       createDeps({
@@ -267,9 +293,36 @@ describe("createSearchForgeTool", () => {
 
   test("mixed scope query returns correct subset", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "b1", scope: "global", createdBy: "other" }));
-    await store.save(createToolBrick({ id: "b2", scope: "agent", createdBy: "agent-1" }));
-    await store.save(createToolBrick({ id: "b3", scope: "agent", createdBy: "other" }));
+    await store.save(
+      createToolBrick({
+        id: "b1",
+        scope: "global",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "other" },
+        },
+      }),
+    );
+    await store.save(
+      createToolBrick({
+        id: "b2",
+        scope: "agent",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-1" },
+        },
+      }),
+    );
+    await store.save(
+      createToolBrick({
+        id: "b3",
+        scope: "agent",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "other" },
+        },
+      }),
+    );
 
     const tool = createSearchForgeTool(createDeps({ store }));
     const result = (await tool.execute({})) as {

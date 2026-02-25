@@ -317,6 +317,20 @@ export type {
 } from "./middleware.js";
 // model provider
 export type { ModelCapabilities, ModelProvider, ModelTarget } from "./model-provider.js";
+// provenance — SLSA-inspired attestation metadata
+export type {
+  ContentMarker,
+  DataClassification,
+  ForgeAttestationSignature,
+  ForgeBuildDefinition,
+  ForgeBuilder,
+  ForgeProvenance,
+  ForgeResourceRef,
+  ForgeRunMetadata,
+  ForgeStageDigest,
+  ForgeVerificationSummary,
+  SigningBackend,
+} from "./provenance.js";
 // resolver
 export type { Resolver, SourceBundle, SourceLanguage } from "./resolver.js";
 // sandbox adapter — pluggable sandbox backends (OS-level, cloud, WASM)

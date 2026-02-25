@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { CompositeArtifact, SkillArtifact, ToolArtifact } from "@koi/core";
+import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import type { AssembleManifestOptions } from "./assemble-manifest.js";
 import { assembleManifest } from "./assemble-manifest.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
@@ -12,8 +13,7 @@ const BASE_FIELDS = {
   scope: "agent" as const,
   trustTier: "sandbox" as const,
   lifecycle: "active" as const,
-  createdBy: "agent-1",
-  createdAt: Date.now(),
+  provenance: DEFAULT_PROVENANCE,
   version: "0.0.1",
   tags: [],
   usageCount: 0,

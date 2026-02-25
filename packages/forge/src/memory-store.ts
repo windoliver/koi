@@ -32,8 +32,21 @@ function matchesQuery(brick: BrickArtifact, query: ForgeQuery): boolean {
   if (query.lifecycle !== undefined && brick.lifecycle !== query.lifecycle) {
     return false;
   }
-  if (query.createdBy !== undefined && brick.createdBy !== query.createdBy) {
+  if (query.createdBy !== undefined && brick.provenance.metadata.agentId !== query.createdBy) {
     return false;
+  }
+  if (
+    query.classification !== undefined &&
+    brick.provenance.classification !== query.classification
+  ) {
+    return false;
+  }
+  if (query.contentMarkers !== undefined && query.contentMarkers.length > 0) {
+    for (const marker of query.contentMarkers) {
+      if (!brick.provenance.contentMarkers.includes(marker)) {
+        return false;
+      }
+    }
   }
   // Tags use AND-subset matching: brick must contain all query tags
   if (query.tags !== undefined && query.tags.length > 0) {

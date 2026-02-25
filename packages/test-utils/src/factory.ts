@@ -15,9 +15,7 @@
  * const user = createUser({ age: 25 }); // { name: "Alice", age: 25 }
  * ```
  */
-export function createFactory<T extends Record<string, unknown>>(
-  defaults: T,
-): (overrides?: Partial<T>) => T {
+export function createFactory<T extends object>(defaults: T): (overrides?: Partial<T>) => T {
   return (overrides?: Partial<T>): T => {
     if (overrides === undefined) {
       return { ...defaults };

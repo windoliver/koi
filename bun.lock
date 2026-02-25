@@ -254,6 +254,9 @@
     "packages/hash": {
       "name": "@koi/hash",
       "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
     },
     "packages/identity": {
       "name": "@koi/identity",
@@ -807,6 +810,9 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
       },
     },
     "packages/webhook-delivery": {

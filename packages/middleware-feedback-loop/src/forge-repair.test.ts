@@ -1,6 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { BrickArtifact, ForgeStore, KoiError, Result, ToolArtifact } from "@koi/core";
 import type { ModelRequest, ModelResponse } from "@koi/core/middleware";
+import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import type { ForgeRepairConfig } from "./forge-repair.js";
 import { createForgeRepairStrategy } from "./forge-repair.js";
 import type { ToolHealthTracker } from "./tool-health.js";
@@ -40,8 +41,7 @@ const defaultToolArtifact: ToolArtifact = {
   scope: "agent",
   trustTier: "sandbox",
   lifecycle: "active",
-  createdBy: "agent-1",
-  createdAt: 1000,
+  provenance: DEFAULT_PROVENANCE,
   version: "1.0.0",
   tags: [],
   usageCount: 0,

@@ -163,6 +163,12 @@ async function composeForgeHandler(
           },
         }
       : {}),
+    ...(compositeInput.classification !== undefined
+      ? { classification: compositeInput.classification }
+      : {}),
+    ...(compositeInput.contentMarkers !== undefined
+      ? { contentMarkers: compositeInput.contentMarkers }
+      : {}),
   };
 
   return runForgePipeline(forgeInput, deps, (id, report) => {

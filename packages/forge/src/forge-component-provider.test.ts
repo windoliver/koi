@@ -10,6 +10,7 @@ import {
   resolverToken,
   toolToken,
 } from "@koi/core";
+import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { brickToTool, createForgeComponentProvider } from "./forge-component-provider.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
 import { createMemoryStoreChangeNotifier } from "./store-notifier.js";
@@ -53,8 +54,7 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -190,8 +190,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
       scope: "agent",
       trustTier: "sandbox",
       lifecycle: "active",
-      createdBy: "agent-1",
-      createdAt: Date.now(),
+      provenance: DEFAULT_PROVENANCE,
       version: "0.0.1",
       tags: [],
       usageCount: 0,
@@ -947,8 +946,7 @@ function createImplementationBrick(
     scope: "agent",
     trustTier: "verified",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -1034,8 +1032,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
       scope: "agent",
       trustTier: "sandbox",
       lifecycle: "active",
-      createdBy: "agent-1",
-      createdAt: Date.now(),
+      provenance: DEFAULT_PROVENANCE,
       version: "0.0.1",
       tags: [],
       usageCount: 0,

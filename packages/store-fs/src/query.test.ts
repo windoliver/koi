@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { BrickArtifactBase } from "@koi/core";
+import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { matchesQuery } from "./query.js";
 
 function baseBrick(overrides?: Partial<BrickArtifactBase>): BrickArtifactBase {
@@ -11,8 +12,7 @@ function baseBrick(overrides?: Partial<BrickArtifactBase>): BrickArtifactBase {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -50,9 +50,21 @@ describe("matchesQuery", () => {
     expect(matchesQuery(baseBrick({ lifecycle: "draft" }), { lifecycle: "active" })).toBe(false);
   });
 
-  test("filters by createdBy", () => {
-    expect(matchesQuery(baseBrick({ createdBy: "agent-1" }), { createdBy: "agent-1" })).toBe(true);
-    expect(matchesQuery(baseBrick({ createdBy: "agent-2" }), { createdBy: "agent-1" })).toBe(false);
+  test("filters by createdBy (provenance.metadata.agentId)", () => {
+    const agent1Provenance = {
+      ...DEFAULT_PROVENANCE,
+      metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-1" },
+    };
+    const agent2Provenance = {
+      ...DEFAULT_PROVENANCE,
+      metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-2" },
+    };
+    expect(
+      matchesQuery(baseBrick({ provenance: agent1Provenance }), { createdBy: "agent-1" }),
+    ).toBe(true);
+    expect(
+      matchesQuery(baseBrick({ provenance: agent2Provenance }), { createdBy: "agent-1" }),
+    ).toBe(false);
   });
 
   test("tags use AND-subset matching", () => {

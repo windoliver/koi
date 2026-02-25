@@ -8,11 +8,13 @@ import type {
   ForgeStore,
   JsonObject,
   Result,
+  SigningBackend,
   StoreChangeNotifier,
   Tool,
   ToolDescriptor,
 } from "@koi/core";
 import { z } from "zod";
+import { createForgeProvenance, signAttestation } from "../attestation.js";
 import type { ForgeConfig } from "../config.js";
 import type { ForgeError } from "../errors.js";
 import { staticError, typeError } from "../errors.js";
@@ -42,6 +44,8 @@ export interface ForgeDeps {
   readonly manifestParser?: ManifestParser;
   /** Optional notifier for cross-agent cache invalidation after store mutations. */
   readonly notifier?: StoreChangeNotifier;
+  /** Optional signing backend for attestation. When provided, forged bricks get cryptographic signatures. */
+  readonly signer?: SigningBackend;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +76,8 @@ export interface ParsedBaseInput {
       }
     | undefined;
   readonly configSchema?: Readonly<Record<string, unknown>> | undefined;
+  readonly classification?: "public" | "internal" | "secret" | undefined;
+  readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[] | undefined;
 }
 
 export interface ParsedToolInput extends ParsedBaseInput {
@@ -131,6 +137,8 @@ const baseInputFields = {
     })
     .optional(),
   configSchema: z.record(z.string(), z.unknown()).optional(),
+  classification: z.enum(["public", "internal", "secret"]).optional(),
+  contentMarkers: z.array(z.enum(["credentials", "pii", "phi", "payment"])).optional(),
 };
 
 const forgeToolInputSchema = z.object({
@@ -266,6 +274,13 @@ export function parseImplementationInput(
 // Shared base fields builder (DRY artifact construction)
 // ---------------------------------------------------------------------------
 
+/**
+ * Builds the shared base fields for all brick artifacts.
+ *
+ * Creates a placeholder provenance that `runForgePipeline` replaces with
+ * the real one after verification completes. This avoids threading provenance
+ * through the `ArtifactBuilder` callback signature.
+ */
 export function buildBaseFields(
   id: string,
   input: {
@@ -277,6 +292,34 @@ export function buildBaseFields(
   deps: ForgeDeps,
   contentHash: string,
 ): Omit<BrickArtifactBase, "kind"> {
+  // Placeholder provenance — overwritten by runForgePipeline after signing
+  const placeholderProvenance: import("@koi/core").ForgeProvenance = {
+    source: { origin: "forged", forgedBy: deps.context.agentId, sessionId: deps.context.sessionId },
+    buildDefinition: { buildType: "koi.forge/placeholder/v1", externalParameters: {} },
+    builder: { id: "koi.forge/pipeline/v1" },
+    metadata: {
+      invocationId: id,
+      startedAt: Date.now(),
+      finishedAt: Date.now(),
+      sessionId: deps.context.sessionId,
+      agentId: deps.context.agentId,
+      depth: deps.context.depth,
+    },
+    verification: {
+      passed: report.passed,
+      finalTrustTier: report.finalTrustTier,
+      totalDurationMs: report.totalDurationMs,
+      stageResults: report.stages.map((s) => ({
+        stage: s.stage,
+        passed: s.passed,
+        durationMs: s.durationMs,
+      })),
+    },
+    classification: "public",
+    contentMarkers: [],
+    contentHash,
+  };
+
   return {
     id,
     name: input.name,
@@ -284,8 +327,7 @@ export function buildBaseFields(
     scope: deps.config.defaultScope,
     trustTier: report.finalTrustTier,
     lifecycle: "active",
-    createdBy: deps.context.agentId,
-    createdAt: Date.now(),
+    provenance: placeholderProvenance,
     version: "0.0.1",
     tags: input.tags ?? [],
     usageCount: 0,
@@ -331,6 +373,7 @@ export async function runForgePipeline(
   deps: ForgeDeps,
   buildArtifact: ArtifactBuilder,
 ): Promise<Result<ForgeResult, ForgeError>> {
+  const startedAt = Date.now();
   const { executor: sandboxExecutor } = deps.executor.forTier("sandbox");
   const verifyResult = await verify(
     forgeInput,
@@ -348,8 +391,48 @@ export async function runForgePipeline(
   const id = `brick_${crypto.randomUUID()}`;
 
   const artifact = buildArtifact(id, report, deps);
+  const finishedAt = Date.now();
 
-  const saveResult = await deps.store.save(artifact);
+  // Build provenance from pipeline outputs
+  // let justified: provenance may be signed in-place below
+  const classificationValue =
+    "classification" in forgeInput
+      ? (forgeInput as { readonly classification?: "public" | "internal" | "secret" })
+          .classification
+      : undefined;
+  const contentMarkersValue =
+    "contentMarkers" in forgeInput
+      ? (
+          forgeInput as {
+            readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[];
+          }
+        ).contentMarkers
+      : undefined;
+  let provenance = createForgeProvenance({
+    input: forgeInput,
+    context: deps.context,
+    report,
+    config: deps.config,
+    contentHash: artifact.contentHash,
+    invocationId: id,
+    startedAt,
+    finishedAt,
+    ...(classificationValue !== undefined ? { classification: classificationValue } : {}),
+    ...(contentMarkersValue !== undefined ? { contentMarkers: contentMarkersValue } : {}),
+  });
+
+  // Sign attestation if signer is available
+  if (deps.signer !== undefined) {
+    provenance = await signAttestation(provenance, deps.signer);
+  }
+
+  // Attach provenance to artifact
+  const artifactWithProvenance: BrickArtifact = {
+    ...artifact,
+    provenance,
+  };
+
+  const saveResult = await deps.store.save(artifactWithProvenance);
   if (!saveResult.ok) {
     return {
       ok: false,
@@ -382,7 +465,7 @@ export async function runForgePipeline(
     lifecycle: "active",
     verificationReport: report,
     metadata: {
-      forgedAt: artifact.createdAt,
+      forgedAt: provenance.metadata.startedAt,
       forgedBy: deps.context.agentId,
       sessionId: deps.context.sessionId,
       depth: deps.context.depth,

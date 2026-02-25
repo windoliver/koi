@@ -38,6 +38,7 @@ import { createForgeMiddlewareTool } from "../tools/forge-middleware.js";
 import { createForgeToolTool } from "../tools/forge-tool.js";
 import { createPromoteForgeTool } from "../tools/promote-forge.js";
 import type { ForgeDeps } from "../tools/shared.js";
+import { computeContentHash } from "../tools/shared.js";
 import type { ForgeResult, SandboxExecutor, TieredSandboxExecutor } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -549,6 +550,282 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
       for (const u of unsubs) u();
       forgeProvider.dispose();
       await koiRuntime.dispose();
+    },
+    TIMEOUT_MS,
+  );
+
+  // -------------------------------------------------------------------------
+  // Provenance & attestation E2E
+  // -------------------------------------------------------------------------
+
+  test(
+    "forged tool has valid provenance and passes on-load integrity verification",
+    async () => {
+      const store = createInMemoryForgeStore();
+      const executor = adderExecutor();
+      const deps = defaultDeps(store, executor);
+
+      // Step 1: Forge a tool with data classification
+      const forgeTool = createForgeToolTool(deps);
+      const forgeResult = (await forgeTool.execute({
+        name: "provenance-adder",
+        description: "Adds two numbers with provenance tracking.",
+        inputSchema: {
+          type: "object",
+          properties: { a: { type: "number" }, b: { type: "number" } },
+          required: ["a", "b"],
+        },
+        implementation: "return { sum: input.a + input.b };",
+        classification: "internal",
+        contentMarkers: ["pii"],
+      })) as { readonly ok: true; readonly value: ForgeResult };
+
+      expect(forgeResult.ok).toBe(true);
+      const brickId = forgeResult.value.id;
+
+      // Step 2: Load from store and verify provenance structure
+      const loadResult = await store.load(brickId);
+      expect(loadResult.ok).toBe(true);
+      if (!loadResult.ok) return;
+
+      const brick = loadResult.value;
+      const { provenance } = brick;
+
+      // Provenance source (narrow to "forged" variant)
+      expect(provenance.source.origin).toBe("forged");
+      if (provenance.source.origin === "forged") {
+        expect(provenance.source.forgedBy).toBe("e2e-agent");
+        expect(provenance.source.sessionId).toBe("e2e-session");
+      }
+
+      // Build definition
+      expect(provenance.buildDefinition.buildType).toBe("koi.forge/tool/v1");
+      expect(provenance.buildDefinition.externalParameters).toBeDefined();
+
+      // Builder identity
+      expect(provenance.builder.id).toBe("koi.forge/pipeline/v1");
+
+      // Run metadata
+      expect(provenance.metadata.agentId).toBe("e2e-agent");
+      expect(provenance.metadata.sessionId).toBe("e2e-session");
+      expect(provenance.metadata.depth).toBe(0);
+      expect(provenance.metadata.startedAt).toBeGreaterThan(0);
+      expect(provenance.metadata.finishedAt).toBeGreaterThanOrEqual(provenance.metadata.startedAt);
+
+      // Verification summary
+      expect(provenance.verification.passed).toBe(true);
+      expect(provenance.verification.stageResults.length).toBeGreaterThan(0);
+
+      // Classification propagated
+      expect(provenance.classification).toBe("internal");
+      expect(provenance.contentMarkers).toEqual(["pii"]);
+
+      // Content hash matches actual implementation
+      const expectedHash = computeContentHash("return { sum: input.a + input.b };");
+      expect(brick.contentHash).toBe(expectedHash);
+      expect(provenance.contentHash).toBe(expectedHash);
+
+      // Step 3: Wire through createForgeRuntime with integrity verification
+      const forgeRuntime = createForgeRuntime({
+        store,
+        executor: mockTiered(executor),
+      });
+
+      // Tool should resolve (integrity check passes)
+      const resolvedTool = await forgeRuntime.resolveTool("provenance-adder");
+      expect(resolvedTool).toBeDefined();
+      expect(resolvedTool?.descriptor.name).toBe("provenance-adder");
+
+      forgeRuntime.dispose?.();
+
+      // Step 4: Full L1 runtime — LLM calls the provenance-verified tool
+      const forgeProvider = createForgeComponentProvider({
+        store,
+        executor: mockTiered(executor),
+      });
+
+      const modelCall = createModelCall();
+      const loopAdapter = createLoopAdapter({ modelCall, maxTurns: 3 });
+
+      const runtime = await createKoi({
+        manifest: testManifest(),
+        adapter: loopAdapter,
+        providers: [forgeProvider],
+        loopDetection: false,
+      });
+
+      const events = await collectEvents(
+        runtime.run({
+          kind: "text",
+          text: "Use the provenance-adder tool to add 100 and 200. Return the result.",
+        }),
+      );
+      await runtime.dispose();
+
+      const output = findDoneOutput(events);
+      expect(output).toBeDefined();
+      expect(output?.stopReason === "completed" || output?.stopReason === "max_turns").toBe(true);
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "tampered tool rejected by ForgeRuntime on-load integrity check",
+    async () => {
+      const store = createInMemoryForgeStore();
+      const executor = adderExecutor();
+      const deps = defaultDeps(store, executor);
+
+      // Step 1: Forge a valid tool
+      const forgeTool = createForgeToolTool(deps);
+      const forgeResult = (await forgeTool.execute({
+        name: "tamper-target",
+        description: "A tool that will be tampered with.",
+        inputSchema: { type: "object" },
+        implementation: "return { status: 'original' };",
+      })) as { readonly ok: true; readonly value: ForgeResult };
+      expect(forgeResult.ok).toBe(true);
+
+      // Step 2: Tamper with the stored artifact — change implementation but keep old hash
+      const loadResult = await store.load(forgeResult.value.id);
+      expect(loadResult.ok).toBe(true);
+      if (!loadResult.ok) return;
+
+      const original = loadResult.value;
+      expect(original.kind).toBe("tool");
+
+      // Overwrite with tampered implementation (contentHash still points to original)
+      const tampered = {
+        ...original,
+        implementation: "return { status: 'HACKED' };",
+        // contentHash is stale — doesn't match new implementation
+      };
+      // Save tampered version (bypasses forge pipeline — simulates store corruption)
+      await store.save(tampered as import("@koi/core").BrickArtifact);
+
+      // Step 3: ForgeRuntime should reject the tampered tool
+      const forgeRuntime = createForgeRuntime({
+        store,
+        executor: mockTiered(executor),
+      });
+
+      const tool = await forgeRuntime.resolveTool("tamper-target");
+      expect(tool).toBeUndefined(); // Rejected — hash mismatch
+
+      forgeRuntime.dispose?.();
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "signed attestation survives full forge→store→load→verify round-trip",
+    async () => {
+      const store = createInMemoryForgeStore();
+      const executor = adderExecutor();
+
+      // Create a signer (inline HMAC — no @koi/hash dependency needed)
+      const signingKey = new Uint8Array(32).fill(42);
+      const signer: import("@koi/core").SigningBackend = {
+        algorithm: "hmac-sha256",
+        sign: (data: Uint8Array): Uint8Array => {
+          const hasher = new Bun.CryptoHasher("sha256");
+          hasher.update(signingKey);
+          hasher.update(data);
+          return new Uint8Array(hasher.digest());
+        },
+        verify: (data: Uint8Array, signature: Uint8Array): boolean => {
+          const hasher = new Bun.CryptoHasher("sha256");
+          hasher.update(signingKey);
+          hasher.update(data);
+          const expected = new Uint8Array(hasher.digest());
+          if (expected.length !== signature.length) return false;
+          // let justified: mutable accumulator for constant-time comparison
+          let diff = 0;
+          for (let i = 0; i < expected.length; i++) {
+            diff |= (expected[i] ?? 0) ^ (signature[i] ?? 0);
+          }
+          return diff === 0;
+        },
+      };
+
+      // Forge with signer injected into deps
+      const deps: ForgeDeps = {
+        store,
+        executor: mockTiered(executor),
+        verifiers: [],
+        config: createDefaultForgeConfig(),
+        context: {
+          agentId: "e2e-signing-agent",
+          depth: 0,
+          sessionId: "e2e-signing-session",
+          forgesThisSession: 0,
+        },
+        signer,
+      };
+
+      // Step 1: Forge a tool (signer in deps → provenance gets attestation)
+      const forgeTool = createForgeToolTool(deps);
+      const forgeResult = (await forgeTool.execute({
+        name: "signed-adder",
+        description: "Adds two numbers with signed attestation.",
+        inputSchema: {
+          type: "object",
+          properties: { a: { type: "number" }, b: { type: "number" } },
+          required: ["a", "b"],
+        },
+        implementation: "return { sum: input.a + input.b };",
+      })) as { readonly ok: true; readonly value: ForgeResult };
+      expect(forgeResult.ok).toBe(true);
+
+      // Step 2: Verify attestation is present on stored artifact
+      const loadResult = await store.load(forgeResult.value.id);
+      expect(loadResult.ok).toBe(true);
+      if (!loadResult.ok) return;
+
+      const brick = loadResult.value;
+      expect(brick.provenance.attestation).toBeDefined();
+      expect(brick.provenance.attestation?.algorithm).toBe("hmac-sha256");
+      expect(brick.provenance.attestation?.signature.length).toBeGreaterThan(0);
+
+      // Step 3: ForgeRuntime with signer verifies attestation on load
+      const forgeRuntime = createForgeRuntime({
+        store,
+        executor: mockTiered(executor),
+        signer,
+      });
+
+      const tool = await forgeRuntime.resolveTool("signed-adder");
+      expect(tool).toBeDefined();
+      expect(tool?.descriptor.name).toBe("signed-adder");
+
+      forgeRuntime.dispose?.();
+
+      // Step 4: Full runtime — LLM uses the signed tool
+      const forgeProvider = createForgeComponentProvider({
+        store,
+        executor: mockTiered(executor),
+      });
+
+      const modelCall = createModelCall();
+      const loopAdapter = createLoopAdapter({ modelCall, maxTurns: 3 });
+
+      const runtime = await createKoi({
+        manifest: testManifest(),
+        adapter: loopAdapter,
+        providers: [forgeProvider],
+        loopDetection: false,
+      });
+
+      const events = await collectEvents(
+        runtime.run({
+          kind: "text",
+          text: "Use the signed-adder tool to add 50 and 75. Return the result.",
+        }),
+      );
+      await runtime.dispose();
+
+      const output = findDoneOutput(events);
+      expect(output).toBeDefined();
     },
     TIMEOUT_MS,
   );

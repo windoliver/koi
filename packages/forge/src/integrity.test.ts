@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { loadAndVerify, verifyBrickIntegrity } from "./integrity.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
 import { computeContentHash } from "./tools/shared.js";
@@ -19,8 +20,7 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -51,8 +51,7 @@ function createSkillBrick(overrides?: Partial<SkillArtifact>): SkillArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -76,8 +75,7 @@ function createAgentBrick(overrides?: Partial<AgentArtifact>): AgentArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -106,8 +104,7 @@ function createCompositeBrick(overrides?: Partial<CompositeArtifact>): Composite
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -130,9 +127,9 @@ function createCompositeBrick(overrides?: Partial<CompositeArtifact>): Composite
 // ---------------------------------------------------------------------------
 
 describe("verifyBrickIntegrity", () => {
-  test("returns ok for tool with matching hash", () => {
+  test("returns ok for tool with matching hash", async () => {
     const brick = createToolBrick();
-    const result = verifyBrickIntegrity(brick);
+    const result = await verifyBrickIntegrity(brick);
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.brickId).toBe(brick.id);
@@ -140,29 +137,29 @@ describe("verifyBrickIntegrity", () => {
     }
   });
 
-  test("returns ok for skill with matching hash", () => {
+  test("returns ok for skill with matching hash", async () => {
     const brick = createSkillBrick();
-    const result = verifyBrickIntegrity(brick);
+    const result = await verifyBrickIntegrity(brick);
     expect(result.ok).toBe(true);
   });
 
-  test("returns ok for agent with matching hash", () => {
+  test("returns ok for agent with matching hash", async () => {
     const brick = createAgentBrick();
-    const result = verifyBrickIntegrity(brick);
+    const result = await verifyBrickIntegrity(brick);
     expect(result.ok).toBe(true);
   });
 
-  test("returns ok for composite with matching hash", () => {
+  test("returns ok for composite with matching hash", async () => {
     const brick = createCompositeBrick();
-    const result = verifyBrickIntegrity(brick);
+    const result = await verifyBrickIntegrity(brick);
     expect(result.ok).toBe(true);
   });
 
-  test("detects tampered tool implementation", () => {
+  test("detects tampered tool implementation", async () => {
     const brick = createToolBrick();
     // Tamper: modify implementation without updating contentHash
     const tampered: ToolArtifact = { ...brick, implementation: "return 'HACKED';" };
-    const result = verifyBrickIntegrity(tampered);
+    const result = await verifyBrickIntegrity(tampered);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.expectedHash).toBe(brick.contentHash);
@@ -170,41 +167,41 @@ describe("verifyBrickIntegrity", () => {
     }
   });
 
-  test("detects tampered skill content", () => {
+  test("detects tampered skill content", async () => {
     const brick = createSkillBrick();
     const tampered: SkillArtifact = { ...brick, content: "# Malicious content" };
-    const result = verifyBrickIntegrity(tampered);
+    const result = await verifyBrickIntegrity(tampered);
     expect(result.ok).toBe(false);
   });
 
-  test("detects tampered agent manifestYaml", () => {
+  test("detects tampered agent manifestYaml", async () => {
     const brick = createAgentBrick();
     const tampered: AgentArtifact = { ...brick, manifestYaml: "name: evil-agent" };
-    const result = verifyBrickIntegrity(tampered);
+    const result = await verifyBrickIntegrity(tampered);
     expect(result.ok).toBe(false);
   });
 
-  test("detects tampered composite brickIds", () => {
+  test("detects tampered composite brickIds", async () => {
     const brick = createCompositeBrick();
     const tampered: CompositeArtifact = { ...brick, brickIds: ["brick_evil"] };
-    const result = verifyBrickIntegrity(tampered);
+    const result = await verifyBrickIntegrity(tampered);
     expect(result.ok).toBe(false);
   });
 
-  test("detects tampered files", () => {
+  test("detects tampered files", async () => {
     const brick = createToolBrick({ files: { "helper.ts": "export const x = 1;" } });
     const tampered: ToolArtifact = {
       ...brick,
       files: { "helper.ts": "export const x = 'EVIL';" },
     };
-    const result = verifyBrickIntegrity(tampered);
+    const result = await verifyBrickIntegrity(tampered);
     expect(result.ok).toBe(false);
   });
 
-  test("handles brick with no files", () => {
+  test("handles brick with no files", async () => {
     const brick = createToolBrick();
     expect(brick.files).toBeUndefined();
-    const result = verifyBrickIntegrity(brick);
+    const result = await verifyBrickIntegrity(brick);
     expect(result.ok).toBe(true);
   });
 });

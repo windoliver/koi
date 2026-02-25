@@ -1,0 +1,933 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/forge API surface . has stable type surface 1`] = `
+"import { BrickKind, TrustTier, TestCase, BrickRequires, DataClassification, ContentMarker, ToolDescriptor, ForgeScope, BrickLifecycle, SandboxExecutor, BrickArtifact, ForgeStore, Result, KoiError, ForgeProvenance, SigningBackend, ToolArtifact, Tool, TieredSandboxExecutor, StoreChangeNotifier, ComponentProvider, Resolver, StoreChangeEvent, KoiMiddleware, AgentArtifact } from '@koi/core';
+export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, CompositeArtifact, ContentMarker, DataClassification, ForgeAttestationSignature, ForgeBuildDefinition, ForgeBuilder, ForgeProvenance, ForgeQuery, ForgeResourceRef, ForgeRunMetadata, ForgeStageDigest, ForgeStore, ForgeVerificationSummary, LockHandle, LockMode, LockRequest, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, SigningBackend, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, TierResolution, TieredSandboxExecutor, ToolArtifact } from '@koi/core';
+
+/**
+ * Core types for the @koi/forge self-extension system.
+ */
+
+interface ForgeResultMetadata {
+    readonly forgedAt: number;
+    readonly forgedBy: string;
+    readonly sessionId: string;
+    readonly depth: number;
+}
+interface ForgeResult {
+    readonly id: string;
+    readonly kind: BrickKind;
+    readonly name: string;
+    readonly descriptor: ToolDescriptor;
+    readonly trustTier: TrustTier;
+    readonly scope: ForgeScope;
+    readonly lifecycle: BrickLifecycle;
+    readonly verificationReport: VerificationReport;
+    readonly metadata: ForgeResultMetadata;
+    /** Number of forge operations consumed (caller must increment forgesThisSession by this amount). */
+    readonly forgesConsumed: number;
+}
+type VerificationStage = "static" | "sandbox" | "self_test" | "trust";
+interface StageReport {
+    readonly stage: VerificationStage;
+    readonly passed: boolean;
+    readonly durationMs: number;
+    readonly message?: string;
+}
+interface TrustStageReport extends StageReport {
+    readonly stage: "trust";
+    readonly trustTier: TrustTier;
+}
+interface VerificationReport {
+    readonly stages: readonly StageReport[];
+    readonly finalTrustTier: TrustTier;
+    readonly totalDurationMs: number;
+    readonly passed: boolean;
+}
+
+interface ForgeToolInput {
+    readonly kind: "tool";
+    readonly name: string;
+    readonly description: string;
+    readonly tags?: readonly string[];
+    readonly inputSchema: Readonly<Record<string, unknown>>;
+    readonly implementation: string;
+    readonly testCases?: readonly TestCase[];
+    readonly files?: Readonly<Record<string, string>>;
+    readonly requires?: BrickRequires;
+    readonly configSchema?: Readonly<Record<string, unknown>>;
+    readonly classification?: DataClassification;
+    readonly contentMarkers?: readonly ContentMarker[];
+}
+interface ForgeSkillInput {
+    readonly kind: "skill";
+    readonly name: string;
+    readonly description: string;
+    /** Markdown body of the skill (the raw content, not the generated SKILL.md). */
+    readonly body: string;
+    readonly tags?: readonly string[];
+    readonly files?: Readonly<Record<string, string>>;
+    readonly requires?: BrickRequires;
+    readonly classification?: DataClassification;
+    readonly contentMarkers?: readonly ContentMarker[];
+}
+interface ForgeAgentInputWithManifest {
+    readonly kind: "agent";
+    readonly name: string;
+    readonly description: string;
+    readonly tags?: readonly string[];
+    readonly manifestYaml: string;
+    readonly brickIds?: undefined;
+    readonly files?: Readonly<Record<string, string>>;
+    readonly requires?: BrickRequires;
+    readonly classification?: DataClassification;
+    readonly contentMarkers?: readonly ContentMarker[];
+}
+interface ForgeAgentInputWithBricks {
+    readonly kind: "agent";
+    readonly name: string;
+    readonly description: string;
+    readonly tags?: readonly string[];
+    readonly brickIds: readonly string[];
+    readonly manifestYaml?: undefined;
+    readonly model?: string;
+    readonly agentType?: string;
+    readonly files?: Readonly<Record<string, string>>;
+    readonly requires?: BrickRequires;
+    readonly classification?: DataClassification;
+    readonly contentMarkers?: readonly ContentMarker[];
+}
+type ForgeAgentInput = ForgeAgentInputWithManifest | ForgeAgentInputWithBricks;
+interface ForgeCompositeInput {
+    readonly kind: "composite";
+    readonly name: string;
+    readonly description: string;
+    readonly tags?: readonly string[];
+    readonly brickIds: readonly string[];
+    readonly files?: Readonly<Record<string, string>>;
+    readonly requires?: BrickRequires;
+    readonly classification?: DataClassification;
+    readonly contentMarkers?: readonly ContentMarker[];
+}
+interface ForgeMiddlewareInput {
+    readonly kind: "middleware";
+    readonly name: string;
+    readonly description: string;
+    readonly tags?: readonly string[];
+    readonly implementation: string;
+    readonly testCases?: readonly TestCase[];
+    readonly files?: Readonly<Record<string, string>>;
+    readonly requires?: BrickRequires;
+    readonly configSchema?: Readonly<Record<string, unknown>>;
+    readonly classification?: DataClassification;
+    readonly contentMarkers?: readonly ContentMarker[];
+}
+interface ForgeChannelInput {
+    readonly kind: "channel";
+    readonly name: string;
+    readonly description: string;
+    readonly tags?: readonly string[];
+    readonly implementation: string;
+    readonly testCases?: readonly TestCase[];
+    readonly files?: Readonly<Record<string, string>>;
+    readonly requires?: BrickRequires;
+    readonly configSchema?: Readonly<Record<string, unknown>>;
+    readonly classification?: DataClassification;
+    readonly contentMarkers?: readonly ContentMarker[];
+}
+interface ForgeEngineInput {
+    readonly kind: "engine";
+    readonly name: string;
+    readonly description: string;
+    readonly tags?: readonly string[];
+    readonly implementation: string;
+    readonly testCases?: readonly TestCase[];
+    readonly files?: Readonly<Record<string, string>>;
+    readonly requires?: BrickRequires;
+    readonly configSchema?: Readonly<Record<string, unknown>>;
+    readonly classification?: DataClassification;
+    readonly contentMarkers?: readonly ContentMarker[];
+}
+interface ForgeResolverInput {
+    readonly kind: "resolver";
+    readonly name: string;
+    readonly description: string;
+    readonly tags?: readonly string[];
+    readonly implementation: string;
+    readonly testCases?: readonly TestCase[];
+    readonly files?: Readonly<Record<string, string>>;
+    readonly requires?: BrickRequires;
+    readonly configSchema?: Readonly<Record<string, unknown>>;
+    readonly classification?: DataClassification;
+    readonly contentMarkers?: readonly ContentMarker[];
+}
+interface ForgeProviderInput {
+    readonly kind: "provider";
+    readonly name: string;
+    readonly description: string;
+    readonly tags?: readonly string[];
+    readonly implementation: string;
+    readonly testCases?: readonly TestCase[];
+    readonly files?: Readonly<Record<string, string>>;
+    readonly requires?: BrickRequires;
+    readonly configSchema?: Readonly<Record<string, unknown>>;
+    readonly classification?: DataClassification;
+    readonly contentMarkers?: readonly ContentMarker[];
+}
+type ForgeInput = ForgeToolInput | ForgeSkillInput | ForgeAgentInput | ForgeCompositeInput | ForgeMiddlewareInput | ForgeChannelInput | ForgeEngineInput | ForgeResolverInput | ForgeProviderInput;
+interface VerifierResult {
+    readonly passed: boolean;
+    readonly message?: string;
+}
+interface ForgeVerifier {
+    readonly name: string;
+    readonly verify: (input: ForgeInput, context: ForgeContext) => Promise<VerifierResult>;
+}
+
+interface ForgeContext {
+    readonly agentId: string;
+    readonly depth: number;
+    readonly sessionId: string;
+    readonly forgesThisSession: number;
+    /** Zone identifier for zone-scoped brick visibility. */
+    readonly zoneId?: string | undefined;
+}
+
+interface PromoteChange<T> {
+    readonly from: T;
+    readonly to: T;
+}
+interface PromoteResult {
+    readonly brickId: string;
+    readonly applied: boolean;
+    readonly requiresHumanApproval: boolean;
+    readonly changes: {
+        readonly scope?: PromoteChange<ForgeScope>;
+        readonly trustTier?: PromoteChange<TrustTier>;
+        readonly lifecycle?: PromoteChange<BrickLifecycle>;
+    };
+    readonly message?: string;
+}
+type ManifestParseResult = {
+    readonly ok: true;
+    readonly warnings: readonly string[];
+} | {
+    readonly ok: false;
+    readonly error: string;
+};
+interface ManifestParser {
+    readonly parse: (yaml: string) => ManifestParseResult | Promise<ManifestParseResult>;
+}
+interface CompositionBrickInfo {
+    readonly id: string;
+    readonly name: string;
+    readonly kind: BrickKind;
+    readonly trustTier: TrustTier;
+}
+interface CompositionMetadata {
+    readonly bricks: readonly CompositionBrickInfo[];
+    readonly minimumTrustTier: TrustTier;
+}
+
+/**
+ * Built-in adversarial ForgeVerifier implementations.
+ *
+ * Five categories of adversarial probes:
+ * 1. Injection — malicious input strings (__proto__, SQL injection, path traversal)
+ * 2. Resource exhaustion — deeply nested or very large inputs
+ * 3. Exfiltration — checks that outputs don't leak sensitive data
+ * 4. Content scanning — prompt injection, credential harvesting, tool poisoning
+ * 5. Structural hiding — base64/hex obfuscation, Unicode confusables, hidden payloads
+ */
+
+declare function createInjectionVerifier(executor: SandboxExecutor): ForgeVerifier;
+declare function createResourceExhaustionVerifier(executor: SandboxExecutor): ForgeVerifier;
+declare function createExfiltrationVerifier(executor: SandboxExecutor): ForgeVerifier;
+declare function createContentScanningVerifier(): ForgeVerifier;
+declare function createStructuralHidingVerifier(): ForgeVerifier;
+declare function createAdversarialVerifiers(executor: SandboxExecutor): readonly ForgeVerifier[];
+
+/**
+ * Forge error types — discriminated union with per-stage variants.
+ */
+interface TestFailure {
+    readonly testName: string;
+    readonly expected: unknown;
+    readonly actual: unknown;
+    readonly error?: string;
+}
+type ForgeError = {
+    readonly stage: "static";
+    readonly code: "INVALID_SCHEMA" | "INVALID_NAME" | "SIZE_EXCEEDED" | "MISSING_FIELD" | "INVALID_TYPE" | "MANIFEST_PARSE_FAILED" | "SYNTAX_ERROR";
+    readonly message: string;
+} | {
+    readonly stage: "sandbox";
+    readonly code: "TIMEOUT" | "OOM" | "CRASH" | "PERMISSION";
+    readonly message: string;
+    readonly durationMs?: number;
+} | {
+    readonly stage: "self_test";
+    readonly code: "TEST_FAILED" | "VERIFIER_REJECTED";
+    readonly message: string;
+    readonly failures?: readonly TestFailure[];
+} | {
+    readonly stage: "trust";
+    readonly code: "GOVERNANCE_REJECTED" | "RATE_LIMITED" | "DEPTH_EXCEEDED";
+    readonly message: string;
+} | {
+    readonly stage: "governance";
+    readonly code: "FORGE_DISABLED" | "MAX_DEPTH" | "MAX_SESSION_FORGES" | "SCOPE_VIOLATION" | "TRUST_DEMOTION_NOT_ALLOWED" | "LIFECYCLE_INVALID_TRANSITION" | "DEPTH_TOOL_RESTRICTED";
+    readonly message: string;
+} | {
+    readonly stage: "store";
+    readonly code: "SAVE_FAILED" | "LOAD_FAILED" | "SEARCH_FAILED";
+    readonly message: string;
+};
+declare function staticError(code: Extract<ForgeError, {
+    readonly stage: "static";
+}>["code"], message: string): ForgeError;
+declare function typeError(message: string): ForgeError;
+declare function sandboxError(code: Extract<ForgeError, {
+    readonly stage: "sandbox";
+}>["code"], message: string, durationMs?: number): ForgeError;
+declare function selfTestError(code: Extract<ForgeError, {
+    readonly stage: "self_test";
+}>["code"], message: string, failures?: readonly TestFailure[]): ForgeError;
+declare function trustError(code: Extract<ForgeError, {
+    readonly stage: "trust";
+}>["code"], message: string): ForgeError;
+declare function governanceError(code: Extract<ForgeError, {
+    readonly stage: "governance";
+}>["code"], message: string): ForgeError;
+declare function storeError(code: Extract<ForgeError, {
+    readonly stage: "store";
+}>["code"], message: string): ForgeError;
+
+/**
+ * Brick-based agent manifest assembly.
+ *
+ * Given a list of brick IDs, loads them from the store and generates
+ * a \`koi.yaml\`-style manifest YAML string. Returns both the YAML and
+ * the loaded brick artifacts for reuse by callers (e.g. trust propagation).
+ */
+
+interface AssembleManifestOptions {
+    readonly name: string;
+    readonly description: string;
+    readonly model?: string;
+    readonly agentType?: string;
+}
+interface AssembleManifestResult {
+    readonly manifestYaml: string;
+    readonly loadedBricks: readonly BrickArtifact[];
+}
+declare function assembleManifest(brickIds: readonly string[], store: ForgeStore, options: AssembleManifestOptions): Promise<Result<AssembleManifestResult, ForgeError>>;
+
+/**
+ * Forge configuration — Zod schema, validation, factory with defaults.
+ */
+
+interface ScopePromotionConfig {
+    readonly requireHumanApproval: boolean;
+    readonly minTrustForZone: TrustTier;
+    readonly minTrustForGlobal: TrustTier;
+}
+interface VerificationConfig {
+    readonly staticTimeoutMs: number;
+    readonly sandboxTimeoutMs: number;
+    readonly selfTestTimeoutMs: number;
+    readonly totalTimeoutMs: number;
+    readonly maxBrickSizeBytes: number;
+    readonly failFast: boolean;
+}
+interface AutoPromotionConfig {
+    readonly enabled: boolean;
+    readonly sandboxToVerifiedThreshold: number;
+    readonly verifiedToPromotedThreshold: number;
+}
+interface ForgeConfig {
+    readonly enabled: boolean;
+    readonly maxForgeDepth: number;
+    readonly maxForgesPerSession: number;
+    readonly defaultScope: ForgeScope;
+    readonly defaultTrustTier: TrustTier;
+    readonly scopePromotion: ScopePromotionConfig;
+    readonly verification: VerificationConfig;
+    readonly autoPromotion: AutoPromotionConfig;
+}
+declare function createDefaultForgeConfig(overrides?: Partial<ForgeConfig>): ForgeConfig;
+/**
+ * Validates raw input and resolves a full ForgeConfig with defaults applied.
+ *
+ * @param raw - Unknown input to validate.
+ * @returns Result containing the fully resolved ForgeConfig or a validation error.
+ */
+declare function validateForgeConfig(raw: unknown): Result<ForgeConfig, KoiError>;
+
+/**
+ * Forge attestation — provenance creation, signing, and verification.
+ *
+ * Builds ForgeProvenance from pipeline outputs, signs attestations
+ * with a pluggable SigningBackend, and verifies attestation integrity.
+ */
+
+interface CreateProvenanceOptions {
+    readonly input: ForgeInput;
+    readonly context: ForgeContext;
+    readonly report: VerificationReport;
+    readonly config: ForgeConfig;
+    readonly contentHash: string;
+    readonly invocationId: string;
+    readonly startedAt: number;
+    readonly finishedAt: number;
+    readonly classification?: DataClassification;
+    readonly contentMarkers?: readonly ContentMarker[];
+}
+/**
+ * Build a ForgeProvenance struct from forge pipeline outputs.
+ */
+declare function createForgeProvenance(options: CreateProvenanceOptions): ForgeProvenance;
+/**
+ * Sign a provenance record with a SigningBackend.
+ *
+ * Returns a new ForgeProvenance with the \`attestation\` field populated.
+ * The signature covers canonical JSON of all fields except \`attestation\`.
+ */
+declare function signAttestation(provenance: ForgeProvenance, signer: SigningBackend): Promise<ForgeProvenance>;
+/**
+ * Verify a provenance record's attestation signature.
+ *
+ * Re-serializes provenance (without attestation field) to canonical JSON,
+ * then verifies the signature with the provided SigningBackend.
+ */
+declare function verifyAttestation(provenance: ForgeProvenance, signer: SigningBackend): Promise<boolean>;
+
+/**
+ * Attestation verification cache — avoids re-verifying the same content hash.
+ *
+ * Keyed by content hash (SHA-256 hex). Invalidated on store change events.
+ */
+interface CacheEntry {
+    readonly valid: boolean;
+    readonly verifiedAt: number;
+}
+interface AttestationCache {
+    readonly get: (contentHash: string) => CacheEntry | undefined;
+    readonly set: (contentHash: string, valid: boolean) => void;
+    readonly invalidate: (contentHash: string) => void;
+    readonly clear: () => void;
+    readonly size: () => number;
+}
+/**
+ * Create an in-memory attestation verification cache.
+ */
+declare function createAttestationCache(): AttestationCache;
+
+/**
+ * Brick → Tool conversion — shared utility for converting ToolArtifact bricks
+ * into executable Tool instances via a sandbox executor.
+ */
+
+/**
+ * Convert a ToolArtifact into an executable Tool backed by a sandbox executor.
+ *
+ * @param brick - The tool artifact to convert
+ * @param executor - Sandbox executor for the brick's trust tier
+ * @param timeoutMs - Execution timeout in milliseconds (default: 5000)
+ */
+declare function brickToTool(brick: ToolArtifact, executor: SandboxExecutor, timeoutMs?: number): Tool;
+
+/**
+ * ForgeComponentProvider — attaches forged bricks as components to agents.
+ *
+ * Implements the L0 ComponentProvider interface. On first attach(), it discovers
+ * all active bricks from the ForgeStore: tool bricks are wrapped as executable
+ * Tools; implementation bricks (engine, resolver, provider, middleware, channel)
+ * are registered as raw ImplementationArtifact values under kind-specific tokens.
+ * Results are cached for subsequent attach() calls.
+ *
+ * Lazy loading (decision 13A): bricks are loaded on first attach(), not at creation.
+ * Scope + zoneId filtering (Issue 8A): only agent-scoped + zone-scoped bricks visible.
+ * Delta-based invalidation (Issue 15A): invalidate by scope or brick ID.
+ */
+
+interface ForgeComponentProviderConfig {
+    readonly store: ForgeStore;
+    readonly executor: TieredSandboxExecutor;
+    readonly sandboxTimeoutMs?: number;
+    /** Agent's current scope — filters bricks to this scope and broader. */
+    readonly scope?: ForgeScope | undefined;
+    /** Zone identifier — when set, zone-scoped bricks are filtered by this zone tag. */
+    readonly zoneId?: string | undefined;
+    /** Optional notifier — auto-subscribes for cross-agent cache invalidation. */
+    readonly notifier?: StoreChangeNotifier | undefined;
+}
+/**
+ * Extended ComponentProvider with cache invalidation support.
+ * Call \`invalidate()\` after store mutations (save/remove/update) to ensure
+ * the next \`attach()\` re-queries the store for fresh data.
+ *
+ * Delta-based invalidation (Issue 15A):
+ * - \`invalidate()\` — full cache clear (backward-compatible)
+ * - \`invalidateByScope(scope)\` — clear only if cached bricks include that scope
+ * - \`invalidateByBrickId(id)\` — clear only if the specific brick is cached
+ */
+interface ForgeComponentProviderInstance extends ComponentProvider {
+    /** Clears the cached tool set. Next \`attach()\` will re-query the store. */
+    readonly invalidate: () => void;
+    /** Invalidate cache if it contains bricks of the given scope. */
+    readonly invalidateByScope: (scope: ForgeScope) => void;
+    /** Invalidate cache if the specific brick ID is cached. */
+    readonly invalidateByBrickId: (brickId: string) => void;
+    /** Resolves a brick name to its brick ID. Returns \`undefined\` for non-forged bricks or before first \`attach()\`. */
+    readonly lookupBrickId: (brickName: string) => string | undefined;
+    /** Unsubscribes from the notifier (if one was provided). */
+    readonly dispose: () => void;
+}
+/**
+ * Creates a ComponentProvider that lazily loads forged tools on first attach().
+ * Results are cached — subsequent attach() calls return the same tool instances.
+ * Call \`invalidate()\` to clear the cache after store mutations.
+ *
+ * Scope filtering (Issue 8A): when \`config.scope\` is set, only bricks at that
+ * scope or broader are included. Zone-scoped bricks are further filtered by
+ * \`config.zoneId\` tag matching.
+ */
+declare function createForgeComponentProvider(config: ForgeComponentProviderConfig): ForgeComponentProviderInstance;
+
+/**
+ * ForgeResolver — Resolver adapter backed by a ForgeStore.
+ * Implements the L0 Resolver<BrickArtifact, BrickArtifact> interface.
+ */
+
+interface ForgeResolverContext {
+    readonly agentId: string;
+}
+declare function createForgeResolver(store: ForgeStore, context: ForgeResolverContext): Resolver<BrickArtifact, BrickArtifact>;
+
+/**
+ * ForgeRuntime factory — creates a live forge runtime backed by a ForgeStore.
+ *
+ * Enables hot-attach: forged tools become available mid-session without
+ * requiring agent re-assembly. Caches name→ToolArtifact for O(1) lookups,
+ * invalidated on store onChange.
+ */
+
+interface CreateForgeRuntimeOptions {
+    readonly store: ForgeStore;
+    readonly executor: TieredSandboxExecutor;
+    readonly sandboxTimeoutMs?: number;
+    /** When provided, verifies attestation signatures on tool load. */
+    readonly signer?: SigningBackend;
+}
+/**
+ * ForgeRuntime shape — structurally matches the L1 ForgeRuntime interface.
+ * Declared locally to avoid importing from @koi/engine (L2 must not import L1).
+ */
+interface ForgeRuntimeInstance {
+    readonly resolveTool: (toolId: string) => Promise<Tool | undefined>;
+    readonly toolDescriptors: () => Promise<readonly ToolDescriptor[]>;
+    readonly watch?: (listener: (event: StoreChangeEvent) => void) => () => void;
+    /** Clean up internal store subscription and external listeners. */
+    readonly dispose?: () => void;
+}
+/**
+ * Creates a ForgeRuntime backed by a ForgeStore.
+ *
+ * - Caches active tool artifacts in a name→ToolArtifact Map
+ * - Invalidates cache on store.watch notifications
+ * - Provides onChange pass-through from the underlying store
+ */
+declare function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRuntimeInstance;
+
+/**
+ * Forge usage tracking middleware — records brick usage after successful tool calls.
+ *
+ * Wraps tool calls via \`KoiMiddleware.wrapToolCall\`. After a successful call,
+ * fires \`recordBrickUsage\` in fire-and-forget mode. Non-forged tools are silently
+ * skipped. Usage recording failures never break tool calls.
+ */
+
+interface ForgeUsageMiddlewareConfig {
+    readonly store: ForgeStore;
+    readonly config: ForgeConfig;
+    /** Resolves a tool name to its forge brick ID. Returns \`undefined\` for non-forged tools. */
+    readonly resolveBrickId: (toolName: string) => string | undefined;
+    /** Optional notifier for cross-agent cache invalidation after usage-based mutations. */
+    readonly notifier?: StoreChangeNotifier | undefined;
+    /** Optional error handler for usage recording failures. */
+    readonly onUsageError?: (toolName: string, brickId: string, error: unknown) => void;
+}
+/**
+ * Creates a \`KoiMiddleware\` that tracks usage of forged tools.
+ *
+ * After each successful tool call, looks up the tool's brick ID via
+ * \`resolveBrickId\`. If found, calls \`recordBrickUsage\` fire-and-forget.
+ * Failed tool calls do not record usage. Non-forged tools are silently skipped.
+ */
+declare function createForgeUsageMiddleware(cfg: ForgeUsageMiddlewareConfig): KoiMiddleware;
+
+/**
+ * Pure function to generate SKILL.md with YAML frontmatter from structured input.
+ *
+ * Output format follows the Agent Skills specification:
+ * \`\`\`
+ * ---
+ * name: skill-name
+ * description: "What this skill does"
+ * metadata:
+ *   author: agent-id
+ *   version: "0.0.1"
+ *   tags:
+ *     - tag1
+ * ---
+ *
+ * <body content>
+ * \`\`\`
+ */
+interface SkillMdInput {
+    readonly name: string;
+    readonly description: string;
+    readonly tags?: readonly string[];
+    readonly agentId: string;
+    readonly version: string;
+    readonly body: string;
+}
+declare function generateSkillMd(input: SkillMdInput): string;
+
+/**
+ * Governance — depth-aware forge policies and scope promotion checks.
+ */
+
+interface GovernanceResult {
+    readonly requiresHumanApproval: boolean;
+    readonly message?: string;
+}
+declare function checkGovernance(context: ForgeContext, config: ForgeConfig, toolName?: string): Result<void, ForgeError>;
+declare function checkScopePromotion(currentScope: ForgeScope, targetScope: ForgeScope, trustTier: TrustTier, config: ForgeConfig): Result<GovernanceResult, ForgeError>;
+
+/**
+ * Content integrity verification — recomputes SHA-256 hash and compares
+ * to the stored \`contentHash\` on a brick artifact.
+ */
+
+interface IntegrityOk {
+    readonly ok: true;
+    readonly brickId: string;
+    readonly hash: string;
+}
+interface IntegrityMismatch {
+    readonly ok: false;
+    readonly brickId: string;
+    readonly expectedHash: string;
+    readonly actualHash: string;
+}
+type IntegrityResult = IntegrityOk | IntegrityMismatch;
+/**
+ * Verifies that a brick's content has not been tampered with by recomputing
+ * the SHA-256 content hash and comparing it to the stored \`contentHash\`.
+ *
+ * Current implementation is synchronous; return type is \`IntegrityResult | Promise<IntegrityResult>\`
+ * to allow future async backends (await on a non-Promise is a no-op).
+ */
+declare function verifyBrickIntegrity(brick: BrickArtifact): IntegrityResult | Promise<IntegrityResult>;
+/**
+ * Verifies both content hash integrity AND attestation signature.
+ *
+ * Returns the integrity result. If the brick has an attestation and a signer
+ * is provided, also verifies the cryptographic signature.
+ */
+declare function verifyBrickAttestation(brick: BrickArtifact, signer: SigningBackend): Promise<IntegrityResult>;
+/**
+ * Loads a brick from the store and verifies its content integrity.
+ *
+ * Returns the brick alongside the integrity result even when integrity fails.
+ * Only store-level failures produce a \`ForgeError\`.
+ */
+declare function loadAndVerify(store: ForgeStore, id: string): Promise<Result<{
+    readonly brick: BrickArtifact;
+    readonly integrity: IntegrityResult;
+}, ForgeError>>;
+
+/**
+ * InMemoryForgeStore — simple Map-based store for tests and development.
+ * No eviction, no persistence across restarts.
+ */
+
+declare function createInMemoryForgeStore(): ForgeStore;
+
+/**
+ * Runtime enforcement of BrickRequires — checks bins, env vars, and tool availability.
+ */
+
+interface RequiresCheckResult {
+    readonly satisfied: boolean;
+    readonly violation?: {
+        readonly kind: "bin" | "env" | "tool";
+        readonly name: string;
+    };
+}
+/**
+ * Validates that all runtime requirements declared by a brick are satisfied.
+ * Returns the first violation found (fail-fast). No requires → always satisfied.
+ */
+declare function checkBrickRequires(requires: BrickRequires | undefined, availableToolNames: ReadonlySet<string>): RequiresCheckResult;
+
+/**
+ * Scope-based visibility filtering for forge bricks.
+ *
+ * Pure functions used by search_forge and ForgeResolver to enforce
+ * agent-scoped brick visibility. Zone scope is deferred (Phase 2).
+ */
+
+/**
+ * Returns true if the given brick is visible to the specified agent.
+ * - \`global\` and \`zone\` scoped bricks are visible to all agents.
+ * - \`agent\` scoped bricks are only visible to their creator.
+ *
+ * Fail-closed: unknown scope values deny access.
+ */
+declare function isVisibleToAgent(brick: BrickArtifact, agentId: string): boolean;
+/**
+ * Filters an array of bricks to only those visible to the specified agent.
+ */
+declare function filterByAgentScope(bricks: readonly BrickArtifact[], agentId: string): readonly BrickArtifact[];
+
+/**
+ * SLSA v1.0 serializer — maps Koi-native ForgeProvenance to SLSA predicate.
+ *
+ * Koi uses its own vocabulary internally; this serializer produces
+ * SLSA-compatible JSON for external consumption and audit trails.
+ */
+
+interface SlsaBuildDefinition {
+    readonly buildType: string;
+    readonly externalParameters: Readonly<Record<string, unknown>>;
+    readonly internalParameters?: Readonly<Record<string, unknown>>;
+    readonly resolvedDependencies?: readonly SlsaResourceDescriptor[];
+}
+interface SlsaResourceDescriptor {
+    readonly uri: string;
+    readonly digest?: Readonly<Record<string, string>>;
+    readonly name?: string;
+}
+interface SlsaBuilder {
+    readonly id: string;
+    readonly version?: Readonly<Record<string, string>>;
+}
+interface SlsaBuildMetadata {
+    readonly invocationId: string;
+    readonly startedOn?: string;
+    readonly finishedOn?: string;
+}
+interface SlsaRunDetails {
+    readonly builder: SlsaBuilder;
+    readonly metadata?: SlsaBuildMetadata;
+}
+interface SlsaProvenanceV1 {
+    readonly buildDefinition: SlsaBuildDefinition;
+    readonly runDetails: SlsaRunDetails;
+}
+/**
+ * Map Koi ForgeProvenance to SLSA v1.0 predicate structure.
+ */
+declare function mapProvenanceToSlsa(provenance: ForgeProvenance): SlsaProvenanceV1;
+
+/**
+ * In-memory store change notifier — pub/sub for cross-agent cache invalidation.
+ *
+ * Sync-only (in-process). Async backends (Redis, Nexus) would be separate L2 packages.
+ */
+
+/**
+ * Creates an in-memory \`StoreChangeNotifier\` backed by a simple listener map.
+ *
+ * - \`notify()\` snapshots the listener array and calls each synchronously.
+ * - \`subscribe()\` returns an unsubscribe function.
+ * - Throws if subscriber count reaches \`MAX_SUBSCRIBERS\` (likely a leak).
+ */
+declare function createMemoryStoreChangeNotifier(): StoreChangeNotifier;
+
+/**
+ * Shared factory for primordial forge tools — DRY across all 6 tools.
+ */
+
+interface ForgeDeps {
+    readonly store: ForgeStore;
+    readonly executor: TieredSandboxExecutor;
+    readonly verifiers: readonly ForgeVerifier[];
+    readonly config: ForgeConfig;
+    readonly context: ForgeContext;
+    /** Injected manifest parser — required only for forge_agent. Avoids L2 peer import of @koi/manifest. */
+    readonly manifestParser?: ManifestParser;
+    /** Optional notifier for cross-agent cache invalidation after store mutations. */
+    readonly notifier?: StoreChangeNotifier;
+    /** Optional signing backend for attestation. When provided, forged bricks get cryptographic signatures. */
+    readonly signer?: SigningBackend;
+}
+interface ForgeToolConfig {
+    readonly name: string;
+    readonly description: string;
+    readonly inputSchema: Readonly<Record<string, unknown>>;
+    readonly handler: (input: unknown, deps: ForgeDeps) => Promise<Result<unknown, ForgeError>>;
+}
+declare function createForgeTool(toolConfig: ForgeToolConfig, deps: ForgeDeps): Tool;
+
+/**
+ * compose_forge — Groups multiple bricks into a metadata-only composite.
+ * Validates all referenced brick IDs exist in the store before creating.
+ * Computes trust as min(component trusts) for trust propagation.
+ */
+
+declare function createComposeForgeTool(deps: ForgeDeps): Tool;
+
+/**
+ * forge_agent — Creates a new sub-agent with manifest validation.
+ * Supports two input modes:
+ *   1. \`manifestYaml\` — raw YAML manifest (existing behavior)
+ *   2. \`brickIds\` — auto-assembles manifest from referenced bricks
+ *
+ * Requires a ManifestParser injected via ForgeDeps to validate YAML
+ * without importing @koi/manifest (avoids L2 peer dependency).
+ */
+
+/**
+ * Callback invoked after a successful forge_agent artifact creation.
+ * The caller (typically L3 or consumer code) uses this to trigger
+ * child agent assembly via \`spawnChildAgent()\`.
+ *
+ * Returns void — spawn orchestration results are captured by the caller
+ * through closure, keeping L2 independent of L1 types.
+ */
+type OnForgeAgentSpawn = (artifact: AgentArtifact) => void | Promise<void>;
+declare function createForgeAgentTool(deps: ForgeDeps, onSpawn?: OnForgeAgentSpawn): Tool;
+
+/**
+ * forge_channel — Creates a new channel brick through the verification pipeline.
+ */
+
+declare function createForgeChannelTool(deps: ForgeDeps): Tool;
+
+/**
+ * forge_engine — Creates a new engine brick through the verification pipeline.
+ */
+
+declare function createForgeEngineTool(deps: ForgeDeps): Tool;
+
+/**
+ * forge_middleware — Creates a new middleware brick through the verification pipeline.
+ */
+
+declare function createForgeMiddlewareTool(deps: ForgeDeps): Tool;
+
+/**
+ * forge_provider — Creates a new provider brick through the verification pipeline.
+ */
+
+declare function createForgeProviderTool(deps: ForgeDeps): Tool;
+
+/**
+ * forge_resolver — Creates a new resolver brick through the verification pipeline.
+ */
+
+declare function createForgeResolverTool(deps: ForgeDeps): Tool;
+
+/**
+ * forge_skill — Creates a new SKILL.md (markdown-based knowledge unit).
+ * Lighter verification — no sandbox stage for markdown content.
+ */
+
+declare function createForgeSkillTool(deps: ForgeDeps): Tool;
+
+/**
+ * forge_tool — Creates a new tool through the verification pipeline.
+ */
+
+declare function createForgeToolTool(deps: ForgeDeps): Tool;
+
+/**
+ * promote_forge — Promotes a brick's scope, trust tier, or lifecycle.
+ *
+ * Per-field evaluation (Issue 5A): each dimension is validated independently.
+ * Scope HITL does NOT block trust or lifecycle changes.
+ * Uses VALID_LIFECYCLE_TRANSITIONS for state machine enforcement (Issue 7A).
+ * Dedicated error codes: TRUST_DEMOTION_NOT_ALLOWED, LIFECYCLE_INVALID_TRANSITION (Issue 6A).
+ * Wires scope promotion to store.promote() if available (Issue 1A).
+ */
+
+declare function createPromoteForgeTool(deps: ForgeDeps): Tool;
+
+/**
+ * search_forge — Discovers existing bricks via ForgeStore queries.
+ */
+
+declare function createSearchForgeTool(deps: ForgeDeps): Tool;
+
+/**
+ * Usage-based auto-promotion — tracks brick usage and promotes trust tier
+ * when configurable thresholds are crossed.
+ */
+
+interface UsageRecordedResult {
+    readonly kind: "recorded";
+    readonly brickId: string;
+    readonly newUsageCount: number;
+}
+interface UsagePromotedResult {
+    readonly kind: "promoted";
+    readonly brickId: string;
+    readonly newUsageCount: number;
+    readonly previousTier: TrustTier;
+    readonly newTier: TrustTier;
+}
+type UsageResult = UsageRecordedResult | UsagePromotedResult;
+/**
+ * Given a brick's current trust tier and its new usage count, returns the
+ * tier it should be promoted to — or \`undefined\` if no promotion applies.
+ */
+declare function computeAutoPromotion(currentTier: TrustTier, newUsageCount: number, config: AutoPromotionConfig): TrustTier | undefined;
+/**
+ * Records a single usage of a brick. Increments \`usageCount\` and, when
+ * auto-promotion is enabled and a threshold is crossed, promotes the
+ * brick's trust tier.
+ */
+declare function recordBrickUsage(store: ForgeStore, brickId: string, config: ForgeConfig): Promise<Result<UsageResult, ForgeError>>;
+
+/**
+ * Pipeline orchestrator — runs verification stages sequentially with early termination.
+ *
+ * Governance checks are handled by the createForgeTool factory (shared.ts),
+ * NOT here. This function is purely the 4-stage verification pipeline.
+ */
+
+declare function verify(input: ForgeInput, context: ForgeContext, executor: SandboxExecutor, verifiers: readonly ForgeVerifier[], config: ForgeConfig): Promise<Result<VerificationReport, ForgeError>>;
+
+/**
+ * Stage 2: Sandbox execution — runs tool implementation in a sandboxed environment.
+ * Only applies to "tool" and "composite" kinds; skills/agents skip with a pass.
+ */
+
+declare function verifySandbox(input: ForgeInput, executor: SandboxExecutor, config: VerificationConfig): Promise<Result<StageReport, ForgeError>>;
+
+/**
+ * Stage 3: Self-test — run test cases and pluggable verifiers.
+ */
+
+declare function verifySelfTest(input: ForgeInput, executor: SandboxExecutor, verifiers: readonly ForgeVerifier[], context: ForgeContext, config: VerificationConfig): Promise<Result<StageReport, ForgeError>>;
+
+/**
+ * Stage 1: Static validation — name, schema, size, security checks.
+ * No external deps. Pure synchronous validation.
+ */
+
+declare function verifyStatic(input: ForgeInput, config: VerificationConfig): Result<StageReport, ForgeError>;
+
+/**
+ * Stage 4: Trust tier assignment — determines the trust level for a forged brick.
+ */
+
+declare function assignTrust(_input: ForgeInput, config: ForgeConfig, stageResults: readonly StageReport[]): Result<TrustStageReport, ForgeError>;
+
+export { type AssembleManifestOptions, type AssembleManifestResult, type AttestationCache, type AutoPromotionConfig, type CompositionBrickInfo, type CompositionMetadata, type CreateForgeRuntimeOptions, type CreateProvenanceOptions, type ForgeAgentInput, type ForgeAgentInputWithBricks, type ForgeAgentInputWithManifest, type ForgeChannelInput, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeCompositeInput, type ForgeConfig, type ForgeContext, type ForgeDeps, type ForgeEngineInput, type ForgeError, type ForgeInput, type ForgeMiddlewareInput, type ForgeProviderInput, type ForgeResolverContext, type ForgeResolverInput, type ForgeResult, type ForgeResultMetadata, type ForgeRuntimeInstance, type ForgeSkillInput, type ForgeToolConfig, type ForgeToolInput, type ForgeUsageMiddlewareConfig, type ForgeVerifier, type GovernanceResult, type IntegrityMismatch, type IntegrityOk, type IntegrityResult, type ManifestParseResult, type ManifestParser, type OnForgeAgentSpawn, type PromoteChange, type PromoteResult, type RequiresCheckResult, type ScopePromotionConfig, type SkillMdInput, type SlsaBuildDefinition, type SlsaBuildMetadata, type SlsaBuilder, type SlsaProvenanceV1, type SlsaResourceDescriptor, type SlsaRunDetails, type StageReport, type TestFailure, type TrustStageReport, type UsagePromotedResult, type UsageRecordedResult, type UsageResult, type VerificationConfig, type VerificationReport, type VerificationStage, type VerifierResult, assembleManifest, assignTrust, brickToTool, checkBrickRequires, checkGovernance, checkScopePromotion, computeAutoPromotion, createAdversarialVerifiers, createAttestationCache, createComposeForgeTool, createContentScanningVerifier, createDefaultForgeConfig, createExfiltrationVerifier, createForgeAgentTool, createForgeChannelTool, createForgeComponentProvider, createForgeEngineTool, createForgeMiddlewareTool, createForgeProvenance, createForgeProviderTool, createForgeResolver, createForgeResolverTool, createForgeRuntime, createForgeSkillTool, createForgeTool, createForgeToolTool, createForgeUsageMiddleware, createInMemoryForgeStore, createInjectionVerifier, createMemoryStoreChangeNotifier, createPromoteForgeTool, createResourceExhaustionVerifier, createSearchForgeTool, createStructuralHidingVerifier, filterByAgentScope, generateSkillMd, governanceError, isVisibleToAgent, loadAndVerify, mapProvenanceToSlsa, recordBrickUsage, sandboxError, selfTestError, signAttestation, staticError, storeError, trustError, typeError, validateForgeConfig, verify, verifyAttestation, verifyBrickAttestation, verifyBrickIntegrity, verifySandbox, verifySelfTest, verifyStatic };
+"
+`;

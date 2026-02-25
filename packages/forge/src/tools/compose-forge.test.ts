@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SandboxExecutor, TieredSandboxExecutor, ToolArtifact } from "@koi/core";
+import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import type { CompositionMetadata, ForgeResult } from "../types.js";
@@ -15,8 +16,7 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    createdBy: "agent-1",
-    createdAt: Date.now(),
+    provenance: DEFAULT_PROVENANCE,
     version: "0.0.1",
     tags: [],
     usageCount: 0,
@@ -426,9 +426,24 @@ describe("createComposeForgeTool", () => {
 
   test("rejects composing another agent's agent-scoped brick", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_own", createdBy: "agent-1" }));
     await store.save(
-      createToolBrick({ id: "brick_foreign", createdBy: "agent-2", scope: "agent" }),
+      createToolBrick({
+        id: "brick_own",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-1" },
+        },
+      }),
+    );
+    await store.save(
+      createToolBrick({
+        id: "brick_foreign",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-2" },
+        },
+        scope: "agent",
+      }),
     );
 
     const tool = createComposeForgeTool(createDeps({ store }));
@@ -444,9 +459,24 @@ describe("createComposeForgeTool", () => {
 
   test("allows composing another agent's global-scoped brick", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ id: "brick_own", createdBy: "agent-1" }));
     await store.save(
-      createToolBrick({ id: "brick_global", createdBy: "agent-2", scope: "global" }),
+      createToolBrick({
+        id: "brick_own",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-1" },
+        },
+      }),
+    );
+    await store.save(
+      createToolBrick({
+        id: "brick_global",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "agent-2" },
+        },
+        scope: "global",
+      }),
     );
 
     const tool = createComposeForgeTool(createDeps({ store }));

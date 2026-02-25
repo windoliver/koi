@@ -6,8 +6,18 @@
  * invalidated on store onChange.
  */
 
-import type { ForgeStore, StoreChangeEvent, Tool, ToolArtifact, ToolDescriptor } from "@koi/core";
+import type {
+  ForgeStore,
+  SigningBackend,
+  StoreChangeEvent,
+  Tool,
+  ToolArtifact,
+  ToolDescriptor,
+} from "@koi/core";
+import type { AttestationCache } from "./attestation-cache.js";
+import { createAttestationCache } from "./attestation-cache.js";
 import { brickToTool } from "./brick-conversion.js";
+import { verifyBrickAttestation, verifyBrickIntegrity } from "./integrity.js";
 import type { TieredSandboxExecutor } from "./types.js";
 
 // Re-use the ForgeRuntime interface from L1 types.
@@ -23,6 +33,8 @@ export interface CreateForgeRuntimeOptions {
   readonly store: ForgeStore;
   readonly executor: TieredSandboxExecutor;
   readonly sandboxTimeoutMs?: number;
+  /** When provided, verifies attestation signatures on tool load. */
+  readonly signer?: SigningBackend;
 }
 
 /**
@@ -45,10 +57,11 @@ export interface ForgeRuntimeInstance {
  * - Provides onChange pass-through from the underlying store
  */
 export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRuntimeInstance {
-  const { store, executor, sandboxTimeoutMs = DEFAULT_SANDBOX_TIMEOUT_MS } = options;
+  const { store, executor, sandboxTimeoutMs = DEFAULT_SANDBOX_TIMEOUT_MS, signer } = options;
 
   // let justified: mutable cache invalidated by store.watch
   let cachedTools: ReadonlyMap<string, ToolArtifact> | undefined;
+  const integrityCache: AttestationCache = createAttestationCache();
 
   async function ensureCache(): Promise<ReadonlyMap<string, ToolArtifact>> {
     if (cachedTools !== undefined) {
@@ -73,6 +86,7 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
 
   function invalidateCache(): void {
     cachedTools = undefined;
+    integrityCache.clear();
   }
 
   const resolveTool = async (toolId: string): Promise<Tool | undefined> => {
@@ -81,6 +95,26 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
     if (artifact === undefined) {
       return undefined;
     }
+
+    // On-load integrity verification (cached by content hash)
+    const cached = integrityCache.get(artifact.contentHash);
+    if (cached !== undefined) {
+      if (!cached.valid) {
+        return undefined;
+      }
+    } else {
+      // Verify integrity: content hash + attestation signature (if signer provided)
+      const integrityResult =
+        signer !== undefined
+          ? await verifyBrickAttestation(artifact, signer)
+          : await verifyBrickIntegrity(artifact);
+
+      integrityCache.set(artifact.contentHash, integrityResult.ok);
+      if (!integrityResult.ok) {
+        return undefined;
+      }
+    }
+
     const { executor: tierExecutor } = executor.forTier(artifact.trustTier);
     return brickToTool(artifact, tierExecutor, sandboxTimeoutMs);
   };
