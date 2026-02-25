@@ -100,6 +100,7 @@ import type {
 import {
   ALL_BRICK_KINDS,
   agentId,
+  COMPONENT_PRIORITY,
   CREDENTIALS,
   channelToken,
   DEFAULT_HEALTH_MONITOR_CONFIG,
@@ -225,6 +226,7 @@ describe("export inventory", () => {
     expect(DEFAULT_HEALTH_MONITOR_CONFIG).toBeDefined();
     expect(ALL_BRICK_KINDS).toBeDefined();
     expect(MIN_TRUST_BY_KIND).toBeDefined();
+    expect(COMPONENT_PRIORITY).toBeDefined();
   });
 
   test("runtime values are functions, strings, or objects", () => {
@@ -244,5 +246,6 @@ describe("export inventory", () => {
     expect(typeof RETRYABLE_DEFAULTS).toBe("object");
     expect(typeof VALID_TRANSITIONS).toBe("object");
     expect(typeof DEFAULT_HEALTH_MONITOR_CONFIG).toBe("object");
+    expect(typeof COMPONENT_PRIORITY).toBe("object");
   });
 });

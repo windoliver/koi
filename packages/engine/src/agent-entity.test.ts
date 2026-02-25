@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentManifest, ComponentProvider, ProcessId, Tool } from "@koi/core";
-import { agentId, MEMORY, token, toolToken } from "@koi/core";
+import { agentId, COMPONENT_PRIORITY, MEMORY, token, toolToken } from "@koi/core";
 import { AgentEntity } from "./agent-entity.js";
 
 // ---------------------------------------------------------------------------
@@ -106,7 +106,7 @@ describe("AgentEntity.assemble", () => {
       },
     };
 
-    const agent = await AgentEntity.assemble(testPid(), testManifest(), [provider]);
+    const { agent } = await AgentEntity.assemble(testPid(), testManifest(), [provider]);
 
     expect(agent.has(toolToken("calc"))).toBe(true);
     expect(agent.has(toolToken("search"))).toBe(true);
@@ -123,33 +123,153 @@ describe("AgentEntity.assemble", () => {
       attach: async () => new Map([["memory", { recall: async () => [], store: async () => {} }]]),
     };
 
-    const agent = await AgentEntity.assemble(testPid(), testManifest(), [provider1, provider2]);
+    const { agent } = await AgentEntity.assemble(testPid(), testManifest(), [provider1, provider2]);
 
     expect(agent.has(toolToken("calc"))).toBe(true);
     expect(agent.has(MEMORY)).toBe(true);
     expect(agent.components().size).toBe(2);
   });
 
-  test("later provider overwrites earlier for same key", async () => {
+  test("higher-priority provider wins (first-write-wins after sort)", async () => {
     const tool1 = testTool("v1");
     const tool2 = testTool("v2");
     const provider1: ComponentProvider = {
-      name: "first",
+      name: "bundled",
+      priority: COMPONENT_PRIORITY.BUNDLED,
       attach: async () => new Map([["tool:calc", tool1]]),
     };
     const provider2: ComponentProvider = {
-      name: "second",
+      name: "forge",
+      priority: COMPONENT_PRIORITY.AGENT_FORGED,
       attach: async () => new Map([["tool:calc", tool2]]),
     };
 
-    const agent = await AgentEntity.assemble(testPid(), testManifest(), [provider1, provider2]);
+    // provider1 registered first, but provider2 has higher priority (lower number)
+    const { agent } = await AgentEntity.assemble(testPid(), testManifest(), [provider1, provider2]);
 
     const result = agent.component<Tool>(toolToken("calc"));
     expect(result?.descriptor.name).toBe("v2");
   });
 
+  test("same-priority ties broken by registration order (stable sort)", async () => {
+    const tool1 = testTool("first");
+    const tool2 = testTool("second");
+    const provider1: ComponentProvider = {
+      name: "first",
+      priority: 50,
+      attach: async () => new Map([["tool:calc", tool1]]),
+    };
+    const provider2: ComponentProvider = {
+      name: "second",
+      priority: 50,
+      attach: async () => new Map([["tool:calc", tool2]]),
+    };
+
+    const { agent } = await AgentEntity.assemble(testPid(), testManifest(), [provider1, provider2]);
+
+    // first-write-wins: provider1 comes first at same priority
+    const result = agent.component<Tool>(toolToken("calc"));
+    expect(result?.descriptor.name).toBe("first");
+  });
+
+  test("default priority is BUNDLED (100)", async () => {
+    const tool1 = testTool("no-priority");
+    const tool2 = testTool("forged");
+    const provider1: ComponentProvider = {
+      name: "no-priority",
+      // no priority set — defaults to BUNDLED (100)
+      attach: async () => new Map([["tool:calc", tool1]]),
+    };
+    const provider2: ComponentProvider = {
+      name: "forged",
+      priority: COMPONENT_PRIORITY.AGENT_FORGED,
+      attach: async () => new Map([["tool:calc", tool2]]),
+    };
+
+    const { agent } = await AgentEntity.assemble(testPid(), testManifest(), [provider1, provider2]);
+
+    // forged (priority 0) beats unset (defaults to 100)
+    const result = agent.component<Tool>(toolToken("calc"));
+    expect(result?.descriptor.name).toBe("forged");
+  });
+
+  test("returns empty conflicts when no key collisions", async () => {
+    const provider1: ComponentProvider = {
+      name: "tools",
+      attach: async () => new Map([["tool:calc", testTool("calc")]]),
+    };
+    const provider2: ComponentProvider = {
+      name: "memory",
+      attach: async () => new Map([["memory", { recall: async () => [], store: async () => {} }]]),
+    };
+
+    const { conflicts } = await AgentEntity.assemble(testPid(), testManifest(), [
+      provider1,
+      provider2,
+    ]);
+
+    expect(conflicts).toEqual([]);
+  });
+
+  test("records conflict when forge shadows bundled", async () => {
+    const provider1: ComponentProvider = {
+      name: "bundled",
+      priority: COMPONENT_PRIORITY.BUNDLED,
+      attach: async () => new Map([["tool:calc", testTool("v1")]]),
+    };
+    const provider2: ComponentProvider = {
+      name: "forge",
+      priority: COMPONENT_PRIORITY.AGENT_FORGED,
+      attach: async () => new Map([["tool:calc", testTool("v2")]]),
+    };
+
+    const { conflicts } = await AgentEntity.assemble(testPid(), testManifest(), [
+      provider1,
+      provider2,
+    ]);
+
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]?.key).toBe("tool:calc");
+    expect(conflicts[0]?.winner).toBe("forge");
+    expect(conflicts[0]?.shadowed).toEqual(["bundled"]);
+  });
+
+  test("records multiple conflicts for multiple shadowed keys", async () => {
+    const provider1: ComponentProvider = {
+      name: "bundled",
+      priority: COMPONENT_PRIORITY.BUNDLED,
+      attach: async () =>
+        new Map([
+          ["tool:calc", testTool("calc-b")],
+          ["tool:search", testTool("search-b")],
+        ]),
+    };
+    const provider2: ComponentProvider = {
+      name: "forge",
+      priority: COMPONENT_PRIORITY.AGENT_FORGED,
+      attach: async () =>
+        new Map([
+          ["tool:calc", testTool("calc-f")],
+          ["tool:search", testTool("search-f")],
+        ]),
+    };
+
+    const { conflicts } = await AgentEntity.assemble(testPid(), testManifest(), [
+      provider1,
+      provider2,
+    ]);
+
+    expect(conflicts).toHaveLength(2);
+    const keys = conflicts.map((c) => c.key).sort();
+    expect(keys).toEqual(["tool:calc", "tool:search"]);
+    for (const conflict of conflicts) {
+      expect(conflict.winner).toBe("forge");
+      expect(conflict.shadowed).toEqual(["bundled"]);
+    }
+  });
+
   test("empty providers results in empty components", async () => {
-    const agent = await AgentEntity.assemble(testPid(), testManifest(), []);
+    const { agent } = await AgentEntity.assemble(testPid(), testManifest(), []);
     expect(agent.components().size).toBe(0);
   });
 
@@ -160,7 +280,7 @@ describe("AgentEntity.assemble", () => {
       attach: async () => new Map([["tool:calc", calc]]),
     };
 
-    const agent = await AgentEntity.assemble(testPid(), testManifest(), [provider]);
+    const { agent } = await AgentEntity.assemble(testPid(), testManifest(), [provider]);
     const retrieved = agent.component<Tool>(toolToken("calc"));
     expect(retrieved).toBe(calc);
   });
@@ -183,7 +303,7 @@ describe("query", () => {
         ]),
     };
 
-    const agent = await AgentEntity.assemble(testPid(), testManifest(), [provider]);
+    const { agent } = await AgentEntity.assemble(testPid(), testManifest(), [provider]);
 
     const tools = agent.query<Tool>("tool:");
     expect(tools.size).toBe(2);
@@ -206,7 +326,7 @@ describe("query", () => {
         ]),
     };
 
-    const agent = await AgentEntity.assemble(testPid(), testManifest(), [provider]);
+    const { agent } = await AgentEntity.assemble(testPid(), testManifest(), [provider]);
     const first = agent.query<Tool>("tool:");
     const second = agent.query<Tool>("tool:");
     expect(first).toBe(second); // Same reference = cache hit
@@ -228,7 +348,7 @@ describe("hasAll with assembled components", () => {
           ["memory", {}],
         ]),
     };
-    const agent = await AgentEntity.assemble(testPid(), testManifest(), [provider]);
+    const { agent } = await AgentEntity.assemble(testPid(), testManifest(), [provider]);
     expect(agent.hasAll(toolToken("calc"), MEMORY)).toBe(true);
   });
 
@@ -237,7 +357,7 @@ describe("hasAll with assembled components", () => {
       name: "provider",
       attach: async () => new Map([["tool:calc", testTool("calc")]]),
     };
-    const agent = await AgentEntity.assemble(testPid(), testManifest(), [provider]);
+    const { agent } = await AgentEntity.assemble(testPid(), testManifest(), [provider]);
     expect(agent.hasAll(toolToken("calc"), MEMORY)).toBe(false);
   });
 });

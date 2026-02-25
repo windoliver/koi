@@ -110,7 +110,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     ...(options.parentPid !== undefined ? { parent: options.parentPid } : {}),
     ...(options.agentType !== undefined ? { agentType: options.agentType } : {}),
   });
-  const agent = await AgentEntity.assemble(pid, manifest, providers);
+  const { agent, conflicts } = await AgentEntity.assemble(pid, manifest, providers);
 
   // --- 2. Create L1 guards (declarative, no mutation) ---
   const spawnPolicy = { ...options.spawn };
@@ -133,11 +133,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // --- 3. Compose middleware chain: guards + user middleware, sorted by priority ---
   const allMiddleware: readonly KoiMiddleware[] = sortByPriority([...guards, ...middleware]);
 
-  // --- 4. Default tool terminal (entity first, then forge fallback) ---
+  // --- 4. Default tool terminal (forge first, then entity fallback) ---
   const defaultToolTerminal = async (request: ToolRequest): Promise<ToolResponse> => {
-    // O(1) entity lookup (manifest-defined + previously assembled forged tools)
+    // Forge-first: forged tools shadow entity tools (Agent-forged > Bundled)
     const tool: Tool | undefined =
-      agent.component(toolToken(request.toolId)) ?? (await forge?.resolveTool(request.toolId));
+      (await forge?.resolveTool(request.toolId)) ?? agent.component(toolToken(request.toolId));
 
     if (tool === undefined) {
       throw KoiRuntimeError.from("NOT_FOUND", `Tool not found: "${request.toolId}"`, {
@@ -157,6 +157,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // --- 6. Build runtime ---
   const runtime: KoiRuntime = {
     agent,
+    conflicts,
 
     run(input: EngineInput): AsyncIterable<EngineEvent> {
       // Guard concurrent run() calls
@@ -195,6 +196,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
           // let justified: mutable forged descriptor cache, refreshed at turn boundaries
           let forgedDescriptorsCache: readonly ToolDescriptor[] = [];
+          // let justified: mutable memo for deduped tools getter — avoids O(n) alloc per access
+          let dedupedToolsMemo: readonly ToolDescriptor[] = [];
+          let dedupedForgeRef: readonly ToolDescriptor[] = forgedDescriptorsCache;
 
           // let justified: mutable flag to defer forge refresh until next iteration,
           // giving the consumer a chance to inject tools/middleware between turns
@@ -382,7 +386,18 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                             if (forgedDescriptorsCache.length === 0) {
                               return entityDescriptors;
                             }
-                            return [...entityDescriptors, ...forgedDescriptorsCache];
+                            // Memoized: recompute only when forgedDescriptorsCache ref changes
+                            if (dedupedForgeRef !== forgedDescriptorsCache) {
+                              dedupedForgeRef = forgedDescriptorsCache;
+                              const forgedNames = new Set(
+                                forgedDescriptorsCache.map((d) => d.name),
+                              );
+                              dedupedToolsMemo = [
+                                ...forgedDescriptorsCache,
+                                ...entityDescriptors.filter((d) => !forgedNames.has(d.name)),
+                              ];
+                            }
+                            return dedupedToolsMemo;
                           },
                           enumerable: true,
                           configurable: false,

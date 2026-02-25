@@ -182,10 +182,38 @@ export interface SkillMetadata {
 
 export interface ComponentProvider {
   readonly name: string;
+  /**
+   * Assembly priority. Lower = higher precedence.
+   * When multiple providers supply the same component key,
+   * the provider with the lowest priority wins (first-write-wins after sort).
+   * Defaults to COMPONENT_PRIORITY.BUNDLED (100) if omitted.
+   */
+  readonly priority?: number;
   readonly attach: (agent: Agent) => Promise<ReadonlyMap<string, unknown>>;
   readonly detach?: (agent: Agent) => Promise<void>;
   readonly watch?: (listener: (event: ComponentEvent) => void) => () => void;
 }
+
+// ---------------------------------------------------------------------------
+// Component priority constants
+// ---------------------------------------------------------------------------
+
+/**
+ * Priority tiers for ComponentProvider resolution.
+ * Lower number = higher precedence.
+ * Order: Agent-forged > Zone-forged > Global-forged > Bundled.
+ */
+export const COMPONENT_PRIORITY: Readonly<{
+  readonly AGENT_FORGED: 0;
+  readonly ZONE_FORGED: 10;
+  readonly GLOBAL_FORGED: 50;
+  readonly BUNDLED: 100;
+}> = Object.freeze({
+  AGENT_FORGED: 0,
+  ZONE_FORGED: 10,
+  GLOBAL_FORGED: 50,
+  BUNDLED: 100,
+} as const);
 
 // ---------------------------------------------------------------------------
 // Component events

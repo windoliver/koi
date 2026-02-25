@@ -9,6 +9,7 @@
 // errors
 export { KoiRuntimeError } from "@koi/errors";
 // agent entity
+export type { AssemblyConflict, AssemblyResult } from "./agent-entity.js";
 export { AgentEntity } from "./agent-entity.js";
 // swarm
 export type { CascadingTermination } from "./cascading-termination.js";

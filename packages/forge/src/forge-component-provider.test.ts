@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { Agent, SubsystemToken, TieredSandboxExecutor } from "@koi/core";
 import {
   agentId,
+  COMPONENT_PRIORITY,
   channelToken,
   engineToken,
   middlewareToken,
@@ -1141,5 +1142,46 @@ describe("createForgeComponentProvider — implementation kinds", () => {
     const second = await provider.attach(createMockAgent());
     expect(second.size).toBe(2);
     expect(searchCount).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Priority by scope
+// ---------------------------------------------------------------------------
+
+describe("createForgeComponentProvider — priority by scope", () => {
+  test("agent scope sets AGENT_FORGED priority", () => {
+    const provider = createForgeComponentProvider({
+      store: createInMemoryForgeStore(),
+      executor: mockTiered(echoExecutor()),
+      scope: "agent",
+    });
+    expect(provider.priority).toBe(COMPONENT_PRIORITY.AGENT_FORGED);
+  });
+
+  test("zone scope sets ZONE_FORGED priority", () => {
+    const provider = createForgeComponentProvider({
+      store: createInMemoryForgeStore(),
+      executor: mockTiered(echoExecutor()),
+      scope: "zone",
+    });
+    expect(provider.priority).toBe(COMPONENT_PRIORITY.ZONE_FORGED);
+  });
+
+  test("global scope sets GLOBAL_FORGED priority", () => {
+    const provider = createForgeComponentProvider({
+      store: createInMemoryForgeStore(),
+      executor: mockTiered(echoExecutor()),
+      scope: "global",
+    });
+    expect(provider.priority).toBe(COMPONENT_PRIORITY.GLOBAL_FORGED);
+  });
+
+  test("undefined scope defaults to AGENT_FORGED priority", () => {
+    const provider = createForgeComponentProvider({
+      store: createInMemoryForgeStore(),
+      executor: mockTiered(echoExecutor()),
+    });
+    expect(provider.priority).toBe(COMPONENT_PRIORITY.AGENT_FORGED);
   });
 });
