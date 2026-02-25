@@ -399,6 +399,28 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-pii": {
+      "name": "@koi/middleware-pii",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware-planning": {
+      "name": "@koi/middleware-planning",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-sandbox": {
       "name": "@koi/middleware-sandbox",
       "version": "0.0.0",
@@ -728,6 +750,7 @@
       "version": "0.0.0",
       "devDependencies": {
         "@koi/core": "workspace:*",
+        "@koi/delegation": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
@@ -1031,6 +1054,10 @@
     "@koi/middleware-pay": ["@koi/middleware-pay@workspace:packages/middleware-pay"],
 
     "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/middleware-permissions"],
+
+    "@koi/middleware-pii": ["@koi/middleware-pii@workspace:packages/middleware-pii"],
+
+    "@koi/middleware-planning": ["@koi/middleware-planning@workspace:packages/middleware-planning"],
 
     "@koi/middleware-sandbox": ["@koi/middleware-sandbox@workspace:packages/middleware-sandbox"],
 
