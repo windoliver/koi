@@ -522,6 +522,57 @@ describe("createEventSubscriber", () => {
     }
   });
 
+  test("reverse-maps sanitized tool names via toolNameMap in toolcall_start", async () => {
+    const queue = new AsyncQueue<EngineEvent>();
+    const metrics = createMetricsAccumulator();
+    const toolNameMap = new Map([["lsp_ts_hover", "lsp/ts/hover"]]);
+    const subscriber = createEventSubscriber(queue, metrics, toolNameMap);
+
+    const partial = makePartialMessage({
+      content: [{ type: "toolCall", id: "call-1", name: "lsp_ts_hover", arguments: {} }],
+    });
+
+    subscriber(
+      makeMessageUpdate({
+        type: "toolcall_start",
+        contentIndex: 0,
+        partial,
+      }),
+    );
+    subscriber({ type: "agent_end", messages: [] });
+
+    const events = await collectEvents(queue);
+    expect(events[0]).toEqual({
+      kind: "tool_call_start",
+      toolName: "lsp/ts/hover",
+      callId: toolCallId("call-1"),
+      args: {},
+    });
+  });
+
+  test("reverse-maps sanitized tool names via toolNameMap in tool_execution_start", async () => {
+    const queue = new AsyncQueue<EngineEvent>();
+    const metrics = createMetricsAccumulator();
+    const toolNameMap = new Map([["lsp_ts_get_diagnostics", "lsp/ts/get_diagnostics"]]);
+    const subscriber = createEventSubscriber(queue, metrics, toolNameMap);
+
+    subscriber({
+      type: "tool_execution_start",
+      toolCallId: "call-2",
+      toolName: "lsp_ts_get_diagnostics",
+      args: {},
+    });
+    subscriber({ type: "agent_end", messages: [] });
+
+    const events = await collectEvents(queue);
+    expect(events[0]).toEqual({
+      kind: "tool_call_start",
+      toolName: "lsp/ts/get_diagnostics",
+      callId: toolCallId("call-2"),
+      args: {},
+    });
+  });
+
   test("filters irrelevant events (agent_start, turn_start, etc.)", async () => {
     const queue = new AsyncQueue<EngineEvent>();
     const metrics = createMetricsAccumulator();
