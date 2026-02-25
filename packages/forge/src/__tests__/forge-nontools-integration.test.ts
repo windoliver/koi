@@ -18,11 +18,14 @@
 import { describe, expect, test } from "bun:test";
 import type {
   Agent,
+  AgentManifest,
   ImplementationArtifact,
+  ProcessId,
   SandboxExecutor,
   TieredSandboxExecutor,
 } from "@koi/core";
 import {
+  agentId,
   channelToken,
   engineToken,
   middlewareToken,
@@ -62,7 +65,22 @@ function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
 }
 
 function stubAgent(): Agent {
-  return { id: "agent-test" } as Agent;
+  const pid: ProcessId = {
+    id: agentId("agent-test"),
+    name: "test",
+    type: "worker",
+    depth: 0,
+  };
+  return {
+    pid,
+    manifest: { name: "test", version: "0.0.0" } as AgentManifest,
+    state: "running",
+    component: () => undefined,
+    has: () => false,
+    hasAll: () => false,
+    query: () => new Map(),
+    components: () => new Map(),
+  };
 }
 
 describe("Forge non-tool bricks — integration", () => {

@@ -17,6 +17,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type {
+  AgentManifest,
   EngineEvent,
   EngineOutput,
   KoiMiddleware,
