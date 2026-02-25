@@ -450,6 +450,40 @@ describe("AI-friendly denial messages", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Additional edge-case SSRF bypass vectors (Issue 271)
+// ---------------------------------------------------------------------------
+
+describe("SSRF bypass edge cases", () => {
+  // Userinfo prefix: http://user@169.254.169.254/ — the WHATWG URL parser
+  // places 169.254.169.254 in url.hostname regardless of the userinfo prefix.
+  test("blocks userinfo prefix: user@169.254.169.254", () => {
+    expect(blocked("http://user@169.254.169.254/")).toBe(true);
+  });
+
+  // Explicit port should not bypass the IP block — port appears in url.port,
+  // hostname is still the private IP and is checked independently.
+  test("blocks 169.254.169.254 with explicit port :80", () => {
+    expect(blocked("http://169.254.169.254:80/")).toBe(true);
+  });
+
+  test("blocks RFC 1918 10.0.0.1 with non-standard port :8080", () => {
+    expect(blocked("http://10.0.0.1:8080/api")).toBe(true);
+  });
+
+  // Partial hex encoding: 0x7f.0.0.1 — WHATWG URL normalises this to 127.0.0.1
+  // before the block list is checked, so no special handling is needed.
+  test("blocks partial hex 0x7f.0.0.1 (= 127.0.0.1)", () => {
+    expect(blocked("https://0x7f.0.0.1/")).toBe(true);
+  });
+
+  // Public IP with explicit port must remain allowed — ports are not a signal
+  // of private-ness and should not cause false positives.
+  test("allows public IP 8.8.8.8:443 (public with explicit port)", () => {
+    expect(allowed("https://8.8.8.8:443/")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // No security config — backward-compatible passthrough
 // ---------------------------------------------------------------------------
 

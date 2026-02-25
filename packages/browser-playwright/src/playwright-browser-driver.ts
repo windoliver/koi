@@ -15,6 +15,9 @@
  * Stealth: set stealth:true to hide navigator.webdriver and disable AutomationControlled.
  */
 
+import { promises as dnsPromises } from "node:dns";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
   BrowserActionOptions,
   BrowserConsoleEntry,
@@ -37,7 +40,11 @@ import type {
   BrowserTabFocusOptions,
   BrowserTabInfo,
   BrowserTabNewOptions,
+  BrowserTraceOptions,
+  BrowserTraceResult,
   BrowserTypeOptions,
+  BrowserUploadFile,
+  BrowserUploadOptions,
   BrowserWaitOptions,
   KoiError,
   Result,
@@ -87,6 +94,12 @@ export interface PlaywrightDriverConfig {
    * Example: '/Users/alice/.koi/profiles/work'
    */
   readonly userDataDir?: string;
+  /**
+   * Block navigations that resolve to private/link-local IP addresses.
+   * Prevents DNS rebinding attacks by re-resolving hostnames at request time.
+   * Default: true (secure by default).
+   */
+  readonly blockPrivateAddresses?: boolean;
 }
 
 // Timeout defaults and maximum caps (ms)
@@ -100,8 +113,37 @@ const EVALUATE_DEFAULT_MS = 5_000;
 const EVALUATE_MAX_MS = 10_000;
 const LAUNCH_DEFAULT_MS = 30_000;
 
-/** Maximum entries per tab before FIFO eviction kicks in. */
-const CONSOLE_BUFFER_CAP = 1_000;
+/**
+ * Maximum entries per tab before FIFO eviction kicks in.
+ * 200 entries is enough context for agent debugging without unbounded growth.
+ * In practice, agents inspect the last 50 entries (console() default limit).
+ */
+const CONSOLE_BUFFER_CAP = 200;
+
+// ---------------------------------------------------------------------------
+// DNS rebinding protection helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true if the IP address falls within a private, loopback, or link-local range.
+ * Used by the DNS rebinding route guard to block navigations that resolve to
+ * internal addresses — catches post-TTL rebinding that bypasses static URL analysis.
+ *
+ * Inlined here (not imported from @koi/tool-browser) to avoid L2 peer violations.
+ */
+function isPrivateIp(ip: string): boolean {
+  return (
+    /^127\./.test(ip) ||
+    /^10\./.test(ip) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ||
+    /^192\.168\./.test(ip) ||
+    /^169\.254\./.test(ip) ||
+    ip === "::1" ||
+    ip.startsWith("fc") ||
+    ip.startsWith("fd") ||
+    ip === "0.0.0.0"
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Console helpers
@@ -226,6 +268,10 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
 
   let browser: Browser | null = config.browser ?? null;
   let browserContext: BrowserContext | null = null;
+  // Promise caches prevent concurrent callers from launching two browsers/contexts.
+  // Without these, two simultaneous ensureBrowser() calls would both see null and both launch.
+  let browserInitPromise: Promise<Browser> | null = null; // intentional mutation: set once on first call
+  let contextInitPromise: Promise<BrowserContext> | null = null; // intentional mutation: set once on first call
   let tabCounter = 0;
   const tabs = new Map<string, Page>();
   let currentTabId: string | null = null;
@@ -262,18 +308,22 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       };
       const buf = tabConsoleLogs.get(tabId);
       if (buf === undefined) return;
-      buf.push(entry);
-      if (buf.length > CONSOLE_BUFFER_CAP) buf.shift(); // FIFO eviction
+      buf.push(entry); // intentional mutation: buf is a private per-tab ring buffer owned by this closure
+      if (buf.length > CONSOLE_BUFFER_CAP) buf.shift(); // intentional mutation: FIFO eviction of oldest entry
     });
   }
 
   async function ensureBrowser(): Promise<Browser> {
-    if (!browser) {
-      if (config.cdpEndpoint) {
-        browser = await chromium.connectOverCDP(config.cdpEndpoint, {
-          timeout: config.launchTimeout ?? LAUNCH_DEFAULT_MS,
-        });
-      } else {
+    if (browser) return browser;
+    // Promise cache: concurrent callers share one launch and all await the same result.
+    if (!browserInitPromise) {
+      browserInitPromise = (async (): Promise<Browser> => {
+        // intentional assignment: set promise cache once
+        if (config.cdpEndpoint) {
+          return chromium.connectOverCDP(config.cdpEndpoint, {
+            timeout: config.launchTimeout ?? LAUNCH_DEFAULT_MS,
+          });
+        }
         const launchArgs = config.stealth
           ? [
               "--disable-blink-features=AutomationControlled",
@@ -281,50 +331,98 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
               "--no-default-browser-check",
             ]
           : [];
-        browser = await chromium.launch({
+        return chromium.launch({
           headless: config.headless ?? true,
           timeout: config.launchTimeout ?? LAUNCH_DEFAULT_MS,
           args: launchArgs,
           ...(config.stealth ? { ignoreDefaultArgs: ["--enable-automation"] } : {}),
         });
-      }
+      })();
     }
+    browser = await browserInitPromise; // intentional assignment: cache resolved browser for sync access
     return browser;
   }
 
   async function ensureContext(): Promise<BrowserContext> {
-    if (!browserContext) {
-      // Persistent context path: userDataDir bypasses ensureBrowser() entirely.
-      // chromium.launchPersistentContext() returns a BrowserContext directly.
-      if (config.userDataDir && !config.browser && !config.cdpEndpoint) {
-        const launchArgs = config.stealth
-          ? [
-              "--disable-blink-features=AutomationControlled",
-              "--no-first-run",
-              "--no-default-browser-check",
-            ]
-          : [];
-        browserContext = await chromium.launchPersistentContext(config.userDataDir, {
-          headless: config.headless ?? true,
-          timeout: config.launchTimeout ?? LAUNCH_DEFAULT_MS,
-          args: launchArgs,
-          ...(config.stealth ? { ignoreDefaultArgs: ["--enable-automation"] } : {}),
-        });
-      } else {
-        const b = await ensureBrowser();
-        // For CDP connections, reuse the default context if one exists
-        if (config.cdpEndpoint) {
-          const contexts = b.contexts();
-          browserContext = contexts[0] ?? (await b.newContext());
+    if (browserContext) return browserContext;
+    // Promise cache: concurrent callers share one context creation and all await the same result.
+    if (!contextInitPromise) {
+      contextInitPromise = (async (): Promise<BrowserContext> => {
+        // intentional assignment: set promise cache once
+        let ctx: BrowserContext;
+        // Persistent context path: userDataDir bypasses ensureBrowser() entirely.
+        // chromium.launchPersistentContext() returns a BrowserContext directly.
+        if (config.userDataDir && !config.browser && !config.cdpEndpoint) {
+          const launchArgs = config.stealth
+            ? [
+                "--disable-blink-features=AutomationControlled",
+                "--no-first-run",
+                "--no-default-browser-check",
+              ]
+            : [];
+          ctx = await chromium.launchPersistentContext(config.userDataDir, {
+            headless: config.headless ?? true,
+            timeout: config.launchTimeout ?? LAUNCH_DEFAULT_MS,
+            args: launchArgs,
+            ...(config.stealth ? { ignoreDefaultArgs: ["--enable-automation"] } : {}),
+          });
         } else {
-          browserContext = await b.newContext();
+          const b = await ensureBrowser();
+          // For CDP connections, reuse the default context if one exists
+          if (config.cdpEndpoint) {
+            const contexts = b.contexts();
+            ctx = contexts[0] ?? (await b.newContext());
+          } else {
+            ctx = await b.newContext();
+          }
         }
-      }
-      // Inject stealth script at context level — covers all pages and window.open() tabs
-      if (config.stealth && !config.browser && !config.cdpEndpoint) {
-        await browserContext.addInitScript(STEALTH_INIT_SCRIPT);
-      }
+        // Inject stealth script at context level — covers all pages and window.open() tabs
+        if (config.stealth && !config.browser && !config.cdpEndpoint) {
+          await ctx.addInitScript(STEALTH_INIT_SCRIPT);
+        }
+
+        // DNS rebinding guard — re-resolve hostnames at request time for document navigations.
+        // Catches post-TTL rebinding that bypasses the static URL check in url-security.ts.
+        // Default: enabled (blockPrivateAddresses !== false).
+        if (config.blockPrivateAddresses !== false) {
+          await ctx.route("**", async (route) => {
+            const req = route.request();
+            // Only intercept main-frame document navigations — sub-resources are not rebinding vectors
+            if (req.resourceType() !== "document" || !req.isNavigationRequest()) {
+              await route.continue();
+              return;
+            }
+            try {
+              const url = new URL(req.url());
+              // Skip non-HTTP(S) schemes — file://, data://, etc. are not rebinding targets
+              if (url.protocol !== "http:" && url.protocol !== "https:") {
+                await route.continue();
+                return;
+              }
+              const hostname = url.hostname;
+              // IP literals are already checked by url-security.ts at the tool layer
+              if (/^[\d.:[\]]+$/.test(hostname)) {
+                await route.continue();
+                return;
+              }
+              const { address } = await dnsPromises.lookup(hostname);
+              if (isPrivateIp(address)) {
+                await route.abort("accessdenied");
+                return;
+              }
+            } catch {
+              // DNS lookup failure → fail closed (deny the request)
+              await route.abort("accessdenied");
+              return;
+            }
+            await route.continue();
+          });
+        }
+
+        return ctx;
+      })();
     }
+    browserContext = await contextInitPromise; // intentional assignment: cache resolved context for sync access
     return browserContext;
   }
 
@@ -920,6 +1018,62 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       }
     },
 
+    async upload(
+      ref: string,
+      files: readonly BrowserUploadFile[],
+      options?: BrowserUploadOptions,
+    ): Promise<Result<void, KoiError>> {
+      try {
+        const page = await ensurePage();
+        const stale = checkSnapshotId(options?.snapshotId);
+        if (stale) return stale;
+
+        const found = requireLocator(page, ref, options?.frameSelector);
+        if ("error" in found) return found.error;
+
+        const t = resolveTimeout(options?.timeout, ACTION_DEFAULT_MS, ACTION_MAX_MS, "upload");
+        if (!t.ok) return t;
+
+        // Convert base64 content to Buffer payloads for Playwright setInputFiles
+        const payloads = files.map((f) => ({
+          name: f.name,
+          mimeType: f.mimeType ?? "application/octet-stream",
+          buffer: Buffer.from(f.content, "base64"),
+        }));
+
+        await found.locator.setInputFiles(payloads, { timeout: t.value });
+        return { ok: true, value: undefined };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_upload", e) };
+      }
+    },
+
+    async traceStart(options?: BrowserTraceOptions): Promise<Result<void, KoiError>> {
+      try {
+        const ctx = await ensureContext();
+        await ctx.tracing.start({
+          snapshots: options?.snapshots ?? true,
+          screenshots: true,
+          sources: false,
+          ...(options?.title !== undefined ? { title: options.title } : {}),
+        });
+        return { ok: true, value: undefined };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_trace_start", e) };
+      }
+    },
+
+    async traceStop(): Promise<Result<BrowserTraceResult, KoiError>> {
+      try {
+        const ctx = await ensureContext();
+        const tracePath = join(tmpdir(), `koi-trace-${Date.now()}.zip`);
+        await ctx.tracing.stop({ path: tracePath });
+        return { ok: true, value: { path: tracePath } };
+      } catch (e: unknown) {
+        return { ok: false, error: translatePlaywrightError("browser_trace_stop", e) };
+      }
+    },
+
     async dispose(): Promise<void> {
       // Invalidate all tab snapshots and console buffers
       tabSnapshots.clear();
@@ -934,12 +1088,14 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
       if (browserContext) {
         await browserContext.close().catch(() => undefined);
         browserContext = null;
+        contextInitPromise = null; // intentional mutation: reset so a new driver can be re-initialized after dispose
       }
 
       // Only close browser if we launched it (not injected and not CDP)
       if (ownsLifecycle && browser) {
         await browser.close().catch(() => undefined);
         browser = null;
+        browserInitPromise = null; // intentional mutation: reset so a new driver can be re-initialized after dispose
       }
     },
   };

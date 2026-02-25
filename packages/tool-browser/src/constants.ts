@@ -93,7 +93,7 @@ export const OPERATIONS = [
   "console",
 ] as const;
 
-/** All operations including the promoted-tier evaluate. */
+/** All operations including promoted-tier and opt-in operations. */
 export const ALL_OPERATIONS = [
   "snapshot",
   "navigate",
@@ -111,6 +111,9 @@ export const ALL_OPERATIONS = [
   "tab_focus",
   "console",
   "evaluate",
+  "upload",
+  "trace_start",
+  "trace_stop",
 ] as const;
 
 export type BrowserOperation = (typeof ALL_OPERATIONS)[number];
@@ -123,3 +126,16 @@ export const EVALUATE_OPERATION = "evaluate" as const;
 
 /** Trust tier for evaluate — higher than the default "verified". */
 export const EVALUATE_TRUST_TIER = "promoted" as const;
+
+/**
+ * The `upload` operation writes files to the server process.
+ * It is excluded from OPERATIONS and must be explicitly added.
+ */
+export const UPLOAD_OPERATION = "upload" as const;
+
+/**
+ * Trace recording operations — debug-only.
+ * Excluded from OPERATIONS and must be explicitly added.
+ */
+export const TRACE_OPERATION_START = "trace_start" as const;
+export const TRACE_OPERATION_STOP = "trace_stop" as const;
