@@ -1,0 +1,186 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/doctor API surface . has stable type surface 1`] = `
+"import { AgentManifest, PermissionConfig, DelegationConfig } from '@koi/core';
+import { Severity } from '@koi/validation';
+
+/**
+ * Public type definitions for @koi/doctor — security scanner + deployment audits.
+ *
+ * All types are immutable (readonly). No runtime code in this file.
+ */
+
+type DoctorCategory = "GOAL_INTEGRITY" | "TOOL_SAFETY" | "ACCESS_CONTROL" | "SUPPLY_CHAIN" | "RESILIENCE";
+type OwaspAgenticId = "ASI01" | "ASI02" | "ASI03" | "ASI04" | "ASI05" | "ASI06" | "ASI07" | "ASI08" | "ASI09" | "ASI10";
+interface DoctorFinding {
+    readonly rule: string;
+    readonly severity: Severity;
+    readonly category: DoctorCategory;
+    readonly message: string;
+    readonly fix?: string;
+    readonly owasp?: readonly OwaspAgenticId[];
+    readonly path?: string;
+}
+interface DoctorRuleError {
+    readonly rule: string;
+    readonly message: string;
+    readonly durationMs: number;
+    readonly timedOut: boolean;
+}
+interface OwaspCoverage {
+    readonly id: OwaspAgenticId;
+    readonly findingCount: number;
+    readonly maxSeverity: Severity | undefined;
+}
+interface DoctorReport {
+    readonly findings: readonly DoctorFinding[];
+    readonly ruleErrors: readonly DoctorRuleError[];
+    readonly rulesApplied: number;
+    readonly durationMs: number;
+    readonly owaspSummary: readonly OwaspCoverage[];
+    readonly healthy: boolean;
+    readonly truncationWarning: boolean;
+}
+interface DependencyEntry {
+    readonly name: string;
+    readonly version: string;
+    readonly isDev: boolean;
+}
+interface DoctorContext {
+    readonly manifest: AgentManifest;
+    readonly middlewareNames: () => ReadonlySet<string>;
+    readonly toolNames: () => ReadonlySet<string>;
+    readonly dependencies: () => readonly DependencyEntry[];
+    readonly envKeys: () => ReadonlySet<string>;
+    readonly permissions: PermissionConfig | undefined;
+    readonly delegation: DelegationConfig | undefined;
+    readonly packageJson?: Readonly<Record<string, unknown>>;
+}
+interface DoctorRule {
+    readonly name: string;
+    readonly category: DoctorCategory;
+    readonly defaultSeverity: Severity;
+    readonly owasp: readonly OwaspAgenticId[];
+    readonly check: (ctx: DoctorContext) => readonly DoctorFinding[] | Promise<readonly DoctorFinding[]>;
+}
+/**
+ * Async callback that returns advisory findings for declared dependencies.
+ * Callers can plug in \`npm audit\`, OSV, Snyk, or any other vulnerability feed.
+ */
+type AdvisoryCallback = (deps: readonly DependencyEntry[]) => readonly DoctorFinding[] | Promise<readonly DoctorFinding[]>;
+interface DoctorConfig {
+    readonly manifest: AgentManifest;
+    readonly dependencies?: readonly DependencyEntry[];
+    readonly envKeys?: ReadonlySet<string>;
+    readonly enabledCategories?: readonly DoctorCategory[];
+    readonly severityThreshold?: Severity;
+    readonly severityOverrides?: Readonly<Record<string, Severity>>;
+    readonly ruleTimeoutMs?: number;
+    readonly timeoutMs?: number;
+    readonly customRules?: readonly DoctorRule[];
+    readonly maxFindings?: number;
+    readonly advisoryCallback?: AdvisoryCallback;
+}
+interface ResolvedDoctorConfig {
+    readonly manifest: AgentManifest;
+    readonly dependencies: readonly DependencyEntry[];
+    readonly envKeys: ReadonlySet<string> | undefined;
+    readonly enabledCategories: readonly DoctorCategory[];
+    readonly severityThreshold: Severity;
+    readonly severityOverrides: Readonly<Record<string, Severity>>;
+    readonly ruleTimeoutMs: number;
+    readonly timeoutMs: number;
+    readonly customRules: readonly DoctorRule[];
+    readonly maxFindings: number;
+    readonly advisoryCallback: AdvisoryCallback | undefined;
+}
+interface Doctor {
+    readonly run: () => Promise<DoctorReport>;
+}
+interface SarifMessage {
+    readonly text: string;
+}
+interface SarifArtifactLocation {
+    readonly uri?: string;
+}
+interface SarifPhysicalLocation {
+    readonly artifactLocation?: SarifArtifactLocation;
+}
+interface SarifLocation {
+    readonly physicalLocation?: SarifPhysicalLocation;
+}
+interface SarifResult {
+    readonly ruleId: string;
+    readonly level: "error" | "warning" | "note" | "none";
+    readonly message: SarifMessage;
+    readonly locations?: readonly SarifLocation[];
+}
+interface SarifToolDriver {
+    readonly name: string;
+    readonly version: string;
+}
+interface SarifTool {
+    readonly driver: SarifToolDriver;
+}
+interface SarifRun {
+    readonly tool: SarifTool;
+    readonly results: readonly SarifResult[];
+}
+interface SarifLog {
+    readonly $schema: string;
+    readonly version: string;
+    readonly runs: readonly SarifRun[];
+}
+
+/**
+ * Configuration validation and defaults for @koi/doctor.
+ */
+
+declare function validateDoctorConfig(config: DoctorConfig): void;
+declare function resolveConfig(config: DoctorConfig): ResolvedDoctorConfig;
+
+/**
+ * DoctorContext factory with lazy memoized accessors.
+ */
+
+interface CreateDoctorContextOptions {
+    readonly dependencies?: readonly DependencyEntry[];
+    readonly envKeys?: ReadonlySet<string>;
+    readonly packageJson?: Readonly<Record<string, unknown>>;
+}
+declare function createDoctorContext(manifest: AgentManifest, options?: CreateDoctorContextOptions): DoctorContext;
+
+/**
+ * OWASP Agentic Top 10 summary aggregation.
+ */
+
+declare function computeOwaspSummary(findings: readonly DoctorFinding[]): readonly OwaspCoverage[];
+
+/**
+ * Built-in rule registry for @koi/doctor.
+ *
+ * All 25 rules across 10 OWASP Agentic categories.
+ */
+
+declare function getBuiltinRules(): readonly DoctorRule[];
+
+/**
+ * Doctor runner — parallel rule execution with timeout containment.
+ *
+ * Follows the @koi/self-test/check-runner.ts timeout pattern.
+ */
+
+declare function createDoctor(config: DoctorConfig): Doctor;
+
+/**
+ * SARIF 2.1.0 export for CI integration.
+ *
+ * Maps DoctorReport findings to the SARIF static analysis format
+ * for consumption by GitHub Advanced Security, VS Code, etc.
+ */
+
+declare function mapDoctorReportToSarif(report: DoctorReport, version?: string): SarifLog;
+
+export { type AdvisoryCallback, type CreateDoctorContextOptions, type DependencyEntry, type Doctor, type DoctorCategory, type DoctorConfig, type DoctorContext, type DoctorFinding, type DoctorReport, type DoctorRule, type DoctorRuleError, type OwaspAgenticId, type OwaspCoverage, type ResolvedDoctorConfig, type SarifLog, type SarifResult, type SarifRun, computeOwaspSummary, createDoctor, createDoctorContext, getBuiltinRules, mapDoctorReportToSarif, resolveConfig, validateDoctorConfig };
+"
+`;

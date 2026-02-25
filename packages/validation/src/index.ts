@@ -7,4 +7,5 @@
  */
 
 export { validateBrickArtifact } from "./brick-validation.js";
+export { SEVERITY_ORDER, type Severity, severityAtOrAbove } from "./severity.js";
 export { validateWith, zodToKoiError } from "./validation.js";

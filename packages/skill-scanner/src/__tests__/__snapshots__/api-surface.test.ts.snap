@@ -9,6 +9,10 @@ exports[`@koi/skill-scanner API surface . has stable type surface 1`] = `
  * All types live in L2 — no L0 changes required.
  */
 
+/**
+ * Severity levels — mirrored from @koi/validation.
+ * Kept local to avoid tsup DTS cross-package re-export resolution issues.
+ */
 type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
 type ScanCategory = "DANGEROUS_API" | "OBFUSCATION" | "EXFILTRATION" | "PROTOTYPE_POLLUTION" | "FILESYSTEM_ABUSE" | "SSRF" | "PROMPT_INJECTION" | "SECRETS" | "UNPARSEABLE";
 interface ScanLocation {

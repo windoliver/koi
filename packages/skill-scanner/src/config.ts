@@ -2,18 +2,8 @@
  * Scanner configuration validation and defaults.
  */
 
+import { severityAtOrAbove as _severityAtOrAbove } from "@koi/validation";
 import type { ScannerConfig, Severity } from "./types.js";
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const SEVERITY_ORDER: Record<Severity, number> = {
-  LOW: 0,
-  MEDIUM: 1,
-  HIGH: 2,
-  CRITICAL: 3,
-};
 
 const DEFAULT_CONFIG: Required<ScannerConfig> = {
   enabledCategories: [
@@ -48,7 +38,7 @@ export function resolveConfig(config?: ScannerConfig): Required<ScannerConfig> {
 }
 
 export function severityAtOrAbove(severity: Severity, threshold: Severity): boolean {
-  return SEVERITY_ORDER[severity] >= SEVERITY_ORDER[threshold];
+  return _severityAtOrAbove(severity, threshold);
 }
 
 export function meetsThresholds(

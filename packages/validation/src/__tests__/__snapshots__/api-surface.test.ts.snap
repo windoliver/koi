@@ -21,6 +21,16 @@ import { z } from 'zod';
 declare function validateBrickArtifact(data: unknown, source: string): Result<BrickArtifact, KoiError>;
 
 /**
+ * Shared severity types and utilities.
+ *
+ * Used by @koi/skill-scanner, @koi/doctor, and any L2 package
+ * that needs severity-level comparison.
+ */
+type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+declare const SEVERITY_ORDER: Readonly<Record<Severity, number>>;
+declare function severityAtOrAbove(severity: Severity, threshold: Severity): boolean;
+
+/**
  * Shared Zod → KoiError validation utilities.
  *
  * Eliminates duplication of \`zodToKoiError\` across L2 packages.
@@ -43,6 +53,6 @@ declare function zodToKoiError(zodError: z.core.$ZodError, prefix?: string): Koi
  */
 declare function validateWith<T>(schema: z.ZodType<T>, raw: unknown, prefix?: string): Result<T, KoiError>;
 
-export { validateBrickArtifact, validateWith, zodToKoiError };
+export { SEVERITY_ORDER, type Severity, severityAtOrAbove, validateBrickArtifact, validateWith, zodToKoiError };
 "
 `;
