@@ -1,0 +1,27 @@
+{
+  "name": "@koi/task-spawn",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/engine": "workspace:*",
+    "@koi/engine-loop": "workspace:*",
+    "@koi/model-router": "workspace:*",
+    "@koi/test-utils": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  }
+}

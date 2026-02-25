@@ -653,6 +653,19 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/task-spawn": {
+      "name": "@koi/task-spawn",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/test-utils": {
       "name": "@koi/test-utils",
       "version": "0.0.0",
@@ -1055,6 +1068,8 @@
     "@koi/store-fs": ["@koi/store-fs@workspace:packages/store-fs"],
 
     "@koi/store-sqlite": ["@koi/store-sqlite@workspace:packages/store-sqlite"],
+
+    "@koi/task-spawn": ["@koi/task-spawn@workspace:packages/task-spawn"],
 
     "@koi/test-utils": ["@koi/test-utils@workspace:packages/test-utils"],
 
