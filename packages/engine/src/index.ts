@@ -30,6 +30,17 @@ export {
 export { disposeAll } from "./dispose.js";
 // eviction policies
 export { lruPolicy, qosPolicy } from "./eviction-policies.js";
+// extension composer
+export type {
+  ComposedExtensions,
+  DefaultGuardExtensionConfig,
+  TransitionValidator,
+} from "./extension-composer.js";
+export {
+  composeExtensions,
+  createDefaultGuardExtension,
+  isSignificantTransition,
+} from "./extension-composer.js";
 // guards
 export type { CreateSpawnGuardOptions } from "./guards.js";
 export {

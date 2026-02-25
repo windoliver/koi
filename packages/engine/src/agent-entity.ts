@@ -14,6 +14,7 @@ import type {
   SubsystemToken,
 } from "@koi/core";
 import { COMPONENT_PRIORITY } from "@koi/core";
+import type { TransitionValidator } from "./extension-composer.js";
 import type { AgentLifecycle, LifecycleEvent } from "./lifecycle.js";
 import { createLifecycle, transition } from "./lifecycle.js";
 
@@ -38,6 +39,7 @@ export class AgentEntity implements Agent {
 
   private _lifecycle: AgentLifecycle;
   private _components: ReadonlyMap<string, unknown> = new Map();
+  private _transitionValidator: TransitionValidator | undefined;
   /**
    * Prefix query cache. Safe because components are immutable after assembly.
    * If runtime component modification is added (e.g., Forge), this cache
@@ -99,9 +101,25 @@ export class AgentEntity implements Agent {
     return this._lifecycle;
   }
 
+  /** @internal — Set a validator that gates lifecycle transitions. */
+  setTransitionValidator(validator: TransitionValidator): void {
+    this._transitionValidator = validator;
+  }
+
   /** @internal */
   transition(event: LifecycleEvent): void {
-    this._lifecycle = transition(this._lifecycle, event);
+    const next = transition(this._lifecycle, event);
+
+    // If state actually changed and a validator is set, check permission
+    if (
+      next.state !== this._lifecycle.state &&
+      this._transitionValidator !== undefined &&
+      !this._transitionValidator(this._lifecycle.state, next.state)
+    ) {
+      return; // Validator blocked the transition — state unchanged
+    }
+
+    this._lifecycle = next;
   }
 
   // ---------------------------------------------------------------------------

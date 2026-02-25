@@ -3,8 +3,8 @@
 exports[`@koi/core API surface . has stable type surface 1`] = `
 "import { BrickRef } from './brick-snapshot.js';
 export { BrickId, BrickSnapshot, BrickSource, SnapshotEvent, SnapshotId, SnapshotQuery, SnapshotStore, brickId, snapshotId } from './brick-snapshot.js';
-import { A as AgentId, P as ProcessState, S as SessionId, T as ToolCallId } from './ecs-d084so0Y.js';
-export { a as Agent, B as BROWSER, b as BrowserActionOptions, c as BrowserConsoleEntry, d as BrowserConsoleLevel, e as BrowserConsoleOptions, f as BrowserConsoleResult, g as BrowserDriver, h as BrowserEvaluateOptions, i as BrowserEvaluateResult, j as BrowserFormField, k as BrowserNavigateOptions, l as BrowserNavigateResult, m as BrowserRefInfo, n as BrowserScreenshotOptions, o as BrowserScreenshotResult, p as BrowserScrollOptions, q as BrowserSnapshotOptions, r as BrowserSnapshotResult, s as BrowserTabCloseOptions, t as BrowserTabFocusOptions, u as BrowserTabInfo, v as BrowserTabNewOptions, w as BrowserTypeOptions, x as BrowserWaitOptions, y as BrowserWaitUntil, C as COMPONENT_PRIORITY, z as CREDENTIALS, D as ChildHandle, E as ChildLifecycleEvent, F as ComponentEvent, G as ComponentEventKind, H as ComponentProvider, I as CredentialComponent, J as DELEGATION, K as EVENTS, L as EventComponent, M as FILESYSTEM, N as GOVERNANCE, O as GovernanceComponent, Q as GovernanceUsage, R as MEMORY, U as MemoryComponent, V as MemoryResult, W as ProcessAccounter, X as ProcessId, Y as RunId, Z as SkillMetadata, _ as SpawnCheck, $ as SpawnLedger, a0 as SubsystemToken, a1 as Tool, a2 as ToolDescriptor, a3 as TrustTier, a4 as TurnId, a5 as agentId, a6 as channelToken, a7 as engineToken, a8 as middlewareToken, a9 as providerToken, aa as resolverToken, ab as runId, ac as sessionId, ad as skillToken, ae as token, af as toolCallId, ag as toolToken, ah as turnId } from './ecs-d084so0Y.js';
+import { A as AgentId, P as ProcessState, a as Agent, S as SessionId, T as ToolCallId } from './ecs-d084so0Y.js';
+export { B as BROWSER, b as BrowserActionOptions, c as BrowserConsoleEntry, d as BrowserConsoleLevel, e as BrowserConsoleOptions, f as BrowserConsoleResult, g as BrowserDriver, h as BrowserEvaluateOptions, i as BrowserEvaluateResult, j as BrowserFormField, k as BrowserNavigateOptions, l as BrowserNavigateResult, m as BrowserRefInfo, n as BrowserScreenshotOptions, o as BrowserScreenshotResult, p as BrowserScrollOptions, q as BrowserSnapshotOptions, r as BrowserSnapshotResult, s as BrowserTabCloseOptions, t as BrowserTabFocusOptions, u as BrowserTabInfo, v as BrowserTabNewOptions, w as BrowserTypeOptions, x as BrowserWaitOptions, y as BrowserWaitUntil, C as COMPONENT_PRIORITY, z as CREDENTIALS, D as ChildHandle, E as ChildLifecycleEvent, F as ComponentEvent, G as ComponentEventKind, H as ComponentProvider, I as CredentialComponent, J as DELEGATION, K as EVENTS, L as EventComponent, M as FILESYSTEM, N as GOVERNANCE, O as GovernanceComponent, Q as GovernanceUsage, R as MEMORY, U as MemoryComponent, V as MemoryResult, W as ProcessAccounter, X as ProcessId, Y as RunId, Z as SkillMetadata, _ as SpawnCheck, $ as SpawnLedger, a0 as SubsystemToken, a1 as Tool, a2 as ToolDescriptor, a3 as TrustTier, a4 as TurnId, a5 as agentId, a6 as channelToken, a7 as engineToken, a8 as middlewareToken, a9 as providerToken, aa as resolverToken, ab as runId, ac as sessionId, ad as skillToken, ae as token, af as toolCallId, ag as toolToken, ah as turnId } from './ecs-d084so0Y.js';
 import { E as EngineState, a as EngineInput } from './engine-DoGrEOa4.js';
 export { A as AbortReason, C as ComposedCallHandlers, b as CorrelationIds, c as EngineAdapter, d as EngineEvent, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, h as EngineStopReason } from './engine-DoGrEOa4.js';
 import { Result, KoiError } from './errors.js';
@@ -21,9 +21,10 @@ export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } fro
 export { FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-backend.js';
 export { A as ALL_BRICK_KINDS, B as BrickKind, a as BrickLifecycle, F as ForgeScope, M as MIN_TRUST_BY_KIND, V as VALID_LIFECYCLE_TRANSITIONS } from './forge-types-CDaWduep.js';
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
+import { KoiMiddleware } from './middleware.js';
+export { ApprovalDecision, ApprovalHandler, ApprovalRequest, ModelChunk, ModelHandler, ModelRequest, ModelResponse, ModelStreamHandler, SessionContext, ToolHandler, ToolRequest, ToolResponse, TurnContext } from './middleware.js';
 export { AgentCondition, AgentRegistry, AgentStatus, RegistryEntry, RegistryEvent, RegistryFilter, TransitionReason, VALID_TRANSITIONS } from './lifecycle.js';
 export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
-export { ApprovalDecision, ApprovalHandler, ApprovalRequest, KoiMiddleware, ModelChunk, ModelHandler, ModelRequest, ModelResponse, ModelStreamHandler, SessionContext, ToolHandler, ToolRequest, ToolResponse, TurnContext } from './middleware.js';
 export { ModelCapabilities, ModelProvider, ModelTarget } from './model-provider.js';
 export { Resolver, SourceBundle, SourceLanguage } from './resolver.js';
 export { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance } from './sandbox-adapter.js';
@@ -241,6 +242,104 @@ declare function permission(message: string): KoiError;
  * @param hint - Optional actionable hint for the caller (e.g., "call browser_snapshot").
  */
 declare function staleRef(refId: string, hint?: string): KoiError;
+
+/**
+ * Kernel extension contract — pluggable L1 guard/lifecycle/assembly slots.
+ *
+ * Extensions allow composable, replaceable kernel behaviors without forking
+ * createKoi(). Guard slots produce KoiMiddleware (sole interposition layer),
+ * lifecycle validators gate state transitions, and assembly validators
+ * verify component correctness before an agent starts.
+ *
+ * Exception: EXTENSION_PRIORITY constant is permitted in L0 as a pure
+ * readonly data constant derived from L0 type definitions with zero logic.
+ */
+
+/**
+ * Priority tiers for KernelExtension ordering.
+ * Lower number = higher precedence (runs first / takes priority).
+ * Order: Core > Platform > User > Addon.
+ */
+declare const EXTENSION_PRIORITY: Readonly<{
+    readonly CORE: 0;
+    readonly PLATFORM: 10;
+    readonly USER: 50;
+    readonly ADDON: 100;
+}>;
+/**
+ * Context provided to a KernelExtension's guard slot at assembly time.
+ * Guards use this to produce middleware tailored to the current agent.
+ */
+interface GuardContext {
+    /** Depth of the agent in the process tree (0 = root). */
+    readonly agentDepth: number;
+    /** The agent's manifest. */
+    readonly manifest: AgentManifest;
+    /** All attached components as a readonly map. */
+    readonly components: ReadonlyMap<string, unknown>;
+    /** The assembled agent entity (for GovernanceComponent lookup, etc.). */
+    readonly agent?: Agent;
+}
+/**
+ * Context for lifecycle transition validation.
+ * Validators receive the current and target states.
+ */
+interface TransitionContext {
+    /** Current process state before the transition. */
+    readonly from: ProcessState;
+    /** Target process state after the transition. */
+    readonly to: ProcessState;
+}
+/** A single diagnostic produced by assembly validation. */
+interface ValidationDiagnostic {
+    /** Name of the extension or validator that produced this diagnostic. */
+    readonly source: string;
+    /** Human-readable description of the issue. */
+    readonly message: string;
+    /** Severity: "error" blocks agent creation, "warning" is advisory. */
+    readonly severity: "error" | "warning";
+}
+/** Result of assembly validation — discriminated union. */
+type ValidationResult = {
+    readonly ok: true;
+} | {
+    readonly ok: false;
+    readonly diagnostics: readonly ValidationDiagnostic[];
+};
+/**
+ * A composable kernel extension that plugs into L1 guard, lifecycle,
+ * and assembly validation slots.
+ *
+ * All slots are optional — an extension can provide any combination.
+ * Extensions are sorted by priority (ascending) before composition.
+ */
+interface KernelExtension {
+    /** Unique name for this extension (e.g., "koi:default-guards"). */
+    readonly name: string;
+    /**
+     * Extension priority. Lower = higher precedence.
+     * Defaults to EXTENSION_PRIORITY.USER (50) if omitted.
+     */
+    readonly priority?: number;
+    /**
+     * Guard slot — produces KoiMiddleware for the agent session.
+     * Called once at assembly time. The returned middleware array is
+     * composed into the agent's middleware chain.
+     */
+    readonly guards?: (ctx: GuardContext) => readonly KoiMiddleware[] | Promise<readonly KoiMiddleware[]>;
+    /**
+     * Lifecycle transition validator — sync only for hot-path performance.
+     * Returns true to allow the transition, false to block it.
+     * Only called for significant transitions (not wait/resume hot path).
+     */
+    readonly validateTransition?: (ctx: TransitionContext) => boolean;
+    /**
+     * Assembly validator — checks component/manifest correctness before
+     * the agent starts running. Can be async for I/O-backed validation.
+     * Return { ok: true } to pass, or { ok: false, diagnostics } to report issues.
+     */
+    readonly validateAssembly?: (components: ReadonlyMap<string, unknown>, manifest: AgentManifest) => ValidationResult | Promise<ValidationResult>;
+}
 
 /**
  * Scheduler contract — pluggable task scheduling, priority queue, cron,
@@ -655,7 +754,7 @@ declare function isProcessState(value: string): value is ProcessState;
  */
 declare function validateNonEmpty(value: string, name: string): Result<void, KoiError>;
 
-export { AgentId, AgentManifest, type AgentSnapshot, type AgentSnapshotStore, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickRef, type ChainCompactor, type ChainId, type CompensatingOp, type CronSchedule, DEFAULT_SCHEDULER_CONFIG, EngineInput, EngineState, type EventCursor, type FileOpKind, type FileOpRecord, type ForkRef, JsonObject, KoiError, type NodeId, type PendingFrame, ProcessState, type PruningPolicy, type PutOptions, type RecoveryPlan, type RedactionRule, Result, type ScheduleId, type ScheduleStore, type ScheduledTask, type SchedulerConfig, type SchedulerEvent, type SchedulerStats, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, type TaskFilter, type TaskId, type TaskOptions, type TaskScheduler, type TaskStatus, type TaskStore, ToolCallId, type TraceEvent, type TraceEventKind, type TurnTrace, chainId, conflict, external, internal, isProcessState, nodeId, notFound, permission, rateLimit, scheduleId, staleRef, taskId, timeout, validateNonEmpty, validation };
+export { Agent, AgentId, AgentManifest, type AgentSnapshot, type AgentSnapshotStore, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickRef, type ChainCompactor, type ChainId, type CompensatingOp, type CronSchedule, DEFAULT_SCHEDULER_CONFIG, EXTENSION_PRIORITY, EngineInput, EngineState, type EventCursor, type FileOpKind, type FileOpRecord, type ForkRef, type GuardContext, JsonObject, type KernelExtension, KoiError, KoiMiddleware, type NodeId, type PendingFrame, ProcessState, type PruningPolicy, type PutOptions, type RecoveryPlan, type RedactionRule, Result, type ScheduleId, type ScheduleStore, type ScheduledTask, type SchedulerConfig, type SchedulerEvent, type SchedulerStats, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, type TaskFilter, type TaskId, type TaskOptions, type TaskScheduler, type TaskStatus, type TaskStore, ToolCallId, type TraceEvent, type TraceEventKind, type TransitionContext, type TurnTrace, type ValidationDiagnostic, type ValidationResult, chainId, conflict, external, internal, isProcessState, nodeId, notFound, permission, rateLimit, scheduleId, staleRef, taskId, timeout, validateNonEmpty, validation };
 "
 `;
 

@@ -138,6 +138,9 @@
         "@koi/errors": "workspace:*",
         "@koi/hash": "workspace:*",
       },
+      "devDependencies": {
+        "@koi/engine-pi": "workspace:*",
+      },
     },
     "packages/engine-claude": {
       "name": "@koi/engine-claude",

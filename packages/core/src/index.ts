@@ -261,6 +261,15 @@ export type {
 } from "./health.js";
 // health — runtime values
 export { DEFAULT_HEALTH_MONITOR_CONFIG } from "./health.js";
+// kernel extension — pluggable L1 guard/lifecycle/assembly slots
+export type {
+  GuardContext,
+  KernelExtension,
+  TransitionContext,
+  ValidationDiagnostic,
+  ValidationResult,
+} from "./kernel-extension.js";
+export { EXTENSION_PRIORITY } from "./kernel-extension.js";
 // lifecycle
 export type {
   AgentCondition,
