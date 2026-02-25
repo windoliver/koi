@@ -29,6 +29,7 @@ export { Resolver, SourceBundle, SourceLanguage } from './resolver.js';
 export { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance } from './sandbox-adapter.js';
 export { SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, TierResolution, TieredSandboxExecutor } from './sandbox-executor.js';
 export { FilesystemPolicy, NetworkPolicy, ResourceLimits, SandboxProfile } from './sandbox-profile.js';
+export { DEFAULT_SKILL_SEARCH_LIMIT, SkillId, SkillPage, SkillPublishRequest, SkillRegistryBackend, SkillRegistryChangeEvent, SkillRegistryChangeKind, SkillRegistryEntry, SkillRegistryReader, SkillRegistryWriter, SkillSearchQuery, SkillVersion, skillId } from './skill-registry.js';
 export { OutboundWebhookConfig, WebhookDeliveryStatus, WebhookEventKind, WebhookPayload } from './webhook.js';
 
 /**
@@ -1949,5 +1950,140 @@ interface SandboxProfile {
 }
 
 export type { FilesystemPolicy, NetworkPolicy, ResourceLimits, SandboxProfile };
+"
+`;
+
+exports[`@koi/core API surface ./skill-registry has stable type surface 1`] = `
+"import { c as BrickRequires, q as SkillArtifact } from './brick-store-CNGzhyLN.js';
+import { Result, KoiError } from './errors.js';
+import './ecs-DM4-kRhl.js';
+import './assembly-Bp5WuiM8.js';
+import './common.js';
+import './webhook.js';
+import './channel.js';
+import './message.js';
+import './filesystem-backend.js';
+import './brick-snapshot-LmuHPCYQ.js';
+
+/**
+ * Skill registry — pluggable skill discovery, publishing, versioning, and installation.
+ *
+ * Separate from ForgeStore (local brick persistence) and Resolver (generic read-only
+ * discovery). The registry models a remote or local package catalog — think npm for skills.
+ *
+ * Split into SkillRegistryReader (all backends) and SkillRegistryWriter (writable backends).
+ * Combined as SkillRegistryBackend for backends that support both.
+ *
+ * Exception: \`skillId()\` branded cast is permitted in L0 as a zero-logic identity cast.
+ * Exception: \`DEFAULT_SKILL_SEARCH_LIMIT\` is a pure readonly data constant.
+ */
+
+declare const __skillIdBrand: unique symbol;
+/**
+ * Branded string type for skill identifiers.
+ * Prevents accidental mixing with agent IDs, session IDs, etc.
+ */
+type SkillId = string & {
+    readonly [__skillIdBrand]: "SkillId";
+};
+/** Create a branded SkillId from a plain string. */
+declare function skillId(raw: string): SkillId;
+/** Version metadata for a published skill. */
+interface SkillVersion {
+    readonly version: string;
+    /** Subresource Integrity hash (e.g., "sha256-..."). */
+    readonly integrity?: string;
+    /** Unix milliseconds when this version was published. */
+    readonly publishedAt: number;
+    /** Whether this version has been deprecated. */
+    readonly deprecated?: boolean;
+}
+/**
+ * Catalog-level skill entry. Richer than SkillMetadata (includes version, author)
+ * but lighter than SkillArtifact (no content/implementation).
+ */
+interface SkillRegistryEntry {
+    readonly id: SkillId;
+    readonly name: string;
+    readonly description: string;
+    readonly tags: readonly string[];
+    /** Latest published version string. */
+    readonly version: string;
+    /** Unix ms when the latest version was published. */
+    readonly publishedAt: number;
+    readonly author?: string;
+    /** Runtime requirements (bins, env vars, tools). Surfaced at catalog level for filtering. */
+    readonly requires?: BrickRequires;
+    /** Total install/download count. Optional — not all backends track this. */
+    readonly downloads?: number;
+}
+interface SkillSearchQuery {
+    /** Case-insensitive text match against name and description. */
+    readonly text?: string;
+    /** Filter by tags (AND — all specified tags must match). */
+    readonly tags?: readonly string[];
+    readonly author?: string;
+    /** Max items per page. Defaults to DEFAULT_SKILL_SEARCH_LIMIT. */
+    readonly limit?: number;
+    /** Opaque cursor for the next page. undefined = first page. */
+    readonly cursor?: string;
+}
+/** Default page size for skill search. */
+declare const DEFAULT_SKILL_SEARCH_LIMIT: 50;
+interface SkillPage {
+    readonly items: readonly SkillRegistryEntry[];
+    /** Opaque cursor for the next page. undefined = no more pages. */
+    readonly cursor?: string;
+    /** Total matching skills. Optional — some backends can't count cheaply. */
+    readonly total?: number;
+}
+/** Describes what changed in the registry. */
+type SkillRegistryChangeKind = "published" | "unpublished" | "deprecated";
+/** Notification payload for registry mutations. */
+interface SkillRegistryChangeEvent {
+    readonly kind: SkillRegistryChangeKind;
+    readonly skillId: SkillId;
+    /** Version affected (for published/deprecated events). */
+    readonly version?: string;
+}
+interface SkillRegistryReader {
+    /** Search the registry with optional filters and pagination. */
+    readonly search: (query: SkillSearchQuery) => SkillPage | Promise<SkillPage>;
+    /** Get a single skill entry by ID. */
+    readonly get: (id: SkillId) => Result<SkillRegistryEntry, KoiError> | Promise<Result<SkillRegistryEntry, KoiError>>;
+    /** List all versions of a skill, newest first. */
+    readonly versions: (id: SkillId) => Result<readonly SkillVersion[], KoiError> | Promise<Result<readonly SkillVersion[], KoiError>>;
+    /** Download and return a SkillArtifact. Always async (I/O). */
+    readonly install: (id: SkillId, version?: string) => Promise<Result<SkillArtifact, KoiError>>;
+    /** Optional typed change notification. Returns unsubscribe function. */
+    readonly onChange?: (listener: (event: SkillRegistryChangeEvent) => void) => () => void;
+}
+interface SkillPublishRequest {
+    readonly id: SkillId;
+    readonly name: string;
+    readonly description: string;
+    readonly tags: readonly string[];
+    readonly version: string;
+    /** Markdown source content. */
+    readonly content: string;
+    readonly author?: string;
+    /** Subresource Integrity hash for verification. */
+    readonly integrity?: string;
+    /** Runtime requirements (bins, env vars, tools) for catalog-level filtering. */
+    readonly requires?: BrickRequires;
+}
+interface SkillRegistryWriter {
+    /** Publish a new skill version to the registry. */
+    readonly publish: (request: SkillPublishRequest) => Result<SkillRegistryEntry, KoiError> | Promise<Result<SkillRegistryEntry, KoiError>>;
+    /** Remove a skill entirely from the registry. */
+    readonly unpublish: (id: SkillId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    /** Mark a specific version as deprecated. */
+    readonly deprecate: (id: SkillId, version: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+}
+/** Full registry backend that supports both reading and writing. */
+interface SkillRegistryBackend extends SkillRegistryReader, SkillRegistryWriter {
+}
+
+export { DEFAULT_SKILL_SEARCH_LIMIT, type SkillId, type SkillPage, type SkillPublishRequest, type SkillRegistryBackend, type SkillRegistryChangeEvent, type SkillRegistryChangeKind, type SkillRegistryEntry, type SkillRegistryReader, type SkillRegistryWriter, type SkillSearchQuery, type SkillVersion, skillId };
 "
 `;
