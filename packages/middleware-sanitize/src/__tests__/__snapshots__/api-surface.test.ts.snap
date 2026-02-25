@@ -189,13 +189,18 @@ interface StreamBuffer {
     readonly flush: () => StreamBufferResult;
 }
 /**
+ * Downgrade \`block\` actions to \`strip\` for streaming context.
+ * Call once at factory creation, pass the result to \`createStreamBuffer\`.
+ */
+declare function mapBlockToStrip(rules: readonly SanitizeRule[]): readonly SanitizeRule[];
+/**
  * Create a sliding window stream buffer for sanitizing streaming output.
  *
- * Rules with \`block\` action are downgraded to \`strip\` in stream context
- * (since we can't retract already-yielded content).
+ * Expects rules pre-processed via \`mapBlockToStrip\` — block actions should
+ * already be downgraded to strip (since we can't retract already-yielded content).
  */
 declare function createStreamBuffer(rules: readonly SanitizeRule[], bufferSize?: number): StreamBuffer;
 
-export { CONTROL_CHAR_RULES, type ContentBlockKind, DEFAULT_JSON_WALK_MAX_DEPTH, DEFAULT_RULES, DEFAULT_STREAM_BUFFER_SIZE, HTML_TAG_RULES, PROMPT_INJECTION_RULES, type RulePreset, type SanitizationEvent, type SanitizationLocation, type SanitizeAction, type SanitizeMiddlewareConfig, type SanitizeRule, type SanitizeSeverity, ZERO_WIDTH_RULES, createSanitizeMiddleware, createStreamBuffer, resolvePresets, sanitizeBlock, sanitizeMessage, sanitizeString, validateSanitizeConfig, walkJsonStrings };
+export { CONTROL_CHAR_RULES, type ContentBlockKind, DEFAULT_JSON_WALK_MAX_DEPTH, DEFAULT_RULES, DEFAULT_STREAM_BUFFER_SIZE, HTML_TAG_RULES, PROMPT_INJECTION_RULES, type RulePreset, type SanitizationEvent, type SanitizationLocation, type SanitizeAction, type SanitizeMiddlewareConfig, type SanitizeRule, type SanitizeSeverity, ZERO_WIDTH_RULES, createSanitizeMiddleware, createStreamBuffer, mapBlockToStrip, resolvePresets, sanitizeBlock, sanitizeMessage, sanitizeString, validateSanitizeConfig, walkJsonStrings };
 "
 `;
