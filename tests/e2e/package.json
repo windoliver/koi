@@ -15,6 +15,7 @@
     "@koi/model-router": "workspace:*",
     "@koi/forge": "workspace:*",
     "@koi/hash": "workspace:*",
+    "@koi/node": "workspace:*",
     "@koi/delegation": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },

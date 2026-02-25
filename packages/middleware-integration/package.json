@@ -7,6 +7,8 @@
     "@koi/context": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/engine": "workspace:*",
+    "@koi/execution-context": "workspace:*",
+    "@koi/node": "workspace:*",
     "@koi/engine-loop": "workspace:*",
     "@koi/middleware-audit": "workspace:*",
     "@koi/middleware-memory": "workspace:*",

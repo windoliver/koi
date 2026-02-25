@@ -26,6 +26,7 @@ const L0_PACKAGES = new Set(["@koi/core"]);
 const L0U_PACKAGES = new Set([
   "@koi/channel-base",
   "@koi/errors",
+  "@koi/execution-context",
   "@koi/hash",
   "@koi/manifest",
   "@koi/shutdown",

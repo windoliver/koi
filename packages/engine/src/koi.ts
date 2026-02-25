@@ -35,6 +35,7 @@ import type {
 } from "@koi/core";
 import { agentId, runId, sessionId, toolToken, turnId } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
+import { runWithExecutionContext } from "@koi/execution-context";
 import { AgentEntity } from "./agent-entity.js";
 import {
   composeModelChain,
@@ -255,6 +256,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             agentId: pid.id,
             sessionId: sid,
             runId: rid,
+            ...(options.userId !== undefined ? { userId: options.userId } : {}),
             ...(options.channelId !== undefined ? { channelId: options.channelId } : {}),
             metadata: {},
           };
@@ -329,7 +331,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                       return cachedTurnCtx;
                     };
                     const rawModelTerminal = adapter.terminals.modelCall;
-                    const rawToolTerminal = adapter.terminals.toolCall ?? defaultToolTerminal;
+                    const baseToolTerminal = adapter.terminals.toolCall ?? defaultToolTerminal;
+                    // Wrap tool terminal with execution context so tools can
+                    // read session identity via getExecutionContext().
+                    const rawToolTerminal: ToolHandler = (request) => {
+                      const execCtx = { session: sessionCtx, turnIndex: currentTurnIndex };
+                      return runWithExecutionContext(execCtx, () => baseToolTerminal(request));
+                    };
                     const rawModelStreamTerminal = adapter.terminals.modelStream;
 
                     // Create lifecycle-aware terminal handlers (cached for reuse across turns)

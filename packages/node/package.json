@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
+    "@koi/execution-context": "workspace:*",
     "@koi/shutdown": "workspace:*",
     "zod": "4.3.6"
   },
