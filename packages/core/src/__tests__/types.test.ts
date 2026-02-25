@@ -1469,3 +1469,25 @@ describe("ModelRequest.signal", () => {
     expect(req.signal).toBe(controller.signal);
   });
 });
+
+// ---------------------------------------------------------------------------
+// ModelRequest.tools (#313 — tool selector middleware)
+// ---------------------------------------------------------------------------
+
+describe("ModelRequest.tools", () => {
+  test("tools is optional on ModelRequest", () => {
+    const req: ModelRequest = { messages: [] };
+    expect(req.tools).toBeUndefined();
+  });
+
+  test("ModelRequest accepts optional tools field", () => {
+    const descriptor: ToolDescriptor = {
+      name: "test",
+      description: "test tool",
+      inputSchema: {},
+    };
+    const req: ModelRequest = { messages: [], tools: [descriptor] };
+    expect(req.tools).toHaveLength(1);
+    expect(req.tools?.[0]?.name).toBe("test");
+  });
+});

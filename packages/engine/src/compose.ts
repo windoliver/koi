@@ -321,9 +321,14 @@ export function createComposedCallHandlers(
     (t) => t.descriptor,
   );
 
+  // Inject tool descriptors into ModelRequest so middleware can see/filter tools.
+  // If the request already carries tools (e.g., set by a prior layer), preserve them.
+  const injectTools = (request: ModelRequest): ModelRequest =>
+    request.tools !== undefined ? request : { ...request, tools: toolDescriptors };
+
   if (modelStreamHandler === undefined) {
     return {
-      modelCall: (request) => modelChain(getTurnContext(), request),
+      modelCall: (request) => modelChain(getTurnContext(), injectTools(request)),
       toolCall: (request) => toolChain(getTurnContext(), request),
       tools: toolDescriptors,
     };
@@ -332,8 +337,8 @@ export function createComposedCallHandlers(
   const streamChain = composeModelStreamChain(middleware, modelStreamHandler);
 
   return {
-    modelCall: (request) => modelChain(getTurnContext(), request),
-    modelStream: (request) => streamChain(getTurnContext(), request),
+    modelCall: (request) => modelChain(getTurnContext(), injectTools(request)),
+    modelStream: (request) => streamChain(getTurnContext(), injectTools(request)),
     toolCall: (request) => toolChain(getTurnContext(), request),
     tools: toolDescriptors,
   };

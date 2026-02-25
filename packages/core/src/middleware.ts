@@ -4,7 +4,7 @@
 
 import type { ChannelStatus } from "./channel.js";
 import type { JsonObject } from "./common.js";
-import type { RunId, SessionId, ToolCallId, TurnId } from "./ecs.js";
+import type { RunId, SessionId, ToolCallId, ToolDescriptor, TurnId } from "./ecs.js";
 import type { InboundMessage } from "./message.js";
 
 export interface SessionContext {
@@ -34,6 +34,8 @@ export interface ModelRequest {
   readonly metadata?: JsonObject;
   /** Propagated abort signal — adapters should compose with their own timeout. */
   readonly signal?: AbortSignal | undefined;
+  /** Tool descriptors available for this call. Injected by L1; middleware may filter. */
+  readonly tools?: readonly ToolDescriptor[];
 }
 
 export interface ModelResponse {

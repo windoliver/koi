@@ -1157,7 +1157,7 @@ export type { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, Inb
 exports[`@koi/core API surface ./middleware has stable type surface 1`] = `
 "import { ChannelStatus } from './channel.js';
 import { JsonObject } from './common.js';
-import { T as ToolCallId, S as SessionId, Y as RunId, a4 as TurnId } from './ecs-d084so0Y.js';
+import { a2 as ToolDescriptor, T as ToolCallId, S as SessionId, Y as RunId, a4 as TurnId } from './ecs-d084so0Y.js';
 import { InboundMessage } from './message.js';
 import './assembly-CFhPkvga.js';
 import './webhook.js';
@@ -1193,6 +1193,8 @@ interface ModelRequest {
     readonly metadata?: JsonObject;
     /** Propagated abort signal — adapters should compose with their own timeout. */
     readonly signal?: AbortSignal | undefined;
+    /** Tool descriptors available for this call. Injected by L1; middleware may filter. */
+    readonly tools?: readonly ToolDescriptor[];
 }
 interface ModelResponse {
     readonly content: string;
