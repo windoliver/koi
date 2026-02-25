@@ -1,10 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/middleware-tool-selector API surface . has stable type surface 1`] = `
-"import { ToolDescriptor } from '@koi/core';
-import { Result, KoiError } from '@koi/core/errors';
-import { InboundMessage } from '@koi/core/message';
-import { KoiMiddleware } from '@koi/core/middleware';
+"import { ToolDescriptor, InboundMessage, Result, KoiError, KoiMiddleware } from '@koi/core';
 
 /**
  * Configuration for the tool-selector middleware.
