@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { InboundMessage } from "@koi/core/message";
+import type { InboundMessage } from "@koi/core";
 import { extractLastUserText } from "./extract-query.js";
 
 function msg(text: string): InboundMessage {

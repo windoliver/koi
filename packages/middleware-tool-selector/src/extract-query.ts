@@ -2,7 +2,7 @@
  * Default query extraction — extracts text from the last inbound message.
  */
 
-import type { InboundMessage } from "@koi/core/message";
+import type { InboundMessage } from "@koi/core";
 
 /**
  * Extracts text content from the last message in the list.

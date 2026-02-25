@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { ToolDescriptor } from "@koi/core";
-import type { ModelRequest, ModelResponse } from "@koi/core/middleware";
+import type { ModelRequest, ModelResponse, ToolDescriptor } from "@koi/core";
 import { createMockInboundMessage, createMockTurnContext } from "@koi/test-utils";
 import { createToolSelectorMiddleware } from "./tool-selector.js";
 
