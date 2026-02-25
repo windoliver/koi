@@ -225,26 +225,6 @@ type CreateClientFn = (config: ResolvedLspServerConfig, maxReconnectAttempts: nu
 declare function createLspComponentProvider(config: LspProviderConfig, createClient?: CreateClientFn): Promise<LspComponentProviderResult>;
 
 /**
- * Auto-detection of installed LSP server binaries.
- *
- * Scans PATH for known LSP binaries using Bun.which() and returns
- * DetectedLspServer entries ready to merge with user configuration.
- */
-interface DetectedLspServer {
-    readonly name: string;
-    readonly command: string;
-    readonly args: readonly string[];
-    readonly languageIds: readonly string[];
-}
-/**
- * Detects installed LSP servers by scanning PATH for known binaries.
- *
- * Returns one entry per known server, using the first binary found from
- * each server's candidate list. Pure and synchronous.
- */
-declare function detectLspServers(): readonly DetectedLspServer[];
-
-/**
  * Error factories and mapping for LSP errors.
  *
  * Maps LSP JSON-RPC error codes and common failure modes to KoiError.
@@ -282,6 +262,26 @@ declare function capabilityNotSupportedError(serverName: string, capability: str
  * Returns \`undefined\` if the extension is not recognized.
  */
 declare function detectLanguageId(uri: string): string | undefined;
+
+/**
+ * Auto-detection of installed LSP server binaries.
+ *
+ * Scans PATH for known LSP binaries using Bun.which() and returns
+ * DetectedLspServer entries ready to merge with user configuration.
+ */
+interface DetectedLspServer {
+    readonly name: string;
+    readonly command: string;
+    readonly args: readonly string[];
+    readonly languageIds: readonly string[];
+}
+/**
+ * Detects installed LSP servers by scanning PATH for known binaries.
+ *
+ * Returns one entry per known server, using the first binary found from
+ * each server's candidate list. Pure and synchronous.
+ */
+declare function detectLspServers(): readonly DetectedLspServer[];
 
 /**
  * Tool adapter — creates Koi Tool components from LSP client capabilities.
