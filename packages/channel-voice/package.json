@@ -19,6 +19,8 @@
     "livekit-server-sdk": "2.15.0"
   },
   "devDependencies": {
+    "@koi/engine": "workspace:*",
+    "@koi/engine-pi": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },
   "scripts": {
