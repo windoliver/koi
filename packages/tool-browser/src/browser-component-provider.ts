@@ -13,6 +13,9 @@ import {
   EVALUATE_OPERATION,
   EVALUATE_TRUST_TIER,
   OPERATIONS,
+  TRACE_OPERATION_START,
+  TRACE_OPERATION_STOP,
+  UPLOAD_OPERATION,
 } from "./constants.js";
 import { createBrowserClickTool } from "./tools/click.js";
 import { createBrowserConsoleTool } from "./tools/console.js";
@@ -28,7 +31,10 @@ import { createBrowserSnapshotTool } from "./tools/snapshot.js";
 import { createBrowserTabCloseTool } from "./tools/tab-close.js";
 import { createBrowserTabFocusTool } from "./tools/tab-focus.js";
 import { createBrowserTabNewTool } from "./tools/tab-new.js";
+import { createBrowserTraceStartTool } from "./tools/trace-start.js";
+import { createBrowserTraceStopTool } from "./tools/trace-stop.js";
 import { createBrowserTypeTool } from "./tools/type.js";
+import { createBrowserUploadTool } from "./tools/upload.js";
 import { createBrowserWaitTool } from "./tools/wait.js";
 import {
   type CompiledNavigationSecurity,
@@ -70,10 +76,15 @@ export type { CompiledNavigationSecurity, NavigationSecurityConfig };
 
 // navigate and tab_new are handled separately in createBrowserProvider
 // because they accept an optional security config (4th arg).
+// upload, trace_start, trace_stop are handled separately because they are
+// driver-optional (guarded with if (backend.method) before registering).
 type ToolFactory = (driver: BrowserDriver, prefix: string, trustTier: TrustTier) => Tool;
 
 const TOOL_FACTORIES: Readonly<
-  Omit<Record<BrowserOperation, ToolFactory>, "navigate" | "tab_new">
+  Omit<
+    Record<BrowserOperation, ToolFactory>,
+    "navigate" | "tab_new" | "upload" | "trace_start" | "trace_stop"
+  >
 > = {
   snapshot: createBrowserSnapshotTool,
   click: createBrowserClickTool,
@@ -108,22 +119,32 @@ export function createBrowserProvider(config: BrowserProviderConfig): ComponentP
     name: `browser:${backend.name}`,
 
     attach: async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
-      const toolEntries = operations.map((op) => {
+      const toolEntries = operations.flatMap((op) => {
         // evaluate always uses promoted tier regardless of config
         const tier: TrustTier = op === EVALUATE_OPERATION ? EVALUATE_TRUST_TIER : trustTier;
 
         // navigate and tab_new accept an optional security config (4th arg).
+        // upload, trace_start, trace_stop are driver-optional — skip if not implemented.
         // All other tools use the standard 3-arg factory signature.
         let tool: Tool;
         if (op === "navigate") {
           tool = createBrowserNavigateTool(backend, prefix, tier, compiledSecurity);
         } else if (op === "tab_new") {
           tool = createBrowserTabNewTool(backend, prefix, tier, compiledSecurity);
+        } else if (op === UPLOAD_OPERATION) {
+          if (!backend.upload) return [];
+          tool = createBrowserUploadTool(backend, prefix, tier);
+        } else if (op === TRACE_OPERATION_START) {
+          if (!backend.traceStart) return [];
+          tool = createBrowserTraceStartTool(backend, prefix, tier);
+        } else if (op === TRACE_OPERATION_STOP) {
+          if (!backend.traceStop) return [];
+          tool = createBrowserTraceStopTool(backend, prefix, tier);
         } else {
           const factory = TOOL_FACTORIES[op];
           tool = factory(backend, prefix, tier);
         }
-        return [toolToken(tool.descriptor.name) as string, tool] as const;
+        return [[toolToken(tool.descriptor.name) as string, tool] as const];
       });
 
       return new Map<string, unknown>([[BROWSER as string, backend], ...toolEntries]);

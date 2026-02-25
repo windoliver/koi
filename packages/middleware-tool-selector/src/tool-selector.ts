@@ -2,8 +2,8 @@
  * Tool-selector middleware — pre-filters tools before each model call.
  */
 
-import type { JsonObject } from "@koi/core/common";
 import type {
+  JsonObject,
   KoiMiddleware,
   ModelChunk,
   ModelHandler,
@@ -11,7 +11,7 @@ import type {
   ModelResponse,
   ModelStreamHandler,
   TurnContext,
-} from "@koi/core/middleware";
+} from "@koi/core";
 import { KoiRuntimeError, swallowError } from "@koi/errors";
 import type { ToolSelectorConfig } from "./config.js";
 import { validateToolSelectorConfig } from "./config.js";

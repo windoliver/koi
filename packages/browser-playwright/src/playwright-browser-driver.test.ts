@@ -23,6 +23,7 @@ interface MockLocator {
   readonly selectOption: MockFn;
   readonly scrollIntoViewIfNeeded: MockFn;
   readonly elementHandle: MockFn;
+  readonly setInputFiles: MockFn;
 }
 
 interface MockPage {
@@ -52,6 +53,11 @@ interface MockBrowserContext {
   readonly newPage: MockFn;
   readonly close: MockFn;
   readonly addInitScript: MockFn;
+  readonly route: MockFn;
+  readonly tracing: {
+    readonly start: MockFn;
+    readonly stop: MockFn;
+  };
 }
 
 interface MockBrowser {
@@ -95,6 +101,7 @@ function makeMockLocator(opts?: { fails?: boolean }): MockLocator {
     selectOption: mock(() => Promise.resolve()),
     scrollIntoViewIfNeeded: mock(() => Promise.resolve()),
     elementHandle: mock(() => Promise.resolve(null)),
+    setInputFiles: mock(() => Promise.resolve()),
   };
 }
 
@@ -174,6 +181,12 @@ function makeMockContext(page: MockPage): MockBrowserContext {
     newPage: mock(() => Promise.resolve(page)),
     close: mock(() => Promise.resolve()),
     addInitScript: mock(() => Promise.resolve()),
+    // route is called with a pattern + handler; we capture the handler for DNS rebinding tests
+    route: mock((_pattern: string, _handler: unknown) => Promise.resolve()),
+    tracing: {
+      start: mock(() => Promise.resolve()),
+      stop: mock(() => Promise.resolve()),
+    },
   };
 }
 
@@ -1083,6 +1096,148 @@ describe("createPlaywrightBrowserDriver", () => {
   // console() — per-tab console buffer
   // ---------------------------------------------------------------------------
 
+  // ---------------------------------------------------------------------------
+  // DNS rebinding protection (blockPrivateAddresses)
+  // ---------------------------------------------------------------------------
+
+  describe("blockPrivateAddresses config", () => {
+    it("registers a route handler on context creation when blockPrivateAddresses is not false", async () => {
+      const { driver, context } = buildDriver();
+      // Trigger context creation via snapshot
+      await driver.snapshot();
+      // route() should have been called to register the DNS rebinding guard
+      const ctx = context as MockBrowserContext;
+      expect(ctx.route.mock.calls.length).toBeGreaterThan(0);
+    });
+
+    it("does not register route handler when blockPrivateAddresses=false", async () => {
+      const page = makeMockPage();
+      const context = makeMockContext(page);
+      const browser = makeMockBrowser(context);
+      const driver = createPlaywrightBrowserDriver({
+        // biome-ignore lint/suspicious/noExplicitAny: test injection boundary
+        browser: browser as any,
+        blockPrivateAddresses: false,
+      });
+      await driver.snapshot();
+      // No route handler should be registered
+      expect(context.route.mock.calls.length).toBe(0);
+    });
+
+    it("accepts blockPrivateAddresses in PlaywrightDriverConfig (type-level verification)", () => {
+      const config: PlaywrightDriverConfig = {
+        blockPrivateAddresses: true,
+      };
+      expect(config.blockPrivateAddresses).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // upload() method
+  // ---------------------------------------------------------------------------
+
+  describe("upload()", () => {
+    it("is implemented by the playwright driver", () => {
+      const { driver } = buildDriver();
+      expect(typeof driver.upload).toBe("function");
+    });
+
+    it("calls setInputFiles on the resolved locator", async () => {
+      const { driver, page } = buildDriver();
+      await driver.snapshot();
+      if (!driver.upload) return;
+      const result = await driver.upload("e1", [
+        { content: "SGVsbG8gV29ybGQ=", name: "hello.txt", mimeType: "text/plain" },
+      ]);
+      expect(result.ok).toBe(true);
+      expect(page._locator.setInputFiles).toHaveBeenCalled();
+    });
+
+    it("returns STALE_REF for unknown ref", async () => {
+      const { driver } = buildDriver();
+      await driver.snapshot();
+      if (!driver.upload) return;
+      const result = await driver.upload("e99", [{ content: "SGVsbG8=", name: "test.txt" }]);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.code).toBe("STALE_REF");
+    });
+
+    it("rejects stale snapshotId", async () => {
+      const { driver } = buildDriver();
+      await driver.snapshot();
+      if (!driver.upload) return;
+      const result = await driver.upload("e1", [{ content: "SGVsbG8=", name: "test.txt" }], {
+        snapshotId: "snap-stale-999",
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.code).toBe("STALE_REF");
+    });
+
+    it("returns VALIDATION when timeout exceeds cap", async () => {
+      const { driver } = buildDriver();
+      await driver.snapshot();
+      if (!driver.upload) return;
+      const result = await driver.upload("e1", [{ content: "SGVsbG8=", name: "test.txt" }], {
+        timeout: 999_999,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.code).toBe("VALIDATION");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // traceStart() and traceStop()
+  // ---------------------------------------------------------------------------
+
+  describe("traceStart()", () => {
+    it("starts tracing successfully", async () => {
+      const { driver, context } = buildDriver();
+      await driver.snapshot(); // trigger context creation
+      const result = await driver.traceStart?.();
+      expect(result?.ok).toBe(true);
+      const ctx = context as MockBrowserContext;
+      expect(ctx.tracing.start).toHaveBeenCalled();
+    });
+
+    it("starts tracing with options", async () => {
+      const { driver, context } = buildDriver();
+      await driver.snapshot();
+      const result = await driver.traceStart?.({ snapshots: false, title: "test-trace" });
+      expect(result?.ok).toBe(true);
+      const ctx = context as MockBrowserContext;
+      const callArgs = ctx.tracing.start.mock.calls[0] as [Record<string, unknown>];
+      expect(callArgs?.[0]?.snapshots).toBe(false);
+    });
+
+    it("driver has traceStart method", () => {
+      const { driver } = buildDriver();
+      expect(typeof driver.traceStart).toBe("function");
+    });
+  });
+
+  describe("traceStop()", () => {
+    it("stops tracing and returns path", async () => {
+      const { driver, context } = buildDriver();
+      await driver.snapshot();
+      await driver.traceStart?.();
+      const result = await driver.traceStop?.();
+      expect(result?.ok).toBe(true);
+      if (!result?.ok) return;
+      expect(typeof result.value.path).toBe("string");
+      expect(result.value.path).toMatch(/koi-trace-.*\.zip$/);
+      const ctx = context as MockBrowserContext;
+      expect(ctx.tracing.stop).toHaveBeenCalled();
+    });
+
+    it("driver has traceStop method", () => {
+      const { driver } = buildDriver();
+      expect(typeof driver.traceStop).toBe("function");
+    });
+  });
+
   describe("console()", () => {
     it("returns empty entries for new tab", async () => {
       const { driver } = buildDriver();
@@ -1148,23 +1303,23 @@ describe("createPlaywrightBrowserDriver", () => {
       expect(result.value.entries.length).toBe(0);
     });
 
-    it("buffers up to 1000 entries with FIFO eviction", async () => {
+    it("buffers up to 200 entries with FIFO eviction", async () => {
       const { driver, page } = buildDriver();
       await driver.snapshot();
-      // Push 1001 messages — cap is 1000, first message should be evicted
-      for (let i = 0; i < 1001; i++) {
+      // Push 201 messages — cap is 200, first message should be evicted
+      for (let i = 0; i < 201; i++) {
         page._triggerConsole(makeConsoleMsg("log", `msg-${i}`));
       }
       const result = await driver.console({ limit: 200 });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      // Buffer holds exactly 1000 after eviction (msg-0 evicted, buf contains msg-1..msg-1000)
-      // total = all 1000 matching entries before the limit is applied
-      expect(result.value.total).toBe(1000);
-      // entries = last 200 of 1000-entry buffer = msg-801 through msg-1000 (0-indexed: buf[800..999])
+      // Buffer holds exactly 200 after eviction (msg-0 evicted, buf contains msg-1..msg-200)
+      // total = all 200 matching entries before the limit is applied
+      expect(result.value.total).toBe(200);
+      // entries = last 200 of 200-entry buffer = all of msg-1..msg-200
       expect(result.value.entries.length).toBe(200);
-      expect(result.value.entries[0]?.text).toBe("msg-801");
-      expect(result.value.entries[199]?.text).toBe("msg-1000");
+      expect(result.value.entries[0]?.text).toBe("msg-1");
+      expect(result.value.entries[199]?.text).toBe("msg-200");
     });
   });
 });

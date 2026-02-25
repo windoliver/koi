@@ -248,6 +248,48 @@ export interface BrowserConsoleResult {
 }
 
 // ---------------------------------------------------------------------------
+// File upload
+// ---------------------------------------------------------------------------
+
+export interface BrowserUploadFile {
+  /** Base64-encoded file content. Required when name is provided. */
+  readonly content: string;
+  /** Filename as it will appear in the input element. */
+  readonly name: string;
+  /** MIME type (default: application/octet-stream). */
+  readonly mimeType?: string;
+}
+
+export interface BrowserUploadOptions extends BrowserActionOptions {
+  /** Clear any already-attached files before uploading (default: true). */
+  readonly clear?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Trace recording
+// ---------------------------------------------------------------------------
+
+export interface BrowserTraceOptions {
+  /**
+   * Include DOM snapshots in the trace (default: true).
+   * Disable for lower overhead when only timing/network data is needed.
+   */
+  readonly snapshots?: boolean;
+  /** Include network request/response metadata (default: true). */
+  readonly network?: boolean;
+  /** Name label written into the trace metadata. */
+  readonly title?: string;
+}
+
+export interface BrowserTraceResult {
+  /**
+   * Absolute path to the .zip trace file on the local filesystem.
+   * Open with: npx playwright show-trace <path>
+   */
+  readonly path: string;
+}
+
+// ---------------------------------------------------------------------------
 // Backend contract
 // ---------------------------------------------------------------------------
 
@@ -366,6 +408,38 @@ export interface BrowserDriver {
   readonly console: (
     options?: BrowserConsoleOptions,
   ) => Result<BrowserConsoleResult, KoiError> | Promise<Result<BrowserConsoleResult, KoiError>>;
+
+  /**
+   * Upload files to a file input element identified by its snapshot ref.
+   *
+   * Opt-in only (not in default OPERATIONS). Must be explicitly enabled in
+   * BrowserProviderConfig because it writes files to the server-side process.
+   */
+  readonly upload?: (
+    ref: string,
+    files: readonly BrowserUploadFile[],
+    options?: BrowserUploadOptions,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+
+  /**
+   * Start recording a Playwright trace for debugging.
+   * Stop with traceStop() to save the .zip file.
+   *
+   * Debug-only — opt-in only (not in default OPERATIONS).
+   */
+  readonly traceStart?: (
+    options?: BrowserTraceOptions,
+  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+
+  /**
+   * Stop the active trace and save it to a .zip file.
+   * Returns the absolute path to the trace file.
+   *
+   * Debug-only — opt-in only (not in default OPERATIONS).
+   */
+  readonly traceStop?: () =>
+    | Result<BrowserTraceResult, KoiError>
+    | Promise<Result<BrowserTraceResult, KoiError>>;
 
   readonly dispose?: () => void | Promise<void>;
 }

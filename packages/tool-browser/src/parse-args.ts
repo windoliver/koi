@@ -205,6 +205,61 @@ export function parseFormFields(
   return { ok: true, value: fields };
 }
 
+/** Parse file upload array: [{content, name, mimeType?}] */
+export function parseUploadFiles(
+  args: JsonObject,
+  key: string,
+): ParseResult<readonly { content: string; name: string; mimeType?: string }[]> {
+  const raw = args[key];
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return {
+      ok: false,
+      err: {
+        error: `${key} must be a non-empty array of {content, name} objects`,
+        code: "VALIDATION",
+      },
+    };
+  }
+  const files: { content: string; name: string; mimeType?: string }[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const item = raw[i];
+    if (typeof item !== "object" || item === null) {
+      return {
+        ok: false,
+        err: { error: `${key}[${i}] must be an object`, code: "VALIDATION" },
+      };
+    }
+    const { content, name, mimeType } = item as Record<string, unknown>;
+    if (typeof content !== "string" || content.length === 0) {
+      return {
+        ok: false,
+        err: {
+          error: `${key}[${i}].content must be a non-empty base64 string`,
+          code: "VALIDATION",
+        },
+      };
+    }
+    if (typeof name !== "string" || name.length === 0) {
+      return {
+        ok: false,
+        err: { error: `${key}[${i}].name must be a non-empty string`, code: "VALIDATION" },
+      };
+    }
+    if (mimeType !== undefined && typeof mimeType !== "string") {
+      return {
+        ok: false,
+        err: { error: `${key}[${i}].mimeType must be a string`, code: "VALIDATION" },
+      };
+    }
+    files.push({
+      content,
+      name,
+      ...(mimeType !== undefined && { mimeType }),
+    });
+  }
+  return { ok: true, value: files };
+}
+
 /** Type guard that narrows `unknown` to a member of a string literal union, avoiding `as` casts. */
 function memberOf<T extends string>(set: readonly T[], value: unknown): value is T {
   return (set as readonly unknown[]).includes(value);

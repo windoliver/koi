@@ -75,7 +75,11 @@ export type {
   BrowserTabFocusOptions,
   BrowserTabInfo,
   BrowserTabNewOptions,
+  BrowserTraceOptions,
+  BrowserTraceResult,
   BrowserTypeOptions,
+  BrowserUploadFile,
+  BrowserUploadOptions,
   BrowserWaitOptions,
   BrowserWaitUntil,
 } from "./browser-driver.js";

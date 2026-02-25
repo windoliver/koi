@@ -29,7 +29,11 @@ import type {
   BrowserTabFocusOptions,
   BrowserTabInfo,
   BrowserTabNewOptions,
+  BrowserTraceOptions,
+  BrowserTraceResult,
   BrowserTypeOptions,
+  BrowserUploadFile,
+  BrowserUploadOptions,
   BrowserWaitOptions,
   KoiError,
   KoiErrorCode,
@@ -227,6 +231,25 @@ export function createMockDriver(options: MockDriverOptions = {}): BrowserDriver
     ): Promise<Result<BrowserConsoleResult, KoiError>> => {
       if (failWith) return fail();
       return { ok: true, value: { entries: [], total: 0 } };
+    },
+
+    upload: (
+      _ref: string,
+      _files: readonly BrowserUploadFile[],
+      _options?: BrowserUploadOptions,
+    ): Result<void, KoiError> => {
+      if (failWith) return fail();
+      return { ok: true, value: undefined };
+    },
+
+    traceStart: (_options?: BrowserTraceOptions): Result<void, KoiError> => {
+      if (failWith) return fail();
+      return { ok: true, value: undefined };
+    },
+
+    traceStop: (): Result<BrowserTraceResult, KoiError> => {
+      if (failWith) return fail();
+      return { ok: true, value: { path: "/tmp/koi-trace-mock.zip" } };
     },
   };
 }

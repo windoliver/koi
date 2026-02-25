@@ -2,10 +2,8 @@
  * Configuration for the tool-selector middleware.
  */
 
-import type { ToolDescriptor } from "@koi/core";
-import type { KoiError, Result } from "@koi/core/errors";
-import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
-import type { InboundMessage } from "@koi/core/message";
+import type { InboundMessage, KoiError, Result, ToolDescriptor } from "@koi/core";
+import { RETRYABLE_DEFAULTS } from "@koi/core";
 
 export interface ToolSelectorConfig {
   /** Caller-provided function that selects relevant tool names for a query. */
