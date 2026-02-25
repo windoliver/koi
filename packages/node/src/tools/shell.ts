@@ -11,6 +11,7 @@
  */
 
 import type { Tool, ToolDescriptor } from "@koi/core";
+import { getExecutionContext, mapContextToEnv } from "@koi/execution-context";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -61,13 +62,21 @@ const SAFE_ENV_KEYS: readonly string[] = [
   "TZ",
 ];
 
-/** Build a scrubbed environment with only safe keys from process.env. */
+/** Build a scrubbed environment with only safe keys from process.env + KOI_* context vars. */
 function createSafeEnv(): Record<string, string> {
   const safe: Record<string, string> = {};
   for (const key of SAFE_ENV_KEYS) {
     const val = process.env[key];
     if (val !== undefined) {
       safe[key] = val;
+    }
+  }
+  // Merge KOI_* context env vars (if running within an L1 agent loop)
+  const ctx = getExecutionContext();
+  if (ctx !== undefined) {
+    const koiEnv = mapContextToEnv(ctx);
+    for (const [k, v] of Object.entries(koiEnv)) {
+      safe[k] = v;
     }
   }
   return safe;

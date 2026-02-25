@@ -13,6 +13,7 @@ export function createMockSessionContext(overrides?: Partial<SessionContext>): S
     agentId: "agent-test-1",
     sessionId: sessionId("session-test-1"),
     runId: rid,
+    userId: "user-test-1",
     metadata: {},
     ...overrides,
   };

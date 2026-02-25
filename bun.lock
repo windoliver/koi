@@ -169,6 +169,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/execution-context": "workspace:*",
         "@koi/hash": "workspace:*",
       },
       "devDependencies": {
@@ -238,6 +239,13 @@
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/execution-context": {
+      "name": "@koi/execution-context",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
     },
     "packages/filesystem": {
@@ -448,6 +456,7 @@
         "@koi/core": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/engine-loop": "workspace:*",
+        "@koi/execution-context": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
         "@koi/middleware-event-trace": "workspace:*",
         "@koi/middleware-fs-rollback": "workspace:*",
@@ -456,6 +465,7 @@
         "@koi/middleware-pay": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/model-router": "workspace:*",
+        "@koi/node": "workspace:*",
         "@koi/snapshot-chain-store": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
@@ -584,6 +594,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/execution-context": "workspace:*",
         "@koi/shutdown": "workspace:*",
         "zod": "4.3.6",
       },
@@ -887,6 +898,7 @@
         "@koi/middleware-memory": "workspace:*",
         "@koi/middleware-turn-ack": "workspace:*",
         "@koi/model-router": "workspace:*",
+        "@koi/node": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -1186,6 +1198,8 @@
     "@koi/eval": ["@koi/eval@workspace:packages/eval"],
 
     "@koi/events-memory": ["@koi/events-memory@workspace:packages/events-memory"],
+
+    "@koi/execution-context": ["@koi/execution-context@workspace:packages/execution-context"],
 
     "@koi/filesystem": ["@koi/filesystem@workspace:packages/filesystem"],
 

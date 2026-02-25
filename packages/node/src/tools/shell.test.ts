@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import type { SessionContext } from "@koi/core";
+import { runId, sessionId } from "@koi/core";
+import { runWithExecutionContext } from "@koi/execution-context";
 import { createShellTool } from "./shell.js";
 
 describe("shell tool", () => {
@@ -61,5 +64,104 @@ describe("shell tool", () => {
       stdout: string;
     };
     expect(result.stdout.trim()).toContain("tmp");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// KOI_* env var injection
+// ---------------------------------------------------------------------------
+
+describe("shell tool KOI_* env injection", () => {
+  function createTestSession(overrides?: Partial<SessionContext>): SessionContext {
+    return {
+      agentId: "agent-shell-test",
+      sessionId: sessionId("sess-shell-test"),
+      runId: runId("run-shell-test"),
+      metadata: {},
+      ...overrides,
+    };
+  }
+
+  it("without execution context only has SAFE_ENV_KEYS (backwards compatible)", async () => {
+    const tool = createShellTool();
+    const result = (await tool.execute({ command: "env" })) as {
+      stdout: string;
+      exitCode: number;
+    };
+    expect(result.exitCode).toBe(0);
+    // KOI_* vars should NOT be present
+    expect(result.stdout).not.toContain("KOI_AGENT_ID");
+    expect(result.stdout).not.toContain("KOI_SESSION_ID");
+  });
+
+  it("within execution context includes KOI_* vars in child env", async () => {
+    const tool = createShellTool();
+    const ctx = {
+      session: createTestSession({
+        userId: "user-99",
+        channelId: "@koi/channel-slack",
+      }),
+      turnIndex: 7,
+    };
+
+    const result = (await runWithExecutionContext(ctx, () => tool.execute({ command: "env" }))) as {
+      stdout: string;
+      exitCode: number;
+    };
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("KOI_AGENT_ID=agent-shell-test");
+    expect(result.stdout).toContain("KOI_SESSION_ID=sess-shell-test");
+    expect(result.stdout).toContain("KOI_RUN_ID=run-shell-test");
+    expect(result.stdout).toContain("KOI_USER_ID=user-99");
+    expect(result.stdout).toContain("KOI_CHANNEL=@koi/channel-slack");
+    expect(result.stdout).toContain("KOI_TURN_INDEX=7");
+  });
+
+  it("child process can echo $KOI_AGENT_ID and get correct value", async () => {
+    const tool = createShellTool();
+    const ctx = {
+      session: createTestSession(),
+      turnIndex: 0,
+    };
+
+    const result = (await runWithExecutionContext(ctx, () =>
+      tool.execute({ command: "echo $KOI_AGENT_ID" }),
+    )) as { stdout: string; exitCode: number };
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("agent-shell-test");
+  });
+
+  it("KOI_USER_ID is absent when userId not in context", async () => {
+    const tool = createShellTool();
+    const ctx = {
+      session: createTestSession(),
+      turnIndex: 0,
+    };
+
+    const result = (await runWithExecutionContext(ctx, () => tool.execute({ command: "env" }))) as {
+      stdout: string;
+      exitCode: number;
+    };
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).not.toContain("KOI_USER_ID");
+  });
+
+  it("KOI_CHANNEL is absent when channelId not in context", async () => {
+    const tool = createShellTool();
+    const ctx = {
+      session: createTestSession(),
+      turnIndex: 0,
+    };
+
+    const result = (await runWithExecutionContext(ctx, () => tool.execute({ command: "env" }))) as {
+      stdout: string;
+      exitCode: number;
+    };
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).not.toContain("KOI_CHANNEL");
   });
 });

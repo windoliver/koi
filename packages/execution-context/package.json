@@ -1,5 +1,5 @@
 {
-  "name": "@koi/engine",
+  "name": "@koi/execution-context",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,13 +10,7 @@
     }
   },
   "dependencies": {
-    "@koi/core": "workspace:*",
-    "@koi/errors": "workspace:*",
-    "@koi/execution-context": "workspace:*",
-    "@koi/hash": "workspace:*"
-  },
-  "devDependencies": {
-    "@koi/engine-pi": "workspace:*"
+    "@koi/core": "workspace:*"
   },
   "scripts": {
     "build": "tsup",
