@@ -1,0 +1,177 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/redaction API surface . has stable type surface 1`] = `
+"import { Result, KoiError } from '@koi/core';
+
+/**
+ * @koi/redaction — Type definitions for structured log secret masking.
+ */
+/** A detected secret occurrence within a string value. */
+interface SecretMatch {
+    readonly text: string;
+    readonly start: number;
+    readonly end: number;
+    readonly kind: string;
+}
+/** Pattern detector — structurally compatible with PIIDetector. */
+interface SecretPattern {
+    readonly name: string;
+    readonly kind: string;
+    readonly detect: (text: string) => readonly SecretMatch[];
+}
+/** Named censor strategy for replacing detected secrets. */
+type CensorStrategy = "redact" | "mask" | "remove";
+/** Censor can be a strategy name or a custom function. */
+type Censor = CensorStrategy | ((match: SecretMatch, fieldName?: string) => string);
+/** Configuration for createRedactor(). Immutable after construction. */
+interface RedactionConfig {
+    readonly patterns: readonly SecretPattern[];
+    readonly customPatterns: readonly SecretPattern[];
+    readonly fieldNames: readonly (string | RegExp)[];
+    readonly censor: Censor;
+    readonly fieldCensor: Censor;
+    readonly maxDepth: number;
+    readonly maxStringLength: number;
+    readonly onError: ((error: unknown) => void) | undefined;
+}
+/** Result of object redaction. */
+interface RedactObjectResult<T> {
+    readonly value: T;
+    readonly changed: boolean;
+    readonly secretCount: number;
+    readonly fieldCount: number;
+}
+/** Result of string redaction. */
+interface RedactStringResult {
+    readonly text: string;
+    readonly changed: boolean;
+    readonly matchCount: number;
+}
+/** Compiled redactor — the main API surface. */
+interface Redactor {
+    readonly redactObject: <T>(value: T) => RedactObjectResult<T>;
+    readonly redactString: (text: string) => RedactStringResult;
+}
+
+/**
+ * Configuration validation + defaults for createRedactor().
+ */
+
+/** Default configuration for createRedactor(). */
+declare const DEFAULT_REDACTION_CONFIG: RedactionConfig;
+/**
+ * Validate a partial redaction config and merge with defaults.
+ * Returns a fully resolved \`RedactionConfig\` or a validation error.
+ */
+declare function validateRedactionConfig(config: unknown): Result<RedactionConfig, KoiError>;
+
+/**
+ * Anthropic API key detector — matches \`sk-ant-api03-\` and \`sk-ant-admin01-\` prefixed keys.
+ */
+
+declare function createAnthropicDetector(): SecretPattern;
+
+/**
+ * AWS Access Key ID detector — matches \`AKIA\` followed by 16 uppercase alphanumeric chars.
+ */
+
+declare function createAWSDetector(): SecretPattern;
+
+/**
+ * Basic auth detector — matches \`Basic <base64>\` in authorization headers.
+ */
+
+declare function createBasicAuthDetector(): SecretPattern;
+
+/**
+ * Bearer token detector — matches \`Bearer <token>\` in authorization headers.
+ */
+
+declare function createBearerDetector(): SecretPattern;
+
+/**
+ * Credential URI detector — matches database/service connection strings with embedded passwords.
+ * Covers: mongodb, postgres, mysql, redis, amqp (and their TLS variants).
+ */
+
+declare function createCredentialURIDetector(): SecretPattern;
+
+/**
+ * Generic secret detector — matches \`password=\`, \`api_key=\`, \`secret=\` assignment patterns
+ * in unstructured strings (log lines, config fragments, CLI output).
+ *
+ * This is the highest false-positive-risk pattern. Mitigations:
+ * - Minimum 8-char value length
+ * - Excludes known placeholder values ([REDACTED], ***, <placeholder>, etc.)
+ */
+
+declare function createGenericSecretDetector(): SecretPattern;
+
+/**
+ * GitHub token detector — matches \`ghp_\` and \`ghs_\` prefixed tokens.
+ */
+
+declare function createGitHubDetector(): SecretPattern;
+
+/**
+ * Google API key detector — matches \`AIza\` prefixed keys (Maps, Firebase, Vertex AI, Gemini).
+ */
+
+declare function createGoogleDetector(): SecretPattern;
+
+/**
+ * Pattern registry — all 13 built-in secret detectors + default sensitive field names.
+ */
+
+/** Create all 13 built-in secret pattern detectors. */
+declare function createAllSecretPatterns(): readonly SecretPattern[];
+/**
+ * Default sensitive field names for field-name-based redaction.
+ * Case-insensitive matching is applied by the field matcher.
+ */
+declare const DEFAULT_SENSITIVE_FIELDS: readonly string[];
+
+/**
+ * JWT token detector — matches base64url-encoded \`eyJ...\` three-part tokens.
+ */
+
+declare function createJWTDetector(): SecretPattern;
+
+/**
+ * OpenAI API key detector — matches \`sk-proj-\`, \`sk-svcacct-\`, \`sk-admin-\` prefixed keys.
+ */
+
+declare function createOpenAIDetector(): SecretPattern;
+
+/**
+ * PEM private key detector — matches \`-----BEGIN ... PRIVATE KEY-----\` blocks.
+ */
+
+declare function createPEMDetector(): SecretPattern;
+
+/**
+ * Slack token detector — matches \`xoxp-\`, \`xoxb-\`, \`xoxa-\`, \`xoxo-\` prefixed tokens.
+ */
+
+declare function createSlackDetector(): SecretPattern;
+
+/**
+ * Stripe key detector — matches \`sk_live_\` and \`pk_live_\` prefixed keys.
+ */
+
+declare function createStripeDetector(): SecretPattern;
+
+/**
+ * Redactor factory — compile-once, use-many secret masking engine.
+ */
+
+/**
+ * Create a compiled redactor from the given config.
+ * Validates config at construction and pre-compiles patterns and field matcher.
+ * Fail-closed: on any runtime error, returns \`[REDACTION_FAILED]\` and calls \`onError\`.
+ */
+declare function createRedactor(config?: Partial<RedactionConfig>): Redactor;
+
+export { type Censor, type CensorStrategy, DEFAULT_REDACTION_CONFIG, DEFAULT_SENSITIVE_FIELDS, type RedactObjectResult, type RedactStringResult, type RedactionConfig, type Redactor, type SecretMatch, type SecretPattern, createAWSDetector, createAllSecretPatterns, createAnthropicDetector, createBasicAuthDetector, createBearerDetector, createCredentialURIDetector, createGenericSecretDetector, createGitHubDetector, createGoogleDetector, createJWTDetector, createOpenAIDetector, createPEMDetector, createRedactor, createSlackDetector, createStripeDetector, validateRedactionConfig };
+"
+`;

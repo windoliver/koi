@@ -1,0 +1,64 @@
+[
+  {
+    "description": "API call with Bearer token",
+    "input": {
+      "timestamp": 1700000000,
+      "kind": "tool_call",
+      "request": {
+        "url": "https://api.example.com/users",
+        "headers": {
+          "Authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123"
+        }
+      },
+      "response": {
+        "status": 200,
+        "body": { "id": "user-1", "name": "Alice" }
+      }
+    }
+  },
+  {
+    "description": "AWS credentials in config",
+    "input": {
+      "timestamp": 1700000001,
+      "kind": "model_call",
+      "request": {
+        "config": {
+          "aws_access_key_id": "AKIAIOSFODNN7EXAMPLE",
+          "aws_secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+          "region": "us-east-1"
+        }
+      }
+    }
+  },
+  {
+    "description": "GitHub token in log message",
+    "input": {
+      "timestamp": 1700000002,
+      "kind": "tool_call",
+      "request": {
+        "message": "Cloning repo with token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl"
+      }
+    }
+  },
+  {
+    "description": "Mixed: password field + Stripe key in value",
+    "input": {
+      "timestamp": 1700000003,
+      "kind": "session_start",
+      "metadata": {
+        "password": "super-secret-password",
+        "payment_key": "pk_live_TESTKEY00000000000000000"
+      }
+    }
+  },
+  {
+    "description": "PEM private key in response",
+    "input": {
+      "timestamp": 1700000004,
+      "kind": "tool_call",
+      "response": {
+        "certificate": "-----BEGIN RSA PRIVATE KEY-----\nMIIBogIBAAJBALRiMLAHudeSA/x3hB2f+2NRkJLA\n-----END RSA PRIVATE KEY-----"
+      }
+    }
+  }
+]
