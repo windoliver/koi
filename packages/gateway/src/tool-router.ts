@@ -11,6 +11,7 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
+import { isToolCallPayload } from "@koi/core";
 import type { NodeFrame } from "./node-handler.js";
 import type { NodeRegistry, RegisteredNode } from "./node-registry.js";
 
@@ -37,6 +38,7 @@ export interface ToolRouter {
   readonly handleToolError: (frame: NodeFrame) => void;
   readonly handleNodeDisconnect: (nodeId: string) => void;
   readonly handleNodeRegistered: (nodeId: string) => void;
+  readonly handleToolsUpdated: (nodeId: string) => void;
   readonly pendingCount: () => number;
   readonly queuedCount: () => number;
   readonly dispose: () => void;
@@ -94,26 +96,20 @@ export const DEFAULT_TOOL_ROUTING_CONFIG: ToolRoutingConfig = {
   queueTimeoutMs: 60_000,
 } as const;
 
-// ---------------------------------------------------------------------------
-// Type guard (duplicated from @koi/node — gateway cannot import L2 peers)
-// ---------------------------------------------------------------------------
+export const TOOL_ROUTING_ERROR_CODES: {
+  readonly NOT_FOUND: "not_found";
+  readonly TIMEOUT: "timeout";
+  readonly RATE_LIMIT: "rate_limit";
+  readonly VALIDATION: "validation";
+} = {
+  NOT_FOUND: "not_found",
+  TIMEOUT: "timeout",
+  RATE_LIMIT: "rate_limit",
+  VALIDATION: "validation",
+} as const satisfies Record<string, string>;
 
-interface ToolCallPayload {
-  readonly toolName: string;
-  readonly args: Readonly<Record<string, unknown>>;
-  readonly callerAgentId: string;
-  readonly zone?: string | undefined;
-}
-
-export function isToolCallPayload(value: unknown): value is ToolCallPayload {
-  if (value === null || typeof value !== "object") return false;
-  const obj = value as Record<string, unknown>;
-  return (
-    typeof obj.toolName === "string" &&
-    obj.toolName.length > 0 &&
-    typeof obj.callerAgentId === "string"
-  );
-}
+export type ToolRoutingErrorCode =
+  (typeof TOOL_ROUTING_ERROR_CODES)[keyof typeof TOOL_ROUTING_ERROR_CODES];
 
 // ---------------------------------------------------------------------------
 // Glob pattern compilation
@@ -168,11 +164,17 @@ export function resolveTargetNode(
     }
   }
 
-  // Capacity: sort by available descending, pick highest
-  const sorted = [...remote].sort((a, b) => b.capacity.available - a.capacity.available);
-  const best = sorted[0];
-  // best is defined: remote.length > 0 checked above
-  if (best === undefined) return { kind: "not_available" };
+  // Capacity: O(N) scan for highest available — no array allocation
+  // let justified: accumulator pattern for max scan
+  const first = remote[0];
+  if (first === undefined) return { kind: "not_available" };
+  let best = first;
+  for (let i = 1; i < remote.length; i++) {
+    const candidate = remote[i];
+    if (candidate !== undefined && candidate.capacity.available > best.capacity.available) {
+      best = candidate;
+    }
+  }
   return { kind: "routed", targetNodeId: best.nodeId };
 }
 
@@ -212,7 +214,7 @@ export function createToolRouter(config: ToolRoutingConfig, deps: ToolRouterDeps
       entry.sourceAgentId,
       entry.correlationId,
       entry.toolName,
-      "timeout",
+      TOOL_ROUTING_ERROR_CODES.TIMEOUT,
       `Tool call "${entry.toolName}" timed out after ${String(entry.timeoutMs)}ms`,
     );
   }
@@ -232,7 +234,7 @@ export function createToolRouter(config: ToolRoutingConfig, deps: ToolRouterDeps
             frame.agentId,
             frame.correlationId,
             toolName,
-            "timeout",
+            TOOL_ROUTING_ERROR_CODES.TIMEOUT,
             `Queued tool call "${toolName}" expired after ${String(config.queueTimeoutMs)}ms`,
           );
         }, config.queueTimeoutMs);
@@ -252,7 +254,7 @@ export function createToolRouter(config: ToolRoutingConfig, deps: ToolRouterDeps
         frame.agentId,
         frame.correlationId,
         toolName,
-        "not_found",
+        TOOL_ROUTING_ERROR_CODES.NOT_FOUND,
         `No node available for tool "${toolName}"`,
       );
       return;
@@ -288,7 +290,7 @@ export function createToolRouter(config: ToolRoutingConfig, deps: ToolRouterDeps
         frame.agentId,
         frame.correlationId,
         toolName,
-        "not_found",
+        TOOL_ROUTING_ERROR_CODES.NOT_FOUND,
         `Failed to send to target node: ${sendResult.error.message}`,
       );
     }
@@ -301,7 +303,7 @@ export function createToolRouter(config: ToolRoutingConfig, deps: ToolRouterDeps
         frame.agentId,
         frame.correlationId,
         "unknown",
-        "validation",
+        TOOL_ROUTING_ERROR_CODES.VALIDATION,
         "Malformed tool_call payload",
       );
       return;
@@ -313,7 +315,7 @@ export function createToolRouter(config: ToolRoutingConfig, deps: ToolRouterDeps
         frame.agentId,
         frame.correlationId,
         frame.payload.toolName,
-        "rate_limit",
+        TOOL_ROUTING_ERROR_CODES.RATE_LIMIT,
         `Max pending tool calls reached (${String(config.maxPendingCalls)})`,
       );
       return;
@@ -346,7 +348,7 @@ export function createToolRouter(config: ToolRoutingConfig, deps: ToolRouterDeps
           entry.sourceAgentId,
           entry.correlationId,
           entry.toolName,
-          "not_found",
+          TOOL_ROUTING_ERROR_CODES.NOT_FOUND,
           `Target node "${nodeId}" disconnected during tool call`,
         );
       } else if (entry.sourceNodeId === nodeId) {
@@ -363,7 +365,7 @@ export function createToolRouter(config: ToolRoutingConfig, deps: ToolRouterDeps
     }
   }
 
-  function handleNodeRegistered(nodeId: string): void {
+  function drainQueueForNode(nodeId: string): void {
     const node = deps.registry.lookup(nodeId);
     if (node === undefined) return;
 
@@ -394,7 +396,8 @@ export function createToolRouter(config: ToolRoutingConfig, deps: ToolRouterDeps
     handleToolResult: handleToolResponse,
     handleToolError: handleToolResponse,
     handleNodeDisconnect,
-    handleNodeRegistered,
+    handleNodeRegistered: drainQueueForNode,
+    handleToolsUpdated: drainQueueForNode,
     pendingCount: () => pending.size,
     queuedCount: () => queued.size,
     dispose,

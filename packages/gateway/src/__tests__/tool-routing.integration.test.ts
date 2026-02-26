@@ -13,6 +13,7 @@ import {
   createMockTransport,
   createNodeCapabilitiesMessage,
   createNodeHandshakeMessage,
+  createNodeToolsUpdatedMessage,
   createTestAuthenticator,
   createToolCallFrameMessage,
   createToolErrorFrameMessage,
@@ -283,6 +284,38 @@ describe("Tool routing integration", () => {
 
     expect(findSentFrame(connB, "tool_call")).toBeDefined();
     expect(findSentFrame(connC, "tool_call")).toBeUndefined();
+  });
+
+  test("queued tool_call is dequeued when node:tools_updated adds the needed tool", async () => {
+    const connA = registerNode(transport, "node-a", [{ name: "search" }]);
+    const connB = registerNode(transport, "node-b", [{ name: "browse" }]);
+    await waitForCondition(() => gateway.nodeRegistry().size() === 2);
+
+    // Send tool_call for a tool no node currently has → queued
+    transport.simulateMessage(
+      connA.id,
+      createToolCallFrameMessage(
+        "node-a",
+        "camera.capture",
+        {},
+        { correlationId: "corr-tools-updated" },
+      ),
+    );
+
+    // No error yet — should be queued
+    await new Promise((r) => setTimeout(r, 50));
+    expect(findSentFrame(connA, "tool_error")).toBeUndefined();
+
+    // Node-B dynamically advertises camera.capture via tools_updated
+    transport.simulateMessage(
+      connB.id,
+      createNodeToolsUpdatedMessage("node-b", [{ name: "camera.capture" }]),
+    );
+
+    // The queued call should be dequeued and routed to node-B
+    await waitForCondition(() => findSentFrame(connB, "tool_call") !== undefined);
+    const forwarded = findSentFrame(connB, "tool_call");
+    expect(forwarded).toBeDefined();
   });
 
   test("tool_error from target forwarded back with original correlationId", async () => {

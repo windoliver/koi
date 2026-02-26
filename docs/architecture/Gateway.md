@@ -126,6 +126,7 @@ interface NodeFrame {
 | `node:registered` | gw -> node | Registration acknowledgement |
 | `node:heartbeat` | node -> gw | Keep-alive signal |
 | `node:capacity` | node -> gw | Updated capacity report |
+| `node:tools_updated` | node -> gw | Dynamic tool add/remove (hot-plug) |
 | `node:error` | gw -> node | Error response |
 | `agent:dispatch` | gw -> node | Dispatch work to an agent on the node |
 | `agent:message` | node -> gw | Agent output message |
@@ -367,7 +368,26 @@ interface RegisteredNode {
 
 ### Inverted Tool Index
 
-`toolName -> Set<nodeId>` mapping built at registration time. `registry.findByTool(name)` returns all nodes advertising a given tool in O(1) lookup time. The index is incrementally maintained — entries are added on register and removed on deregister.
+`toolName -> Set<nodeId>` mapping built at registration time. `registry.findByTool(name)` returns all nodes advertising a given tool in O(1) lookup time. The index is incrementally maintained — entries are added on register, removed on deregister, and updated on `node:tools_updated`.
+
+### Dynamic Tool Re-advertisement
+
+Nodes can update their tool set at runtime without disconnecting by sending a `node:tools_updated` frame:
+
+```typescript
+interface ToolsUpdatedPayload {
+  readonly added: readonly AdvertisedTool[];   // new tools to advertise
+  readonly removed: readonly string[];         // tool names to withdraw
+}
+```
+
+The gateway processes this atomically via `registry.updateTools(nodeId, added, removed)`:
+1. Removes withdrawn tools from the node's tool list and the inverted index
+2. Adds new tools to the node's tool list and the inverted index
+3. Emits `tools_added` and/or `tools_removed` events
+4. Triggers the tool router's queue drain — any queued `tool_call` frames matching the newly added tools are dispatched immediately
+
+This enables hot-plugging: a node starts with a base tool set and advertises new capabilities as plugins load, without reconnecting.
 
 ### Heartbeat and Capacity
 
@@ -389,6 +409,8 @@ Subscribers receive events via `gateway.onNodeEvent()`:
 | `deregistered` | Node disconnected or evicted |
 | `heartbeat` | Node sent heartbeat |
 | `capacity_updated` | Node reported new capacity |
+| `tools_added` | Node advertised new tools (via `node:tools_updated`) |
+| `tools_removed` | Node withdrew tools (via `node:tools_updated`) |
 
 ---
 
@@ -415,6 +437,19 @@ When a `tool_call` frame arrives, the router applies a 5-priority decision tree:
 4. If no candidate: queue with TTL (if queue not full)
 5. If queue full or disabled: return tool_error to source
 ```
+
+Capacity selection uses an O(N) linear scan (not sort) — zero array allocation, picks the node with the highest `capacity.available`.
+
+### Error Codes
+
+All tool routing errors use typed constants (`TOOL_ROUTING_ERROR_CODES`):
+
+| Code | Constant | When |
+|------|----------|------|
+| `"not_found"` | `NOT_FOUND` | No node available for the tool, or send to target failed |
+| `"timeout"` | `TIMEOUT` | Routed call exceeded TTL (per-frame or default) |
+| `"rate_limit"` | `RATE_LIMIT` | `maxPendingCalls` reached |
+| `"validation"` | `VALIDATION` | Malformed `tool_call` payload |
 
 ### Cross-Node Flow
 
@@ -459,7 +494,8 @@ When no node is available for a tool call, it is queued in memory:
 
 - **Max size**: `maxQueuedCalls` (default: 1,000)
 - **TTL**: `queueTimeoutMs` (default: 60,000ms)
-- **Dequeue**: when a new node registers, the router checks if any queued calls match the node's tools and dispatches them immediately.
+- **Dequeue on register**: when a new node registers (`handleNodeRegistered`), the router checks if any queued calls match the node's tools and dispatches them immediately.
+- **Dequeue on tools_updated**: when an existing node adds tools (`handleToolsUpdated`), the same drain logic fires — queued calls matching the newly added tools are dispatched.
 - **Expiry**: a TTL timer fires `tool_error` back to the source if no node becomes available.
 
 ### Timeout
@@ -485,13 +521,14 @@ interface ToolRouter {
   readonly handleToolError: (frame: NodeFrame) => void;
   readonly handleNodeDisconnect: (nodeId: string) => void;
   readonly handleNodeRegistered: (nodeId: string) => void;
+  readonly handleToolsUpdated: (nodeId: string) => void;
   readonly pendingCount: () => number;
   readonly queuedCount: () => number;
   readonly dispose: () => void;
 }
 ```
 
-The tool router is wired into the node connection handler via callback — `tool_call`, `tool_result`, and `tool_error` frame kinds are intercepted and forwarded to the router. The router also subscribes to node registry events to handle disconnect cleanup and queue drain on registration.
+The tool router is wired into the node connection handler via callback — `tool_call`, `tool_result`, and `tool_error` frame kinds are intercepted and forwarded to the router. The router also subscribes to node registry events to handle disconnect cleanup, queue drain on registration, and queue drain on dynamic tool updates (`node:tools_updated`).
 
 ---
 

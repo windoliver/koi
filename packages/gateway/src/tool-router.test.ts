@@ -155,6 +155,18 @@ describe("resolveTargetNode", () => {
     }
   });
 
+  test("routes to one of equal-capacity nodes (any is valid)", () => {
+    registry.register(createRegisteredNode("node-b", ["search"], 5));
+    registry.register(createRegisteredNode("node-c", ["search"], 5));
+
+    const result = resolveTargetNode("search", "node-a", registry, []);
+    expect(result.kind).toBe("routed");
+    if (result.kind === "routed") {
+      // Either node is a valid pick; both have identical capacity
+      expect(["node-b", "node-c"]).toContain(result.targetNodeId);
+    }
+  });
+
   test("affinity miss falls through to capacity selection", () => {
     registry.register(createRegisteredNode("node-b", ["search"], 3));
     registry.register(createRegisteredNode("node-c", ["search"], 8));
@@ -489,6 +501,25 @@ describe("createToolRouter", () => {
       expect(payload.code).toBe("timeout");
 
       shortTimeoutRouter.dispose();
+    });
+
+    test("uses frame.ttl for timeout instead of defaultTimeoutMs", async () => {
+      registry.register(createRegisteredNode("node-a", ["search"]));
+      registry.register(createRegisteredNode("node-b", ["search"]));
+
+      // defaultTimeoutMs is 5_000ms, but frame.ttl is 50ms
+      const frame = createToolCallFrame("node-a", "search", { ttl: 50 });
+      router.handleToolCall(frame);
+      expect(router.pendingCount()).toBe(1);
+
+      // Wait 100ms — enough for 50ms TTL but well under 5_000ms default
+      await new Promise((r) => setTimeout(r, 100));
+
+      expect(router.pendingCount()).toBe(0);
+      const errorSent = findSent("node-a", "tool_error");
+      expect(errorSent).toBeDefined();
+      const payload = errorSent?.frame.payload as Record<string, unknown>;
+      expect(payload.code).toBe("timeout");
     });
 
     test("cleans up pending entry on timeout", async () => {

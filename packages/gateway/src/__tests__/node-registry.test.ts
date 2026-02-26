@@ -214,6 +214,92 @@ describe("NodeRegistry", () => {
     });
   });
 
+  describe("updateTools()", () => {
+    test("adds new tools and updates inverted index", () => {
+      const node = createTestNode({
+        nodeId: "node-1",
+        tools: [{ name: "search" }],
+      });
+      registry.register(node);
+
+      const result = registry.updateTools("node-1", [{ name: "browse" }], []);
+      expect(result.ok).toBe(true);
+
+      const updated = registry.lookup("node-1");
+      expect(updated?.tools).toHaveLength(2);
+      expect(updated?.tools.map((t) => t.name).sort()).toEqual(["browse", "search"]);
+      expect(registry.findByTool("browse")).toHaveLength(1);
+    });
+
+    test("removes tools and cleans inverted index", () => {
+      const node = createTestNode({
+        nodeId: "node-1",
+        tools: [{ name: "search" }, { name: "browse" }],
+      });
+      registry.register(node);
+      expect(registry.findByTool("search")).toHaveLength(1);
+
+      const result = registry.updateTools("node-1", [], ["search"]);
+      expect(result.ok).toBe(true);
+
+      const updated = registry.lookup("node-1");
+      expect(updated?.tools).toHaveLength(1);
+      expect(updated?.tools[0]?.name).toBe("browse");
+      expect(registry.findByTool("search")).toHaveLength(0);
+    });
+
+    test("with both added and removed", () => {
+      const node = createTestNode({
+        nodeId: "node-1",
+        tools: [{ name: "search" }, { name: "browse" }],
+      });
+      registry.register(node);
+
+      const result = registry.updateTools("node-1", [{ name: "camera.capture" }], ["browse"]);
+      expect(result.ok).toBe(true);
+
+      const updated = registry.lookup("node-1");
+      const names = updated?.tools.map((t) => t.name).sort();
+      expect(names).toEqual(["camera.capture", "search"]);
+      expect(registry.findByTool("browse")).toHaveLength(0);
+      expect(registry.findByTool("camera.capture")).toHaveLength(1);
+    });
+
+    test("returns NOT_FOUND for non-existent node", () => {
+      const result = registry.updateTools("no-such-node", [{ name: "search" }], []);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("NOT_FOUND");
+      }
+    });
+
+    test("with empty added and empty removed is no-op", () => {
+      const node = createTestNode({
+        nodeId: "node-1",
+        tools: [{ name: "search" }],
+      });
+      registry.register(node);
+
+      const result = registry.updateTools("node-1", [], []);
+      expect(result.ok).toBe(true);
+
+      const updated = registry.lookup("node-1");
+      expect(updated?.tools).toHaveLength(1);
+    });
+
+    test("registers node with empty tools array", () => {
+      const node = createTestNode({
+        nodeId: "node-1",
+        tools: [],
+      });
+      const result = registry.register(node);
+      expect(result.ok).toBe(true);
+      expect(registry.size()).toBe(1);
+      expect(registry.findByTool("search")).toHaveLength(0);
+      expect(registry.lookup("node-1")).toBeDefined();
+    });
+  });
+
   describe("updateCapacity()", () => {
     test("updates capacity for existing node", () => {
       const node = createTestNode({ nodeId: "node-1" });

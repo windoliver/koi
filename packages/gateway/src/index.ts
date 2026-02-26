@@ -75,12 +75,22 @@ export type { SessionStore } from "./session-store.js";
 export { createInMemorySessionStore } from "./session-store.js";
 // tool router
 export type {
+  CompiledAffinity,
+  RouteResult,
   ToolAffinity,
   ToolRouter,
   ToolRouterDeps,
   ToolRoutingConfig,
+  ToolRoutingErrorCode,
 } from "./tool-router.js";
-export { createToolRouter, DEFAULT_TOOL_ROUTING_CONFIG } from "./tool-router.js";
+export {
+  compileAffinities,
+  createToolRouter,
+  DEFAULT_TOOL_ROUTING_CONFIG,
+  matchAffinity,
+  resolveTargetNode,
+  TOOL_ROUTING_ERROR_CODES,
+} from "./tool-router.js";
 // transport
 export type {
   BunTransport,

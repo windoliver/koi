@@ -6,6 +6,8 @@ import { describe, expect, test } from "bun:test";
  */
 
 import type {
+  // capability registry
+  AdvertisedTool,
   Agent,
   // lifecycle
   AgentCondition,
@@ -16,6 +18,8 @@ import type {
   AgentStatus,
   BrickComponentMap,
   ButtonBlock,
+  CapabilityRegistry,
+  CapacityReport,
   ChannelAdapter,
   // channel
   ChannelCapabilities,
@@ -66,6 +70,7 @@ import type {
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  NodeCapability,
   OutboundMessage,
   PermissionConfig,
   ProcessAccounter,
@@ -90,11 +95,14 @@ import type {
   // message
   TextBlock,
   Tool,
+  ToolCallPayload,
   ToolConfig,
   ToolDescriptor,
+  ToolErrorPayload,
   ToolHandler,
   ToolRequest,
   ToolResponse,
+  ToolResultPayload,
   TransitionReason,
   TrustTier,
   TurnContext,
@@ -111,6 +119,7 @@ import {
   GOVERNANCE,
   GOVERNANCE_VARIABLES,
   governanceContributorToken,
+  isToolCallPayload,
   MEMORY,
   MIN_TRUST_BY_KIND,
   middlewareToken,
@@ -210,7 +219,15 @@ type _TypeGuard =
   | AssertDefined<BrickComponentMap>
   // ecs extensions
   | AssertDefined<SkillComponent>
-  | AssertDefined<AgentDescriptor>;
+  | AssertDefined<AgentDescriptor>
+  // capability registry
+  | AssertDefined<AdvertisedTool>
+  | AssertDefined<CapacityReport>
+  | AssertDefined<ToolCallPayload>
+  | AssertDefined<ToolResultPayload>
+  | AssertDefined<ToolErrorPayload>
+  | AssertDefined<NodeCapability>
+  | AssertDefined<CapabilityRegistry>;
 
 describe("export inventory", () => {
   test("all runtime values are defined", () => {
@@ -233,6 +250,7 @@ describe("export inventory", () => {
     expect(ALL_BRICK_KINDS).toBeDefined();
     expect(MIN_TRUST_BY_KIND).toBeDefined();
     expect(COMPONENT_PRIORITY).toBeDefined();
+    expect(isToolCallPayload).toBeDefined();
   });
 
   test("runtime values are functions, strings, or objects", () => {
@@ -251,5 +269,6 @@ describe("export inventory", () => {
     expect(typeof VALID_TRANSITIONS).toBe("object");
     expect(typeof DEFAULT_HEALTH_MONITOR_CONFIG).toBe("object");
     expect(typeof COMPONENT_PRIORITY).toBe("object");
+    expect(typeof isToolCallPayload).toBe("function");
   });
 });

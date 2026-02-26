@@ -389,6 +389,21 @@ export function createToolErrorFrameMessage(
   });
 }
 
+/** Build a JSON-encoded node:tools_updated frame string. */
+export function createNodeToolsUpdatedMessage(
+  nodeId: string,
+  added: readonly { readonly name: string; readonly description?: string }[] = [],
+  removed: readonly string[] = [],
+): string {
+  return JSON.stringify({
+    kind: "node:tools_updated",
+    nodeId,
+    agentId: "",
+    correlationId: crypto.randomUUID(),
+    payload: { added, removed },
+  });
+}
+
 /** Build a JSON-encoded node:capacity frame string. */
 export function createNodeCapacityMessage(
   nodeId: string,

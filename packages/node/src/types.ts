@@ -9,6 +9,8 @@
  */
 
 import type {
+  AdvertisedTool,
+  CapacityReport,
   KoiError,
   PendingFrame,
   RecoveryPlan,
@@ -18,6 +20,15 @@ import type {
   SessionRecord,
 } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core";
+
+export type {
+  AdvertisedTool,
+  CapacityReport,
+  ToolCallPayload,
+  ToolErrorPayload,
+  ToolResultPayload,
+} from "@koi/core";
+
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
@@ -239,43 +250,8 @@ export interface AuthAckPayload {
 }
 
 // ---------------------------------------------------------------------------
-// Tool routing payloads (remote tool invocation between Nodes)
-// ---------------------------------------------------------------------------
-
-/** Gateway → Node: execute a tool on this Node (may originate from a remote agent). */
-export interface ToolCallPayload {
-  readonly toolName: string;
-  readonly args: Readonly<Record<string, unknown>>;
-  /** Agent requesting the tool call (for permission checks). */
-  readonly callerAgentId: string;
-  /** Zone scope for permission enforcement (backend-dependent). */
-  readonly zone?: string | undefined;
-}
-
-/** Node → Gateway: tool execution result returned to calling agent. */
-export interface ToolResultPayload {
-  readonly toolName: string;
-  readonly result: unknown;
-}
-
-/** Node → Gateway: tool execution failed or permission denied. */
-export interface ToolErrorPayload {
-  readonly toolName: string;
-  readonly code: "permission_denied" | "not_found" | "execution_error" | "timeout";
-  readonly message: string;
-}
-
-// ---------------------------------------------------------------------------
 // Capability advertisement payloads
 // ---------------------------------------------------------------------------
-
-/** Descriptor for a single tool advertised by a Node. */
-export interface AdvertisedTool {
-  readonly name: string;
-  readonly description?: string | undefined;
-  /** JSON Schema for the tool's arguments. */
-  readonly schema?: Readonly<Record<string, unknown>> | undefined;
-}
 
 /** Node → Gateway: advertise this Node's tool surface. */
 export interface CapabilitiesPayload {
@@ -291,12 +267,6 @@ export interface HandshakePayload {
   readonly nodeId: string;
   readonly version: string;
   readonly capacity: CapacityReport;
-}
-
-export interface CapacityReport {
-  readonly current: number;
-  readonly max: number;
-  readonly available: number;
 }
 
 // ---------------------------------------------------------------------------

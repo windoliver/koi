@@ -109,6 +109,17 @@ export type {
   BrowserWaitOptions,
   BrowserWaitUntil,
 } from "./browser-driver.js";
+// capability registry — shared wire types for node capability advertisement
+export type {
+  AdvertisedTool,
+  CapabilityRegistry,
+  CapacityReport,
+  NodeCapability,
+  ToolCallPayload,
+  ToolErrorPayload,
+  ToolResultPayload,
+} from "./capability-registry.js";
+export { isToolCallPayload } from "./capability-registry.js";
 // channel
 export type {
   ChannelAdapter,

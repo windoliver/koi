@@ -5,9 +5,8 @@
  * Nodes use a different wire format (NodeFrame) than clients (GatewayFrame).
  */
 
-import type { KoiError, Result } from "@koi/core";
+import type { AdvertisedTool, CapacityReport, KoiError, Result } from "@koi/core";
 import { validation } from "@koi/core";
-import type { AdvertisedTool, CapacityReport } from "./node-registry.js";
 
 // ---------------------------------------------------------------------------
 // NodeFrame kinds
@@ -19,6 +18,7 @@ const NODE_FRAME_KINDS = new Set([
   "node:registered",
   "node:heartbeat",
   "node:capacity",
+  "node:tools_updated",
   "node:error",
   "agent:dispatch",
   "agent:message",
@@ -35,6 +35,7 @@ export type NodeFrameKind =
   | "node:registered"
   | "node:heartbeat"
   | "node:capacity"
+  | "node:tools_updated"
   | "node:error"
   | "agent:dispatch"
   | "agent:message"
@@ -206,6 +207,67 @@ export function validateCapabilitiesPayload(
     });
   }
   return { ok: true, value: { nodeType: obj.nodeType, tools } };
+}
+
+// ---------------------------------------------------------------------------
+// Tools updated payload
+// ---------------------------------------------------------------------------
+
+export interface ToolsUpdatedPayload {
+  readonly added: readonly AdvertisedTool[];
+  readonly removed: readonly string[];
+}
+
+export function validateToolsUpdatedPayload(
+  payload: unknown,
+): Result<ToolsUpdatedPayload, KoiError> {
+  if (typeof payload !== "object" || payload === null) {
+    return { ok: false, error: validation("ToolsUpdated payload must be an object") };
+  }
+  const obj = payload as Record<string, unknown>;
+
+  // added: optional array of AdvertisedTool
+  const added: AdvertisedTool[] = [];
+  if (obj.added !== undefined) {
+    if (!Array.isArray(obj.added)) {
+      return { ok: false, error: validation("payload.added must be an array") };
+    }
+    for (const t of obj.added) {
+      if (typeof t !== "object" || t === null) {
+        return { ok: false, error: validation("Each added tool must be an object") };
+      }
+      const tool = t as Record<string, unknown>;
+      if (typeof tool.name !== "string" || tool.name.length === 0) {
+        return { ok: false, error: validation("Each added tool must have a non-empty name") };
+      }
+      added.push({
+        name: tool.name,
+        ...(typeof tool.description === "string" ? { description: tool.description } : {}),
+        ...(typeof tool.schema === "object" && tool.schema !== null
+          ? { schema: tool.schema as Readonly<Record<string, unknown>> }
+          : {}),
+      });
+    }
+  }
+
+  // removed: optional array of tool name strings
+  const removed: string[] = [];
+  if (obj.removed !== undefined) {
+    if (!Array.isArray(obj.removed)) {
+      return { ok: false, error: validation("payload.removed must be an array") };
+    }
+    for (const name of obj.removed) {
+      if (typeof name !== "string" || name.length === 0) {
+        return {
+          ok: false,
+          error: validation("Each removed tool name must be a non-empty string"),
+        };
+      }
+      removed.push(name);
+    }
+  }
+
+  return { ok: true, value: { added, removed } };
 }
 
 export function validateCapacityPayload(payload: unknown): Result<CapacityReport, KoiError> {
