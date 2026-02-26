@@ -259,6 +259,7 @@ export type {
   FileListResult,
   FileReadOptions,
   FileReadResult,
+  FileRenameResult,
   FileSearchMatch,
   FileSearchOptions,
   FileSearchResult,

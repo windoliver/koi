@@ -19,7 +19,7 @@ export { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, FeatureFl
 export { CompactionResult, ContextCompactor, TokenEstimator } from './context.js';
 export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, EventEnvelope, EventInput, ReadOptions, ReadResult, SubscribeOptions, SubscriptionHandle } from './event-backend.js';
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
-export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-backend.js';
+export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileRenameResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-backend.js';
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
 import { KoiMiddleware } from './middleware.js';
 export { ApprovalDecision, ApprovalHandler, ApprovalRequest, ModelChunk, ModelHandler, ModelRequest, ModelResponse, ModelStreamHandler, SessionContext, ToolHandler, ToolRequest, ToolResponse, TurnContext } from './middleware.js';
