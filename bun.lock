@@ -217,6 +217,7 @@
       "devDependencies": {
         "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
+        "@koi/model-router": "workspace:*",
       },
     },
     "packages/engine-claude": {

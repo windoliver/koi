@@ -44,6 +44,13 @@ export {
   createDefaultGuardExtension,
   isSignificantTransition,
 } from "./extension-composer.js";
+// governance
+export type { GovernanceControllerBuilder } from "./governance-controller.js";
+export { createGovernanceController } from "./governance-controller.js";
+export { createGovernanceExtension } from "./governance-extension.js";
+export { createGovernanceProvider } from "./governance-provider.js";
+export type { AgentLookup } from "./governance-reconciler.js";
+export { createGovernanceReconciler } from "./governance-reconciler.js";
 // guards
 export type { CreateSpawnGuardOptions } from "./guards.js";
 export {
@@ -99,6 +106,7 @@ export { applyTransition, validateTransition } from "./transitions.js";
 export type {
   CreateKoiOptions,
   ForgeRuntime,
+  GovernanceConfig,
   IterationLimits,
   KoiRuntime,
   LoopDetectionConfig,
@@ -109,4 +117,8 @@ export type {
   SpawnResult,
   SpawnWarningInfo,
 } from "./types.js";
-export { DEFAULT_SPAWN_TOOL_IDS } from "./types.js";
+export {
+  createDefaultGovernanceConfig,
+  DEFAULT_GOVERNANCE_CONFIG,
+  DEFAULT_SPAWN_TOOL_IDS,
+} from "./types.js";

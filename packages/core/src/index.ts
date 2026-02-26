@@ -169,8 +169,6 @@ export type {
   ComponentProvider,
   CredentialComponent,
   EventComponent,
-  GovernanceComponent,
-  GovernanceUsage,
   MemoryComponent,
   MemoryResult,
   ProcessAccounter,
@@ -180,7 +178,6 @@ export type {
   SessionId,
   SkillComponent,
   SkillMetadata,
-  SpawnCheck,
   SpawnLedger,
   SubsystemToken,
   Tool,
@@ -285,6 +282,18 @@ export type {
 // forge types
 export type { BrickKind, BrickLifecycle, ForgeScope } from "./forge-types.js";
 export { ALL_BRICK_KINDS, MIN_TRUST_BY_KIND, VALID_LIFECYCLE_TRANSITIONS } from "./forge-types.js";
+// governance — types
+export type {
+  GovernanceCheck,
+  GovernanceController,
+  GovernanceEvent,
+  GovernanceSnapshot,
+  GovernanceVariable,
+  GovernanceVariableContributor,
+  SensorReading,
+} from "./governance.js";
+// governance — runtime values
+export { GOVERNANCE_VARIABLES, governanceContributorToken } from "./governance.js";
 // health
 export type {
   HealthMonitor,

@@ -2,7 +2,8 @@
  * Governance — depth-aware forge policies and scope promotion checks.
  */
 
-import type { Result, TrustTier } from "@koi/core";
+import type { GovernanceController, Result, TrustTier } from "@koi/core";
+import { GOVERNANCE_VARIABLES } from "@koi/core";
 import type { ForgeConfig } from "./config.js";
 import type { ForgeError } from "./errors.js";
 import { governanceError } from "./errors.js";
@@ -63,11 +64,25 @@ function getAllowedToolsForDepth(depth: number): ReadonlySet<string> {
 // Public API
 // ---------------------------------------------------------------------------
 
+/**
+ * Check forge governance with optional controller delegation.
+ *
+ * When a GovernanceController is provided, forge_depth and forge_budget
+ * checks delegate to the unified controller. The controller path returns
+ * the first failing GovernanceCheck or `{ ok: true }`.
+ *
+ * When no controller is provided (backward compat), uses standalone
+ * ForgeContext-based logic.
+ *
+ * Depth-aware tool filtering and config.enabled always use local logic
+ * regardless of controller presence.
+ */
 export function checkGovernance(
   context: ForgeContext,
   config: ForgeConfig,
-  toolName?: string,
-): Result<void, ForgeError> {
+  toolName?: string | undefined,
+  controller?: GovernanceController | undefined,
+): Result<void, ForgeError> | Promise<Result<void, ForgeError>> {
   if (!config.enabled) {
     return {
       ok: false,
@@ -75,6 +90,12 @@ export function checkGovernance(
     };
   }
 
+  // Delegate depth + budget checks to controller when present
+  if (controller !== undefined) {
+    return checkGovernanceViaController(controller, context, toolName);
+  }
+
+  // Standalone path (backward compat) — preserves original check ordering
   if (context.depth > config.maxForgeDepth) {
     return {
       ok: false,
@@ -96,6 +117,44 @@ export function checkGovernance(
   }
 
   // Depth-aware tool filtering (only applies to known primordial tools)
+  if (toolName !== undefined && DEPTH_0_TOOLS.has(toolName)) {
+    const allowed = getAllowedToolsForDepth(context.depth);
+    if (!allowed.has(toolName)) {
+      return {
+        ok: false,
+        error: governanceError(
+          "DEPTH_TOOL_RESTRICTED",
+          `Tool "${toolName}" is not allowed at depth ${context.depth}`,
+        ),
+      };
+    }
+  }
+
+  return { ok: true, value: undefined };
+}
+
+async function checkGovernanceViaController(
+  controller: GovernanceController,
+  context: ForgeContext,
+  toolName?: string | undefined,
+): Promise<Result<void, ForgeError>> {
+  const depthCheck = await controller.check(GOVERNANCE_VARIABLES.FORGE_DEPTH);
+  if (!depthCheck.ok) {
+    return {
+      ok: false,
+      error: governanceError("MAX_DEPTH", depthCheck.reason),
+    };
+  }
+
+  const budgetCheck = await controller.check(GOVERNANCE_VARIABLES.FORGE_BUDGET);
+  if (!budgetCheck.ok) {
+    return {
+      ok: false,
+      error: governanceError("MAX_SESSION_FORGES", budgetCheck.reason),
+    };
+  }
+
+  // Depth-aware tool filtering (always local — controller doesn't own tool policy)
   if (toolName !== undefined && DEPTH_0_TOOLS.has(toolName)) {
     const allowed = getAllowedToolsForDepth(context.depth);
     if (!allowed.has(toolName)) {

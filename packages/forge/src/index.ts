@@ -90,6 +90,11 @@ export type {
   ForgeComponentProviderInstance,
 } from "./forge-component-provider.js";
 export { brickToTool, createForgeComponentProvider } from "./forge-component-provider.js";
+// runtime values — forge governance contributor
+export {
+  createForgeGovernanceContributor,
+  FORGE_GOVERNANCE,
+} from "./forge-governance-contributor.js";
 export type { ForgeResolverContext } from "./forge-resolver.js";
 export { createForgeResolver } from "./forge-resolver.js";
 export type { CreateForgeRuntimeOptions, ForgeRuntimeInstance } from "./forge-runtime.js";

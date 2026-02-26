@@ -13,6 +13,7 @@ import type { ChannelAdapter } from "./channel.js";
 import type { JsonObject } from "./common.js";
 import type { DelegationComponent } from "./delegation.js";
 import type { FileSystemBackend } from "./filesystem-backend.js";
+import type { GovernanceController } from "./governance.js";
 
 // ---------------------------------------------------------------------------
 // Branded types
@@ -253,22 +254,6 @@ export interface MemoryComponent {
   readonly store: (content: string) => Promise<void>;
 }
 
-export interface GovernanceUsage {
-  readonly turns: number;
-  readonly spawns: number;
-  /** Extensible counters for L2-defined metrics (e.g., tokens, tool calls). */
-  readonly counters?: Readonly<Record<string, number>>;
-}
-
-export type SpawnCheck =
-  | { readonly allowed: true }
-  | { readonly allowed: false; readonly reason: string };
-
-export interface GovernanceComponent {
-  readonly usage: () => GovernanceUsage;
-  readonly checkSpawn: (depth: number) => SpawnCheck;
-}
-
 // ---------------------------------------------------------------------------
 // Spawn ledger (tree-wide spawn accounting)
 // ---------------------------------------------------------------------------
@@ -370,8 +355,8 @@ export interface ChildHandle {
 // ---------------------------------------------------------------------------
 
 export const MEMORY: SubsystemToken<MemoryComponent> = token<MemoryComponent>("memory");
-export const GOVERNANCE: SubsystemToken<GovernanceComponent> =
-  token<GovernanceComponent>("governance");
+export const GOVERNANCE: SubsystemToken<GovernanceController> =
+  token<GovernanceController>("governance");
 export const CREDENTIALS: SubsystemToken<CredentialComponent> =
   token<CredentialComponent>("credentials");
 export const EVENTS: SubsystemToken<EventComponent> = token<EventComponent>("events");

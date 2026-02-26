@@ -1,7 +1,8 @@
 import { describe, expect, mock, test } from "bun:test";
 import type {
   Agent,
-  GovernanceComponent,
+  GovernanceCheck,
+  GovernanceController,
   InboundMessage,
   KoiMiddleware,
   ModelChunk,
@@ -764,8 +765,8 @@ function deferredToolNext(): { readonly next: ToolNext; readonly resolve: () => 
   return { next: () => promise, resolve };
 }
 
-/** Minimal mock Agent for GovernanceComponent testing. */
-function mockAgent(governance?: GovernanceComponent): Agent {
+/** Minimal mock Agent for GovernanceController testing. */
+function mockAgent(governance?: GovernanceController): Agent {
   const components = new Map<string, unknown>();
   if (governance) {
     components.set(GOVERNANCE as string, governance);
@@ -1164,16 +1165,22 @@ describe("createSpawnGuard", () => {
   });
 
   // -------------------------------------------------------------------------
-  // GovernanceComponent wiring (#3A)
+  // GovernanceController wiring (#3A)
   // -------------------------------------------------------------------------
 
-  test("consults GovernanceComponent when agent is provided", async () => {
-    const governance: GovernanceComponent = {
-      usage: () => ({ turns: 0, spawns: 0 }),
-      checkSpawn: (depth: number) => ({
-        allowed: false,
-        reason: `Custom governance denies spawn at depth ${depth}`,
+  test("consults GovernanceController when agent is provided", async () => {
+    const governance: GovernanceController = {
+      check: (_variable: string): GovernanceCheck => ({
+        ok: false,
+        variable: "spawn_depth",
+        reason: "Custom governance denies spawn",
+        retryable: false,
       }),
+      checkAll: () => ({ ok: true }),
+      record: () => undefined,
+      snapshot: () => ({ timestamp: 0, readings: [], healthy: true, violations: [] }),
+      variables: () => new Map(),
+      reading: () => undefined,
     };
     const agent = mockAgent(governance);
     const guard = createSpawnGuard({ agentDepth: 0, agent });
@@ -1194,10 +1201,14 @@ describe("createSpawnGuard", () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  test("allows spawn when GovernanceComponent approves", async () => {
-    const governance: GovernanceComponent = {
-      usage: () => ({ turns: 0, spawns: 0 }),
-      checkSpawn: () => ({ allowed: true }),
+  test("allows spawn when GovernanceController approves", async () => {
+    const governance: GovernanceController = {
+      check: (): GovernanceCheck => ({ ok: true }),
+      checkAll: () => ({ ok: true }),
+      record: () => undefined,
+      snapshot: () => ({ timestamp: 0, readings: [], healthy: true, violations: [] }),
+      variables: () => new Map(),
+      reading: () => undefined,
     };
     const agent = mockAgent(governance);
     const guard = createSpawnGuard({ agentDepth: 0, agent });
@@ -1209,8 +1220,8 @@ describe("createSpawnGuard", () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
-  test("skips GovernanceComponent check when agent has no GOVERNANCE component", async () => {
-    const agent = mockAgent(); // no governance component
+  test("skips GovernanceController check when agent has no GOVERNANCE component", async () => {
+    const agent = mockAgent(); // no governance controller
     const guard = createSpawnGuard({ agentDepth: 0, agent });
     const wrap = getToolWrap(guard);
     const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
@@ -1220,7 +1231,7 @@ describe("createSpawnGuard", () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
-  test("works without agent (no GovernanceComponent check)", async () => {
+  test("works without agent (no GovernanceController check)", async () => {
     const guard = createSpawnGuard({ agentDepth: 0 });
     const wrap = getToolWrap(guard);
     const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));

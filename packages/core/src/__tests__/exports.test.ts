@@ -40,8 +40,8 @@ import type {
   EvictionReason,
   EvictionResult,
   FileBlock,
-  GovernanceComponent,
-  GovernanceUsage,
+  GovernanceCheck,
+  GovernanceController,
   // health
   HealthMonitor,
   HealthMonitorConfig,
@@ -85,7 +85,6 @@ import type {
   SkillMetadata,
   SourceBundle,
   SourceLanguage,
-  SpawnCheck,
   // ecs
   SubsystemToken,
   // message
@@ -110,6 +109,8 @@ import {
   DEFAULT_HEALTH_MONITOR_CONFIG,
   EVENTS,
   GOVERNANCE,
+  GOVERNANCE_VARIABLES,
+  governanceContributorToken,
   MEMORY,
   MIN_TRUST_BY_KIND,
   middlewareToken,
@@ -173,9 +174,8 @@ type _TypeGuard =
   | AssertDefined<ComponentProvider>
   | AssertDefined<MemoryComponent>
   | AssertDefined<MemoryResult>
-  | AssertDefined<GovernanceComponent>
-  | AssertDefined<GovernanceUsage>
-  | AssertDefined<SpawnCheck>
+  | AssertDefined<GovernanceController>
+  | AssertDefined<GovernanceCheck>
   | AssertDefined<CredentialComponent>
   | AssertDefined<EventComponent>
   | AssertDefined<ProcessAccounter>
@@ -223,6 +223,8 @@ describe("export inventory", () => {
     expect(agentId).toBeDefined();
     expect(MEMORY).toBeDefined();
     expect(GOVERNANCE).toBeDefined();
+    expect(GOVERNANCE_VARIABLES).toBeDefined();
+    expect(governanceContributorToken).toBeDefined();
     expect(CREDENTIALS).toBeDefined();
     expect(EVENTS).toBeDefined();
     expect(RETRYABLE_DEFAULTS).toBeDefined();

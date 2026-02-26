@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge API surface . has stable type surface 1`] = `
-"import { TestCase, BrickRequires, DataClassification, ContentMarker, TrustTier, BrickId, BrickKind, ToolDescriptor, ForgeScope, BrickLifecycle, SandboxExecutor, BrickArtifact, ForgeStore, Result, KoiError, ForgeProvenance, SigningBackend, ToolArtifact, Tool, TieredSandboxExecutor, StoreChangeNotifier, ComponentProvider, Resolver, StoreChangeEvent, BrickComponentMap, KoiMiddleware, InTotoStatementV1, AgentArtifact } from '@koi/core';
+"import { TestCase, BrickRequires, DataClassification, ContentMarker, TrustTier, BrickId, BrickKind, ToolDescriptor, ForgeScope, BrickLifecycle, SandboxExecutor, BrickArtifact, ForgeStore, Result, KoiError, ForgeProvenance, SigningBackend, ToolArtifact, Tool, TieredSandboxExecutor, StoreChangeNotifier, ComponentProvider, SubsystemToken, GovernanceVariableContributor, Resolver, StoreChangeEvent, BrickComponentMap, KoiMiddleware, GovernanceController, InTotoStatementV1, AgentArtifact } from '@koi/core';
 export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, ContentMarker, DataClassification, ForgeAttestationSignature, ForgeBuildDefinition, ForgeBuilder, ForgeProvenance, ForgeQuery, ForgeResourceRef, ForgeRunMetadata, ForgeStageDigest, ForgeStore, ForgeVerificationSummary, LockHandle, LockMode, LockRequest, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, SigningBackend, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, TierResolution, TieredSandboxExecutor, ToolArtifact } from '@koi/core';
 
 /**
@@ -461,6 +461,17 @@ interface ForgeComponentProviderInstance extends ComponentProvider {
 declare function createForgeComponentProvider(config: ForgeComponentProviderConfig): ForgeComponentProviderInstance;
 
 /**
+ * Forge governance contributor — L2 package that declares forge-specific
+ * governance variables via the GovernanceVariableContributor pattern.
+ *
+ * Attached as an ECS component under "governance:contrib:forge".
+ * The L1 governance extension discovers it via generic prefix query.
+ */
+
+declare const FORGE_GOVERNANCE: SubsystemToken<GovernanceVariableContributor>;
+declare function createForgeGovernanceContributor(config: ForgeConfig, readDepth: () => number, readForgeCount: () => number): GovernanceVariableContributor;
+
+/**
  * ForgeResolver — Resolver adapter backed by a ForgeStore.
  * Implements the L0 Resolver<BrickArtifact, BrickArtifact> interface.
  */
@@ -570,7 +581,20 @@ interface GovernanceResult {
     readonly requiresHumanApproval: boolean;
     readonly message?: string;
 }
-declare function checkGovernance(context: ForgeContext, config: ForgeConfig, toolName?: string): Result<void, ForgeError>;
+/**
+ * Check forge governance with optional controller delegation.
+ *
+ * When a GovernanceController is provided, forge_depth and forge_budget
+ * checks delegate to the unified controller. The controller path returns
+ * the first failing GovernanceCheck or \`{ ok: true }\`.
+ *
+ * When no controller is provided (backward compat), uses standalone
+ * ForgeContext-based logic.
+ *
+ * Depth-aware tool filtering and config.enabled always use local logic
+ * regardless of controller presence.
+ */
+declare function checkGovernance(context: ForgeContext, config: ForgeConfig, toolName?: string | undefined, controller?: GovernanceController | undefined): Result<void, ForgeError> | Promise<Result<void, ForgeError>>;
 declare function checkScopePromotion(currentScope: ForgeScope, targetScope: ForgeScope, trustTier: TrustTier, config: ForgeConfig): Result<GovernanceResult, ForgeError>;
 
 /**
@@ -893,6 +917,6 @@ declare function verifyStatic(input: ForgeInput, config: VerificationConfig): Re
 
 declare function assignTrust(_input: ForgeInput, config: ForgeConfig, stageResults: readonly StageReport[]): Result<TrustStageReport, ForgeError>;
 
-export { type AssembleManifestOptions, type AssembleManifestResult, type AttestationCache, type AutoPromotionConfig, type CreateForgeRuntimeOptions, type CreateProvenanceOptions, type ForgeAgentInput, type ForgeAgentInputWithBricks, type ForgeAgentInputWithManifest, type ForgeChannelInput, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeConfig, type ForgeContext, type ForgeDeps, type ForgeError, type ForgeInput, type ForgeMiddlewareInput, type ForgeResolverContext, type ForgeResult, type ForgeResultMetadata, type ForgeRuntimeInstance, type ForgeSkillInput, type ForgeToolConfig, type ForgeToolInput, type ForgeUsageMiddlewareConfig, type ForgeVerifier, type GovernanceResult, type IntegrityAttestationFailed, type IntegrityContentMismatch, type IntegrityOk, type IntegrityResult, type ManifestParseResult, type ManifestParser, type OnForgeAgentSpawn, type PromoteChange, type PromoteResult, type RequiresCheckResult, type ScopePromotionConfig, type SkillMdInput, type SlsaBuildDefinition, type SlsaBuildMetadata, type SlsaBuilder, type SlsaKoiExtensions, type SlsaProvenanceV1, type SlsaProvenanceV1WithExtensions, type SlsaResourceDescriptor, type SlsaRunDetails, type StageReport, type TestFailure, type TrustStageReport, type UsagePromotedResult, type UsageRecordedResult, type UsageResult, type VerificationConfig, type VerificationReport, type VerificationStage, type VerifierResult, assembleManifest, assignTrust, brickToTool, canonicalJsonSerialize, checkBrickRequires, checkGovernance, checkScopePromotion, computeAutoPromotion, createAdversarialVerifiers, createAttestationCache, createContentScanningVerifier, createDefaultForgeConfig, createExfiltrationVerifier, createForgeAgentTool, createForgeChannelTool, createForgeComponentProvider, createForgeMiddlewareTool, createForgeProvenance, createForgeResolver, createForgeRuntime, createForgeSkillTool, createForgeTool, createForgeToolTool, createForgeUsageMiddleware, createInMemoryForgeStore, createInjectionVerifier, createMemoryStoreChangeNotifier, createPromoteForgeTool, createResourceExhaustionVerifier, createSearchForgeTool, createStructuralHidingVerifier, extractBrickContent, filterByAgentScope, generateSkillMd, governanceError, isVisibleToAgent, loadAndVerify, mapProvenanceToSlsa, mapProvenanceToStatement, recordBrickUsage, sandboxError, selfTestError, signAttestation, staticError, storeError, trustError, typeError, validateForgeConfig, verify, verifyAttestation, verifyBrickAttestation, verifyBrickIntegrity, verifySandbox, verifySelfTest, verifyStatic };
+export { type AssembleManifestOptions, type AssembleManifestResult, type AttestationCache, type AutoPromotionConfig, type CreateForgeRuntimeOptions, type CreateProvenanceOptions, FORGE_GOVERNANCE, type ForgeAgentInput, type ForgeAgentInputWithBricks, type ForgeAgentInputWithManifest, type ForgeChannelInput, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeConfig, type ForgeContext, type ForgeDeps, type ForgeError, type ForgeInput, type ForgeMiddlewareInput, type ForgeResolverContext, type ForgeResult, type ForgeResultMetadata, type ForgeRuntimeInstance, type ForgeSkillInput, type ForgeToolConfig, type ForgeToolInput, type ForgeUsageMiddlewareConfig, type ForgeVerifier, type GovernanceResult, type IntegrityAttestationFailed, type IntegrityContentMismatch, type IntegrityOk, type IntegrityResult, type ManifestParseResult, type ManifestParser, type OnForgeAgentSpawn, type PromoteChange, type PromoteResult, type RequiresCheckResult, type ScopePromotionConfig, type SkillMdInput, type SlsaBuildDefinition, type SlsaBuildMetadata, type SlsaBuilder, type SlsaKoiExtensions, type SlsaProvenanceV1, type SlsaProvenanceV1WithExtensions, type SlsaResourceDescriptor, type SlsaRunDetails, type StageReport, type TestFailure, type TrustStageReport, type UsagePromotedResult, type UsageRecordedResult, type UsageResult, type VerificationConfig, type VerificationReport, type VerificationStage, type VerifierResult, assembleManifest, assignTrust, brickToTool, canonicalJsonSerialize, checkBrickRequires, checkGovernance, checkScopePromotion, computeAutoPromotion, createAdversarialVerifiers, createAttestationCache, createContentScanningVerifier, createDefaultForgeConfig, createExfiltrationVerifier, createForgeAgentTool, createForgeChannelTool, createForgeComponentProvider, createForgeGovernanceContributor, createForgeMiddlewareTool, createForgeProvenance, createForgeResolver, createForgeRuntime, createForgeSkillTool, createForgeTool, createForgeToolTool, createForgeUsageMiddleware, createInMemoryForgeStore, createInjectionVerifier, createMemoryStoreChangeNotifier, createPromoteForgeTool, createResourceExhaustionVerifier, createSearchForgeTool, createStructuralHidingVerifier, extractBrickContent, filterByAgentScope, generateSkillMd, governanceError, isVisibleToAgent, loadAndVerify, mapProvenanceToSlsa, mapProvenanceToStatement, recordBrickUsage, sandboxError, selfTestError, signAttestation, staticError, storeError, trustError, typeError, validateForgeConfig, verify, verifyAttestation, verifyBrickAttestation, verifyBrickIntegrity, verifySandbox, verifySelfTest, verifyStatic };
 "
 `;

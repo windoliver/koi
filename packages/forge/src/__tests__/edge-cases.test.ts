@@ -146,10 +146,10 @@ describe("Edge case 3: Implementation importing node:child_process", () => {
 });
 
 describe("Edge case 4: Forge at depth > maxForgeDepth", () => {
-  test("governance rejects deep forging", () => {
+  test("governance rejects deep forging", async () => {
     const config = createDefaultForgeConfig({ maxForgeDepth: 1 });
     const context: ForgeContext = { ...DEFAULT_CONTEXT, depth: 2 };
-    const result = checkGovernance(context, config);
+    const result = await checkGovernance(context, config);
     expect(result.ok).toBe(false);
     if (!result.ok && result.error.stage === "governance") {
       expect(result.error.code).toBe("MAX_DEPTH");
@@ -158,10 +158,10 @@ describe("Edge case 4: Forge at depth > maxForgeDepth", () => {
 });
 
 describe("Edge case 5: N+1th forge when maxForgesPerSession = N", () => {
-  test("governance rejects at limit", () => {
+  test("governance rejects at limit", async () => {
     const config = createDefaultForgeConfig({ maxForgesPerSession: 3 });
     const context: ForgeContext = { ...DEFAULT_CONTEXT, forgesThisSession: 3 };
-    const result = checkGovernance(context, config);
+    const result = await checkGovernance(context, config);
     expect(result.ok).toBe(false);
     if (!result.ok && result.error.stage === "governance") {
       expect(result.error.code).toBe("MAX_SESSION_FORGES");

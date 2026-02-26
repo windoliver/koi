@@ -46,6 +46,8 @@ import {
   runTurnHooks,
 } from "./compose.js";
 import { composeExtensions, createDefaultGuardExtension } from "./extension-composer.js";
+import { createGovernanceExtension } from "./governance-extension.js";
+import { createGovernanceProvider } from "./governance-provider.js";
 import type { CreateKoiOptions, KoiRuntime } from "./types.js";
 
 /** Generate a unique process ID for a new agent. */
@@ -106,20 +108,23 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
   const { manifest, adapter, middleware = [], providers = [], forge } = options;
 
-  // --- 1. Assemble the agent entity ---
+  // --- 1. Assemble the agent entity (with governance provider) ---
   const pid = generatePid(manifest, {
     ...(options.parentPid !== undefined ? { parent: options.parentPid } : {}),
     ...(options.agentType !== undefined ? { agentType: options.agentType } : {}),
   });
-  const { agent, conflicts } = await AgentEntity.assemble(pid, manifest, providers);
+  const governanceProvider = createGovernanceProvider(options.governance);
+  const allProviders = [governanceProvider, ...providers];
+  const { agent, conflicts } = await AgentEntity.assemble(pid, manifest, allProviders);
 
-  // --- 2. Compose kernel extensions ---
+  // --- 2. Compose kernel extensions (governance + default guards) ---
+  const governanceExt = createGovernanceExtension();
   const defaultGuardExt = createDefaultGuardExtension({
     ...(options.limits !== undefined ? { limits: options.limits } : {}),
     ...(options.loopDetection !== undefined ? { loopDetection: options.loopDetection } : {}),
     ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
   });
-  const allExtensions = [defaultGuardExt, ...(options.extensions ?? [])];
+  const allExtensions = [governanceExt, defaultGuardExt, ...(options.extensions ?? [])];
 
   const guardCtx = {
     agentDepth: pid.depth,
