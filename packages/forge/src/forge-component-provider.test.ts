@@ -1255,7 +1255,7 @@ const NON_TOOL_KINDS = [
     factory: (overrides?: Partial<AgentArtifact>) => createTestAgentArtifact(overrides),
     tokenPrefix: "agent:",
   },
-] as const;
+];
 
 describe.each(NON_TOOL_KINDS)("$kind brick attachment", ({ kind, factory, tokenPrefix }) => {
   test("attaches under correct token prefix", async () => {

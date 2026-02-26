@@ -391,7 +391,7 @@ interface ResolveCase {
   readonly check: (v: unknown) => boolean;
 }
 
-const RESOLVE_CASES: readonly ResolveCase[] = [
+const RESOLVE_CASES: ResolveCase[] = [
   {
     kind: "skill",
     factory: (overrides) => createTestSkillArtifact(overrides),
@@ -402,7 +402,7 @@ const RESOLVE_CASES: readonly ResolveCase[] = [
     factory: (overrides) => createTestAgentArtifact(overrides),
     check: (v: unknown) => typeof v === "object" && v !== null && "manifestYaml" in v,
   },
-] as const;
+];
 
 describe.each(RESOLVE_CASES)("resolve('$kind', name)", ({ kind, factory, check }) => {
   test("returns component for active brick", async () => {
