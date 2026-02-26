@@ -7,8 +7,8 @@
  * 3. Delegate to createKoi() with child-specific options
  * 4. Register child in registry (if provided)
  * 5. Create ChildHandle for lifecycle monitoring
- * 6. Wire parent termination → child cascade (auto-terminates child if parent dies)
- * 7. Wire ledger release + runtime disposal + watcher cleanup to child termination event
+ * 6. (Handled externally by CascadingTermination — supervision-aware)
+ * 7. Wire ledger release + runtime disposal to child termination event
  */
 
 import type { AgentId, ChildHandle, ChildLifecycleEvent } from "@koi/core";
@@ -108,52 +108,15 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     const reg = options.registry;
     handle = createChildHandle(childPid.id, options.manifest.name, reg);
 
-    // 6. Wire parent termination → child cascade
-    //    Each child watches its own parent — no external ProcessTree needed.
-    const parentId = options.parentAgent.pid.id;
-    const unsubParentWatch = reg.watch((event) => {
-      if (
-        event.kind === "transitioned" &&
-        event.agentId === parentId &&
-        event.to === "terminated"
-      ) {
-        // Parent died — cascade termination to child
-        const entry = reg.lookup(childPid.id);
-        // Sync path only (InMemoryRegistry); async registries handled by
-        // external CascadingTermination service
-        if (entry !== undefined && !(entry instanceof Promise)) {
-          const result = reg.transition(childPid.id, "terminated", entry.status.generation, {
-            kind: "evicted",
-          });
-          void result;
-        }
-        unsubParentWatch();
-      }
-    });
+    // 6. Parent termination → child cascade is handled by CascadingTermination
+    //    (centralized, supervision-aware). No per-child watcher needed here.
 
-    // Race guard: parent may have terminated before watcher was installed
-    const parentEntry = reg.lookup(parentId);
-    if (
-      parentEntry !== undefined &&
-      !(parentEntry instanceof Promise) &&
-      parentEntry.status.phase === "terminated"
-    ) {
-      const childEntry = reg.lookup(childPid.id);
-      if (childEntry !== undefined && !(childEntry instanceof Promise)) {
-        reg.transition(childPid.id, "terminated", childEntry.status.generation, {
-          kind: "evicted",
-        });
-      }
-      unsubParentWatch();
-    }
-
-    // 7. Wire ledger release + runtime disposal + watcher cleanup to child termination
+    // 7. Wire ledger release + runtime disposal to child termination
     handle.onEvent((event) => {
       if (event.kind === "terminated") {
         const release = options.spawnLedger.release();
         void (release instanceof Promise ? release : undefined);
         void childRuntime.dispose();
-        unsubParentWatch();
       }
     });
   } else {

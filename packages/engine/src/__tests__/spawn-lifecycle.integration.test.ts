@@ -19,6 +19,8 @@ import type {
   Tool,
 } from "@koi/core";
 import { agentId, toolToken } from "@koi/core";
+import { createCascadingTermination } from "../cascading-termination.js";
+import { createProcessTree } from "../process-tree.js";
 import type { InMemoryRegistry } from "../registry.js";
 import { createInMemoryRegistry } from "../registry.js";
 import { spawnChildAgent } from "../spawn-child.js";
@@ -289,6 +291,10 @@ describe("spawn lifecycle integration", () => {
     const ledger = createInMemorySpawnLedger(10);
     const parent = mockParentAgent(0);
 
+    // Wire up CascadingTermination (centralized, replaces per-child watcher)
+    const tree = createProcessTree(registry);
+    const cascade = createCascadingTermination(registry, tree);
+
     // Register parent
     registry.register({
       agentId: parent.pid.id,
@@ -317,7 +323,7 @@ describe("spawn lifecycle integration", () => {
 
     expect(ledger.activeCount()).toBe(3);
 
-    // Parent dies
+    // Parent dies — CascadingTermination cascades to children
     registry.transition(parent.pid.id, "terminated", 1, { kind: "error" });
 
     // All children should be cascade-terminated
@@ -327,6 +333,9 @@ describe("spawn lifecycle integration", () => {
 
     // All ledger slots released
     expect(ledger.activeCount()).toBe(0);
+
+    await cascade[Symbol.asyncDispose]();
+    await tree[Symbol.asyncDispose]();
   });
 
   test("child PID has correct depth and parent reference", async () => {

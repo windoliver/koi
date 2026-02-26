@@ -201,6 +201,7 @@
         "@koi/hash": "workspace:*",
       },
       "devDependencies": {
+        "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
       },
     },

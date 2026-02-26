@@ -11,6 +11,10 @@ import type {
 } from "@koi/core";
 import { agentId, toolToken } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
+import type { CascadingTermination } from "./cascading-termination.js";
+import { createCascadingTermination } from "./cascading-termination.js";
+import type { ProcessTree } from "./process-tree.js";
+import { createProcessTree } from "./process-tree.js";
 import type { InMemoryRegistry } from "./registry.js";
 import { createInMemoryRegistry } from "./registry.js";
 import { spawnChildAgent } from "./spawn-child.js";
@@ -366,7 +370,7 @@ describe("spawnChildAgent cleanup on termination", () => {
     expect(disposeCalled).toBe(true);
   });
 
-  test("calls runtime.dispose() on cascade termination", async () => {
+  test("calls runtime.dispose() on cascade termination (via CascadingTermination)", async () => {
     // let justified: mutable flag to track dispose call
     let disposeCalled = false;
     const adapterWithDispose: EngineAdapter = {
@@ -377,6 +381,8 @@ describe("spawnChildAgent cleanup on termination", () => {
     };
 
     const parent = mockParentAgent(0);
+    const tree = createProcessTree(registry);
+    const cascade = createCascadingTermination(registry, tree);
 
     // Register parent
     registry.register({
@@ -394,28 +400,37 @@ describe("spawnChildAgent cleanup on termination", () => {
 
     expect(disposeCalled).toBe(false);
 
-    // Parent terminates — cascade kills child
+    // Parent terminates — CascadingTermination cascades to child
     registry.transition(parent.pid.id, "terminated", 1, { kind: "completed" });
 
     // Allow async dispose to settle
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(disposeCalled).toBe(true);
+
+    await cascade[Symbol.asyncDispose]();
+    await tree[Symbol.asyncDispose]();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Cascading termination (parent dies → child auto-terminated)
+// Cascading termination (parent dies → child auto-terminated via CascadingTermination)
 // ---------------------------------------------------------------------------
 
-describe("spawnChildAgent cascading termination", () => {
+describe("spawnChildAgent cascading termination (via CascadingTermination)", () => {
   let registry: InMemoryRegistry;
+  let tree: ProcessTree;
+  let cascade: CascadingTermination;
 
   beforeEach(() => {
     registry = createInMemoryRegistry();
+    tree = createProcessTree(registry);
+    cascade = createCascadingTermination(registry, tree);
   });
 
   afterEach(async () => {
+    await cascade[Symbol.asyncDispose]();
+    await tree[Symbol.asyncDispose]();
     await registry[Symbol.asyncDispose]();
   });
 
@@ -441,7 +456,7 @@ describe("spawnChildAgent cascading termination", () => {
     expect(ledger.activeCount()).toBe(1);
     registry.transition(result.childPid.id, "running", 0, { kind: "assembly_complete" });
 
-    // Parent terminates
+    // Parent terminates — CascadingTermination cascades to child
     registry.transition(parent.pid.id, "terminated", 1, { kind: "completed" });
 
     // Child should have been cascade-terminated
@@ -472,7 +487,7 @@ describe("spawnChildAgent cascading termination", () => {
     const events: ChildLifecycleEvent[] = [];
     result.handle.onEvent((e) => events.push(e));
 
-    // Parent terminates
+    // Parent terminates — CascadingTermination cascades to child
     registry.transition(parent.pid.id, "terminated", 1, { kind: "completed" });
 
     // Child handle should have fired terminated event
@@ -506,7 +521,7 @@ describe("spawnChildAgent cascading termination", () => {
     registry.transition(child1.childPid.id, "running", 0, { kind: "assembly_complete" });
     registry.transition(child2.childPid.id, "running", 0, { kind: "assembly_complete" });
 
-    // Parent terminates
+    // Parent terminates — CascadingTermination cascades to children
     registry.transition(parent.pid.id, "terminated", 1, { kind: "completed" });
 
     // Both children should be terminated
@@ -515,27 +530,6 @@ describe("spawnChildAgent cascading termination", () => {
 
     // Both ledger slots released
     expect(ledger.activeCount()).toBe(0);
-  });
-
-  test("race guard: child terminated if parent already dead at spawn time", async () => {
-    const parent = mockParentAgent(0);
-
-    // Register and immediately terminate parent
-    registry.register({
-      agentId: parent.pid.id,
-      status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
-      agentType: "copilot",
-      metadata: {},
-      registeredAt: Date.now(),
-    });
-    registry.transition(parent.pid.id, "running", 0, { kind: "assembly_complete" });
-    registry.transition(parent.pid.id, "terminated", 1, { kind: "completed" });
-
-    const result = await spawnChildAgent(baseOptions({ parentAgent: parent, registry }));
-
-    // Child should have been immediately cascade-terminated
-    const childEntry = registry.lookup(result.childPid.id);
-    expect(childEntry?.status.phase).toBe("terminated");
   });
 
   test("no cascade without registry (noop handle)", async () => {

@@ -431,6 +431,14 @@ export type {
   TurnTrace,
 } from "./snapshot-time-travel.js";
 export { BACKTRACK_REASON_KEY } from "./snapshot-time-travel.js";
+// supervision — Erlang/OTP-style hierarchical fault recovery
+export type {
+  ChildSpec,
+  RestartType,
+  SupervisionConfig,
+  SupervisionStrategy,
+} from "./supervision.js";
+export { DEFAULT_SUPERVISION_CONFIG } from "./supervision.js";
 // validation utilities — runtime type guards and validators
 export { isProcessState, validateNonEmpty } from "./validation-utils.js";
 // webhook — outbound webhook delivery contract

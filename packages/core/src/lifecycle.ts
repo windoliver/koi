@@ -44,7 +44,9 @@ export type TransitionReason =
   | { readonly kind: "iteration_limit" }
   | { readonly kind: "timeout" }
   | { readonly kind: "evicted" }
-  | { readonly kind: "stale" };
+  | { readonly kind: "stale" }
+  | { readonly kind: "restarted"; readonly attempt: number; readonly strategy: string }
+  | { readonly kind: "escalated"; readonly cause: string };
 
 // ---------------------------------------------------------------------------
 // Valid state transitions (architecture-doc invariants)
