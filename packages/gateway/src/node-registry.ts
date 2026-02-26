@@ -5,24 +5,10 @@
  * Internal to @koi/gateway (L2) — not an L0 contract.
  */
 
-import type { KoiError, Result } from "@koi/core";
+import type { AdvertisedTool, CapacityReport, KoiError, Result } from "@koi/core";
 import { conflict, notFound, validation } from "@koi/core";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export interface AdvertisedTool {
-  readonly name: string;
-  readonly description?: string | undefined;
-  readonly schema?: Readonly<Record<string, unknown>> | undefined;
-}
-
-export interface CapacityReport {
-  readonly current: number;
-  readonly max: number;
-  readonly available: number;
-}
+export type { AdvertisedTool, CapacityReport } from "@koi/core";
 
 export interface RegisteredNode {
   readonly nodeId: string;
@@ -46,6 +32,16 @@ export type NodeRegistryEvent =
       readonly kind: "capacity_updated";
       readonly nodeId: string;
       readonly capacity: CapacityReport;
+    }
+  | {
+      readonly kind: "tools_added";
+      readonly nodeId: string;
+      readonly tools: readonly AdvertisedTool[];
+    }
+  | {
+      readonly kind: "tools_removed";
+      readonly nodeId: string;
+      readonly toolNames: readonly string[];
     };
 
 // ---------------------------------------------------------------------------
@@ -61,6 +57,11 @@ export interface NodeRegistry {
   readonly size: () => number;
   readonly updateHeartbeat: (nodeId: string) => Result<void, KoiError>;
   readonly updateCapacity: (nodeId: string, capacity: CapacityReport) => Result<void, KoiError>;
+  readonly updateTools: (
+    nodeId: string,
+    added: readonly AdvertisedTool[],
+    removed: readonly string[],
+  ) => Result<void, KoiError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +168,35 @@ export function createInMemoryNodeRegistry(): NodeRegistry {
         };
       }
       nodeMap.set(nodeId, { ...existing, capacity });
+      return { ok: true, value: undefined };
+    },
+
+    updateTools(
+      nodeId: string,
+      added: readonly AdvertisedTool[],
+      removed: readonly string[],
+    ): Result<void, KoiError> {
+      const existing = nodeMap.get(nodeId);
+      if (existing === undefined) {
+        return {
+          ok: false,
+          error: notFound(nodeId, `Node not found: ${nodeId}`),
+        };
+      }
+
+      // Remove tools from index by name
+      const removedSet = new Set(removed);
+      const removedTools = existing.tools.filter((t) => removedSet.has(t.name));
+      removeFromToolIndex(nodeId, removedTools);
+
+      // Add new tools to index
+      addToToolIndex(nodeId, added);
+
+      // Build new tools array: keep non-removed, append added (immutable)
+      const keptTools = existing.tools.filter((t) => !removedSet.has(t.name));
+      const newTools = [...keptTools, ...added];
+
+      nodeMap.set(nodeId, { ...existing, tools: newTools });
       return { ok: true, value: undefined };
     },
   };

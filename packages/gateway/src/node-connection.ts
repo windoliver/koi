@@ -15,6 +15,7 @@ import {
   validateCapabilitiesPayload,
   validateCapacityPayload,
   validateHandshakePayload,
+  validateToolsUpdatedPayload,
 } from "./node-handler.js";
 import type { NodeRegistry, NodeRegistryEvent } from "./node-registry.js";
 import type { TransportConnection } from "./transport.js";
@@ -57,6 +58,7 @@ export function createNodeConnectionHandler(
   emitNodeEvent: (event: NodeRegistryEvent) => void,
   onEvict: (connId: string) => void,
   onToolFrame?: ((frame: NodeFrame) => void) | undefined,
+  onToolsUpdated?: ((nodeId: string) => void) | undefined,
 ): NodeConnectionHandler {
   const nodeConnMap = new Map<string, string>(); // connId → nodeId
   const connByNode = new Map<string, string>(); // nodeId → connId
@@ -189,6 +191,48 @@ export function createNodeConnectionHandler(
             nodeId,
             capacity: capResult.value,
           });
+        }
+        return;
+      }
+
+      case "node:tools_updated": {
+        const nodeId = nodeConnMap.get(conn.id);
+        if (nodeId === undefined) {
+          conn.close(4002, "Received tools_updated before registration");
+          cleanupNode(conn.id);
+          return;
+        }
+
+        // Reject if node is still in pending handshake state (not yet registered)
+        if (pendingNodeHandshakes.has(conn.id)) {
+          conn.close(4002, "Received tools_updated before registration");
+          cleanupNode(conn.id);
+          return;
+        }
+
+        const tuResult = validateToolsUpdatedPayload(frame.payload);
+        if (!tuResult.ok) {
+          swallowError(tuResult.error, { package: "gateway", operation: "node:tools_updated" });
+          return;
+        }
+
+        const { added, removed } = tuResult.value;
+        const updateResult = registry.updateTools(nodeId, added, removed);
+        if (!updateResult.ok) {
+          swallowError(updateResult.error, { package: "gateway", operation: "node:tools_updated" });
+          return;
+        }
+
+        if (added.length > 0) {
+          emitNodeEvent({ kind: "tools_added", nodeId, tools: added });
+        }
+        if (removed.length > 0) {
+          emitNodeEvent({ kind: "tools_removed", nodeId, toolNames: removed });
+        }
+
+        // Notify tool router so queued calls can be dequeued
+        if (added.length > 0) {
+          onToolsUpdated?.(nodeId);
         }
         return;
       }

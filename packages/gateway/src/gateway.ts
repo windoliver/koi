@@ -197,6 +197,12 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
           }
         }
       : undefined,
+    // Tools updated callback — drain queued calls when node advertises new tools
+    config.toolRouting !== undefined
+      ? (nodeId: string) => {
+          toolRouter?.handleToolsUpdated(nodeId);
+        }
+      : undefined,
   );
 
   // Initialize tool router after nodeHandler (needs sendToNode)

@@ -3,15 +3,12 @@
  * with explicit dependencies for direct unit testing.
  */
 
-import type { DelegationScope, ScopeChecker } from "@koi/core";
+import type { DelegationScope, ScopeChecker, ToolErrorPayload, ToolResultPayload } from "@koi/core";
+import { isToolCallPayload } from "@koi/core";
 import type { LocalResolver } from "./tools/local-resolver.js";
-import type {
-  NodeEvent,
-  NodeFrame,
-  ToolCallPayload,
-  ToolErrorPayload,
-  ToolResultPayload,
-} from "./types.js";
+import type { NodeEvent, NodeFrame } from "./types.js";
+
+export { isToolCallPayload };
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -38,21 +35,6 @@ export interface ToolCallHandlerDeps {
   readonly emit: (type: NodeEvent["type"], data?: unknown) => void;
   /** Milliseconds before a tool execution is considered timed out. Defaults to DEFAULT_TOOL_CALL_TIMEOUT_MS. */
   readonly timeoutMs?: number | undefined;
-}
-
-// ---------------------------------------------------------------------------
-// Type guard
-// ---------------------------------------------------------------------------
-
-/** Type guard — validates ToolCallPayload shape without `as` assertion. */
-export function isToolCallPayload(value: unknown): value is ToolCallPayload {
-  if (value === null || typeof value !== "object") return false;
-  const obj = value as Record<string, unknown>;
-  return (
-    typeof obj.toolName === "string" &&
-    obj.toolName.length > 0 &&
-    typeof obj.callerAgentId === "string"
-  );
 }
 
 // ---------------------------------------------------------------------------

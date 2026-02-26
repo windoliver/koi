@@ -1,7 +1,8 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/node API surface . has stable type surface 1`] = `
-"import { SessionPersistence, SessionCheckpoint, PendingFrame, RecoveryPlan, SessionRecord, Result, KoiError, ProcessId, AgentManifest, EngineAdapter, ComponentProvider, Agent, AgentId, Tool, SourceBundle, ScopeChecker, DelegationScope } from '@koi/core';
+"import { AdvertisedTool, SessionPersistence, CapacityReport, SessionCheckpoint, PendingFrame, RecoveryPlan, SessionRecord, Result, KoiError, ProcessId, AgentManifest, EngineAdapter, ComponentProvider, Agent, AgentId, Tool, SourceBundle, ScopeChecker, DelegationScope } from '@koi/core';
+export { AdvertisedTool, CapacityReport, ToolCallPayload, ToolErrorPayload, ToolResultPayload, isToolCallPayload } from '@koi/core';
 export { ShutdownCallbacks, ShutdownEmit, ShutdownHandler, createShutdownHandler } from '@koi/shutdown';
 
 /**
@@ -98,33 +99,6 @@ interface AuthAckPayload {
     readonly success: boolean;
     readonly reason?: string | undefined;
 }
-/** Gateway → Node: execute a tool on this Node (may originate from a remote agent). */
-interface ToolCallPayload {
-    readonly toolName: string;
-    readonly args: Readonly<Record<string, unknown>>;
-    /** Agent requesting the tool call (for permission checks). */
-    readonly callerAgentId: string;
-    /** Zone scope for permission enforcement (backend-dependent). */
-    readonly zone?: string | undefined;
-}
-/** Node → Gateway: tool execution result returned to calling agent. */
-interface ToolResultPayload {
-    readonly toolName: string;
-    readonly result: unknown;
-}
-/** Node → Gateway: tool execution failed or permission denied. */
-interface ToolErrorPayload {
-    readonly toolName: string;
-    readonly code: "permission_denied" | "not_found" | "execution_error" | "timeout";
-    readonly message: string;
-}
-/** Descriptor for a single tool advertised by a Node. */
-interface AdvertisedTool {
-    readonly name: string;
-    readonly description?: string | undefined;
-    /** JSON Schema for the tool's arguments. */
-    readonly schema?: Readonly<Record<string, unknown>> | undefined;
-}
 /** Node → Gateway: advertise this Node's tool surface. */
 interface CapabilitiesPayload {
     readonly nodeType: "full" | "thin";
@@ -134,11 +108,6 @@ interface HandshakePayload {
     readonly nodeId: string;
     readonly version: string;
     readonly capacity: CapacityReport;
-}
-interface CapacityReport {
-    readonly current: number;
-    readonly max: number;
-    readonly available: number;
 }
 interface AgentStatusPayload {
     readonly agentId: string;
@@ -693,8 +662,6 @@ interface ToolCallHandlerDeps {
     /** Milliseconds before a tool execution is considered timed out. Defaults to DEFAULT_TOOL_CALL_TIMEOUT_MS. */
     readonly timeoutMs?: number | undefined;
 }
-/** Type guard — validates ToolCallPayload shape without \`as\` assertion. */
-declare function isToolCallPayload(value: unknown): value is ToolCallPayload;
 /** Handle a tool_call frame: validate -> permission check -> resolve -> execute -> respond. */
 declare function handleToolCall(frame: NodeFrame, deps: ToolCallHandlerDeps): Promise<void>;
 
@@ -721,6 +688,6 @@ declare function createFilesystemTool(allowedPaths?: readonly string[]): Tool;
 
 declare function createShellTool(): Tool;
 
-export { type AdvertisedTool, type AgentHost, type AgentStatusPayload, type AuthAckPayload, type AuthChallengePayload, type AuthConfig, type AuthHandshake, type AuthHandshakeConfig, type AuthPayload, type AuthResponsePayload, type CapabilitiesPayload, type CapacityReport, type CheckpointManager, type CheckpointManagerDeps, type CheckpointingEngineConfig, DEFAULT_DELIVERY_CONFIG, DEFAULT_TOOL_CALL_TIMEOUT_MS, type DeliveryManager, type DeliveryManagerConfig, type DeliveryManagerDeps, type DiscoveryConfig, type DiscoveryService, type FrameCounterState, type FrameCounters, type FrameDeduplicator, type FullKoiNode, type GatewayConnectionConfig, type HandshakePayload, type HeartbeatCallbacks, type HeartbeatConfig, type HeartbeatMonitor, type KoiNode, type LocalResolver, type MemoryMetrics, type MemoryMonitor, type NodeCheckpoint, type NodeConfig, type NodeDeps, type NodeEvent, type NodeEventListener, type NodeEventType, type NodeFrame, type NodeFrameKind, type NodeMode, type NodePendingFrame, type NodeRecoveryPlan, type NodeSessionRecord, type NodeSessionStore, type NodeState, type ReconnectState, type RecoveryResult, type ResourcesConfig, type ServiceInfo, type StatusReporter, type ThinKoiNode, type ToolCallHandlerDeps, type ToolCallPayload, type ToolErrorPayload, type ToolMeta, type ToolResolverConfig, type ToolResultPayload, type Transport, type TransportState, type WriteQueue, type WriteQueueConfig, computeReconnectDelay, createAgentHost, createAuthHandshake, createAuthPayload, createCheckpointManager, createCheckpointingEngine, createDeliveryManager, createDiscoveryService, createFilesystemTool, createFrameCounters, createFrameDeduplicator, createHeartbeatMonitor, createLocalResolver, createMemoryMonitor, createNode, createReconnectState, createShellTool, createStatusReporter, createTransport, createWriteQueue, decodeFrame, encodeFrame, generateCorrelationId, handleToolCall, isCleanClose, isToolCallPayload, nextAttempt, parseNodeConfig, resetReconnectState, signChallenge };
+export { type AgentHost, type AgentStatusPayload, type AuthAckPayload, type AuthChallengePayload, type AuthConfig, type AuthHandshake, type AuthHandshakeConfig, type AuthPayload, type AuthResponsePayload, type CapabilitiesPayload, type CheckpointManager, type CheckpointManagerDeps, type CheckpointingEngineConfig, DEFAULT_DELIVERY_CONFIG, DEFAULT_TOOL_CALL_TIMEOUT_MS, type DeliveryManager, type DeliveryManagerConfig, type DeliveryManagerDeps, type DiscoveryConfig, type DiscoveryService, type FrameCounterState, type FrameCounters, type FrameDeduplicator, type FullKoiNode, type GatewayConnectionConfig, type HandshakePayload, type HeartbeatCallbacks, type HeartbeatConfig, type HeartbeatMonitor, type KoiNode, type LocalResolver, type MemoryMetrics, type MemoryMonitor, type NodeCheckpoint, type NodeConfig, type NodeDeps, type NodeEvent, type NodeEventListener, type NodeEventType, type NodeFrame, type NodeFrameKind, type NodeMode, type NodePendingFrame, type NodeRecoveryPlan, type NodeSessionRecord, type NodeSessionStore, type NodeState, type ReconnectState, type RecoveryResult, type ResourcesConfig, type ServiceInfo, type StatusReporter, type ThinKoiNode, type ToolCallHandlerDeps, type ToolMeta, type ToolResolverConfig, type Transport, type TransportState, type WriteQueue, type WriteQueueConfig, computeReconnectDelay, createAgentHost, createAuthHandshake, createAuthPayload, createCheckpointManager, createCheckpointingEngine, createDeliveryManager, createDiscoveryService, createFilesystemTool, createFrameCounters, createFrameDeduplicator, createHeartbeatMonitor, createLocalResolver, createMemoryMonitor, createNode, createReconnectState, createShellTool, createStatusReporter, createTransport, createWriteQueue, decodeFrame, encodeFrame, generateCorrelationId, handleToolCall, isCleanClose, nextAttempt, parseNodeConfig, resetReconnectState, signChallenge };
 "
 `;

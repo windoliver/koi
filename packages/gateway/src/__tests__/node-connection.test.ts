@@ -18,6 +18,7 @@ import {
   createNodeCapacityMessage,
   createNodeHandshakeMessage,
   createNodeHeartbeatMessage,
+  createNodeToolsUpdatedMessage,
   createTestAuthenticator,
   storeHas,
   waitForCondition,
@@ -496,6 +497,163 @@ describe("Node connections", () => {
       // Node should still be registered
       expect(gateway.nodeRegistry().size()).toBe(1);
       expect(conn.closed).toBe(false);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // node:tools_updated
+  // -----------------------------------------------------------------------
+
+  describe("node:tools_updated", () => {
+    test("adds tools to registered node", async () => {
+      const events: NodeRegistryEvent[] = [];
+      gateway.onNodeEvent((e) => events.push(e));
+
+      const conn = transport.simulateOpen();
+      transport.simulateMessage(conn.id, createNodeHandshakeMessage("node-1"));
+      transport.simulateMessage(
+        conn.id,
+        createNodeCapabilitiesMessage("node-1", [{ name: "search" }]),
+      );
+      await waitForCondition(() => gateway.nodeRegistry().size() === 1);
+
+      transport.simulateMessage(
+        conn.id,
+        createNodeToolsUpdatedMessage("node-1", [{ name: "camera.capture" }]),
+      );
+
+      await waitForCondition(() => events.some((e) => e.kind === "tools_added"));
+
+      const node = gateway.nodeRegistry().lookup("node-1");
+      expect(node?.tools).toHaveLength(2);
+      expect(node?.tools.map((t) => t.name).sort()).toEqual(["camera.capture", "search"]);
+      expect(gateway.nodeRegistry().findByTool("camera.capture")).toHaveLength(1);
+
+      const addedEvent = events.find((e) => e.kind === "tools_added");
+      expect(addedEvent).toBeDefined();
+      if (addedEvent?.kind === "tools_added") {
+        expect(addedEvent.nodeId).toBe("node-1");
+        expect(addedEvent.tools).toHaveLength(1);
+        expect(addedEvent.tools[0]?.name).toBe("camera.capture");
+      }
+    });
+
+    test("removes tools from registered node", async () => {
+      const events: NodeRegistryEvent[] = [];
+      gateway.onNodeEvent((e) => events.push(e));
+
+      const conn = transport.simulateOpen();
+      transport.simulateMessage(conn.id, createNodeHandshakeMessage("node-1"));
+      transport.simulateMessage(
+        conn.id,
+        createNodeCapabilitiesMessage("node-1", [{ name: "search" }, { name: "browse" }]),
+      );
+      await waitForCondition(() => gateway.nodeRegistry().size() === 1);
+
+      transport.simulateMessage(conn.id, createNodeToolsUpdatedMessage("node-1", [], ["browse"]));
+
+      await waitForCondition(() => events.some((e) => e.kind === "tools_removed"));
+
+      const node = gateway.nodeRegistry().lookup("node-1");
+      expect(node?.tools).toHaveLength(1);
+      expect(node?.tools[0]?.name).toBe("search");
+      expect(gateway.nodeRegistry().findByTool("browse")).toHaveLength(0);
+    });
+
+    test("with mixed add/remove", async () => {
+      const events: NodeRegistryEvent[] = [];
+      gateway.onNodeEvent((e) => events.push(e));
+
+      const conn = transport.simulateOpen();
+      transport.simulateMessage(conn.id, createNodeHandshakeMessage("node-1"));
+      transport.simulateMessage(
+        conn.id,
+        createNodeCapabilitiesMessage("node-1", [{ name: "search" }, { name: "browse" }]),
+      );
+      await waitForCondition(() => gateway.nodeRegistry().size() === 1);
+
+      transport.simulateMessage(
+        conn.id,
+        createNodeToolsUpdatedMessage("node-1", [{ name: "camera.capture" }], ["browse"]),
+      );
+
+      await waitForCondition(() => events.some((e) => e.kind === "tools_added"));
+
+      const node = gateway.nodeRegistry().lookup("node-1");
+      expect(node?.tools.map((t) => t.name).sort()).toEqual(["camera.capture", "search"]);
+    });
+
+    test("before registration is rejected", async () => {
+      const conn = transport.simulateOpen();
+      transport.simulateMessage(conn.id, createNodeHandshakeMessage("node-1"));
+      // Send tools_updated before capabilities (still in pending handshake)
+      transport.simulateMessage(
+        conn.id,
+        createNodeToolsUpdatedMessage("node-1", [{ name: "camera.capture" }]),
+      );
+
+      await waitForCondition(() => conn.closed);
+      expect(conn.closed).toBe(true);
+      expect(conn.closeCode).toBe(4002);
+    });
+
+    test("with invalid payload is silently handled", async () => {
+      const conn = transport.simulateOpen();
+      transport.simulateMessage(conn.id, createNodeHandshakeMessage("node-1"));
+      transport.simulateMessage(conn.id, createNodeCapabilitiesMessage("node-1"));
+      await waitForCondition(() => gateway.nodeRegistry().size() === 1);
+
+      // Send invalid tools_updated payload (added is not an array)
+      transport.simulateMessage(
+        conn.id,
+        JSON.stringify({
+          kind: "node:tools_updated",
+          nodeId: "node-1",
+          agentId: "",
+          correlationId: crypto.randomUUID(),
+          payload: { added: "not-an-array" },
+        }),
+      );
+
+      // Should not crash or disconnect — just swallow the error
+      await new Promise((r) => setTimeout(r, 50));
+      expect(conn.closed).toBe(false);
+      expect(gateway.nodeRegistry().size()).toBe(1);
+    });
+
+    test("emits tools_added and tools_removed events", async () => {
+      const events: NodeRegistryEvent[] = [];
+      gateway.onNodeEvent((e) => events.push(e));
+
+      const conn = transport.simulateOpen();
+      transport.simulateMessage(conn.id, createNodeHandshakeMessage("node-1"));
+      transport.simulateMessage(
+        conn.id,
+        createNodeCapabilitiesMessage("node-1", [{ name: "search" }]),
+      );
+      await waitForCondition(() => gateway.nodeRegistry().size() === 1);
+
+      transport.simulateMessage(
+        conn.id,
+        createNodeToolsUpdatedMessage("node-1", [{ name: "camera.capture" }], ["search"]),
+      );
+
+      await waitForCondition(
+        () =>
+          events.some((e) => e.kind === "tools_added") &&
+          events.some((e) => e.kind === "tools_removed"),
+      );
+
+      const addedEvent = events.find((e) => e.kind === "tools_added");
+      const removedEvent = events.find((e) => e.kind === "tools_removed");
+      expect(addedEvent).toBeDefined();
+      expect(removedEvent).toBeDefined();
+      if (addedEvent?.kind === "tools_added") {
+        expect(addedEvent.tools[0]?.name).toBe("camera.capture");
+      }
+      if (removedEvent?.kind === "tools_removed") {
+        expect(removedEvent.toolNames).toEqual(["search"]);
+      }
     });
   });
 
