@@ -300,6 +300,56 @@ One per agent, accessed via well-known tokens:
 
 Additional ECS types: `SpawnLedger` (tree-wide spawn accounting), `ProcessAccounter` (cross-agent spawn counting), `ChildHandle` + `ChildLifecycleEvent` (monitoring child agents).
 
+### Scoped Component Views (Linux namespace model)
+
+Different L2 consumers of the same singleton token often need **different permission scopes** — like Linux mount namespaces where each process sees a restricted view of the same kernel filesystem.
+
+```
+                    ┌──────────────────┐
+                    │   Real Backend    │
+                    │  (full access)    │
+                    └────────┬─────────┘
+                             │
+                 ┌───────────┼───────────┐
+                 ▼           ▼           ▼
+          ┌───────────┐ ┌────────┐ ┌───────────┐
+          │ Scoped    │ │ Scoped │ │ Scoped    │
+          │ View A    │ │ View B │ │ View C    │
+          └───────────┘ └────────┘ └───────────┘
+              rw           ro          rw
+           ./src       ~/.koi/skills  ./cache
+```
+
+**Pattern**: one real backend per token, pure proxy wrappers restrict the view per consumer. Same L0 interface in, same L0 interface out. L2 code is unchanged — `agent.component(FILESYSTEM)` returns a `FileSystemBackend`, it just doesn't know it's scoped.
+
+**Tokens requiring scoped views:**
+
+| Token | Scoping dimension | Example |
+|-------|-------------------|---------|
+| `FILESYSTEM` | Path root + read/write mode | code-mode gets rw to `./src`, skill-scanner gets ro to `~/.koi/skills` |
+| `BROWSER` | URL allowlist + trust tier gating | Payment tool restricted to payment domains, e2e tool gets full navigation |
+| `CREDENTIALS` | Key name pattern (glob filter) | Child agent gets `OPENAI_*` keys only, not parent's full vault |
+| `MEMORY` | Agent namespace + read/write isolation | Child's `store()` doesn't pollute parent's `recall()` results |
+
+**Tokens already scoped by design (no proxy needed):**
+
+| Token | Why |
+|-------|-----|
+| `GOVERNANCE` | Each agent gets its own controller instance with independent quotas |
+| `EVENTS` | Each agent gets its own stream (keyed by `streamId`) — isolation is built in |
+| `DELEGATION` | Monotonic attenuation is the whole point — `grant()` can only narrow, never widen |
+
+**Implementation**: Scoped view wrappers are pure L0u functions (`createScopedFs()`, `createScopedBrowser()`, etc.) that take the real backend + scope config and return the same interface. The resolver (L3) reads manifest config per tool declaration and creates scoped views at assembly time. No ECS model changes, no new tokens, no L2 code changes.
+
+```yaml
+# koi.yaml — resolver reads per-tool scope config
+tools:
+  - package: "@koi/code-mode"
+    filesystem: { root: "./src", mode: "read-write" }
+  - package: "@koi/skill-scanner"
+    filesystem: { root: "~/.koi/skills", mode: "read-only" }
+```
+
 ### Other Kernel Types
 
 Additional types in `@koi/core`: `KoiConfig`, `FeatureFlags`, `ModelConfig`, `PermissionConfig`, `EngineOutput`, `EngineState`, `EngineMetrics`, `EngineStopReason`, `BrickKind` (6 values: tool, skill, agent, composite, middleware, channel), `BrickLifecycle`, `ForgeScope`, `TrustTier`.
@@ -648,7 +698,7 @@ Properties:
   • Composable — multiple capabilities combine via intersection
 ```
 
-This replaces ambient authority (checking "is this agent allowed?") with capability authority (the token IS the permission). Aligns with the existing `DelegationComponent` + HMAC-signed grants.
+This replaces ambient authority (checking "is this agent allowed?") with capability authority (the token IS the permission). Aligns with the existing `DelegationComponent` + HMAC-signed grants. See also: **Scoped Component Views** — the Linux namespace model for infrastructure tokens (FILESYSTEM, BROWSER, CREDENTIALS, MEMORY) where each L2 consumer receives a restricted proxy of the same backend.
 
 ### Pattern-Based Permissions
 
