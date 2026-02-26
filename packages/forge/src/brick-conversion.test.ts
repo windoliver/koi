@@ -1,5 +1,11 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { BrickArtifact, JsonObject, SandboxExecutor, ToolArtifact } from "@koi/core";
+import type {
+  BrickArtifact,
+  SandboxError,
+  SandboxExecutor,
+  SandboxResult,
+  ToolArtifact,
+} from "@koi/core";
 import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { brickCapabilityFragment, brickToTool } from "./brick-conversion.js";
@@ -29,12 +35,13 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
 
 function createMockExecutor(
   result:
-    | { ok: true; value: { output: unknown } }
-    | { ok: false; error: { code: string; message: string } },
+    | { readonly ok: true; readonly value: SandboxResult }
+    | { readonly ok: false; readonly error: SandboxError },
 ): SandboxExecutor {
-  return {
-    execute: mock(async (_code: string, _input: JsonObject, _timeoutMs: number) => result),
-  };
+  const executeFn: SandboxExecutor["execute"] = mock(
+    async (_code: string, _input: unknown, _timeoutMs: number) => result,
+  );
+  return { execute: executeFn };
 }
 
 // ---------------------------------------------------------------------------
@@ -44,7 +51,7 @@ function createMockExecutor(
 describe("brickToTool", () => {
   test("creates tool with correct descriptor from brick", () => {
     const brick = createToolBrick({ name: "adder", description: "Adds numbers" });
-    const executor = createMockExecutor({ ok: true, value: { output: 3 } });
+    const executor = createMockExecutor({ ok: true, value: { output: 3, durationMs: 10 } });
 
     const tool = brickToTool(brick, executor);
 
@@ -56,7 +63,7 @@ describe("brickToTool", () => {
 
   test("execute delegates to sandbox executor on success", async () => {
     const brick = createToolBrick();
-    const executor = createMockExecutor({ ok: true, value: { output: 42 } });
+    const executor = createMockExecutor({ ok: true, value: { output: 42, durationMs: 5 } });
 
     const tool = brickToTool(brick, executor);
     const result = await tool.execute({ a: 1, b: 2 });
@@ -69,7 +76,7 @@ describe("brickToTool", () => {
     const brick = createToolBrick({ name: "fail_tool" });
     const executor = createMockExecutor({
       ok: false,
-      error: { code: "TIMEOUT", message: "execution timed out" },
+      error: { code: "TIMEOUT", message: "execution timed out", durationMs: 5000 },
     });
 
     const tool = brickToTool(brick, executor);
@@ -86,7 +93,7 @@ describe("brickToTool", () => {
 
   test("respects custom timeout", async () => {
     const brick = createToolBrick();
-    const executor = createMockExecutor({ ok: true, value: { output: 0 } });
+    const executor = createMockExecutor({ ok: true, value: { output: 0, durationMs: 1 } });
 
     const tool = brickToTool(brick, executor, 10_000);
     await tool.execute({});
