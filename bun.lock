@@ -659,6 +659,19 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/ralph": {
+      "name": "@koi/ralph",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/redaction": {
       "name": "@koi/redaction",
       "version": "0.0.0",
@@ -1322,6 +1335,8 @@
     "@koi/node": ["@koi/node@workspace:packages/node"],
 
     "@koi/parallel-minions": ["@koi/parallel-minions@workspace:packages/parallel-minions"],
+
+    "@koi/ralph": ["@koi/ralph@workspace:packages/ralph"],
 
     "@koi/redaction": ["@koi/redaction@workspace:packages/redaction"],
 
