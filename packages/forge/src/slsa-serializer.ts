@@ -5,7 +5,7 @@
  * SLSA-compatible JSON for external consumption and audit trails.
  */
 
-import type { ForgeProvenance } from "@koi/core";
+import type { BrickId, ForgeProvenance, InTotoStatementV1 } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // SLSA v1.0 predicate types (subset relevant to Koi)
@@ -44,6 +44,20 @@ export interface SlsaProvenanceV1 {
   readonly buildDefinition: SlsaBuildDefinition;
   readonly runDetails: SlsaRunDetails;
 }
+
+/** Koi vendor extensions appended to the SLSA predicate. */
+export interface SlsaKoiExtensions {
+  readonly koi_classification: string;
+  readonly koi_contentMarkers: readonly string[];
+  readonly koi_verification: {
+    readonly passed: boolean;
+    readonly finalTrustTier: string;
+    readonly totalDurationMs: number;
+  };
+}
+
+/** SLSA predicate with Koi vendor extensions. */
+export type SlsaProvenanceV1WithExtensions = SlsaProvenanceV1 & SlsaKoiExtensions;
 
 // ---------------------------------------------------------------------------
 // Mapper
@@ -89,5 +103,46 @@ export function mapProvenanceToSlsa(provenance: ForgeProvenance): SlsaProvenance
       builder,
       metadata,
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Statement envelope — wraps predicate in in-toto Statement v1
+// ---------------------------------------------------------------------------
+
+const SLSA_PROVENANCE_V1_PREDICATE_TYPE = "https://slsa.dev/provenance/v1";
+
+/**
+ * Wrap Koi ForgeProvenance in a full in-toto Statement v1 envelope.
+ *
+ * The subject is the brick identified by its content-addressed BrickId.
+ * Includes Koi vendor extensions (classification, content markers, verification summary).
+ */
+export function mapProvenanceToStatement(
+  provenance: ForgeProvenance,
+  brickId: BrickId,
+): InTotoStatementV1<SlsaProvenanceV1WithExtensions> {
+  const predicate = mapProvenanceToSlsa(provenance);
+
+  const extensions: SlsaKoiExtensions = {
+    koi_classification: provenance.classification,
+    koi_contentMarkers: provenance.contentMarkers,
+    koi_verification: {
+      passed: provenance.verification.passed,
+      finalTrustTier: provenance.verification.finalTrustTier,
+      totalDurationMs: provenance.verification.totalDurationMs,
+    },
+  };
+
+  return {
+    _type: "https://in-toto.io/Statement/v1",
+    subject: [
+      {
+        name: brickId,
+        digest: { sha256: brickId.replace("sha256:", "") },
+      },
+    ],
+    predicateType: SLSA_PROVENANCE_V1_PREDICATE_TYPE,
+    predicate: { ...predicate, ...extensions },
   };
 }

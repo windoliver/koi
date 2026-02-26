@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge API surface . has stable type surface 1`] = `
-"import { TestCase, BrickRequires, DataClassification, ContentMarker, TrustTier, BrickId, BrickKind, ToolDescriptor, ForgeScope, BrickLifecycle, SandboxExecutor, BrickArtifact, ForgeStore, Result, KoiError, ForgeProvenance, SigningBackend, ToolArtifact, Tool, TieredSandboxExecutor, StoreChangeNotifier, ComponentProvider, Resolver, StoreChangeEvent, BrickComponentMap, KoiMiddleware, AgentArtifact } from '@koi/core';
+"import { TestCase, BrickRequires, DataClassification, ContentMarker, TrustTier, BrickId, BrickKind, ToolDescriptor, ForgeScope, BrickLifecycle, SandboxExecutor, BrickArtifact, ForgeStore, Result, KoiError, ForgeProvenance, SigningBackend, ToolArtifact, Tool, TieredSandboxExecutor, StoreChangeNotifier, ComponentProvider, Resolver, StoreChangeEvent, BrickComponentMap, KoiMiddleware, InTotoStatementV1, AgentArtifact } from '@koi/core';
 export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, ContentMarker, DataClassification, ForgeAttestationSignature, ForgeBuildDefinition, ForgeBuilder, ForgeProvenance, ForgeQuery, ForgeResourceRef, ForgeRunMetadata, ForgeStageDigest, ForgeStore, ForgeVerificationSummary, LockHandle, LockMode, LockRequest, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, SigningBackend, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, TierResolution, TieredSandboxExecutor, ToolArtifact } from '@koi/core';
 
 /**
@@ -311,6 +311,7 @@ declare function validateForgeConfig(raw: unknown): Result<ForgeConfig, KoiError
  * with a pluggable SigningBackend, and verifies attestation integrity.
  */
 
+declare function canonicalJsonSerialize(value: unknown): string;
 interface CreateProvenanceOptions {
     readonly input: ForgeInput;
     readonly context: ForgeContext;
@@ -362,6 +363,30 @@ interface AttestationCache {
  * Create an in-memory attestation verification cache.
  */
 declare function createAttestationCache(): AttestationCache;
+
+/**
+ * Shared brick content extraction — maps brick kind to hashable primary content.
+ *
+ * Used by both integrity verification and forge pipeline for content-addressed ID computation.
+ */
+
+/**
+ * Minimal shape needed for content extraction — works for full BrickArtifact
+ * and provenance-less builder output.
+ */
+interface HasKindAndContent {
+    readonly kind: BrickKind;
+    readonly implementation?: string;
+    readonly content?: string;
+    readonly manifestYaml?: string;
+}
+/**
+ * Extract the primary content string from a brick artifact for hashing.
+ */
+declare function extractBrickContent(brick: HasKindAndContent): {
+    readonly kind: string;
+    readonly content: string;
+};
 
 /**
  * Brick → Tool conversion — shared utility for converting ToolArtifact bricks
@@ -554,17 +579,25 @@ declare function checkScopePromotion(currentScope: ForgeScope, targetScope: Forg
  */
 
 interface IntegrityOk {
+    readonly kind: "ok";
     readonly ok: true;
     readonly brickId: BrickId;
     readonly id: BrickId;
 }
-interface IntegrityMismatch {
+interface IntegrityContentMismatch {
+    readonly kind: "content_mismatch";
     readonly ok: false;
     readonly brickId: BrickId;
     readonly expectedId: BrickId;
     readonly actualId: BrickId;
 }
-type IntegrityResult = IntegrityOk | IntegrityMismatch;
+interface IntegrityAttestationFailed {
+    readonly kind: "attestation_failed";
+    readonly ok: false;
+    readonly brickId: BrickId;
+    readonly reason: "missing" | "invalid" | "algorithm_mismatch";
+}
+type IntegrityResult = IntegrityOk | IntegrityContentMismatch | IntegrityAttestationFailed;
 /**
  * Verifies that a brick's content has not been tampered with by recomputing
  * the content-addressed BrickId and comparing it to the stored \`id\`.
@@ -667,10 +700,29 @@ interface SlsaProvenanceV1 {
     readonly buildDefinition: SlsaBuildDefinition;
     readonly runDetails: SlsaRunDetails;
 }
+/** Koi vendor extensions appended to the SLSA predicate. */
+interface SlsaKoiExtensions {
+    readonly koi_classification: string;
+    readonly koi_contentMarkers: readonly string[];
+    readonly koi_verification: {
+        readonly passed: boolean;
+        readonly finalTrustTier: string;
+        readonly totalDurationMs: number;
+    };
+}
+/** SLSA predicate with Koi vendor extensions. */
+type SlsaProvenanceV1WithExtensions = SlsaProvenanceV1 & SlsaKoiExtensions;
 /**
  * Map Koi ForgeProvenance to SLSA v1.0 predicate structure.
  */
 declare function mapProvenanceToSlsa(provenance: ForgeProvenance): SlsaProvenanceV1;
+/**
+ * Wrap Koi ForgeProvenance in a full in-toto Statement v1 envelope.
+ *
+ * The subject is the brick identified by its content-addressed BrickId.
+ * Includes Koi vendor extensions (classification, content markers, verification summary).
+ */
+declare function mapProvenanceToStatement(provenance: ForgeProvenance, brickId: BrickId): InTotoStatementV1<SlsaProvenanceV1WithExtensions>;
 
 /**
  * In-memory store change notifier — pub/sub for cross-agent cache invalidation.
@@ -841,6 +893,6 @@ declare function verifyStatic(input: ForgeInput, config: VerificationConfig): Re
 
 declare function assignTrust(_input: ForgeInput, config: ForgeConfig, stageResults: readonly StageReport[]): Result<TrustStageReport, ForgeError>;
 
-export { type AssembleManifestOptions, type AssembleManifestResult, type AttestationCache, type AutoPromotionConfig, type CreateForgeRuntimeOptions, type CreateProvenanceOptions, type ForgeAgentInput, type ForgeAgentInputWithBricks, type ForgeAgentInputWithManifest, type ForgeChannelInput, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeConfig, type ForgeContext, type ForgeDeps, type ForgeError, type ForgeInput, type ForgeMiddlewareInput, type ForgeResolverContext, type ForgeResult, type ForgeResultMetadata, type ForgeRuntimeInstance, type ForgeSkillInput, type ForgeToolConfig, type ForgeToolInput, type ForgeUsageMiddlewareConfig, type ForgeVerifier, type GovernanceResult, type IntegrityMismatch, type IntegrityOk, type IntegrityResult, type ManifestParseResult, type ManifestParser, type OnForgeAgentSpawn, type PromoteChange, type PromoteResult, type RequiresCheckResult, type ScopePromotionConfig, type SkillMdInput, type SlsaBuildDefinition, type SlsaBuildMetadata, type SlsaBuilder, type SlsaProvenanceV1, type SlsaResourceDescriptor, type SlsaRunDetails, type StageReport, type TestFailure, type TrustStageReport, type UsagePromotedResult, type UsageRecordedResult, type UsageResult, type VerificationConfig, type VerificationReport, type VerificationStage, type VerifierResult, assembleManifest, assignTrust, brickToTool, checkBrickRequires, checkGovernance, checkScopePromotion, computeAutoPromotion, createAdversarialVerifiers, createAttestationCache, createContentScanningVerifier, createDefaultForgeConfig, createExfiltrationVerifier, createForgeAgentTool, createForgeChannelTool, createForgeComponentProvider, createForgeMiddlewareTool, createForgeProvenance, createForgeResolver, createForgeRuntime, createForgeSkillTool, createForgeTool, createForgeToolTool, createForgeUsageMiddleware, createInMemoryForgeStore, createInjectionVerifier, createMemoryStoreChangeNotifier, createPromoteForgeTool, createResourceExhaustionVerifier, createSearchForgeTool, createStructuralHidingVerifier, filterByAgentScope, generateSkillMd, governanceError, isVisibleToAgent, loadAndVerify, mapProvenanceToSlsa, recordBrickUsage, sandboxError, selfTestError, signAttestation, staticError, storeError, trustError, typeError, validateForgeConfig, verify, verifyAttestation, verifyBrickAttestation, verifyBrickIntegrity, verifySandbox, verifySelfTest, verifyStatic };
+export { type AssembleManifestOptions, type AssembleManifestResult, type AttestationCache, type AutoPromotionConfig, type CreateForgeRuntimeOptions, type CreateProvenanceOptions, type ForgeAgentInput, type ForgeAgentInputWithBricks, type ForgeAgentInputWithManifest, type ForgeChannelInput, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeConfig, type ForgeContext, type ForgeDeps, type ForgeError, type ForgeInput, type ForgeMiddlewareInput, type ForgeResolverContext, type ForgeResult, type ForgeResultMetadata, type ForgeRuntimeInstance, type ForgeSkillInput, type ForgeToolConfig, type ForgeToolInput, type ForgeUsageMiddlewareConfig, type ForgeVerifier, type GovernanceResult, type IntegrityAttestationFailed, type IntegrityContentMismatch, type IntegrityOk, type IntegrityResult, type ManifestParseResult, type ManifestParser, type OnForgeAgentSpawn, type PromoteChange, type PromoteResult, type RequiresCheckResult, type ScopePromotionConfig, type SkillMdInput, type SlsaBuildDefinition, type SlsaBuildMetadata, type SlsaBuilder, type SlsaKoiExtensions, type SlsaProvenanceV1, type SlsaProvenanceV1WithExtensions, type SlsaResourceDescriptor, type SlsaRunDetails, type StageReport, type TestFailure, type TrustStageReport, type UsagePromotedResult, type UsageRecordedResult, type UsageResult, type VerificationConfig, type VerificationReport, type VerificationStage, type VerifierResult, assembleManifest, assignTrust, brickToTool, canonicalJsonSerialize, checkBrickRequires, checkGovernance, checkScopePromotion, computeAutoPromotion, createAdversarialVerifiers, createAttestationCache, createContentScanningVerifier, createDefaultForgeConfig, createExfiltrationVerifier, createForgeAgentTool, createForgeChannelTool, createForgeComponentProvider, createForgeMiddlewareTool, createForgeProvenance, createForgeResolver, createForgeRuntime, createForgeSkillTool, createForgeTool, createForgeToolTool, createForgeUsageMiddleware, createInMemoryForgeStore, createInjectionVerifier, createMemoryStoreChangeNotifier, createPromoteForgeTool, createResourceExhaustionVerifier, createSearchForgeTool, createStructuralHidingVerifier, extractBrickContent, filterByAgentScope, generateSkillMd, governanceError, isVisibleToAgent, loadAndVerify, mapProvenanceToSlsa, mapProvenanceToStatement, recordBrickUsage, sandboxError, selfTestError, signAttestation, staticError, storeError, trustError, typeError, validateForgeConfig, verify, verifyAttestation, verifyBrickAttestation, verifyBrickIntegrity, verifySandbox, verifySelfTest, verifyStatic };
 "
 `;

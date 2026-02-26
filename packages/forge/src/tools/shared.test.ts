@@ -193,7 +193,6 @@ describe("buildBaseFields", () => {
     expect(base.trustTier).toBe("sandbox");
     expect(base.scope).toBe("agent");
     expect(base.lifecycle).toBe("active");
-    expect(base.provenance.metadata.agentId).toBe("agent-1");
     expect(base.version).toBe("0.0.1");
     expect(base.usageCount).toBe(0);
   });

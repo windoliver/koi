@@ -54,10 +54,17 @@ export type { AssembleManifestOptions, AssembleManifestResult } from "./assemble
 export { assembleManifest } from "./assemble-manifest.js";
 // runtime values — attestation
 export type { CreateProvenanceOptions } from "./attestation.js";
-export { createForgeProvenance, signAttestation, verifyAttestation } from "./attestation.js";
+export {
+  canonicalJsonSerialize,
+  createForgeProvenance,
+  signAttestation,
+  verifyAttestation,
+} from "./attestation.js";
 // runtime values — attestation cache
 export type { AttestationCache } from "./attestation-cache.js";
 export { createAttestationCache } from "./attestation-cache.js";
+// runtime values — brick content extraction
+export { extractBrickContent } from "./brick-content.js";
 export type {
   AutoPromotionConfig,
   ForgeConfig,
@@ -97,7 +104,12 @@ export type { GovernanceResult } from "./governance.js";
 // runtime values — governance
 export { checkGovernance, checkScopePromotion } from "./governance.js";
 // runtime values — integrity verification
-export type { IntegrityMismatch, IntegrityOk, IntegrityResult } from "./integrity.js";
+export type {
+  IntegrityAttestationFailed,
+  IntegrityContentMismatch,
+  IntegrityOk,
+  IntegrityResult,
+} from "./integrity.js";
 export { loadAndVerify, verifyBrickAttestation, verifyBrickIntegrity } from "./integrity.js";
 // runtime values — storage
 export { createInMemoryForgeStore } from "./memory-store.js";
@@ -109,11 +121,13 @@ export type {
   SlsaBuildDefinition,
   SlsaBuilder,
   SlsaBuildMetadata,
+  SlsaKoiExtensions,
   SlsaProvenanceV1,
+  SlsaProvenanceV1WithExtensions,
   SlsaResourceDescriptor,
   SlsaRunDetails,
 } from "./slsa-serializer.js";
-export { mapProvenanceToSlsa } from "./slsa-serializer.js";
+export { mapProvenanceToSlsa, mapProvenanceToStatement } from "./slsa-serializer.js";
 // runtime values — store change notification
 export { createMemoryStoreChangeNotifier } from "./store-notifier.js";
 export type { OnForgeAgentSpawn } from "./tools/forge-agent.js";

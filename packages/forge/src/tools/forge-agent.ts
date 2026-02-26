@@ -159,16 +159,13 @@ async function forgeAgentHandler(
       : {}),
   };
 
-  return runForgePipeline(forgeInput, deps, (report) => {
-    const artifact: AgentArtifact = {
-      ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
-      kind: "agent",
-      manifestYaml,
-      ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
-      ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
-    };
-    return artifact;
-  });
+  return runForgePipeline(forgeInput, deps, (report) => ({
+    ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
+    kind: "agent" as const,
+    manifestYaml,
+    ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
+    ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
+  }));
 }
 
 // ---------------------------------------------------------------------------

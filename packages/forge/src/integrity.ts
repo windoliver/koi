@@ -6,44 +6,37 @@
 import type { BrickArtifact, BrickId, ForgeStore, Result, SigningBackend } from "@koi/core";
 import { computeBrickId } from "@koi/hash";
 import { verifyAttestation } from "./attestation.js";
+import { extractBrickContent } from "./brick-content.js";
 import type { ForgeError } from "./errors.js";
 import { storeError } from "./errors.js";
 
 // ---------------------------------------------------------------------------
-// Result types
+// Result types — 3-variant discriminated union
 // ---------------------------------------------------------------------------
 
 export interface IntegrityOk {
+  readonly kind: "ok";
   readonly ok: true;
   readonly brickId: BrickId;
   readonly id: BrickId;
 }
 
-export interface IntegrityMismatch {
+export interface IntegrityContentMismatch {
+  readonly kind: "content_mismatch";
   readonly ok: false;
   readonly brickId: BrickId;
   readonly expectedId: BrickId;
   readonly actualId: BrickId;
 }
 
-export type IntegrityResult = IntegrityOk | IntegrityMismatch;
-
-// ---------------------------------------------------------------------------
-// Content extraction per brick kind
-// ---------------------------------------------------------------------------
-
-function extractContentForHash(brick: BrickArtifact): string {
-  switch (brick.kind) {
-    case "tool":
-    case "middleware":
-    case "channel":
-      return brick.implementation;
-    case "skill":
-      return brick.content;
-    case "agent":
-      return brick.manifestYaml;
-  }
+export interface IntegrityAttestationFailed {
+  readonly kind: "attestation_failed";
+  readonly ok: false;
+  readonly brickId: BrickId;
+  readonly reason: "missing" | "invalid" | "algorithm_mismatch";
 }
+
+export type IntegrityResult = IntegrityOk | IntegrityContentMismatch | IntegrityAttestationFailed;
 
 // ---------------------------------------------------------------------------
 // Pure — recomputes ID from content and compares to stored id
@@ -54,17 +47,15 @@ function extractContentForHash(brick: BrickArtifact): string {
  * the content-addressed BrickId and comparing it to the stored `id`.
  */
 export function verifyBrickIntegrity(brick: BrickArtifact): IntegrityResult {
-  const recomputedId: BrickId = computeBrickId(
-    brick.kind,
-    extractContentForHash(brick),
-    brick.files,
-  );
+  const { content } = extractBrickContent(brick);
+  const recomputedId: BrickId = computeBrickId(brick.kind, content, brick.files);
 
   if (recomputedId === brick.id) {
-    return { ok: true, brickId: brick.id, id: recomputedId };
+    return { kind: "ok", ok: true, brickId: brick.id, id: recomputedId };
   }
 
   return {
+    kind: "content_mismatch",
     ok: false,
     brickId: brick.id,
     expectedId: brick.id,
@@ -93,10 +84,10 @@ export async function verifyBrickAttestation(
     const signatureValid = await verifyAttestation(brick.provenance, signer);
     if (!signatureValid) {
       return {
+        kind: "attestation_failed",
         ok: false,
         brickId: brick.id,
-        expectedId: brick.id,
-        actualId: brick.id, // Content matches but attestation is invalid
+        reason: "invalid",
       };
     }
   }

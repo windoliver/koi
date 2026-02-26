@@ -379,6 +379,47 @@ describe("createForgeRuntime — attestation verification", () => {
     // verifyBrickAttestation passes when no attestation present (only checks hash)
     expect(tool).toBeDefined();
   });
+
+  test("integrity cache works with attestation-backed verification", async () => {
+    const signer = createTestSigner();
+    const store = createInMemoryForgeStore();
+
+    const brick = testToolArtifact({ name: "cache-attest-tool" });
+    const signedProvenance = await signAttestation(brick.provenance, signer);
+    await store.save({ ...brick, provenance: signedProvenance });
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered(), signer });
+
+    // First resolve — verifies attestation, caches result
+    const first = await runtime.resolveTool("cache-attest-tool");
+    expect(first).toBeDefined();
+
+    // Second resolve — uses cached result
+    const second = await runtime.resolveTool("cache-attest-tool");
+    expect(second).toBeDefined();
+  });
+
+  test("failed attestation is cached — forged sig stays rejected", async () => {
+    const signer = createTestSigner();
+    const store = createInMemoryForgeStore();
+
+    const brick = testToolArtifact({ name: "bad-attest" });
+    const fakeProvenance = {
+      ...brick.provenance,
+      attestation: { algorithm: "hmac-sha256", signature: "ab".repeat(32) },
+    };
+    await store.save({ ...brick, provenance: fakeProvenance });
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered(), signer });
+
+    // First resolve — detects invalid attestation, caches failure
+    const first = await runtime.resolveTool("bad-attest");
+    expect(first).toBeUndefined();
+
+    // Second resolve — uses cached failure
+    const second = await runtime.resolveTool("bad-attest");
+    expect(second).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@
 import type { Result, Tool } from "@koi/core";
 import { brickId } from "@koi/core";
 import type { ForgeError } from "../errors.js";
-import type { ForgeMiddlewareInput, ForgeResult, ImplementationArtifact } from "../types.js";
+import type { ForgeMiddlewareInput, ForgeResult } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import {
   buildBaseFields,
@@ -112,18 +112,15 @@ async function forgeMiddlewareHandler(
       : {}),
   };
 
-  return runForgePipeline(forgeInput, deps, (report) => {
-    const artifact: ImplementationArtifact = {
-      ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
-      kind: "middleware",
-      implementation: forgeInput.implementation,
-      ...(forgeInput.testCases !== undefined ? { testCases: forgeInput.testCases } : {}),
-      ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
-      ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
-      ...(forgeInput.configSchema !== undefined ? { configSchema: forgeInput.configSchema } : {}),
-    };
-    return artifact;
-  });
+  return runForgePipeline(forgeInput, deps, (report) => ({
+    ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
+    kind: "middleware" as const,
+    implementation: forgeInput.implementation,
+    ...(forgeInput.testCases !== undefined ? { testCases: forgeInput.testCases } : {}),
+    ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
+    ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
+    ...(forgeInput.configSchema !== undefined ? { configSchema: forgeInput.configSchema } : {}),
+  }));
 }
 
 // ---------------------------------------------------------------------------

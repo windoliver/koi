@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import type { SigningBackend } from "@koi/core";
 import { brickId } from "@koi/core";
 import { computeBrickId } from "@koi/hash";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
-import { loadAndVerify, verifyBrickIntegrity } from "./integrity.js";
+import { signAttestation } from "./attestation.js";
+import { loadAndVerify, verifyBrickAttestation, verifyBrickIntegrity } from "./integrity.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
 import type { AgentArtifact, SkillArtifact, ToolArtifact } from "./types.js";
 
@@ -129,7 +131,7 @@ describe("verifyBrickIntegrity", () => {
     const tampered: ToolArtifact = { ...brick, implementation: "return 'HACKED';" };
     const result = verifyBrickIntegrity(tampered);
     expect(result.ok).toBe(false);
-    if (!result.ok) {
+    if (result.kind === "content_mismatch") {
       expect(result.expectedId).toBe(brick.id);
       expect(result.actualId).not.toBe(brick.id);
     }
@@ -211,5 +213,121 @@ describe("loadAndVerify", () => {
       expect(result.error.stage).toBe("store");
       expect(result.error.code).toBe("LOAD_FAILED");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// verifyBrickAttestation
+// ---------------------------------------------------------------------------
+
+function createTestSigner(): SigningBackend {
+  const BLOCK_SIZE = 64;
+  const secretKey = new Uint8Array(32).fill(42);
+
+  function hmac(key: Uint8Array, data: Uint8Array): Uint8Array {
+    const hasher1 = new Bun.CryptoHasher("sha256");
+    const paddedKey = new Uint8Array(BLOCK_SIZE);
+    paddedKey.set(
+      key.length > BLOCK_SIZE
+        ? new Uint8Array(new Bun.CryptoHasher("sha256").update(key).digest())
+        : key,
+    );
+    const innerPad = new Uint8Array(BLOCK_SIZE);
+    const outerPad = new Uint8Array(BLOCK_SIZE);
+    for (let i = 0; i < BLOCK_SIZE; i++) {
+      const kb = paddedKey[i] ?? 0;
+      innerPad[i] = kb ^ 0x36;
+      outerPad[i] = kb ^ 0x5c;
+    }
+    hasher1.update(innerPad);
+    hasher1.update(data);
+    const innerDigest = new Uint8Array(hasher1.digest());
+    const hasher2 = new Bun.CryptoHasher("sha256");
+    hasher2.update(outerPad);
+    hasher2.update(innerDigest);
+    return new Uint8Array(hasher2.digest());
+  }
+
+  return {
+    algorithm: "hmac-sha256",
+    sign: (data: Uint8Array) => hmac(secretKey, data),
+    verify: (data: Uint8Array, signature: Uint8Array) => {
+      const expected = hmac(secretKey, data);
+      if (expected.length !== signature.length) return false;
+      // let justified: accumulator for constant-time comparison
+      let diff = 0;
+      for (let i = 0; i < expected.length; i++) {
+        diff |= (expected[i] ?? 0) ^ (signature[i] ?? 0);
+      }
+      return diff === 0;
+    },
+  };
+}
+
+describe("verifyBrickAttestation", () => {
+  test("valid hash + valid attestation returns IntegrityOk", async () => {
+    const signer = createTestSigner();
+    const brick = createToolBrick();
+    const signedProvenance = await signAttestation(brick.provenance, signer);
+    const signedBrick: ToolArtifact = { ...brick, provenance: signedProvenance };
+
+    const result = await verifyBrickAttestation(signedBrick, signer);
+    expect(result.ok).toBe(true);
+    expect(result.kind).toBe("ok");
+  });
+
+  test("valid hash + invalid attestation returns IntegrityAttestationFailed", async () => {
+    const signer = createTestSigner();
+    const brick = createToolBrick();
+    const badProvenance = {
+      ...brick.provenance,
+      attestation: { algorithm: "hmac-sha256", signature: "0".repeat(64) },
+    };
+    const badBrick: ToolArtifact = { ...brick, provenance: badProvenance };
+
+    const result = await verifyBrickAttestation(badBrick, signer);
+    expect(result.ok).toBe(false);
+    expect(result.kind).toBe("attestation_failed");
+    if (result.kind === "attestation_failed") {
+      expect(result.reason).toBe("invalid");
+    }
+  });
+
+  test("invalid hash + valid attestation returns IntegrityContentMismatch", async () => {
+    const signer = createTestSigner();
+    const brick = createToolBrick();
+    const signedProvenance = await signAttestation(brick.provenance, signer);
+    // Tamper the implementation but keep the signed provenance
+    const tamperedBrick: ToolArtifact = {
+      ...brick,
+      implementation: "return 'HACKED';",
+      provenance: signedProvenance,
+    };
+
+    const result = await verifyBrickAttestation(tamperedBrick, signer);
+    expect(result.ok).toBe(false);
+    // Hash check fails first — content_mismatch takes precedence
+    expect(result.kind).toBe("content_mismatch");
+  });
+
+  test("valid hash + missing attestation returns IntegrityOk (attestation is optional)", async () => {
+    const signer = createTestSigner();
+    const brick = createToolBrick();
+    // No attestation on provenance
+
+    const result = await verifyBrickAttestation(brick, signer);
+    expect(result.ok).toBe(true);
+    expect(result.kind).toBe("ok");
+  });
+
+  test("valid hash + no signer context handled by caller — function requires signer", async () => {
+    // verifyBrickAttestation requires a signer parameter, so this tests
+    // that even with a signer, bricks without attestation still pass
+    const signer = createTestSigner();
+    const brick = createSkillBrick();
+
+    const result = await verifyBrickAttestation(brick, signer);
+    expect(result.ok).toBe(true);
+    expect(result.kind).toBe("ok");
   });
 });

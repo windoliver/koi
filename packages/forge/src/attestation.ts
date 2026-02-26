@@ -16,27 +16,56 @@ import type {
 import type { ForgeConfig } from "./config.js";
 import type { ForgeContext, ForgeInput, VerificationReport } from "./types.js";
 
+const TEXT_ENCODER = new TextEncoder();
+
 // ---------------------------------------------------------------------------
 // Canonical JSON serialization (sorted keys, deterministic)
 // ---------------------------------------------------------------------------
 
-function canonicalJsonSerialize(value: unknown): string {
-  if (value === null || value === undefined) {
-    return JSON.stringify(value);
+export function canonicalJsonSerialize(value: unknown): string {
+  if (value === undefined) {
+    return "null";
+  }
+  const parts: string[] = [];
+  serializeInto(parts, value);
+  return parts.join("");
+}
+
+function serializeInto(parts: string[], value: unknown): void {
+  if (value === null) {
+    parts.push("null");
+    return;
   }
   if (typeof value !== "object") {
-    return JSON.stringify(value);
+    parts.push(JSON.stringify(value));
+    return;
   }
   if (Array.isArray(value)) {
-    const items = value.map(canonicalJsonSerialize);
-    return `[${items.join(",")}]`;
+    parts.push("[");
+    for (let i = 0; i < value.length; i++) {
+      if (i > 0) parts.push(",");
+      serializeInto(parts, value[i]);
+    }
+    parts.push("]");
+    return;
   }
-  const obj = value as Record<string, unknown>;
+  // Type guard instead of `as` cast
+  const obj: Record<string, unknown> =
+    typeof value === "object" && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
   const sortedKeys = Object.keys(obj).sort();
-  const entries = sortedKeys
-    .filter((key) => obj[key] !== undefined)
-    .map((key) => `${JSON.stringify(key)}:${canonicalJsonSerialize(obj[key])}`);
-  return `{${entries.join(",")}}`;
+  parts.push("{");
+  let first = true;
+  for (const key of sortedKeys) {
+    if (obj[key] === undefined) continue;
+    if (!first) parts.push(",");
+    parts.push(JSON.stringify(key));
+    parts.push(":");
+    serializeInto(parts, obj[key]);
+    first = false;
+  }
+  parts.push("}");
 }
 
 // ---------------------------------------------------------------------------
@@ -145,11 +174,9 @@ export async function signAttestation(
   // Serialize provenance without attestation field
   const { attestation: _, ...withoutAttestation } = provenance;
   const canonical = canonicalJsonSerialize(withoutAttestation);
-  const data = new TextEncoder().encode(canonical);
+  const data = TEXT_ENCODER.encode(canonical);
   const signatureBytes = await signer.sign(data);
-  const signature = Array.from(signatureBytes)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  const signature = Buffer.from(signatureBytes).toString("hex");
 
   return {
     ...provenance,
@@ -180,14 +207,10 @@ export async function verifyAttestation(
 
   const { attestation, ...withoutAttestation } = provenance;
   const canonical = canonicalJsonSerialize(withoutAttestation);
-  const data = new TextEncoder().encode(canonical);
+  const data = TEXT_ENCODER.encode(canonical);
 
   // Convert hex signature back to bytes
-  const signatureHex = attestation.signature;
-  const signatureBytes = new Uint8Array(signatureHex.length / 2);
-  for (let i = 0; i < signatureHex.length; i += 2) {
-    signatureBytes[i / 2] = Number.parseInt(signatureHex.slice(i, i + 2), 16);
-  }
+  const signatureBytes = new Uint8Array(Buffer.from(attestation.signature, "hex"));
 
   return signer.verify(data, signatureBytes);
 }

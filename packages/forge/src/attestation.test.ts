@@ -5,7 +5,12 @@
 import { describe, expect, test } from "bun:test";
 import type { ForgeProvenance, SigningBackend } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
-import { createForgeProvenance, signAttestation, verifyAttestation } from "./attestation.js";
+import {
+  canonicalJsonSerialize,
+  createForgeProvenance,
+  signAttestation,
+  verifyAttestation,
+} from "./attestation.js";
 import type { ForgeConfig } from "./config.js";
 import { createDefaultForgeConfig } from "./config.js";
 import type { ForgeContext, ForgeToolInput, VerificationReport } from "./types.js";
@@ -565,5 +570,76 @@ describe("attestation edge cases", () => {
     });
 
     expect(provenance.buildDefinition.buildType).toBe("koi.forge/middleware/v1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// canonicalJsonSerialize
+// ---------------------------------------------------------------------------
+
+describe("canonicalJsonSerialize", () => {
+  test("sorts keys alphabetically", () => {
+    expect(canonicalJsonSerialize({ b: 1, a: 2 })).toBe('{"a":2,"b":1}');
+  });
+
+  test("sorts nested object keys at every level", () => {
+    expect(canonicalJsonSerialize({ z: { b: 1, a: 2 }, a: 3 })).toBe('{"a":3,"z":{"a":2,"b":1}}');
+  });
+
+  test("preserves array element order", () => {
+    expect(canonicalJsonSerialize([3, 1, 2])).toBe("[3,1,2]");
+  });
+
+  test("filters undefined values from objects", () => {
+    expect(canonicalJsonSerialize({ a: 1, b: undefined, c: 3 })).toBe('{"a":1,"c":3}');
+  });
+
+  test("serializes empty object", () => {
+    expect(canonicalJsonSerialize({})).toBe("{}");
+  });
+
+  test("serializes empty array", () => {
+    expect(canonicalJsonSerialize([])).toBe("[]");
+  });
+
+  test("handles null", () => {
+    expect(canonicalJsonSerialize(null)).toBe("null");
+  });
+
+  test("handles undefined at top level as null", () => {
+    expect(canonicalJsonSerialize(undefined)).toBe("null");
+  });
+
+  test("handles string values", () => {
+    expect(canonicalJsonSerialize("hello")).toBe('"hello"');
+  });
+
+  test("handles numeric edge cases", () => {
+    expect(canonicalJsonSerialize(0)).toBe("0");
+    expect(canonicalJsonSerialize(-0)).toBe("0");
+    expect(canonicalJsonSerialize(NaN)).toBe("null");
+    expect(canonicalJsonSerialize(Infinity)).toBe("null");
+  });
+
+  test("handles special characters in keys", () => {
+    // \t (0x09) sorts before \n (0x0A) in Unicode order
+    expect(canonicalJsonSerialize({ "a\nb": 1, "a\tb": 2 })).toBe('{"a\\tb":2,"a\\nb":1}');
+  });
+
+  test("handles boolean values", () => {
+    expect(canonicalJsonSerialize(true)).toBe("true");
+    expect(canonicalJsonSerialize(false)).toBe("false");
+  });
+
+  test("handles deeply nested structures", () => {
+    const input = { c: [{ z: 1, a: 2 }], b: { y: 3, x: 4 } };
+    expect(canonicalJsonSerialize(input)).toBe('{"b":{"x":4,"y":3},"c":[{"a":2,"z":1}]}');
+  });
+
+  test("deterministic — same input always produces same output", () => {
+    const obj = { z: "last", a: "first", m: [3, 1, 2] };
+    const first = canonicalJsonSerialize(obj);
+    const second = canonicalJsonSerialize(obj);
+    expect(first).toBe(second);
   });
 });

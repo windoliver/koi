@@ -14,8 +14,8 @@ export { RegistryEvent, RegistryFilter, VALID_TRANSITIONS } from './lifecycle.js
 import { A as AgentManifest } from './assembly-D3WlayKT.js';
 export { C as ChannelConfig, a as ChannelIdentity, b as ChildSpec, c as CircuitBreakerConfig, D as DEFAULT_CIRCUIT_BREAKER_CONFIG, d as DEFAULT_SUPERVISION_CONFIG, e as DelegationComponent, f as DelegationConfig, g as DelegationDenyReason, h as DelegationEvent, i as DelegationGrant, j as DelegationId, k as DelegationManagerConfig, l as DelegationScope, m as DelegationVerifyResult, M as MiddlewareConfig, n as ModelConfig, P as PermissionConfig, R as RestartType, o as RevocationRegistry, S as ScopeChecker, p as SupervisionConfig, q as SupervisionStrategy, T as ToolConfig, r as delegationId } from './assembly-D3WlayKT.js';
 import { JsonObject } from './common.js';
-import { I as ImplementationArtifact, B as BrickArtifact } from './brick-store-ByNuvbeC.js';
-export { A as AdvisoryLock, a as AgentArtifact, b as BrickArtifactBase, c as BrickRequires, d as BrickUpdate, C as ContentMarker, D as DataClassification, F as ForgeAttestationSignature, e as ForgeBuildDefinition, f as ForgeBuilder, g as ForgeProvenance, h as ForgeQuery, i as ForgeResourceRef, j as ForgeRunMetadata, k as ForgeStageDigest, l as ForgeStore, m as ForgeVerificationSummary, L as LockHandle, n as LockMode, o as LockRequest, S as SigningBackend, p as SkillArtifact, q as StoreChangeEvent, r as StoreChangeKind, s as StoreChangeNotifier, T as TestCase, t as ToolArtifact } from './brick-store-ByNuvbeC.js';
+import { I as ImplementationArtifact, B as BrickArtifact } from './brick-store-CwFn6Nr-.js';
+export { A as AdvisoryLock, a as AgentArtifact, b as BrickArtifactBase, c as BrickRequires, d as BrickUpdate, C as ContentMarker, D as DataClassification, F as ForgeAttestationSignature, e as ForgeBuildDefinition, f as ForgeBuilder, g as ForgeProvenance, h as ForgeQuery, i as ForgeResourceRef, j as ForgeRunMetadata, k as ForgeStageDigest, l as ForgeStore, m as ForgeVerificationSummary, n as InTotoStatementV1, o as InTotoSubject, L as LockHandle, p as LockMode, q as LockRequest, S as SigningBackend, r as SkillArtifact, s as StoreChangeEvent, t as StoreChangeKind, u as StoreChangeNotifier, T as TestCase, v as ToolArtifact } from './brick-store-CwFn6Nr-.js';
 export { ChannelAdapter, ChannelCapabilities, ChannelStatus, ChannelStatusKind, MessageHandler } from './channel.js';
 export { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, FeatureFlags, ForgeConfigSection, KoiConfig, LimitsConfig, LogLevel, LoopDetectionConfigSection, ModelRouterConfigSection, ModelTargetConfigEntry, SpawnConfig, TelemetryConfig } from './config.js';
 export { CompactionResult, ContextCompactor, TokenEstimator } from './context.js';
@@ -1947,7 +1947,7 @@ exports[`@koi/core API surface ./brick-store has stable type surface 1`] = `
 "import './brick-snapshot-B23ZkSza.js';
 import './ecs-CQlhEvUf.js';
 import './errors.js';
-export { A as AdvisoryLock, a as AgentArtifact, B as BrickArtifact, b as BrickArtifactBase, c as BrickRequires, d as BrickUpdate, h as ForgeQuery, l as ForgeStore, I as ImplementationArtifact, L as LockHandle, n as LockMode, o as LockRequest, p as SkillArtifact, q as StoreChangeEvent, r as StoreChangeKind, s as StoreChangeNotifier, T as TestCase, t as ToolArtifact } from './brick-store-ByNuvbeC.js';
+export { A as AdvisoryLock, a as AgentArtifact, B as BrickArtifact, b as BrickArtifactBase, c as BrickRequires, d as BrickUpdate, h as ForgeQuery, l as ForgeStore, I as ImplementationArtifact, L as LockHandle, p as LockMode, q as LockRequest, r as SkillArtifact, s as StoreChangeEvent, t as StoreChangeKind, u as StoreChangeNotifier, T as TestCase, v as ToolArtifact } from './brick-store-CwFn6Nr-.js';
 import './assembly-D3WlayKT.js';
 import './common.js';
 import './webhook.js';
@@ -2148,7 +2148,7 @@ export type { FilesystemPolicy, NetworkPolicy, ResourceLimits, SandboxProfile };
 `;
 
 exports[`@koi/core API surface ./skill-registry has stable type surface 1`] = `
-"import { c as BrickRequires, p as SkillArtifact } from './brick-store-ByNuvbeC.js';
+"import { c as BrickRequires, r as SkillArtifact } from './brick-store-CwFn6Nr-.js';
 import { Result, KoiError } from './errors.js';
 import './brick-snapshot-B23ZkSza.js';
 import './ecs-CQlhEvUf.js';
