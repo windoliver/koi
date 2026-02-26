@@ -18,6 +18,7 @@
     "@koi/node": "workspace:*",
     "@koi/delegation": "workspace:*",
     "@koi/engine-external": "workspace:*",
+    "@koi/canvas": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },
   "scripts": {

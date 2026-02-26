@@ -924,6 +924,7 @@
       "name": "@koi/e2e-contracts",
       "version": "0.0.0",
       "devDependencies": {
+        "@koi/canvas": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/delegation": "workspace:*",
         "@koi/engine": "workspace:*",
