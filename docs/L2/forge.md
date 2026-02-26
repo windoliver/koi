@@ -88,6 +88,7 @@ index.ts                         ← public re-exports (60+ symbols)
 ├── verify-trust.ts              ← stage 4: trust assignment
 │
 ├── dependency-audit.ts          ← allowlist/blocklist + transitive dep audit
+├── verify-install-integrity.ts  ← post-install lockfile + node_modules verification
 ├── workspace-manager.ts         ← per-dep-hash workspace creation + LRU cleanup
 ├── workspace-scan.ts            ← post-install node_modules code scanner
 │
@@ -287,7 +288,11 @@ audits, installs, and isolates these dependencies automatically.
                                 │     code scan for child_process, etc.   │
                                 │     symlink escape detection (lstat)    │
                                 │                                         │
-                                │  4. Write entry file:                   │
+                                │  4. Integrity verification:             │
+                                │     lockfile matches declared deps      │
+                                │     node_modules matches lockfile       │
+                                │                                         │
+                                │  5. Write entry file:                   │
                                 │     <workspace>/<brick-name>.ts         │
                                 └─────────────────────────────────────────┘
 ```
@@ -315,7 +320,10 @@ Workspaces are evicted by LRU: age > 30 days or total size > 1 GB.
     ├── NODE_PATH: <workspace>/node_modules
     ├── timeout: SIGKILL
     ├── stdout cap: 10 MB
-    └── no access to host secrets (ANTHROPIC_API_KEY, etc.)
+    ├── no access to host secrets (ANTHROPIC_API_KEY, etc.)
+    ├── network isolation: Seatbelt (macOS) / Bubblewrap (Linux)
+    │   when requires.network: false
+    └── resource limits: ulimit -v (memory), ulimit -u (PIDs, Linux)
 
   promoted tier:
     promoted-executor → in-process import() → LRU cache (256 cap)
@@ -323,9 +331,20 @@ Workspaces are evicted by LRU: age > 30 days or total size > 1 GB.
     └── Promise.race timeout with cleanup
 ```
 
-**Network detection**: static analysis catches 19 evasion patterns for bricks that
-declare `requires.network: false` — `globalThis.fetch`, variable aliasing, `node:` prefix
-imports, third-party HTTP libraries, computed property access, and more.
+**Network isolation**: runtime enforcement via OS sandbox (Seatbelt on macOS, Bubblewrap on
+Linux). Bricks with `requires.network: false` are wrapped in `sandbox-exec -p <deny-network>`
+(macOS) or `bwrap --unshare-net` (Linux). Combined with static analysis that catches 19
+evasion patterns — `globalThis.fetch`, variable aliasing, `node:` prefix imports,
+third-party HTTP libraries, computed property access, and more.
+
+**Resource limits**: subprocess memory and PID limits are enforced via `ulimit` before
+executing the brick. Configurable via `dependencies.maxBrickMemoryMb` (default: 256 MB)
+and `dependencies.maxBrickPids` (default: 32, Linux only).
+
+**Post-install integrity**: after `bun install`, the workspace manager verifies that each
+declared package appears in `bun.lock` with the correct version and that `node_modules`
+contains matching `package.json` files. Any mismatch triggers `INTEGRITY_MISMATCH` and the
+workspace is deleted.
 
 ---
 
@@ -698,6 +717,8 @@ const config = createDefaultForgeConfig({
 | `dependencies.maxCacheSizeBytes` | `1,073,741,824` | Max total workspace disk (1 GB) |
 | `dependencies.maxWorkspaceAgeDays` | `30` | LRU eviction age |
 | `dependencies.maxTransitiveDependencies` | `200` | Max transitive deps after install |
+| `dependencies.maxBrickMemoryMb` | `256` | Max virtual memory (MB) per brick subprocess |
+| `dependencies.maxBrickPids` | `32` | Max child processes per brick (Linux only) |
 | `dependencies.allowedPackages` | `undefined` | Allowlist (empty = all allowed) |
 | `dependencies.blockedPackages` | `undefined` | Blocklist (takes precedence) |
 
@@ -753,8 +774,9 @@ createInMemoryForgeStore(): ForgeStore
 createMemoryStoreChangeNotifier(): StoreChangeNotifier
 createAttestationCache(): AttestationCache
 
-// Dependencies
+// Dependencies + integrity
 auditDependencies(packages, config): Result<void, ForgeError>
+verifyInstallIntegrity(workspacePath, declaredPackages): Promise<Result<void, ForgeError>>
 auditTransitiveDependencies(lockContent, config): Result<void, ForgeError>
 computeDependencyHash(packages): string
 resolveWorkspacePath(depHash, cacheDir?): string
@@ -940,6 +962,6 @@ for await (const event of runtime.run({ kind: "text", text: "Use adder to add 2 
 - [Koi Architecture](../architecture/Koi.md) — system overview and layer rules
 - [Brick Auto-Discovery](../architecture/brick-auto-discovery.md) — how bricks are discovered at scale
 - [@koi/doctor](./doctor.md) — static security scanning for agent manifests
-- `@koi/sandbox-executor` — trust-tiered executor dispatch (subprocess + promoted + fallback)
+- [@koi/sandbox-executor](./sandbox-executor.md) — trust-tiered executor dispatch (subprocess + promoted + fallback)
 - [#72](https://github.com/windoliver/koi/issues/72) — OS-level sandbox isolation (Seatbelt/bubblewrap/gVisor)
 - [#394](https://github.com/windoliver/koi/issues/394) — cross-device workspace sync via Nexus

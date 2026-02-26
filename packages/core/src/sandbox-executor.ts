@@ -44,6 +44,13 @@ export interface ExecutionContext {
   readonly workspacePath?: string;
   /** Absolute path to the brick's entry .ts file within the workspace. */
   readonly entryPath?: string;
+  /** Whether the brick is allowed to make network requests. Default: false. */
+  readonly networkAllowed?: boolean;
+  /** OS-level resource limits for the subprocess. */
+  readonly resourceLimits?: {
+    readonly maxMemoryMb?: number;
+    readonly maxPids?: number;
+  };
 }
 
 export interface SandboxExecutor {

@@ -62,7 +62,12 @@ export type ForgeError =
     }
   | {
       readonly stage: "resolve";
-      readonly code: "AUDIT_FAILED" | "INSTALL_FAILED" | "INSTALL_TIMEOUT" | "WORKSPACE_FAILED";
+      readonly code:
+        | "AUDIT_FAILED"
+        | "INSTALL_FAILED"
+        | "INSTALL_TIMEOUT"
+        | "INTEGRITY_MISMATCH"
+        | "WORKSPACE_FAILED";
       readonly message: string;
     }
   | {

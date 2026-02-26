@@ -29,6 +29,8 @@ const TEST_CONFIG: DependencyConfig = {
   maxCacheSizeBytes: 1_073_741_824,
   maxWorkspaceAgeDays: 30,
   maxTransitiveDependencies: 200,
+  maxBrickMemoryMb: 256,
+  maxBrickPids: 32,
 };
 
 afterAll(async () => {

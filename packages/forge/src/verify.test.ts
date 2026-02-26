@@ -341,3 +341,71 @@ describe("verify — stage ordering", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Execution context propagation (network + resource limits)
+// ---------------------------------------------------------------------------
+
+describe("verify — execution context propagation", () => {
+  test("passes networkAllowed=false to executor when requires.network is absent", async () => {
+    const config = createDefaultForgeConfig();
+    // let justified: captures execution context from executor call
+    let capturedContext: unknown;
+    const capturingExecutor: SandboxExecutor = {
+      execute: async (_code, input, _timeout, ctx) => {
+        capturedContext = ctx;
+        return { ok: true, value: { output: input, durationMs: 1 } };
+      },
+    };
+    await verify(validToolInput, DEFAULT_CONTEXT, capturingExecutor, [], config);
+    const ctx = capturedContext as { networkAllowed?: boolean; resourceLimits?: unknown };
+    expect(ctx.networkAllowed).toBe(false);
+  });
+
+  test("passes networkAllowed=true when requires.network is true", async () => {
+    const config = createDefaultForgeConfig();
+    // let justified: captures execution context from executor call
+    let capturedContext: unknown;
+    const capturingExecutor: SandboxExecutor = {
+      execute: async (_code, input, _timeout, ctx) => {
+        capturedContext = ctx;
+        return { ok: true, value: { output: input, durationMs: 1 } };
+      },
+    };
+    const input: ForgeInput = {
+      ...validToolInput,
+      requires: { network: true },
+    };
+    await verify(input, DEFAULT_CONTEXT, capturingExecutor, [], config);
+    const ctx = capturedContext as { networkAllowed?: boolean };
+    expect(ctx.networkAllowed).toBe(true);
+  });
+
+  test("passes resourceLimits from config to executor", async () => {
+    const config = createDefaultForgeConfig({
+      dependencies: {
+        maxDependencies: 20,
+        installTimeoutMs: 15_000,
+        maxCacheSizeBytes: 1_073_741_824,
+        maxWorkspaceAgeDays: 30,
+        maxTransitiveDependencies: 200,
+        maxBrickMemoryMb: 128,
+        maxBrickPids: 16,
+      },
+    });
+    // let justified: captures execution context from executor call
+    let capturedContext: unknown;
+    const capturingExecutor: SandboxExecutor = {
+      execute: async (_code, input, _timeout, ctx) => {
+        capturedContext = ctx;
+        return { ok: true, value: { output: input, durationMs: 1 } };
+      },
+    };
+    await verify(validToolInput, DEFAULT_CONTEXT, capturingExecutor, [], config);
+    const ctx = capturedContext as {
+      resourceLimits?: { maxMemoryMb?: number; maxPids?: number };
+    };
+    expect(ctx.resourceLimits?.maxMemoryMb).toBe(128);
+    expect(ctx.resourceLimits?.maxPids).toBe(16);
+  });
+});

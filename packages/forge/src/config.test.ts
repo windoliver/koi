@@ -92,6 +92,8 @@ describe("createDefaultForgeConfig", () => {
     expect(config.dependencies.installTimeoutMs).toBe(15_000);
     expect(config.dependencies.maxCacheSizeBytes).toBe(1_073_741_824);
     expect(config.dependencies.maxWorkspaceAgeDays).toBe(30);
+    expect(config.dependencies.maxBrickMemoryMb).toBe(256);
+    expect(config.dependencies.maxBrickPids).toBe(32);
     expect(config.dependencies.allowedPackages).toBeUndefined();
     expect(config.dependencies.blockedPackages).toBeUndefined();
   });
@@ -104,12 +106,16 @@ describe("createDefaultForgeConfig", () => {
         maxCacheSizeBytes: 500_000_000,
         maxWorkspaceAgeDays: 7,
         maxTransitiveDependencies: 100,
+        maxBrickMemoryMb: 128,
+        maxBrickPids: 16,
         allowedPackages: ["zod", "lodash"],
         blockedPackages: ["eval"],
       },
     });
     expect(config.dependencies.maxDependencies).toBe(10);
     expect(config.dependencies.installTimeoutMs).toBe(30_000);
+    expect(config.dependencies.maxBrickMemoryMb).toBe(128);
+    expect(config.dependencies.maxBrickPids).toBe(16);
     expect(config.dependencies.allowedPackages).toEqual(["zod", "lodash"]);
     expect(config.dependencies.blockedPackages).toEqual(["eval"]);
   });
@@ -361,6 +367,33 @@ describe("validateForgeConfig (dependencies)", () => {
       expect(result.value.dependencies.maxDependencies).toBe(20);
       expect(result.value.dependencies.maxCacheSizeBytes).toBe(1_073_741_824);
       expect(result.value.dependencies.maxWorkspaceAgeDays).toBe(30);
+      expect(result.value.dependencies.maxBrickMemoryMb).toBe(256);
+      expect(result.value.dependencies.maxBrickPids).toBe(32);
     }
+  });
+
+  test("accepts maxBrickMemoryMb and maxBrickPids overrides", () => {
+    const result = validateForgeConfig({
+      dependencies: { maxBrickMemoryMb: 512, maxBrickPids: 64 },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.dependencies.maxBrickMemoryMb).toBe(512);
+      expect(result.value.dependencies.maxBrickPids).toBe(64);
+    }
+  });
+
+  test("rejects zero maxBrickMemoryMb", () => {
+    const result = validateForgeConfig({
+      dependencies: { maxBrickMemoryMb: 0 },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects negative maxBrickPids", () => {
+    const result = validateForgeConfig({
+      dependencies: { maxBrickPids: -1 },
+    });
+    expect(result.ok).toBe(false);
   });
 });

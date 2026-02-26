@@ -13,7 +13,6 @@ import type {
   ForgeContext,
   ForgeInput,
   ForgeVerifier,
-  ResolveStageReport,
   SandboxExecutor,
   StageReport,
   VerificationReport,
@@ -86,15 +85,23 @@ export async function verify(
     return { ok: false, error: timeoutAfterResolve };
   }
 
-  // Build execution context from resolve stage (workspace path for import())
-  const resolveReport = resolveResult.value as ResolveStageReport;
-  const executionContext: ExecutionContext | undefined =
-    resolveReport.workspacePath !== undefined
-      ? {
-          workspacePath: resolveReport.workspacePath,
-          ...(resolveReport.entryPath !== undefined ? { entryPath: resolveReport.entryPath } : {}),
-        }
-      : undefined;
+  // Build execution context — always include network/resource isolation,
+  // and workspace paths when available from resolve stage.
+  const resolveReport = resolveResult.value;
+  const hasWorkspace = resolveReport.stage === "resolve" && "workspacePath" in resolveReport;
+  const executionContext: ExecutionContext = {
+    ...(hasWorkspace && resolveReport.workspacePath !== undefined
+      ? { workspacePath: resolveReport.workspacePath }
+      : {}),
+    ...(hasWorkspace && "entryPath" in resolveReport && resolveReport.entryPath !== undefined
+      ? { entryPath: resolveReport.entryPath }
+      : {}),
+    networkAllowed: input.requires?.network === true,
+    resourceLimits: {
+      maxMemoryMb: config.dependencies.maxBrickMemoryMb,
+      maxPids: config.dependencies.maxBrickPids,
+    },
+  };
 
   // Stage 2: Sandbox execution
   const sandboxResult = await verifySandbox(input, executor, config.verification, executionContext);

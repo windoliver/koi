@@ -47,6 +47,10 @@ export interface DependencyConfig {
   readonly maxWorkspaceAgeDays: number;
   /** Maximum number of transitive dependencies allowed after resolution. */
   readonly maxTransitiveDependencies: number;
+  /** Maximum virtual memory (MB) for brick subprocess. */
+  readonly maxBrickMemoryMb: number;
+  /** Maximum number of child processes for brick subprocess (Linux only). */
+  readonly maxBrickPids: number;
 }
 
 export interface ForgeConfig {
@@ -102,6 +106,8 @@ const dependencySchema = z.object({
   maxCacheSizeBytes: z.number().int().positive().optional(),
   maxWorkspaceAgeDays: z.number().int().positive().optional(),
   maxTransitiveDependencies: z.number().int().positive().optional(),
+  maxBrickMemoryMb: z.number().int().positive().optional(),
+  maxBrickPids: z.number().int().positive().optional(),
 });
 
 const forgeConfigInputSchema = z.object({
@@ -147,6 +153,8 @@ const DEFAULT_DEPENDENCY: DependencyConfig = {
   maxCacheSizeBytes: 1_073_741_824, // 1 GB
   maxWorkspaceAgeDays: 30,
   maxTransitiveDependencies: 200,
+  maxBrickMemoryMb: 256,
+  maxBrickPids: 32,
 } as const;
 
 const DEFAULT_CONFIG: ForgeConfig = {
@@ -269,6 +277,9 @@ export function validateForgeConfig(raw: unknown): Result<ForgeConfig, KoiError>
             maxTransitiveDependencies:
               p.dependencies.maxTransitiveDependencies ??
               DEFAULT_DEPENDENCY.maxTransitiveDependencies,
+            maxBrickMemoryMb:
+              p.dependencies.maxBrickMemoryMb ?? DEFAULT_DEPENDENCY.maxBrickMemoryMb,
+            maxBrickPids: p.dependencies.maxBrickPids ?? DEFAULT_DEPENDENCY.maxBrickPids,
           }
         : DEFAULT_DEPENDENCY,
   };

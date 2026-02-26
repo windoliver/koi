@@ -16,6 +16,7 @@ import type { DependencyConfig } from "./config.js";
 import { auditTransitiveDependencies } from "./dependency-audit.js";
 import type { ForgeError } from "./errors.js";
 import { resolveError } from "./errors.js";
+import { verifyInstallIntegrity } from "./verify-install-integrity.js";
 import { scanWorkspaceCode } from "./workspace-scan.js";
 
 // ---------------------------------------------------------------------------
@@ -98,7 +99,8 @@ async function createBrickWorkspaceInner(
 ): Promise<Result<WorkspaceResult, ForgeError>> {
   const workspacePath = resolveWorkspacePath(depHash, cacheDir);
 
-  // Cache hit: check if workspace exists with node_modules
+  // Cache hit: check if workspace exists with node_modules.
+  // Integrity was verified at creation time — skip re-verification on cache hit.
   try {
     const nmStat = await stat(join(workspacePath, "node_modules"));
     if (nmStat.isDirectory()) {
@@ -218,6 +220,13 @@ async function createBrickWorkspaceInner(
   if (!scanResult.ok) {
     await rm(workspacePath, { recursive: true, force: true }).catch(() => {});
     return scanResult;
+  }
+
+  // Post-install: verify installed packages match declared deps + lockfile
+  const integrityResult = await verifyInstallIntegrity(workspacePath, packages);
+  if (!integrityResult.ok) {
+    await rm(workspacePath, { recursive: true, force: true }).catch(() => {});
+    return integrityResult;
   }
 
   return {

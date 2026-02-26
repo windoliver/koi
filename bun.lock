@@ -1278,6 +1278,7 @@
         "@koi/node": "workspace:*",
         "@koi/orchestrator": "workspace:*",
         "@koi/resolve": "workspace:*",
+        "@koi/sandbox-executor": "workspace:*",
         "@koi/test-utils": "workspace:*",
         "@koi/worktree-merge": "workspace:*",
       },

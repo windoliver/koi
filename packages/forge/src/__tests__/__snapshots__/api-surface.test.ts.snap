@@ -196,7 +196,7 @@ type ForgeError = {
     readonly message: string;
 } | {
     readonly stage: "resolve";
-    readonly code: "AUDIT_FAILED" | "INSTALL_FAILED" | "INSTALL_TIMEOUT" | "WORKSPACE_FAILED";
+    readonly code: "AUDIT_FAILED" | "INSTALL_FAILED" | "INSTALL_TIMEOUT" | "INTEGRITY_MISMATCH" | "WORKSPACE_FAILED";
     readonly message: string;
 } | {
     readonly stage: "store";
@@ -283,6 +283,10 @@ interface DependencyConfig {
     readonly maxWorkspaceAgeDays: number;
     /** Maximum number of transitive dependencies allowed after resolution. */
     readonly maxTransitiveDependencies: number;
+    /** Maximum virtual memory (MB) for brick subprocess. */
+    readonly maxBrickMemoryMb: number;
+    /** Maximum number of child processes for brick subprocess (Linux only). */
+    readonly maxBrickPids: number;
 }
 interface ForgeConfig {
     readonly enabled: boolean;
@@ -944,6 +948,27 @@ declare function recordBrickUsage(store: ForgeStore, brickId: string, config: Fo
 declare function verify(input: ForgeInput, context: ForgeContext, executor: SandboxExecutor, verifiers: readonly ForgeVerifier[], config: ForgeConfig): Promise<Result<VerificationReport, ForgeError>>;
 
 /**
+ * Post-install integrity verification — ensures installed packages match
+ * the declared dependency map and the lockfile.
+ *
+ * Checks:
+ * 1. bun.lock exists and is parseable
+ * 2. Each declared package appears in the lockfile
+ * 3. Resolved version in lockfile matches the declared version
+ * 4. node_modules/<pkg>/package.json exists with matching version
+ *
+ * Returns a typed Result — INTEGRITY_MISMATCH on any discrepancy.
+ */
+
+/**
+ * Verify that installed packages match declared dependencies.
+ * Returns ok if all checks pass, INTEGRITY_MISMATCH error otherwise.
+ *
+ * Skips verification when declaredPackages is empty.
+ */
+declare function verifyInstallIntegrity(workspacePath: string, declaredPackages: Readonly<Record<string, string>>): Promise<Result<void, ForgeError>>;
+
+/**
  * Stage 1.5: Resolve — audits and installs npm dependencies for bricks
  * that declare \`requires.packages\`. Inserted between Static and Sandbox stages.
  *
@@ -1047,6 +1072,6 @@ interface ScanResult {
  */
 declare function scanWorkspaceCode(workspacePath: string, _config: DependencyConfig): Promise<Result<ScanResult, ForgeError>>;
 
-export { type AssembleManifestOptions, type AssembleManifestResult, type AttestationCache, type AutoPromotionConfig, type CreateForgeRuntimeOptions, type CreateProvenanceOptions, type DependencyConfig, FORGE_GOVERNANCE, type ForgeAgentInput, type ForgeAgentInputWithBricks, type ForgeAgentInputWithManifest, type ForgeChannelInput, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeConfig, type ForgeContext, type ForgeDeps, type ForgeError, type ForgeInput, type ForgeInputBase, type ForgeMiddlewareInput, type ForgeResolverContext, type ForgeResult, type ForgeResultMetadata, type ForgeRuntimeInstance, type ForgeSkillInput, type ForgeToolConfig, type ForgeToolInput, type ForgeUsageMiddlewareConfig, type ForgeVerifier, type GovernanceResult, type IntegrityAttestationFailed, type IntegrityContentMismatch, type IntegrityOk, type IntegrityResult, type ManifestParseResult, type ManifestParser, type OnForgeAgentSpawn, type PromoteChange, type PromoteResult, type RequiresCheckResult, type ResolveStageReport, type ScanFinding, type ScanResult, type ScopePromotionConfig, type SkillMdInput, type SlsaBuildDefinition, type SlsaBuildMetadata, type SlsaBuilder, type SlsaKoiExtensions, type SlsaProvenanceV1, type SlsaProvenanceV1WithExtensions, type SlsaResourceDescriptor, type SlsaRunDetails, type StageReport, type TestFailure, type TrustStageReport, type UsagePromotedResult, type UsageRecordedResult, type UsageResult, type VerificationConfig, type VerificationReport, type VerificationStage, type VerifierResult, type WorkspaceResult, assembleManifest, assignTrust, auditDependencies, auditTransitiveDependencies, brickToTool, canonicalJsonSerialize, checkBrickRequires, checkGovernance, checkScopePromotion, cleanupStaleWorkspaces, computeAutoPromotion, computeDependencyHash, createAdversarialVerifiers, createAttestationCache, createBrickWorkspace, createContentScanningVerifier, createDefaultForgeConfig, createExfiltrationVerifier, createForgeAgentTool, createForgeChannelTool, createForgeComponentProvider, createForgeGovernanceContributor, createForgeMiddlewareTool, createForgeProvenance, createForgeResolver, createForgeRuntime, createForgeSkillTool, createForgeTool, createForgeToolTool, createForgeUsageMiddleware, createInMemoryForgeStore, createInjectionVerifier, createMemoryStoreChangeNotifier, createPromoteForgeTool, createResourceExhaustionVerifier, createSearchForgeTool, createStructuralHidingVerifier, descriptor, extractBrickContent, filterByAgentScope, generateSkillMd, governanceError, isVisibleToAgent, loadAndVerify, mapProvenanceToSlsa, mapProvenanceToStatement, recordBrickUsage, resolveError, resolveWorkspacePath, sandboxError, scanWorkspaceCode, selfTestError, signAttestation, staticError, storeError, trustError, typeError, validateForgeConfig, verify, verifyAttestation, verifyBrickAttestation, verifyBrickIntegrity, verifyResolve, verifySandbox, verifySelfTest, verifyStatic, writeBrickEntry };
+export { type AssembleManifestOptions, type AssembleManifestResult, type AttestationCache, type AutoPromotionConfig, type CreateForgeRuntimeOptions, type CreateProvenanceOptions, type DependencyConfig, FORGE_GOVERNANCE, type ForgeAgentInput, type ForgeAgentInputWithBricks, type ForgeAgentInputWithManifest, type ForgeChannelInput, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeConfig, type ForgeContext, type ForgeDeps, type ForgeError, type ForgeInput, type ForgeInputBase, type ForgeMiddlewareInput, type ForgeResolverContext, type ForgeResult, type ForgeResultMetadata, type ForgeRuntimeInstance, type ForgeSkillInput, type ForgeToolConfig, type ForgeToolInput, type ForgeUsageMiddlewareConfig, type ForgeVerifier, type GovernanceResult, type IntegrityAttestationFailed, type IntegrityContentMismatch, type IntegrityOk, type IntegrityResult, type ManifestParseResult, type ManifestParser, type OnForgeAgentSpawn, type PromoteChange, type PromoteResult, type RequiresCheckResult, type ResolveStageReport, type ScanFinding, type ScanResult, type ScopePromotionConfig, type SkillMdInput, type SlsaBuildDefinition, type SlsaBuildMetadata, type SlsaBuilder, type SlsaKoiExtensions, type SlsaProvenanceV1, type SlsaProvenanceV1WithExtensions, type SlsaResourceDescriptor, type SlsaRunDetails, type StageReport, type TestFailure, type TrustStageReport, type UsagePromotedResult, type UsageRecordedResult, type UsageResult, type VerificationConfig, type VerificationReport, type VerificationStage, type VerifierResult, type WorkspaceResult, assembleManifest, assignTrust, auditDependencies, auditTransitiveDependencies, brickToTool, canonicalJsonSerialize, checkBrickRequires, checkGovernance, checkScopePromotion, cleanupStaleWorkspaces, computeAutoPromotion, computeDependencyHash, createAdversarialVerifiers, createAttestationCache, createBrickWorkspace, createContentScanningVerifier, createDefaultForgeConfig, createExfiltrationVerifier, createForgeAgentTool, createForgeChannelTool, createForgeComponentProvider, createForgeGovernanceContributor, createForgeMiddlewareTool, createForgeProvenance, createForgeResolver, createForgeRuntime, createForgeSkillTool, createForgeTool, createForgeToolTool, createForgeUsageMiddleware, createInMemoryForgeStore, createInjectionVerifier, createMemoryStoreChangeNotifier, createPromoteForgeTool, createResourceExhaustionVerifier, createSearchForgeTool, createStructuralHidingVerifier, descriptor, extractBrickContent, filterByAgentScope, generateSkillMd, governanceError, isVisibleToAgent, loadAndVerify, mapProvenanceToSlsa, mapProvenanceToStatement, recordBrickUsage, resolveError, resolveWorkspacePath, sandboxError, scanWorkspaceCode, selfTestError, signAttestation, staticError, storeError, trustError, typeError, validateForgeConfig, verify, verifyAttestation, verifyBrickAttestation, verifyBrickIntegrity, verifyInstallIntegrity, verifyResolve, verifySandbox, verifySelfTest, verifyStatic, writeBrickEntry };
 "
 `;

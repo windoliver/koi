@@ -188,6 +188,8 @@ export type { UsagePromotedResult, UsageRecordedResult, UsageResult } from "./us
 export { computeAutoPromotion, recordBrickUsage } from "./usage.js";
 // runtime values — verification
 export { verify } from "./verify.js";
+// runtime values — install integrity verification
+export { verifyInstallIntegrity } from "./verify-install-integrity.js";
 export { verifyResolve } from "./verify-resolve.js";
 export { verifySandbox } from "./verify-sandbox.js";
 export { verifySelfTest } from "./verify-self-test.js";
