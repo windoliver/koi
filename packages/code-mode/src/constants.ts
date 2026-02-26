@@ -16,7 +16,7 @@ export const PLAN_STATES = ["pending", "applied", "failed"] as const;
 export type PlanState = (typeof PLAN_STATES)[number];
 
 /** Step kind discriminant values. */
-export const STEP_KINDS = ["create", "edit", "delete"] as const;
+export const STEP_KINDS = ["create", "edit", "delete", "rename"] as const;
 
 export type StepKind = (typeof STEP_KINDS)[number];
 

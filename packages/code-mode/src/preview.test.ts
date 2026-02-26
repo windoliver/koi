@@ -213,6 +213,39 @@ describe("generatePreview", () => {
     expect(lines[4]).toBe("  end");
   });
 
+  test("rename step shows >>> header with source and destination", () => {
+    const plan = makePlan({
+      steps: [{ kind: "rename", path: "/old.ts", to: "/new.ts" }],
+    });
+    const preview = generatePreview(plan);
+    expect(preview.files[0]?.lines[0]).toBe(">>> /old.ts -> /new.ts");
+    expect(preview.files[0]?.kind).toBe("rename");
+    expect(preview.files[0]?.truncated).toBe(false);
+    expect(preview.files[0]?.lines.length).toBe(1);
+  });
+
+  test("rename step with description shows description in header", () => {
+    const plan = makePlan({
+      steps: [
+        { kind: "rename", path: "/old.ts", to: "/new.ts", description: "move to new location" },
+      ],
+    });
+    const preview = generatePreview(plan);
+    expect(preview.files[0]?.lines[0]).toBe(">>> /old.ts -> /new.ts (move to new location)");
+  });
+
+  test("summary includes rename count", () => {
+    const plan = makePlan({
+      steps: [
+        { kind: "create", path: "/new.ts", content: "x" },
+        { kind: "rename", path: "/old.ts", to: "/moved.ts" },
+        { kind: "rename", path: "/old2.ts", to: "/moved2.ts" },
+      ],
+    });
+    const preview = generatePreview(plan);
+    expect(preview.summary).toBe("3 files: 1 create, 2 renames");
+  });
+
   test("edit preview without fileContents shows no context lines", () => {
     const plan = makePlan({
       steps: [{ kind: "edit", path: "/f.ts", edits: [{ oldText: "old", newText: "new" }] }],

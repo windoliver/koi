@@ -16,8 +16,9 @@ import { validateStaleness } from "../validation.js";
 interface FileSnapshot {
   readonly stepIndex: number;
   readonly path: string;
-  readonly kind: "created" | "modified" | "deleted";
+  readonly kind: "created" | "modified" | "deleted" | "renamed";
   readonly previousContent?: string;
+  readonly renamedTo?: string;
 }
 
 export function createPlanApplyTool(
@@ -202,17 +203,22 @@ async function takeSnapshot(
     return undefined;
   }
 
-  // Delete step — save content so we can recreate on rollback
-  const readResult = await backend.read(step.path);
-  if (readResult.ok) {
-    return {
-      stepIndex,
-      path: step.path,
-      kind: "deleted",
-      previousContent: readResult.value.content,
-    };
+  if (step.kind === "delete") {
+    // Delete step — save content so we can recreate on rollback
+    const readResult = await backend.read(step.path);
+    if (readResult.ok) {
+      return {
+        stepIndex,
+        path: step.path,
+        kind: "deleted",
+        previousContent: readResult.value.content,
+      };
+    }
+    return undefined;
   }
-  return undefined;
+
+  // Rename step — record source and destination for reverse rename on rollback
+  return { stepIndex, path: step.path, kind: "renamed", renamedTo: step.to };
 }
 
 async function rollbackSteps(
@@ -253,6 +259,18 @@ async function rollbackSteps(
         if (!result.ok) {
           errors.push(`Rollback failed for ${snapshot.path}: ${result.error.message}`);
         }
+      } else if (snapshot.kind === "renamed" && snapshot.renamedTo !== undefined) {
+        // Undo rename: rename back from destination to source
+        if (backend.rename !== undefined) {
+          const result = await backend.rename(snapshot.renamedTo, snapshot.path);
+          if (!result.ok) {
+            errors.push(`Rollback failed for ${snapshot.path}: ${result.error.message}`);
+          }
+        } else {
+          errors.push(
+            `Cannot rollback rename for ${snapshot.path}: backend does not support rename`,
+          );
+        }
       }
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
@@ -286,6 +304,22 @@ async function applyStep(
         };
       }
       const result = await backend.delete(step.path);
+      if (!result.ok) {
+        return { stepIndex, path: step.path, success: false, error: result.error.message };
+      }
+      return { stepIndex, path: step.path, success: true };
+    }
+
+    if (step.kind === "rename") {
+      if (backend.rename === undefined) {
+        return {
+          stepIndex,
+          path: step.path,
+          success: false,
+          error: "Backend does not support file rename",
+        };
+      }
+      const result = await backend.rename(step.path, step.to);
       if (!result.ok) {
         return { stepIndex, path: step.path, success: false, error: result.error.message };
       }

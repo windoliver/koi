@@ -133,6 +133,48 @@ describe("createPlanCreateTool", () => {
     expect(result.error).toContain("delet");
   });
 
+  test("creates plan for valid rename step", async () => {
+    const backend = createMockBackend({ "/old.ts": "content" });
+    const store = createPlanStore();
+    const tool = createPlanCreateTool(backend, store, "code_plan", "verified");
+
+    const result = (await tool.execute({
+      steps: [{ kind: "rename", path: "/old.ts", to: "/new.ts" }],
+    })) as PlanPreview;
+
+    expect(result.planId).toBeDefined();
+    expect(result.summary).toContain("1 rename");
+    expect(store.get()).toBeDefined();
+  });
+
+  test("returns VALIDATION error for rename with no backend.rename", async () => {
+    const backend = createMockBackend({ "/old.ts": "content" });
+    const { rename: _ren, ...rest } = backend;
+    const backendNoRename = rest as typeof backend;
+    const store = createPlanStore();
+    const tool = createPlanCreateTool(backendNoRename, store, "code_plan", "verified");
+
+    const result = (await tool.execute({
+      steps: [{ kind: "rename", path: "/old.ts", to: "/new.ts" }],
+    })) as { error: string; code: string };
+
+    expect(result.code).toBe("VALIDATION");
+    expect(result.error).toContain("rename");
+  });
+
+  test("returns VALIDATION error for rename step missing 'to'", async () => {
+    const backend = createMockBackend({ "/old.ts": "content" });
+    const store = createPlanStore();
+    const tool = createPlanCreateTool(backend, store, "code_plan", "verified");
+
+    const result = (await tool.execute({
+      steps: [{ kind: "rename", path: "/old.ts" }],
+    })) as { error: string; code: string };
+
+    expect(result.code).toBe("VALIDATION");
+    expect(result.error).toContain("to");
+  });
+
   test("returns error for invalid step kind", async () => {
     const backend = createMockBackend();
     const store = createPlanStore();

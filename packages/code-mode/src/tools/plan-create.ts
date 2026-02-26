@@ -26,20 +26,21 @@ export function createPlanCreateTool(
     descriptor: {
       name: `${prefix}_create`,
       description:
-        "Create a code plan with file edits, creations, and deletions. Validates all steps and returns a preview. The plan must be applied with code_plan_apply.",
+        "Create a code plan with file edits, creations, deletions, and renames. Validates all steps and returns a preview. The plan must be applied with code_plan_apply.",
       inputSchema: {
         type: "object",
         properties: {
           steps: {
             type: "array",
             description:
-              "Array of steps: { kind: 'create' | 'edit' | 'delete', path, content?, edits?, description? }",
+              "Array of steps: { kind: 'create' | 'edit' | 'delete' | 'rename', path, content?, edits?, to?, description? }",
             items: {
               type: "object",
               properties: {
-                kind: { type: "string", description: "'create', 'edit', or 'delete'" },
-                path: { type: "string", description: "File path" },
+                kind: { type: "string", description: "'create', 'edit', 'delete', or 'rename'" },
+                path: { type: "string", description: "File path (source path for rename)" },
                 content: { type: "string", description: "Full file content (for create)" },
+                to: { type: "string", description: "Destination path (for rename)" },
                 edits: {
                   type: "array",
                   description: "Array of { oldText, newText } (for edit)",
@@ -77,6 +78,15 @@ export function createPlanCreateTool(
       if (hasDeleteSteps && backend.delete === undefined) {
         return {
           error: "Backend does not support file deletion",
+          code: "VALIDATION",
+        };
+      }
+
+      // Check that backend supports rename if any rename steps are present
+      const hasRenameSteps = steps.some((s) => s.kind === "rename");
+      if (hasRenameSteps && backend.rename === undefined) {
+        return {
+          error: "Backend does not support file rename",
           code: "VALIDATION",
         };
       }
@@ -130,6 +140,9 @@ function collectPaths(steps: readonly CodePlanStep[]): readonly string[] {
   const paths = new Set<string>();
   for (const step of steps) {
     paths.add(step.path);
+    if (step.kind === "rename") {
+      paths.add(step.to);
+    }
   }
   return [...paths];
 }
@@ -202,10 +215,20 @@ function parseSteps(raw: readonly unknown[]): StepParseResult {
           ? { kind: "delete", path, description: entry.description }
           : { kind: "delete", path };
       steps.push(step);
+    } else if (kind === "rename") {
+      const to = entry.to;
+      if (typeof to !== "string" || to.length === 0) {
+        return { ok: false, error: `Step ${i}: rename step requires 'to' as a non-empty string` };
+      }
+      const step: CodePlanStep =
+        typeof entry.description === "string"
+          ? { kind: "rename", path, to, description: entry.description }
+          : { kind: "rename", path, to };
+      steps.push(step);
     } else {
       return {
         ok: false,
-        error: `Step ${i}: kind must be 'create', 'edit', or 'delete', got '${String(kind)}'`,
+        error: `Step ${i}: kind must be 'create', 'edit', 'delete', or 'rename', got '${String(kind)}'`,
       };
     }
   }

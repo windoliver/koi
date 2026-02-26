@@ -47,6 +47,8 @@ export function validateSteps(
       validateCreateStep(step, fileContents, i, issues);
     } else if (step.kind === "delete") {
       validateDeleteStep(step, fileContents, i, issues);
+    } else if (step.kind === "rename") {
+      validateRenameStep(step, fileContents, i, issues);
     } else {
       validateEditStep(step, fileContents, i, issues, config);
     }
@@ -64,7 +66,10 @@ export function computeHashes(
   const seen = new Set<string>();
   const hashes: FileContentHash[] = [];
   for (const step of steps) {
-    if ((step.kind === "edit" || step.kind === "delete") && !seen.has(step.path)) {
+    if (
+      (step.kind === "edit" || step.kind === "delete" || step.kind === "rename") &&
+      !seen.has(step.path)
+    ) {
       seen.add(step.path);
       const content = fileContents.get(step.path);
       if (content !== undefined) {
@@ -120,6 +125,30 @@ function validateDeleteStep(
       kind: "FILE_NOT_FOUND",
       path: step.path,
       message: `File not found: ${step.path}`,
+      stepIndex,
+    });
+  }
+}
+
+function validateRenameStep(
+  step: { readonly kind: "rename"; readonly path: string; readonly to: string },
+  fileContents: ReadonlyMap<string, string>,
+  stepIndex: number,
+  issues: ValidationIssue[],
+): void {
+  if (!fileContents.has(step.path)) {
+    issues.push({
+      kind: "FILE_NOT_FOUND",
+      path: step.path,
+      message: `Source file not found: ${step.path}`,
+      stepIndex,
+    });
+  }
+  if (fileContents.has(step.to)) {
+    issues.push({
+      kind: "DEST_EXISTS",
+      path: step.to,
+      message: `Destination already exists: ${step.to}`,
       stepIndex,
     });
   }

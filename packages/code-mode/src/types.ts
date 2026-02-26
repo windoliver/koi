@@ -30,8 +30,16 @@ export interface DeleteStep {
   readonly description?: string;
 }
 
+/** A step to rename/move a file. */
+export interface RenameStep {
+  readonly kind: "rename";
+  readonly path: string;
+  readonly to: string;
+  readonly description?: string;
+}
+
 /** Discriminated union of plan steps. */
-export type CodePlanStep = CreateStep | EditStep | DeleteStep;
+export type CodePlanStep = CreateStep | EditStep | DeleteStep | RenameStep;
 
 // ─── File content hash ──────────────────────────────────────────────────
 
@@ -73,6 +81,7 @@ export interface PlanPreview {
 
 export type ValidationIssueKind =
   | "AMBIGUOUS_MATCH"
+  | "DEST_EXISTS"
   | "NO_MATCH"
   | "OVERLAP"
   | "STALE"

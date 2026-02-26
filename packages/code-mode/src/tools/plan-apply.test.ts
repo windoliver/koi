@@ -285,6 +285,81 @@ describe("createPlanApplyTool", () => {
     expect(result.rollbackErrors).toEqual([]);
   });
 
+  test("applies rename step successfully", async () => {
+    const backend = createMockBackend({ "/old.ts": "file content" });
+    const store = createPlanStore();
+    store.set(
+      makePlan({
+        steps: [{ kind: "rename", path: "/old.ts", to: "/new.ts" }],
+      }),
+    );
+    const tool = createPlanApplyTool(backend, store, "code_plan", "verified");
+
+    const result = (await tool.execute({})) as ApplyResult;
+    expect(result.success).toBe(true);
+    expect(result.rolledBack).toBe(false);
+
+    // Verify file was renamed
+    const oldResult = await backend.read("/old.ts");
+    expect(oldResult.ok).toBe(false);
+    const newResult = await backend.read("/new.ts");
+    expect(newResult.ok).toBe(true);
+    if (newResult.ok) {
+      expect(newResult.value.content).toBe("file content");
+    }
+  });
+
+  test("rename step fails if backend has no rename", async () => {
+    const backend = createMockBackend({ "/old.ts": "content" });
+    const { rename: _ren, ...rest } = backend;
+    const backendNoRename = rest as typeof backend;
+    const store = createPlanStore();
+    store.set(
+      makePlan({
+        steps: [{ kind: "rename", path: "/old.ts", to: "/new.ts" }],
+      }),
+    );
+    const tool = createPlanApplyTool(backendNoRename, store, "code_plan", "verified");
+
+    const result = (await tool.execute({})) as ApplyResult;
+    expect(result.success).toBe(false);
+    expect(store.get()?.state).toBe("failed");
+  });
+
+  test("rollback reverses rename", async () => {
+    const backend = createMockBackend({ "/old.ts": "original" });
+    const store = createPlanStore();
+    store.set(
+      makePlan({
+        steps: [
+          { kind: "rename", path: "/old.ts", to: "/new.ts" },
+          // This step will fail — file doesn't exist
+          {
+            kind: "edit",
+            path: "/nonexistent.ts",
+            edits: [{ oldText: "x", newText: "y" }],
+          },
+        ],
+      }),
+    );
+    const tool = createPlanApplyTool(backend, store, "code_plan", "verified");
+
+    const result = (await tool.execute({})) as ApplyResult;
+    expect(result.success).toBe(false);
+    expect(result.rolledBack).toBe(true);
+
+    // Renamed file should be moved back
+    const oldResult = await backend.read("/old.ts");
+    expect(oldResult.ok).toBe(true);
+    if (oldResult.ok) {
+      expect(oldResult.value.content).toBe("original");
+    }
+
+    // Destination should not exist
+    const newResult = await backend.read("/new.ts");
+    expect(newResult.ok).toBe(false);
+  });
+
   test("detects stale files and marks plan failed", async () => {
     const backend = createMockBackend({
       "/src/index.ts": "changed content",

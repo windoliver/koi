@@ -43,13 +43,14 @@ filesystem, and applies them atomically with rollback on failure.
 
 ## Step Kinds
 
-Three operations cover the full file lifecycle:
+Four operations cover the full file lifecycle:
 
 | Kind     | Header   | Input                  | What it does                     |
 |----------|----------|------------------------|----------------------------------|
 | `create` | `+++`    | `path`, `content`      | Write a new file                 |
 | `edit`   | `~~~`    | `path`, `edits[]`      | Search-and-replace hunks         |
 | `delete` | `---`    | `path`                 | Remove an existing file          |
+| `rename` | `>>>`    | `path`, `to`           | Move/rename a file               |
 
 Each edit hunk is `{ oldText, newText }` — exact string match, replaced once.
 
@@ -81,6 +82,12 @@ and returns a diff-style preview.
       "kind": "delete",
       "path": "/src/legacy.ts",
       "description": "remove deprecated module"
+    },
+    {
+      "kind": "rename",
+      "path": "/src/old-utils.ts",
+      "to": "/src/utils.ts",
+      "description": "rename to match convention"
     }
   ]
 }
@@ -105,6 +112,8 @@ and returns a diff-style preview.
 
   --- /src/legacy.ts (remove deprecated module)
   (file will be deleted)
+
+  >>> /src/old-utils.ts -> /src/utils.ts (rename to match convention)
 ```
 
 Preview is truncated at 50 lines per file and 200 lines total.
@@ -128,11 +137,12 @@ plan is being applied.
 3. **Rollback on failure** — if any step fails, all previously applied steps
    are undone in reverse order (LIFO):
 
-| Step kind | Rollback action                    |
-|-----------|------------------------------------|
-| `create`  | Delete the created file            |
-| `edit`    | Restore original file content      |
+| Step kind | Rollback action                      |
+|-----------|--------------------------------------|
+| `create`  | Delete the created file              |
+| `edit`    | Restore original file content        |
 | `delete`  | Recreate the file with saved content |
+| `rename`  | Rename back to original path         |
 
 **Returns** an `ApplyResult`:
 
@@ -197,8 +207,9 @@ are attached but don't prevent creation.
 
 | Issue kind        | Severity | When                                        |
 |-------------------|----------|---------------------------------------------|
-| `FILE_NOT_FOUND`  | error    | Edit or delete targets a missing file       |
+| `FILE_NOT_FOUND`  | error    | Edit, delete, or rename targets a missing file |
 | `FILE_EXISTS`     | error    | Create targets an existing file             |
+| `DEST_EXISTS`     | error    | Rename destination already exists           |
 | `NO_MATCH`        | error    | Edit's `oldText` not found in file          |
 | `AMBIGUOUS_MATCH` | error    | `oldText` matches 2+ locations              |
 | `OVERLAP`         | error    | Multiple edits overlap in the same file     |
@@ -295,7 +306,7 @@ const failing = createFailingBackend();
 Run tests:
 
 ```bash
-bun test                    # unit + deterministic E2E (102 tests)
+bun test                    # unit + deterministic E2E (116 tests)
 E2E_TESTS=1 bun test       # includes real LLM test (requires API key)
 ```
 

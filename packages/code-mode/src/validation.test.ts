@@ -161,6 +161,56 @@ describe("computeHashes — delete", () => {
   });
 });
 
+describe("validateSteps — rename", () => {
+  test("valid rename step for existing source and nonexistent dest passes", () => {
+    const steps: readonly CodePlanStep[] = [
+      { kind: "rename", path: "/src/index.ts", to: "/src/main.ts" },
+    ];
+    const issues = validateSteps(steps, FILES);
+    expect(issues.length).toBe(0);
+  });
+
+  test("rename step for missing source returns FILE_NOT_FOUND", () => {
+    const steps: readonly CodePlanStep[] = [
+      { kind: "rename", path: "/missing.ts", to: "/src/new.ts" },
+    ];
+    const issues = validateSteps(steps, FILES);
+    expect(issues.length).toBe(1);
+    expect(issues[0]?.kind).toBe("FILE_NOT_FOUND");
+  });
+
+  test("rename step to existing dest returns DEST_EXISTS", () => {
+    const steps: readonly CodePlanStep[] = [
+      { kind: "rename", path: "/src/index.ts", to: "/src/utils.ts" },
+    ];
+    const issues = validateSteps(steps, FILES);
+    expect(issues.length).toBe(1);
+    expect(issues[0]?.kind).toBe("DEST_EXISTS");
+  });
+
+  test("rename with missing source AND existing dest returns both errors", () => {
+    const steps: readonly CodePlanStep[] = [
+      { kind: "rename", path: "/missing.ts", to: "/src/utils.ts" },
+    ];
+    const issues = validateSteps(steps, FILES);
+    expect(issues.length).toBe(2);
+    expect(issues.some((i) => i.kind === "FILE_NOT_FOUND")).toBe(true);
+    expect(issues.some((i) => i.kind === "DEST_EXISTS")).toBe(true);
+  });
+});
+
+describe("computeHashes — rename", () => {
+  test("computes hashes for rename step source paths", () => {
+    const steps: readonly CodePlanStep[] = [
+      { kind: "rename", path: "/src/index.ts", to: "/src/main.ts" },
+    ];
+    const hashes = computeHashes(steps, FILES);
+    expect(hashes.length).toBe(1);
+    expect(hashes[0]?.path).toBe("/src/index.ts");
+    expect(typeof hashes[0]?.hash).toBe("number");
+  });
+});
+
 describe("validateStaleness", () => {
   test("no issues when hashes match", () => {
     const hashes = computeHashes(

@@ -8,6 +8,7 @@ import type {
   FileEditResult,
   FileListResult,
   FileReadResult,
+  FileRenameResult,
   FileSearchResult,
   FileSystemBackend,
   FileWriteResult,
@@ -108,6 +109,33 @@ export function createMockBackend(
       files.delete(path);
       return { ok: true, value: { path } };
     },
+
+    rename: (from: string, to: string): Result<FileRenameResult, KoiError> => {
+      const content = files.get(from);
+      if (content === undefined) {
+        return {
+          ok: false,
+          error: {
+            code: "NOT_FOUND",
+            message: `File not found: ${from}`,
+            retryable: false,
+          },
+        };
+      }
+      if (files.has(to)) {
+        return {
+          ok: false,
+          error: {
+            code: "CONFLICT",
+            message: `Destination already exists: ${to}`,
+            retryable: false,
+          },
+        };
+      }
+      files.delete(from);
+      files.set(to, content);
+      return { ok: true, value: { from, to } };
+    },
   };
 }
 
@@ -128,6 +156,7 @@ export function createFailingBackend(name = "failing"): FileSystemBackend {
     list: () => ({ ok: false, error }),
     search: () => ({ ok: false, error }),
     delete: () => ({ ok: false, error }),
+    rename: () => ({ ok: false, error }),
   };
 }
 

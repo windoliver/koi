@@ -45,6 +45,7 @@ export type {
   FilePreview,
   PlanPreview,
   PlanStatus,
+  RenameStep,
   StepResult,
   ValidationIssue,
   ValidationIssueKind,

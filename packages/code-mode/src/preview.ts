@@ -14,11 +14,13 @@ export function generatePreview(plan: CodePlan): PlanPreview {
   const creates = plan.steps.filter((s) => s.kind === "create").length;
   const edits = plan.steps.filter((s) => s.kind === "edit").length;
   const deletes = plan.steps.filter((s) => s.kind === "delete").length;
+  const renames = plan.steps.filter((s) => s.kind === "rename").length;
 
   const parts: string[] = [];
   if (creates > 0) parts.push(`${creates} create${creates > 1 ? "s" : ""}`);
   if (edits > 0) parts.push(`${edits} edit${edits > 1 ? "s" : ""}`);
   if (deletes > 0) parts.push(`${deletes} delete${deletes > 1 ? "s" : ""}`);
+  if (renames > 0) parts.push(`${renames} rename${renames > 1 ? "s" : ""}`);
   const summary = `${plan.steps.length} file${plan.steps.length !== 1 ? "s" : ""}: ${parts.join(", ")}`;
 
   /* let justified: mutable counter for total line budget */
@@ -68,6 +70,9 @@ function generateFilePreview(
   if (step.kind === "delete") {
     return generateDeletePreview(step);
   }
+  if (step.kind === "rename") {
+    return generateRenamePreview(step);
+  }
   return generateEditPreview(step, maxLines, fileContents);
 }
 
@@ -110,6 +115,25 @@ function generateDeletePreview(step: {
     path: step.path,
     kind: "delete",
     lines: [header, "(file will be deleted)"],
+    truncated: false,
+  };
+}
+
+function generateRenamePreview(step: {
+  readonly kind: "rename";
+  readonly path: string;
+  readonly to: string;
+  readonly description?: string;
+}): FilePreview {
+  const header =
+    step.description !== undefined
+      ? `>>> ${step.path} -> ${step.to} (${step.description})`
+      : `>>> ${step.path} -> ${step.to}`;
+
+  return {
+    path: step.path,
+    kind: "rename",
+    lines: [header],
     truncated: false,
   };
 }
