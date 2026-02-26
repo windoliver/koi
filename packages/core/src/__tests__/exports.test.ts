@@ -43,6 +43,8 @@ import type {
   EvictionPolicy,
   EvictionReason,
   EvictionResult,
+  // reputation backend
+  FeedbackKind,
   FileBlock,
   GovernanceCheck,
   GovernanceController,
@@ -79,6 +81,12 @@ import type {
   RegistryEntry,
   RegistryEvent,
   RegistryFilter,
+  ReputationBackend,
+  ReputationFeedback,
+  ReputationLevel,
+  ReputationQuery,
+  ReputationQueryResult,
+  ReputationScore,
   // resolver
   Resolver,
   Result,
@@ -121,6 +129,7 @@ import {
   CREDENTIALS,
   channelToken,
   DEFAULT_HEALTH_MONITOR_CONFIG,
+  DEFAULT_REPUTATION_QUERY_LIMIT,
   EVENTS,
   GOVERNANCE,
   GOVERNANCE_VARIABLES,
@@ -129,6 +138,7 @@ import {
   MEMORY,
   MIN_TRUST_BY_KIND,
   middlewareToken,
+  REPUTATION_LEVEL_ORDER,
   RETRYABLE_DEFAULTS,
   SCHEDULER,
   skillToken,
@@ -243,7 +253,15 @@ type _TypeGuard =
   // webhook component
   | AssertDefined<WebhookComponent>
   | AssertDefined<WebhookEndpointHealth>
-  | AssertDefined<WebhookSummary>;
+  | AssertDefined<WebhookSummary>
+  // reputation backend
+  | AssertDefined<FeedbackKind>
+  | AssertDefined<ReputationBackend>
+  | AssertDefined<ReputationFeedback>
+  | AssertDefined<ReputationLevel>
+  | AssertDefined<ReputationQuery>
+  | AssertDefined<ReputationQueryResult>
+  | AssertDefined<ReputationScore>;
 
 describe("export inventory", () => {
   test("all runtime values are defined", () => {
@@ -269,6 +287,8 @@ describe("export inventory", () => {
     expect(isToolCallPayload).toBeDefined();
     expect(SCHEDULER).toBeDefined();
     expect(WEBHOOK).toBeDefined();
+    expect(DEFAULT_REPUTATION_QUERY_LIMIT).toBeDefined();
+    expect(REPUTATION_LEVEL_ORDER).toBeDefined();
   });
 
   test("runtime values are functions, strings, or objects", () => {
@@ -290,5 +310,7 @@ describe("export inventory", () => {
     expect(typeof isToolCallPayload).toBe("function");
     expect(typeof SCHEDULER).toBe("string");
     expect(typeof WEBHOOK).toBe("string");
+    expect(typeof DEFAULT_REPUTATION_QUERY_LIMIT).toBe("number");
+    expect(typeof REPUTATION_LEVEL_ORDER).toBe("object");
   });
 });

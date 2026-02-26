@@ -616,6 +616,164 @@ interface ReconcileRunnerConfig {
 declare const DEFAULT_RECONCILE_RUNNER_CONFIG: ReconcileRunnerConfig;
 
 /**
+ * Reputation backend — pluggable trust scoring and feedback contract (Layer 0).
+ *
+ * Defines the shapes for recording interaction feedback, querying computed trust
+ * scores, and filtering feedback history. L2 packages implement ReputationBackend
+ * for specific backends (in-memory ring buffer, Nexus/EigenTrust, etc.).
+ *
+ * Fail-closed contract: callers MUST treat a missing score (undefined from
+ * getScore) as "unknown" trust level — never as implicitly trusted.
+ */
+
+/**
+ * Discrete trust level derived from a computed reputation score.
+ * Ordered from least to most trusted — see REPUTATION_LEVEL_ORDER for
+ * the canonical sequence.
+ */
+type ReputationLevel = "unknown" | "untrusted" | "low" | "medium" | "high" | "verified";
+/**
+ * Canonical ordering of ReputationLevel values from least to most trusted.
+ * Use this to avoid hardcoding the sequence in consumers:
+ *
+ * \`\`\`typescript
+ * const idx = REPUTATION_LEVEL_ORDER.indexOf(score.level);
+ * if (idx >= REPUTATION_LEVEL_ORDER.indexOf("medium")) { ... }
+ * \`\`\`
+ */
+declare const REPUTATION_LEVEL_ORDER: readonly ReputationLevel[];
+/**
+ * Categorical feedback signal. Backends map these to numeric weights
+ * using their own algorithm (e.g., EigenTrust normalizes to [0,1]).
+ *
+ * Start minimal: "positive" | "negative" | "neutral" only.
+ * Retraction and dispute kinds (with entry IDs) will be added when
+ * the dispute resolution workflow is designed.
+ */
+type FeedbackKind = "positive" | "negative" | "neutral";
+/**
+ * A single trust signal from one agent about another.
+ *
+ * No numeric score on input — backends derive weights from \`kind\` using
+ * their own algorithm. This avoids the ambiguity of \`kind: "positive"\` with
+ * \`score: -0.5\`. \`kind\` is the authoritative semantic signal.
+ */
+interface ReputationFeedback {
+    /** The agent providing feedback (the observer). */
+    readonly sourceId: AgentId;
+    /** The agent being evaluated (the subject). */
+    readonly targetId: AgentId;
+    /** The semantic nature of the trust signal. */
+    readonly kind: FeedbackKind;
+    /**
+     * Optional structured context for the interaction.
+     * Useful for domain-specific metadata (session ID, task ID, domain tag).
+     * Backends may use context fields for domain-scoped scoring.
+     */
+    readonly context?: JsonObject | undefined;
+    /** Unix timestamp (ms) when the interaction occurred. */
+    readonly timestamp: number;
+}
+/**
+ * The computed trust score for an agent.
+ *
+ * \`score\` is the continuous value in [0, 1] — backends derive this from
+ * their own algorithm (e.g., EigenTrust eigenvector value, weighted average).
+ * \`level\` is the categorical bucket derived from \`score\`.
+ */
+interface ReputationScore {
+    /** The agent this score belongs to. */
+    readonly agentId: AgentId;
+    /**
+     * Continuous trust score in [0, 1].
+     * Higher = more trusted. Backends define the specific mapping.
+     */
+    readonly score: number;
+    /** Categorical trust level derived from \`score\`. */
+    readonly level: ReputationLevel;
+    /** Total number of feedback entries that contributed to this score. */
+    readonly feedbackCount: number;
+    /** Unix timestamp (ms) when this score was last computed. */
+    readonly computedAt: number;
+}
+/**
+ * Default maximum number of feedback entries returned by a single \`query()\` call.
+ * Implementations SHOULD apply this when the caller omits \`limit\`.
+ */
+declare const DEFAULT_REPUTATION_QUERY_LIMIT = 100;
+/**
+ * Filter for querying raw feedback entries.
+ * All fields are optional — omitting a field means "no constraint on that dimension".
+ * Providing no fields (empty filter) returns ALL entries up to \`limit\` — use with care.
+ */
+interface ReputationQuery {
+    /** Filter to feedback where this agent is the subject being evaluated. */
+    readonly targetId?: AgentId | undefined;
+    /** Filter to feedback originating from this agent. */
+    readonly sourceId?: AgentId | undefined;
+    /** Filter to entries matching any of these kinds. */
+    readonly kinds?: readonly FeedbackKind[] | undefined;
+    /** Include only entries at or after this Unix timestamp (ms). */
+    readonly after?: number | undefined;
+    /** Include only entries before this Unix timestamp (ms). */
+    readonly before?: number | undefined;
+    /** Maximum number of entries to return. */
+    readonly limit?: number | undefined;
+}
+interface ReputationQueryResult {
+    /** Feedback entries matching the query filter. */
+    readonly entries: readonly ReputationFeedback[];
+    /** True if more entries exist beyond the returned batch (use limit + before/after to paginate). */
+    readonly hasMore: boolean;
+}
+/**
+ * Pluggable trust scoring and feedback backend.
+ *
+ * All fallible operations return \`Result<T, KoiError>\`.
+ * All methods return \`T | Promise<T>\` — in-memory implementations are sync,
+ * database/network implementations are async. Callers must always \`await\`.
+ *
+ * **Fail-closed contract**: \`getScore()\` returns \`undefined\` for agents with
+ * no feedback history. Callers MUST treat \`undefined\` as \`"unknown"\` trust
+ * level and restrict access accordingly — never treat absence of data as
+ * implicit trust.
+ */
+interface ReputationBackend {
+    /**
+     * Record a trust signal from one agent about another.
+     * Implementations SHOULD be idempotent for identical (sourceId, targetId, kind, timestamp)
+     * tuples to handle retry scenarios.
+     */
+    readonly record: (feedback: ReputationFeedback) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    /**
+     * Get the current computed trust score for a single agent.
+     *
+     * Returns \`undefined\` when no feedback exists for this agent.
+     * Callers MUST treat \`undefined\` as \`"unknown"\` level — fail closed.
+     */
+    readonly getScore: (targetId: AgentId) => Result<ReputationScore | undefined, KoiError> | Promise<Result<ReputationScore | undefined, KoiError>>;
+    /**
+     * Get computed trust scores for multiple agents in a single call.
+     *
+     * Optional — in-memory backends implement this trivially; network backends
+     * use batch requests to avoid N+1 roundtrips (e.g., for trust-aware routing).
+     * Callers SHOULD use this when scoring multiple agents simultaneously.
+     *
+     * Missing entries in the returned map mean no feedback exists for that agent.
+     */
+    readonly getScores?: (targetIds: readonly AgentId[]) => Result<ReadonlyMap<AgentId, ReputationScore | undefined>, KoiError> | Promise<Result<ReadonlyMap<AgentId, ReputationScore | undefined>, KoiError>>;
+    /**
+     * Query raw feedback entries matching the filter.
+     *
+     * Returns entries ordered by \`timestamp\` descending (most recent first).
+     * Check \`hasMore\` to determine if results were truncated.
+     */
+    readonly query: (filter: ReputationQuery) => Result<ReputationQueryResult, KoiError> | Promise<Result<ReputationQueryResult, KoiError>>;
+    /** Close the backend and release resources. */
+    readonly dispose?: () => void | Promise<void>;
+}
+
+/**
  * Session persistence contract — L0 types for crash recovery.
  *
  * Promoted from @koi/session-store so that both @koi/session-store (L2)
@@ -977,7 +1135,7 @@ declare function isProcessState(value: string): value is ProcessState;
  */
 declare function validateNonEmpty(value: string, name: string): Result<void, KoiError>;
 
-export { type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentId, AgentManifest, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickKind, type BrickPage, BrickRef, type BrickRegistryBackend, type BrickRegistryChangeEvent, type BrickRegistryChangeKind, type BrickRegistryReader, type BrickRegistryWriter, type BrickSearchQuery, type BundleId, type CapabilityRegistry, type CapacityReport, type ChainCompactor, type ChainId, type CompensatingOp, DEFAULT_BRICK_SEARCH_LIMIT, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_TASK_BOARD_CONFIG, EXTENSION_PRIORITY, EngineState, type EventCursor, type FileOpKind, type FileOpRecord, type ForkRef, type GuardContext, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, KoiError, KoiMiddleware, type NodeCapability, type NodeId, type PendingFrame, ProcessState, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, Result, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, SkillComponent, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, type TaskBoard, type TaskBoardConfig, type TaskBoardEvent, type TaskBoardSnapshot, type TaskItem, type TaskItemId, type TaskItemInput, type TaskItemPatch, type TaskItemStatus, type TaskResult, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TransitionContext, TransitionReason, type TurnTrace, type ValidationDiagnostic, type ValidationResult, bundleId, chainId, conflict, evolveRegistryEntry, external, internal, isAgentStateEvent, isProcessState, isToolCallPayload, nodeId, notFound, permission, rateLimit, staleRef, taskItemId, timeout, validateNonEmpty, validation };
+export { type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentId, AgentManifest, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickKind, type BrickPage, BrickRef, type BrickRegistryBackend, type BrickRegistryChangeEvent, type BrickRegistryChangeKind, type BrickRegistryReader, type BrickRegistryWriter, type BrickSearchQuery, type BundleId, type CapabilityRegistry, type CapacityReport, type ChainCompactor, type ChainId, type CompensatingOp, DEFAULT_BRICK_SEARCH_LIMIT, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_REPUTATION_QUERY_LIMIT, DEFAULT_TASK_BOARD_CONFIG, EXTENSION_PRIORITY, EngineState, type EventCursor, type FeedbackKind, type FileOpKind, type FileOpRecord, type ForkRef, type GuardContext, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, KoiError, KoiMiddleware, type NodeCapability, type NodeId, type PendingFrame, ProcessState, type PruningPolicy, type PutOptions, REPUTATION_LEVEL_ORDER, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, type ReputationBackend, type ReputationFeedback, type ReputationLevel, type ReputationQuery, type ReputationQueryResult, type ReputationScore, Result, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, SkillComponent, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, type TaskBoard, type TaskBoardConfig, type TaskBoardEvent, type TaskBoardSnapshot, type TaskItem, type TaskItemId, type TaskItemInput, type TaskItemPatch, type TaskItemStatus, type TaskResult, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TransitionContext, TransitionReason, type TurnTrace, type ValidationDiagnostic, type ValidationResult, bundleId, chainId, conflict, evolveRegistryEntry, external, internal, isAgentStateEvent, isProcessState, isToolCallPayload, nodeId, notFound, permission, rateLimit, staleRef, taskItemId, timeout, validateNonEmpty, validation };
 "
 `;
 
