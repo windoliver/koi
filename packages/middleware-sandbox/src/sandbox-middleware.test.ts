@@ -293,6 +293,54 @@ describe("createSandboxMiddleware", () => {
     });
   });
 
+  describe("signal threading", () => {
+    it("threads signal to next handler via ToolRequest.signal", async () => {
+      const mw = createSandboxMiddleware(
+        makeConfig({ "sig-tool": "sandbox" }, { timeoutGraceMs: 5_000 }),
+      );
+      // let justified: captured from inside the handler
+      let capturedSignal: AbortSignal | undefined;
+      const handler: ToolHandler = async (request: ToolRequest): Promise<ToolResponse> => {
+        capturedSignal = request.signal;
+        return { output: { ok: true } };
+      };
+      const request = makeRequest("sig-tool");
+
+      await mw.wrapToolCall?.(ctx, request, handler);
+
+      // The handler should have received a signal (the sandbox controller's signal)
+      expect(capturedSignal).toBeDefined();
+      expect(capturedSignal).toBeInstanceOf(AbortSignal);
+    });
+
+    it("composes upstream signal with sandbox timeout", async () => {
+      const mw = createSandboxMiddleware(
+        makeConfig({ "compose-tool": "sandbox" }, { timeoutGraceMs: 5_000 }),
+      );
+      const upstreamController = new AbortController();
+      // let justified: captured from inside the handler
+      let capturedSignal: AbortSignal | undefined;
+      const handler: ToolHandler = async (request: ToolRequest): Promise<ToolResponse> => {
+        capturedSignal = request.signal;
+        return { output: { ok: true } };
+      };
+      // Request with upstream signal
+      const request: ToolRequest = {
+        toolId: "compose-tool",
+        input: { arg: "value" },
+        signal: upstreamController.signal,
+      };
+
+      await mw.wrapToolCall?.(ctx, request, handler);
+
+      // The composed signal should be present (AbortSignal.any)
+      expect(capturedSignal).toBeDefined();
+      expect(capturedSignal).toBeInstanceOf(AbortSignal);
+      // The composed signal is distinct from the upstream one (it wraps both)
+      expect(capturedSignal).not.toBe(upstreamController.signal);
+    });
+  });
+
   describe("observability", () => {
     it("calls onSandboxError on timeout", async () => {
       const onError = mock((_toolId: string, _tier: TrustTier, _code: string, _msg: string) => {});

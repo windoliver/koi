@@ -44,6 +44,8 @@ import type {
   Tool,
   ToolCallId,
   ToolDescriptor,
+  ToolExecuteOptions,
+  ToolRequest,
   TrustTier,
   TurnContext,
   TurnId,
@@ -1560,5 +1562,66 @@ describe("KoiMiddleware.describeCapabilities", () => {
       describeCapabilities: () => undefined,
     };
     expect(mw.describeCapabilities?.(ctx)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ToolExecuteOptions + Tool.execute options bag
+// ---------------------------------------------------------------------------
+
+describe("ToolExecuteOptions", () => {
+  test("is assignable with signal", () => {
+    const opts: ToolExecuteOptions = { signal: AbortSignal.timeout(1000) };
+    expect(opts.signal).toBeDefined();
+  });
+
+  test("is assignable with undefined signal", () => {
+    const opts: ToolExecuteOptions = { signal: undefined };
+    expect(opts.signal).toBeUndefined();
+  });
+
+  test("is assignable as empty object", () => {
+    const opts: ToolExecuteOptions = {};
+    expect(opts.signal).toBeUndefined();
+  });
+
+  test("Tool.execute is callable with 1 arg (backward compat)", () => {
+    const tool: Tool = {
+      descriptor: { name: "test", description: "test", inputSchema: {} },
+      trustTier: "sandbox",
+      execute: async (args) => args,
+    };
+    // Should compile and run with just args
+    expect(typeof tool.execute).toBe("function");
+  });
+
+  test("Tool.execute is callable with 2 args (options bag)", () => {
+    const tool: Tool = {
+      descriptor: { name: "test", description: "test", inputSchema: {} },
+      trustTier: "sandbox",
+      execute: async (args, options) => ({ args, signal: options?.signal }),
+    };
+    // Should compile and run with args + options
+    expect(typeof tool.execute).toBe("function");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ToolRequest.signal
+// ---------------------------------------------------------------------------
+
+describe("ToolRequest.signal", () => {
+  test("signal is optional", () => {
+    const req: ToolRequest = { toolId: "test", input: {} };
+    expect(req.signal).toBeUndefined();
+  });
+
+  test("accepts AbortSignal", () => {
+    const req: ToolRequest = {
+      toolId: "test",
+      input: {},
+      signal: AbortSignal.timeout(1000),
+    };
+    expect(req.signal).toBeDefined();
   });
 });

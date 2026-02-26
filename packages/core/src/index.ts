@@ -194,6 +194,7 @@ export type {
   Tool,
   ToolCallId,
   ToolDescriptor,
+  ToolExecuteOptions,
   TrustTier,
   TurnId,
   WorkspaceComponent,

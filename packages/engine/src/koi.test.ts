@@ -462,6 +462,67 @@ describe("createKoi terminal injection", () => {
     await collectEvents(runtime.run({ kind: "text", text: "test" }));
     expect(executeMock).toHaveBeenCalledTimes(1);
   });
+
+  test("default tool terminal threads signal to tool.execute", async () => {
+    // let justified: captured signal from inside the tool
+    let capturedSignal: AbortSignal | undefined;
+    const executeMock = mock((_args: unknown, options?: { signal?: AbortSignal }) => {
+      capturedSignal = options?.signal;
+      return Promise.resolve("tool-result");
+    });
+    const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
+
+    const adapter: EngineAdapter = {
+      engineId: "signal-thread-adapter",
+      terminals: { modelCall: modelTerminal },
+      stream: (input: EngineInput) => {
+        let done = false;
+        return {
+          async *[Symbol.asyncIterator]() {
+            if (!done) {
+              done = true;
+              if (input.callHandlers) {
+                // Pass a request with signal — the engine should thread ctx.signal onto it
+                await input.callHandlers.toolCall({
+                  toolId: "sig-tool",
+                  input: {},
+                });
+              }
+              yield { kind: "done" as const, output: doneOutput() };
+            }
+          },
+        };
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+      providers: [
+        {
+          name: "sig-tool-provider",
+          attach: async () =>
+            new Map([
+              [
+                toolToken("sig-tool") as string,
+                {
+                  descriptor: { name: "sig-tool", description: "Signal test", inputSchema: {} },
+                  trustTier: "verified" as const,
+                  execute: executeMock,
+                },
+              ],
+            ]),
+        },
+      ],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    // The engine threads ctx.signal (the run's abort signal) to tool.execute
+    expect(capturedSignal).toBeDefined();
+    expect(capturedSignal).toBeInstanceOf(AbortSignal);
+  });
 });
 
 // ---------------------------------------------------------------------------
