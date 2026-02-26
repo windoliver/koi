@@ -327,6 +327,14 @@ export type {
   ForgeVerificationSummary,
   SigningBackend,
 } from "./provenance.js";
+// reconciliation — desired-state convergence contract
+export type {
+  ReconcileContext,
+  ReconcileResult,
+  ReconcileRunnerConfig,
+  ReconciliationController,
+} from "./reconciliation.js";
+export { DEFAULT_RECONCILE_RUNNER_CONFIG } from "./reconciliation.js";
 // resolver
 export type { Resolver, SourceBundle, SourceLanguage } from "./resolver.js";
 // sandbox adapter — pluggable sandbox backends (OS-level, cloud, WASM)

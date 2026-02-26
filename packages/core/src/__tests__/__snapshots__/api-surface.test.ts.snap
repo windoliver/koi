@@ -22,7 +22,8 @@ export { FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
 import { KoiMiddleware } from './middleware.js';
 export { ApprovalDecision, ApprovalHandler, ApprovalRequest, ModelChunk, ModelHandler, ModelRequest, ModelResponse, ModelStreamHandler, SessionContext, ToolHandler, ToolRequest, ToolResponse, TurnContext } from './middleware.js';
-export { AgentCondition, AgentRegistry, AgentStatus, RegistryEntry, RegistryEvent, RegistryFilter, TransitionReason, VALID_TRANSITIONS } from './lifecycle.js';
+import { AgentRegistry } from './lifecycle.js';
+export { AgentCondition, AgentStatus, RegistryEntry, RegistryEvent, RegistryFilter, TransitionReason, VALID_TRANSITIONS } from './lifecycle.js';
 export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
 export { ModelCapabilities, ModelProvider, ModelTarget } from './model-provider.js';
 export { Resolver, SourceBundle, SourceLanguage } from './resolver.js';
@@ -340,6 +341,68 @@ interface KernelExtension {
      */
     readonly validateAssembly?: (components: ReadonlyMap<string, unknown>, manifest: AgentManifest) => ValidationResult | Promise<ValidationResult>;
 }
+
+/**
+ * Reconciliation contract — K8s-style desired-state convergence.
+ *
+ * Defines the extension point for L2 reconciliation controllers and the
+ * configuration surface for the L1 reconcile runner. Controllers implement
+ * \`observe(actual) → diff(desired) → act()\` loops that converge the system
+ * to its declared desired state.
+ *
+ * Exception: DEFAULT_RECONCILE_RUNNER_CONFIG is a pure readonly data constant
+ * derived from L0 type definitions, codifying architecture-doc invariants.
+ */
+
+/** Discriminated union describing the outcome of a single reconcile pass. */
+type ReconcileResult = {
+    readonly kind: "converged";
+} | {
+    readonly kind: "retry";
+    readonly afterMs: number;
+} | {
+    readonly kind: "terminal";
+    readonly reason: string;
+} | {
+    readonly kind: "recheck";
+    readonly afterMs: number;
+};
+/** Read-only context provided to each reconciliation controller invocation. */
+interface ReconcileContext {
+    readonly registry: AgentRegistry;
+    readonly manifest: AgentManifest;
+}
+/**
+ * A reconciliation controller observes actual state, diffs against desired
+ * state (manifest), and returns an action result. The runner calls each
+ * registered controller for every enqueued agent.
+ *
+ * Level-triggered: the controller re-reads current state on each invocation
+ * rather than relying on edge-triggered event payloads.
+ */
+interface ReconciliationController extends AsyncDisposable {
+    readonly name: string;
+    readonly reconcile: (agentId: AgentId, ctx: ReconcileContext) => ReconcileResult | Promise<ReconcileResult>;
+}
+/** Configurable options for the reconcile runner processing loop. */
+interface ReconcileRunnerConfig {
+    /** Interval between drift sweep scans of running agents (ms). Default: 60_000. */
+    readonly driftCheckIntervalMs: number;
+    /** Timeout for a single controller.reconcile() call (ms). Default: 30_000. */
+    readonly reconcileTimeoutMs: number;
+    /** Consecutive failures before circuit-breaking an agent+controller pair. Default: 5. */
+    readonly maxConsecutiveFailures: number;
+    /** Base delay for decorrelated jitter backoff (ms). Default: 100. */
+    readonly backoffBaseMs: number;
+    /** Maximum backoff cap (ms). Default: 30_000. */
+    readonly backoffCapMs: number;
+    /** Minimum interval between reconcile passes for the same agent (ms). Default: 5_000. */
+    readonly minReconcileIntervalMs: number;
+    /** Maximum concurrent async reconciles. 0 = unlimited. Default: 10. */
+    readonly maxConcurrentReconciles: number;
+}
+/** Sensible defaults for the reconcile runner. */
+declare const DEFAULT_RECONCILE_RUNNER_CONFIG: ReconcileRunnerConfig;
 
 /**
  * Scheduler contract — pluggable task scheduling, priority queue, cron,
@@ -754,7 +817,7 @@ declare function isProcessState(value: string): value is ProcessState;
  */
 declare function validateNonEmpty(value: string, name: string): Result<void, KoiError>;
 
-export { Agent, AgentId, AgentManifest, type AgentSnapshot, type AgentSnapshotStore, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickRef, type ChainCompactor, type ChainId, type CompensatingOp, type CronSchedule, DEFAULT_SCHEDULER_CONFIG, EXTENSION_PRIORITY, EngineInput, EngineState, type EventCursor, type FileOpKind, type FileOpRecord, type ForkRef, type GuardContext, JsonObject, type KernelExtension, KoiError, KoiMiddleware, type NodeId, type PendingFrame, ProcessState, type PruningPolicy, type PutOptions, type RecoveryPlan, type RedactionRule, Result, type ScheduleId, type ScheduleStore, type ScheduledTask, type SchedulerConfig, type SchedulerEvent, type SchedulerStats, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, type TaskFilter, type TaskId, type TaskOptions, type TaskScheduler, type TaskStatus, type TaskStore, ToolCallId, type TraceEvent, type TraceEventKind, type TransitionContext, type TurnTrace, type ValidationDiagnostic, type ValidationResult, chainId, conflict, external, internal, isProcessState, nodeId, notFound, permission, rateLimit, scheduleId, staleRef, taskId, timeout, validateNonEmpty, validation };
+export { Agent, AgentId, AgentManifest, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickRef, type ChainCompactor, type ChainId, type CompensatingOp, type CronSchedule, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_SCHEDULER_CONFIG, EXTENSION_PRIORITY, EngineInput, EngineState, type EventCursor, type FileOpKind, type FileOpRecord, type ForkRef, type GuardContext, JsonObject, type KernelExtension, KoiError, KoiMiddleware, type NodeId, type PendingFrame, ProcessState, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, Result, type ScheduleId, type ScheduleStore, type ScheduledTask, type SchedulerConfig, type SchedulerEvent, type SchedulerStats, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, type TaskFilter, type TaskId, type TaskOptions, type TaskScheduler, type TaskStatus, type TaskStore, ToolCallId, type TraceEvent, type TraceEventKind, type TransitionContext, type TurnTrace, type ValidationDiagnostic, type ValidationResult, chainId, conflict, external, internal, isProcessState, nodeId, notFound, permission, rateLimit, scheduleId, staleRef, taskId, timeout, validateNonEmpty, validation };
 "
 `;
 
