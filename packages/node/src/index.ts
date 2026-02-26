@@ -51,12 +51,19 @@ export type { FrameDeduplicator } from "./frame-dedup.js";
 export { createFrameDeduplicator } from "./frame-dedup.js";
 export type { MemoryMetrics, MemoryMonitor } from "./monitor.js";
 export { createMemoryMonitor } from "./monitor.js";
-export type { KoiNode, NodeDeps, RecoveryResult } from "./node.js";
+export type { FullKoiNode, KoiNode, NodeDeps, RecoveryResult, ThinKoiNode } from "./node.js";
 // -- Main entry point -------------------------------------------------------
 export { createNode } from "./node.js";
 export type { ShutdownCallbacks, ShutdownEmit, ShutdownHandler } from "./shutdown.js";
 // -- Shutdown ---------------------------------------------------------------
 export { createShutdownHandler } from "./shutdown.js";
+export type { ToolCallHandlerDeps } from "./tool-call-handler.js";
+// -- Tool call handler ------------------------------------------------------
+export {
+  DEFAULT_TOOL_CALL_TIMEOUT_MS,
+  handleToolCall,
+  isToolCallPayload,
+} from "./tool-call-handler.js";
 export { createFilesystemTool } from "./tools/filesystem.js";
 export type { LocalResolver, ToolMeta } from "./tools/local-resolver.js";
 // -- Tools ------------------------------------------------------------------

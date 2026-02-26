@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import type { AgentManifest, ProcessId } from "@koi/core";
 import { agentId } from "@koi/core";
 import { createMockEngineAdapter } from "@koi/test-utils";
-import type { KoiNode } from "./node.js";
+import type { FullKoiNode } from "./node.js";
 import { createNode } from "./node.js";
 import type { NodeEvent, NodeState } from "./types.js";
 
@@ -48,6 +48,14 @@ function mockManifest(name = "test-agent"): AgentManifest {
     version: "0.0.1",
     model: { name: "test-model" },
   };
+}
+
+/** Helper to create a FullKoiNode for tests that need Full-only members. */
+function createFullNode(overrides?: Record<string, unknown>): FullKoiNode {
+  const result = createNode(validConfig(overrides));
+  if (!result.ok) throw new Error("Failed to create full node for test");
+  if (result.value.mode !== "full") throw new Error("Expected full mode node");
+  return result.value;
 }
 
 // ---------------------------------------------------------------------------
@@ -241,12 +249,10 @@ describe("createNode — state machine", () => {
 // ---------------------------------------------------------------------------
 
 describe("createNode — dispatch guards", () => {
-  let node: KoiNode;
+  let node: FullKoiNode;
 
   beforeEach(() => {
-    const result = createNode(validConfig());
-    if (!result.ok) throw new Error("Failed to create node for test");
-    node = result.value;
+    node = createFullNode();
   });
 
   afterEach(async () => {
@@ -286,12 +292,10 @@ describe("createNode — dispatch guards", () => {
 // ---------------------------------------------------------------------------
 
 describe("createNode — terminate", () => {
-  let node: KoiNode;
+  let node: FullKoiNode;
 
   beforeEach(() => {
-    const result = createNode(validConfig());
-    if (!result.ok) throw new Error("Failed to create node for test");
-    node = result.value;
+    node = createFullNode();
   });
 
   afterEach(async () => {
@@ -321,12 +325,10 @@ describe("createNode — terminate", () => {
 // ---------------------------------------------------------------------------
 
 describe("createNode — agent queries", () => {
-  let node: KoiNode;
+  let node: FullKoiNode;
 
   beforeEach(() => {
-    const result = createNode(validConfig());
-    if (!result.ok) throw new Error("Failed to create node for test");
-    node = result.value;
+    node = createFullNode();
   });
 
   afterEach(async () => {
@@ -356,11 +358,7 @@ describe("createNode — agent queries", () => {
 
 describe("createNode — capacity", () => {
   it("capacity() returns valid report with default maxAgents", () => {
-    const result = createNode(validConfig());
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    const node = result.value;
+    const node = createFullNode();
     const cap = node.capacity();
 
     expect(cap.current).toBe(0);
@@ -369,11 +367,7 @@ describe("createNode — capacity", () => {
   });
 
   it("capacity() reflects custom maxAgents from config", () => {
-    const result = createNode(validConfig({ resources: { maxAgents: 10 } }));
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    const node = result.value;
+    const node = createFullNode({ resources: { maxAgents: 10 } });
     const cap = node.capacity();
 
     expect(cap.current).toBe(0);
@@ -382,20 +376,16 @@ describe("createNode — capacity", () => {
   });
 
   it("capacity report fields are non-negative", () => {
-    const result = createNode(validConfig());
-    if (!result.ok) return;
-
-    const cap = result.value.capacity();
+    const node = createFullNode();
+    const cap = node.capacity();
     expect(cap.current).toBeGreaterThanOrEqual(0);
     expect(cap.max).toBeGreaterThan(0);
     expect(cap.available).toBeGreaterThanOrEqual(0);
   });
 
   it("capacity available equals max minus current initially", () => {
-    const result = createNode(validConfig());
-    if (!result.ok) return;
-
-    const cap = result.value.capacity();
+    const node = createFullNode();
+    const cap = node.capacity();
     expect(cap.available).toBe(cap.max - cap.current);
   });
 });
@@ -405,12 +395,10 @@ describe("createNode — capacity", () => {
 // ---------------------------------------------------------------------------
 
 describe("createNode — event system", () => {
-  let node: KoiNode;
+  let node: FullKoiNode;
 
   beforeEach(() => {
-    const result = createNode(validConfig());
-    if (!result.ok) throw new Error("Failed to create node for test");
-    node = result.value;
+    node = createFullNode();
   });
 
   afterEach(async () => {
@@ -598,10 +586,7 @@ describe("createNode — tool resolver", () => {
 
 describe("createNode — stop and cleanup", () => {
   it("after stop(), dispatch returns error", async () => {
-    const result = createNode(validConfig());
-    if (!result.ok) return;
-
-    const node = result.value;
+    const node = createFullNode();
     await node.stop();
 
     const dispatchResult = await node.dispatch(
@@ -617,28 +602,19 @@ describe("createNode — stop and cleanup", () => {
   });
 
   it("after stop(), state is 'stopped'", async () => {
-    const result = createNode(validConfig());
-    if (!result.ok) return;
-
-    const node = result.value;
+    const node = createFullNode();
     await node.stop();
     expect(node.state()).toBe("stopped");
   });
 
   it("after stop(), listAgents returns empty", async () => {
-    const result = createNode(validConfig());
-    if (!result.ok) return;
-
-    const node = result.value;
+    const node = createFullNode();
     await node.stop();
     expect(node.listAgents()).toEqual([]);
   });
 
   it("stop() without start() leaves state as stopped", async () => {
-    const result = createNode(validConfig());
-    if (!result.ok) return;
-
-    const node = result.value;
+    const node = createFullNode();
     expect(node.state()).toBe("stopped");
     await node.stop();
     expect(node.state()).toBe("stopped");
@@ -666,10 +642,19 @@ describe("createNode — config modes", () => {
   });
 
   it("defaults mode to 'full' when not specified", () => {
-    // We can't directly read mode from the node handle, but the node
-    // should create successfully with the default
     const result = createNode(validConfig());
     expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.mode).toBe("full");
+    }
+  });
+
+  it("returns mode 'thin' when configured", () => {
+    const result = createNode(validConfig({ mode: "thin" }));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.mode).toBe("thin");
+    }
   });
 });
 
@@ -741,11 +726,8 @@ describe("createNode — edge cases", () => {
 // ---------------------------------------------------------------------------
 
 describe("createNode — KoiNode interface shape", () => {
-  it("returned node has all required methods", () => {
-    const result = createNode(validConfig());
-    if (!result.ok) return;
-
-    const node = result.value;
+  it("full node has all required methods", () => {
+    const node = createFullNode();
 
     expect(typeof node.nodeId).toBe("string");
     expect(typeof node.state).toBe("function");
@@ -758,6 +740,7 @@ describe("createNode — KoiNode interface shape", () => {
     expect(typeof node.capacity).toBe("function");
     expect(typeof node.onEvent).toBe("function");
     expect(node.toolResolver).toBeDefined();
+    expect(node.mode).toBe("full");
   });
 
   it("state() returns a valid NodeState", () => {
