@@ -92,6 +92,22 @@ export type ApprovalDecision =
 
 export type ApprovalHandler = (request: ApprovalRequest) => Promise<ApprovalDecision>;
 
+/**
+ * A middleware's self-description for the LLM.
+ *
+ * Good descriptions are concise, factual, and actionable:
+ *   label: "permissions", description: "Tools requiring approval: fs:write, shell:exec"
+ *   label: "budget", description: "Token budget: 8,500 of 10,000 remaining"
+ *   label: "guardrails", description: "Output must conform to JSON schema: {...}"
+ *
+ * Bad descriptions are verbose or self-referential:
+ *   "I am the permissions middleware and I enforce access control policies..."
+ */
+export interface CapabilityFragment {
+  readonly label: string;
+  readonly description: string;
+}
+
 export interface KoiMiddleware {
   readonly name: string;
   /** Middleware execution priority. Lower = outer onion layer (runs first). Default: 500. */
@@ -122,4 +138,6 @@ export interface KoiMiddleware {
     request: ToolRequest,
     next: ToolHandler,
   ) => Promise<ToolResponse>;
+  /** Optional self-description injected into model calls. Return undefined to skip. */
+  readonly describeCapabilities?: (ctx: TurnContext) => CapabilityFragment | undefined;
 }
