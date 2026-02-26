@@ -8,7 +8,7 @@
 
 import type {
   Agent,
-  GovernanceComponent,
+  GovernanceController,
   InboundMessage,
   KoiMiddleware,
   ModelChunk,
@@ -552,7 +552,7 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
  *
  * The spawn guard enforces:
  * - Depth limits (structural, PERMISSION error)
- * - GovernanceComponent checks (PERMISSION error)
+ * - GovernanceController checks (PERMISSION error)
  * - Fan-out limits (transient, RATE_LIMIT error)
  *
  * Ledger management (tree-wide process slots) is handled by `spawnChildAgent()`,
@@ -563,7 +563,7 @@ export interface CreateSpawnGuardOptions {
   readonly policy?: Partial<SpawnPolicy>;
   /** Depth of the current agent in the process tree (0 = root). */
   readonly agentDepth?: number;
-  /** Agent entity — if present, GovernanceComponent will be consulted. */
+  /** Agent entity — if present, GovernanceController will be consulted. */
   readonly agent?: Agent;
 }
 
@@ -586,8 +586,8 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
   // Build spawn tool ID set for O(1) lookup
   const spawnToolIds = new Set<string>(policy.spawnToolIds ?? DEFAULT_SPAWN_TOOL_IDS);
 
-  // Cache GovernanceComponent lookup — fixed after assembly, no need to look up per-call
-  const governance = agent?.component<GovernanceComponent>(GOVERNANCE);
+  // Cache GovernanceController lookup — fixed after assembly, no need to look up per-call
+  const governance = agent?.component<GovernanceController>(GOVERNANCE);
 
   // let justified: mutable per-agent fan-out counter
   let directChildren = 0;
@@ -617,12 +617,12 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
         );
       }
 
-      // 2. Consult GovernanceComponent (cached at construction)
+      // 2. Consult GovernanceController (cached at construction)
       if (governance !== undefined) {
-        const check = governance.checkSpawn(childDepth);
-        if (!check.allowed) {
+        const check = await governance.check("spawn_depth");
+        if (!check.ok) {
           throw KoiRuntimeError.from("PERMISSION", check.reason, {
-            context: { childDepth, source: "GovernanceComponent" },
+            context: { childDepth, source: "GovernanceController", variable: check.variable },
           });
         }
       }

@@ -18,7 +18,8 @@ import type {
   EngineEvent,
   EngineInput,
   EngineStopReason,
-  GovernanceUsage,
+  GovernanceCheck,
+  GovernanceSnapshot,
   KoiError,
   KoiErrorCode,
   KoiMiddleware,
@@ -38,7 +39,6 @@ import type {
   SessionId,
   SourceBundle,
   SourceLanguage,
-  SpawnCheck,
   SubsystemToken,
   Tool,
   ToolCallId,
@@ -307,16 +307,16 @@ describe("well-known token type narrowing", () => {
     expect(mem).toBeUndefined();
   });
 
-  test("GOVERNANCE token narrows component to GovernanceComponent", () => {
+  test("GOVERNANCE token narrows component to GovernanceController", () => {
     const agentLike: Pick<Agent, "component"> = {
       component: <T>(_token: SubsystemToken<T>): T | undefined => undefined,
     };
     const gov = agentLike.component(GOVERNANCE);
     if (gov) {
-      const _usage: GovernanceUsage = gov.usage();
-      const _check: SpawnCheck = gov.checkSpawn(0);
-      void _usage;
+      const _check: GovernanceCheck | Promise<GovernanceCheck> = gov.check("spawn_depth");
+      const _snap: GovernanceSnapshot | Promise<GovernanceSnapshot> = gov.snapshot();
       void _check;
+      void _snap;
     }
     expect(gov).toBeUndefined();
   });
@@ -515,7 +515,7 @@ describe("PermissionConfig negative types", () => {
 });
 
 // ---------------------------------------------------------------------------
-// TrustTier and SpawnCheck
+// TrustTier and GovernanceCheck
 // ---------------------------------------------------------------------------
 
 describe("TrustTier", () => {
@@ -525,18 +525,25 @@ describe("TrustTier", () => {
   });
 });
 
-describe("SpawnCheck discriminant", () => {
-  test("narrows to allowed branch", () => {
-    const check: SpawnCheck = { allowed: true };
-    if (check.allowed) {
-      expect(check.allowed).toBe(true);
+describe("GovernanceCheck discriminant", () => {
+  test("narrows to ok branch", () => {
+    const check: GovernanceCheck = { ok: true };
+    if (check.ok) {
+      expect(check.ok).toBe(true);
     }
   });
 
-  test("narrows to denied branch with reason", () => {
-    const check: SpawnCheck = { allowed: false, reason: "max depth exceeded" };
-    if (!check.allowed) {
+  test("narrows to failed branch with variable and reason", () => {
+    const check: GovernanceCheck = {
+      ok: false,
+      variable: "spawn_depth",
+      reason: "max depth exceeded",
+      retryable: false,
+    };
+    if (!check.ok) {
+      expect(check.variable).toBe("spawn_depth");
       expect(check.reason).toBe("max depth exceeded");
+      expect(check.retryable).toBe(false);
     }
   });
 });

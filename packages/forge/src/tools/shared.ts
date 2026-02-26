@@ -476,7 +476,7 @@ export function createForgeTool(toolConfig: ForgeToolConfig, deps: ForgeDeps): T
 
   const execute = async (input: JsonObject): Promise<unknown> => {
     // Governance pre-check (includes depth-aware tool filtering)
-    const govResult = checkGovernance(deps.context, deps.config, toolConfig.name);
+    const govResult = await checkGovernance(deps.context, deps.config, toolConfig.name);
     if (!govResult.ok) {
       return { ok: false, error: govResult.error };
     }

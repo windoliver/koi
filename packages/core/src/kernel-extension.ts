@@ -50,7 +50,7 @@ export interface GuardContext {
   readonly manifest: AgentManifest;
   /** All attached components as a readonly map. */
   readonly components: ReadonlyMap<string, unknown>;
-  /** The assembled agent entity (for GovernanceComponent lookup, etc.). */
+  /** The assembled agent entity (for GovernanceController lookup, etc.). */
   readonly agent?: Agent;
 }
 
