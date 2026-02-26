@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { parseGitError, resolveWorktreeBasePath } from "./git-utils.js";
+import { parseGitError } from "./run-git.js";
 
 describe("parseGitError", () => {
   it("maps 'already exists' to CONFLICT", () => {
@@ -36,28 +36,5 @@ describe("parseGitError", () => {
   it("includes command in context", () => {
     const err = parseGitError("error", ["worktree", "add", "/path"]);
     expect(err.context).toEqual({ command: "git worktree add /path" });
-  });
-});
-
-describe("resolveWorktreeBasePath", () => {
-  it("returns explicit path when provided", () => {
-    expect(resolveWorktreeBasePath("/repos/myrepo", "/custom/base")).toBe("/custom/base");
-  });
-
-  it("derives path from repo name when no explicit path", () => {
-    const result = resolveWorktreeBasePath("/repos/myrepo");
-    expect(result).toBe("/repos/myrepo/../myrepo-workspaces");
-  });
-
-  it("handles repo path ending with slash", () => {
-    // path.split("/").pop() on trailing slash gives ""
-    const result = resolveWorktreeBasePath("/repos/myrepo/");
-    // pop() returns "" for trailing slash, fallback to "repo"
-    expect(result).toContain("-workspaces");
-  });
-
-  it("falls back to 'repo' for edge case paths", () => {
-    const result = resolveWorktreeBasePath("/");
-    expect(result).toContain("repo-workspaces");
   });
 });

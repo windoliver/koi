@@ -1,0 +1,31 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/git-utils API surface . has stable type surface 1`] = `
+"import { KoiError, Result } from '@koi/core';
+
+/**
+ * Path resolution utilities for git worktrees.
+ */
+/** Resolve the base path for worktrees relative to the repo. */
+declare function resolveWorktreeBasePath(repoPath: string, explicit?: string): string;
+
+/**
+ * Git command execution utilities.
+ *
+ * Thin wrapper around Bun.spawn for running git commands and
+ * mapping stderr to KoiError values.
+ */
+
+/**
+ * Run a git command and return the stdout as a Result.
+ *
+ * On non-zero exit, returns a Result.error with the stderr parsed
+ * into a KoiError. Side-effect: spawns a child process.
+ */
+declare function runGit(args: readonly string[], cwd: string): Promise<Result<string, KoiError>>;
+/** Map git stderr messages to structured KoiError values. */
+declare function parseGitError(stderr: string, args: readonly string[]): KoiError;
+
+export { parseGitError, resolveWorktreeBasePath, runGit };
+"
+`;

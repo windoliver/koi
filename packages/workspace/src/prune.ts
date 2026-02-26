@@ -8,7 +8,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type { KoiError } from "@koi/core";
-import { runGit } from "./git-utils.js";
+import { runGit } from "@koi/git-utils";
 
 // ---------------------------------------------------------------------------
 // Types

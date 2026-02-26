@@ -1,0 +1,207 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/worktree-merge API surface . has stable type surface 1`] = `
+"import { KoiError, Result } from '@koi/core';
+
+/**
+ * Types for branch reconciliation after parallel worktree-based agent work.
+ */
+
+/** A branch to merge, with optional ordering dependencies. */
+interface MergeBranch {
+    readonly name: string;
+    readonly dependsOn: readonly string[];
+    /** If set, merge is skipped when branch tip differs (stale-branch guard). */
+    readonly expectedRef?: string;
+    readonly metadata?: Readonly<Record<string, unknown>>;
+}
+/** Merge strategy discriminant. */
+type MergeStrategyKind = "sequential" | "octopus" | "rebase-chain";
+/** When to run the verify function. */
+type VerifyAfter = "each" | "all" | "levels";
+/** Information about a merge conflict, passed to the resolver callback. */
+interface ConflictInfo {
+    readonly branch: string;
+    readonly conflictFiles: readonly string[];
+    readonly targetRef: string;
+    readonly branchRef: string;
+}
+/** Resolution returned by the conflict resolver. */
+type ConflictResolution = {
+    readonly kind: "resolved";
+    readonly commitSha: string;
+} | {
+    readonly kind: "abort";
+};
+/** Pluggable conflict resolution callback. */
+type ConflictResolverFn = (conflict: ConflictInfo) => Promise<ConflictResolution>;
+/** Verification callback invoked after merges. */
+type VerifyFn = (mergedRef: string, mergedBranches: readonly string[]) => Promise<VerifyResult>;
+/** Result of a verification step. */
+interface VerifyResult {
+    readonly passed: boolean;
+    readonly message?: string;
+}
+/** Full configuration for executeMerge(). */
+interface MergeConfig {
+    readonly repoPath: string;
+    readonly targetBranch: string;
+    readonly branches: readonly MergeBranch[];
+    readonly strategy: MergeStrategyKind;
+    readonly verifyAfter?: VerifyAfter;
+    readonly verify?: VerifyFn;
+    readonly resolveConflict?: ConflictResolverFn;
+    readonly signal?: AbortSignal;
+    readonly onEvent?: (event: MergeEvent) => void;
+}
+/** Discriminated union of all merge progress events. */
+type MergeEvent = {
+    readonly kind: "merge:started";
+    readonly branch: string;
+    readonly index: number;
+    readonly total: number;
+} | {
+    readonly kind: "merge:completed";
+    readonly branch: string;
+    readonly commitSha: string;
+} | {
+    readonly kind: "merge:conflict";
+    readonly branch: string;
+    readonly files: readonly string[];
+} | {
+    readonly kind: "merge:skipped";
+    readonly branch: string;
+    readonly reason: string;
+} | {
+    readonly kind: "merge:reverted";
+    readonly branch: string;
+    readonly reason: string;
+} | {
+    readonly kind: "merge:failed";
+    readonly branch: string;
+    readonly error: KoiError;
+} | {
+    readonly kind: "verify:started";
+    readonly branches: readonly string[];
+} | {
+    readonly kind: "verify:passed";
+} | {
+    readonly kind: "verify:failed";
+    readonly message: string;
+} | {
+    readonly kind: "level:started";
+    readonly level: number;
+    readonly branches: readonly string[];
+} | {
+    readonly kind: "level:completed";
+    readonly level: number;
+} | {
+    readonly kind: "aborted";
+    readonly restoreRef: string;
+};
+/** Per-branch outcome after a merge attempt. */
+type BranchMergeOutcome = {
+    readonly kind: "merged";
+    readonly commitSha: string;
+} | {
+    readonly kind: "conflict";
+    readonly conflictFiles: readonly string[];
+    readonly resolved: boolean;
+} | {
+    readonly kind: "skipped";
+    readonly reason: string;
+} | {
+    readonly kind: "failed";
+    readonly error: KoiError;
+} | {
+    readonly kind: "reverted";
+    readonly reason: string;
+};
+/** Aggregate result of executeMerge(). */
+interface MergeResult {
+    readonly strategy: MergeStrategyKind;
+    readonly targetBranch: string;
+    readonly mergeOrder: readonly string[];
+    readonly outcomes: ReadonlyMap<string, BranchMergeOutcome>;
+    readonly verified: boolean;
+    readonly durationMs: number;
+    readonly aborted: boolean;
+}
+/** Signature shared by all strategy functions. */
+type MergeStrategyFn = (branch: string, targetBranch: string, repoPath: string, resolveConflict: ConflictResolverFn) => Promise<BranchMergeOutcome>;
+/** Validate MergeConfig, returning an error for invalid inputs. */
+declare function validateMergeConfig(config: MergeConfig): Result<void, KoiError>;
+
+/**
+ * Main entry point for branch reconciliation.
+ *
+ * Orchestrates topological ordering, strategy dispatch, verification,
+ * and abort handling into a single executeMerge() call.
+ */
+
+/** Execute a merge plan according to the given configuration. */
+declare function executeMerge(config: MergeConfig): Promise<Result<MergeResult, KoiError>>;
+
+/**
+ * Octopus merge strategy: merge multiple branches at once.
+ *
+ * Only works for conflict-free branches at the same level. On conflict,
+ * falls back to sequential merging of individual branches.
+ */
+
+/** Merge a single branch via octopus (delegates to git merge). */
+declare function mergeOctopus(branch: string, targetBranch: string, repoPath: string, resolveConflict: ConflictResolverFn): Promise<BranchMergeOutcome>;
+/**
+ * Attempt an octopus merge of all branches in a level.
+ *
+ * Returns outcomes per branch. If octopus fails, resets and
+ * falls back to sequential merging.
+ */
+declare function mergeOctopusLevel(branches: readonly string[], targetBranch: string, repoPath: string, resolveConflict: ConflictResolverFn): Promise<ReadonlyMap<string, BranchMergeOutcome>>;
+
+/**
+ * Topological ordering for merge branches.
+ *
+ * Uses Kahn's algorithm to compute a merge order that respects
+ * dependency constraints, and groups branches into independence levels.
+ */
+
+/**
+ * Compute topological merge order via Kahn's algorithm.
+ *
+ * Returns branch names in an order where every branch appears after
+ * all of its dependencies. Returns an error if a cycle is detected.
+ */
+declare function computeMergeOrder(branches: readonly MergeBranch[]): Result<readonly string[], KoiError>;
+/**
+ * Group branches into independence levels (same BFS depth).
+ *
+ * Each level contains branches that can be processed after all
+ * branches in previous levels have completed. Within a level,
+ * branches are independent of each other.
+ */
+declare function computeMergeLevels(branches: readonly MergeBranch[]): Result<readonly (readonly string[])[], KoiError>;
+
+/**
+ * Rebase-chain merge strategy: rebase each branch onto target, then ff merge.
+ *
+ * Rewrites history (documented as explicit tradeoff). On conflict during
+ * replay, calls the conflict resolver. If resolution fails, aborts rebase.
+ */
+
+/** Rebase a branch onto target, then fast-forward merge. */
+declare function mergeRebaseChain(branch: string, targetBranch: string, repoPath: string, resolveConflict: ConflictResolverFn): Promise<BranchMergeOutcome>;
+
+/**
+ * Sequential merge strategy: git merge --no-ff for each branch.
+ *
+ * On conflict: calls the conflict resolver. If resolution fails or
+ * is aborted, reverts the merge attempt.
+ */
+
+/** Merge a single branch using --no-ff. */
+declare function mergeSequential(branch: string, _targetBranch: string, repoPath: string, resolveConflict: ConflictResolverFn): Promise<BranchMergeOutcome>;
+
+export { type BranchMergeOutcome, type ConflictInfo, type ConflictResolution, type ConflictResolverFn, type MergeBranch, type MergeConfig, type MergeEvent, type MergeResult, type MergeStrategyFn, type MergeStrategyKind, type VerifyAfter, type VerifyFn, type VerifyResult, computeMergeLevels, computeMergeOrder, executeMerge, mergeOctopus, mergeOctopusLevel, mergeRebaseChain, mergeSequential, validateMergeConfig };
+"
+`;

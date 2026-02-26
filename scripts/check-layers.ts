@@ -27,6 +27,7 @@ const L0U_PACKAGES = new Set([
   "@koi/channel-base",
   "@koi/errors",
   "@koi/execution-context",
+  "@koi/git-utils",
   "@koi/hash",
   "@koi/manifest",
   "@koi/sandbox-cloud-base",

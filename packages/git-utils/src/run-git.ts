@@ -96,10 +96,3 @@ export function parseGitError(stderr: string, args: readonly string[]): KoiError
     context: { command: `git ${args.join(" ")}` },
   };
 }
-
-/** Resolve the base path for worktrees relative to the repo. */
-export function resolveWorktreeBasePath(repoPath: string, explicit?: string): string {
-  if (explicit) return explicit;
-  const repoName = repoPath.split("/").pop() || "repo";
-  return `${repoPath}/../${repoName}-workspaces`;
-}
