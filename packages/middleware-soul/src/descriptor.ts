@@ -8,13 +8,13 @@
 import type { KoiError, KoiMiddleware, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "@koi/resolve";
-import type { CreateSoulOptions, SoulUserInput } from "./config.js";
-import { createSoulMiddleware } from "./soul.js";
+import type { ContentInput, CreateSoulOptions } from "@koi/soul";
+import { createSoulMiddleware } from "@koi/soul";
 
 /**
  * Validates soul descriptor options from the manifest.
  *
- * Accepts { soul?: SoulUserInput, user?: SoulUserInput } — basePath
+ * Accepts { soul?: ContentInput, user?: ContentInput } — basePath
  * is injected from context.manifestDir by the factory, not from YAML.
  */
 function validateSoulDescriptorOptions(input: unknown): Result<unknown, KoiError> {
@@ -33,7 +33,7 @@ function validateSoulDescriptorOptions(input: unknown): Result<unknown, KoiError
 
   // Validate soul field if present
   if (opts.soul !== undefined) {
-    if (!isValidSoulUserInput(opts.soul)) {
+    if (!isValidContentInput(opts.soul)) {
       return {
         ok: false,
         error: {
@@ -47,7 +47,7 @@ function validateSoulDescriptorOptions(input: unknown): Result<unknown, KoiError
 
   // Validate user field if present
   if (opts.user !== undefined) {
-    if (!isValidSoulUserInput(opts.user)) {
+    if (!isValidContentInput(opts.user)) {
       return {
         ok: false,
         error: {
@@ -62,7 +62,7 @@ function validateSoulDescriptorOptions(input: unknown): Result<unknown, KoiError
   return { ok: true, value: input };
 }
 
-function isValidSoulUserInput(value: unknown): value is SoulUserInput {
+function isValidContentInput(value: unknown): value is ContentInput {
   if (typeof value === "string") return true;
   if (typeof value === "object" && value !== null) {
     const obj = value as Record<string, unknown>;
@@ -85,8 +85,8 @@ export const descriptor: BrickDescriptor<KoiMiddleware> = {
   aliases: ["soul"],
   optionsValidator: validateSoulDescriptorOptions,
   async factory(options, context): Promise<KoiMiddleware> {
-    const soul = isValidSoulUserInput(options.soul) ? options.soul : undefined;
-    const user = isValidSoulUserInput(options.user) ? options.user : undefined;
+    const soul = isValidContentInput(options.soul) ? options.soul : undefined;
+    const user = isValidContentInput(options.user) ? options.user : undefined;
     const createOptions: CreateSoulOptions = {
       soul,
       user,

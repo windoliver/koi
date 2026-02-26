@@ -1,5 +1,5 @@
 {
-  "name": "@koi/middleware-soul",
+  "name": "@koi/file-resolution",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,20 +9,14 @@
       "import": "./dist/index.js"
     }
   },
-  "dependencies": {
-    "@koi/core": "workspace:*",
-    "@koi/file-resolution": "workspace:*",
-    "@koi/resolve": "workspace:*",
-    "@koi/soul": "workspace:*"
-  },
-  "devDependencies": {
-    "@koi/test-utils": "workspace:*"
-  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test",
     "test:api": "bun test src/__tests__/api-surface.test.ts"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*"
   }
 }
