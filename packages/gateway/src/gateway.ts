@@ -1,6 +1,7 @@
 /**
  * Gateway factory: wires transport, auth, sessions, sequencing,
- * and backpressure into a single control-plane entry point.
+ * backpressure, node registry, session resume, and channel binding
+ * into a single control-plane entry point.
  */
 
 import type { KoiError, Result } from "@koi/core";
@@ -8,10 +9,20 @@ import { swallowError } from "@koi/errors";
 import type { GatewayAuthenticator, HandshakeOptions } from "./auth.js";
 import { handleHandshake, startHeartbeatSweep } from "./auth.js";
 import { createBackpressureMonitor } from "./backpressure.js";
-import { createAckFrame, createErrorFrame, encodeFrame, parseFrame } from "./protocol.js";
+import type { NodeRegistry, NodeRegistryEvent } from "./node-registry.js";
+import { createInMemoryNodeRegistry } from "./node-registry.js";
+import type { FrameIdGenerator } from "./protocol.js";
+import {
+  createAckFrame,
+  createErrorFrame,
+  createFrameIdGenerator,
+  encodeFrame,
+  parseFrame,
+} from "./protocol.js";
 import { resolveRoute } from "./routing.js";
 import type { GatewayScheduler } from "./scheduler.js";
 import { createScheduler } from "./scheduler.js";
+import type { SequenceTracker } from "./sequence-tracker.js";
 import { createSequenceTracker } from "./sequence-tracker.js";
 import type { SessionStore } from "./session-store.js";
 import { createInMemorySessionStore } from "./session-store.js";
@@ -20,6 +31,16 @@ import type { GatewayConfig, GatewayFrame, Session } from "./types.js";
 import { DEFAULT_GATEWAY_CONFIG } from "./types.js";
 import type { WebhookAuthenticator, WebhookServer } from "./webhook.js";
 import { createWebhookServer } from "./webhook.js";
+
+// ---------------------------------------------------------------------------
+// Session events
+// ---------------------------------------------------------------------------
+
+export type SessionEvent =
+  | { readonly kind: "created"; readonly session: Session }
+  | { readonly kind: "resumed"; readonly session: Session; readonly pendingFrameCount: number }
+  | { readonly kind: "destroyed"; readonly sessionId: string; readonly reason: string }
+  | { readonly kind: "expired"; readonly sessionId: string };
 
 // ---------------------------------------------------------------------------
 // Gateway interface
@@ -35,6 +56,20 @@ export interface Gateway {
   readonly dispatch: (session: Session, frame: GatewayFrame) => void;
   /** Returns the webhook server port, or undefined if webhook is not configured. */
   readonly webhookPort: () => number | undefined;
+  /** Access the node registry for tool/node management. */
+  readonly nodeRegistry: () => NodeRegistry;
+  /** Subscribe to node lifecycle events. Returns unsubscribe function. */
+  readonly onNodeEvent: (handler: (event: NodeRegistryEvent) => void) => () => void;
+  /** Force-destroy a session by ID. */
+  readonly destroySession: (sessionId: string, reason?: string) => Result<void, KoiError>;
+  /** Subscribe to session lifecycle events. Returns unsubscribe function. */
+  readonly onSessionEvent: (handler: (event: SessionEvent) => void) => () => void;
+  /** Bind a channel name to a specific agent ID at runtime. */
+  readonly bindChannel: (channelName: string, agentId: string) => void;
+  /** Remove a channel-to-agent binding. Returns true if binding existed. */
+  readonly unbindChannel: (channelName: string) => boolean;
+  /** Snapshot of current channel bindings. */
+  readonly channelBindings: () => ReadonlyMap<string, string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -48,22 +83,67 @@ export interface GatewayDeps {
   readonly webhookAuth?: WebhookAuthenticator;
 }
 
+/** Maximum frames buffered per disconnected session to prevent memory exhaustion. */
+const MAX_PENDING_FRAMES = 1_000;
+
+/** Disconnected session state kept alive during TTL window. */
+interface DisconnectedSession {
+  readonly timer: ReturnType<typeof setTimeout>;
+  readonly tracker: SequenceTracker;
+  /** Mutable buffer — encapsulated internal state, never shared outside cleanup()/send(). */
+  readonly pendingFrames: GatewayFrame[];
+}
+
 export function createGateway(configOverrides: Partial<GatewayConfig>, deps: GatewayDeps): Gateway {
   const config: GatewayConfig = { ...DEFAULT_GATEWAY_CONFIG, ...configOverrides };
   const store = deps.store ?? createInMemorySessionStore();
   const bp = createBackpressureMonitor(config);
+  const nextId: FrameIdGenerator = createFrameIdGenerator();
+  const registry = createInMemoryNodeRegistry();
 
   // Per-connection state (mutable internal, not exposed)
   const connMap = new Map<string, TransportConnection>();
   const sessionByConn = new Map<string, string>(); // connId → sessionId
   const connBySession = new Map<string, string>(); // sessionId → connId
-  const trackers = new Map<string, ReturnType<typeof createSequenceTracker>>();
+  const trackers = new Map<string, SequenceTracker>();
   const pendingHandshakes = new Map<string, (data: string) => void>();
 
+  // Session resume: disconnected sessions kept alive during TTL
+  const disconnected = new Map<string, DisconnectedSession>();
+
+  // Channel bindings: channelName → agentId
+  const channelBindingMap = new Map<string, string>();
+
+  // Event handlers
   const frameHandlers = new Set<(session: Session, frame: GatewayFrame) => void>();
+  const nodeEventHandlers = new Set<(event: NodeRegistryEvent) => void>();
+  const sessionEventHandlers = new Set<(event: SessionEvent) => void>();
+
+  // let: assigned in start(), cleared in stop()
   let stopSweep: (() => void) | undefined;
   let webhookServer: WebhookServer | undefined;
   let scheduler: GatewayScheduler | undefined;
+
+  // Populate static channel bindings from config
+  if (config.channelBindings !== undefined) {
+    for (const binding of config.channelBindings) {
+      channelBindingMap.set(binding.channelName, binding.agentId);
+    }
+  }
+
+  // Effective capabilities: enable resumption if TTL > 0
+  const effectiveCapabilities =
+    config.sessionTtlMs > 0 ? { ...config.capabilities, resumption: true } : config.capabilities;
+
+  function emitSessionEvent(event: SessionEvent): void {
+    for (const handler of sessionEventHandlers) {
+      try {
+        handler(event);
+      } catch (err: unknown) {
+        swallowError(err, { package: "gateway", operation: "onSessionEvent" });
+      }
+    }
+  }
 
   function closeConnection(connId: string, code: number, reason: string): void {
     const conn = connMap.get(connId);
@@ -81,8 +161,34 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
     bp.remove(connId);
     if (sessionId !== undefined) {
       connBySession.delete(sessionId);
+
+      // If session resume is enabled, keep session alive during TTL window
+      if (config.sessionTtlMs > 0) {
+        const tracker = trackers.get(sessionId);
+        if (tracker !== undefined) {
+          trackers.delete(sessionId);
+          const timer = setTimeout(() => {
+            disconnected.delete(sessionId);
+            trackers.delete(sessionId);
+            void Promise.resolve(store.delete(sessionId)).then((result) => {
+              if (!result.ok) {
+                swallowError(result.error, { package: "gateway", operation: "store.delete" });
+              }
+            });
+            emitSessionEvent({ kind: "expired", sessionId });
+          }, config.sessionTtlMs);
+          disconnected.set(sessionId, { timer, tracker, pendingFrames: [] });
+        }
+        return;
+      }
+
+      // Immediate cleanup (no TTL)
       trackers.delete(sessionId);
-      void store.delete(sessionId);
+      void Promise.resolve(store.delete(sessionId)).then((result) => {
+        if (!result.ok) {
+          swallowError(result.error, { package: "gateway", operation: "store.delete" });
+        }
+      });
     }
   }
 
@@ -91,11 +197,22 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
       try {
         handler(session, frame);
       } catch (err: unknown) {
-        // Isolate handler exceptions so one bad handler doesn't break others.
-        // Log for observability — swallowing completely hides bugs.
         swallowError(err, { package: "gateway", operation: "dispatchFrame" });
       }
     }
+  }
+
+  /** Resolve route and dispatch a frame — shared by post-handshake, webhook, and dispatch(). */
+  function resolveAndDispatch(session: Session, frame: GatewayFrame): void {
+    const resolved = resolveRoute(
+      config.routing,
+      session.routing,
+      session.agentId,
+      channelBindingMap.size > 0 ? channelBindingMap : undefined,
+    );
+    const routedSession =
+      resolved.agentId !== session.agentId ? { ...session, agentId: resolved.agentId } : session;
+    dispatchFrame(routedSession, frame);
   }
 
   async function handlePostHandshake(conn: TransportConnection, data: string): Promise<void> {
@@ -131,7 +248,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
 
     const result = parseFrame(data);
     if (!result.ok) {
-      conn.send(createErrorFrame(session.seq, result.error.code, result.error.message));
+      conn.send(createErrorFrame(session.seq, result.error.code, result.error.message, nextId));
       return;
     }
 
@@ -147,18 +264,22 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
     const acceptance = tracker.accept(frame);
 
     if (acceptance.result === "duplicate") {
-      // Send ack for duplicate (idempotent)
-      conn.send(createAckFrame(session.seq, frame.id));
+      conn.send(createAckFrame(session.seq, frame.id, undefined, nextId));
       return;
     }
 
     if (acceptance.result === "out_of_window") {
-      conn.send(createErrorFrame(session.seq, "VALIDATION", "Sequence out of window"));
+      conn.send(createErrorFrame(session.seq, "VALIDATION", "Sequence out of window", nextId));
       return;
     }
 
-    // Resolve route once per batch — routing context doesn't change within a batch
-    const resolved = resolveRoute(config.routing, session.routing, session.agentId);
+    // Resolve route once per batch
+    const resolved = resolveRoute(
+      config.routing,
+      session.routing,
+      session.agentId,
+      channelBindingMap.size > 0 ? channelBindingMap : undefined,
+    );
     const baseAgentId = resolved.agentId;
 
     // Process all ready frames (in order) with immutable session updates
@@ -175,11 +296,15 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
           : { ...currentSession, remoteSeq: readyFrame.seq, lastHeartbeat: Date.now() };
       currentSession = routedSession;
       dispatchFrame(currentSession, readyFrame);
-      conn.send(createAckFrame(currentSession.seq, readyFrame.id));
+      conn.send(createAckFrame(currentSession.seq, readyFrame.id, undefined, nextId));
     }
-    // Persist final session state once (dispatch/ack use in-memory state)
+    // Persist final session state once
     if (acceptance.ready.length > 0) {
-      await store.set(currentSession);
+      const setResult = await store.set(currentSession);
+      if (!setResult.ok) {
+        swallowError(setResult.error, { package: "gateway", operation: "store.set" });
+        closeConnection(conn.id, 4008, "Session store failure");
+      }
     }
   }
 
@@ -200,7 +325,6 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
 
       await deps.transport.listen(port, {
         onOpen(conn: TransportConnection): void {
-          // Reject if at capacity
           if (deps.transport.connections() > config.maxConnections) {
             conn.close(4005, "Max connections exceeded");
             return;
@@ -212,11 +336,10 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
 
           connMap.set(conn.id, conn);
 
-          // Build handshake options from config + runtime state
           const handshakeOptions: HandshakeOptions = {
             minProtocolVersion: config.minProtocolVersion,
             maxProtocolVersion: config.maxProtocolVersion,
-            capabilities: config.capabilities,
+            capabilities: effectiveCapabilities,
             ...(config.includeSnapshot
               ? {
                   snapshot: {
@@ -227,7 +350,6 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
               : {}),
           };
 
-          // Start auth handshake
           void handleHandshake(
             conn,
             deps.auth,
@@ -237,15 +359,68 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
               pendingHandshakes.set(conn.id, handler);
             },
           ).then(
-            async ({ session }) => {
+            async ({ session, connectFrame }) => {
               pendingHandshakes.delete(conn.id);
-              await store.set(session);
+
+              // --- Session resume path ---
+              if (connectFrame.resume !== undefined) {
+                const { sessionId } = connectFrame.resume;
+                const disc = disconnected.get(sessionId);
+                if (disc === undefined) {
+                  // Session expired or never existed
+                  conn.send(
+                    createErrorFrame(0, "SESSION_EXPIRED", "Session not found or expired", nextId),
+                  );
+                  conn.close(4011, "Session expired");
+                  cleanup(conn.id);
+                  return;
+                }
+
+                // Cancel TTL timer and restore session
+                clearTimeout(disc.timer);
+                disconnected.delete(sessionId);
+
+                // Restore tracker
+                trackers.set(sessionId, disc.tracker);
+
+                // Bind new connection to existing session
+                sessionByConn.set(conn.id, sessionId);
+                connBySession.set(sessionId, conn.id);
+
+                // Replay pending frames
+                const pending = disc.pendingFrames;
+                for (const pendingFrame of pending) {
+                  conn.send(encodeFrame(pendingFrame));
+                }
+
+                // Tracker state is preserved from before disconnect — no reset needed.
+                // The client's lastSeq is for server→client replay, not client→server tracking.
+
+                const existingSession = await store.get(sessionId);
+                if (existingSession.ok) {
+                  emitSessionEvent({
+                    kind: "resumed",
+                    session: existingSession.value,
+                    pendingFrameCount: pending.length,
+                  });
+                }
+                return;
+              }
+
+              // --- Normal (new session) path ---
+              const setResult = await store.set(session);
+              if (!setResult.ok) {
+                swallowError(setResult.error, { package: "gateway", operation: "store.set" });
+                conn.close(4008, "Session store failure");
+                cleanup(conn.id);
+                return;
+              }
               sessionByConn.set(conn.id, session.id);
               connBySession.set(session.id, conn.id);
               trackers.set(session.id, createSequenceTracker(config.dedupWindowSize));
+              emitSessionEvent({ kind: "created", session });
             },
             () => {
-              // Auth failed — connection already closed by handleHandshake
               cleanup(conn.id);
             },
           );
@@ -273,14 +448,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
       if (config.webhookPort !== undefined) {
         webhookServer = createWebhookServer(
           { port: config.webhookPort, pathPrefix: config.webhookPath ?? "/webhook" },
-          (session, frame) => {
-            const resolved = resolveRoute(config.routing, session.routing, session.agentId);
-            const routedSession =
-              resolved.agentId !== session.agentId
-                ? { ...session, agentId: resolved.agentId }
-                : session;
-            dispatchFrame(routedSession, frame);
-          },
+          resolveAndDispatch,
           deps.webhookAuth,
         );
         await webhookServer.start();
@@ -288,9 +456,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
 
       // Start schedulers if configured
       if (config.schedulers !== undefined && config.schedulers.length > 0) {
-        scheduler = createScheduler(config.schedulers, (session, frame) => {
-          dispatchFrame(session, frame);
-        });
+        scheduler = createScheduler(config.schedulers, resolveAndDispatch);
         scheduler.start();
       }
     },
@@ -299,6 +465,11 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
       scheduler?.stop();
       webhookServer?.stop();
       stopSweep?.();
+      // Clean up TTL timers
+      for (const disc of disconnected.values()) {
+        clearTimeout(disc.timer);
+      }
+      disconnected.clear();
       // Best-effort graceful close
       for (const conn of connMap.values()) {
         conn.close(1001, "Server shutting down");
@@ -323,6 +494,23 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
     },
 
     send(sessionId: string, frame: GatewayFrame): Result<number, KoiError> {
+      // If session is disconnected but within TTL, buffer the frame
+      const disc = disconnected.get(sessionId);
+      if (disc !== undefined) {
+        if (disc.pendingFrames.length >= MAX_PENDING_FRAMES) {
+          return {
+            ok: false,
+            error: {
+              code: "VALIDATION",
+              message: `Pending frame limit exceeded (${MAX_PENDING_FRAMES})`,
+              retryable: false,
+            },
+          };
+        }
+        disc.pendingFrames.push(frame);
+        return { ok: true, value: 0 };
+      }
+
       const connId = connBySession.get(sessionId);
       if (connId === undefined) {
         return {
@@ -361,14 +549,72 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
     },
 
     dispatch(session: Session, frame: GatewayFrame): void {
-      const resolved = resolveRoute(config.routing, session.routing, session.agentId);
-      const routedSession =
-        resolved.agentId !== session.agentId ? { ...session, agentId: resolved.agentId } : session;
-      dispatchFrame(routedSession, frame);
+      resolveAndDispatch(session, frame);
     },
 
     webhookPort(): number | undefined {
       return webhookServer?.port();
+    },
+
+    nodeRegistry(): NodeRegistry {
+      return registry;
+    },
+
+    onNodeEvent(handler: (event: NodeRegistryEvent) => void): () => void {
+      nodeEventHandlers.add(handler);
+      return () => {
+        nodeEventHandlers.delete(handler);
+      };
+    },
+
+    destroySession(sessionId: string, reason = "destroyed"): Result<void, KoiError> {
+      // Check if it's a disconnected session first
+      const disc = disconnected.get(sessionId);
+      if (disc !== undefined) {
+        clearTimeout(disc.timer);
+        disconnected.delete(sessionId);
+        void Promise.resolve(store.delete(sessionId)).then((result) => {
+          if (!result.ok) {
+            swallowError(result.error, { package: "gateway", operation: "store.delete" });
+          }
+        });
+        emitSessionEvent({ kind: "destroyed", sessionId, reason });
+        return { ok: true, value: undefined };
+      }
+
+      const connId = connBySession.get(sessionId);
+      if (connId === undefined) {
+        return {
+          ok: false,
+          error: {
+            code: "NOT_FOUND",
+            message: `Session not found: ${sessionId}`,
+            retryable: false,
+          },
+        };
+      }
+      closeConnection(connId, 4012, reason);
+      emitSessionEvent({ kind: "destroyed", sessionId, reason });
+      return { ok: true, value: undefined };
+    },
+
+    onSessionEvent(handler: (event: SessionEvent) => void): () => void {
+      sessionEventHandlers.add(handler);
+      return () => {
+        sessionEventHandlers.delete(handler);
+      };
+    },
+
+    bindChannel(channelName: string, agentId: string): void {
+      channelBindingMap.set(channelName, agentId);
+    },
+
+    unbindChannel(channelName: string): boolean {
+      return channelBindingMap.delete(channelName);
+    },
+
+    channelBindings(): ReadonlyMap<string, string> {
+      return channelBindingMap;
     },
   };
 }

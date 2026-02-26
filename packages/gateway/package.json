@@ -13,6 +13,10 @@
     "@koi/core": "workspace:*",
     "@koi/errors": "workspace:*"
   },
+  "devDependencies": {
+    "@koi/engine": "workspace:*",
+    "@koi/engine-pi": "workspace:*"
+  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",

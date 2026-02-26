@@ -255,8 +255,20 @@ export function createConnectMessage(
     maxProtocol: overrides?.maxProtocol ?? 1,
     auth: overrides?.auth ?? { token },
     ...(overrides?.client !== undefined ? { client: overrides.client } : {}),
+    ...(overrides?.resume !== undefined ? { resume: overrides.resume } : {}),
   };
   return JSON.stringify(frame);
+}
+
+/** Build a JSON-encoded connect frame string for resuming a session. */
+export function createResumeConnectMessage(
+  sessionId: string,
+  lastSeq: number,
+  token = "test-token",
+): string {
+  return createConnectMessage(token, {
+    resume: { sessionId, lastSeq },
+  });
 }
 
 /** Build a JSON-encoded connect frame string in legacy format (single protocol field). */

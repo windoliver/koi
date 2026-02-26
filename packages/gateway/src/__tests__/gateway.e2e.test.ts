@@ -543,6 +543,92 @@ describe("Gateway e2e (real WebSocket)", () => {
     ws.close();
   });
 
+  test("session resume over real WebSocket: disconnect → buffer → resume → replay", async () => {
+    transport = createBunTransport();
+    const FIXED_SESSION = "e2e-resume-session";
+    const auth = createTestAuthenticator({
+      ok: true,
+      sessionId: FIXED_SESSION,
+      agentId: "a",
+      metadata: {},
+    });
+    gateway = createGateway({ sessionTtlMs: 5_000 }, { transport, auth });
+    await gateway.start(0);
+    const port = transport.port();
+
+    const dispatched: GatewayFrame[] = [];
+    gateway.onFrame((_session, frame) => {
+      dispatched.push(frame);
+    });
+
+    // 1. Connect, send seq 0 and 1
+    const client1 = await connectClient(port);
+    await client1.opened;
+    client1.ws.send(createConnectMessage());
+    await waitForMessages(client1.messages, 1); // auth ack
+
+    client1.ws.send(
+      JSON.stringify({ kind: "request", id: "r0", seq: 0, timestamp: Date.now(), payload: null }),
+    );
+    client1.ws.send(
+      JSON.stringify({ kind: "request", id: "r1", seq: 1, timestamp: Date.now(), payload: null }),
+    );
+    await waitForMessages(client1.messages, 3); // 2 request acks
+    expect(dispatched).toHaveLength(2);
+
+    // 2. Disconnect
+    client1.ws.close();
+    await client1.closed;
+    // Allow server-side cleanup to complete
+    await new Promise((r) => setTimeout(r, 100));
+
+    // 3. Push frames while disconnected
+    const pushResult = gateway.send(FIXED_SESSION, {
+      kind: "event",
+      id: "buffered-evt-1",
+      seq: 0,
+      timestamp: Date.now(),
+      payload: { msg: "buffered" },
+    });
+    expect(pushResult.ok).toBe(true);
+
+    // 4. Resume
+    const client2 = await connectClient(port);
+    await client2.opened;
+
+    // Send connect frame with resume request
+    client2.ws.send(
+      JSON.stringify({
+        kind: "connect",
+        minProtocol: 1,
+        maxProtocol: 1,
+        auth: { token: "test-token" },
+        resume: { sessionId: FIXED_SESSION, lastSeq: 0 },
+      }),
+    );
+
+    // Should receive: handshake ack + replayed buffered event
+    await waitForMessages(client2.messages, 2);
+
+    // Verify the replayed event is present
+    const parsedMessages = client2.messages.map(
+      (m) => JSON.parse(m) as { id?: string; kind?: string },
+    );
+    const replayedEvt = parsedMessages.find((m) => m.id === "buffered-evt-1");
+    expect(replayedEvt).toBeDefined();
+    expect(replayedEvt?.kind).toBe("event");
+
+    // 5. Send seq 2 after resume — tracker should accept it
+    client2.ws.send(
+      JSON.stringify({ kind: "request", id: "r2", seq: 2, timestamp: Date.now(), payload: null }),
+    );
+    await waitForMessages(client2.messages, 3);
+    expect(dispatched).toHaveLength(3);
+    expect(dispatched[2]?.id).toBe("r2");
+
+    client2.ws.close();
+  });
+
   test("version negotiation: client range vs server range", async () => {
     transport = createBunTransport();
     const auth = createTestAuthenticator({

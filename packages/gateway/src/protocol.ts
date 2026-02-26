@@ -179,12 +179,29 @@ export function parseConnectFrame(raw: string): Result<ConnectFrame, KoiError> {
     };
   }
 
+  // resume is optional
+  let resume: ConnectFrame["resume"];
+  if (obj.resume !== undefined) {
+    if (typeof obj.resume !== "object" || obj.resume === null || Array.isArray(obj.resume)) {
+      return makeError('"resume" must be an object when present');
+    }
+    const r = obj.resume as Record<string, unknown>;
+    if (typeof r.sessionId !== "string" || r.sessionId.length === 0) {
+      return makeError('"resume.sessionId" must be a non-empty string');
+    }
+    if (typeof r.lastSeq !== "number" || !Number.isInteger(r.lastSeq) || r.lastSeq < 0) {
+      return makeError('"resume.lastSeq" must be a non-negative integer');
+    }
+    resume = { sessionId: r.sessionId, lastSeq: r.lastSeq };
+  }
+
   const frame: ConnectFrame = {
     kind: "connect",
     minProtocol,
     maxProtocol,
     auth: { token: auth.token as string },
     ...(client !== undefined ? { client } : {}),
+    ...(resume !== undefined ? { resume } : {}),
   };
 
   return { ok: true, value: frame };
@@ -201,20 +218,33 @@ export function encodeFrame(frame: GatewayFrame): string {
 // Monotonic frame ID generator (server-side only)
 // ---------------------------------------------------------------------------
 
-let frameCounter = 0;
-const instanceId = crypto.randomUUID().slice(0, 8);
+export type FrameIdGenerator = () => string;
 
-function nextFrameId(): string {
-  return `gw-${instanceId}-${frameCounter++}`;
+/**
+ * Create a monotonic frame ID generator scoped to a single gateway instance.
+ * Each call to the returned function produces a unique, sequentially-ordered ID.
+ */
+export function createFrameIdGenerator(): FrameIdGenerator {
+  const instanceId = crypto.randomUUID().slice(0, 8);
+  let counter = 0;
+  return (): string => `gw-${instanceId}-${counter++}`;
 }
+
+// Shared default generator for backward compatibility with bare createErrorFrame/createAckFrame calls
+const defaultNextId = createFrameIdGenerator();
 
 /**
  * Create a JSON-encoded error frame string for server-generated error responses.
  */
-export function createErrorFrame(seq: number, code: string, message: string): string {
+export function createErrorFrame(
+  seq: number,
+  code: string,
+  message: string,
+  nextId: FrameIdGenerator = defaultNextId,
+): string {
   return encodeFrame({
     kind: "error",
-    id: nextFrameId(),
+    id: nextId(),
     seq,
     timestamp: Date.now(),
     payload: { code, message },
@@ -224,10 +254,15 @@ export function createErrorFrame(seq: number, code: string, message: string): st
 /**
  * Create a JSON-encoded ack frame string for server-generated acknowledgements.
  */
-export function createAckFrame(seq: number, ref?: string, payload?: unknown): string {
+export function createAckFrame(
+  seq: number,
+  ref?: string,
+  payload?: unknown,
+  nextId: FrameIdGenerator = defaultNextId,
+): string {
   return encodeFrame({
     kind: "ack",
-    id: nextFrameId(),
+    id: nextId(),
     seq,
     timestamp: Date.now(),
     payload: payload ?? null,

@@ -2,7 +2,8 @@
  * @koi/gateway — WebSocket control plane (Layer 2)
  *
  * Delivery semantics: ordering, deduplication, backpressure, authentication,
- * routing, webhook ingestion, and scheduler dispatch.
+ * routing, webhook ingestion, scheduler dispatch, node registration,
+ * session resumption, and channel binding.
  * Depends on @koi/core only.
  */
 
@@ -18,12 +19,23 @@ export { handleHandshake, startHeartbeatSweep } from "./auth.js";
 export type { BackpressureMonitor } from "./backpressure.js";
 export { createBackpressureMonitor } from "./backpressure.js";
 // gateway
-export type { Gateway, GatewayDeps } from "./gateway.js";
+export type { Gateway, GatewayDeps, SessionEvent } from "./gateway.js";
 export { createGateway } from "./gateway.js";
+// node registry
+export type {
+  AdvertisedTool,
+  CapacityReport,
+  NodeRegistry,
+  NodeRegistryEvent,
+  RegisteredNode,
+} from "./node-registry.js";
+export { createInMemoryNodeRegistry } from "./node-registry.js";
 // protocol
+export type { FrameIdGenerator } from "./protocol.js";
 export {
   createAckFrame,
   createErrorFrame,
+  createFrameIdGenerator,
   encodeFrame,
   negotiateProtocol,
   parseConnectFrame,
@@ -59,6 +71,7 @@ export { createBunTransport } from "./transport.js";
 export type {
   AuthResult,
   BackpressureState,
+  ChannelBinding,
   ConnectClient,
   ConnectFrame,
   GatewayCapabilities,
@@ -67,6 +80,7 @@ export type {
   GatewayFrameKind,
   HandshakeAckPayload,
   HandshakeSnapshot,
+  ResumeRequest,
   RouteBinding,
   RoutingConfig,
   RoutingContext,
