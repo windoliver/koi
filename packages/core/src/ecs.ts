@@ -317,6 +317,13 @@ export interface SpawnLedger {
   readonly capacity: () => number;
 }
 
+export interface WorkspaceComponent {
+  readonly path: string;
+  readonly id: string;
+  readonly createdAt: number;
+  readonly metadata: Readonly<Record<string, string>>;
+}
+
 export interface CredentialComponent {
   readonly get: (key: string) => Promise<string | undefined>;
 }
@@ -372,3 +379,4 @@ export const DELEGATION: SubsystemToken<DelegationComponent> =
   token<DelegationComponent>("delegation");
 export const FILESYSTEM: SubsystemToken<FileSystemBackend> = token<FileSystemBackend>("filesystem");
 export const BROWSER: SubsystemToken<BrowserDriver> = token<BrowserDriver>("browser");
+export const WORKSPACE: SubsystemToken<WorkspaceComponent> = token<WorkspaceComponent>("workspace");

@@ -512,6 +512,25 @@ declare function createManifestFile(dir: string, content?: string, filename?: st
 declare function withTempDir(fn: (dir: string) => Promise<void>): Promise<void>;
 
 /**
+ * Temporary git repository helper for tests.
+ *
+ * Creates a bare git repo with an initial commit for testing
+ * git-based features (worktrees, branches, etc.).
+ */
+interface TempGitRepo {
+    readonly repoPath: string;
+    readonly cleanup: () => Promise<void>;
+}
+/**
+ * Creates a temporary git repository with an initial commit.
+ *
+ * The repo is fully initialized with a \`main\` branch and a
+ * single commit containing a README file. Caller is responsible
+ * for cleanup (call \`cleanup()\` when done).
+ */
+declare function createTempGitRepo(): Promise<TempGitRepo>;
+
+/**
  * Mock validator factories for testing validation middleware.
  *
  * Types are structurally compatible with @koi/middleware-feedback-loop's
@@ -548,6 +567,6 @@ declare function createThrowingValidator(error: Error, name?: string): MockValid
 /** Creates a validator that passes or fails based on a predicate. */
 declare function createConditionalValidator(fn: (output: unknown) => boolean, name?: string): MockValidator;
 
-export { type BrickRegistryContractOptions, type CapturedOutput, type ChannelContractOptions, DEFAULT_PROVENANCE, type EngineContractOptions, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type ResolverContractOptions, type SkillRegistryContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createInMemoryBrickRegistry, createInMemorySkillRegistry, createManifestFile, createMockAgent, createMockEngineAdapter, createMockEventBackend, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTestAgentArtifact, createTestConfig, createTestConfigStore, createTestImplementationArtifact, createTestSkillArtifact, createTestToolArtifact, createThrowingValidator, makeTempDir, runEventBackendContractTests, runForgeStoreContractTests, runSessionPersistenceContractTests, runSnapshotChainStoreContractTests, testBrickRegistryContract, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, testSkillRegistryContract, withTempDir };
+export { type BrickRegistryContractOptions, type CapturedOutput, type ChannelContractOptions, DEFAULT_PROVENANCE, type EngineContractOptions, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type ResolverContractOptions, type SkillRegistryContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, type TempGitRepo, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createInMemoryBrickRegistry, createInMemorySkillRegistry, createManifestFile, createMockAgent, createMockEngineAdapter, createMockEventBackend, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTempGitRepo, createTestAgentArtifact, createTestConfig, createTestConfigStore, createTestImplementationArtifact, createTestSkillArtifact, createTestToolArtifact, createThrowingValidator, makeTempDir, runEventBackendContractTests, runForgeStoreContractTests, runSessionPersistenceContractTests, runSnapshotChainStoreContractTests, testBrickRegistryContract, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, testSkillRegistryContract, withTempDir };
 "
 `;
