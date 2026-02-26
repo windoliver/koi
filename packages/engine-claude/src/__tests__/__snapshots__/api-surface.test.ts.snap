@@ -413,23 +413,6 @@ interface SdkFunctions {
 declare function createClaudeAdapter(config: ClaudeAdapterConfig, sdk: SdkFunctions, mcpBridge?: McpBridgeConfig): ClaudeEngineAdapter;
 
 /**
- * BrickDescriptor for @koi/engine-claude.
- *
- * Enables manifest auto-resolution for the Claude Agent SDK engine.
- * Requires ANTHROPIC_API_KEY environment variable.
- */
-
-/**
- * Descriptor for Claude engine adapter.
- *
- * Note: The Claude adapter requires SDK function bindings that cannot be
- * resolved from YAML alone. The factory throws — the CLI must inject SDK
- * bindings after resolution. This descriptor registers the name/alias so
- * the resolver can validate and locate it.
- */
-declare const descriptor: BrickDescriptor<EngineAdapter>;
-
-/**
  * Approval bridge — maps Koi ApprovalHandler to SDK canUseTool callback.
  *
  * Fail-closed: if the handler throws, the tool call is denied.
@@ -453,6 +436,23 @@ interface HitlEventEmitter {
  * @returns SDK-compatible canUseTool callback
  */
 declare function createApprovalBridge(handler: ApprovalHandler, emitter?: HitlEventEmitter): SdkCanUseTool;
+
+/**
+ * BrickDescriptor for @koi/engine-claude.
+ *
+ * Enables manifest auto-resolution for the Claude Agent SDK engine.
+ * Requires ANTHROPIC_API_KEY environment variable.
+ */
+
+/**
+ * Descriptor for Claude engine adapter.
+ *
+ * Note: The Claude adapter requires SDK function bindings that cannot be
+ * resolved from YAML alone. The factory throws — the CLI must inject SDK
+ * bindings after resolution. This descriptor registers the name/alias so
+ * the resolver can validate and locate it.
+ */
+declare const descriptor: BrickDescriptor<EngineAdapter>;
 
 /**
  * Bounded async iterable message queue for streaming input to the Claude SDK.

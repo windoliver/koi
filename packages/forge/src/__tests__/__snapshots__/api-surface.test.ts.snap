@@ -1,26 +1,9 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge API surface . has stable type surface 1`] = `
-"import { BrickDescriptor } from '@koi/resolve';
-import { TestCase, BrickRequires, DataClassification, ContentMarker, TrustTier, BrickId, BrickKind, ToolDescriptor, ForgeScope, BrickLifecycle, SandboxExecutor, BrickArtifact, ForgeStore, Result, KoiError, ForgeProvenance, SigningBackend, ToolArtifact, Tool, TieredSandboxExecutor, StoreChangeNotifier, ComponentProvider, SubsystemToken, GovernanceVariableContributor, Resolver, StoreChangeEvent, BrickComponentMap, KoiMiddleware, GovernanceController, InTotoStatementV1, AgentArtifact } from '@koi/core';
+"import { TestCase, BrickRequires, DataClassification, ContentMarker, TrustTier, BrickId, BrickKind, ToolDescriptor, ForgeScope, BrickLifecycle, SandboxExecutor, BrickArtifact, ForgeStore, Result, KoiError, ForgeProvenance, SigningBackend, ToolArtifact, Tool, TieredSandboxExecutor, StoreChangeNotifier, ComponentProvider, SubsystemToken, GovernanceVariableContributor, Resolver, StoreChangeEvent, BrickComponentMap, KoiMiddleware, GovernanceController, InTotoStatementV1, AgentArtifact } from '@koi/core';
 export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, ContentMarker, DataClassification, ForgeAttestationSignature, ForgeBuildDefinition, ForgeBuilder, ForgeProvenance, ForgeQuery, ForgeResourceRef, ForgeRunMetadata, ForgeStageDigest, ForgeStore, ForgeVerificationSummary, LockHandle, LockMode, LockRequest, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, SigningBackend, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, TierResolution, TieredSandboxExecutor, ToolArtifact } from '@koi/core';
-
-/**
- * BrickDescriptor for @koi/forge.
- *
- * Enables manifest auto-resolution for the forge component provider.
- * Creates a forge runtime that auto-discovers forged artifacts.
- */
-
-/**
- * Descriptor for forge component provider.
- *
- * Note: The forge provider requires a ForgeStore and TieredSandboxExecutor
- * that cannot be resolved from YAML alone. The factory throws — the CLI
- * must inject runtime dependencies after resolution. This descriptor
- * registers the name/alias so the resolver can validate and locate it.
- */
-declare const descriptor: BrickDescriptor<unknown>;
+import { BrickDescriptor } from '@koi/resolve';
 
 /**
  * Core types for the @koi/forge self-extension system.
@@ -405,6 +388,23 @@ declare function extractBrickContent(brick: HasKindAndContent): {
     readonly kind: string;
     readonly content: string;
 };
+
+/**
+ * BrickDescriptor for @koi/forge.
+ *
+ * Enables manifest auto-resolution for the forge component provider.
+ * Creates a forge runtime that auto-discovers forged artifacts.
+ */
+
+/**
+ * Descriptor for forge component provider.
+ *
+ * Note: The forge provider requires a ForgeStore and TieredSandboxExecutor
+ * that cannot be resolved from YAML alone. The factory throws — the CLI
+ * must inject runtime dependencies after resolution. This descriptor
+ * registers the name/alias so the resolver can validate and locate it.
+ */
+declare const descriptor: BrickDescriptor<unknown>;
 
 /**
  * Brick → Tool conversion — shared utility for converting ToolArtifact bricks

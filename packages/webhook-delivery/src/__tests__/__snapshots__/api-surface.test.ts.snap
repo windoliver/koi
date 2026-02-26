@@ -1,26 +1,9 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/webhook-delivery API surface . has stable type surface 1`] = `
-"import { KoiMiddleware, WebhookDeliveryStatus, EventBackend, OutboundWebhookConfig } from '@koi/core';
+"import { RetryConfig, CircuitBreakerConfig } from '@koi/errors';
+import { WebhookDeliveryStatus, EventBackend, OutboundWebhookConfig, KoiMiddleware } from '@koi/core';
 import { BrickDescriptor } from '@koi/resolve';
-import { RetryConfig, CircuitBreakerConfig } from '@koi/errors';
-
-/**
- * BrickDescriptor for @koi/webhook-delivery.
- *
- * Enables manifest auto-resolution for outbound webhook delivery.
- * Validates webhook endpoint configuration from the manifest.
- */
-
-/**
- * Descriptor for webhook delivery middleware.
- *
- * Note: The webhook middleware requires an EventBackend that cannot be
- * resolved from YAML alone. The factory throws — the CLI must inject the
- * EventBackend after resolution. This descriptor registers the name/alias
- * so the resolver can validate and locate it.
- */
-declare const descriptor: BrickDescriptor<KoiMiddleware>;
 
 /**
  * Webhook delivery configuration and validation.
@@ -99,6 +82,23 @@ interface WebhookDeliveryService {
  * and delivers matching events to registered webhook endpoints.
  */
 declare function createWebhookDeliveryService(deps: WebhookDeliveryServiceDeps): WebhookDeliveryService;
+
+/**
+ * BrickDescriptor for @koi/webhook-delivery.
+ *
+ * Enables manifest auto-resolution for outbound webhook delivery.
+ * Validates webhook endpoint configuration from the manifest.
+ */
+
+/**
+ * Descriptor for webhook delivery middleware.
+ *
+ * Note: The webhook middleware requires an EventBackend that cannot be
+ * resolved from YAML alone. The factory throws — the CLI must inject the
+ * EventBackend after resolution. This descriptor registers the name/alias
+ * so the resolver can validate and locate it.
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
 
 /**
  * WebhookMiddleware — captures agent events and emits them to EventBackend.
