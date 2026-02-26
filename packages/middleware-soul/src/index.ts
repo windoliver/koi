@@ -24,5 +24,6 @@ export {
   enrichRequest,
   validateSoulConfig,
 } from "@koi/soul";
+export { descriptor } from "./descriptor.js";
 export type { ResolvedContent, ResolveOptions } from "./resolve.js";
 export { resolveSoulContent, resolveUserContent } from "./resolve.js";
