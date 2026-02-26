@@ -76,6 +76,10 @@ export function middlewareToken(name: string): SubsystemToken<unknown> {
   return `middleware:${name}` as SubsystemToken<unknown>;
 }
 
+export function agentToken(name: string): SubsystemToken<AgentDescriptor> {
+  return `agent:${name}` as SubsystemToken<AgentDescriptor>;
+}
+
 /** Create a branded AgentId from a plain string. */
 export function agentId(id: string): AgentId {
   return id as AgentId;
@@ -162,6 +166,24 @@ export interface SkillMetadata {
   readonly name: string;
   readonly description: string;
   readonly tags?: readonly string[];
+}
+
+/**
+ * Rich skill component attached by forge. Extends SkillMetadata with content.
+ * ForgeComponentProvider stores this; consumers query<SkillComponent>("skill:").
+ */
+export interface SkillComponent extends SkillMetadata {
+  readonly content: string;
+}
+
+/**
+ * Lightweight agent descriptor for peer discovery.
+ * Raw manifestYaml — consumers parse when needed (lazy philosophy).
+ */
+export interface AgentDescriptor {
+  readonly name: string;
+  readonly description: string;
+  readonly manifestYaml: string;
 }
 
 // ---------------------------------------------------------------------------

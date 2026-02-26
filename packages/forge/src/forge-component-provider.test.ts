@@ -1,18 +1,31 @@
 import { describe, expect, test } from "bun:test";
-import type { Agent, SubsystemToken, TieredSandboxExecutor } from "@koi/core";
+import type {
+  Agent,
+  AgentDescriptor,
+  SkillComponent,
+  SubsystemToken,
+  TieredSandboxExecutor,
+} from "@koi/core";
 import {
   agentId,
+  agentToken,
   brickId,
   COMPONENT_PRIORITY,
   channelToken,
   middlewareToken,
+  skillToken,
   toolToken,
 } from "@koi/core";
-import { DEFAULT_PROVENANCE } from "@koi/test-utils";
+import {
+  createTestAgentArtifact,
+  createTestSkillArtifact,
+  DEFAULT_PROVENANCE,
+} from "@koi/test-utils";
 import { brickToTool, createForgeComponentProvider } from "./forge-component-provider.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
 import { createMemoryStoreChangeNotifier } from "./store-notifier.js";
 import type {
+  AgentArtifact,
   ImplementationArtifact,
   SandboxExecutor,
   SkillArtifact,
@@ -176,7 +189,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
     expect(components.size).toBe(0);
   });
 
-  test("skips non-tool bricks", async () => {
+  test("attaches both tool and skill bricks", async () => {
     const store = createInMemoryForgeStore();
     await store.save(createToolBrick({ name: "myTool" }));
     const skillBrick: SkillArtifact = {
@@ -201,7 +214,9 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
     });
 
     const components = await provider.attach(createMockAgent());
-    expect(components.size).toBe(1);
+    expect(components.size).toBe(2);
+    expect(components.has(toolToken("myTool") as string)).toBe(true);
+    expect(components.has(skillToken("mySkill") as string)).toBe(true);
   });
 
   test("only loads active bricks", async () => {
@@ -1021,27 +1036,37 @@ describe("createForgeComponentProvider — implementation kinds", () => {
     expect(components.has(middlewareToken("myMiddleware") as string)).toBe(true);
   });
 
-  test("skips skill/agent bricks", async () => {
+  test("attaches all 5 brick kinds in single pass", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createToolBrick({ name: "myTool" }));
+    await store.save(createToolBrick({ id: brickId("b1"), name: "myTool" }));
     await store.save(
-      createImplementationBrick("middleware", { name: "myMiddleware", trustTier: "promoted" }),
+      createImplementationBrick("middleware", {
+        id: brickId("b2"),
+        name: "myMiddleware",
+        trustTier: "promoted",
+      }),
     );
-    const skillBrick: SkillArtifact = {
-      id: brickId(`brick_${crypto.randomUUID()}`),
-      kind: "skill",
-      name: "mySkill",
-      description: "A skill",
-      scope: "agent",
-      trustTier: "sandbox",
-      lifecycle: "active",
-      provenance: DEFAULT_PROVENANCE,
-      version: "0.0.1",
-      tags: [],
-      usageCount: 0,
-      content: "# Skill",
-    };
-    await store.save(skillBrick);
+    await store.save(
+      createImplementationBrick("channel", {
+        id: brickId("b3"),
+        name: "myChannel",
+        trustTier: "promoted",
+      }),
+    );
+    await store.save(
+      createTestSkillArtifact({
+        id: brickId("b4"),
+        name: "mySkill",
+        content: "# Skill content",
+      }),
+    );
+    await store.save(
+      createTestAgentArtifact({
+        id: brickId("b5"),
+        name: "myAgent",
+        manifestYaml: "name: myAgent",
+      }),
+    );
 
     const provider = createForgeComponentProvider({
       store,
@@ -1049,10 +1074,12 @@ describe("createForgeComponentProvider — implementation kinds", () => {
     });
 
     const components = await provider.attach(createMockAgent());
-    // tool + middleware = 2, skill is skipped
-    expect(components.size).toBe(2);
+    expect(components.size).toBe(5);
     expect(components.has(toolToken("myTool") as string)).toBe(true);
     expect(components.has(middlewareToken("myMiddleware") as string)).toBe(true);
+    expect(components.has(channelToken("myChannel") as string)).toBe(true);
+    expect(components.has(skillToken("mySkill") as string)).toBe(true);
+    expect(components.has(agentToken("myAgent") as string)).toBe(true);
   });
 
   test("scope filtering works for implementations", async () => {
@@ -1210,5 +1237,207 @@ describe("createForgeComponentProvider — priority by scope", () => {
       executor: mockTiered(echoExecutor()),
     });
     expect(provider.priority).toBe(COMPONENT_PRIORITY.AGENT_FORGED);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Skill and agent brick attachment (parameterized)
+// ---------------------------------------------------------------------------
+
+const NON_TOOL_KINDS = [
+  {
+    kind: "skill" as const,
+    factory: (overrides?: Partial<SkillArtifact>) => createTestSkillArtifact(overrides),
+    tokenPrefix: "skill:",
+  },
+  {
+    kind: "agent" as const,
+    factory: (overrides?: Partial<AgentArtifact>) => createTestAgentArtifact(overrides),
+    tokenPrefix: "agent:",
+  },
+];
+
+describe.each(NON_TOOL_KINDS)("$kind brick attachment", ({ kind, factory, tokenPrefix }) => {
+  test("attaches under correct token prefix", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(factory({ name: `my-${kind}` }));
+
+    const provider = createForgeComponentProvider({
+      store,
+      executor: mockTiered(echoExecutor()),
+    });
+
+    const components = await provider.attach(createMockAgent());
+    expect(components.has(`${tokenPrefix}my-${kind}`)).toBe(true);
+  });
+
+  test("respects scope filtering", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      factory({ id: brickId(`b-${kind}-1`), name: `agent-${kind}`, scope: "agent" }),
+    );
+    await store.save(
+      factory({ id: brickId(`b-${kind}-2`), name: `global-${kind}`, scope: "global" }),
+    );
+
+    const provider = createForgeComponentProvider({
+      store,
+      executor: mockTiered(echoExecutor()),
+      scope: "global",
+    });
+
+    const components = await provider.attach(createMockAgent());
+    expect(components.has(`${tokenPrefix}global-${kind}`)).toBe(true);
+    expect(components.has(`${tokenPrefix}agent-${kind}`)).toBe(false);
+  });
+
+  test("respects zone filtering", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      factory({
+        id: brickId(`b-${kind}-zone-a`),
+        name: `zone-a-${kind}`,
+        scope: "zone",
+        tags: ["zone:alpha"],
+      }),
+    );
+    await store.save(
+      factory({
+        id: brickId(`b-${kind}-zone-b`),
+        name: `zone-b-${kind}`,
+        scope: "zone",
+        tags: ["zone:beta"],
+      }),
+    );
+
+    const provider = createForgeComponentProvider({
+      store,
+      executor: mockTiered(echoExecutor()),
+      scope: "agent",
+      zoneId: "alpha",
+    });
+
+    const components = await provider.attach(createMockAgent());
+    expect(components.has(`${tokenPrefix}zone-a-${kind}`)).toBe(true);
+    expect(components.has(`${tokenPrefix}zone-b-${kind}`)).toBe(false);
+  });
+
+  test("respects requires enforcement", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      factory({
+        name: `guarded-${kind}`,
+        requires: { tools: ["nonexistent-tool"] },
+      }),
+    );
+
+    const provider = createForgeComponentProvider({
+      store,
+      executor: mockTiered(echoExecutor()),
+    });
+
+    const components = await provider.attach(createMockAgent());
+    expect(components.has(`${tokenPrefix}guarded-${kind}`)).toBe(false);
+  });
+
+  test("included in cache invalidation", async () => {
+    let searchCount = 0;
+    const realStore = createInMemoryForgeStore();
+    await realStore.save(factory({ name: `cached-${kind}` }));
+
+    const countingStore = {
+      ...realStore,
+      search: async (...args: readonly unknown[]) => {
+        searchCount++;
+        return realStore.search(...(args as Parameters<typeof realStore.search>));
+      },
+    };
+
+    const notifier = createMemoryStoreChangeNotifier();
+    const provider = createForgeComponentProvider({
+      store: countingStore,
+      executor: mockTiered(echoExecutor()),
+      notifier,
+    });
+
+    await provider.attach(createMockAgent());
+    expect(searchCount).toBe(1);
+
+    notifier.notify({ kind: "saved", brickId: brickId("new-brick"), scope: "agent" });
+
+    await provider.attach(createMockAgent());
+    expect(searchCount).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Specific shape tests for skill and agent components
+// ---------------------------------------------------------------------------
+
+describe("createForgeComponentProvider — component shapes", () => {
+  test("skill SkillComponent has content field", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      createTestSkillArtifact({
+        name: "research",
+        description: "Research skill",
+        content: "# Research\n\nDo research.",
+        tags: ["research", "analysis"],
+      }),
+    );
+
+    const provider = createForgeComponentProvider({
+      store,
+      executor: mockTiered(echoExecutor()),
+    });
+
+    const components = await provider.attach(createMockAgent());
+    const skill = components.get(skillToken("research") as string) as SkillComponent;
+    expect(skill.name).toBe("research");
+    expect(skill.description).toBe("Research skill");
+    expect(skill.content).toBe("# Research\n\nDo research.");
+    expect(skill.tags).toEqual(["research", "analysis"]);
+  });
+
+  test("skill with empty tags stores undefined for tags", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      createTestSkillArtifact({
+        name: "no-tags",
+        tags: [],
+        content: "content",
+      }),
+    );
+
+    const provider = createForgeComponentProvider({
+      store,
+      executor: mockTiered(echoExecutor()),
+    });
+
+    const components = await provider.attach(createMockAgent());
+    const skill = components.get(skillToken("no-tags") as string) as SkillComponent;
+    expect(skill.tags).toBeUndefined();
+  });
+
+  test("agent AgentDescriptor has manifestYaml field", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      createTestAgentArtifact({
+        name: "planner",
+        description: "Planning agent",
+        manifestYaml: "name: planner\ntype: worker",
+      }),
+    );
+
+    const provider = createForgeComponentProvider({
+      store,
+      executor: mockTiered(echoExecutor()),
+    });
+
+    const components = await provider.attach(createMockAgent());
+    const agent = components.get(agentToken("planner") as string) as AgentDescriptor;
+    expect(agent.name).toBe("planner");
+    expect(agent.description).toBe("Planning agent");
+    expect(agent.manifestYaml).toBe("name: planner\ntype: worker");
   });
 });

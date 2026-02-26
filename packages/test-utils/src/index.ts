@@ -26,6 +26,8 @@ export {
   createTestToolArtifact,
   DEFAULT_PROVENANCE,
 } from "./brick-artifacts.js";
+export type { BrickRegistryContractOptions } from "./brick-registry-contract.js";
+export { testBrickRegistryContract } from "./brick-registry-contract.js";
 export type { CapturedOutput } from "./capture-output.js";
 export { captureOutput } from "./capture-output.js";
 export type { ChannelContractOptions } from "./channel-contract.js";
@@ -53,6 +55,7 @@ export {
   createSpyModelStreamHandler,
   createSpyToolHandler,
 } from "./handlers.js";
+export { createInMemoryBrickRegistry } from "./in-memory-brick-registry.js";
 export type { MiddlewareContractOptions } from "./middleware-contract/index.js";
 export { testMiddlewareContract } from "./middleware-contract/index.js";
 export type { ResolverContractOptions } from "./resolver-contract.js";

@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge API surface . has stable type surface 1`] = `
-"import { TestCase, BrickRequires, DataClassification, ContentMarker, TrustTier, BrickId, BrickKind, ToolDescriptor, ForgeScope, BrickLifecycle, SandboxExecutor, BrickArtifact, ForgeStore, Result, KoiError, ForgeProvenance, SigningBackend, ToolArtifact, Tool, TieredSandboxExecutor, StoreChangeNotifier, ComponentProvider, Resolver, StoreChangeEvent, KoiMiddleware, AgentArtifact } from '@koi/core';
+"import { TestCase, BrickRequires, DataClassification, ContentMarker, TrustTier, BrickId, BrickKind, ToolDescriptor, ForgeScope, BrickLifecycle, SandboxExecutor, BrickArtifact, ForgeStore, Result, KoiError, ForgeProvenance, SigningBackend, ToolArtifact, Tool, TieredSandboxExecutor, StoreChangeNotifier, ComponentProvider, Resolver, StoreChangeEvent, BrickComponentMap, KoiMiddleware, AgentArtifact } from '@koi/core';
 export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, ContentMarker, DataClassification, ForgeAttestationSignature, ForgeBuildDefinition, ForgeBuilder, ForgeProvenance, ForgeQuery, ForgeResourceRef, ForgeRunMetadata, ForgeStageDigest, ForgeStore, ForgeVerificationSummary, LockHandle, LockMode, LockRequest, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, SigningBackend, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, TierResolution, TieredSandboxExecutor, ToolArtifact } from '@koi/core';
 
 /**
@@ -468,6 +468,8 @@ interface ForgeRuntimeInstance {
     readonly resolveTool: (toolId: string) => Promise<Tool | undefined>;
     readonly toolDescriptors: () => Promise<readonly ToolDescriptor[]>;
     readonly watch?: (listener: (event: StoreChangeEvent) => void) => () => void;
+    /** Generic per-kind resolution. */
+    readonly resolve?: <K extends BrickKind>(kind: K, name: string) => Promise<BrickComponentMap[K] | undefined>;
     /** Clean up internal store subscription and external listeners. */
     readonly dispose?: () => void;
 }

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  agentToken,
   CREDENTIALS,
   channelToken,
   EVENTS,
@@ -100,6 +101,20 @@ describe("middlewareToken()", () => {
 
   test("name with colon produces double colon", () => {
     expect(str(middlewareToken("v2:beta"))).toBe("middleware:v2:beta");
+  });
+});
+
+describe("agentToken()", () => {
+  test("prefixes with agent:", () => {
+    expect(str(agentToken("planner"))).toBe("agent:planner");
+  });
+
+  test("contains namespace separator", () => {
+    expect(str(agentToken("worker"))).toContain(":");
+  });
+
+  test("empty name produces agent: prefix only", () => {
+    expect(str(agentToken(""))).toBe("agent:");
   });
 });
 

@@ -19,6 +19,19 @@ export type {
 } from "./assembly.js";
 // audit backend — structured audit logging contract
 export type { AuditEntry, AuditSink, RedactionRule } from "./audit-backend.js";
+// brick component map — per-kind ECS type mapping
+export type { BrickComponentMap } from "./brick-component-map.js";
+// brick registry — generic brick discovery and management
+export type {
+  BrickPage,
+  BrickRegistryBackend,
+  BrickRegistryChangeEvent,
+  BrickRegistryChangeKind,
+  BrickRegistryReader,
+  BrickRegistryWriter,
+  BrickSearchQuery,
+} from "./brick-registry.js";
+export { DEFAULT_BRICK_SEARCH_LIMIT } from "./brick-registry.js";
 // brick snapshot — version history, provenance, audit
 export type {
   BrickId,
@@ -134,6 +147,7 @@ export { DEFAULT_CIRCUIT_BREAKER_CONFIG, delegationId } from "./delegation.js";
 // ecs — types
 export type {
   Agent,
+  AgentDescriptor,
   AgentId,
   ChildHandle,
   ChildLifecycleEvent,
@@ -151,6 +165,7 @@ export type {
   ProcessState,
   RunId,
   SessionId,
+  SkillComponent,
   SkillMetadata,
   SpawnCheck,
   SpawnLedger,
@@ -164,6 +179,7 @@ export type {
 // ecs — runtime values (token factories + well-known constants)
 export {
   agentId,
+  agentToken,
   BROWSER,
   COMPONENT_PRIORITY,
   CREDENTIALS,
