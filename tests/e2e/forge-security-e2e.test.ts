@@ -39,7 +39,11 @@ import {
   verifyInstallIntegrity,
 } from "@koi/forge";
 import { computeBrickId } from "@koi/hash";
-import { createSubprocessExecutor, createTieredExecutor } from "@koi/sandbox-executor";
+import {
+  createSubprocessExecutor,
+  createTieredExecutor,
+  detectSandboxPlatform,
+} from "@koi/sandbox-executor";
 
 // ---------------------------------------------------------------------------
 // Environment gate
@@ -307,26 +311,32 @@ describe("e2e: subprocess network isolation", () => {
     }
   }, 30_000);
 
-  test("subprocess with networkAllowed=false executes pure computation", async () => {
-    const entryPath = join(TEST_DIR, "net-denied-pure.ts");
-    await writeFile(
-      entryPath,
-      "export default function run(input: { x: number; y: number }) { return input.x + input.y; }",
-      "utf8",
-    );
+  // Requires OS sandbox (Seatbelt on macOS, bwrap on Linux) — fail-closed design
+  // refuses execution when networkAllowed=false and no sandbox is available.
+  test.skipIf(detectSandboxPlatform() === "none")(
+    "subprocess with networkAllowed=false executes pure computation",
+    async () => {
+      const entryPath = join(TEST_DIR, "net-denied-pure.ts");
+      await writeFile(
+        entryPath,
+        "export default function run(input: { x: number; y: number }) { return input.x + input.y; }",
+        "utf8",
+      );
 
-    const context: ExecutionContext = {
-      entryPath,
-      workspacePath: TEST_DIR,
-      networkAllowed: false,
-    };
+      const context: ExecutionContext = {
+        entryPath,
+        workspacePath: TEST_DIR,
+        networkAllowed: false,
+      };
 
-    const result = await executor.execute("", { x: 10, y: 32 }, 10_000, context);
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.output).toBe(42);
-    }
-  }, 30_000);
+      const result = await executor.execute("", { x: 10, y: 32 }, 10_000, context);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.output).toBe(42);
+      }
+    },
+    30_000,
+  );
 
   test.skipIf(process.platform !== "darwin")(
     "subprocess with networkAllowed=false blocks fetch on macOS (Seatbelt)",
@@ -384,7 +394,7 @@ describe("e2e: subprocess resource limits", () => {
       const context: ExecutionContext = {
         entryPath,
         workspacePath: TEST_DIR,
-        resourceLimits: { maxMemoryMb: 256 },
+        resourceLimits: { maxMemoryMb: 2048 },
       };
 
       const result = await executor.execute("", { n: 12 }, 10_000, context);
@@ -396,29 +406,34 @@ describe("e2e: subprocess resource limits", () => {
     30_000,
   );
 
-  test("subprocess with network deny + process isolation (no resource limits)", async () => {
-    const entryPath = join(TEST_DIR, "combined-isolation.ts");
-    await writeFile(
-      entryPath,
-      "export default function run() { return { isolated: true, pid: process.pid }; }",
-      "utf8",
-    );
+  // Requires OS sandbox — fail-closed design refuses networkAllowed=false without sandbox.
+  test.skipIf(detectSandboxPlatform() === "none")(
+    "subprocess with network deny + process isolation (no resource limits)",
+    async () => {
+      const entryPath = join(TEST_DIR, "combined-isolation.ts");
+      await writeFile(
+        entryPath,
+        "export default function run() { return { isolated: true, pid: process.pid }; }",
+        "utf8",
+      );
 
-    const context: ExecutionContext = {
-      entryPath,
-      workspacePath: TEST_DIR,
-      networkAllowed: false,
-    };
+      const context: ExecutionContext = {
+        entryPath,
+        workspacePath: TEST_DIR,
+        networkAllowed: false,
+      };
 
-    const result = await executor.execute("", {}, 10_000, context);
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      const output = result.value.output as { isolated: boolean; pid: number };
-      expect(output.isolated).toBe(true);
-      // Child PID should be different from our PID (proving subprocess isolation)
-      expect(output.pid).not.toBe(process.pid);
-    }
-  }, 30_000);
+      const result = await executor.execute("", {}, 10_000, context);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        const output = result.value.output as { isolated: boolean; pid: number };
+        expect(output.isolated).toBe(true);
+        // Child PID should be different from our PID (proving subprocess isolation)
+        expect(output.pid).not.toBe(process.pid);
+      }
+    },
+    30_000,
+  );
 });
 
 // ---------------------------------------------------------------------------

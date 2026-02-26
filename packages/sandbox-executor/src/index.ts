@@ -7,5 +7,6 @@
 
 export { createPromotedExecutor } from "./promoted-executor.js";
 export type { TieredExecutorConfig } from "./resolve.js";
-export { createSubprocessExecutor } from "./subprocess-executor.js";
+export type { SandboxPlatform } from "./subprocess-executor.js";
+export { createSubprocessExecutor, detectSandboxPlatform } from "./subprocess-executor.js";
 export { createTieredExecutor } from "./tiered-executor.js";
