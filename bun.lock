@@ -75,6 +75,21 @@
         "playwright": "^1.49.0",
       },
     },
+    "packages/bundle": {
+      "name": "@koi/bundle",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/forge": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/canvas": {
       "name": "@koi/canvas",
       "version": "0.0.0",
@@ -1388,6 +1403,8 @@
     "@koi/bootstrap": ["@koi/bootstrap@workspace:packages/bootstrap"],
 
     "@koi/browser-playwright": ["@koi/browser-playwright@workspace:packages/browser-playwright"],
+
+    "@koi/bundle": ["@koi/bundle@workspace:packages/bundle"],
 
     "@koi/canvas": ["@koi/canvas@workspace:packages/canvas"],
 
