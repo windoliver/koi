@@ -13,6 +13,7 @@ export { validateAceConfig } from "./config.js";
 export type { DefaultConsolidatorOptions } from "./consolidator.js";
 export { createDefaultConsolidator } from "./consolidator.js";
 export { type CurateOptions, curateTrajectorySummary } from "./curator.js";
+export { descriptor } from "./descriptor.js";
 export { estimateTokens, selectPlaybooks } from "./injector.js";
 export { computeCurationScore, computeRecencyFactor } from "./scoring.js";
 export type { PlaybookStore, TrajectoryStore } from "./stores.js";

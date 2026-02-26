@@ -6,6 +6,7 @@
  */
 
 export { createExternalAdapter } from "./adapter.js";
+export { descriptor } from "./descriptor.js";
 export {
   createJsonLinesParser,
   createLineParser,

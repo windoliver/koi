@@ -7,3 +7,4 @@
 
 export type { CliChannelConfig } from "./cli-channel.js";
 export { createCliChannel } from "./cli-channel.js";
+export { descriptor } from "./descriptor.js";

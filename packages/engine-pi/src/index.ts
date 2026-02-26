@@ -6,6 +6,7 @@
  */
 
 export { createPiAdapter } from "./adapter.js";
+export { descriptor } from "./descriptor.js";
 export type {
   ContextMessage,
   GetApiKeyFn,

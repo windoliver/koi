@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
+    "@koi/resolve": "workspace:*",
     "@mariozechner/pi-agent-core": "0.54.0",
     "@mariozechner/pi-ai": "0.54.0"
   },

@@ -13,6 +13,7 @@ export {
   DEFAULT_STREAM_BUFFER_SIZE,
   validateSanitizeConfig,
 } from "./config.js";
+export { descriptor } from "./descriptor.js";
 export {
   CONTROL_CHAR_RULES,
   DEFAULT_RULES,

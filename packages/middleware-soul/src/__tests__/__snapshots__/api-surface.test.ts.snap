@@ -2,8 +2,10 @@
 
 exports[`@koi/middleware-soul API surface . has stable type surface 1`] = `
 "import { Result, KoiError } from '@koi/core/errors';
+import { KoiMiddleware } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
 import { InboundMessage } from '@koi/core/message';
-import { KoiMiddleware, ModelRequest } from '@koi/core/middleware';
+import { KoiMiddleware as KoiMiddleware$1, ModelRequest } from '@koi/core/middleware';
 
 /**
  * Soul middleware configuration and validation.
@@ -26,6 +28,19 @@ declare const DEFAULT_SOUL_MAX_TOKENS = 4000;
 declare const DEFAULT_USER_MAX_TOKENS = 2000;
 /** Validates the CreateSoulOptions, returning a Result. */
 declare function validateSoulConfig(config: unknown): Result<CreateSoulOptions, KoiError>;
+
+/**
+ * BrickDescriptor for @koi/middleware-soul.
+ *
+ * Enables manifest auto-resolution: the resolve layer looks up this
+ * descriptor, validates soul/user options, and calls the factory.
+ */
+
+/**
+ * Descriptor for soul middleware.
+ * Exported for registration with createRegistry().
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
 
 /**
  * Soul/user content resolution — reads markdown files or inline text,
@@ -74,7 +89,7 @@ declare function resolveUserContent(options: ResolveOptions): Promise<ResolvedCo
  * (the write must pass through the middleware chain, including permissions/HITL).
  * Manual \`reload()\` is also available for programmatic use.
  */
-interface SoulMiddleware extends KoiMiddleware {
+interface SoulMiddleware extends KoiMiddleware$1 {
     /**
      * Re-resolves all soul and user content from original source paths.
      * Called automatically after successful \`fs_write\` to tracked files.
@@ -102,6 +117,6 @@ declare function enrichRequest(request: ModelRequest, soulMessage: InboundMessag
  */
 declare function createSoulMiddleware(options: CreateSoulOptions): Promise<SoulMiddleware>;
 
-export { type CreateSoulOptions, DEFAULT_SOUL_MAX_TOKENS, DEFAULT_USER_MAX_TOKENS, type ResolveOptions, type ResolvedContent, type SoulMiddleware, type SoulUserInput, createSoulMiddleware, enrichRequest, resolveSoulContent, resolveUserContent, validateSoulConfig };
+export { type CreateSoulOptions, DEFAULT_SOUL_MAX_TOKENS, DEFAULT_USER_MAX_TOKENS, type ResolveOptions, type ResolvedContent, type SoulMiddleware, type SoulUserInput, createSoulMiddleware, descriptor, enrichRequest, resolveSoulContent, resolveUserContent, validateSoulConfig };
 "
 `;

@@ -12,7 +12,8 @@
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/errors": "workspace:*",
-    "@koi/hash": "workspace:*"
+    "@koi/hash": "workspace:*",
+    "@koi/resolve": "workspace:*"
   },
   "devDependencies": {
     "@koi/test-utils": "workspace:*"

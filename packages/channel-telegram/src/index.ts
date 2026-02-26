@@ -16,6 +16,7 @@
  * ```
  */
 
+export { descriptor } from "./descriptor.js";
 export type {
   TelegramChannelAdapter,
   TelegramChannelConfig,

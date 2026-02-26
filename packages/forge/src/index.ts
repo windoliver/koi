@@ -73,6 +73,7 @@ export type {
 } from "./config.js";
 // runtime values — config
 export { createDefaultForgeConfig, validateForgeConfig } from "./config.js";
+export { descriptor } from "./descriptor.js";
 export type { ForgeError, TestFailure } from "./errors.js";
 // runtime values — errors
 export {

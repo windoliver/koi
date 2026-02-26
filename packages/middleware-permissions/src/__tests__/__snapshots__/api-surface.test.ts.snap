@@ -3,7 +3,9 @@
 exports[`@koi/middleware-permissions API surface . has stable type surface 1`] = `
 "import { Result, KoiError } from '@koi/core/errors';
 import { JsonObject } from '@koi/core/common';
-import { KoiMiddleware } from '@koi/core/middleware';
+import { KoiMiddleware } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
+import { KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
 
 /**
  * Permission engine interfaces and default implementations.
@@ -60,11 +62,24 @@ interface PermissionsMiddlewareConfig {
 declare function validatePermissionsConfig(config: unknown): Result<PermissionsMiddlewareConfig, KoiError>;
 
 /**
+ * BrickDescriptor for @koi/middleware-permissions.
+ *
+ * Enables manifest auto-resolution: the resolve layer looks up this
+ * descriptor, validates allow/deny/ask options, and calls the factory.
+ */
+
+/**
+ * Descriptor for permissions middleware.
+ * Exported for registration with createRegistry().
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
+
+/**
  * Permissions middleware factory — tool-level access control + HITL approval.
  */
 
-declare function createPermissionsMiddleware(config: PermissionsMiddlewareConfig): KoiMiddleware;
+declare function createPermissionsMiddleware(config: PermissionsMiddlewareConfig): KoiMiddleware$1;
 
-export { type ApprovalCacheConfig, type ApprovalHandler, DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, type PermissionDecision, type PermissionEngine, type PermissionRules, type PermissionsMiddlewareConfig, createAutoApprovalHandler, createPatternPermissionEngine, createPermissionsMiddleware, validatePermissionsConfig };
+export { type ApprovalCacheConfig, type ApprovalHandler, DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, type PermissionDecision, type PermissionEngine, type PermissionRules, type PermissionsMiddlewareConfig, createAutoApprovalHandler, createPatternPermissionEngine, createPermissionsMiddleware, descriptor, validatePermissionsConfig };
 "
 `;

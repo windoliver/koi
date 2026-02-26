@@ -9,6 +9,7 @@
 export type { LlmCompactor } from "./compact.js";
 export { createLlmCompactor } from "./compact.js";
 export { createCompactorMiddleware } from "./compactor-middleware.js";
+export { descriptor } from "./descriptor.js";
 export { createMemoryCompactionStore } from "./memory-compaction-store.js";
 export type {
   CompactionArchiver,

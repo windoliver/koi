@@ -2,7 +2,9 @@
 
 exports[`@koi/middleware-call-limits API surface . has stable type surface 1`] = `
 "import { Result, KoiError } from '@koi/core/errors';
-import { KoiMiddleware } from '@koi/core/middleware';
+import { KoiMiddleware } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
+import { KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
 
 /**
  * Call limit types — store interface, exit behaviors, limit info.
@@ -50,6 +52,21 @@ declare function validateModelCallLimitConfig(config: unknown): Result<ModelCall
 declare function validateToolCallLimitConfig(config: unknown): Result<ToolCallLimitConfig, KoiError>;
 
 /**
+ * BrickDescriptor for @koi/middleware-call-limits.
+ *
+ * Enables manifest auto-resolution: validates maxModelCalls/maxToolCalls
+ * options, then creates model and/or tool call limit middleware.
+ */
+
+/**
+ * Descriptor for call-limits middleware.
+ *
+ * Creates a combined middleware that wraps both model and tool call limits.
+ * Uses in-memory stores by default.
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
+
+/**
  * Model call limit middleware — caps the number of model calls per session.
  *
  * Counts on attempt (before execution). Both "end" and "error" exit behaviors
@@ -58,7 +75,7 @@ declare function validateToolCallLimitConfig(config: unknown): Result<ToolCallLi
  * Priority 175: runs before pay (200) and compactor (225).
  */
 
-declare function createModelCallLimitMiddleware(config: ModelCallLimitConfig): KoiMiddleware;
+declare function createModelCallLimitMiddleware(config: ModelCallLimitConfig): KoiMiddleware$1;
 
 /**
  * In-memory call limit store — Map-backed, sync returns.
@@ -80,8 +97,8 @@ declare function createInMemoryCallLimitStore(): CallLimitStore;
  * Priority 175: runs before pay (200) and compactor (225).
  */
 
-declare function createToolCallLimitMiddleware(config: ToolCallLimitConfig): KoiMiddleware;
+declare function createToolCallLimitMiddleware(config: ToolCallLimitConfig): KoiMiddleware$1;
 
-export { type CallLimitStore, type LimitReachedInfo, type ModelCallLimitConfig, type ModelExitBehavior, type ToolCallLimitConfig, type ToolExitBehavior, createInMemoryCallLimitStore, createModelCallLimitMiddleware, createToolCallLimitMiddleware, validateModelCallLimitConfig, validateToolCallLimitConfig };
+export { type CallLimitStore, type LimitReachedInfo, type ModelCallLimitConfig, type ModelExitBehavior, type ToolCallLimitConfig, type ToolExitBehavior, createInMemoryCallLimitStore, createModelCallLimitMiddleware, createToolCallLimitMiddleware, descriptor, validateModelCallLimitConfig, validateToolCallLimitConfig };
 "
 `;

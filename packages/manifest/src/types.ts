@@ -19,6 +19,9 @@ export interface DeployConfig {
   readonly system: boolean;
 }
 
+/** Manifest-level soul/user config: string path/inline or object with path + maxTokens. */
+export type SoulUserConfig = string | { readonly path: string; readonly maxTokens?: number };
+
 /**
  * Extension fields that exist in koi.yaml but are outside L0 core contracts.
  * All values are validated by the schema layer.
@@ -29,8 +32,8 @@ export interface ManifestExtensions {
   readonly webhooks?: unknown;
   readonly forge?: unknown;
   readonly context?: unknown;
-  readonly soul?: unknown;
-  readonly user?: unknown;
+  readonly soul?: SoulUserConfig | undefined;
+  readonly user?: SoulUserConfig | undefined;
   readonly deploy?: DeployConfig | undefined;
 }
 

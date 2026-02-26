@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
+    "@koi/resolve": "workspace:*",
     "@anthropic-ai/claude-agent-sdk": "^0.2.37"
   },
   "devDependencies": {

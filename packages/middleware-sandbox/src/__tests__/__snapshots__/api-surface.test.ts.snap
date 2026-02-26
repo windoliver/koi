@@ -4,7 +4,9 @@ exports[`@koi/middleware-sandbox API surface . has stable type surface 1`] = `
 "import { TrustTier } from '@koi/core/ecs';
 import { Result, KoiError } from '@koi/core/errors';
 import { SandboxProfile, ResourceLimits } from '@koi/core/sandbox-profile';
-import { KoiMiddleware } from '@koi/core/middleware';
+import { KoiMiddleware } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
+import { KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
 
 /**
  * Sandbox middleware configuration and validation.
@@ -39,12 +41,26 @@ interface SandboxMiddlewareConfig {
 declare function validateConfig(config: unknown): Result<SandboxMiddlewareConfig, KoiError>;
 
 /**
+ * BrickDescriptor for @koi/middleware-sandbox.
+ *
+ * Enables manifest auto-resolution: validates sandbox config,
+ * then creates the sandbox middleware with default trust tier profiles.
+ */
+
+/**
+ * Descriptor for sandbox middleware.
+ * Uses default trust tier profiles and treats all tools as sandbox tier.
+ * Exported for registration with createRegistry().
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
+
+/**
  * Sandbox policy middleware — defense-in-depth timeout, output truncation,
  * error classification, and observability for sandboxed tool execution.
  */
 
-declare function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMiddleware;
+declare function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMiddleware$1;
 
-export { DEFAULT_OUTPUT_LIMIT_BYTES, DEFAULT_SKIP_TIERS, DEFAULT_TIMEOUT_GRACE_MS, type SandboxMiddlewareConfig, createSandboxMiddleware, validateConfig };
+export { DEFAULT_OUTPUT_LIMIT_BYTES, DEFAULT_SKIP_TIERS, DEFAULT_TIMEOUT_GRACE_MS, type SandboxMiddlewareConfig, createSandboxMiddleware, descriptor, validateConfig };
 "
 `;

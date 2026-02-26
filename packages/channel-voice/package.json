@@ -13,6 +13,7 @@
     "@koi/channel-base": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/errors": "workspace:*",
+    "@koi/resolve": "workspace:*",
     "@livekit/agents": "1.0.47",
     "@livekit/agents-plugin-deepgram": "1.0.47",
     "@livekit/agents-plugin-openai": "1.0.47",

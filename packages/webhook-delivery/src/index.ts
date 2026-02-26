@@ -19,6 +19,7 @@ export {
   type WebhookDeliveryService,
   type WebhookDeliveryServiceDeps,
 } from "./delivery-service.js";
+export { descriptor } from "./descriptor.js";
 export { createWebhookMiddleware } from "./middleware.js";
 export { createSignatureHeaders, verifySignature } from "./signing.js";
 export { validateWebhookUrl } from "./ssrf.js";
