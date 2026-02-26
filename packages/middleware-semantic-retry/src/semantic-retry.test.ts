@@ -419,4 +419,35 @@ describe("createSemanticRetryMiddleware", () => {
       expect(handle.getRecords()[0]?.actionTaken.kind).toBe("add_context");
     });
   });
+
+  describe("budget underflow guard", () => {
+    test("budget never goes negative after exhaustion", async () => {
+      const handle = createSemanticRetryMiddleware({ maxRetries: 1 });
+
+      // First failure: budget 1 → 0, sets abort
+      await expect(
+        handle.middleware.wrapModelCall?.(
+          mockCtx,
+          baseRequest,
+          createFailingModelHandler(new Error("fail-1")),
+        ),
+      ).rejects.toThrow("fail-1");
+
+      expect(handle.getRetryBudget()).toBe(0);
+      expect(handle.getRecords()).toHaveLength(1);
+
+      // Second failure after budget exhausted: should be ignored, budget stays 0
+      await expect(
+        handle.middleware.wrapToolCall?.(
+          mockCtx,
+          baseToolRequest,
+          createFailingToolHandler(new Error("tool-fail-after-budget")),
+        ),
+      ).rejects.toThrow("tool-fail-after-budget");
+
+      expect(handle.getRetryBudget()).toBe(0);
+      // No new record added — handleFailure skipped
+      expect(handle.getRecords()).toHaveLength(1);
+    });
+  });
 });

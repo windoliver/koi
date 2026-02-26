@@ -172,6 +172,9 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
     request: ModelRequest | ToolFailureRequest,
     turnIndex: number,
   ): Promise<void> {
+    // Guard: skip analysis once budget is exhausted — prevents negative counter
+    if (budget <= 0) return;
+
     const ctx: FailureContext = { error, request, records, turnIndex };
     const { failureClass, classifyFailed } = await classifyWithFallback(
       analyzer,
