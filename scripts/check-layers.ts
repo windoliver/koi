@@ -38,7 +38,7 @@ const L0U_PACKAGES = new Set([
 ]);
 const L1_PACKAGES = new Set(["@koi/engine"]);
 /** Meta-packages that bundle L0 + L1 + L2 — no new logic, only re-exports / orchestration. */
-const L3_PACKAGES = new Set(["@koi/cli"]);
+const L3_PACKAGES = new Set(["@koi/cli", "@koi/starter"]);
 
 // --- Main ---
 

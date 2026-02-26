@@ -15,6 +15,21 @@
         "typescript": "^5.9.3",
       },
     },
+    "packages/agent-monitor": {
+      "name": "@koi/agent-monitor",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/agui": {
       "name": "@koi/agui",
       "version": "0.0.0",
@@ -947,6 +962,21 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/starter": {
+      "name": "@koi/starter",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/agent-monitor": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/engine": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/middleware-permissions": "workspace:*",
+        "@koi/middleware-soul": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/store-fs": {
       "name": "@koi/store-fs",
       "version": "0.0.0",
@@ -1331,6 +1361,8 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
+    "@koi/agent-monitor": ["@koi/agent-monitor@workspace:packages/agent-monitor"],
+
     "@koi/agui": ["@koi/agui@workspace:packages/agui"],
 
     "@koi/artifact-client": ["@koi/artifact-client@workspace:packages/artifact-client"],
@@ -1500,6 +1532,8 @@
     "@koi/snapshot-chain-store": ["@koi/snapshot-chain-store@workspace:packages/snapshot-chain-store"],
 
     "@koi/sqlite-utils": ["@koi/sqlite-utils@workspace:packages/sqlite-utils"],
+
+    "@koi/starter": ["@koi/starter@workspace:packages/starter"],
 
     "@koi/store-fs": ["@koi/store-fs@workspace:packages/store-fs"],
 

@@ -1,0 +1,183 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/agent-monitor API surface . has stable type surface 1`] = `
+"import { SessionId } from '@koi/core/ecs';
+import { Result, KoiError } from '@koi/core/errors';
+import { KoiMiddleware } from '@koi/core/middleware';
+
+/**
+ * Public types for @koi/agent-monitor.
+ *
+ * AnomalySignal is a discriminated union: AnomalyBase & AnomalyDetail.
+ * Per-kind fields only appear on the relevant variant.
+ */
+
+type AnomalyBase = {
+    readonly sessionId: SessionId;
+    readonly agentId: string;
+    readonly timestamp: number;
+    readonly turnIndex: number;
+};
+type AnomalyDetail = {
+    readonly kind: "tool_rate_exceeded";
+    readonly callsPerTurn: number;
+    readonly threshold: number;
+} | {
+    readonly kind: "error_spike";
+    readonly errorCount: number;
+    readonly threshold: number;
+} | {
+    readonly kind: "tool_repeated";
+    readonly toolId: string;
+    readonly repeatCount: number;
+    readonly threshold: number;
+} | {
+    readonly kind: "model_latency_anomaly";
+    readonly latencyMs: number;
+    readonly mean: number;
+    readonly stddev: number;
+    readonly factor: number;
+} | {
+    readonly kind: "denied_tool_calls";
+    readonly deniedCount: number;
+    readonly threshold: number;
+} | {
+    /** Gap 1: destructive/irreversible tool called too many times this turn. */
+    readonly kind: "irreversible_action_rate";
+    readonly toolId: string;
+    readonly callsThisTurn: number;
+    readonly threshold: number;
+} | {
+    /** Gap 2: model output token count is a statistical outlier. */
+    readonly kind: "token_spike";
+    readonly outputTokens: number;
+    readonly mean: number;
+    readonly stddev: number;
+    readonly factor: number;
+} | {
+    /** Gap 3: too many distinct tools called in a single turn (sweep behaviour). */
+    readonly kind: "tool_diversity_spike";
+    readonly distinctToolCount: number;
+    readonly threshold: number;
+} | {
+    /** Gap A: agent ping-pongs between exactly two tools (A→B→A→B…). */
+    readonly kind: "tool_ping_pong";
+    readonly toolIdA: string;
+    readonly toolIdB: string;
+    readonly altCount: number;
+    readonly threshold: number;
+} | {
+    /** Gap B: session has been running longer than the configured limit. */
+    readonly kind: "session_duration_exceeded";
+    readonly durationMs: number;
+    readonly threshold: number;
+} | {
+    /**
+     * Phase 2: agent at currentDepth called a spawn tool when
+     * currentDepth >= maxDelegationDepth — delegation chain too deep.
+     */
+    readonly kind: "delegation_depth_exceeded";
+    readonly currentDepth: number;
+    readonly maxDepth: number;
+    readonly spawnToolId: string;
+};
+type AnomalySignal = AnomalyBase & AnomalyDetail;
+interface SessionMetricsSummary {
+    readonly sessionId: SessionId;
+    readonly agentId: string;
+    readonly totalToolCalls: number;
+    readonly totalModelCalls: number;
+    readonly totalErrorCalls: number;
+    readonly totalDeniedCalls: number;
+    readonly totalDestructiveCalls: number;
+    readonly anomalyCount: number;
+    readonly turnCount: number;
+    readonly meanLatencyMs: number;
+    readonly latencyStddevMs: number;
+    readonly meanOutputTokens: number;
+    readonly outputTokenStddev: number;
+}
+interface LatencyStats {
+    readonly count: number;
+    readonly mean: number;
+    readonly stddev: number;
+}
+
+/**
+ * AgentMonitorConfig and validation.
+ */
+
+interface AgentMonitorConfig {
+    readonly thresholds?: {
+        readonly maxToolCallsPerTurn?: number;
+        readonly maxErrorCallsPerSession?: number;
+        readonly maxConsecutiveRepeatCalls?: number;
+        readonly maxDeniedCallsPerSession?: number;
+        readonly latencyAnomalyFactor?: number;
+        readonly minLatencySamples?: number;
+        /** Gap 1: max destructive/irreversible tool calls per turn before firing. */
+        readonly maxDestructiveCallsPerTurn?: number;
+        /** Gap 2: token spike factor (mean + N*stddev). Shares minLatencySamples warmup. */
+        readonly tokenSpikeAnomalyFactor?: number;
+        /** Gap 3: max distinct tool IDs callable in one turn before sweep is flagged. */
+        readonly maxDistinctToolsPerTurn?: number;
+        /** Gap A: max alternation count between two tools before ping-pong is flagged. */
+        readonly maxPingPongCycles?: number;
+        /** Gap B: max session wall-clock duration in milliseconds before firing. */
+        readonly maxSessionDurationMs?: number;
+        /**
+         * Phase 2: max process-tree depth from which an agent may spawn sub-agents.
+         * Requires agentDepth + spawnToolIds to be configured; disabled if either is absent.
+         */
+        readonly maxDelegationDepth?: number;
+    };
+    /**
+     * Gap 1: set of toolIds classified as irreversible (delete, send, publish, transfer…).
+     * Any tool in this set increments a separate counter checked against maxDestructiveCallsPerTurn.
+     * An empty or absent set disables the signal.
+     */
+    readonly destructiveToolIds?: readonly string[];
+    /**
+     * Phase 2: this agent's current process-tree depth (0 = root copilot, 1 = first sub-agent…).
+     * Must be set together with spawnToolIds for delegation_depth_exceeded to fire.
+     * Absent or undefined disables the signal.
+     */
+    readonly agentDepth?: number;
+    /**
+     * Phase 2: tool IDs that spawn sub-agents (e.g. ["forge_agent"]).
+     * An empty or absent array disables the signal even if agentDepth is set.
+     * In Koi projects the L1 default is ["forge_agent"].
+     */
+    readonly spawnToolIds?: readonly string[];
+    readonly onAnomaly?: (signal: AnomalySignal) => void | Promise<void>;
+    readonly onAnomalyError?: (err: unknown, signal: AnomalySignal) => void;
+    readonly onMetrics?: (sessionId: SessionId, summary: SessionMetricsSummary) => void;
+}
+declare const DEFAULT_THRESHOLDS: {
+    readonly maxToolCallsPerTurn: 20;
+    readonly maxErrorCallsPerSession: 10;
+    readonly maxConsecutiveRepeatCalls: 5;
+    readonly maxDeniedCallsPerSession: 3;
+    readonly latencyAnomalyFactor: 3;
+    readonly minLatencySamples: 5;
+    readonly maxDestructiveCallsPerTurn: 3;
+    readonly tokenSpikeAnomalyFactor: 3;
+    readonly maxDistinctToolsPerTurn: 15;
+    readonly maxPingPongCycles: 4;
+    readonly maxSessionDurationMs: 300000;
+    readonly maxDelegationDepth: 3;
+};
+declare function validateAgentMonitorConfig(config: unknown): Result<AgentMonitorConfig, KoiError>;
+
+/**
+ * createAgentMonitorMiddleware — adversarial agent behavior detection.
+ *
+ * Pure observer: fires onAnomaly callbacks, never throws or aborts.
+ * Session state is isolated per sessionId and cleaned up in onSessionEnd.
+ */
+
+declare function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMiddleware;
+
+export { type AgentMonitorConfig, type AnomalySignal, DEFAULT_THRESHOLDS, type LatencyStats, type SessionMetricsSummary, createAgentMonitorMiddleware, validateAgentMonitorConfig };
+"
+`;
