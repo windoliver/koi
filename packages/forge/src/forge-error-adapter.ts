@@ -30,6 +30,18 @@ const STATIC_MAP: Readonly<
   INVALID_TYPE: { koiCode: "VALIDATION", retryable: RETRYABLE_DEFAULTS.VALIDATION },
   MANIFEST_PARSE_FAILED: { koiCode: "VALIDATION", retryable: RETRYABLE_DEFAULTS.VALIDATION },
   SYNTAX_ERROR: { koiCode: "VALIDATION", retryable: RETRYABLE_DEFAULTS.VALIDATION },
+  NETWORK_ACCESS_DENIED: { koiCode: "VALIDATION", retryable: RETRYABLE_DEFAULTS.VALIDATION },
+};
+
+/** Resolve stage: dependency install/audit failures are EXTERNAL or VALIDATION. */
+const RESOLVE_MAP: Readonly<
+  Record<Extract<ForgeError, { readonly stage: "resolve" }>["code"], ForgeMapping>
+> = {
+  AUDIT_FAILED: { koiCode: "VALIDATION", retryable: RETRYABLE_DEFAULTS.VALIDATION },
+  INSTALL_FAILED: { koiCode: "EXTERNAL", retryable: false },
+  INSTALL_TIMEOUT: { koiCode: "TIMEOUT", retryable: RETRYABLE_DEFAULTS.TIMEOUT },
+  INTEGRITY_MISMATCH: { koiCode: "VALIDATION", retryable: RETRYABLE_DEFAULTS.VALIDATION },
+  WORKSPACE_FAILED: { koiCode: "INTERNAL", retryable: RETRYABLE_DEFAULTS.INTERNAL },
 };
 
 /** Sandbox stage: mixed — TIMEOUT is retryable, others are not. */
@@ -100,6 +112,8 @@ function lookupMapping(error: ForgeError): ForgeMapping {
   switch (error.stage) {
     case "static":
       return STATIC_MAP[error.code];
+    case "resolve":
+      return RESOLVE_MAP[error.code];
     case "sandbox":
       return SANDBOX_MAP[error.code];
     case "self_test":

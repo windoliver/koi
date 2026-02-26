@@ -2,11 +2,11 @@
  * Pipeline orchestrator — runs verification stages sequentially with early termination.
  *
  * Governance checks are handled by the createForgeTool factory (shared.ts),
- * NOT here. This function is purely the 4-stage verification pipeline.
+ * NOT here. This function is purely the 5-stage verification pipeline.
  */
 
-import type { Result } from "@koi/core";
-import type { ForgeConfig } from "./config.js";
+import type { ExecutionContext, Result } from "@koi/core";
+import type { DependencyConfig, ForgeConfig } from "./config.js";
 import type { ForgeError } from "./errors.js";
 import { sandboxError } from "./errors.js";
 import type {
@@ -17,6 +17,7 @@ import type {
   StageReport,
   VerificationReport,
 } from "./types.js";
+import { verifyResolve } from "./verify-resolve.js";
 import { verifySandbox } from "./verify-sandbox.js";
 import { verifySelfTest } from "./verify-self-test.js";
 import { verifyStatic } from "./verify-static.js";
@@ -66,8 +67,44 @@ export async function verify(
     return { ok: false, error: timeoutAfterStatic };
   }
 
+  // Stage 1.5: Resolve dependencies (audit + install)
+  // Cap install timeout to remaining pipeline budget to prevent overshoot
+  const remainingAfterStatic = totalTimeoutMs - (performance.now() - pipelineStart);
+  const cappedDeps: DependencyConfig =
+    remainingAfterStatic < config.dependencies.installTimeoutMs
+      ? { ...config.dependencies, installTimeoutMs: Math.max(0, Math.round(remainingAfterStatic)) }
+      : config.dependencies;
+  const resolveResult = await verifyResolve(input, cappedDeps);
+  if (!resolveResult.ok) {
+    return { ok: false, error: resolveResult.error };
+  }
+  stages.push(resolveResult.value);
+
+  const timeoutAfterResolve = checkTimeout(pipelineStart, totalTimeoutMs);
+  if (timeoutAfterResolve !== undefined) {
+    return { ok: false, error: timeoutAfterResolve };
+  }
+
+  // Build execution context — always include network/resource isolation,
+  // and workspace paths when available from resolve stage.
+  const resolveReport = resolveResult.value;
+  const hasWorkspace = resolveReport.stage === "resolve" && "workspacePath" in resolveReport;
+  const executionContext: ExecutionContext = {
+    ...(hasWorkspace && resolveReport.workspacePath !== undefined
+      ? { workspacePath: resolveReport.workspacePath }
+      : {}),
+    ...(hasWorkspace && "entryPath" in resolveReport && resolveReport.entryPath !== undefined
+      ? { entryPath: resolveReport.entryPath }
+      : {}),
+    networkAllowed: input.requires?.network === true,
+    resourceLimits: {
+      maxMemoryMb: config.dependencies.maxBrickMemoryMb,
+      maxPids: config.dependencies.maxBrickPids,
+    },
+  };
+
   // Stage 2: Sandbox execution
-  const sandboxResult = await verifySandbox(input, executor, config.verification);
+  const sandboxResult = await verifySandbox(input, executor, config.verification, executionContext);
   if (!sandboxResult.ok) {
     return { ok: false, error: sandboxResult.error };
   }

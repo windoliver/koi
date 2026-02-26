@@ -27,6 +27,7 @@
     "@koi/engine-loop": "workspace:*",
     "@koi/engine-pi": "workspace:*",
     "@koi/model-router": "workspace:*",
+    "@koi/sandbox-executor": "workspace:*",
     "@koi/test-utils": "workspace:*"
   }
 }

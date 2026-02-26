@@ -40,11 +40,20 @@ const FORGE_TOOL_CONFIG: ForgeToolConfig = {
       files: { type: "object", description: "Companion files: relative path → content" },
       requires: {
         type: "object",
-        description: "Runtime requirements (bins, env, tools)",
+        description: "Runtime requirements (bins, env, tools, npm packages)",
         properties: {
           bins: { type: "array", items: { type: "string" } },
           env: { type: "array", items: { type: "string" } },
           tools: { type: "array", items: { type: "string" } },
+          packages: {
+            type: "object",
+            description:
+              'npm packages: package name → exact semver version (e.g. { "zod": "3.22.0" })',
+          },
+          network: {
+            type: "boolean",
+            description: "Whether this brick requires network access at runtime (default: false)",
+          },
         },
       },
       configSchema: { type: "object", description: "JSON Schema for brick config parameters" },
@@ -94,6 +103,12 @@ async function forgeToolHandler(
             ...(parsed.value.requires.env !== undefined ? { env: parsed.value.requires.env } : {}),
             ...(parsed.value.requires.tools !== undefined
               ? { tools: parsed.value.requires.tools }
+              : {}),
+            ...(parsed.value.requires.packages !== undefined
+              ? { packages: parsed.value.requires.packages }
+              : {}),
+            ...(parsed.value.requires.network !== undefined
+              ? { network: parsed.value.requires.network }
               : {}),
           },
         }

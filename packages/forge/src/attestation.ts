@@ -145,6 +145,16 @@ export function createForgeProvenance(options: CreateProvenanceOptions): ForgePr
     buildDefinition: {
       buildType: `koi.forge/${input.kind}/v1`,
       externalParameters: mapExternalParameters(input),
+      ...(input.requires?.packages !== undefined && Object.keys(input.requires.packages).length > 0
+        ? {
+            resolvedDependencies: Object.entries(input.requires.packages).map(
+              ([name, version]) => ({
+                uri: `npm:${name}@${version}`,
+                name,
+              }),
+            ),
+          }
+        : {}),
     },
     builder: {
       id: "koi.forge/pipeline/v1",

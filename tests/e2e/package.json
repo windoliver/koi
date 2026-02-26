@@ -34,6 +34,7 @@
     "@koi/node": "workspace:*",
     "@koi/delegation": "workspace:*",
     "@koi/engine-external": "workspace:*",
+    "@koi/sandbox-executor": "workspace:*",
     "@koi/canvas": "workspace:*",
     "@koi/orchestrator": "workspace:*",
     "@koi/test-utils": "workspace:*",

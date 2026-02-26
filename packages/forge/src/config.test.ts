@@ -27,7 +27,7 @@ describe("createDefaultForgeConfig", () => {
     expect(config.verification.staticTimeoutMs).toBe(1_000);
     expect(config.verification.sandboxTimeoutMs).toBe(5_000);
     expect(config.verification.selfTestTimeoutMs).toBe(10_000);
-    expect(config.verification.totalTimeoutMs).toBe(30_000);
+    expect(config.verification.totalTimeoutMs).toBe(60_000);
     expect(config.verification.maxBrickSizeBytes).toBe(50_000);
   });
 
@@ -84,6 +84,40 @@ describe("createDefaultForgeConfig", () => {
     expect(config.autoPromotion.enabled).toBe(true);
     expect(config.autoPromotion.sandboxToVerifiedThreshold).toBe(10);
     expect(config.autoPromotion.verifiedToPromotedThreshold).toBe(50);
+  });
+
+  test("returns defaults for nested dependencies", () => {
+    const config = createDefaultForgeConfig();
+    expect(config.dependencies.maxDependencies).toBe(20);
+    expect(config.dependencies.installTimeoutMs).toBe(15_000);
+    expect(config.dependencies.maxCacheSizeBytes).toBe(1_073_741_824);
+    expect(config.dependencies.maxWorkspaceAgeDays).toBe(30);
+    expect(config.dependencies.maxBrickMemoryMb).toBe(256);
+    expect(config.dependencies.maxBrickPids).toBe(32);
+    expect(config.dependencies.allowedPackages).toBeUndefined();
+    expect(config.dependencies.blockedPackages).toBeUndefined();
+  });
+
+  test("overrides nested dependencies", () => {
+    const config = createDefaultForgeConfig({
+      dependencies: {
+        maxDependencies: 10,
+        installTimeoutMs: 30_000,
+        maxCacheSizeBytes: 500_000_000,
+        maxWorkspaceAgeDays: 7,
+        maxTransitiveDependencies: 100,
+        maxBrickMemoryMb: 128,
+        maxBrickPids: 16,
+        allowedPackages: ["zod", "lodash"],
+        blockedPackages: ["eval"],
+      },
+    });
+    expect(config.dependencies.maxDependencies).toBe(10);
+    expect(config.dependencies.installTimeoutMs).toBe(30_000);
+    expect(config.dependencies.maxBrickMemoryMb).toBe(128);
+    expect(config.dependencies.maxBrickPids).toBe(16);
+    expect(config.dependencies.allowedPackages).toEqual(["zod", "lodash"]);
+    expect(config.dependencies.blockedPackages).toEqual(["eval"]);
   });
 
   test("returns new object each time", () => {
@@ -268,6 +302,97 @@ describe("validateForgeConfig (negative)", () => {
   test("rejects zero verifiedToPromotedThreshold in autoPromotion", () => {
     const result = validateForgeConfig({
       autoPromotion: { verifiedToPromotedThreshold: 0 },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects negative maxDependencies in dependencies", () => {
+    const result = validateForgeConfig({
+      dependencies: { maxDependencies: -1 },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects zero installTimeoutMs in dependencies", () => {
+    const result = validateForgeConfig({
+      dependencies: { installTimeoutMs: 0 },
+    });
+    expect(result.ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateForgeConfig — dependencies section
+// ---------------------------------------------------------------------------
+
+describe("validateForgeConfig (dependencies)", () => {
+  test("accepts empty dependencies object and returns defaults", () => {
+    const result = validateForgeConfig({ dependencies: {} });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.dependencies.maxDependencies).toBe(20);
+      expect(result.value.dependencies.installTimeoutMs).toBe(15_000);
+    }
+  });
+
+  test("accepts partial dependencies overrides", () => {
+    const result = validateForgeConfig({
+      dependencies: { maxDependencies: 5 },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.dependencies.maxDependencies).toBe(5);
+      expect(result.value.dependencies.installTimeoutMs).toBe(15_000); // default
+    }
+  });
+
+  test("accepts allowedPackages and blockedPackages", () => {
+    const result = validateForgeConfig({
+      dependencies: {
+        allowedPackages: ["zod", "lodash"],
+        blockedPackages: ["eval"],
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.dependencies.allowedPackages).toEqual(["zod", "lodash"]);
+      expect(result.value.dependencies.blockedPackages).toEqual(["eval"]);
+    }
+  });
+
+  test("returns default dependencies when not provided", () => {
+    const result = validateForgeConfig({});
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.dependencies.maxDependencies).toBe(20);
+      expect(result.value.dependencies.maxCacheSizeBytes).toBe(1_073_741_824);
+      expect(result.value.dependencies.maxWorkspaceAgeDays).toBe(30);
+      expect(result.value.dependencies.maxBrickMemoryMb).toBe(256);
+      expect(result.value.dependencies.maxBrickPids).toBe(32);
+    }
+  });
+
+  test("accepts maxBrickMemoryMb and maxBrickPids overrides", () => {
+    const result = validateForgeConfig({
+      dependencies: { maxBrickMemoryMb: 512, maxBrickPids: 64 },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.dependencies.maxBrickMemoryMb).toBe(512);
+      expect(result.value.dependencies.maxBrickPids).toBe(64);
+    }
+  });
+
+  test("rejects zero maxBrickMemoryMb", () => {
+    const result = validateForgeConfig({
+      dependencies: { maxBrickMemoryMb: 0 },
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects negative maxBrickPids", () => {
+    const result = validateForgeConfig({
+      dependencies: { maxBrickPids: -1 },
     });
     expect(result.ok).toBe(false);
   });

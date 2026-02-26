@@ -25,7 +25,7 @@ export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundM
 export { ModelCapabilities, ModelProvider, ModelTarget } from './model-HASH.js';
 export { Resolver, SourceBundle, SourceLanguage } from './resolver.js';
 export { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance } from './sandbox-HASH.js';
-export { SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, TierResolution, TieredSandboxExecutor } from './sandbox-HASH.js';
+export { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, TierResolution, TieredSandboxExecutor } from './sandbox-HASH.js';
 export { FilesystemPolicy, NetworkPolicy, ResourceLimits, SandboxProfile } from './sandbox-HASH.js';
 export { DEFAULT_SKILL_SEARCH_LIMIT, SkillId, SkillPage, SkillPublishRequest, SkillRegistryBackend, SkillRegistryChangeEvent, SkillRegistryChangeKind, SkillRegistryEntry, SkillRegistryReader, SkillRegistryWriter, SkillSearchQuery, SkillVersion, skillId } from './skill-HASH.js';
 export { OutboundWebhookConfig, WebhookComponent, WebhookDeliveryStatus, WebhookEndpointHealth, WebhookEventKind, WebhookPayload, WebhookSummary } from './webhook.js';
@@ -1988,8 +1988,25 @@ interface SandboxResult {
     readonly durationMs: number;
     readonly memoryUsedBytes?: number;
 }
+/**
+ * Optional execution context — provides workspace and dependency metadata
+ * for bricks that require npm packages or filesystem access.
+ */
+interface ExecutionContext {
+    /** Absolute path to the brick's per-dependency workspace (contains node_modules). */
+    readonly workspacePath?: string;
+    /** Absolute path to the brick's entry .ts file within the workspace. */
+    readonly entryPath?: string;
+    /** Whether the brick is allowed to make network requests. Default: false. */
+    readonly networkAllowed?: boolean;
+    /** OS-level resource limits for the subprocess. */
+    readonly resourceLimits?: {
+        readonly maxMemoryMb?: number;
+        readonly maxPids?: number;
+    };
+}
 interface SandboxExecutor {
-    readonly execute: (code: string, input: unknown, timeoutMs: number) => Promise<{
+    readonly execute: (code: string, input: unknown, timeoutMs: number, context?: ExecutionContext) => Promise<{
         readonly ok: true;
         readonly value: SandboxResult;
     } | {
@@ -2017,7 +2034,7 @@ interface TieredSandboxExecutor {
     readonly forTier: (tier: TrustTier) => TierResolution;
 }
 
-export type { SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, TierResolution, TieredSandboxExecutor };
+export type { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, TierResolution, TieredSandboxExecutor };
 "
 `;
 

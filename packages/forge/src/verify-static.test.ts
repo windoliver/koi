@@ -456,4 +456,408 @@ describe("verifyStatic — requires validation", () => {
     const result = verifyStatic(input, DEFAULT_VERIFICATION);
     expect(result.ok).toBe(true);
   });
+
+  test("accepts valid packages in requires", () => {
+    const input: ForgeInput = {
+      kind: "tool",
+      name: "myTool",
+      description: "A tool",
+      implementation: "return input;",
+      inputSchema: { type: "object" },
+      requires: { packages: { zod: "3.22.0", lodash: "4.17.21" } },
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts empty packages in requires", () => {
+    const input: ForgeInput = {
+      kind: "tool",
+      name: "myTool",
+      description: "A tool",
+      implementation: "return input;",
+      inputSchema: { type: "object" },
+      requires: { packages: {} },
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects packages with non-string values", () => {
+    const input: ForgeInput = {
+      kind: "tool",
+      name: "myTool",
+      description: "A tool",
+      implementation: "return input;",
+      inputSchema: { type: "object" },
+      requires: { packages: { zod: 123 } } as unknown as BrickRequires,
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("INVALID_SCHEMA");
+      expect(result.error.message).toContain("packages");
+    }
+  });
+
+  test("rejects packages with empty package name", () => {
+    const input: ForgeInput = {
+      kind: "tool",
+      name: "myTool",
+      description: "A tool",
+      implementation: "return input;",
+      inputSchema: { type: "object" },
+      requires: { packages: { "": "1.0.0" } },
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.message).toContain("empty package name");
+    }
+  });
+
+  test("rejects packages with empty version string", () => {
+    const input: ForgeInput = {
+      kind: "tool",
+      name: "myTool",
+      description: "A tool",
+      implementation: "return input;",
+      inputSchema: { type: "object" },
+      requires: { packages: { zod: "" } },
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects packages as array instead of record", () => {
+    const input: ForgeInput = {
+      kind: "tool",
+      name: "myTool",
+      description: "A tool",
+      implementation: "return input;",
+      inputSchema: { type: "object" },
+      requires: { packages: ["zod"] } as unknown as BrickRequires,
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+  });
+
+  test("accepts requires.network as boolean", () => {
+    const input: ForgeInput = {
+      kind: "tool",
+      name: "myTool",
+      description: "A tool",
+      implementation: 'const res = fetch("https://api.example.com");',
+      inputSchema: { type: "object" },
+      requires: { network: true },
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects requires.network as non-boolean", () => {
+    const input: ForgeInput = {
+      kind: "tool",
+      name: "myTool",
+      description: "A tool",
+      implementation: "return input;",
+      inputSchema: { type: "object" },
+      requires: { network: "yes" } as unknown as BrickRequires,
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("INVALID_SCHEMA");
+      expect(result.error.message).toContain("network");
+    }
+  });
+});
+
+describe("verifyStatic — network access validation", () => {
+  test("rejects fetch() in implementation without requires.network", () => {
+    const input: ForgeInput = {
+      kind: "tool",
+      name: "myTool",
+      description: "A tool",
+      inputSchema: { type: "object" },
+      implementation: 'const data = await fetch("https://api.example.com/data");',
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("NETWORK_ACCESS_DENIED");
+      expect(result.error.message).toContain("requires.network");
+    }
+  });
+
+  test("allows fetch() with requires.network: true", () => {
+    const input: ForgeInput = {
+      kind: "tool",
+      name: "myTool",
+      description: "A tool",
+      inputSchema: { type: "object" },
+      implementation: 'const data = await fetch("https://api.example.com/data");',
+      requires: { network: true },
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects WebSocket in implementation without requires.network", () => {
+    const input: ForgeInput = {
+      kind: "tool",
+      name: "myTool",
+      description: "A tool",
+      inputSchema: { type: "object" },
+      implementation: 'const ws = new WebSocket("wss://example.com");',
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("NETWORK_ACCESS_DENIED");
+    }
+  });
+
+  test("rejects http import without requires.network", () => {
+    const input: ForgeInput = {
+      kind: "tool",
+      name: "myTool",
+      description: "A tool",
+      inputSchema: { type: "object" },
+      implementation: 'import http from "http";\nhttp.createServer();',
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("NETWORK_ACCESS_DENIED");
+    }
+  });
+
+  test("rejects Bun.serve() without requires.network", () => {
+    const input: ForgeInput = {
+      kind: "tool",
+      name: "myTool",
+      description: "A tool",
+      inputSchema: { type: "object" },
+      implementation: "Bun.serve({ port: 3000, fetch(req) { return new Response('ok'); } });",
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("NETWORK_ACCESS_DENIED");
+    }
+  });
+
+  test("rejects network API in companion files without requires.network", () => {
+    const input: ForgeInput = {
+      kind: "skill",
+      name: "mySkill",
+      description: "A skill",
+      body: "# My Skill",
+      files: { "lib/client.ts": 'const res = await fetch("https://api.example.com");' },
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("NETWORK_ACCESS_DENIED");
+      expect(result.error.message).toContain("lib/client.ts");
+    }
+  });
+
+  test("allows code without network access and no requires.network", () => {
+    const input: ForgeInput = {
+      kind: "tool",
+      name: "myTool",
+      description: "A tool",
+      inputSchema: { type: "object" },
+      implementation: "return { result: input.value * 2 };",
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(true);
+  });
+
+  test("allows middleware with network access when requires.network: true", () => {
+    const input: ForgeInput = {
+      kind: "middleware",
+      name: "myMiddleware",
+      description: "A middleware",
+      implementation: 'const data = await fetch("https://api.example.com");',
+      requires: { network: true },
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(true);
+  });
+
+  test("skips network check for skill body (markdown, not executable)", () => {
+    const input: ForgeInput = {
+      kind: "skill",
+      name: "mySkill",
+      description: "A skill",
+      body: "Use `fetch()` to call the API",
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Network evasion pattern tests
+// ---------------------------------------------------------------------------
+
+describe("verifyStatic — network evasion detection", () => {
+  const makeNetTool = (code: string): ForgeInput => ({
+    kind: "tool",
+    name: "evasionTool",
+    description: "Tests evasion patterns",
+    inputSchema: { type: "object" },
+    implementation: code,
+  });
+
+  test("rejects globalThis.fetch", () => {
+    const result = verifyStatic(
+      makeNetTool("globalThis.fetch('https://x.com')"),
+      DEFAULT_VERIFICATION,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("NETWORK_ACCESS_DENIED");
+    }
+  });
+
+  test("rejects globalThis['fetch']", () => {
+    const result = verifyStatic(
+      makeNetTool("globalThis['fetch']('https://x.com')"),
+      DEFAULT_VERIFICATION,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("NETWORK_ACCESS_DENIED");
+    }
+  });
+
+  test("rejects self.fetch", () => {
+    const result = verifyStatic(makeNetTool("self.fetch('https://x.com')"), DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("NETWORK_ACCESS_DENIED");
+    }
+  });
+
+  test("rejects variable aliasing: const f = fetch", () => {
+    const result = verifyStatic(
+      makeNetTool("const f = fetch;\nf('https://x.com');"),
+      DEFAULT_VERIFICATION,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("NETWORK_ACCESS_DENIED");
+    }
+  });
+
+  test("rejects variable aliasing: const ws = WebSocket", () => {
+    const result = verifyStatic(
+      makeNetTool("const WS = WebSocket;\nnew WS('wss://x.com');"),
+      DEFAULT_VERIFICATION,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("NETWORK_ACCESS_DENIED");
+    }
+  });
+
+  test("rejects Bun aliasing: const b = Bun", () => {
+    const result = verifyStatic(
+      makeNetTool("const b = Bun;\nb.serve({ fetch() { return new Response('ok'); } });"),
+      DEFAULT_VERIFICATION,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("NETWORK_ACCESS_DENIED");
+    }
+  });
+
+  test("rejects node:-prefixed imports: import from 'node:http'", () => {
+    const result = verifyStatic(
+      makeNetTool(
+        'import http from "node:http";\nexport function run() { return http.createServer(); }',
+      ),
+      DEFAULT_VERIFICATION,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("NETWORK_ACCESS_DENIED");
+    }
+  });
+
+  test("rejects node:-prefixed require: require('node:https')", () => {
+    const result = verifyStatic(
+      makeNetTool(
+        'const https = require("node:https");\nexport function run() { return https.get; }',
+      ),
+      DEFAULT_VERIFICATION,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("NETWORK_ACCESS_DENIED");
+    }
+  });
+
+  test("rejects http2 module import", () => {
+    const result = verifyStatic(
+      makeNetTool(
+        'import http2 from "http2";\nexport function run() { return http2.createServer; }',
+      ),
+      DEFAULT_VERIFICATION,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("NETWORK_ACCESS_DENIED");
+    }
+  });
+
+  test("rejects undici import", () => {
+    const result = verifyStatic(
+      makeNetTool('import { request } from "undici";\nexport function run() { return request; }'),
+      DEFAULT_VERIFICATION,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("NETWORK_ACCESS_DENIED");
+    }
+  });
+
+  test("rejects axios import", () => {
+    const result = verifyStatic(
+      makeNetTool('import axios from "axios";\nexport function run() { return axios; }'),
+      DEFAULT_VERIFICATION,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("NETWORK_ACCESS_DENIED");
+    }
+  });
+
+  test("rejects globalThis['WebSocket']", () => {
+    const result = verifyStatic(
+      makeNetTool("const WS = globalThis['WebSocket'];\nexport function run() { return WS; }"),
+      DEFAULT_VERIFICATION,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "static") {
+      expect(result.error.code).toBe("NETWORK_ACCESS_DENIED");
+    }
+  });
+
+  test("allows all evasion patterns with requires.network: true", () => {
+    const input: ForgeInput = {
+      kind: "tool",
+      name: "netTool",
+      description: "Needs network",
+      inputSchema: { type: "object" },
+      implementation: "const f = fetch;\nglobalThis.fetch('x');\nconst b = Bun;\n",
+      requires: { network: true },
+    };
+    const result = verifyStatic(input, DEFAULT_VERIFICATION);
+    expect(result.ok).toBe(true);
+  });
 });

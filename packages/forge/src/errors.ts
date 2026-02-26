@@ -27,7 +27,8 @@ export type ForgeError =
         | "MISSING_FIELD"
         | "INVALID_TYPE"
         | "MANIFEST_PARSE_FAILED"
-        | "SYNTAX_ERROR";
+        | "SYNTAX_ERROR"
+        | "NETWORK_ACCESS_DENIED";
       readonly message: string;
     }
   | {
@@ -57,6 +58,16 @@ export type ForgeError =
         | "TRUST_DEMOTION_NOT_ALLOWED"
         | "LIFECYCLE_INVALID_TRANSITION"
         | "DEPTH_TOOL_RESTRICTED";
+      readonly message: string;
+    }
+  | {
+      readonly stage: "resolve";
+      readonly code:
+        | "AUDIT_FAILED"
+        | "INSTALL_FAILED"
+        | "INSTALL_TIMEOUT"
+        | "INTEGRITY_MISMATCH"
+        | "WORKSPACE_FAILED";
       readonly message: string;
     }
   | {
@@ -112,6 +123,13 @@ export function governanceError(
   message: string,
 ): ForgeError {
   return { stage: "governance", code, message };
+}
+
+export function resolveError(
+  code: Extract<ForgeError, { readonly stage: "resolve" }>["code"],
+  message: string,
+): ForgeError {
+  return { stage: "resolve", code, message };
 }
 
 export function storeError(

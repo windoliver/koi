@@ -32,6 +32,27 @@ export interface AutoPromotionConfig {
   readonly verifiedToPromotedThreshold: number;
 }
 
+export interface DependencyConfig {
+  /** Package names explicitly allowed (empty = all allowed). */
+  readonly allowedPackages?: readonly string[];
+  /** Package names explicitly blocked (takes precedence over allowedPackages). */
+  readonly blockedPackages?: readonly string[];
+  /** Maximum number of dependencies per brick. */
+  readonly maxDependencies: number;
+  /** Timeout for a single `bun install` in milliseconds. */
+  readonly installTimeoutMs: number;
+  /** Maximum total disk space for all brick workspaces. */
+  readonly maxCacheSizeBytes: number;
+  /** Maximum age (in days) for unused workspaces before LRU eviction. */
+  readonly maxWorkspaceAgeDays: number;
+  /** Maximum number of transitive dependencies allowed after resolution. */
+  readonly maxTransitiveDependencies: number;
+  /** Maximum virtual memory (MB) for brick subprocess. */
+  readonly maxBrickMemoryMb: number;
+  /** Maximum number of child processes for brick subprocess (Linux only). */
+  readonly maxBrickPids: number;
+}
+
 export interface ForgeConfig {
   readonly enabled: boolean;
   readonly maxForgeDepth: number;
@@ -41,6 +62,7 @@ export interface ForgeConfig {
   readonly scopePromotion: ScopePromotionConfig;
   readonly verification: VerificationConfig;
   readonly autoPromotion: AutoPromotionConfig;
+  readonly dependencies: DependencyConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +98,18 @@ const autoPromotionSchema = z.object({
   verifiedToPromotedThreshold: z.number().int().positive().optional(),
 });
 
+const dependencySchema = z.object({
+  allowedPackages: z.array(z.string()).optional(),
+  blockedPackages: z.array(z.string()).optional(),
+  maxDependencies: z.number().int().positive().optional(),
+  installTimeoutMs: z.number().int().positive().optional(),
+  maxCacheSizeBytes: z.number().int().positive().optional(),
+  maxWorkspaceAgeDays: z.number().int().positive().optional(),
+  maxTransitiveDependencies: z.number().int().positive().optional(),
+  maxBrickMemoryMb: z.number().int().positive().optional(),
+  maxBrickPids: z.number().int().positive().optional(),
+});
+
 const forgeConfigInputSchema = z.object({
   enabled: z.boolean().optional(),
   maxForgeDepth: z.number().int().min(0).optional(),
@@ -85,6 +119,7 @@ const forgeConfigInputSchema = z.object({
   scopePromotion: scopePromotionSchema.optional(),
   verification: verificationSchema.optional(),
   autoPromotion: autoPromotionSchema.optional(),
+  dependencies: dependencySchema.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -101,7 +136,7 @@ const DEFAULT_VERIFICATION: VerificationConfig = {
   staticTimeoutMs: 1_000,
   sandboxTimeoutMs: 5_000,
   selfTestTimeoutMs: 10_000,
-  totalTimeoutMs: 30_000,
+  totalTimeoutMs: 60_000,
   maxBrickSizeBytes: 50_000,
   failFast: true,
 } as const;
@@ -110,6 +145,16 @@ const DEFAULT_AUTO_PROMOTION: AutoPromotionConfig = {
   enabled: false,
   sandboxToVerifiedThreshold: 5,
   verifiedToPromotedThreshold: 20,
+} as const;
+
+const DEFAULT_DEPENDENCY: DependencyConfig = {
+  maxDependencies: 20,
+  installTimeoutMs: 15_000,
+  maxCacheSizeBytes: 1_073_741_824, // 1 GB
+  maxWorkspaceAgeDays: 30,
+  maxTransitiveDependencies: 200,
+  maxBrickMemoryMb: 256,
+  maxBrickPids: 32,
 } as const;
 
 const DEFAULT_CONFIG: ForgeConfig = {
@@ -121,6 +166,7 @@ const DEFAULT_CONFIG: ForgeConfig = {
   scopePromotion: DEFAULT_SCOPE_PROMOTION,
   verification: DEFAULT_VERIFICATION,
   autoPromotion: DEFAULT_AUTO_PROMOTION,
+  dependencies: DEFAULT_DEPENDENCY,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -146,6 +192,10 @@ export function createDefaultForgeConfig(overrides?: Partial<ForgeConfig>): Forg
       overrides.autoPromotion !== undefined
         ? { ...DEFAULT_AUTO_PROMOTION, ...overrides.autoPromotion }
         : DEFAULT_AUTO_PROMOTION,
+    dependencies:
+      overrides.dependencies !== undefined
+        ? { ...DEFAULT_DEPENDENCY, ...overrides.dependencies }
+        : DEFAULT_DEPENDENCY,
   };
 }
 
@@ -208,6 +258,30 @@ export function validateForgeConfig(raw: unknown): Result<ForgeConfig, KoiError>
               DEFAULT_AUTO_PROMOTION.verifiedToPromotedThreshold,
           }
         : DEFAULT_AUTO_PROMOTION,
+    dependencies:
+      p.dependencies !== undefined
+        ? {
+            ...(p.dependencies.allowedPackages !== undefined
+              ? { allowedPackages: p.dependencies.allowedPackages }
+              : {}),
+            ...(p.dependencies.blockedPackages !== undefined
+              ? { blockedPackages: p.dependencies.blockedPackages }
+              : {}),
+            maxDependencies: p.dependencies.maxDependencies ?? DEFAULT_DEPENDENCY.maxDependencies,
+            installTimeoutMs:
+              p.dependencies.installTimeoutMs ?? DEFAULT_DEPENDENCY.installTimeoutMs,
+            maxCacheSizeBytes:
+              p.dependencies.maxCacheSizeBytes ?? DEFAULT_DEPENDENCY.maxCacheSizeBytes,
+            maxWorkspaceAgeDays:
+              p.dependencies.maxWorkspaceAgeDays ?? DEFAULT_DEPENDENCY.maxWorkspaceAgeDays,
+            maxTransitiveDependencies:
+              p.dependencies.maxTransitiveDependencies ??
+              DEFAULT_DEPENDENCY.maxTransitiveDependencies,
+            maxBrickMemoryMb:
+              p.dependencies.maxBrickMemoryMb ?? DEFAULT_DEPENDENCY.maxBrickMemoryMb,
+            maxBrickPids: p.dependencies.maxBrickPids ?? DEFAULT_DEPENDENCY.maxBrickPids,
+          }
+        : DEFAULT_DEPENDENCY,
   };
   return { ok: true, value: config };
 }

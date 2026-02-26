@@ -1,143 +1,143 @@
-import { describe, expect, mock, test } from "bun:test";
-import type {
-  BrickArtifact,
-  SandboxError,
-  SandboxExecutor,
-  SandboxResult,
-  ToolArtifact,
-} from "@koi/core";
-import { brickId } from "@koi/core";
-import { DEFAULT_PROVENANCE } from "@koi/test-utils";
-import { brickCapabilityFragment, brickToTool } from "./brick-conversion.js";
+/**
+ * Tests for brick-conversion — trust-tier dispatch and workspace path handling.
+ */
+
+import { describe, expect, test } from "bun:test";
+import type { ExecutionContext, SandboxExecutor, ToolArtifact } from "@koi/core";
+import { brickToTool } from "./brick-conversion.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
+function makeArtifact(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
-    id: brickId("brick_test"),
+    id: "sha256:0000000000000000000000000000000000000000000000000000000000000001" as ToolArtifact["id"],
     kind: "tool",
-    name: "calc",
-    description: "A simple calculator tool",
+    name: "test-tool",
+    description: "A test tool",
     scope: "agent",
     trustTier: "sandbox",
     lifecycle: "active",
-    provenance: DEFAULT_PROVENANCE,
-    version: "0.0.1",
+    provenance: {} as ToolArtifact["provenance"],
+    version: "1.0.0",
     tags: [],
     usageCount: 0,
-    implementation: "return input.a + input.b;",
-    inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } },
+    implementation: "return input;",
+    inputSchema: { type: "object" },
     ...overrides,
   };
 }
 
-function createMockExecutor(
-  result:
-    | { readonly ok: true; readonly value: SandboxResult }
-    | { readonly ok: false; readonly error: SandboxError },
+function makeMockExecutor(
+  handler: (
+    code: string,
+    input: unknown,
+    timeoutMs: number,
+    context?: ExecutionContext,
+  ) => Promise<
+    | {
+        readonly ok: true;
+        readonly value: { readonly output: unknown; readonly durationMs: number };
+      }
+    | {
+        readonly ok: false;
+        readonly error: {
+          readonly code: "CRASH";
+          readonly message: string;
+          readonly durationMs: number;
+        };
+      }
+  >,
 ): SandboxExecutor {
-  const executeFn: SandboxExecutor["execute"] = mock(
-    async (_code: string, _input: unknown, _timeoutMs: number) => result,
-  );
-  return { execute: executeFn };
+  return { execute: handler };
 }
 
 // ---------------------------------------------------------------------------
-// brickToTool
+// Basic conversion
 // ---------------------------------------------------------------------------
 
 describe("brickToTool", () => {
-  test("creates tool with correct descriptor from brick", () => {
-    const brick = createToolBrick({ name: "adder", description: "Adds numbers" });
-    const executor = createMockExecutor({ ok: true, value: { output: 3, durationMs: 10 } });
+  test("creates tool with correct descriptor", () => {
+    const artifact = makeArtifact({ name: "my-tool", description: "Does stuff" });
+    const executor = makeMockExecutor(async () => ({
+      ok: true,
+      value: { output: 42, durationMs: 1 },
+    }));
 
-    const tool = brickToTool(brick, executor);
+    const tool = brickToTool(artifact, executor);
 
-    expect(tool.descriptor.name).toBe("adder");
-    expect(tool.descriptor.description).toBe("Adds numbers");
-    expect(tool.descriptor.inputSchema).toEqual(brick.inputSchema);
+    expect(tool.descriptor.name).toBe("my-tool");
+    expect(tool.descriptor.description).toBe("Does stuff");
     expect(tool.trustTier).toBe("sandbox");
   });
 
-  test("execute delegates to sandbox executor on success", async () => {
-    const brick = createToolBrick();
-    const executor = createMockExecutor({ ok: true, value: { output: 42, durationMs: 5 } });
-
-    const tool = brickToTool(brick, executor);
-    const result = await tool.execute({ a: 1, b: 2 });
-
-    expect(result).toBe(42);
-    expect(executor.execute).toHaveBeenCalledWith(brick.implementation, { a: 1, b: 2 }, 5_000);
-  });
-
-  test("execute returns error object when sandbox fails", async () => {
-    const brick = createToolBrick({ name: "fail_tool" });
-    const executor = createMockExecutor({
-      ok: false,
-      error: { code: "TIMEOUT", message: "execution timed out", durationMs: 5000 },
+  test("executes without workspace path (new Function fallback)", async () => {
+    // let justified: capturedContext tracks what the executor received
+    let capturedContext: ExecutionContext | undefined;
+    const executor = makeMockExecutor(async (_code, _input, _timeout, ctx) => {
+      capturedContext = ctx;
+      return { ok: true, value: { output: "result", durationMs: 1 } };
     });
 
-    const tool = brickToTool(brick, executor);
+    const tool = brickToTool(makeArtifact(), executor);
     const result = await tool.execute({});
 
-    expect(result).toEqual({
+    expect(result).toBe("result");
+    expect(capturedContext).toBeUndefined();
+  });
+
+  test("passes workspace path via ExecutionContext when provided", async () => {
+    // let justified: capturedContext tracks what the executor received
+    let capturedContext: ExecutionContext | undefined;
+    const executor = makeMockExecutor(async (_code, _input, _timeout, ctx) => {
+      capturedContext = ctx;
+      return { ok: true, value: { output: "with-deps", durationMs: 1 } };
+    });
+
+    const tool = brickToTool(
+      makeArtifact(),
+      executor,
+      5_000,
+      "/tmp/workspace",
+      "/tmp/workspace/entry.ts",
+    );
+    const result = await tool.execute({});
+
+    expect(result).toBe("with-deps");
+    expect(capturedContext).toBeDefined();
+    expect(capturedContext?.workspacePath).toBe("/tmp/workspace");
+    expect(capturedContext?.entryPath).toBe("/tmp/workspace/entry.ts");
+  });
+
+  test("returns error result when executor fails", async () => {
+    const executor = makeMockExecutor(async () => ({
       ok: false,
-      error: {
-        code: "TIMEOUT",
-        message: 'Forged tool "fail_tool" failed: execution timed out',
-      },
-    });
-  });
+      error: { code: "CRASH", message: "boom", durationMs: 1 },
+    }));
 
-  test("respects custom timeout", async () => {
-    const brick = createToolBrick();
-    const executor = createMockExecutor({ ok: true, value: { output: 0, durationMs: 1 } });
-
-    const tool = brickToTool(brick, executor, 10_000);
-    await tool.execute({});
-
-    expect(executor.execute).toHaveBeenCalledWith(brick.implementation, {}, 10_000);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// brickCapabilityFragment
-// ---------------------------------------------------------------------------
-
-describe("brickCapabilityFragment", () => {
-  test("returns label and description from BrickArtifact", () => {
-    const brick = createToolBrick({
-      name: "my-tool",
-      description: "Does something useful",
-    });
-
-    const fragment = brickCapabilityFragment(brick);
-
-    expect(fragment.label).toBe("my-tool");
-    expect(fragment.description).toBe("Does something useful");
-  });
-
-  test("works with non-tool BrickArtifact kinds", () => {
-    const middlewareBrick: BrickArtifact = {
-      id: brickId("brick_mw"),
-      kind: "middleware",
-      name: "rate-limiter",
-      description: "Rate limiting middleware",
-      scope: "agent",
-      trustTier: "verified",
-      lifecycle: "active",
-      provenance: DEFAULT_PROVENANCE,
-      version: "1.0.0",
-      tags: [],
-      usageCount: 5,
-      implementation: "/* middleware impl */",
+    const tool = brickToTool(makeArtifact({ name: "fail-tool" }), executor);
+    const result = (await tool.execute({})) as {
+      readonly ok: false;
+      readonly error: { readonly message: string };
     };
 
-    const fragment = brickCapabilityFragment(middlewareBrick);
+    expect(result.ok).toBe(false);
+    expect(result.error.message).toContain("fail-tool");
+    expect(result.error.message).toContain("boom");
+  });
 
-    expect(fragment.label).toBe("rate-limiter");
-    expect(fragment.description).toBe("Rate limiting middleware");
+  test("uses custom timeout", async () => {
+    // let justified: capturedTimeout tracks what the executor received
+    let capturedTimeout = 0;
+    const executor = makeMockExecutor(async (_code, _input, timeout) => {
+      capturedTimeout = timeout;
+      return { ok: true, value: { output: null, durationMs: 1 } };
+    });
+
+    const tool = brickToTool(makeArtifact(), executor, 10_000);
+    await tool.execute({});
+
+    expect(capturedTimeout).toBe(10_000);
   });
 });

@@ -35,11 +35,30 @@ export interface SandboxResult {
 // Executor contract — the pluggable sandbox backend
 // ---------------------------------------------------------------------------
 
+/**
+ * Optional execution context — provides workspace and dependency metadata
+ * for bricks that require npm packages or filesystem access.
+ */
+export interface ExecutionContext {
+  /** Absolute path to the brick's per-dependency workspace (contains node_modules). */
+  readonly workspacePath?: string;
+  /** Absolute path to the brick's entry .ts file within the workspace. */
+  readonly entryPath?: string;
+  /** Whether the brick is allowed to make network requests. Default: false. */
+  readonly networkAllowed?: boolean;
+  /** OS-level resource limits for the subprocess. */
+  readonly resourceLimits?: {
+    readonly maxMemoryMb?: number;
+    readonly maxPids?: number;
+  };
+}
+
 export interface SandboxExecutor {
   readonly execute: (
     code: string,
     input: unknown,
     timeoutMs: number,
+    context?: ExecutionContext,
   ) => Promise<
     | { readonly ok: true; readonly value: SandboxResult }
     | { readonly ok: false; readonly error: SandboxError }
