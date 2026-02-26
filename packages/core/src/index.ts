@@ -375,6 +375,22 @@ export type {
 } from "./middleware.js";
 // model provider
 export type { ModelCapabilities, ModelProvider, ModelTarget } from "./model-provider.js";
+// proposal — unified change governance contract
+export type {
+  ChangeKind,
+  ChangeTarget,
+  GateRequirement,
+  Proposal,
+  ProposalEvent,
+  ProposalGate,
+  ProposalId,
+  ProposalInput,
+  ProposalResult,
+  ProposalStatus,
+  ProposalUnsubscribe,
+  ReviewDecision,
+} from "./proposal.js";
+export { ALL_CHANGE_TARGETS, PROPOSAL_GATE_REQUIREMENTS, proposalId } from "./proposal.js";
 // provenance — SLSA-inspired attestation metadata
 export type {
   ContentMarker,

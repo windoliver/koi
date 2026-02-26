@@ -1,378 +1,287 @@
-# Issue #247: Brick Dependency Management
+# Issue #223: Proposal + ProposalGate — Unified Change Governance
 
-Install, cache, audit, and hot-update npm dependencies for forged bricks.
+Agent-submitted change requests for any layer, with trust gates that scale with blast radius.
 
 ## Decisions Log
 
-| # | Area | Decision | Choice |
-|---|------|----------|--------|
-| 1 | Architecture | Where `dependencies` lives in L0 | **1B**: Extend `BrickRequires` with `packages?: Record<string, string>` |
-| 2 | Architecture | Brick workspace location | **2A**: XDG cache dir `$XDG_CACHE_HOME/koi/brick-workspaces/<dep-hash>/` |
-| 3 | Architecture | Pipeline stage for install | **3A**: New "resolve" stage between Static and Sandbox |
-| 4 | Architecture | Promoted tier execution | **4A**: Direct `import()` + query-string cache busting |
-| 5 | Code Quality | SandboxExecutor interface | **5A**: Optional `ExecutionContext` object parameter |
-| 6 | Code Quality | DRY ForgeInput types | **6A**: Extract `ForgeInputBase` intersection type |
-| 7 | Code Quality | Promoted executor cache | **7A**: LRU eviction, 256-entry cap |
-| 8 | Code Quality | Dependency config | **8A**: New `DependencyConfig` section in `ForgeConfig` |
-| 9 | Tests | brick-conversion tests | **9A**: TDD with colocated `brick-conversion.test.ts` |
-| 10 | Tests | Workspace management tests | **10A**: Unit tests (mocked) + integration tests (real FS) |
-| 11 | Tests | Promoted executor tests | **11A**: Comprehensive suite for import()-based executor |
-| 12 | Tests | Dependency audit tests | **12A**: Dedicated adversarial test file |
-| 13 | Performance | bun install latency | **13A**: Cache-first + configurable `installTimeoutMs` (15s), increase `totalTimeoutMs` to 60s |
-| 14 | Performance | import() cold start | **14A**: Pre-write `.ts` file at forge time, not execution time |
-| 15 | Performance | Workspace disk usage | **15A**: LRU eviction by access time (30d), max cache size (1GB) |
-| 16 | Performance | Dep hash computation | **16A**: `sha256(JSON.stringify(Object.entries(deps).sort()))` via `@koi/hash` |
+| # | Area | Issue | Decision | Choice |
+|---|------|-------|----------|--------|
+| 1 | Architecture | ProposalGate location | L0 only | **1A**: Both `Proposal` type and `ProposalGate` interface in `@koi/core`. L1 reads it like GovernanceController. |
+| 2 | Architecture | Blast radius encoding | Pure data constant | **2A**: `PROPOSAL_GATE_REQUIREMENTS: Record<ChangeTarget, GateRequirement>` in L0 (like `MIN_TRUST_BY_KIND`). |
+| 3 | Architecture | ProposalGate surface | Narrow | **3A**: `submit + review + watch` only. |
+| 4 | Architecture | Relation to ApprovalRequest | Fully separate | **4A**: Distinct contract — different lifecycle, reviewer, and data model. |
+| 5 | Code Quality | ChangeTarget modeling | Flat string union | **5A**: One value per gate tier: `"brick:sandboxed" \| "brick:promoted" \| "bundle_l2" \| "l1_extension" \| "l1_core" \| "l0_interface" \| "sandbox_policy" \| "gateway_routing"`. Renamed brick variants to match TrustTier vocabulary. |
+| 6 | Code Quality | ReviewDecision vocabulary | "approved"/"rejected" | **6A**: `{ kind: "approved", reason? } \| { kind: "rejected", reason }`. Distinct from `ApprovalDecision`. |
+| 7 | Code Quality | ProposalId type | Branded string | **7A**: `Brand<string, "ProposalId">` + `proposalId()` factory. |
+| 8 | Code Quality | File organization | New file | **8A**: New `proposal.ts`. Do not extend `governance.ts` or `forge-types.ts`. |
+| 9 | Tests | ChangeTarget exhaustiveness | Runtime + types | **9A**: Runtime loop over `ALL_CHANGE_TARGETS` + `Record<ChangeTarget, GateRequirement>` compile-time. |
+| 10 | Tests | ProposalGate conformance | Stub + satisfies | **10A**: Async stubs with `satisfies ProposalGate`. Follows `ReputationBackend` test pattern. |
+| 11 | Tests | ProposalStatus coverage | All variants | **11A**: Explicit test per status variant (pending, approved, rejected, superseded, expired). |
+| 12 | Tests | PROPOSAL_GATE_REQUIREMENTS | Frozen + presence + key invariants | **12A**: Frozen + all 8 targets present + `brick:sandboxed` has no HITL + `l0_interface` requires HITL+fullTest. |
+| 13 | Performance | submit/review return type | T \| Promise<T> | **13A**: `ProposalResult \| Promise<ProposalResult>` and `void \| Promise<void>`. |
+| 14 | Performance | Proposal TTL field | Optional expiresAt | **14A**: `readonly expiresAt?: number \| undefined`. |
+| 15 | Performance | Watch callback | void \| Promise<void> | **15A**: `(event: ProposalEvent) => void \| Promise<void>`. |
+| 16 | Performance | Unsubscribe type | Plain function | **16A**: `ProposalUnsubscribe = () => void`. Consistent with `ConfigUnsubscribe`. |
 
 ---
 
-## Phase 1: L0 Type Changes (`@koi/core`)
+## Phase 1: Create `proposal.ts` (L0 types)
 
-Smallest blast radius — pure type changes that propagate errors downstream.
+**File**: `packages/core/src/proposal.ts`
 
-### 1.1 Extend `BrickRequires` with `packages` field
-- [ ] `packages/core/src/brick-store.ts` — Add `readonly packages?: Readonly<Record<string, string>>` to `BrickRequires` (line 30-37)
-- [ ] JSDoc: "npm package dependencies to install. Keys are package names, values are exact semver versions."
+### 1.1 Branded ProposalId + factory
+- [ ] `declare const __proposalBrand: unique symbol`
+- [ ] `type ProposalId = string & { readonly [__proposalBrand]: "ProposalId" }`
+- [ ] `function proposalId(raw: string): ProposalId` — identity cast factory
 
-### 1.2 Add `ExecutionContext` type and update `SandboxExecutor`
-- [ ] `packages/core/src/sandbox-executor.ts` — Add `ExecutionContext` interface:
-  ```typescript
-  export interface ExecutionContext {
-    readonly workspacePath?: string;
-  }
-  ```
-- [ ] `packages/core/src/sandbox-executor.ts` — Add optional 4th parameter to `SandboxExecutor.execute`:
-  ```typescript
-  execute(code: string, input: unknown, timeoutMs: number, context?: ExecutionContext) => ...
-  ```
-- [ ] Update API surface snapshot test
+### 1.2 ChangeTarget string union (8 gate tiers from arch doc table)
+```typescript
+type ChangeTarget =
+  | "brick:sandboxed"   // tool, skill — matches TrustTier "sandbox", auto verified
+  | "brick:promoted"    // middleware, channel — matches TrustTier "promoted", HITL required
+  | "bundle_l2"         // fork to forge store, shadows bundled L2 — auto
+  | "l1_extension"      // HITL + full agent test, takes effect at next startup
+  | "l1_core"           // HITL + full agent test, requires new binary
+  | "l0_interface"      // HITL + all agents test, requires new binary
+  | "sandbox_policy"    // HITL + meta-sandbox test, config push
+  | "gateway_routing";  // HITL + staging gateway test, config push
+```
+- [ ] `const ALL_CHANGE_TARGETS: readonly ChangeTarget[]` — for test exhaustiveness
 
-### 1.3 Verify L0 anti-leak
-- [ ] `@koi/core` has zero `import` statements from other packages
-- [ ] No function bodies or class definitions (only types/interfaces)
-- [ ] All properties are `readonly`
+### 1.3 ChangeKind string union
+```typescript
+type ChangeKind = "create" | "update" | "promote" | "delete" | "configure" | "extend";
+```
 
----
+### 1.4 ProposalStatus discriminated union (5 states)
+```typescript
+type ProposalStatus = "pending" | "approved" | "rejected" | "superseded" | "expired";
+```
 
-## Phase 2: `ForgeInputBase` DRY Refactor (`@koi/forge`)
+### 1.5 GateRequirement interface (per-tier requirements)
+```typescript
+interface GateRequirement {
+  readonly requiresHitl: boolean;
+  readonly requiresFullTest: boolean;
+  readonly takeEffectOn: "immediately" | "next_session" | "next_startup" | "next_binary" | "config_push";
+  readonly sandboxTestScope:
+    | "brick_only"
+    | "brick_plus_integration"
+    | "full_agent_test"
+    | "all_agents_test"
+    | "meta_sandbox"
+    | "staging_gateway";
+}
+```
 
-Extract repeated fields before adding new features.
+### 1.6 PROPOSAL_GATE_REQUIREMENTS constant
+```typescript
+const PROPOSAL_GATE_REQUIREMENTS: Readonly<Record<ChangeTarget, GateRequirement>> = Object.freeze({
+  "brick:sandboxed":  { requiresHitl: false, requiresFullTest: false, takeEffectOn: "immediately", sandboxTestScope: "brick_only" },
+  "brick:promoted":   { requiresHitl: true,  requiresFullTest: false, takeEffectOn: "next_session", sandboxTestScope: "brick_plus_integration" },
+  "bundle_l2":        { requiresHitl: false, requiresFullTest: false, takeEffectOn: "immediately", sandboxTestScope: "brick_only" },
+  "l1_extension":     { requiresHitl: true,  requiresFullTest: true,  takeEffectOn: "next_startup", sandboxTestScope: "full_agent_test" },
+  "l1_core":          { requiresHitl: true,  requiresFullTest: true,  takeEffectOn: "next_binary", sandboxTestScope: "full_agent_test" },
+  "l0_interface":     { requiresHitl: true,  requiresFullTest: true,  takeEffectOn: "next_binary", sandboxTestScope: "all_agents_test" },
+  "sandbox_policy":   { requiresHitl: true,  requiresFullTest: false, takeEffectOn: "config_push", sandboxTestScope: "meta_sandbox" },
+  "gateway_routing":  { requiresHitl: true,  requiresFullTest: false, takeEffectOn: "config_push", sandboxTestScope: "staging_gateway" },
+}) satisfies Record<ChangeTarget, GateRequirement>;
+```
 
-- [ ] `packages/forge/src/types.ts` — Define `ForgeInputBase`:
-  ```typescript
-  interface ForgeInputBase {
-    readonly name: string;
-    readonly description: string;
-    readonly tags?: readonly string[];
-    readonly files?: Readonly<Record<string, string>>;
-    readonly requires?: BrickRequires;
-    readonly classification?: DataClassification;
-    readonly contentMarkers?: readonly ContentMarker[];
-  }
-  ```
-- [ ] Refactor all 6 `ForgeInput` variants to use `ForgeInputBase & { ... }`
-- [ ] Verify `switch (input.kind)` discrimination still works
-- [ ] Run existing tests — no regressions
+### 1.7 ReviewDecision discriminated union
+```typescript
+type ReviewDecision =
+  | { readonly kind: "approved"; readonly reason?: string | undefined }
+  | { readonly kind: "rejected"; readonly reason: string };  // reason required on rejection
+```
 
----
+### 1.8 ProposalEvent discriminated union (4 kinds)
+```typescript
+type ProposalEvent =
+  | { readonly kind: "proposal:submitted"; readonly proposal: Proposal }
+  | { readonly kind: "proposal:reviewed"; readonly proposalId: ProposalId; readonly decision: ReviewDecision }
+  | { readonly kind: "proposal:expired"; readonly proposalId: ProposalId }
+  | { readonly kind: "proposal:superseded"; readonly proposalId: ProposalId; readonly supersededBy: ProposalId };
+```
 
-## Phase 3: `DependencyConfig` in `ForgeConfig` (`@koi/forge`)
+### 1.9 ProposalInput interface (what submitter provides)
+```typescript
+interface ProposalInput {
+  readonly submittedBy: AgentId;
+  readonly changeTarget: ChangeTarget;
+  readonly changeKind: ChangeKind;
+  readonly description: string;
+  readonly brickRef?: BrickRef | undefined;
+  readonly expiresAt?: number | undefined;
+  readonly metadata?: JsonObject | undefined;
+}
+```
 
-Add configuration for dependency management.
+### 1.10 Proposal interface (gate assigns id, status, submittedAt)
+```typescript
+interface Proposal {
+  readonly id: ProposalId;
+  readonly submittedBy: AgentId;
+  readonly changeTarget: ChangeTarget;
+  readonly changeKind: ChangeKind;
+  readonly description: string;
+  readonly brickRef?: BrickRef | undefined;
+  readonly status: ProposalStatus;
+  readonly submittedAt: number;
+  readonly expiresAt?: number | undefined;
+  readonly reviewedAt?: number | undefined;
+  readonly reviewDecision?: ReviewDecision | undefined;
+  /** Set when status is "superseded" — points to the replacing proposal. */
+  readonly supersededBy?: ProposalId | undefined;
+  readonly metadata?: JsonObject | undefined;
+}
+```
 
-- [ ] `packages/forge/src/config.ts` — Add `DependencyConfig` interface:
-  ```typescript
-  interface DependencyConfig {
-    readonly allowedPackages?: readonly string[];
-    readonly blockedPackages?: readonly string[];
-    readonly maxDependencies: number;
-    readonly installTimeoutMs: number;
-    readonly cacheDirOverride?: string;
-    readonly maxCacheSizeBytes: number;
-    readonly maxWorkspaceAgeDays: number;
-  }
-  ```
-- [ ] Add `dependencies: DependencyConfig` to `ForgeConfig`
-- [ ] Add defaults:
-  ```typescript
-  const DEFAULT_DEPENDENCY_CONFIG: DependencyConfig = {
-    maxDependencies: 20,
-    installTimeoutMs: 15_000,
-    maxCacheSizeBytes: 1_073_741_824, // 1GB
-    maxWorkspaceAgeDays: 30,
-  };
-  ```
-- [ ] Add Zod schema for `DependencyConfig`
-- [ ] Update `createDefaultForgeConfig` and `validateForgeConfig`
-- [ ] Increase `totalTimeoutMs` default from 30s to 60s
-- [ ] Update `config.test.ts` with new config fields
+### 1.11 ProposalResult + ProposalUnsubscribe types
+```typescript
+type ProposalResult = Result<Proposal, KoiError>;
+type ProposalUnsubscribe = () => void;
+```
 
----
+### 1.12 ProposalGate interface (narrow: submit + review + watch)
+```typescript
+interface ProposalGate {
+  readonly submit: (input: ProposalInput) => ProposalResult | Promise<ProposalResult>;
+  readonly review: (id: ProposalId, decision: ReviewDecision) => void | Promise<void>;
+  readonly watch: (
+    handler: (event: ProposalEvent) => void | Promise<void>,
+  ) => ProposalUnsubscribe;
+}
+```
 
-## Phase 4: Workspace Manager (`@koi/forge`)
+### 1.13 Imports
+```typescript
+import type { AgentId } from "./ecs.js";
+import type { BrickRef } from "./brick-snapshot.js";
+import type { JsonObject } from "./common.js";
+import type { KoiError, Result } from "./errors.js";
+```
 
-New module for per-brick workspace lifecycle.
-
-### 4.1 Create `workspace-manager.ts`
-- [ ] Create `packages/forge/src/workspace-manager.ts`
-- [ ] Implement:
-  - `computeDependencyHash(packages: Record<string, string>): string` — sorted JSON entries → SHA-256 via `@koi/hash`
-  - `resolveWorkspacePath(depHash: string, cacheDir?: string): string` — `$XDG_CACHE_HOME/koi/brick-workspaces/<depHash>/`
-  - `createBrickWorkspace(packages: Record<string, string>, config: DependencyConfig): Promise<Result<WorkspaceResult, ForgeError>>`:
-    1. Compute dep hash
-    2. Check if workspace exists (cache hit → return path, update access time)
-    3. Cache miss: create dir, write `package.json`, run `bun install --frozen-lockfile` with timeout
-    4. Return `{ workspacePath, cacheHit, installDurationMs }`
-  - `writeBrickEntry(workspacePath: string, implementation: string, brickName: string): Promise<string>` — writes `.ts` file, returns entry path
-  - `cleanupStaleWorkspaces(config: DependencyConfig): Promise<number>` — LRU eviction by access time
-
-### 4.2 Create `workspace-manager.test.ts` (unit tests, mocked I/O)
-- [ ] Tests for `computeDependencyHash`:
-  - Deterministic output (same deps → same hash)
-  - Order-independent (different insertion order → same hash)
-  - Different deps → different hash
-  - Empty deps → consistent hash
-- [ ] Tests for `resolveWorkspacePath`:
-  - XDG_CACHE_HOME respected
-  - Fallback to ~/.cache/koi
-- [ ] Tests for `createBrickWorkspace`:
-  - Cache hit (workspace exists) → returns immediately
-  - Cache miss → creates dir + package.json
-  - Install timeout → returns error
-  - Invalid package names → returns validation error
-- [ ] Tests for `writeBrickEntry`:
-  - Writes valid .ts file
-  - Returns correct path
-- [ ] Tests for `cleanupStaleWorkspaces`:
-  - Evicts workspaces older than maxWorkspaceAgeDays
-  - Respects maxCacheSizeBytes
-  - Doesn't evict recently-accessed workspaces
-
-### 4.3 Create integration test (real FS, env-gated)
-- [ ] `packages/forge/src/__tests__/workspace-integration.test.ts`
-- [ ] Gate behind `WORKSPACE_INTEGRATION` env var
-- [ ] Tests:
-  - Real `bun install` with a single small dep (e.g., `is-odd`)
-  - Workspace reuse on cache hit
-  - Module resolution works from workspace
-  - Cleanup removes stale dirs
-
----
-
-## Phase 5: Dependency Audit Gate (`@koi/forge`)
-
-Allowlist/denylist validation for brick dependencies.
-
-### 5.1 Create `dependency-audit.ts`
-- [ ] Create `packages/forge/src/dependency-audit.ts`
-- [ ] Implement `auditDependencies(packages: Record<string, string>, config: DependencyConfig): Result<void, ForgeError>`:
-  - Validate max dependency count
-  - Check each package against `blockedPackages` (exact match + glob)
-  - If `allowedPackages` set, check each package is in the allowlist
-  - Validate package names (no path traversal, no scoped injection)
-  - Validate version strings (exact semver only, no ranges/tags)
-- [ ] Export audit function
-
-### 5.2 Create `dependency-audit.test.ts` (adversarial)
-- [ ] Create `packages/forge/src/dependency-audit.test.ts`
-- [ ] Adversarial test cases:
-  - Typosquats (`lodas` when `lodash` allowed but not `lodas`)
-  - Scope injection (`@evil/lodash`)
-  - Blocked package detection
-  - Version range rejection (`^1.0.0`, `~1.0.0`, `*`, `latest`)
-  - Path traversal in package name (`../../../etc/passwd`)
-  - Max dependency count enforcement
-  - Empty dependency map (should pass)
-  - Allow/block overlap resolution
-  - Unicode in package names
-
----
-
-## Phase 6: Verify-Resolve Stage (`@koi/forge`)
-
-New pipeline stage between Static and Sandbox.
-
-### 6.1 Create `verify-resolve.ts`
-- [ ] Create `packages/forge/src/verify-resolve.ts`
-- [ ] Implement `verifyResolve(input: ForgeInput, config: ForgeConfig): Promise<Result<ResolveStageReport, ForgeError>>`:
-  1. If `input.requires?.packages` is undefined or empty → pass-through (no-op stage)
-  2. Run `auditDependencies()` — fail fast if audit fails
-  3. Run `createBrickWorkspace()` — create/reuse workspace
-  4. If brick has implementation → run `writeBrickEntry()` — pre-write .ts file
-  5. Run lazy `cleanupStaleWorkspaces()` (non-blocking, best-effort)
-  6. Return `ResolveStageReport` with `workspacePath`, `cacheHit`, `installDurationMs`
-- [ ] Add `"resolve"` to `VerificationStage` union in `types.ts`
-- [ ] Define `ResolveStageReport extends StageReport` with workspace metadata
-
-### 6.2 Update `verify.ts` pipeline
-- [ ] Insert resolve stage after Static, before Sandbox:
-  ```
-  Static → Resolve → Sandbox → Self-Test → Trust
-  ```
-- [ ] Pass `ResolveStageReport.workspacePath` to sandbox stage via `ExecutionContext`
-- [ ] Add timeout check between Resolve and Sandbox
-
-### 6.3 Create `verify-resolve.test.ts`
-- [ ] Tests:
-  - No packages → pass-through (no-op)
-  - Valid packages → workspace created, stage passes
-  - Blocked package → audit fails, stage fails
-  - Workspace cache hit → no install, fast pass
-  - Install timeout → stage fails with TIMEOUT error
-  - Invalid version string → audit fails
-
-### 6.4 Update `verify.test.ts`
-- [ ] Update pipeline tests to include resolve stage
-- [ ] Test 5-stage pipeline ordering
-- [ ] Test timeout propagation through resolve stage
-
----
-
-## Phase 7: Sandbox Executor Updates (`@koi/sandbox-executor`)
-
-### 7.1 Update `promoted-executor.ts` for `import()`
-- [ ] Replace `new Function("input", code)` with `import()` from workspace file
-- [ ] Accept `ExecutionContext` parameter (workspace path)
-- [ ] Implement query-string cache busting: `import(`${entryPath}?v=${contentHash}`)`
-- [ ] Replace unbounded `Map` with LRU cache (256-entry cap)
-- [ ] Fallback: if no workspace path, keep `new Function()` for backward compatibility
-- [ ] Add timeout enforcement via `AbortController` + `Promise.race()`
-
-### 7.2 Update `verify-sandbox.ts` to pass `ExecutionContext`
-- [ ] Pass `context.workspacePath` from resolve stage to sandbox executor
-- [ ] If no workspace, `context` is undefined (backward-compatible)
-
-### 7.3 Update `brick-conversion.ts` for trust-tier dispatch
-- [ ] Check `brick.trustTier`:
-  - `"promoted"` → use `import()` from workspace (pass `ExecutionContext`)
-  - `"sandbox"` / `"verified"` → use `executor.execute()` with workspace mount
-- [ ] Accept optional `workspacePath` parameter in `brickToTool()`
-
-### 7.4 Rewrite `promoted-executor.test.ts`
-- [ ] `import()` happy path — module loaded and executed
-- [ ] `import()` failure — file not found, syntax error
-- [ ] LRU eviction at boundary (256 → 257 entries)
-- [ ] Query-string cache busting — new content hash → fresh module
-- [ ] Timeout enforcement — hang → TIMEOUT error
-- [ ] Error classification — Permission, Crash
-- [ ] Backward compat — no context → falls back to `new Function()`
-
-### 7.5 Create `brick-conversion.test.ts` (TDD)
-- [ ] Baseline: sandbox tier → executor.execute() (current behavior)
-- [ ] New: promoted tier → import() path
-- [ ] Error wrapping — preserves code, message
-- [ ] No workspace → still works (backward compat)
-
----
-
-## Phase 8: ForgeRuntime + Hot Updates (`@koi/forge`)
-
-Wire workspace management into the runtime for cache invalidation and hot updates.
-
-### 8.1 Update `forge-runtime.ts`
-- [ ] Pass workspace path from resolve stage through to `brickToTool()`
-- [ ] On store change event → invalidate workspace entry file (not the whole workspace)
-- [ ] Re-forge workflow: detect dep change → new workspace (or reuse) → rewrite entry file → invalidate module cache (via new content hash)
-
-### 8.2 Workspace cleanup on brick removal
-- [ ] On `StoreChangeEvent.kind === "removed"` → mark workspace for cleanup if no other brick references the same dep hash
-- [ ] Lazy cleanup — don't block the event handler
-
-### 8.3 Update `forge-runtime.test.ts`
-- [ ] Test workspace path propagation to brickToTool
-- [ ] Test hot update: dep change → cache invalidation → fresh resolve
-
----
-
-## Phase 9: Provenance Updates (`@koi/core`)
-
-Record npm dependencies in SLSA provenance.
-
-- [ ] `packages/core/src/provenance.ts` — Add npm deps to `ForgeBuildDefinition.resolvedDependencies` as `ForgeResourceRef[]`:
-  ```typescript
-  { uri: "pkg:npm/zod@3.24.0", name: "zod" }
-  ```
-- [ ] Update attestation serializer in `@koi/forge` to include dep refs
-- [ ] Update `slsa-serializer.test.ts` with dep refs
-
----
-
-## Phase 10: Validate Static Validation for `packages` field
-
-### 10.1 Update `verify-static.ts`
-- [ ] Add `validatePackages(packages: Record<string, string>)`:
-  - Package name format validation (npm naming rules)
-  - Version string format validation (exact semver only)
-  - Max count check (against `config.dependencies.maxDependencies`)
-- [ ] Call `validatePackages()` from `validateRequires()` when `packages` field present
-
-### 10.2 Update `verify-static.test.ts`
-- [ ] Tests for packages validation:
-  - Valid packages → pass
-  - Invalid package name → fail
-  - Version range (not exact) → fail
-  - Exceeds max count → fail
-  - Empty packages → pass
-
----
-
-## Phase 11: Export + Index Updates
-
-- [ ] `packages/forge/src/index.ts` — Export new modules:
-  - `workspace-manager.ts` (createBrickWorkspace, computeDependencyHash, cleanupStaleWorkspaces)
-  - `dependency-audit.ts` (auditDependencies)
-  - `verify-resolve.ts` (verifyResolve)
-- [ ] `packages/core/src/index.ts` — Export `ExecutionContext`
-- [ ] Update `@koi/core` API surface snapshot
-
----
-
-## Phase 12: Verify
-
-- [ ] Run `bun run build` — clean compilation across all packages
-- [ ] Run `bun test` — all tests pass
-- [ ] Run `bun run lint` — Biome passes
-- [ ] Verify test coverage >= 80%
-- [ ] Anti-leak: `@koi/core` has zero imports from other packages
-- [ ] Anti-leak: L2 packages only import from L0 and L0u
-- [ ] Anti-leak: No vendor types in L0 or L1
+### 1.14 L0 anti-leak verification
+- [ ] No `import` from any `@koi/*` package (only intra-L0 `.js` imports)
+- [ ] No function bodies except branded type constructor + data constants
 - [ ] All interface properties are `readonly`
-- [ ] No `enum`, `any`, `as Type`, `!` assertions in new code
-- [ ] ESM-only with `.js` extensions in all import paths
-- [ ] No hardcoded secrets
+- [ ] Uses `.js` extensions in all import paths (ESM)
+
+---
+
+## Phase 2: Create `proposal.test.ts` (colocated unit tests)
+
+**File**: `packages/core/src/proposal.test.ts`
+
+### 2.1 `proposalId()` factory tests
+- [ ] `proposalId("test-123")` returns branded string
+- [ ] `typeof id === "string"` (structural string check)
+- [ ] Same input produces same output (`expect(id).toBe(proposalId("test-123"))`)
+
+### 2.2 `ALL_CHANGE_TARGETS` exhaustiveness test
+- [ ] Has exactly 8 entries
+- [ ] All 8 expected values are present
+- [ ] Is frozen / readonly (attempt mutation fails or array is frozen)
+
+### 2.3 `PROPOSAL_GATE_REQUIREMENTS` constant tests
+- [ ] Is frozen (`Object.isFrozen(PROPOSAL_GATE_REQUIREMENTS)`)
+- [ ] All `ALL_CHANGE_TARGETS` values have an entry (runtime loop)
+- [ ] `"brick:sandboxed"` has `requiresHitl: false` (lowest blast radius gate)
+- [ ] `"l0_interface"` has `requiresHitl: true` AND `requiresFullTest: true` (highest blast radius)
+- [ ] `"brick:sandboxed"` has `takeEffectOn: "immediately"`
+- [ ] `"l0_interface"` has `sandboxTestScope: "all_agents_test"`
+
+### 2.4 `ReviewDecision` discriminated union tests
+- [ ] `approved` variant: `{ kind: "approved" }` compiles, `reason` is optional
+- [ ] `approved` with reason: `{ kind: "approved", reason: "LGTM" }` compiles
+- [ ] `rejected` variant: `{ kind: "rejected", reason: "security risk" }` compiles
+- [ ] `rejected` requires `reason` field (TypeScript compile-time — comment explaining it)
+
+### 2.5 `ProposalStatus` variant tests
+- [ ] `"pending"` variant: typed Proposal stub with `status: "pending"` compiles
+- [ ] `"approved"` variant: `status: "approved"` compiles
+- [ ] `"rejected"` variant: `status: "rejected"` compiles
+- [ ] `"superseded"` variant: `status: "superseded"` compiles
+- [ ] `"expired"` variant: `status: "expired"` compiles
+
+### 2.6 `ProposalEvent` discriminated union tests (follow SnapshotEvent pattern)
+- [ ] `"proposal:submitted"` variant
+- [ ] `"proposal:reviewed"` variant with approved decision
+- [ ] `"proposal:expired"` variant
+- [ ] `"proposal:superseded"` variant with `supersededBy` field
+
+### 2.7 `Proposal` interface shape test
+- [ ] Full proposal compiles with all fields set
+- [ ] Minimal proposal (no optional fields) compiles
+- [ ] `brickRef`, `expiresAt`, `reviewedAt`, `reviewDecision`, `supersededBy`, `metadata` are all optional
+- [ ] `supersededBy` field accepts a `ProposalId` value
+
+### 2.8 `ProposalGate` interface conformance test (follows ReputationBackend pattern)
+- [ ] Stub minimal implementation compiles with `satisfies ProposalGate`
+- [ ] `submit` is a function
+- [ ] `review` is a function
+- [ ] `watch` is a function that returns a function (ProposalUnsubscribe)
+- [ ] Optional: verify `watch` returns something callable (smoke test)
+
+---
+
+## Phase 3: Update `index.ts` exports
+
+**File**: `packages/core/src/index.ts`
+
+Add after `// forge types` section (alphabetically: "proposal" comes after "provenance"):
+
+```typescript
+// proposal — unified change governance contract
+export type {
+  ChangeKind,
+  ChangeTarget,
+  GateRequirement,
+  Proposal,
+  ProposalEvent,
+  ProposalGate,
+  ProposalId,
+  ProposalInput,
+  ProposalResult,
+  ProposalStatus,
+  ProposalUnsubscribe,
+  ReviewDecision,
+} from "./proposal.js";
+export { ALL_CHANGE_TARGETS, PROPOSAL_GATE_REQUIREMENTS, proposalId } from "./proposal.js";
+```
+
+---
+
+## Phase 4: Update API surface snapshot
+
+- [ ] Run `bun run build` in `packages/core` (or `turbo build --filter=@koi/core`)
+- [ ] Run `bun test packages/core/src/__tests__/api-surface.test.ts --update-snapshots`
+- [ ] Verify snapshot diff is additive only (new proposal exports, nothing removed)
+
+---
+
+## Phase 5: Verify
+
+- [ ] `bun run build` — clean compilation, zero TypeScript errors
+- [ ] `bun test packages/core` — all tests pass including proposal.test.ts
+- [ ] `bun run lint` — Biome passes, no formatting issues
+- [ ] Coverage for proposal.ts >= 80% (all runtime code: factory + constant)
+- [ ] Anti-leak: `@koi/core` has zero imports from other `@koi/*` packages
+- [ ] No function bodies in proposal.ts except branded cast and data constants
+- [ ] All interface properties are `readonly`
+- [ ] No banned constructs: `enum`, `any`, `as Type`, `!`, `@ts-ignore`
+- [ ] ESM-only with `.js` extensions in all imports
 
 ---
 
 ## Files Summary
 
-### New Files (~8 files)
-| File | Package | LOC est. | Purpose |
-|------|---------|----------|---------|
-| `workspace-manager.ts` | @koi/forge | ~200 | Workspace creation, caching, cleanup |
-| `workspace-manager.test.ts` | @koi/forge | ~200 | Unit tests (mocked I/O) |
-| `dependency-audit.ts` | @koi/forge | ~100 | Allowlist/denylist validation |
-| `dependency-audit.test.ts` | @koi/forge | ~150 | Adversarial tests |
-| `verify-resolve.ts` | @koi/forge | ~100 | Pipeline stage: audit + install + pre-write |
-| `verify-resolve.test.ts` | @koi/forge | ~150 | Stage tests |
-| `brick-conversion.test.ts` | @koi/forge | ~100 | TDD for trust-tier dispatch |
-| `workspace-integration.test.ts` | @koi/forge | ~80 | Integration tests (env-gated) |
+| File | Action | Est. LOC | Purpose |
+|------|--------|----------|---------|
+| `packages/core/src/proposal.ts` | Create | ~195 | L0 types + constants + factory |
+| `packages/core/src/proposal.test.ts` | Create | ~175 | All type-shape + constant tests |
+| `packages/core/src/index.ts` | Modify | +15 lines | Export proposal types |
+| `packages/core/src/__tests__/__snapshots__/api-surface.test.ts.snap` | Regenerate | — | Updated API surface |
 
-### Modified Files (~12 files)
-| File | Package | Changes |
-|------|---------|---------|
-| `brick-store.ts` | @koi/core | Add `packages` to `BrickRequires` |
-| `sandbox-executor.ts` | @koi/core | Add `ExecutionContext` type + parameter |
-| `provenance.ts` | @koi/core | Add npm dep refs to provenance |
-| `types.ts` | @koi/forge | Extract `ForgeInputBase`, add `"resolve"` stage |
-| `config.ts` | @koi/forge | Add `DependencyConfig` section |
-| `verify.ts` | @koi/forge | Insert resolve stage into pipeline |
-| `verify-static.ts` | @koi/forge | Add `validatePackages()` |
-| `brick-conversion.ts` | @koi/forge | Trust-tier dispatch + workspace path |
-| `forge-runtime.ts` | @koi/forge | Workspace path propagation, hot update |
-| `promoted-executor.ts` | @koi/sandbox-executor | `import()` + LRU cache |
-| `index.ts` | @koi/forge | Export new modules |
-| `index.ts` | @koi/core | Export `ExecutionContext` |
-
-### Estimated Total
-- New code: ~1,080 LOC
-- Modified code: ~300 LOC changes
-- Tests: ~680 LOC (63% of new code is tests)
+**Total new code**: ~385 LOC (45% tests)
