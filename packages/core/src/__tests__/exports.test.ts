@@ -82,6 +82,7 @@ import type {
   // resolver
   Resolver,
   Result,
+  SchedulerComponent,
   // delegation
   ScopeChecker,
   // middleware
@@ -92,6 +93,8 @@ import type {
   SourceLanguage,
   // ecs
   SubsystemToken,
+  TaskHistoryFilter,
+  TaskRunRecord,
   // message
   TextBlock,
   Tool,
@@ -106,6 +109,9 @@ import type {
   TransitionReason,
   TrustTier,
   TurnContext,
+  WebhookComponent,
+  WebhookEndpointHealth,
+  WebhookSummary,
 } from "../index.js";
 import {
   ALL_BRICK_KINDS,
@@ -124,10 +130,12 @@ import {
   MIN_TRUST_BY_KIND,
   middlewareToken,
   RETRYABLE_DEFAULTS,
+  SCHEDULER,
   skillToken,
   token,
   toolToken,
   VALID_TRANSITIONS,
+  WEBHOOK,
 } from "../index.js";
 
 // Prevent type imports from being optimized away
@@ -227,7 +235,15 @@ type _TypeGuard =
   | AssertDefined<ToolResultPayload>
   | AssertDefined<ToolErrorPayload>
   | AssertDefined<NodeCapability>
-  | AssertDefined<CapabilityRegistry>;
+  | AssertDefined<CapabilityRegistry>
+  // scheduler component
+  | AssertDefined<SchedulerComponent>
+  | AssertDefined<TaskRunRecord>
+  | AssertDefined<TaskHistoryFilter>
+  // webhook component
+  | AssertDefined<WebhookComponent>
+  | AssertDefined<WebhookEndpointHealth>
+  | AssertDefined<WebhookSummary>;
 
 describe("export inventory", () => {
   test("all runtime values are defined", () => {
@@ -251,6 +267,8 @@ describe("export inventory", () => {
     expect(MIN_TRUST_BY_KIND).toBeDefined();
     expect(COMPONENT_PRIORITY).toBeDefined();
     expect(isToolCallPayload).toBeDefined();
+    expect(SCHEDULER).toBeDefined();
+    expect(WEBHOOK).toBeDefined();
   });
 
   test("runtime values are functions, strings, or objects", () => {
@@ -270,5 +288,7 @@ describe("export inventory", () => {
     expect(typeof DEFAULT_HEALTH_MONITOR_CONFIG).toBe("object");
     expect(typeof COMPONENT_PRIORITY).toBe("object");
     expect(typeof isToolCallPayload).toBe("function");
+    expect(typeof SCHEDULER).toBe("string");
+    expect(typeof WEBHOOK).toBe("string");
   });
 });

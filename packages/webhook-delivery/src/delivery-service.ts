@@ -9,6 +9,7 @@ import type {
   EventEnvelope,
   OutboundWebhookConfig,
   WebhookDeliveryStatus,
+  WebhookEndpointHealth,
   WebhookEventKind,
   WebhookPayload,
 } from "@koi/core";
@@ -49,6 +50,7 @@ export interface WebhookDeliveryServiceLogger {
 export interface WebhookDeliveryService {
   readonly start: () => Promise<void>;
   readonly dispose: () => void;
+  readonly health: () => readonly WebhookEndpointHealth[];
 }
 
 /**
@@ -133,17 +135,20 @@ export function createWebhookDeliveryService(
 
     if (result.ok) {
       cb.recordSuccess();
+      lastDeliveryTimes.set(webhook.url, clock());
       logger?.info(`Webhook delivered to ${webhook.url} (${result.latencyMs}ms)`);
       return;
     }
 
     // 410 Gone — permanent failure, no retry
     if (result.statusCode === 410) {
+      lastErrors.set(webhook.url, "410 Gone — permanent failure");
       logger?.warn(`Webhook endpoint ${webhook.url} returned 410 Gone — permanent failure`);
       return;
     }
 
     cb.recordFailure(result.statusCode);
+    lastErrors.set(webhook.url, result.error);
 
     if (attempt >= config.maxRetries) {
       logger?.warn(
@@ -196,7 +201,28 @@ export function createWebhookDeliveryService(
     }
   }
 
+  // Per-endpoint last successful delivery tracking
+  const lastDeliveryTimes = new Map<string, number>();
+  // Per-endpoint last error tracking
+  const lastErrors = new Map<string, string>();
+
   return {
+    health(): readonly WebhookEndpointHealth[] {
+      return activeWebhooks.map((webhook): WebhookEndpointHealth => {
+        const cb = circuitBreakers.get(webhook.url);
+        const snapshot = cb?.getSnapshot();
+        const isOpen = snapshot?.state === "OPEN";
+        return {
+          url: webhook.url,
+          ok: snapshot?.state === "CLOSED",
+          consecutiveFailures: snapshot?.failureCount ?? 0,
+          circuitBreakerOpen: isOpen,
+          lastDeliveryAt: lastDeliveryTimes.get(webhook.url),
+          lastError: lastErrors.get(webhook.url),
+        };
+      });
+    },
+
     async start(): Promise<void> {
       if (activeWebhooks.length === 0) {
         logger?.info("No active webhooks configured, skipping delivery service");

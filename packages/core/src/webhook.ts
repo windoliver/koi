@@ -49,6 +49,45 @@ export interface WebhookPayload {
   readonly data: unknown;
 }
 
+// ---------------------------------------------------------------------------
+// Agent-facing types (sanitized — no secrets)
+// ---------------------------------------------------------------------------
+
+/**
+ * Sanitized webhook summary for agent consumption — secrets stripped.
+ */
+export interface WebhookSummary {
+  readonly url: string;
+  readonly events: readonly WebhookEventKind[];
+  readonly description?: string | undefined;
+  readonly enabled: boolean;
+}
+
+/**
+ * Health status for a single webhook endpoint.
+ */
+export interface WebhookEndpointHealth {
+  readonly url: string;
+  readonly ok: boolean;
+  readonly consecutiveFailures: number;
+  readonly circuitBreakerOpen: boolean;
+  readonly lastDeliveryAt?: number | undefined;
+  readonly lastError?: string | undefined;
+}
+
+/**
+ * Agent-facing webhook component — read-only observability.
+ *
+ * Provides visibility into configured webhook endpoints and their
+ * delivery health. Registration/management stays manifest-driven.
+ */
+export interface WebhookComponent {
+  readonly list: () => readonly WebhookSummary[] | Promise<readonly WebhookSummary[]>;
+  readonly health: () =>
+    | readonly WebhookEndpointHealth[]
+    | Promise<readonly WebhookEndpointHealth[]>;
+}
+
 /**
  * Result of a single webhook delivery attempt.
  */

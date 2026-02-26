@@ -18,7 +18,9 @@
   "devDependencies": {
     "@koi/engine-loop": "workspace:*",
     "@koi/engine-pi": "workspace:*",
-    "@koi/model-router": "workspace:*"
+    "@koi/model-router": "workspace:*",
+    "@koi/scheduler": "workspace:*",
+    "@koi/scheduler-provider": "workspace:*"
   },
   "scripts": {
     "build": "tsup",

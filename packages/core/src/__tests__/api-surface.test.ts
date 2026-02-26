@@ -36,7 +36,10 @@ describe("@koi/core API surface", () => {
 
     test(`${subpath} has stable type surface`, () => {
       const dts = readFileSync(dtsPath, "utf-8");
-      expect(dts).toMatchSnapshot();
+      // Normalize chunk hash suffixes (e.g., "ecs-Czk0XWb5.js" → "ecs-HASH.js")
+      // so snapshots are stable across tsup/rollup versions.
+      const normalized = dts.replace(/([a-z-]+)-[A-Za-z0-9_-]{6,12}\.(js|d\.ts)/g, "$1-HASH.$2");
+      expect(normalized).toMatchSnapshot();
     });
   }
 });
