@@ -605,6 +605,16 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-semantic-retry": {
+      "name": "@koi/middleware-semantic-retry",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-soul": {
       "name": "@koi/middleware-soul",
       "version": "0.0.0",
@@ -1366,6 +1376,8 @@
     "@koi/middleware-sandbox": ["@koi/middleware-sandbox@workspace:packages/middleware-sandbox"],
 
     "@koi/middleware-sanitize": ["@koi/middleware-sanitize@workspace:packages/middleware-sanitize"],
+
+    "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/middleware-semantic-retry"],
 
     "@koi/middleware-soul": ["@koi/middleware-soul@workspace:packages/middleware-soul"],
 
