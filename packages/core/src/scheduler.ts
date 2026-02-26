@@ -108,6 +108,32 @@ export interface CronSchedule {
 }
 
 // ---------------------------------------------------------------------------
+// Task run history — immutable execution records for audit
+// ---------------------------------------------------------------------------
+
+/**
+ * Immutable record of a single task execution — for history/audit.
+ */
+export interface TaskRunRecord {
+  readonly taskId: TaskId;
+  readonly agentId: AgentId;
+  readonly status: "completed" | "failed";
+  readonly startedAt: number;
+  readonly completedAt: number;
+  readonly durationMs: number;
+  readonly error?: string | undefined;
+  readonly result?: unknown | undefined;
+  readonly retryAttempt: number;
+}
+
+export interface TaskHistoryFilter {
+  readonly agentId?: AgentId | undefined;
+  readonly status?: "completed" | "failed" | undefined;
+  readonly since?: number | undefined;
+  readonly limit?: number | undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Task filter for queries
 // ---------------------------------------------------------------------------
 
@@ -131,7 +157,9 @@ export type SchedulerEvent =
   | { readonly kind: "task:cancelled"; readonly taskId: TaskId }
   | { readonly kind: "task:recovered"; readonly taskId: TaskId; readonly retriesUsed: number }
   | { readonly kind: "schedule:created"; readonly schedule: CronSchedule }
-  | { readonly kind: "schedule:removed"; readonly scheduleId: ScheduleId };
+  | { readonly kind: "schedule:removed"; readonly scheduleId: ScheduleId }
+  | { readonly kind: "schedule:paused"; readonly scheduleId: ScheduleId }
+  | { readonly kind: "schedule:resumed"; readonly scheduleId: ScheduleId };
 
 // ---------------------------------------------------------------------------
 // Pluggable persistence backend
@@ -172,11 +200,53 @@ export interface TaskScheduler extends AsyncDisposable {
     options?: TaskOptions & { readonly timezone?: string | undefined },
   ) => ScheduleId | Promise<ScheduleId>;
   readonly unschedule: (id: ScheduleId) => boolean | Promise<boolean>;
+  readonly pause: (id: ScheduleId) => boolean | Promise<boolean>;
+  readonly resume: (id: ScheduleId) => boolean | Promise<boolean>;
   readonly query: (
     filter: TaskFilter,
   ) => readonly ScheduledTask[] | Promise<readonly ScheduledTask[]>;
   readonly stats: () => SchedulerStats;
+  readonly history: (
+    filter: TaskHistoryFilter,
+  ) => readonly TaskRunRecord[] | Promise<readonly TaskRunRecord[]>;
   readonly watch: (listener: (event: SchedulerEvent) => void) => () => void;
+}
+
+// ---------------------------------------------------------------------------
+// Agent-facing component (exposed via SCHEDULER token)
+// ---------------------------------------------------------------------------
+
+/**
+ * Agent-facing subset of TaskScheduler — exposed via SCHEDULER component token.
+ *
+ * Unlike TaskScheduler, this interface:
+ * - Omits agentId from submit/schedule (pinned by provider)
+ * - Omits watch (streaming not suitable for tool calls)
+ * - Omits AsyncDisposable (infrastructure lifecycle, not agent concern)
+ */
+export interface SchedulerComponent {
+  readonly submit: (
+    input: EngineInput,
+    mode: "spawn" | "dispatch",
+    options?: TaskOptions,
+  ) => TaskId | Promise<TaskId>;
+  readonly cancel: (id: TaskId) => boolean | Promise<boolean>;
+  readonly schedule: (
+    expression: string,
+    input: EngineInput,
+    mode: "spawn" | "dispatch",
+    options?: TaskOptions & { readonly timezone?: string | undefined },
+  ) => ScheduleId | Promise<ScheduleId>;
+  readonly unschedule: (id: ScheduleId) => boolean | Promise<boolean>;
+  readonly pause: (id: ScheduleId) => boolean | Promise<boolean>;
+  readonly resume: (id: ScheduleId) => boolean | Promise<boolean>;
+  readonly query: (
+    filter: TaskFilter,
+  ) => readonly ScheduledTask[] | Promise<readonly ScheduledTask[]>;
+  readonly stats: () => SchedulerStats | Promise<SchedulerStats>;
+  readonly history: (
+    filter: TaskHistoryFilter,
+  ) => readonly TaskRunRecord[] | Promise<readonly TaskRunRecord[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +260,7 @@ export interface SchedulerStats {
   readonly failed: number;
   readonly deadLettered: number;
   readonly activeSchedules: number;
+  readonly pausedSchedules: number;
 }
 
 // ---------------------------------------------------------------------------

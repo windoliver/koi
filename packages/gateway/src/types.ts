@@ -208,6 +208,20 @@ export interface GatewayConfig {
   readonly channelBindings?: readonly ChannelBinding[];
   /** Tool routing configuration. Undefined = tool routing disabled (backward compatible). Partial fields are merged with DEFAULT_TOOL_ROUTING_CONFIG. */
   readonly toolRouting?: Partial<ToolRoutingConfig> | undefined;
+  /** Port for canvas HTTP server. Undefined = disabled. */
+  readonly canvasPort?: number;
+  /** URL path prefix for canvas endpoints. Default: "/gateway/canvas". */
+  readonly canvasPath?: string;
+  /** Maximum canvas request body size in bytes. Default: 1_048_576 (1MB). */
+  readonly canvasMaxBodyBytes?: number;
+  /** Maximum number of stored surfaces. Default: 10_000. */
+  readonly canvasMaxSurfaces?: number;
+  /** Maximum SSE subscribers per surface. Default: 100. */
+  readonly canvasMaxSsePerSurface?: number;
+  /** Maximum total SSE subscribers across all surfaces. Default: 10_000. */
+  readonly canvasMaxSseTotal?: number;
+  /** SSE keep-alive interval in ms. Default: 15_000. */
+  readonly canvasSseKeepAliveMs?: number;
 }
 
 export const DEFAULT_GATEWAY_CONFIG: GatewayConfig = {

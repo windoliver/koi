@@ -9,6 +9,10 @@ import { swallowError } from "@koi/errors";
 import type { GatewayAuthenticator, HandshakeOptions } from "./auth.js";
 import { handleHandshake, startHeartbeatSweep } from "./auth.js";
 import { createBackpressureMonitor } from "./backpressure.js";
+import type { CanvasAuthenticator, CanvasServer } from "./canvas-routes.js";
+import type { CanvasSseManager } from "./canvas-sse.js";
+import type { SurfaceStore } from "./canvas-store.js";
+import { createCanvasWiring } from "./canvas-wiring.js";
 import { createNodeConnectionHandler } from "./node-connection.js";
 import type { NodeFrame } from "./node-handler.js";
 import { peekFrameKind } from "./node-handler.js";
@@ -77,6 +81,10 @@ export interface Gateway {
   readonly channelBindings: () => ReadonlyMap<string, string>;
   /** Send a NodeFrame to a connected compute node. */
   readonly sendToNode: (nodeId: string, frame: NodeFrame) => Result<number, KoiError>;
+  /** Returns the canvas server port, or undefined if canvas is not configured. */
+  readonly canvasPort: () => number | undefined;
+  /** Access the surface store for external use. Undefined if canvas is not configured. */
+  readonly surfaceStore: () => SurfaceStore | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +96,7 @@ export interface GatewayDeps {
   readonly auth: GatewayAuthenticator;
   readonly store?: SessionStore;
   readonly webhookAuth?: WebhookAuthenticator;
+  readonly canvasAuth?: CanvasAuthenticator;
 }
 
 /** Maximum frames buffered per disconnected session to prevent memory exhaustion. */
@@ -135,6 +144,9 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
   let stopNodeSweep: (() => void) | undefined;
   let webhookServer: WebhookServer | undefined;
   let scheduler: GatewayScheduler | undefined;
+  let canvasServer: CanvasServer | undefined;
+  let canvasSseManager: CanvasSseManager | undefined;
+  let canvasSurfaceStore: SurfaceStore | undefined;
 
   // Populate static channel bindings from config
   if (config.channelBindings !== undefined) {
@@ -579,6 +591,15 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
         await webhookServer.start();
       }
 
+      // Start canvas server if configured
+      if (config.canvasPort !== undefined) {
+        const wiring = createCanvasWiring(config, deps.canvasAuth);
+        canvasSurfaceStore = wiring.store;
+        canvasSseManager = wiring.sse;
+        canvasServer = wiring.server;
+        await canvasServer.start();
+      }
+
       // Start schedulers if configured
       if (config.schedulers !== undefined && config.schedulers.length > 0) {
         scheduler = createScheduler(config.schedulers, resolveAndDispatch);
@@ -590,6 +611,11 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
       toolRouter?.dispose();
       toolRouter = undefined;
       scheduler?.stop();
+      canvasSseManager?.dispose();
+      canvasSseManager = undefined;
+      canvasServer?.stop();
+      canvasServer = undefined;
+      canvasSurfaceStore = undefined;
       webhookServer?.stop();
       stopSweep?.();
       stopNodeSweep?.();
@@ -748,6 +774,14 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
 
     sendToNode(nodeId: string, frame: NodeFrame): Result<number, KoiError> {
       return nodeHandler.sendToNode(nodeId, frame, connMap);
+    },
+
+    canvasPort(): number | undefined {
+      return canvasServer?.port();
+    },
+
+    surfaceStore(): SurfaceStore | undefined {
+      return canvasSurfaceStore;
     },
   };
 }

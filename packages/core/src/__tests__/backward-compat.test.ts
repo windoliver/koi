@@ -33,6 +33,7 @@ import {
   RETRYABLE_DEFAULTS,
   rateLimit,
   runId,
+  SCHEDULER,
   scheduleId,
   sessionId,
   snapshotId,
@@ -43,6 +44,7 @@ import {
   turnId,
   VALID_TRANSITIONS,
   validation,
+  WEBHOOK,
 } from "../index.js";
 
 // ---------------------------------------------------------------------------
@@ -223,6 +225,8 @@ describe("well-known subsystem tokens backward compatibility", () => {
     expect(typeof EVENTS).toBe("string");
     expect(typeof DELEGATION).toBe("string");
     expect(typeof FILESYSTEM).toBe("string");
+    expect(typeof SCHEDULER).toBe("string");
+    expect(typeof WEBHOOK).toBe("string");
   });
 
   test("token values match expected names", () => {
@@ -232,6 +236,8 @@ describe("well-known subsystem tokens backward compatibility", () => {
     expect(EVENTS as string).toBe("events");
     expect(DELEGATION as string).toBe("delegation");
     expect(FILESYSTEM as string).toBe("filesystem");
+    expect(SCHEDULER as string).toBe("scheduler");
+    expect(WEBHOOK as string).toBe("webhook");
   });
 });
 

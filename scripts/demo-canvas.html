@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Koi Canvas — A2UI Demo</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         max-width: 960px; margin: 0 auto; padding: 32px 20px; color: #1a1a2e;
+         background: #f8f9fa; line-height: 1.6; }
+  h1 { margin-bottom: 4px; font-size: 1.8em; }
+  h2 { margin: 16px 0 8px; font-size: 1.3em; }
+  h3 { margin: 12px 0 6px; font-size: 1.1em; color: #555; }
+  p { margin: 6px 0; }
+  small { color: #888; }
+  hr { border: none; border-top: 1px solid #ddd; margin: 16px 0; }
+  .card { border: 1px solid #e0e0e0; border-radius: 12px; padding: 20px;
+          background: white; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin: 8px 0; }
+  .btn { padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer;
+         font-size: 14px; font-weight: 500; transition: all 0.2s; }
+  .btn-primary { background: #4f46e5; color: white; }
+  .btn-primary:hover { background: #4338ca; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(79,70,229,0.3); }
+  .btn-secondary { background: #e5e7eb; color: #374151; }
+  .btn-secondary:hover { background: #d1d5db; }
+  .btn-danger { background: #ef4444; color: white; }
+  .btn-danger:hover { background: #dc2626; }
+  .text-field { padding: 10px 14px; border: 1px solid #d1d5db; border-radius: 8px;
+                font-size: 14px; width: 100%; margin-top: 4px; background: white; }
+  .text-field:focus { outline: none; border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,0.1); }
+  .checkbox { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .checkbox input { width: 18px; height: 18px; accent-color: #4f46e5; }
+  label { display: block; margin: 8px 0; font-weight: 500; }
+  select { padding: 10px 14px; border: 1px solid #d1d5db; border-radius: 8px;
+           font-size: 14px; width: 100%; margin-top: 4px; }
+  .unknown { color: #888; font-style: italic; padding: 8px; border: 1px dashed #ccc; border-radius: 4px; }
+
+  /* Nav tabs */
+  .tabs { display: flex; gap: 0; border-bottom: 2px solid #e0e0e0; margin-bottom: 24px; }
+  .tab { padding: 10px 20px; cursor: pointer; font-weight: 500; color: #666;
+         border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.2s; user-select: none; }
+  .tab:hover { color: #4f46e5; }
+  .tab.active { color: #4f46e5; border-bottom-color: #4f46e5; }
+
+  /* Surface container */
+  .surface { display: none; animation: fadeIn 0.3s ease; }
+  .surface.active { display: block; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+  /* Header */
+  .header { margin-bottom: 24px; }
+  .header .subtitle { color: #666; font-size: 0.95em; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px;
+           background: #dbeafe; color: #1e40af; font-size: 0.75em; font-weight: 600; margin-left: 8px; vertical-align: middle; }
+  .badge-green { background: #dcfce7; color: #166534; }
+
+  /* JSON viewer */
+  .json-toggle { margin-top: 20px; }
+  .json-toggle summary { cursor: pointer; color: #4f46e5; font-size: 0.85em; font-weight: 500; }
+  .json-toggle pre { background: #1e1e2e; color: #cdd6f4; padding: 16px; border-radius: 8px;
+                     overflow-x: auto; font-size: 12px; line-height: 1.5; margin-top: 8px; }
+  .json-key { color: #89b4fa; }
+  .json-string { color: #a6e3a1; }
+  .json-number { color: #fab387; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Koi Canvas <span class="badge">A2UI v0.9</span></h1>
+  <p class="subtitle">Agent-generated UI surfaces rendered as HTML</p>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-surface="hello-world">Hello World</div>
+  <div class="tab" data-surface="dashboard">Dashboard</div>
+  <div class="tab" data-surface="form">Form</div>
+</div>
+
+<div id="surfaces"></div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Embedded A2UI surface data (serialized from @koi/canvas)
+// ---------------------------------------------------------------------------
+var SURFACES = {"hello":{"id":"hello-world","title":"Hello World","components":[{"id":"card","type":"Card","properties":{},"children":["heading","body"]},{"id":"heading","type":"Text","properties":{"text":"Hello, Canvas!","style":"heading"},"children":[]},{"id":"body","type":"Text","properties":{"text":"This is a live A2UI surface rendered from the Koi canvas API. Edit it via PATCH and watch it update in real time."},"children":[]}],"dataModel":{}},"dashboard":{"id":"dashboard","title":"Dashboard","components":[{"id":"row","type":"Row","properties":{},"children":["c1","c2","c3"]},{"id":"c1","type":"Card","properties":{},"children":["c1-title","c1-value","c1-btn"]},{"id":"c1-title","type":"Text","properties":{"text":"Active Agents","style":"caption"},"children":[]},{"id":"c1-value","type":"Text","properties":{"text":"12","style":"heading"},"children":[]},{"id":"c1-btn","type":"Button","properties":{"label":"View All","variant":"secondary"},"children":[]},{"id":"c2","type":"Card","properties":{},"children":["c2-title","c2-value","c2-btn"]},{"id":"c2-title","type":"Text","properties":{"text":"Tasks Today","style":"caption"},"children":[]},{"id":"c2-value","type":"Text","properties":{"text":"47","style":"heading"},"children":[]},{"id":"c2-btn","type":"Button","properties":{"label":"Details","variant":"secondary"},"children":[]},{"id":"c3","type":"Card","properties":{},"children":["c3-title","c3-value","c3-btn"]},{"id":"c3-title","type":"Text","properties":{"text":"Success Rate","style":"caption"},"children":[]},{"id":"c3-value","type":"Text","properties":{"text":"98.5%","style":"heading"},"children":[]},{"id":"c3-btn","type":"Button","properties":{"label":"Report","variant":"primary"},"children":[]}],"dataModel":{}},"form":{"id":"form","title":"Form","components":[{"id":"col","type":"Column","properties":{},"children":["title","name","email","divider","notify","submit"]},{"id":"title","type":"Text","properties":{"text":"Create Agent","style":"heading"},"children":[]},{"id":"name","type":"TextField","properties":{"label":"Agent Name","placeholder":"e.g. research-assistant"},"children":[]},{"id":"email","type":"TextField","properties":{"label":"Owner Email","placeholder":"you@example.com"},"children":[]},{"id":"divider","type":"Divider","properties":{},"children":[]},{"id":"notify","type":"CheckBox","properties":{"label":"Send notification on completion"},"children":[]},{"id":"submit","type":"Button","properties":{"label":"Create Agent","variant":"primary"},"children":[]}],"dataModel":{}}};
+
+// ---------------------------------------------------------------------------
+// A2UI -> HTML renderer (client-side, matches server-side renderer)
+// ---------------------------------------------------------------------------
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function lookup(components) {
+  var map = {};
+  for (var i = 0; i < components.length; i++) map[components[i].id] = components[i];
+  return map;
+}
+
+function renderComp(comp, map, visited) {
+  if (!comp) return '';
+  if (visited[comp.id]) return '';
+  visited[comp.id] = true;
+  var ch = (comp.children || []).map(function(cid) { return renderComp(map[cid], map, visited); }).join('\n');
+  var p = comp.properties || {};
+
+  switch (comp.type) {
+    case 'Row': return '<div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">' + ch + '</div>';
+    case 'Column': return '<div style="display:flex;flex-direction:column;gap:12px">' + ch + '</div>';
+    case 'Card': return '<div class="card">' + ch + '</div>';
+    case 'List': return '<ul>' + ch + '</ul>';
+    case 'Text':
+      var t = esc(p.text || '');
+      if (p.style === 'heading' || p.style === 'title') return '<h2>' + t + '</h2>';
+      if (p.style === 'subtitle') return '<h3>' + t + '</h3>';
+      if (p.style === 'caption') return '<small>' + t + '</small>';
+      return '<p>' + t + '</p>';
+    case 'Image':
+      var src = (p.src || '').match(/^https?:\/\//) ? esc(p.src) : '';
+      return '<img src="' + src + '" alt="' + esc(p.alt || '') + '" style="max-width:100%;border-radius:8px">';
+    case 'Divider': return '<hr>';
+    case 'Button':
+      var v = p.variant || 'primary';
+      return '<button class="btn btn-' + esc(v) + '">' + esc(p.label || 'Button') + '</button>';
+    case 'TextField':
+      var lbl = p.label ? '<label>' + esc(p.label) + '<br>' : '';
+      var end = p.label ? '</label>' : '';
+      return lbl + '<input type="text" placeholder="' + esc(p.placeholder || '') + '" class="text-field">' + end;
+    case 'CheckBox':
+      return '<label class="checkbox"><input type="checkbox"' + (p.checked ? ' checked' : '') + '> ' + esc(p.label || '') + '</label>';
+    case 'Slider':
+      return '<label>' + esc(p.label || '') + ' <input type="range" min="' + (p.min||0) + '" max="' + (p.max||100) + '"></label>';
+    case 'ChoicePicker':
+      var opts = (p.options || []).map(function(o) { return '<option>' + esc(o) + '</option>'; }).join('');
+      return '<label>' + esc(p.label || '') + '<br><select>' + opts + '</select></label>';
+    case 'DateTimeInput':
+      return '<label>' + esc(p.label || '') + '<br><input type="datetime-local" class="text-field"></label>';
+    default:
+      return '<div class="unknown">[' + esc(comp.type) + ': ' + esc(comp.id) + ']</div>';
+  }
+}
+
+function findRoots(components) {
+  var childSet = {};
+  components.forEach(function(c) { (c.children || []).forEach(function(id) { childSet[id] = true; }); });
+  return components.filter(function(c) { return !childSet[c.id]; });
+}
+
+function renderSurface(surface) {
+  var map = lookup(surface.components);
+  var roots = findRoots(surface.components);
+  return roots.map(function(r) { return renderComp(r, map, {}); }).join('\n');
+}
+
+function syntaxHighlight(json) {
+  return json.replace(/("(?:\\.|[^"\\])*")\s*:/g, '<span class="json-key">$1</span>:')
+             .replace(/:\s*("(?:\\.|[^"\\])*")/g, ': <span class="json-string">$1</span>')
+             .replace(/:\s*(\d+(?:\.\d+)?)/g, ': <span class="json-number">$1</span>');
+}
+
+// ---------------------------------------------------------------------------
+// Render all surfaces
+// ---------------------------------------------------------------------------
+var container = document.getElementById('surfaces');
+var entries = [
+  { key: 'hello', id: 'hello-world', desc: 'Simple card with heading and text' },
+  { key: 'dashboard', id: 'dashboard', desc: 'Three-card dashboard layout with stats' },
+  { key: 'form', id: 'form', desc: 'Interactive form with text fields and checkbox' },
+];
+
+entries.forEach(function(entry) {
+  var surface = SURFACES[entry.key];
+  var div = document.createElement('div');
+  div.className = 'surface' + (entry.id === 'hello-world' ? ' active' : '');
+  div.setAttribute('data-surface', entry.id);
+
+  var rendered = renderSurface(surface);
+  var jsonStr = JSON.stringify(surface, null, 2);
+
+  div.innerHTML = '<p style="color:#888;font-size:0.85em;margin-bottom:12px">' + esc(entry.desc) +
+    ' <span class="badge badge-green">' + surface.components.length + ' components</span></p>' +
+    rendered +
+    '<details class="json-toggle"><summary>View A2UI JSON</summary><pre>' +
+    syntaxHighlight(esc(jsonStr)) + '</pre></details>';
+  container.appendChild(div);
+});
+
+// ---------------------------------------------------------------------------
+// Tab switching
+// ---------------------------------------------------------------------------
+document.querySelectorAll('.tab').forEach(function(tab) {
+  tab.addEventListener('click', function() {
+    document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+    document.querySelectorAll('.surface').forEach(function(s) { s.classList.remove('active'); });
+    tab.classList.add('active');
+    var target = tab.getAttribute('data-surface');
+    document.querySelector('.surface[data-surface="' + target + '"]').classList.add('active');
+  });
+});
+</script>
+</body>
+</html>

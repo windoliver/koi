@@ -4,6 +4,7 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
+import { jsonResponse, matchPath, parseJsonBody } from "./http-helpers.js";
 import type { GatewayFrame, RoutingContext, Session } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -37,17 +38,6 @@ export interface WebhookAuthResult {
   readonly agentId: string;
   readonly routing?: RoutingContext;
   readonly metadata?: Readonly<Record<string, unknown>>;
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function jsonResponse(status: number, body: Record<string, unknown>): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -86,60 +76,25 @@ export function createWebhookServer(
           // Path check — require exact match or "/" boundary to avoid
           // "/webhook" matching "/webhookadmin"
           const url = new URL(request.url);
-          if (url.pathname !== prefix && !url.pathname.startsWith(`${prefix}/`)) {
+          const pathResult = matchPath(url.pathname, prefix);
+          if (!pathResult.match) {
             return jsonResponse(404, { ok: false, error: "Not found" });
           }
 
-          // Reject bodies that declare a too-large Content-Length early
-          const declaredLength = request.headers.get("Content-Length");
-          if (declaredLength !== null && parseInt(declaredLength, 10) > maxBodyBytes) {
-            return jsonResponse(413, { ok: false, error: "Payload too large" });
-          }
-
           // Extract channel/account from path: {prefix}/{channel}/{account?}
-          const pathAfterPrefix = url.pathname.slice(prefix.length);
-          const segments = pathAfterPrefix.split("/").filter((s) => s.length > 0);
-          const channel = segments[0] ?? undefined;
-          const account = segments[1] ?? undefined;
+          const channel = pathResult.segments[0] ?? undefined;
+          const account = pathResult.segments[1] ?? undefined;
 
           // Extract peer from header
           const peer = request.headers.get("X-Webhook-Peer") ?? "webhook";
 
-          // Read body with streaming size enforcement to prevent
-          // unbounded memory consumption when Content-Length is absent
-          let rawBody = "";
-          try {
-            if (request.body !== null) {
-              const reader = request.body.getReader();
-              const decoder = new TextDecoder();
-              let totalBytes = 0;
-
-              for (;;) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                totalBytes += value.byteLength;
-                if (totalBytes > maxBodyBytes) {
-                  reader.cancel();
-                  return jsonResponse(413, { ok: false, error: "Payload too large" });
-                }
-                rawBody += decoder.decode(value, { stream: true });
-              }
-              // Flush the decoder
-              rawBody += decoder.decode();
-            }
-          } catch {
-            return jsonResponse(400, { ok: false, error: "Failed to read request body" });
+          // Read and parse JSON body with streaming size enforcement
+          const bodyResult = await parseJsonBody(request, maxBodyBytes);
+          if (!bodyResult.ok) {
+            return jsonResponse(bodyResult.status, { ok: false, error: bodyResult.message });
           }
-
-          // Parse JSON body
-          let payload: unknown = null;
-          if (rawBody.length > 0) {
-            try {
-              payload = JSON.parse(rawBody);
-            } catch {
-              return jsonResponse(400, { ok: false, error: "Invalid JSON body" });
-            }
-          }
+          const rawBody = bodyResult.raw;
+          const payload = bodyResult.parsed;
 
           // Authenticate if authenticator provided — receives raw body
           // so it can verify HMAC signatures

@@ -313,6 +313,8 @@
         "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
         "@koi/model-router": "workspace:*",
+        "@koi/scheduler": "workspace:*",
+        "@koi/scheduler-provider": "workspace:*",
       },
     },
     "packages/engine-claude": {
@@ -1041,6 +1043,13 @@
         "croner": "9.0.0",
       },
     },
+    "packages/scheduler-provider": {
+      "name": "@koi/scheduler-provider",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/search": {
       "name": "@koi/search",
       "version": "0.0.0",
@@ -1217,6 +1226,13 @@
         "@koi/errors": "workspace:*",
         "@koi/hash": "workspace:*",
         "@koi/resolve": "workspace:*",
+      },
+    },
+    "packages/webhook-provider": {
+      "name": "@koi/webhook-provider",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
     },
     "packages/workspace": {
@@ -1762,6 +1778,8 @@
 
     "@koi/scheduler": ["@koi/scheduler@workspace:packages/scheduler"],
 
+    "@koi/scheduler-provider": ["@koi/scheduler-provider@workspace:packages/scheduler-provider"],
+
     "@koi/search": ["@koi/search@workspace:packages/search"],
 
     "@koi/self-test": ["@koi/self-test@workspace:packages/self-test"],
@@ -1795,6 +1813,8 @@
     "@koi/validation": ["@koi/validation@workspace:packages/validation"],
 
     "@koi/webhook-delivery": ["@koi/webhook-delivery@workspace:packages/webhook-delivery"],
+
+    "@koi/webhook-provider": ["@koi/webhook-provider@workspace:packages/webhook-provider"],
 
     "@koi/workspace": ["@koi/workspace@workspace:packages/workspace"],
 

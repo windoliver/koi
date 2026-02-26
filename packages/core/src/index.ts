@@ -217,12 +217,14 @@ export {
   MEMORY,
   middlewareToken,
   runId,
+  SCHEDULER,
   sessionId,
   skillToken,
   token,
   toolCallId,
   toolToken,
   turnId,
+  WEBHOOK,
   WORKSPACE,
 } from "./ecs.js";
 // engine
@@ -426,13 +428,16 @@ export type {
   CronSchedule,
   ScheduledTask,
   ScheduleId,
+  SchedulerComponent,
   SchedulerConfig,
   SchedulerEvent,
   SchedulerStats,
   ScheduleStore,
   TaskFilter,
+  TaskHistoryFilter,
   TaskId,
   TaskOptions,
+  TaskRunRecord,
   TaskScheduler,
   TaskStatus,
   TaskStore,
@@ -520,7 +525,10 @@ export { isProcessState, validateNonEmpty } from "./validation-utils.js";
 // webhook — outbound webhook delivery contract
 export type {
   OutboundWebhookConfig,
+  WebhookComponent,
   WebhookDeliveryStatus,
+  WebhookEndpointHealth,
   WebhookEventKind,
   WebhookPayload,
+  WebhookSummary,
 } from "./webhook.js";

@@ -2,7 +2,7 @@
 
 exports[`@koi/webhook-delivery API surface . has stable type surface 1`] = `
 "import { RetryConfig, CircuitBreakerConfig } from '@koi/errors';
-import { WebhookDeliveryStatus, EventBackend, OutboundWebhookConfig, KoiMiddleware } from '@koi/core';
+import { WebhookDeliveryStatus, WebhookEndpointHealth, EventBackend, OutboundWebhookConfig, KoiMiddleware } from '@koi/core';
 import { BrickDescriptor } from '@koi/resolve';
 
 /**
@@ -76,6 +76,7 @@ interface WebhookDeliveryServiceLogger {
 interface WebhookDeliveryService {
     readonly start: () => Promise<void>;
     readonly dispose: () => void;
+    readonly health: () => readonly WebhookEndpointHealth[];
 }
 /**
  * Creates a webhook delivery service that subscribes to an EventBackend stream
