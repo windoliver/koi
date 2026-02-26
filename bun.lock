@@ -284,14 +284,39 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/events-memory": {
-      "name": "@koi/events-memory",
+    "packages/event-delivery": {
+      "name": "@koi/event-delivery",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/hash": "workspace:*",
       },
+    },
+    "packages/events-memory": {
+      "name": "@koi/events-memory",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/event-delivery": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
       "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/events-sqlite": {
+      "name": "@koi/events-sqlite",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/event-delivery": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/sqlite-utils": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/registry-event-sourced": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -914,6 +939,14 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/sqlite-utils": {
+      "name": "@koi/sqlite-utils",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/store-fs": {
       "name": "@koi/store-fs",
       "version": "0.0.0",
@@ -933,7 +966,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
+        "@koi/sqlite-utils": "workspace:*",
         "@koi/validation": "workspace:*",
       },
       "devDependencies": {
@@ -1347,7 +1380,11 @@
 
     "@koi/eval": ["@koi/eval@workspace:packages/eval"],
 
+    "@koi/event-delivery": ["@koi/event-delivery@workspace:packages/event-delivery"],
+
     "@koi/events-memory": ["@koi/events-memory@workspace:packages/events-memory"],
+
+    "@koi/events-sqlite": ["@koi/events-sqlite@workspace:packages/events-sqlite"],
 
     "@koi/exec-approvals": ["@koi/exec-approvals@workspace:packages/exec-approvals"],
 
@@ -1460,6 +1497,8 @@
     "@koi/skill-scanner": ["@koi/skill-scanner@workspace:packages/skill-scanner"],
 
     "@koi/snapshot-chain-store": ["@koi/snapshot-chain-store@workspace:packages/snapshot-chain-store"],
+
+    "@koi/sqlite-utils": ["@koi/sqlite-utils@workspace:packages/sqlite-utils"],
 
     "@koi/store-fs": ["@koi/store-fs@workspace:packages/store-fs"],
 

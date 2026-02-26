@@ -1,5 +1,5 @@
 {
-  "name": "@koi/store-sqlite",
+  "name": "@koi/events-sqlite",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,10 +11,14 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/sqlite-utils": "workspace:*",
-    "@koi/validation": "workspace:*"
+    "@koi/event-delivery": "workspace:*",
+    "@koi/hash": "workspace:*",
+    "@koi/sqlite-utils": "workspace:*"
   },
   "devDependencies": {
+    "@koi/engine": "workspace:*",
+    "@koi/engine-pi": "workspace:*",
+    "@koi/registry-event-sourced": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },
   "scripts": {
