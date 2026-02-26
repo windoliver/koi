@@ -21,6 +21,21 @@ export { createBackpressureMonitor } from "./backpressure.js";
 // gateway
 export type { Gateway, GatewayDeps, SessionEvent } from "./gateway.js";
 export { createGateway } from "./gateway.js";
+// node handler
+export type {
+  CapabilitiesPayload,
+  HandshakePayload,
+  NodeFrame,
+  NodeFrameKind,
+} from "./node-handler.js";
+export {
+  encodeNodeFrame,
+  parseNodeFrame,
+  peekFrameKind,
+  validateCapabilitiesPayload,
+  validateCapacityPayload,
+  validateHandshakePayload,
+} from "./node-handler.js";
 // node registry
 export type {
   AdvertisedTool,

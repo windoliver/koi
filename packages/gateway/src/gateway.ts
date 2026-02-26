@@ -9,6 +9,9 @@ import { swallowError } from "@koi/errors";
 import type { GatewayAuthenticator, HandshakeOptions } from "./auth.js";
 import { handleHandshake, startHeartbeatSweep } from "./auth.js";
 import { createBackpressureMonitor } from "./backpressure.js";
+import { createNodeConnectionHandler } from "./node-connection.js";
+import type { NodeFrame } from "./node-handler.js";
+import { peekFrameKind } from "./node-handler.js";
 import type { NodeRegistry, NodeRegistryEvent } from "./node-registry.js";
 import { createInMemoryNodeRegistry } from "./node-registry.js";
 import type { FrameIdGenerator } from "./protocol.js";
@@ -70,6 +73,8 @@ export interface Gateway {
   readonly unbindChannel: (channelName: string) => boolean;
   /** Snapshot of current channel bindings. */
   readonly channelBindings: () => ReadonlyMap<string, string>;
+  /** Send a NodeFrame to a connected compute node. */
+  readonly sendToNode: (nodeId: string, frame: NodeFrame) => Result<number, KoiError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +126,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
 
   // let: assigned in start(), cleared in stop()
   let stopSweep: (() => void) | undefined;
+  let stopNodeSweep: (() => void) | undefined;
   let webhookServer: WebhookServer | undefined;
   let scheduler: GatewayScheduler | undefined;
 
@@ -145,6 +151,27 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
     }
   }
 
+  // Node connection handler (extracted module)
+  function emitNodeEvent(event: NodeRegistryEvent): void {
+    for (const handler of nodeEventHandlers) {
+      try {
+        handler(event);
+      } catch (err: unknown) {
+        swallowError(err, { package: "gateway", operation: "onNodeEvent" });
+      }
+    }
+  }
+  const nodeHandler = createNodeConnectionHandler(registry, emitNodeEvent, (connId: string) => {
+    const conn = connMap.get(connId);
+    if (conn !== undefined) {
+      conn.close(4014, "Replaced by reconnecting node");
+    }
+    // Note: cleanupNode already called by the handler before onEvict
+    connMap.delete(connId);
+    pendingHandshakes.delete(connId);
+    bp.remove(connId);
+  });
+
   function closeConnection(connId: string, code: number, reason: string): void {
     const conn = connMap.get(connId);
     if (conn !== undefined) {
@@ -154,6 +181,14 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
   }
 
   function cleanup(connId: string): void {
+    // Node connection cleanup (delegated to extracted handler)
+    if (nodeHandler.cleanupNode(connId)) {
+      connMap.delete(connId);
+      pendingHandshakes.delete(connId);
+      bp.remove(connId);
+      return; // Node connections don't have sessions
+    }
+
     const sessionId = sessionByConn.get(connId);
     sessionByConn.delete(connId);
     connMap.delete(connId);
@@ -323,6 +358,14 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
         },
       );
 
+      stopNodeSweep = nodeHandler.startNodeSweep(
+        config.nodeHeartbeatTimeoutMs,
+        config.sweepIntervalMs,
+        (nodeId: string, connId: string) => {
+          closeConnection(connId, 4013, `Node heartbeat expired: ${nodeId}`);
+        },
+      );
+
       await deps.transport.listen(port, {
         onOpen(conn: TransportConnection): void {
           if (deps.transport.connections() > config.maxConnections) {
@@ -336,94 +379,116 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
 
           connMap.set(conn.id, conn);
 
-          const handshakeOptions: HandshakeOptions = {
-            minProtocolVersion: config.minProtocolVersion,
-            maxProtocolVersion: config.maxProtocolVersion,
-            capabilities: effectiveCapabilities,
-            ...(config.includeSnapshot
-              ? {
-                  snapshot: {
-                    serverTime: Date.now(),
-                    activeConnections: deps.transport.connections(),
-                  },
-                }
-              : {}),
-          };
-
-          void handleHandshake(
-            conn,
-            deps.auth,
-            config.authTimeoutMs,
-            handshakeOptions,
-            (handler) => {
-              pendingHandshakes.set(conn.id, handler);
-            },
-          ).then(
-            async ({ session, connectFrame }) => {
+          // First-message router: peek at `kind` to distinguish clients from nodes
+          const authTimer = setTimeout(() => {
+            if (pendingHandshakes.has(conn.id)) {
               pendingHandshakes.delete(conn.id);
-
-              // --- Session resume path ---
-              if (connectFrame.resume !== undefined) {
-                const { sessionId } = connectFrame.resume;
-                const disc = disconnected.get(sessionId);
-                if (disc === undefined) {
-                  // Session expired or never existed
-                  conn.send(
-                    createErrorFrame(0, "SESSION_EXPIRED", "Session not found or expired", nextId),
-                  );
-                  conn.close(4011, "Session expired");
-                  cleanup(conn.id);
-                  return;
-                }
-
-                // Cancel TTL timer and restore session
-                clearTimeout(disc.timer);
-                disconnected.delete(sessionId);
-
-                // Restore tracker
-                trackers.set(sessionId, disc.tracker);
-
-                // Bind new connection to existing session
-                sessionByConn.set(conn.id, sessionId);
-                connBySession.set(sessionId, conn.id);
-
-                // Replay pending frames
-                const pending = disc.pendingFrames;
-                for (const pendingFrame of pending) {
-                  conn.send(encodeFrame(pendingFrame));
-                }
-
-                // Tracker state is preserved from before disconnect — no reset needed.
-                // The client's lastSeq is for server→client replay, not client→server tracking.
-
-                const existingSession = await store.get(sessionId);
-                if (existingSession.ok) {
-                  emitSessionEvent({
-                    kind: "resumed",
-                    session: existingSession.value,
-                    pendingFrameCount: pending.length,
-                  });
-                }
-                return;
-              }
-
-              // --- Normal (new session) path ---
-              const setResult = await store.set(session);
-              if (!setResult.ok) {
-                swallowError(setResult.error, { package: "gateway", operation: "store.set" });
-                conn.close(4008, "Session store failure");
-                cleanup(conn.id);
-                return;
-              }
-              sessionByConn.set(conn.id, session.id);
-              connBySession.set(session.id, conn.id);
-              trackers.set(session.id, createSequenceTracker(config.dedupWindowSize));
-              emitSessionEvent({ kind: "created", session });
-            },
-            () => {
+              conn.close(4001, "Auth timeout");
               cleanup(conn.id);
-            },
-          );
+            }
+          }, config.authTimeoutMs);
+
+          pendingHandshakes.set(conn.id, (data: string) => {
+            clearTimeout(authTimer);
+            pendingHandshakes.delete(conn.id);
+
+            const kind = peekFrameKind(data);
+
+            if (kind === "connect") {
+              // Client path: delegate to handleHandshake, feeding data via onMessage callback
+              void handleHandshake(
+                conn,
+                deps.auth,
+                config.authTimeoutMs,
+                {
+                  minProtocolVersion: config.minProtocolVersion,
+                  maxProtocolVersion: config.maxProtocolVersion,
+                  capabilities: effectiveCapabilities,
+                  ...(config.includeSnapshot
+                    ? {
+                        snapshot: {
+                          serverTime: Date.now(),
+                          activeConnections: deps.transport.connections(),
+                        },
+                      }
+                    : {}),
+                } satisfies HandshakeOptions,
+                (handler) => {
+                  // Feed the already-received data immediately
+                  handler(data);
+                },
+              ).then(
+                async ({ session, connectFrame }) => {
+                  // --- Session resume path ---
+                  if (connectFrame.resume !== undefined) {
+                    const { sessionId } = connectFrame.resume;
+                    const disc = disconnected.get(sessionId);
+                    if (disc === undefined) {
+                      conn.send(
+                        createErrorFrame(
+                          0,
+                          "SESSION_EXPIRED",
+                          "Session not found or expired",
+                          nextId,
+                        ),
+                      );
+                      conn.close(4011, "Session expired");
+                      cleanup(conn.id);
+                      return;
+                    }
+
+                    clearTimeout(disc.timer);
+                    disconnected.delete(sessionId);
+                    trackers.set(sessionId, disc.tracker);
+                    sessionByConn.set(conn.id, sessionId);
+                    connBySession.set(sessionId, conn.id);
+
+                    const pending = disc.pendingFrames;
+                    for (const pendingFrame of pending) {
+                      conn.send(encodeFrame(pendingFrame));
+                    }
+
+                    const existingSession = await store.get(sessionId);
+                    if (existingSession.ok) {
+                      emitSessionEvent({
+                        kind: "resumed",
+                        session: existingSession.value,
+                        pendingFrameCount: pending.length,
+                      });
+                    }
+                    return;
+                  }
+
+                  // --- Normal (new session) path ---
+                  const setResult = await store.set(session);
+                  if (!setResult.ok) {
+                    swallowError(setResult.error, { package: "gateway", operation: "store.set" });
+                    conn.close(4008, "Session store failure");
+                    cleanup(conn.id);
+                    return;
+                  }
+                  sessionByConn.set(conn.id, session.id);
+                  connBySession.set(session.id, conn.id);
+                  trackers.set(session.id, createSequenceTracker(config.dedupWindowSize));
+                  emitSessionEvent({ kind: "created", session });
+                },
+                () => {
+                  cleanup(conn.id);
+                },
+              );
+              return;
+            }
+
+            if (kind?.startsWith("node:")) {
+              // Node path
+              nodeHandler.handleFirstMessage(conn, data);
+              return;
+            }
+
+            // Unknown first message
+            conn.close(4002, "Invalid first message: unrecognized kind");
+            cleanup(conn.id);
+          });
         },
 
         onMessage(conn: TransportConnection, data: string): void {
@@ -432,6 +497,12 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
             handshakeHandler(data);
             return;
           }
+          // Node messages
+          if (nodeHandler.isNodeConnection(conn.id)) {
+            nodeHandler.handleMessage(conn, data);
+            return;
+          }
+          // Client messages
           void handlePostHandshake(conn, data);
         },
 
@@ -465,6 +536,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
       scheduler?.stop();
       webhookServer?.stop();
       stopSweep?.();
+      stopNodeSweep?.();
       // Clean up TTL timers
       for (const disc of disconnected.values()) {
         clearTimeout(disc.timer);
@@ -480,6 +552,7 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
       connBySession.clear();
       trackers.clear();
       pendingHandshakes.clear();
+      nodeHandler.clear();
     },
 
     sessions(): SessionStore {
@@ -615,6 +688,10 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
 
     channelBindings(): ReadonlyMap<string, string> {
       return channelBindingMap;
+    },
+
+    sendToNode(nodeId: string, frame: NodeFrame): Result<number, KoiError> {
+      return nodeHandler.sendToNode(nodeId, frame, connMap);
     },
   };
 }
