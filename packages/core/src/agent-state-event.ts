@@ -30,6 +30,8 @@ export interface AgentRegisteredEvent {
   readonly agentId: AgentId;
   readonly agentType: "copilot" | "worker";
   readonly parentId?: AgentId | undefined;
+  /** Immutable provenance — the agent that spawned this one. */
+  readonly spawner?: AgentId | undefined;
   readonly metadata: Readonly<Record<string, unknown>>;
   readonly registeredAt: number;
 }
@@ -125,7 +127,11 @@ export function evolveRegistryEntry(
           lastTransitionAt: event.registeredAt,
         },
       };
-      return event.parentId !== undefined ? { ...base, parentId: event.parentId } : base;
+      return {
+        ...base,
+        ...(event.parentId !== undefined ? { parentId: event.parentId } : {}),
+        ...(event.spawner !== undefined ? { spawner: event.spawner } : {}),
+      };
     }
 
     case "agent_transitioned": {

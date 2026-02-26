@@ -153,6 +153,23 @@ describe("evolveRegistryEntry — agent_registered", () => {
     expect("parentId" in (result ?? {})).toBe(false);
   });
 
+  test("sets spawner when provided", () => {
+    const event: AgentRegisteredEvent = {
+      ...REGISTERED_WITH_PARENT,
+      spawner: agentId("spawner-1"),
+    };
+    const result = evolveRegistryEntry(undefined, event);
+
+    expect(result?.spawner).toBe(agentId("spawner-1"));
+  });
+
+  test("omits spawner when not provided", () => {
+    const result = evolveRegistryEntry(undefined, REGISTERED_EVENT);
+
+    expect(result?.spawner).toBeUndefined();
+    expect("spawner" in (result ?? {})).toBe(false);
+  });
+
   test("re-register replaces existing state", () => {
     const existing = evolveRegistryEntry(undefined, REGISTERED_EVENT);
     const reRegistered = evolveRegistryEntry(existing, {

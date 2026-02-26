@@ -3,7 +3,8 @@
  * transitions and fires events for parent-side observation.
  *
  * Watches the registry for the specific child's transitions and maps them
- * to simplified ChildLifecycleEvent types.
+ * to simplified ChildLifecycleEvent types. Supports signal/terminate for
+ * parent-initiated control.
  */
 
 import type { AgentId, AgentRegistry, ChildHandle, ChildLifecycleEvent } from "@koi/core";
@@ -16,6 +17,7 @@ export function createChildHandle(
   childId: AgentId,
   name: string,
   registry: AgentRegistry,
+  abortController?: AbortController,
 ): ChildHandle {
   const listeners = new Set<(event: ChildLifecycleEvent) => void>();
   let unsubscribe: (() => void) | undefined; // let justified: set once, cleared on cleanup
@@ -33,8 +35,13 @@ export function createChildHandle(
         notify({ kind: "started", childId });
       }
 
-      // Any transition to terminated
+      // Any transition to terminated — map reason to completed/error/terminated
       if (event.to === "terminated") {
+        if (event.reason.kind === "completed") {
+          notify({ kind: "completed", childId });
+        } else if (event.reason.kind === "error") {
+          notify({ kind: "error", childId, cause: event.reason.cause });
+        }
         notify({ kind: "terminated", childId });
         cleanup();
       }
@@ -54,6 +61,29 @@ export function createChildHandle(
     }
   }
 
+  async function signal(kind: string): Promise<void> {
+    notify({ kind: "signaled", childId, signal: kind });
+    abortController?.abort(kind);
+  }
+
+  async function terminate(_reason?: string): Promise<void> {
+    const entry = await registry.lookup(childId);
+    if (entry === undefined || entry.status.phase === "terminated") return;
+
+    const result = await registry.transition(childId, "terminated", entry.status.generation, {
+      kind: "evicted",
+    });
+
+    // Retry once on CAS conflict (entry may have moved between lookup and transition)
+    if (!result.ok && result.error.code === "CONFLICT") {
+      const retryEntry = await registry.lookup(childId);
+      if (retryEntry === undefined || retryEntry.status.phase === "terminated") return;
+      await registry.transition(childId, "terminated", retryEntry.status.generation, {
+        kind: "evicted",
+      });
+    }
+  }
+
   return {
     childId,
     name,
@@ -63,5 +93,7 @@ export function createChildHandle(
         listeners.delete(listener);
       };
     },
+    signal,
+    terminate,
   };
 }

@@ -346,13 +346,18 @@ export type ChildLifecycleEvent =
   | { readonly kind: "started"; readonly childId: AgentId }
   | { readonly kind: "completed"; readonly childId: AgentId }
   | { readonly kind: "error"; readonly childId: AgentId; readonly cause?: unknown }
+  | { readonly kind: "signaled"; readonly childId: AgentId; readonly signal: string }
   | { readonly kind: "terminated"; readonly childId: AgentId };
 
-/** Handle for monitoring a child agent's lifecycle. */
+/** Handle for monitoring and controlling a child agent's lifecycle. */
 export interface ChildHandle {
   readonly childId: AgentId;
   readonly name: string;
   readonly onEvent: (listener: (event: ChildLifecycleEvent) => void) => () => void;
+  /** Send a named signal to the child. Fires a "signaled" event to listeners. */
+  readonly signal: (kind: string) => void | Promise<void>;
+  /** Terminate the child agent. No-op if already terminated. Retries once on CAS conflict. */
+  readonly terminate: (reason?: string) => void | Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

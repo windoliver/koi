@@ -10,7 +10,12 @@ import { createInMemoryRegistry } from "./registry.js";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function entry(id: string, parentId?: string, phase: ProcessState = "created"): RegistryEntry {
+function entry(
+  id: string,
+  parentId?: string,
+  phase: ProcessState = "created",
+  spawner?: string,
+): RegistryEntry {
   return {
     agentId: agentId(id),
     status: {
@@ -23,6 +28,7 @@ function entry(id: string, parentId?: string, phase: ProcessState = "created"): 
     metadata: {},
     registeredAt: Date.now(),
     ...(parentId !== undefined ? { parentId: agentId(parentId) } : {}),
+    ...(spawner !== undefined ? { spawner: agentId(spawner) } : {}),
   };
 }
 
@@ -108,5 +114,70 @@ describe("ProcessTree", () => {
 
     expect(tree.size()).toBe(0);
     expect(tree.childrenOf(agentId("root"))).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lineage (spawner chain)
+// ---------------------------------------------------------------------------
+
+describe("ProcessTree lineage", () => {
+  let registry: InMemoryRegistry;
+  let tree: ProcessTree;
+
+  beforeEach(() => {
+    registry = createInMemoryRegistry();
+    tree = createProcessTree(registry);
+  });
+
+  afterEach(async () => {
+    await tree[Symbol.asyncDispose]();
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("lineage returns spawner chain", () => {
+    registry.register(entry("root"));
+    registry.register(entry("child", "root", "created", "root"));
+    registry.register(entry("grandchild", "child", "created", "child"));
+
+    const lin = tree.lineage(agentId("grandchild"));
+    expect(lin).toEqual([agentId("child"), agentId("root")]);
+  });
+
+  test("lineage returns empty array for root agent", () => {
+    registry.register(entry("root"));
+
+    expect(tree.lineage(agentId("root"))).toEqual([]);
+  });
+
+  test("lineage returns empty for unknown agent", () => {
+    expect(tree.lineage(agentId("nonexistent"))).toEqual([]);
+  });
+
+  test("spawner tracked on register", () => {
+    registry.register(entry("root"));
+    registry.register(entry("child", "root", "created", "root"));
+
+    const lin = tree.lineage(agentId("child"));
+    expect(lin).toEqual([agentId("root")]);
+  });
+
+  test("spawner cleaned up on deregister", () => {
+    registry.register(entry("root"));
+    registry.register(entry("child", "root", "created", "root"));
+
+    registry.deregister(agentId("child"));
+
+    expect(tree.lineage(agentId("child"))).toEqual([]);
+  });
+
+  test("lineage handles deep chain", () => {
+    registry.register(entry("a"));
+    registry.register(entry("b", "a", "created", "a"));
+    registry.register(entry("c", "b", "created", "b"));
+    registry.register(entry("d", "c", "created", "c"));
+
+    const lin = tree.lineage(agentId("d"));
+    expect(lin).toEqual([agentId("c"), agentId("b"), agentId("a")]);
   });
 });

@@ -2,9 +2,9 @@
  * Cascading termination — automatically terminates descendant agents when
  * a parent transitions to "terminated".
  *
- * Watches the registry for terminated transitions, walks the process tree to
- * find all descendants, and CAS-transitions each to "terminated".
- * CAS conflicts are silently ignored (child already moved on).
+ * Uses inline BFS with copilot subtree pruning: copilot children (and their
+ * entire subtrees) are skipped during cascade because copilots survive
+ * independently per the architecture doc.
  *
  * Supervision-aware: when a supervised child terminates, cascading to its
  * descendants is deferred to the supervision reconciler (which may restart
@@ -13,7 +13,6 @@
  */
 
 import type { AgentId, AgentRegistry } from "@koi/core";
-import { isPromise } from "./is-promise.js";
 import type { ProcessTree } from "./process-tree.js";
 
 // ---------------------------------------------------------------------------
@@ -48,33 +47,8 @@ export function createCascadingTermination(
       return;
     }
 
-    const descendants = tree.descendantsOf(event.agentId);
-    for (const childId of descendants) {
-      const entry = registry.lookup(childId);
-
-      // Handle async registries gracefully via fire-and-forget
-      if (isPromise(entry)) {
-        void entry.then((resolved) => {
-          if (resolved === undefined || resolved.status.phase === "terminated") return;
-          const result = registry.transition(childId, "terminated", resolved.status.generation, {
-            kind: "evicted",
-          });
-          void result;
-        });
-        continue;
-      }
-
-      if (entry === undefined || entry.status.phase === "terminated") continue;
-
-      const result = registry.transition(childId, "terminated", entry.status.generation, {
-        kind: "evicted",
-      });
-
-      // Handle async transition result (fire-and-forget, CAS conflict is expected)
-      if (isPromise(result)) {
-        void result;
-      }
-    }
+    // Inline BFS with copilot subtree pruning
+    void cascadeTerminate(registry, tree, event.agentId);
   });
 
   return {
@@ -82,4 +56,44 @@ export function createCascadingTermination(
       unsubscribe();
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Internal BFS cascade
+// ---------------------------------------------------------------------------
+
+async function cascadeTerminate(
+  registry: AgentRegistry,
+  tree: ProcessTree,
+  terminatedAgentId: AgentId,
+): Promise<void> {
+  const queue: AgentId[] = [...tree.childrenOf(terminatedAgentId)];
+  let i = 0; // let justified: index pointer avoids O(n) shift per iteration
+
+  while (i < queue.length) {
+    // biome-ignore lint/style/noNonNullAssertion: i < queue.length guarantees element exists
+    const childId = queue[i]!;
+    i++;
+
+    const entry = await registry.lookup(childId);
+
+    // Skip copilots — they survive parent death. Also skip their entire subtree.
+    if (entry !== undefined && entry.agentType === "copilot") {
+      continue;
+    }
+
+    // Skip already-terminated
+    if (entry === undefined || entry.status.phase === "terminated") continue;
+
+    // CAS-transition to terminated (conflict is expected, silently ignored)
+    await registry.transition(childId, "terminated", entry.status.generation, {
+      kind: "evicted",
+    });
+
+    // Enqueue this child's children for further cascade
+    const grandchildren = tree.childrenOf(childId);
+    for (const gc of grandchildren) {
+      queue.push(gc);
+    }
+  }
 }

@@ -1002,6 +1002,7 @@ describe("SupervisionReconciler", () => {
 
       // Terminate unrelated parent — should cascade normally
       registry.transition(agentId("unrelated"), "terminated", 0, { kind: "completed" });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
       expect(registry.lookup(agentId("unrelated-child"))?.status.phase).toBe("terminated");
 
@@ -1034,6 +1035,7 @@ describe("SupervisionReconciler", () => {
 
       // Terminate the supervisor itself — NOT a supervised child, so cascading proceeds
       registry.transition(agentId("sup"), "terminated", 0, { kind: "completed" });
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
       // All descendants should be cascade-terminated
       expect(registry.lookup(agentId("child"))?.status.phase).toBe("terminated");

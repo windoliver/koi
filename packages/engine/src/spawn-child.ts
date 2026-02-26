@@ -29,6 +29,8 @@ function createNoopChildHandle(childId: AgentId, name: string): ChildHandle {
     onEvent: (_listener: (event: ChildLifecycleEvent) => void): (() => void) => {
       return () => {};
     },
+    signal: () => {},
+    terminate: () => {},
   };
 }
 
@@ -58,14 +60,17 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     ...(options.scopeChecker !== undefined ? { scopeChecker: options.scopeChecker } : {}),
   });
 
-  // 3. Delegate to createKoi with child-specific options
+  // 3. Create AbortController for child signal/terminate support
+  const abortController = new AbortController();
+
+  // 4. Delegate to createKoi with child-specific options
+  //    Manifest lifecycle drives agentType — no explicit agentType override needed.
   let childRuntime: KoiRuntime;
   try {
     childRuntime = await createKoi({
       manifest: options.manifest,
       adapter: options.adapter,
       parentPid: options.parentAgent.pid,
-      agentType: "worker",
       providers: [inheritedProvider, ...(options.providers ?? [])],
       spawnLedger: options.spawnLedger,
       spawn: options.spawnPolicy,
@@ -85,8 +90,9 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
 
   const childPid = childRuntime.agent.pid;
 
-  // 4. Register child in registry (if provided)
+  // 5. Register child in registry (if provided)
   if (options.registry !== undefined) {
+    const childAgentType = childPid.type;
     await options.registry.register({
       agentId: childPid.id,
       status: {
@@ -95,25 +101,29 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
         conditions: [],
         lastTransitionAt: Date.now(),
       },
-      agentType: "worker",
+      agentType: childAgentType,
       metadata: {},
       registeredAt: Date.now(),
       parentId: options.parentAgent.pid.id,
+      spawner: options.parentAgent.pid.id,
     });
   }
 
-  // 5. Create child handle for lifecycle monitoring
+  // 6. Create child handle for lifecycle monitoring
   let handle: ChildHandle;
   if (options.registry !== undefined) {
     const reg = options.registry;
-    handle = createChildHandle(childPid.id, options.manifest.name, reg);
+    handle = createChildHandle(childPid.id, options.manifest.name, reg, abortController);
 
-    // 6. Parent termination → child cascade is handled by CascadingTermination
+    // 7. Parent termination → child cascade is handled by CascadingTermination
     //    (centralized, supervision-aware). No per-child watcher needed here.
 
-    // 7. Wire ledger release + runtime disposal to child termination
+    // 8. Wire ledger release + runtime disposal to child termination
+    //    Idempotency guard prevents double release if terminated fires multiple times.
+    let released = false; // let justified: mutable idempotency flag for one-shot cleanup
     handle.onEvent((event) => {
-      if (event.kind === "terminated") {
+      if (event.kind === "terminated" && !released) {
+        released = true;
         const release = options.spawnLedger.release();
         void (release instanceof Promise ? release : undefined);
         void childRuntime.dispose();

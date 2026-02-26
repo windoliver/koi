@@ -107,6 +107,8 @@ export interface RegistryEntry {
   readonly registeredAt: number;
   /** Parent agent ID (undefined for root agents). */
   readonly parentId?: AgentId;
+  /** Immutable provenance — the agent that spawned this one. Set once at registration, never updated. */
+  readonly spawner?: AgentId;
 }
 
 // ---------------------------------------------------------------------------
