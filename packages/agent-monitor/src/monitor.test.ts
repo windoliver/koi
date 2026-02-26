@@ -1183,4 +1183,165 @@ describe("createAgentMonitorMiddleware", () => {
       expect(summaries[0]?.meanOutputTokens).toBe(50);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Issue 160: goal drift
+  // ---------------------------------------------------------------------------
+
+  describe("goal_drift", () => {
+    test("fires when no tool call matches any objective keyword", async () => {
+      const anomalies: AnomalySignal[] = [];
+      const mw = createAgentMonitorMiddleware({
+        objectives: ["search the web", "write a report"],
+        onAnomaly: (s) => {
+          anomalies.push(s);
+        },
+      });
+      const sessionCtx = createMockSessionContext();
+      await mw.onSessionStart?.(sessionCtx);
+
+      // Turn 0: call unrelated tools
+      const turn0 = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
+      await mw.onBeforeTurn?.(turn0);
+      await runToolCall(mw, turn0, "email_send");
+      await runToolCall(mw, turn0, "calendar_create");
+
+      // Turn 1: onBeforeTurn evaluates turn 0's tool calls
+      const turn1 = createMockTurnContext({ session: sessionCtx, turnIndex: 1 });
+      await mw.onBeforeTurn?.(turn1);
+
+      // Allow fire-and-forget callbacks to run
+      await new Promise((r) => setTimeout(r, 20));
+
+      const driftSignals = anomalies.filter((a) => a.kind === "goal_drift");
+      expect(driftSignals.length).toBeGreaterThan(0);
+    });
+
+    test("does not fire when at least one tool matches an objective keyword", async () => {
+      const anomalies: AnomalySignal[] = [];
+      const mw = createAgentMonitorMiddleware({
+        objectives: ["search the web"],
+        onAnomaly: (s) => {
+          anomalies.push(s);
+        },
+      });
+      const sessionCtx = createMockSessionContext();
+      await mw.onSessionStart?.(sessionCtx);
+
+      // Turn 0: call a tool that matches "search"
+      const turn0 = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
+      await mw.onBeforeTurn?.(turn0);
+      await runToolCall(mw, turn0, "web_search");
+
+      // Turn 1: evaluate turn 0
+      const turn1 = createMockTurnContext({ session: sessionCtx, turnIndex: 1 });
+      await mw.onBeforeTurn?.(turn1);
+
+      await new Promise((r) => setTimeout(r, 20));
+      const driftSignals = anomalies.filter((a) => a.kind === "goal_drift");
+      expect(driftSignals.length).toBe(0);
+    });
+
+    test("does not fire when no tool calls were made in the turn", async () => {
+      const anomalies: AnomalySignal[] = [];
+      const mw = createAgentMonitorMiddleware({
+        objectives: ["search the web"],
+        onAnomaly: (s) => {
+          anomalies.push(s);
+        },
+      });
+      const sessionCtx = createMockSessionContext();
+      await mw.onSessionStart?.(sessionCtx);
+
+      // Turn 0: no tool calls
+      const turn0 = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
+      await mw.onBeforeTurn?.(turn0);
+
+      // Turn 1: evaluate turn 0 (no tools called — should not fire)
+      const turn1 = createMockTurnContext({ session: sessionCtx, turnIndex: 1 });
+      await mw.onBeforeTurn?.(turn1);
+
+      await new Promise((r) => setTimeout(r, 20));
+      const driftSignals = anomalies.filter((a) => a.kind === "goal_drift");
+      expect(driftSignals.length).toBe(0);
+    });
+
+    test("does not fire when objectives array is empty", async () => {
+      const anomalies: AnomalySignal[] = [];
+      const mw = createAgentMonitorMiddleware({
+        objectives: [],
+        onAnomaly: (s) => {
+          anomalies.push(s);
+        },
+      });
+      const sessionCtx = createMockSessionContext();
+      await mw.onSessionStart?.(sessionCtx);
+
+      const turn0 = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
+      await mw.onBeforeTurn?.(turn0);
+      await runToolCall(mw, turn0, "email_send");
+
+      const turn1 = createMockTurnContext({ session: sessionCtx, turnIndex: 1 });
+      await mw.onBeforeTurn?.(turn1);
+
+      await new Promise((r) => setTimeout(r, 20));
+      expect(anomalies.filter((a) => a.kind === "goal_drift")).toHaveLength(0);
+    });
+
+    test("async scorer path: fires when scorer returns score > threshold", async () => {
+      const anomalies: AnomalySignal[] = [];
+      const mw = createAgentMonitorMiddleware({
+        objectives: ["write a report"],
+        goalDrift: {
+          threshold: 0.5,
+          scorer: async () => 1.0, // always fully drifted
+        },
+        onAnomaly: (s) => {
+          anomalies.push(s);
+        },
+      });
+      const sessionCtx = createMockSessionContext();
+      await mw.onSessionStart?.(sessionCtx);
+
+      const turn0 = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
+      await mw.onBeforeTurn?.(turn0);
+      await runToolCall(mw, turn0, "email_send");
+
+      const turn1 = createMockTurnContext({ session: sessionCtx, turnIndex: 1 });
+      await mw.onBeforeTurn?.(turn1);
+
+      // Allow async scorer to complete
+      await new Promise((r) => setTimeout(r, 50));
+
+      const driftSignals = anomalies.filter((a) => a.kind === "goal_drift");
+      expect(driftSignals.length).toBeGreaterThan(0);
+    });
+
+    test("async scorer error is caught and does not propagate", async () => {
+      let errorCaught = false;
+      const mw = createAgentMonitorMiddleware({
+        objectives: ["write a report"],
+        goalDrift: {
+          scorer: async () => {
+            throw new Error("scorer failed");
+          },
+        },
+        onAnomalyError: () => {
+          errorCaught = true;
+        },
+      });
+      const sessionCtx = createMockSessionContext();
+      await mw.onSessionStart?.(sessionCtx);
+
+      const turn0 = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
+      await mw.onBeforeTurn?.(turn0);
+      await runToolCall(mw, turn0, "email_send");
+
+      const turn1 = createMockTurnContext({ session: sessionCtx, turnIndex: 1 });
+      await mw.onBeforeTurn?.(turn1);
+
+      await new Promise((r) => setTimeout(r, 50));
+      expect(errorCaught).toBe(true);
+    });
+  });
 });

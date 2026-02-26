@@ -1,9 +1,9 @@
 # @koi/agent-monitor — Adversarial Agent Behavior Detection
 
 `@koi/agent-monitor` is an L2 middleware package that observes agent activity at runtime
-and fires callbacks when anomalous patterns are detected. It covers 11 signals across
+and fires callbacks when anomalous patterns are detected. It covers 12 signals across
 tool abuse, error accumulation, latency anomalies, token spikes, destructive actions,
-and delegation depth — satisfying the
+delegation depth, and goal drift — satisfying the
 [OWASP ASI10 (Rogue/Unmonitored Agents)](https://genai.owasp.org/llmrisk/agentic-ai/)
 requirement enforced by the `rogue-agents:no-agent-monitor` doctor rule.
 
@@ -73,8 +73,8 @@ index.ts                 ← public re-exports
 | Hook | What runs |
 |---|---|
 | `onSessionStart` | Initialize `SessionMetrics` in the internal map |
-| `onBeforeTurn` | Reset per-turn counters; increment `turnIndex`; check `session_duration_exceeded` |
-| `wrapToolCall` | Increment counters; run checks 1–3, 5–9; fire anomalies; detect ping-pong |
+| `onBeforeTurn` | Evaluate previous turn's goal drift BEFORE resetting counters; reset per-turn counters; increment `turnIndex`; check `session_duration_exceeded` |
+| `wrapToolCall` | Increment counters; run checks 1–3, 5–9; fire anomalies; detect ping-pong; set `goalDriftMatchedThisTurn` flag on keyword match |
 | `wrapModelStream` | Time the stream; capture usage tokens; run checks 4 (latency), 10 (token spike) |
 | `onSessionEnd` | Emit `onMetrics` snapshot; remove session from state map |
 
@@ -92,13 +92,24 @@ wrapToolCall(ctx, toolId, input, next)
        ├─ check irreversible_action_rate (6) ← if toolId in destructiveToolIds
        ├─ check tool_diversity_spike   (8)
        ├─ check tool_ping_pong         (9)
-       └─ check delegation_depth_exceeded (11) ← if toolId in spawnToolIds
+       ├─ check delegation_depth_exceeded (11) ← if toolId in spawnToolIds
+       └─ keyword match (12) ← if objectives set and toolId matches any pattern
+               goalDriftMatchedThisTurn = true
                │
                ▼ (for each non-null result)
           fireAnomaly(signal, m)
                │
                └─ void Promise.resolve().then(() => onAnomaly(signal))
                   ← fire-and-forget; never blocks the agent
+
+onBeforeTurn(ctx, turnIndex)
+       │
+       ├─ [NEW] evaluate previous turn's goal drift BEFORE reset:
+       │     if toolCallsThisTurn > 0 and objectives.length > 0:
+       │       keyword path: !goalDriftMatchedThisTurn → driftScore=1.0 → check threshold
+       │       async scorer: fire-and-forget via Promise chain
+       │
+       └─ reset: toolCallsThisTurn=0, goalDriftMatchedThisTurn=false, distinctToolsThisTurn.clear()
 ```
 
 ### Data flow (model stream)
@@ -126,7 +137,7 @@ wrapModelStream*(ctx, request, next)
 
 ---
 
-## The 11 anomaly signals
+## The 12 anomaly signals
 
 ### Signal table
 
@@ -143,6 +154,7 @@ wrapModelStream*(ctx, request, next)
 | 9 | `tool_ping_pong` | ASI10 | `maxPingPongCycles = 4` | A→B→A→B alternation >4 cycles |
 | 10 | `session_duration_exceeded` | ASI10 | `maxSessionDurationMs = 300_000` | session age >5 minutes |
 | 11 | `delegation_depth_exceeded` | ASI10 | `maxDelegationDepth = 3` | spawn tool called at depth ≥ 3 |
+| 12 | `goal_drift` | ASI10 | `goalDriftThreshold = 1.0` | zero tool calls in a turn matched any declared objective keyword |
 
 ### Threshold rationale
 
@@ -159,6 +171,7 @@ wrapModelStream*(ctx, request, next)
 | `maxDistinctToolsPerTurn = 15` | Sweeping >15 different tools in one turn resembles reconnaissance |
 | `maxPingPongCycles = 4` | 4 A↔B cycles = 8 alternating calls; deeper loops are almost never intentional |
 | `maxSessionDurationMs = 300_000` | 5 minutes is generous for agent tasks; longer sessions may be stuck |
+| `goalDriftThreshold = 1.0` | Fire only when 100% of tool calls in a turn had zero keyword match (avoids false positives from incidental tool use) |
 
 ---
 
@@ -183,6 +196,11 @@ const mw = createAgentMonitorMiddleware({
     maxPingPongCycles: 3,
     maxSessionDurationMs: 120_000,
     maxDelegationDepth: 2,
+  },
+  objectives: ["search the web", "write a report"],  // enables goal drift detection
+  goalDrift: {
+    threshold: 0.8,         // fire when ≥80% of tool calls had no keyword match
+    // scorer: async (toolIds, objectives) => number  // optional custom scorer
   },
   destructiveToolIds: ["delete_file", "send_email", "publish_post"],
   spawnToolIds: ["forge_agent"],      // Phase 2: delegation depth tracking
@@ -219,6 +237,32 @@ interface AgentMonitorConfig {
     readonly maxSessionDurationMs?: number;       // default: 300_000
     readonly maxDelegationDepth?: number;         // default: 3
   };
+  /**
+   * Declared task objectives — used to build keyword patterns for goal drift detection.
+   * Must be set for `goalDrift` to have any effect.
+   */
+  readonly objectives?: readonly string[];
+  /**
+   * Goal drift detection config. Requires `objectives` to be non-empty.
+   * Disabled if `objectives` is absent or empty.
+   */
+  readonly goalDrift?: {
+    /**
+     * Drift score threshold (0.0–1.0). Signal fires when the computed score ≥ threshold.
+     * Default: 1.0 — fires only when zero tool calls in a turn matched any objective keyword.
+     * Set lower (e.g., 0.5) to fire when fewer than half of calls matched.
+     */
+    readonly threshold?: number;
+    /**
+     * Optional async scorer replacing the default keyword matcher.
+     * Returns 0.0 (fully aligned) to 1.0 (fully drifted).
+     * Invoked fire-and-forget — never blocks tool calls.
+     */
+    readonly scorer?: (
+      toolIds: readonly string[],
+      objectives: readonly string[],
+    ) => number | Promise<number>;
+  };
   readonly destructiveToolIds?: readonly string[];
   readonly spawnToolIds?: readonly string[];      // Phase 2
   readonly agentDepth?: number;                  // Phase 2
@@ -252,6 +296,7 @@ type AnomalySignal = AnomalyBase & (
   | { kind: "tool_ping_pong";           toolIdA: string; toolIdB: string; altCount: number; threshold: number }
   | { kind: "session_duration_exceeded"; durationMs: number;   threshold: number }
   | { kind: "delegation_depth_exceeded"; currentDepth: number; maxDepth: number; spawnToolId: string }
+  | { kind: "goal_drift"; driftScore: number; threshold: number; objectives: readonly string[] }
 );
 ```
 
@@ -423,6 +468,69 @@ createAgentMonitorMiddleware({
 });
 ```
 
+### 7. Goal drift detection
+
+```typescript
+createAgentMonitorMiddleware({
+  objectives: ["search the web for recent papers", "write a literature review"],
+  goalDrift: {
+    threshold: 1.0,   // fire when zero tool calls matched any objective keyword
+  },
+  onAnomaly: (signal) => {
+    if (signal.kind === "goal_drift") {
+      console.warn(
+        `[goal drift] turn ${signal.turnIndex}: ` +
+        `score=${signal.driftScore}, threshold=${signal.threshold}`,
+        signal.objectives,
+      );
+      // Typical response: re-inject objectives, abort, or notify operator
+    }
+  },
+});
+```
+
+**How it fires:**
+
+```
+Turn N tool calls:  ["email_send", "calendar_check", "slack_post"]
+Objectives:         ["search the web", "write a report"]
+Keyword patterns:   /search/i, /write/i, /report/i
+
+  email_send    → no match
+  calendar_check → no match
+  slack_post    → no match
+
+All three calls missed → driftScore = 1.0 ≥ threshold 1.0 → goal_drift fires in onBeforeTurn(N+1)
+```
+
+**How it is suppressed:**
+
+```
+Turn N tool calls:  ["web_search", "email_send", "slack_post"]
+Objectives:         ["search the web"]
+Keyword patterns:   /search/i
+
+  web_search → "search" matches → goalDriftMatchedThisTurn = true
+
+At least one match → no goal_drift signal
+```
+
+**Keyword extraction** happens once at factory time (`buildKeywordPatterns`):
+1. Objectives are split on non-word characters
+2. Stopwords (a, an, the, to, for, in, on, of, and, or) and short words (≤2 chars) are removed
+3. Remaining unique words are compiled into case-insensitive `RegExp` objects
+4. During `wrapToolCall`, each `toolId` is tested against all patterns — O(patterns) per call
+
+**Timing:** `goal_drift` is evaluated in `onBeforeTurn(N+1)`, not at the end of turn N.
+This means the `turnIndex` on the signal reflects the turn when drift was *detected*,
+which is one higher than the turn where the off-target calls occurred.
+
+**Async scorer (optional):** Supply `goalDrift.scorer` to replace the keyword heuristic
+with a custom function (e.g., an embedding-based similarity check). The scorer receives
+the full list of `toolIds` from the previous turn and the `objectives` array. It is
+invoked fire-and-forget — a rejected promise calls `onAnomalyError` (if provided) or
+is silently swallowed.
+
 ---
 
 ## Doctor integration
@@ -463,6 +571,8 @@ All operations are O(1) per call — no arrays grow with session length:
 | Ping-pong detection | Last two toolIds + counter | 3 fields per session |
 | Tool diversity (per turn) | `Set<string>` reset each turn | O(tools/turn) transient |
 | Destructive rate (per turn) | `Map<toolId, count>` reset each turn | O(destructive tools/turn) transient |
+| Goal drift keyword patterns | `readonly RegExp[]` pre-compiled at factory time | O(unique keywords) — amortized zero per call |
+| Goal drift match flag | `boolean` reset each turn | 1 field per session |
 | Session state | `Map<SessionId, SessionMetrics>` | 1 entry per live session |
 | `onAnomaly` dispatch | Fire-and-forget via `Promise.resolve().then(cb)` | Zero latency added to hot path |
 
@@ -488,7 +598,8 @@ createKoi({ adapter, middleware: [agentMonitorMw, ...] })
     │  wrapModelStream ─ latency + token tracking        │
     │    ← try/finally ← runs even on generator .return()│
     │                                                    │
-    │  wrapToolCall ×N ─ 9 checks per call               │
+    │  wrapToolCall ×N ─ checks per call (signals 1–3,5–9,11–12) │
+    │                    + goal drift keyword matching   │
     │                    fire-and-forget anomalies       │
     │                                                    │
     │  onSessionEnd    ─ onMetrics snapshot emitted      │

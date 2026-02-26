@@ -23,10 +23,12 @@ import { swallowError } from "@koi/errors";
 import type { AgentMonitorConfig } from "./config.js";
 import { DEFAULT_THRESHOLDS } from "./config.js";
 import {
+  buildKeywordPatterns,
   checkDelegationDepth,
   checkDeniedCalls,
   checkDestructiveRate,
   checkErrorSpike,
+  checkGoalDrift,
   checkLatencyAnomaly,
   checkSessionDuration,
   checkTokenSpike,
@@ -34,10 +36,11 @@ import {
   checkToolPingPong,
   checkToolRate,
   checkToolRepeat,
+  matchesAnyObjective,
 } from "./detector.js";
 import type { WelfordState } from "./latency.js";
 import { WELFORD_INITIAL, welfordStddev, welfordUpdate } from "./latency.js";
-import type { AnomalySignal, LatencyStats, SessionMetricsSummary } from "./types.js";
+import type { AnomalyDetail, AnomalySignal, LatencyStats, SessionMetricsSummary } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Internal mutable session state — never exported
@@ -68,6 +71,8 @@ type SessionMetrics = {
   // Gap B: session duration (set once in onSessionStart, fired at most once)
   sessionStartedAt: number;
   sessionDurationFired: boolean;
+  // Issue 160: goal drift — true if any tool this turn matched an objective keyword
+  goalDriftMatchedThisTurn: boolean;
 };
 
 function createSessionMetrics(): SessionMetrics {
@@ -91,6 +96,7 @@ function createSessionMetrics(): SessionMetrics {
     pingPongAltCount: 0,
     sessionStartedAt: Date.now(),
     sessionDurationFired: false,
+    goalDriftMatchedThisTurn: false,
   };
 }
 
@@ -125,6 +131,19 @@ function buildLatencyStats(state: WelfordState): LatencyStats {
 }
 
 // ---------------------------------------------------------------------------
+// DRY helper: build a fully-stamped AnomalySignal from a detail + context
+// ---------------------------------------------------------------------------
+
+function buildSignal(
+  detail: AnomalyDetail,
+  sessionId: SessionId,
+  agentId: string,
+  turnIndex: number,
+): AnomalySignal {
+  return { ...detail, sessionId, agentId, timestamp: Date.now(), turnIndex };
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -153,6 +172,7 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
       config.thresholds?.maxSessionDurationMs ?? DEFAULT_THRESHOLDS.maxSessionDurationMs,
     maxDelegationDepth:
       config.thresholds?.maxDelegationDepth ?? DEFAULT_THRESHOLDS.maxDelegationDepth,
+    goalDriftThreshold: config.goalDrift?.threshold ?? DEFAULT_THRESHOLDS.goalDriftThreshold,
   };
 
   // Gap 1: pre-build a Set for O(1) destructive-tool lookups
@@ -161,6 +181,11 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
   // Phase 2: pre-build a Set for O(1) spawn-tool lookups; depth check disabled if either is absent
   const spawnSet = new Set(config.spawnToolIds ?? []);
   const agentDepth = config.agentDepth;
+
+  // Issue 160: pre-compile keyword patterns from objectives at factory time
+  const objectives: readonly string[] = config.objectives ?? [];
+  const keywordPatterns = buildKeywordPatterns(objectives);
+  const asyncScorer = config.goalDrift?.scorer;
 
   // Session state keyed by sessionId string (brands are strings at runtime)
   const sessions = new Map<string, SessionMetrics>();
@@ -179,6 +204,44 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
       });
   }
 
+  // ---------------------------------------------------------------------------
+  // DRY helper: run latency + token spike checks after a model call completes
+  // ---------------------------------------------------------------------------
+
+  function runPostModelChecks(
+    m: SessionMetrics,
+    latencyMs: number,
+    outputTokens: number,
+    sessionId: SessionId,
+    agentId: string,
+    turnIndex: number,
+  ): void {
+    m.latency = welfordUpdate(m.latency, latencyMs);
+
+    const latencySignal = checkLatencyAnomaly(
+      latencyMs,
+      buildLatencyStats(m.latency),
+      thresholds.latencyAnomalyFactor,
+      thresholds.minLatencySamples,
+    );
+    if (latencySignal !== null) {
+      fireAnomaly(buildSignal(latencySignal, sessionId, agentId, turnIndex), m);
+    }
+
+    if (outputTokens > 0) {
+      m.tokens = welfordUpdate(m.tokens, outputTokens);
+      const tokenSignal = checkTokenSpike(
+        outputTokens,
+        buildLatencyStats(m.tokens),
+        thresholds.tokenSpikeAnomalyFactor,
+        thresholds.minLatencySamples,
+      );
+      if (tokenSignal !== null) {
+        fireAnomaly(buildSignal(tokenSignal, sessionId, agentId, turnIndex), m);
+      }
+    }
+  }
+
   return {
     name: "agent-monitor",
     priority: 350,
@@ -190,9 +253,54 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
     async onBeforeTurn(ctx: TurnContext): Promise<void> {
       const m = sessions.get(ctx.session.sessionId as string);
       if (!m) return;
+
+      // Issue 160: evaluate goal drift for the just-completed turn BEFORE resetting counters
+      if (m.toolCallsThisTurn > 0 && objectives.length > 0) {
+        const prevTurnIndex = m.turnIndex;
+        const prevToolIds = [...m.distinctToolsThisTurn]; // snapshot before reset
+        const { sessionId, agentId } = ctx.session;
+
+        // Keyword scorer (sync): fire immediately if no tool matched
+        if (keywordPatterns.length > 0 && !m.goalDriftMatchedThisTurn) {
+          const detail = checkGoalDrift(1.0, thresholds.goalDriftThreshold, objectives);
+          if (detail !== null) {
+            fireAnomaly(buildSignal(detail, sessionId, agentId, prevTurnIndex), m);
+          }
+        }
+
+        // Async scorer (fire-and-forget, never blocks the turn)
+        if (asyncScorer !== undefined) {
+          void Promise.resolve()
+            .then(() => asyncScorer(prevToolIds, objectives))
+            .then((score: number) => {
+              const detail = checkGoalDrift(score, thresholds.goalDriftThreshold, objectives);
+              if (detail !== null) {
+                fireAnomaly(buildSignal(detail, sessionId, agentId, prevTurnIndex), m);
+              }
+            })
+            .catch((err: unknown) => {
+              if (config.onAnomalyError) {
+                config.onAnomalyError(
+                  err,
+                  buildSignal(
+                    { kind: "goal_drift", driftScore: 0, threshold: 0, objectives },
+                    sessionId,
+                    agentId,
+                    prevTurnIndex,
+                  ),
+                );
+              } else {
+                swallowError(err, { package: "agent-monitor", operation: "goalDriftScorer" });
+              }
+            });
+        }
+      }
+
+      // Reset per-turn counters
       m.toolCallsThisTurn = 0;
       m.destructiveCallsThisTurn = 0;
       m.distinctToolsThisTurn = new Set();
+      m.goalDriftMatchedThisTurn = false;
       m.turnIndex = ctx.turnIndex + 1;
     },
 
@@ -215,6 +323,13 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
       if (isDestructive) {
         m.destructiveCallsThisTurn += 1;
         m.totalDestructiveCalls += 1;
+      }
+
+      // Issue 160: keyword match — set flag once per turn (no reset until onBeforeTurn)
+      if (!m.goalDriftMatchedThisTurn && keywordPatterns.length > 0) {
+        if (matchesAnyObjective(request.toolId, keywordPatterns)) {
+          m.goalDriftMatchedThisTurn = true;
+        }
       }
 
       // Update consecutive repeat tracking + Gap A: ping-pong detection
@@ -247,19 +362,12 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
         }
       }
 
+      const { sessionId, agentId } = ctx.session;
+
       // Check tool rate
       const toolRateSignal = checkToolRate(m.toolCallsThisTurn, thresholds.maxToolCallsPerTurn);
       if (toolRateSignal !== null) {
-        fireAnomaly(
-          {
-            ...toolRateSignal,
-            sessionId: ctx.session.sessionId,
-            agentId: ctx.session.agentId,
-            timestamp: Date.now(),
-            turnIndex: ctx.turnIndex,
-          },
-          m,
-        );
+        fireAnomaly(buildSignal(toolRateSignal, sessionId, agentId, ctx.turnIndex), m);
       }
 
       // Check consecutive repeat
@@ -269,16 +377,7 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
         thresholds.maxConsecutiveRepeatCalls,
       );
       if (repeatSignal !== null) {
-        fireAnomaly(
-          {
-            ...repeatSignal,
-            sessionId: ctx.session.sessionId,
-            agentId: ctx.session.agentId,
-            timestamp: Date.now(),
-            turnIndex: ctx.turnIndex,
-          },
-          m,
-        );
+        fireAnomaly(buildSignal(repeatSignal, sessionId, agentId, ctx.turnIndex), m);
       }
 
       // Gap 1: check destructive rate
@@ -289,16 +388,7 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
           thresholds.maxDestructiveCallsPerTurn,
         );
         if (destructiveSignal !== null) {
-          fireAnomaly(
-            {
-              ...destructiveSignal,
-              sessionId: ctx.session.sessionId,
-              agentId: ctx.session.agentId,
-              timestamp: Date.now(),
-              turnIndex: ctx.turnIndex,
-            },
-            m,
-          );
+          fireAnomaly(buildSignal(destructiveSignal, sessionId, agentId, ctx.turnIndex), m);
         }
       }
 
@@ -310,16 +400,7 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
           thresholds.maxDelegationDepth,
         );
         if (depthSignal !== null) {
-          fireAnomaly(
-            {
-              ...depthSignal,
-              sessionId: ctx.session.sessionId,
-              agentId: ctx.session.agentId,
-              timestamp: Date.now(),
-              turnIndex: ctx.turnIndex,
-            },
-            m,
-          );
+          fireAnomaly(buildSignal(depthSignal, sessionId, agentId, ctx.turnIndex), m);
         }
       }
 
@@ -329,16 +410,7 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
         thresholds.maxDistinctToolsPerTurn,
       );
       if (diversitySignal !== null) {
-        fireAnomaly(
-          {
-            ...diversitySignal,
-            sessionId: ctx.session.sessionId,
-            agentId: ctx.session.agentId,
-            timestamp: Date.now(),
-            turnIndex: ctx.turnIndex,
-          },
-          m,
-        );
+        fireAnomaly(buildSignal(diversitySignal, sessionId, agentId, ctx.turnIndex), m);
       }
 
       // Gap A: check ping-pong (only meaningful once two tools have been seen)
@@ -350,16 +422,7 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
           thresholds.maxPingPongCycles,
         );
         if (pingPongSignal !== null) {
-          fireAnomaly(
-            {
-              ...pingPongSignal,
-              sessionId: ctx.session.sessionId,
-              agentId: ctx.session.agentId,
-              timestamp: Date.now(),
-              turnIndex: ctx.turnIndex,
-            },
-            m,
-          );
+          fireAnomaly(buildSignal(pingPongSignal, sessionId, agentId, ctx.turnIndex), m);
         }
       }
 
@@ -371,16 +434,7 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
         // Check error spike after incrementing
         const errorSignal = checkErrorSpike(m.totalErrorCalls, thresholds.maxErrorCallsPerSession);
         if (errorSignal !== null) {
-          fireAnomaly(
-            {
-              ...errorSignal,
-              sessionId: ctx.session.sessionId,
-              agentId: ctx.session.agentId,
-              timestamp: Date.now(),
-              turnIndex: ctx.turnIndex,
-            },
-            m,
-          );
+          fireAnomaly(buildSignal(errorSignal, sessionId, agentId, ctx.turnIndex), m);
         }
         throw e;
       }
@@ -393,16 +447,7 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
           thresholds.maxDeniedCallsPerSession,
         );
         if (deniedSignal !== null) {
-          fireAnomaly(
-            {
-              ...deniedSignal,
-              sessionId: ctx.session.sessionId,
-              agentId: ctx.session.agentId,
-              timestamp: Date.now(),
-              turnIndex: ctx.turnIndex,
-            },
-            m,
-          );
+          fireAnomaly(buildSignal(deniedSignal, sessionId, agentId, ctx.turnIndex), m);
         }
       }
 
@@ -419,73 +464,24 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
 
       m.totalModelCalls += 1;
 
+      const { sessionId, agentId } = ctx.session;
+
       // Gap B: check session duration before the model call (fire-once guard)
       if (!m.sessionDurationFired) {
         const durationMs = Date.now() - m.sessionStartedAt;
         const durationSignal = checkSessionDuration(durationMs, thresholds.maxSessionDurationMs);
         if (durationSignal !== null) {
           m.sessionDurationFired = true;
-          fireAnomaly(
-            {
-              ...durationSignal,
-              sessionId: ctx.session.sessionId,
-              agentId: ctx.session.agentId,
-              timestamp: Date.now(),
-              turnIndex: ctx.turnIndex,
-            },
-            m,
-          );
+          fireAnomaly(buildSignal(durationSignal, sessionId, agentId, ctx.turnIndex), m);
         }
       }
 
       const startTime = Date.now();
       const response = await next(request);
       const latencyMs = Date.now() - startTime;
+      const outputTokens = response.usage?.outputTokens ?? 0;
 
-      m.latency = welfordUpdate(m.latency, latencyMs);
-
-      const latencySignal = checkLatencyAnomaly(
-        latencyMs,
-        buildLatencyStats(m.latency),
-        thresholds.latencyAnomalyFactor,
-        thresholds.minLatencySamples,
-      );
-      if (latencySignal !== null) {
-        fireAnomaly(
-          {
-            ...latencySignal,
-            sessionId: ctx.session.sessionId,
-            agentId: ctx.session.agentId,
-            timestamp: Date.now(),
-            turnIndex: ctx.turnIndex,
-          },
-          m,
-        );
-      }
-
-      // Gap 2: track output tokens and check for spike
-      if (response.usage !== undefined) {
-        const outputTokens = response.usage.outputTokens;
-        m.tokens = welfordUpdate(m.tokens, outputTokens);
-        const tokenSignal = checkTokenSpike(
-          outputTokens,
-          buildLatencyStats(m.tokens),
-          thresholds.tokenSpikeAnomalyFactor,
-          thresholds.minLatencySamples,
-        );
-        if (tokenSignal !== null) {
-          fireAnomaly(
-            {
-              ...tokenSignal,
-              sessionId: ctx.session.sessionId,
-              agentId: ctx.session.agentId,
-              timestamp: Date.now(),
-              turnIndex: ctx.turnIndex,
-            },
-            m,
-          );
-        }
-      }
+      runPostModelChecks(m, latencyMs, outputTokens, sessionId, agentId, ctx.turnIndex);
 
       return response;
     },
@@ -503,22 +499,15 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
 
       m.totalModelCalls += 1;
 
+      const { sessionId, agentId } = ctx.session;
+
       // Gap B: check session duration before the model stream (fire-once guard)
       if (!m.sessionDurationFired) {
         const durationMs = Date.now() - m.sessionStartedAt;
         const durationSignal = checkSessionDuration(durationMs, thresholds.maxSessionDurationMs);
         if (durationSignal !== null) {
           m.sessionDurationFired = true;
-          fireAnomaly(
-            {
-              ...durationSignal,
-              sessionId: ctx.session.sessionId,
-              agentId: ctx.session.agentId,
-              timestamp: Date.now(),
-              turnIndex: ctx.turnIndex,
-            },
-            m,
-          );
+          fireAnomaly(buildSignal(durationSignal, sessionId, agentId, ctx.turnIndex), m);
         }
       }
 
@@ -537,34 +526,7 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
         // Using finally ensures this code runs even when the consumer calls .return()
         // on this generator (e.g., the bridge exits after receiving the done chunk).
         const latencyMs = Date.now() - startTime;
-        const { sessionId, agentId } = ctx.session;
-        const timestamp = Date.now();
-        const { turnIndex } = m;
-
-        m.latency = welfordUpdate(m.latency, latencyMs);
-
-        const latencySignal = checkLatencyAnomaly(
-          latencyMs,
-          buildLatencyStats(m.latency),
-          thresholds.latencyAnomalyFactor,
-          thresholds.minLatencySamples,
-        );
-        if (latencySignal !== null) {
-          fireAnomaly({ ...latencySignal, sessionId, agentId, timestamp, turnIndex }, m);
-        }
-
-        if (outputTokens > 0) {
-          m.tokens = welfordUpdate(m.tokens, outputTokens);
-          const tokenSignal = checkTokenSpike(
-            outputTokens,
-            buildLatencyStats(m.tokens),
-            thresholds.tokenSpikeAnomalyFactor,
-            thresholds.minLatencySamples,
-          );
-          if (tokenSignal !== null) {
-            fireAnomaly({ ...tokenSignal, sessionId, agentId, timestamp, turnIndex }, m);
-          }
-        }
+        runPostModelChecks(m, latencyMs, outputTokens, sessionId, agentId, m.turnIndex);
       }
     },
 

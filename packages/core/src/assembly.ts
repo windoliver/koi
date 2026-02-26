@@ -58,4 +58,6 @@ export interface AgentManifest {
   readonly supervision?: SupervisionConfig;
   readonly outboundWebhooks?: readonly OutboundWebhookConfig[] | undefined;
   readonly metadata?: JsonObject;
+  /** Declared task objectives — used by goal drift detection and attention management middleware. */
+  readonly objectives?: readonly string[];
 }

@@ -7,10 +7,12 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  buildKeywordPatterns,
   checkDelegationDepth,
   checkDeniedCalls,
   checkDestructiveRate,
   checkErrorSpike,
+  checkGoalDrift,
   checkLatencyAnomaly,
   checkSessionDuration,
   checkTokenSpike,
@@ -18,6 +20,7 @@ import {
   checkToolPingPong,
   checkToolRate,
   checkToolRepeat,
+  matchesAnyObjective,
 } from "./detector.js";
 import type { LatencyStats } from "./types.js";
 
@@ -363,5 +366,99 @@ describe("checkSessionDuration", () => {
       durationMs: threshold + 1,
       threshold,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue 160: goal drift detection
+// ---------------------------------------------------------------------------
+
+describe("buildKeywordPatterns", () => {
+  test("extracts meaningful words and creates RegExp patterns", () => {
+    const patterns = buildKeywordPatterns(["search the web", "write files"]);
+    // "the" is a stopword, "search", "web", "write", "files" should be extracted
+    expect(patterns.length).toBeGreaterThan(0);
+    expect(patterns.some((p) => p.test("search_tool"))).toBe(true);
+    expect(patterns.some((p) => p.test("file_writer"))).toBe(true);
+  });
+
+  test("filters stopwords and short words", () => {
+    const patterns = buildKeywordPatterns(["a an the to for in on of and or"]);
+    // All are stopwords — nothing extracted
+    expect(patterns.length).toBe(0);
+  });
+
+  test("deduplicates identical keywords across objectives", () => {
+    const patterns = buildKeywordPatterns(["search data", "search results"]);
+    const searchPatterns = patterns.filter((p) => p.toString().includes("search"));
+    expect(searchPatterns.length).toBe(1);
+  });
+
+  test("returns empty array for empty objectives", () => {
+    expect(buildKeywordPatterns([])).toEqual([]);
+  });
+});
+
+describe("matchesAnyObjective", () => {
+  test("returns true when toolId matches a pattern", () => {
+    const patterns = buildKeywordPatterns(["search the web"]);
+    expect(matchesAnyObjective("web_search", patterns)).toBe(true);
+  });
+
+  test("returns false when toolId does not match any pattern", () => {
+    const patterns = buildKeywordPatterns(["search the web"]);
+    expect(matchesAnyObjective("email_send", patterns)).toBe(false);
+  });
+
+  test("returns false when patterns is empty", () => {
+    expect(matchesAnyObjective("any_tool", [])).toBe(false);
+  });
+
+  test("is case-insensitive", () => {
+    const patterns = buildKeywordPatterns(["Search Data"]);
+    expect(matchesAnyObjective("SEARCH_TOOL", patterns)).toBe(true);
+  });
+});
+
+describe("checkGoalDrift", () => {
+  const objectives = ["search the web", "write a report"];
+  const threshold = 1.0;
+
+  test("returns null when objectives is empty", () => {
+    expect(checkGoalDrift(1.0, threshold, [])).toBeNull();
+  });
+
+  test("returns null when driftScore < threshold", () => {
+    expect(checkGoalDrift(0.5, threshold, objectives)).toBeNull();
+  });
+
+  test("fires when driftScore === threshold (meets minimum)", () => {
+    // Uses >= semantics: fire when score reaches the threshold
+    const result = checkGoalDrift(threshold, threshold, objectives);
+    expect(result).not.toBeNull();
+    expect(result).toMatchObject({
+      kind: "goal_drift",
+      driftScore: threshold,
+      threshold,
+      objectives,
+    });
+  });
+
+  test("fires when driftScore > threshold", () => {
+    const result = checkGoalDrift(1.0, 0.5, objectives);
+    expect(result).not.toBeNull();
+    expect(result).toMatchObject({
+      kind: "goal_drift",
+      driftScore: 1.0,
+      threshold: 0.5,
+      objectives,
+    });
+  });
+
+  test("fires at score 1.0 with default threshold 1.0 (fully drifted)", () => {
+    // Default case: threshold=1.0 fires when all tools are off-target (score=1.0)
+    const result = checkGoalDrift(1.0, 1.0, objectives);
+    expect(result).not.toBeNull();
+    expect(result?.kind).toBe("goal_drift");
   });
 });

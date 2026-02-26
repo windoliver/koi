@@ -49,6 +49,31 @@ export interface AgentMonitorConfig {
    * In Koi projects the L1 default is ["forge_agent"].
    */
   readonly spawnToolIds?: readonly string[];
+  /**
+   * Tool-to-objective keyword matching for goal drift detection.
+   * Requires objectives to be set (via AgentManifest or directly here).
+   */
+  readonly goalDrift?: {
+    /**
+     * Score threshold (0–1): fire when drift score exceeds this.
+     * Default: 1.0 (only fire when zero tools matched any objective).
+     */
+    readonly threshold?: number;
+    /**
+     * Optional async scorer replacing keyword default.
+     * Returns 0.0 (aligned) to 1.0 (fully drifted).
+     * Must NOT block — results are fire-and-forget via Promise.
+     */
+    readonly scorer?: (
+      toolIds: readonly string[],
+      objectives: readonly string[],
+    ) => number | Promise<number>;
+  };
+  /**
+   * Declared task objectives — sourced from AgentManifest or set directly.
+   * Used by goal drift detection. Empty array disables the signal.
+   */
+  readonly objectives?: readonly string[];
   readonly onAnomaly?: (signal: AnomalySignal) => void | Promise<void>;
   readonly onAnomalyError?: (err: unknown, signal: AnomalySignal) => void;
   readonly onMetrics?: (sessionId: SessionId, summary: SessionMetricsSummary) => void;
@@ -67,6 +92,7 @@ export const DEFAULT_THRESHOLDS = {
   maxPingPongCycles: 4,
   maxSessionDurationMs: 300_000,
   maxDelegationDepth: 3,
+  goalDriftThreshold: 1.0,
 } as const;
 
 function validateNonNegativeInteger(value: unknown, name: string): KoiError | null {
@@ -162,6 +188,72 @@ export function validateAgentMonitorConfig(config: unknown): Result<AgentMonitor
           },
         };
       }
+    }
+  }
+
+  if (c.objectives !== undefined) {
+    if (!Array.isArray(c.objectives)) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: "objectives must be an array of strings",
+          retryable: RETRYABLE_DEFAULTS.VALIDATION,
+        },
+      };
+    }
+    for (const obj of c.objectives as unknown[]) {
+      if (typeof obj !== "string" || obj.length === 0) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: "objectives must be an array of non-empty strings",
+            retryable: RETRYABLE_DEFAULTS.VALIDATION,
+          },
+        };
+      }
+    }
+  }
+
+  if (c.goalDrift !== null && c.goalDrift !== undefined) {
+    if (typeof c.goalDrift !== "object") {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: "goalDrift must be an object",
+          retryable: RETRYABLE_DEFAULTS.VALIDATION,
+        },
+      };
+    }
+    const gd = c.goalDrift as Record<string, unknown>;
+    if (gd.threshold !== undefined) {
+      if (
+        typeof gd.threshold !== "number" ||
+        !Number.isFinite(gd.threshold) ||
+        gd.threshold <= 0 ||
+        gd.threshold > 1
+      ) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: "goalDrift.threshold must be a positive number <= 1.0",
+            retryable: RETRYABLE_DEFAULTS.VALIDATION,
+          },
+        };
+      }
+    }
+    if (gd.scorer !== undefined && typeof gd.scorer !== "function") {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: "goalDrift.scorer must be a function",
+          retryable: RETRYABLE_DEFAULTS.VALIDATION,
+        },
+      };
     }
   }
 

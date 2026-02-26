@@ -80,6 +80,16 @@ type AnomalyDetail = {
     readonly currentDepth: number;
     readonly maxDepth: number;
     readonly spawnToolId: string;
+} | {
+    /**
+     * Issue 160: none of the agent's tool calls this turn matched any
+     * declared manifest objective keyword (goal drift detected).
+     * driftScore: 0.0 (aligned) – 1.0 (fully drifted).
+     */
+    readonly kind: "goal_drift";
+    readonly driftScore: number;
+    readonly threshold: number;
+    readonly objectives: readonly string[];
 };
 type AnomalySignal = AnomalyBase & AnomalyDetail;
 interface SessionMetricsSummary {
@@ -149,6 +159,28 @@ interface AgentMonitorConfig {
      * In Koi projects the L1 default is ["forge_agent"].
      */
     readonly spawnToolIds?: readonly string[];
+    /**
+     * Tool-to-objective keyword matching for goal drift detection.
+     * Requires objectives to be set (via AgentManifest or directly here).
+     */
+    readonly goalDrift?: {
+        /**
+         * Score threshold (0–1): fire when drift score exceeds this.
+         * Default: 1.0 (only fire when zero tools matched any objective).
+         */
+        readonly threshold?: number;
+        /**
+         * Optional async scorer replacing keyword default.
+         * Returns 0.0 (aligned) to 1.0 (fully drifted).
+         * Must NOT block — results are fire-and-forget via Promise.
+         */
+        readonly scorer?: (toolIds: readonly string[], objectives: readonly string[]) => number | Promise<number>;
+    };
+    /**
+     * Declared task objectives — sourced from AgentManifest or set directly.
+     * Used by goal drift detection. Empty array disables the signal.
+     */
+    readonly objectives?: readonly string[];
     readonly onAnomaly?: (signal: AnomalySignal) => void | Promise<void>;
     readonly onAnomalyError?: (err: unknown, signal: AnomalySignal) => void;
     readonly onMetrics?: (sessionId: SessionId, summary: SessionMetricsSummary) => void;
@@ -166,8 +198,39 @@ declare const DEFAULT_THRESHOLDS: {
     readonly maxPingPongCycles: 4;
     readonly maxSessionDurationMs: 300000;
     readonly maxDelegationDepth: 3;
+    readonly goalDriftThreshold: 1;
 };
 declare function validateAgentMonitorConfig(config: unknown): Result<AgentMonitorConfig, KoiError>;
+
+/**
+ * Pure detection functions — each returns an AnomalyDetail or null.
+ *
+ * No side effects. No session state. All state is passed as arguments.
+ */
+
+type GoalDrift = {
+    readonly kind: "goal_drift";
+    readonly driftScore: number;
+    readonly threshold: number;
+    readonly objectives: readonly string[];
+};
+/**
+ * Pre-compile keyword patterns from objectives at factory time.
+ * Extracts meaningful words (length > 2, not stopwords) and deduplicates.
+ */
+declare function buildKeywordPatterns(objectives: readonly string[]): readonly RegExp[];
+/**
+ * Check if a single tool ID matches any pre-compiled objective keyword pattern.
+ */
+declare function matchesAnyObjective(toolId: string, patterns: readonly RegExp[]): boolean;
+/**
+ * Pure check: fire if driftScore meets or exceeds threshold and objectives are declared.
+ *
+ * Uses >= so that threshold=1.0 fires when 100% of tools are off-target (score=1.0).
+ * This differs from other anomaly checks (which use >) because drift is a fraction:
+ * the threshold is the minimum score that constitutes an anomaly.
+ */
+declare function checkGoalDrift(driftScore: number, threshold: number, objectives: readonly string[]): GoalDrift | null;
 
 /**
  * createAgentMonitorMiddleware — adversarial agent behavior detection.
@@ -178,6 +241,6 @@ declare function validateAgentMonitorConfig(config: unknown): Result<AgentMonito
 
 declare function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMiddleware;
 
-export { type AgentMonitorConfig, type AnomalySignal, DEFAULT_THRESHOLDS, type LatencyStats, type SessionMetricsSummary, createAgentMonitorMiddleware, validateAgentMonitorConfig };
+export { type AgentMonitorConfig, type AnomalyDetail, type AnomalySignal, DEFAULT_THRESHOLDS, type LatencyStats, type SessionMetricsSummary, buildKeywordPatterns, checkGoalDrift, createAgentMonitorMiddleware, matchesAnyObjective, validateAgentMonitorConfig };
 "
 `;

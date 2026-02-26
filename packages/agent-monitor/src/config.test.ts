@@ -260,4 +260,81 @@ describe("validateAgentMonitorConfig", () => {
       expect(result.error.message).toMatch(/maxDelegationDepth/);
     }
   });
+
+  // Issue 160: objectives
+
+  test("accepts valid objectives array", () => {
+    const result = validateAgentMonitorConfig({ objectives: ["search the web", "write a report"] });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts empty objectives array", () => {
+    const result = validateAgentMonitorConfig({ objectives: [] });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects non-array objectives", () => {
+    const result = validateAgentMonitorConfig({ objectives: "search" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toMatch(/objectives/);
+    }
+  });
+
+  test("rejects objectives with empty string elements", () => {
+    const result = validateAgentMonitorConfig({ objectives: [""] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toMatch(/objectives/);
+    }
+  });
+
+  // Issue 160: goalDrift config
+
+  test("accepts valid goalDrift config with threshold", () => {
+    const result = validateAgentMonitorConfig({ goalDrift: { threshold: 0.8 } });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts valid goalDrift config with scorer function", () => {
+    const result = validateAgentMonitorConfig({ goalDrift: { scorer: () => 0.5 } });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts empty goalDrift config object", () => {
+    const result = validateAgentMonitorConfig({ goalDrift: {} });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects non-object goalDrift", () => {
+    const result = validateAgentMonitorConfig({ goalDrift: "bad" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toMatch(/goalDrift/);
+    }
+  });
+
+  test("rejects goalDrift.threshold > 1.0", () => {
+    const result = validateAgentMonitorConfig({ goalDrift: { threshold: 1.5 } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toMatch(/goalDrift\.threshold/);
+    }
+  });
+
+  test("rejects goalDrift.threshold = 0", () => {
+    const result = validateAgentMonitorConfig({ goalDrift: { threshold: 0 } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toMatch(/goalDrift\.threshold/);
+    }
+  });
+
+  test("rejects goalDrift.scorer that is not a function", () => {
+    const result = validateAgentMonitorConfig({ goalDrift: { scorer: 42 } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toMatch(/goalDrift\.scorer/);
+    }
+  });
 });

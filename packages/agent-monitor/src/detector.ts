@@ -264,3 +264,55 @@ export function checkSessionDuration(
   }
   return null;
 }
+
+// ---------------------------------------------------------------------------
+// Issue 160: Goal drift detection
+// ---------------------------------------------------------------------------
+
+type GoalDrift = {
+  readonly kind: "goal_drift";
+  readonly driftScore: number;
+  readonly threshold: number;
+  readonly objectives: readonly string[];
+};
+
+const STOPWORDS = new Set(["a", "an", "the", "to", "for", "in", "on", "of", "and", "or"]);
+
+/**
+ * Pre-compile keyword patterns from objectives at factory time.
+ * Extracts meaningful words (length > 2, not stopwords) and deduplicates.
+ */
+export function buildKeywordPatterns(objectives: readonly string[]): readonly RegExp[] {
+  const words = objectives.flatMap((obj) =>
+    obj
+      .toLowerCase()
+      .split(/\W+/)
+      .filter((w) => w.length > 2 && !STOPWORDS.has(w)),
+  );
+  return [...new Set(words)].map((w) => new RegExp(w, "i"));
+}
+
+/**
+ * Check if a single tool ID matches any pre-compiled objective keyword pattern.
+ */
+export function matchesAnyObjective(toolId: string, patterns: readonly RegExp[]): boolean {
+  if (patterns.length === 0) return false;
+  return patterns.some((p) => p.test(toolId));
+}
+
+/**
+ * Pure check: fire if driftScore meets or exceeds threshold and objectives are declared.
+ *
+ * Uses >= so that threshold=1.0 fires when 100% of tools are off-target (score=1.0).
+ * This differs from other anomaly checks (which use >) because drift is a fraction:
+ * the threshold is the minimum score that constitutes an anomaly.
+ */
+export function checkGoalDrift(
+  driftScore: number,
+  threshold: number,
+  objectives: readonly string[],
+): GoalDrift | null {
+  if (objectives.length === 0) return null;
+  if (driftScore >= threshold) return { kind: "goal_drift", driftScore, threshold, objectives };
+  return null;
+}

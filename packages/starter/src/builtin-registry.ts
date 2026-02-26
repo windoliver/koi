@@ -10,10 +10,13 @@
  *  - "agent-monitor" (also "monitor" alias) — @koi/agent-monitor
  *  - "soul"                                 — @koi/middleware-soul
  *  - "permissions"                          — @koi/middleware-permissions
+ *  - "goal-anchor"                          — @koi/middleware-goal-anchor
  */
 
 import type { AgentMonitorCallbacks } from "./adapters/agent-monitor.js";
 import { createAgentMonitorAdapter } from "./adapters/agent-monitor.js";
+import type { GoalAnchorCallbacks } from "./adapters/goal-anchor.js";
+import { createGoalAnchorAdapter } from "./adapters/goal-anchor.js";
 import type { PermissionsCallbacks } from "./adapters/permissions.js";
 import { createPermissionsAdapter } from "./adapters/permissions.js";
 import { createSoulAdapter } from "./adapters/soul.js";
@@ -31,6 +34,8 @@ export interface BuiltinCallbacks {
   readonly monitor?: AgentMonitorCallbacks;
   /** Runtime callbacks for @koi/middleware-permissions (engine, approvalHandler). */
   readonly permissions?: PermissionsCallbacks;
+  /** Runtime callbacks for @koi/middleware-goal-anchor. */
+  readonly "goal-anchor"?: GoalAnchorCallbacks;
 }
 
 export function createDefaultRegistry(callbacks?: BuiltinCallbacks): MiddlewareRegistry {
@@ -45,11 +50,16 @@ export function createDefaultRegistry(callbacks?: BuiltinCallbacks): MiddlewareR
   const permissionsFactory: MiddlewareFactory = (config, opts) =>
     createPermissionsAdapter(config, opts, permissionsCbs);
 
+  const goalAnchorCbs = callbacks?.["goal-anchor"];
+  const goalAnchorFactory: MiddlewareFactory = (config, opts) =>
+    createGoalAnchorAdapter(config, opts, goalAnchorCbs);
+
   const entries = new Map<string, MiddlewareFactory>([
     ["agent-monitor", agentMonitorFactory],
     ["monitor", agentMonitorFactory],
     ["soul", createSoulAdapter],
     ["permissions", permissionsFactory],
+    ["goal-anchor", goalAnchorFactory],
   ]);
 
   return createMiddlewareRegistry(entries);
