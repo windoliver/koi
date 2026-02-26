@@ -324,4 +324,22 @@ describe("createCompactorMiddleware", () => {
       expect(spy.calls.length).toBe(1);
     });
   });
+
+  describe("describeCapabilities", () => {
+    test("is defined on the middleware", () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer(),
+      });
+      expect(mw.describeCapabilities).toBeDefined();
+    });
+
+    test("returns label 'compactor' and description containing 'compaction'", () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer(),
+      });
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.label).toBe("compactor");
+      expect(result?.description).toContain("compaction");
+    });
+  });
 });

@@ -10,6 +10,7 @@
  */
 
 import type {
+  CapabilityFragment,
   KoiMiddleware,
   ModelRequest,
   ModelResponse,
@@ -204,9 +205,16 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
     onRetry?.(record);
   }
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "semantic-retry",
+    description: "Semantic retry on model errors",
+  };
+
   const middleware: KoiMiddleware = {
     name: MIDDLEWARE_NAME,
     priority: MIDDLEWARE_PRIORITY,
+
+    describeCapabilities: (_ctx: TurnContext) => capabilityFragment,
 
     async wrapModelCall(
       ctx: TurnContext,

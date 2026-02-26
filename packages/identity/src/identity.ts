@@ -4,6 +4,7 @@
 
 import type { InboundMessage } from "@koi/core/message";
 import type {
+  CapabilityFragment,
   KoiMiddleware,
   ModelHandler,
   ModelRequest,
@@ -70,10 +71,17 @@ export async function createIdentityMiddleware(
     watchedPaths = buildWatchedPaths(newMap);
   }
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "identity",
+    description: `Identity: ${personaMap.size} persona(s) configured`,
+  };
+
   return {
     name: "identity",
     // Priority 490: slightly ahead of soul (500) so identity wraps outside soul
     priority: 490,
+
+    describeCapabilities: () => capabilityFragment,
 
     reload,
 

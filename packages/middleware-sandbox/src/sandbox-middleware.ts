@@ -5,6 +5,7 @@
 
 import type { TrustTier } from "@koi/core/ecs";
 import type {
+  CapabilityFragment,
   KoiMiddleware,
   ToolHandler,
   ToolRequest,
@@ -39,9 +40,15 @@ export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMid
 
   const skipSet = new Set(skipTiers);
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "sandbox",
+    description: "Tool sandboxing active for untrusted tools",
+  };
+
   return {
     name: "sandbox",
     priority: 200,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
 
     async wrapToolCall(
       _ctx: TurnContext,

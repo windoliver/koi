@@ -4,6 +4,7 @@
 
 import type { InboundMessage } from "@koi/core/message";
 import type {
+  CapabilityFragment,
   KoiMiddleware,
   ModelHandler,
   ModelRequest,
@@ -37,9 +38,16 @@ export function createMemoryMiddleware(config: MemoryMiddlewareConfig): KoiMiddl
     onStoreError,
   } = config;
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "memory",
+    description: "Long-term memory active",
+  };
+
   return {
     name: "memory",
     priority: 400,
+
+    describeCapabilities: (_ctx: TurnContext) => capabilityFragment,
 
     async wrapModelCall(
       ctx: TurnContext,

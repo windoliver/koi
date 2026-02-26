@@ -450,4 +450,18 @@ describe("createSemanticRetryMiddleware", () => {
       expect(handle.getRecords()).toHaveLength(1);
     });
   });
+
+  describe("describeCapabilities", () => {
+    test("is defined on the middleware", () => {
+      const handle = createSemanticRetryMiddleware({});
+      expect(handle.middleware.describeCapabilities).toBeDefined();
+    });
+
+    test("returns label 'semantic-retry' and description containing 'retry'", () => {
+      const handle = createSemanticRetryMiddleware({});
+      const result = handle.middleware.describeCapabilities?.(mockCtx);
+      expect(result?.label).toBe("semantic-retry");
+      expect(result?.description).toContain("retry");
+    });
+  });
 });

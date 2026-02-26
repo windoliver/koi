@@ -224,4 +224,19 @@ describe("createModelCallLimitMiddleware", () => {
       expect(err.context).toEqual({ limit: 2, count: 3, exitBehavior: "error" });
     }
   });
+
+  describe("describeCapabilities", () => {
+    test("is defined on the middleware", () => {
+      const mw = createModelCallLimitMiddleware({ limit: 10 });
+      expect(mw.describeCapabilities).toBeDefined();
+    });
+
+    test("returns label 'rate-limits' and description containing the limit", () => {
+      const mw = createModelCallLimitMiddleware({ limit: 10 });
+      const ctx = createMockTurnContext();
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.label).toBe("rate-limits");
+      expect(result?.description).toContain("10");
+    });
+  });
 });

@@ -3,6 +3,7 @@
  */
 
 import type {
+  CapabilityFragment,
   KoiMiddleware,
   ModelHandler,
   ModelRequest,
@@ -27,6 +28,10 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
     onUsage,
     hardKill = true,
   } = config;
+
+  // Cached remaining budget for describeCapabilities (updated after each model call)
+  // let justified: mutable state updated by wrapModelCall to reflect latest budget snapshot
+  let lastKnownRemaining: number = budget;
 
   // Track which thresholds have already been fired to avoid repeats
   const firedThresholds = new Set<number>();
@@ -55,6 +60,10 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
   return {
     name: "pay",
     priority: 200,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => ({
+      label: "budget",
+      description: `Token budget: $${lastKnownRemaining.toFixed(4)} of $${budget.toFixed(4)} remaining`,
+    }),
 
     async wrapModelCall(
       ctx: TurnContext,
@@ -88,6 +97,7 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
           tracker.totalSpend(sessionId),
           tracker.remaining(sessionId, budget),
         ]);
+        lastKnownRemaining = remainingBudget;
         const pctUsed = budget > 0 ? totalSpent / budget : 1;
         checkAndFireAlerts(pctUsed, remainingBudget);
 

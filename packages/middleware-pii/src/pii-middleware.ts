@@ -8,6 +8,7 @@
 import type { JsonObject } from "@koi/core/common";
 import type { InboundMessage } from "@koi/core/message";
 import type {
+  CapabilityFragment,
   KoiMiddleware,
   ModelChunk,
   ModelHandler,
@@ -55,9 +56,16 @@ export function createPIIMiddleware(config: PIIConfig): KoiMiddleware {
       ? () => new Bun.CryptoHasher("sha256", validated.hashSecret!)
       : undefined;
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "pii",
+    description: "PII detection and redaction active",
+  };
+
   return {
     name: "pii",
     priority: 340,
+
+    describeCapabilities: (_ctx: TurnContext) => capabilityFragment,
 
     async wrapModelCall(
       _ctx: TurnContext,

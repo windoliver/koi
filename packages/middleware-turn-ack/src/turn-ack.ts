@@ -7,7 +7,14 @@
  * sendStatus calls are fire-and-forget — they never block the turn.
  */
 
-import type { KoiMiddleware, ToolHandler, ToolRequest, ToolResponse, TurnContext } from "@koi/core";
+import type {
+  CapabilityFragment,
+  KoiMiddleware,
+  ToolHandler,
+  ToolRequest,
+  ToolResponse,
+  TurnContext,
+} from "@koi/core";
 import type { TurnAckConfig } from "./config.js";
 
 export function createTurnAckMiddleware(config?: TurnAckConfig): KoiMiddleware {
@@ -20,9 +27,15 @@ export function createTurnAckMiddleware(config?: TurnAckConfig): KoiMiddleware {
   // let justified: mutable state reset per turn for debounce timer lifecycle
   let turnAbort: AbortController | undefined;
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "turn-ack",
+    description: "Turn acknowledgment active",
+  };
+
   return {
     name: "turn-ack",
     priority: 50,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
 
     async onBeforeTurn(ctx: TurnContext): Promise<void> {
       if (ctx.sendStatus === undefined) return;

@@ -314,4 +314,25 @@ describe("createAceMiddleware", () => {
       }),
     ).rejects.toThrow("ACE: onSessionEnd failed for session s");
   });
+
+  describe("describeCapabilities", () => {
+    test("is defined on the middleware", () => {
+      const mw = createAceMiddleware(baseConfig());
+      expect(mw.describeCapabilities).toBeDefined();
+    });
+
+    test("returns label 'playbooks' and description containing 'playbooks'", () => {
+      const mw = createAceMiddleware(baseConfig());
+      const ctx = {
+        session: { agentId: "a", sessionId: "s" as never, runId: "r" as never, metadata: {} },
+        turnIndex: 0,
+        turnId: "r:t0" as never,
+        messages: [],
+        metadata: {},
+      };
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.label).toBe("playbooks");
+      expect(result?.description).toContain("playbooks");
+    });
+  });
 });

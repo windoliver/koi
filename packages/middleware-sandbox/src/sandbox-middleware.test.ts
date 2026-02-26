@@ -4,7 +4,12 @@
 
 import { describe, expect, it, mock } from "bun:test";
 import type { TrustTier } from "@koi/core/ecs";
-import type { ToolHandler, ToolRequest, ToolResponse } from "@koi/core/middleware";
+import type {
+  CapabilityFragment,
+  ToolHandler,
+  ToolRequest,
+  ToolResponse,
+} from "@koi/core/middleware";
 import type { SandboxProfile } from "@koi/core/sandbox-profile";
 import { KoiRuntimeError } from "@koi/errors";
 import { createMockTurnContext, createSpyToolHandler } from "@koi/test-utils";
@@ -332,6 +337,20 @@ describe("createSandboxMiddleware", () => {
       expect(typeof call?.at(2)).toBe("number");
       expect(typeof call?.at(3)).toBe("number");
       expect(call?.at(4)).toBe(false);
+    });
+  });
+
+  describe("describeCapabilities", () => {
+    it("is defined on the middleware", () => {
+      const mw = createSandboxMiddleware(makeConfig({}, { failClosedOnLookupError: false }));
+      expect(mw.describeCapabilities).toBeDefined();
+    });
+
+    it("returns label 'sandbox' and description containing 'sandboxing'", () => {
+      const mw = createSandboxMiddleware(makeConfig({}, { failClosedOnLookupError: false }));
+      const result = mw.describeCapabilities?.(ctx) as CapabilityFragment;
+      expect(result.label).toBe("sandbox");
+      expect(result.description).toContain("sandboxing");
     });
   });
 });

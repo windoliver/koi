@@ -9,6 +9,7 @@
  */
 
 import type {
+  CapabilityFragment,
   KoiMiddleware,
   ToolHandler,
   ToolRequest,
@@ -85,9 +86,15 @@ export function createToolCallLimitMiddleware(config: ToolCallLimitConfig): KoiM
     );
   }
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "rate-limits",
+    description: `Tool call limit: ${config.globalLimit ?? "per-tool"} calls per session`,
+  };
+
   return {
     name: "koi:tool-call-limit",
     priority: 175,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
 
     async wrapToolCall(
       ctx: TurnContext,

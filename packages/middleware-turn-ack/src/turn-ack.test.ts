@@ -242,4 +242,19 @@ describe("createTurnAckMiddleware", () => {
     expect(sendStatus).toHaveBeenCalledTimes(3);
     expect(sendStatus.mock.calls[2]?.[0]).toEqual({ kind: "idle", turnIndex: 1 });
   });
+
+  describe("describeCapabilities", () => {
+    test("is defined on the middleware", () => {
+      const mw = createTurnAckMiddleware();
+      expect(mw.describeCapabilities).toBeDefined();
+    });
+
+    test("returns label 'turn-ack' and expected description", () => {
+      const mw = createTurnAckMiddleware();
+      const ctx = createMockTurnContext();
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.label).toBe("turn-ack");
+      expect(result?.description).toBe("Turn acknowledgment active");
+    });
+  });
 });

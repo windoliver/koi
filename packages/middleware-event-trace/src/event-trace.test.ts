@@ -285,4 +285,17 @@ describe("createEventTraceMiddleware", () => {
       }
     }
   });
+
+  describe("describeCapabilities", () => {
+    test("is defined on the middleware", () => {
+      expect(handle.middleware.describeCapabilities).toBeDefined();
+    });
+
+    test("returns label 'tracing' and description containing 'tracing'", () => {
+      const ctx = createMockTurnContext();
+      const result = handle.middleware.describeCapabilities?.(ctx);
+      expect(result?.label).toBe("tracing");
+      expect(result?.description).toContain("tracing");
+    });
+  });
 });

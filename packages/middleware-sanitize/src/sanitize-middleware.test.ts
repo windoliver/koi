@@ -385,4 +385,18 @@ describe("createSanitizeMiddleware", () => {
       expect(sanitizedText).not.toContain("\0");
     });
   });
+
+  describe("describeCapabilities", () => {
+    test("is defined on the middleware", () => {
+      const mw = createSanitizeMiddleware(makeConfig());
+      expect(mw.describeCapabilities).toBeDefined();
+    });
+
+    test("returns label 'sanitize' and description containing 'sanitization'", () => {
+      const mw = createSanitizeMiddleware(makeConfig());
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.label).toBe("sanitize");
+      expect(result?.description).toContain("sanitization");
+    });
+  });
 });

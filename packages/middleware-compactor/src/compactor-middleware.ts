@@ -13,6 +13,7 @@
 
 import type { CompactionResult } from "@koi/core/context";
 import type {
+  CapabilityFragment,
   KoiMiddleware,
   ModelRequest,
   SessionContext,
@@ -79,9 +80,15 @@ export function createCompactorMiddleware(config: CompactorConfig): KoiMiddlewar
     return { ...request, messages: result.messages };
   }
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "compactor",
+    description: `Context compaction active above ${config.contextWindowSize ?? "default"} tokens`,
+  };
+
   return {
     name: "koi:compactor",
     priority: 225,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
 
     // Restore previous compaction on session start
     ...(store !== undefined

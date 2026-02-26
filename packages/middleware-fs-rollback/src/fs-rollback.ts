@@ -3,6 +3,7 @@
  */
 
 import type {
+  CapabilityFragment,
   FileOpRecord,
   KoiMiddleware,
   NodeId,
@@ -51,9 +52,16 @@ export function createFsRollbackMiddleware(config: FsRollbackConfig): FsRollback
   let lastNodeId: NodeId | undefined;
   let callCounter = 0;
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "fs-rollback",
+    description: "Filesystem rollback on error enabled",
+  };
+
   const middleware: KoiMiddleware = {
     name: "fs-rollback",
     priority: 350,
+
+    describeCapabilities: (_ctx: TurnContext) => capabilityFragment,
 
     wrapToolCall: async (
       ctx: TurnContext,

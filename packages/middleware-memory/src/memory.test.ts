@@ -201,4 +201,19 @@ describe("createMemoryMiddleware", () => {
     const response = await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
     expect(response?.content).toBe("response");
   });
+
+  describe("describeCapabilities", () => {
+    test("is defined on the middleware", () => {
+      const mw = createMemoryMiddleware({ store: createInMemoryStore() });
+      expect(mw.describeCapabilities).toBeDefined();
+    });
+
+    test("returns label 'memory' and description containing 'memory'", () => {
+      const mw = createMemoryMiddleware({ store: createInMemoryStore() });
+      const ctx = createMockTurnContext();
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.label).toBe("memory");
+      expect(result?.description).toContain("memory");
+    });
+  });
 });

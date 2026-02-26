@@ -134,4 +134,18 @@ describe("createContextEditingMiddleware", () => {
       "numRecentToKeep must be non-negative",
     );
   });
+
+  describe("describeCapabilities", () => {
+    test("is defined on the middleware", () => {
+      const mw = createContextEditingMiddleware();
+      expect(mw.describeCapabilities).toBeDefined();
+    });
+
+    test("returns label 'context-editing' and description containing 'tool results'", () => {
+      const mw = createContextEditingMiddleware();
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.label).toBe("context-editing");
+      expect(result?.description).toContain("tool results");
+    });
+  });
 });

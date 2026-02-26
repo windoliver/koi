@@ -12,10 +12,12 @@
 
 import type {
   Agent,
+  CapabilityFragment,
   ContextCompactor,
   InboundMessage,
   KoiMiddleware,
   TokenEstimator,
+  TurnContext,
 } from "@koi/core";
 import { CHARS_PER_TOKEN, heuristicTokenEstimator } from "./estimator.js";
 import { resolveFileSource } from "./sources/file.js";
@@ -447,9 +449,15 @@ export function createContextHydrator(options: ContextHydratorOptions): ContextH
   // Frozen hydration state — set once in onSessionStart, refreshed on interval
   const state: { hydration: HydrationCache | undefined } = { hydration: undefined };
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "context",
+    description: `Context hydration active with ${String(config.sources.length)} sources`,
+  };
+
   return {
     name: "context-hydrator",
     priority: 300,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
 
     getHydrationResult(): HydrationResult | undefined {
       return state.hydration?.result;

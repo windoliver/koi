@@ -1,9 +1,20 @@
 /**
  * Brick → Tool conversion — shared utility for converting ToolArtifact bricks
  * into executable Tool instances via a sandbox executor.
+ *
+ * Also provides `brickCapabilityFragment` for auto-mapping BrickArtifact.description
+ * to the `CapabilityFragment` convention used by self-describing middleware.
  */
 
-import type { JsonObject, SandboxExecutor, Tool, ToolArtifact, ToolDescriptor } from "@koi/core";
+import type {
+  BrickArtifact,
+  CapabilityFragment,
+  JsonObject,
+  SandboxExecutor,
+  Tool,
+  ToolArtifact,
+  ToolDescriptor,
+} from "@koi/core";
 
 const DEFAULT_SANDBOX_TIMEOUT_MS = 5_000;
 
@@ -44,4 +55,13 @@ export function brickToTool(
     trustTier: brick.trustTier,
     execute,
   };
+}
+
+/**
+ * Auto-generates a CapabilityFragment from a BrickArtifact's name and description.
+ * Used when converting forged middleware bricks to KoiMiddleware at runtime.
+ * Agent updates description by re-forging (new content hash = new brick).
+ */
+export function brickCapabilityFragment(brick: BrickArtifact): CapabilityFragment {
+  return { label: brick.name, description: brick.description };
 }

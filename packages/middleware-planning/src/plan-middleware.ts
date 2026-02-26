@@ -7,6 +7,7 @@
 import type { JsonObject } from "@koi/core/common";
 import type { InboundMessage } from "@koi/core/message";
 import type {
+  CapabilityFragment,
   KoiMiddleware,
   ModelChunk,
   ModelHandler,
@@ -100,6 +101,10 @@ export function createPlanMiddleware(config?: PlanConfig): KoiMiddleware {
   return {
     name: "plan",
     priority,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => ({
+      label: "planning",
+      description: `Planning mode: ${currentPlan.length > 0 ? "enabled" : "disabled"}`,
+    }),
 
     async onBeforeTurn(_ctx: TurnContext): Promise<void> {
       writePlanCallsThisTurn = 0;

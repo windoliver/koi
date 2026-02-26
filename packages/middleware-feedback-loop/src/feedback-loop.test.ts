@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createMockValidator } from "@koi/test-utils";
+import { createMockTurnContext, createMockValidator } from "@koi/test-utils";
 import { createFeedbackLoopMiddleware } from "./feedback-loop.js";
 
 describe("createFeedbackLoopMiddleware", () => {
@@ -37,5 +37,20 @@ describe("createFeedbackLoopMiddleware", () => {
     expect(mw.onSessionEnd).toBeUndefined();
     expect(mw.onBeforeTurn).toBeUndefined();
     expect(mw.onAfterTurn).toBeUndefined();
+  });
+
+  describe("describeCapabilities", () => {
+    test("is defined on the middleware", () => {
+      const mw = createFeedbackLoopMiddleware({});
+      expect(mw.describeCapabilities).toBeDefined();
+    });
+
+    test("returns label 'feedback' and description containing 'feedback'", () => {
+      const mw = createFeedbackLoopMiddleware({});
+      const ctx = createMockTurnContext();
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.label).toBe("feedback");
+      expect(result?.description).toContain("feedback");
+    });
   });
 });

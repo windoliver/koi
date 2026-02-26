@@ -296,4 +296,19 @@ describe("createToolCallLimitMiddleware", () => {
     expect(tools).toContain("search");
     expect(tools).toContain("read");
   });
+
+  describe("describeCapabilities", () => {
+    test("is defined on the middleware", () => {
+      const mw = createToolCallLimitMiddleware({ globalLimit: 5 });
+      expect(mw.describeCapabilities).toBeDefined();
+    });
+
+    test("returns label 'rate-limits' and description containing 'per-tool' when no globalLimit", () => {
+      const mw = createToolCallLimitMiddleware({ limits: { search: 3 } });
+      const ctx = createTurnCtx("s1");
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.label).toBe("rate-limits");
+      expect(result?.description).toContain("per-tool");
+    });
+  });
 });

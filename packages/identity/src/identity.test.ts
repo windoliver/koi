@@ -3,7 +3,12 @@
  */
 
 import { describe, expect, it, mock, spyOn } from "bun:test";
-import type { ModelRequest, ModelResponse, TurnContext } from "@koi/core/middleware";
+import type {
+  CapabilityFragment,
+  ModelRequest,
+  ModelResponse,
+  TurnContext,
+} from "@koi/core/middleware";
 import { createIdentityMiddleware } from "./identity.js";
 import * as personaMapModule from "./persona-map.js";
 
@@ -326,5 +331,25 @@ describe("createIdentityMiddleware — metadata", () => {
   it("exposes reload function", async () => {
     const mw = await createIdentityMiddleware({ personas: [] });
     expect(typeof mw.reload).toBe("function");
+  });
+});
+
+describe("describeCapabilities", () => {
+  it("is defined on the middleware", async () => {
+    const mw = await createIdentityMiddleware({ personas: [] });
+    expect(mw.describeCapabilities).toBeDefined();
+  });
+
+  it("returns label 'identity' and description containing 'persona'", async () => {
+    const mw = await createIdentityMiddleware({
+      personas: [
+        { channelId: "@koi/channel-telegram", name: "Alex" },
+        { channelId: "@koi/channel-slack", name: "Bot" },
+      ],
+    });
+    const ctx = makeTurnCtx();
+    const result = mw.describeCapabilities?.(ctx) as CapabilityFragment;
+    expect(result.label).toBe("identity");
+    expect(result.description).toContain("persona");
   });
 });

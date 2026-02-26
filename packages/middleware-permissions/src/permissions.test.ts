@@ -387,3 +387,31 @@ describe("approval cache", () => {
     expect(spy.calls).toHaveLength(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// describeCapabilities
+// ---------------------------------------------------------------------------
+
+describe("describeCapabilities", () => {
+  const engine = createPatternPermissionEngine();
+  const ctx = createMockTurnContext();
+
+  test("is defined on the middleware", () => {
+    const mw = createPermissionsMiddleware({
+      engine,
+      rules: { allow: ["*"], deny: [], ask: [] },
+    });
+    expect(mw.describeCapabilities).toBeDefined();
+  });
+
+  test("returns label 'permissions' and description containing approval info", () => {
+    const mw = createPermissionsMiddleware({
+      engine,
+      rules: { allow: [], deny: [], ask: ["deploy"] },
+      defaultDeny: true,
+    });
+    const result = mw.describeCapabilities?.(ctx);
+    expect(result?.label).toBe("permissions");
+    expect(result?.description).toContain("Default");
+  });
+});
