@@ -366,13 +366,16 @@ The registry is parameterized by `EventBackend` (L0 interface). Swap the backend
   ┌──────────────────┐ ┌──────────────┐ ┌──────────────────┐
   │ @koi/events-memory│ │ events-sqlite│ │  events-nexus    │
   │ In-memory (tests) │ │ bun:sqlite   │ │  Multi-node      │
-  │ ✅ Available      │ │ (Single-node)│ │  (via Nexus AI)  │
-  │                   │ │ 🔜 #396      │ │  🔜 #397         │
+  │ ✅ Available      │ │ ✅ Available  │ │  (via Nexus AI)  │
+  │                   │ │ (Single-node)│ │  🔜 #397         │
   └──────────────────┘ └──────────────┘ └──────────────────┘
 ```
 
-Currently only `@koi/events-memory` exists (in-memory, suitable for tests and ephemeral use). Durable backends are tracked:
-- **#396** — `@koi/events-sqlite` (single-node, `bun:sqlite`)
+Available backends:
+- **`@koi/events-memory`** — in-memory, suitable for tests and ephemeral use
+- **`@koi/events-sqlite`** (#396) — single-node durable persistence via `bun:sqlite`
+
+Planned:
 - **#397** — `@koi/events-nexus` (multi-node, shared Nexus filesystem)
 
 ---

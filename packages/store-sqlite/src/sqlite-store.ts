@@ -7,7 +7,7 @@
  * with AND-subset matching via correlated subquery.
  */
 
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
 import type {
   BrickArtifact,
   BrickId,
@@ -19,8 +19,8 @@ import type {
   StoreChangeEvent,
 } from "@koi/core";
 import { internal, notFound } from "@koi/core";
+import { mapSqliteError, openDb, wrapSqlite } from "@koi/sqlite-utils";
 import { validateBrickArtifact } from "@koi/validation";
-import { mapSqliteError, wrapSqlite } from "./errors.js";
 import { applyMigrations } from "./schema.js";
 
 // ---------------------------------------------------------------------------
@@ -45,17 +45,11 @@ export type SqliteForgeStoreConfig = SqliteForgeStorePathConfig | SqliteForgeSto
 // Public helpers
 // ---------------------------------------------------------------------------
 
-/** Create a Database with optimized PRAGMAs for ForgeStore usage. */
-export function openForgeDb(dbPath: string): Database {
-  const db = new Database(dbPath);
-  db.run("PRAGMA journal_mode = WAL");
-  db.run("PRAGMA synchronous = NORMAL");
-  db.run("PRAGMA foreign_keys = ON");
-  db.run("PRAGMA busy_timeout = 5000");
-  db.run("PRAGMA cache_size = -16000");
-  db.run("PRAGMA temp_store = MEMORY");
-  return db;
-}
+/**
+ * Create a Database with optimized PRAGMAs for ForgeStore usage.
+ * @deprecated Use `openDb` from `@koi/sqlite-utils` directly.
+ */
+export const openForgeDb: (dbPath: string) => Database = openDb;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -90,7 +84,7 @@ export interface SqliteForgeStore extends ForgeStore {
  */
 export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteForgeStore {
   const ownsDb = isPathConfig(config);
-  const db = ownsDb ? openForgeDb(config.dbPath) : config.db;
+  const db = ownsDb ? openDb(config.dbPath) : config.db;
 
   applyMigrations(db);
 

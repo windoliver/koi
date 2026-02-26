@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
+    "@koi/event-delivery": "workspace:*",
     "@koi/hash": "workspace:*"
   },
   "devDependencies": {
