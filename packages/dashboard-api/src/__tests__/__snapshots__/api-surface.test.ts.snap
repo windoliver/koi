@@ -1,0 +1,91 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/dashboard-api API surface . has stable type surface 1`] = `
+"import { DashboardDataSource, DashboardConfig } from '@koi/dashboard-types';
+
+/**
+ * createDashboardHandler — main factory for the dashboard HTTP handler.
+ *
+ * Returns a composable handler that returns \`Response | null\`.
+ * Null means the request didn't match any dashboard route,
+ * allowing the consumer to chain with other handlers.
+ */
+
+interface DashboardHandlerResult {
+    readonly handler: (req: Request) => Promise<Response | null>;
+    readonly dispose: () => void;
+}
+declare function createDashboardHandler(dataSource: DashboardDataSource, config?: DashboardConfig): DashboardHandlerResult;
+
+/**
+ * Lightweight URL pattern router for dashboard API.
+ *
+ * No frameworks — uses \`new URL(req.url)\` for path matching and
+ * simple pattern extraction for route parameters.
+ */
+interface RouteParams {
+    readonly [key: string]: string;
+}
+type RouteHandler = (req: Request, params: RouteParams) => Response | Promise<Response>;
+interface Route {
+    readonly method: string;
+    readonly pattern: string;
+    readonly handler: RouteHandler;
+}
+interface Router {
+    readonly match: (method: string, path: string) => RouteMatch | undefined;
+}
+interface RouteMatch {
+    readonly handler: RouteHandler;
+    readonly params: RouteParams;
+}
+declare function createRouter(routes: readonly Route[]): Router;
+declare function jsonResponse<T>(data: T, status?: number): Response;
+declare function errorResponse(code: string, message: string, status: number): Response;
+
+/**
+ * SSE message encoder — converts data payloads to SSE wire format.
+ */
+/** Encode a data payload as an SSE frame: "data: {json}\\n\\n" */
+declare function encodeSseMessage(data: unknown): Uint8Array;
+/** Encode an SSE comment (keepalive): ":keepalive\\n\\n" */
+declare function encodeSseKeepalive(): Uint8Array;
+/** Encode an SSE event with an ID field for reconnection. */
+declare function encodeSseMessageWithId(data: unknown, id: string): Uint8Array;
+
+/**
+ * SSE producer — manages connections and 100ms event batching.
+ *
+ * Subscribes to DashboardDataSource.subscribe() for events, buffers
+ * them in-memory, and flushes every sseBatchIntervalMs as a
+ * DashboardEventBatch to all connected clients.
+ */
+
+interface SseProducer {
+    /** Create a new SSE Response for a client connection. Returns 503 if at capacity. Extra headers merged into response. */
+    readonly connect: (req: Request, extraHeaders?: Readonly<Record<string, string>>) => Response;
+    /** Number of active SSE connections. */
+    readonly connectionCount: () => number;
+    /** Shut down the producer — flush remaining events, close all connections, stop timers. */
+    readonly dispose: () => void;
+}
+declare function createSseProducer(dataSource: DashboardDataSource, options: {
+    readonly batchIntervalMs: number;
+    readonly maxConnections: number;
+}): SseProducer;
+
+/**
+ * Static asset serving for the dashboard UI.
+ *
+ * Serves files from the configured assetsDir with appropriate cache headers:
+ * - Content-hashed files (e.g. index-a1b2c3.js) → immutable cache
+ * - index.html → no-cache (SPA fallback)
+ */
+interface StaticServeResult {
+    readonly serve: (pathname: string) => Promise<Response | null>;
+}
+declare function createStaticServe(assetsDir: string): StaticServeResult;
+
+export { type DashboardHandlerResult, type Route, type RouteHandler, type RouteMatch, type RouteParams, type Router, type SseProducer, type StaticServeResult, createDashboardHandler, createRouter, createSseProducer, createStaticServe, encodeSseKeepalive, encodeSseMessage, encodeSseMessageWithId, errorResponse, jsonResponse };
+"
+`;

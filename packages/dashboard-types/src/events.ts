@@ -1,0 +1,170 @@
+/**
+ * Dashboard event types — namespaced discriminated unions for SSE streaming.
+ *
+ * Events are organized by domain (agent, skill, channel, system) with
+ * a top-level `kind` discriminator and a `subKind` sub-discriminator.
+ * Batched into DashboardEventBatch envelopes for efficient SSE transport.
+ */
+
+import type { AgentId, ProcessState } from "@koi/core";
+
+// ---------------------------------------------------------------------------
+// Agent events
+// ---------------------------------------------------------------------------
+
+export type AgentDashboardEvent =
+  | {
+      readonly kind: "agent";
+      readonly subKind: "status_changed";
+      readonly agentId: AgentId;
+      readonly from: ProcessState;
+      readonly to: ProcessState;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "agent";
+      readonly subKind: "dispatched";
+      readonly agentId: AgentId;
+      readonly name: string;
+      readonly agentType: "copilot" | "worker";
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "agent";
+      readonly subKind: "terminated";
+      readonly agentId: AgentId;
+      readonly reason?: string;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "agent";
+      readonly subKind: "metrics_updated";
+      readonly agentId: AgentId;
+      readonly turns: number;
+      readonly tokenCount: number;
+      readonly timestamp: number;
+    };
+
+// ---------------------------------------------------------------------------
+// Skill events
+// ---------------------------------------------------------------------------
+
+export type SkillDashboardEvent =
+  | {
+      readonly kind: "skill";
+      readonly subKind: "installed";
+      readonly name: string;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "skill";
+      readonly subKind: "removed";
+      readonly name: string;
+      readonly timestamp: number;
+    };
+
+// ---------------------------------------------------------------------------
+// Channel events
+// ---------------------------------------------------------------------------
+
+export type ChannelDashboardEvent =
+  | {
+      readonly kind: "channel";
+      readonly subKind: "connected";
+      readonly channelId: string;
+      readonly channelType: string;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "channel";
+      readonly subKind: "disconnected";
+      readonly channelId: string;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "channel";
+      readonly subKind: "message_received";
+      readonly channelId: string;
+      readonly agentId: AgentId;
+      readonly timestamp: number;
+    };
+
+// ---------------------------------------------------------------------------
+// System events
+// ---------------------------------------------------------------------------
+
+export type SystemDashboardEvent =
+  | {
+      readonly kind: "system";
+      readonly subKind: "memory_warning";
+      readonly heapUsedMb: number;
+      readonly heapLimitMb: number;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "system";
+      readonly subKind: "error";
+      readonly message: string;
+      readonly timestamp: number;
+    }
+  | {
+      readonly kind: "system";
+      readonly subKind: "activity";
+      readonly message: string;
+      readonly timestamp: number;
+    };
+
+// ---------------------------------------------------------------------------
+// Union + batch envelope
+// ---------------------------------------------------------------------------
+
+export type DashboardEvent =
+  | AgentDashboardEvent
+  | SkillDashboardEvent
+  | ChannelDashboardEvent
+  | SystemDashboardEvent;
+
+/** Batched envelope sent over SSE. Monotonic seq for gap detection. */
+export interface DashboardEventBatch {
+  readonly events: readonly DashboardEvent[];
+  readonly seq: number;
+  readonly timestamp: number;
+}
+
+// ---------------------------------------------------------------------------
+// Type guards
+// ---------------------------------------------------------------------------
+
+const VALID_KINDS = new Set(["agent", "skill", "channel", "system"]);
+
+/** Type guard for DashboardEvent. Validates kind + subKind presence. */
+export function isDashboardEvent(value: unknown): value is DashboardEvent {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.kind === "string" &&
+    VALID_KINDS.has(v.kind) &&
+    typeof v.subKind === "string" &&
+    typeof v.timestamp === "number"
+  );
+}
+
+/** Type guard for agent domain events. */
+export function isAgentEvent(event: DashboardEvent): event is AgentDashboardEvent {
+  return event.kind === "agent";
+}
+
+/** Type guard for skill domain events. */
+export function isSkillEvent(event: DashboardEvent): event is SkillDashboardEvent {
+  return event.kind === "skill";
+}
+
+/** Type guard for channel domain events. */
+export function isChannelEvent(event: DashboardEvent): event is ChannelDashboardEvent {
+  return event.kind === "channel";
+}
+
+/** Type guard for system domain events. */
+export function isSystemEvent(event: DashboardEvent): event is SystemDashboardEvent {
+  return event.kind === "system";
+}

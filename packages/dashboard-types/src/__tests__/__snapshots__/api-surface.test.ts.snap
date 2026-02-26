@@ -1,0 +1,222 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/dashboard-types API surface . has stable type surface 1`] = `
+"import { AgentId, ProcessState, Result, KoiError } from '@koi/core';
+
+/**
+ * Dashboard configuration types and defaults.
+ */
+interface DashboardConfig {
+    /** URL path prefix for the dashboard UI. Default: "/dashboard" */
+    readonly basePath?: string;
+    /** URL path prefix for API endpoints. Default: "/dashboard/api" */
+    readonly apiPath?: string;
+    /** Absolute path to built dashboard-ui dist/ directory. */
+    readonly assetsDir?: string;
+    /** SSE event batch interval in milliseconds. Default: 100 */
+    readonly sseBatchIntervalMs?: number;
+    /** Maximum concurrent SSE connections. Default: 50 */
+    readonly maxSseConnections?: number;
+    /** Enable CORS headers. Default: false */
+    readonly cors?: boolean;
+}
+declare const DEFAULT_DASHBOARD_CONFIG: Readonly<{
+    readonly basePath: "/dashboard";
+    readonly apiPath: "/dashboard/api";
+    readonly sseBatchIntervalMs: 100;
+    readonly maxSseConnections: 50;
+    readonly cors: false;
+}>;
+
+/**
+ * Cursor-based pagination types for Phase 3 conversation history.
+ * Defined now for API stability — unused until Phase 3.
+ */
+interface CursorRequest {
+    readonly cursor?: string;
+    readonly limit?: number;
+}
+interface CursorPage<T> {
+    readonly items: readonly T[];
+    readonly nextCursor?: string;
+    readonly hasMore: boolean;
+}
+
+/**
+ * Dashboard event types — namespaced discriminated unions for SSE streaming.
+ *
+ * Events are organized by domain (agent, skill, channel, system) with
+ * a top-level \`kind\` discriminator and a \`subKind\` sub-discriminator.
+ * Batched into DashboardEventBatch envelopes for efficient SSE transport.
+ */
+
+type AgentDashboardEvent = {
+    readonly kind: "agent";
+    readonly subKind: "status_changed";
+    readonly agentId: AgentId;
+    readonly from: ProcessState;
+    readonly to: ProcessState;
+    readonly timestamp: number;
+} | {
+    readonly kind: "agent";
+    readonly subKind: "dispatched";
+    readonly agentId: AgentId;
+    readonly name: string;
+    readonly agentType: "copilot" | "worker";
+    readonly timestamp: number;
+} | {
+    readonly kind: "agent";
+    readonly subKind: "terminated";
+    readonly agentId: AgentId;
+    readonly reason?: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "agent";
+    readonly subKind: "metrics_updated";
+    readonly agentId: AgentId;
+    readonly turns: number;
+    readonly tokenCount: number;
+    readonly timestamp: number;
+};
+type SkillDashboardEvent = {
+    readonly kind: "skill";
+    readonly subKind: "installed";
+    readonly name: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "skill";
+    readonly subKind: "removed";
+    readonly name: string;
+    readonly timestamp: number;
+};
+type ChannelDashboardEvent = {
+    readonly kind: "channel";
+    readonly subKind: "connected";
+    readonly channelId: string;
+    readonly channelType: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "channel";
+    readonly subKind: "disconnected";
+    readonly channelId: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "channel";
+    readonly subKind: "message_received";
+    readonly channelId: string;
+    readonly agentId: AgentId;
+    readonly timestamp: number;
+};
+type SystemDashboardEvent = {
+    readonly kind: "system";
+    readonly subKind: "memory_warning";
+    readonly heapUsedMb: number;
+    readonly heapLimitMb: number;
+    readonly timestamp: number;
+} | {
+    readonly kind: "system";
+    readonly subKind: "error";
+    readonly message: string;
+    readonly timestamp: number;
+} | {
+    readonly kind: "system";
+    readonly subKind: "activity";
+    readonly message: string;
+    readonly timestamp: number;
+};
+type DashboardEvent = AgentDashboardEvent | SkillDashboardEvent | ChannelDashboardEvent | SystemDashboardEvent;
+/** Batched envelope sent over SSE. Monotonic seq for gap detection. */
+interface DashboardEventBatch {
+    readonly events: readonly DashboardEvent[];
+    readonly seq: number;
+    readonly timestamp: number;
+}
+/** Type guard for DashboardEvent. Validates kind + subKind presence. */
+declare function isDashboardEvent(value: unknown): value is DashboardEvent;
+/** Type guard for agent domain events. */
+declare function isAgentEvent(event: DashboardEvent): event is AgentDashboardEvent;
+/** Type guard for skill domain events. */
+declare function isSkillEvent(event: DashboardEvent): event is SkillDashboardEvent;
+/** Type guard for channel domain events. */
+declare function isChannelEvent(event: DashboardEvent): event is ChannelDashboardEvent;
+/** Type guard for system domain events. */
+declare function isSystemEvent(event: DashboardEvent): event is SystemDashboardEvent;
+
+/**
+ * DashboardDataSource — adapter interface for dashboard data access.
+ *
+ * All methods return \`T | Promise<T>\` so implementations can be sync
+ * (in-memory mock) or async (network-backed) without interface changes.
+ * Callers must always \`await\` the result.
+ */
+
+interface DashboardAgentSummary {
+    readonly agentId: AgentId;
+    readonly name: string;
+    readonly agentType: "copilot" | "worker";
+    readonly state: ProcessState;
+    readonly model?: string;
+    readonly channels: readonly string[];
+    readonly turns: number;
+    readonly startedAt: number;
+    readonly lastActivityAt: number;
+}
+interface DashboardAgentDetail extends DashboardAgentSummary {
+    readonly parentId?: AgentId;
+    readonly skills: readonly string[];
+    readonly tokenCount: number;
+    readonly metadata: Readonly<Record<string, unknown>>;
+}
+interface DashboardChannelSummary {
+    readonly channelId: string;
+    readonly channelType: string;
+    readonly agentId: AgentId;
+    readonly connected: boolean;
+    readonly messageCount: number;
+    readonly connectedAt: number;
+}
+interface DashboardSkillSummary {
+    readonly name: string;
+    readonly description: string;
+    readonly tags: readonly string[];
+    readonly agentId: AgentId;
+}
+interface DashboardSystemMetrics {
+    readonly uptimeMs: number;
+    readonly heapUsedMb: number;
+    readonly heapTotalMb: number;
+    readonly activeAgents: number;
+    readonly totalAgents: number;
+    readonly activeChannels: number;
+}
+interface DashboardDataSource {
+    readonly listAgents: () => readonly DashboardAgentSummary[] | Promise<readonly DashboardAgentSummary[]>;
+    readonly getAgent: (agentId: AgentId) => DashboardAgentDetail | undefined | Promise<DashboardAgentDetail | undefined>;
+    readonly terminateAgent: (agentId: AgentId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly listChannels: () => readonly DashboardChannelSummary[] | Promise<readonly DashboardChannelSummary[]>;
+    readonly listSkills: () => readonly DashboardSkillSummary[] | Promise<readonly DashboardSkillSummary[]>;
+    readonly getSystemMetrics: () => DashboardSystemMetrics | Promise<DashboardSystemMetrics>;
+    readonly subscribe: (listener: (event: DashboardEvent) => void) => () => void;
+}
+
+/**
+ * REST API response types for the dashboard.
+ *
+ * All responses use the ApiResult<T> envelope — a discriminated union
+ * that separates success from error without throwing.
+ */
+type ApiResult<T> = {
+    readonly ok: true;
+    readonly data: T;
+} | {
+    readonly ok: false;
+    readonly error: ApiError;
+};
+interface ApiError {
+    readonly code: string;
+    readonly message: string;
+}
+
+export { type AgentDashboardEvent, type ApiError, type ApiResult, type ChannelDashboardEvent, type CursorPage, type CursorRequest, DEFAULT_DASHBOARD_CONFIG, type DashboardAgentDetail, type DashboardAgentSummary, type DashboardChannelSummary, type DashboardConfig, type DashboardDataSource, type DashboardEvent, type DashboardEventBatch, type DashboardSkillSummary, type DashboardSystemMetrics, type SkillDashboardEvent, type SystemDashboardEvent, isAgentEvent, isChannelEvent, isDashboardEvent, isSkillEvent, isSystemEvent };
+"
+`;
