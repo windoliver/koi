@@ -34,8 +34,9 @@ interface LockfileEntry {
  * in the format `<name>@<version>`.
  */
 function parseLockfilePackages(lockContent: string): readonly LockfileEntry[] {
-  // Strip single-line comments for JSONC compatibility
-  const stripped = lockContent.replace(/^\s*\/\/.*$/gm, "");
+  // Strip single-line comments and trailing commas for JSONC compatibility.
+  // bun.lock uses JSONC with trailing commas (e.g., {"a": 1,}).
+  const stripped = lockContent.replace(/^\s*\/\/.*$/gm, "").replace(/,\s*([\]}])/g, "$1");
   const parsed: unknown = JSON.parse(stripped);
 
   if (typeof parsed !== "object" || parsed === null) {

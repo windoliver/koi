@@ -209,6 +209,32 @@ describe("verifyInstallIntegrity", () => {
     }
   });
 
+  test("parses real bun.lock JSONC with trailing commas and comments", async () => {
+    // Real bun.lock files use JSONC: trailing commas, single-line comments
+    const lockContent = `{
+  // bun.lock v1
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "test-ws",
+      "dependencies": {
+        "is-number": "7.0.0",
+      },
+    },
+  },
+  "packages": {
+    "is-number": ["is-number@7.0.0", "", {}, "sha512-abc=="],
+  }
+}`;
+    const wsPath = await createWorkspace("jsonc-trailing", {
+      lockContent,
+      packages: [{ name: "is-number", version: "7.0.0" }],
+    });
+
+    const result = await verifyInstallIntegrity(wsPath, { "is-number": "7.0.0" });
+    expect(result.ok).toBe(true);
+  });
+
   test("handles scoped package missing from lockfile", async () => {
     const wsPath = await createWorkspace("scoped-missing", {
       lockContent: buildLockContent([]),
