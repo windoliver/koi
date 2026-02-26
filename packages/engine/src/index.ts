@@ -11,10 +11,13 @@ export { KoiRuntimeError } from "@koi/errors";
 // agent entity
 export type { AssemblyConflict, AssemblyResult } from "./agent-entity.js";
 export { AgentEntity } from "./agent-entity.js";
+export { computeBackoff } from "./backoff.js";
 // swarm
 export type { CascadingTermination } from "./cascading-termination.js";
 export { createCascadingTermination } from "./cascading-termination.js";
 export { createChildHandle } from "./child-handle.js";
+export type { Clock, FakeClock, TimerHandle } from "./clock.js";
+export { createFakeClock, createRealClock } from "./clock.js";
 export type { TerminalHandlers } from "./compose.js";
 // composition
 export {
@@ -52,9 +55,11 @@ export {
 // health monitor
 export type { InMemoryHealthMonitor } from "./health-monitor.js";
 export { createHealthMonitor } from "./health-monitor.js";
+export { createHealthReconciler } from "./health-reconciler.js";
 // inherited component provider
 export type { InheritedComponentProviderConfig } from "./inherited-component-provider.js";
 export { createInheritedComponentProvider } from "./inherited-component-provider.js";
+export { isPromise } from "./is-promise.js";
 // factory
 export { createKoi } from "./koi.js";
 // lifecycle
@@ -64,6 +69,11 @@ export type { SharedProcessAccounter } from "./process-accounter.js";
 export { createProcessAccounter } from "./process-accounter.js";
 export type { ProcessTree } from "./process-tree.js";
 export { createProcessTree } from "./process-tree.js";
+export type { ReconcileQueue } from "./reconcile-queue.js";
+export { createReconcileQueue } from "./reconcile-queue.js";
+// reconciliation
+export type { ReconcileRunner, ReconcileRunnerStats } from "./reconcile-runner.js";
+export { createReconcileRunner } from "./reconcile-runner.js";
 // registry
 export type { InMemoryRegistry } from "./registry.js";
 export { createInMemoryRegistry } from "./registry.js";
@@ -74,6 +84,8 @@ export { createResultPruner } from "./result-pruner.js";
 export { spawnChildAgent } from "./spawn-child.js";
 // spawn ledger
 export { createInMemorySpawnLedger } from "./spawn-ledger.js";
+export { createTimeoutReconciler } from "./timeout-reconciler.js";
+export { createToolReconciler } from "./tool-reconciler.js";
 // transitions
 export type { TransitionInput } from "./transitions.js";
 export { applyTransition, validateTransition } from "./transitions.js";
