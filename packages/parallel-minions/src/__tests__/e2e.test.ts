@@ -82,6 +82,7 @@ const RESEARCHER_MANIFEST: AgentManifest = {
   version: "0.0.1",
   description: "Researches topics concisely",
   model: { name: MODEL },
+  lifecycle: "worker",
 };
 
 const CODER_MANIFEST: AgentManifest = {
@@ -89,6 +90,7 @@ const CODER_MANIFEST: AgentManifest = {
   version: "0.0.1",
   description: "Writes code concisely",
   model: { name: MODEL },
+  lifecycle: "worker",
 };
 
 // ---------------------------------------------------------------------------
@@ -387,7 +389,6 @@ describeE2E("@koi/parallel-minions E2E with real LLM", () => {
           manifest: request.manifest,
           adapter: childAdapter,
           spawnLedger: ledger,
-          agentType: "worker",
           loopDetection: false,
           limits: { maxTurns: 1, maxDurationMs: 30_000, maxTokens: 10_000 },
         });
