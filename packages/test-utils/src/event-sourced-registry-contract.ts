@@ -45,7 +45,7 @@ export interface EventSourcedRegistryForTest {
   ) => Result<RegistryEntry, KoiError> | Promise<Result<RegistryEntry, KoiError>>;
   readonly watch: (listener: (event: RegistryEvent) => void) => () => void;
   readonly rebuild: () => Promise<void>;
-  readonly [Symbol.asyncDispose]: () => Promise<void>;
+  readonly [Symbol.asyncDispose]: () => PromiseLike<void>;
 }
 
 export interface EventSourcedRegistryTestContext {

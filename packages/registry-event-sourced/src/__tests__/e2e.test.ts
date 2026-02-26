@@ -607,8 +607,9 @@ describeE2E(
         expect(successes).toHaveLength(1);
         expect(failures).toHaveLength(1);
 
-        if (!failures[0]?.ok) {
-          expect(failures[0].error.code).toBe("CONFLICT");
+        const firstFailure = failures[0];
+        if (firstFailure !== undefined && !firstFailure.ok) {
+          expect(firstFailure.error.code).toBe("CONFLICT");
         }
 
         // Final state should be consistent
