@@ -36,6 +36,10 @@
       "types": "./dist/ecs.d.ts",
       "import": "./dist/ecs.js"
     },
+    "./handoff": {
+      "types": "./dist/handoff.d.ts",
+      "import": "./dist/handoff.js"
+    },
     "./engine": {
       "types": "./dist/engine.d.ts",
       "import": "./dist/engine.js"

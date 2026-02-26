@@ -216,6 +216,7 @@ export {
   EVENTS,
   FILESYSTEM,
   GOVERNANCE,
+  HANDOFF,
   MEMORY,
   middlewareToken,
   runId,
@@ -313,6 +314,20 @@ export type {
 } from "./governance.js";
 // governance — runtime values
 export { GOVERNANCE_VARIABLES, governanceContributorToken } from "./governance.js";
+// handoff — types
+export type {
+  ArtifactRef,
+  DecisionRecord,
+  HandoffAcceptError,
+  HandoffAcceptResult,
+  HandoffComponent,
+  HandoffEnvelope,
+  HandoffEvent,
+  HandoffId,
+  HandoffStatus,
+} from "./handoff.js";
+// handoff — runtime values
+export { handoffId } from "./handoff.js";
 // health
 export type {
   HealthMonitor,

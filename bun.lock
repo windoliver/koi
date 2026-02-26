@@ -496,6 +496,18 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/handoff": {
+      "name": "@koi/handoff",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/hash": {
       "name": "@koi/hash",
       "version": "0.0.0",
@@ -1698,6 +1710,8 @@
     "@koi/gateway": ["@koi/gateway@workspace:packages/gateway"],
 
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/git-utils"],
+
+    "@koi/handoff": ["@koi/handoff@workspace:packages/handoff"],
 
     "@koi/hash": ["@koi/hash@workspace:packages/hash"],
 

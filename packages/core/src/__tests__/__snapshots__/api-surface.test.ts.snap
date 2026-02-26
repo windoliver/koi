@@ -4,7 +4,7 @@ exports[`@koi/core API surface . has stable type surface 1`] = `
 "import { B as BrickRef, a as BrickKind } from './brick-snapshot-HASH.js';
 export { A as ALL_BRICK_KINDS, b as BrickId, c as BrickLifecycle, d as BrickSnapshot, e as BrickSource, F as ForgeScope, M as MIN_TRUST_BY_KIND, S as SnapshotEvent, f as SnapshotId, g as SnapshotQuery, h as SnapshotStore, V as VALID_LIFECYCLE_TRANSITIONS, i as brickId, s as snapshotId } from './brick-snapshot-HASH.js';
 import { A as AgentId, E as EngineState, P as ProcessState, T as Tool, S as SkillComponent, a as AgentDescriptor, b as Agent, K as KoiMiddleware, c as SessionId, d as ToolCallId } from './ecs-HASH.js';
-export { e as AbortReason, f as ApprovalDecision, g as ApprovalHandler, h as ApprovalRequest, B as BROWSER, i as BrowserActionOptions, j as BrowserConsoleEntry, k as BrowserConsoleLevel, l as BrowserConsoleOptions, m as BrowserConsoleResult, n as BrowserDriver, o as BrowserEvaluateOptions, p as BrowserEvaluateResult, q as BrowserFormField, r as BrowserNavigateOptions, s as BrowserNavigateResult, t as BrowserRefInfo, u as BrowserScreenshotOptions, v as BrowserScreenshotResult, w as BrowserScrollOptions, x as BrowserSnapshotOptions, y as BrowserSnapshotResult, z as BrowserTabCloseOptions, C as BrowserTabFocusOptions, D as BrowserTabInfo, F as BrowserTabNewOptions, G as BrowserTraceOptions, H as BrowserTraceResult, I as BrowserTypeOptions, J as BrowserUploadFile, L as BrowserUploadOptions, M as BrowserWaitOptions, N as BrowserWaitUntil, O as COMPONENT_PRIORITY, Q as CREDENTIALS, R as CapabilityFragment, U as ChildHandle, V as ChildLifecycleEvent, W as ComponentEvent, X as ComponentEventKind, Y as ComponentProvider, Z as ComposedCallHandlers, _ as CorrelationIds, $ as CredentialComponent, a0 as CronSchedule, a1 as DEFAULT_SCHEDULER_CONFIG, a2 as DELEGATION, a3 as EVENTS, a4 as EngineAdapter, a5 as EngineEvent, a6 as EngineInput, a7 as EngineInputBase, a8 as EngineMetrics, a9 as EngineOutput, aa as EngineStopReason, ab as EventComponent, ac as FILESYSTEM, ad as GOVERNANCE, ae as GOVERNANCE_VARIABLES, af as GovernanceCheck, ag as GovernanceController, ah as GovernanceEvent, ai as GovernanceSnapshot, aj as GovernanceVariable, ak as GovernanceVariableContributor, al as MEMORY, am as MemoryComponent, an as MemoryRecallOptions, ao as MemoryResult, ap as MemoryStoreOptions, aq as ModelChunk, ar as ModelHandler, as as ModelRequest, at as ModelResponse, au as ModelStreamHandler, av as ProcessAccounter, aw as ProcessId, ax as RunId, ay as SCHEDULER, az as ScheduleId, aA as ScheduleStore, aB as ScheduledTask, aC as SchedulerComponent, aD as SchedulerConfig, aE as SchedulerEvent, aF as SchedulerStats, aG as SensorReading, aH as SessionContext, aI as SkillMetadata, aJ as SpawnLedger, aK as SubsystemToken, aL as TaskFilter, aM as TaskHistoryFilter, aN as TaskId, aO as TaskOptions, aP as TaskRunRecord, aQ as TaskScheduler, aR as TaskStatus, aS as TaskStore, aT as ToolDescriptor, aU as ToolExecuteOptions, aV as ToolHandler, aW as ToolRequest, aX as ToolResponse, aY as TrustTier, aZ as TurnContext, a_ as TurnId, a$ as WEBHOOK, b0 as WORKSPACE, b1 as WorkspaceComponent, b2 as agentId, b3 as agentToken, b4 as channelToken, b5 as governanceContributorToken, b6 as middlewareToken, b7 as runId, b8 as scheduleId, b9 as sessionId, ba as skillToken, bb as taskId, bc as token, bd as toolCallId, be as toolToken, bf as turnId } from './ecs-HASH.js';
+export { e as AbortReason, f as ApprovalDecision, g as ApprovalHandler, h as ApprovalRequest, i as ArtifactRef, B as BROWSER, j as BrowserActionOptions, k as BrowserConsoleEntry, l as BrowserConsoleLevel, m as BrowserConsoleOptions, n as BrowserConsoleResult, o as BrowserDriver, p as BrowserEvaluateOptions, q as BrowserEvaluateResult, r as BrowserFormField, s as BrowserNavigateOptions, t as BrowserNavigateResult, u as BrowserRefInfo, v as BrowserScreenshotOptions, w as BrowserScreenshotResult, x as BrowserScrollOptions, y as BrowserSnapshotOptions, z as BrowserSnapshotResult, C as BrowserTabCloseOptions, D as BrowserTabFocusOptions, F as BrowserTabInfo, G as BrowserTabNewOptions, H as BrowserTraceOptions, I as BrowserTraceResult, J as BrowserTypeOptions, L as BrowserUploadFile, M as BrowserUploadOptions, N as BrowserWaitOptions, O as BrowserWaitUntil, Q as COMPONENT_PRIORITY, R as CREDENTIALS, U as CapabilityFragment, V as ChildHandle, W as ChildLifecycleEvent, X as ComponentEvent, Y as ComponentEventKind, Z as ComponentProvider, _ as ComposedCallHandlers, $ as CorrelationIds, a0 as CredentialComponent, a1 as CronSchedule, a2 as DEFAULT_SCHEDULER_CONFIG, a3 as DELEGATION, a4 as DecisionRecord, a5 as EVENTS, a6 as EngineAdapter, a7 as EngineEvent, a8 as EngineInput, a9 as EngineInputBase, aa as EngineMetrics, ab as EngineOutput, ac as EngineStopReason, ad as EventComponent, ae as FILESYSTEM, af as GOVERNANCE, ag as GOVERNANCE_VARIABLES, ah as GovernanceCheck, ai as GovernanceController, aj as GovernanceEvent, ak as GovernanceSnapshot, al as GovernanceVariable, am as GovernanceVariableContributor, an as HANDOFF, ao as HandoffAcceptError, ap as HandoffAcceptResult, aq as HandoffComponent, ar as HandoffEnvelope, as as HandoffEvent, at as HandoffId, au as HandoffStatus, av as MEMORY, aw as MemoryComponent, ax as MemoryRecallOptions, ay as MemoryResult, az as MemoryStoreOptions, aA as ModelChunk, aB as ModelHandler, aC as ModelRequest, aD as ModelResponse, aE as ModelStreamHandler, aF as ProcessAccounter, aG as ProcessId, aH as RunId, aI as SCHEDULER, aJ as ScheduleId, aK as ScheduleStore, aL as ScheduledTask, aM as SchedulerComponent, aN as SchedulerConfig, aO as SchedulerEvent, aP as SchedulerStats, aQ as SensorReading, aR as SessionContext, aS as SkillMetadata, aT as SpawnLedger, aU as SubsystemToken, aV as TaskFilter, aW as TaskHistoryFilter, aX as TaskId, aY as TaskOptions, aZ as TaskRunRecord, a_ as TaskScheduler, a$ as TaskStatus, b0 as TaskStore, b1 as ToolDescriptor, b2 as ToolExecuteOptions, b3 as ToolHandler, b4 as ToolRequest, b5 as ToolResponse, b6 as TrustTier, b7 as TurnContext, b8 as TurnId, b9 as WEBHOOK, ba as WORKSPACE, bb as WorkspaceComponent, bc as agentId, bd as agentToken, be as channelToken, bf as governanceContributorToken, bg as handoffId, bh as middlewareToken, bi as runId, bj as scheduleId, bk as sessionId, bl as skillToken, bm as taskId, bn as token, bo as toolCallId, bp as toolToken, bq as turnId } from './ecs-HASH.js';
 import { Result, KoiError } from './errors.js';
 export { BackendErrorMapper, KoiErrorCode, RETRYABLE_DEFAULTS } from './errors.js';
 import { TransitionReason, AgentCondition, AgentStatus, RegistryEntry, AgentRegistry } from './lifecycle.js';
@@ -1577,7 +1577,7 @@ import './webhook.js';
 
 exports[`@koi/core API surface ./ecs has stable type surface 1`] = `
 "import './assembly-HASH.js';
-export { b as Agent, a as AgentDescriptor, A as AgentId, B as BROWSER, O as COMPONENT_PRIORITY, Q as CREDENTIALS, U as ChildHandle, V as ChildLifecycleEvent, W as ComponentEvent, X as ComponentEventKind, Y as ComponentProvider, $ as CredentialComponent, a2 as DELEGATION, a3 as EVENTS, ab as EventComponent, ac as FILESYSTEM, ad as GOVERNANCE, al as MEMORY, am as MemoryComponent, an as MemoryRecallOptions, ao as MemoryResult, ap as MemoryStoreOptions, av as ProcessAccounter, aw as ProcessId, P as ProcessState, ax as RunId, ay as SCHEDULER, c as SessionId, S as SkillComponent, aI as SkillMetadata, aJ as SpawnLedger, aK as SubsystemToken, T as Tool, d as ToolCallId, aT as ToolDescriptor, aU as ToolExecuteOptions, aY as TrustTier, a_ as TurnId, a$ as WEBHOOK, b0 as WORKSPACE, b1 as WorkspaceComponent, b2 as agentId, b3 as agentToken, b4 as channelToken, b6 as middlewareToken, b7 as runId, b9 as sessionId, ba as skillToken, bc as token, bd as toolCallId, be as toolToken, bf as turnId } from './ecs-HASH.js';
+export { b as Agent, a as AgentDescriptor, A as AgentId, B as BROWSER, Q as COMPONENT_PRIORITY, R as CREDENTIALS, V as ChildHandle, W as ChildLifecycleEvent, X as ComponentEvent, Y as ComponentEventKind, Z as ComponentProvider, a0 as CredentialComponent, a3 as DELEGATION, a5 as EVENTS, ad as EventComponent, ae as FILESYSTEM, af as GOVERNANCE, an as HANDOFF, av as MEMORY, aw as MemoryComponent, ax as MemoryRecallOptions, ay as MemoryResult, az as MemoryStoreOptions, aF as ProcessAccounter, aG as ProcessId, P as ProcessState, aH as RunId, aI as SCHEDULER, c as SessionId, S as SkillComponent, aS as SkillMetadata, aT as SpawnLedger, aU as SubsystemToken, T as Tool, d as ToolCallId, b1 as ToolDescriptor, b2 as ToolExecuteOptions, b6 as TrustTier, b8 as TurnId, b9 as WEBHOOK, ba as WORKSPACE, bb as WorkspaceComponent, bc as agentId, bd as agentToken, be as channelToken, bh as middlewareToken, bi as runId, bk as sessionId, bl as skillToken, bn as token, bo as toolCallId, bp as toolToken, bq as turnId } from './ecs-HASH.js';
 import './channel.js';
 import './common.js';
 import './filesystem-HASH.js';
@@ -1587,9 +1587,21 @@ import './message.js';
 "
 `;
 
+exports[`@koi/core API surface ./handoff has stable type surface 1`] = `
+"import './common.js';
+import './assembly-HASH.js';
+export { i as ArtifactRef, a4 as DecisionRecord, ao as HandoffAcceptError, ap as HandoffAcceptResult, aq as HandoffComponent, ar as HandoffEnvelope, as as HandoffEvent, at as HandoffId, au as HandoffStatus, bg as handoffId } from './ecs-HASH.js';
+import './webhook.js';
+import './errors.js';
+import './channel.js';
+import './message.js';
+import './filesystem-HASH.js';
+"
+`;
+
 exports[`@koi/core API surface ./engine has stable type surface 1`] = `
 "import './common.js';
-export { e as AbortReason, Z as ComposedCallHandlers, a4 as EngineAdapter, a5 as EngineEvent, a6 as EngineInput, a7 as EngineInputBase, a8 as EngineMetrics, a9 as EngineOutput, E as EngineState, aa as EngineStopReason } from './ecs-HASH.js';
+export { e as AbortReason, _ as ComposedCallHandlers, a6 as EngineAdapter, a7 as EngineEvent, a8 as EngineInput, a9 as EngineInputBase, aa as EngineMetrics, ab as EngineOutput, E as EngineState, ac as EngineStopReason } from './ecs-HASH.js';
 import './message.js';
 import './assembly-HASH.js';
 import './webhook.js';
@@ -1875,7 +1887,7 @@ export type { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, Inb
 exports[`@koi/core API surface ./middleware has stable type surface 1`] = `
 "import './channel.js';
 import './common.js';
-export { f as ApprovalDecision, g as ApprovalHandler, h as ApprovalRequest, R as CapabilityFragment, K as KoiMiddleware, aq as ModelChunk, ar as ModelHandler, as as ModelRequest, at as ModelResponse, au as ModelStreamHandler, aH as SessionContext, aV as ToolHandler, aW as ToolRequest, aX as ToolResponse, aZ as TurnContext } from './ecs-HASH.js';
+export { f as ApprovalDecision, g as ApprovalHandler, h as ApprovalRequest, U as CapabilityFragment, K as KoiMiddleware, aA as ModelChunk, aB as ModelHandler, aC as ModelRequest, aD as ModelResponse, aE as ModelStreamHandler, aR as SessionContext, b3 as ToolHandler, b4 as ToolRequest, b5 as ToolResponse, b7 as TurnContext } from './ecs-HASH.js';
 import './message.js';
 import './assembly-HASH.js';
 import './webhook.js';
@@ -2348,7 +2360,7 @@ export type { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxI
 `;
 
 exports[`@koi/core API surface ./sandbox-executor has stable type surface 1`] = `
-"import { aY as TrustTier } from './ecs-HASH.js';
+"import { b6 as TrustTier } from './ecs-HASH.js';
 import './assembly-HASH.js';
 import './common.js';
 import './webhook.js';
@@ -2429,7 +2441,7 @@ export type { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor,
 `;
 
 exports[`@koi/core API surface ./sandbox-profile has stable type surface 1`] = `
-"import { aY as TrustTier } from './ecs-HASH.js';
+"import { b6 as TrustTier } from './ecs-HASH.js';
 import './assembly-HASH.js';
 import './common.js';
 import './webhook.js';
