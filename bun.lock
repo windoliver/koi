@@ -279,6 +279,19 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/exec-approvals": {
+      "name": "@koi/exec-approvals",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/execution-context": {
       "name": "@koi/execution-context",
       "version": "0.0.0",
@@ -1269,6 +1282,8 @@
     "@koi/eval": ["@koi/eval@workspace:packages/eval"],
 
     "@koi/events-memory": ["@koi/events-memory@workspace:packages/events-memory"],
+
+    "@koi/exec-approvals": ["@koi/exec-approvals@workspace:packages/exec-approvals"],
 
     "@koi/execution-context": ["@koi/execution-context@workspace:packages/execution-context"],
 

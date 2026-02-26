@@ -1,0 +1,126 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/exec-approvals API surface . has stable type surface 1`] = `
+"import { JsonObject } from '@koi/core/common';
+import { Result, KoiError } from '@koi/core/errors';
+import { KoiMiddleware } from '@koi/core/middleware';
+
+/**
+ * Domain types for @koi/exec-approvals.
+ */
+
+/**
+ * The 5 decisions a user can make when prompted for approval.
+ *
+ * - allow_once: allow this single invocation only
+ * - allow_session: allow for the remainder of this session
+ * - allow_always: allow permanently (pattern written to store)
+ * - deny_once: deny this single invocation
+ * - deny_always: deny permanently (pattern written to store)
+ */
+type ProgressiveDecision = {
+    readonly kind: "allow_once";
+} | {
+    readonly kind: "allow_session";
+    readonly pattern: string;
+} | {
+    readonly kind: "allow_always";
+    readonly pattern: string;
+} | {
+    readonly kind: "deny_once";
+    readonly reason: string;
+} | {
+    readonly kind: "deny_always";
+    readonly pattern: string;
+    readonly reason: string;
+};
+/**
+ * The shape persisted in the backing store.
+ */
+interface PersistedRules {
+    readonly allow: readonly string[];
+    readonly deny: readonly string[];
+}
+/**
+ * Pluggable backing store for "always" decisions.
+ * Use createInMemoryRulesStore() for testing/development.
+ */
+interface ExecRulesStore {
+    readonly load: () => Promise<PersistedRules>;
+    readonly save: (rules: PersistedRules) => Promise<void>;
+}
+/**
+ * The request passed to onAsk when an ask rule fires.
+ */
+interface ExecApprovalRequest {
+    readonly toolId: string;
+    readonly input: JsonObject;
+    /** Which ask pattern triggered this request. */
+    readonly matchedPattern: string;
+}
+
+/**
+ * ExecApprovalsConfig interface and validation.
+ */
+
+declare const DEFAULT_APPROVAL_TIMEOUT_MS = 30000;
+interface ExecApprovalsConfig {
+    readonly rules: {
+        readonly allow: readonly string[];
+        readonly deny: readonly string[];
+        readonly ask: readonly string[];
+    };
+    /** Called when an ask rule fires. Must return a ProgressiveDecision. */
+    readonly onAsk: (req: ExecApprovalRequest) => Promise<ProgressiveDecision>;
+    /** Backing store for "always" decisions. Defaults to createInMemoryRulesStore(). */
+    readonly store?: ExecRulesStore;
+    /** Timeout for onAsk. Defaults to DEFAULT_APPROVAL_TIMEOUT_MS (30_000 ms). */
+    readonly approvalTimeoutMs?: number;
+    /** Called when store.save() fails. Tool call proceeds regardless. */
+    readonly onSaveError?: (error: unknown) => void;
+    /** Called when store.load() fails. Session starts with empty accumulated state. */
+    readonly onLoadError?: (error: unknown) => void;
+    /**
+     * Extract a command string from the tool input for compound pattern matching.
+     * Defaults to defaultExtractCommand.
+     */
+    readonly extractCommand?: (input: JsonObject) => string;
+}
+declare function validateExecApprovalsConfig(config: unknown): Result<ExecApprovalsConfig, KoiError>;
+
+/**
+ * Progressive command allowlisting middleware factory.
+ */
+
+declare function createExecApprovalsMiddleware(rawConfig: ExecApprovalsConfig): KoiMiddleware;
+
+/**
+ * Compound pattern matching for @koi/exec-approvals.
+ *
+ * Patterns have two optional parts separated by the FIRST colon:
+ *   "bash:cat /etc:shadow"  →  toolPattern="bash", inputPattern="cat /etc:shadow"
+ *   "bash"                  →  toolPattern="bash", inputPattern=undefined (any input)
+ *   "*"                     →  matches any tool, any input
+ *   "bash:*"                →  matches bash with any input (including empty)
+ *
+ * Wildcards: only \`*\` at the end of a segment → prefix match.
+ * \`**\` is normalized to \`*\` at construction time.
+ */
+
+/**
+ * Default command extractor: tries input.command, then input.args joined, then JSON.stringify.
+ */
+declare function defaultExtractCommand(input: JsonObject): string;
+
+/**
+ * In-memory ExecRulesStore implementation.
+ *
+ * Starts empty. "Always" decisions accumulate in memory only.
+ * Useful for testing and development.
+ */
+
+declare function createInMemoryRulesStore(): ExecRulesStore;
+
+export { DEFAULT_APPROVAL_TIMEOUT_MS, type ExecApprovalRequest, type ExecApprovalsConfig, type ExecRulesStore, type PersistedRules, type ProgressiveDecision, createExecApprovalsMiddleware, createInMemoryRulesStore, defaultExtractCommand, validateExecApprovalsConfig };
+"
+`;

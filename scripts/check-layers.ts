@@ -29,6 +29,7 @@ const L0U_PACKAGES = new Set([
   "@koi/execution-context",
   "@koi/hash",
   "@koi/manifest",
+  "@koi/sandbox-cloud-base",
   "@koi/shutdown",
   "@koi/skill-scanner",
   "@koi/snapshot-chain-store",
