@@ -7,9 +7,11 @@ import {
   GOVERNANCE,
   MEMORY,
   middlewareToken,
+  SCHEDULER,
   skillToken,
   token,
   toolToken,
+  WEBHOOK,
 } from "../index.js";
 
 /** Widen a branded token to plain string for runtime assertions. */
@@ -135,10 +137,20 @@ describe("well-known singleton tokens", () => {
     expect(str(EVENTS)).toBe("events");
   });
 
+  test("SCHEDULER equals 'scheduler'", () => {
+    expect(str(SCHEDULER)).toBe("scheduler");
+  });
+
+  test("WEBHOOK equals 'webhook'", () => {
+    expect(str(WEBHOOK)).toBe("webhook");
+  });
+
   test("singleton tokens do not contain ':'", () => {
     expect(str(MEMORY)).not.toContain(":");
     expect(str(GOVERNANCE)).not.toContain(":");
     expect(str(CREDENTIALS)).not.toContain(":");
     expect(str(EVENTS)).not.toContain(":");
+    expect(str(SCHEDULER)).not.toContain(":");
+    expect(str(WEBHOOK)).not.toContain(":");
   });
 });

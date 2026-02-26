@@ -1,21 +1,19 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/core API surface . has stable type surface 1`] = `
-"import { B as BrickRef, a as BrickKind } from './brick-snapshot-CLT550hY.js';
-export { A as ALL_BRICK_KINDS, b as BrickId, c as BrickLifecycle, d as BrickSnapshot, e as BrickSource, F as ForgeScope, M as MIN_TRUST_BY_KIND, S as SnapshotEvent, f as SnapshotId, g as SnapshotQuery, h as SnapshotStore, V as VALID_LIFECYCLE_TRANSITIONS, i as brickId, s as snapshotId } from './brick-snapshot-CLT550hY.js';
-import { A as AgentId, P as ProcessState, T as Tool, S as SkillComponent, a as AgentDescriptor, b as Agent, c as SessionId, d as ToolCallId } from './ecs-kiGAEELm.js';
-export { B as BROWSER, e as BrowserActionOptions, f as BrowserConsoleEntry, g as BrowserConsoleLevel, h as BrowserConsoleOptions, i as BrowserConsoleResult, j as BrowserDriver, k as BrowserEvaluateOptions, l as BrowserEvaluateResult, m as BrowserFormField, n as BrowserNavigateOptions, o as BrowserNavigateResult, p as BrowserRefInfo, q as BrowserScreenshotOptions, r as BrowserScreenshotResult, s as BrowserScrollOptions, t as BrowserSnapshotOptions, u as BrowserSnapshotResult, v as BrowserTabCloseOptions, w as BrowserTabFocusOptions, x as BrowserTabInfo, y as BrowserTabNewOptions, z as BrowserTraceOptions, C as BrowserTraceResult, D as BrowserTypeOptions, E as BrowserUploadFile, F as BrowserUploadOptions, G as BrowserWaitOptions, H as BrowserWaitUntil, I as COMPONENT_PRIORITY, J as CREDENTIALS, K as ChildHandle, L as ChildLifecycleEvent, M as ComponentEvent, N as ComponentEventKind, O as ComponentProvider, Q as CredentialComponent, R as DELEGATION, U as EVENTS, V as EventComponent, W as FILESYSTEM, X as GOVERNANCE, Y as GOVERNANCE_VARIABLES, Z as GovernanceCheck, _ as GovernanceController, $ as GovernanceEvent, a0 as GovernanceSnapshot, a1 as GovernanceVariable, a2 as GovernanceVariableContributor, a3 as MEMORY, a4 as MemoryComponent, a5 as MemoryResult, a6 as ProcessAccounter, a7 as ProcessId, a8 as RunId, a9 as SensorReading, aa as SkillMetadata, ab as SpawnLedger, ac as SubsystemToken, ad as ToolDescriptor, ae as ToolExecuteOptions, af as TrustTier, ag as TurnId, ah as WORKSPACE, ai as WorkspaceComponent, aj as agentId, ak as agentToken, al as channelToken, am as governanceContributorToken, an as middlewareToken, ao as runId, ap as sessionId, aq as skillToken, ar as token, as as toolCallId, at as toolToken, au as turnId } from './ecs-kiGAEELm.js';
-import { E as EngineState, a as EngineInput } from './engine-CxBCud0e.js';
-export { A as AbortReason, C as ComposedCallHandlers, b as CorrelationIds, c as EngineAdapter, d as EngineEvent, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, h as EngineStopReason } from './engine-CxBCud0e.js';
+"import { B as BrickRef, a as BrickKind } from './brick-snapshot-DZOvlbqI.js';
+export { A as ALL_BRICK_KINDS, b as BrickId, c as BrickLifecycle, d as BrickSnapshot, e as BrickSource, F as ForgeScope, M as MIN_TRUST_BY_KIND, S as SnapshotEvent, f as SnapshotId, g as SnapshotQuery, h as SnapshotStore, V as VALID_LIFECYCLE_TRANSITIONS, i as brickId, s as snapshotId } from './brick-snapshot-DZOvlbqI.js';
+import { A as AgentId, E as EngineState, P as ProcessState, T as Tool, S as SkillComponent, a as AgentDescriptor, b as Agent, K as KoiMiddleware, c as SessionId, d as ToolCallId } from './ecs-Czk0XWb5.js';
+export { e as AbortReason, f as ApprovalDecision, g as ApprovalHandler, h as ApprovalRequest, B as BROWSER, i as BrowserActionOptions, j as BrowserConsoleEntry, k as BrowserConsoleLevel, l as BrowserConsoleOptions, m as BrowserConsoleResult, n as BrowserDriver, o as BrowserEvaluateOptions, p as BrowserEvaluateResult, q as BrowserFormField, r as BrowserNavigateOptions, s as BrowserNavigateResult, t as BrowserRefInfo, u as BrowserScreenshotOptions, v as BrowserScreenshotResult, w as BrowserScrollOptions, x as BrowserSnapshotOptions, y as BrowserSnapshotResult, z as BrowserTabCloseOptions, C as BrowserTabFocusOptions, D as BrowserTabInfo, F as BrowserTabNewOptions, G as BrowserTraceOptions, H as BrowserTraceResult, I as BrowserTypeOptions, J as BrowserUploadFile, L as BrowserUploadOptions, M as BrowserWaitOptions, N as BrowserWaitUntil, O as COMPONENT_PRIORITY, Q as CREDENTIALS, R as CapabilityFragment, U as ChildHandle, V as ChildLifecycleEvent, W as ComponentEvent, X as ComponentEventKind, Y as ComponentProvider, Z as ComposedCallHandlers, _ as CorrelationIds, $ as CredentialComponent, a0 as CronSchedule, a1 as DEFAULT_SCHEDULER_CONFIG, a2 as DELEGATION, a3 as EVENTS, a4 as EngineAdapter, a5 as EngineEvent, a6 as EngineInput, a7 as EngineInputBase, a8 as EngineMetrics, a9 as EngineOutput, aa as EngineStopReason, ab as EventComponent, ac as FILESYSTEM, ad as GOVERNANCE, ae as GOVERNANCE_VARIABLES, af as GovernanceCheck, ag as GovernanceController, ah as GovernanceEvent, ai as GovernanceSnapshot, aj as GovernanceVariable, ak as GovernanceVariableContributor, al as MEMORY, am as MemoryComponent, an as MemoryResult, ao as ModelChunk, ap as ModelHandler, aq as ModelRequest, ar as ModelResponse, as as ModelStreamHandler, at as ProcessAccounter, au as ProcessId, av as RunId, aw as SCHEDULER, ax as ScheduleId, ay as ScheduleStore, az as ScheduledTask, aA as SchedulerComponent, aB as SchedulerConfig, aC as SchedulerEvent, aD as SchedulerStats, aE as SensorReading, aF as SessionContext, aG as SkillMetadata, aH as SpawnLedger, aI as SubsystemToken, aJ as TaskFilter, aK as TaskHistoryFilter, aL as TaskId, aM as TaskOptions, aN as TaskRunRecord, aO as TaskScheduler, aP as TaskStatus, aQ as TaskStore, aR as ToolDescriptor, aS as ToolExecuteOptions, aT as ToolHandler, aU as ToolRequest, aV as ToolResponse, aW as TrustTier, aX as TurnContext, aY as TurnId, aZ as WEBHOOK, a_ as WORKSPACE, a$ as WorkspaceComponent, b0 as agentId, b1 as agentToken, b2 as channelToken, b3 as governanceContributorToken, b4 as middlewareToken, b5 as runId, b6 as scheduleId, b7 as sessionId, b8 as skillToken, b9 as taskId, ba as token, bb as toolCallId, bc as toolToken, bd as turnId } from './ecs-Czk0XWb5.js';
 import { Result, KoiError } from './errors.js';
 export { BackendErrorMapper, KoiErrorCode, RETRYABLE_DEFAULTS } from './errors.js';
 import { TransitionReason, AgentCondition, AgentStatus, RegistryEntry, AgentRegistry } from './lifecycle.js';
 export { RegistryEvent, RegistryFilter, VALID_TRANSITIONS } from './lifecycle.js';
-import { A as AgentManifest } from './assembly-B1YTeO16.js';
-export { C as ChannelConfig, a as ChannelIdentity, b as ChildSpec, c as CircuitBreakerConfig, D as DEFAULT_CIRCUIT_BREAKER_CONFIG, d as DEFAULT_SUPERVISION_CONFIG, e as DelegationComponent, f as DelegationConfig, g as DelegationDenyReason, h as DelegationEvent, i as DelegationGrant, j as DelegationId, k as DelegationManagerConfig, l as DelegationScope, m as DelegationVerifyResult, M as MiddlewareConfig, n as ModelConfig, P as PermissionConfig, R as RestartType, o as RevocationRegistry, S as ScopeChecker, p as SupervisionConfig, q as SupervisionStrategy, T as ToolConfig, r as delegationId } from './assembly-B1YTeO16.js';
+import { A as AgentManifest } from './assembly-D3WlayKT.js';
+export { C as ChannelConfig, a as ChannelIdentity, b as ChildSpec, c as CircuitBreakerConfig, D as DEFAULT_CIRCUIT_BREAKER_CONFIG, d as DEFAULT_SUPERVISION_CONFIG, e as DelegationComponent, f as DelegationConfig, g as DelegationDenyReason, h as DelegationEvent, i as DelegationGrant, j as DelegationId, k as DelegationManagerConfig, l as DelegationScope, m as DelegationVerifyResult, M as MiddlewareConfig, n as ModelConfig, P as PermissionConfig, R as RestartType, o as RevocationRegistry, S as ScopeChecker, p as SupervisionConfig, q as SupervisionStrategy, T as ToolConfig, r as delegationId } from './assembly-D3WlayKT.js';
 import { JsonObject } from './common.js';
-import { I as ImplementationArtifact, B as BrickArtifact } from './brick-store-BA2rBdy-.js';
-export { A as AdvisoryLock, a as AgentArtifact, b as BrickArtifactBase, c as BrickRequires, d as BrickUpdate, C as ContentMarker, D as DataClassification, F as ForgeAttestationSignature, e as ForgeBuildDefinition, f as ForgeBuilder, g as ForgeProvenance, h as ForgeQuery, i as ForgeResourceRef, j as ForgeRunMetadata, k as ForgeStageDigest, l as ForgeStore, m as ForgeVerificationSummary, n as InTotoStatementV1, o as InTotoSubject, L as LockHandle, p as LockMode, q as LockRequest, S as SigningBackend, r as SkillArtifact, s as StoreChangeEvent, t as StoreChangeKind, u as StoreChangeNotifier, T as TestCase, v as ToolArtifact } from './brick-store-BA2rBdy-.js';
+import { I as ImplementationArtifact, B as BrickArtifact } from './brick-store-DsjZ7i7T.js';
+export { A as AdvisoryLock, a as AgentArtifact, b as BrickArtifactBase, c as BrickRequires, d as BrickUpdate, C as ContentMarker, D as DataClassification, F as ForgeAttestationSignature, e as ForgeBuildDefinition, f as ForgeBuilder, g as ForgeProvenance, h as ForgeQuery, i as ForgeResourceRef, j as ForgeRunMetadata, k as ForgeStageDigest, l as ForgeStore, m as ForgeVerificationSummary, n as InTotoStatementV1, o as InTotoSubject, L as LockHandle, p as LockMode, q as LockRequest, S as SigningBackend, r as SkillArtifact, s as StoreChangeEvent, t as StoreChangeKind, u as StoreChangeNotifier, T as TestCase, v as ToolArtifact } from './brick-store-DsjZ7i7T.js';
 export { ChannelAdapter, ChannelCapabilities, ChannelStatus, ChannelStatusKind, MessageHandler } from './channel.js';
 export { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, FeatureFlags, ForgeConfigSection, KoiConfig, LimitsConfig, LogLevel, LoopDetectionConfigSection, ModelRouterConfigSection, ModelTargetConfigEntry, SpawnConfig, TelemetryConfig } from './config.js';
 export { CompactionResult, ContextCompactor, TokenEstimator } from './context.js';
@@ -23,8 +21,6 @@ export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, Ev
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
 export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileRenameResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-backend.js';
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
-import { KoiMiddleware } from './middleware.js';
-export { ApprovalDecision, ApprovalHandler, ApprovalRequest, CapabilityFragment, ModelChunk, ModelHandler, ModelRequest, ModelResponse, ModelStreamHandler, SessionContext, ToolHandler, ToolRequest, ToolResponse, TurnContext } from './middleware.js';
 export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
 export { ModelCapabilities, ModelProvider, ModelTarget } from './model-provider.js';
 export { Resolver, SourceBundle, SourceLanguage } from './resolver.js';
@@ -32,7 +28,7 @@ export { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstan
 export { SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, TierResolution, TieredSandboxExecutor } from './sandbox-executor.js';
 export { FilesystemPolicy, NetworkPolicy, ResourceLimits, SandboxProfile } from './sandbox-profile.js';
 export { DEFAULT_SKILL_SEARCH_LIMIT, SkillId, SkillPage, SkillPublishRequest, SkillRegistryBackend, SkillRegistryChangeEvent, SkillRegistryChangeKind, SkillRegistryEntry, SkillRegistryReader, SkillRegistryWriter, SkillSearchQuery, SkillVersion, skillId } from './skill-registry.js';
-export { OutboundWebhookConfig, WebhookDeliveryStatus, WebhookEventKind, WebhookPayload } from './webhook.js';
+export { OutboundWebhookConfig, WebhookComponent, WebhookDeliveryStatus, WebhookEndpointHealth, WebhookEventKind, WebhookPayload, WebhookSummary } from './webhook.js';
 
 /**
  * Generic snapshot chain types — immutable DAG for time travel, fork, and recovery.
@@ -201,8 +197,6 @@ interface AgentRegisteredEvent {
     readonly agentId: AgentId;
     readonly agentType: "copilot" | "worker";
     readonly parentId?: AgentId | undefined;
-    /** Immutable provenance — the agent that spawned this one. */
-    readonly spawner?: AgentId | undefined;
     readonly metadata: Readonly<Record<string, unknown>>;
     readonly registeredAt: number;
 }
@@ -620,162 +614,6 @@ interface ReconcileRunnerConfig {
 declare const DEFAULT_RECONCILE_RUNNER_CONFIG: ReconcileRunnerConfig;
 
 /**
- * Scheduler contract — pluggable task scheduling, priority queue, cron,
- * and dead-letter queue for agent message dispatch.
- *
- * A "task" in Koi = deliver input to an agent (new or existing) at a
- * scheduled time/priority. The scheduler is a message dispatch service,
- * not arbitrary code execution.
- *
- * Exception: branded type constructors (taskId, scheduleId) are permitted
- * in L0 as zero-logic identity casts for type safety.
- * Exception: DEFAULT_SCHEDULER_CONFIG is a pure readonly data constant
- * derived from L0 type definitions.
- */
-
-declare const __taskBrand: unique symbol;
-/** Branded string type for scheduled task identifiers. */
-type TaskId = string & {
-    readonly [__taskBrand]: "TaskId";
-};
-declare const __scheduleBrand: unique symbol;
-/** Branded string type for cron schedule identifiers. */
-type ScheduleId = string & {
-    readonly [__scheduleBrand]: "ScheduleId";
-};
-/** Create a branded TaskId from a plain string. */
-declare function taskId(id: string): TaskId;
-/** Create a branded ScheduleId from a plain string. */
-declare function scheduleId(id: string): ScheduleId;
-type TaskStatus = "pending" | "running" | "completed" | "failed" | "dead_letter";
-interface ScheduledTask {
-    readonly id: TaskId;
-    readonly agentId: AgentId;
-    readonly input: EngineInput;
-    readonly mode: "spawn" | "dispatch";
-    /** 0 = highest priority. */
-    readonly priority: number;
-    readonly status: TaskStatus;
-    readonly createdAt: number;
-    /** Unix timestamp ms for delayed execution. */
-    readonly scheduledAt?: number | undefined;
-    readonly startedAt?: number | undefined;
-    readonly completedAt?: number | undefined;
-    readonly retries: number;
-    readonly maxRetries: number;
-    /** Per-execution timeout in milliseconds. */
-    readonly timeoutMs?: number | undefined;
-    readonly lastError?: KoiError | undefined;
-    readonly metadata?: Readonly<Record<string, unknown>> | undefined;
-}
-interface TaskOptions {
-    /** Priority level (0 = highest). Default: 5. */
-    readonly priority?: number | undefined;
-    /** Defer execution by this many milliseconds. */
-    readonly delayMs?: number | undefined;
-    /** Maximum retry attempts. Default: 3. */
-    readonly maxRetries?: number | undefined;
-    /** Per-execution timeout in milliseconds. */
-    readonly timeoutMs?: number | undefined;
-    readonly metadata?: Readonly<Record<string, unknown>> | undefined;
-}
-interface CronSchedule {
-    readonly id: ScheduleId;
-    /** Cron expression (e.g., "0 0 * * *"). */
-    readonly expression: string;
-    readonly agentId: AgentId;
-    readonly input: EngineInput;
-    readonly mode: "spawn" | "dispatch";
-    readonly taskOptions?: TaskOptions | undefined;
-    readonly timezone?: string | undefined;
-    readonly paused: boolean;
-}
-interface TaskFilter {
-    readonly status?: TaskStatus | undefined;
-    readonly agentId?: AgentId | undefined;
-    readonly priority?: number | undefined;
-    readonly limit?: number | undefined;
-}
-type SchedulerEvent = {
-    readonly kind: "task:submitted";
-    readonly task: ScheduledTask;
-} | {
-    readonly kind: "task:started";
-    readonly taskId: TaskId;
-} | {
-    readonly kind: "task:completed";
-    readonly taskId: TaskId;
-    readonly result: unknown;
-} | {
-    readonly kind: "task:failed";
-    readonly taskId: TaskId;
-    readonly error: KoiError;
-} | {
-    readonly kind: "task:dead_letter";
-    readonly taskId: TaskId;
-    readonly error: KoiError;
-} | {
-    readonly kind: "task:cancelled";
-    readonly taskId: TaskId;
-} | {
-    readonly kind: "task:recovered";
-    readonly taskId: TaskId;
-    readonly retriesUsed: number;
-} | {
-    readonly kind: "schedule:created";
-    readonly schedule: CronSchedule;
-} | {
-    readonly kind: "schedule:removed";
-    readonly scheduleId: ScheduleId;
-};
-interface TaskStore extends AsyncDisposable {
-    readonly save: (task: ScheduledTask) => void | Promise<void>;
-    readonly load: (id: TaskId) => ScheduledTask | undefined | Promise<ScheduledTask | undefined>;
-    readonly remove: (id: TaskId) => void | Promise<void>;
-    readonly updateStatus: (id: TaskId, status: TaskStatus, patch?: Partial<Pick<ScheduledTask, "startedAt" | "completedAt" | "lastError" | "retries">>) => void | Promise<void>;
-    readonly query: (filter: TaskFilter) => readonly ScheduledTask[] | Promise<readonly ScheduledTask[]>;
-    readonly loadPending: () => readonly ScheduledTask[] | Promise<readonly ScheduledTask[]>;
-}
-interface TaskScheduler extends AsyncDisposable {
-    readonly submit: (agentId: AgentId, input: EngineInput, mode: "spawn" | "dispatch", options?: TaskOptions) => TaskId | Promise<TaskId>;
-    readonly cancel: (id: TaskId) => boolean | Promise<boolean>;
-    readonly schedule: (expression: string, agentId: AgentId, input: EngineInput, mode: "spawn" | "dispatch", options?: TaskOptions & {
-        readonly timezone?: string | undefined;
-    }) => ScheduleId | Promise<ScheduleId>;
-    readonly unschedule: (id: ScheduleId) => boolean | Promise<boolean>;
-    readonly query: (filter: TaskFilter) => readonly ScheduledTask[] | Promise<readonly ScheduledTask[]>;
-    readonly stats: () => SchedulerStats;
-    readonly watch: (listener: (event: SchedulerEvent) => void) => () => void;
-}
-interface SchedulerStats {
-    readonly pending: number;
-    readonly running: number;
-    readonly completed: number;
-    readonly failed: number;
-    readonly deadLettered: number;
-    readonly activeSchedules: number;
-}
-interface SchedulerConfig {
-    readonly maxConcurrent: number;
-    readonly defaultPriority: number;
-    readonly defaultMaxRetries: number;
-    readonly baseRetryDelayMs: number;
-    readonly maxRetryDelayMs: number;
-    readonly retryJitterMs: number;
-    readonly pollIntervalMs: number;
-    /** Threshold (ms) after which a "running" task is considered stale and eligible for recovery. */
-    readonly staleTaskThresholdMs: number;
-}
-/** Default scheduler configuration. */
-declare const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig;
-/** Persistence backend for cron schedule definitions. */
-interface ScheduleStore extends AsyncDisposable {
-    readonly saveSchedule: (schedule: CronSchedule) => void | Promise<void>;
-    readonly removeSchedule: (id: ScheduleId) => void | Promise<void>;
-    readonly loadSchedules: () => readonly CronSchedule[] | Promise<readonly CronSchedule[]>;
-}
-
-/**
  * Session persistence contract — L0 types for crash recovery.
  *
  * Promoted from @koi/session-store so that both @koi/session-store (L2)
@@ -1137,7 +975,7 @@ declare function isProcessState(value: string): value is ProcessState;
  */
 declare function validateNonEmpty(value: string, name: string): Result<void, KoiError>;
 
-export { type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentId, AgentManifest, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickKind, type BrickPage, BrickRef, type BrickRegistryBackend, type BrickRegistryChangeEvent, type BrickRegistryChangeKind, type BrickRegistryReader, type BrickRegistryWriter, type BrickSearchQuery, type BundleId, type CapabilityRegistry, type CapacityReport, type ChainCompactor, type ChainId, type CompensatingOp, type CronSchedule, DEFAULT_BRICK_SEARCH_LIMIT, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_SCHEDULER_CONFIG, DEFAULT_TASK_BOARD_CONFIG, EXTENSION_PRIORITY, EngineInput, EngineState, type EventCursor, type FileOpKind, type FileOpRecord, type ForkRef, type GuardContext, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, KoiError, KoiMiddleware, type NodeCapability, type NodeId, type PendingFrame, ProcessState, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, Result, type ScheduleId, type ScheduleStore, type ScheduledTask, type SchedulerConfig, type SchedulerEvent, type SchedulerStats, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, SkillComponent, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, type TaskBoard, type TaskBoardConfig, type TaskBoardEvent, type TaskBoardSnapshot, type TaskFilter, type TaskId, type TaskItem, type TaskItemId, type TaskItemInput, type TaskItemPatch, type TaskItemStatus, type TaskOptions, type TaskResult, type TaskScheduler, type TaskStatus, type TaskStore, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TransitionContext, TransitionReason, type TurnTrace, type ValidationDiagnostic, type ValidationResult, bundleId, chainId, conflict, evolveRegistryEntry, external, internal, isAgentStateEvent, isProcessState, isToolCallPayload, nodeId, notFound, permission, rateLimit, scheduleId, staleRef, taskId, taskItemId, timeout, validateNonEmpty, validation };
+export { type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentId, AgentManifest, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickKind, type BrickPage, BrickRef, type BrickRegistryBackend, type BrickRegistryChangeEvent, type BrickRegistryChangeKind, type BrickRegistryReader, type BrickRegistryWriter, type BrickSearchQuery, type BundleId, type CapabilityRegistry, type CapacityReport, type ChainCompactor, type ChainId, type CompensatingOp, DEFAULT_BRICK_SEARCH_LIMIT, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_TASK_BOARD_CONFIG, EXTENSION_PRIORITY, EngineState, type EventCursor, type FileOpKind, type FileOpRecord, type ForkRef, type GuardContext, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, KoiError, KoiMiddleware, type NodeCapability, type NodeId, type PendingFrame, ProcessState, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, Result, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, SkillComponent, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, type TaskBoard, type TaskBoardConfig, type TaskBoardEvent, type TaskBoardSnapshot, type TaskItem, type TaskItemId, type TaskItemInput, type TaskItemPatch, type TaskItemStatus, type TaskResult, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TransitionContext, TransitionReason, type TurnTrace, type ValidationDiagnostic, type ValidationResult, bundleId, chainId, conflict, evolveRegistryEntry, external, internal, isAgentStateEvent, isProcessState, isToolCallPayload, nodeId, notFound, permission, rateLimit, staleRef, taskItemId, timeout, validateNonEmpty, validation };
 "
 `;
 
@@ -1235,7 +1073,7 @@ export type { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, Feat
 
 exports[`@koi/core API surface ./assembly has stable type surface 1`] = `
 "import './common.js';
-export { A as AgentManifest, C as ChannelConfig, a as ChannelIdentity, M as MiddlewareConfig, n as ModelConfig, P as PermissionConfig, T as ToolConfig } from './assembly-B1YTeO16.js';
+export { A as AgentManifest, C as ChannelConfig, a as ChannelIdentity, M as MiddlewareConfig, n as ModelConfig, P as PermissionConfig, T as ToolConfig } from './assembly-D3WlayKT.js';
 import './webhook.js';
 "
 `;
@@ -1339,15 +1177,15 @@ export type { CompactionResult, ContextCompactor, TokenEstimator };
 `;
 
 exports[`@koi/core API surface ./delegation has stable type surface 1`] = `
-"export { c as CircuitBreakerConfig, D as DEFAULT_CIRCUIT_BREAKER_CONFIG, e as DelegationComponent, f as DelegationConfig, g as DelegationDenyReason, h as DelegationEvent, i as DelegationGrant, j as DelegationId, k as DelegationManagerConfig, l as DelegationScope, m as DelegationVerifyResult, o as RevocationRegistry, S as ScopeChecker, r as delegationId } from './assembly-B1YTeO16.js';
+"export { c as CircuitBreakerConfig, D as DEFAULT_CIRCUIT_BREAKER_CONFIG, e as DelegationComponent, f as DelegationConfig, g as DelegationDenyReason, h as DelegationEvent, i as DelegationGrant, j as DelegationId, k as DelegationManagerConfig, l as DelegationScope, m as DelegationVerifyResult, o as RevocationRegistry, S as ScopeChecker, r as delegationId } from './assembly-D3WlayKT.js';
 import './common.js';
 import './webhook.js';
 "
 `;
 
 exports[`@koi/core API surface ./ecs has stable type surface 1`] = `
-"import './assembly-B1YTeO16.js';
-export { b as Agent, a as AgentDescriptor, A as AgentId, B as BROWSER, I as COMPONENT_PRIORITY, J as CREDENTIALS, K as ChildHandle, L as ChildLifecycleEvent, M as ComponentEvent, N as ComponentEventKind, O as ComponentProvider, Q as CredentialComponent, R as DELEGATION, U as EVENTS, V as EventComponent, W as FILESYSTEM, X as GOVERNANCE, a3 as MEMORY, a4 as MemoryComponent, a5 as MemoryResult, a6 as ProcessAccounter, a7 as ProcessId, P as ProcessState, a8 as RunId, c as SessionId, S as SkillComponent, aa as SkillMetadata, ab as SpawnLedger, ac as SubsystemToken, T as Tool, d as ToolCallId, ad as ToolDescriptor, ae as ToolExecuteOptions, af as TrustTier, ag as TurnId, ah as WORKSPACE, ai as WorkspaceComponent, aj as agentId, ak as agentToken, al as channelToken, an as middlewareToken, ao as runId, ap as sessionId, aq as skillToken, ar as token, as as toolCallId, at as toolToken, au as turnId } from './ecs-kiGAEELm.js';
+"import './assembly-D3WlayKT.js';
+export { b as Agent, a as AgentDescriptor, A as AgentId, B as BROWSER, O as COMPONENT_PRIORITY, Q as CREDENTIALS, U as ChildHandle, V as ChildLifecycleEvent, W as ComponentEvent, X as ComponentEventKind, Y as ComponentProvider, $ as CredentialComponent, a2 as DELEGATION, a3 as EVENTS, ab as EventComponent, ac as FILESYSTEM, ad as GOVERNANCE, al as MEMORY, am as MemoryComponent, an as MemoryResult, at as ProcessAccounter, au as ProcessId, P as ProcessState, av as RunId, aw as SCHEDULER, c as SessionId, S as SkillComponent, aG as SkillMetadata, aH as SpawnLedger, aI as SubsystemToken, T as Tool, d as ToolCallId, aR as ToolDescriptor, aS as ToolExecuteOptions, aW as TrustTier, aY as TurnId, aZ as WEBHOOK, a_ as WORKSPACE, a$ as WorkspaceComponent, b0 as agentId, b1 as agentToken, b2 as channelToken, b4 as middlewareToken, b5 as runId, b7 as sessionId, b8 as skillToken, ba as token, bb as toolCallId, bc as toolToken, bd as turnId } from './ecs-Czk0XWb5.js';
 import './channel.js';
 import './common.js';
 import './filesystem-backend.js';
@@ -1359,11 +1197,9 @@ import './message.js';
 
 exports[`@koi/core API surface ./engine has stable type surface 1`] = `
 "import './common.js';
-export { A as AbortReason, C as ComposedCallHandlers, c as EngineAdapter, d as EngineEvent, a as EngineInput, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, E as EngineState, h as EngineStopReason } from './engine-CxBCud0e.js';
-import './ecs-kiGAEELm.js';
+export { e as AbortReason, Z as ComposedCallHandlers, a4 as EngineAdapter, a5 as EngineEvent, a6 as EngineInput, a7 as EngineInputBase, a8 as EngineMetrics, a9 as EngineOutput, E as EngineState, aa as EngineStopReason } from './ecs-Czk0XWb5.js';
 import './message.js';
-import './middleware.js';
-import './assembly-B1YTeO16.js';
+import './assembly-D3WlayKT.js';
 import './webhook.js';
 import './errors.js';
 import './channel.js';
@@ -1645,158 +1481,20 @@ export type { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, Inb
 `;
 
 exports[`@koi/core API surface ./middleware has stable type surface 1`] = `
-"import { ChannelStatus } from './channel.js';
-import { JsonObject } from './common.js';
-import { ad as ToolDescriptor, d as ToolCallId, c as SessionId, a8 as RunId, ag as TurnId } from './ecs-kiGAEELm.js';
-import { InboundMessage } from './message.js';
-import './assembly-B1YTeO16.js';
+"import './channel.js';
+import './common.js';
+export { f as ApprovalDecision, g as ApprovalHandler, h as ApprovalRequest, R as CapabilityFragment, K as KoiMiddleware, ao as ModelChunk, ap as ModelHandler, aq as ModelRequest, ar as ModelResponse, as as ModelStreamHandler, aF as SessionContext, aT as ToolHandler, aU as ToolRequest, aV as ToolResponse, aX as TurnContext } from './ecs-Czk0XWb5.js';
+import './message.js';
+import './assembly-D3WlayKT.js';
 import './webhook.js';
 import './errors.js';
 import './filesystem-backend.js';
-
-/**
- * Middleware contract — sole interposition layer for model/tool calls.
- */
-
-interface SessionContext {
-    readonly agentId: string;
-    readonly sessionId: SessionId;
-    readonly runId: RunId;
-    /** Authenticated user identity. Injected by L1 when provided in CreateKoiOptions. */
-    readonly userId?: string;
-    /** Injected by L1 at session start — package name of the active channel adapter (e.g. "@koi/channel-telegram"). */
-    readonly channelId?: string;
-    readonly metadata: JsonObject;
-}
-interface TurnContext {
-    readonly session: SessionContext;
-    readonly turnIndex: number;
-    readonly turnId: TurnId;
-    readonly messages: readonly InboundMessage[];
-    readonly metadata: JsonObject;
-    readonly signal?: AbortSignal | undefined;
-    readonly requestApproval?: ApprovalHandler;
-    /** Optional callback to notify channels of turn status. Injected by L1 if configured. */
-    readonly sendStatus?: (status: ChannelStatus) => Promise<void>;
-}
-interface ModelRequest {
-    readonly messages: readonly InboundMessage[];
-    readonly model?: string;
-    readonly temperature?: number;
-    readonly maxTokens?: number;
-    readonly metadata?: JsonObject;
-    /** Propagated abort signal — adapters should compose with their own timeout. */
-    readonly signal?: AbortSignal | undefined;
-    /** Tool descriptors available for this call. Injected by L1; middleware may filter. */
-    readonly tools?: readonly ToolDescriptor[];
-}
-interface ModelResponse {
-    readonly content: string;
-    readonly model: string;
-    readonly usage?: {
-        readonly inputTokens: number;
-        readonly outputTokens: number;
-    };
-    readonly metadata?: JsonObject;
-}
-type ModelHandler = (request: ModelRequest) => Promise<ModelResponse>;
-type ModelChunk = {
-    readonly kind: "text_delta";
-    readonly delta: string;
-} | {
-    readonly kind: "thinking_delta";
-    readonly delta: string;
-} | {
-    readonly kind: "tool_call_start";
-    readonly toolName: string;
-    readonly callId: ToolCallId;
-} | {
-    readonly kind: "tool_call_delta";
-    readonly callId: ToolCallId;
-    readonly delta: string;
-} | {
-    readonly kind: "tool_call_end";
-    readonly callId: ToolCallId;
-} | {
-    readonly kind: "usage";
-    readonly inputTokens: number;
-    readonly outputTokens: number;
-} | {
-    readonly kind: "done";
-    readonly response: ModelResponse;
-};
-type ModelStreamHandler = (request: ModelRequest) => AsyncIterable<ModelChunk>;
-interface ToolRequest {
-    readonly toolId: string;
-    readonly input: JsonObject;
-    readonly metadata?: JsonObject;
-    readonly signal?: AbortSignal | undefined;
-}
-interface ToolResponse {
-    readonly output: unknown;
-    readonly metadata?: JsonObject;
-}
-type ToolHandler = (request: ToolRequest) => Promise<ToolResponse>;
-interface ApprovalRequest {
-    readonly toolId: string;
-    readonly input: JsonObject;
-    readonly reason: string;
-    readonly metadata?: JsonObject;
-}
-type ApprovalDecision = {
-    readonly kind: "allow";
-} | {
-    readonly kind: "modify";
-    readonly updatedInput: JsonObject;
-} | {
-    readonly kind: "deny";
-    readonly reason: string;
-};
-type ApprovalHandler = (request: ApprovalRequest) => Promise<ApprovalDecision>;
-/**
- * A middleware's self-description for the LLM.
- *
- * Good descriptions are concise, factual, and actionable:
- *   label: "permissions", description: "Tools requiring approval: fs:write, shell:exec"
- *   label: "budget", description: "Token budget: 8,500 of 10,000 remaining"
- *   label: "guardrails", description: "Output must conform to JSON schema: {...}"
- *
- * Bad descriptions are verbose or self-referential:
- *   "I am the permissions middleware and I enforce access control policies..."
- */
-interface CapabilityFragment {
-    readonly label: string;
-    readonly description: string;
-}
-interface KoiMiddleware {
-    readonly name: string;
-    /** Middleware execution priority. Lower = outer onion layer (runs first). Default: 500. */
-    readonly priority?: number;
-    /** Called once when an agent session begins. */
-    readonly onSessionStart?: (ctx: SessionContext) => Promise<void>;
-    /** Called once when an agent session ends. */
-    readonly onSessionEnd?: (ctx: SessionContext) => Promise<void>;
-    /** Called before each turn's model call. */
-    readonly onBeforeTurn?: (ctx: TurnContext) => Promise<void>;
-    /** Called after each turn completes. */
-    readonly onAfterTurn?: (ctx: TurnContext) => Promise<void>;
-    /** Onion wrapper for model calls. Call \`next(req)\` to continue the chain. */
-    readonly wrapModelCall?: (ctx: TurnContext, request: ModelRequest, next: ModelHandler) => Promise<ModelResponse>;
-    /** Onion wrapper for model streams. Call \`next(req)\` to continue the chain. */
-    readonly wrapModelStream?: (ctx: TurnContext, request: ModelRequest, next: ModelStreamHandler) => AsyncIterable<ModelChunk>;
-    /** Onion wrapper for tool calls. Call \`next(req)\` to continue the chain. */
-    readonly wrapToolCall?: (ctx: TurnContext, request: ToolRequest, next: ToolHandler) => Promise<ToolResponse>;
-    /** Optional self-description injected into model calls. Return undefined to skip. */
-    readonly describeCapabilities?: (ctx: TurnContext) => CapabilityFragment | undefined;
-}
-
-export type { ApprovalDecision, ApprovalHandler, ApprovalRequest, CapabilityFragment, KoiMiddleware, ModelChunk, ModelHandler, ModelRequest, ModelResponse, ModelStreamHandler, SessionContext, ToolHandler, ToolRequest, ToolResponse, TurnContext };
 "
 `;
 
 exports[`@koi/core API surface ./eviction has stable type surface 1`] = `
-"import { A as AgentId, P as ProcessState } from './ecs-kiGAEELm.js';
-import './assembly-B1YTeO16.js';
+"import { A as AgentId, P as ProcessState } from './ecs-Czk0XWb5.js';
+import './assembly-D3WlayKT.js';
 import './common.js';
 import './webhook.js';
 import './errors.js';
@@ -1849,8 +1547,8 @@ export type { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult 
 `;
 
 exports[`@koi/core API surface ./health has stable type surface 1`] = `
-"import { A as AgentId } from './ecs-kiGAEELm.js';
-import './assembly-B1YTeO16.js';
+"import { A as AgentId } from './ecs-Czk0XWb5.js';
+import './assembly-D3WlayKT.js';
 import './common.js';
 import './webhook.js';
 import './errors.js';
@@ -1921,9 +1619,9 @@ export { DEFAULT_HEALTH_MONITOR_CONFIG, type HealthMonitor, type HealthMonitorCo
 `;
 
 exports[`@koi/core API surface ./lifecycle has stable type surface 1`] = `
-"import { A as AgentId, P as ProcessState } from './ecs-kiGAEELm.js';
+"import { A as AgentId, P as ProcessState } from './ecs-Czk0XWb5.js';
 import { Result, KoiError } from './errors.js';
-import './assembly-B1YTeO16.js';
+import './assembly-D3WlayKT.js';
 import './common.js';
 import './webhook.js';
 import './channel.js';
@@ -2025,8 +1723,6 @@ interface RegistryEntry {
     readonly registeredAt: number;
     /** Parent agent ID (undefined for root agents). */
     readonly parentId?: AgentId;
-    /** Immutable provenance — the agent that spawned this one. Set once at registration, never updated. */
-    readonly spawner?: AgentId;
 }
 /** Events emitted by the registry on state changes. */
 type RegistryEvent = {
@@ -2159,10 +1855,10 @@ export type { Resolver, SourceBundle, SourceLanguage };
 
 exports[`@koi/core API surface ./brick-snapshot has stable type surface 1`] = `
 "import './errors.js';
-export { b as BrickId, B as BrickRef, d as BrickSnapshot, e as BrickSource, S as SnapshotEvent, f as SnapshotId, g as SnapshotQuery, h as SnapshotStore, i as brickId, s as snapshotId } from './brick-snapshot-CLT550hY.js';
+export { b as BrickId, B as BrickRef, d as BrickSnapshot, e as BrickSource, S as SnapshotEvent, f as SnapshotId, g as SnapshotQuery, h as SnapshotStore, i as brickId, s as snapshotId } from './brick-snapshot-DZOvlbqI.js';
 import './common.js';
-import './ecs-kiGAEELm.js';
-import './assembly-B1YTeO16.js';
+import './ecs-Czk0XWb5.js';
+import './assembly-D3WlayKT.js';
 import './webhook.js';
 import './channel.js';
 import './message.js';
@@ -2171,11 +1867,11 @@ import './filesystem-backend.js';
 `;
 
 exports[`@koi/core API surface ./brick-store has stable type surface 1`] = `
-"import './brick-snapshot-CLT550hY.js';
-import './ecs-kiGAEELm.js';
+"import './brick-snapshot-DZOvlbqI.js';
+import './ecs-Czk0XWb5.js';
 import './errors.js';
-export { A as AdvisoryLock, a as AgentArtifact, B as BrickArtifact, b as BrickArtifactBase, c as BrickRequires, d as BrickUpdate, h as ForgeQuery, l as ForgeStore, I as ImplementationArtifact, L as LockHandle, p as LockMode, q as LockRequest, r as SkillArtifact, s as StoreChangeEvent, t as StoreChangeKind, u as StoreChangeNotifier, T as TestCase, v as ToolArtifact } from './brick-store-BA2rBdy-.js';
-import './assembly-B1YTeO16.js';
+export { A as AdvisoryLock, a as AgentArtifact, B as BrickArtifact, b as BrickArtifactBase, c as BrickRequires, d as BrickUpdate, h as ForgeQuery, l as ForgeStore, I as ImplementationArtifact, L as LockHandle, p as LockMode, q as LockRequest, r as SkillArtifact, s as StoreChangeEvent, t as StoreChangeKind, u as StoreChangeNotifier, T as TestCase, v as ToolArtifact } from './brick-store-DsjZ7i7T.js';
+import './assembly-D3WlayKT.js';
 import './common.js';
 import './webhook.js';
 import './channel.js';
@@ -2186,8 +1882,8 @@ import './filesystem-backend.js';
 
 exports[`@koi/core API surface ./sandbox-adapter has stable type surface 1`] = `
 "import { SandboxProfile } from './sandbox-profile.js';
-import './ecs-kiGAEELm.js';
-import './assembly-B1YTeO16.js';
+import './ecs-Czk0XWb5.js';
+import './assembly-D3WlayKT.js';
 import './common.js';
 import './webhook.js';
 import './errors.js';
@@ -2258,8 +1954,8 @@ export type { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxI
 `;
 
 exports[`@koi/core API surface ./sandbox-executor has stable type surface 1`] = `
-"import { af as TrustTier } from './ecs-kiGAEELm.js';
-import './assembly-B1YTeO16.js';
+"import { aW as TrustTier } from './ecs-Czk0XWb5.js';
+import './assembly-D3WlayKT.js';
 import './common.js';
 import './webhook.js';
 import './errors.js';
@@ -2322,8 +2018,8 @@ export type { SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, Ti
 `;
 
 exports[`@koi/core API surface ./sandbox-profile has stable type surface 1`] = `
-"import { af as TrustTier } from './ecs-kiGAEELm.js';
-import './assembly-B1YTeO16.js';
+"import { aW as TrustTier } from './ecs-Czk0XWb5.js';
+import './assembly-D3WlayKT.js';
 import './common.js';
 import './webhook.js';
 import './errors.js';
@@ -2375,11 +2071,11 @@ export type { FilesystemPolicy, NetworkPolicy, ResourceLimits, SandboxProfile };
 `;
 
 exports[`@koi/core API surface ./skill-registry has stable type surface 1`] = `
-"import { c as BrickRequires, r as SkillArtifact } from './brick-store-BA2rBdy-.js';
+"import { c as BrickRequires, r as SkillArtifact } from './brick-store-DsjZ7i7T.js';
 import { Result, KoiError } from './errors.js';
-import './brick-snapshot-CLT550hY.js';
-import './ecs-kiGAEELm.js';
-import './assembly-B1YTeO16.js';
+import './brick-snapshot-DZOvlbqI.js';
+import './ecs-Czk0XWb5.js';
+import './assembly-D3WlayKT.js';
 import './common.js';
 import './webhook.js';
 import './channel.js';

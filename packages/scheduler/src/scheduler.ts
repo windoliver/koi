@@ -17,8 +17,10 @@ import type {
   SchedulerStats,
   ScheduleStore,
   TaskFilter,
+  TaskHistoryFilter,
   TaskId,
   TaskOptions,
+  TaskRunRecord,
   TaskScheduler,
   TaskStore,
 } from "@koi/core";
@@ -442,7 +444,44 @@ export function createScheduler(
     return store.query(filter);
   }
 
+  function pause(id: ScheduleId): boolean {
+    const job = crons.get(id as string);
+    const meta = cronMeta.get(id as string);
+    if (job === undefined || meta === undefined) return false;
+
+    job.pause();
+    cronMeta.set(id as string, { ...meta, paused: true });
+
+    if (scheduleStore !== undefined) {
+      // Fire-and-forget persistence — best effort
+      void scheduleStore.saveSchedule({ ...meta, paused: true });
+    }
+
+    emit({ kind: "schedule:paused", scheduleId: id });
+    return true;
+  }
+
+  function resume(id: ScheduleId): boolean {
+    const job = crons.get(id as string);
+    const meta = cronMeta.get(id as string);
+    if (job === undefined || meta === undefined) return false;
+
+    job.resume();
+    cronMeta.set(id as string, { ...meta, paused: false });
+
+    if (scheduleStore !== undefined) {
+      void scheduleStore.saveSchedule({ ...meta, paused: false });
+    }
+
+    emit({ kind: "schedule:resumed", scheduleId: id });
+    return true;
+  }
+
   function stats(): SchedulerStats {
+    let pausedCount = 0; // let: counted by iteration
+    for (const meta of cronMeta.values()) {
+      if (meta.paused) pausedCount += 1;
+    }
     return {
       pending: heap.size(),
       running: config.maxConcurrent - semaphore.available(),
@@ -450,7 +489,14 @@ export function createScheduler(
       failed: failedCount,
       deadLettered: deadLetteredCount,
       activeSchedules: crons.size,
+      pausedSchedules: pausedCount,
     };
+  }
+
+  function history(_filter: TaskHistoryFilter): readonly TaskRunRecord[] {
+    // In-memory scheduler does not persist run history.
+    // A production implementation with a RunHistoryStore would query here.
+    return [];
   }
 
   // P9 fix: idempotent unsubscribe, no Set copy on hot path
@@ -485,8 +531,11 @@ export function createScheduler(
     cancel,
     schedule,
     unschedule,
+    pause,
+    resume,
     query,
     stats,
+    history,
     watch,
     [Symbol.asyncDispose]: dispose,
   };
