@@ -3,7 +3,22 @@
 exports[`@koi/middleware-soul API surface . has stable type surface 1`] = `
 "import { ContentInput } from '@koi/soul';
 export { CreateSoulOptions, DEFAULT_SOUL_MAX_TOKENS, DEFAULT_USER_MAX_TOKENS, SoulMiddleware, createSoulMiddleware, enrichRequest, validateSoulConfig } from '@koi/soul';
+import { KoiMiddleware } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
 import { ResolvedContent as ResolvedContent$1 } from '@koi/file-resolution';
+
+/**
+ * BrickDescriptor for @koi/middleware-soul.
+ *
+ * Enables manifest auto-resolution: the resolve layer looks up this
+ * descriptor, validates soul/user options, and calls the factory.
+ */
+
+/**
+ * Descriptor for soul middleware.
+ * Exported for registration with createRegistry().
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
 
 /**
  * Soul/user content resolution — thin wrappers around @koi/file-resolution.
@@ -55,6 +70,6 @@ declare function resolveUserContent(options: ResolveOptions): Promise<ResolvedCo
  */
 type SoulUserInput = ContentInput;
 
-export { type ResolveOptions, type ResolvedContent, type SoulUserInput, resolveSoulContent, resolveUserContent };
+export { type ResolveOptions, type ResolvedContent, type SoulUserInput, descriptor, resolveSoulContent, resolveUserContent };
 "
 `;
