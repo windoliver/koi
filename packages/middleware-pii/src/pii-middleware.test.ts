@@ -246,3 +246,18 @@ describe("mask strategy", () => {
     expect(firstText(capturedRequest!)).toBe("j***@example.com");
   });
 });
+
+describe("describeCapabilities", () => {
+  test("is defined on the middleware", () => {
+    const mw = createPIIMiddleware({ strategy: "redact" });
+    expect(mw.describeCapabilities).toBeDefined();
+  });
+
+  test("returns label 'pii' and description containing 'PII'", () => {
+    const mw = createPIIMiddleware({ strategy: "redact" });
+    const ctx = createMockTurnContext();
+    const result = mw.describeCapabilities?.(ctx);
+    expect(result?.label).toBe("pii");
+    expect(result?.description).toContain("PII");
+  });
+});

@@ -159,4 +159,18 @@ describe("createGuidedRetryMiddleware", () => {
     expect(handle.middleware.name).toBe("guided-retry");
     expect(handle.middleware.priority).toBe(425);
   });
+
+  describe("describeCapabilities", () => {
+    test("is defined on the middleware", () => {
+      const handle = createGuidedRetryMiddleware({});
+      expect(handle.middleware.describeCapabilities).toBeDefined();
+    });
+
+    test("returns label 'guided-retry' and description containing 'retry'", () => {
+      const handle = createGuidedRetryMiddleware({});
+      const result = handle.middleware.describeCapabilities?.(mockCtx);
+      expect(result?.label).toBe("guided-retry");
+      expect(result?.description).toContain("retry");
+    });
+  });
 });

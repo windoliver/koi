@@ -7,6 +7,7 @@
  */
 
 import type {
+  CapabilityFragment,
   ForgeStore,
   KoiMiddleware,
   StoreChangeNotifier,
@@ -49,9 +50,15 @@ const USAGE_MIDDLEWARE_PRIORITY = 900;
  * Failed tool calls do not record usage. Non-forged tools are silently skipped.
  */
 export function createForgeUsageMiddleware(cfg: ForgeUsageMiddlewareConfig): KoiMiddleware {
+  const capabilityFragment: CapabilityFragment = {
+    label: "forge-usage",
+    description: "Forge brick usage tracking active",
+  };
+
   return {
     name: "forge-usage",
     priority: USAGE_MIDDLEWARE_PRIORITY,
+    describeCapabilities: () => capabilityFragment,
     wrapToolCall: async (
       _ctx: TurnContext,
       request: ToolRequest,

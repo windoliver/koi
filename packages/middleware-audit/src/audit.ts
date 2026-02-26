@@ -4,6 +4,7 @@
 
 import type { AuditEntry } from "@koi/core";
 import type {
+  CapabilityFragment,
   KoiMiddleware,
   ModelHandler,
   ModelRequest,
@@ -58,9 +59,15 @@ export function createAuditMiddleware(config: AuditMiddlewareConfig): KoiMiddlew
     });
   }
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "audit",
+    description: "Compliance audit logging active",
+  };
+
   return {
     name: "audit",
     priority: 300,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
 
     async onSessionStart(ctx: SessionContext): Promise<void> {
       const entry: AuditEntry = {

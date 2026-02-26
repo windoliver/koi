@@ -244,4 +244,20 @@ describe("createAuditMiddleware", () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(sink.entries[0]?.turnIndex).toBe(5);
   });
+
+  describe("describeCapabilities", () => {
+    test("is defined on the middleware", () => {
+      const sink = createInMemoryAuditSink();
+      const mw = createAuditMiddleware({ sink });
+      expect(mw.describeCapabilities).toBeDefined();
+    });
+
+    test("returns label 'audit' and expected description", () => {
+      const sink = createInMemoryAuditSink();
+      const mw = createAuditMiddleware({ sink });
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.label).toBe("audit");
+      expect(result?.description).toBe("Compliance audit logging active");
+    });
+  });
 });

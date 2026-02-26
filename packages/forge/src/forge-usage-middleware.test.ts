@@ -344,4 +344,27 @@ describe("createForgeUsageMiddleware", () => {
 
     expect(events.length).toBe(0);
   });
+
+  describe("describeCapabilities", () => {
+    test("is defined on the middleware", () => {
+      const mw = createForgeUsageMiddleware({
+        store: createInMemoryForgeStore(),
+        config: createDefaultForgeConfig(),
+        resolveBrickId: () => undefined,
+      });
+      expect(mw.describeCapabilities).toBeDefined();
+    });
+
+    test("returns label 'forge-usage' and expected description", () => {
+      const mw = createForgeUsageMiddleware({
+        store: createInMemoryForgeStore(),
+        config: createDefaultForgeConfig(),
+        resolveBrickId: () => undefined,
+      });
+      const ctx = stubTurnContext();
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.label).toBe("forge-usage");
+      expect(result?.description).toContain("usage tracking");
+    });
+  });
 });

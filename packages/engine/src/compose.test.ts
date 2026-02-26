@@ -20,11 +20,14 @@ import {
 } from "@koi/core";
 import { AgentEntity } from "./agent-entity.js";
 import {
+  collectCapabilities,
   composeModelChain,
   composeModelStreamChain,
   composeToolChain,
   createComposedCallHandlers,
   createTerminalHandlers,
+  formatCapabilityMessage,
+  injectCapabilities,
   runSessionHooks,
   runTurnHooks,
 } from "./compose.js";
@@ -1245,5 +1248,296 @@ describe("createComposedCallHandlers streaming", () => {
       expect(chunks).toEqual(sampleChunks);
     }
     expect(observed).toEqual(["mw:start", "mw:end"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// collectCapabilities
+// ---------------------------------------------------------------------------
+
+describe("collectCapabilities", () => {
+  test("returns empty array when no middleware has describeCapabilities", () => {
+    const mw: KoiMiddleware = { name: "plain" };
+    const result = collectCapabilities([mw], mockTurnContext());
+    expect(result).toEqual([]);
+  });
+
+  test("collects fragment from one middleware", () => {
+    const mw: KoiMiddleware = {
+      name: "perms",
+      describeCapabilities: () => ({ label: "permissions", description: "All tools allowed" }),
+    };
+    const result = collectCapabilities([mw], mockTurnContext());
+    expect(result).toEqual([{ label: "permissions", description: "All tools allowed" }]);
+  });
+
+  test("collects fragments from multiple middleware in order", () => {
+    const mw1: KoiMiddleware = {
+      name: "perms",
+      describeCapabilities: () => ({ label: "permissions", description: "perms desc" }),
+    };
+    const mw2: KoiMiddleware = {
+      name: "budget",
+      describeCapabilities: () => ({ label: "budget", description: "budget desc" }),
+    };
+    const result = collectCapabilities([mw1, mw2], mockTurnContext());
+    expect(result).toHaveLength(2);
+    expect(result[0]?.label).toBe("permissions");
+    expect(result[1]?.label).toBe("budget");
+  });
+
+  test("skips middleware that returns undefined", () => {
+    const mw1: KoiMiddleware = {
+      name: "conditional",
+      describeCapabilities: () => undefined,
+    };
+    const mw2: KoiMiddleware = {
+      name: "active",
+      describeCapabilities: () => ({ label: "active", description: "active desc" }),
+    };
+    const result = collectCapabilities([mw1, mw2], mockTurnContext());
+    expect(result).toHaveLength(1);
+    expect(result[0]?.label).toBe("active");
+  });
+
+  test("catches and skips middleware that throws", () => {
+    const warnSpy = mock(() => {});
+    const originalWarn = console.warn;
+    console.warn = warnSpy;
+
+    const mw1: KoiMiddleware = {
+      name: "broken",
+      describeCapabilities: () => {
+        throw new Error("oops");
+      },
+    };
+    const mw2: KoiMiddleware = {
+      name: "healthy",
+      describeCapabilities: () => ({ label: "healthy", description: "still works" }),
+    };
+    const result = collectCapabilities([mw1, mw2], mockTurnContext());
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.label).toBe("healthy");
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+
+    console.warn = originalWarn;
+  });
+
+  test("treats empty string description as valid", () => {
+    const mw: KoiMiddleware = {
+      name: "empty-desc",
+      describeCapabilities: () => ({ label: "test", description: "" }),
+    };
+    const result = collectCapabilities([mw], mockTurnContext());
+    expect(result).toHaveLength(1);
+    expect(result[0]?.description).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatCapabilityMessage
+// ---------------------------------------------------------------------------
+
+describe("formatCapabilityMessage", () => {
+  test("formats single fragment", () => {
+    const msg = formatCapabilityMessage([{ label: "perms", description: "All allowed" }]);
+    expect(msg.senderId).toBe("system:capabilities");
+    expect(msg.content).toHaveLength(1);
+    const text = msg.content[0];
+    expect(text?.kind).toBe("text");
+    if (text?.kind === "text") {
+      expect(text.text).toContain("[Active Capabilities]");
+      expect(text.text).toContain("- **perms**: All allowed");
+    }
+  });
+
+  test("formats multiple fragments", () => {
+    const msg = formatCapabilityMessage([
+      { label: "perms", description: "desc1" },
+      { label: "budget", description: "desc2" },
+    ]);
+    const text = msg.content[0];
+    if (text?.kind === "text") {
+      expect(text.text).toContain("- **perms**: desc1");
+      expect(text.text).toContain("- **budget**: desc2");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// injectCapabilities
+// ---------------------------------------------------------------------------
+
+describe("injectCapabilities", () => {
+  test("returns request unchanged when no middleware has describeCapabilities", () => {
+    const mw: KoiMiddleware = { name: "plain" };
+    const request = mockModelRequest();
+    const result = injectCapabilities([mw], mockTurnContext(), request);
+    expect(result).toBe(request); // same reference = zero allocation
+  });
+
+  test("prepends capability message before existing messages", () => {
+    const mw: KoiMiddleware = {
+      name: "perms",
+      describeCapabilities: () => ({ label: "permissions", description: "test" }),
+    };
+    const existingMsg = {
+      senderId: "user",
+      timestamp: Date.now(),
+      content: [{ kind: "text" as const, text: "hello" }],
+    };
+    const request: ModelRequest = { messages: [existingMsg] };
+    const result = injectCapabilities([mw], mockTurnContext(), request);
+
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[0]?.senderId).toBe("system:capabilities");
+    expect(result.messages[1]?.senderId).toBe("user");
+  });
+
+  test("maxCapabilityTokens truncates fragments from end", () => {
+    const mw1: KoiMiddleware = {
+      name: "short",
+      describeCapabilities: () => ({ label: "a", description: "short" }),
+    };
+    const mw2: KoiMiddleware = {
+      name: "long",
+      describeCapabilities: () => ({
+        label: "b",
+        description: "x".repeat(1000),
+      }),
+    };
+    const request = mockModelRequest();
+    const result = injectCapabilities([mw1, mw2], mockTurnContext(), request, {
+      maxCapabilityTokens: 20,
+    });
+
+    // Should include only the first fragment since second would exceed budget
+    const text = result.messages[0]?.content[0];
+    if (text?.kind === "text") {
+      expect(text.text).toContain("**a**");
+      expect(text.text).not.toContain("**b**");
+    }
+  });
+
+  test("returns request unchanged when maxCapabilityTokens is too small for any fragment", () => {
+    const mw: KoiMiddleware = {
+      name: "verbose",
+      describeCapabilities: () => ({
+        label: "verbose",
+        description: "x".repeat(1000),
+      }),
+    };
+    const request = mockModelRequest();
+    const result = injectCapabilities([mw], mockTurnContext(), request, {
+      maxCapabilityTokens: 1,
+    });
+    expect(result).toBe(request);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createComposedCallHandlers — capability injection integration
+// ---------------------------------------------------------------------------
+
+describe("createComposedCallHandlers capability injection", () => {
+  test("injects capabilities into modelCall request", async () => {
+    const agent = await createStartedAgent();
+    let receivedRequest: ModelRequest | undefined;
+
+    const mw: KoiMiddleware = {
+      name: "cap-mw",
+      describeCapabilities: () => ({ label: "test-cap", description: "test description" }),
+      wrapModelCall: async (_ctx, req, next) => {
+        receivedRequest = req;
+        return next(req);
+      },
+    };
+
+    const rawModel = mock(() => Promise.resolve(mockModelResponse()));
+    const rawTool = mock(() => Promise.resolve(mockToolResponse()));
+
+    const handlers = createComposedCallHandlers(
+      [mw],
+      () => mockTurnContext(),
+      agent,
+      rawModel,
+      rawTool,
+    );
+
+    await handlers.modelCall(mockModelRequest());
+
+    expect(receivedRequest).toBeDefined();
+    expect(receivedRequest?.messages[0]?.senderId).toBe("system:capabilities");
+    const text = receivedRequest?.messages[0]?.content[0];
+    if (text?.kind === "text") {
+      expect(text.text).toContain("**test-cap**: test description");
+    }
+  });
+
+  test("injects capabilities into modelStream request", async () => {
+    const agent = await createStartedAgent();
+    let receivedRequest: ModelRequest | undefined;
+
+    const mw: KoiMiddleware = {
+      name: "cap-stream-mw",
+      describeCapabilities: () => ({ label: "stream-cap", description: "stream desc" }),
+      wrapModelStream: (_ctx, req, next) => {
+        receivedRequest = req;
+        return next(req);
+      },
+    };
+
+    const rawModel = mock(() => Promise.resolve(mockModelResponse()));
+    const rawTool = mock(() => Promise.resolve(mockToolResponse()));
+    const rawStream = mockStreamChunks(sampleChunks);
+
+    const handlers = createComposedCallHandlers(
+      [mw],
+      () => mockTurnContext(),
+      agent,
+      rawModel,
+      rawTool,
+      rawStream,
+    );
+
+    expect(handlers.modelStream).toBeDefined();
+    if (handlers.modelStream) {
+      await collectChunks(handlers.modelStream(mockModelRequest()));
+    }
+
+    expect(receivedRequest).toBeDefined();
+    expect(receivedRequest?.messages[0]?.senderId).toBe("system:capabilities");
+  });
+
+  test("skips capability injection when no middleware has describeCapabilities", async () => {
+    const agent = await createStartedAgent();
+    let receivedRequest: ModelRequest | undefined;
+
+    const mw: KoiMiddleware = {
+      name: "no-caps",
+      wrapModelCall: async (_ctx, req, next) => {
+        receivedRequest = req;
+        return next(req);
+      },
+    };
+
+    const rawModel = mock(() => Promise.resolve(mockModelResponse()));
+    const rawTool = mock(() => Promise.resolve(mockToolResponse()));
+
+    const handlers = createComposedCallHandlers(
+      [mw],
+      () => mockTurnContext(),
+      agent,
+      rawModel,
+      rawTool,
+    );
+
+    await handlers.modelCall(mockModelRequest());
+
+    expect(receivedRequest).toBeDefined();
+    // Only injected tools message, no capabilities message
+    const capMsg = receivedRequest?.messages.find((m) => m.senderId === "system:capabilities");
+    expect(capMsg).toBeUndefined();
   });
 });

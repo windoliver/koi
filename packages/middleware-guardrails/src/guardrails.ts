@@ -7,6 +7,7 @@
 
 import type { InboundMessage } from "@koi/core/message";
 import type {
+  CapabilityFragment,
   KoiMiddleware,
   ModelChunk,
   ModelHandler,
@@ -147,10 +148,17 @@ export function createGuardrailsMiddleware(config: GuardrailsConfig): KoiMiddlew
     return { ...request, messages: [...request.messages, retryMessage] };
   }
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "guardrails",
+    description: `Output validation active. Max ${maxAttempts} retries`,
+  };
+
   // Build middleware with conditional hook registration
   const middleware: KoiMiddleware = {
     name: "guardrails",
     priority: 375,
+
+    describeCapabilities: (_ctx: TurnContext) => capabilityFragment,
 
     // Only register wrapModelCall/wrapModelStream if model output rules exist
     ...(hasModelOutputRules

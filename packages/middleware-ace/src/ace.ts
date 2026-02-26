@@ -8,6 +8,7 @@
 
 import type { InboundMessage } from "@koi/core/message";
 import type {
+  CapabilityFragment,
   KoiMiddleware,
   ModelHandler,
   ModelRequest,
@@ -45,9 +46,17 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
     }
   }
 
+  // let: mutable — updated after each playbook injection to reflect current count
+  let activePlaybookCount = 0;
+
   return {
     name: "ace",
     priority: 350,
+
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => ({
+      label: "playbooks",
+      description: `Active playbooks: ${activePlaybookCount}`,
+    }),
 
     async wrapModelCall(
       ctx: TurnContext,
@@ -68,6 +77,7 @@ export function createAceMiddleware(config: AceConfig): KoiMiddleware {
         maxTokens: config.maxInjectionTokens ?? DEFAULT_MAX_INJECTION_TOKENS,
         clock,
       });
+      activePlaybookCount = selected.length;
 
       // Build enriched request if playbooks are available
       const enrichedRequest: ModelRequest =

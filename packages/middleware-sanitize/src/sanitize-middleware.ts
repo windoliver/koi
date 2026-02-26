@@ -7,6 +7,7 @@
  */
 
 import type {
+  CapabilityFragment,
   KoiMiddleware,
   ModelChunk,
   ModelHandler,
@@ -60,9 +61,16 @@ export function createSanitizeMiddleware(config: SanitizeMiddlewareConfig): KoiM
     return { ...request, messages: sanitizedMessages };
   }
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "sanitize",
+    description: "Input/output sanitization active",
+  };
+
   return {
     name: "sanitize",
     priority: 350,
+
+    describeCapabilities: (_ctx: TurnContext) => capabilityFragment,
 
     async wrapModelCall(
       _ctx: TurnContext,

@@ -4,6 +4,7 @@
  */
 
 import type {
+  CapabilityFragment,
   KoiError,
   KoiMiddleware,
   ModelChunk,
@@ -35,9 +36,15 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
   // Mutable turn-scoped state — reset each turn
   let turnStartTime = 0;
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "tracing",
+    description: "Event tracing active",
+  };
+
   const middleware: KoiMiddleware = {
     name: "event-trace",
     priority: 475,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
 
     async onBeforeTurn(_ctx: TurnContext): Promise<void> {
       collector.reset();

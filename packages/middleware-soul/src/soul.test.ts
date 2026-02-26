@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ModelRequest } from "@koi/core";
+import type { CapabilityFragment } from "@koi/core/middleware";
 import { createMockTurnContext, createSpyModelHandler } from "@koi/test-utils";
 import type { SoulMiddleware } from "./soul.js";
 import { createSoulMiddleware, enrichRequest } from "./soul.js";
@@ -666,5 +667,20 @@ describe("createSoulMiddleware — integration", () => {
         expect(call.messages[0].content[0].text).toContain("Name: Bob");
       }
     }
+  });
+});
+
+describe("describeCapabilities", () => {
+  test("is defined on the middleware", async () => {
+    const mw = await createSoulMiddleware({ basePath: tmpDir });
+    expect(mw.describeCapabilities).toBeDefined();
+  });
+
+  test("returns label 'soul' and description containing 'Persona'", async () => {
+    const mw = await createSoulMiddleware({ basePath: tmpDir });
+    const ctx = createMockTurnContext();
+    const result = mw.describeCapabilities?.(ctx) as CapabilityFragment;
+    expect(result.label).toBe("soul");
+    expect(result.description).toContain("Persona");
   });
 });

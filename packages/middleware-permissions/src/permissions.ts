@@ -3,6 +3,7 @@
  */
 
 import type {
+  CapabilityFragment,
   KoiMiddleware,
   ToolHandler,
   ToolRequest,
@@ -36,9 +37,15 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
   /** Cache keyed by fnv1a(toolId + ":" + JSON.stringify(input)). Only approvals are cached. */
   const cache = resolvedCache !== false ? new Map<number, true>() : undefined;
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "permissions",
+    description: `Tools requiring approval: ${rules.ask.length > 0 ? rules.ask.join(", ") : "none"}. Default: ${config.defaultDeny ? "deny" : "allow"}`,
+  };
+
   return {
     name: "permissions",
     priority: 100,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
 
     async wrapToolCall(
       _ctx: TurnContext,

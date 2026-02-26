@@ -2,7 +2,12 @@ import { describe, expect, test } from "bun:test";
 import type { JsonObject } from "@koi/core/common";
 import type { ToolDescriptor } from "@koi/core/ecs";
 import type { InboundMessage } from "@koi/core/message";
-import type { ModelChunk, ModelRequest, ModelResponse } from "@koi/core/middleware";
+import type {
+  CapabilityFragment,
+  ModelChunk,
+  ModelRequest,
+  ModelResponse,
+} from "@koi/core/middleware";
 import { createMockTurnContext, testMiddlewareContract } from "@koi/test-utils";
 import { createPlanMiddleware } from "./plan-middleware.js";
 import { WRITE_PLAN_TOOL_NAME } from "./plan-tool.js";
@@ -310,5 +315,40 @@ describe("plan persistence across turns", () => {
     const plan = response?.metadata?.currentPlan as unknown as Array<{ content: string }>;
     expect(plan).toHaveLength(1);
     expect(plan[0]?.content).toBe("Step 1");
+  });
+});
+
+describe("describeCapabilities", () => {
+  test("is defined on the middleware", () => {
+    const mw = createPlanMiddleware();
+    expect(mw.describeCapabilities).toBeDefined();
+  });
+
+  test("returns label 'planning' and description changes based on plan state", async () => {
+    const mw = createPlanMiddleware();
+    const ctx = createMockTurnContext();
+
+    // Before any plan is written — disabled
+    const before = mw.describeCapabilities?.(ctx) as CapabilityFragment;
+    expect(before.label).toBe("planning");
+    expect(before.description).toContain("disabled");
+
+    // Write a plan to enable it
+    await mw.onBeforeTurn?.(ctx);
+    await mw.wrapToolCall?.(
+      ctx,
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: {
+          plan: [{ content: "Step 1", status: "pending" }],
+        } satisfies JsonObject,
+      },
+      async () => ({ output: "x" }),
+    );
+
+    // After plan is written — enabled
+    const after = mw.describeCapabilities?.(ctx) as CapabilityFragment;
+    expect(after.label).toBe("planning");
+    expect(after.description).toContain("enabled");
   });
 });

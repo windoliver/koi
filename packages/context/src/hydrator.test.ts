@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { MemoryComponent } from "@koi/core";
+import type { CapabilityFragment, MemoryComponent } from "@koi/core";
 import { MEMORY, runId, sessionId } from "@koi/core";
 import { createMockAgent, createMockTurnContext, createSpyModelHandler } from "@koi/test-utils";
 import { createContextHydrator } from "./hydrator.js";
@@ -511,5 +511,28 @@ describe("createContextHydrator — wrapModelStream", () => {
     expect(textBlock).toBeDefined();
     expect(textBlock?.text).toContain("Stream context data");
     expect(textBlock?.text).toContain("StreamLabel");
+  });
+});
+
+describe("describeCapabilities", () => {
+  test("is defined on the middleware", () => {
+    const agent = createMockAgent();
+    const mw = createContextHydrator({
+      config: { sources: [{ kind: "text", text: "hi" }] },
+      agent,
+    });
+    expect(mw.describeCapabilities).toBeDefined();
+  });
+
+  test("returns label 'context' and description containing 'hydration'", () => {
+    const agent = createMockAgent();
+    const mw = createContextHydrator({
+      config: { sources: [{ kind: "text", text: "hi" }] },
+      agent,
+    });
+    const ctx = createMockTurnContext();
+    const result = mw.describeCapabilities?.(ctx) as CapabilityFragment;
+    expect(result.label).toBe("context");
+    expect(result.description).toContain("hydration");
   });
 });

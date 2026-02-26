@@ -7,7 +7,9 @@
  */
 
 import type {
+  CapabilityFragment,
   ComposedCallHandlers,
+  InboundMessage,
   KoiMiddleware,
   ModelChunk,
   ModelHandler,
@@ -290,6 +292,94 @@ export function createTerminalHandlers(
   return { modelHandler, modelStreamHandler, toolHandler };
 }
 
+// ---------------------------------------------------------------------------
+// Capability injection — self-describing middleware
+// ---------------------------------------------------------------------------
+
+export interface CapabilityInjectionConfig {
+  /** Maximum estimated tokens for the capability message. Fragments truncated from the end when exceeded. */
+  readonly maxCapabilityTokens?: number;
+}
+
+/**
+ * Collects capability descriptions from all middleware that implement `describeCapabilities`.
+ * Each call is wrapped in try/catch — errors are logged and the middleware is skipped.
+ */
+export function collectCapabilities(
+  middleware: readonly KoiMiddleware[],
+  ctx: TurnContext,
+): readonly CapabilityFragment[] {
+  const fragments: CapabilityFragment[] = [];
+  for (const mw of middleware) {
+    if (mw.describeCapabilities === undefined) continue;
+    try {
+      const fragment = mw.describeCapabilities(ctx);
+      if (fragment !== undefined) {
+        fragments.push(fragment);
+      }
+    } catch (e: unknown) {
+      console.warn(
+        `Middleware "${mw.name}" threw in describeCapabilities, skipping:`,
+        e instanceof Error ? e.message : e,
+      );
+    }
+  }
+  return fragments;
+}
+
+/**
+ * Formats collected capability fragments into an InboundMessage.
+ * Assumes fragments is non-empty — caller must check.
+ */
+export function formatCapabilityMessage(fragments: readonly CapabilityFragment[]): InboundMessage {
+  const lines = fragments.map((f) => `- **${f.label}**: ${f.description}`);
+  const text = `[Active Capabilities]\n${lines.join("\n")}`;
+  return {
+    senderId: "system:capabilities",
+    timestamp: Date.now(),
+    content: [{ kind: "text", text }],
+  };
+}
+
+/** Heuristic token estimate: ~4 chars per token. */
+function estimateTokensFromChars(charCount: number): number {
+  return Math.ceil(charCount / 4);
+}
+
+/**
+ * Injects capability descriptions into a ModelRequest. Returns the request unchanged
+ * if no middleware provides descriptions (zero-allocation fast-path).
+ */
+export function injectCapabilities(
+  middleware: readonly KoiMiddleware[],
+  ctx: TurnContext,
+  request: ModelRequest,
+  config?: CapabilityInjectionConfig,
+): ModelRequest {
+  const allFragments = collectCapabilities(middleware, ctx);
+  if (allFragments.length === 0) return request;
+
+  // Apply maxCapabilityTokens truncation from the end
+  let fragments: readonly CapabilityFragment[];
+  if (config?.maxCapabilityTokens !== undefined) {
+    let totalChars = "[Active Capabilities]\n".length;
+    const kept: CapabilityFragment[] = [];
+    for (const f of allFragments) {
+      const lineChars = `- **${f.label}**: ${f.description}\n`.length;
+      if (estimateTokensFromChars(totalChars + lineChars) > config.maxCapabilityTokens) break;
+      totalChars += lineChars;
+      kept.push(f);
+    }
+    if (kept.length === 0) return request;
+    fragments = kept;
+  } else {
+    fragments = allFragments;
+  }
+
+  const message = formatCapabilityMessage(fragments);
+  return { ...request, messages: [message, ...request.messages] };
+}
+
 /**
  * Composes middleware chains around lifecycle-aware terminals,
  * producing a ComposedCallHandlers that adapters invoke at defined points.
@@ -304,6 +394,7 @@ export function createComposedCallHandlers(
   rawModelTerminal: ModelHandler,
   rawToolTerminal: ToolHandler,
   rawModelStreamTerminal?: ModelStreamHandler,
+  capabilityConfig?: CapabilityInjectionConfig,
 ): ComposedCallHandlers {
   const { modelHandler, modelStreamHandler, toolHandler } = createTerminalHandlers(
     agent,
@@ -326,9 +417,18 @@ export function createComposedCallHandlers(
   const injectTools = (request: ModelRequest): ModelRequest =>
     request.tools !== undefined ? request : { ...request, tools: toolDescriptors };
 
+  // Pre-compute flag: skip capability injection when no middleware implements it
+  const hasCapabilities = middleware.some((mw) => mw.describeCapabilities !== undefined);
+
+  const prepareRequest = (request: ModelRequest): ModelRequest => {
+    const withTools = injectTools(request);
+    if (!hasCapabilities) return withTools;
+    return injectCapabilities(middleware, getTurnContext(), withTools, capabilityConfig);
+  };
+
   if (modelStreamHandler === undefined) {
     return {
-      modelCall: (request) => modelChain(getTurnContext(), injectTools(request)),
+      modelCall: (request) => modelChain(getTurnContext(), prepareRequest(request)),
       toolCall: (request) => toolChain(getTurnContext(), request),
       tools: toolDescriptors,
     };
@@ -337,8 +437,8 @@ export function createComposedCallHandlers(
   const streamChain = composeModelStreamChain(middleware, modelStreamHandler);
 
   return {
-    modelCall: (request) => modelChain(getTurnContext(), injectTools(request)),
-    modelStream: (request) => streamChain(getTurnContext(), injectTools(request)),
+    modelCall: (request) => modelChain(getTurnContext(), prepareRequest(request)),
+    modelStream: (request) => streamChain(getTurnContext(), prepareRequest(request)),
     toolCall: (request) => toolChain(getTurnContext(), request),
     tools: toolDescriptors,
   };

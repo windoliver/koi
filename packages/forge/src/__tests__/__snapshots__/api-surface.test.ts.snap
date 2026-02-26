@@ -391,6 +391,9 @@ declare function extractBrickContent(brick: HasKindAndContent): {
 /**
  * Brick → Tool conversion — shared utility for converting ToolArtifact bricks
  * into executable Tool instances via a sandbox executor.
+ *
+ * Also provides \`brickCapabilityFragment\` for auto-mapping BrickArtifact.description
+ * to the \`CapabilityFragment\` convention used by self-describing middleware.
  */
 
 /**

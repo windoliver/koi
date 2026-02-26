@@ -3,6 +3,7 @@ import type {
   AbortReason,
   Agent,
   AgentManifest,
+  CapabilityFragment,
   ChannelAdapter,
   ChannelCapabilities,
   ContentBlock,
@@ -1496,5 +1497,68 @@ describe("ModelRequest.tools", () => {
     const req: ModelRequest = { messages: [], tools: [descriptor] };
     expect(req.tools).toHaveLength(1);
     expect(req.tools?.[0]?.name).toBe("test");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CapabilityFragment and describeCapabilities (#361)
+// ---------------------------------------------------------------------------
+
+describe("CapabilityFragment", () => {
+  test("has readonly label and description", () => {
+    const fragment: CapabilityFragment = {
+      label: "permissions",
+      description: "Tools requiring approval: fs:write",
+    };
+    expect(fragment.label).toBe("permissions");
+    expect(fragment.description).toBe("Tools requiring approval: fs:write");
+  });
+
+  test("properties are readonly", () => {
+    const fragment: CapabilityFragment = { label: "test", description: "desc" };
+    // @ts-expect-error — cannot assign to readonly property
+    fragment.label = "other";
+    // @ts-expect-error — cannot assign to readonly property
+    fragment.description = "other";
+  });
+});
+
+describe("KoiMiddleware.describeCapabilities", () => {
+  test("middleware without describeCapabilities is valid", () => {
+    const mw: KoiMiddleware = { name: "simple" };
+    expect(mw.describeCapabilities).toBeUndefined();
+  });
+
+  test("middleware with describeCapabilities is valid", () => {
+    const rid = runId("r1");
+    const ctx: TurnContext = {
+      session: { agentId: "a1", sessionId: sessionId("s1"), runId: rid, metadata: {} },
+      turnIndex: 0,
+      turnId: turnId(rid, 0),
+      messages: [],
+      metadata: {},
+    };
+    const mw: KoiMiddleware = {
+      name: "with-caps",
+      describeCapabilities: () => ({ label: "test", description: "test desc" }),
+    };
+    const result = mw.describeCapabilities?.(ctx);
+    expect(result).toEqual({ label: "test", description: "test desc" });
+  });
+
+  test("describeCapabilities can return undefined", () => {
+    const rid = runId("r1");
+    const ctx: TurnContext = {
+      session: { agentId: "a1", sessionId: sessionId("s1"), runId: rid, metadata: {} },
+      turnIndex: 0,
+      turnId: turnId(rid, 0),
+      messages: [],
+      metadata: {},
+    };
+    const mw: KoiMiddleware = {
+      name: "conditional-caps",
+      describeCapabilities: () => undefined,
+    };
+    expect(mw.describeCapabilities?.(ctx)).toBeUndefined();
   });
 });

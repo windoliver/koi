@@ -344,4 +344,31 @@ describe("createFsRollbackMiddleware", () => {
     expect(handle.middleware.name).toBe("fs-rollback");
     expect(handle.middleware.priority).toBe(350);
   });
+
+  describe("describeCapabilities", () => {
+    test("is defined on the middleware", () => {
+      const store = createInMemorySnapshotChainStore<FileOpRecord>();
+      const backend = createTestBackend();
+      const handle = createFsRollbackMiddleware({
+        store,
+        chainId: testChainId,
+        backend,
+      });
+      expect(handle.middleware.describeCapabilities).toBeDefined();
+    });
+
+    test("returns label 'fs-rollback' and description containing 'rollback'", () => {
+      const store = createInMemorySnapshotChainStore<FileOpRecord>();
+      const backend = createTestBackend();
+      const handle = createFsRollbackMiddleware({
+        store,
+        chainId: testChainId,
+        backend,
+      });
+      const ctx = createMockTurnContext();
+      const result = handle.middleware.describeCapabilities?.(ctx);
+      expect(result?.label).toBe("fs-rollback");
+      expect(result?.description).toContain("rollback");
+    });
+  });
 });

@@ -3,6 +3,7 @@
  */
 
 import type {
+  CapabilityFragment,
   JsonObject,
   KoiMiddleware,
   ModelChunk,
@@ -79,9 +80,16 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
     return { ...request, tools: filteredTools, metadata };
   }
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "tool-filter",
+    description: "Tool filtering active",
+  };
+
   return {
     name: "tool-selector",
     priority: 420,
+
+    describeCapabilities: (_ctx: TurnContext) => capabilityFragment,
 
     async wrapModelCall(
       _ctx: TurnContext,

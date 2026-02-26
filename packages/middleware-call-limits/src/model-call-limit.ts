@@ -8,6 +8,7 @@
  */
 
 import type {
+  CapabilityFragment,
   KoiMiddleware,
   ModelChunk,
   ModelHandler,
@@ -60,9 +61,15 @@ export function createModelCallLimitMiddleware(config: ModelCallLimitConfig): Ko
     }
   }
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "rate-limits",
+    description: `Model call limit: ${config.limit} calls per session`,
+  };
+
   return {
     name: "koi:model-call-limit",
     priority: 175,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
 
     async wrapModelCall(
       ctx: TurnContext,

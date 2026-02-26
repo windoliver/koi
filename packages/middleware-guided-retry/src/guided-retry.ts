@@ -7,6 +7,7 @@
 
 import type {
   BacktrackConstraint,
+  CapabilityFragment,
   KoiMiddleware,
   ModelRequest,
   ModelResponse,
@@ -36,9 +37,15 @@ export function createGuidedRetryMiddleware(config: GuidedRetryConfig): GuidedRe
     remainingInjections = 0;
   }
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "guided-retry",
+    description: "Guided retry with structural repair",
+  };
+
   const middleware: KoiMiddleware = {
     name: MIDDLEWARE_NAME,
     priority: MIDDLEWARE_PRIORITY,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
 
     async wrapModelCall(
       _ctx: TurnContext,

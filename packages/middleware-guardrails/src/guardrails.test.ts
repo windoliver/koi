@@ -433,4 +433,18 @@ describe("createGuardrailsMiddleware", () => {
       expect(events).toHaveLength(2);
     });
   });
+
+  describe("describeCapabilities", () => {
+    test("is defined on the middleware", () => {
+      const mw = createGuardrailsMiddleware({ rules: [blockRule] });
+      expect(mw.describeCapabilities).toBeDefined();
+    });
+
+    test("returns label 'guardrails' and description containing 'retries'", () => {
+      const mw = createGuardrailsMiddleware({ rules: [blockRule] });
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.label).toBe("guardrails");
+      expect(result?.description).toContain("retries");
+    });
+  });
 });

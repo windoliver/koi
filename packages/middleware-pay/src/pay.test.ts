@@ -270,4 +270,18 @@ describe("createPayMiddleware", () => {
     await mw.wrapModelCall?.(ctx, { messages: [] }, noUsageHandler);
     expect(await tracker.totalSpend("session-test-1")).toBe(0);
   });
+
+  describe("describeCapabilities", () => {
+    test("is defined on the middleware", () => {
+      const mw = makeMiddleware(5);
+      expect(mw.describeCapabilities).toBeDefined();
+    });
+
+    test("returns label 'budget' and description containing budget value", () => {
+      const mw = makeMiddleware(25);
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.label).toBe("budget");
+      expect(result?.description).toContain("25");
+    });
+  });
 });

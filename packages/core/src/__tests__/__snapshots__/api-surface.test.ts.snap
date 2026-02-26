@@ -24,7 +24,7 @@ export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } fro
 export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileRenameResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-backend.js';
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
 import { KoiMiddleware } from './middleware.js';
-export { ApprovalDecision, ApprovalHandler, ApprovalRequest, ModelChunk, ModelHandler, ModelRequest, ModelResponse, ModelStreamHandler, SessionContext, ToolHandler, ToolRequest, ToolResponse, TurnContext } from './middleware.js';
+export { ApprovalDecision, ApprovalHandler, ApprovalRequest, CapabilityFragment, ModelChunk, ModelHandler, ModelRequest, ModelResponse, ModelStreamHandler, SessionContext, ToolHandler, ToolRequest, ToolResponse, TurnContext } from './middleware.js';
 export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
 export { ModelCapabilities, ModelProvider, ModelTarget } from './model-provider.js';
 export { Resolver, SourceBundle, SourceLanguage } from './resolver.js';
@@ -1712,6 +1712,21 @@ type ApprovalDecision = {
     readonly reason: string;
 };
 type ApprovalHandler = (request: ApprovalRequest) => Promise<ApprovalDecision>;
+/**
+ * A middleware's self-description for the LLM.
+ *
+ * Good descriptions are concise, factual, and actionable:
+ *   label: "permissions", description: "Tools requiring approval: fs:write, shell:exec"
+ *   label: "budget", description: "Token budget: 8,500 of 10,000 remaining"
+ *   label: "guardrails", description: "Output must conform to JSON schema: {...}"
+ *
+ * Bad descriptions are verbose or self-referential:
+ *   "I am the permissions middleware and I enforce access control policies..."
+ */
+interface CapabilityFragment {
+    readonly label: string;
+    readonly description: string;
+}
 interface KoiMiddleware {
     readonly name: string;
     /** Middleware execution priority. Lower = outer onion layer (runs first). Default: 500. */
@@ -1730,9 +1745,11 @@ interface KoiMiddleware {
     readonly wrapModelStream?: (ctx: TurnContext, request: ModelRequest, next: ModelStreamHandler) => AsyncIterable<ModelChunk>;
     /** Onion wrapper for tool calls. Call \`next(req)\` to continue the chain. */
     readonly wrapToolCall?: (ctx: TurnContext, request: ToolRequest, next: ToolHandler) => Promise<ToolResponse>;
+    /** Optional self-description injected into model calls. Return undefined to skip. */
+    readonly describeCapabilities?: (ctx: TurnContext) => CapabilityFragment | undefined;
 }
 
-export type { ApprovalDecision, ApprovalHandler, ApprovalRequest, KoiMiddleware, ModelChunk, ModelHandler, ModelRequest, ModelResponse, ModelStreamHandler, SessionContext, ToolHandler, ToolRequest, ToolResponse, TurnContext };
+export type { ApprovalDecision, ApprovalHandler, ApprovalRequest, CapabilityFragment, KoiMiddleware, ModelChunk, ModelHandler, ModelRequest, ModelResponse, ModelStreamHandler, SessionContext, ToolHandler, ToolRequest, ToolResponse, TurnContext };
 "
 `;
 

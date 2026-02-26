@@ -375,4 +375,23 @@ describe("createToolSelectorMiddleware", () => {
     expect(streamReceivedRequest?.tools).toHaveLength(2);
     expect(streamReceivedRequest?.tools?.map((t) => t.name)).toEqual(["tool-1", "tool-3"]);
   });
+
+  describe("describeCapabilities", () => {
+    test("is defined on the middleware", () => {
+      const mw = createToolSelectorMiddleware({
+        selectTools: async () => [],
+      });
+      expect(mw.describeCapabilities).toBeDefined();
+    });
+
+    test("returns label 'tool-filter' and description containing 'filter'", () => {
+      const mw = createToolSelectorMiddleware({
+        selectTools: async () => [],
+      });
+      const ctx = createMockTurnContext();
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.label).toBe("tool-filter");
+      expect(result?.description).toContain("filter");
+    });
+  });
 });

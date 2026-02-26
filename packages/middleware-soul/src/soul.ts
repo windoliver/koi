@@ -4,6 +4,7 @@
 
 import type { InboundMessage } from "@koi/core/message";
 import type {
+  CapabilityFragment,
   KoiMiddleware,
   ModelHandler,
   ModelRequest,
@@ -185,9 +186,15 @@ export async function createSoulMiddleware(options: CreateSoulOptions): Promise<
     watchedPaths = buildWatchedPaths(newSoul.sources, newUser.sources);
   }
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "soul",
+    description: "Persona active",
+  };
+
   return {
     name: "soul",
     priority: 500,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
 
     reload,
 

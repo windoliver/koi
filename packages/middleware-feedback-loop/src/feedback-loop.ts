@@ -3,6 +3,7 @@
  */
 
 import type {
+  CapabilityFragment,
   KoiMiddleware,
   ModelHandler,
   ModelRequest,
@@ -37,9 +38,15 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
   const healthClock = config.forgeHealth?.clock ?? Date.now;
   const resolveBrickId = config.forgeHealth?.resolveBrickId;
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "feedback",
+    description: "Validation with feedback loop active",
+  };
+
   return {
     name: "feedback-loop",
     priority: 450,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
 
     async wrapModelCall(
       ctx: TurnContext,

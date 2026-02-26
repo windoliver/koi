@@ -6,7 +6,12 @@
  * a configurable threshold.
  */
 
-import type { KoiMiddleware, ModelRequest } from "@koi/core/middleware";
+import type {
+  CapabilityFragment,
+  KoiMiddleware,
+  ModelRequest,
+  TurnContext,
+} from "@koi/core/middleware";
 import { editMessages } from "./edit-messages.js";
 import { heuristicTokenEstimator } from "./estimator.js";
 import type { ContextEditingConfig, ResolvedContextEditingConfig } from "./types.js";
@@ -53,9 +58,15 @@ export function createContextEditingMiddleware(config?: ContextEditingConfig): K
     return { ...request, messages: editedMessages };
   }
 
+  const capabilityFragment: CapabilityFragment = {
+    label: "context-editing",
+    description: `Old tool results cleared above ${config?.triggerTokenCount ?? "default"} tokens, keeping ${config?.numRecentToKeep ?? "default"} most recent`,
+  };
+
   return {
     name: "koi:context-editing",
     priority: 250,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
 
     async wrapModelCall(_ctx, request, next) {
       return next(await applyEdits(request));

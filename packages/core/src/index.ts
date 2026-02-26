@@ -352,6 +352,7 @@ export type {
   ApprovalDecision,
   ApprovalHandler,
   ApprovalRequest,
+  CapabilityFragment,
   KoiMiddleware,
   ModelChunk,
   ModelHandler,
