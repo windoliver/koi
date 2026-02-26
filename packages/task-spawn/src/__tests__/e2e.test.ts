@@ -121,6 +121,7 @@ describeE2E("@koi/task-spawn E2E with real LLM", () => {
         version: "0.0.1",
         description: "A research worker",
         model: { name: MODEL },
+        lifecycle: "worker",
       };
 
       const config: TaskSpawnConfig = {
@@ -194,7 +195,6 @@ describeE2E("@koi/task-spawn E2E with real LLM", () => {
         const childRuntime = await createKoi({
           manifest: request.manifest,
           adapter: childAdapter,
-          agentType: "worker",
           spawnLedger: ledger,
           loopDetection: false,
           limits: { maxTurns: 1, maxDurationMs: 30_000, maxTokens: 20_000 },

@@ -3,9 +3,10 @@
  *
  * Watches the AgentRegistry for registration/deregistration events that contain
  * parentId and builds an in-memory tree structure for ancestry queries.
+ * Also tracks spawner provenance for lineage queries.
  */
 
-import type { AgentId, AgentRegistry } from "@koi/core";
+import type { AgentId, AgentRegistry, RegistryEvent } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Public type
@@ -22,6 +23,11 @@ export interface ProcessTree extends AsyncDisposable {
   readonly depthOf: (id: AgentId) => number;
   /** Total number of tracked agents. */
   readonly size: () => number;
+  /**
+   * Get the spawner lineage of an agent — walks the spawner chain upward.
+   * Returns [spawner, spawner's spawner, ..., root] or empty array for root agents.
+   */
+  readonly lineage: (id: AgentId) => readonly AgentId[];
 }
 
 // ---------------------------------------------------------------------------
@@ -31,8 +37,9 @@ export interface ProcessTree extends AsyncDisposable {
 export function createProcessTree(registry: AgentRegistry): ProcessTree {
   const parentMap = new Map<string, AgentId>();
   const childrenMap = new Map<string, AgentId[]>();
+  const spawnerMap = new Map<string, AgentId>();
 
-  const unsubscribe = registry.watch((event) => {
+  const unsubscribe = registry.watch((event: RegistryEvent) => {
     if (event.kind === "registered") {
       const { agentId, parentId } = event.entry;
       if (parentId !== undefined) {
@@ -43,6 +50,10 @@ export function createProcessTree(registry: AgentRegistry): ProcessTree {
       // Ensure the agent has an entry in childrenMap even if it has no children
       if (!childrenMap.has(agentId)) {
         childrenMap.set(agentId, []);
+      }
+      // Track spawner provenance
+      if (event.entry.spawner !== undefined) {
+        spawnerMap.set(agentId, event.entry.spawner);
       }
     }
 
@@ -60,6 +71,7 @@ export function createProcessTree(registry: AgentRegistry): ProcessTree {
         parentMap.delete(agentId);
       }
       childrenMap.delete(agentId);
+      spawnerMap.delete(agentId);
     }
   });
 
@@ -105,16 +117,28 @@ export function createProcessTree(registry: AgentRegistry): ProcessTree {
     return childrenMap.size;
   }
 
+  function lineage(id: AgentId): readonly AgentId[] {
+    const result: AgentId[] = [];
+    let current: AgentId | undefined = spawnerMap.get(id);
+    while (current !== undefined) {
+      result.push(current);
+      current = spawnerMap.get(current);
+    }
+    return result;
+  }
+
   return {
     parentOf,
     childrenOf,
     descendantsOf,
     depthOf,
     size,
+    lineage,
     async [Symbol.asyncDispose](): Promise<void> {
       unsubscribe();
       parentMap.clear();
       childrenMap.clear();
+      spawnerMap.clear();
     },
   };
 }

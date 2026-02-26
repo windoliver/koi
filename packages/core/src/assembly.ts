@@ -57,6 +57,12 @@ export interface AgentManifest {
   readonly delegation?: DelegationConfig;
   readonly supervision?: SupervisionConfig;
   readonly outboundWebhooks?: readonly OutboundWebhookConfig[] | undefined;
+  /**
+   * Lifecycle behavior declaration — "copilot" survives parent death,
+   * "worker" is cascade-terminated with parent.
+   * When undefined, inferred at runtime: worker if spawned, copilot if top-level.
+   */
+  readonly lifecycle?: "copilot" | "worker" | undefined;
   readonly metadata?: JsonObject;
   /** Declared task objectives — used by goal drift detection and attention management middleware. */
   readonly objectives?: readonly string[];

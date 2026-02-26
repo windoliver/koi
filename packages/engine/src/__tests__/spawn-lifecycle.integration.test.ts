@@ -276,15 +276,17 @@ describe("spawn lifecycle integration", () => {
 
     result.handle.onEvent((e) => events.push(e));
 
-    // created → running → terminated
+    // created → running → terminated (with completed reason)
     registry.transition(result.childPid.id, "running", 0, { kind: "assembly_complete" });
     registry.transition(result.childPid.id, "terminated", 1, { kind: "completed" });
 
-    expect(events).toHaveLength(2);
+    // started + completed + terminated = 3 events
+    expect(events).toHaveLength(3);
     expect(events[0]?.kind).toBe("started");
     expect(events[0]?.childId).toBe(result.childPid.id);
-    expect(events[1]?.kind).toBe("terminated");
-    expect(events[1]?.childId).toBe(result.childPid.id);
+    expect(events[1]?.kind).toBe("completed");
+    expect(events[2]?.kind).toBe("terminated");
+    expect(events[2]?.childId).toBe(result.childPid.id);
   });
 
   test("cascading termination: parent death kills all children and releases slots", async () => {
@@ -325,6 +327,7 @@ describe("spawn lifecycle integration", () => {
 
     // Parent dies — CascadingTermination cascades to children
     registry.transition(parent.pid.id, "terminated", 1, { kind: "error" });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
     // All children should be cascade-terminated
     expect(registry.lookup(child1.childPid.id)?.status.phase).toBe("terminated");
@@ -347,5 +350,95 @@ describe("spawn lifecycle integration", () => {
     expect(result.childPid.type).toBe("worker");
     expect(result.childPid.parent).toBe(parent.pid.id);
     expect(result.childPid.name).toBe("child-agent");
+  });
+
+  test("copilot child survives parent termination, worker child dies", async () => {
+    const parent = mockParentAgent(0);
+
+    const tree = createProcessTree(registry);
+    const cascade = createCascadingTermination(registry, tree);
+
+    registry.register({
+      agentId: parent.pid.id,
+      status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
+      agentType: "copilot",
+      metadata: {},
+      registeredAt: Date.now(),
+    });
+    registry.transition(parent.pid.id, "running", 0, { kind: "assembly_complete" });
+
+    // Spawn a copilot child (lifecycle: "copilot")
+    const copilotChild = await spawnChildAgent(
+      baseOptions({
+        manifest: testManifest({ lifecycle: "copilot" }),
+        parentAgent: parent,
+        registry,
+      }),
+    );
+
+    // Spawn a worker child (default lifecycle)
+    const workerChild = await spawnChildAgent(
+      baseOptions({
+        manifest: testManifest({ lifecycle: "worker" }),
+        parentAgent: parent,
+        registry,
+      }),
+    );
+
+    registry.transition(copilotChild.childPid.id, "running", 0, { kind: "assembly_complete" });
+    registry.transition(workerChild.childPid.id, "running", 0, { kind: "assembly_complete" });
+
+    // Parent dies
+    registry.transition(parent.pid.id, "terminated", 1, { kind: "completed" });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    // Copilot survives, worker dies
+    expect(registry.lookup(copilotChild.childPid.id)?.status.phase).toBe("running");
+    expect(registry.lookup(workerChild.childPid.id)?.status.phase).toBe("terminated");
+
+    await cascade[Symbol.asyncDispose]();
+    await tree[Symbol.asyncDispose]();
+  });
+
+  test("spawner lineage query through ProcessTree", async () => {
+    const parent = mockParentAgent(0);
+    const tree = createProcessTree(registry);
+
+    // Register parent
+    registry.register({
+      agentId: parent.pid.id,
+      status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
+      agentType: "copilot",
+      metadata: {},
+      registeredAt: Date.now(),
+    });
+
+    // Spawn child (child's spawner = parent)
+    const child = await spawnChildAgent(baseOptions({ parentAgent: parent, registry }));
+
+    // Verify lineage
+    const lin = tree.lineage(child.childPid.id);
+    expect(lin).toEqual([parent.pid.id]);
+
+    // Root has empty lineage
+    expect(tree.lineage(parent.pid.id)).toEqual([]);
+
+    await tree[Symbol.asyncDispose]();
+  });
+
+  test("signal delivers to child handle listeners", async () => {
+    const result = await spawnChildAgent(baseOptions({ registry }));
+    registry.transition(result.childPid.id, "running", 0, { kind: "assembly_complete" });
+
+    const events: ChildLifecycleEvent[] = [];
+    result.handle.onEvent((e) => events.push(e));
+
+    await result.handle.signal("graceful_shutdown");
+
+    expect(events).toHaveLength(1);
+    expect(events[0]?.kind).toBe("signaled");
+    if (events[0]?.kind === "signaled") {
+      expect(events[0].signal).toBe("graceful_shutdown");
+    }
   });
 });

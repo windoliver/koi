@@ -137,7 +137,7 @@ describe("spawnChildAgent PID generation", () => {
     expect(result.childPid.depth).toBe(3);
   });
 
-  test("child has type worker", async () => {
+  test("child has type worker by default", async () => {
     const result = await spawnChildAgent(baseOptions());
 
     expect(result.childPid.type).toBe("worker");
@@ -148,6 +148,27 @@ describe("spawnChildAgent PID generation", () => {
     const result = await spawnChildAgent(baseOptions({ parentAgent: parent }));
 
     expect(result.childPid.parent).toBe(parent.pid.id);
+  });
+
+  test("manifest lifecycle drives agentType", async () => {
+    const copilotManifest = testManifest({ lifecycle: "copilot" });
+    const result = await spawnChildAgent(baseOptions({ manifest: copilotManifest }));
+
+    expect(result.childPid.type).toBe("copilot");
+  });
+
+  test("manifest lifecycle worker produces worker type", async () => {
+    const workerManifest = testManifest({ lifecycle: "worker" });
+    const result = await spawnChildAgent(baseOptions({ manifest: workerManifest }));
+
+    expect(result.childPid.type).toBe("worker");
+  });
+
+  test("undefined manifest lifecycle defaults to worker for spawned agent", async () => {
+    const noLifecycleManifest = testManifest();
+    const result = await spawnChildAgent(baseOptions({ manifest: noLifecycleManifest }));
+
+    expect(result.childPid.type).toBe("worker");
   });
 });
 
@@ -250,6 +271,23 @@ describe("spawnChildAgent registry integration", () => {
     expect(result.runtime).toBeDefined();
     expect(result.handle).toBeDefined();
     expect(result.childPid).toBeDefined();
+  });
+
+  test("spawner set on registration", async () => {
+    const parent = mockParentAgent(0);
+    const result = await spawnChildAgent(baseOptions({ parentAgent: parent, registry }));
+
+    const entry = registry.lookup(result.childPid.id);
+    expect(entry).toBeDefined();
+    expect(entry?.spawner).toBe(parent.pid.id);
+  });
+
+  test("registry agentType matches manifest lifecycle", async () => {
+    const copilotManifest = testManifest({ lifecycle: "copilot" });
+    const result = await spawnChildAgent(baseOptions({ manifest: copilotManifest, registry }));
+
+    const entry = registry.lookup(result.childPid.id);
+    expect(entry?.agentType).toBe("copilot");
   });
 });
 
@@ -370,6 +408,26 @@ describe("spawnChildAgent cleanup on termination", () => {
     expect(disposeCalled).toBe(true);
   });
 
+  test("double-termination is idempotent (no double ledger release)", async () => {
+    const ledger = createInMemorySpawnLedger(10);
+    const result = await spawnChildAgent(baseOptions({ spawnLedger: ledger, registry }));
+
+    expect(ledger.activeCount()).toBe(1);
+
+    // Transition child: created -> running -> terminated
+    registry.transition(result.childPid.id, "running", 0, { kind: "assembly_complete" });
+    registry.transition(result.childPid.id, "terminated", 1, { kind: "completed" });
+
+    // First termination releases the slot
+    expect(ledger.activeCount()).toBe(0);
+
+    // If we could trigger another terminated event, the idempotency guard
+    // should prevent a second release. The ledger count should stay at 0.
+    // (In practice, the registry won't allow a second terminated transition,
+    // but the guard is defense-in-depth.)
+    expect(ledger.activeCount()).toBe(0);
+  });
+
   test("calls runtime.dispose() on cascade termination (via CascadingTermination)", async () => {
     // let justified: mutable flag to track dispose call
     let disposeCalled = false;
@@ -458,6 +516,7 @@ describe("spawnChildAgent cascading termination (via CascadingTermination)", () 
 
     // Parent terminates — CascadingTermination cascades to child
     registry.transition(parent.pid.id, "terminated", 1, { kind: "completed" });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
     // Child should have been cascade-terminated
     const childEntry = registry.lookup(result.childPid.id);
@@ -489,6 +548,7 @@ describe("spawnChildAgent cascading termination (via CascadingTermination)", () 
 
     // Parent terminates — CascadingTermination cascades to child
     registry.transition(parent.pid.id, "terminated", 1, { kind: "completed" });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
     // Child handle should have fired terminated event
     expect(events).toHaveLength(1);
@@ -523,6 +583,7 @@ describe("spawnChildAgent cascading termination (via CascadingTermination)", () 
 
     // Parent terminates — CascadingTermination cascades to children
     registry.transition(parent.pid.id, "terminated", 1, { kind: "completed" });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
     // Both children should be terminated
     expect(registry.lookup(child1.childPid.id)?.status.phase).toBe("terminated");

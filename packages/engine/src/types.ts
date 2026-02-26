@@ -318,8 +318,6 @@ export interface CreateKoiOptions {
   readonly sendStatus?: (status: ChannelStatus) => Promise<void>;
   /** Parent process ID. When provided, child PID is generated with parent reference. */
   readonly parentPid?: ProcessId;
-  /** Agent type override. Defaults to "worker" when parentPid is set, "copilot" otherwise. */
-  readonly agentType?: "copilot" | "worker";
   /** Registry for agent lifecycle tracking. If provided, agent is registered on creation. */
   readonly registry?: AgentRegistry;
   /** Authenticated user identity. Injected into SessionContext. */

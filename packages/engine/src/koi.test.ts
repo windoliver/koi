@@ -121,6 +121,54 @@ describe("createKoi assembly", () => {
     expect(runtime.agent.pid.depth).toBe(0);
   });
 
+  test("top-level agent defaults to copilot type", async () => {
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([]),
+    });
+    expect(runtime.agent.pid.type).toBe("copilot");
+  });
+
+  test("manifest lifecycle overrides default type", async () => {
+    const runtime = await createKoi({
+      manifest: testManifest({ lifecycle: "worker" }),
+      adapter: mockAdapter([]),
+    });
+    expect(runtime.agent.pid.type).toBe("worker");
+  });
+
+  test("manifest lifecycle copilot on spawned child", async () => {
+    const parentPid = {
+      id: "parent-id" as import("@koi/core").AgentId,
+      name: "parent",
+      type: "copilot" as const,
+      depth: 0,
+    };
+    const runtime = await createKoi({
+      manifest: testManifest({ lifecycle: "copilot" }),
+      adapter: mockAdapter([]),
+      parentPid,
+    });
+    // Even though it has a parent, manifest lifecycle "copilot" takes precedence
+    expect(runtime.agent.pid.type).toBe("copilot");
+  });
+
+  test("undefined lifecycle defaults to worker for child", async () => {
+    const parentPid = {
+      id: "parent-id" as import("@koi/core").AgentId,
+      name: "parent",
+      type: "copilot" as const,
+      depth: 0,
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([]),
+      parentPid,
+    });
+    // No lifecycle field + parent = worker (default inference)
+    expect(runtime.agent.pid.type).toBe("worker");
+  });
+
   test("assembles with component providers", async () => {
     const runtime = await createKoi({
       manifest: testManifest(),

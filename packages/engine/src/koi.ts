@@ -53,16 +53,18 @@ import type { CreateKoiOptions, KoiRuntime } from "./types.js";
 
 /** Generate a unique process ID for a new agent. */
 function generatePid(
-  manifest: { readonly name: string },
+  manifest: { readonly name: string; readonly lifecycle?: "copilot" | "worker" | undefined },
   options?: {
     readonly parent?: ProcessId;
-    readonly agentType?: "copilot" | "worker";
   },
 ): ProcessId {
+  // Manifest lifecycle is the primary source of truth.
+  // Fallback: worker if spawned (has parent), copilot if top-level.
+  const agentType = manifest.lifecycle ?? (options?.parent !== undefined ? "worker" : "copilot");
   return {
     id: agentId(crypto.randomUUID()),
     name: manifest.name,
-    type: options?.agentType ?? (options?.parent !== undefined ? "worker" : "copilot"),
+    type: agentType,
     depth: options?.parent !== undefined ? options.parent.depth + 1 : 0,
     ...(options?.parent !== undefined ? { parent: options.parent.id } : {}),
   };
@@ -112,7 +114,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // --- 1. Assemble the agent entity (with governance provider) ---
   const pid = generatePid(manifest, {
     ...(options.parentPid !== undefined ? { parent: options.parentPid } : {}),
-    ...(options.agentType !== undefined ? { agentType: options.agentType } : {}),
   });
   const governanceProvider = createGovernanceProvider(options.governance);
   const allProviders = [governanceProvider, ...providers];
