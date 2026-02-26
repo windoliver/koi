@@ -65,7 +65,7 @@ describe("createGoalAnchorMiddleware", () => {
 
   describe("2. wrapModelCall prepends todo block to messages", () => {
     test("injects a system:goal-anchor message before existing messages", async () => {
-      let capturedRequest: ModelRequest | null = null;
+      let capturedRequest: ModelRequest | undefined;
 
       const mw = createGoalAnchorMiddleware({
         objectives: ["search the web"],
@@ -92,14 +92,17 @@ describe("createGoalAnchorMiddleware", () => {
         );
       }
 
-      expect(capturedRequest).not.toBeNull();
-      expect(capturedRequest?.messages[0]?.senderId).toBe("system:goal-anchor");
-      // Original user message should still be present
-      expect(capturedRequest?.messages[1]?.senderId).toBe("user");
+      const req = capturedRequest;
+      expect(req).toBeDefined();
+      if (req !== undefined) {
+        expect(req.messages[0]?.senderId).toBe("system:goal-anchor");
+        // Original user message should still be present
+        expect(req.messages[1]?.senderId).toBe("user");
+      }
     });
 
     test("todo block contains all objective texts", async () => {
-      let capturedRequest: ModelRequest | null = null;
+      let capturedRequest: ModelRequest | undefined;
       const mw = createGoalAnchorMiddleware({
         objectives: ["search the web", "write a report"],
         header: "## Tasks",
@@ -118,7 +121,9 @@ describe("createGoalAnchorMiddleware", () => {
         await mw.wrapModelCall(turnCtx, { messages: [] }, handler);
       }
 
-      const firstMsg = capturedRequest?.messages[0];
+      const req = capturedRequest;
+      expect(req).toBeDefined();
+      const firstMsg = req?.messages[0];
       const content = firstMsg?.content[0];
       expect(content?.kind).toBe("text");
       if (content?.kind === "text") {
@@ -172,7 +177,7 @@ describe("createGoalAnchorMiddleware", () => {
       }
 
       // Second call: verify the todo block shows [x]
-      let capturedRequest: ModelRequest | null = null;
+      let capturedRequest: ModelRequest | undefined;
       if (mw.wrapModelCall) {
         await mw.wrapModelCall(
           turnCtx,
@@ -184,7 +189,9 @@ describe("createGoalAnchorMiddleware", () => {
         );
       }
 
-      const firstMsg = capturedRequest?.messages[0];
+      const req = capturedRequest;
+      expect(req).toBeDefined();
+      const firstMsg = req?.messages[0];
       const content = firstMsg?.content[0];
       if (content?.kind === "text") {
         expect(content.text).toContain("- [x] search the web");
@@ -242,7 +249,7 @@ describe("createGoalAnchorMiddleware", () => {
 
       const turnCtx = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
 
-      let capturedRequest: ModelRequest | null = null;
+      let capturedRequest: ModelRequest | undefined;
       if (mw.wrapModelCall) {
         await mw.wrapModelCall(
           turnCtx,
@@ -255,8 +262,8 @@ describe("createGoalAnchorMiddleware", () => {
       }
 
       // After session end, request passes through unmodified (no prepended message)
-      if (capturedRequest !== null) {
-        const firstMsg = capturedRequest.messages[0];
+      if (capturedRequest !== undefined) {
+        const firstMsg = capturedRequest?.messages[0];
         expect(firstMsg?.senderId).not.toBe("system:goal-anchor");
       }
     });
@@ -264,7 +271,7 @@ describe("createGoalAnchorMiddleware", () => {
 
   describe("wrapModelStream: injects todo and detects completions", () => {
     test("prepends todo message in stream path", async () => {
-      let capturedRequest: ModelRequest | null = null;
+      let capturedRequest: ModelRequest | undefined;
       const mw = createGoalAnchorMiddleware({
         objectives: ["search the web"],
       });
@@ -286,7 +293,11 @@ describe("createGoalAnchorMiddleware", () => {
         }
       }
 
-      expect(capturedRequest?.messages[0]?.senderId).toBe("system:goal-anchor");
+      const req = capturedRequest;
+      expect(req).toBeDefined();
+      if (req !== undefined) {
+        expect(req.messages[0]?.senderId).toBe("system:goal-anchor");
+      }
     });
 
     test("marks objective complete from streamed text", async () => {

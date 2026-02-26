@@ -112,7 +112,7 @@ describe("agent-monitor + goal-anchor integration", () => {
     await anchor.onSessionStart?.(sessionCtx);
 
     const turnCtx = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
-    let capturedRequest: ModelRequest | null = null;
+    let capturedRequest: ModelRequest | undefined;
 
     if (anchor.wrapModelCall) {
       await anchor.wrapModelCall(
@@ -125,14 +125,18 @@ describe("agent-monitor + goal-anchor integration", () => {
       );
     }
 
-    expect(capturedRequest?.messages[0]?.senderId).toBe("system:goal-anchor");
-    // Original user message preserved
-    expect(capturedRequest?.messages[1]?.senderId).toBe("user");
-    // Todo block contains all objectives as pending
-    const block = capturedRequest?.messages[0]?.content[0];
-    if (block?.kind === "text") {
-      expect(block.text).toContain("- [ ] search the web");
-      expect(block.text).toContain("- [ ] write a report");
+    const req = capturedRequest;
+    expect(req).toBeDefined();
+    if (req !== undefined) {
+      expect(req.messages[0]?.senderId).toBe("system:goal-anchor");
+      // Original user message preserved
+      expect(req.messages[1]?.senderId).toBe("user");
+      // Todo block contains all objectives as pending
+      const block = req.messages[0]?.content[0];
+      if (block?.kind === "text") {
+        expect(block.text).toContain("- [ ] search the web");
+        expect(block.text).toContain("- [ ] write a report");
+      }
     }
   });
 
@@ -178,7 +182,7 @@ describe("agent-monitor + goal-anchor integration", () => {
     }
 
     // Second call: todo should reflect completed state
-    let capturedRequest: ModelRequest | null = null;
+    let capturedRequest: ModelRequest | undefined;
     if (anchor.wrapModelCall) {
       await anchor.wrapModelCall(
         turnCtx,
@@ -190,9 +194,13 @@ describe("agent-monitor + goal-anchor integration", () => {
       );
     }
 
-    const block = capturedRequest?.messages[0]?.content[0];
-    if (block?.kind === "text") {
-      expect(block.text).toContain("- [x] search the web");
+    const req = capturedRequest;
+    expect(req).toBeDefined();
+    if (req !== undefined) {
+      const block = req.messages[0]?.content[0];
+      if (block?.kind === "text") {
+        expect(block.text).toContain("- [x] search the web");
+      }
     }
   });
 
@@ -216,7 +224,7 @@ describe("agent-monitor + goal-anchor integration", () => {
 
     // Post-end: goal-anchor should pass through unmodified (no todo prepended)
     const turnCtx = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
-    let capturedRequest: ModelRequest | null = null;
+    let capturedRequest: ModelRequest | undefined;
     if (anchor.wrapModelCall) {
       await anchor.wrapModelCall(
         turnCtx,
@@ -229,6 +237,9 @@ describe("agent-monitor + goal-anchor integration", () => {
     }
 
     // No system:goal-anchor message after session end
-    expect(capturedRequest?.messages[0]?.senderId).not.toBe("system:goal-anchor");
+    const req = capturedRequest;
+    if (req !== undefined) {
+      expect(req.messages[0]?.senderId).not.toBe("system:goal-anchor");
+    }
   });
 });
