@@ -157,10 +157,15 @@ export interface ToolDescriptor {
   readonly inputSchema: JsonObject;
 }
 
+/** Options bag for Tool.execute — extensible without breaking existing callers. */
+export interface ToolExecuteOptions {
+  readonly signal?: AbortSignal | undefined;
+}
+
 export interface Tool {
   readonly descriptor: ToolDescriptor;
   readonly trustTier: TrustTier;
-  readonly execute: (args: JsonObject) => Promise<unknown>;
+  readonly execute: (args: JsonObject, options?: ToolExecuteOptions) => Promise<unknown>;
 }
 
 export interface SkillMetadata {

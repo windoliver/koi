@@ -68,6 +68,45 @@ describe("shell tool", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Signal-based cooperative cancellation
+// ---------------------------------------------------------------------------
+
+describe("shell tool signal cancellation", () => {
+  it("returns cancelled result when signal already aborted", async () => {
+    const tool = createShellTool();
+    const controller = new AbortController();
+    controller.abort(new Error("pre-aborted"));
+
+    const result = (await tool.execute(
+      { command: "echo hello" },
+      { signal: controller.signal },
+    )) as {
+      error: string;
+      cancelled: boolean;
+    };
+    expect(result.cancelled).toBe(true);
+    expect(result.error).toContain("cancelled");
+  });
+
+  it("kills process when signal aborts during execution", async () => {
+    const tool = createShellTool();
+    const controller = new AbortController();
+
+    // Abort after 100ms — command sleeps for 10s
+    setTimeout(() => controller.abort(new Error("cancelled")), 100);
+
+    const start = Date.now();
+    await tool.execute({ command: "sleep 10", timeoutMs: 30_000 }, { signal: controller.signal });
+    const elapsed = Date.now() - start;
+
+    // Should complete well before the 10s sleep or 30s timeout
+    expect(elapsed).toBeLessThan(5_000);
+    // Process was killed — either via signal abort handler or timeout check
+    // The exact result depends on timing, but it should not take 10 seconds
+  });
+});
+
+// ---------------------------------------------------------------------------
 // KOI_* env var injection
 // ---------------------------------------------------------------------------
 

@@ -77,22 +77,38 @@ export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMid
         overrides?.timeoutMs ?? profile.resources.timeoutMs ?? FALLBACK_TIMEOUT_MS;
       const totalTimeoutMs = effectiveTimeoutMs + timeoutGraceMs;
 
-      // 4. Execute with timeout wrapping
-      // let justified: mutable flag tracking async timeout state
-      let timedOut = false;
-      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      // 4. Execute with signal-based timeout + backstop race
+      const controller = new AbortController();
+      // let justified: cleared in finally block
+      let timeoutId: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+        controller.abort(new Error(`middleware-sandbox-timeout:${request.toolId}`));
+      }, totalTimeoutMs);
+
+      // Compose sandbox signal with upstream request.signal (if present)
+      const effectiveSignal =
+        request.signal !== undefined
+          ? AbortSignal.any([request.signal, controller.signal])
+          : controller.signal;
+
+      // Thread composed signal to downstream middleware/tool
+      const signalledRequest: ToolRequest = { ...request, signal: effectiveSignal };
 
       const start = performance.now();
 
+      // let justified: assigned inside backstop promise, cleaned up in finally
+      let onAbort: (() => void) | undefined;
+
       try {
-        const timeoutPromise = new Promise<never>((_resolve, reject) => {
-          timeoutId = setTimeout(() => {
-            timedOut = true;
-            reject(new Error(`middleware-sandbox-timeout:${request.toolId}`));
-          }, totalTimeoutMs);
+        const backstopPromise = new Promise<never>((_resolve, reject) => {
+          if (controller.signal.aborted) {
+            reject(controller.signal.reason);
+            return;
+          }
+          onAbort = () => reject(controller.signal.reason);
+          controller.signal.addEventListener("abort", onAbort, { once: true });
         });
 
-        const response = await Promise.race([next(request), timeoutPromise]);
+        const response = await Promise.race([next(signalledRequest), backstopPromise]);
 
         const durationMs = Math.round(performance.now() - start);
 
@@ -122,7 +138,7 @@ export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMid
       } catch (error: unknown) {
         const durationMs = Math.round(performance.now() - start);
 
-        if (timedOut) {
+        if (controller.signal.aborted) {
           const message = `Tool "${request.toolId}" exceeded sandbox timeout (${String(totalTimeoutMs)}ms)`;
           onSandboxError?.(request.toolId, tier, "TIMEOUT", message);
           throw KoiRuntimeError.from("TIMEOUT", message, {
@@ -141,6 +157,10 @@ export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMid
       } finally {
         if (timeoutId !== undefined) {
           clearTimeout(timeoutId);
+          timeoutId = undefined;
+        }
+        if (onAbort !== undefined) {
+          controller.signal.removeEventListener("abort", onAbort);
         }
       }
     },

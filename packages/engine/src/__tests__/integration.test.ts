@@ -728,7 +728,8 @@ describe("HITL approval lifecycle integration", () => {
 
     await collectEvents(runtime.run({ kind: "text", text: "test" }));
     expect(executeMock).toHaveBeenCalledTimes(1);
-    expect(executeMock).toHaveBeenCalledWith({ x: 1 });
+    // First arg is the tool input; second arg is options (with signal from engine)
+    expect(executeMock.mock.calls[0]?.[0]).toEqual({ x: 1 });
   });
 
   test("full lifecycle with denial: tool call denied, error propagated", async () => {
@@ -812,7 +813,7 @@ describe("HITL approval lifecycle integration", () => {
 
     await collectEvents(runtime.run({ kind: "text", text: "test" }));
     expect(executeMock).toHaveBeenCalledTimes(1);
-    // Tool should have been called with the modified input
-    expect(executeMock).toHaveBeenCalledWith({ x: 999 });
+    // First arg is the tool input (modified by approval handler); second arg is options
+    expect(executeMock.mock.calls[0]?.[0]).toEqual({ x: 999 });
   });
 });

@@ -166,7 +166,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         context: { toolId: request.toolId },
       });
     }
-    const output = await tool.execute(request.input);
+    const output = await tool.execute(
+      request.input,
+      request.signal !== undefined ? { signal: request.signal } : undefined,
+    );
     return request.metadata !== undefined ? { output, metadata: request.metadata } : { output };
   };
 
@@ -422,8 +425,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                       {
                         modelCall: (request: ModelRequest) =>
                           activeModelChain(getTurnContext(), prepareRequest(request)),
-                        toolCall: (request: ToolRequest) =>
-                          activeToolChain(getTurnContext(), request),
+                        toolCall: (request: ToolRequest) => {
+                          const ctx = getTurnContext();
+                          const effectiveRequest =
+                            ctx.signal !== undefined ? { ...request, signal: ctx.signal } : request;
+                          return activeToolChain(ctx, effectiveRequest);
+                        },
                         tools: entityDescriptors, // placeholder, overridden by getter below
                         ...(hasStreamChain ? { modelStream: streamChainProxy } : {}),
                       },

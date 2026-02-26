@@ -69,6 +69,7 @@ export interface ToolRequest {
   readonly toolId: string;
   readonly input: JsonObject;
   readonly metadata?: JsonObject;
+  readonly signal?: AbortSignal | undefined;
 }
 
 export interface ToolResponse {

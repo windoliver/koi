@@ -8,7 +8,7 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import type { DelegationScope, KoiError, Result, ScopeChecker, Tool } from "@koi/core";
 import type { ToolCallHandlerDeps } from "./tool-call-handler.js";
-import { handleToolCall, isToolCallPayload } from "./tool-call-handler.js";
+import { executeWithSignal, handleToolCall, isToolCallPayload } from "./tool-call-handler.js";
 import type { LocalResolver, ToolMeta } from "./tools/local-resolver.js";
 import type { NodeFrame } from "./types.js";
 
@@ -290,5 +290,109 @@ describe("handleToolCall", () => {
     const sent = (defaultDeps.sendOutbound as ReturnType<typeof mock>).mock
       .calls[0]?.[0] as NodeFrame;
     expect(sent.kind).toBe("tool_result");
+  });
+
+  it("passes AbortSignal to tool.execute via options", async () => {
+    const tool: Tool = {
+      descriptor: { name: "read_file", description: "Read a file", inputSchema: {} },
+      trustTier: "sandbox",
+      execute: mock((_args, options) => {
+        // Verify signal is passed in options
+        expect(options).toBeDefined();
+        expect(options?.signal).toBeInstanceOf(AbortSignal);
+        return Promise.resolve("ok");
+      }),
+    };
+    const signalDeps = makeDeps({ resolver: makeResolver(tool), timeoutMs: 5_000 });
+    const frame = makeFrame();
+    await handleToolCall(frame, signalDeps);
+
+    expect(tool.execute).toHaveBeenCalledTimes(1);
+    const sent = (signalDeps.sendOutbound as ReturnType<typeof mock>).mock
+      .calls[0]?.[0] as NodeFrame;
+    expect(sent.kind).toBe("tool_result");
+  });
+
+  it("signal is aborted when timeout fires", async () => {
+    // let justified: captured from inside the tool execute call
+    let capturedSignal: AbortSignal | undefined;
+    const slowTool: Tool = {
+      descriptor: { name: "read_file", description: "Slow tool", inputSchema: {} },
+      trustTier: "sandbox",
+      execute: mock((_args, options) => {
+        capturedSignal = options?.signal;
+        return new Promise(() => {}); // never resolves
+      }),
+    };
+    const timeoutDeps = makeDeps({
+      resolver: makeResolver(slowTool),
+      timeoutMs: 50,
+    });
+    const frame = makeFrame();
+    await handleToolCall(frame, timeoutDeps);
+
+    // After timeout, the signal should be aborted
+    expect(capturedSignal).toBeDefined();
+    expect(capturedSignal?.aborted).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// executeWithSignal
+// ---------------------------------------------------------------------------
+
+describe("executeWithSignal", () => {
+  it("cooperative tool that checks signal exits early", async () => {
+    // let justified: step counter tracking cooperative cancellation
+    let step = 0;
+    const controller = new AbortController();
+    const cooperativeTool: Tool = {
+      descriptor: { name: "coop", description: "Cooperative tool", inputSchema: {} },
+      trustTier: "sandbox",
+      execute: async (_args, options) => {
+        step = 1;
+        // Simulate long work — signal fires before this completes
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        if (options?.signal?.aborted) {
+          step = 2; // Reached cancellation check
+          throw options.signal.reason;
+        }
+        step = 3; // Should not reach here
+        return "completed";
+      },
+    };
+
+    // Abort after 20ms — well before the 200ms work completes
+    setTimeout(() => controller.abort(new Error("cancelled")), 20);
+
+    await expect(executeWithSignal(cooperativeTool, {}, controller.signal)).rejects.toThrow(
+      "cancelled",
+    );
+    // The backstop fires (at 20ms) before cooperative check (at 200ms),
+    // so step remains 1 (the backstop rejects the race, tool is still sleeping)
+    expect(step).toBe(1);
+  });
+
+  it("non-cooperating tool is still bounded by deadline", async () => {
+    const hangingTool: Tool = {
+      descriptor: { name: "hang", description: "Hanging tool", inputSchema: {} },
+      trustTier: "sandbox",
+      execute: () => new Promise(() => {}), // never resolves, ignores signal
+    };
+
+    const signal = AbortSignal.timeout(50);
+    const start = Date.now();
+    await expect(executeWithSignal(hangingTool, {}, signal)).rejects.toThrow();
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(300);
+  });
+
+  it("throws immediately when signal is already aborted", async () => {
+    const tool = makeTool("should-not-reach");
+    const controller = new AbortController();
+    controller.abort(new Error("pre-aborted"));
+
+    await expect(executeWithSignal(tool, {}, controller.signal)).rejects.toThrow("pre-aborted");
+    expect(tool.execute).not.toHaveBeenCalled();
   });
 });

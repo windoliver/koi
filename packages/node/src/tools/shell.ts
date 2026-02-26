@@ -10,7 +10,7 @@
  * Full sandboxing is enforced by @koi/middleware-sandbox wrapping tool.execute().
  */
 
-import type { Tool, ToolDescriptor } from "@koi/core";
+import type { Tool, ToolDescriptor, ToolExecuteOptions } from "@koi/core";
 import { getExecutionContext, mapContextToEnv } from "@koi/execution-context";
 
 // ---------------------------------------------------------------------------
@@ -91,7 +91,14 @@ export function createShellTool(): Tool {
     descriptor: DESCRIPTOR,
     trustTier: "sandbox",
 
-    async execute(args) {
+    async execute(args, options?: ToolExecuteOptions) {
+      const signal = options?.signal;
+
+      // Fast-path: already cancelled before we start
+      if (signal?.aborted) {
+        return { error: "Command cancelled", cancelled: true };
+      }
+
       const command = args.command;
       if (typeof command !== "string" || command.length === 0) {
         return { error: "Invalid arguments: command must be a non-empty string" };
@@ -111,39 +118,56 @@ export function createShellTool(): Tool {
           env: createSafeEnv(),
         });
 
+        // Kill process on signal abort (cooperative cancellation)
+        const onAbort = (): void => {
+          proc.kill();
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
+
         // Race between process completion and timeout
+        // let justified: cleared in finally block
         let timeoutId: ReturnType<typeof setTimeout> | undefined;
         const timeoutPromise = new Promise<"timeout">((resolve) => {
           timeoutId = setTimeout(() => resolve("timeout"), timeoutMs);
         });
 
-        const result = await Promise.race([proc.exited, timeoutPromise]);
-        // Clear timer to prevent leak when process completes before timeout
-        if (timeoutId !== undefined) clearTimeout(timeoutId);
+        try {
+          const result = await Promise.race([proc.exited, timeoutPromise]);
+          if (timeoutId !== undefined) clearTimeout(timeoutId);
 
-        if (result === "timeout") {
-          proc.kill();
-          return { error: `Command timed out after ${timeoutMs}ms`, timedOut: true };
+          // Check if signal aborted while waiting
+          if (signal?.aborted) {
+            proc.kill();
+            return { error: "Command cancelled", cancelled: true };
+          }
+
+          if (result === "timeout") {
+            proc.kill();
+            return { error: `Command timed out after ${timeoutMs}ms`, timedOut: true };
+          }
+
+          let stdout = await new Response(proc.stdout).text();
+          let stderr = await new Response(proc.stderr).text();
+
+          // Truncate oversized output
+          const truncated = stdout.length > MAX_OUTPUT_BYTES || stderr.length > MAX_OUTPUT_BYTES;
+          if (stdout.length > MAX_OUTPUT_BYTES) {
+            stdout = `${stdout.slice(0, MAX_OUTPUT_BYTES)}... [truncated]`;
+          }
+          if (stderr.length > MAX_OUTPUT_BYTES) {
+            stderr = `${stderr.slice(0, MAX_OUTPUT_BYTES)}... [truncated]`;
+          }
+
+          return {
+            stdout,
+            stderr,
+            exitCode: result,
+            truncated,
+          };
+        } finally {
+          if (timeoutId !== undefined) clearTimeout(timeoutId);
+          signal?.removeEventListener("abort", onAbort);
         }
-
-        let stdout = await new Response(proc.stdout).text();
-        let stderr = await new Response(proc.stderr).text();
-
-        // Truncate oversized output
-        const truncated = stdout.length > MAX_OUTPUT_BYTES || stderr.length > MAX_OUTPUT_BYTES;
-        if (stdout.length > MAX_OUTPUT_BYTES) {
-          stdout = `${stdout.slice(0, MAX_OUTPUT_BYTES)}... [truncated]`;
-        }
-        if (stderr.length > MAX_OUTPUT_BYTES) {
-          stderr = `${stderr.slice(0, MAX_OUTPUT_BYTES)}... [truncated]`;
-        }
-
-        return {
-          stdout,
-          stderr,
-          exitCode: result,
-          truncated,
-        };
       } catch {
         return { error: "Command execution failed" };
       }

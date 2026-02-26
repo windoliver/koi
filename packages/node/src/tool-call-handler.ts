@@ -3,7 +3,14 @@
  * with explicit dependencies for direct unit testing.
  */
 
-import type { DelegationScope, ScopeChecker, ToolErrorPayload, ToolResultPayload } from "@koi/core";
+import type {
+  DelegationScope,
+  JsonObject,
+  ScopeChecker,
+  Tool,
+  ToolErrorPayload,
+  ToolResultPayload,
+} from "@koi/core";
 import { isToolCallPayload } from "@koi/core";
 import type { LocalResolver } from "./tools/local-resolver.js";
 import type { NodeEvent, NodeFrame } from "./types.js";
@@ -104,25 +111,26 @@ export async function handleToolCall(frame: NodeFrame, deps: ToolCallHandlerDeps
     return;
   }
 
-  // Execute tool with timeout
-  // NOTE: Promise.race does not cancel the underlying tool execution.
-  // After timeout, execute() continues to run but its result is discarded.
-  // Adding AbortSignal to Tool.execute is an L0 change for a future PR.
+  // Execute tool with cooperative cancellation via AbortSignal
   const effectiveTimeout = deps.timeoutMs ?? DEFAULT_TOOL_CALL_TIMEOUT_MS;
+  const timeoutSignal = AbortSignal.timeout(effectiveTimeout);
 
-  // let: cleared in finally block after race settles or rejects
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
-    const timeoutPromise = new Promise<"timeout">((resolve) => {
-      timeoutId = setTimeout(() => resolve("timeout"), effectiveTimeout);
+    const result = await executeWithSignal(loadResult.value, args ?? {}, timeoutSignal);
+
+    deps.sendOutbound({
+      nodeId: deps.nodeId,
+      agentId: frame.agentId,
+      correlationId: frame.correlationId,
+      kind: "tool_result",
+      payload: {
+        toolName,
+        result,
+      } satisfies ToolResultPayload,
     });
-
-    const result = await Promise.race([
-      loadResult.value.execute(args ?? {}).then((r) => ({ ok: true as const, value: r })),
-      timeoutPromise,
-    ]);
-
-    if (result === "timeout") {
+  } catch (e: unknown) {
+    // Discriminate timeout from other errors via signal state
+    if (timeoutSignal.aborted) {
       deps.emit("agent_crashed", {
         reason: "Tool execution timed out",
         agentId: frame.agentId,
@@ -143,18 +151,7 @@ export async function handleToolCall(frame: NodeFrame, deps: ToolCallHandlerDeps
       return;
     }
 
-    deps.sendOutbound({
-      nodeId: deps.nodeId,
-      agentId: frame.agentId,
-      correlationId: frame.correlationId,
-      kind: "tool_result",
-      payload: {
-        toolName,
-        result: result.value,
-      } satisfies ToolResultPayload,
-    });
-  } catch (e: unknown) {
-    // Log full error internally for debugging
+    // Non-timeout execution error
     deps.emit("agent_crashed", {
       reason: "Tool execution failed",
       agentId: frame.agentId,
@@ -172,7 +169,44 @@ export async function handleToolCall(frame: NodeFrame, deps: ToolCallHandlerDeps
         message: "Tool execution failed",
       } satisfies ToolErrorPayload,
     });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Signal-aware tool execution helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute a tool with cooperative cancellation + race backstop.
+ *
+ * 1. Fast-path: throws immediately if signal is already aborted.
+ * 2. Cooperative: passes signal to tool.execute() via options bag.
+ * 3. Backstop: races against a signal-derived rejection for non-cooperating tools.
+ */
+export async function executeWithSignal(
+  tool: Tool,
+  args: JsonObject,
+  signal: AbortSignal,
+): Promise<unknown> {
+  signal.throwIfAborted();
+
+  // let justified: assigned inside backstop promise, cleaned up in finally
+  let onAbort: (() => void) | undefined;
+  try {
+    return await Promise.race([
+      tool.execute(args, { signal }),
+      new Promise<never>((_resolve, reject) => {
+        if (signal.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        onAbort = () => reject(signal.reason);
+        signal.addEventListener("abort", onAbort, { once: true });
+      }),
+    ]);
   } finally {
-    if (timeoutId !== undefined) clearTimeout(timeoutId);
+    if (onAbort !== undefined) {
+      signal.removeEventListener("abort", onAbort);
+    }
   }
 }
