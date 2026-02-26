@@ -264,6 +264,7 @@ export type {
 } from "./eviction.js";
 // filesystem backend
 export type {
+  FileDeleteResult,
   FileEdit,
   FileEditOptions,
   FileEditResult,
@@ -273,6 +274,7 @@ export type {
   FileListResult,
   FileReadOptions,
   FileReadResult,
+  FileRenameResult,
   FileSearchMatch,
   FileSearchOptions,
   FileSearchResult,

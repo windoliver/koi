@@ -6,10 +6,11 @@ pre-commit:
       run: bunx biome check --staged --no-errors-on-unmatched {staged_files}
 
 pre-push:
+  parallel: true
   commands:
     build:
-      run: bun run build
+      # Only build directly changed packages (no transitive dependents).
+      # CI handles the full dependency graph.
+      run: bunx turbo run build --filter='[origin/main]'
     typecheck:
-      run: bun run typecheck
-    test:
-      run: bun run test
+      run: bunx turbo run typecheck --filter='[origin/main]'

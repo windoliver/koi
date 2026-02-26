@@ -103,6 +103,23 @@ export interface FileSearchResult {
 }
 
 // ---------------------------------------------------------------------------
+// Delete
+// ---------------------------------------------------------------------------
+
+export interface FileDeleteResult {
+  readonly path: string;
+}
+
+// ---------------------------------------------------------------------------
+// Rename
+// ---------------------------------------------------------------------------
+
+export interface FileRenameResult {
+  readonly from: string;
+  readonly to: string;
+}
+
+// ---------------------------------------------------------------------------
 // Backend contract
 // ---------------------------------------------------------------------------
 
@@ -135,6 +152,15 @@ export interface FileSystemBackend {
     pattern: string,
     options?: FileSearchOptions,
   ) => Result<FileSearchResult, KoiError> | Promise<Result<FileSearchResult, KoiError>>;
+
+  readonly delete?: (
+    path: string,
+  ) => Result<FileDeleteResult, KoiError> | Promise<Result<FileDeleteResult, KoiError>>;
+
+  readonly rename?: (
+    from: string,
+    to: string,
+  ) => Result<FileRenameResult, KoiError> | Promise<Result<FileRenameResult, KoiError>>;
 
   readonly dispose?: () => void | Promise<void>;
 }
