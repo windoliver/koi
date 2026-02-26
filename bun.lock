@@ -685,6 +685,16 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/orchestrator": {
+      "name": "@koi/orchestrator",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/parallel-minions": {
       "name": "@koi/parallel-minions",
       "version": "0.0.0",
@@ -1022,6 +1032,7 @@
         "@koi/middleware-turn-ack": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/node": "workspace:*",
+        "@koi/orchestrator": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -1405,6 +1416,8 @@
     "@koi/model-router": ["@koi/model-router@workspace:packages/model-router"],
 
     "@koi/node": ["@koi/node@workspace:packages/node"],
+
+    "@koi/orchestrator": ["@koi/orchestrator@workspace:packages/orchestrator"],
 
     "@koi/parallel-minions": ["@koi/parallel-minions@workspace:packages/parallel-minions"],
 

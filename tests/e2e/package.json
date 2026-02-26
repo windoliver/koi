@@ -19,6 +19,7 @@
     "@koi/delegation": "workspace:*",
     "@koi/engine-external": "workspace:*",
     "@koi/canvas": "workspace:*",
+    "@koi/orchestrator": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },
   "scripts": {
