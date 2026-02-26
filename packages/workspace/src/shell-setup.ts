@@ -32,13 +32,13 @@ export function createShellSetup(
   return async (workspace: WorkspaceInfo): Promise<void> => {
     const proc = Bun.spawn([command, ...(args ?? [])], {
       cwd: workspace.path,
-      stdout: "pipe",
+      stdout: "ignore",
       stderr: "pipe",
     });
 
-    const exitCode = await proc.exited;
+    const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
+
     if (exitCode !== 0) {
-      const stderr = await new Response(proc.stderr).text();
       throw new Error(`Shell setup "${command}" failed (exit ${exitCode}): ${stderr.trim()}`);
     }
   };

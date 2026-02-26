@@ -45,13 +45,16 @@ export async function runGit(
     };
   }
 
-  const exitCode = await proc.exited;
+  const [exitCode, stdout, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+
   if (exitCode !== 0) {
-    const stderr = await new Response(proc.stderr).text();
     return { ok: false, error: parseGitError(stderr, args) };
   }
 
-  const stdout = await new Response(proc.stdout).text();
   return { ok: true, value: stdout.trim() };
 }
 

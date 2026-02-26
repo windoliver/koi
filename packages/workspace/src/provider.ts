@@ -47,8 +47,16 @@ export function createWorkspaceProvider(
         try {
           await postCreate(workspace);
         } catch (e: unknown) {
-          // Clean up the created workspace before propagating
-          await backend.dispose(workspace.id);
+          // Best-effort cleanup — don't mask the original error
+          try {
+            await backend.dispose(workspace.id);
+          } catch (disposeErr: unknown) {
+            console.warn(
+              `[workspace] dispose during postCreate cleanup failed: ${
+                disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+              }`,
+            );
+          }
           throw new Error("postCreate hook failed", { cause: e });
         }
       }
