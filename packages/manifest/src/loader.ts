@@ -30,6 +30,7 @@ const KNOWN_FIELDS = [
   "soul",
   "user",
   "deploy",
+  "scope",
 ] as const;
 
 /**

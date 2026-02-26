@@ -43,3 +43,4 @@ export {
   type RuntimeOpts,
 } from "./registry.js";
 export { resolveManifestMiddleware } from "./resolve.js";
+export { resolveManifestScope, type ScopeBackends } from "./scope-resolver.js";

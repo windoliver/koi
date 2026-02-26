@@ -95,6 +95,7 @@ export interface RawManifest {
   readonly soul?: string | RawSoulUserConfig | undefined;
   readonly user?: string | RawSoulUserConfig | undefined;
   readonly deploy?: RawDeploy | undefined;
+  readonly scope?: RawScope | undefined;
   readonly [key: string]: unknown;
 }
 
@@ -213,7 +214,7 @@ const outboundWebhookSchema = z.object({
 /** Array of outbound webhook configs. */
 const outboundWebhooksSchema = z.array(outboundWebhookSchema);
 
-/** Trust tier values used in forge config. */
+/** Trust tier values used in forge config and scope. */
 const trustTierSchema = z.enum(["sandbox", "verified", "promoted"]);
 
 /** Forge governance config. */
@@ -251,6 +252,51 @@ const deploySchema = z.object({
   system: z.boolean().default(false),
 });
 
+// ── Scope schema ──
+
+/** Declarative scope boundaries for agent subsystems. */
+const scopeSchema = z.object({
+  filesystem: z
+    .object({
+      root: z.string(),
+      mode: z.enum(["rw", "ro"]).default("rw"),
+    })
+    .optional(),
+  browser: z
+    .object({
+      allowedProtocols: z.array(z.string()).optional(),
+      allowedDomains: z.array(z.string()).optional(),
+      blockPrivateAddresses: z.boolean().optional(),
+      trustTier: trustTierSchema.optional(),
+    })
+    .optional(),
+  credentials: z
+    .object({
+      keyPattern: z.string(),
+    })
+    .optional(),
+  memory: z
+    .object({
+      namespace: z.string(),
+    })
+    .optional(),
+});
+
+/** Scope section as output by Zod after defaults are applied. */
+interface RawScope {
+  readonly filesystem?: { readonly root: string; readonly mode: "rw" | "ro" } | undefined;
+  readonly browser?:
+    | {
+        readonly allowedProtocols?: readonly string[] | undefined;
+        readonly allowedDomains?: readonly string[] | undefined;
+        readonly blockPrivateAddresses?: boolean | undefined;
+        readonly trustTier?: "sandbox" | "verified" | "promoted" | undefined;
+      }
+    | undefined;
+  readonly credentials?: { readonly keyPattern: string } | undefined;
+  readonly memory?: { readonly namespace: string } | undefined;
+}
+
 // ── Raw manifest schema ──
 
 /**
@@ -278,6 +324,7 @@ export const rawManifestSchema: z.ZodType<RawManifest> = z
     soul: soulUserSchema.optional(),
     user: soulUserSchema.optional(),
     deploy: deploySchema.optional(),
+    scope: scopeSchema.optional(),
   })
   .passthrough();
 

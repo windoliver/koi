@@ -15,6 +15,11 @@ export type {
   DeployConfig,
   LoadedManifest,
   LoadResult,
+  ManifestBrowserScope,
+  ManifestCredentialsScope,
+  ManifestFileSystemScope,
+  ManifestMemoryScope,
+  ManifestScopeConfig,
   ManifestWarning,
   SoulUserConfig,
 } from "./types.js";

@@ -50,6 +50,8 @@ export type {
   BrowserWaitOptions,
   BrowserWaitUntil,
 } from "@koi/core";
+// scope types — re-exported from @koi/scope for convenience
+export type { BrowserScope } from "@koi/scope";
 // provider
 export type {
   BrowserProviderConfig,
