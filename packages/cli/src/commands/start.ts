@@ -12,13 +12,13 @@
  */
 
 import { createCliChannel } from "@koi/channel-cli";
-import type { ContentBlock, EngineEvent, EngineInput, ModelHandler } from "@koi/core";
+import type { ContentBlock, EngineEvent, EngineInput } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { loadManifest } from "@koi/manifest";
 import { EXIT_CONFIG } from "@koi/shutdown";
 import type { StartFlags } from "../args.js";
-import { resolveModelCall } from "../model-resolve.js";
+import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
 
 // ---------------------------------------------------------------------------
 // Event rendering
@@ -95,20 +95,23 @@ export async function runStart(flags: StartFlags): Promise<void> {
     return;
   }
 
-  // 4. ASSEMBLE: Create engine adapter with real model provider
+  // 4. RESOLVE: Resolve manifest into runtime instances (middleware + model)
   const modelName = manifest.model.name;
-  // let: TypeScript cannot narrow through process.exit() in catch
-  let modelCall: ModelHandler;
-  try {
-    modelCall = resolveModelCall(manifest);
-  } catch (error: unknown) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  const resolved = await resolveAgent({ manifestPath, manifest });
+  if (!resolved.ok) {
+    process.stderr.write(formatResolutionError(resolved.error));
     process.exit(EXIT_CONFIG);
   }
-  const adapter = createLoopAdapter({ modelCall });
 
-  // 5. WIRE: Create the Koi runtime
-  const runtime = await createKoi({ manifest, adapter });
+  // 5. ASSEMBLE: Create engine adapter with resolved model handler
+  const adapter = createLoopAdapter({ modelCall: resolved.value.model });
+
+  // 6. WIRE: Create the Koi runtime with resolved middleware
+  const runtime = await createKoi({
+    manifest,
+    adapter,
+    middleware: resolved.value.middleware,
+  });
 
   // 6. Set up CLI channel
   const channel = createCliChannel();

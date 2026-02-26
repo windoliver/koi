@@ -2,6 +2,7 @@
 
 exports[`@koi/engine-claude API surface . has stable type surface 1`] = `
 "import { EngineEvent, EngineStopReason, ApprovalHandler, EngineAdapter, JsonObject, EngineMetrics, Tool, Agent } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
 
 /**
  * SDKMessage → EngineEvent mapping.
@@ -437,6 +438,23 @@ interface HitlEventEmitter {
 declare function createApprovalBridge(handler: ApprovalHandler, emitter?: HitlEventEmitter): SdkCanUseTool;
 
 /**
+ * BrickDescriptor for @koi/engine-claude.
+ *
+ * Enables manifest auto-resolution for the Claude Agent SDK engine.
+ * Requires ANTHROPIC_API_KEY environment variable.
+ */
+
+/**
+ * Descriptor for Claude engine adapter.
+ *
+ * Note: The Claude adapter requires SDK function bindings that cannot be
+ * resolved from YAML alone. The factory throws — the CLI must inject SDK
+ * bindings after resolution. This descriptor registers the name/alias so
+ * the resolver can validate and locate it.
+ */
+declare const descriptor: BrickDescriptor<EngineAdapter>;
+
+/**
  * Bounded async iterable message queue for streaming input to the Claude SDK.
  *
  * Pattern from Anthropic's claude-agent-sdk-demos: single-pending-Promise
@@ -567,6 +585,6 @@ declare function createToolBridgeMcpServer(agent: Agent, createMcpServerFn: (con
     readonly registry: ToolRegistry;
 } | undefined;
 
-export { type ClaudeAdapterConfig, type ClaudeEngineAdapter, type ClaudeQueryControls, type ClaudeSessionState, HITL_EVENTS, type HitlEventEmitter, type HitlRequestData, type MapResult, type McpBridgeConfig, type MessageMapper, type MessageQueue, type MessageQueueOptions, type SdkAssistantMessage, type SdkCanUseTool, type SdkCanUseToolOptions, type SdkContentBlock, type SdkFunctions, type SdkInputMessage, type SdkMessage, type SdkOptions, type SdkPermissionResult, type SdkQuery, type SdkQueryFn, type SdkResultFields, type SdkResultMessage, type SdkStreamEvent, type SdkStreamEventMessage, type SdkSystemMessage, type StreamEventMapper, type ToolBridgeDescriptor, type ToolRegistry, createApprovalBridge, createClaudeAdapter, createMessageMapper, createMessageQueue, createSdkOptions, createStreamEventMapper, createToolBridgeMcpServer, createToolRegistry, executeBridgedTool, mapAssistantMessage, mapMetrics, mapResultMessage, mapRichMetadata, mapSdkMessage, mapStopReason };
+export { type ClaudeAdapterConfig, type ClaudeEngineAdapter, type ClaudeQueryControls, type ClaudeSessionState, HITL_EVENTS, type HitlEventEmitter, type HitlRequestData, type MapResult, type McpBridgeConfig, type MessageMapper, type MessageQueue, type MessageQueueOptions, type SdkAssistantMessage, type SdkCanUseTool, type SdkCanUseToolOptions, type SdkContentBlock, type SdkFunctions, type SdkInputMessage, type SdkMessage, type SdkOptions, type SdkPermissionResult, type SdkQuery, type SdkQueryFn, type SdkResultFields, type SdkResultMessage, type SdkStreamEvent, type SdkStreamEventMessage, type SdkSystemMessage, type StreamEventMapper, type ToolBridgeDescriptor, type ToolRegistry, createApprovalBridge, createClaudeAdapter, createMessageMapper, createMessageQueue, createSdkOptions, createStreamEventMapper, createToolBridgeMcpServer, createToolRegistry, descriptor, executeBridgedTool, mapAssistantMessage, mapMetrics, mapResultMessage, mapRichMetadata, mapSdkMessage, mapStopReason };
 "
 `;

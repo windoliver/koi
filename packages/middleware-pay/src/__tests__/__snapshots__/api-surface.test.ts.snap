@@ -2,7 +2,9 @@
 
 exports[`@koi/middleware-pay API surface . has stable type surface 1`] = `
 "import { Result, KoiError } from '@koi/core/errors';
-import { KoiMiddleware } from '@koi/core/middleware';
+import { KoiMiddleware } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
+import { KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
 
 /**
  * Budget tracking interfaces and default implementations.
@@ -55,11 +57,26 @@ interface PayMiddlewareConfig {
 declare function validatePayConfig(config: unknown): Result<PayMiddlewareConfig, KoiError>;
 
 /**
+ * BrickDescriptor for @koi/middleware-pay.
+ *
+ * Enables manifest auto-resolution: validates pay config,
+ * then creates the pay middleware with in-memory budget tracker
+ * and default cost calculator.
+ */
+
+/**
+ * Descriptor for pay middleware.
+ * Uses in-memory budget tracker and default cost calculator.
+ * Exported for registration with createRegistry().
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
+
+/**
  * Pay middleware factory — token budget enforcement.
  */
 
-declare function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware;
+declare function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware$1;
 
-export { type BudgetTracker, type CostCalculator, type CostEntry, type PayMiddlewareConfig, type UsageInfo, createDefaultCostCalculator, createInMemoryBudgetTracker, createPayMiddleware, validatePayConfig };
+export { type BudgetTracker, type CostCalculator, type CostEntry, type PayMiddlewareConfig, type UsageInfo, createDefaultCostCalculator, createInMemoryBudgetTracker, createPayMiddleware, descriptor, validatePayConfig };
 "
 `;

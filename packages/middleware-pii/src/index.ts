@@ -7,6 +7,7 @@
  */
 
 export { validatePIIConfig } from "./config.js";
+export { descriptor } from "./descriptor.js";
 export {
   createAllDetectors,
   createCreditCardDetector,

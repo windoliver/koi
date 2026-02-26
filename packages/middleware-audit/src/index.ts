@@ -10,6 +10,7 @@ export type { AuditEntry, AuditSink, RedactionRule } from "@koi/core";
 export { createAuditMiddleware } from "./audit.js";
 export type { AuditMiddlewareConfig } from "./config.js";
 export { validateAuditConfig } from "./config.js";
+export { descriptor } from "./descriptor.js";
 export {
   applyRedaction,
   createConsoleAuditSink,

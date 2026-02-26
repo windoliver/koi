@@ -1,10 +1,11 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/middleware-audit API surface . has stable type surface 1`] = `
-"import { AuditSink, RedactionRule, AuditEntry } from '@koi/core';
+"import { AuditSink, RedactionRule, AuditEntry, KoiMiddleware as KoiMiddleware$1 } from '@koi/core';
 export { AuditEntry, AuditSink, RedactionRule } from '@koi/core';
 import { KoiMiddleware } from '@koi/core/middleware';
 import { Result, KoiError } from '@koi/core/errors';
+import { BrickDescriptor } from '@koi/resolve';
 
 /**
  * Audit middleware configuration and validation.
@@ -24,6 +25,20 @@ declare function validateAuditConfig(config: unknown): Result<AuditMiddlewareCon
  */
 
 declare function createAuditMiddleware(config: AuditMiddlewareConfig): KoiMiddleware;
+
+/**
+ * BrickDescriptor for @koi/middleware-audit.
+ *
+ * Enables manifest auto-resolution: validates audit config,
+ * then creates the audit middleware with a console sink by default.
+ */
+
+/**
+ * Descriptor for audit middleware.
+ * Uses a console audit sink by default.
+ * Exported for registration with createRegistry().
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware$1>;
 
 /**
  * Audit sink default implementations and utilities.
@@ -50,6 +65,6 @@ declare function applyRedaction(text: string, rules: readonly RedactionRule[]): 
  */
 declare function truncate(text: string, maxLength: number): string;
 
-export { type AuditMiddlewareConfig, applyRedaction, createAuditMiddleware, createConsoleAuditSink, createInMemoryAuditSink, truncate, validateAuditConfig };
+export { type AuditMiddlewareConfig, applyRedaction, createAuditMiddleware, createConsoleAuditSink, createInMemoryAuditSink, descriptor, truncate, validateAuditConfig };
 "
 `;

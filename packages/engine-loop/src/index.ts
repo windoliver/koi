@@ -6,5 +6,6 @@
  * in parallel, append results, and repeat.
  */
 
+export { descriptor } from "./descriptor.js";
 export type { LoopAdapterConfig } from "./loop-adapter.js";
 export { createLoopAdapter } from "./loop-adapter.js";

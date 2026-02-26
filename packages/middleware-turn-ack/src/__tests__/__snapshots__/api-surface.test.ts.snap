@@ -2,6 +2,7 @@
 
 exports[`@koi/middleware-turn-ack API surface . has stable type surface 1`] = `
 "import { Result, KoiError, KoiMiddleware } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
 
 /**
  * Configuration for TurnAckMiddleware.
@@ -18,6 +19,19 @@ interface TurnAckConfig {
 declare function validateTurnAckConfig(config: TurnAckConfig): Result<TurnAckConfig, KoiError>;
 
 /**
+ * BrickDescriptor for @koi/middleware-turn-ack.
+ *
+ * Enables manifest auto-resolution: validates turn-ack config,
+ * then creates the turn acknowledgement middleware.
+ */
+
+/**
+ * Descriptor for turn-ack middleware.
+ * Exported for registration with createRegistry().
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
+
+/**
  * TurnAckMiddleware — two-stage acknowledgement for long-running agent turns.
  *
  * Stage 1: "processing" status sent after a debounce delay (skipped for fast turns).
@@ -28,6 +42,6 @@ declare function validateTurnAckConfig(config: TurnAckConfig): Result<TurnAckCon
 
 declare function createTurnAckMiddleware(config?: TurnAckConfig): KoiMiddleware;
 
-export { type TurnAckConfig, createTurnAckMiddleware, validateTurnAckConfig };
+export { type TurnAckConfig, createTurnAckMiddleware, descriptor, validateTurnAckConfig };
 "
 `;

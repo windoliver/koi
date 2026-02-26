@@ -11,4 +11,10 @@
 export { loadManifest, loadManifestFromString } from "./loader.js";
 
 // Types
-export type { DeployConfig, LoadedManifest, LoadResult, ManifestWarning } from "./types.js";
+export type {
+  DeployConfig,
+  LoadedManifest,
+  LoadResult,
+  ManifestWarning,
+  SoulUserConfig,
+} from "./types.js";

@@ -2,6 +2,7 @@
 
 exports[`@koi/engine-external API surface . has stable type surface 1`] = `
 "import { EngineEvent, EngineAdapter, Result, KoiError } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
 
 /**
  * Type definitions for the external process engine adapter.
@@ -92,6 +93,19 @@ interface ExternalProcessState {
 declare function createExternalAdapter(config: ExternalAdapterConfig): ExternalEngineAdapter;
 
 /**
+ * BrickDescriptor for @koi/engine-external.
+ *
+ * Enables manifest auto-resolution for external CLI process engines.
+ * Requires a \`command\` option specifying the external process to run.
+ */
+
+/**
+ * Descriptor for external engine adapter.
+ * Exported for registration with createRegistry().
+ */
+declare const descriptor: BrickDescriptor<EngineAdapter>;
+
+/**
  * Output parsers for external process stdout/stderr.
  *
  * Each factory returns a fresh OutputParser (stateful per stream() call).
@@ -130,6 +144,6 @@ declare function createLineParser(mapLine: (line: string, source: "stdout" | "st
  */
 declare function validateExternalAdapterConfig(config: unknown): Result<ExternalAdapterConfig, KoiError>;
 
-export { type EnvStrategy, type ExternalAdapterConfig, type ExternalEngineAdapter, type ExternalProcessState, type OutputParseResult, type OutputParser, type OutputParserFactory, type ShutdownConfig, createExternalAdapter, createJsonLinesParser, createLineParser, createTextDeltaParser, validateExternalAdapterConfig };
+export { type EnvStrategy, type ExternalAdapterConfig, type ExternalEngineAdapter, type ExternalProcessState, type OutputParseResult, type OutputParser, type OutputParserFactory, type ShutdownConfig, createExternalAdapter, createJsonLinesParser, createLineParser, createTextDeltaParser, descriptor, validateExternalAdapterConfig };
 "
 `;

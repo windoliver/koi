@@ -11,6 +11,7 @@ export type { SdkFunctions, SdkInputMessage, SdkQuery, SdkQueryFn } from "./adap
 export { createClaudeAdapter } from "./adapter.js";
 export type { HitlEventEmitter } from "./approval-bridge.js";
 export { createApprovalBridge } from "./approval-bridge.js";
+export { descriptor } from "./descriptor.js";
 export type {
   MapResult,
   MessageMapper,

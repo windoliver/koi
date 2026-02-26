@@ -13,6 +13,7 @@ export {
   DEFAULT_USER_MAX_TOKENS,
   validateSoulConfig,
 } from "./config.js";
+export { descriptor } from "./descriptor.js";
 export type { ResolvedContent, ResolveOptions } from "./resolve.js";
 export { resolveSoulContent, resolveUserContent } from "./resolve.js";
 export type { SoulMiddleware } from "./soul.js";

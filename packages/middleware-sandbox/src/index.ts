@@ -13,4 +13,5 @@ export {
   DEFAULT_TIMEOUT_GRACE_MS,
   validateConfig,
 } from "./config.js";
+export { descriptor } from "./descriptor.js";
 export { createSandboxMiddleware } from "./sandbox-middleware.js";

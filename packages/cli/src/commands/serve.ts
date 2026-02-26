@@ -8,14 +8,13 @@
  * - Uses exit codes from @koi/shutdown (78 for config, 1 for runtime)
  */
 
-import type { ModelHandler } from "@koi/core";
 import { createHealthServer } from "@koi/deploy";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { loadManifest } from "@koi/manifest";
 import { createShutdownHandler, EXIT_CONFIG, EXIT_ERROR } from "@koi/shutdown";
 import type { ServeFlags } from "../args.js";
-import { resolveModelCall } from "../model-resolve.js";
+import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
 
 // ---------------------------------------------------------------------------
 // Main command
@@ -43,20 +42,23 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   const deployConfig = manifest.deploy;
   const healthPort = flags.port ?? deployConfig?.port ?? 9100;
 
-  // 4. ASSEMBLE: Create engine adapter with real model provider
+  // 4. RESOLVE: Resolve manifest into runtime instances (middleware + model)
   const modelName = manifest.model.name;
-  // let: TypeScript cannot narrow through process.exit() in catch
-  let modelCall: ModelHandler;
-  try {
-    modelCall = resolveModelCall(manifest);
-  } catch (error: unknown) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  const resolved = await resolveAgent({ manifestPath, manifest });
+  if (!resolved.ok) {
+    process.stderr.write(formatResolutionError(resolved.error));
     process.exit(EXIT_CONFIG);
   }
-  const adapter = createLoopAdapter({ modelCall });
 
-  // 5. WIRE: Create the Koi runtime
-  const runtime = await createKoi({ manifest, adapter });
+  // 5. ASSEMBLE: Create engine adapter with resolved model handler
+  const adapter = createLoopAdapter({ modelCall: resolved.value.model });
+
+  // 6. WIRE: Create the Koi runtime with resolved middleware
+  const runtime = await createKoi({
+    manifest,
+    adapter,
+    middleware: resolved.value.middleware,
+  });
 
   // 6. Start health server
   const healthServer = createHealthServer({

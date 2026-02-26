@@ -39,28 +39,37 @@ mock.module("@koi/channel-cli", () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Mock model-resolve to avoid requiring real API keys in tests
+// Mock resolve-agent to avoid requiring real API keys in tests
 // ---------------------------------------------------------------------------
 
-mock.module("../model-resolve.js", () => ({
-  resolveModelCall:
-    () =>
-    async (request: {
-      readonly messages: readonly {
-        readonly content: readonly { readonly kind: string; readonly text?: string }[];
-      }[];
-    }) => {
-      const inputText = request.messages
-        .flatMap((m) => m.content)
-        .filter((b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text")
-        .map((b) => b.text)
-        .join("\n");
-      return {
-        content: `[echo] ${inputText}`,
-        model: "mock-model",
-        usage: { inputTokens: inputText.length, outputTokens: inputText.length + 7 },
-      };
-    },
+const mockModelHandler = async (request: {
+  readonly messages: readonly {
+    readonly content: readonly { readonly kind: string; readonly text?: string }[];
+  }[];
+}) => {
+  const inputText = request.messages
+    .flatMap((m) => m.content)
+    .filter((b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text")
+    .map((b) => b.text)
+    .join("\n");
+  return {
+    content: `[echo] ${inputText}`,
+    model: "mock-model",
+    usage: { inputTokens: inputText.length, outputTokens: inputText.length + 7 },
+  };
+};
+
+mock.module("../resolve-agent.js", () => ({
+  resolveAgent: () =>
+    Promise.resolve({
+      ok: true,
+      value: {
+        middleware: [],
+        model: mockModelHandler,
+      },
+    }),
+  formatResolutionError: (error: { readonly message: string }) =>
+    `Resolution error: ${error.message}\n`,
 }));
 
 const { runStart } = await import("./start.js");

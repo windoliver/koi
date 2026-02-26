@@ -3,7 +3,9 @@
 exports[`@koi/middleware-memory API surface . has stable type surface 1`] = `
 "import { Result, KoiError } from '@koi/core/errors';
 import { JsonObject } from '@koi/core/common';
-import { KoiMiddleware } from '@koi/core/middleware';
+import { KoiMiddleware } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
+import { KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
 
 /**
  * Memory store interfaces and default implementations.
@@ -39,11 +41,25 @@ interface MemoryMiddlewareConfig {
 declare function validateMemoryConfig(config: unknown): Result<MemoryMiddlewareConfig, KoiError>;
 
 /**
+ * BrickDescriptor for @koi/middleware-memory.
+ *
+ * Enables manifest auto-resolution: validates memory config,
+ * then creates the memory middleware with an in-memory store by default.
+ */
+
+/**
+ * Descriptor for memory middleware.
+ * Uses an in-memory store by default.
+ * Exported for registration with createRegistry().
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
+
+/**
  * Memory middleware factory — persistent memory injection.
  */
 
-declare function createMemoryMiddleware(config: MemoryMiddlewareConfig): KoiMiddleware;
+declare function createMemoryMiddleware(config: MemoryMiddlewareConfig): KoiMiddleware$1;
 
-export { type MemoryEntry, type MemoryMiddlewareConfig, type MemoryStore, createInMemoryStore, createMemoryMiddleware, validateMemoryConfig };
+export { type MemoryEntry, type MemoryMiddlewareConfig, type MemoryStore, createInMemoryStore, createMemoryMiddleware, descriptor, validateMemoryConfig };
 "
 `;

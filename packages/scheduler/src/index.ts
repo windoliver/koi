@@ -7,6 +7,7 @@
 
 export type { Clock, FakeClock } from "./clock.js";
 export { createFakeClock, createSystemClock } from "./clock.js";
+export { descriptor } from "./descriptor.js";
 export type { MinHeap } from "./heap.js";
 export { createMinHeap } from "./heap.js";
 export { computeRetryDelay } from "./retry.js";

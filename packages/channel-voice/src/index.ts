@@ -13,6 +13,7 @@ export {
   DEFAULT_ROOM_EMPTY_TIMEOUT_SECONDS,
   validateVoiceConfig,
 } from "./config.js";
+export { descriptor } from "./descriptor.js";
 // Pipeline interface (for testing/extension)
 export type { TranscriptEvent, VoicePipeline } from "./pipeline.js";
 export type { VoiceSession } from "./room.js";

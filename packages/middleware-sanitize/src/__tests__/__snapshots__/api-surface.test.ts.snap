@@ -2,8 +2,10 @@
 
 exports[`@koi/middleware-sanitize API surface . has stable type surface 1`] = `
 "import { Result, KoiError } from '@koi/core/errors';
+import { KoiMiddleware } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
 import { ContentBlock, InboundMessage } from '@koi/core/message';
-import { KoiMiddleware } from '@koi/core/middleware';
+import { KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
 
 /**
  * Core types for the sanitize middleware.
@@ -87,6 +89,19 @@ interface SanitizeMiddlewareConfig {
 declare function validateSanitizeConfig(config: unknown): Result<SanitizeMiddlewareConfig, KoiError>;
 
 /**
+ * BrickDescriptor for @koi/middleware-sanitize.
+ *
+ * Enables manifest auto-resolution: validates sanitize config,
+ * then creates the sanitize middleware with preset-based rules.
+ */
+
+/**
+ * Descriptor for sanitize middleware.
+ * Exported for registration with createRegistry().
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
+
+/**
  * Built-in rule presets for content sanitization.
  *
  * Patterns are sourced from @koi/skill-scanner prompt-injection rules
@@ -165,7 +180,7 @@ declare function walkJsonStrings(value: unknown, rules: readonly SanitizeRule[],
  * but before memory (400) and default (500).
  */
 
-declare function createSanitizeMiddleware(config: SanitizeMiddlewareConfig): KoiMiddleware;
+declare function createSanitizeMiddleware(config: SanitizeMiddlewareConfig): KoiMiddleware$1;
 
 /**
  * Sliding window buffer for streaming output sanitization.
@@ -201,6 +216,6 @@ declare function mapBlockToStrip(rules: readonly SanitizeRule[]): readonly Sanit
  */
 declare function createStreamBuffer(rules: readonly SanitizeRule[], bufferSize?: number): StreamBuffer;
 
-export { CONTROL_CHAR_RULES, type ContentBlockKind, DEFAULT_JSON_WALK_MAX_DEPTH, DEFAULT_RULES, DEFAULT_STREAM_BUFFER_SIZE, HTML_TAG_RULES, PROMPT_INJECTION_RULES, type RulePreset, type SanitizationEvent, type SanitizationLocation, type SanitizeAction, type SanitizeMiddlewareConfig, type SanitizeRule, type SanitizeSeverity, ZERO_WIDTH_RULES, createSanitizeMiddleware, createStreamBuffer, mapBlockToStrip, resolvePresets, sanitizeBlock, sanitizeMessage, sanitizeString, validateSanitizeConfig, walkJsonStrings };
+export { CONTROL_CHAR_RULES, type ContentBlockKind, DEFAULT_JSON_WALK_MAX_DEPTH, DEFAULT_RULES, DEFAULT_STREAM_BUFFER_SIZE, HTML_TAG_RULES, PROMPT_INJECTION_RULES, type RulePreset, type SanitizationEvent, type SanitizationLocation, type SanitizeAction, type SanitizeMiddlewareConfig, type SanitizeRule, type SanitizeSeverity, ZERO_WIDTH_RULES, createSanitizeMiddleware, createStreamBuffer, descriptor, mapBlockToStrip, resolvePresets, sanitizeBlock, sanitizeMessage, sanitizeString, validateSanitizeConfig, walkJsonStrings };
 "
 `;

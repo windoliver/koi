@@ -116,6 +116,7 @@
       "dependencies": {
         "@koi/channel-base": "workspace:*",
         "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -127,6 +128,7 @@
       "dependencies": {
         "@koi/channel-base": "workspace:*",
         "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
         "grammy": "1.40.0",
       },
       "devDependencies": {
@@ -141,6 +143,7 @@
         "@koi/channel-base": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
         "@livekit/agents": "1.0.47",
         "@livekit/agents-plugin-deepgram": "1.0.47",
         "@livekit/agents-plugin-openai": "1.0.47",
@@ -166,7 +169,25 @@
         "@koi/engine": "workspace:*",
         "@koi/engine-loop": "workspace:*",
         "@koi/manifest": "workspace:*",
+        "@koi/middleware-ace": "workspace:*",
+        "@koi/middleware-audit": "workspace:*",
+        "@koi/middleware-call-limits": "workspace:*",
+        "@koi/middleware-compactor": "workspace:*",
+        "@koi/middleware-context-editing": "workspace:*",
+        "@koi/middleware-guided-retry": "workspace:*",
+        "@koi/middleware-memory": "workspace:*",
+        "@koi/middleware-pay": "workspace:*",
+        "@koi/middleware-permissions": "workspace:*",
+        "@koi/middleware-pii": "workspace:*",
+        "@koi/middleware-planning": "workspace:*",
+        "@koi/middleware-sandbox": "workspace:*",
+        "@koi/middleware-sanitize": "workspace:*",
+        "@koi/middleware-semantic-retry": "workspace:*",
+        "@koi/middleware-soul": "workspace:*",
+        "@koi/middleware-tool-selector": "workspace:*",
+        "@koi/middleware-turn-ack": "workspace:*",
         "@koi/model-router": "workspace:*",
+        "@koi/resolve": "workspace:*",
         "@koi/shutdown": "workspace:*",
       },
     },
@@ -199,6 +220,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
       },
@@ -299,6 +321,7 @@
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.2.37",
         "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -309,6 +332,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -319,6 +343,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/model-router": "workspace:*",
@@ -330,6 +355,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
         "@mariozechner/pi-agent-core": "0.54.0",
         "@mariozechner/pi-ai": "0.54.0",
       },
@@ -426,6 +452,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/hash": "workspace:*",
+        "@koi/resolve": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
       },
@@ -515,6 +542,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
@@ -529,6 +557,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -540,6 +569,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -551,6 +581,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -561,6 +592,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -620,6 +652,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -653,6 +686,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -664,6 +698,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -676,6 +711,7 @@
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
         "@koi/hash": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -687,6 +723,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -698,6 +735,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -709,6 +747,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -720,6 +759,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -730,6 +770,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -740,6 +781,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -751,6 +793,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -761,6 +804,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -851,6 +895,13 @@
         "@koi/engine-pi": "workspace:*",
         "@koi/events-memory": "workspace:*",
         "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/resolve": {
+      "name": "@koi/resolve",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
     },
     "packages/sandbox": {
@@ -962,6 +1013,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
         "croner": "9.0.0",
       },
     },
@@ -1126,6 +1178,7 @@
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
         "@koi/hash": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
     },
     "packages/workspace": {
@@ -1165,13 +1218,28 @@
         "@koi/gateway": "workspace:*",
         "@koi/git-utils": "workspace:*",
         "@koi/hash": "workspace:*",
+        "@koi/manifest": "workspace:*",
+        "@koi/middleware-ace": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
         "@koi/middleware-call-limits": "workspace:*",
+        "@koi/middleware-compactor": "workspace:*",
+        "@koi/middleware-context-editing": "workspace:*",
+        "@koi/middleware-guided-retry": "workspace:*",
         "@koi/middleware-memory": "workspace:*",
+        "@koi/middleware-pay": "workspace:*",
+        "@koi/middleware-permissions": "workspace:*",
+        "@koi/middleware-pii": "workspace:*",
+        "@koi/middleware-planning": "workspace:*",
+        "@koi/middleware-sandbox": "workspace:*",
+        "@koi/middleware-sanitize": "workspace:*",
+        "@koi/middleware-semantic-retry": "workspace:*",
+        "@koi/middleware-soul": "workspace:*",
+        "@koi/middleware-tool-selector": "workspace:*",
         "@koi/middleware-turn-ack": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/node": "workspace:*",
         "@koi/orchestrator": "workspace:*",
+        "@koi/resolve": "workspace:*",
         "@koi/test-utils": "workspace:*",
         "@koi/worktree-merge": "workspace:*",
       },
@@ -1626,6 +1694,8 @@
     "@koi/redaction": ["@koi/redaction@workspace:packages/redaction"],
 
     "@koi/registry-event-sourced": ["@koi/registry-event-sourced@workspace:packages/registry-event-sourced"],
+
+    "@koi/resolve": ["@koi/resolve@workspace:packages/resolve"],
 
     "@koi/sandbox": ["@koi/sandbox@workspace:packages/sandbox"],
 

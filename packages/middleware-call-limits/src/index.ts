@@ -8,6 +8,7 @@
 
 export type { ModelCallLimitConfig, ToolCallLimitConfig } from "./config.js";
 export { validateModelCallLimitConfig, validateToolCallLimitConfig } from "./config.js";
+export { descriptor } from "./descriptor.js";
 export { createModelCallLimitMiddleware } from "./model-call-limit.js";
 export { createInMemoryCallLimitStore } from "./store.js";
 export { createToolCallLimitMiddleware } from "./tool-call-limit.js";

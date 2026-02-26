@@ -10,7 +10,8 @@
     }
   },
   "dependencies": {
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "@koi/resolve": "workspace:*"
   },
   "devDependencies": {
     "@koi/test-utils": "workspace:*"

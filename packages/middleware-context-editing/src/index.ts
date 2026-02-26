@@ -8,6 +8,7 @@
  */
 
 export { createContextEditingMiddleware } from "./context-editing.js";
+export { descriptor } from "./descriptor.js";
 export { editMessages } from "./edit-messages.js";
 export type { ContextEditingConfig, ResolvedContextEditingConfig } from "./types.js";
 export { CONTEXT_EDITING_DEFAULTS } from "./types.js";

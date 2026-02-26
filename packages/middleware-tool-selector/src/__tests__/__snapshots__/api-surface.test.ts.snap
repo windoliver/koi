@@ -2,6 +2,7 @@
 
 exports[`@koi/middleware-tool-selector API surface . has stable type surface 1`] = `
 "import { ToolDescriptor, InboundMessage, Result, KoiError, KoiMiddleware } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
 
 /**
  * Configuration for the tool-selector middleware.
@@ -20,6 +21,20 @@ interface ToolSelectorConfig {
     readonly extractQuery?: (messages: readonly InboundMessage[]) => string;
 }
 declare function validateToolSelectorConfig(config: unknown): Result<ToolSelectorConfig, KoiError>;
+
+/**
+ * BrickDescriptor for @koi/middleware-tool-selector.
+ *
+ * Enables manifest auto-resolution: validates tool selector config,
+ * then creates the tool selector middleware with a basic keyword-matching
+ * selectTools implementation for YAML-driven use.
+ */
+
+/**
+ * Descriptor for tool-selector middleware.
+ * Exported for registration with createRegistry().
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
 
 /**
  * Default query extraction — extracts text from the last inbound message.
@@ -42,6 +57,6 @@ declare function extractLastUserText(messages: readonly InboundMessage[]): strin
  */
 declare function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMiddleware;
 
-export { type ToolSelectorConfig, createToolSelectorMiddleware, extractLastUserText, validateToolSelectorConfig };
+export { type ToolSelectorConfig, createToolSelectorMiddleware, descriptor, extractLastUserText, validateToolSelectorConfig };
 "
 `;

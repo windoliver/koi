@@ -8,4 +8,5 @@
 
 export type { TurnAckConfig } from "./config.js";
 export { validateTurnAckConfig } from "./config.js";
+export { descriptor } from "./descriptor.js";
 export { createTurnAckMiddleware } from "./turn-ack.js";

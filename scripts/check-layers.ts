@@ -30,6 +30,7 @@ const L0U_PACKAGES = new Set([
   "@koi/git-utils",
   "@koi/hash",
   "@koi/manifest",
+  "@koi/resolve",
   "@koi/sandbox-cloud-base",
   "@koi/shutdown",
   "@koi/skill-scanner",

@@ -9,6 +9,7 @@
 
 export { createDefaultFailureAnalyzer } from "./default-analyzer.js";
 export { createDefaultPromptRewriter } from "./default-rewriter.js";
+export { descriptor } from "./descriptor.js";
 export { createSemanticRetryMiddleware } from "./semantic-retry.js";
 export type {
   FailureAnalyzer,

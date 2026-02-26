@@ -8,5 +8,6 @@
 
 export type { ToolSelectorConfig } from "./config.js";
 export { validateToolSelectorConfig } from "./config.js";
+export { descriptor } from "./descriptor.js";
 export { extractLastUserText } from "./extract-query.js";
 export { createToolSelectorMiddleware } from "./tool-selector.js";
