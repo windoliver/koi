@@ -123,6 +123,7 @@ export type RegistryEvent =
       readonly from: ProcessState;
       readonly to: ProcessState;
       readonly generation: number;
+      readonly reason: TransitionReason;
     };
 
 // ---------------------------------------------------------------------------

@@ -7,6 +7,19 @@
 
 // agent snapshot — per-agent state capture
 export type { AgentSnapshot, AgentSnapshotStore } from "./agent-snapshot.js";
+// agent state events — event-sourced registry domain events + fold function
+export type {
+  AgentDeregisteredEvent,
+  AgentRegisteredEvent,
+  AgentStateEvent,
+  AgentStateEventKind,
+  AgentTransitionedEvent,
+} from "./agent-state-event.js";
+export {
+  evolveRegistryEntry,
+  INITIAL_AGENT_STATUS,
+  isAgentStateEvent,
+} from "./agent-state-event.js";
 // assembly
 export type {
   AgentManifest,

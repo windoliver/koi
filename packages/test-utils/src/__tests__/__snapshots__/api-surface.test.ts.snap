@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/test-utils API surface . has stable type surface 1`] = `
-"import { ProcessId, AgentManifest, ProcessState, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, ForgeProvenance, AgentArtifact, ImplementationArtifact, SkillArtifact, ToolArtifact, BrickRegistryBackend, ChannelAdapter, MemoryResult, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, SessionPersistence, SkillRegistryBackend, SnapshotChainStore, ForgeStore } from '@koi/core';
+"import { ProcessId, AgentManifest, ProcessState, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, ForgeProvenance, AgentArtifact, ImplementationArtifact, SkillArtifact, ToolArtifact, BrickRegistryBackend, ChannelAdapter, MemoryResult, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, RegistryEntry, AgentId, TransitionReason, Result as Result$1, KoiError as KoiError$1, RegistryEvent, SessionPersistence, SkillRegistryBackend, SnapshotChainStore, ForgeStore } from '@koi/core';
 import { Result, KoiError } from '@koi/core/errors';
 import { InboundMessage } from '@koi/core/message';
 import { SessionContext, TurnContext, ModelHandler, ModelRequest, ModelStreamHandler, ToolHandler, ToolRequest, ModelResponse, ModelChunk, ToolResponse, KoiMiddleware } from '@koi/core/middleware';
@@ -320,6 +320,41 @@ interface MockEventBackend extends EventBackend {
 declare function createMockEventBackend(): MockEventBackend;
 
 /**
+ * Reusable contract test suite for event-sourced AgentRegistry implementations.
+ *
+ * Validates both standard AgentRegistry behavior and event-sourcing invariants:
+ * - Events are persisted and readable from the backend
+ * - rebuild() produces identical state to the original
+ * - Concurrent transitions respect optimistic concurrency
+ *
+ * Accepts a factory that returns a registry + its underlying EventBackend.
+ */
+
+/** Registry with a rebuild method for event-sourcing tests. */
+interface EventSourcedRegistryForTest {
+    readonly register: (entry: RegistryEntry) => RegistryEntry | Promise<RegistryEntry>;
+    readonly deregister: (agentId: AgentId) => boolean | Promise<boolean>;
+    readonly lookup: (agentId: AgentId) => RegistryEntry | undefined | Promise<RegistryEntry | undefined>;
+    readonly list: (filter?: {
+        readonly phase?: ProcessState;
+    }) => readonly RegistryEntry[] | Promise<readonly RegistryEntry[]>;
+    readonly transition: (agentId: AgentId, targetPhase: ProcessState, expectedGeneration: number, reason: TransitionReason) => Result$1<RegistryEntry, KoiError$1> | Promise<Result$1<RegistryEntry, KoiError$1>>;
+    readonly watch: (listener: (event: RegistryEvent) => void) => () => void;
+    readonly rebuild: () => Promise<void>;
+    readonly [Symbol.asyncDispose]: () => PromiseLike<void>;
+}
+interface EventSourcedRegistryTestContext {
+    readonly registry: EventSourcedRegistryForTest;
+    readonly backend: EventBackend;
+}
+/**
+ * Run the event-sourced AgentRegistry contract test suite.
+ *
+ * The factory should return a fresh registry + backend pair for each test.
+ */
+declare function runEventSourcedRegistryContractTests(createContext: () => EventSourcedRegistryTestContext | Promise<EventSourcedRegistryTestContext>): void;
+
+/**
  * Generic factory helper for test fixtures.
  *
  * Creates a factory function that returns a new object from defaults,
@@ -567,6 +602,6 @@ declare function createThrowingValidator(error: Error, name?: string): MockValid
 /** Creates a validator that passes or fails based on a predicate. */
 declare function createConditionalValidator(fn: (output: unknown) => boolean, name?: string): MockValidator;
 
-export { type BrickRegistryContractOptions, type CapturedOutput, type ChannelContractOptions, DEFAULT_PROVENANCE, type EngineContractOptions, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type ResolverContractOptions, type SkillRegistryContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, type TempGitRepo, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createInMemoryBrickRegistry, createInMemorySkillRegistry, createManifestFile, createMockAgent, createMockEngineAdapter, createMockEventBackend, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTempGitRepo, createTestAgentArtifact, createTestConfig, createTestConfigStore, createTestImplementationArtifact, createTestSkillArtifact, createTestToolArtifact, createThrowingValidator, makeTempDir, runEventBackendContractTests, runForgeStoreContractTests, runSessionPersistenceContractTests, runSnapshotChainStoreContractTests, testBrickRegistryContract, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, testSkillRegistryContract, withTempDir };
+export { type BrickRegistryContractOptions, type CapturedOutput, type ChannelContractOptions, DEFAULT_PROVENANCE, type EngineContractOptions, type EventSourcedRegistryForTest, type EventSourcedRegistryTestContext, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type ResolverContractOptions, type SkillRegistryContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, type TempGitRepo, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createInMemoryBrickRegistry, createInMemorySkillRegistry, createManifestFile, createMockAgent, createMockEngineAdapter, createMockEventBackend, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTempGitRepo, createTestAgentArtifact, createTestConfig, createTestConfigStore, createTestImplementationArtifact, createTestSkillArtifact, createTestToolArtifact, createThrowingValidator, makeTempDir, runEventBackendContractTests, runEventSourcedRegistryContractTests, runForgeStoreContractTests, runSessionPersistenceContractTests, runSnapshotChainStoreContractTests, testBrickRegistryContract, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, testSkillRegistryContract, withTempDir };
 "
 `;

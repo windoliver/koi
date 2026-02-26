@@ -256,6 +256,7 @@ describe("InMemoryRegistry", () => {
       expect(events[0].from).toBe("created");
       expect(events[0].to).toBe("running");
       expect(events[0].generation).toBe(1);
+      expect(events[0].reason).toEqual({ kind: "assembly_complete" });
     }
   });
 
