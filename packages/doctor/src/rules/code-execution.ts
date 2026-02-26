@@ -1,10 +1,11 @@
 /**
  * ASI05 — Insecure Code Execution rules.
  *
- * Checks for missing sandboxing and permission controls
+ * Checks for missing sandboxing, permission controls, and redaction
  * when tools are configured.
  */
 
+import { getMetadataKey } from "../metadata.js";
 import type { DoctorContext, DoctorFinding, DoctorRule } from "../types.js";
 
 function isObjectWithPreset(value: unknown): value is { readonly preset: unknown } {
@@ -30,10 +31,7 @@ function checkMissingSandboxMiddleware(ctx: DoctorContext): readonly DoctorFindi
 }
 
 function checkPermissiveForge(ctx: DoctorContext): readonly DoctorFinding[] {
-  const metadata = ctx.manifest.metadata;
-  if (metadata === undefined) return [];
-
-  const forgeRaw: unknown = metadata.forge;
+  const forgeRaw = getMetadataKey(ctx.manifest.metadata, "forge");
   if (!isObjectWithPreset(forgeRaw)) return [];
   if (forgeRaw.preset !== "permissive") return [];
   return [
@@ -67,6 +65,24 @@ function checkNoPermissionsMiddleware(ctx: DoctorContext): readonly DoctorFindin
   ];
 }
 
+function checkNoRedactionMiddleware(ctx: DoctorContext): readonly DoctorFinding[] {
+  const tools = ctx.toolNames();
+  if (tools.size === 0) return [];
+  if (ctx.middlewareNames().has("redaction")) return [];
+  return [
+    {
+      rule: "code-execution:no-redaction-middleware",
+      severity: "MEDIUM",
+      category: "TOOL_SAFETY",
+      message:
+        "Tools are configured but no 'redaction' middleware is present — tool outputs may leak sensitive data",
+      fix: "Add { name: 'redaction' } to manifest.middleware to scrub PII and secrets from tool outputs",
+      owasp: ["ASI05"],
+      path: "middleware",
+    },
+  ];
+}
+
 export const codeExecutionRules: readonly DoctorRule[] = [
   {
     name: "code-execution:missing-sandbox-middleware",
@@ -88,5 +104,12 @@ export const codeExecutionRules: readonly DoctorRule[] = [
     defaultSeverity: "HIGH",
     owasp: ["ASI05"],
     check: checkNoPermissionsMiddleware,
+  },
+  {
+    name: "code-execution:no-redaction-middleware",
+    category: "TOOL_SAFETY",
+    defaultSeverity: "MEDIUM",
+    owasp: ["ASI05"],
+    check: checkNoRedactionMiddleware,
   },
 ];

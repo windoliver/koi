@@ -55,11 +55,11 @@ describe("e2e: OWASP coverage", () => {
     }
   });
 
-  test("all 25 built-in rules are applied against full manifest", async () => {
+  test("all 30 built-in rules are applied against full manifest", async () => {
     const doctor = createDoctor({
       manifest: createInsecureManifest(),
     });
     const report = await doctor.run();
-    expect(report.rulesApplied).toBe(25);
+    expect(report.rulesApplied).toBe(30);
   });
 });

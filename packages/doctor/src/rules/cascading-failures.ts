@@ -1,10 +1,11 @@
 /**
  * ASI08 — Cascading Failures & Denial of Service rules.
  *
- * Checks for missing call limits and circuit breaker configuration
- * to prevent runaway agent loops and cascading failures.
+ * Checks for missing call limits, circuit breaker configuration, and budget
+ * controls to prevent runaway agent loops and unbounded cost accumulation.
  */
 
+import { getMetadataKey } from "../metadata.js";
 import type { DoctorContext, DoctorFinding, DoctorRule } from "../types.js";
 
 function checkNoCallLimits(ctx: DoctorContext): readonly DoctorFinding[] {
@@ -29,11 +30,8 @@ function checkNoCircuitBreaker(ctx: DoctorContext): readonly DoctorFinding[] {
   if (middleware.has("circuit-breaker")) return [];
 
   // Also check metadata for circuit breaker config
-  const metadata = ctx.manifest.metadata;
-  if (metadata !== undefined) {
-    const cb = metadata.circuitBreaker;
-    if (cb !== undefined && cb !== null) return [];
-  }
+  const cb = getMetadataKey(ctx.manifest.metadata, "circuitBreaker");
+  if (cb !== undefined && cb !== null) return [];
 
   return [
     {
@@ -45,6 +43,25 @@ function checkNoCircuitBreaker(ctx: DoctorContext): readonly DoctorFinding[] {
       fix: "Add circuit breaker config to delegation or add 'circuit-breaker' middleware",
       owasp: ["ASI08"],
       path: "delegation",
+    },
+  ];
+}
+
+function checkNoBudgetLimits(ctx: DoctorContext): readonly DoctorFinding[] {
+  const middleware = ctx.middlewareNames();
+  if (middleware.has("budget") || middleware.has("pay")) return [];
+  const maxCost = getMetadataKey(ctx.manifest.metadata, "maxCostUsd");
+  if (maxCost !== undefined && maxCost !== null) return [];
+  return [
+    {
+      rule: "cascading-failures:no-budget-limits",
+      severity: "MEDIUM",
+      category: "RESILIENCE",
+      message:
+        "No budget middleware or maxCostUsd configured — agent may incur unbounded model costs",
+      fix: "Add { name: 'budget' } to manifest.middleware or set metadata.maxCostUsd",
+      owasp: ["ASI08"],
+      path: "middleware",
     },
   ];
 }
@@ -63,5 +80,12 @@ export const cascadingFailuresRules: readonly DoctorRule[] = [
     defaultSeverity: "MEDIUM",
     owasp: ["ASI08"],
     check: checkNoCircuitBreaker,
+  },
+  {
+    name: "cascading-failures:no-budget-limits",
+    category: "RESILIENCE",
+    defaultSeverity: "MEDIUM",
+    owasp: ["ASI08"],
+    check: checkNoBudgetLimits,
   },
 ];

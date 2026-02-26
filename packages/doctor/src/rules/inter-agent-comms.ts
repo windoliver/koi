@@ -1,8 +1,11 @@
 /**
- * ASI07 — Insecure Agent Delegation rules.
+ * ASI07 — Insecure Inter-Agent Communication rules.
  *
- * Checks for missing signature secrets, excessive chain depth,
- * and overly long TTL in delegation config.
+ * Checks for missing signature secrets, excessive chain depth, overly long
+ * TTL in delegation config, and unauthenticated agent-to-agent messaging.
+ *
+ * Rule IDs retain the `insecure-delegation:` prefix for backward compatibility
+ * with existing severity overrides in consumer configs.
  */
 
 import type { DoctorContext, DoctorFinding, DoctorRule } from "../types.js";
@@ -59,6 +62,23 @@ function checkLongTtl(ctx: DoctorContext): readonly DoctorFinding[] {
   ];
 }
 
+function checkNoA2aAuth(ctx: DoctorContext): readonly DoctorFinding[] {
+  if (ctx.delegation === undefined || !ctx.delegation.enabled) return [];
+  if (ctx.middlewareNames().has("a2a-auth")) return [];
+  return [
+    {
+      rule: "insecure-delegation:no-a2a-auth",
+      severity: "HIGH",
+      category: "ACCESS_CONTROL",
+      message:
+        "Delegation is enabled but no 'a2a-auth' middleware is configured — agent-to-agent messages are not authenticated",
+      fix: "Add { name: 'a2a-auth' } to manifest.middleware to authenticate inter-agent communication",
+      owasp: ["ASI07"],
+      path: "middleware",
+    },
+  ];
+}
+
 export const insecureDelegationRules: readonly DoctorRule[] = [
   {
     name: "insecure-delegation:unsigned-grants",
@@ -80,5 +100,12 @@ export const insecureDelegationRules: readonly DoctorRule[] = [
     defaultSeverity: "MEDIUM",
     owasp: ["ASI07"],
     check: checkLongTtl,
+  },
+  {
+    name: "insecure-delegation:no-a2a-auth",
+    category: "ACCESS_CONTROL",
+    defaultSeverity: "HIGH",
+    owasp: ["ASI07"],
+    check: checkNoA2aAuth,
   },
 ];

@@ -120,11 +120,15 @@ describe("all categories pass", () => {
         { name: "guardrails" },
         { name: "sandbox" },
         { name: "permissions" },
+        { name: "redaction" },
         { name: "call-limits" },
+        { name: "budget" },
         { name: "compactor" },
         { name: "turn-ack" },
         { name: "audit" },
         { name: "governance" },
+        { name: "agent-monitor" },
+        { name: "a2a-auth" },
         { name: "memory" },
       ],
       permissions: {
@@ -133,6 +137,7 @@ describe("all categories pass", () => {
         ask: ["read_file"],
       },
       delegation: { enabled: true, maxChainDepth: 3, defaultTtlMs: 3_600_000 },
+      metadata: { forge: { verification: true } },
     };
     const doctor = createDoctor({
       manifest: secureManifest,
@@ -361,7 +366,7 @@ describe("severity overrides", () => {
 // 13. advisoryCallback → supply chain vulnerability feed integration
 // ---------------------------------------------------------------------------
 describe("advisory callback", () => {
-  test("advisory findings are merged into report", async () => {
+  test("advisory findings are merged into report and advisoryError is absent", async () => {
     const advisoryFinding: DoctorFinding = {
       rule: "advisory:CVE-2024-1234",
       severity: "CRITICAL",
@@ -377,6 +382,7 @@ describe("advisory callback", () => {
     const report = await doctor.run();
     expect(report.findings).toContainEqual(advisoryFinding);
     expect(report.healthy).toBe(false);
+    expect(report.advisoryError).toBeUndefined();
   });
 
   test("async advisory callback works", async () => {
@@ -396,7 +402,7 @@ describe("advisory callback", () => {
     expect(report.findings.some((f) => f.rule === "advisory:async-vuln")).toBe(true);
   });
 
-  test("advisory callback failure is non-fatal", async () => {
+  test("advisory callback failure is non-fatal but surfaces advisoryError", async () => {
     const doctor = createDoctor({
       manifest: createMinimalManifest(),
       enabledCategories: [],
@@ -407,5 +413,6 @@ describe("advisory callback", () => {
     const report = await doctor.run();
     expect(report.findings).toHaveLength(0);
     expect(report.healthy).toBe(true);
+    expect(report.advisoryError).toBe("Advisory service unavailable");
   });
 });

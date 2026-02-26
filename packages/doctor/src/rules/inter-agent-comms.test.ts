@@ -1,17 +1,18 @@
 /**
- * Unit tests for ASI07 — Insecure Agent Delegation rules.
+ * Unit tests for ASI07 — Insecure Inter-Agent Communication rules.
  */
 
 import { describe, expect, test } from "bun:test";
 import type { AgentManifest } from "@koi/core";
 import { createDoctorContext } from "../context.js";
 import type { DoctorContext, DoctorFinding, DoctorRule } from "../types.js";
-import { insecureDelegationRules } from "./insecure-delegation.js";
+import { insecureDelegationRules } from "./inter-agent-comms.js";
 
-const [unsignedGrants, excessiveChainDepth, longTtl] = insecureDelegationRules;
+const [unsignedGrants, excessiveChainDepth, longTtl, noA2aAuth] = insecureDelegationRules;
 if (unsignedGrants === undefined) throw new Error("missing rule: unsignedGrants");
 if (excessiveChainDepth === undefined) throw new Error("missing rule: excessiveChainDepth");
 if (longTtl === undefined) throw new Error("missing rule: longTtl");
+if (noA2aAuth === undefined) throw new Error("missing rule: noA2aAuth");
 
 async function check(rule: DoctorRule, ctx: DoctorContext): Promise<readonly DoctorFinding[]> {
   return Promise.resolve(rule.check(ctx));
@@ -268,5 +269,77 @@ describe("insecure-delegation:long-ttl", () => {
     expect(longTtl?.category).toBe("ACCESS_CONTROL");
     expect(longTtl?.defaultSeverity).toBe("MEDIUM");
     expect(longTtl?.owasp).toEqual(["ASI07"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// insecure-delegation:no-a2a-auth
+// ---------------------------------------------------------------------------
+
+describe("insecure-delegation:no-a2a-auth", () => {
+  test("returns finding when delegation enabled but no a2a-auth middleware", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+      delegation: { enabled: true, maxChainDepth: 3, defaultTtlMs: 3_600_000 },
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(noA2aAuth, ctx);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      rule: "insecure-delegation:no-a2a-auth",
+      severity: "HIGH",
+      category: "ACCESS_CONTROL",
+      owasp: ["ASI07"],
+      path: "middleware",
+    });
+  });
+
+  test("returns empty when a2a-auth middleware is present", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+      delegation: { enabled: true, maxChainDepth: 3, defaultTtlMs: 3_600_000 },
+      middleware: [{ name: "a2a-auth" }],
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(noA2aAuth, ctx);
+
+    expect(findings).toHaveLength(0);
+  });
+
+  test("returns empty when delegation is disabled", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+      delegation: { enabled: false, maxChainDepth: 3, defaultTtlMs: 3_600_000 },
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(noA2aAuth, ctx);
+
+    expect(findings).toHaveLength(0);
+  });
+
+  test("returns empty when delegation is undefined", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(noA2aAuth, ctx);
+
+    expect(findings).toHaveLength(0);
+  });
+
+  test("rule metadata is correct", () => {
+    expect(noA2aAuth?.name).toBe("insecure-delegation:no-a2a-auth");
+    expect(noA2aAuth?.category).toBe("ACCESS_CONTROL");
+    expect(noA2aAuth?.defaultSeverity).toBe("HIGH");
+    expect(noA2aAuth?.owasp).toEqual(["ASI07"]);
   });
 });
