@@ -42,6 +42,7 @@ import {
   composeModelStreamChain,
   composeToolChain,
   createTerminalHandlers,
+  injectCapabilities,
   runSessionHooks,
   runTurnHooks,
 } from "./compose.js";
@@ -397,13 +398,30 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                     // Build callHandlers with dynamic tools getter and chain refs
                     // Capture stream chain presence — the mutable ref is read inside the closure
                     const hasStreamChain = activeStreamChain !== undefined;
+
+                    // Pre-compute capability injection flag at composition time (fast-path)
+                    const hasCapabilities = allMiddleware.some(
+                      (mw) => mw.describeCapabilities !== undefined,
+                    );
+
+                    // Inject tool descriptors + capability descriptions into ModelRequest
+                    const prepareRequest = (request: ModelRequest): ModelRequest => {
+                      // Inject tool descriptors if not already present
+                      const withTools: ModelRequest =
+                        request.tools !== undefined
+                          ? request
+                          : { ...request, tools: callHandlers.tools };
+                      if (!hasCapabilities) return withTools;
+                      return injectCapabilities(allMiddleware, getTurnContext(), withTools);
+                    };
+
                     const streamChainProxy = (request: ModelRequest) =>
-                      activeStreamChain?.(getTurnContext(), request);
+                      activeStreamChain?.(getTurnContext(), prepareRequest(request));
 
                     const callHandlers: ComposedCallHandlers = Object.defineProperties(
                       {
                         modelCall: (request: ModelRequest) =>
-                          activeModelChain(getTurnContext(), request),
+                          activeModelChain(getTurnContext(), prepareRequest(request)),
                         toolCall: (request: ToolRequest) =>
                           activeToolChain(getTurnContext(), request),
                         tools: entityDescriptors, // placeholder, overridden by getter below

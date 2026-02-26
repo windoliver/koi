@@ -18,14 +18,17 @@ export { createCascadingTermination } from "./cascading-termination.js";
 export { createChildHandle } from "./child-handle.js";
 export type { Clock, FakeClock, TimerHandle } from "./clock.js";
 export { createFakeClock, createRealClock } from "./clock.js";
-export type { TerminalHandlers } from "./compose.js";
+export type { CapabilityInjectionConfig, TerminalHandlers } from "./compose.js";
 // composition
 export {
+  collectCapabilities,
   composeModelChain,
   composeModelStreamChain,
   composeToolChain,
   createComposedCallHandlers,
   createTerminalHandlers,
+  formatCapabilityMessage,
+  injectCapabilities,
   runSessionHooks,
   runTurnHooks,
 } from "./compose.js";
