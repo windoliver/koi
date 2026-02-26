@@ -483,6 +483,21 @@ export type {
   SupervisionStrategy,
 } from "./supervision.js";
 export { DEFAULT_SUPERVISION_CONFIG } from "./supervision.js";
+// task-board — types
+export type {
+  TaskBoard,
+  TaskBoardConfig,
+  TaskBoardEvent,
+  TaskBoardSnapshot,
+  TaskItem,
+  TaskItemId,
+  TaskItemInput,
+  TaskItemPatch,
+  TaskItemStatus,
+  TaskResult,
+} from "./task-board.js";
+// task-board — runtime values (branded constructor + defaults)
+export { DEFAULT_TASK_BOARD_CONFIG, taskItemId } from "./task-board.js";
 // validation utilities — runtime type guards and validators
 export { isProcessState, validateNonEmpty } from "./validation-utils.js";
 // webhook — outbound webhook delivery contract
