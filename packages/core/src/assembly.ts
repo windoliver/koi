@@ -4,6 +4,7 @@
 
 import type { JsonObject } from "./common.js";
 import type { DelegationConfig } from "./delegation.js";
+import type { SupervisionConfig } from "./supervision.js";
 import type { OutboundWebhookConfig } from "./webhook.js";
 
 export interface ModelConfig {
@@ -54,6 +55,7 @@ export interface AgentManifest {
   readonly middleware?: readonly MiddlewareConfig[];
   readonly permissions?: PermissionConfig;
   readonly delegation?: DelegationConfig;
+  readonly supervision?: SupervisionConfig;
   readonly outboundWebhooks?: readonly OutboundWebhookConfig[] | undefined;
   readonly metadata?: JsonObject;
 }

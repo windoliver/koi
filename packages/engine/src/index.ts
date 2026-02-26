@@ -77,6 +77,9 @@ export { createReconcileRunner } from "./reconcile-runner.js";
 // registry
 export type { InMemoryRegistry } from "./registry.js";
 export { createInMemoryRegistry } from "./registry.js";
+// restart intensity
+export type { RestartIntensityTracker } from "./restart-intensity.js";
+export { createRestartIntensityTracker } from "./restart-intensity.js";
 // result pruner
 export type { ResultPrunerConfig } from "./result-pruner.js";
 export { createResultPruner } from "./result-pruner.js";
@@ -84,6 +87,9 @@ export { createResultPruner } from "./result-pruner.js";
 export { spawnChildAgent } from "./spawn-child.js";
 // spawn ledger
 export { createInMemorySpawnLedger } from "./spawn-ledger.js";
+// supervision
+export type { SpawnChildFn, SupervisionReconciler } from "./supervision-reconciler.js";
+export { createSupervisionReconciler } from "./supervision-reconciler.js";
 export { createTimeoutReconciler } from "./timeout-reconciler.js";
 export { createToolReconciler } from "./tool-reconciler.js";
 // transitions
