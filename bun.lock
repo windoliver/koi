@@ -632,6 +632,20 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-goal-anchor": {
+      "name": "@koi/middleware-goal-anchor",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/agent-monitor": "workspace:*",
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-guardrails": {
       "name": "@koi/middleware-guardrails",
       "version": "0.0.0",
@@ -1087,6 +1101,7 @@
         "@koi/core": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/middleware-goal-anchor": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-soul": "workspace:*",
       },
@@ -1652,6 +1667,8 @@
     "@koi/middleware-feedback-loop": ["@koi/middleware-feedback-loop@workspace:packages/middleware-feedback-loop"],
 
     "@koi/middleware-fs-rollback": ["@koi/middleware-fs-rollback@workspace:packages/middleware-fs-rollback"],
+
+    "@koi/middleware-goal-anchor": ["@koi/middleware-goal-anchor@workspace:packages/middleware-goal-anchor"],
 
     "@koi/middleware-guardrails": ["@koi/middleware-guardrails@workspace:packages/middleware-guardrails"],
 

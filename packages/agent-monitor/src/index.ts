@@ -13,5 +13,6 @@
 
 export type { AgentMonitorConfig } from "./config.js";
 export { DEFAULT_THRESHOLDS, validateAgentMonitorConfig } from "./config.js";
+export { buildKeywordPatterns, checkGoalDrift, matchesAnyObjective } from "./detector.js";
 export { createAgentMonitorMiddleware } from "./monitor.js";
-export type { AnomalySignal, LatencyStats, SessionMetricsSummary } from "./types.js";
+export type { AnomalyDetail, AnomalySignal, LatencyStats, SessionMetricsSummary } from "./types.js";

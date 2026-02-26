@@ -18,7 +18,7 @@ type AnomalyBase = {
   readonly turnIndex: number;
 };
 
-type AnomalyDetail =
+export type AnomalyDetail =
   | {
       readonly kind: "tool_rate_exceeded";
       readonly callsPerTurn: number;
@@ -91,6 +91,17 @@ type AnomalyDetail =
       readonly currentDepth: number;
       readonly maxDepth: number;
       readonly spawnToolId: string;
+    }
+  | {
+      /**
+       * Issue 160: none of the agent's tool calls this turn matched any
+       * declared manifest objective keyword (goal drift detected).
+       * driftScore: 0.0 (aligned) – 1.0 (fully drifted).
+       */
+      readonly kind: "goal_drift";
+      readonly driftScore: number;
+      readonly threshold: number;
+      readonly objectives: readonly string[];
     };
 
 export type AnomalySignal = AnomalyBase & AnomalyDetail;

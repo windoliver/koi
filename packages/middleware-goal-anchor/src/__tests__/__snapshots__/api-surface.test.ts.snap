@@ -1,0 +1,58 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-goal-anchor API surface . has stable type surface 1`] = `
+"import { Result, KoiError } from '@koi/core/errors';
+import { KoiMiddleware } from '@koi/core/middleware';
+
+/**
+ * Types for @koi/middleware-goal-anchor todo state.
+ */
+type TodoItemStatus = "pending" | "completed";
+interface TodoItem {
+    readonly id: string;
+    readonly text: string;
+    readonly status: TodoItemStatus;
+}
+interface TodoState {
+    readonly items: readonly TodoItem[];
+}
+
+/**
+ * GoalAnchorConfig and validation for @koi/middleware-goal-anchor.
+ */
+
+interface GoalAnchorConfig {
+    /** Required: declared task objectives. Empty array disables the middleware. */
+    readonly objectives: readonly string[];
+    /** Header text prepended to the todo block. Default: "## Current Objectives" */
+    readonly header?: string;
+    /** Called when an objective item is marked complete. */
+    readonly onComplete?: (item: TodoItem) => void;
+}
+declare function validateGoalAnchorConfig(config: unknown): Result<GoalAnchorConfig, KoiError>;
+
+/**
+ * createGoalAnchorMiddleware — Manus-style todo-anchored attention management.
+ *
+ * Injects a live todo list as a system message at the start of every model call,
+ * keeping declared objectives in the model's recent attention span.
+ * Heuristically marks objectives complete when model responses mention them.
+ */
+
+declare function createGoalAnchorMiddleware(config: GoalAnchorConfig): KoiMiddleware;
+
+/**
+ * Pure functions for todo state management — no side effects.
+ */
+
+declare function createTodoState(objectives: readonly string[]): TodoState;
+declare function renderTodoBlock(state: TodoState, header: string): string;
+/**
+ * Heuristic scan of response text for completion signals near objective keywords.
+ * Returns the same state reference if nothing changed (fast path).
+ */
+declare function detectCompletions(responseText: string, state: TodoState): TodoState;
+
+export { type GoalAnchorConfig, type TodoItem, type TodoItemStatus, type TodoState, createGoalAnchorMiddleware, createTodoState, detectCompletions, renderTodoBlock, validateGoalAnchorConfig };
+"
+`;
