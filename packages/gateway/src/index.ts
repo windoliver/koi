@@ -73,6 +73,14 @@ export { createSequenceTracker } from "./sequence-tracker.js";
 // session store
 export type { SessionStore } from "./session-store.js";
 export { createInMemorySessionStore } from "./session-store.js";
+// tool router
+export type {
+  ToolAffinity,
+  ToolRouter,
+  ToolRouterDeps,
+  ToolRoutingConfig,
+} from "./tool-router.js";
+export { createToolRouter, DEFAULT_TOOL_ROUTING_CONFIG } from "./tool-router.js";
 // transport
 export type {
   BunTransport,

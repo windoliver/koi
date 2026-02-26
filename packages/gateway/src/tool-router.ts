@@ -1,0 +1,402 @@
+/**
+ * Gateway tool routing — intercepts tool_call frames, resolves target nodes,
+ * forwards calls, tracks pending responses, and routes results back.
+ *
+ * Routing priority:
+ * 1. Exclude source node (if tool_call reached gateway, source can't execute it)
+ * 2. Affinity match (glob patterns -> preferred node)
+ * 3. Highest available capacity
+ * 4. Queue with TTL (if no candidates online)
+ * 5. Error (queue full or disabled)
+ */
+
+import type { KoiError, Result } from "@koi/core";
+import type { NodeFrame } from "./node-handler.js";
+import type { NodeRegistry, RegisteredNode } from "./node-registry.js";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface ToolRoutingConfig {
+  readonly defaultTimeoutMs: number;
+  readonly maxPendingCalls: number;
+  readonly maxQueuedCalls: number;
+  readonly queueTimeoutMs: number;
+  readonly affinities?: readonly ToolAffinity[] | undefined;
+}
+
+export interface ToolAffinity {
+  readonly pattern: string;
+  readonly nodeId: string;
+}
+
+export interface ToolRouter {
+  readonly handleToolCall: (frame: NodeFrame) => void;
+  readonly handleToolResult: (frame: NodeFrame) => void;
+  readonly handleToolError: (frame: NodeFrame) => void;
+  readonly handleNodeDisconnect: (nodeId: string) => void;
+  readonly handleNodeRegistered: (nodeId: string) => void;
+  readonly pendingCount: () => number;
+  readonly queuedCount: () => number;
+  readonly dispose: () => void;
+}
+
+export interface ToolRouterDeps {
+  readonly registry: NodeRegistry;
+  readonly sendToNode: (nodeId: string, frame: NodeFrame) => Result<number, KoiError>;
+}
+
+// ---------------------------------------------------------------------------
+// Internal types
+// ---------------------------------------------------------------------------
+
+interface PendingToolCall {
+  readonly sourceNodeId: string;
+  readonly sourceAgentId: string;
+  readonly correlationId: string;
+  readonly toolName: string;
+  readonly targetNodeId: string;
+  readonly dispatchedAt: number;
+  readonly timeoutMs: number;
+  readonly timeoutTimer: ReturnType<typeof setTimeout>;
+}
+
+interface QueuedToolCall {
+  readonly frame: NodeFrame;
+  readonly toolName: string;
+  readonly sourceNodeId: string;
+  readonly queuedAt: number;
+  readonly ttlTimer: ReturnType<typeof setTimeout>;
+}
+
+export interface CompiledAffinity {
+  readonly regex: RegExp;
+  readonly nodeId: string;
+}
+
+// ---------------------------------------------------------------------------
+// Routing resolution result
+// ---------------------------------------------------------------------------
+
+export type RouteResult =
+  | { readonly kind: "routed"; readonly targetNodeId: string }
+  | { readonly kind: "not_available" };
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_TOOL_ROUTING_CONFIG: ToolRoutingConfig = {
+  defaultTimeoutMs: 30_000,
+  maxPendingCalls: 10_000,
+  maxQueuedCalls: 1_000,
+  queueTimeoutMs: 60_000,
+} as const;
+
+// ---------------------------------------------------------------------------
+// Type guard (duplicated from @koi/node — gateway cannot import L2 peers)
+// ---------------------------------------------------------------------------
+
+interface ToolCallPayload {
+  readonly toolName: string;
+  readonly args: Readonly<Record<string, unknown>>;
+  readonly callerAgentId: string;
+  readonly zone?: string | undefined;
+}
+
+export function isToolCallPayload(value: unknown): value is ToolCallPayload {
+  if (value === null || typeof value !== "object") return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    typeof obj.toolName === "string" &&
+    obj.toolName.length > 0 &&
+    typeof obj.callerAgentId === "string"
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Glob pattern compilation
+// ---------------------------------------------------------------------------
+
+export function compileAffinities(
+  affinities: readonly ToolAffinity[],
+): readonly CompiledAffinity[] {
+  return affinities.map((a) => ({
+    regex: compileGlobPattern(a.pattern),
+    nodeId: a.nodeId,
+  }));
+}
+
+function compileGlobPattern(pattern: string): RegExp {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+  return new RegExp(`^${escaped}$`);
+}
+
+export function matchAffinity(
+  toolName: string,
+  compiled: readonly CompiledAffinity[],
+): string | undefined {
+  for (const a of compiled) {
+    if (a.regex.test(toolName)) return a.nodeId;
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Routing resolution — pure function
+// ---------------------------------------------------------------------------
+
+export function resolveTargetNode(
+  toolName: string,
+  sourceNodeId: string,
+  registry: NodeRegistry,
+  compiledAffinities: readonly CompiledAffinity[],
+): RouteResult {
+  const candidates = registry.findByTool(toolName);
+  if (candidates.length === 0) return { kind: "not_available" };
+
+  const remote: readonly RegisteredNode[] = candidates.filter((n) => n.nodeId !== sourceNodeId);
+  if (remote.length === 0) return { kind: "not_available" };
+
+  // Affinity: check if preferred node is in remote candidates
+  const affinityNodeId = matchAffinity(toolName, compiledAffinities);
+  if (affinityNodeId !== undefined) {
+    const affinityNode = remote.find((n) => n.nodeId === affinityNodeId);
+    if (affinityNode !== undefined) {
+      return { kind: "routed", targetNodeId: affinityNode.nodeId };
+    }
+  }
+
+  // Capacity: sort by available descending, pick highest
+  const sorted = [...remote].sort((a, b) => b.capacity.available - a.capacity.available);
+  const best = sorted[0];
+  // best is defined: remote.length > 0 checked above
+  if (best === undefined) return { kind: "not_available" };
+  return { kind: "routed", targetNodeId: best.nodeId };
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
+export function createToolRouter(config: ToolRoutingConfig, deps: ToolRouterDeps): ToolRouter {
+  const pending = new Map<string, PendingToolCall>();
+  const queued = new Map<string, QueuedToolCall>();
+  const compiledAffs = compileAffinities(config.affinities ?? []);
+
+  function sendToolError(
+    sourceNodeId: string,
+    agentId: string,
+    correlationId: string,
+    toolName: string,
+    code: string,
+    message: string,
+  ): void {
+    deps.sendToNode(sourceNodeId, {
+      kind: "tool_error",
+      nodeId: sourceNodeId,
+      agentId,
+      correlationId,
+      payload: { toolName, code, message },
+    });
+  }
+
+  function handleTimeout(routingCorrelationId: string): void {
+    const entry = pending.get(routingCorrelationId);
+    if (entry === undefined) return;
+    pending.delete(routingCorrelationId);
+
+    sendToolError(
+      entry.sourceNodeId,
+      entry.sourceAgentId,
+      entry.correlationId,
+      entry.toolName,
+      "timeout",
+      `Tool call "${entry.toolName}" timed out after ${String(entry.timeoutMs)}ms`,
+    );
+  }
+
+  function routeCall(frame: NodeFrame, toolName: string): void {
+    const route = resolveTargetNode(toolName, frame.nodeId, deps.registry, compiledAffs);
+
+    if (route.kind === "not_available") {
+      if (config.maxQueuedCalls > 0 && queued.size < config.maxQueuedCalls) {
+        const queueKey = frame.correlationId;
+        const ttlTimer = setTimeout(() => {
+          const qEntry = queued.get(queueKey);
+          if (qEntry === undefined) return;
+          queued.delete(queueKey);
+          sendToolError(
+            frame.nodeId,
+            frame.agentId,
+            frame.correlationId,
+            toolName,
+            "timeout",
+            `Queued tool call "${toolName}" expired after ${String(config.queueTimeoutMs)}ms`,
+          );
+        }, config.queueTimeoutMs);
+
+        queued.set(queueKey, {
+          frame,
+          toolName,
+          sourceNodeId: frame.nodeId,
+          queuedAt: Date.now(),
+          ttlTimer,
+        });
+        return;
+      }
+
+      sendToolError(
+        frame.nodeId,
+        frame.agentId,
+        frame.correlationId,
+        toolName,
+        "not_found",
+        `No node available for tool "${toolName}"`,
+      );
+      return;
+    }
+
+    const routingCorrelationId = `route-${frame.correlationId}-${String(Date.now())}`;
+    const timeoutMs = frame.ttl ?? config.defaultTimeoutMs;
+    const timeoutTimer = setTimeout(() => handleTimeout(routingCorrelationId), timeoutMs);
+
+    pending.set(routingCorrelationId, {
+      sourceNodeId: frame.nodeId,
+      sourceAgentId: frame.agentId,
+      correlationId: frame.correlationId,
+      toolName,
+      targetNodeId: route.targetNodeId,
+      dispatchedAt: Date.now(),
+      timeoutMs,
+      timeoutTimer,
+    });
+
+    const forwardedFrame: NodeFrame = {
+      ...frame,
+      nodeId: route.targetNodeId,
+      correlationId: routingCorrelationId,
+    };
+
+    const sendResult = deps.sendToNode(route.targetNodeId, forwardedFrame);
+    if (!sendResult.ok) {
+      clearTimeout(timeoutTimer);
+      pending.delete(routingCorrelationId);
+      sendToolError(
+        frame.nodeId,
+        frame.agentId,
+        frame.correlationId,
+        toolName,
+        "not_found",
+        `Failed to send to target node: ${sendResult.error.message}`,
+      );
+    }
+  }
+
+  function handleToolCall(frame: NodeFrame): void {
+    if (!isToolCallPayload(frame.payload)) {
+      sendToolError(
+        frame.nodeId,
+        frame.agentId,
+        frame.correlationId,
+        "unknown",
+        "validation",
+        "Malformed tool_call payload",
+      );
+      return;
+    }
+
+    if (pending.size >= config.maxPendingCalls) {
+      sendToolError(
+        frame.nodeId,
+        frame.agentId,
+        frame.correlationId,
+        frame.payload.toolName,
+        "rate_limit",
+        `Max pending tool calls reached (${String(config.maxPendingCalls)})`,
+      );
+      return;
+    }
+
+    routeCall(frame, frame.payload.toolName);
+  }
+
+  function handleToolResponse(frame: NodeFrame): void {
+    const entry = pending.get(frame.correlationId);
+    if (entry === undefined) return;
+
+    clearTimeout(entry.timeoutTimer);
+    pending.delete(frame.correlationId);
+
+    deps.sendToNode(entry.sourceNodeId, {
+      ...frame,
+      nodeId: entry.sourceNodeId,
+      correlationId: entry.correlationId,
+    });
+  }
+
+  function handleNodeDisconnect(nodeId: string): void {
+    for (const [routingId, entry] of pending) {
+      if (entry.targetNodeId === nodeId) {
+        clearTimeout(entry.timeoutTimer);
+        pending.delete(routingId);
+        sendToolError(
+          entry.sourceNodeId,
+          entry.sourceAgentId,
+          entry.correlationId,
+          entry.toolName,
+          "not_found",
+          `Target node "${nodeId}" disconnected during tool call`,
+        );
+      } else if (entry.sourceNodeId === nodeId) {
+        clearTimeout(entry.timeoutTimer);
+        pending.delete(routingId);
+      }
+    }
+
+    for (const [queueKey, qEntry] of queued) {
+      if (qEntry.sourceNodeId === nodeId) {
+        clearTimeout(qEntry.ttlTimer);
+        queued.delete(queueKey);
+      }
+    }
+  }
+
+  function handleNodeRegistered(nodeId: string): void {
+    const node = deps.registry.lookup(nodeId);
+    if (node === undefined) return;
+
+    const toolNames = new Set(node.tools.map((t) => t.name));
+
+    for (const [queueKey, qEntry] of queued) {
+      if (toolNames.has(qEntry.toolName)) {
+        clearTimeout(qEntry.ttlTimer);
+        queued.delete(queueKey);
+        routeCall(qEntry.frame, qEntry.toolName);
+      }
+    }
+  }
+
+  function dispose(): void {
+    for (const entry of pending.values()) {
+      clearTimeout(entry.timeoutTimer);
+    }
+    pending.clear();
+    for (const entry of queued.values()) {
+      clearTimeout(entry.ttlTimer);
+    }
+    queued.clear();
+  }
+
+  return {
+    handleToolCall,
+    handleToolResult: handleToolResponse,
+    handleToolError: handleToolResponse,
+    handleNodeDisconnect,
+    handleNodeRegistered,
+    pendingCount: () => pending.size,
+    queuedCount: () => queued.size,
+    dispose,
+  };
+}
