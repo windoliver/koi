@@ -8,10 +8,17 @@ import { createDoctorContext } from "../context.js";
 import type { DoctorContext, DoctorFinding, DoctorRule } from "../types.js";
 import { supplyChainRules } from "./supply-chain.js";
 
-const [noDependenciesProvided, excessiveDependencies, knownVulnerablePatterns] = supplyChainRules;
+const [
+  noDependenciesProvided,
+  excessiveDependencies,
+  knownVulnerablePatterns,
+  forgeVerificationDisabled,
+] = supplyChainRules;
 if (noDependenciesProvided === undefined) throw new Error("missing rule: noDependenciesProvided");
 if (excessiveDependencies === undefined) throw new Error("missing rule: excessiveDependencies");
 if (knownVulnerablePatterns === undefined) throw new Error("missing rule: knownVulnerablePatterns");
+if (forgeVerificationDisabled === undefined)
+  throw new Error("missing rule: forgeVerificationDisabled");
 
 async function check(rule: DoctorRule, ctx: DoctorContext): Promise<readonly DoctorFinding[]> {
   return Promise.resolve(rule.check(ctx));
@@ -314,5 +321,102 @@ describe("supply-chain:known-vulnerable-patterns", () => {
     expect(knownVulnerablePatterns?.category).toBe("SUPPLY_CHAIN");
     expect(knownVulnerablePatterns?.defaultSeverity).toBe("HIGH");
     expect(knownVulnerablePatterns?.owasp).toEqual(["ASI04"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// supply-chain:forge-verification-disabled
+// ---------------------------------------------------------------------------
+
+describe("supply-chain:forge-verification-disabled", () => {
+  test("returns finding when forge is configured without verification", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+      metadata: { forge: { preset: "strict" } },
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(forgeVerificationDisabled, ctx);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      rule: "supply-chain:forge-verification-disabled",
+      severity: "HIGH",
+      category: "SUPPLY_CHAIN",
+      owasp: ["ASI04"],
+      path: "metadata.forge.verification",
+    });
+  });
+
+  test("returns finding when forge has verification: false", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+      metadata: { forge: { verification: false } },
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(forgeVerificationDisabled, ctx);
+
+    expect(findings).toHaveLength(1);
+  });
+
+  test("returns empty when forge has verification: true", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+      metadata: { forge: { verification: true } },
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(forgeVerificationDisabled, ctx);
+
+    expect(findings).toHaveLength(0);
+  });
+
+  test("returns empty when forge has a verification object (provider config)", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+      metadata: { forge: { verification: { provider: "slsa", level: 2 } } },
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(forgeVerificationDisabled, ctx);
+
+    expect(findings).toHaveLength(0);
+  });
+
+  test("returns empty when forge metadata is absent", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(forgeVerificationDisabled, ctx);
+
+    expect(findings).toHaveLength(0);
+  });
+
+  test("returns empty when forge is not an object (string value)", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+      metadata: { forge: "disabled" },
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(forgeVerificationDisabled, ctx);
+
+    expect(findings).toHaveLength(0);
+  });
+
+  test("rule metadata is correct", () => {
+    expect(forgeVerificationDisabled?.name).toBe("supply-chain:forge-verification-disabled");
+    expect(forgeVerificationDisabled?.category).toBe("SUPPLY_CHAIN");
+    expect(forgeVerificationDisabled?.defaultSeverity).toBe("HIGH");
+    expect(forgeVerificationDisabled?.owasp).toEqual(["ASI04"]);
   });
 });

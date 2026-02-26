@@ -11,6 +11,12 @@ import type { Severity } from "@koi/validation";
 // Categories & OWASP mapping
 // ---------------------------------------------------------------------------
 
+/**
+ * Koi semantic categories for organising rule findings.
+ * These are coarser-grained than OWASP IDs — each finding also carries a
+ * `owasp` tag with the precise ASI0x identifier. Use the OWASP tags for
+ * compliance mapping; use categories for enabling/disabling rule groups.
+ */
 export type DoctorCategory =
   | "GOAL_INTEGRITY"
   | "TOOL_SAFETY"
@@ -73,6 +79,8 @@ export interface DoctorReport {
   readonly owaspSummary: readonly OwaspCoverage[];
   readonly healthy: boolean;
   readonly truncationWarning: boolean;
+  /** Set when the advisory callback threw — advisory findings will be absent. */
+  readonly advisoryError?: string;
 }
 
 // ---------------------------------------------------------------------------

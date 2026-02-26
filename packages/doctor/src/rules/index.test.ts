@@ -1,7 +1,7 @@
 /**
  * Unit tests for the built-in rule registry.
  *
- * Verifies registry completeness: 25 rules, all unique names,
+ * Verifies registry completeness: 30 rules, all unique names,
  * all 5 categories, and all 10 OWASP IDs represented.
  */
 
@@ -12,14 +12,14 @@ import { getBuiltinRules } from "./index.js";
 describe("getBuiltinRules", () => {
   const rules = getBuiltinRules();
 
-  test("returns exactly 25 rules", () => {
-    expect(rules).toHaveLength(25);
+  test("returns exactly 30 rules", () => {
+    expect(rules).toHaveLength(30);
   });
 
   test("all rule names are unique", () => {
     const names = rules.map((r) => r.name);
     const uniqueNames = new Set(names);
-    expect(uniqueNames.size).toBe(25);
+    expect(uniqueNames.size).toBe(30);
   });
 
   test("all 5 categories are represented", () => {

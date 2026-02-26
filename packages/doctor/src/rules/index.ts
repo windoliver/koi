@@ -9,7 +9,7 @@ import { cascadingFailuresRules } from "./cascading-failures.js";
 import { codeExecutionRules } from "./code-execution.js";
 import { goalHijackRules } from "./goal-hijack.js";
 import { humanTrustRules } from "./human-trust.js";
-import { insecureDelegationRules } from "./insecure-delegation.js";
+import { insecureDelegationRules } from "./inter-agent-comms.js";
 import { memoryPoisoningRules } from "./memory-poisoning.js";
 import { privilegeAbuseRules } from "./privilege-abuse.js";
 import { rogueAgentsRules } from "./rogue-agents.js";

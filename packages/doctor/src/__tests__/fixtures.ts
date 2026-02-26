@@ -41,11 +41,15 @@ export function createSecureManifest(): AgentManifest {
       { name: "guardrails" },
       { name: "sandbox" },
       { name: "permissions" },
+      { name: "redaction" },
       { name: "call-limits" },
+      { name: "budget" },
       { name: "compactor" },
       { name: "turn-ack" },
       { name: "audit" },
       { name: "governance" },
+      { name: "agent-monitor" },
+      { name: "a2a-auth" },
       { name: "memory" },
     ],
     permissions: {
@@ -57,6 +61,9 @@ export function createSecureManifest(): AgentManifest {
       enabled: true,
       maxChainDepth: 3,
       defaultTtlMs: 3_600_000, // 1 hour
+    },
+    metadata: {
+      forge: { verification: true },
     },
   };
 }

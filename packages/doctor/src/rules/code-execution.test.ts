@@ -8,10 +8,12 @@ import { createDoctorContext } from "../context.js";
 import type { DoctorContext, DoctorFinding, DoctorRule } from "../types.js";
 import { codeExecutionRules } from "./code-execution.js";
 
-const [missingSandbox, permissiveForge, noPermissionsMiddleware] = codeExecutionRules;
+const [missingSandbox, permissiveForge, noPermissionsMiddleware, noRedactionMiddleware] =
+  codeExecutionRules;
 if (missingSandbox === undefined) throw new Error("missing rule: missingSandbox");
 if (permissiveForge === undefined) throw new Error("missing rule: permissiveForge");
 if (noPermissionsMiddleware === undefined) throw new Error("missing rule: noPermissionsMiddleware");
+if (noRedactionMiddleware === undefined) throw new Error("missing rule: noRedactionMiddleware");
 
 async function check(rule: DoctorRule, ctx: DoctorContext): Promise<readonly DoctorFinding[]> {
   return Promise.resolve(rule.check(ctx));
@@ -244,5 +246,64 @@ describe("code-execution:no-permissions-middleware", () => {
     expect(noPermissionsMiddleware?.category).toBe("TOOL_SAFETY");
     expect(noPermissionsMiddleware?.defaultSeverity).toBe("HIGH");
     expect(noPermissionsMiddleware?.owasp).toEqual(["ASI05"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// code-execution:no-redaction-middleware
+// ---------------------------------------------------------------------------
+
+describe("code-execution:no-redaction-middleware", () => {
+  test("returns finding when tools are configured without redaction middleware", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+      tools: [{ name: "read_file" }],
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(noRedactionMiddleware, ctx);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      rule: "code-execution:no-redaction-middleware",
+      severity: "MEDIUM",
+      category: "TOOL_SAFETY",
+      owasp: ["ASI05"],
+      path: "middleware",
+    });
+  });
+
+  test("returns empty when redaction middleware is present", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+      tools: [{ name: "read_file" }],
+      middleware: [{ name: "redaction" }],
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(noRedactionMiddleware, ctx);
+
+    expect(findings).toHaveLength(0);
+  });
+
+  test("returns empty when no tools are configured", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(noRedactionMiddleware, ctx);
+
+    expect(findings).toHaveLength(0);
+  });
+
+  test("rule metadata is correct", () => {
+    expect(noRedactionMiddleware?.name).toBe("code-execution:no-redaction-middleware");
+    expect(noRedactionMiddleware?.category).toBe("TOOL_SAFETY");
+    expect(noRedactionMiddleware?.defaultSeverity).toBe("MEDIUM");
+    expect(noRedactionMiddleware?.owasp).toEqual(["ASI05"]);
   });
 });

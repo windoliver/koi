@@ -1,9 +1,11 @@
 /**
  * ASI04 — Supply Chain Vulnerability rules.
  *
- * Checks for dependency hygiene, excessive deps, and known-vulnerable patterns.
+ * Checks for dependency hygiene, excessive deps, known-vulnerable patterns,
+ * and forge verification (provenance of forged bricks).
  */
 
+import { getMetadataKey } from "../metadata.js";
 import type { DoctorContext, DoctorFinding, DoctorRule } from "../types.js";
 
 const MAX_PRODUCTION_DEPS = 50;
@@ -69,6 +71,28 @@ function checkKnownVulnerablePatterns(ctx: DoctorContext): readonly DoctorFindin
   ];
 }
 
+function checkForgeVerificationDisabled(ctx: DoctorContext): readonly DoctorFinding[] {
+  const forgeRaw = getMetadataKey(ctx.manifest.metadata, "forge");
+  if (forgeRaw === undefined || forgeRaw === null) return [];
+  if (typeof forgeRaw !== "object") return [];
+  const forge = forgeRaw as Readonly<Record<string, unknown>>;
+  const verification = forge.verification;
+  if (verification === true || (typeof verification === "object" && verification !== null))
+    return [];
+  return [
+    {
+      rule: "supply-chain:forge-verification-disabled",
+      severity: "HIGH",
+      category: "SUPPLY_CHAIN",
+      message:
+        "Forge is configured but verification is not enabled — forged bricks lack provenance guarantees",
+      fix: "Set metadata.forge.verification = true or configure a verification provider",
+      owasp: ["ASI04"],
+      path: "metadata.forge.verification",
+    },
+  ];
+}
+
 export const supplyChainRules: readonly DoctorRule[] = [
   {
     name: "supply-chain:no-dependencies-provided",
@@ -90,5 +114,12 @@ export const supplyChainRules: readonly DoctorRule[] = [
     defaultSeverity: "HIGH",
     owasp: ["ASI04"],
     check: checkKnownVulnerablePatterns,
+  },
+  {
+    name: "supply-chain:forge-verification-disabled",
+    category: "SUPPLY_CHAIN",
+    defaultSeverity: "HIGH",
+    owasp: ["ASI04"],
+    check: checkForgeVerificationDisabled,
   },
 ];

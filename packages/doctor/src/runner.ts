@@ -28,6 +28,11 @@ interface RuleResult {
   readonly error?: DoctorRuleError;
 }
 
+interface AdvisoryResult {
+  readonly findings: readonly DoctorFinding[];
+  readonly error?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -51,8 +56,6 @@ function extractTimedOut(reason: unknown): boolean {
   return false;
 }
 
-const EMPTY_SETTLED: readonly PromiseSettledResult<RuleResult>[] = [];
-
 function applySeverityOverride(
   finding: DoctorFinding,
   overrides: Readonly<Record<string, import("@koi/validation").Severity>>,
@@ -70,31 +73,29 @@ function collectResults(
   readonly findings: readonly DoctorFinding[];
   readonly ruleErrors: readonly DoctorRuleError[];
 } {
-  // Local accumulation arrays — `let` justified: building from iteration results
-  let findings: readonly DoctorFinding[] = [];
-  let ruleErrors: readonly DoctorRuleError[] = [];
+  // Local mutable accumulators — let/push justified: single-pass aggregation within this function
+  const findings: DoctorFinding[] = [];
+  const ruleErrors: DoctorRuleError[] = [];
 
   for (const result of settled) {
     if (result.status === "fulfilled") {
       const { findings: ruleFindings, error } = result.value;
       if (error !== undefined) {
-        ruleErrors = [...ruleErrors, error];
+        ruleErrors.push(error);
       }
-      const overridden = ruleFindings.map((f) => applySeverityOverride(f, severityOverrides));
-      const filtered = overridden.filter((f) =>
-        meetsSeverityThreshold(f.severity, severityThreshold),
-      );
-      findings = [...findings, ...filtered];
+      for (const f of ruleFindings) {
+        const overridden = applySeverityOverride(f, severityOverrides);
+        if (meetsSeverityThreshold(overridden.severity, severityThreshold)) {
+          findings.push(overridden);
+        }
+      }
     } else {
-      ruleErrors = [
-        ...ruleErrors,
-        {
-          rule: extractRuleName(result.reason),
-          message: "Rule execution failed unexpectedly",
-          durationMs: 0,
-          timedOut: extractTimedOut(result.reason),
-        },
-      ];
+      ruleErrors.push({
+        rule: extractRuleName(result.reason),
+        message: "Rule execution failed unexpectedly",
+        durationMs: 0,
+        timedOut: extractTimedOut(result.reason),
+      });
     }
   }
 
@@ -130,28 +131,29 @@ export function createDoctor(config: DoctorConfig): Doctor {
         globalSignal.addEventListener("abort", () => reject(globalSignal.reason), { once: true });
       });
 
-      const settled = await Promise.race([
-        Promise.allSettled(allRules.map((rule) => executeRule(rule, ctx, resolved.ruleTimeoutMs))),
-        globalAbort.then(() => EMPTY_SETTLED),
-      ]).catch((): readonly PromiseSettledResult<RuleResult>[] => {
-        // Global timeout — return empty, all rules treated as timed out
-        return allRules.map((rule) => ({
-          status: "rejected" as const,
-          reason: { rule: rule.name, timedOut: true },
-        }));
-      });
-
-      const advisoryFindings = await runAdvisoryCallback(
-        resolved.advisoryCallback,
-        ctx.dependencies(),
-      );
+      // Run rules and advisory callback concurrently — advisory is independent of rule results
+      const [settled, advisoryResult] = await Promise.all([
+        Promise.race([
+          Promise.allSettled(
+            allRules.map((rule) => executeRule(rule, ctx, resolved.ruleTimeoutMs)),
+          ),
+          globalAbort,
+        ]).catch((): readonly PromiseSettledResult<RuleResult>[] => {
+          // Global timeout — treat all rules as timed out
+          return allRules.map((rule) => ({
+            status: "rejected" as const,
+            reason: { rule: rule.name, timedOut: true },
+          }));
+        }),
+        runAdvisoryCallback(resolved.advisoryCallback, ctx.dependencies()),
+      ]);
 
       const { findings: ruleFindings, ruleErrors } = collectResults(
         settled,
         resolved.severityThreshold,
         resolved.severityOverrides,
       );
-      const findings = [...ruleFindings, ...advisoryFindings];
+      const findings = [...ruleFindings, ...advisoryResult.findings];
 
       const truncationWarning = findings.length > resolved.maxFindings;
       const truncatedFindings = truncationWarning
@@ -171,6 +173,7 @@ export function createDoctor(config: DoctorConfig): Doctor {
         owaspSummary,
         healthy,
         truncationWarning,
+        ...(advisoryResult.error !== undefined ? { advisoryError: advisoryResult.error } : {}),
       };
     },
   };
@@ -183,13 +186,15 @@ export function createDoctor(config: DoctorConfig): Doctor {
 async function runAdvisoryCallback(
   callback: AdvisoryCallback | undefined,
   deps: readonly import("./types.js").DependencyEntry[],
-): Promise<readonly DoctorFinding[]> {
-  if (callback === undefined) return [];
+): Promise<AdvisoryResult> {
+  if (callback === undefined) return { findings: [] };
   try {
-    return await Promise.resolve(callback(deps));
-  } catch (_e: unknown) {
-    // Advisory callback failure is non-fatal — findings come from rules instead
-    return [];
+    return { findings: await Promise.resolve(callback(deps)) };
+  } catch (e: unknown) {
+    return {
+      findings: [],
+      error: e instanceof Error ? e.message : String(e),
+    };
   }
 }
 

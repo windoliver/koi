@@ -8,9 +8,10 @@ import { createDoctorContext } from "../context.js";
 import type { DoctorContext, DoctorFinding, DoctorRule } from "../types.js";
 import { cascadingFailuresRules } from "./cascading-failures.js";
 
-const [noCallLimits, noCircuitBreaker] = cascadingFailuresRules;
+const [noCallLimits, noCircuitBreaker, noBudgetLimits] = cascadingFailuresRules;
 if (noCallLimits === undefined) throw new Error("missing rule: noCallLimits");
 if (noCircuitBreaker === undefined) throw new Error("missing rule: noCircuitBreaker");
+if (noBudgetLimits === undefined) throw new Error("missing rule: noBudgetLimits");
 
 async function check(rule: DoctorRule, ctx: DoctorContext): Promise<readonly DoctorFinding[]> {
   return Promise.resolve(rule.check(ctx));
@@ -184,5 +185,76 @@ describe("cascading-failures:no-circuit-breaker", () => {
     expect(noCircuitBreaker?.category).toBe("RESILIENCE");
     expect(noCircuitBreaker?.defaultSeverity).toBe("MEDIUM");
     expect(noCircuitBreaker?.owasp).toEqual(["ASI08"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cascading-failures:no-budget-limits
+// ---------------------------------------------------------------------------
+
+describe("cascading-failures:no-budget-limits", () => {
+  test("returns finding when no budget middleware or maxCostUsd configured", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(noBudgetLimits, ctx);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      rule: "cascading-failures:no-budget-limits",
+      severity: "MEDIUM",
+      category: "RESILIENCE",
+      owasp: ["ASI08"],
+      path: "middleware",
+    });
+  });
+
+  test("returns empty when budget middleware is present", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+      middleware: [{ name: "budget" }],
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(noBudgetLimits, ctx);
+
+    expect(findings).toHaveLength(0);
+  });
+
+  test("returns empty when pay middleware is present", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+      middleware: [{ name: "pay" }],
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(noBudgetLimits, ctx);
+
+    expect(findings).toHaveLength(0);
+  });
+
+  test("returns empty when maxCostUsd is set in metadata", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+      metadata: { maxCostUsd: 5.0 },
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(noBudgetLimits, ctx);
+
+    expect(findings).toHaveLength(0);
+  });
+
+  test("rule metadata is correct", () => {
+    expect(noBudgetLimits?.name).toBe("cascading-failures:no-budget-limits");
+    expect(noBudgetLimits?.category).toBe("RESILIENCE");
+    expect(noBudgetLimits?.defaultSeverity).toBe("MEDIUM");
+    expect(noBudgetLimits?.owasp).toEqual(["ASI08"]);
   });
 });
