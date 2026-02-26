@@ -175,6 +175,7 @@ export type {
   ToolDescriptor,
   TrustTier,
   TurnId,
+  WorkspaceComponent,
 } from "./ecs.js";
 // ecs — runtime values (token factories + well-known constants)
 export {
@@ -197,6 +198,7 @@ export {
   toolCallId,
   toolToken,
   turnId,
+  WORKSPACE,
 } from "./ecs.js";
 // engine
 export type {

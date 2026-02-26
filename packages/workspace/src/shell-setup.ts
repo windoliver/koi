@@ -1,0 +1,45 @@
+/**
+ * Shell setup helper for workspace post-create hooks.
+ *
+ * Convenience factory that creates a postCreate function
+ * which runs a shell command in the new workspace directory.
+ */
+
+import type { WorkspaceInfo } from "./types.js";
+
+/**
+ * Create a postCreate hook that runs a shell command in the workspace.
+ *
+ * Validates command at creation time (fail-fast). The returned function
+ * spawns the process in the workspace directory.
+ *
+ * @example
+ * ```typescript
+ * const provider = createWorkspaceProvider({
+ *   backend,
+ *   postCreate: createShellSetup("bun", ["install"]),
+ * });
+ * ```
+ */
+export function createShellSetup(
+  command: string,
+  args?: readonly string[],
+): (workspace: WorkspaceInfo) => Promise<void> {
+  if (!command || command.includes("\0")) {
+    throw new Error("createShellSetup: command must be a non-empty string without null bytes");
+  }
+
+  return async (workspace: WorkspaceInfo): Promise<void> => {
+    const proc = Bun.spawn([command, ...(args ?? [])], {
+      cwd: workspace.path,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+      throw new Error(`Shell setup "${command}" failed (exit ${exitCode}): ${stderr.trim()}`);
+    }
+  };
+}

@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/test-utils API surface . has stable type surface 1`] = `
-"import { ProcessId, AgentManifest, ProcessState, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, ForgeProvenance, AgentArtifact, ImplementationArtifact, SkillArtifact, ToolArtifact, BrickRegistryBackend, ChannelAdapter, MemoryResult, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, SessionPersistence, SkillRegistryBackend, SnapshotChainStore, ForgeStore } from '@koi/core';
+"import { ProcessId, AgentManifest, ProcessState, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, ForgeProvenance, AgentArtifact, ImplementationArtifact, SkillArtifact, ToolArtifact, ChannelAdapter, MemoryResult, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, SessionPersistence, SkillRegistryBackend, SnapshotChainStore, ForgeStore } from '@koi/core';
 import { Result, KoiError } from '@koi/core/errors';
 import { InboundMessage } from '@koi/core/message';
 import { SessionContext, TurnContext, ModelHandler, ModelRequest, ModelStreamHandler, ToolHandler, ToolRequest, ModelResponse, ModelChunk, ToolResponse, KoiMiddleware } from '@koi/core/middleware';
@@ -131,25 +131,6 @@ declare const createTestToolArtifact: (overrides?: Partial<ToolArtifact>) => Too
 declare const createTestSkillArtifact: (overrides?: Partial<SkillArtifact>) => SkillArtifact;
 declare const createTestAgentArtifact: (overrides?: Partial<AgentArtifact>) => AgentArtifact;
 declare const createTestImplementationArtifact: (overrides?: Partial<ImplementationArtifact>) => ImplementationArtifact;
-
-/**
- * Brick registry contract test suite.
- *
- * Validates that any BrickRegistryBackend implementation satisfies the L0 contract.
- * Usage: import { testBrickRegistryContract } from "@koi/test-utils" and call it
- * inside a describe() block with a factory function.
- */
-
-interface BrickRegistryContractOptions {
-    readonly createRegistry: () => BrickRegistryBackend | Promise<BrickRegistryBackend>;
-}
-/**
- * Runs the brick registry contract test suite.
- *
- * Call this inside a \`describe()\` block. It registers tests that verify
- * the registry satisfies all L0 contract invariants.
- */
-declare function testBrickRegistryContract(options: BrickRegistryContractOptions): void;
 
 /**
  * Output capture helper for tests.
@@ -367,15 +348,6 @@ declare function createSpyModelStreamHandler(chunks: readonly ModelChunk[]): Spy
 declare function createMockModelStreamHandler(chunks: readonly ModelChunk[]): ModelStreamHandler;
 
 /**
- * In-memory BrickRegistryBackend implementation for testing.
- *
- * Stores bricks in a Map keyed by "kind:name". Supports search, get,
- * register, unregister, and onChange notifications.
- */
-
-declare function createInMemoryBrickRegistry(): BrickRegistryBackend;
-
-/**
  * Middleware contract test suite.
  *
  * Validates that any KoiMiddleware implementation satisfies the L0 contract.
@@ -512,6 +484,25 @@ declare function createManifestFile(dir: string, content?: string, filename?: st
 declare function withTempDir(fn: (dir: string) => Promise<void>): Promise<void>;
 
 /**
+ * Temporary git repository helper for tests.
+ *
+ * Creates a bare git repo with an initial commit for testing
+ * git-based features (worktrees, branches, etc.).
+ */
+interface TempGitRepo {
+    readonly repoPath: string;
+    readonly cleanup: () => Promise<void>;
+}
+/**
+ * Creates a temporary git repository with an initial commit.
+ *
+ * The repo is fully initialized with a \`main\` branch and a
+ * single commit containing a README file. Caller is responsible
+ * for cleanup (call \`cleanup()\` when done).
+ */
+declare function createTempGitRepo(): Promise<TempGitRepo>;
+
+/**
  * Mock validator factories for testing validation middleware.
  *
  * Types are structurally compatible with @koi/middleware-feedback-loop's
@@ -548,6 +539,6 @@ declare function createThrowingValidator(error: Error, name?: string): MockValid
 /** Creates a validator that passes or fails based on a predicate. */
 declare function createConditionalValidator(fn: (output: unknown) => boolean, name?: string): MockValidator;
 
-export { type BrickRegistryContractOptions, type CapturedOutput, type ChannelContractOptions, DEFAULT_PROVENANCE, type EngineContractOptions, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type ResolverContractOptions, type SkillRegistryContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createInMemoryBrickRegistry, createInMemorySkillRegistry, createManifestFile, createMockAgent, createMockEngineAdapter, createMockEventBackend, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTestAgentArtifact, createTestConfig, createTestConfigStore, createTestImplementationArtifact, createTestSkillArtifact, createTestToolArtifact, createThrowingValidator, makeTempDir, runEventBackendContractTests, runForgeStoreContractTests, runSessionPersistenceContractTests, runSnapshotChainStoreContractTests, testBrickRegistryContract, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, testSkillRegistryContract, withTempDir };
+export { type CapturedOutput, type ChannelContractOptions, DEFAULT_PROVENANCE, type EngineContractOptions, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type ResolverContractOptions, type SkillRegistryContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, type TempGitRepo, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createInMemorySkillRegistry, createManifestFile, createMockAgent, createMockEngineAdapter, createMockEventBackend, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTempGitRepo, createTestAgentArtifact, createTestConfig, createTestConfigStore, createTestImplementationArtifact, createTestSkillArtifact, createTestToolArtifact, createThrowingValidator, makeTempDir, runEventBackendContractTests, runForgeStoreContractTests, runSessionPersistenceContractTests, runSnapshotChainStoreContractTests, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, testSkillRegistryContract, withTempDir };
 "
 `;

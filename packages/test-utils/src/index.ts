@@ -67,6 +67,8 @@ export { createInMemorySkillRegistry } from "./skill-registry-memory.js";
 export { runSnapshotChainStoreContractTests } from "./snapshot-chain-contract.js";
 export { runForgeStoreContractTests } from "./store-contract.js";
 export { createManifestFile, makeTempDir, withTempDir } from "./temp-dir.js";
+export type { TempGitRepo } from "./temp-git-repo.js";
+export { createTempGitRepo } from "./temp-git-repo.js";
 export type { MockValidationError, MockValidationResult, MockValidator } from "./validators.js";
 export {
   createAsyncValidator,
