@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AgentId, KoiError, Result } from "@koi/core";
-import { resolveWorktreeBasePath, runGit } from "./git-utils.js";
+import { resolveWorktreeBasePath, runGit } from "@koi/git-utils";
 import type { ResolvedWorkspaceConfig, WorkspaceBackend, WorkspaceInfo } from "./types.js";
 
 // ---------------------------------------------------------------------------
