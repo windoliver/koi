@@ -156,6 +156,9 @@ export interface SweepError {
   readonly cause: unknown;
 }
 
+/** Maximum concurrent auth validations per sweep to prevent thundering herd. */
+const SWEEP_BATCH_SIZE = 50;
+
 export function startHeartbeatSweep(
   store: SessionStore,
   authenticator: GatewayAuthenticator,
@@ -166,33 +169,44 @@ export function startHeartbeatSweep(
 ): () => void {
   let shardIndex = 0;
 
+  function validateSession(id: string, session: Session): Promise<void> {
+    return authenticator
+      .validate(id)
+      .then(async (valid) => {
+        if (!valid) {
+          await store.delete(id);
+          onExpired(id);
+        } else {
+          await store.set({ ...session, lastHeartbeat: Date.now() });
+        }
+      })
+      .catch((cause: unknown) => {
+        // Fail-open: auth service error → keep session alive, retry next sweep.
+        onError?.({ sessionId: id, cause });
+      });
+  }
+
   const timer = setInterval(() => {
     const now = Date.now();
     const currentShard = shardIndex;
     shardIndex = (shardIndex + 1) % SHARD_COUNT;
 
+    // Collect sessions for this shard that need validation
+    const candidates: Array<{ readonly id: string; readonly session: Session }> = [];
     let i = 0;
     for (const [id, session] of store.entries()) {
       if (i++ % SHARD_COUNT !== currentShard) continue;
       if (now - session.lastHeartbeat < heartbeatIntervalMs) continue;
-
-      void authenticator
-        .validate(id)
-        .then(async (valid) => {
-          if (!valid) {
-            await store.delete(id);
-            onExpired(id);
-          } else {
-            // Update heartbeat timestamp
-            await store.set({ ...session, lastHeartbeat: Date.now() });
-          }
-        })
-        .catch((cause: unknown) => {
-          // Fail-open: auth service error → keep session alive, retry next sweep.
-          // Notify caller for logging/metrics — never silently swallow.
-          onError?.({ sessionId: id, cause });
-        });
+      candidates.push({ id, session });
     }
+
+    // Process in batches to prevent thundering herd on the auth service
+    void (async () => {
+      for (let offset = 0; offset < candidates.length; offset += SWEEP_BATCH_SIZE) {
+        const batch = candidates.slice(offset, offset + SWEEP_BATCH_SIZE);
+        await Promise.all(batch.map(({ id, session }) => validateSession(id, session)));
+      }
+    })();
   }, sweepIntervalMs);
 
   return () => clearInterval(timer);

@@ -143,6 +143,7 @@ export interface ResolvedRoute {
 
 /**
  * Resolve the target agent for a routing context.
+ * Priority: channel bindings > pattern bindings > fallback.
  * - If no routing config is provided, returns the fallback immediately (backward compat).
  * - Otherwise, computes the dispatch key, matches bindings, and falls back to `fallbackAgentId`.
  */
@@ -150,7 +151,18 @@ export function resolveRoute(
   config: RoutingConfig | undefined,
   routing: RoutingContext | undefined,
   fallbackAgentId: string,
+  channelBindings?: ReadonlyMap<string, string>,
 ): ResolvedRoute {
+  // Channel binding lookup takes highest priority
+  if (channelBindings !== undefined && routing?.channel !== undefined) {
+    const boundAgentId = channelBindings.get(routing.channel);
+    if (boundAgentId !== undefined) {
+      const dispatchKey =
+        config !== undefined ? computeDispatchKey(config.scopingMode, routing) : "main";
+      return { agentId: boundAgentId, dispatchKey };
+    }
+  }
+
   if (config === undefined) {
     return { agentId: fallbackAgentId, dispatchKey: "main" };
   }

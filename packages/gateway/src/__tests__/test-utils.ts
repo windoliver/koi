@@ -255,8 +255,20 @@ export function createConnectMessage(
     maxProtocol: overrides?.maxProtocol ?? 1,
     auth: overrides?.auth ?? { token },
     ...(overrides?.client !== undefined ? { client: overrides.client } : {}),
+    ...(overrides?.resume !== undefined ? { resume: overrides.resume } : {}),
   };
   return JSON.stringify(frame);
+}
+
+/** Build a JSON-encoded connect frame string for resuming a session. */
+export function createResumeConnectMessage(
+  sessionId: string,
+  lastSeq: number,
+  token = "test-token",
+): string {
+  return createConnectMessage(token, {
+    resume: { sessionId, lastSeq },
+  });
 }
 
 /** Build a JSON-encoded connect frame string in legacy format (single protocol field). */
@@ -265,5 +277,70 @@ export function createLegacyConnectMessage(token = "test-token", protocol = 1): 
     kind: "connect",
     protocol,
     auth: { token },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Node frame builders
+// ---------------------------------------------------------------------------
+
+/** Build a JSON-encoded node:handshake frame string. */
+export function createNodeHandshakeMessage(
+  nodeId: string,
+  capacity?: { readonly current: number; readonly max: number; readonly available: number },
+): string {
+  return JSON.stringify({
+    kind: "node:handshake",
+    nodeId,
+    agentId: "",
+    correlationId: crypto.randomUUID(),
+    payload: {
+      nodeId,
+      version: "1.0.0",
+      capacity: capacity ?? { current: 0, max: 10, available: 10 },
+    },
+  });
+}
+
+/** Build a JSON-encoded node:capabilities frame string. */
+export function createNodeCapabilitiesMessage(
+  nodeId: string,
+  tools?: readonly { readonly name: string; readonly description?: string }[],
+  nodeType: "full" | "thin" = "full",
+): string {
+  return JSON.stringify({
+    kind: "node:capabilities",
+    nodeId,
+    agentId: "",
+    correlationId: crypto.randomUUID(),
+    payload: {
+      nodeType,
+      tools: tools ?? [{ name: "search", description: "Search tool" }],
+    },
+  });
+}
+
+/** Build a JSON-encoded node:heartbeat frame string. */
+export function createNodeHeartbeatMessage(nodeId: string): string {
+  return JSON.stringify({
+    kind: "node:heartbeat",
+    nodeId,
+    agentId: "",
+    correlationId: crypto.randomUUID(),
+    payload: null,
+  });
+}
+
+/** Build a JSON-encoded node:capacity frame string. */
+export function createNodeCapacityMessage(
+  nodeId: string,
+  capacity: { readonly current: number; readonly max: number; readonly available: number },
+): string {
+  return JSON.stringify({
+    kind: "node:capacity",
+    nodeId,
+    agentId: "",
+    correlationId: crypto.randomUUID(),
+    payload: capacity,
   });
 }

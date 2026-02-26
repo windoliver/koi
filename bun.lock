@@ -316,6 +316,10 @@
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
       },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+      },
     },
     "packages/hash": {
       "name": "@koi/hash",

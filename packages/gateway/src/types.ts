@@ -19,6 +19,12 @@ export interface ConnectClient {
   readonly platform?: string;
 }
 
+/** Session resume request embedded in a ConnectFrame. */
+export interface ResumeRequest {
+  readonly sessionId: string;
+  readonly lastSeq: number;
+}
+
 export interface ConnectFrame {
   readonly kind: "connect";
   /** Minimum protocol version the client supports (positive integer). */
@@ -29,6 +35,8 @@ export interface ConnectFrame {
     readonly token: string;
   };
   readonly client?: ConnectClient;
+  /** If present, the client is attempting to resume a previous session. */
+  readonly resume?: ResumeRequest;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +153,12 @@ export interface SchedulerDef {
   readonly payload?: unknown;
 }
 
+/** Static channel-to-agent binding for routing. */
+export interface ChannelBinding {
+  readonly channelName: string;
+  readonly agentId: string;
+}
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -184,6 +198,12 @@ export interface GatewayConfig {
   readonly webhookPath?: string;
   /** Scheduler definitions for periodic frame dispatch. */
   readonly schedulers?: readonly SchedulerDef[];
+  /** Node heartbeat timeout in ms. Nodes not heartbeating within this window are evicted. Default: 90_000 (3x heartbeat interval). */
+  readonly nodeHeartbeatTimeoutMs: number;
+  /** Session time-to-live after disconnect (ms). 0 = immediate cleanup. Default: 0. */
+  readonly sessionTtlMs: number;
+  /** Static channel-to-agent bindings, loaded at startup. */
+  readonly channelBindings?: readonly ChannelBinding[];
 }
 
 export const DEFAULT_GATEWAY_CONFIG: GatewayConfig = {
@@ -200,6 +220,8 @@ export const DEFAULT_GATEWAY_CONFIG: GatewayConfig = {
   authTimeoutMs: 5_000,
   backpressureCriticalTimeoutMs: 30_000,
   sweepIntervalMs: 10_000,
+  nodeHeartbeatTimeoutMs: 90_000,
+  sessionTtlMs: 0,
 } as const;
 
 // ---------------------------------------------------------------------------

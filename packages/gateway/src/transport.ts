@@ -49,6 +49,17 @@ export interface BunTransport extends Transport {
   readonly port: () => number;
 }
 
+interface WsData {
+  readonly id: string;
+}
+
+function isWsData(data: unknown): data is WsData {
+  if (typeof data !== "object" || data === null) return false;
+  if (!("id" in data)) return false;
+  const record = data as Record<string, unknown>;
+  return typeof record.id === "string";
+}
+
 export function createBunTransport(): BunTransport {
   let server: ReturnType<typeof Bun.serve> | undefined;
   let connectionCount = 0;
@@ -69,7 +80,7 @@ export function createBunTransport(): BunTransport {
         port,
         fetch(req, srv) {
           const upgraded = srv.upgrade(req, {
-            data: { id: crypto.randomUUID() },
+            data: { id: crypto.randomUUID() } satisfies WsData,
           });
           if (!upgraded) {
             return new Response("WebSocket upgrade required", { status: 426 });
@@ -78,7 +89,8 @@ export function createBunTransport(): BunTransport {
         },
         websocket: {
           open(ws) {
-            const id = (ws.data as { readonly id: string }).id;
+            if (!isWsData(ws.data)) return;
+            const { id } = ws.data;
             const conn: TransportConnection = {
               id,
               send: (data: string) => ws.send(data) as TransportSendResult,
@@ -90,23 +102,23 @@ export function createBunTransport(): BunTransport {
             handler.onOpen(conn);
           },
           message(ws, message) {
-            const id = (ws.data as { readonly id: string }).id;
-            const conn = connMap.get(id);
+            if (!isWsData(ws.data)) return;
+            const conn = connMap.get(ws.data.id);
             if (conn === undefined) return;
             const data = typeof message === "string" ? message : decoder.decode(message);
             handler.onMessage(conn, data);
           },
           close(ws, code, reason) {
-            const id = (ws.data as { readonly id: string }).id;
-            const conn = connMap.get(id);
+            if (!isWsData(ws.data)) return;
+            const conn = connMap.get(ws.data.id);
             if (conn === undefined) return;
-            connMap.delete(id);
+            connMap.delete(ws.data.id);
             connectionCount--;
             handler.onClose(conn, code, reason);
           },
           drain(ws) {
-            const id = (ws.data as { readonly id: string }).id;
-            const conn = connMap.get(id);
+            if (!isWsData(ws.data)) return;
+            const conn = connMap.get(ws.data.id);
             if (conn === undefined) return;
             handler.onDrain(conn);
           },

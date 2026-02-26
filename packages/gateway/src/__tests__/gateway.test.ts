@@ -769,4 +769,163 @@ describe("createGateway", () => {
       await gateway.stop();
     });
   });
+
+  // =========================================================================
+  // Session lifecycle (destroySession, onSessionEvent)
+  // =========================================================================
+
+  describe("destroySession()", () => {
+    test("force-destroys an active session", async () => {
+      const auth = createTestAuthenticator({
+        ok: true,
+        sessionId: "s-destroy",
+        agentId: "agent-1",
+        metadata: {},
+      });
+      gateway = createGateway({}, { transport, auth });
+      await gateway.start(0);
+
+      const conn = await authenticateConnection(transport, gateway, "s-destroy");
+      expect(conn.closed).toBe(false);
+
+      const result = gateway.destroySession("s-destroy", "admin action");
+      expect(result.ok).toBe(true);
+      expect(conn.closed).toBe(true);
+      expect(conn.closeCode).toBe(4012);
+    });
+
+    test("returns NOT_FOUND for non-existent session", async () => {
+      const auth = createTestAuthenticator();
+      gateway = createGateway({}, { transport, auth });
+      await gateway.start(0);
+
+      const result = gateway.destroySession("no-such-session");
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("NOT_FOUND");
+      }
+    });
+
+    test("emits 'destroyed' session event", async () => {
+      const auth = createTestAuthenticator({
+        ok: true,
+        sessionId: "s-destroy-event",
+        agentId: "agent-1",
+        metadata: {},
+      });
+      gateway = createGateway({}, { transport, auth });
+      await gateway.start(0);
+
+      const events: unknown[] = [];
+      gateway.onSessionEvent((e) => events.push(e));
+
+      await authenticateConnection(transport, gateway, "s-destroy-event");
+      gateway.destroySession("s-destroy-event", "test reason");
+
+      const destroyed = events.find((e) => (e as { kind: string }).kind === "destroyed") as
+        | { kind: "destroyed"; sessionId: string; reason: string }
+        | undefined;
+      expect(destroyed).toBeDefined();
+      expect(destroyed?.sessionId).toBe("s-destroy-event");
+      expect(destroyed?.reason).toBe("test reason");
+    });
+
+    test("destroys a disconnected session within TTL", async () => {
+      const auth = createTestAuthenticator({
+        ok: true,
+        sessionId: "s-disc-destroy",
+        agentId: "agent-1",
+        metadata: {},
+      });
+      gateway = createGateway({ sessionTtlMs: 30_000 }, { transport, auth });
+      await gateway.start(0);
+
+      const events: unknown[] = [];
+      gateway.onSessionEvent((e) => events.push(e));
+
+      const conn = await authenticateConnection(transport, gateway, "s-disc-destroy");
+      transport.simulateClose(conn.id);
+
+      const result = gateway.destroySession("s-disc-destroy");
+      expect(result.ok).toBe(true);
+
+      const destroyed = events.find((e) => (e as { kind: string }).kind === "destroyed");
+      expect(destroyed).toBeDefined();
+    });
+  });
+
+  describe("onSessionEvent()", () => {
+    test("unsubscribe function prevents further events", async () => {
+      const auth = createTestAuthenticator({
+        ok: true,
+        sessionId: "s-unsub",
+        agentId: "agent-1",
+        metadata: {},
+      });
+      gateway = createGateway({}, { transport, auth });
+      await gateway.start(0);
+
+      const events: unknown[] = [];
+      const unsub = gateway.onSessionEvent((e) => events.push(e));
+
+      await authenticateConnection(transport, gateway, "s-unsub");
+      expect(events.length).toBeGreaterThan(0);
+
+      unsub();
+      events.length = 0;
+      gateway.destroySession("s-unsub");
+      expect(events).toHaveLength(0);
+    });
+  });
+
+  // =========================================================================
+  // Node registry access
+  // =========================================================================
+
+  describe("nodeRegistry()", () => {
+    test("returns the node registry instance", async () => {
+      const auth = createTestAuthenticator();
+      gateway = createGateway({}, { transport, auth });
+      await gateway.start(0);
+
+      const reg = gateway.nodeRegistry();
+      expect(reg).toBeDefined();
+      expect(reg.size()).toBe(0);
+    });
+
+    test("node registry is usable for registration", async () => {
+      const auth = createTestAuthenticator();
+      gateway = createGateway({}, { transport, auth });
+      await gateway.start(0);
+
+      const reg = gateway.nodeRegistry();
+      const result = reg.register({
+        nodeId: "node-1",
+        mode: "full",
+        tools: [{ name: "search" }],
+        capacity: { current: 0, max: 10, available: 10 },
+        connectedAt: Date.now(),
+        lastHeartbeat: Date.now(),
+        connId: "conn-1",
+      });
+      expect(result.ok).toBe(true);
+      expect(reg.size()).toBe(1);
+    });
+  });
+
+  describe("onNodeEvent()", () => {
+    test("subscribe and unsubscribe work correctly", async () => {
+      const auth = createTestAuthenticator();
+      gateway = createGateway({}, { transport, auth });
+      await gateway.start(0);
+
+      const events: unknown[] = [];
+      const unsub = gateway.onNodeEvent((e) => events.push(e));
+
+      // Events are not emitted by gateway itself yet (future node connection handling)
+      // but the subscription mechanism should work
+      expect(typeof unsub).toBe("function");
+      unsub();
+    });
+  });
 });

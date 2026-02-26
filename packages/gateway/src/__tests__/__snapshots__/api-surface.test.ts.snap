@@ -14,6 +14,11 @@ interface ConnectClient {
     /** Platform hint (e.g. "web", "ios", "cli", "node"). */
     readonly platform?: string;
 }
+/** Session resume request embedded in a ConnectFrame. */
+interface ResumeRequest {
+    readonly sessionId: string;
+    readonly lastSeq: number;
+}
 interface ConnectFrame {
     readonly kind: "connect";
     /** Minimum protocol version the client supports (positive integer). */
@@ -24,6 +29,8 @@ interface ConnectFrame {
         readonly token: string;
     };
     readonly client?: ConnectClient;
+    /** If present, the client is attempting to resume a previous session. */
+    readonly resume?: ResumeRequest;
 }
 type GatewayFrameKind = "request" | "response" | "event" | "ack" | "error";
 interface GatewayFrame {
@@ -101,6 +108,11 @@ interface SchedulerDef {
     readonly agentId: string;
     readonly payload?: unknown;
 }
+/** Static channel-to-agent binding for routing. */
+interface ChannelBinding {
+    readonly channelName: string;
+    readonly agentId: string;
+}
 interface GatewayConfig {
     /** Minimum protocol version the server supports. Default: 1. */
     readonly minProtocolVersion: number;
@@ -136,6 +148,12 @@ interface GatewayConfig {
     readonly webhookPath?: string;
     /** Scheduler definitions for periodic frame dispatch. */
     readonly schedulers?: readonly SchedulerDef[];
+    /** Node heartbeat timeout in ms. Nodes not heartbeating within this window are evicted. Default: 90_000 (3x heartbeat interval). */
+    readonly nodeHeartbeatTimeoutMs: number;
+    /** Session time-to-live after disconnect (ms). 0 = immediate cleanup. Default: 0. */
+    readonly sessionTtlMs: number;
+    /** Static channel-to-agent bindings, loaded at startup. */
+    readonly channelBindings?: readonly ChannelBinding[];
 }
 declare const DEFAULT_GATEWAY_CONFIG: GatewayConfig;
 type BackpressureState = "normal" | "warning" | "critical";
@@ -249,6 +267,90 @@ interface BackpressureMonitor {
 declare function createBackpressureMonitor(config: Pick<GatewayConfig, "maxBufferBytesPerConnection" | "backpressureHighWatermark" | "globalBufferLimitBytes">): BackpressureMonitor;
 
 /**
+ * Node registration and health tracking for connected compute nodes.
+ * Maintains an inverted tool index for O(1) tool-to-node lookups.
+ *
+ * Internal to @koi/gateway (L2) — not an L0 contract.
+ */
+
+interface AdvertisedTool {
+    readonly name: string;
+    readonly description?: string | undefined;
+    readonly schema?: Readonly<Record<string, unknown>> | undefined;
+}
+interface CapacityReport {
+    readonly current: number;
+    readonly max: number;
+    readonly available: number;
+}
+interface RegisteredNode {
+    readonly nodeId: string;
+    readonly mode: "full" | "thin";
+    readonly tools: readonly AdvertisedTool[];
+    readonly capacity: CapacityReport;
+    readonly connectedAt: number;
+    readonly lastHeartbeat: number;
+    readonly connId: string;
+}
+type NodeRegistryEvent = {
+    readonly kind: "registered";
+    readonly node: RegisteredNode;
+} | {
+    readonly kind: "deregistered";
+    readonly nodeId: string;
+} | {
+    readonly kind: "heartbeat";
+    readonly nodeId: string;
+} | {
+    readonly kind: "capacity_updated";
+    readonly nodeId: string;
+    readonly capacity: CapacityReport;
+};
+interface NodeRegistry {
+    readonly register: (node: RegisteredNode) => Result<void, KoiError>;
+    readonly deregister: (nodeId: string) => Result<boolean, KoiError>;
+    readonly lookup: (nodeId: string) => RegisteredNode | undefined;
+    readonly findByTool: (toolName: string) => readonly RegisteredNode[];
+    readonly nodes: () => ReadonlyMap<string, RegisteredNode>;
+    readonly size: () => number;
+    readonly updateHeartbeat: (nodeId: string) => Result<void, KoiError>;
+    readonly updateCapacity: (nodeId: string, capacity: CapacityReport) => Result<void, KoiError>;
+}
+declare function createInMemoryNodeRegistry(): NodeRegistry;
+
+/**
+ * Node frame types, parsing, and encoding for compute-node connections.
+ *
+ * All types are local to @koi/gateway — no imports from @koi/node (L2 peer).
+ * Nodes use a different wire format (NodeFrame) than clients (GatewayFrame).
+ */
+
+type NodeFrameKind = "node:handshake" | "node:capabilities" | "node:registered" | "node:heartbeat" | "node:capacity" | "node:error" | "agent:dispatch" | "agent:message" | "agent:status" | "agent:terminate" | "tool_call" | "tool_result" | "tool_error";
+interface NodeFrame {
+    readonly nodeId: string;
+    readonly agentId: string;
+    readonly correlationId: string;
+    readonly ttl?: number | undefined;
+    readonly kind: NodeFrameKind;
+    readonly payload: unknown;
+}
+interface HandshakePayload {
+    readonly nodeId: string;
+    readonly version: string;
+    readonly capacity: CapacityReport;
+}
+interface CapabilitiesPayload {
+    readonly nodeType: "full" | "thin";
+    readonly tools: readonly AdvertisedTool[];
+}
+declare function peekFrameKind(data: string): string | undefined;
+declare function parseNodeFrame(data: string): Result<NodeFrame, KoiError>;
+declare function validateHandshakePayload(payload: unknown): Result<HandshakePayload, KoiError>;
+declare function validateCapabilitiesPayload(payload: unknown): Result<CapabilitiesPayload, KoiError>;
+declare function validateCapacityPayload(payload: unknown): Result<CapacityReport, KoiError>;
+declare function encodeNodeFrame(frame: NodeFrame): string;
+
+/**
  * Webhook ingestion: HTTP server that converts POST requests
  * into GatewayFrames dispatched through the gateway pipeline.
  */
@@ -275,9 +377,25 @@ declare function createWebhookServer(config: WebhookConfig, dispatcher: WebhookD
 
 /**
  * Gateway factory: wires transport, auth, sessions, sequencing,
- * and backpressure into a single control-plane entry point.
+ * backpressure, node registry, session resume, and channel binding
+ * into a single control-plane entry point.
  */
 
+type SessionEvent = {
+    readonly kind: "created";
+    readonly session: Session;
+} | {
+    readonly kind: "resumed";
+    readonly session: Session;
+    readonly pendingFrameCount: number;
+} | {
+    readonly kind: "destroyed";
+    readonly sessionId: string;
+    readonly reason: string;
+} | {
+    readonly kind: "expired";
+    readonly sessionId: string;
+};
 interface Gateway {
     readonly start: (port: number) => Promise<void>;
     readonly stop: () => Promise<void>;
@@ -288,6 +406,22 @@ interface Gateway {
     readonly dispatch: (session: Session, frame: GatewayFrame) => void;
     /** Returns the webhook server port, or undefined if webhook is not configured. */
     readonly webhookPort: () => number | undefined;
+    /** Access the node registry for tool/node management. */
+    readonly nodeRegistry: () => NodeRegistry;
+    /** Subscribe to node lifecycle events. Returns unsubscribe function. */
+    readonly onNodeEvent: (handler: (event: NodeRegistryEvent) => void) => () => void;
+    /** Force-destroy a session by ID. */
+    readonly destroySession: (sessionId: string, reason?: string) => Result<void, KoiError>;
+    /** Subscribe to session lifecycle events. Returns unsubscribe function. */
+    readonly onSessionEvent: (handler: (event: SessionEvent) => void) => () => void;
+    /** Bind a channel name to a specific agent ID at runtime. */
+    readonly bindChannel: (channelName: string, agentId: string) => void;
+    /** Remove a channel-to-agent binding. Returns true if binding existed. */
+    readonly unbindChannel: (channelName: string) => boolean;
+    /** Snapshot of current channel bindings. */
+    readonly channelBindings: () => ReadonlyMap<string, string>;
+    /** Send a NodeFrame to a connected compute node. */
+    readonly sendToNode: (nodeId: string, frame: NodeFrame) => Result<number, KoiError>;
 }
 interface GatewayDeps {
     readonly transport: Transport;
@@ -321,14 +455,20 @@ declare function parseConnectFrame(raw: string): Result<ConnectFrame, KoiError>;
  * Encode a GatewayFrame to its JSON wire representation.
  */
 declare function encodeFrame(frame: GatewayFrame): string;
+type FrameIdGenerator = () => string;
+/**
+ * Create a monotonic frame ID generator scoped to a single gateway instance.
+ * Each call to the returned function produces a unique, sequentially-ordered ID.
+ */
+declare function createFrameIdGenerator(): FrameIdGenerator;
 /**
  * Create a JSON-encoded error frame string for server-generated error responses.
  */
-declare function createErrorFrame(seq: number, code: string, message: string): string;
+declare function createErrorFrame(seq: number, code: string, message: string, nextId?: FrameIdGenerator): string;
 /**
  * Create a JSON-encoded ack frame string for server-generated acknowledgements.
  */
-declare function createAckFrame(seq: number, ref?: string, payload?: unknown): string;
+declare function createAckFrame(seq: number, ref?: string, payload?: unknown, nextId?: FrameIdGenerator): string;
 
 /**
  * Routing: dispatch key computation, pattern matching, and route resolution.
@@ -361,10 +501,11 @@ interface ResolvedRoute {
 }
 /**
  * Resolve the target agent for a routing context.
+ * Priority: channel bindings > pattern bindings > fallback.
  * - If no routing config is provided, returns the fallback immediately (backward compat).
  * - Otherwise, computes the dispatch key, matches bindings, and falls back to \`fallbackAgentId\`.
  */
-declare function resolveRoute(config: RoutingConfig | undefined, routing: RoutingContext | undefined, fallbackAgentId: string): ResolvedRoute;
+declare function resolveRoute(config: RoutingConfig | undefined, routing: RoutingContext | undefined, fallbackAgentId: string, channelBindings?: ReadonlyMap<string, string>): ResolvedRoute;
 
 /**
  * Scheduler: timer-based periodic frame generation.
@@ -407,6 +548,6 @@ interface SequenceTracker {
 }
 declare function createSequenceTracker(windowSize: number): SequenceTracker;
 
-export { type AcceptResult, type AuthResult, type BackpressureMonitor, type BackpressureState, type BunTransport, type ConnectClient, type ConnectFrame, DEFAULT_GATEWAY_CONFIG, type Gateway, type GatewayAuthenticator, type GatewayCapabilities, type GatewayConfig, type GatewayDeps, type GatewayFrame, type GatewayFrameKind, type GatewayScheduler, type HandshakeAckPayload, type HandshakeOptions, type HandshakeResult, type HandshakeSnapshot, type ResolvedRoute, type RouteBinding, type RoutingConfig, type RoutingContext, type SchedulerDef, type SchedulerDispatcher, type ScopingMode, type SequenceTracker, type Session, type SessionStore, type SweepError, type Transport, type TransportConnection, type TransportHandler, type TransportSendResult, type WebhookAuthResult, type WebhookAuthenticator, type WebhookConfig, type WebhookDispatcher, type WebhookServer, computeDispatchKey, createAckFrame, createBackpressureMonitor, createBunTransport, createErrorFrame, createGateway, createInMemorySessionStore, createScheduler, createSequenceTracker, createWebhookServer, encodeFrame, handleHandshake, negotiateProtocol, parseConnectFrame, parseFrame, resolveBinding, resolveRoute, startHeartbeatSweep, validateBindingPattern };
+export { type AcceptResult, type AdvertisedTool, type AuthResult, type BackpressureMonitor, type BackpressureState, type BunTransport, type CapabilitiesPayload, type CapacityReport, type ChannelBinding, type ConnectClient, type ConnectFrame, DEFAULT_GATEWAY_CONFIG, type FrameIdGenerator, type Gateway, type GatewayAuthenticator, type GatewayCapabilities, type GatewayConfig, type GatewayDeps, type GatewayFrame, type GatewayFrameKind, type GatewayScheduler, type HandshakeAckPayload, type HandshakeOptions, type HandshakePayload, type HandshakeResult, type HandshakeSnapshot, type NodeFrame, type NodeFrameKind, type NodeRegistry, type NodeRegistryEvent, type RegisteredNode, type ResolvedRoute, type ResumeRequest, type RouteBinding, type RoutingConfig, type RoutingContext, type SchedulerDef, type SchedulerDispatcher, type ScopingMode, type SequenceTracker, type Session, type SessionEvent, type SessionStore, type SweepError, type Transport, type TransportConnection, type TransportHandler, type TransportSendResult, type WebhookAuthResult, type WebhookAuthenticator, type WebhookConfig, type WebhookDispatcher, type WebhookServer, computeDispatchKey, createAckFrame, createBackpressureMonitor, createBunTransport, createErrorFrame, createFrameIdGenerator, createGateway, createInMemoryNodeRegistry, createInMemorySessionStore, createScheduler, createSequenceTracker, createWebhookServer, encodeFrame, encodeNodeFrame, handleHandshake, negotiateProtocol, parseConnectFrame, parseFrame, parseNodeFrame, peekFrameKind, resolveBinding, resolveRoute, startHeartbeatSweep, validateBindingPattern, validateCapabilitiesPayload, validateCapacityPayload, validateHandshakePayload };
 "
 `;

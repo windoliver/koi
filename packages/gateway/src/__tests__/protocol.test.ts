@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { encodeFrame, negotiateProtocol, parseConnectFrame, parseFrame } from "../protocol.js";
+import {
+  createFrameIdGenerator,
+  encodeFrame,
+  negotiateProtocol,
+  parseConnectFrame,
+  parseFrame,
+} from "../protocol.js";
 import type { GatewayFrame } from "../types.js";
 
 describe("parseFrame", () => {
@@ -359,6 +365,129 @@ describe("negotiateProtocol", () => {
     if (!result.ok) {
       expect(result.error.message).toContain("No protocol overlap");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseConnectFrame — resume field
+// ---------------------------------------------------------------------------
+
+describe("parseConnectFrame — resume", () => {
+  test("parses connect frame with valid resume field", () => {
+    const raw = JSON.stringify({
+      kind: "connect",
+      minProtocol: 1,
+      maxProtocol: 1,
+      auth: { token: "tok" },
+      resume: { sessionId: "sess-1", lastSeq: 42 },
+    });
+    const result = parseConnectFrame(raw);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.resume).toEqual({ sessionId: "sess-1", lastSeq: 42 });
+    }
+  });
+
+  test("parses connect frame without resume (undefined)", () => {
+    const raw = JSON.stringify({
+      kind: "connect",
+      minProtocol: 1,
+      maxProtocol: 1,
+      auth: { token: "tok" },
+    });
+    const result = parseConnectFrame(raw);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.resume).toBeUndefined();
+    }
+  });
+
+  test("rejects resume that is not an object", () => {
+    const raw = JSON.stringify({
+      kind: "connect",
+      minProtocol: 1,
+      maxProtocol: 1,
+      auth: { token: "tok" },
+      resume: "not-an-object",
+    });
+    const result = parseConnectFrame(raw);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain('"resume" must be an object');
+    }
+  });
+
+  test("rejects resume with empty sessionId", () => {
+    const raw = JSON.stringify({
+      kind: "connect",
+      minProtocol: 1,
+      maxProtocol: 1,
+      auth: { token: "tok" },
+      resume: { sessionId: "", lastSeq: 0 },
+    });
+    const result = parseConnectFrame(raw);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("resume.sessionId");
+    }
+  });
+
+  test("rejects resume with negative lastSeq", () => {
+    const raw = JSON.stringify({
+      kind: "connect",
+      minProtocol: 1,
+      maxProtocol: 1,
+      auth: { token: "tok" },
+      resume: { sessionId: "s1", lastSeq: -1 },
+    });
+    const result = parseConnectFrame(raw);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("resume.lastSeq");
+    }
+  });
+
+  test("rejects resume with non-integer lastSeq", () => {
+    const raw = JSON.stringify({
+      kind: "connect",
+      minProtocol: 1,
+      maxProtocol: 1,
+      auth: { token: "tok" },
+      resume: { sessionId: "s1", lastSeq: 1.5 },
+    });
+    const result = parseConnectFrame(raw);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("resume.lastSeq");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createFrameIdGenerator
+// ---------------------------------------------------------------------------
+
+describe("createFrameIdGenerator", () => {
+  test("produces unique monotonic IDs", () => {
+    const gen = createFrameIdGenerator();
+    const id1 = gen();
+    const id2 = gen();
+    const id3 = gen();
+    expect(id1).not.toBe(id2);
+    expect(id2).not.toBe(id3);
+    expect(id1).toMatch(/^gw-[a-f0-9]{8}-0$/);
+    expect(id2).toMatch(/^gw-[a-f0-9]{8}-1$/);
+  });
+
+  test("different generators have different instance prefixes", () => {
+    const gen1 = createFrameIdGenerator();
+    const gen2 = createFrameIdGenerator();
+    const id1 = gen1();
+    const id2 = gen2();
+    // Both end in -0 but have different instance prefixes
+    expect(id1).toMatch(/-0$/);
+    expect(id2).toMatch(/-0$/);
+    expect(id1).not.toBe(id2);
   });
 });
 
