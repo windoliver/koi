@@ -554,6 +554,200 @@ interface KernelExtension {
 }
 
 /**
+ * Proposal + ProposalGate — unified change governance contract.
+ *
+ * Every agent-submitted change request flows through this contract.
+ * The gate requirement scales with the architectural blast radius of the target layer:
+ *   brick:sandboxed  → auto (sandbox verifies), takes effect immediately
+ *   brick:promoted   → HITL required, takes effect next session
+ *   bundle_l2        → auto (forge store shadows it), takes effect immediately
+ *   l1_extension     → HITL + full agent test, takes effect at next startup
+ *   l1_core          → HITL + full agent test, requires new binary
+ *   l0_interface     → HITL + all agents test, requires new binary
+ *   sandbox_policy   → HITL + meta-sandbox, takes effect on config push
+ *   gateway_routing  → HITL + staging gateway, takes effect on config push
+ *
+ * Exception: proposalId() is a branded type constructor (identity cast), permitted
+ * in L0 as a zero-logic operation for type safety.
+ *
+ * Exception: ALL_CHANGE_TARGETS and PROPOSAL_GATE_REQUIREMENTS are pure readonly
+ * data constants derived from L0 type definitions, codifying architecture-doc
+ * invariants with zero logic.
+ */
+
+declare const __proposalBrand: unique symbol;
+/**
+ * Branded string type for proposal identifiers.
+ * Prevents accidental mixing with other string IDs at compile time.
+ */
+type ProposalId = string & {
+    readonly [__proposalBrand]: "ProposalId";
+};
+/** Create a branded ProposalId from a plain string. */
+declare function proposalId(raw: string): ProposalId;
+/**
+ * The architectural layer targeted by a proposal.
+ * Names align with TrustTier vocabulary so submitters can reason about them:
+ *   "brick:sandboxed" — tool or skill (TrustTier "sandbox", auto-verified)
+ *   "brick:promoted"  — middleware or channel (TrustTier "promoted", HITL required)
+ *
+ * Maps 1:1 to the "Trust Gate by Layer" table in the architecture doc.
+ */
+type ChangeTarget = "brick:sandboxed" | "brick:promoted" | "bundle_l2" | "l1_extension" | "l1_core" | "l0_interface" | "sandbox_policy" | "gateway_routing";
+/** All valid ChangeTarget values. Used for exhaustiveness checks in tests and implementations. */
+declare const ALL_CHANGE_TARGETS: readonly ChangeTarget[];
+/** The type of change being proposed. */
+type ChangeKind = "create" | "update" | "promote" | "delete" | "configure" | "extend";
+/**
+ * Lifecycle state of a proposal.
+ * Terminal states: approved, rejected, superseded, expired.
+ * Non-terminal: pending.
+ */
+type ProposalStatus = "pending" | "approved" | "rejected" | "superseded" | "expired";
+/**
+ * Gate requirements for a given ChangeTarget.
+ * Encodes the "Trust Gate by Layer" table from the architecture doc.
+ */
+interface GateRequirement {
+    /** Whether a human must explicitly approve before the change proceeds. */
+    readonly requiresHitl: boolean;
+    /**
+     * Whether the change requires a full test suite (full agent test or all agents test)
+     * beyond the isolated brick verification.
+     */
+    readonly requiresFullTest: boolean;
+    /** When the change takes effect after gate approval. */
+    readonly takeEffectOn: "immediately" | "next_session" | "next_startup" | "next_binary" | "config_push";
+    /** Scope of sandbox testing required for this change. */
+    readonly sandboxTestScope: "brick_only" | "brick_plus_integration" | "full_agent_test" | "all_agents_test" | "meta_sandbox" | "staging_gateway";
+}
+/**
+ * Gate requirements per ChangeTarget. Encodes the full "Trust Gate by Layer"
+ * table from the architecture doc. Zero logic — pure lookup.
+ *
+ * Blast radius increases from top to bottom:
+ *   brick:sandboxed  → lowest (affects this brick only, immediately)
+ *   l0_interface     → highest (affects all agents, requires new binary)
+ */
+declare const PROPOSAL_GATE_REQUIREMENTS: Readonly<Record<ChangeTarget, GateRequirement>>;
+/**
+ * The outcome of a human (or automated) review of a proposal.
+ * Distinct from ApprovalDecision (middleware.ts) which is per-tool-call.
+ * Rejection always requires a reason; approval reason is optional.
+ */
+type ReviewDecision = {
+    readonly kind: "approved";
+    readonly reason?: string | undefined;
+} | {
+    readonly kind: "rejected";
+    readonly reason: string;
+};
+/**
+ * Events emitted by ProposalGate during proposal lifecycle operations.
+ * Follows the RegistryEvent / DelegationEvent discriminated union pattern.
+ */
+type ProposalEvent = {
+    readonly kind: "proposal:submitted";
+    readonly proposal: Proposal;
+} | {
+    readonly kind: "proposal:reviewed";
+    readonly proposalId: ProposalId;
+    readonly decision: ReviewDecision;
+} | {
+    readonly kind: "proposal:expired";
+    readonly proposalId: ProposalId;
+} | {
+    readonly kind: "proposal:superseded";
+    readonly proposalId: ProposalId;
+    readonly supersededBy: ProposalId;
+};
+/**
+ * Data provided by the agent when submitting a change proposal.
+ * The gate assigns id, status, and submittedAt.
+ */
+interface ProposalInput {
+    /** Agent ID of the submitter. */
+    readonly submittedBy: AgentId;
+    /** Which architectural layer this change targets. */
+    readonly changeTarget: ChangeTarget;
+    /** What kind of operation is being requested. */
+    readonly changeKind: ChangeKind;
+    /** Human-readable description of what is being changed and why. */
+    readonly description: string;
+    /** Optional reference to the specific brick being changed. */
+    readonly brickRef?: BrickRef | undefined;
+    /** Optional expiry timestamp (ms). If set, proposal transitions to "expired" after this time. */
+    readonly expiresAt?: number | undefined;
+    /** Optional structured metadata for the change (schema, diff, etc.). */
+    readonly metadata?: JsonObject | undefined;
+}
+/**
+ * A complete proposal record as stored and returned by the gate.
+ * Immutable — each state transition produces a new Proposal object.
+ */
+interface Proposal {
+    /** Gate-assigned unique identifier. */
+    readonly id: ProposalId;
+    /** Agent ID of the submitter. */
+    readonly submittedBy: AgentId;
+    /** Which architectural layer this change targets. */
+    readonly changeTarget: ChangeTarget;
+    /** What kind of operation is being requested. */
+    readonly changeKind: ChangeKind;
+    /** Human-readable description of what is being changed and why. */
+    readonly description: string;
+    /** Optional reference to the specific brick being changed. */
+    readonly brickRef?: BrickRef | undefined;
+    /** Current lifecycle state. */
+    readonly status: ProposalStatus;
+    /** Unix timestamp (ms) when the proposal was submitted. */
+    readonly submittedAt: number;
+    /** Optional expiry timestamp (ms). */
+    readonly expiresAt?: number | undefined;
+    /** Unix timestamp (ms) when the proposal was reviewed. Set when status is approved or rejected. */
+    readonly reviewedAt?: number | undefined;
+    /** The review verdict. Set when status is approved or rejected. */
+    readonly reviewDecision?: ReviewDecision | undefined;
+    /** The proposal that replaced this one. Set when status is "superseded". */
+    readonly supersededBy?: ProposalId | undefined;
+    /** Optional structured metadata for the change (schema, diff, etc.). */
+    readonly metadata?: JsonObject | undefined;
+}
+/** Result of submitting a proposal. */
+type ProposalResult = Result<Proposal, KoiError>;
+/** Call to stop receiving proposal events from a ProposalGate.watch() subscription. */
+type ProposalUnsubscribe = () => void;
+/**
+ * Submit/review interface for change governance.
+ * Separate from KoiMiddleware.ApprovalHandler — this is for structural
+ * layer changes (persistent, cross-session) not per-tool-call approval (in-turn).
+ *
+ * Methods return T | Promise<T> per the L0 async-by-default-for-I/O pattern:
+ * in-memory gates return sync values; HTTP-backed gates return Promises.
+ * Callers must always await.
+ */
+interface ProposalGate {
+    /**
+     * Submit a change proposal to the gate.
+     * The gate assigns id, status ("pending"), and submittedAt.
+     * Returns the created Proposal on success, or a KoiError on validation failure.
+     */
+    readonly submit: (input: ProposalInput) => ProposalResult | Promise<ProposalResult>;
+    /**
+     * Record a review decision for a pending proposal.
+     * Transitions the proposal to "approved" or "rejected".
+     * No-op if the proposal is already in a terminal state.
+     */
+    readonly review: (id: ProposalId, decision: ReviewDecision) => void | Promise<void>;
+    /**
+     * Subscribe to proposal lifecycle events.
+     * Returns a ProposalUnsubscribe function — call it to stop receiving events.
+     * Handler may be sync or async; the gate does not await handler results.
+     */
+    readonly watch: (handler: (event: ProposalEvent) => void | Promise<void>) => ProposalUnsubscribe;
+}
+
+/**
  * Reconciliation contract — K8s-style desired-state convergence.
  *
  * Defines the extension point for L2 reconciliation controllers and the
@@ -1173,7 +1367,7 @@ declare function isProcessState(value: string): value is ProcessState;
  */
 declare function validateNonEmpty(value: string, name: string): Result<void, KoiError>;
 
-export { type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentId, AgentManifest, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickKind, type BrickPage, BrickRef, type BrickRegistryBackend, type BrickRegistryChangeEvent, type BrickRegistryChangeKind, type BrickRegistryReader, type BrickRegistryWriter, type BrickSearchQuery, type BundleId, type CapabilityRegistry, type CapacityReport, type ChainCompactor, type ChainId, type CompensatingOp, DEFAULT_BRICK_SEARCH_LIMIT, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_REPUTATION_QUERY_LIMIT, DEFAULT_TASK_BOARD_CONFIG, EXTENSION_PRIORITY, EngineState, type EventCursor, type FeedbackKind, type FileOpKind, type FileOpRecord, type ForkRef, type GuardContext, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, KoiError, KoiMiddleware, type NodeCapability, type NodeId, type PendingFrame, ProcessState, type PruningPolicy, type PutOptions, REPUTATION_LEVEL_ORDER, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, type ReputationBackend, type ReputationFeedback, type ReputationLevel, type ReputationQuery, type ReputationQueryResult, type ReputationScore, Result, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, SkillComponent, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, type TaskBoard, type TaskBoardConfig, type TaskBoardEvent, type TaskBoardSnapshot, type TaskItem, type TaskItemId, type TaskItemInput, type TaskItemPatch, type TaskItemStatus, type TaskResult, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TransitionContext, TransitionReason, type TurnTrace, type ValidationDiagnostic, type ValidationResult, bundleId, chainId, conflict, evolveRegistryEntry, external, internal, isAgentStateEvent, isProcessState, isToolCallPayload, nodeId, notFound, permission, rateLimit, staleRef, taskItemId, timeout, validateNonEmpty, validation };
+export { ALL_CHANGE_TARGETS, type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentId, AgentManifest, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickKind, type BrickPage, BrickRef, type BrickRegistryBackend, type BrickRegistryChangeEvent, type BrickRegistryChangeKind, type BrickRegistryReader, type BrickRegistryWriter, type BrickSearchQuery, type BundleId, type CapabilityRegistry, type CapacityReport, type ChainCompactor, type ChainId, type ChangeKind, type ChangeTarget, type CompensatingOp, DEFAULT_BRICK_SEARCH_LIMIT, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_REPUTATION_QUERY_LIMIT, DEFAULT_TASK_BOARD_CONFIG, EXTENSION_PRIORITY, EngineState, type EventCursor, type FeedbackKind, type FileOpKind, type FileOpRecord, type ForkRef, type GateRequirement, type GuardContext, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, KoiError, KoiMiddleware, type NodeCapability, type NodeId, PROPOSAL_GATE_REQUIREMENTS, type PendingFrame, ProcessState, type Proposal, type ProposalEvent, type ProposalGate, type ProposalId, type ProposalInput, type ProposalResult, type ProposalStatus, type ProposalUnsubscribe, type PruningPolicy, type PutOptions, REPUTATION_LEVEL_ORDER, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, type ReputationBackend, type ReputationFeedback, type ReputationLevel, type ReputationQuery, type ReputationQueryResult, type ReputationScore, Result, type ReviewDecision, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, SkillComponent, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, type TaskBoard, type TaskBoardConfig, type TaskBoardEvent, type TaskBoardSnapshot, type TaskItem, type TaskItemId, type TaskItemInput, type TaskItemPatch, type TaskItemStatus, type TaskResult, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TransitionContext, TransitionReason, type TurnTrace, type ValidationDiagnostic, type ValidationResult, bundleId, chainId, conflict, evolveRegistryEntry, external, internal, isAgentStateEvent, isProcessState, isToolCallPayload, nodeId, notFound, permission, proposalId, rateLimit, staleRef, taskItemId, timeout, validateNonEmpty, validation };
 "
 `;
 
