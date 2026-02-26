@@ -1,0 +1,96 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/file-resolution API surface . has stable type surface 1`] = `
+"/**
+ * Soul directory resolution — reads structured SOUL.md + STYLE.md + INSTRUCTIONS.md directories.
+ */
+/** Files to look for in a soul directory, in order. */
+declare const SOUL_DIR_FILES: readonly ["SOUL.md", "STYLE.md", "INSTRUCTIONS.md"];
+/** Section headers for directory mode concatenation. */
+declare const SECTION_HEADERS: Readonly<Record<string, string>>;
+/** Result of resolving a soul directory. */
+interface ResolvedDirectory {
+    readonly text: string;
+    readonly sources: readonly string[];
+    readonly warnings: readonly string[];
+}
+/**
+ * Resolves directory content by reading SOUL.md (required) and optional STYLE.md, INSTRUCTIONS.md.
+ * Returns concatenated sections with headers, or empty text if SOUL.md is missing.
+ */
+declare function resolveDirectoryContent(dirPath: string, label: string): Promise<ResolvedDirectory>;
+
+/**
+ * Low-level file reading utilities for content resolution.
+ */
+/**
+ * Reads a file's text content.
+ * Returns undefined when the file does not exist (ENOENT) or path is a directory (EISDIR).
+ * Throws on unexpected errors (permission denied, disk failure, etc.).
+ */
+declare function readBoundedFile(filePath: string): Promise<string | undefined>;
+/**
+ * Returns true if the given path is a readable directory.
+ * Returns false when the path does not exist (ENOENT) or is not a directory (ENOTDIR).
+ * Throws on unexpected errors (permission denied, etc.).
+ */
+declare function isDirectory(path: string): Promise<boolean>;
+/**
+ * Returns true if the input string contains a newline (indicating inline content).
+ */
+declare function isInlineContent(input: string): boolean;
+/**
+ * Resolves a relative input path against a base path.
+ */
+declare function resolveInputPath(input: string, basePath: string): string;
+
+/**
+ * Unified content resolution — inline text, single file, or directory mode.
+ */
+/** Resolved content ready for injection. */
+interface ResolvedContent {
+    readonly text: string;
+    readonly tokens: number;
+    readonly sources: readonly string[];
+    readonly warnings: readonly string[];
+}
+/** Options for resolving content from a manifest config value. */
+interface ResolveContentOptions {
+    readonly input: string;
+    readonly maxTokens: number;
+    readonly label: string;
+    readonly basePath: string;
+    /** When true, directory inputs are resolved as structured soul directories. Default: false. */
+    readonly allowDirectory?: boolean;
+}
+/**
+ * Resolves content from a string input, supporting three modes:
+ * - Inline: string containing newlines => used directly
+ * - File: path to a single file
+ * - Directory: path to a directory with SOUL.md (only when allowDirectory is true)
+ *
+ * Returns resolved text with token estimation and optional warnings.
+ */
+declare function resolveContent(options: ResolveContentOptions): Promise<ResolvedContent>;
+
+/**
+ * Token estimation and budget enforcement for content resolution.
+ */
+/** Approximate chars per token — same heuristic as @koi/context. */
+declare const CHARS_PER_TOKEN = 4;
+/** Estimates token count from text length. */
+declare function estimateTokens(text: string): number;
+/** Result of truncating text to a token budget. */
+interface TruncateResult {
+    readonly text: string;
+    readonly warning: string | undefined;
+}
+/**
+ * Truncates text to fit within a token budget.
+ * Returns the (possibly truncated) text and an optional warning.
+ */
+declare function truncateToTokenBudget(text: string, maxTokens: number, label: string): TruncateResult;
+
+export { CHARS_PER_TOKEN, type ResolveContentOptions, type ResolvedContent, type ResolvedDirectory, SECTION_HEADERS, SOUL_DIR_FILES, type TruncateResult, estimateTokens, isDirectory, isInlineContent, readBoundedFile, resolveContent, resolveDirectoryContent, resolveInputPath, truncateToTokenBudget };
+"
+`;
