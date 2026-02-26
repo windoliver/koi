@@ -3,10 +3,8 @@
 exports[`@koi/core API surface . has stable type surface 1`] = `
 "import { B as BrickRef, a as BrickKind } from './brick-snapshot-HASH.js';
 export { A as ALL_BRICK_KINDS, b as BrickId, c as BrickLifecycle, d as BrickSnapshot, e as BrickSource, F as ForgeScope, M as MIN_TRUST_BY_KIND, S as SnapshotEvent, f as SnapshotId, g as SnapshotQuery, h as SnapshotStore, V as VALID_LIFECYCLE_TRANSITIONS, i as brickId, s as snapshotId } from './brick-snapshot-HASH.js';
-import { A as AgentId, P as ProcessState, T as Tool, S as SkillComponent, a as AgentDescriptor, b as Agent, c as SessionId, d as ToolCallId } from './ecs-HASH.js';
-export { B as BROWSER, e as BrowserActionOptions, f as BrowserConsoleEntry, g as BrowserConsoleLevel, h as BrowserConsoleOptions, i as BrowserConsoleResult, j as BrowserDriver, k as BrowserEvaluateOptions, l as BrowserEvaluateResult, m as BrowserFormField, n as BrowserNavigateOptions, o as BrowserNavigateResult, p as BrowserRefInfo, q as BrowserScreenshotOptions, r as BrowserScreenshotResult, s as BrowserScrollOptions, t as BrowserSnapshotOptions, u as BrowserSnapshotResult, v as BrowserTabCloseOptions, w as BrowserTabFocusOptions, x as BrowserTabInfo, y as BrowserTabNewOptions, z as BrowserTraceOptions, C as BrowserTraceResult, D as BrowserTypeOptions, E as BrowserUploadFile, F as BrowserUploadOptions, G as BrowserWaitOptions, H as BrowserWaitUntil, I as COMPONENT_PRIORITY, J as CREDENTIALS, K as ChildHandle, L as ChildLifecycleEvent, M as ComponentEvent, N as ComponentEventKind, O as ComponentProvider, Q as CredentialComponent, R as DELEGATION, U as EVENTS, V as EventComponent, W as FILESYSTEM, X as GOVERNANCE, Y as GOVERNANCE_VARIABLES, Z as GovernanceCheck, _ as GovernanceController, $ as GovernanceEvent, a0 as GovernanceSnapshot, a1 as GovernanceVariable, a2 as GovernanceVariableContributor, a3 as MEMORY, a4 as MemoryComponent, a5 as MemoryRecallOptions, a6 as MemoryResult, a7 as MemoryStoreOptions, a8 as ProcessAccounter, a9 as ProcessId, aa as RunId, ab as SensorReading, ac as SkillMetadata, ad as SpawnLedger, ae as SubsystemToken, af as ToolDescriptor, ag as ToolExecuteOptions, ah as TrustTier, ai as TurnId, aj as WORKSPACE, ak as WorkspaceComponent, al as agentId, am as agentToken, an as channelToken, ao as governanceContributorToken, ap as middlewareToken, aq as runId, ar as sessionId, as as skillToken, at as token, au as toolCallId, av as toolToken, aw as turnId } from './ecs-HASH.js';
-import { E as EngineState, a as EngineInput } from './engine-HASH.js';
-export { A as AbortReason, C as ComposedCallHandlers, b as CorrelationIds, c as EngineAdapter, d as EngineEvent, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, h as EngineStopReason } from './engine-HASH.js';
+import { A as AgentId, E as EngineState, P as ProcessState, T as Tool, S as SkillComponent, a as AgentDescriptor, b as Agent, K as KoiMiddleware, c as SessionId, d as ToolCallId } from './ecs-HASH.js';
+export { e as AbortReason, f as ApprovalDecision, g as ApprovalHandler, h as ApprovalRequest, B as BROWSER, i as BrowserActionOptions, j as BrowserConsoleEntry, k as BrowserConsoleLevel, l as BrowserConsoleOptions, m as BrowserConsoleResult, n as BrowserDriver, o as BrowserEvaluateOptions, p as BrowserEvaluateResult, q as BrowserFormField, r as BrowserNavigateOptions, s as BrowserNavigateResult, t as BrowserRefInfo, u as BrowserScreenshotOptions, v as BrowserScreenshotResult, w as BrowserScrollOptions, x as BrowserSnapshotOptions, y as BrowserSnapshotResult, z as BrowserTabCloseOptions, C as BrowserTabFocusOptions, D as BrowserTabInfo, F as BrowserTabNewOptions, G as BrowserTraceOptions, H as BrowserTraceResult, I as BrowserTypeOptions, J as BrowserUploadFile, L as BrowserUploadOptions, M as BrowserWaitOptions, N as BrowserWaitUntil, O as COMPONENT_PRIORITY, Q as CREDENTIALS, R as CapabilityFragment, U as ChildHandle, V as ChildLifecycleEvent, W as ComponentEvent, X as ComponentEventKind, Y as ComponentProvider, Z as ComposedCallHandlers, _ as CorrelationIds, $ as CredentialComponent, a0 as CronSchedule, a1 as DEFAULT_SCHEDULER_CONFIG, a2 as DELEGATION, a3 as EVENTS, a4 as EngineAdapter, a5 as EngineEvent, a6 as EngineInput, a7 as EngineInputBase, a8 as EngineMetrics, a9 as EngineOutput, aa as EngineStopReason, ab as EventComponent, ac as FILESYSTEM, ad as GOVERNANCE, ae as GOVERNANCE_VARIABLES, af as GovernanceCheck, ag as GovernanceController, ah as GovernanceEvent, ai as GovernanceSnapshot, aj as GovernanceVariable, ak as GovernanceVariableContributor, al as MEMORY, am as MemoryComponent, an as MemoryRecallOptions, ao as MemoryResult, ap as MemoryStoreOptions, aq as ModelChunk, ar as ModelHandler, as as ModelRequest, at as ModelResponse, au as ModelStreamHandler, av as ProcessAccounter, aw as ProcessId, ax as RunId, ay as SCHEDULER, az as ScheduleId, aA as ScheduleStore, aB as ScheduledTask, aC as SchedulerComponent, aD as SchedulerConfig, aE as SchedulerEvent, aF as SchedulerStats, aG as SensorReading, aH as SessionContext, aI as SkillMetadata, aJ as SpawnLedger, aK as SubsystemToken, aL as TaskFilter, aM as TaskHistoryFilter, aN as TaskId, aO as TaskOptions, aP as TaskRunRecord, aQ as TaskScheduler, aR as TaskStatus, aS as TaskStore, aT as ToolDescriptor, aU as ToolExecuteOptions, aV as ToolHandler, aW as ToolRequest, aX as ToolResponse, aY as TrustTier, aZ as TurnContext, a_ as TurnId, a$ as WEBHOOK, b0 as WORKSPACE, b1 as WorkspaceComponent, b2 as agentId, b3 as agentToken, b4 as channelToken, b5 as governanceContributorToken, b6 as middlewareToken, b7 as runId, b8 as scheduleId, b9 as sessionId, ba as skillToken, bb as taskId, bc as token, bd as toolCallId, be as toolToken, bf as turnId } from './ecs-HASH.js';
 import { Result, KoiError } from './errors.js';
 export { BackendErrorMapper, KoiErrorCode, RETRYABLE_DEFAULTS } from './errors.js';
 import { TransitionReason, AgentCondition, AgentStatus, RegistryEntry, AgentRegistry } from './lifecycle.js';
@@ -23,16 +21,14 @@ export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, Ev
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
 export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileRenameResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-HASH.js';
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
-import { KoiMiddleware } from './middleware.js';
-export { ApprovalDecision, ApprovalHandler, ApprovalRequest, CapabilityFragment, ModelChunk, ModelHandler, ModelRequest, ModelResponse, ModelStreamHandler, SessionContext, ToolHandler, ToolRequest, ToolResponse, TurnContext } from './middleware.js';
 export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
 export { ModelCapabilities, ModelProvider, ModelTarget } from './model-HASH.js';
 export { Resolver, SourceBundle, SourceLanguage } from './resolver.js';
 export { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance } from './sandbox-HASH.js';
-export { SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, TierResolution, TieredSandboxExecutor } from './sandbox-HASH.js';
+export { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, TierResolution, TieredSandboxExecutor } from './sandbox-HASH.js';
 export { FilesystemPolicy, NetworkPolicy, ResourceLimits, SandboxProfile } from './sandbox-HASH.js';
 export { DEFAULT_SKILL_SEARCH_LIMIT, SkillId, SkillPage, SkillPublishRequest, SkillRegistryBackend, SkillRegistryChangeEvent, SkillRegistryChangeKind, SkillRegistryEntry, SkillRegistryReader, SkillRegistryWriter, SkillSearchQuery, SkillVersion, skillId } from './skill-HASH.js';
-export { OutboundWebhookConfig, WebhookDeliveryStatus, WebhookEventKind, WebhookPayload } from './webhook.js';
+export { OutboundWebhookConfig, WebhookComponent, WebhookDeliveryStatus, WebhookEndpointHealth, WebhookEventKind, WebhookPayload, WebhookSummary } from './webhook.js';
 
 /**
  * Generic snapshot chain types — immutable DAG for time travel, fork, and recovery.
@@ -201,6 +197,8 @@ interface AgentRegisteredEvent {
     readonly agentId: AgentId;
     readonly agentType: "copilot" | "worker";
     readonly parentId?: AgentId | undefined;
+    /** Immutable provenance — the agent that spawned this one. */
+    readonly spawner?: AgentId | undefined;
     readonly metadata: Readonly<Record<string, unknown>>;
     readonly registeredAt: number;
 }
@@ -618,6 +616,164 @@ interface ReconcileRunnerConfig {
 declare const DEFAULT_RECONCILE_RUNNER_CONFIG: ReconcileRunnerConfig;
 
 /**
+ * Reputation backend — pluggable trust scoring and feedback contract (Layer 0).
+ *
+ * Defines the shapes for recording interaction feedback, querying computed trust
+ * scores, and filtering feedback history. L2 packages implement ReputationBackend
+ * for specific backends (in-memory ring buffer, Nexus/EigenTrust, etc.).
+ *
+ * Fail-closed contract: callers MUST treat a missing score (undefined from
+ * getScore) as "unknown" trust level — never as implicitly trusted.
+ */
+
+/**
+ * Discrete trust level derived from a computed reputation score.
+ * Ordered from least to most trusted — see REPUTATION_LEVEL_ORDER for
+ * the canonical sequence.
+ */
+type ReputationLevel = "unknown" | "untrusted" | "low" | "medium" | "high" | "verified";
+/**
+ * Canonical ordering of ReputationLevel values from least to most trusted.
+ * Use this to avoid hardcoding the sequence in consumers:
+ *
+ * \`\`\`typescript
+ * const idx = REPUTATION_LEVEL_ORDER.indexOf(score.level);
+ * if (idx >= REPUTATION_LEVEL_ORDER.indexOf("medium")) { ... }
+ * \`\`\`
+ */
+declare const REPUTATION_LEVEL_ORDER: readonly ReputationLevel[];
+/**
+ * Categorical feedback signal. Backends map these to numeric weights
+ * using their own algorithm (e.g., EigenTrust normalizes to [0,1]).
+ *
+ * Start minimal: "positive" | "negative" | "neutral" only.
+ * Retraction and dispute kinds (with entry IDs) will be added when
+ * the dispute resolution workflow is designed.
+ */
+type FeedbackKind = "positive" | "negative" | "neutral";
+/**
+ * A single trust signal from one agent about another.
+ *
+ * No numeric score on input — backends derive weights from \`kind\` using
+ * their own algorithm. This avoids the ambiguity of \`kind: "positive"\` with
+ * \`score: -0.5\`. \`kind\` is the authoritative semantic signal.
+ */
+interface ReputationFeedback {
+    /** The agent providing feedback (the observer). */
+    readonly sourceId: AgentId;
+    /** The agent being evaluated (the subject). */
+    readonly targetId: AgentId;
+    /** The semantic nature of the trust signal. */
+    readonly kind: FeedbackKind;
+    /**
+     * Optional structured context for the interaction.
+     * Useful for domain-specific metadata (session ID, task ID, domain tag).
+     * Backends may use context fields for domain-scoped scoring.
+     */
+    readonly context?: JsonObject | undefined;
+    /** Unix timestamp (ms) when the interaction occurred. */
+    readonly timestamp: number;
+}
+/**
+ * The computed trust score for an agent.
+ *
+ * \`score\` is the continuous value in [0, 1] — backends derive this from
+ * their own algorithm (e.g., EigenTrust eigenvector value, weighted average).
+ * \`level\` is the categorical bucket derived from \`score\`.
+ */
+interface ReputationScore {
+    /** The agent this score belongs to. */
+    readonly agentId: AgentId;
+    /**
+     * Continuous trust score in [0, 1].
+     * Higher = more trusted. Backends define the specific mapping.
+     */
+    readonly score: number;
+    /** Categorical trust level derived from \`score\`. */
+    readonly level: ReputationLevel;
+    /** Total number of feedback entries that contributed to this score. */
+    readonly feedbackCount: number;
+    /** Unix timestamp (ms) when this score was last computed. */
+    readonly computedAt: number;
+}
+/**
+ * Default maximum number of feedback entries returned by a single \`query()\` call.
+ * Implementations SHOULD apply this when the caller omits \`limit\`.
+ */
+declare const DEFAULT_REPUTATION_QUERY_LIMIT = 100;
+/**
+ * Filter for querying raw feedback entries.
+ * All fields are optional — omitting a field means "no constraint on that dimension".
+ * Providing no fields (empty filter) returns ALL entries up to \`limit\` — use with care.
+ */
+interface ReputationQuery {
+    /** Filter to feedback where this agent is the subject being evaluated. */
+    readonly targetId?: AgentId | undefined;
+    /** Filter to feedback originating from this agent. */
+    readonly sourceId?: AgentId | undefined;
+    /** Filter to entries matching any of these kinds. */
+    readonly kinds?: readonly FeedbackKind[] | undefined;
+    /** Include only entries at or after this Unix timestamp (ms). */
+    readonly after?: number | undefined;
+    /** Include only entries before this Unix timestamp (ms). */
+    readonly before?: number | undefined;
+    /** Maximum number of entries to return. */
+    readonly limit?: number | undefined;
+}
+interface ReputationQueryResult {
+    /** Feedback entries matching the query filter. */
+    readonly entries: readonly ReputationFeedback[];
+    /** True if more entries exist beyond the returned batch (use limit + before/after to paginate). */
+    readonly hasMore: boolean;
+}
+/**
+ * Pluggable trust scoring and feedback backend.
+ *
+ * All fallible operations return \`Result<T, KoiError>\`.
+ * All methods return \`T | Promise<T>\` — in-memory implementations are sync,
+ * database/network implementations are async. Callers must always \`await\`.
+ *
+ * **Fail-closed contract**: \`getScore()\` returns \`undefined\` for agents with
+ * no feedback history. Callers MUST treat \`undefined\` as \`"unknown"\` trust
+ * level and restrict access accordingly — never treat absence of data as
+ * implicit trust.
+ */
+interface ReputationBackend {
+    /**
+     * Record a trust signal from one agent about another.
+     * Implementations SHOULD be idempotent for identical (sourceId, targetId, kind, timestamp)
+     * tuples to handle retry scenarios.
+     */
+    readonly record: (feedback: ReputationFeedback) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    /**
+     * Get the current computed trust score for a single agent.
+     *
+     * Returns \`undefined\` when no feedback exists for this agent.
+     * Callers MUST treat \`undefined\` as \`"unknown"\` level — fail closed.
+     */
+    readonly getScore: (targetId: AgentId) => Result<ReputationScore | undefined, KoiError> | Promise<Result<ReputationScore | undefined, KoiError>>;
+    /**
+     * Get computed trust scores for multiple agents in a single call.
+     *
+     * Optional — in-memory backends implement this trivially; network backends
+     * use batch requests to avoid N+1 roundtrips (e.g., for trust-aware routing).
+     * Callers SHOULD use this when scoring multiple agents simultaneously.
+     *
+     * Missing entries in the returned map mean no feedback exists for that agent.
+     */
+    readonly getScores?: (targetIds: readonly AgentId[]) => Result<ReadonlyMap<AgentId, ReputationScore | undefined>, KoiError> | Promise<Result<ReadonlyMap<AgentId, ReputationScore | undefined>, KoiError>>;
+    /**
+     * Query raw feedback entries matching the filter.
+     *
+     * Returns entries ordered by \`timestamp\` descending (most recent first).
+     * Check \`hasMore\` to determine if results were truncated.
+     */
+    readonly query: (filter: ReputationQuery) => Result<ReputationQueryResult, KoiError> | Promise<Result<ReputationQueryResult, KoiError>>;
+    /** Close the backend and release resources. */
+    readonly dispose?: () => void | Promise<void>;
+}
+
+/**
  * Scope enforcement — pluggable policy backend for subsystem access checks.
  *
  * Default enforcement lives in \`@koi/scope\` (local compiled patterns).
@@ -653,162 +809,6 @@ interface ScopeEnforcer {
     readonly checkAccess: (request: ScopeAccessRequest) => boolean | Promise<boolean>;
     /** Optional cleanup for stateful enforcers (connection pools, timers). */
     readonly dispose?: () => void | Promise<void>;
-}
-
-/**
- * Scheduler contract — pluggable task scheduling, priority queue, cron,
- * and dead-letter queue for agent message dispatch.
- *
- * A "task" in Koi = deliver input to an agent (new or existing) at a
- * scheduled time/priority. The scheduler is a message dispatch service,
- * not arbitrary code execution.
- *
- * Exception: branded type constructors (taskId, scheduleId) are permitted
- * in L0 as zero-logic identity casts for type safety.
- * Exception: DEFAULT_SCHEDULER_CONFIG is a pure readonly data constant
- * derived from L0 type definitions.
- */
-
-declare const __taskBrand: unique symbol;
-/** Branded string type for scheduled task identifiers. */
-type TaskId = string & {
-    readonly [__taskBrand]: "TaskId";
-};
-declare const __scheduleBrand: unique symbol;
-/** Branded string type for cron schedule identifiers. */
-type ScheduleId = string & {
-    readonly [__scheduleBrand]: "ScheduleId";
-};
-/** Create a branded TaskId from a plain string. */
-declare function taskId(id: string): TaskId;
-/** Create a branded ScheduleId from a plain string. */
-declare function scheduleId(id: string): ScheduleId;
-type TaskStatus = "pending" | "running" | "completed" | "failed" | "dead_letter";
-interface ScheduledTask {
-    readonly id: TaskId;
-    readonly agentId: AgentId;
-    readonly input: EngineInput;
-    readonly mode: "spawn" | "dispatch";
-    /** 0 = highest priority. */
-    readonly priority: number;
-    readonly status: TaskStatus;
-    readonly createdAt: number;
-    /** Unix timestamp ms for delayed execution. */
-    readonly scheduledAt?: number | undefined;
-    readonly startedAt?: number | undefined;
-    readonly completedAt?: number | undefined;
-    readonly retries: number;
-    readonly maxRetries: number;
-    /** Per-execution timeout in milliseconds. */
-    readonly timeoutMs?: number | undefined;
-    readonly lastError?: KoiError | undefined;
-    readonly metadata?: Readonly<Record<string, unknown>> | undefined;
-}
-interface TaskOptions {
-    /** Priority level (0 = highest). Default: 5. */
-    readonly priority?: number | undefined;
-    /** Defer execution by this many milliseconds. */
-    readonly delayMs?: number | undefined;
-    /** Maximum retry attempts. Default: 3. */
-    readonly maxRetries?: number | undefined;
-    /** Per-execution timeout in milliseconds. */
-    readonly timeoutMs?: number | undefined;
-    readonly metadata?: Readonly<Record<string, unknown>> | undefined;
-}
-interface CronSchedule {
-    readonly id: ScheduleId;
-    /** Cron expression (e.g., "0 0 * * *"). */
-    readonly expression: string;
-    readonly agentId: AgentId;
-    readonly input: EngineInput;
-    readonly mode: "spawn" | "dispatch";
-    readonly taskOptions?: TaskOptions | undefined;
-    readonly timezone?: string | undefined;
-    readonly paused: boolean;
-}
-interface TaskFilter {
-    readonly status?: TaskStatus | undefined;
-    readonly agentId?: AgentId | undefined;
-    readonly priority?: number | undefined;
-    readonly limit?: number | undefined;
-}
-type SchedulerEvent = {
-    readonly kind: "task:submitted";
-    readonly task: ScheduledTask;
-} | {
-    readonly kind: "task:started";
-    readonly taskId: TaskId;
-} | {
-    readonly kind: "task:completed";
-    readonly taskId: TaskId;
-    readonly result: unknown;
-} | {
-    readonly kind: "task:failed";
-    readonly taskId: TaskId;
-    readonly error: KoiError;
-} | {
-    readonly kind: "task:dead_letter";
-    readonly taskId: TaskId;
-    readonly error: KoiError;
-} | {
-    readonly kind: "task:cancelled";
-    readonly taskId: TaskId;
-} | {
-    readonly kind: "task:recovered";
-    readonly taskId: TaskId;
-    readonly retriesUsed: number;
-} | {
-    readonly kind: "schedule:created";
-    readonly schedule: CronSchedule;
-} | {
-    readonly kind: "schedule:removed";
-    readonly scheduleId: ScheduleId;
-};
-interface TaskStore extends AsyncDisposable {
-    readonly save: (task: ScheduledTask) => void | Promise<void>;
-    readonly load: (id: TaskId) => ScheduledTask | undefined | Promise<ScheduledTask | undefined>;
-    readonly remove: (id: TaskId) => void | Promise<void>;
-    readonly updateStatus: (id: TaskId, status: TaskStatus, patch?: Partial<Pick<ScheduledTask, "startedAt" | "completedAt" | "lastError" | "retries">>) => void | Promise<void>;
-    readonly query: (filter: TaskFilter) => readonly ScheduledTask[] | Promise<readonly ScheduledTask[]>;
-    readonly loadPending: () => readonly ScheduledTask[] | Promise<readonly ScheduledTask[]>;
-}
-interface TaskScheduler extends AsyncDisposable {
-    readonly submit: (agentId: AgentId, input: EngineInput, mode: "spawn" | "dispatch", options?: TaskOptions) => TaskId | Promise<TaskId>;
-    readonly cancel: (id: TaskId) => boolean | Promise<boolean>;
-    readonly schedule: (expression: string, agentId: AgentId, input: EngineInput, mode: "spawn" | "dispatch", options?: TaskOptions & {
-        readonly timezone?: string | undefined;
-    }) => ScheduleId | Promise<ScheduleId>;
-    readonly unschedule: (id: ScheduleId) => boolean | Promise<boolean>;
-    readonly query: (filter: TaskFilter) => readonly ScheduledTask[] | Promise<readonly ScheduledTask[]>;
-    readonly stats: () => SchedulerStats;
-    readonly watch: (listener: (event: SchedulerEvent) => void) => () => void;
-}
-interface SchedulerStats {
-    readonly pending: number;
-    readonly running: number;
-    readonly completed: number;
-    readonly failed: number;
-    readonly deadLettered: number;
-    readonly activeSchedules: number;
-}
-interface SchedulerConfig {
-    readonly maxConcurrent: number;
-    readonly defaultPriority: number;
-    readonly defaultMaxRetries: number;
-    readonly baseRetryDelayMs: number;
-    readonly maxRetryDelayMs: number;
-    readonly retryJitterMs: number;
-    readonly pollIntervalMs: number;
-    /** Threshold (ms) after which a "running" task is considered stale and eligible for recovery. */
-    readonly staleTaskThresholdMs: number;
-}
-/** Default scheduler configuration. */
-declare const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig;
-/** Persistence backend for cron schedule definitions. */
-interface ScheduleStore extends AsyncDisposable {
-    readonly saveSchedule: (schedule: CronSchedule) => void | Promise<void>;
-    readonly removeSchedule: (id: ScheduleId) => void | Promise<void>;
-    readonly loadSchedules: () => readonly CronSchedule[] | Promise<readonly CronSchedule[]>;
 }
 
 /**
@@ -1173,7 +1173,7 @@ declare function isProcessState(value: string): value is ProcessState;
  */
 declare function validateNonEmpty(value: string, name: string): Result<void, KoiError>;
 
-export { type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentId, AgentManifest, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickKind, type BrickPage, BrickRef, type BrickRegistryBackend, type BrickRegistryChangeEvent, type BrickRegistryChangeKind, type BrickRegistryReader, type BrickRegistryWriter, type BrickSearchQuery, type BundleId, type CapabilityRegistry, type CapacityReport, type ChainCompactor, type ChainId, type CompensatingOp, type CronSchedule, DEFAULT_BRICK_SEARCH_LIMIT, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_SCHEDULER_CONFIG, DEFAULT_TASK_BOARD_CONFIG, EXTENSION_PRIORITY, EngineInput, EngineState, type EventCursor, type FileOpKind, type FileOpRecord, type ForkRef, type GuardContext, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, KoiError, KoiMiddleware, type NodeCapability, type NodeId, type PendingFrame, ProcessState, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, Result, type ScheduleId, type ScheduleStore, type ScheduledTask, type SchedulerConfig, type SchedulerEvent, type SchedulerStats, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, SkillComponent, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, type TaskBoard, type TaskBoardConfig, type TaskBoardEvent, type TaskBoardSnapshot, type TaskFilter, type TaskId, type TaskItem, type TaskItemId, type TaskItemInput, type TaskItemPatch, type TaskItemStatus, type TaskOptions, type TaskResult, type TaskScheduler, type TaskStatus, type TaskStore, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TransitionContext, TransitionReason, type TurnTrace, type ValidationDiagnostic, type ValidationResult, bundleId, chainId, conflict, evolveRegistryEntry, external, internal, isAgentStateEvent, isProcessState, isToolCallPayload, nodeId, notFound, permission, rateLimit, scheduleId, staleRef, taskId, taskItemId, timeout, validateNonEmpty, validation };
+export { type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentId, AgentManifest, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickKind, type BrickPage, BrickRef, type BrickRegistryBackend, type BrickRegistryChangeEvent, type BrickRegistryChangeKind, type BrickRegistryReader, type BrickRegistryWriter, type BrickSearchQuery, type BundleId, type CapabilityRegistry, type CapacityReport, type ChainCompactor, type ChainId, type CompensatingOp, DEFAULT_BRICK_SEARCH_LIMIT, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_REPUTATION_QUERY_LIMIT, DEFAULT_TASK_BOARD_CONFIG, EXTENSION_PRIORITY, EngineState, type EventCursor, type FeedbackKind, type FileOpKind, type FileOpRecord, type ForkRef, type GuardContext, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, KoiError, KoiMiddleware, type NodeCapability, type NodeId, type PendingFrame, ProcessState, type PruningPolicy, type PutOptions, REPUTATION_LEVEL_ORDER, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, type ReputationBackend, type ReputationFeedback, type ReputationLevel, type ReputationQuery, type ReputationQueryResult, type ReputationScore, Result, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, SkillComponent, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, type TaskBoard, type TaskBoardConfig, type TaskBoardEvent, type TaskBoardSnapshot, type TaskItem, type TaskItemId, type TaskItemInput, type TaskItemPatch, type TaskItemStatus, type TaskResult, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TransitionContext, TransitionReason, type TurnTrace, type ValidationDiagnostic, type ValidationResult, bundleId, chainId, conflict, evolveRegistryEntry, external, internal, isAgentStateEvent, isProcessState, isToolCallPayload, nodeId, notFound, permission, rateLimit, staleRef, taskItemId, timeout, validateNonEmpty, validation };
 "
 `;
 
@@ -1383,7 +1383,7 @@ import './webhook.js';
 
 exports[`@koi/core API surface ./ecs has stable type surface 1`] = `
 "import './assembly-HASH.js';
-export { b as Agent, a as AgentDescriptor, A as AgentId, B as BROWSER, I as COMPONENT_PRIORITY, J as CREDENTIALS, K as ChildHandle, L as ChildLifecycleEvent, M as ComponentEvent, N as ComponentEventKind, O as ComponentProvider, Q as CredentialComponent, R as DELEGATION, U as EVENTS, V as EventComponent, W as FILESYSTEM, X as GOVERNANCE, a3 as MEMORY, a4 as MemoryComponent, a5 as MemoryRecallOptions, a6 as MemoryResult, a7 as MemoryStoreOptions, a8 as ProcessAccounter, a9 as ProcessId, P as ProcessState, aa as RunId, c as SessionId, S as SkillComponent, ac as SkillMetadata, ad as SpawnLedger, ae as SubsystemToken, T as Tool, d as ToolCallId, af as ToolDescriptor, ag as ToolExecuteOptions, ah as TrustTier, ai as TurnId, aj as WORKSPACE, ak as WorkspaceComponent, al as agentId, am as agentToken, an as channelToken, ap as middlewareToken, aq as runId, ar as sessionId, as as skillToken, at as token, au as toolCallId, av as toolToken, aw as turnId } from './ecs-HASH.js';
+export { b as Agent, a as AgentDescriptor, A as AgentId, B as BROWSER, O as COMPONENT_PRIORITY, Q as CREDENTIALS, U as ChildHandle, V as ChildLifecycleEvent, W as ComponentEvent, X as ComponentEventKind, Y as ComponentProvider, $ as CredentialComponent, a2 as DELEGATION, a3 as EVENTS, ab as EventComponent, ac as FILESYSTEM, ad as GOVERNANCE, al as MEMORY, am as MemoryComponent, an as MemoryRecallOptions, ao as MemoryResult, ap as MemoryStoreOptions, av as ProcessAccounter, aw as ProcessId, P as ProcessState, ax as RunId, ay as SCHEDULER, c as SessionId, S as SkillComponent, aI as SkillMetadata, aJ as SpawnLedger, aK as SubsystemToken, T as Tool, d as ToolCallId, aT as ToolDescriptor, aU as ToolExecuteOptions, aY as TrustTier, a_ as TurnId, a$ as WEBHOOK, b0 as WORKSPACE, b1 as WorkspaceComponent, b2 as agentId, b3 as agentToken, b4 as channelToken, b6 as middlewareToken, b7 as runId, b9 as sessionId, ba as skillToken, bc as token, bd as toolCallId, be as toolToken, bf as turnId } from './ecs-HASH.js';
 import './channel.js';
 import './common.js';
 import './filesystem-HASH.js';
@@ -1395,10 +1395,8 @@ import './message.js';
 
 exports[`@koi/core API surface ./engine has stable type surface 1`] = `
 "import './common.js';
-export { A as AbortReason, C as ComposedCallHandlers, c as EngineAdapter, d as EngineEvent, a as EngineInput, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, E as EngineState, h as EngineStopReason } from './engine-HASH.js';
-import './ecs-HASH.js';
+export { e as AbortReason, Z as ComposedCallHandlers, a4 as EngineAdapter, a5 as EngineEvent, a6 as EngineInput, a7 as EngineInputBase, a8 as EngineMetrics, a9 as EngineOutput, E as EngineState, aa as EngineStopReason } from './ecs-HASH.js';
 import './message.js';
-import './middleware.js';
 import './assembly-HASH.js';
 import './webhook.js';
 import './errors.js';
@@ -1681,152 +1679,14 @@ export type { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, Inb
 `;
 
 exports[`@koi/core API surface ./middleware has stable type surface 1`] = `
-"import { ChannelStatus } from './channel.js';
-import { JsonObject } from './common.js';
-import { af as ToolDescriptor, d as ToolCallId, c as SessionId, aa as RunId, ai as TurnId } from './ecs-HASH.js';
-import { InboundMessage } from './message.js';
+"import './channel.js';
+import './common.js';
+export { f as ApprovalDecision, g as ApprovalHandler, h as ApprovalRequest, R as CapabilityFragment, K as KoiMiddleware, aq as ModelChunk, ar as ModelHandler, as as ModelRequest, at as ModelResponse, au as ModelStreamHandler, aH as SessionContext, aV as ToolHandler, aW as ToolRequest, aX as ToolResponse, aZ as TurnContext } from './ecs-HASH.js';
+import './message.js';
 import './assembly-HASH.js';
 import './webhook.js';
 import './errors.js';
 import './filesystem-HASH.js';
-
-/**
- * Middleware contract — sole interposition layer for model/tool calls.
- */
-
-interface SessionContext {
-    readonly agentId: string;
-    readonly sessionId: SessionId;
-    readonly runId: RunId;
-    /** Authenticated user identity. Injected by L1 when provided in CreateKoiOptions. */
-    readonly userId?: string;
-    /** Injected by L1 at session start — package name of the active channel adapter (e.g. "@koi/channel-telegram"). */
-    readonly channelId?: string;
-    readonly metadata: JsonObject;
-}
-interface TurnContext {
-    readonly session: SessionContext;
-    readonly turnIndex: number;
-    readonly turnId: TurnId;
-    readonly messages: readonly InboundMessage[];
-    readonly metadata: JsonObject;
-    readonly signal?: AbortSignal | undefined;
-    readonly requestApproval?: ApprovalHandler;
-    /** Optional callback to notify channels of turn status. Injected by L1 if configured. */
-    readonly sendStatus?: (status: ChannelStatus) => Promise<void>;
-}
-interface ModelRequest {
-    readonly messages: readonly InboundMessage[];
-    readonly model?: string;
-    readonly temperature?: number;
-    readonly maxTokens?: number;
-    readonly metadata?: JsonObject;
-    /** Propagated abort signal — adapters should compose with their own timeout. */
-    readonly signal?: AbortSignal | undefined;
-    /** Tool descriptors available for this call. Injected by L1; middleware may filter. */
-    readonly tools?: readonly ToolDescriptor[];
-}
-interface ModelResponse {
-    readonly content: string;
-    readonly model: string;
-    readonly usage?: {
-        readonly inputTokens: number;
-        readonly outputTokens: number;
-    };
-    readonly metadata?: JsonObject;
-}
-type ModelHandler = (request: ModelRequest) => Promise<ModelResponse>;
-type ModelChunk = {
-    readonly kind: "text_delta";
-    readonly delta: string;
-} | {
-    readonly kind: "thinking_delta";
-    readonly delta: string;
-} | {
-    readonly kind: "tool_call_start";
-    readonly toolName: string;
-    readonly callId: ToolCallId;
-} | {
-    readonly kind: "tool_call_delta";
-    readonly callId: ToolCallId;
-    readonly delta: string;
-} | {
-    readonly kind: "tool_call_end";
-    readonly callId: ToolCallId;
-} | {
-    readonly kind: "usage";
-    readonly inputTokens: number;
-    readonly outputTokens: number;
-} | {
-    readonly kind: "done";
-    readonly response: ModelResponse;
-};
-type ModelStreamHandler = (request: ModelRequest) => AsyncIterable<ModelChunk>;
-interface ToolRequest {
-    readonly toolId: string;
-    readonly input: JsonObject;
-    readonly metadata?: JsonObject;
-    readonly signal?: AbortSignal | undefined;
-}
-interface ToolResponse {
-    readonly output: unknown;
-    readonly metadata?: JsonObject;
-}
-type ToolHandler = (request: ToolRequest) => Promise<ToolResponse>;
-interface ApprovalRequest {
-    readonly toolId: string;
-    readonly input: JsonObject;
-    readonly reason: string;
-    readonly metadata?: JsonObject;
-}
-type ApprovalDecision = {
-    readonly kind: "allow";
-} | {
-    readonly kind: "modify";
-    readonly updatedInput: JsonObject;
-} | {
-    readonly kind: "deny";
-    readonly reason: string;
-};
-type ApprovalHandler = (request: ApprovalRequest) => Promise<ApprovalDecision>;
-/**
- * A middleware's self-description for the LLM.
- *
- * Good descriptions are concise, factual, and actionable:
- *   label: "permissions", description: "Tools requiring approval: fs:write, shell:exec"
- *   label: "budget", description: "Token budget: 8,500 of 10,000 remaining"
- *   label: "guardrails", description: "Output must conform to JSON schema: {...}"
- *
- * Bad descriptions are verbose or self-referential:
- *   "I am the permissions middleware and I enforce access control policies..."
- */
-interface CapabilityFragment {
-    readonly label: string;
-    readonly description: string;
-}
-interface KoiMiddleware {
-    readonly name: string;
-    /** Middleware execution priority. Lower = outer onion layer (runs first). Default: 500. */
-    readonly priority?: number;
-    /** Called once when an agent session begins. */
-    readonly onSessionStart?: (ctx: SessionContext) => Promise<void>;
-    /** Called once when an agent session ends. */
-    readonly onSessionEnd?: (ctx: SessionContext) => Promise<void>;
-    /** Called before each turn's model call. */
-    readonly onBeforeTurn?: (ctx: TurnContext) => Promise<void>;
-    /** Called after each turn completes. */
-    readonly onAfterTurn?: (ctx: TurnContext) => Promise<void>;
-    /** Onion wrapper for model calls. Call \`next(req)\` to continue the chain. */
-    readonly wrapModelCall?: (ctx: TurnContext, request: ModelRequest, next: ModelHandler) => Promise<ModelResponse>;
-    /** Onion wrapper for model streams. Call \`next(req)\` to continue the chain. */
-    readonly wrapModelStream?: (ctx: TurnContext, request: ModelRequest, next: ModelStreamHandler) => AsyncIterable<ModelChunk>;
-    /** Onion wrapper for tool calls. Call \`next(req)\` to continue the chain. */
-    readonly wrapToolCall?: (ctx: TurnContext, request: ToolRequest, next: ToolHandler) => Promise<ToolResponse>;
-    /** Optional self-description injected into model calls. Return undefined to skip. */
-    readonly describeCapabilities?: (ctx: TurnContext) => CapabilityFragment | undefined;
-}
-
-export type { ApprovalDecision, ApprovalHandler, ApprovalRequest, CapabilityFragment, KoiMiddleware, ModelChunk, ModelHandler, ModelRequest, ModelResponse, ModelStreamHandler, SessionContext, ToolHandler, ToolRequest, ToolResponse, TurnContext };
 "
 `;
 
@@ -2061,6 +1921,8 @@ interface RegistryEntry {
     readonly registeredAt: number;
     /** Parent agent ID (undefined for root agents). */
     readonly parentId?: AgentId;
+    /** Immutable provenance — the agent that spawned this one. Set once at registration, never updated. */
+    readonly spawner?: AgentId;
 }
 /** Events emitted by the registry on state changes. */
 type RegistryEvent = {
@@ -2292,7 +2154,7 @@ export type { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxI
 `;
 
 exports[`@koi/core API surface ./sandbox-executor has stable type surface 1`] = `
-"import { ah as TrustTier } from './ecs-HASH.js';
+"import { aY as TrustTier } from './ecs-HASH.js';
 import './assembly-HASH.js';
 import './common.js';
 import './webhook.js';
@@ -2322,8 +2184,25 @@ interface SandboxResult {
     readonly durationMs: number;
     readonly memoryUsedBytes?: number;
 }
+/**
+ * Optional execution context — provides workspace and dependency metadata
+ * for bricks that require npm packages or filesystem access.
+ */
+interface ExecutionContext {
+    /** Absolute path to the brick's per-dependency workspace (contains node_modules). */
+    readonly workspacePath?: string;
+    /** Absolute path to the brick's entry .ts file within the workspace. */
+    readonly entryPath?: string;
+    /** Whether the brick is allowed to make network requests. Default: false. */
+    readonly networkAllowed?: boolean;
+    /** OS-level resource limits for the subprocess. */
+    readonly resourceLimits?: {
+        readonly maxMemoryMb?: number;
+        readonly maxPids?: number;
+    };
+}
 interface SandboxExecutor {
-    readonly execute: (code: string, input: unknown, timeoutMs: number) => Promise<{
+    readonly execute: (code: string, input: unknown, timeoutMs: number, context?: ExecutionContext) => Promise<{
         readonly ok: true;
         readonly value: SandboxResult;
     } | {
@@ -2351,12 +2230,12 @@ interface TieredSandboxExecutor {
     readonly forTier: (tier: TrustTier) => TierResolution;
 }
 
-export type { SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, TierResolution, TieredSandboxExecutor };
+export type { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, TierResolution, TieredSandboxExecutor };
 "
 `;
 
 exports[`@koi/core API surface ./sandbox-profile has stable type surface 1`] = `
-"import { ah as TrustTier } from './ecs-HASH.js';
+"import { aY as TrustTier } from './ecs-HASH.js';
 import './assembly-HASH.js';
 import './common.js';
 import './webhook.js';
