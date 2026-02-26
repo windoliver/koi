@@ -397,6 +397,17 @@ export type {
   ReconciliationController,
 } from "./reconciliation.js";
 export { DEFAULT_RECONCILE_RUNNER_CONFIG } from "./reconciliation.js";
+// reputation backend — pluggable trust scoring and feedback contract
+export type {
+  FeedbackKind,
+  ReputationBackend,
+  ReputationFeedback,
+  ReputationLevel,
+  ReputationQuery,
+  ReputationQueryResult,
+  ReputationScore,
+} from "./reputation-backend.js";
+export { DEFAULT_REPUTATION_QUERY_LIMIT, REPUTATION_LEVEL_ORDER } from "./reputation-backend.js";
 // resolver
 export type { Resolver, SourceBundle, SourceLanguage } from "./resolver.js";
 // sandbox adapter — pluggable sandbox backends (OS-level, cloud, WASM)
