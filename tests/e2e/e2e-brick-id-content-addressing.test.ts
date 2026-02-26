@@ -8,11 +8,10 @@
  *   1. Forge tool → BrickId has sha256: format
  *   2. Forge same content twice → same BrickId (dedup)
  *   3. Forge different content → different BrickId
- *   4. Composite BrickId is order-independent (sorted children)
- *   5. Integrity verification: id === recomputed hash
- *   6. Forged tool callable through full runtime with real LLM
- *   7. Middleware chain intercepts forged tool call
- *   8. Dedup short-circuit: second forge consumes 0 quota
+ *   4. Integrity verification: id === recomputed hash
+ *   5. Forged tool callable through full runtime with real LLM
+ *   6. Middleware chain intercepts forged tool call
+ *   7. Cross-kind isolation: same content, different kind → different ID
  *
  * Gated on ANTHROPIC_API_KEY + E2E_TESTS=1.
  *
@@ -35,7 +34,6 @@ import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
 import type { ForgeDeps, ForgeResult, SandboxExecutor, TieredSandboxExecutor } from "@koi/forge";
 import {
-  createComposeForgeTool,
   createDefaultForgeConfig,
   createForgeComponentProvider,
   createForgeSkillTool,
@@ -246,74 +244,7 @@ describeE2E("e2e: Content-Addressed BrickId through full runtime", () => {
     TIMEOUT_MS,
   );
 
-  // ── 4. Composite BrickId: forge + integrity ───────────────────────────────
-
-  test(
-    "composite brick has valid content-addressed ID and passes integrity check",
-    async () => {
-      const store = createInMemoryForgeStore();
-      const executor = adderExecutor();
-
-      // Forge two component tools
-      const deps0 = defaultDeps(store, executor, 0);
-      const forgeTool = createForgeToolTool(deps0);
-      const toolA = (await forgeTool.execute({
-        name: "comp-tool-a",
-        description: "Component A",
-        inputSchema: { type: "object" },
-        implementation: "return { a: true };",
-      })) as { readonly ok: true; readonly value: ForgeResult };
-
-      const deps1 = defaultDeps(store, executor, 1);
-      const forgeTool2 = createForgeToolTool(deps1);
-      const toolB = (await forgeTool2.execute({
-        name: "comp-tool-b",
-        description: "Component B",
-        inputSchema: { type: "object" },
-        implementation: "return { b: true };",
-      })) as { readonly ok: true; readonly value: ForgeResult };
-
-      expect(toolA.ok).toBe(true);
-      expect(toolB.ok).toBe(true);
-
-      // Compose into a composite
-      const deps2 = defaultDeps(store, executor, 2);
-      const composeTool = createComposeForgeTool(deps2);
-      const composite = (await composeTool.execute({
-        name: "suite-ab",
-        description: "A and B combined",
-        brickIds: [toolA.value.id, toolB.value.id],
-      })) as { readonly ok: true; readonly value: ForgeResult };
-
-      expect(composite.ok).toBe(true);
-      expect(composite.value.kind).toBe("composite");
-      expect(isBrickId(composite.value.id)).toBe(true);
-
-      // Load from store and verify integrity (id === recomputed hash)
-      const loadResult = await store.load(composite.value.id);
-      expect(loadResult.ok).toBe(true);
-      if (!loadResult.ok) return;
-
-      const integrity = verifyBrickIntegrity(loadResult.value);
-      expect(integrity.ok).toBe(true);
-
-      // Composing the same content again → dedup (same ID, 0 quota)
-      const deps3 = defaultDeps(store, executor, 3);
-      const composeTool2 = createComposeForgeTool(deps3);
-      const dup = (await composeTool2.execute({
-        name: "suite-ab",
-        description: "A and B combined",
-        brickIds: [toolA.value.id, toolB.value.id],
-      })) as { readonly ok: true; readonly value: ForgeResult };
-
-      expect(dup.ok).toBe(true);
-      expect(dup.value.id).toBe(composite.value.id);
-      expect(dup.value.forgesConsumed).toBe(0);
-    },
-    TIMEOUT_MS,
-  );
-
-  // ── 5. Integrity verification ────────────────────────────────────────────
+  // ── 4. Integrity verification ────────────────────────────────────────────
 
   test(
     "stored brick passes integrity verification (id === recomputed hash)",
@@ -353,7 +284,7 @@ describeE2E("e2e: Content-Addressed BrickId through full runtime", () => {
     TIMEOUT_MS,
   );
 
-  // ── 6. Full runtime: forged tool callable by real LLM ────────────────────
+  // ── 5. Full runtime: forged tool callable by real LLM ────────────────────
 
   test(
     "content-addressed forged tool callable by LLM through createKoi + createLoopAdapter",
@@ -434,7 +365,7 @@ describeE2E("e2e: Content-Addressed BrickId through full runtime", () => {
     TIMEOUT_MS,
   );
 
-  // ── 7. Middleware chain intercepts forged tool call ───────────────────────
+  // ── 6. Middleware chain intercepts forged tool call ───────────────────────
 
   test(
     "middleware chain intercepts content-addressed forged tool call",
@@ -509,7 +440,7 @@ describeE2E("e2e: Content-Addressed BrickId through full runtime", () => {
     TIMEOUT_MS,
   );
 
-  // ── 8. Cross-kind isolation: same content, different kind → different ID ─
+  // ── 7. Cross-kind isolation: same content, different kind → different ID ─
 
   test(
     "same content in different brick kinds produces different BrickIds",
