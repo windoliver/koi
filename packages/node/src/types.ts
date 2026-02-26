@@ -51,6 +51,7 @@ const toolsSchema = z.object({
       shell: z.boolean().default(true),
     })
     .default({ filesystem: true, shell: true }),
+  toolCallTimeoutMs: z.number().positive().default(30_000),
 });
 
 const resourcesSchema = z.object({
@@ -79,6 +80,7 @@ const nodeConfigSchema = z.object({
   tools: toolsSchema.default({
     directories: [],
     builtins: { filesystem: true, shell: true },
+    toolCallTimeoutMs: 30_000,
   }),
   resources: resourcesSchema.default({
     maxAgents: 50,
@@ -119,6 +121,7 @@ export interface ToolResolverConfig {
     readonly filesystem: boolean;
     readonly shell: boolean;
   };
+  readonly toolCallTimeoutMs: number;
 }
 
 export interface ResourcesConfig {

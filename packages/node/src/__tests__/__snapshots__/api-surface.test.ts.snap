@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/node API surface . has stable type surface 1`] = `
-"import { SessionPersistence, SessionCheckpoint, PendingFrame, RecoveryPlan, SessionRecord, Result, KoiError, ProcessId, AgentManifest, EngineAdapter, ComponentProvider, Agent, AgentId, Tool, SourceBundle } from '@koi/core';
+"import { SessionPersistence, SessionCheckpoint, PendingFrame, RecoveryPlan, SessionRecord, Result, KoiError, ProcessId, AgentManifest, EngineAdapter, ComponentProvider, Agent, AgentId, Tool, SourceBundle, ScopeChecker, DelegationScope } from '@koi/core';
 export { ShutdownCallbacks, ShutdownEmit, ShutdownHandler, createShutdownHandler } from '@koi/shutdown';
 
 /**
@@ -36,6 +36,7 @@ interface ToolResolverConfig {
         readonly filesystem: boolean;
         readonly shell: boolean;
     };
+    readonly toolCallTimeoutMs: number;
 }
 interface ResourcesConfig {
     readonly maxAgents: number;
@@ -591,15 +592,26 @@ declare function createLocalResolver(config: ToolResolverConfig): LocalResolver;
  * The Node is a stateless host — agent state lives in Engine/Components.
  */
 
-interface KoiNode {
+/** Shared surface present on both Full and Thin nodes. */
+interface KoiNodeBase {
     /** Unique node identifier. */
     readonly nodeId: string;
+    /** Node mode (discriminant). */
+    readonly mode: NodeMode;
     /** Current node state. */
     readonly state: () => NodeState;
     /** Start the node (connect, discover, scan tools). */
     readonly start: () => Promise<void>;
     /** Stop the node gracefully. */
     readonly stop: () => Promise<void>;
+    /** Register a node event listener. */
+    readonly onEvent: (listener: NodeEventListener) => () => void;
+    /** Access the local tool resolver. */
+    readonly toolResolver: LocalResolver;
+}
+/** Full mode — hosts agents, dispatches engines, manages checkpoints. */
+interface FullKoiNode extends KoiNodeBase {
+    readonly mode: "full";
     /** Dispatch a new agent onto this node. */
     readonly dispatch: (pid: ProcessId, manifest: AgentManifest, engine: EngineAdapter, providers?: readonly ComponentProvider[]) => Promise<Result<Agent, KoiError>>;
     /** Terminate an agent by ID. */
@@ -610,13 +622,15 @@ interface KoiNode {
     readonly listAgents: () => readonly Agent[];
     /** Current capacity report. */
     readonly capacity: () => CapacityReport;
-    /** Register a node event listener. */
-    readonly onEvent: (listener: NodeEventListener) => () => void;
-    /** Access the local tool resolver. */
-    readonly toolResolver: LocalResolver;
     /** Checkpoint manager (available when sessionStore is provided). */
     readonly checkpoint: CheckpointManager | undefined;
 }
+/** Thin mode — exposes tools only, no engine execution. */
+interface ThinKoiNode extends KoiNodeBase {
+    readonly mode: "thin";
+}
+/** Discriminated union: narrow on \`mode\` to access Full-only or Thin-only members. */
+type KoiNode = FullKoiNode | ThinKoiNode;
 /**
  * Result returned by \`onRecover\` for each session during startup recovery.
  *
@@ -639,8 +653,42 @@ interface NodeDeps {
      * Return a \`RecoveryResult\` to re-dispatch the agent, or \`null\` to skip it.
      */
     readonly onRecover?: (session: SessionRecord, checkpoint: SessionCheckpoint | undefined) => RecoveryResult | null | Promise<RecoveryResult | null>;
+    /**
+     * Permission checker for tool_call authorization. When absent, all tool calls
+     * are denied by default (fail closed). Inject a ScopeChecker + DelegationScope
+     * to enable permission-checked tool execution.
+     */
+    readonly permission?: {
+        readonly checker: ScopeChecker;
+        readonly scope: DelegationScope;
+    } | undefined;
 }
 declare function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode, KoiError>;
+
+/**
+ * Extracted tool_call handler — standalone pure-ish async function
+ * with explicit dependencies for direct unit testing.
+ */
+
+/** Default timeout for tool execution (30 seconds). */
+declare const DEFAULT_TOOL_CALL_TIMEOUT_MS = 30000;
+/** Explicit dependencies for handleToolCall — no closures. */
+interface ToolCallHandlerDeps {
+    readonly nodeId: string;
+    readonly permission?: {
+        readonly checker: ScopeChecker;
+        readonly scope: DelegationScope;
+    } | undefined;
+    readonly resolver: LocalResolver;
+    readonly sendOutbound: (frame: NodeFrame) => void;
+    readonly emit: (type: NodeEvent["type"], data?: unknown) => void;
+    /** Milliseconds before a tool execution is considered timed out. Defaults to DEFAULT_TOOL_CALL_TIMEOUT_MS. */
+    readonly timeoutMs?: number | undefined;
+}
+/** Type guard — validates ToolCallPayload shape without \`as\` assertion. */
+declare function isToolCallPayload(value: unknown): value is ToolCallPayload;
+/** Handle a tool_call frame: validate -> permission check -> resolve -> execute -> respond. */
+declare function handleToolCall(frame: NodeFrame, deps: ToolCallHandlerDeps): Promise<void>;
 
 /**
  * Built-in filesystem tool — read, write, list files.
@@ -665,6 +713,6 @@ declare function createFilesystemTool(allowedPaths?: readonly string[]): Tool;
 
 declare function createShellTool(): Tool;
 
-export { type AdvertisedTool, type AgentHost, type AgentStatusPayload, type AuthAckPayload, type AuthChallengePayload, type AuthConfig, type AuthHandshake, type AuthHandshakeConfig, type AuthPayload, type AuthResponsePayload, type CapabilitiesPayload, type CapacityReport, type CheckpointManager, type CheckpointManagerDeps, type CheckpointingEngineConfig, DEFAULT_DELIVERY_CONFIG, type DeliveryManager, type DeliveryManagerConfig, type DeliveryManagerDeps, type DiscoveryConfig, type DiscoveryService, type FrameCounterState, type FrameCounters, type FrameDeduplicator, type GatewayConnectionConfig, type HandshakePayload, type HeartbeatCallbacks, type HeartbeatConfig, type HeartbeatMonitor, type KoiNode, type LocalResolver, type MemoryMetrics, type MemoryMonitor, type NodeCheckpoint, type NodeConfig, type NodeDeps, type NodeEvent, type NodeEventListener, type NodeEventType, type NodeFrame, type NodeFrameKind, type NodeMode, type NodePendingFrame, type NodeRecoveryPlan, type NodeSessionRecord, type NodeSessionStore, type NodeState, type ReconnectState, type RecoveryResult, type ResourcesConfig, type ServiceInfo, type StatusReporter, type ToolCallPayload, type ToolErrorPayload, type ToolMeta, type ToolResolverConfig, type ToolResultPayload, type Transport, type TransportState, type WriteQueue, type WriteQueueConfig, computeReconnectDelay, createAgentHost, createAuthHandshake, createAuthPayload, createCheckpointManager, createCheckpointingEngine, createDeliveryManager, createDiscoveryService, createFilesystemTool, createFrameCounters, createFrameDeduplicator, createHeartbeatMonitor, createLocalResolver, createMemoryMonitor, createNode, createReconnectState, createShellTool, createStatusReporter, createTransport, createWriteQueue, decodeFrame, encodeFrame, generateCorrelationId, isCleanClose, nextAttempt, parseNodeConfig, resetReconnectState, signChallenge };
+export { type AdvertisedTool, type AgentHost, type AgentStatusPayload, type AuthAckPayload, type AuthChallengePayload, type AuthConfig, type AuthHandshake, type AuthHandshakeConfig, type AuthPayload, type AuthResponsePayload, type CapabilitiesPayload, type CapacityReport, type CheckpointManager, type CheckpointManagerDeps, type CheckpointingEngineConfig, DEFAULT_DELIVERY_CONFIG, DEFAULT_TOOL_CALL_TIMEOUT_MS, type DeliveryManager, type DeliveryManagerConfig, type DeliveryManagerDeps, type DiscoveryConfig, type DiscoveryService, type FrameCounterState, type FrameCounters, type FrameDeduplicator, type FullKoiNode, type GatewayConnectionConfig, type HandshakePayload, type HeartbeatCallbacks, type HeartbeatConfig, type HeartbeatMonitor, type KoiNode, type LocalResolver, type MemoryMetrics, type MemoryMonitor, type NodeCheckpoint, type NodeConfig, type NodeDeps, type NodeEvent, type NodeEventListener, type NodeEventType, type NodeFrame, type NodeFrameKind, type NodeMode, type NodePendingFrame, type NodeRecoveryPlan, type NodeSessionRecord, type NodeSessionStore, type NodeState, type ReconnectState, type RecoveryResult, type ResourcesConfig, type ServiceInfo, type StatusReporter, type ThinKoiNode, type ToolCallHandlerDeps, type ToolCallPayload, type ToolErrorPayload, type ToolMeta, type ToolResolverConfig, type ToolResultPayload, type Transport, type TransportState, type WriteQueue, type WriteQueueConfig, computeReconnectDelay, createAgentHost, createAuthHandshake, createAuthPayload, createCheckpointManager, createCheckpointingEngine, createDeliveryManager, createDiscoveryService, createFilesystemTool, createFrameCounters, createFrameDeduplicator, createHeartbeatMonitor, createLocalResolver, createMemoryMonitor, createNode, createReconnectState, createShellTool, createStatusReporter, createTransport, createWriteQueue, decodeFrame, encodeFrame, generateCorrelationId, handleToolCall, isCleanClose, isToolCallPayload, nextAttempt, parseNodeConfig, resetReconnectState, signChallenge };
 "
 `;
