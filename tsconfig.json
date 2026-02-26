@@ -42,6 +42,7 @@
     { "path": "packages/model-router" },
     { "path": "packages/node" },
     { "path": "packages/ralph" },
+    { "path": "packages/registry-event-sourced" },
     { "path": "packages/sandbox" },
     { "path": "packages/sandbox-cloud-base" },
     { "path": "packages/sandbox-cloudflare" },
