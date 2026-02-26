@@ -1,0 +1,233 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/canvas API surface . has stable type surface 1`] = `
+"import { Result, KoiError, JsonObject, EngineEvent, ContentBlock } from '@koi/core';
+
+/**
+ * Canvas configuration with sensible defaults.
+ */
+
+interface CanvasConfig {
+    /** Maximum number of components per surface. */
+    readonly maxComponents: number;
+    /** Maximum component tree depth (DFS cycle detection limit). */
+    readonly maxTreeDepth: number;
+    /** Maximum number of surfaces per session. */
+    readonly maxSurfaces: number;
+    /** Maximum serialized surface size in bytes. */
+    readonly maxSerializedBytes: number;
+}
+declare const DEFAULT_CANVAS_CONFIG: CanvasConfig;
+/** Validates raw input against the CanvasConfig schema. */
+declare function validateCanvasConfig(raw: unknown): Result<CanvasConfig, KoiError>;
+
+/**
+ * A2UI v0.9 types + Koi canvas types with branded IDs.
+ */
+
+declare const __surfaceBrand: unique symbol;
+/** Branded string type for canvas surface identifiers. */
+type SurfaceId = string & {
+    readonly [__surfaceBrand]: "SurfaceId";
+};
+declare const __componentIdBrand: unique symbol;
+/** Branded string type for A2UI component identifiers. */
+type ComponentId = string & {
+    readonly [__componentIdBrand]: "ComponentId";
+};
+/** Create a branded SurfaceId from a plain string. */
+declare function surfaceId(id: string): SurfaceId;
+/** Create a branded ComponentId from a plain string. */
+declare function componentId(id: string): ComponentId;
+/** Layout component types. */
+type A2uiLayoutType = "Row" | "Column" | "List" | "Card" | "Tabs" | "Modal";
+/** Display component types. */
+type A2uiDisplayType = "Text" | "Image" | "Icon" | "Video" | "AudioPlayer" | "Divider";
+/** Input component types. */
+type A2uiInputType = "TextField" | "CheckBox" | "DateTimeInput" | "ChoicePicker" | "Slider" | "Button";
+/** All A2UI v0.9 component types. */
+type A2uiComponentType = A2uiLayoutType | A2uiDisplayType | A2uiInputType;
+/** A2UI v0.9 component categories. */
+type A2uiCategory = "layout" | "display" | "input";
+/** Returns true if the value is a valid A2UI component type string. */
+declare function isA2uiComponentType(value: unknown): value is A2uiComponentType;
+/** Returns the category of an A2UI component type. */
+declare function categorizeComponent(type: A2uiComponentType): A2uiCategory;
+/** A single A2UI component as it appears in protocol messages. */
+interface A2uiComponent {
+    readonly id: ComponentId;
+    readonly type: A2uiComponentType;
+    readonly properties?: JsonObject;
+    readonly children?: readonly ComponentId[];
+    readonly dataBinding?: string;
+}
+interface A2uiCreateSurface {
+    readonly kind: "createSurface";
+    readonly surfaceId: SurfaceId;
+    readonly title?: string;
+    readonly components: readonly A2uiComponent[];
+    readonly dataModel?: JsonObject;
+}
+interface A2uiUpdateComponents {
+    readonly kind: "updateComponents";
+    readonly surfaceId: SurfaceId;
+    readonly components: readonly A2uiComponent[];
+}
+interface A2uiDataModelUpdate {
+    readonly pointer: string;
+    readonly value: unknown;
+}
+interface A2uiUpdateDataModel {
+    readonly kind: "updateDataModel";
+    readonly surfaceId: SurfaceId;
+    readonly updates: readonly A2uiDataModelUpdate[];
+}
+interface A2uiDeleteSurface {
+    readonly kind: "deleteSurface";
+    readonly surfaceId: SurfaceId;
+}
+/** All A2UI message types. */
+type A2uiMessage = A2uiCreateSurface | A2uiUpdateComponents | A2uiUpdateDataModel | A2uiDeleteSurface;
+/** All A2UI message kinds. */
+type A2uiMessageKind = A2uiMessage["kind"];
+/** Type guard for A2UI message kind. */
+declare function isA2uiMessageKind(value: unknown): value is A2uiMessageKind;
+/** A canvas element — the Koi representation of an A2UI component. */
+interface CanvasElement {
+    readonly id: ComponentId;
+    readonly type: A2uiComponentType;
+    readonly properties: JsonObject;
+    readonly children: readonly ComponentId[];
+    readonly dataBinding?: string;
+}
+/** A canvas surface — the Koi representation of an A2UI surface. */
+interface CanvasSurface {
+    readonly id: SurfaceId;
+    readonly title?: string;
+    readonly components: ReadonlyMap<ComponentId, CanvasElement>;
+    readonly dataModel: JsonObject;
+}
+
+/**
+ * AG-UI EngineEvent custom event wrappers for A2UI messages.
+ *
+ * A2UI messages are transported as EngineEvent \`custom\` events
+ * with type prefix \`a2ui:\`.
+ */
+
+/** Creates an EngineEvent wrapping an A2UI message. */
+declare function createCanvasEvent(message: A2uiMessage): EngineEvent;
+/** Returns true if the EngineEvent is an A2UI canvas event. */
+declare function isCanvasEvent(event: EngineEvent): boolean;
+/** Extracts the A2UI message from a canvas EngineEvent. */
+declare function extractCanvasMessage(event: EngineEvent): Result<A2uiMessage, KoiError>;
+
+/**
+ * Bidirectional mappers between A2UI protocol types and Koi canvas types,
+ * plus ContentBlock ↔ CanvasElement conversions.
+ */
+
+/** Maps an A2UI protocol component to a Koi CanvasElement. */
+declare function mapA2uiComponent(component: A2uiComponent): CanvasElement;
+/** Maps a Koi CanvasElement back to an A2UI protocol component. */
+declare function mapCanvasElement(element: CanvasElement): A2uiComponent;
+/**
+ * Maps a ContentBlock (custom kind with A2UI data) to a CanvasElement.
+ * Returns undefined if the block is not a canvas-compatible custom block.
+ */
+declare function mapContentBlockToElement(block: ContentBlock): CanvasElement | undefined;
+/** Maps a CanvasElement to a ContentBlock (custom kind). */
+declare function mapElementToContentBlock(element: CanvasElement): ContentBlock;
+/** Maps an A2UI createSurface message to a Koi CanvasSurface. */
+declare function mapCreateSurfaceToCanvas(msg: A2uiCreateSurface): CanvasSurface;
+/** Maps a Koi CanvasSurface back to an A2UI createSurface message. */
+declare function mapCanvasToCreateSurface(surface: CanvasSurface): A2uiCreateSurface;
+
+/**
+ * JSON serialization/deserialization for CanvasSurface.
+ *
+ * Handles Map ↔ array conversion since JSON doesn't support Maps natively.
+ */
+
+/** Serializes a CanvasSurface to a JSON string. */
+declare function serializeSurface(surface: CanvasSurface): string;
+/** Deserializes a JSON string to a CanvasSurface. */
+declare function deserializeSurface(json: string): Result<CanvasSurface, KoiError>;
+
+/**
+ * Immutable surface operations — create, update components, update data model.
+ *
+ * All operations return new objects (structural sharing for immutability).
+ */
+
+/** Creates a new empty CanvasSurface. */
+declare function createCanvasSurface(id: SurfaceId, title?: string): CanvasSurface;
+/** Applies component updates to a surface, returning a new surface. */
+declare function applySurfaceUpdate(surface: CanvasSurface, components: readonly A2uiComponent[]): CanvasSurface;
+/**
+ * Applies data model updates to a surface, returning a new surface.
+ *
+ * Each update specifies a JSON Pointer and a new value. Only top-level
+ * pointers (e.g., "/name") are supported for immutable updates.
+ */
+declare function applyDataModelUpdate(surface: CanvasSurface, updates: readonly A2uiDataModelUpdate[]): Result<CanvasSurface, KoiError>;
+/** Gets a component from a surface by ID. */
+declare function getComponent(surface: CanvasSurface, id: ComponentId): CanvasElement | undefined;
+
+/**
+ * Top-level validators composing Zod schema + semantic checks.
+ */
+
+/**
+ * Validates a raw A2UI message (Zod schema only, no semantic checks).
+ *
+ * Zod validates structure; branded types are applied via cast since
+ * the schema guarantees string content matches the branded type shape.
+ */
+declare function validateA2uiMessage(raw: unknown): Result<A2uiMessage, KoiError>;
+/**
+ * Validates a createSurface message with both Zod schema and semantic checks.
+ */
+declare function validateCreateSurface(raw: unknown, config?: Partial<CanvasConfig>): Result<A2uiCreateSurface, KoiError>;
+
+/**
+ * JSON Pointer (RFC 6901) validation and parsing.
+ */
+
+/** A parsed JSON Pointer as an array of unescaped reference tokens. */
+type JsonPointerTokens = readonly string[];
+/**
+ * Validates and parses a JSON Pointer string per RFC 6901.
+ *
+ * A valid pointer must:
+ * - Be exactly "" (empty — root) or start with "/"
+ * - Use "~0" for "~" and "~1" for "/" in tokens
+ */
+declare function parseJsonPointer(pointer: string): Result<JsonPointerTokens, KoiError>;
+/**
+ * Validates that a JSON Pointer string conforms to RFC 6901.
+ * Returns true if valid, false otherwise.
+ */
+declare function isValidJsonPointer(pointer: string): boolean;
+
+/**
+ * Semantic validators for canvas surfaces.
+ *
+ * Validates structural invariants that Zod schemas cannot express:
+ * - Root component existence
+ * - No duplicate component IDs
+ * - No cycles in component tree (DFS)
+ * - All child references point to existing components
+ * - Component count within configured limit
+ */
+
+/**
+ * Validates semantic invariants of a component array.
+ *
+ * Checks: duplicate IDs, dangling child refs, cycles, component count cap.
+ */
+declare function validateSurfaceComponents(components: readonly A2uiComponent[], config?: Partial<CanvasConfig>): Result<true, KoiError>;
+
+export { type A2uiCategory, type A2uiComponent, type A2uiComponentType, type A2uiCreateSurface, type A2uiDataModelUpdate, type A2uiDeleteSurface, type A2uiDisplayType, type A2uiInputType, type A2uiLayoutType, type A2uiMessage, type A2uiMessageKind, type A2uiUpdateComponents, type A2uiUpdateDataModel, type CanvasConfig, type CanvasElement, type CanvasSurface, type ComponentId, DEFAULT_CANVAS_CONFIG, type JsonPointerTokens, type SurfaceId, applyDataModelUpdate, applySurfaceUpdate, categorizeComponent, componentId, createCanvasEvent, createCanvasSurface, deserializeSurface, extractCanvasMessage, getComponent, isA2uiComponentType, isA2uiMessageKind, isCanvasEvent, isValidJsonPointer, mapA2uiComponent, mapCanvasElement, mapCanvasToCreateSurface, mapContentBlockToElement, mapCreateSurfaceToCanvas, mapElementToContentBlock, parseJsonPointer, serializeSurface, surfaceId, validateA2uiMessage, validateCanvasConfig, validateCreateSurface, validateSurfaceComponents };
+"
+`;

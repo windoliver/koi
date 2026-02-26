@@ -60,6 +60,18 @@
         "playwright": "^1.49.0",
       },
     },
+    "packages/canvas": {
+      "name": "@koi/canvas",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/channel-base": {
       "name": "@koi/channel-base",
       "version": "0.0.0",
@@ -912,6 +924,7 @@
       "name": "@koi/e2e-contracts",
       "version": "0.0.0",
       "devDependencies": {
+        "@koi/canvas": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/delegation": "workspace:*",
         "@koi/engine": "workspace:*",
@@ -1197,6 +1210,8 @@
     "@koi/bootstrap": ["@koi/bootstrap@workspace:packages/bootstrap"],
 
     "@koi/browser-playwright": ["@koi/browser-playwright@workspace:packages/browser-playwright"],
+
+    "@koi/canvas": ["@koi/canvas@workspace:packages/canvas"],
 
     "@koi/channel-base": ["@koi/channel-base@workspace:packages/channel-base"],
 
