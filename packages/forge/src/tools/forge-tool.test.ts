@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import type { SandboxExecutor, TieredSandboxExecutor } from "@koi/core";
+import type { SandboxExecutor, SigningBackend, TieredSandboxExecutor } from "@koi/core";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import type { ForgeResult } from "../types.js";
+import { createForgeSkillTool } from "./forge-skill.js";
 import { createForgeToolTool } from "./forge-tool.js";
 import type { ForgeDeps } from "./shared.js";
 
@@ -243,6 +244,122 @@ describe("createForgeToolTool", () => {
     const loadResult = await store.load(result.value.id);
     if (loadResult.ok) {
       expect(loadResult.value.requires).toEqual({ bins: ["python3"], tools: ["search"] });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Signing attestation tests
+// ---------------------------------------------------------------------------
+
+function createTestSigner(): SigningBackend {
+  const BLOCK_SIZE = 64;
+  const secretKey = new Uint8Array(32).fill(42);
+
+  function hmac(key: Uint8Array, data: Uint8Array): Uint8Array {
+    const hasher1 = new Bun.CryptoHasher("sha256");
+    const paddedKey = new Uint8Array(BLOCK_SIZE);
+    paddedKey.set(
+      key.length > BLOCK_SIZE
+        ? new Uint8Array(new Bun.CryptoHasher("sha256").update(key).digest())
+        : key,
+    );
+    const innerPad = new Uint8Array(BLOCK_SIZE);
+    const outerPad = new Uint8Array(BLOCK_SIZE);
+    for (let i = 0; i < BLOCK_SIZE; i++) {
+      const kb = paddedKey[i] ?? 0;
+      innerPad[i] = kb ^ 0x36;
+      outerPad[i] = kb ^ 0x5c;
+    }
+    hasher1.update(innerPad);
+    hasher1.update(data);
+    const innerDigest = new Uint8Array(hasher1.digest());
+    const hasher2 = new Bun.CryptoHasher("sha256");
+    hasher2.update(outerPad);
+    hasher2.update(innerDigest);
+    return new Uint8Array(hasher2.digest());
+  }
+
+  return {
+    algorithm: "hmac-sha256",
+    sign: (data: Uint8Array) => hmac(secretKey, data),
+    verify: (data: Uint8Array, signature: Uint8Array) => {
+      const expected = hmac(secretKey, data);
+      if (expected.length !== signature.length) return false;
+      // let justified: accumulator for constant-time comparison
+      let diff = 0;
+      for (let i = 0; i < expected.length; i++) {
+        diff |= (expected[i] ?? 0) ^ (signature[i] ?? 0);
+      }
+      return diff === 0;
+    },
+  };
+}
+
+describe("forge tool with signer", () => {
+  test("forged tool has attestation populated when signer provided", async () => {
+    const store = createInMemoryForgeStore();
+    const signer = createTestSigner();
+    const deps = createDeps({ store, signer });
+    const tool = createForgeToolTool(deps);
+
+    const result = (await tool.execute({
+      name: "signedTool",
+      description: "A signed tool",
+      inputSchema: { type: "object" },
+      implementation: "return 1;",
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+
+    const loadResult = await store.load(result.value.id);
+    expect(loadResult.ok).toBe(true);
+    if (loadResult.ok) {
+      expect(loadResult.value.provenance.attestation).toBeDefined();
+      expect(loadResult.value.provenance.attestation?.algorithm).toBe("hmac-sha256");
+      expect(loadResult.value.provenance.attestation?.signature).toBeTruthy();
+      expect(loadResult.value.provenance.attestation?.signature.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("attestation signature is valid hex string", async () => {
+    const store = createInMemoryForgeStore();
+    const signer = createTestSigner();
+    const deps = createDeps({ store, signer });
+    const tool = createForgeToolTool(deps);
+
+    const result = (await tool.execute({
+      name: "hexTool",
+      description: "A tool with hex sig",
+      inputSchema: { type: "object" },
+      implementation: "return 2;",
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    const loadResult = await store.load(result.value.id);
+    if (loadResult.ok) {
+      const sig = loadResult.value.provenance.attestation?.signature ?? "";
+      expect(sig).toMatch(/^[0-9a-f]+$/);
+    }
+  });
+
+  test("forged skill has attestation when signer provided", async () => {
+    const store = createInMemoryForgeStore();
+    const signer = createTestSigner();
+    const deps = createDeps({ store, signer });
+    const tool = createForgeSkillTool(deps);
+
+    const result = (await tool.execute({
+      name: "signedSkill",
+      description: "A signed skill",
+      body: "# My Skill\n\nDo something useful.",
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    const loadResult = await store.load(result.value.id);
+    if (loadResult.ok) {
+      expect(loadResult.value.provenance.attestation).toBeDefined();
+      expect(loadResult.value.provenance.attestation?.algorithm).toBe("hmac-sha256");
     }
   });
 });

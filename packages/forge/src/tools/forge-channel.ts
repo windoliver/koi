@@ -5,7 +5,7 @@
 import type { Result, Tool } from "@koi/core";
 import { brickId } from "@koi/core";
 import type { ForgeError } from "../errors.js";
-import type { ForgeChannelInput, ForgeResult, ImplementationArtifact } from "../types.js";
+import type { ForgeChannelInput, ForgeResult } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import {
   buildBaseFields,
@@ -112,18 +112,15 @@ async function forgeChannelHandler(
       : {}),
   };
 
-  return runForgePipeline(forgeInput, deps, (report) => {
-    const artifact: ImplementationArtifact = {
-      ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
-      kind: "channel",
-      implementation: forgeInput.implementation,
-      ...(forgeInput.testCases !== undefined ? { testCases: forgeInput.testCases } : {}),
-      ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
-      ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
-      ...(forgeInput.configSchema !== undefined ? { configSchema: forgeInput.configSchema } : {}),
-    };
-    return artifact;
-  });
+  return runForgePipeline(forgeInput, deps, (report) => ({
+    ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
+    kind: "channel" as const,
+    implementation: forgeInput.implementation,
+    ...(forgeInput.testCases !== undefined ? { testCases: forgeInput.testCases } : {}),
+    ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
+    ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
+    ...(forgeInput.configSchema !== undefined ? { configSchema: forgeInput.configSchema } : {}),
+  }));
 }
 
 // ---------------------------------------------------------------------------

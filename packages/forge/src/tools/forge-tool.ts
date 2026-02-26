@@ -5,7 +5,7 @@
 import type { Result, Tool } from "@koi/core";
 import { brickId } from "@koi/core";
 import type { ForgeError } from "../errors.js";
-import type { ForgeResult, ForgeToolInput, ToolArtifact } from "../types.js";
+import type { ForgeResult, ForgeToolInput } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import { buildBaseFields, createForgeTool, parseToolInput, runForgePipeline } from "./shared.js";
 
@@ -108,19 +108,16 @@ async function forgeToolHandler(
   };
 
   // Placeholder id — pipeline replaces with content-addressed hash
-  return runForgePipeline(forgeInput, deps, (report) => {
-    const artifact: ToolArtifact = {
-      ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
-      kind: "tool",
-      implementation: forgeInput.implementation,
-      inputSchema: forgeInput.inputSchema,
-      ...(forgeInput.testCases !== undefined ? { testCases: forgeInput.testCases } : {}),
-      ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
-      ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
-      ...(forgeInput.configSchema !== undefined ? { configSchema: forgeInput.configSchema } : {}),
-    };
-    return artifact;
-  });
+  return runForgePipeline(forgeInput, deps, (report) => ({
+    ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
+    kind: "tool" as const,
+    implementation: forgeInput.implementation,
+    inputSchema: forgeInput.inputSchema,
+    ...(forgeInput.testCases !== undefined ? { testCases: forgeInput.testCases } : {}),
+    ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
+    ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
+    ...(forgeInput.configSchema !== undefined ? { configSchema: forgeInput.configSchema } : {}),
+  }));
 }
 
 // ---------------------------------------------------------------------------

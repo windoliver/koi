@@ -7,7 +7,7 @@ import type { Result, Tool } from "@koi/core";
 import { brickId } from "@koi/core";
 import type { ForgeError } from "../errors.js";
 import { generateSkillMd } from "../generate-skill-md.js";
-import type { ForgeResult, ForgeSkillInput, SkillArtifact } from "../types.js";
+import type { ForgeResult, ForgeSkillInput } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import { buildBaseFields, createForgeTool, parseSkillInput, runForgePipeline } from "./shared.js";
 
@@ -92,16 +92,13 @@ async function forgeSkillHandler(
     body: forgeInput.body,
   });
 
-  return runForgePipeline(forgeInput, deps, (report) => {
-    const artifact: SkillArtifact = {
-      ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
-      kind: "skill",
-      content: generatedContent,
-      ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
-      ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
-    };
-    return artifact;
-  });
+  return runForgePipeline(forgeInput, deps, (report) => ({
+    ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
+    kind: "skill" as const,
+    content: generatedContent,
+    ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
+    ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
+  }));
 }
 
 // ---------------------------------------------------------------------------

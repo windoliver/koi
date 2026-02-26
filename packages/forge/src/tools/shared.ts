@@ -17,6 +17,7 @@ import type {
 import { computeBrickId } from "@koi/hash";
 import { z } from "zod";
 import { createForgeProvenance, signAttestation } from "../attestation.js";
+import { extractBrickContent } from "../brick-content.js";
 import type { ForgeConfig } from "../config.js";
 import type { ForgeError } from "../errors.js";
 import { staticError, typeError } from "../errors.js";
@@ -277,11 +278,10 @@ export function parseImplementationInput(
 // ---------------------------------------------------------------------------
 
 /**
- * Builds the shared base fields for all brick artifacts.
+ * Builds the shared base fields for all brick artifacts (without provenance).
  *
- * Creates a placeholder provenance that `runForgePipeline` replaces with
- * the real one after verification completes. This avoids threading provenance
- * through the `ArtifactBuilder` callback signature.
+ * Provenance is attached by `runForgePipeline` after verification + signing,
+ * avoiding a wasteful placeholder that was always overwritten.
  */
 export function buildBaseFields(
   id: BrickId,
@@ -292,35 +292,7 @@ export function buildBaseFields(
   },
   report: VerificationReport,
   deps: ForgeDeps,
-): Omit<BrickArtifactBase, "kind"> {
-  // Placeholder provenance — overwritten by runForgePipeline after signing
-  const placeholderProvenance: import("@koi/core").ForgeProvenance = {
-    source: { origin: "forged", forgedBy: deps.context.agentId, sessionId: deps.context.sessionId },
-    buildDefinition: { buildType: "koi.forge/placeholder/v1", externalParameters: {} },
-    builder: { id: "koi.forge/pipeline/v1" },
-    metadata: {
-      invocationId: id,
-      startedAt: Date.now(),
-      finishedAt: Date.now(),
-      sessionId: deps.context.sessionId,
-      agentId: deps.context.agentId,
-      depth: deps.context.depth,
-    },
-    verification: {
-      passed: report.passed,
-      finalTrustTier: report.finalTrustTier,
-      totalDurationMs: report.totalDurationMs,
-      stageResults: report.stages.map((s) => ({
-        stage: s.stage,
-        passed: s.passed,
-        durationMs: s.durationMs,
-      })),
-    },
-    classification: "public",
-    contentMarkers: [],
-    contentHash: id, // Placeholder — overwritten by runForgePipeline
-  };
-
+): Omit<BrickArtifactBase, "kind" | "provenance"> {
   return {
     id,
     name: input.name,
@@ -328,38 +300,17 @@ export function buildBaseFields(
     scope: deps.config.defaultScope,
     trustTier: report.finalTrustTier,
     lifecycle: "active",
-    provenance: placeholderProvenance,
     version: "0.0.1",
     tags: input.tags ?? [],
     usageCount: 0,
   };
 }
 
-// ---------------------------------------------------------------------------
-// Content extraction — maps brick kind to hashable primary content
-// ---------------------------------------------------------------------------
-
-function extractContentForHash(artifact: BrickArtifact): {
-  readonly kind: string;
-  readonly content: string;
-} {
-  switch (artifact.kind) {
-    case "tool":
-    case "middleware":
-    case "channel":
-      return { kind: artifact.kind, content: artifact.implementation };
-    case "skill":
-      return { kind: artifact.kind, content: artifact.content };
-    case "agent":
-      return { kind: artifact.kind, content: artifact.manifestYaml };
-  }
-}
-
 /**
- * Compute a content-addressed BrickId for any artifact (without an id yet).
+ * Compute a content-addressed BrickId for any artifact body (provenance not required).
  */
-function computeArtifactId(artifact: BrickArtifact): BrickId {
-  const { kind, content } = extractContentForHash(artifact);
+function computeArtifactId(artifact: Omit<BrickArtifact, "provenance">): BrickId {
+  const { kind, content } = extractBrickContent(artifact);
   return computeBrickId(kind, content, artifact.files);
 }
 
@@ -368,10 +319,14 @@ function computeArtifactId(artifact: BrickArtifact): BrickId {
 // ---------------------------------------------------------------------------
 
 /**
- * Builder returns a BrickArtifact body. The `id` field will be a placeholder
- * — the pipeline replaces it with the content-addressed hash.
+ * Builder returns a BrickArtifact body without provenance.
+ * The `id` field will be a placeholder — the pipeline replaces it with
+ * the content-addressed hash. Provenance is attached after signing.
  */
-export type ArtifactBuilder = (report: VerificationReport, deps: ForgeDeps) => BrickArtifact;
+export type ArtifactBuilder = (
+  report: VerificationReport,
+  deps: ForgeDeps,
+) => Omit<BrickArtifact, "provenance">;
 
 export async function runForgePipeline(
   forgeInput: ForgeInput,
@@ -394,14 +349,14 @@ export async function runForgePipeline(
 
   const report = verifyResult.value;
 
-  // Builder uses a placeholder ID — we'll replace it with the content hash
-  const placeholderArtifact = buildArtifact(report, deps);
+  // Builder returns artifact body without provenance — we'll add it after signing
+  const artifactBody = buildArtifact(report, deps);
 
   // Compute content-addressed ID
-  const id = computeArtifactId(placeholderArtifact);
+  const id = computeArtifactId(artifactBody);
 
   // Replace placeholder id with content-addressed id
-  const artifact: BrickArtifact = { ...placeholderArtifact, id };
+  const artifactWithId = { ...artifactBody, id };
 
   // Dedup check: if brick with this ID already exists, return early
   const existsResult = await deps.store.exists(id);
@@ -434,19 +389,6 @@ export async function runForgePipeline(
 
   // Build provenance from pipeline outputs
   // let justified: provenance may be signed in-place below
-  const classificationValue =
-    "classification" in forgeInput
-      ? (forgeInput as { readonly classification?: "public" | "internal" | "secret" })
-          .classification
-      : undefined;
-  const contentMarkersValue =
-    "contentMarkers" in forgeInput
-      ? (
-          forgeInput as {
-            readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[];
-          }
-        ).contentMarkers
-      : undefined;
   let provenance = createForgeProvenance({
     input: forgeInput,
     context: deps.context,
@@ -456,8 +398,12 @@ export async function runForgePipeline(
     invocationId: id,
     startedAt,
     finishedAt,
-    ...(classificationValue !== undefined ? { classification: classificationValue } : {}),
-    ...(contentMarkersValue !== undefined ? { contentMarkers: contentMarkersValue } : {}),
+    ...(forgeInput.classification !== undefined
+      ? { classification: forgeInput.classification }
+      : {}),
+    ...(forgeInput.contentMarkers !== undefined
+      ? { contentMarkers: forgeInput.contentMarkers }
+      : {}),
   });
 
   // Sign attestation if signer is available
@@ -465,11 +411,13 @@ export async function runForgePipeline(
     provenance = await signAttestation(provenance, deps.signer);
   }
 
-  // Attach provenance to artifact
-  const artifactWithProvenance: BrickArtifact = {
-    ...artifact,
+  // Justified `as BrickArtifact`: reconstructing the exact union variant by adding back
+  // the `provenance` field that was omitted from the builder return type. TypeScript cannot
+  // prove that Omit<UnionType, "provenance"> & { provenance } reconstitutes the union.
+  const artifactWithProvenance = {
+    ...artifactWithId,
     provenance,
-  };
+  } as BrickArtifact;
 
   const saveResult = await deps.store.save(artifactWithProvenance);
   if (!saveResult.ok) {

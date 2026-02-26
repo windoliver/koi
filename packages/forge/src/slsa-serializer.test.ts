@@ -3,9 +3,10 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { ForgeProvenance } from "@koi/core";
+import type { BrickId, ForgeProvenance } from "@koi/core";
+import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
-import { mapProvenanceToSlsa } from "./slsa-serializer.js";
+import { mapProvenanceToSlsa, mapProvenanceToStatement } from "./slsa-serializer.js";
 
 describe("mapProvenanceToSlsa", () => {
   test("maps Koi provenance to SLSA v1.0 predicate structure", () => {
@@ -119,5 +120,77 @@ describe("mapProvenanceToSlsa", () => {
   test("invocationId is preserved", () => {
     const slsa = mapProvenanceToSlsa(DEFAULT_PROVENANCE);
     expect(slsa.runDetails.metadata?.invocationId).toBe(DEFAULT_PROVENANCE.metadata.invocationId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mapProvenanceToStatement — in-toto Statement v1 envelope
+// ---------------------------------------------------------------------------
+
+describe("mapProvenanceToStatement", () => {
+  const testBrickId: BrickId = brickId("sha256:abc123def456");
+
+  test("produces valid in-toto Statement v1", () => {
+    const statement = mapProvenanceToStatement(DEFAULT_PROVENANCE, testBrickId);
+    expect(statement._type).toBe("https://in-toto.io/Statement/v1");
+  });
+
+  test("subject contains BrickId with correct digest", () => {
+    const statement = mapProvenanceToStatement(DEFAULT_PROVENANCE, testBrickId);
+    expect(statement.subject).toHaveLength(1);
+    expect(statement.subject[0]?.name).toBe(testBrickId);
+    expect(statement.subject[0]?.digest.sha256).toBe("abc123def456");
+  });
+
+  test("predicateType is SLSA provenance v1", () => {
+    const statement = mapProvenanceToStatement(DEFAULT_PROVENANCE, testBrickId);
+    expect(statement.predicateType).toBe("https://slsa.dev/provenance/v1");
+  });
+
+  test("predicate contains SLSA build definition and run details", () => {
+    const statement = mapProvenanceToStatement(DEFAULT_PROVENANCE, testBrickId);
+    expect(statement.predicate.buildDefinition).toBeDefined();
+    expect(statement.predicate.runDetails).toBeDefined();
+    expect(statement.predicate.buildDefinition.buildType).toBe(
+      DEFAULT_PROVENANCE.buildDefinition.buildType,
+    );
+  });
+
+  test("vendor extensions: koi_classification present", () => {
+    const provenance: ForgeProvenance = {
+      ...DEFAULT_PROVENANCE,
+      classification: "secret",
+    };
+    const statement = mapProvenanceToStatement(provenance, testBrickId);
+    expect(statement.predicate.koi_classification).toBe("secret");
+  });
+
+  test("vendor extensions: koi_contentMarkers present", () => {
+    const provenance: ForgeProvenance = {
+      ...DEFAULT_PROVENANCE,
+      contentMarkers: ["credentials", "pii"],
+    };
+    const statement = mapProvenanceToStatement(provenance, testBrickId);
+    expect(statement.predicate.koi_contentMarkers).toEqual(["credentials", "pii"]);
+  });
+
+  test("vendor extensions: koi_verification present", () => {
+    const statement = mapProvenanceToStatement(DEFAULT_PROVENANCE, testBrickId);
+    expect(statement.predicate.koi_verification).toBeDefined();
+    expect(statement.predicate.koi_verification.passed).toBe(
+      DEFAULT_PROVENANCE.verification.passed,
+    );
+    expect(statement.predicate.koi_verification.finalTrustTier).toBe(
+      DEFAULT_PROVENANCE.verification.finalTrustTier,
+    );
+    expect(statement.predicate.koi_verification.totalDurationMs).toBe(
+      DEFAULT_PROVENANCE.verification.totalDurationMs,
+    );
+  });
+
+  test("BrickId without sha256: prefix extracts correctly", () => {
+    const plainId: BrickId = brickId("no-prefix-hash");
+    const statement = mapProvenanceToStatement(DEFAULT_PROVENANCE, plainId);
+    expect(statement.subject[0]?.digest.sha256).toBe("no-prefix-hash");
   });
 });

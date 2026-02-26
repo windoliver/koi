@@ -356,6 +356,8 @@ export type {
   ForgeRunMetadata,
   ForgeStageDigest,
   ForgeVerificationSummary,
+  InTotoStatementV1,
+  InTotoSubject,
   SigningBackend,
 } from "./provenance.js";
 // reconciliation — desired-state convergence contract

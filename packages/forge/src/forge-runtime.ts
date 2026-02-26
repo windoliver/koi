@@ -119,9 +119,38 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
     integrityCache.clear();
   }
 
-  const resolveTool = async (toolId: string): Promise<Tool | undefined> => {
+  /**
+   * Resolve a tool artifact by name.
+   * Fast path: if cache is cold, try direct store search to avoid loading all tools.
+   */
+  async function resolveToolArtifact(toolId: string): Promise<ToolArtifact | undefined> {
+    // Warm cache: direct lookup
+    if (cachedTools !== undefined) {
+      return cachedTools.get(toolId);
+    }
+
+    // Cold cache fast path: single-brick search by name
+    const searchResult = await store.search({
+      kind: "tool",
+      lifecycle: "active",
+      text: toolId,
+      limit: 1,
+    });
+    if (searchResult.ok) {
+      const match = searchResult.value[0];
+      if (match !== undefined && match.kind === "tool" && match.name === toolId) {
+        return match;
+      }
+    }
+
+    // Fall back to full cache population
     const tools = await ensureCache();
-    const artifact = tools.get(toolId);
+    return tools.get(toolId);
+  }
+
+  const resolveTool = async (toolId: string): Promise<Tool | undefined> => {
+    // Fast path: if cache is cold, try single-brick lookup before populating full cache
+    const artifact = await resolveToolArtifact(toolId);
     if (artifact === undefined) {
       return undefined;
     }

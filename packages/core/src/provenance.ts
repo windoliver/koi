@@ -116,3 +116,21 @@ export interface ForgeProvenance {
   readonly contentHash: string;
   readonly attestation?: ForgeAttestationSignature;
 }
+
+// ---------------------------------------------------------------------------
+// In-toto Statement v1 envelope
+// ---------------------------------------------------------------------------
+
+/** Subject of an in-toto Statement — identifies the artifact by name + digest. */
+export interface InTotoSubject {
+  readonly name: string;
+  readonly digest: Readonly<Record<string, string>>;
+}
+
+/** In-toto Statement v1 envelope wrapping a typed predicate. */
+export interface InTotoStatementV1<T> {
+  readonly _type: "https://in-toto.io/Statement/v1";
+  readonly subject: readonly InTotoSubject[];
+  readonly predicateType: string;
+  readonly predicate: T;
+}
