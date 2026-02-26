@@ -61,7 +61,7 @@ function makeChecker(allows: boolean): ScopeChecker {
 }
 
 function makeScope(): DelegationScope {
-  return { permissions: { tools: { allow: ["*"] } } };
+  return { permissions: { allow: ["*"] } };
 }
 
 function makeDeps(overrides?: Partial<ToolCallHandlerDeps>): ToolCallHandlerDeps {

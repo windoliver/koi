@@ -7,13 +7,21 @@
 
 import type { KoiError, Result, SourceBundle, Tool, ToolDescriptor } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core";
-import type { ToolResolverConfig } from "../types.js";
 import { createFilesystemTool } from "./filesystem.js";
 import { createShellTool } from "./shell.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+/** Config subset used by the resolver (excludes toolCallTimeoutMs which is node-level). */
+interface ResolverConfig {
+  readonly directories: readonly string[];
+  readonly builtins: {
+    readonly filesystem: boolean;
+    readonly shell: boolean;
+  };
+}
 
 export interface ToolMeta {
   readonly name: string;
@@ -34,7 +42,7 @@ export interface LocalResolver {
 // Factory
 // ---------------------------------------------------------------------------
 
-export function createLocalResolver(config: ToolResolverConfig): LocalResolver {
+export function createLocalResolver(config: ResolverConfig): LocalResolver {
   const tools = new Map<string, Tool>();
   const toolSources = new Map<string, "builtin" | "directory">();
   const toolPaths = new Map<string, string>();

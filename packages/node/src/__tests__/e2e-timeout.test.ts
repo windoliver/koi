@@ -92,7 +92,7 @@ function makeChecker(): ScopeChecker {
 }
 
 function makeScope(): DelegationScope {
-  return { permissions: { tools: { allow: ["*"] } } };
+  return { permissions: { allow: ["*"] } };
 }
 
 function makeDeps(tool: Tool, overrides?: Partial<ToolCallHandlerDeps>): ToolCallHandlerDeps {
