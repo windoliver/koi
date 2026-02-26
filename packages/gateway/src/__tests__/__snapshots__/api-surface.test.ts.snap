@@ -302,6 +302,20 @@ interface GatewayConfig {
     readonly channelBindings?: readonly ChannelBinding[];
     /** Tool routing configuration. Undefined = tool routing disabled (backward compatible). Partial fields are merged with DEFAULT_TOOL_ROUTING_CONFIG. */
     readonly toolRouting?: Partial<ToolRoutingConfig> | undefined;
+    /** Port for canvas HTTP server. Undefined = disabled. */
+    readonly canvasPort?: number;
+    /** URL path prefix for canvas endpoints. Default: "/gateway/canvas". */
+    readonly canvasPath?: string;
+    /** Maximum canvas request body size in bytes. Default: 1_048_576 (1MB). */
+    readonly canvasMaxBodyBytes?: number;
+    /** Maximum number of stored surfaces. Default: 10_000. */
+    readonly canvasMaxSurfaces?: number;
+    /** Maximum SSE subscribers per surface. Default: 100. */
+    readonly canvasMaxSsePerSurface?: number;
+    /** Maximum total SSE subscribers across all surfaces. Default: 10_000. */
+    readonly canvasMaxSseTotal?: number;
+    /** SSE keep-alive interval in ms. Default: 15_000. */
+    readonly canvasSseKeepAliveMs?: number;
 }
 declare const DEFAULT_GATEWAY_CONFIG: GatewayConfig;
 type BackpressureState = "normal" | "warning" | "critical";
@@ -415,6 +429,127 @@ interface BackpressureMonitor {
 declare function createBackpressureMonitor(config: Pick<GatewayConfig, "maxBufferBytesPerConnection" | "backpressureHighWatermark" | "globalBufferLimitBytes">): BackpressureMonitor;
 
 /**
+ * SSE (Server-Sent Events) subscriber registry for canvas surfaces.
+ *
+ * Manages per-surface fan-out, keep-alive pings, connection limits,
+ * and automatic dead-subscriber cleanup.
+ */
+
+interface SseEvent {
+    /** Monotonic event ID for Last-Event-ID reconnection. */
+    readonly id: string;
+    /** Event type: "updated" | "deleted". */
+    readonly event: string;
+    /** JSON payload string. */
+    readonly data: string;
+}
+/**
+ * Callback that receives raw SSE bytes.
+ * Returns false if the subscriber is dead (connection closed).
+ */
+type SseSubscriber = (data: Uint8Array) => boolean;
+interface CanvasSseManager {
+    /**
+     * Register a subscriber for a surface's event stream.
+     * Returns an unsubscribe function on success.
+     * Fails with RATE_LIMIT if per-surface or global limit reached.
+     */
+    readonly subscribe: (surfaceId: string, subscriber: SseSubscriber) => Result<() => void, KoiError>;
+    /** Fan out an event to all subscribers for a surface. */
+    readonly publish: (surfaceId: string, event: SseEvent) => void;
+    /** Send "deleted" event and remove all subscribers for a surface. */
+    readonly close: (surfaceId: string) => void;
+    /** Stop keep-alive timer and clear all subscribers. */
+    readonly dispose: () => void;
+    /** Get the next monotonic event ID for a surface. */
+    readonly nextEventId: (surfaceId: string) => string;
+    readonly subscriberCount: (surfaceId: string) => number;
+    readonly totalSubscribers: () => number;
+}
+interface CanvasSseConfig {
+    /** Max subscribers per surface. Default: 100. */
+    readonly maxSubscribersPerSurface: number;
+    /** Max total subscribers across all surfaces. Default: 10_000. */
+    readonly maxTotalSubscribers: number;
+    /** Keep-alive interval in ms. Default: 15_000. */
+    readonly keepAliveIntervalMs: number;
+}
+/** Format an SSE event to wire format bytes. */
+declare function formatSseEvent(event: SseEvent): Uint8Array;
+declare function createCanvasSseManager(configOverrides?: Partial<CanvasSseConfig>): CanvasSseManager;
+
+/**
+ * SurfaceStore: pluggable surface persistence for canvas rendering.
+ *
+ * Surfaces are opaque blobs — the store does not understand A2UI structure.
+ * Default in-memory implementation with LRU eviction provided.
+ */
+
+interface SurfaceEntry {
+    readonly surfaceId: string;
+    /** Opaque serialized surface content. */
+    readonly content: string;
+    /** SHA-256 hex digest of content — used as ETag. */
+    readonly contentHash: string;
+    readonly createdAt: number;
+    readonly updatedAt: number;
+    /** Tracks access time for LRU eviction. */
+    readonly lastAccessedAt: number;
+    readonly metadata?: Readonly<Record<string, unknown>>;
+}
+interface SurfaceStore {
+    readonly get: (id: string) => Result<SurfaceEntry, KoiError> | Promise<Result<SurfaceEntry, KoiError>>;
+    readonly create: (id: string, content: string, metadata?: Readonly<Record<string, unknown>>) => Result<SurfaceEntry, KoiError> | Promise<Result<SurfaceEntry, KoiError>>;
+    /**
+     * Update surface content.
+     * If expectedHash is provided and doesn't match current hash → CONFLICT error (CAS).
+     * If expectedHash is undefined → unconditional update.
+     */
+    readonly update: (id: string, content: string, expectedHash: string | undefined) => Result<SurfaceEntry, KoiError> | Promise<Result<SurfaceEntry, KoiError>>;
+    readonly delete: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
+    readonly has: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
+    readonly size: () => number;
+}
+interface SurfaceStoreConfig {
+    /** Maximum number of surfaces before LRU eviction. Default: 10_000. */
+    readonly maxSurfaces: number;
+}
+/** Compute SHA-256 hex digest of content using Bun native crypto. */
+declare function computeContentHash(content: string): string;
+declare function createInMemorySurfaceStore(configOverrides?: Partial<SurfaceStoreConfig>): SurfaceStore;
+
+/**
+ * HTTP route handler for canvas surface CRUD + SSE streaming.
+ *
+ * Routes:
+ *   POST   {prefix}/{surfaceId}         Create surface (auth required)
+ *   GET    {prefix}/{surfaceId}         Fetch surface (public)
+ *   PATCH  {prefix}/{surfaceId}         Update surface (auth required)
+ *   DELETE {prefix}/{surfaceId}         Delete surface (auth required)
+ *   GET    {prefix}/{surfaceId}/events  SSE stream (public)
+ */
+
+interface CanvasRouteConfig {
+    /** URL path prefix. Default: "/gateway/canvas". */
+    readonly pathPrefix: string;
+    /** Maximum request body size in bytes. Default: 1_048_576 (1MB). */
+    readonly maxBodyBytes: number;
+}
+interface CanvasServer {
+    readonly start: () => Promise<void>;
+    readonly stop: () => void;
+    readonly port: () => number;
+}
+type CanvasAuthenticator = (request: Request) => Promise<Result<CanvasAuthResult, KoiError>>;
+interface CanvasAuthResult {
+    readonly agentId: string;
+    readonly metadata?: Readonly<Record<string, unknown>>;
+}
+declare function createCanvasServer(config: Partial<CanvasRouteConfig> & {
+    readonly port: number;
+}, store: SurfaceStore, sse: CanvasSseManager, authenticator?: CanvasAuthenticator): CanvasServer;
+
+/**
  * Webhook ingestion: HTTP server that converts POST requests
  * into GatewayFrames dispatched through the gateway pipeline.
  */
@@ -486,14 +621,59 @@ interface Gateway {
     readonly channelBindings: () => ReadonlyMap<string, string>;
     /** Send a NodeFrame to a connected compute node. */
     readonly sendToNode: (nodeId: string, frame: NodeFrame) => Result<number, KoiError>;
+    /** Returns the canvas server port, or undefined if canvas is not configured. */
+    readonly canvasPort: () => number | undefined;
+    /** Access the surface store for external use. Undefined if canvas is not configured. */
+    readonly surfaceStore: () => SurfaceStore | undefined;
 }
 interface GatewayDeps {
     readonly transport: Transport;
     readonly auth: GatewayAuthenticator;
     readonly store?: SessionStore;
     readonly webhookAuth?: WebhookAuthenticator;
+    readonly canvasAuth?: CanvasAuthenticator;
 }
 declare function createGateway(configOverrides: Partial<GatewayConfig>, deps: GatewayDeps): Gateway;
+
+/**
+ * Shared HTTP utilities for gateway HTTP servers (webhook, canvas, etc.).
+ */
+/** Create a JSON Response with the given status code and body. */
+declare function jsonResponse(status: number, body: Record<string, unknown>): Response;
+interface ParsedBody {
+    readonly ok: true;
+    readonly raw: string;
+    readonly parsed: unknown;
+}
+interface ParseBodyError {
+    readonly ok: false;
+    readonly status: number;
+    readonly message: string;
+}
+type ParseBodyResult = ParsedBody | ParseBodyError;
+/**
+ * Read and parse a JSON request body with streaming size enforcement.
+ *
+ * Returns the raw string (useful for HMAC verification) and the parsed JSON.
+ * Returns a typed error with HTTP status code on failure.
+ */
+declare function parseJsonBody(request: Request, maxBytes: number): Promise<ParseBodyResult>;
+interface PathMatch {
+    readonly match: true;
+    readonly segments: readonly string[];
+}
+interface PathNoMatch {
+    readonly match: false;
+}
+type PathMatchResult = PathMatch | PathNoMatch;
+/**
+ * Match a URL pathname against a prefix with boundary safety.
+ *
+ * Prevents "/webhook" from matching "/webhookadmin" by requiring
+ * an exact match or a "/" boundary after the prefix.
+ * Returns the path segments after the prefix.
+ */
+declare function matchPath(pathname: string, prefix: string): PathMatchResult;
 
 /**
  * Wire protocol: parse and encode GatewayFrame.
@@ -612,6 +792,6 @@ interface SequenceTracker {
 }
 declare function createSequenceTracker(windowSize: number): SequenceTracker;
 
-export { type AcceptResult, type AuthResult, type BackpressureMonitor, type BackpressureState, type BunTransport, type CapabilitiesPayload, type ChannelBinding, type CompiledAffinity, type ConnectClient, type ConnectFrame, DEFAULT_GATEWAY_CONFIG, DEFAULT_TOOL_ROUTING_CONFIG, type FrameIdGenerator, type Gateway, type GatewayAuthenticator, type GatewayCapabilities, type GatewayConfig, type GatewayDeps, type GatewayFrame, type GatewayFrameKind, type GatewayScheduler, type HandshakeAckPayload, type HandshakeOptions, type HandshakePayload, type HandshakeResult, type HandshakeSnapshot, type NodeFrame, type NodeFrameKind, type NodeRegistry, type NodeRegistryEvent, type RegisteredNode, type ResolvedRoute, type ResumeRequest, type RouteBinding, type RouteResult, type RoutingConfig, type RoutingContext, type SchedulerDef, type SchedulerDispatcher, type ScopingMode, type SequenceTracker, type Session, type SessionEvent, type SessionStore, type SweepError, TOOL_ROUTING_ERROR_CODES, type ToolAffinity, type ToolRouter, type ToolRouterDeps, type ToolRoutingConfig, type ToolRoutingErrorCode, type Transport, type TransportConnection, type TransportHandler, type TransportSendResult, type WebhookAuthResult, type WebhookAuthenticator, type WebhookConfig, type WebhookDispatcher, type WebhookServer, compileAffinities, computeDispatchKey, createAckFrame, createBackpressureMonitor, createBunTransport, createErrorFrame, createFrameIdGenerator, createGateway, createInMemoryNodeRegistry, createInMemorySessionStore, createScheduler, createSequenceTracker, createToolRouter, createWebhookServer, encodeFrame, encodeNodeFrame, handleHandshake, matchAffinity, negotiateProtocol, parseConnectFrame, parseFrame, parseNodeFrame, peekFrameKind, resolveBinding, resolveRoute, resolveTargetNode, startHeartbeatSweep, validateBindingPattern, validateCapabilitiesPayload, validateCapacityPayload, validateHandshakePayload };
+export { type AcceptResult, type AuthResult, type BackpressureMonitor, type BackpressureState, type BunTransport, type CanvasAuthResult, type CanvasAuthenticator, type CanvasRouteConfig, type CanvasServer, type CanvasSseConfig, type CanvasSseManager, type CapabilitiesPayload, type ChannelBinding, type CompiledAffinity, type ConnectClient, type ConnectFrame, DEFAULT_GATEWAY_CONFIG, DEFAULT_TOOL_ROUTING_CONFIG, type FrameIdGenerator, type Gateway, type GatewayAuthenticator, type GatewayCapabilities, type GatewayConfig, type GatewayDeps, type GatewayFrame, type GatewayFrameKind, type GatewayScheduler, type HandshakeAckPayload, type HandshakeOptions, type HandshakePayload, type HandshakeResult, type HandshakeSnapshot, type NodeFrame, type NodeFrameKind, type NodeRegistry, type NodeRegistryEvent, type RegisteredNode, type ResolvedRoute, type ResumeRequest, type RouteBinding, type RouteResult, type RoutingConfig, type RoutingContext, type SchedulerDef, type SchedulerDispatcher, type ScopingMode, type SequenceTracker, type Session, type SessionEvent, type SessionStore, type SseEvent, type SseSubscriber, type SurfaceEntry, type SurfaceStore, type SurfaceStoreConfig, type SweepError, TOOL_ROUTING_ERROR_CODES, type ToolAffinity, type ToolRouter, type ToolRouterDeps, type ToolRoutingConfig, type ToolRoutingErrorCode, type Transport, type TransportConnection, type TransportHandler, type TransportSendResult, type WebhookAuthResult, type WebhookAuthenticator, type WebhookConfig, type WebhookDispatcher, type WebhookServer, compileAffinities, computeContentHash, computeDispatchKey, createAckFrame, createBackpressureMonitor, createBunTransport, createCanvasServer, createCanvasSseManager, createErrorFrame, createFrameIdGenerator, createGateway, createInMemoryNodeRegistry, createInMemorySessionStore, createInMemorySurfaceStore, createScheduler, createSequenceTracker, createToolRouter, createWebhookServer, encodeFrame, encodeNodeFrame, formatSseEvent, handleHandshake, jsonResponse, matchAffinity, matchPath, negotiateProtocol, parseConnectFrame, parseFrame, parseJsonBody, parseNodeFrame, peekFrameKind, resolveBinding, resolveRoute, resolveTargetNode, startHeartbeatSweep, validateBindingPattern, validateCapabilitiesPayload, validateCapacityPayload, validateHandshakePayload };
 "
 `;

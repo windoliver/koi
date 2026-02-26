@@ -18,9 +18,34 @@ export { handleHandshake, startHeartbeatSweep } from "./auth.js";
 // backpressure
 export type { BackpressureMonitor } from "./backpressure.js";
 export { createBackpressureMonitor } from "./backpressure.js";
+// canvas routes
+export type {
+  CanvasAuthenticator,
+  CanvasAuthResult,
+  CanvasRouteConfig,
+  CanvasServer,
+} from "./canvas-routes.js";
+export { createCanvasServer } from "./canvas-routes.js";
+// canvas SSE
+export type {
+  CanvasSseConfig,
+  CanvasSseManager,
+  SseEvent,
+  SseSubscriber,
+} from "./canvas-sse.js";
+export { createCanvasSseManager, formatSseEvent } from "./canvas-sse.js";
+// canvas store
+export type {
+  SurfaceEntry,
+  SurfaceStore,
+  SurfaceStoreConfig,
+} from "./canvas-store.js";
+export { computeContentHash, createInMemorySurfaceStore } from "./canvas-store.js";
 // gateway
 export type { Gateway, GatewayDeps, SessionEvent } from "./gateway.js";
 export { createGateway } from "./gateway.js";
+// http helpers
+export { jsonResponse, matchPath, parseJsonBody } from "./http-helpers.js";
 // node handler
 export type {
   CapabilitiesPayload,
