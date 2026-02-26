@@ -140,6 +140,20 @@
         "@koi/shutdown": "workspace:*",
       },
     },
+    "packages/code-mode": {
+      "name": "@koi/code-mode",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/model-router": "workspace:*",
+      },
+    },
     "packages/config": {
       "name": "@koi/config",
       "version": "0.0.0",
@@ -1254,6 +1268,8 @@
     "@koi/channel-voice": ["@koi/channel-voice@workspace:packages/channel-voice"],
 
     "@koi/cli": ["@koi/cli@workspace:packages/cli"],
+
+    "@koi/code-mode": ["@koi/code-mode@workspace:packages/code-mode"],
 
     "@koi/config": ["@koi/config@workspace:packages/config"],
 
