@@ -348,19 +348,6 @@ describe("createContentScanningVerifier", () => {
     expect(result.message).toContain("Skipped");
   });
 
-  test("skips composite inputs", async () => {
-    const verifier = createContentScanningVerifier();
-    const input: ForgeInput = {
-      kind: "composite",
-      name: "myComposite",
-      description: "A composite",
-      brickIds: ["brick_1"],
-    };
-    const result = await verifier.verify(input, CTX);
-    expect(result.passed).toBe(true);
-    expect(result.message).toContain("Skipped");
-  });
-
   test("detects identity redefinition", async () => {
     const verifier = createContentScanningVerifier();
     const input: ForgeInput = {
@@ -597,19 +584,6 @@ describe("createStructuralHidingVerifier", () => {
   test("skips tool inputs", async () => {
     const verifier = createStructuralHidingVerifier();
     const result = await verifier.verify(safeToolInput(), CTX);
-    expect(result.passed).toBe(true);
-    expect(result.message).toContain("Skipped");
-  });
-
-  test("skips composite inputs", async () => {
-    const verifier = createStructuralHidingVerifier();
-    const input: ForgeInput = {
-      kind: "composite",
-      name: "myComposite",
-      description: "A composite",
-      brickIds: ["brick_1"],
-    };
-    const result = await verifier.verify(input, CTX);
     expect(result.passed).toBe(true);
     expect(result.message).toContain("Skipped");
   });

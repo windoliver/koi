@@ -78,23 +78,13 @@ export interface AgentArtifact extends BrickArtifactBase {
   readonly manifestYaml: string;
 }
 
-export interface CompositeArtifact extends BrickArtifactBase {
-  readonly kind: "composite";
-  readonly brickIds: readonly BrickId[];
-}
-
 export interface ImplementationArtifact extends BrickArtifactBase {
-  readonly kind: "engine" | "resolver" | "provider" | "middleware" | "channel";
+  readonly kind: "middleware" | "channel";
   readonly implementation: string;
   readonly testCases?: readonly TestCase[];
 }
 
-export type BrickArtifact =
-  | ToolArtifact
-  | SkillArtifact
-  | AgentArtifact
-  | CompositeArtifact
-  | ImplementationArtifact;
+export type BrickArtifact = ToolArtifact | SkillArtifact | AgentArtifact | ImplementationArtifact;
 
 // ---------------------------------------------------------------------------
 // Forge query (structured search)

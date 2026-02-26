@@ -206,28 +206,6 @@ describe("verifyStatic — kind-specific validation", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("rejects composite with empty brickIds", () => {
-    const input: ForgeInput = {
-      kind: "composite",
-      name: "myComposite",
-      description: "A composite",
-      brickIds: [],
-    };
-    const result = verifyStatic(input, DEFAULT_VERIFICATION);
-    expect(result.ok).toBe(false);
-  });
-
-  test("accepts valid composite", () => {
-    const input: ForgeInput = {
-      kind: "composite",
-      name: "myComposite",
-      description: "A composite",
-      brickIds: ["brick_1"],
-    };
-    const result = verifyStatic(input, DEFAULT_VERIFICATION);
-    expect(result.ok).toBe(true);
-  });
-
   test("returns StageReport with timing on success", () => {
     const result = verifyStatic(validToolInput(), DEFAULT_VERIFICATION);
     expect(result.ok).toBe(true);

@@ -25,7 +25,6 @@ import { createKoi } from "@koi/engine";
 import { createDefaultForgeConfig } from "../config.js";
 import { createForgeComponentProvider } from "../forge-component-provider.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
-import { createComposeForgeTool } from "../tools/compose-forge.js";
 import { createForgeSkillTool } from "../tools/forge-skill.js";
 import { createForgeToolTool } from "../tools/forge-tool.js";
 import { createSearchForgeTool } from "../tools/search-forge.js";
@@ -387,98 +386,10 @@ describe("forge → agent e2e", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Test 4: Compose skill + tool → search finds composite
+// Test 4: Search mixed types with text filter
 // ---------------------------------------------------------------------------
 
-describe("forge search + compose e2e", () => {
-  test("compose skill + tool → search finds composite and individual bricks", async () => {
-    const store = createInMemoryForgeStore();
-    const executor = mockExecutor();
-    const deps = defaultDeps(store, executor);
-
-    // Forge a tool ("calculator")
-    const forgeTool = createForgeToolTool(deps);
-    const toolResult = (await forgeTool.execute({
-      name: "calculator",
-      description: "A simple calculator tool",
-      inputSchema: { type: "object" },
-      implementation: "return input;",
-    })) as { readonly ok: true; readonly value: ForgeResult };
-
-    expect(toolResult.ok).toBe(true);
-    const toolId = toolResult.value.id;
-
-    // Forge a skill ("math-tips")
-    const deps2: ForgeDeps = { ...deps, context: { ...deps.context, forgesThisSession: 1 } };
-    const forgeSkill = createForgeSkillTool(deps2);
-    const skillResult = (await forgeSkill.execute({
-      name: "math-tips",
-      description: "Tips for math operations",
-      body: "# Math Tips\n\nUse calculator for arithmetic.",
-    })) as { readonly ok: true; readonly value: ForgeResult };
-
-    expect(skillResult.ok).toBe(true);
-    const skillId = skillResult.value.id;
-
-    // Compose both into "math-suite"
-    const deps3: ForgeDeps = { ...deps, context: { ...deps.context, forgesThisSession: 2 } };
-    const composeTool = createComposeForgeTool(deps3);
-    const composeResult = (await composeTool.execute({
-      name: "math-suite",
-      description: "Combined math tool and tips",
-      brickIds: [toolId, skillId],
-    })) as { readonly ok: true; readonly value: ForgeResult };
-
-    expect(composeResult.ok).toBe(true);
-    expect(composeResult.value.kind).toBe("composite");
-
-    // search_forge({}) → finds 3 bricks (tool + skill + composite)
-    const searchTool = createSearchForgeTool(deps);
-
-    const allBricks = (await searchTool.execute({})) as {
-      readonly ok: true;
-      readonly value: readonly BrickArtifact[];
-    };
-    expect(allBricks.ok).toBe(true);
-    expect(allBricks.value).toHaveLength(3);
-
-    // search_forge({ kind: "composite" }) → finds 1 composite
-    const composites = (await searchTool.execute({ kind: "composite" })) as {
-      readonly ok: true;
-      readonly value: readonly BrickArtifact[];
-    };
-    expect(composites.ok).toBe(true);
-    expect(composites.value).toHaveLength(1);
-    const composite = composites.value[0];
-    expect(composite?.kind).toBe("composite");
-    if (composite?.kind === "composite") {
-      expect(composite.brickIds).toContain(toolId);
-      expect(composite.brickIds).toContain(skillId);
-    }
-
-    // search_forge({ kind: "tool" }) → finds 1 tool
-    const tools = (await searchTool.execute({ kind: "tool" })) as {
-      readonly ok: true;
-      readonly value: readonly BrickArtifact[];
-    };
-    expect(tools.ok).toBe(true);
-    expect(tools.value).toHaveLength(1);
-    expect(tools.value[0]?.name).toBe("calculator");
-
-    // search_forge({ kind: "skill" }) → finds 1 skill
-    const skills = (await searchTool.execute({ kind: "skill" })) as {
-      readonly ok: true;
-      readonly value: readonly BrickArtifact[];
-    };
-    expect(skills.ok).toBe(true);
-    expect(skills.value).toHaveLength(1);
-    expect(skills.value[0]?.name).toBe("math-tips");
-  });
-
-  // ---------------------------------------------------------------------------
-  // Test 5: Search mixed types with text filter
-  // ---------------------------------------------------------------------------
-
+describe("forge search e2e", () => {
   test("search mixed types with text filter", async () => {
     const store = createInMemoryForgeStore();
     const executor = mockExecutor();
@@ -533,7 +444,7 @@ describe("forge search + compose e2e", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Test 6: callHandlers.tools contains forged tool descriptors
+// Test 5: callHandlers.tools contains forged tool descriptors
 // ---------------------------------------------------------------------------
 
 describe("forge → callHandlers.tools visibility", () => {
@@ -598,7 +509,7 @@ describe("forge → callHandlers.tools visibility", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Test 7: Agent forges a tool at runtime, then reuses it in a second run
+// Test 6: Agent forges a tool at runtime, then reuses it in a second run
 // ---------------------------------------------------------------------------
 
 describe("forge → reuse: agent self-extends", () => {
@@ -838,7 +749,7 @@ describe("forge → reuse: agent self-extends", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Test 9: Hot-attach — agent forges tool mid-session, visible in next turn
+// Test 7: Hot-attach — agent forges tool mid-session, visible in next turn
 // ---------------------------------------------------------------------------
 
 describe("forge → hot-attach: mid-session tool visibility", () => {

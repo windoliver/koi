@@ -3,7 +3,7 @@ import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createForgeResolver, extractSource } from "./forge-resolver.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
-import type { AgentArtifact, CompositeArtifact, SkillArtifact, ToolArtifact } from "./types.js";
+import type { AgentArtifact, SkillArtifact, ToolArtifact } from "./types.js";
 
 function createBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   return {
@@ -56,24 +56,6 @@ function createAgentBrick(overrides?: Partial<AgentArtifact>): AgentArtifact {
     tags: [],
     usageCount: 0,
     manifestYaml: "name: test-agent\nversion: 0.0.1",
-    ...overrides,
-  };
-}
-
-function createCompositeBrick(overrides?: Partial<CompositeArtifact>): CompositeArtifact {
-  return {
-    id: brickId(`brick_${Math.random().toString(36).slice(2, 10)}`),
-    kind: "composite",
-    name: "test-composite",
-    description: "A test composite",
-    scope: "agent",
-    trustTier: "sandbox",
-    lifecycle: "active",
-    provenance: DEFAULT_PROVENANCE,
-    version: "0.0.1",
-    tags: [],
-    usageCount: 0,
-    brickIds: [brickId("brick_a"), brickId("brick_b")],
     ...overrides,
   };
 }
@@ -274,13 +256,6 @@ describe("extractSource", () => {
     const bundle = extractSource(brick);
     expect(bundle.content).toBe("name: agent\nversion: 1.0");
     expect(bundle.language).toBe("yaml");
-  });
-
-  test("composite brick returns JSON brickIds as json", () => {
-    const brick = createCompositeBrick({ brickIds: [brickId("a"), brickId("b"), brickId("c")] });
-    const bundle = extractSource(brick);
-    expect(bundle.language).toBe("json");
-    expect(JSON.parse(bundle.content)).toEqual(["a", "b", "c"]);
   });
 
   test("includes companion files when present", () => {

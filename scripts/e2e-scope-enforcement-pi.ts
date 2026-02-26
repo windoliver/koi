@@ -4,7 +4,7 @@
  *
  * Validates that agent-scoped bricks are invisible to other agents across
  * all access paths: search_forge, ForgeResolver (discover/load/source),
- * compose_forge, and promote_forge.
+ * and promote_forge.
  *
  * Flow:
  *   Test 1: Alpha forges a "secret-calc" tool  → agent-scoped, owned by alpha
@@ -12,9 +12,8 @@
  *   Test 3: Alpha promotes to global           → scope updated
  *   Test 4: Beta searches again                → now sees the global-scoped brick
  *   Test 5: Alpha forges a 2nd agent-scoped brick "private-util"
- *   Test 6: Beta tries to compose with alpha's agent-scoped brick → must fail
- *   Test 7: Beta tries to promote alpha's agent-scoped brick     → must fail
- *   Test 8: ForgeResolver respects scope (discover/load/source)
+ *   Test 6: Beta tries to promote alpha's agent-scoped brick     → must fail
+ *   Test 7: ForgeResolver respects scope (discover/load/source)
  *
  * Usage:
  *   ANTHROPIC_API_KEY=sk-... bun scripts/e2e-scope-enforcement-pi.ts
@@ -27,7 +26,6 @@ import { createPiAdapter } from "../packages/engine-pi/src/adapter.js";
 import { createDefaultForgeConfig } from "../packages/forge/src/config.js";
 import { createForgeResolver } from "../packages/forge/src/forge-resolver.js";
 import { createInMemoryForgeStore } from "../packages/forge/src/memory-store.js";
-import { createComposeForgeTool } from "../packages/forge/src/tools/compose-forge.js";
 import { createForgeToolTool } from "../packages/forge/src/tools/forge-tool.js";
 import { createPromoteForgeTool } from "../packages/forge/src/tools/promote-forge.js";
 import { createSearchForgeTool } from "../packages/forge/src/tools/search-forge.js";
@@ -169,13 +167,11 @@ function makePrimordialProvider(deps: ForgeDeps): ComponentProvider {
   const forgeTool = createForgeToolTool(deps);
   const promoteTool = createPromoteForgeTool(deps);
   const searchTool = createSearchForgeTool(deps);
-  const composeTool = createComposeForgeTool(deps);
 
   const entries: ReadonlyArray<[string, unknown]> = [
     [toolToken("forge_tool"), forgeTool],
     [toolToken("promote_forge"), promoteTool],
     [toolToken("search_forge"), searchTool],
-    [toolToken("compose_forge"), composeTool],
   ];
 
   return {
@@ -485,119 +481,15 @@ try {
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: Beta tries to compose with alpha's agent-scoped brick → must fail
+// Test 6: Beta tries to promote alpha's agent-scoped brick → must fail
 // ---------------------------------------------------------------------------
 
-console.log(
-  "\n[test 6] Beta tries to compose with alpha's agent-scoped 'private-util' → must fail\n",
-);
+console.log("\n[test 6] Beta tries to promote alpha's agent-scoped 'private-util' → must fail\n");
 
 try {
-  // Find the private-util brick ID (direct store query bypasses scope — test infra only)
   const searchResult = await store.search({ text: "private-util" });
   if (!searchResult.ok || searchResult.value.length === 0) {
     assert("Test 6 requires private-util brick", false, "not found");
-  } else {
-    const privateUtilId = searchResult.value[0]?.id;
-    if (privateUtilId === undefined) {
-      assert("private-util has ID", false, "ID undefined");
-    } else {
-      // Also need a brick Beta owns to compose with
-      const betaDeps = makeDeps("beta-agent", 0);
-
-      // Beta forges its own brick first (programmatic, no LLM needed)
-      const betaForgeResult = await store.save({
-        id: "brick_beta_own",
-        kind: "tool",
-        name: "beta-tool",
-        description: "Beta's own tool",
-        scope: "agent",
-        trustTier: "sandbox",
-        lifecycle: "active",
-        createdBy: "beta-agent",
-        createdAt: Date.now(),
-        version: "0.0.1",
-        tags: [],
-        usageCount: 0,
-        contentHash: "beta-hash",
-        implementation: "return 1;",
-        inputSchema: { type: "object" },
-      });
-      assert("Beta's own brick saved", betaForgeResult.ok);
-
-      const primordialProvider = makePrimordialProvider(betaDeps);
-
-      const adapter = createPiAdapter({
-        model: E2E_MODEL,
-        systemPrompt: [
-          "You have ONE task: use the compose_forge tool to compose two bricks.",
-          "Call compose_forge with EXACTLY these arguments:",
-          '  name: "sneaky-composite"',
-          '  description: "Trying to compose with foreign brick"',
-          `  brickIds: ["brick_beta_own", "${privateUtilId}"]`,
-          "Do NOT say anything before calling the tool. Just call it immediately.",
-        ].join("\n"),
-        getApiKey: async () => API_KEY,
-      });
-
-      const runtime = await createKoi({
-        manifest: { name: "Beta-Compose", version: "0.1.0", model: { name: E2E_MODEL } },
-        adapter,
-        providers: [primordialProvider],
-        loopDetection: false,
-        limits: { maxTurns: 10, maxDurationMs: TIMEOUT_MS, maxTokens: 50_000 },
-      });
-
-      const events = await withTimeout(
-        () => collectEvents(runtime.run({ kind: "text", text: "Compose the bricks now." })),
-        TIMEOUT_MS,
-        "Test 6",
-      );
-
-      const toolStarts = extractToolStarts(events);
-      const composeStarts = toolStarts.filter((e) => e.toolName === "compose_forge");
-      assert(
-        "Beta called compose_forge",
-        composeStarts.length >= 1,
-        `got ${composeStarts.length} calls`,
-      );
-
-      // The compose result should contain an error about the foreign brick not being found
-      const toolEnds = extractToolEnds(events);
-      const composeCallId = composeStarts[0]?.callId;
-      const composeEnd =
-        composeCallId !== undefined
-          ? toolEnds.find((e) => e.callId === composeCallId)
-          : toolEnds[0];
-
-      if (composeEnd !== undefined) {
-        const output = JSON.stringify(composeEnd.result ?? "");
-        assert(
-          "compose_forge failed (foreign brick treated as not found)",
-          output.includes("not found") ||
-            output.includes("LOAD_FAILED") ||
-            output.includes('"ok":false'),
-          `output: ${output.slice(0, 300)}`,
-        );
-      } else {
-        assert("compose_forge tool_call_end emitted", false, "no tool_call_end found");
-      }
-    }
-  }
-} catch (err: unknown) {
-  assert("Test 6 completed without error", false, err instanceof Error ? err.message : String(err));
-}
-
-// ---------------------------------------------------------------------------
-// Test 7: Beta tries to promote alpha's agent-scoped brick → must fail
-// ---------------------------------------------------------------------------
-
-console.log("\n[test 7] Beta tries to promote alpha's agent-scoped 'private-util' → must fail\n");
-
-try {
-  const searchResult = await store.search({ text: "private-util" });
-  if (!searchResult.ok || searchResult.value.length === 0) {
-    assert("Test 7 requires private-util brick", false, "not found");
   } else {
     const privateUtilId = searchResult.value[0]?.id;
     if (privateUtilId === undefined) {
@@ -630,7 +522,7 @@ try {
         () =>
           collectEvents(runtime.run({ kind: "text", text: "Promote the brick to global now." })),
         TIMEOUT_MS,
-        "Test 7",
+        "Test 6",
       );
 
       const toolStarts = extractToolStarts(events);
@@ -674,14 +566,14 @@ try {
     }
   }
 } catch (err: unknown) {
-  assert("Test 7 completed without error", false, err instanceof Error ? err.message : String(err));
+  assert("Test 6 completed without error", false, err instanceof Error ? err.message : String(err));
 }
 
 // ---------------------------------------------------------------------------
-// Test 8: ForgeResolver respects scope (discover/load/source) — no LLM needed
+// Test 7: ForgeResolver respects scope (discover/load/source) — no LLM needed
 // ---------------------------------------------------------------------------
 
-console.log("\n[test 8] ForgeResolver respects scope (discover/load/source)\n");
+console.log("\n[test 7] ForgeResolver respects scope (discover/load/source)\n");
 
 try {
   // Alpha's resolver should see both bricks
@@ -748,7 +640,7 @@ try {
   const betaLoadOwn = await betaResolver.load("brick_beta_own");
   assert("Beta load() of own brick succeeds", betaLoadOwn.ok);
 } catch (err: unknown) {
-  assert("Test 8 completed without error", false, err instanceof Error ? err.message : String(err));
+  assert("Test 7 completed without error", false, err instanceof Error ? err.message : String(err));
 }
 
 // ---------------------------------------------------------------------------

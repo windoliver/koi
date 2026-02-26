@@ -14,7 +14,7 @@ import type {
   Tool,
   ToolDescriptor,
 } from "@koi/core";
-import { computeBrickId, computeCompositeBrickId } from "@koi/hash";
+import { computeBrickId } from "@koi/hash";
 import { z } from "zod";
 import { createForgeProvenance, signAttestation } from "../attestation.js";
 import type { ForgeConfig } from "../config.js";
@@ -345,9 +345,6 @@ function extractContentForHash(artifact: BrickArtifact): {
 } {
   switch (artifact.kind) {
     case "tool":
-    case "engine":
-    case "resolver":
-    case "provider":
     case "middleware":
     case "channel":
       return { kind: artifact.kind, content: artifact.implementation };
@@ -355,20 +352,13 @@ function extractContentForHash(artifact: BrickArtifact): {
       return { kind: artifact.kind, content: artifact.content };
     case "agent":
       return { kind: artifact.kind, content: artifact.manifestYaml };
-    case "composite":
-      // Composite ID is computed via computeCompositeBrickId — sentinel here
-      return { kind: artifact.kind, content: "" };
   }
 }
 
 /**
  * Compute a content-addressed BrickId for any artifact (without an id yet).
- * Composites use sorted child IDs for order-independent Merkle identity.
  */
 function computeArtifactId(artifact: BrickArtifact): BrickId {
-  if (artifact.kind === "composite") {
-    return computeCompositeBrickId(artifact.brickIds, artifact.files);
-  }
   const { kind, content } = extractContentForHash(artifact);
   return computeBrickId(kind, content, artifact.files);
 }

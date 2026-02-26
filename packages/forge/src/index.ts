@@ -17,7 +17,6 @@ export type {
   BrickArtifactBase,
   BrickRequires,
   BrickUpdate,
-  CompositeArtifact,
   ContentMarker,
   DataClassification,
   ForgeAttestationSignature,
@@ -117,14 +116,10 @@ export type {
 export { mapProvenanceToSlsa } from "./slsa-serializer.js";
 // runtime values — store change notification
 export { createMemoryStoreChangeNotifier } from "./store-notifier.js";
-export { createComposeForgeTool } from "./tools/compose-forge.js";
 export type { OnForgeAgentSpawn } from "./tools/forge-agent.js";
 export { createForgeAgentTool } from "./tools/forge-agent.js";
 export { createForgeChannelTool } from "./tools/forge-channel.js";
-export { createForgeEngineTool } from "./tools/forge-engine.js";
 export { createForgeMiddlewareTool } from "./tools/forge-middleware.js";
-export { createForgeProviderTool } from "./tools/forge-provider.js";
-export { createForgeResolverTool } from "./tools/forge-resolver.js";
 export { createForgeSkillTool } from "./tools/forge-skill.js";
 export { createForgeToolTool } from "./tools/forge-tool.js";
 export { createPromoteForgeTool } from "./tools/promote-forge.js";
@@ -134,19 +129,13 @@ export type { ForgeDeps, ForgeToolConfig } from "./tools/shared.js";
 export { createForgeTool } from "./tools/shared.js";
 // types — forge-specific (remain in L2)
 export type {
-  CompositionBrickInfo,
-  CompositionMetadata,
   ForgeAgentInput,
   ForgeAgentInputWithBricks,
   ForgeAgentInputWithManifest,
   ForgeChannelInput,
-  ForgeCompositeInput,
   ForgeContext,
-  ForgeEngineInput,
   ForgeInput,
   ForgeMiddlewareInput,
-  ForgeProviderInput,
-  ForgeResolverInput,
   ForgeResult,
   ForgeResultMetadata,
   ForgeSkillInput,

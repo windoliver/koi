@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 /**
  * E2E test script for @koi/forge — validates the full forge pipeline
- * (forge, search, compose, promote, adversarial verifiers) with real
- * Claude API calls.
+ * (forge, search, promote, adversarial verifiers) with real Claude API
+ * calls.
  *
  * The LLM decides what tool arguments to provide — we don't hardcode them.
  * This validates that Claude can correctly interact with forge tools and
@@ -15,7 +15,6 @@
 import { createAdversarialVerifiers } from "../packages/forge/src/adversarial-verifiers.js";
 import { createDefaultForgeConfig } from "../packages/forge/src/config.js";
 import { createInMemoryForgeStore } from "../packages/forge/src/memory-store.js";
-import { createComposeForgeTool } from "../packages/forge/src/tools/compose-forge.js";
 import { createForgeSkillTool } from "../packages/forge/src/tools/forge-skill.js";
 import { createForgeToolTool } from "../packages/forge/src/tools/forge-tool.js";
 import { createPromoteForgeTool } from "../packages/forge/src/tools/promote-forge.js";
@@ -106,10 +105,9 @@ function makeDeps(): ForgeDeps {
   };
 }
 
-// Create all 5 primordial tools
+// Create primordial tools
 const forgeTool = createForgeToolTool(makeDeps());
 const forgeSkill = createForgeSkillTool(makeDeps());
-const composeTool = createComposeForgeTool(makeDeps());
 const searchTool = createSearchForgeTool(makeDeps());
 const promoteTool = createPromoteForgeTool(makeDeps());
 
@@ -129,7 +127,6 @@ const TOOLS: Readonly<
 > = {
   forge_tool: forgeTool,
   forge_skill: forgeSkill,
-  compose_forge: composeTool,
   search_forge: searchTool,
   promote_forge: promoteTool,
 };
@@ -286,13 +283,12 @@ async function withTimeout<T>(fn: () => Promise<T>, ms: number, label: string): 
 // System prompt for the forge agent
 // ---------------------------------------------------------------------------
 
-const SYSTEM_PROMPT = `You are a tool-forging agent. You have access to 5 forge tools:
+const SYSTEM_PROMPT = `You are a tool-forging agent. You have access to 4 forge tools:
 
 1. forge_tool — Creates a new executable tool. Requires: name (string, 3-50 chars, alphanumeric/dash/underscore, starts with letter), description (string), inputSchema (object with "type" field), implementation (string of JS code). IMPORTANT: The implementation is tested with an empty {} input — it MUST handle missing fields gracefully (use defaults, null checks, or optional chaining). Example: "const text = input.text || ''; return { result: text.split('').reverse().join('') };"
 2. forge_skill — Creates a new skill (markdown knowledge). Requires: name (string, 3-50 chars), description (string), body (string of markdown).
-3. compose_forge — Groups bricks into a composite. Requires: name (string, 3-50 chars), description (string), brickIds (array of brick ID strings).
-4. search_forge — Searches existing bricks. Optional fields: kind, scope, tags, text, limit.
-5. promote_forge — Promotes a brick's scope/trust/lifecycle. Requires: brickId (string). Plus at least one of: targetScope, targetTrustTier, targetLifecycle.
+3. search_forge — Searches existing bricks. Optional fields: kind, scope, tags, text, limit.
+4. promote_forge — Promotes a brick's scope/trust/lifecycle. Requires: brickId (string). Plus at least one of: targetScope, targetTrustTier, targetLifecycle.
 
 IMPORTANT rules for names: must be 3-50 chars, start with a letter, only alphanumeric/dash/underscore. No spaces.
 
@@ -411,45 +407,10 @@ try {
 }
 
 // ---------------------------------------------------------------------------
-// Test 4: Compose bricks
+// Test 4: Promote a brick
 // ---------------------------------------------------------------------------
 
-console.log("\n[test 4] Compose bricks via Claude");
-
-try {
-  // First get brick IDs from the store
-  const allBricks = await store.search({});
-  const brickIds = allBricks.ok ? allBricks.value.map((b) => b.id) : [];
-
-  const { toolCalls } = await withTimeout(
-    () =>
-      runAgentLoop(
-        `Compose the following bricks into a composite called 'dev-toolkit'. Description: "Combined development tools and skills". Brick IDs: ${JSON.stringify(brickIds)}`,
-        SYSTEM_PROMPT,
-      ),
-    60_000,
-    "Test 4",
-  );
-
-  const composeCall = toolCalls.find((c) => c.name === "compose_forge");
-  assert("Claude called compose_forge", composeCall !== undefined);
-
-  if (composeCall !== undefined) {
-    const result = composeCall.result as { readonly ok: boolean; readonly value?: ForgeResult };
-    assert("compose_forge succeeded", result.ok === true, JSON.stringify(result).slice(0, 200));
-    if (result.ok && result.value !== undefined) {
-      assert("composite kind is correct", result.value.kind === "composite");
-    }
-  }
-} catch (err: unknown) {
-  assert("Test 4 completed", false, err instanceof Error ? err.message : String(err));
-}
-
-// ---------------------------------------------------------------------------
-// Test 5: Promote a brick
-// ---------------------------------------------------------------------------
-
-console.log("\n[test 5] Promote brick via Claude");
+console.log("\n[test 4] Promote brick via Claude");
 
 try {
   // Get any brick for promotion (tool preferred, fallback to any)
@@ -469,7 +430,7 @@ try {
           SYSTEM_PROMPT,
         ),
       60_000,
-      "Test 5",
+      "Test 4",
     );
 
     const promoteCall = toolCalls.find((c) => c.name === "promote_forge");
@@ -489,14 +450,14 @@ try {
     assert("Found brick for promotion", false, "no bricks in store");
   }
 } catch (err: unknown) {
-  assert("Test 5 completed", false, err instanceof Error ? err.message : String(err));
+  assert("Test 4 completed", false, err instanceof Error ? err.message : String(err));
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: Adversarial — skill with prompt injection (should be rejected)
+// Test 5: Adversarial — skill with prompt injection (should be rejected)
 // ---------------------------------------------------------------------------
 
-console.log("\n[test 6] Adversarial: skill with prompt injection");
+console.log("\n[test 5] Adversarial: skill with prompt injection");
 
 try {
   // Directly test — no need for LLM here, we test the verifier pipeline
@@ -515,14 +476,14 @@ try {
     result.ok === false ? result.error?.message : "unexpectedly succeeded",
   );
 } catch (err: unknown) {
-  assert("Test 6 completed", false, err instanceof Error ? err.message : String(err));
+  assert("Test 5 completed", false, err instanceof Error ? err.message : String(err));
 }
 
 // ---------------------------------------------------------------------------
-// Test 7: Adversarial — skill with base64-hidden payload
+// Test 6: Adversarial — skill with base64-hidden payload
 // ---------------------------------------------------------------------------
 
-console.log("\n[test 7] Adversarial: skill with base64-hidden payload");
+console.log("\n[test 6] Adversarial: skill with base64-hidden payload");
 
 try {
   const b64SkillDeps = makeDeps();
@@ -543,14 +504,14 @@ try {
     result.ok === false ? result.error?.message : "unexpectedly succeeded",
   );
 } catch (err: unknown) {
-  assert("Test 7 completed", false, err instanceof Error ? err.message : String(err));
+  assert("Test 6 completed", false, err instanceof Error ? err.message : String(err));
 }
 
 // ---------------------------------------------------------------------------
-// Test 8: Adversarial — skill with zero-width chars
+// Test 7: Adversarial — skill with zero-width chars
 // ---------------------------------------------------------------------------
 
-console.log("\n[test 8] Adversarial: skill with zero-width Unicode");
+console.log("\n[test 7] Adversarial: skill with zero-width Unicode");
 
 try {
   const zwcSkillDeps = makeDeps();
@@ -568,14 +529,14 @@ try {
     result.ok === false ? result.error?.message : "unexpectedly succeeded",
   );
 } catch (err: unknown) {
-  assert("Test 8 completed", false, err instanceof Error ? err.message : String(err));
+  assert("Test 7 completed", false, err instanceof Error ? err.message : String(err));
 }
 
 // ---------------------------------------------------------------------------
-// Test 9: Adversarial — skill with tool poisoning
+// Test 8: Adversarial — skill with tool poisoning
 // ---------------------------------------------------------------------------
 
-console.log("\n[test 9] Adversarial: skill with tool poisoning");
+console.log("\n[test 8] Adversarial: skill with tool poisoning");
 
 try {
   const poisonSkillDeps = makeDeps();
@@ -593,14 +554,14 @@ try {
     result.ok === false ? result.error?.message : "unexpectedly succeeded",
   );
 } catch (err: unknown) {
-  assert("Test 9 completed", false, err instanceof Error ? err.message : String(err));
+  assert("Test 8 completed", false, err instanceof Error ? err.message : String(err));
 }
 
 // ---------------------------------------------------------------------------
-// Test 10: Clean skill passes adversarial checks
+// Test 9: Clean skill passes adversarial checks
 // ---------------------------------------------------------------------------
 
-console.log("\n[test 10] Clean skill passes all adversarial checks");
+console.log("\n[test 9] Clean skill passes all adversarial checks");
 
 try {
   const cleanSkillDeps = makeDeps();
@@ -617,7 +578,7 @@ try {
     assert("clean skill kind is correct", result.value.kind === "skill");
   }
 } catch (err: unknown) {
-  assert("Test 10 completed", false, err instanceof Error ? err.message : String(err));
+  assert("Test 9 completed", false, err instanceof Error ? err.message : String(err));
 }
 
 // ---------------------------------------------------------------------------

@@ -3,22 +3,12 @@ import type { BrickKind, TrustTier } from "../index.js";
 import { ALL_BRICK_KINDS, MIN_TRUST_BY_KIND } from "../index.js";
 
 describe("ALL_BRICK_KINDS", () => {
-  test("contains exactly 9 values", () => {
-    expect(ALL_BRICK_KINDS).toHaveLength(9);
+  test("contains exactly 5 values", () => {
+    expect(ALL_BRICK_KINDS).toHaveLength(5);
   });
 
   test("includes all expected kinds", () => {
-    const expected: readonly BrickKind[] = [
-      "tool",
-      "skill",
-      "agent",
-      "composite",
-      "middleware",
-      "channel",
-      "engine",
-      "resolver",
-      "provider",
-    ];
+    const expected: readonly BrickKind[] = ["tool", "skill", "agent", "middleware", "channel"];
     for (const kind of expected) {
       expect(ALL_BRICK_KINDS).toContain(kind);
     }
@@ -38,16 +28,9 @@ describe("MIN_TRUST_BY_KIND", () => {
   });
 
   test("sandbox kinds require sandbox trust", () => {
-    const sandboxKinds: readonly BrickKind[] = ["tool", "skill", "agent", "composite"];
+    const sandboxKinds: readonly BrickKind[] = ["tool", "skill", "agent"];
     for (const kind of sandboxKinds) {
       expect(MIN_TRUST_BY_KIND[kind]).toBe("sandbox" satisfies TrustTier);
-    }
-  });
-
-  test("engine/resolver/provider require verified trust", () => {
-    const verifiedKinds: readonly BrickKind[] = ["engine", "resolver", "provider"];
-    for (const kind of verifiedKinds) {
-      expect(MIN_TRUST_BY_KIND[kind]).toBe("verified" satisfies TrustTier);
     }
   });
 

@@ -111,12 +111,7 @@ export async function verifySelfTest(
 
   // Run test cases for implementation-bearing kinds
   const hasTestCases =
-    (input.kind === "tool" ||
-      input.kind === "middleware" ||
-      input.kind === "channel" ||
-      input.kind === "engine" ||
-      input.kind === "resolver" ||
-      input.kind === "provider") &&
+    (input.kind === "tool" || input.kind === "middleware" || input.kind === "channel") &&
     input.testCases !== undefined &&
     input.testCases.length > 0;
 

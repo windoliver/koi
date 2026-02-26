@@ -1,6 +1,6 @@
 /**
  * Stage 2: Sandbox execution — runs tool implementation in a sandboxed environment.
- * Only applies to "tool" and "composite" kinds; skills/agents skip with a pass.
+ * Only applies to "tool", "middleware", and "channel" kinds; skills/agents skip with a pass.
  */
 
 import type { Result } from "@koi/core";
@@ -31,15 +31,7 @@ export async function verifySandbox(
     };
   }
 
-  // For composite, we just verify it's constructable (no code to run)
-  if (input.kind === "composite") {
-    return {
-      ok: true,
-      value: { stage: "sandbox", passed: true, durationMs: 0, message: "Skipped for composite" },
-    };
-  }
-
-  // Implementation-bearing kinds: tool, middleware, channel, engine, resolver, provider — run in sandbox
+  // Implementation-bearing kinds: tool, middleware, channel — run in sandbox
   const result = await executor.execute(input.implementation, {}, config.sandboxTimeoutMs);
 
   if (!result.ok) {

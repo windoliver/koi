@@ -1,8 +1,8 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge API surface . has stable type surface 1`] = `
-"import { BrickId, BrickKind, TrustTier, TestCase, BrickRequires, DataClassification, ContentMarker, ToolDescriptor, ForgeScope, BrickLifecycle, SandboxExecutor, BrickArtifact, ForgeStore, Result, KoiError, ForgeProvenance, SigningBackend, ToolArtifact, Tool, TieredSandboxExecutor, StoreChangeNotifier, ComponentProvider, Resolver, StoreChangeEvent, KoiMiddleware, AgentArtifact } from '@koi/core';
-export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, CompositeArtifact, ContentMarker, DataClassification, ForgeAttestationSignature, ForgeBuildDefinition, ForgeBuilder, ForgeProvenance, ForgeQuery, ForgeResourceRef, ForgeRunMetadata, ForgeStageDigest, ForgeStore, ForgeVerificationSummary, LockHandle, LockMode, LockRequest, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, SigningBackend, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, TierResolution, TieredSandboxExecutor, ToolArtifact } from '@koi/core';
+"import { TestCase, BrickRequires, DataClassification, ContentMarker, TrustTier, BrickId, BrickKind, ToolDescriptor, ForgeScope, BrickLifecycle, SandboxExecutor, BrickArtifact, ForgeStore, Result, KoiError, ForgeProvenance, SigningBackend, ToolArtifact, Tool, TieredSandboxExecutor, StoreChangeNotifier, ComponentProvider, Resolver, StoreChangeEvent, KoiMiddleware, AgentArtifact } from '@koi/core';
+export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, ContentMarker, DataClassification, ForgeAttestationSignature, ForgeBuildDefinition, ForgeBuilder, ForgeProvenance, ForgeQuery, ForgeResourceRef, ForgeRunMetadata, ForgeStageDigest, ForgeStore, ForgeVerificationSummary, LockHandle, LockMode, LockRequest, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, SigningBackend, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, TierResolution, TieredSandboxExecutor, ToolArtifact } from '@koi/core';
 
 /**
  * Core types for the @koi/forge self-extension system.
@@ -98,17 +98,6 @@ interface ForgeAgentInputWithBricks {
     readonly contentMarkers?: readonly ContentMarker[];
 }
 type ForgeAgentInput = ForgeAgentInputWithManifest | ForgeAgentInputWithBricks;
-interface ForgeCompositeInput {
-    readonly kind: "composite";
-    readonly name: string;
-    readonly description: string;
-    readonly tags?: readonly string[];
-    readonly brickIds: readonly string[];
-    readonly files?: Readonly<Record<string, string>>;
-    readonly requires?: BrickRequires;
-    readonly classification?: DataClassification;
-    readonly contentMarkers?: readonly ContentMarker[];
-}
 interface ForgeMiddlewareInput {
     readonly kind: "middleware";
     readonly name: string;
@@ -135,46 +124,7 @@ interface ForgeChannelInput {
     readonly classification?: DataClassification;
     readonly contentMarkers?: readonly ContentMarker[];
 }
-interface ForgeEngineInput {
-    readonly kind: "engine";
-    readonly name: string;
-    readonly description: string;
-    readonly tags?: readonly string[];
-    readonly implementation: string;
-    readonly testCases?: readonly TestCase[];
-    readonly files?: Readonly<Record<string, string>>;
-    readonly requires?: BrickRequires;
-    readonly configSchema?: Readonly<Record<string, unknown>>;
-    readonly classification?: DataClassification;
-    readonly contentMarkers?: readonly ContentMarker[];
-}
-interface ForgeResolverInput {
-    readonly kind: "resolver";
-    readonly name: string;
-    readonly description: string;
-    readonly tags?: readonly string[];
-    readonly implementation: string;
-    readonly testCases?: readonly TestCase[];
-    readonly files?: Readonly<Record<string, string>>;
-    readonly requires?: BrickRequires;
-    readonly configSchema?: Readonly<Record<string, unknown>>;
-    readonly classification?: DataClassification;
-    readonly contentMarkers?: readonly ContentMarker[];
-}
-interface ForgeProviderInput {
-    readonly kind: "provider";
-    readonly name: string;
-    readonly description: string;
-    readonly tags?: readonly string[];
-    readonly implementation: string;
-    readonly testCases?: readonly TestCase[];
-    readonly files?: Readonly<Record<string, string>>;
-    readonly requires?: BrickRequires;
-    readonly configSchema?: Readonly<Record<string, unknown>>;
-    readonly classification?: DataClassification;
-    readonly contentMarkers?: readonly ContentMarker[];
-}
-type ForgeInput = ForgeToolInput | ForgeSkillInput | ForgeAgentInput | ForgeCompositeInput | ForgeMiddlewareInput | ForgeChannelInput | ForgeEngineInput | ForgeResolverInput | ForgeProviderInput;
+type ForgeInput = ForgeToolInput | ForgeSkillInput | ForgeAgentInput | ForgeMiddlewareInput | ForgeChannelInput;
 interface VerifierResult {
     readonly passed: boolean;
     readonly message?: string;
@@ -217,16 +167,6 @@ type ManifestParseResult = {
 };
 interface ManifestParser {
     readonly parse: (yaml: string) => ManifestParseResult | Promise<ManifestParseResult>;
-}
-interface CompositionBrickInfo {
-    readonly id: BrickId;
-    readonly name: string;
-    readonly kind: BrickKind;
-    readonly trustTier: TrustTier;
-}
-interface CompositionMetadata {
-    readonly bricks: readonly CompositionBrickInfo[];
-    readonly minimumTrustTier: TrustTier;
 }
 
 /**
@@ -442,8 +382,8 @@ declare function brickToTool(brick: ToolArtifact, executor: SandboxExecutor, tim
  *
  * Implements the L0 ComponentProvider interface. On first attach(), it discovers
  * all active bricks from the ForgeStore: tool bricks are wrapped as executable
- * Tools; implementation bricks (engine, resolver, provider, middleware, channel)
- * are registered as raw ImplementationArtifact values under kind-specific tokens.
+ * Tools; implementation bricks (middleware, channel) are registered as raw
+ * ImplementationArtifact values under kind-specific tokens.
  * Results are cached for subsequent attach() calls.
  *
  * Lazy loading (decision 13A): bricks are loaded on first attach(), not at creation.
@@ -771,14 +711,6 @@ interface ForgeToolConfig {
 declare function createForgeTool(toolConfig: ForgeToolConfig, deps: ForgeDeps): Tool;
 
 /**
- * compose_forge — Groups multiple bricks into a metadata-only composite.
- * Validates all referenced brick IDs exist in the store before creating.
- * Computes trust as min(component trusts) for trust propagation.
- */
-
-declare function createComposeForgeTool(deps: ForgeDeps): Tool;
-
-/**
  * forge_agent — Creates a new sub-agent with manifest validation.
  * Supports two input modes:
  *   1. \`manifestYaml\` — raw YAML manifest (existing behavior)
@@ -806,28 +738,10 @@ declare function createForgeAgentTool(deps: ForgeDeps, onSpawn?: OnForgeAgentSpa
 declare function createForgeChannelTool(deps: ForgeDeps): Tool;
 
 /**
- * forge_engine — Creates a new engine brick through the verification pipeline.
- */
-
-declare function createForgeEngineTool(deps: ForgeDeps): Tool;
-
-/**
  * forge_middleware — Creates a new middleware brick through the verification pipeline.
  */
 
 declare function createForgeMiddlewareTool(deps: ForgeDeps): Tool;
-
-/**
- * forge_provider — Creates a new provider brick through the verification pipeline.
- */
-
-declare function createForgeProviderTool(deps: ForgeDeps): Tool;
-
-/**
- * forge_resolver — Creates a new resolver brick through the verification pipeline.
- */
-
-declare function createForgeResolverTool(deps: ForgeDeps): Tool;
 
 /**
  * forge_skill — Creates a new SKILL.md (markdown-based knowledge unit).
@@ -901,7 +815,7 @@ declare function verify(input: ForgeInput, context: ForgeContext, executor: Sand
 
 /**
  * Stage 2: Sandbox execution — runs tool implementation in a sandboxed environment.
- * Only applies to "tool" and "composite" kinds; skills/agents skip with a pass.
+ * Only applies to "tool", "middleware", and "channel" kinds; skills/agents skip with a pass.
  */
 
 declare function verifySandbox(input: ForgeInput, executor: SandboxExecutor, config: VerificationConfig): Promise<Result<StageReport, ForgeError>>;
@@ -925,6 +839,6 @@ declare function verifyStatic(input: ForgeInput, config: VerificationConfig): Re
 
 declare function assignTrust(_input: ForgeInput, config: ForgeConfig, stageResults: readonly StageReport[]): Result<TrustStageReport, ForgeError>;
 
-export { type AssembleManifestOptions, type AssembleManifestResult, type AttestationCache, type AutoPromotionConfig, type CompositionBrickInfo, type CompositionMetadata, type CreateForgeRuntimeOptions, type CreateProvenanceOptions, type ForgeAgentInput, type ForgeAgentInputWithBricks, type ForgeAgentInputWithManifest, type ForgeChannelInput, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeCompositeInput, type ForgeConfig, type ForgeContext, type ForgeDeps, type ForgeEngineInput, type ForgeError, type ForgeInput, type ForgeMiddlewareInput, type ForgeProviderInput, type ForgeResolverContext, type ForgeResolverInput, type ForgeResult, type ForgeResultMetadata, type ForgeRuntimeInstance, type ForgeSkillInput, type ForgeToolConfig, type ForgeToolInput, type ForgeUsageMiddlewareConfig, type ForgeVerifier, type GovernanceResult, type IntegrityMismatch, type IntegrityOk, type IntegrityResult, type ManifestParseResult, type ManifestParser, type OnForgeAgentSpawn, type PromoteChange, type PromoteResult, type RequiresCheckResult, type ScopePromotionConfig, type SkillMdInput, type SlsaBuildDefinition, type SlsaBuildMetadata, type SlsaBuilder, type SlsaProvenanceV1, type SlsaResourceDescriptor, type SlsaRunDetails, type StageReport, type TestFailure, type TrustStageReport, type UsagePromotedResult, type UsageRecordedResult, type UsageResult, type VerificationConfig, type VerificationReport, type VerificationStage, type VerifierResult, assembleManifest, assignTrust, brickToTool, checkBrickRequires, checkGovernance, checkScopePromotion, computeAutoPromotion, createAdversarialVerifiers, createAttestationCache, createComposeForgeTool, createContentScanningVerifier, createDefaultForgeConfig, createExfiltrationVerifier, createForgeAgentTool, createForgeChannelTool, createForgeComponentProvider, createForgeEngineTool, createForgeMiddlewareTool, createForgeProvenance, createForgeProviderTool, createForgeResolver, createForgeResolverTool, createForgeRuntime, createForgeSkillTool, createForgeTool, createForgeToolTool, createForgeUsageMiddleware, createInMemoryForgeStore, createInjectionVerifier, createMemoryStoreChangeNotifier, createPromoteForgeTool, createResourceExhaustionVerifier, createSearchForgeTool, createStructuralHidingVerifier, filterByAgentScope, generateSkillMd, governanceError, isVisibleToAgent, loadAndVerify, mapProvenanceToSlsa, recordBrickUsage, sandboxError, selfTestError, signAttestation, staticError, storeError, trustError, typeError, validateForgeConfig, verify, verifyAttestation, verifyBrickAttestation, verifyBrickIntegrity, verifySandbox, verifySelfTest, verifyStatic };
+export { type AssembleManifestOptions, type AssembleManifestResult, type AttestationCache, type AutoPromotionConfig, type CreateForgeRuntimeOptions, type CreateProvenanceOptions, type ForgeAgentInput, type ForgeAgentInputWithBricks, type ForgeAgentInputWithManifest, type ForgeChannelInput, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeConfig, type ForgeContext, type ForgeDeps, type ForgeError, type ForgeInput, type ForgeMiddlewareInput, type ForgeResolverContext, type ForgeResult, type ForgeResultMetadata, type ForgeRuntimeInstance, type ForgeSkillInput, type ForgeToolConfig, type ForgeToolInput, type ForgeUsageMiddlewareConfig, type ForgeVerifier, type GovernanceResult, type IntegrityMismatch, type IntegrityOk, type IntegrityResult, type ManifestParseResult, type ManifestParser, type OnForgeAgentSpawn, type PromoteChange, type PromoteResult, type RequiresCheckResult, type ScopePromotionConfig, type SkillMdInput, type SlsaBuildDefinition, type SlsaBuildMetadata, type SlsaBuilder, type SlsaProvenanceV1, type SlsaResourceDescriptor, type SlsaRunDetails, type StageReport, type TestFailure, type TrustStageReport, type UsagePromotedResult, type UsageRecordedResult, type UsageResult, type VerificationConfig, type VerificationReport, type VerificationStage, type VerifierResult, assembleManifest, assignTrust, brickToTool, checkBrickRequires, checkGovernance, checkScopePromotion, computeAutoPromotion, createAdversarialVerifiers, createAttestationCache, createContentScanningVerifier, createDefaultForgeConfig, createExfiltrationVerifier, createForgeAgentTool, createForgeChannelTool, createForgeComponentProvider, createForgeMiddlewareTool, createForgeProvenance, createForgeResolver, createForgeRuntime, createForgeSkillTool, createForgeTool, createForgeToolTool, createForgeUsageMiddleware, createInMemoryForgeStore, createInjectionVerifier, createMemoryStoreChangeNotifier, createPromoteForgeTool, createResourceExhaustionVerifier, createSearchForgeTool, createStructuralHidingVerifier, filterByAgentScope, generateSkillMd, governanceError, isVisibleToAgent, loadAndVerify, mapProvenanceToSlsa, recordBrickUsage, sandboxError, selfTestError, signAttestation, staticError, storeError, trustError, typeError, validateForgeConfig, verify, verifyAttestation, verifyBrickAttestation, verifyBrickIntegrity, verifySandbox, verifySelfTest, verifyStatic };
 "
 `;

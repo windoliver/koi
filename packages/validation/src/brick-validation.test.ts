@@ -40,16 +40,6 @@ function validAgent(): Record<string, unknown> {
   };
 }
 
-function validComposite(): Record<string, unknown> {
-  return {
-    ...validTool(),
-    kind: "composite",
-    brickIds: ["b1", "b2"],
-    implementation: undefined,
-    inputSchema: undefined,
-  };
-}
-
 describe("validateBrickArtifact", () => {
   test("accepts valid tool artifact", () => {
     const result = validateBrickArtifact(validTool(), "test-source");
@@ -63,11 +53,6 @@ describe("validateBrickArtifact", () => {
 
   test("accepts valid agent artifact", () => {
     const result = validateBrickArtifact(validAgent(), "test-source");
-    expect(result.ok).toBe(true);
-  });
-
-  test("accepts valid composite artifact", () => {
-    const result = validateBrickArtifact(validComposite(), "test-source");
     expect(result.ok).toBe(true);
   });
 
@@ -163,13 +148,6 @@ describe("validateBrickArtifact", () => {
   test("rejects agent missing manifestYaml", () => {
     const data = validAgent();
     delete data.manifestYaml;
-    const result = validateBrickArtifact(data, "test-source");
-    expect(result.ok).toBe(false);
-  });
-
-  test("rejects composite missing brickIds", () => {
-    const data = validComposite();
-    delete data.brickIds;
     const result = validateBrickArtifact(data, "test-source");
     expect(result.ok).toBe(false);
   });

@@ -150,21 +150,9 @@ function validateAgentInput(
   return validateSize(input.manifestYaml, config.maxBrickSizeBytes, "Manifest YAML");
 }
 
-function validateCompositeInput(
-  input: Extract<ForgeInput, { readonly kind: "composite" }>,
-): ForgeError | undefined {
-  if (input.brickIds.length === 0) {
-    return staticError("MISSING_FIELD", "Composite must reference at least one brick");
-  }
-  return undefined;
-}
-
 type ImplementationForgeInput =
   | Extract<ForgeInput, { readonly kind: "middleware" }>
-  | Extract<ForgeInput, { readonly kind: "channel" }>
-  | Extract<ForgeInput, { readonly kind: "engine" }>
-  | Extract<ForgeInput, { readonly kind: "resolver" }>
-  | Extract<ForgeInput, { readonly kind: "provider" }>;
+  | Extract<ForgeInput, { readonly kind: "channel" }>;
 
 function validateImplementationInput(
   input: ImplementationForgeInput,
@@ -289,14 +277,8 @@ export function verifyStatic(
     case "agent":
       kindErr = validateAgentInput(input, config);
       break;
-    case "composite":
-      kindErr = validateCompositeInput(input);
-      break;
     case "middleware":
     case "channel":
-    case "engine":
-    case "resolver":
-    case "provider":
       kindErr = validateImplementationInput(input, config);
       break;
   }

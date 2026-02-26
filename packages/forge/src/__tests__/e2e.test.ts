@@ -5,9 +5,8 @@
  * LLM calls:
  *   1. Forge a tool → ComponentProvider attaches it → LLM calls it → result returned
  *   2. Forge a middleware → middleware hooks fire during LLM session
- *   3. Forge an engine implementation → ComponentProvider registers under engineToken
- *   4. Requires enforcement: brick with missing env skipped by ComponentProvider
- *   5. configSchema: stored and retrievable on artifact
+ *   3. Requires enforcement: brick with missing env skipped by ComponentProvider
+ *   4. configSchema: stored and retrievable on artifact
  *
  * Gated on ANTHROPIC_API_KEY + E2E_TESTS=1 — tests skip when either is missing.
  * E2E tests require API keys AND explicit opt-in via E2E_TESTS=1 to avoid
@@ -26,7 +25,7 @@ import type {
   ModelRequest,
   ToolRequest,
 } from "@koi/core";
-import { engineToken, toolToken } from "@koi/core";
+import { toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { createAnthropicAdapter } from "@koi/model-router";
@@ -35,10 +34,8 @@ import { createForgeComponentProvider } from "../forge-component-provider.js";
 import { createForgeRuntime } from "../forge-runtime.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import { createMemoryStoreChangeNotifier } from "../store-notifier.js";
-import { createForgeEngineTool } from "../tools/forge-engine.js";
 import { createForgeMiddlewareTool } from "../tools/forge-middleware.js";
 import { createForgeToolTool } from "../tools/forge-tool.js";
-import { createPromoteForgeTool } from "../tools/promote-forge.js";
 import type { ForgeDeps } from "../tools/shared.js";
 import type { ForgeResult, SandboxExecutor, TieredSandboxExecutor } from "../types.js";
 
@@ -283,62 +280,6 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
       if (interceptedToolIds.length > 0) {
         expect(interceptedToolIds).toContain("multiplier");
       }
-    },
-    TIMEOUT_MS,
-  );
-
-  test(
-    "forged engine brick discoverable via ComponentProvider",
-    async () => {
-      const store = createInMemoryForgeStore();
-      const executor = mockExecutor();
-      const deps = defaultDeps(store, executor);
-
-      // Step 1: Forge an engine brick
-      const forgeEngine = createForgeEngineTool(deps);
-      const result = (await forgeEngine.execute({
-        name: "custom-loop",
-        description: "A custom engine loop implementation",
-        implementation: "export function stream() { /* ... */ }",
-      })) as { readonly ok: true; readonly value: ForgeResult };
-      expect(result.ok).toBe(true);
-
-      // Step 2: Promote to "verified" trust (engine requires verified trust)
-      // Brick starts at lifecycle: "active", trustTier: "sandbox" — only need trust promotion
-      const deps2 = defaultDeps(store, executor, 1);
-      const promoteTool = createPromoteForgeTool(deps2);
-      const promoteResult = await promoteTool.execute({
-        brickId: result.value.id,
-        targetTrustTier: "verified",
-      });
-      expect((promoteResult as { readonly ok: boolean }).ok).toBe(true);
-
-      // Step 3: ComponentProvider should register it under engineToken
-      const forgeProvider = createForgeComponentProvider({
-        store,
-        executor: mockTiered(executor),
-      });
-
-      // Step 4: Create runtime — engine brick should be discoverable
-      const modelCall = createModelCall();
-      const loopAdapter = createLoopAdapter({ modelCall, maxTurns: 1 });
-
-      const runtime = await createKoi({
-        manifest: testManifest(),
-        adapter: loopAdapter,
-        providers: [forgeProvider],
-        loopDetection: false,
-      });
-
-      // Run a minimal turn to trigger attach()
-      const events = await collectEvents(runtime.run({ kind: "text", text: "hello" }));
-      await runtime.dispose();
-
-      expect(findDoneOutput(events)).toBeDefined();
-
-      // Engine brick should be registered as a component
-      const engineComponent = runtime.agent.component(engineToken("custom-loop"));
-      expect(engineComponent).toBeDefined();
     },
     TIMEOUT_MS,
   );

@@ -1,6 +1,6 @@
 /**
- * Integration tests for non-tool bricks: forge_middleware, forge_channel,
- * forge_engine, forge_resolver, forge_provider + requires enforcement + configSchema.
+ * Integration tests for non-tool bricks: forge_middleware, forge_channel
+ * + requires enforcement + configSchema.
  *
  * Covers:
  * 1. Middleware: forge → promote → ComponentProvider loads it
@@ -8,11 +8,8 @@
  * 3. Trust enforcement: verified middleware skipped by ComponentProvider
  * 4. Trust enforcement after promotion: promoted middleware loaded
  * 5. Zone-scoped filtering for middleware
- * 6. Engine: forge → promote to verified → ComponentProvider loads it
- * 7. Resolver: forge → promote to verified → ComponentProvider loads it
- * 8. Provider: forge → promote to verified → ComponentProvider loads it
- * 9. Requires enforcement: brick with missing env skipped by ComponentProvider
- * 10. Config schema: forged middleware with configSchema is stored and retrievable
+ * 6. Requires enforcement: brick with missing env skipped by ComponentProvider
+ * 7. Config schema: forged middleware with configSchema is stored and retrievable
  */
 
 import { describe, expect, test } from "bun:test";
@@ -24,22 +21,12 @@ import type {
   SandboxExecutor,
   TieredSandboxExecutor,
 } from "@koi/core";
-import {
-  agentId,
-  channelToken,
-  engineToken,
-  middlewareToken,
-  providerToken,
-  resolverToken,
-} from "@koi/core";
+import { agentId, channelToken, middlewareToken } from "@koi/core";
 import { createDefaultForgeConfig } from "../config.js";
 import { createForgeComponentProvider } from "../forge-component-provider.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import { createForgeChannelTool } from "../tools/forge-channel.js";
-import { createForgeEngineTool } from "../tools/forge-engine.js";
 import { createForgeMiddlewareTool } from "../tools/forge-middleware.js";
-import { createForgeProviderTool } from "../tools/forge-provider.js";
-import { createForgeResolverTool } from "../tools/forge-resolver.js";
 import { createPromoteForgeTool } from "../tools/promote-forge.js";
 import type { ForgeDeps } from "../tools/shared.js";
 import type { ForgeContext, ForgeResult, PromoteResult } from "../types.js";
@@ -308,132 +295,6 @@ describe("Forge non-tool bricks — integration", () => {
     providerOther.dispose();
   });
 
-  test("engine: forge → promote to verified → ComponentProvider loads it", async () => {
-    const store = createInMemoryForgeStore();
-    const executor = mockTiered(mockExecutor());
-    const context: ForgeContext = {
-      agentId: "agent-int",
-      depth: 0,
-      sessionId: "session-int",
-      forgesThisSession: 0,
-    };
-    const config = createDefaultForgeConfig();
-    const deps: ForgeDeps = { store, executor, verifiers: [], config, context };
-
-    // Forge engine
-    const forgeEng = createForgeEngineTool(deps);
-    const forgeResult = (await forgeEng.execute({
-      name: "openaiEngine",
-      description: "OpenAI engine adapter",
-      implementation: "return { stream: async function* () {} };",
-    })) as { readonly ok: true; readonly value: ForgeResult };
-
-    expect(forgeResult.ok).toBe(true);
-    expect(forgeResult.value.kind).toBe("engine");
-
-    // Promote to "verified" (sufficient for engine)
-    const promoteTool = createPromoteForgeTool(deps);
-    const promoteResult = (await promoteTool.execute({
-      brickId: forgeResult.value.id,
-      targetTrustTier: "verified",
-    })) as { readonly ok: true; readonly value: PromoteResult };
-
-    expect(promoteResult.ok).toBe(true);
-
-    // ComponentProvider loads the verified engine
-    const provider = createForgeComponentProvider({ store, executor });
-    const components = await provider.attach(stubAgent());
-
-    const tok = engineToken("openaiEngine") as string;
-    expect(components.has(tok)).toBe(true);
-
-    const brick = components.get(tok) as ImplementationArtifact;
-    expect(brick.kind).toBe("engine");
-    expect(brick.implementation).toContain("stream");
-
-    provider.dispose();
-  });
-
-  test("resolver: forge → promote to verified → ComponentProvider loads it", async () => {
-    const store = createInMemoryForgeStore();
-    const executor = mockTiered(mockExecutor());
-    const context: ForgeContext = {
-      agentId: "agent-int",
-      depth: 0,
-      sessionId: "session-int",
-      forgesThisSession: 0,
-    };
-    const config = createDefaultForgeConfig();
-    const deps: ForgeDeps = { store, executor, verifiers: [], config, context };
-
-    const forgeRes = createForgeResolverTool(deps);
-    const forgeResult = (await forgeRes.execute({
-      name: "fileResolver",
-      description: "File-based tool resolver",
-      implementation: "return { discover: async () => [], load: async () => undefined };",
-    })) as { readonly ok: true; readonly value: ForgeResult };
-
-    expect(forgeResult.ok).toBe(true);
-    expect(forgeResult.value.kind).toBe("resolver");
-
-    const promoteTool = createPromoteForgeTool(deps);
-    await promoteTool.execute({
-      brickId: forgeResult.value.id,
-      targetTrustTier: "verified",
-    });
-
-    const provider = createForgeComponentProvider({ store, executor });
-    const components = await provider.attach(stubAgent());
-
-    const tok = resolverToken("fileResolver") as string;
-    expect(components.has(tok)).toBe(true);
-
-    const brick = components.get(tok) as ImplementationArtifact;
-    expect(brick.kind).toBe("resolver");
-
-    provider.dispose();
-  });
-
-  test("provider: forge → promote to verified → ComponentProvider loads it", async () => {
-    const store = createInMemoryForgeStore();
-    const executor = mockTiered(mockExecutor());
-    const context: ForgeContext = {
-      agentId: "agent-int",
-      depth: 0,
-      sessionId: "session-int",
-      forgesThisSession: 0,
-    };
-    const config = createDefaultForgeConfig();
-    const deps: ForgeDeps = { store, executor, verifiers: [], config, context };
-
-    const forgeProv = createForgeProviderTool(deps);
-    const forgeResult = (await forgeProv.execute({
-      name: "metricsProvider",
-      description: "Metrics component provider",
-      implementation: "return { name: 'metrics', attach: async () => new Map() };",
-    })) as { readonly ok: true; readonly value: ForgeResult };
-
-    expect(forgeResult.ok).toBe(true);
-    expect(forgeResult.value.kind).toBe("provider");
-
-    const promoteTool = createPromoteForgeTool(deps);
-    await promoteTool.execute({
-      brickId: forgeResult.value.id,
-      targetTrustTier: "verified",
-    });
-
-    const provider = createForgeComponentProvider({ store, executor });
-    const components = await provider.attach(stubAgent());
-
-    const tok = providerToken("metricsProvider") as string;
-    expect(components.has(tok)).toBe(true);
-
-    const brick = components.get(tok) as ImplementationArtifact;
-    expect(brick.kind).toBe("provider");
-
-    provider.dispose();
-  });
-
   test("requires enforcement: brick with missing env is skipped by ComponentProvider", async () => {
     const store = createInMemoryForgeStore();
     const executor = mockTiered(mockExecutor());
@@ -446,29 +307,29 @@ describe("Forge non-tool bricks — integration", () => {
     const config = createDefaultForgeConfig();
     const deps: ForgeDeps = { store, executor, verifiers: [], config, context };
 
-    // Forge engine with an env requirement that won't be satisfied
-    const forgeEng = createForgeEngineTool(deps);
-    const forgeResult = (await forgeEng.execute({
-      name: "requiresEngine",
-      description: "Engine with unsatisfied env requirement",
+    // Forge middleware with an env requirement that won't be satisfied
+    const forgeMw = createForgeMiddlewareTool(deps);
+    const forgeResult = (await forgeMw.execute({
+      name: "requiresMiddleware",
+      description: "Middleware with unsatisfied env requirement",
       implementation: "return {};",
       requires: { env: ["__KOI_NONEXISTENT_ENV_VAR_XYZ__"] },
     })) as { readonly ok: true; readonly value: ForgeResult };
 
     expect(forgeResult.ok).toBe(true);
 
-    // Promote to verified (sufficient trust for engine)
+    // Promote to "promoted" (sufficient trust for middleware)
     const promoteTool = createPromoteForgeTool(deps);
     await promoteTool.execute({
       brickId: forgeResult.value.id,
-      targetTrustTier: "verified",
+      targetTrustTier: "promoted",
     });
 
     // ComponentProvider should skip this brick due to unsatisfied requires
     const provider = createForgeComponentProvider({ store, executor });
     const components = await provider.attach(stubAgent());
 
-    const tok = engineToken("requiresEngine") as string;
+    const tok = middlewareToken("requiresMiddleware") as string;
     expect(components.has(tok)).toBe(false);
 
     provider.dispose();

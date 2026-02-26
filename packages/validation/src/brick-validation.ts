@@ -6,9 +6,9 @@
  */
 
 import type { BrickArtifact, KoiError, Result } from "@koi/core";
-import { ALL_BRICK_KINDS, internal } from "@koi/core";
+import { internal } from "@koi/core";
 
-const VALID_KINDS: ReadonlySet<string> = new Set(ALL_BRICK_KINDS);
+const VALID_KINDS = new Set(["tool", "skill", "agent", "middleware", "channel"]);
 const VALID_SCOPES = new Set(["agent", "zone", "global"]);
 const VALID_TRUST_TIERS = new Set(["sandbox", "verified", "promoted"]);
 const VALID_LIFECYCLES = new Set([
@@ -84,12 +84,6 @@ function validateKindFields(data: Record<string, unknown>, source: string): Resu
       if (typeof data.manifestYaml !== "string")
         return fail("agent missing 'manifestYaml'", source);
       break;
-    case "composite":
-      if (!Array.isArray(data.brickIds)) return fail("composite missing 'brickIds' array", source);
-      break;
-    case "engine":
-    case "resolver":
-    case "provider":
     case "middleware":
     case "channel":
       if (typeof data.implementation !== "string")

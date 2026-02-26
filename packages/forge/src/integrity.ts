@@ -4,7 +4,7 @@
  */
 
 import type { BrickArtifact, BrickId, ForgeStore, Result, SigningBackend } from "@koi/core";
-import { computeBrickId, computeCompositeBrickId } from "@koi/hash";
+import { computeBrickId } from "@koi/hash";
 import { verifyAttestation } from "./attestation.js";
 import type { ForgeError } from "./errors.js";
 import { storeError } from "./errors.js";
@@ -35,9 +35,6 @@ export type IntegrityResult = IntegrityOk | IntegrityMismatch;
 function extractContentForHash(brick: BrickArtifact): string {
   switch (brick.kind) {
     case "tool":
-    case "engine":
-    case "resolver":
-    case "provider":
     case "middleware":
     case "channel":
       return brick.implementation;
@@ -45,9 +42,6 @@ function extractContentForHash(brick: BrickArtifact): string {
       return brick.content;
     case "agent":
       return brick.manifestYaml;
-    case "composite":
-      // Composite uses computeCompositeBrickId — sentinel here
-      return "";
   }
 }
 
@@ -60,10 +54,11 @@ function extractContentForHash(brick: BrickArtifact): string {
  * the content-addressed BrickId and comparing it to the stored `id`.
  */
 export function verifyBrickIntegrity(brick: BrickArtifact): IntegrityResult {
-  const recomputedId: BrickId =
-    brick.kind === "composite"
-      ? computeCompositeBrickId(brick.brickIds, brick.files)
-      : computeBrickId(brick.kind, extractContentForHash(brick), brick.files);
+  const recomputedId: BrickId = computeBrickId(
+    brick.kind,
+    extractContentForHash(brick),
+    brick.files,
+  );
 
   if (recomputedId === brick.id) {
     return { ok: true, brickId: brick.id, id: recomputedId };
