@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/test-utils API surface . has stable type surface 1`] = `
-"import { ProcessId, AgentManifest, ProcessState, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, BrickRegistryBackend, ForgeProvenance, AgentArtifact, ImplementationArtifact, SkillArtifact, ToolArtifact, ChannelAdapter, MemoryResult, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, SessionPersistence, SkillRegistryBackend, SnapshotChainStore, ForgeStore } from '@koi/core';
+"import { ProcessId, AgentManifest, ProcessState, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, ForgeProvenance, AgentArtifact, ImplementationArtifact, SkillArtifact, ToolArtifact, BrickRegistryBackend, ChannelAdapter, MemoryResult, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, SessionPersistence, SkillRegistryBackend, SnapshotChainStore, ForgeStore } from '@koi/core';
 import { Result, KoiError } from '@koi/core/errors';
 import { InboundMessage } from '@koi/core/message';
 import { SessionContext, TurnContext, ModelHandler, ModelRequest, ModelStreamHandler, ToolHandler, ToolRequest, ModelResponse, ModelChunk, ToolResponse, KoiMiddleware } from '@koi/core/middleware';
@@ -120,6 +120,19 @@ declare function assertErr<T>(result: Result<T, KoiError>): asserts result is {
 };
 
 /**
+ * Test artifact factories for forged bricks.
+ *
+ * Provides reusable defaults with a valid ForgeProvenance, eliminating
+ * repeated fixture construction across test suites.
+ */
+
+declare const DEFAULT_PROVENANCE: ForgeProvenance;
+declare const createTestToolArtifact: (overrides?: Partial<ToolArtifact>) => ToolArtifact;
+declare const createTestSkillArtifact: (overrides?: Partial<SkillArtifact>) => SkillArtifact;
+declare const createTestAgentArtifact: (overrides?: Partial<AgentArtifact>) => AgentArtifact;
+declare const createTestImplementationArtifact: (overrides?: Partial<ImplementationArtifact>) => ImplementationArtifact;
+
+/**
  * Brick registry contract test suite.
  *
  * Validates that any BrickRegistryBackend implementation satisfies the L0 contract.
@@ -137,28 +150,6 @@ interface BrickRegistryContractOptions {
  * the registry satisfies all L0 contract invariants.
  */
 declare function testBrickRegistryContract(options: BrickRegistryContractOptions): void;
-
-/**
- * In-memory BrickRegistryBackend implementation for testing.
- *
- * Stores bricks in a Map keyed by "kind:name". Supports search, get,
- * register, unregister, and onChange notifications.
- */
-
-declare function createInMemoryBrickRegistry(): BrickRegistryBackend;
-
-/**
- * Test artifact factories for forged bricks.
- *
- * Provides reusable defaults with a valid ForgeProvenance, eliminating
- * repeated fixture construction across test suites.
- */
-
-declare const DEFAULT_PROVENANCE: ForgeProvenance;
-declare const createTestToolArtifact: (overrides?: Partial<ToolArtifact>) => ToolArtifact;
-declare const createTestSkillArtifact: (overrides?: Partial<SkillArtifact>) => SkillArtifact;
-declare const createTestAgentArtifact: (overrides?: Partial<AgentArtifact>) => AgentArtifact;
-declare const createTestImplementationArtifact: (overrides?: Partial<ImplementationArtifact>) => ImplementationArtifact;
 
 /**
  * Output capture helper for tests.
@@ -374,6 +365,15 @@ declare function createSpyModelStreamHandler(chunks: readonly ModelChunk[]): Spy
  * Creates a mock model stream handler that yields provided chunks.
  */
 declare function createMockModelStreamHandler(chunks: readonly ModelChunk[]): ModelStreamHandler;
+
+/**
+ * In-memory BrickRegistryBackend implementation for testing.
+ *
+ * Stores bricks in a Map keyed by "kind:name". Supports search, get,
+ * register, unregister, and onChange notifications.
+ */
+
+declare function createInMemoryBrickRegistry(): BrickRegistryBackend;
 
 /**
  * Middleware contract test suite.
