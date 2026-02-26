@@ -2,6 +2,8 @@
  * Gateway-specific types. No runtime code.
  */
 
+import type { ToolRoutingConfig } from "./tool-router.js";
+
 // ---------------------------------------------------------------------------
 // Wire protocol
 // ---------------------------------------------------------------------------
@@ -204,6 +206,8 @@ export interface GatewayConfig {
   readonly sessionTtlMs: number;
   /** Static channel-to-agent bindings, loaded at startup. */
   readonly channelBindings?: readonly ChannelBinding[];
+  /** Tool routing configuration. Undefined = tool routing disabled (backward compatible). Partial fields are merged with DEFAULT_TOOL_ROUTING_CONFIG. */
+  readonly toolRouting?: Partial<ToolRoutingConfig> | undefined;
 }
 
 export const DEFAULT_GATEWAY_CONFIG: GatewayConfig = {

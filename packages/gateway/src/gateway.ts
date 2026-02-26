@@ -29,6 +29,8 @@ import type { SequenceTracker } from "./sequence-tracker.js";
 import { createSequenceTracker } from "./sequence-tracker.js";
 import type { SessionStore } from "./session-store.js";
 import { createInMemorySessionStore } from "./session-store.js";
+import type { ToolRouter } from "./tool-router.js";
+import { createToolRouter, DEFAULT_TOOL_ROUTING_CONFIG } from "./tool-router.js";
 import type { Transport, TransportConnection } from "./transport.js";
 import type { GatewayConfig, GatewayFrame, Session } from "./types.js";
 import { DEFAULT_GATEWAY_CONFIG } from "./types.js";
@@ -106,6 +108,10 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
   const nextId: FrameIdGenerator = createFrameIdGenerator();
   const registry = createInMemoryNodeRegistry();
 
+  // Tool routing (opt-in via config.toolRouting)
+  // let: set once at construction, cleared in stop()
+  let toolRouter: ToolRouter | undefined;
+
   // Per-connection state (mutable internal, not exposed)
   const connMap = new Map<string, TransportConnection>();
   const sessionByConn = new Map<string, string>(); // connId → sessionId
@@ -161,16 +167,58 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
       }
     }
   }
-  const nodeHandler = createNodeConnectionHandler(registry, emitNodeEvent, (connId: string) => {
-    const conn = connMap.get(connId);
-    if (conn !== undefined) {
-      conn.close(4014, "Replaced by reconnecting node");
-    }
-    // Note: cleanupNode already called by the handler before onEvict
-    connMap.delete(connId);
-    pendingHandshakes.delete(connId);
-    bp.remove(connId);
-  });
+  const nodeHandler = createNodeConnectionHandler(
+    registry,
+    emitNodeEvent,
+    (connId: string) => {
+      const conn = connMap.get(connId);
+      if (conn !== undefined) {
+        conn.close(4014, "Replaced by reconnecting node");
+      }
+      // Note: cleanupNode already called by the handler before onEvict
+      connMap.delete(connId);
+      pendingHandshakes.delete(connId);
+      bp.remove(connId);
+    },
+    // Tool routing callback — only wired when tool routing is enabled
+    config.toolRouting !== undefined
+      ? (frame: NodeFrame) => {
+          if (toolRouter === undefined) return;
+          switch (frame.kind) {
+            case "tool_call":
+              toolRouter.handleToolCall(frame);
+              break;
+            case "tool_result":
+              toolRouter.handleToolResult(frame);
+              break;
+            case "tool_error":
+              toolRouter.handleToolError(frame);
+              break;
+          }
+        }
+      : undefined,
+  );
+
+  // Initialize tool router after nodeHandler (needs sendToNode)
+  if (config.toolRouting !== undefined) {
+    toolRouter = createToolRouter(
+      { ...DEFAULT_TOOL_ROUTING_CONFIG, ...config.toolRouting },
+      {
+        registry,
+        sendToNode: (nodeId, frame) => nodeHandler.sendToNode(nodeId, frame, connMap),
+      },
+    );
+
+    nodeEventHandlers.add((event: NodeRegistryEvent) => {
+      if (toolRouter === undefined) return;
+      if (event.kind === "deregistered") {
+        toolRouter.handleNodeDisconnect(event.nodeId);
+      }
+      if (event.kind === "registered") {
+        toolRouter.handleNodeRegistered(event.node.nodeId);
+      }
+    });
+  }
 
   function closeConnection(connId: string, code: number, reason: string): void {
     const conn = connMap.get(connId);
@@ -533,6 +581,8 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
     },
 
     async stop(): Promise<void> {
+      toolRouter?.dispose();
+      toolRouter = undefined;
       scheduler?.stop();
       webhookServer?.stop();
       stopSweep?.();

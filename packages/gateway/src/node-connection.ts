@@ -56,6 +56,7 @@ export function createNodeConnectionHandler(
   registry: NodeRegistry,
   emitNodeEvent: (event: NodeRegistryEvent) => void,
   onEvict: (connId: string) => void,
+  onToolFrame?: ((frame: NodeFrame) => void) | undefined,
 ): NodeConnectionHandler {
   const nodeConnMap = new Map<string, string>(); // connId → nodeId
   const connByNode = new Map<string, string>(); // nodeId → connId
@@ -192,8 +193,15 @@ export function createNodeConnectionHandler(
         return;
       }
 
+      case "tool_call":
+      case "tool_result":
+      case "tool_error": {
+        onToolFrame?.(frame);
+        return;
+      }
+
       default:
-        // tool_result, tool_error, agent:* — future dispatch, currently no-op
+        // agent:* — future dispatch, currently no-op
         return;
     }
   }

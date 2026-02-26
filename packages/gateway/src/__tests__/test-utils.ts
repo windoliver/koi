@@ -331,6 +331,64 @@ export function createNodeHeartbeatMessage(nodeId: string): string {
   });
 }
 
+/** Build a JSON-encoded tool_call frame string. */
+export function createToolCallFrameMessage(
+  nodeId: string,
+  toolName: string,
+  args?: Readonly<Record<string, unknown>>,
+  overrides?: {
+    readonly agentId?: string;
+    readonly correlationId?: string;
+    readonly ttl?: number;
+  },
+): string {
+  return JSON.stringify({
+    kind: "tool_call",
+    nodeId,
+    agentId: overrides?.agentId ?? "agent-1",
+    correlationId: overrides?.correlationId ?? crypto.randomUUID(),
+    payload: {
+      toolName,
+      args: args ?? {},
+      callerAgentId: overrides?.agentId ?? "agent-1",
+    },
+    ...(overrides?.ttl !== undefined ? { ttl: overrides.ttl } : {}),
+  });
+}
+
+/** Build a JSON-encoded tool_result frame string. */
+export function createToolResultFrameMessage(
+  nodeId: string,
+  toolName: string,
+  result: unknown,
+  correlationId: string,
+): string {
+  return JSON.stringify({
+    kind: "tool_result",
+    nodeId,
+    agentId: "agent-1",
+    correlationId,
+    payload: { toolName, result },
+  });
+}
+
+/** Build a JSON-encoded tool_error frame string. */
+export function createToolErrorFrameMessage(
+  nodeId: string,
+  toolName: string,
+  code: string,
+  message: string,
+  correlationId: string,
+): string {
+  return JSON.stringify({
+    kind: "tool_error",
+    nodeId,
+    agentId: "agent-1",
+    correlationId,
+    payload: { toolName, code, message },
+  });
+}
+
 /** Build a JSON-encoded node:capacity frame string. */
 export function createNodeCapacityMessage(
   nodeId: string,
