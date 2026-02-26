@@ -26,6 +26,7 @@ export default defineConfig({
     "src/filesystem-backend.ts",
     "src/sandbox-adapter.ts",
     "src/sandbox-executor.ts",
+    "src/permission-backend.ts",
     "src/sandbox-profile.ts",
     "src/skill-registry.ts",
     "src/version-index.ts",

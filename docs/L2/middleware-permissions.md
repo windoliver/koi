@@ -1,151 +1,211 @@
-# @koi/middleware-permissions — Tool-Level Access Control + HITL Approval
+# @koi/middleware-permissions — Tool-Level Access Control + Human-in-the-Loop Approval
 
-Checks allow/deny/ask patterns before tool execution. Supports human-in-the-loop approval for sensitive operations. Opt-in approval cache with policy-aware, identity-scoped, TTL-based invalidation.
+Controls which tools an AI agent is allowed to use. Sits between the LLM and tools, enforcing allow/deny/ask policies with pluggable backends, decision caching, audit logging, and circuit breaker resilience.
 
 ---
 
 ## Why It Exists
 
-When an agent has access to tools, some tools are safe (read files), some are dangerous (delete database), and some need a human to say "yes" first (deploy to production). Without a permissions layer, every agent implementer reinvents:
+An agent with access to `bash`, `fs:delete`, `fetch`, and `multiply` can use **all of them freely** by default. That's dangerous — you probably don't want an agent deleting files or running shell commands without oversight.
 
-1. **Pattern matching** — "which tools need approval?"
-2. **Approval flow** — "how do I ask the human and wait?"
-3. **Caching** — "don't re-ask for the same thing every 5 seconds"
+This middleware solves three problems:
 
-This middleware handles all three as a composable `KoiMiddleware` with a single `wrapToolCall` hook.
+1. **Tool filtering** — denied tools are invisible to the LLM (it never knows they exist)
+2. **Human gating** — sensitive tools pause execution until a human approves or rejects
+3. **Fail-closed semantics** — if the permission system is down, everything is denied (not allowed)
+
+Without this package, every agent would reimplement tool filtering, approval flows, caching, and resilience logic.
 
 ---
 
 ## Architecture
 
-`@koi/middleware-permissions` is an **L2 feature package** — it depends on L0 (`@koi/core`) and L0u utilities (`@koi/errors`, `@koi/hash`). Zero external dependencies.
+`@koi/middleware-permissions` is an **L2 feature package** — it depends only on L0 (`@koi/core`) and L0u utilities (`@koi/errors`, `@koi/hash`). Zero external dependencies.
 
 ```
-+----------------------------------------------------------+
-|  @koi/middleware-permissions  (L2)                        |
-|                                                          |
-|  engine.ts       <- PermissionEngine + pattern matching  |
-|  config.ts       <- config types + validation            |
-|  permissions.ts  <- middleware factory + approval cache   |
-|  hash.ts         <- re-export fnv1a from @koi/hash       |
-|  descriptor.ts   <- BrickDescriptor for auto-resolution  |
-|  index.ts        <- public API surface                   |
-|                                                          |
-+---------------------------+------------------------------+
-|  Dependencies             |                              |
-|                           |                              |
-|  @koi/core   (L0)        |  KoiMiddleware, ToolRequest, |
-|                           |  ToolResponse, TurnContext   |
-|  @koi/errors (L0u)       |  KoiRuntimeError             |
-|  @koi/hash   (L0u)       |  fnv1a (cache key hashing)   |
-+---------------------------+------------------------------+
+┌────────────────────────────────────────────────────────────┐
+│  @koi/middleware-permissions  (L2)                          │
+│                                                            │
+│  config.ts          ← config interface + validation        │
+│  engine.ts          ← pattern backend + approval handler   │
+│  permissions.ts     ← middleware factory (core logic)      │
+│  hash.ts            ← FNV-1a for cache keys               │
+│  index.ts           ← public API surface                   │
+│                                                            │
+├────────────────────────────────────────────────────────────┤
+│  Dependencies                                              │
+│                                                            │
+│  @koi/core   (L0)   KoiMiddleware, ModelRequest,           │
+│                      ToolRequest, TurnContext,              │
+│                      PermissionBackend, AuditEntry,         │
+│                      AuditSink                              │
+│  @koi/errors (L0u)  KoiRuntimeError, createCircuitBreaker, │
+│                      swallowError                           │
+│  @koi/hash   (L0u)  (vendored — fnv1a lives in hash.ts)    │
+└────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## How It Works
 
-### Decision Flow
+### The Three Effects
 
-Every tool call passes through this decision tree:
+Every tool the LLM wants to use gets one of three decisions:
 
-```
-Tool call: deploy(env: "prod")
-      |
-      v
-+-----------------+
-| PermissionEngine|
-| .check()        |
-+--------+--------+
-         |
-    +----+----+----------+
-    |         |          |
-    v         v          v
-  ALLOW     DENY       ASK
-    |         |          |
-    v         v          v
- next()    throw      cache lookup
-           PERMISSION     |
-                     +----+----+
-                     |         |
-                     v         v
-                   HIT       MISS
-                     |         |
-                     v         v
-                  next()   approvalHandler
-                            .requestApproval()
-                                |
-                           +----+----+
-                           |         |
-                           v         v
-                        APPROVED   DENIED
-                           |         |
-                           v         v
-                        cache it   throw
-                        next()     PERMISSION
-```
+| Effect | What happens | LLM sees the tool? |
+|--------|-------------|---------------------|
+| **allow** | Tool runs immediately | Yes |
+| **deny** | Tool stripped from context | No — invisible |
+| **ask** | Execution pauses, human prompted | Yes, but blocked until approved |
 
-### Pattern Matching (Deny-First)
+### Evaluation Order
 
-The engine evaluates rules in priority order:
+Deny-first, then ask, then allow:
 
 ```
-Rules: { allow: ["calc", "read:*"],
-         deny:  ["rm", "fs:*"],
-         ask:   ["deploy", "send:*"] }
-
-Tool call       Evaluation path                Result
------------     ----------------------------   -------
-calc            deny? no -> ask? no -> allow   ALLOW
-rm              deny? YES                      DENY
-fs:delete       deny? fs:* YES                 DENY
-deploy          deny? no -> ask? YES           ASK
-send:email      deny? no -> ask? send:* YES    ASK
-read:config     deny? no -> ask? no -> allow   ALLOW
-unknown         deny? no -> ask? no -> allow?  ALLOW (or DENY if defaultDeny)
-                no -> defaultDeny
+Tool ID arrives
+    │
+    ├── matches deny pattern?  ──yes──▶ DENY  (deny always wins)
+    │
+    ├── matches ask pattern?   ──yes──▶ ASK
+    │
+    ├── matches allow pattern? ──yes──▶ ALLOW
+    │
+    └── no match?
+         ├── defaultDeny=true  ──────▶ DENY  (default)
+         └── defaultDeny=false ──────▶ ALLOW
 ```
 
-### Middleware Position (Onion)
+### Two Interception Points
+
+The middleware hooks into both `wrapModelCall` and `wrapToolCall`:
 
 ```
-            Incoming Tool Call
-                   |
-                   v
-       +-----------------------+
-       |   guard middleware    |  priority: 0-99
-       +-----------------------+
-       |   middleware-         |  priority: 100
-       |   permissions (THIS) |  <-- blocks before anything else runs
-       +-----------------------+
-       |   middleware-audit    |  priority: 200+
-       +-----------------------+
-       |   engine adapter     |
-       |   -> tool.execute()  |
-       +-----------+-----------+
-              Response
+                    User sends message
+                           │
+                           ▼
+┌─ wrapModelCall ──────────────────────────────────────────┐
+│                                                          │
+│  LLM is about to see 5 tools. Check all 5 in batch:     │
+│                                                          │
+│  fs:read      → ALLOW  (kept)                            │
+│  fs:write     → ASK    (kept — will gate later)          │
+│  fetch        → ALLOW  (kept)                            │
+│  bash         → DENY   (stripped — LLM never sees)       │
+│  delete_file  → DENY   (stripped — LLM never sees)       │
+│                                                          │
+│  Filtered list → [fs:read, fs:write, fetch]              │
+│  Each decision → audit log                               │
+└──────────────────────────┬───────────────────────────────┘
+                           │
+                    LLM picks fs:write
+                           │
+                           ▼
+┌─ wrapToolCall ───────────────────────────────────────────┐
+│                                                          │
+│  Re-check "fs:write" → ASK                               │
+│                                                          │
+│  ┌────────────────────────────────────────┐              │
+│  │  ApprovalHandler.requestApproval()     │              │
+│  │                                        │              │
+│  │  "fs:write wants to create output.txt" │              │
+│  │                                        │              │
+│  │  [Approve]          [Deny]             │              │
+│  └──────┬────────────────┬────────────────┘              │
+│         │                │                               │
+│    next(request)    throw PERMISSION                     │
+│                                                          │
+│  Timeout (30s default) → auto-deny                       │
+│  Decision → audit log with durationMs                    │
+└──────────────────────────────────────────────────────────┘
 ```
 
-Priority 100 means permissions runs early in the onion — tool calls that are denied never reach downstream middleware or the actual tool executor.
+---
+
+## Named Tool Groups
+
+Instead of listing every tool individually, use `group:<name>` to match categories:
+
+```typescript
+import { createPatternPermissionBackend, DEFAULT_GROUPS } from "@koi/middleware-permissions";
+
+const backend = createPatternPermissionBackend({
+  rules: {
+    allow: ["group:fs_read", "group:web"],  // safe categories
+    deny:  ["group:runtime"],                // block shell access
+    ask:   ["group:fs_write"],               // gate writes on human approval
+  },
+  groups: DEFAULT_GROUPS,
+});
+```
+
+### Built-in Groups (DEFAULT_GROUPS)
+
+| Group | Expands to | Use case |
+|-------|-----------|----------|
+| `fs` | `fs:*` | All filesystem operations |
+| `fs_read` | `fs:read`, `fs:stat`, `fs:list`, `fs:glob` | Read-only filesystem |
+| `fs_write` | `fs:write`, `fs:create`, `fs:mkdir` | Write operations |
+| `fs_delete` | `fs:delete`, `fs:rm`, `fs:rmdir` | Destructive operations |
+| `runtime` | `exec`, `spawn`, `bash`, `shell` | Shell execution |
+| `web` | `http:*`, `fetch`, `curl` | Network calls |
+| `browser` | `browser_*` | Playwright-style automation |
+| `db` | `db:*` | All database operations |
+| `db_read` | `db:query`, `db:read`, `db:select` | Read-only database |
+| `db_write` | `db:write`, `db:insert`, `db:update`, `db:delete` | Database mutations |
+| `lsp` | `lsp/*` | Language server tools |
+| `mcp` | `mcp/*` | MCP server tools |
+
+Extend with custom groups:
+
+```typescript
+const groups = {
+  ...DEFAULT_GROUPS,
+  deploy: ["deploy:staging", "deploy:production"],
+  monitoring: ["metrics:*", "logs:*", "traces:*"],
+};
+```
+
+---
+
+## Decision Cache
+
+Avoids redundant permission checks when the same tool is used repeatedly:
+
+```
+1st call: multiply
+  cache MISS → backend.check() → ALLOW
+  cache.set(key, { effect: "allow", expiresAt: now + 60s })
+
+2nd call: multiply  (12ms later)
+  cache HIT → return ALLOW  (backend never called)
+
+Batch (wrapModelCall with 5 tools):
+  ┌─────────┬─────────┬─────────┬─────────┬─────────┐
+  │ tool A  │ tool B  │ tool C  │ tool D  │ tool E  │
+  │ HIT     │ MISS    │ HIT     │ MISS    │ HIT     │
+  └─────────┴────┬────┴─────────┴────┬────┴─────────┘
+                 │                   │
+                 ▼                   │
+       backend.checkBatch([B, D]) ◄──┘  (only 2 calls, not 5)
+```
+
+- LRU eviction when `maxEntries` reached
+- Per-effect TTL: `allowTtlMs` (default 300s), `denyTtlMs` (default 10s)
+- `ask` decisions are **never cached** in the decision cache (require human interaction each time)
 
 ---
 
 ## Approval Cache
 
-The cache is opt-in (disabled by default) and stores only approvals (never denials).
-
-### The Problem It Solves
-
-Without caching, every "ask" tool call prompts the human — even if they approved the exact same call 2 seconds ago. In long-running agent sessions (#134), this becomes unusable.
+The approval cache is a separate mechanism from the decision cache. It stores human "ask" approvals so users don't get re-prompted for the same tool call.
 
 ### The Stale Authorization Problem
 
-A naive cache keyed by `(toolId, input)` has three security holes:
+A naive cache keyed by `(toolId, input)` has security holes:
 
 ```
-BEFORE (broken cache key)
-=========================
-
 cache key = hash(toolId + input)
 
   Alice                 Bob
@@ -153,51 +213,42 @@ cache key = hash(toolId + input)
     +-- deploy(prod) -----+
     |   ask -> approve    |
     |   cached            |
-    |                     |
     |                     +-- deploy(prod) ----+
     |                     |   CACHE HIT!       |
     |                     |   Bob rides Alice's|
     |                     |   approval         |
-    |                     |                    |
-    v                     v
 
 Problem 1: Bob uses Alice's cached approval (identity leak)
-Problem 2: If rules change, old approvals survive (stale policy)
-Problem 3: Approvals never expire (no time bound)
+Problem 2: Approvals never expire (no time bound)
 ```
 
-### Three-Dimensional Cache Key
+### Multi-Dimensional Cache Key
 
-The fix includes three dimensions in the cache key:
+The fix includes multiple dimensions in the cache key:
 
 ```
-cache key = fnv1a(rulesFingerprint \0 userId \0 toolId \0 input)
-                  ^^^^^^^^^^^^^^^^    ^^^^^^    ^^^^^^    ^^^^^
-                  policy dimension    identity  tool      input
-                                      dimension dimension dimension
+cache key = fnv1a(backendFingerprint \0 userId \0 toolId \0 input)
+                  ^^^^^^^^^^^^^^^^^^    ^^^^^^    ^^^^^^    ^^^^^
+                  policy dimension      identity  tool      input
+                                        dimension dimension dimension
 
 +---------------------+-------------------------------------+
 | Stale scenario      | Defense                             |
 +---------------------+-------------------------------------+
-| Rules changed       | Different fingerprint -> cache miss |
 | User switched       | Different userId -> cache miss      |
 | Time passed         | TTL expired -> evict + re-prompt    |
 +---------------------+-------------------------------------+
 ```
 
-### How Each Dimension Works
+### TTL Behavior
 
-**Policy fingerprint** — computed once at middleware construction:
+**Backend fingerprint** — computed once at middleware construction from a stable random tag:
 
 ```
-rulesFingerprint = fnv1a(JSON.stringify([
-  [...rules.allow].sort(),
-  [...rules.deny].sort(),
-  [...rules.ask].sort(),
-]))
+backendFingerprint = fnv1a(String(Math.random()))
 ```
 
-Since `rules` is `readonly`, the fingerprint is stable for the middleware's lifetime. A new middleware instance with different rules gets a different fingerprint.
+Since the backend is opaque (pluggable via the `PermissionBackend` interface), the fingerprint uses object identity via a random tag. A new middleware instance with a different backend gets a different fingerprint.
 
 **Identity** — read per-call from the `TurnContext`:
 
@@ -218,10 +269,10 @@ Property insertion order is an implementation detail. Both calls above hit the s
 If the input is not JSON-serializable (e.g. contains a circular reference), the middleware throws
 a `VALIDATION` error before the approval prompt is shown.
 
-**TTL** — checked on every cache hit:
+**TTL** — checked on every cache hit. Uses the injected `clock` for deterministic testing:
 
 ```
-expired = ttlMs > 0 && Date.now() - entry.cachedAt >= ttlMs
+expired = ttlMs > 0 && clock() - entry.cachedAt >= ttlMs
 ```
 
 Default: 5 minutes (300,000ms). Set `ttlMs: 0` to disable expiry.
@@ -231,7 +282,7 @@ Default: 5 minutes (300,000ms). Set `ttlMs: 0` to disable expiry.
 The cache uses Map insertion-order as an LRU:
 
 ```
-Cache (maxEntries: 3)
+Cache (maxEntries: 256)
 
 State after 3 approvals:
   [A] -> [B] -> [C]        (A is oldest)
@@ -247,180 +298,294 @@ New entry D (cache full, evict oldest):
 
 ---
 
+## Audit Trail
+
+Every permission decision is logged to an `AuditSink` (fire-and-forget, never blocks the agent):
+
+```
+AuditSink receives:
+
+{ timestamp: 1740...,
+  sessionId: "s-1",
+  agentId: "agent-coder",
+  turnIndex: 3,
+  kind: "tool_call",
+  durationMs: 2,
+  metadata: {
+    permissionCheck: true,
+    resource: "fs:write",
+    effect: "ask",
+    reason: "Tool \"fs:write\" requires approval"
+  }
+}
+```
+
+- Logs from both `wrapModelCall` (batch) and `wrapToolCall` (individual)
+- `durationMs` measures actual backend latency (not hardcoded)
+- Sink errors are swallowed — a broken logger never crashes the agent
+
+---
+
+## Circuit Breaker
+
+Protects against external permission backend outages:
+
+```
+Normal:   backend.check() ──► success ──► recordSuccess()
+
+Failure:  backend.check() ──► throws  ──► recordFailure()  (1/3)
+
+3 failures in window:
+          ┌──────────────────────┐
+          │ CIRCUIT OPEN         │
+          │ All checks → DENY    │
+          │ "fail closed"        │
+          └──────────┬───────────┘
+                     │ cooldownMs elapsed
+                     ▼
+          ┌──────────────────────┐
+          │ CIRCUIT HALF-OPEN    │
+          │ Try backend again    │
+          └──────────┬───────────┘
+                     │ success
+                     ▼
+          ┌──────────────────────┐
+          │ CIRCUIT CLOSED       │
+          │ Normal operation     │
+          └──────────────────────┘
+```
+
+Reuses `createCircuitBreaker` from `@koi/errors` (L0u). Accepts `clock` injection for deterministic testing.
+
+---
+
+## Pluggable Backend
+
+The `PermissionBackend` is an L0 interface — swap implementations without changing middleware code:
+
+```
+                   PermissionBackend (L0 interface)
+                           │
+          ┌────────────────┼────────────────┐
+          │                │                │
+    Pattern-based     HTTP Policy      Database
+    (built-in)        Server           Lookup
+    sync, in-proc     async, remote    async, remote
+```
+
+The built-in `createPatternPermissionBackend` is synchronous and in-process (zero latency). For remote backends, the cache and circuit breaker handle latency and resilience.
+
+```typescript
+// Minimal interface
+interface PermissionBackend {
+  readonly check: (query: PermissionQuery) => PermissionDecision | Promise<PermissionDecision>;
+  readonly checkBatch?: (queries: readonly PermissionQuery[]) => ... ;
+  readonly dispose?: () => Promise<void>;
+}
+```
+
+---
+
+## Middleware Position (Onion)
+
+```
+             Incoming Model Call
+                    │
+                    ▼
+        ┌───────────────────────┐
+        │  middleware-audit      │  priority: 450
+        ├───────────────────────┤
+        │  middleware-semantic-  │  priority: 420
+        │  retry                │
+        ├───────────────────────┤
+     ┌──│  middleware-permissions│──┐  priority: 100
+     │  │  (THIS)               │  │
+     │  ├───────────────────────┤  │
+     │  │  engine adapter       │  │
+     │  │  → LLM API call       │  │
+     │  └───────────┬───────────┘  │
+     │        Tool Response        │
+     │              │              │
+     │   Re-check at wrapToolCall  │
+     └──────────────┴──────────────┘
+```
+
+Priority 100 = runs close to the engine. Tool filtering happens before the LLM sees anything.
+
+---
+
 ## API Reference
 
-### Factory
+### Factory Functions
 
 #### `createPermissionsMiddleware(config)`
 
-Creates the middleware. Cache state lives in the closure — one middleware instance = one cache.
+Creates the middleware instance.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `config.engine` | `PermissionEngine` | (required) | Pattern matcher |
-| `config.rules` | `PermissionRules` | (required) | `{ allow, deny, ask }` string arrays |
-| `config.approvalHandler` | `ApprovalHandler` | `undefined` | HITL callback (required if `ask` is non-empty) |
-| `config.approvalTimeoutMs` | `number` | `30_000` | Timeout for approval requests |
-| `config.defaultDeny` | `boolean` | `false` | Deny unmatched tools (vs allow) |
-| `config.approvalCache` | `boolean \| ApprovalCacheConfig` | `false` | Enable approval caching |
+| `config.backend` | `PermissionBackend` | **required** | Pluggable authorization backend |
+| `config.approvalHandler` | `ApprovalHandler` | — | HITL approval for `ask` decisions |
+| `config.approvalTimeoutMs` | `number` | `30000` | Timeout before auto-deny on ask |
+| `config.cache` | `boolean \| PermissionCacheConfig` | `false` | Enable decision + approval caching |
+| `config.clock` | `() => number` | `Date.now` | Inject clock for testing |
+| `config.auditSink` | `AuditSink` | — | Structured decision logging |
+| `config.circuitBreaker` | `CircuitBreakerConfig` | — | Resilience for remote backends |
+| `config.description` | `string` | `"Permission checks enabled"` | Capability label |
 
 **Returns:** `KoiMiddleware`
 
-#### `createPatternPermissionEngine(defaultDeny?)`
+#### `createPatternPermissionBackend(config)`
 
-Creates the default pattern-matching engine. Evaluation order: deny-first, then ask, then allow, then defaultDeny.
+Built-in pattern-matching backend (synchronous, in-process).
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `config.rules.allow` | `readonly string[]` | **required** | Patterns that grant access |
+| `config.rules.deny` | `readonly string[]` | **required** | Patterns that block access |
+| `config.rules.ask` | `readonly string[]` | **required** | Patterns that require approval |
+| `config.defaultDeny` | `boolean` | `true` | Deny unmatched tools |
+| `config.groups` | `Record<string, readonly string[]>` | `{}` | Named group expansions |
+
+**Returns:** `PermissionBackend`
 
 #### `createAutoApprovalHandler()`
 
 Always approves. For testing and development only.
 
-#### `validatePermissionsConfig(config)`
+**Returns:** `ApprovalHandler`
 
-Validates config shape and returns `Result<PermissionsMiddlewareConfig, KoiError>`.
+#### `validatePermissionsConfig(input)`
 
-### Interfaces
-
-#### `PermissionRules`
-
-```typescript
-interface PermissionRules {
-  readonly allow: readonly string[]  // Glob patterns: "calc", "read:*", "*"
-  readonly deny: readonly string[]   // Deny-first: checked before allow
-  readonly ask: readonly string[]    // Requires human approval
-}
-```
-
-#### `ApprovalHandler`
-
-```typescript
-interface ApprovalHandler {
-  readonly requestApproval: (
-    toolId: string,
-    input: JsonObject,
-    reason: string,
-  ) => Promise<boolean>
-}
-```
-
-#### `ApprovalCacheConfig`
-
-```typescript
-interface ApprovalCacheConfig {
-  readonly maxEntries?: number  // Default: 256. LRU eviction when full.
-  readonly ttlMs?: number       // Default: 300_000 (5 min). 0 = no expiry.
-}
-```
+Runtime config validation. Returns `Result<PermissionsMiddlewareConfig, KoiError>`.
 
 ### Constants
 
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `DEFAULT_APPROVAL_CACHE_MAX_ENTRIES` | `256` | Max cached approvals |
-| `DEFAULT_APPROVAL_CACHE_TTL_MS` | `300_000` | 5-minute TTL |
+#### `DEFAULT_GROUPS`
+
+12 built-in tool group presets. Merge with custom groups via spread: `{ ...DEFAULT_GROUPS, custom: [...] }`.
+
+#### `DEFAULT_CACHE_CONFIG`
+
+Default decision cache settings: `{ maxEntries: 1024, allowTtlMs: 300_000, denyTtlMs: 10_000 }`.
+
+#### `DEFAULT_APPROVAL_CACHE_MAX_ENTRIES`
+
+`256` — max cached human approvals.
+
+#### `DEFAULT_APPROVAL_CACHE_TTL_MS`
+
+`300_000` — 5-minute TTL for cached approvals.
+
+### Types
+
+| Type | Description |
+|------|-------------|
+| `PermissionsMiddlewareConfig` | Full config for `createPermissionsMiddleware()` |
+| `PermissionCacheConfig` | `{ maxEntries, allowTtlMs, denyTtlMs, ttlMs }` |
+| `PatternBackendConfig` | Config for `createPatternPermissionBackend()` |
+| `PermissionRules` | `{ allow, deny, ask }` pattern arrays |
+| `ApprovalHandler` | `{ requestApproval(toolId, input, reason) => Promise<boolean> }` |
+| `PermissionBackend` | L0 interface: `check()` + optional `checkBatch()` + `dispose()` |
+| `PermissionDecision` | `{ effect: "allow" } \| { effect: "deny", reason } \| { effect: "ask", reason }` |
+| `PermissionQuery` | `{ principal, action, resource, context? }` |
 
 ---
 
 ## Examples
 
-### Basic Allow/Deny
+### Basic: Allow-List Only
 
 ```typescript
-import { createPatternPermissionEngine, createPermissionsMiddleware } from "@koi/middleware-permissions";
+import { createPatternPermissionBackend, createPermissionsMiddleware } from "@koi/middleware-permissions";
 
-const mw = createPermissionsMiddleware({
-  engine: createPatternPermissionEngine(),
-  rules: {
-    allow: ["calc", "read:*"],
-    deny: ["rm", "fs:delete"],
-    ask: [],
-  },
+const middleware = createPermissionsMiddleware({
+  backend: createPatternPermissionBackend({
+    rules: {
+      allow: ["multiply", "get_weather"],
+      deny: [],
+      ask: [],
+    },
+  }),
 });
 
-const agent = await createKoi({
+// Register in agent assembly:
+const runtime = await createKoi({
   manifest,
   adapter,
-  middleware: [mw],
+  middleware: [middleware],
 });
 ```
 
-### Human-in-the-Loop with Caching
+### With Groups, Cache, and Audit
 
 ```typescript
 import {
-  createPatternPermissionEngine,
+  createPatternPermissionBackend,
   createPermissionsMiddleware,
+  DEFAULT_GROUPS,
 } from "@koi/middleware-permissions";
 
-const mw = createPermissionsMiddleware({
-  engine: createPatternPermissionEngine(),
-  rules: {
-    allow: ["read:*"],
-    deny: ["rm"],
-    ask: ["deploy", "send:*"],
+const entries = [];
+
+const middleware = createPermissionsMiddleware({
+  backend: createPatternPermissionBackend({
+    rules: {
+      allow: ["group:fs_read", "group:web"],
+      deny: ["group:runtime"],
+      ask: ["group:fs_write"],
+    },
+    groups: DEFAULT_GROUPS,
+  }),
+  cache: { maxEntries: 512, allowTtlMs: 120_000, denyTtlMs: 60_000 },
+  auditSink: {
+    log: async (entry) => {
+      entries.push(entry);
+    },
   },
   approvalHandler: {
     requestApproval: async (toolId, input, reason) => {
-      // Show UI prompt, wait for user response
-      return await showApprovalDialog({ toolId, input, reason });
+      console.log(`Approve ${toolId}? Reason: ${reason}`);
+      return true; // or prompt user via UI
     },
   },
-  approvalCache: true, // defaults: maxEntries=256, ttlMs=300_000
+  approvalTimeoutMs: 60_000,
 });
 ```
 
-### Custom Cache Config
+### With Circuit Breaker (Remote Backend)
 
 ```typescript
-const mw = createPermissionsMiddleware({
-  engine: createPatternPermissionEngine(),
-  rules: { allow: [], deny: [], ask: ["deploy"] },
-  approvalHandler: myHandler,
-  approvalCache: {
-    maxEntries: 64,    // smaller cache
-    ttlMs: 60_000,     // 1-minute TTL (stricter)
+const middleware = createPermissionsMiddleware({
+  backend: myHttpPolicyBackend,  // remote backend
+  cache: true,                    // cache to reduce round-trips
+  circuitBreaker: {
+    failureThreshold: 5,          // open after 5 failures
+    cooldownMs: 30_000,           // retry after 30s
+    failureWindowMs: 60_000,      // failure window
+    failureStatusCodes: [],
   },
 });
 ```
 
-### TTL Disabled (Session-Lifetime Cache)
+### Deterministic Testing
 
 ```typescript
-const mw = createPermissionsMiddleware({
-  engine: createPatternPermissionEngine(),
-  rules: { allow: [], deny: [], ask: ["deploy"] },
-  approvalHandler: myHandler,
-  approvalCache: {
-    ttlMs: 0, // never expires — lives for middleware lifetime
-  },
-});
-```
+import { describe, expect, test } from "bun:test";
 
-### Default Deny (Allowlist Mode)
+test("cache expires after TTL", async () => {
+  let now = 1000;
+  const middleware = createPermissionsMiddleware({
+    backend: myBackend,
+    cache: { maxEntries: 100, allowTtlMs: 5000, denyTtlMs: 2000 },
+    clock: () => now,
+  });
 
-```typescript
-const mw = createPermissionsMiddleware({
-  engine: createPatternPermissionEngine(/* defaultDeny */ true),
-  rules: {
-    allow: ["calc", "read:config"],
-    deny: [],
-    ask: [],
-  },
-  defaultDeny: true, // any tool not in allow list is blocked
-});
-```
-
-### With Other Middleware
-
-```typescript
-const agent = await createKoi({
-  manifest,
-  adapter,
-  middleware: [
-    createPermissionsMiddleware({ ... }),           // priority: 100 (runs first)
-    createAuditMiddleware({ ... }),                 // priority: 200
-    createSemanticRetryMiddleware({ ... }).middleware, // priority: 420
-  ],
-  userId: "alice-123", // injected into ctx.session.userId for cache key
+  // First call: cache miss → backend called
+  // Second call: cache hit → backend skipped
+  // Advance clock past TTL:
+  now += 6000;
+  // Third call: cache expired → backend called again
 });
 ```
 
@@ -428,73 +593,51 @@ const agent = await createKoi({
 
 ## Hot Path Performance
 
-The middleware adds near-zero overhead on the allow/deny fast paths:
+The middleware adds minimal overhead on the success path:
 
 ```
-wrapToolCall(ctx, request, next):
-  |
-  +-- engine.check() -> allowed?
-  |     |
-  |     +-- true  -> return next(request)     <- 1 function call, straight through
-  |     +-- false -> throw PERMISSION         <- immediate, no cache lookup
-  |     +-- "ask" -> cache lookup             <- only "ask" tools hit the cache
-  |                    |
-  |                    +-- HIT + not expired  -> return next(request)
-  |                    +-- MISS or expired    -> approvalHandler (human)
+wrapModelCall:
+  │
+  ├── no tools? → straight through (zero cost)
+  │
+  └── has tools → checkBatch (cache-partitioned)
+       ├── all cache hits → zero backend calls
+       ├── some misses → only misses sent to backend
+       └── audit: fire-and-forget (non-blocking)
+
+wrapToolCall:
+  │
+  ├── cache hit? → return decision (no backend call)
+  │
+  ├── circuit open? → instant deny (no backend call)
+  │
+  └── cache miss → backend.check() → cache result
 ```
 
-**Allow path:** 1 pattern match + delegate to `next()`. Zero allocations.
-
-**Deny path:** 1 pattern match + throw. Zero allocations.
-
-**Ask path (cache hit):** 1 pattern match + `computeCacheKey` (~150us) + Map.get + TTL check. One string allocation for the key.
-
-**Ask path (cache miss):** + human approval latency (~30 seconds). Cache overhead is <0.001% of total.
-
-Cache entry memory: 16 bytes per entry. 256 entries = 4KB total.
-
----
-
-## Testing
-
-```bash
-# Unit tests (fast, no API key needed)
-bun test --cwd packages/middleware-permissions
-
-# E2E with real LLM (requires ANTHROPIC_API_KEY in .env)
-E2E_TESTS=1 bun test --cwd packages/middleware-permissions src/__tests__/e2e-approval-cache.test.ts
-```
-
-### Test Coverage
-
-| Area | Tests | What's Verified |
-|------|-------|-----------------|
-| Config validation | 17 | All fields validated, edge cases |
-| Permission decisions | 12 | Allow/deny/ask/wildcard/defaultDeny |
-| Approval flow | 4 | Approve, deny, timeout, no-handler |
-| Cache basics | 6 | Hit, miss, different input, denial not cached, LRU |
-| Cache identity | 2 | userId isolation, anonymous -> authenticated |
-| Cache TTL | 2 | Expiry after ttlMs, ttlMs=0 disables |
-| Cache policy | 1 | Different rules fingerprint -> miss |
-| E2E (deterministic) | 7 | Full createKoi + createLoopAdapter stack |
-| E2E (real LLM) | 3 | Full createKoi + createPiAdapter + Anthropic Haiku |
+- Groups pre-expanded at construction (not per-check)
+- FNV-1a cache keys: O(n) with zero allocations beyond the key string
+- LRU cache bounded by `maxEntries` — no unbounded growth
+- Audit sink errors swallowed — never blocks the hot path
 
 ---
 
 ## Layer Compliance
 
 ```
-L0  @koi/core -----------------------------------------------+
-    KoiMiddleware, ToolRequest, ToolResponse, TurnContext     |
-                                                              |
-L0u @koi/errors, @koi/hash ----------------------------------+
-    KoiRuntimeError, fnv1a                                    |
-                                                              v
-L2  @koi/middleware-permissions <-----------------------------+
-    imports from L0 and L0u only
-    x never imports @koi/engine (L1)
-    x never imports peer L2 packages (except @koi/resolve for descriptor type)
-    x zero external dependencies
+L0  @koi/core ──────────────────────────────────────────┐
+    KoiMiddleware, ModelRequest, ToolRequest,             │
+    TurnContext, PermissionBackend, PermissionDecision,    │
+    PermissionQuery, AuditEntry, AuditSink                │
+                                                           │
+L0u @koi/errors ────────────────────────────────────┐     │
+    KoiRuntimeError, createCircuitBreaker,           │     │
+    swallowError                                     │     │
+                                                     ▼     ▼
+L2  @koi/middleware-permissions ◄─────────────────────┴─────┘
+    imports from L0 + L0u only
+    ✗ never imports @koi/engine (L1)
+    ✗ never imports peer L2 packages
+    ✗ zero external dependencies
 ```
 
-**Dev-only dependencies** (`@koi/test-utils`, `@koi/engine`, `@koi/engine-loop`, `@koi/engine-pi`) are used in tests but are not runtime imports.
+**Dev-only dependencies** (`@koi/engine`, `@koi/engine-loop`, `@koi/engine-pi`, `@koi/test-utils`) are used in tests but are not runtime imports.

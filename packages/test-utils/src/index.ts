@@ -71,6 +71,8 @@ export {
 export { createInMemoryBrickRegistry } from "./in-memory-brick-registry.js";
 export type { MiddlewareContractOptions } from "./middleware-contract/index.js";
 export { testMiddlewareContract } from "./middleware-contract/index.js";
+export type { FakePermissionBackend, FakePermissionBackendOptions } from "./permission-backend.js";
+export { createFakePermissionBackend } from "./permission-backend.js";
 export type { ResolverContractOptions } from "./resolver-contract.js";
 export { testResolverContract } from "./resolver-contract.js";
 export { runSessionPersistenceContractTests } from "./session-persistence-contract.js";

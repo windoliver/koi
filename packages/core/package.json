@@ -104,6 +104,10 @@
       "types": "./dist/skill-registry.d.ts",
       "import": "./dist/skill-registry.js"
     },
+    "./permission-backend": {
+      "types": "./dist/permission-backend.d.ts",
+      "import": "./dist/permission-backend.js"
+    },
     "./version-index": {
       "types": "./dist/version-index.d.ts",
       "import": "./dist/version-index.js"

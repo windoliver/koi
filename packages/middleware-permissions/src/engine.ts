@@ -1,13 +1,13 @@
 /**
- * Permission engine interfaces and default implementations.
+ * Pattern-based permission backend and approval handler.
  */
 
 import type { JsonObject } from "@koi/core/common";
-
-export type PermissionDecision =
-  | { readonly allowed: true }
-  | { readonly allowed: false; readonly reason: string }
-  | { readonly allowed: "ask"; readonly reason: string };
+import type {
+  PermissionBackend,
+  PermissionDecision,
+  PermissionQuery,
+} from "@koi/core/permission-backend";
 
 export interface PermissionRules {
   readonly allow: readonly string[];
@@ -15,8 +15,44 @@ export interface PermissionRules {
   readonly ask: readonly string[];
 }
 
-export interface PermissionEngine {
-  readonly check: (toolId: string, input: JsonObject, rules: PermissionRules) => PermissionDecision;
+/**
+ * Built-in tool group presets matching common agent tool categories.
+ * Use with `group:<name>` in permission rules, e.g. `allow: ["group:fs_read"]`.
+ *
+ * Groups use prefix wildcards so they match any tool within the category.
+ * Consumers can override or extend these by merging with their own groups map.
+ */
+export const DEFAULT_GROUPS: Readonly<Record<string, readonly string[]>> = {
+  /** Filesystem — read + write + delete */
+  fs: ["fs:*"],
+  /** Filesystem read-only subset */
+  fs_read: ["fs:read", "fs:stat", "fs:list", "fs:glob"],
+  /** Filesystem write subset */
+  fs_write: ["fs:write", "fs:create", "fs:mkdir"],
+  /** Filesystem destructive subset */
+  fs_delete: ["fs:delete", "fs:rm", "fs:rmdir"],
+  /** Shell / process execution */
+  runtime: ["exec", "spawn", "bash", "shell"],
+  /** HTTP / network calls */
+  web: ["http:*", "fetch", "curl"],
+  /** Browser automation (Playwright-style) */
+  browser: ["browser_*"],
+  /** Database operations */
+  db: ["db:*"],
+  /** Database read-only subset */
+  db_read: ["db:query", "db:read", "db:select"],
+  /** Database write subset */
+  db_write: ["db:write", "db:insert", "db:update", "db:delete"],
+  /** Language server protocol tools */
+  lsp: ["lsp/*"],
+  /** MCP server tools (all servers) */
+  mcp: ["mcp/*"],
+} as const;
+
+export interface PatternBackendConfig {
+  readonly rules: PermissionRules;
+  readonly defaultDeny?: boolean;
+  readonly groups?: Readonly<Record<string, readonly string[]>>;
 }
 
 export interface ApprovalHandler {
@@ -44,36 +80,47 @@ function matchesAny(toolId: string, patterns: readonly string[]): boolean {
 }
 
 /**
- * Pattern-based permission engine.
+ * Expands `group:<name>` references in patterns using the provided group map.
+ * Unknown groups are preserved as literal patterns.
+ */
+function expandGroups(
+  patterns: readonly string[],
+  groups: Readonly<Record<string, readonly string[]>>,
+): readonly string[] {
+  return patterns.flatMap((p) => {
+    if (!p.startsWith("group:")) return [p];
+    const name = p.slice(6);
+    return groups[name] ?? [p];
+  });
+}
+
+/**
+ * Pattern-based permission backend.
  * Evaluation order: deny-first, then ask, then allow, then defaultDeny.
  */
-export function createPatternPermissionEngine(defaultDeny: boolean = true): PermissionEngine {
+export function createPatternPermissionBackend(config: PatternBackendConfig): PermissionBackend {
+  const defaultDeny = config.defaultDeny ?? true;
+  const groups = config.groups ?? {};
+
+  // Pre-expand groups at construction time (not per-check)
+  const deny = expandGroups(config.rules.deny, groups);
+  const ask = expandGroups(config.rules.ask, groups);
+  const allow = expandGroups(config.rules.allow, groups);
+
   return {
-    check(toolId: string, _input: JsonObject, rules: PermissionRules): PermissionDecision {
-      // Deny takes precedence
-      if (matchesAny(toolId, rules.deny)) {
-        return { allowed: false, reason: `Tool "${toolId}" is denied by policy` };
+    check(query: PermissionQuery): PermissionDecision {
+      if (matchesAny(query.resource, deny)) {
+        return { effect: "deny", reason: `Tool "${query.resource}" is denied by policy` };
       }
-
-      // Ask takes next precedence
-      if (matchesAny(toolId, rules.ask)) {
-        return { allowed: "ask", reason: `Tool "${toolId}" requires approval` };
+      if (matchesAny(query.resource, ask)) {
+        return { effect: "ask", reason: `Tool "${query.resource}" requires approval` };
       }
-
-      // Allow
-      if (matchesAny(toolId, rules.allow)) {
-        return { allowed: true };
+      if (matchesAny(query.resource, allow)) {
+        return { effect: "allow" };
       }
-
-      // Default
-      if (defaultDeny) {
-        return {
-          allowed: false,
-          reason: `Tool "${toolId}" is not in the allow list (default deny)`,
-        };
-      }
-
-      return { allowed: true };
+      return defaultDeny
+        ? { effect: "deny", reason: `Tool "${query.resource}" not in allow list (default deny)` }
+        : { effect: "allow" };
     },
   };
 }
