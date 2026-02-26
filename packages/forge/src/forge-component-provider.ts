@@ -14,20 +14,23 @@
 
 import type {
   Agent,
-  BrickKind,
+  AgentDescriptor,
+  BrickArtifact,
   ComponentProvider,
   ForgeScope,
   ForgeStore,
-  ImplementationArtifact,
+  SkillComponent,
   StoreChangeNotifier,
   TieredSandboxExecutor,
   TrustTier,
 } from "@koi/core";
 import {
+  agentToken,
   COMPONENT_PRIORITY,
   channelToken,
   MIN_TRUST_BY_KIND,
   middlewareToken,
+  skillToken,
   toolToken,
 } from "@koi/core";
 import { brickToTool } from "./brick-conversion.js";
@@ -38,9 +41,6 @@ import { checkBrickRequires } from "./requires-check.js";
 // ---------------------------------------------------------------------------
 
 const DEFAULT_SANDBOX_TIMEOUT_MS = 5_000;
-
-/** Brick kinds that represent implementation artifacts (discoverable as ECS components). */
-const IMPLEMENTATION_KINDS: ReadonlySet<BrickKind> = new Set(["middleware", "channel"]);
 
 /** Trust tier ordering: sandbox < verified < promoted. */
 const TRUST_TIER_LEVEL: Readonly<Record<TrustTier, number>> = {
@@ -54,13 +54,54 @@ function meetsMinTrust(actual: TrustTier, required: TrustTier): boolean {
   return TRUST_TIER_LEVEL[actual] >= TRUST_TIER_LEVEL[required];
 }
 
-/** Maps an implementation brick kind + name to the correct namespaced token string. */
-function implementationToken(kind: ImplementationArtifact["kind"], name: string): string {
-  switch (kind) {
+// ---------------------------------------------------------------------------
+// Per-brick attachment (exhaustive switch over all 5 BrickKinds)
+// ---------------------------------------------------------------------------
+
+interface AttachResult {
+  readonly token: string;
+  readonly value: unknown;
+}
+
+function attachBrick(
+  brick: BrickArtifact,
+  executor: TieredSandboxExecutor,
+  timeoutMs: number,
+): AttachResult | undefined {
+  // Trust enforcement (universal — all kinds checked)
+  const minTrust = MIN_TRUST_BY_KIND[brick.kind];
+  if (!meetsMinTrust(brick.trustTier, minTrust)) return undefined;
+
+  switch (brick.kind) {
+    case "tool": {
+      const { executor: tierExecutor } = executor.forTier(brick.trustTier);
+      return {
+        token: toolToken(brick.name) as string,
+        value: brickToTool(brick, tierExecutor, timeoutMs),
+      };
+    }
+    case "skill": {
+      const skillValue: SkillComponent = {
+        name: brick.name,
+        description: brick.description,
+        content: brick.content,
+        ...(brick.tags.length > 0 ? { tags: brick.tags } : {}),
+      };
+      return { token: skillToken(brick.name) as string, value: skillValue };
+    }
+    case "agent":
+      return {
+        token: agentToken(brick.name) as string,
+        value: {
+          name: brick.name,
+          description: brick.description,
+          manifestYaml: brick.manifestYaml,
+        } satisfies AgentDescriptor,
+      };
     case "middleware":
-      return middlewareToken(name) as string;
+      return { token: middlewareToken(brick.name) as string, value: brick };
     case "channel":
-      return channelToken(name) as string;
+      return { token: channelToken(brick.name) as string, value: brick };
   }
 }
 
@@ -223,26 +264,9 @@ export function createForgeComponentProvider(
         continue;
       }
 
-      if (brick.kind === "tool") {
-        // Tool path: wrap as executable Tool under toolToken(name)
-        const tok = toolToken(brick.name);
-        const { executor: tierExecutor } = config.executor.forTier(brick.trustTier);
-        const tool = brickToTool(brick, tierExecutor, timeoutMs);
-        components.set(tok as string, tool);
-      } else if (IMPLEMENTATION_KINDS.has(brick.kind)) {
-        // Trust enforcement: implementation bricks must meet minimum trust tier
-        const minTrust = MIN_TRUST_BY_KIND[brick.kind];
-        if (!meetsMinTrust(brick.trustTier, minTrust)) {
-          continue; // Skip under-trusted bricks
-        }
-        // Implementation path: register raw artifact under kind-specific token
-        const tok = implementationToken(brick.kind as ImplementationArtifact["kind"], brick.name);
-        components.set(tok, brick);
-      } else {
-        // skill, agent — skip (different attachment semantics)
-        continue;
-      }
-
+      const result = attachBrick(brick, config.executor, timeoutMs);
+      if (result === undefined) continue;
+      components.set(result.token, result.value);
       scopeTracker.set(brick.id, brick.scope);
       nameTracker.set(brick.name, brick.id);
     }

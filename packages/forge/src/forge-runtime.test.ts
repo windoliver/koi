@@ -3,10 +3,14 @@
  */
 
 import { describe, expect, mock, test } from "bun:test";
-import type { SigningBackend, ToolArtifact } from "@koi/core";
+import type { AgentDescriptor, SigningBackend, SkillComponent, ToolArtifact } from "@koi/core";
 import { brickId } from "@koi/core";
 import { computeBrickId } from "@koi/hash";
-import { DEFAULT_PROVENANCE } from "@koi/test-utils";
+import {
+  createTestAgentArtifact,
+  createTestSkillArtifact,
+  DEFAULT_PROVENANCE,
+} from "@koi/test-utils";
 import { signAttestation } from "./attestation.js";
 import { createForgeRuntime } from "./forge-runtime.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
@@ -374,5 +378,174 @@ describe("createForgeRuntime — attestation verification", () => {
 
     // verifyBrickAttestation passes when no attestation present (only checks hash)
     expect(tool).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolve() — generic per-kind resolution
+// ---------------------------------------------------------------------------
+
+interface ResolveCase {
+  readonly kind: "skill" | "agent";
+  readonly factory: (overrides?: Record<string, unknown>) => import("@koi/core").BrickArtifact;
+  readonly check: (v: unknown) => boolean;
+}
+
+const RESOLVE_CASES: readonly ResolveCase[] = [
+  {
+    kind: "skill",
+    factory: (overrides) => createTestSkillArtifact(overrides),
+    check: (v: unknown) => typeof v === "object" && v !== null && "content" in v,
+  },
+  {
+    kind: "agent",
+    factory: (overrides) => createTestAgentArtifact(overrides),
+    check: (v: unknown) => typeof v === "object" && v !== null && "manifestYaml" in v,
+  },
+] as const;
+
+describe.each(RESOLVE_CASES)("resolve('$kind', name)", ({ kind, factory, check }) => {
+  test("returns component for active brick", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(factory({ name: `test-${kind}` }));
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const result = await runtime.resolve?.(kind, `test-${kind}`);
+
+    expect(result).toBeDefined();
+    expect(check(result)).toBe(true);
+  });
+
+  test("returns undefined for unknown name", async () => {
+    const store = createInMemoryForgeStore();
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+
+    const result = await runtime.resolve?.(kind, "nonexistent");
+    expect(result).toBeUndefined();
+  });
+
+  test("respects cache invalidation", async () => {
+    const store = createInMemoryForgeStore();
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+
+    // Initially no bricks
+    const before = await runtime.resolve?.(kind, `new-${kind}`);
+    expect(before).toBeUndefined();
+
+    // Save a new brick
+    await store.save(factory({ name: `new-${kind}` }));
+    await new Promise((r) => setTimeout(r, 10));
+
+    // After store watch fires, cache invalidated
+    const after = await runtime.resolve?.(kind, `new-${kind}`);
+    expect(after).toBeDefined();
+    expect(check(after)).toBe(true);
+  });
+});
+
+describe("resolve() specific behavior", () => {
+  test("resolve('tool', name) delegates to resolveTool", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(testToolArtifact({ name: "resolver-tool" }));
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const result = await runtime.resolve?.("tool", "resolver-tool");
+
+    expect(result).toBeDefined();
+    // Tool has descriptor property
+    expect(typeof (result as { readonly descriptor: unknown }).descriptor).toBe("object");
+  });
+
+  test("resolve('skill') returns SkillComponent shape", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      createTestSkillArtifact({
+        name: "research",
+        description: "Research skill",
+        content: "# Research\n\nDo research.",
+        tags: ["research"],
+      }),
+    );
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const result = (await runtime.resolve?.("skill", "research")) as SkillComponent | undefined;
+
+    expect(result).toBeDefined();
+    expect(result?.name).toBe("research");
+    expect(result?.description).toBe("Research skill");
+    expect(result?.content).toBe("# Research\n\nDo research.");
+    expect(result?.tags).toEqual(["research"]);
+  });
+
+  test("resolve('agent') returns AgentDescriptor shape", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      createTestAgentArtifact({
+        name: "planner",
+        description: "Planner agent",
+        manifestYaml: "name: planner\ntype: worker",
+      }),
+    );
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const result = (await runtime.resolve?.("agent", "planner")) as AgentDescriptor | undefined;
+
+    expect(result).toBeDefined();
+    expect(result?.name).toBe("planner");
+    expect(result?.description).toBe("Planner agent");
+    expect(result?.manifestYaml).toBe("name: planner\ntype: worker");
+  });
+
+  test("resolve enforces requires.tools — returns undefined when tool dep missing", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      createTestSkillArtifact({
+        name: "needs-tool",
+        requires: { tools: ["missing-tool"] },
+      }),
+    );
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const result = await runtime.resolve?.("skill", "needs-tool");
+    expect(result).toBeUndefined();
+  });
+
+  test("resolve enforces requires.tools — succeeds when tool dep exists", async () => {
+    const store = createInMemoryForgeStore();
+    // Save the required tool first
+    await store.save(testToolArtifact({ name: "dep-tool" }));
+    await store.save(
+      createTestSkillArtifact({
+        name: "has-dep",
+        requires: { tools: ["dep-tool"] },
+      }),
+    );
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const result = await runtime.resolve?.("skill", "has-dep");
+    expect(result).toBeDefined();
+  });
+
+  test("resolve enforces requires.env — returns undefined when env var missing", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      createTestAgentArtifact({
+        name: "needs-env",
+        requires: { env: ["KOI_TEST_NONEXISTENT_VAR_12345"] },
+      }),
+    );
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const result = await runtime.resolve?.("agent", "needs-env");
+    expect(result).toBeUndefined();
+  });
+
+  test("resolve returns undefined for inactive brick", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createTestSkillArtifact({ name: "draft-skill", lifecycle: "draft" }));
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const result = await runtime.resolve?.("skill", "draft-skill");
+    expect(result).toBeUndefined();
   });
 });

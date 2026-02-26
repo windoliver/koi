@@ -9,10 +9,12 @@ import type {
   Agent,
   // lifecycle
   AgentCondition,
+  AgentDescriptor,
   AgentId,
   AgentManifest,
   AgentRegistry,
   AgentStatus,
+  BrickComponentMap,
   ButtonBlock,
   ChannelAdapter,
   // channel
@@ -79,6 +81,7 @@ import type {
   ScopeChecker,
   // middleware
   SessionContext,
+  SkillComponent,
   SkillMetadata,
   SourceBundle,
   SourceLanguage,
@@ -100,6 +103,7 @@ import type {
 import {
   ALL_BRICK_KINDS,
   agentId,
+  agentToken,
   COMPONENT_PRIORITY,
   CREDENTIALS,
   channelToken,
@@ -201,7 +205,12 @@ type _TypeGuard =
   // resolver source types
   | AssertDefined<SourceBundle>
   | AssertDefined<SourceLanguage>
-  | AssertDefined<ImplementationArtifact>;
+  | AssertDefined<ImplementationArtifact>
+  // brick component map
+  | AssertDefined<BrickComponentMap>
+  // ecs extensions
+  | AssertDefined<SkillComponent>
+  | AssertDefined<AgentDescriptor>;
 
 describe("export inventory", () => {
   test("all runtime values are defined", () => {
@@ -210,6 +219,7 @@ describe("export inventory", () => {
     expect(channelToken).toBeDefined();
     expect(skillToken).toBeDefined();
     expect(middlewareToken).toBeDefined();
+    expect(agentToken).toBeDefined();
     expect(agentId).toBeDefined();
     expect(MEMORY).toBeDefined();
     expect(GOVERNANCE).toBeDefined();
@@ -229,6 +239,7 @@ describe("export inventory", () => {
     expect(typeof channelToken).toBe("function");
     expect(typeof skillToken).toBe("function");
     expect(typeof middlewareToken).toBe("function");
+    expect(typeof agentToken).toBe("function");
     expect(typeof agentId).toBe("function");
     expect(typeof MEMORY).toBe("string");
     expect(typeof GOVERNANCE).toBe("string");

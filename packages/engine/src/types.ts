@@ -7,6 +7,8 @@ import type {
   AgentManifest,
   AgentRegistry,
   ApprovalHandler,
+  BrickComponentMap,
+  BrickKind,
   ChannelStatus,
   ChildHandle,
   ComponentProvider,
@@ -189,6 +191,11 @@ export interface ForgeRuntime {
   readonly middleware?: () => Promise<readonly KoiMiddleware[]>;
   /** Push notification when forged capabilities change. Returns unsubscribe. */
   readonly watch?: (listener: (event: StoreChangeEvent) => void) => () => void;
+  /** Generic per-kind resolution. Optional for backward compatibility. */
+  readonly resolve?: <K extends BrickKind>(
+    kind: K,
+    name: string,
+  ) => Promise<BrickComponentMap[K] | undefined>;
 }
 
 // ---------------------------------------------------------------------------

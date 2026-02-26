@@ -7,8 +7,13 @@
  */
 
 import type {
+  AgentDescriptor,
+  BrickArtifact,
+  BrickComponentMap,
+  BrickKind,
   ForgeStore,
   SigningBackend,
+  SkillComponent,
   StoreChangeEvent,
   Tool,
   ToolArtifact,
@@ -18,6 +23,7 @@ import type { AttestationCache } from "./attestation-cache.js";
 import { createAttestationCache } from "./attestation-cache.js";
 import { brickToTool } from "./brick-conversion.js";
 import { verifyBrickAttestation, verifyBrickIntegrity } from "./integrity.js";
+import { checkBrickRequires } from "./requires-check.js";
 import type { TieredSandboxExecutor } from "./types.js";
 
 // Re-use the ForgeRuntime interface from L1 types.
@@ -45,6 +51,11 @@ export interface ForgeRuntimeInstance {
   readonly resolveTool: (toolId: string) => Promise<Tool | undefined>;
   readonly toolDescriptors: () => Promise<readonly ToolDescriptor[]>;
   readonly watch?: (listener: (event: StoreChangeEvent) => void) => () => void;
+  /** Generic per-kind resolution. */
+  readonly resolve?: <K extends BrickKind>(
+    kind: K,
+    name: string,
+  ) => Promise<BrickComponentMap[K] | undefined>;
   /** Clean up internal store subscription and external listeners. */
   readonly dispose?: () => void;
 }
@@ -84,8 +95,27 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
     return cachedTools;
   }
 
+  // Lazy per-kind caches (populated on first resolve for each kind)
+  const kindCaches = new Map<BrickKind, ReadonlyMap<string, BrickArtifact>>();
+
+  async function ensureKindCache(kind: BrickKind): Promise<ReadonlyMap<string, BrickArtifact>> {
+    const existing = kindCaches.get(kind);
+    if (existing !== undefined) return existing;
+
+    const result = await store.search({ kind, lifecycle: "active" });
+    if (!result.ok) return new Map();
+
+    const cache = new Map<string, BrickArtifact>();
+    for (const brick of result.value) {
+      cache.set(brick.name, brick);
+    }
+    kindCaches.set(kind, cache);
+    return cache;
+  }
+
   function invalidateCache(): void {
     cachedTools = undefined;
+    kindCaches.clear();
     integrityCache.clear();
   }
 
@@ -130,6 +160,58 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
       });
     }
     return descriptors;
+  };
+
+  /**
+   * Generic per-kind resolution. For tools, delegates to resolveTool (integrity checks).
+   * For other kinds, uses lazy per-kind caches and wraps artifacts into ECS component types.
+   *
+   * Justified `as BrickComponentMap[K]` casts: TypeScript cannot prove that when
+   * artifact.kind === "skill", the generic K is narrowed to "skill". Each branch
+   * is individually type-safe (satisfies ensures correct shape).
+   */
+  const resolve = async <K extends BrickKind>(
+    kind: K,
+    name: string,
+  ): Promise<BrickComponentMap[K] | undefined> => {
+    // For tools, delegate to existing resolveTool (has integrity checks)
+    if (kind === "tool") {
+      return resolveTool(name) as Promise<BrickComponentMap[K] | undefined>;
+    }
+
+    const cache = await ensureKindCache(kind);
+    const artifact = cache.get(name);
+    if (artifact === undefined) return undefined;
+
+    // Runtime requires enforcement (bins, env, tools) — mirrors ForgeComponentProvider
+    const toolNames = await ensureCache();
+    const requiresResult = checkBrickRequires(artifact.requires, new Set(toolNames.keys()));
+    if (!requiresResult.satisfied) return undefined;
+
+    switch (artifact.kind) {
+      case "skill": {
+        const component: SkillComponent = {
+          name: artifact.name,
+          description: artifact.description,
+          content: artifact.content,
+          ...(artifact.tags.length > 0 ? { tags: artifact.tags } : {}),
+        };
+        return component as BrickComponentMap[K];
+      }
+      case "agent": {
+        const component: AgentDescriptor = {
+          name: artifact.name,
+          description: artifact.description,
+          manifestYaml: artifact.manifestYaml,
+        };
+        return component as BrickComponentMap[K];
+      }
+      case "middleware":
+      case "channel":
+        return artifact as BrickComponentMap[K];
+      default:
+        return undefined;
+    }
   };
 
   // Self-subscribe to store.watch for automatic cache invalidation.
@@ -182,6 +264,7 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
   return {
     resolveTool,
     toolDescriptors,
+    resolve,
     ...(watch !== undefined ? { watch } : {}),
     dispose,
   };
