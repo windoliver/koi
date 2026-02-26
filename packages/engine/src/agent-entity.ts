@@ -134,6 +134,10 @@ export class AgentEntity implements Agent {
     const agent = new AgentEntity(pid, manifest);
     const merged = new Map<string, unknown>();
 
+    // Expose merged map to the agent immediately so that later providers
+    // can discover components attached by earlier providers via agent.component().
+    agent._components = merged;
+
     // Sort providers by priority ascending (lower = higher precedence).
     // Stable sort preserves registration order for same-priority providers.
     const sorted = [...providers].sort(
@@ -162,6 +166,9 @@ export class AgentEntity implements Agent {
           }
         }
       }
+      // Invalidate query cache after each provider so subsequent providers
+      // see fresh results from agent.query()
+      agent._queryCache.clear();
     }
 
     // Build conflict list
@@ -173,7 +180,6 @@ export class AgentEntity implements Agent {
       }),
     );
 
-    agent._components = merged;
     agent._queryCache.clear();
     return { agent, conflicts };
   }
