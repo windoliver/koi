@@ -22,7 +22,7 @@ import type {
   SubscribeOptions,
   SubscriptionHandle,
 } from "@koi/core";
-import { internal, notFound, validation } from "@koi/core";
+import { conflict, internal, notFound, validation } from "@koi/core";
 import { generateUlid } from "@koi/hash";
 
 // ---------------------------------------------------------------------------
@@ -225,6 +225,20 @@ export function createInMemoryEventBackend(config?: EventBackendConfig): EventBa
       }
       if (event.type === "") {
         return { ok: false, error: validation("event type must not be empty") };
+      }
+
+      // Optimistic concurrency check
+      if (event.expectedSequence !== undefined) {
+        const currentLen = sequences.get(streamId) ?? 0;
+        if (currentLen !== event.expectedSequence) {
+          return {
+            ok: false,
+            error: conflict(
+              streamId,
+              `Stream "${streamId}" sequence mismatch: expected ${String(event.expectedSequence)}, current is ${String(currentLen)}`,
+            ),
+          };
+        }
       }
 
       try {

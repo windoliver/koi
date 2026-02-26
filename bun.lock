@@ -700,6 +700,19 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/registry-event-sourced": {
+      "name": "@koi/registry-event-sourced",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/events-memory": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/sandbox": {
       "name": "@koi/sandbox",
       "version": "0.0.0",
@@ -1369,6 +1382,8 @@
     "@koi/ralph": ["@koi/ralph@workspace:packages/ralph"],
 
     "@koi/redaction": ["@koi/redaction@workspace:packages/redaction"],
+
+    "@koi/registry-event-sourced": ["@koi/registry-event-sourced@workspace:packages/registry-event-sourced"],
 
     "@koi/sandbox": ["@koi/sandbox@workspace:packages/sandbox"],
 

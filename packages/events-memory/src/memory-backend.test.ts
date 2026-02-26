@@ -165,4 +165,82 @@ describe("createInMemoryEventBackend — memory-specific", () => {
 
     await backend.close();
   });
+
+  // -------------------------------------------------------------------------
+  // expectedSequence — optimistic concurrency control
+  // -------------------------------------------------------------------------
+
+  test("append with correct expectedSequence succeeds", async () => {
+    const backend = createInMemoryEventBackend();
+
+    const r1 = await backend.append("s", { type: "a", data: 1 });
+    expect(r1.ok).toBe(true);
+
+    // After one append, stream length is 1
+    const r2 = await backend.append("s", { type: "b", data: 2, expectedSequence: 1 });
+    expect(r2.ok).toBe(true);
+    if (r2.ok) {
+      expect(r2.value.sequence).toBe(2);
+    }
+
+    await backend.close();
+  });
+
+  test("append with wrong expectedSequence returns CONFLICT", async () => {
+    const backend = createInMemoryEventBackend();
+
+    await backend.append("s", { type: "a", data: 1 });
+
+    // Stream has 1 event, but we expect 0 — should CONFLICT
+    const result = await backend.append("s", { type: "b", data: 2, expectedSequence: 0 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("CONFLICT");
+    }
+
+    await backend.close();
+  });
+
+  test("append without expectedSequence always succeeds (backward compatible)", async () => {
+    const backend = createInMemoryEventBackend();
+
+    await backend.append("s", { type: "a", data: 1 });
+    await backend.append("s", { type: "b", data: 2 });
+
+    // No expectedSequence — always succeeds regardless of stream state
+    const result = await backend.append("s", { type: "c", data: 3 });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.sequence).toBe(3);
+    }
+
+    await backend.close();
+  });
+
+  test("expectedSequence 0 on empty stream succeeds", async () => {
+    const backend = createInMemoryEventBackend();
+
+    const result = await backend.append("fresh", { type: "a", data: 1, expectedSequence: 0 });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.sequence).toBe(1);
+    }
+
+    await backend.close();
+  });
+
+  test("expectedSequence 0 on non-empty stream returns CONFLICT", async () => {
+    const backend = createInMemoryEventBackend();
+
+    await backend.append("s", { type: "a", data: 1 });
+
+    const result = await backend.append("s", { type: "b", data: 2, expectedSequence: 0 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("CONFLICT");
+      expect(result.error.message).toContain("sequence mismatch");
+    }
+
+    await backend.close();
+  });
 });

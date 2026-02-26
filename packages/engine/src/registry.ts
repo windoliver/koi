@@ -131,6 +131,7 @@ export function createInMemoryRegistry(): InMemoryRegistry {
       from: current.status.phase,
       to: targetPhase,
       generation: result.value.generation,
+      reason,
     });
 
     return { ok: true, value: updated };

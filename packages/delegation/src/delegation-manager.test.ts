@@ -183,6 +183,7 @@ describe("DelegationManager", () => {
       from: "running",
       to: "terminated",
       generation: 1,
+      reason: { kind: "completed" },
     });
 
     // Grant should be revoked (after async processing)
@@ -214,6 +215,7 @@ describe("DelegationManager", () => {
       from: "running",
       to: "terminated",
       generation: 1,
+      reason: { kind: "completed" },
     });
 
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -318,6 +320,7 @@ describe("DelegationManager", () => {
       from: "running",
       to: "terminated",
       generation: 1,
+      reason: { kind: "completed" },
     });
 
     // Grant still listed because dispose unsubscribed

@@ -42,6 +42,14 @@ export interface EventInput {
   readonly data: unknown;
   /** Optional structured metadata. */
   readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+  /**
+   * Optimistic concurrency control for stream appends.
+   *
+   * If provided, the append only succeeds when the current stream length
+   * equals this value. Returns a CONFLICT error otherwise.
+   * When undefined, no concurrency check is performed (backward compatible).
+   */
+  readonly expectedSequence?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
