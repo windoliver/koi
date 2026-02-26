@@ -132,18 +132,6 @@ export interface ForgeAgentInputWithBricks {
 
 export type ForgeAgentInput = ForgeAgentInputWithManifest | ForgeAgentInputWithBricks;
 
-export interface ForgeCompositeInput {
-  readonly kind: "composite";
-  readonly name: string;
-  readonly description: string;
-  readonly tags?: readonly string[];
-  readonly brickIds: readonly string[];
-  readonly files?: Readonly<Record<string, string>>;
-  readonly requires?: BrickRequires;
-  readonly classification?: DataClassification;
-  readonly contentMarkers?: readonly ContentMarker[];
-}
-
 export interface ForgeMiddlewareInput {
   readonly kind: "middleware";
   readonly name: string;
@@ -172,58 +160,12 @@ export interface ForgeChannelInput {
   readonly contentMarkers?: readonly ContentMarker[];
 }
 
-export interface ForgeEngineInput {
-  readonly kind: "engine";
-  readonly name: string;
-  readonly description: string;
-  readonly tags?: readonly string[];
-  readonly implementation: string;
-  readonly testCases?: readonly TestCase[];
-  readonly files?: Readonly<Record<string, string>>;
-  readonly requires?: BrickRequires;
-  readonly configSchema?: Readonly<Record<string, unknown>>;
-  readonly classification?: DataClassification;
-  readonly contentMarkers?: readonly ContentMarker[];
-}
-
-export interface ForgeResolverInput {
-  readonly kind: "resolver";
-  readonly name: string;
-  readonly description: string;
-  readonly tags?: readonly string[];
-  readonly implementation: string;
-  readonly testCases?: readonly TestCase[];
-  readonly files?: Readonly<Record<string, string>>;
-  readonly requires?: BrickRequires;
-  readonly configSchema?: Readonly<Record<string, unknown>>;
-  readonly classification?: DataClassification;
-  readonly contentMarkers?: readonly ContentMarker[];
-}
-
-export interface ForgeProviderInput {
-  readonly kind: "provider";
-  readonly name: string;
-  readonly description: string;
-  readonly tags?: readonly string[];
-  readonly implementation: string;
-  readonly testCases?: readonly TestCase[];
-  readonly files?: Readonly<Record<string, string>>;
-  readonly requires?: BrickRequires;
-  readonly configSchema?: Readonly<Record<string, unknown>>;
-  readonly classification?: DataClassification;
-  readonly contentMarkers?: readonly ContentMarker[];
-}
-
 export type ForgeInput =
   | ForgeToolInput
   | ForgeSkillInput
   | ForgeAgentInput
-  | ForgeCompositeInput
   | ForgeMiddlewareInput
-  | ForgeChannelInput
-  | ForgeEngineInput
-  | ForgeResolverInput
-  | ForgeProviderInput;
+  | ForgeChannelInput;
 
 // ---------------------------------------------------------------------------
 // Pluggable verifier (Stage 3)
@@ -267,7 +209,6 @@ export type {
   AgentArtifact,
   BrickArtifact,
   BrickArtifactBase,
-  CompositeArtifact,
   ImplementationArtifact,
   SkillArtifact,
   ToolArtifact,
@@ -304,22 +245,6 @@ export type ManifestParseResult =
 
 export interface ManifestParser {
   readonly parse: (yaml: string) => ManifestParseResult | Promise<ManifestParseResult>;
-}
-
-// ---------------------------------------------------------------------------
-// Composition metadata (used by compose_forge for trust propagation)
-// ---------------------------------------------------------------------------
-
-export interface CompositionBrickInfo {
-  readonly id: BrickId;
-  readonly name: string;
-  readonly kind: BrickKind;
-  readonly trustTier: TrustTier;
-}
-
-export interface CompositionMetadata {
-  readonly bricks: readonly CompositionBrickInfo[];
-  readonly minimumTrustTier: TrustTier;
 }
 
 // Forge query — canonical definition lives in @koi/core (L0)

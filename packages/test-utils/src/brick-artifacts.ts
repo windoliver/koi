@@ -7,7 +7,6 @@
 
 import type {
   AgentArtifact,
-  CompositeArtifact,
   ForgeProvenance,
   ImplementationArtifact,
   SkillArtifact,
@@ -106,23 +105,6 @@ export const createTestAgentArtifact: (overrides?: Partial<AgentArtifact>) => Ag
     usageCount: 0,
     manifestYaml: "name: test-agent\ntype: assistant",
   });
-
-export const createTestCompositeArtifact: (
-  overrides?: Partial<CompositeArtifact>,
-) => CompositeArtifact = createFactory<CompositeArtifact>({
-  id: brickId("brick_test-composite"),
-  kind: "composite",
-  name: "test-composite",
-  description: "A test composite",
-  scope: "agent",
-  trustTier: "sandbox",
-  lifecycle: "active",
-  provenance: DEFAULT_PROVENANCE,
-  version: "0.0.1",
-  tags: [],
-  usageCount: 0,
-  brickIds: [brickId("brick_a"), brickId("brick_b")],
-});
 
 export const createTestImplementationArtifact: (
   overrides?: Partial<ImplementationArtifact>,

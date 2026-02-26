@@ -49,17 +49,6 @@ describe("verifySandbox", () => {
     expect(result.ok).toBe(true);
   });
 
-  test("skips for composite kind", async () => {
-    const input: ForgeInput = {
-      kind: "composite",
-      name: "myComposite",
-      description: "A composite",
-      brickIds: ["a"],
-    };
-    const result = await verifySandbox(input, mockExecutor(), DEFAULT_VERIFICATION);
-    expect(result.ok).toBe(true);
-  });
-
   test("succeeds for tool with passing executor", async () => {
     const input: ForgeInput = {
       kind: "tool",

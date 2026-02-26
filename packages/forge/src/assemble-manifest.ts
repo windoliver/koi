@@ -89,12 +89,8 @@ export async function assembleManifest(
       toolNames.push(brick.name);
     } else if (brick.kind === "skill") {
       skillNames.push(brick.name);
-    } else if (brick.kind === "composite") {
-      // Flatten composite: include its brick IDs as a comment/reference
-      // (one-level flatten — composites reference their children by ID)
-      toolNames.push(`# composite: ${brick.name}`);
     }
-    // agent bricks and unknown kinds are noted but not rejected
+    // agent, middleware, channel bricks are noted but not rejected
   }
 
   // Generate manifest YAML

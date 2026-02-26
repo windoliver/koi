@@ -547,26 +547,6 @@ describe("attestation edge cases", () => {
     expect(provenance.buildDefinition.buildType).toBe("koi.forge/agent/v1");
   });
 
-  test("provenance for composite kind", () => {
-    const provenance = createForgeProvenance({
-      input: {
-        kind: "composite",
-        name: "test-composite",
-        description: "A composite",
-        brickIds: ["b1", "b2"],
-      },
-      context: defaultContext,
-      report: defaultReport,
-      config: defaultConfig,
-      contentHash: "hash-composite",
-      invocationId: "inv-comp-001",
-      startedAt: 0,
-      finishedAt: 1,
-    });
-
-    expect(provenance.buildDefinition.buildType).toBe("koi.forge/composite/v1");
-  });
-
   test("provenance for middleware kind", () => {
     const provenance = createForgeProvenance({
       input: {

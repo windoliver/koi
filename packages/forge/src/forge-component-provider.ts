@@ -3,8 +3,8 @@
  *
  * Implements the L0 ComponentProvider interface. On first attach(), it discovers
  * all active bricks from the ForgeStore: tool bricks are wrapped as executable
- * Tools; implementation bricks (engine, resolver, provider, middleware, channel)
- * are registered as raw ImplementationArtifact values under kind-specific tokens.
+ * Tools; implementation bricks (middleware, channel) are registered as raw
+ * ImplementationArtifact values under kind-specific tokens.
  * Results are cached for subsequent attach() calls.
  *
  * Lazy loading (decision 13A): bricks are loaded on first attach(), not at creation.
@@ -26,11 +26,8 @@ import type {
 import {
   COMPONENT_PRIORITY,
   channelToken,
-  engineToken,
   MIN_TRUST_BY_KIND,
   middlewareToken,
-  providerToken,
-  resolverToken,
   toolToken,
 } from "@koi/core";
 import { brickToTool } from "./brick-conversion.js";
@@ -43,13 +40,7 @@ import { checkBrickRequires } from "./requires-check.js";
 const DEFAULT_SANDBOX_TIMEOUT_MS = 5_000;
 
 /** Brick kinds that represent implementation artifacts (discoverable as ECS components). */
-const IMPLEMENTATION_KINDS: ReadonlySet<BrickKind> = new Set([
-  "engine",
-  "resolver",
-  "provider",
-  "middleware",
-  "channel",
-]);
+const IMPLEMENTATION_KINDS: ReadonlySet<BrickKind> = new Set(["middleware", "channel"]);
 
 /** Trust tier ordering: sandbox < verified < promoted. */
 const TRUST_TIER_LEVEL: Readonly<Record<TrustTier, number>> = {
@@ -66,12 +57,6 @@ function meetsMinTrust(actual: TrustTier, required: TrustTier): boolean {
 /** Maps an implementation brick kind + name to the correct namespaced token string. */
 function implementationToken(kind: ImplementationArtifact["kind"], name: string): string {
   switch (kind) {
-    case "engine":
-      return engineToken(name) as string;
-    case "resolver":
-      return resolverToken(name) as string;
-    case "provider":
-      return providerToken(name) as string;
     case "middleware":
       return middlewareToken(name) as string;
     case "channel":
@@ -254,7 +239,7 @@ export function createForgeComponentProvider(
         const tok = implementationToken(brick.kind as ImplementationArtifact["kind"], brick.name);
         components.set(tok, brick);
       } else {
-        // skill, agent, composite — skip (different attachment semantics)
+        // skill, agent — skip (different attachment semantics)
         continue;
       }
 

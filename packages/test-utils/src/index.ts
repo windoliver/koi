@@ -21,7 +21,6 @@ export { assertKoiError } from "./assert-koi-error.js";
 export { assertErr, assertOk } from "./assert-result.js";
 export {
   createTestAgentArtifact,
-  createTestCompositeArtifact,
   createTestImplementationArtifact,
   createTestSkillArtifact,
   createTestToolArtifact,

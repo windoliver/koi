@@ -22,9 +22,6 @@ export function extractSource(brick: BrickArtifact): SourceBundle {
   const files = brick.files !== undefined ? { files: brick.files } : {};
   switch (brick.kind) {
     case "tool":
-    case "engine":
-    case "resolver":
-    case "provider":
     case "middleware":
     case "channel":
       return { content: brick.implementation, language: "typescript", ...files };
@@ -32,8 +29,6 @@ export function extractSource(brick: BrickArtifact): SourceBundle {
       return { content: brick.content, language: "markdown", ...files };
     case "agent":
       return { content: brick.manifestYaml, language: "yaml", ...files };
-    case "composite":
-      return { content: JSON.stringify(brick.brickIds, null, 2), language: "json", ...files };
   }
 }
 

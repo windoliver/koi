@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { CompositeArtifact, SkillArtifact, ToolArtifact } from "@koi/core";
+import type { SkillArtifact, ToolArtifact } from "@koi/core";
 import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import type { AssembleManifestOptions } from "./assemble-manifest.js";
@@ -40,17 +40,6 @@ function skillBrick(id: string, name: string): SkillArtifact {
     name,
     description: `Skill: ${name}`,
     content: "# Skill body",
-  };
-}
-
-function compositeBrick(id: string, name: string, brickIds: readonly string[]): CompositeArtifact {
-  return {
-    ...BASE_FIELDS,
-    id: brickId(id),
-    kind: "composite",
-    name,
-    description: `Composite: ${name}`,
-    brickIds: brickIds.map((b) => brickId(b)),
   };
 }
 
@@ -191,19 +180,6 @@ describe("assembleManifest", () => {
     if (result.ok) {
       expect(result.value.manifestYaml).toContain("name: my-agent");
       expect(result.value.manifestYaml).toContain("description: Does things");
-    }
-  });
-
-  test("handles composite bricks", async () => {
-    const store = createInMemoryForgeStore();
-    await store.save(compositeBrick("brick_1", "toolkit", ["sub_1", "sub_2"]));
-
-    const result = await assembleManifest(["brick_1"], store, DEFAULT_OPTIONS);
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      // Composite should appear as a comment in tools section
-      expect(result.value.manifestYaml).toContain("# composite: toolkit");
     }
   });
 

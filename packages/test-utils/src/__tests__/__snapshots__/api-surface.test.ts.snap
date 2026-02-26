@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/test-utils API surface . has stable type surface 1`] = `
-"import { ProcessId, AgentManifest, ProcessState, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, ForgeProvenance, AgentArtifact, CompositeArtifact, ImplementationArtifact, SkillArtifact, ToolArtifact, ChannelAdapter, MemoryResult, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, SessionPersistence, SkillRegistryBackend, SnapshotChainStore, ForgeStore } from '@koi/core';
+"import { ProcessId, AgentManifest, ProcessState, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, ForgeProvenance, AgentArtifact, ImplementationArtifact, SkillArtifact, ToolArtifact, ChannelAdapter, MemoryResult, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, SessionPersistence, SnapshotChainStore, ForgeStore } from '@koi/core';
 import { Result, KoiError } from '@koi/core/errors';
 import { InboundMessage } from '@koi/core/message';
 import { SessionContext, TurnContext, ModelHandler, ModelRequest, ModelStreamHandler, ToolHandler, ToolRequest, ModelResponse, ModelChunk, ToolResponse, KoiMiddleware } from '@koi/core/middleware';
@@ -130,7 +130,6 @@ declare const DEFAULT_PROVENANCE: ForgeProvenance;
 declare const createTestToolArtifact: (overrides?: Partial<ToolArtifact>) => ToolArtifact;
 declare const createTestSkillArtifact: (overrides?: Partial<SkillArtifact>) => SkillArtifact;
 declare const createTestAgentArtifact: (overrides?: Partial<AgentArtifact>) => AgentArtifact;
-declare const createTestCompositeArtifact: (overrides?: Partial<CompositeArtifact>) => CompositeArtifact;
 declare const createTestImplementationArtifact: (overrides?: Partial<ImplementationArtifact>) => ImplementationArtifact;
 
 /**
@@ -406,35 +405,6 @@ declare function testResolverContract<TMeta, TFull>(options: ResolverContractOpt
 declare function runSessionPersistenceContractTests(createStore: () => SessionPersistence): void;
 
 /**
- * Skill registry contract test suite.
- *
- * Validates that any SkillRegistryBackend implementation satisfies the L0 contract.
- * Usage: import { testSkillRegistryContract } from "@koi/test-utils" and call it
- * inside a describe() block with a factory function.
- */
-
-interface SkillRegistryContractOptions {
-    readonly createRegistry: () => SkillRegistryBackend | Promise<SkillRegistryBackend>;
-}
-/**
- * Runs the skill registry contract test suite.
- *
- * Call this inside a \`describe()\` block. It registers tests that verify
- * the registry satisfies all L0 contract invariants.
- */
-declare function testSkillRegistryContract(options: SkillRegistryContractOptions): void;
-
-/**
- * In-memory reference implementation of SkillRegistryBackend.
- *
- * Suitable for testing and as a reference for L2 implementations.
- * Uses a Map<SkillId, SkillRecord> for storage.
- */
-
-/** Create an in-memory SkillRegistryBackend for testing. */
-declare function createInMemorySkillRegistry(): SkillRegistryBackend;
-
-/**
  * Reusable contract test suite for any SnapshotChainStore<T> implementation.
  *
  * Call \`runSnapshotChainStoreContractTests(createStore, createData, createDifferentData)\`
@@ -521,6 +491,6 @@ declare function createThrowingValidator(error: Error, name?: string): MockValid
 /** Creates a validator that passes or fails based on a predicate. */
 declare function createConditionalValidator(fn: (output: unknown) => boolean, name?: string): MockValidator;
 
-export { type CapturedOutput, type ChannelContractOptions, DEFAULT_PROVENANCE, type EngineContractOptions, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type ResolverContractOptions, type SkillRegistryContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createInMemorySkillRegistry, createManifestFile, createMockAgent, createMockEngineAdapter, createMockEventBackend, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTestAgentArtifact, createTestCompositeArtifact, createTestConfig, createTestConfigStore, createTestImplementationArtifact, createTestSkillArtifact, createTestToolArtifact, createThrowingValidator, makeTempDir, runEventBackendContractTests, runForgeStoreContractTests, runSessionPersistenceContractTests, runSnapshotChainStoreContractTests, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, testSkillRegistryContract, withTempDir };
+export { type CapturedOutput, type ChannelContractOptions, DEFAULT_PROVENANCE, type EngineContractOptions, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type ResolverContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createManifestFile, createMockAgent, createMockEngineAdapter, createMockEventBackend, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTestAgentArtifact, createTestConfig, createTestConfigStore, createTestImplementationArtifact, createTestSkillArtifact, createTestToolArtifact, createThrowingValidator, makeTempDir, runEventBackendContractTests, runForgeStoreContractTests, runSessionPersistenceContractTests, runSnapshotChainStoreContractTests, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, withTempDir };
 "
 `;

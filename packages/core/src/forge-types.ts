@@ -49,16 +49,7 @@ export const VALID_LIFECYCLE_TRANSITIONS: Readonly<
 });
 
 /** Kind of forged brick. */
-export type BrickKind =
-  | "tool"
-  | "skill"
-  | "agent"
-  | "composite"
-  | "engine"
-  | "resolver"
-  | "provider"
-  | "middleware"
-  | "channel";
+export type BrickKind = "tool" | "skill" | "agent" | "middleware" | "channel";
 
 // ---------------------------------------------------------------------------
 // Brick-kind constants (architecture-doc invariants)
@@ -69,10 +60,6 @@ export const ALL_BRICK_KINDS: readonly BrickKind[] = [
   "tool",
   "skill",
   "agent",
-  "composite",
-  "engine",
-  "resolver",
-  "provider",
   "middleware",
   "channel",
 ] as const;
@@ -80,18 +67,13 @@ export const ALL_BRICK_KINDS: readonly BrickKind[] = [
 /**
  * Minimum trust tier required per brick kind.
  *
- * - sandbox: tool, skill, agent, composite (sandboxed execution)
- * - verified: engine, resolver, provider (elevated access)
+ * - sandbox: tool, skill, agent (sandboxed execution)
  * - promoted: middleware, channel (full interposition)
  */
 export const MIN_TRUST_BY_KIND: Readonly<Record<BrickKind, import("./ecs.js").TrustTier>> = {
   tool: "sandbox",
   skill: "sandbox",
   agent: "sandbox",
-  composite: "sandbox",
-  engine: "verified",
-  resolver: "verified",
-  provider: "verified",
   middleware: "promoted",
   channel: "promoted",
 } as const;

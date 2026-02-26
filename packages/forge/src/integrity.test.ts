@@ -1,11 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import type { BrickId } from "@koi/core";
 import { brickId } from "@koi/core";
-import { computeBrickId, computeCompositeBrickId } from "@koi/hash";
+import { computeBrickId } from "@koi/hash";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { loadAndVerify, verifyBrickIntegrity } from "./integrity.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
-import type { AgentArtifact, CompositeArtifact, SkillArtifact, ToolArtifact } from "./types.js";
+import type { AgentArtifact, SkillArtifact, ToolArtifact } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers — create bricks with content-addressed ids (id IS the hash)
@@ -97,35 +96,6 @@ function createAgentBrick(overrides?: Partial<AgentArtifact>): AgentArtifact {
   };
 }
 
-function createCompositeBrick(overrides?: Partial<CompositeArtifact>): CompositeArtifact {
-  const brickIds: readonly BrickId[] = overrides?.brickIds ?? [
-    brickId("brick_a"),
-    brickId("brick_b"),
-  ];
-  const files = overrides?.files;
-  const id = overrides?.id ?? computeCompositeBrickId(brickIds, files);
-  return {
-    id,
-    kind: "composite",
-    name: "test-composite",
-    description: "A test composite",
-    scope: "agent",
-    trustTier: "sandbox",
-    lifecycle: "active",
-    provenance: DEFAULT_PROVENANCE,
-    version: "0.0.1",
-    tags: [],
-    usageCount: 0,
-    brickIds,
-    ...overrides,
-    ...(overrides !== undefined && overrides.id === undefined
-      ? {
-          id: computeCompositeBrickId(overrides.brickIds ?? brickIds, overrides.files ?? files),
-        }
-      : {}),
-  };
-}
-
 // ---------------------------------------------------------------------------
 // verifyBrickIntegrity
 // ---------------------------------------------------------------------------
@@ -153,13 +123,7 @@ describe("verifyBrickIntegrity", () => {
     expect(result.ok).toBe(true);
   });
 
-  test("returns ok for composite with matching id", () => {
-    const brick = createCompositeBrick();
-    const result = verifyBrickIntegrity(brick);
-    expect(result.ok).toBe(true);
-  });
-
-  test("detects tampered tool implementation", () => {
+  test("detects tampered tool implementation", async () => {
     const brick = createToolBrick();
     // Tamper: modify implementation without updating id
     const tampered: ToolArtifact = { ...brick, implementation: "return 'HACKED';" };
@@ -185,14 +149,7 @@ describe("verifyBrickIntegrity", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("detects tampered composite brickIds", () => {
-    const brick = createCompositeBrick();
-    const tampered: CompositeArtifact = { ...brick, brickIds: [brickId("brick_evil")] };
-    const result = verifyBrickIntegrity(tampered);
-    expect(result.ok).toBe(false);
-  });
-
-  test("detects tampered files", () => {
+  test("detects tampered files", async () => {
     const brick = createToolBrick({ files: { "helper.ts": "export const x = 1;" } });
     const tampered: ToolArtifact = {
       ...brick,

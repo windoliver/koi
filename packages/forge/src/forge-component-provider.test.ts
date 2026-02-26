@@ -5,10 +5,7 @@ import {
   brickId,
   COMPONENT_PRIORITY,
   channelToken,
-  engineToken,
   middlewareToken,
-  providerToken,
-  resolverToken,
   toolToken,
 } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
@@ -942,7 +939,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Implementation kinds (engine, resolver, provider, middleware, channel)
+// Implementation kinds (middleware, channel)
 // ---------------------------------------------------------------------------
 
 function createImplementationBrick(
@@ -967,9 +964,11 @@ function createImplementationBrick(
 }
 
 describe("createForgeComponentProvider — implementation kinds", () => {
-  test("attaches engine brick as ImplementationArtifact", async () => {
+  test("attaches middleware brick as ImplementationArtifact", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createImplementationBrick("engine", { name: "myEngine" }));
+    await store.save(
+      createImplementationBrick("middleware", { name: "myMiddleware", trustTier: "promoted" }),
+    );
 
     const provider = createForgeComponentProvider({
       store,
@@ -977,26 +976,19 @@ describe("createForgeComponentProvider — implementation kinds", () => {
     });
 
     const components = await provider.attach(createMockAgent());
-    expect(components.has(engineToken("myEngine") as string)).toBe(true);
+    expect(components.has(middlewareToken("myMiddleware") as string)).toBe(true);
 
-    const artifact = components.get(engineToken("myEngine") as string) as ImplementationArtifact;
-    expect(artifact.kind).toBe("engine");
-    expect(artifact.name).toBe("myEngine");
+    const artifact = components.get(
+      middlewareToken("myMiddleware") as string,
+    ) as ImplementationArtifact;
+    expect(artifact.kind).toBe("middleware");
+    expect(artifact.name).toBe("myMiddleware");
   });
 
-  test("attaches all 5 implementation kinds", async () => {
+  test("attaches all 2 implementation kinds", async () => {
     const store = createInMemoryForgeStore();
-    // engine/resolver/provider require "verified"; middleware/channel require "promoted"
-    const verifiedKinds: readonly ImplementationArtifact["kind"][] = [
-      "engine",
-      "resolver",
-      "provider",
-    ];
-    const promotedKinds: readonly ImplementationArtifact["kind"][] = ["middleware", "channel"];
-    for (const kind of verifiedKinds) {
-      await store.save(createImplementationBrick(kind));
-    }
-    for (const kind of promotedKinds) {
+    const kinds: readonly ImplementationArtifact["kind"][] = ["middleware", "channel"];
+    for (const kind of kinds) {
       await store.save(createImplementationBrick(kind, { trustTier: "promoted" }));
     }
 
@@ -1006,10 +998,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
     });
 
     const components = await provider.attach(createMockAgent());
-    expect(components.size).toBe(5);
-    expect(components.has(engineToken("my-engine") as string)).toBe(true);
-    expect(components.has(resolverToken("my-resolver") as string)).toBe(true);
-    expect(components.has(providerToken("my-provider") as string)).toBe(true);
+    expect(components.size).toBe(2);
     expect(components.has(middlewareToken("my-middleware") as string)).toBe(true);
     expect(components.has(channelToken("my-channel") as string)).toBe(true);
   });
@@ -1017,7 +1006,9 @@ describe("createForgeComponentProvider — implementation kinds", () => {
   test("tools and implementations coexist", async () => {
     const store = createInMemoryForgeStore();
     await store.save(createToolBrick({ name: "calc" }));
-    await store.save(createImplementationBrick("engine", { name: "myEngine" }));
+    await store.save(
+      createImplementationBrick("middleware", { name: "myMiddleware", trustTier: "promoted" }),
+    );
 
     const provider = createForgeComponentProvider({
       store,
@@ -1027,13 +1018,15 @@ describe("createForgeComponentProvider — implementation kinds", () => {
     const components = await provider.attach(createMockAgent());
     expect(components.size).toBe(2);
     expect(components.has(toolToken("calc") as string)).toBe(true);
-    expect(components.has(engineToken("myEngine") as string)).toBe(true);
+    expect(components.has(middlewareToken("myMiddleware") as string)).toBe(true);
   });
 
-  test("skips skill/agent/composite bricks", async () => {
+  test("skips skill/agent bricks", async () => {
     const store = createInMemoryForgeStore();
     await store.save(createToolBrick({ name: "myTool" }));
-    await store.save(createImplementationBrick("engine", { name: "myEngine" }));
+    await store.save(
+      createImplementationBrick("middleware", { name: "myMiddleware", trustTier: "promoted" }),
+    );
     const skillBrick: SkillArtifact = {
       id: brickId(`brick_${crypto.randomUUID()}`),
       kind: "skill",
@@ -1056,17 +1049,27 @@ describe("createForgeComponentProvider — implementation kinds", () => {
     });
 
     const components = await provider.attach(createMockAgent());
-    // tool + engine = 2, skill is skipped
+    // tool + middleware = 2, skill is skipped
     expect(components.size).toBe(2);
     expect(components.has(toolToken("myTool") as string)).toBe(true);
-    expect(components.has(engineToken("myEngine") as string)).toBe(true);
+    expect(components.has(middlewareToken("myMiddleware") as string)).toBe(true);
   });
 
   test("scope filtering works for implementations", async () => {
     const store = createInMemoryForgeStore();
-    await store.save(createImplementationBrick("engine", { name: "agentEngine", scope: "agent" }));
     await store.save(
-      createImplementationBrick("engine", { name: "globalEngine", scope: "global" }),
+      createImplementationBrick("middleware", {
+        name: "agentMw",
+        scope: "agent",
+        trustTier: "promoted",
+      }),
+    );
+    await store.save(
+      createImplementationBrick("middleware", {
+        name: "globalMw",
+        scope: "global",
+        trustTier: "promoted",
+      }),
     );
 
     const provider = createForgeComponentProvider({
@@ -1078,8 +1081,8 @@ describe("createForgeComponentProvider — implementation kinds", () => {
     const components = await provider.attach(createMockAgent());
     // Global scope sees only global bricks
     expect(components.size).toBe(1);
-    expect(components.has(engineToken("globalEngine") as string)).toBe(true);
-    expect(components.has(engineToken("agentEngine") as string)).toBe(false);
+    expect(components.has(middlewareToken("globalMw") as string)).toBe(true);
+    expect(components.has(middlewareToken("agentMw") as string)).toBe(false);
   });
 
   test("lookupBrickId works for implementation names", async () => {
@@ -1104,12 +1107,17 @@ describe("createForgeComponentProvider — implementation kinds", () => {
   test("inactive implementations are skipped", async () => {
     const store = createInMemoryForgeStore();
     await store.save(
-      createImplementationBrick("engine", { name: "activeEngine", lifecycle: "active" }),
+      createImplementationBrick("middleware", {
+        name: "activeMw",
+        lifecycle: "active",
+        trustTier: "promoted",
+      }),
     );
     await store.save(
-      createImplementationBrick("engine", {
-        name: "deprecatedEngine",
+      createImplementationBrick("middleware", {
+        name: "deprecatedMw",
         lifecycle: "deprecated",
+        trustTier: "promoted",
       }),
     );
 
@@ -1120,13 +1128,15 @@ describe("createForgeComponentProvider — implementation kinds", () => {
 
     const components = await provider.attach(createMockAgent());
     expect(components.size).toBe(1);
-    expect(components.has(engineToken("activeEngine") as string)).toBe(true);
+    expect(components.has(middlewareToken("activeMw") as string)).toBe(true);
   });
 
   test("cache invalidation works for implementation bricks", async () => {
     let searchCount = 0;
     const realStore = createInMemoryForgeStore();
-    await realStore.save(createImplementationBrick("engine", { name: "myEngine" }));
+    await realStore.save(
+      createImplementationBrick("middleware", { name: "myMiddleware", trustTier: "promoted" }),
+    );
 
     const countingStore = {
       ...realStore,
@@ -1147,8 +1157,10 @@ describe("createForgeComponentProvider — implementation kinds", () => {
     expect(first.size).toBe(1);
     expect(searchCount).toBe(1);
 
-    // Add a new engine brick to the store
-    await realStore.save(createImplementationBrick("resolver", { name: "myResolver" }));
+    // Add a new channel brick to the store
+    await realStore.save(
+      createImplementationBrick("channel", { name: "myChannel", trustTier: "promoted" }),
+    );
 
     // Simulate notifier event
     notifier.notify({ kind: "saved", brickId: brickId("b2"), scope: "agent" });

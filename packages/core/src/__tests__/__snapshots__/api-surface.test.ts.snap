@@ -1,18 +1,18 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/core API surface . has stable type surface 1`] = `
-"import { B as BrickRef } from './brick-snapshot-Dmt58l7c.js';
-export { A as ALL_BRICK_KINDS, a as BrickId, b as BrickKind, c as BrickLifecycle, d as BrickSnapshot, e as BrickSource, F as ForgeScope, M as MIN_TRUST_BY_KIND, S as SnapshotEvent, f as SnapshotId, g as SnapshotQuery, h as SnapshotStore, V as VALID_LIFECYCLE_TRANSITIONS, i as brickId, s as snapshotId } from './brick-snapshot-Dmt58l7c.js';
-import { A as AgentId, P as ProcessState, a as Agent, S as SessionId, T as ToolCallId } from './ecs-DM4-kRhl.js';
-export { B as BROWSER, b as BrowserActionOptions, c as BrowserConsoleEntry, d as BrowserConsoleLevel, e as BrowserConsoleOptions, f as BrowserConsoleResult, g as BrowserDriver, h as BrowserEvaluateOptions, i as BrowserEvaluateResult, j as BrowserFormField, k as BrowserNavigateOptions, l as BrowserNavigateResult, m as BrowserRefInfo, n as BrowserScreenshotOptions, o as BrowserScreenshotResult, p as BrowserScrollOptions, q as BrowserSnapshotOptions, r as BrowserSnapshotResult, s as BrowserTabCloseOptions, t as BrowserTabFocusOptions, u as BrowserTabInfo, v as BrowserTabNewOptions, w as BrowserTraceOptions, x as BrowserTraceResult, y as BrowserTypeOptions, z as BrowserUploadFile, C as BrowserUploadOptions, D as BrowserWaitOptions, E as BrowserWaitUntil, F as COMPONENT_PRIORITY, G as CREDENTIALS, H as ChildHandle, I as ChildLifecycleEvent, J as ComponentEvent, K as ComponentEventKind, L as ComponentProvider, M as CredentialComponent, N as DELEGATION, O as EVENTS, Q as EventComponent, R as FILESYSTEM, U as GOVERNANCE, V as GovernanceComponent, W as GovernanceUsage, X as MEMORY, Y as MemoryComponent, Z as MemoryResult, _ as ProcessAccounter, $ as ProcessId, a0 as RunId, a1 as SkillMetadata, a2 as SpawnCheck, a3 as SpawnLedger, a4 as SubsystemToken, a5 as Tool, a6 as ToolDescriptor, a7 as TrustTier, a8 as TurnId, a9 as agentId, aa as channelToken, ab as engineToken, ac as middlewareToken, ad as providerToken, ae as resolverToken, af as runId, ag as sessionId, ah as skillToken, ai as token, aj as toolCallId, ak as toolToken, al as turnId } from './ecs-DM4-kRhl.js';
-import { E as EngineState, a as EngineInput } from './engine-pB71jm_G.js';
-export { A as AbortReason, C as ComposedCallHandlers, b as CorrelationIds, c as EngineAdapter, d as EngineEvent, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, h as EngineStopReason } from './engine-pB71jm_G.js';
+"import { B as BrickRef } from './brick-snapshot-Di4fLamW.js';
+export { A as ALL_BRICK_KINDS, a as BrickId, b as BrickKind, c as BrickLifecycle, d as BrickSnapshot, e as BrickSource, F as ForgeScope, M as MIN_TRUST_BY_KIND, S as SnapshotEvent, f as SnapshotId, g as SnapshotQuery, h as SnapshotStore, V as VALID_LIFECYCLE_TRANSITIONS, i as brickId, s as snapshotId } from './brick-snapshot-Di4fLamW.js';
+import { A as AgentId, P as ProcessState, a as Agent, S as SessionId, T as ToolCallId } from './ecs-A4154tTj.js';
+export { B as BROWSER, b as BrowserActionOptions, c as BrowserConsoleEntry, d as BrowserConsoleLevel, e as BrowserConsoleOptions, f as BrowserConsoleResult, g as BrowserDriver, h as BrowserEvaluateOptions, i as BrowserEvaluateResult, j as BrowserFormField, k as BrowserNavigateOptions, l as BrowserNavigateResult, m as BrowserRefInfo, n as BrowserScreenshotOptions, o as BrowserScreenshotResult, p as BrowserScrollOptions, q as BrowserSnapshotOptions, r as BrowserSnapshotResult, s as BrowserTabCloseOptions, t as BrowserTabFocusOptions, u as BrowserTabInfo, v as BrowserTabNewOptions, w as BrowserTraceOptions, x as BrowserTraceResult, y as BrowserTypeOptions, z as BrowserUploadFile, C as BrowserUploadOptions, D as BrowserWaitOptions, E as BrowserWaitUntil, F as COMPONENT_PRIORITY, G as CREDENTIALS, H as ChildHandle, I as ChildLifecycleEvent, J as ComponentEvent, K as ComponentEventKind, L as ComponentProvider, M as CredentialComponent, N as DELEGATION, O as EVENTS, Q as EventComponent, R as FILESYSTEM, U as GOVERNANCE, V as GovernanceComponent, W as GovernanceUsage, X as MEMORY, Y as MemoryComponent, Z as MemoryResult, _ as ProcessAccounter, $ as ProcessId, a0 as RunId, a1 as SkillMetadata, a2 as SpawnCheck, a3 as SpawnLedger, a4 as SubsystemToken, a5 as Tool, a6 as ToolDescriptor, a7 as TrustTier, a8 as TurnId, a9 as agentId, aa as channelToken, ab as middlewareToken, ac as runId, ad as sessionId, ae as skillToken, af as token, ag as toolCallId, ah as toolToken, ai as turnId } from './ecs-A4154tTj.js';
+import { E as EngineState, a as EngineInput } from './engine-QbMgaT26.js';
+export { A as AbortReason, C as ComposedCallHandlers, b as CorrelationIds, c as EngineAdapter, d as EngineEvent, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, h as EngineStopReason } from './engine-QbMgaT26.js';
 import { Result, KoiError } from './errors.js';
 export { BackendErrorMapper, KoiErrorCode, RETRYABLE_DEFAULTS } from './errors.js';
 import { A as AgentManifest } from './assembly-Bp5WuiM8.js';
 export { C as ChannelConfig, a as ChannelIdentity, b as CircuitBreakerConfig, D as DEFAULT_CIRCUIT_BREAKER_CONFIG, c as DelegationComponent, d as DelegationConfig, e as DelegationDenyReason, f as DelegationEvent, g as DelegationGrant, h as DelegationId, i as DelegationManagerConfig, j as DelegationScope, k as DelegationVerifyResult, M as MiddlewareConfig, l as ModelConfig, P as PermissionConfig, R as RevocationRegistry, S as ScopeChecker, T as ToolConfig, m as delegationId } from './assembly-Bp5WuiM8.js';
 import { JsonObject } from './common.js';
-export { A as AdvisoryLock, a as AgentArtifact, B as BrickArtifact, b as BrickArtifactBase, c as BrickRequires, d as BrickUpdate, C as CompositeArtifact, e as ContentMarker, D as DataClassification, F as ForgeAttestationSignature, f as ForgeBuildDefinition, g as ForgeBuilder, h as ForgeProvenance, i as ForgeQuery, j as ForgeResourceRef, k as ForgeRunMetadata, l as ForgeStageDigest, m as ForgeStore, n as ForgeVerificationSummary, I as ImplementationArtifact, L as LockHandle, o as LockMode, p as LockRequest, S as SigningBackend, q as SkillArtifact, r as StoreChangeEvent, s as StoreChangeKind, t as StoreChangeNotifier, T as TestCase, u as ToolArtifact } from './brick-store-CwEzke-n.js';
+export { A as AdvisoryLock, a as AgentArtifact, B as BrickArtifact, b as BrickArtifactBase, c as BrickRequires, d as BrickUpdate, C as ContentMarker, D as DataClassification, F as ForgeAttestationSignature, e as ForgeBuildDefinition, f as ForgeBuilder, g as ForgeProvenance, h as ForgeQuery, i as ForgeResourceRef, j as ForgeRunMetadata, k as ForgeStageDigest, l as ForgeStore, m as ForgeVerificationSummary, I as ImplementationArtifact, L as LockHandle, n as LockMode, o as LockRequest, S as SigningBackend, p as SkillArtifact, q as StoreChangeEvent, r as StoreChangeKind, s as StoreChangeNotifier, T as TestCase, t as ToolArtifact } from './brick-store-CJyruIR5.js';
 export { ChannelAdapter, ChannelCapabilities, ChannelStatus, ChannelStatusKind, MessageHandler } from './channel.js';
 export { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, FeatureFlags, ForgeConfigSection, KoiConfig, LimitsConfig, LogLevel, LoopDetectionConfigSection, ModelRouterConfigSection, ModelTargetConfigEntry, SpawnConfig, TelemetryConfig } from './config.js';
 export { CompactionResult, ContextCompactor, TokenEstimator } from './context.js';
@@ -964,7 +964,7 @@ import './webhook.js';
 
 exports[`@koi/core API surface ./ecs has stable type surface 1`] = `
 "import './assembly-Bp5WuiM8.js';
-export { a as Agent, A as AgentId, B as BROWSER, F as COMPONENT_PRIORITY, G as CREDENTIALS, H as ChildHandle, I as ChildLifecycleEvent, J as ComponentEvent, K as ComponentEventKind, L as ComponentProvider, M as CredentialComponent, N as DELEGATION, O as EVENTS, Q as EventComponent, R as FILESYSTEM, U as GOVERNANCE, V as GovernanceComponent, W as GovernanceUsage, X as MEMORY, Y as MemoryComponent, Z as MemoryResult, _ as ProcessAccounter, $ as ProcessId, P as ProcessState, a0 as RunId, S as SessionId, a1 as SkillMetadata, a2 as SpawnCheck, a3 as SpawnLedger, a4 as SubsystemToken, a5 as Tool, T as ToolCallId, a6 as ToolDescriptor, a7 as TrustTier, a8 as TurnId, a9 as agentId, aa as channelToken, ab as engineToken, ac as middlewareToken, ad as providerToken, ae as resolverToken, af as runId, ag as sessionId, ah as skillToken, ai as token, aj as toolCallId, ak as toolToken, al as turnId } from './ecs-DM4-kRhl.js';
+export { a as Agent, A as AgentId, B as BROWSER, F as COMPONENT_PRIORITY, G as CREDENTIALS, H as ChildHandle, I as ChildLifecycleEvent, J as ComponentEvent, K as ComponentEventKind, L as ComponentProvider, M as CredentialComponent, N as DELEGATION, O as EVENTS, Q as EventComponent, R as FILESYSTEM, U as GOVERNANCE, V as GovernanceComponent, W as GovernanceUsage, X as MEMORY, Y as MemoryComponent, Z as MemoryResult, _ as ProcessAccounter, $ as ProcessId, P as ProcessState, a0 as RunId, S as SessionId, a1 as SkillMetadata, a2 as SpawnCheck, a3 as SpawnLedger, a4 as SubsystemToken, a5 as Tool, T as ToolCallId, a6 as ToolDescriptor, a7 as TrustTier, a8 as TurnId, a9 as agentId, aa as channelToken, ab as middlewareToken, ac as runId, ad as sessionId, ae as skillToken, af as token, ag as toolCallId, ah as toolToken, ai as turnId } from './ecs-A4154tTj.js';
 import './channel.js';
 import './common.js';
 import './filesystem-backend.js';
@@ -976,8 +976,8 @@ import './message.js';
 
 exports[`@koi/core API surface ./engine has stable type surface 1`] = `
 "import './common.js';
-export { A as AbortReason, C as ComposedCallHandlers, c as EngineAdapter, d as EngineEvent, a as EngineInput, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, E as EngineState, h as EngineStopReason } from './engine-pB71jm_G.js';
-import './ecs-DM4-kRhl.js';
+export { A as AbortReason, C as ComposedCallHandlers, c as EngineAdapter, d as EngineEvent, a as EngineInput, e as EngineInputBase, f as EngineMetrics, g as EngineOutput, E as EngineState, h as EngineStopReason } from './engine-QbMgaT26.js';
+import './ecs-A4154tTj.js';
 import './message.js';
 import './middleware.js';
 import './assembly-Bp5WuiM8.js';
@@ -1256,7 +1256,7 @@ export type { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, Inb
 exports[`@koi/core API surface ./middleware has stable type surface 1`] = `
 "import { ChannelStatus } from './channel.js';
 import { JsonObject } from './common.js';
-import { a6 as ToolDescriptor, T as ToolCallId, S as SessionId, a0 as RunId, a8 as TurnId } from './ecs-DM4-kRhl.js';
+import { a6 as ToolDescriptor, T as ToolCallId, S as SessionId, a0 as RunId, a8 as TurnId } from './ecs-A4154tTj.js';
 import { InboundMessage } from './message.js';
 import './assembly-Bp5WuiM8.js';
 import './webhook.js';
@@ -1386,7 +1386,7 @@ export type { ApprovalDecision, ApprovalHandler, ApprovalRequest, KoiMiddleware,
 `;
 
 exports[`@koi/core API surface ./eviction has stable type surface 1`] = `
-"import { A as AgentId, P as ProcessState } from './ecs-DM4-kRhl.js';
+"import { A as AgentId, P as ProcessState } from './ecs-A4154tTj.js';
 import './assembly-Bp5WuiM8.js';
 import './common.js';
 import './webhook.js';
@@ -1440,7 +1440,7 @@ export type { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult 
 `;
 
 exports[`@koi/core API surface ./health has stable type surface 1`] = `
-"import { A as AgentId } from './ecs-DM4-kRhl.js';
+"import { A as AgentId } from './ecs-A4154tTj.js';
 import './assembly-Bp5WuiM8.js';
 import './common.js';
 import './webhook.js';
@@ -1512,7 +1512,7 @@ export { DEFAULT_HEALTH_MONITOR_CONFIG, type HealthMonitor, type HealthMonitorCo
 `;
 
 exports[`@koi/core API surface ./lifecycle has stable type surface 1`] = `
-"import { A as AgentId, P as ProcessState } from './ecs-DM4-kRhl.js';
+"import { A as AgentId, P as ProcessState } from './ecs-A4154tTj.js';
 import { Result, KoiError } from './errors.js';
 import './assembly-Bp5WuiM8.js';
 import './common.js';
@@ -1740,9 +1740,9 @@ export type { Resolver, SourceBundle, SourceLanguage };
 
 exports[`@koi/core API surface ./brick-snapshot has stable type surface 1`] = `
 "import './errors.js';
-export { a as BrickId, B as BrickRef, d as BrickSnapshot, e as BrickSource, S as SnapshotEvent, f as SnapshotId, g as SnapshotQuery, h as SnapshotStore, i as brickId, s as snapshotId } from './brick-snapshot-Dmt58l7c.js';
+export { a as BrickId, B as BrickRef, d as BrickSnapshot, e as BrickSource, S as SnapshotEvent, f as SnapshotId, g as SnapshotQuery, h as SnapshotStore, i as brickId, s as snapshotId } from './brick-snapshot-Di4fLamW.js';
 import './common.js';
-import './ecs-DM4-kRhl.js';
+import './ecs-A4154tTj.js';
 import './assembly-Bp5WuiM8.js';
 import './webhook.js';
 import './channel.js';
@@ -1752,10 +1752,10 @@ import './filesystem-backend.js';
 `;
 
 exports[`@koi/core API surface ./brick-store has stable type surface 1`] = `
-"import './brick-snapshot-Dmt58l7c.js';
-import './ecs-DM4-kRhl.js';
+"import './brick-snapshot-Di4fLamW.js';
+import './ecs-A4154tTj.js';
 import './errors.js';
-export { A as AdvisoryLock, a as AgentArtifact, B as BrickArtifact, b as BrickArtifactBase, c as BrickRequires, d as BrickUpdate, C as CompositeArtifact, i as ForgeQuery, m as ForgeStore, I as ImplementationArtifact, L as LockHandle, o as LockMode, p as LockRequest, q as SkillArtifact, r as StoreChangeEvent, s as StoreChangeKind, t as StoreChangeNotifier, T as TestCase, u as ToolArtifact } from './brick-store-CwEzke-n.js';
+export { A as AdvisoryLock, a as AgentArtifact, B as BrickArtifact, b as BrickArtifactBase, c as BrickRequires, d as BrickUpdate, h as ForgeQuery, l as ForgeStore, I as ImplementationArtifact, L as LockHandle, n as LockMode, o as LockRequest, p as SkillArtifact, q as StoreChangeEvent, r as StoreChangeKind, s as StoreChangeNotifier, T as TestCase, t as ToolArtifact } from './brick-store-CJyruIR5.js';
 import './assembly-Bp5WuiM8.js';
 import './common.js';
 import './webhook.js';
@@ -1767,7 +1767,7 @@ import './filesystem-backend.js';
 
 exports[`@koi/core API surface ./sandbox-adapter has stable type surface 1`] = `
 "import { SandboxProfile } from './sandbox-profile.js';
-import './ecs-DM4-kRhl.js';
+import './ecs-A4154tTj.js';
 import './assembly-Bp5WuiM8.js';
 import './common.js';
 import './webhook.js';
@@ -1839,7 +1839,7 @@ export type { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxI
 `;
 
 exports[`@koi/core API surface ./sandbox-executor has stable type surface 1`] = `
-"import { a7 as TrustTier } from './ecs-DM4-kRhl.js';
+"import { a7 as TrustTier } from './ecs-A4154tTj.js';
 import './assembly-Bp5WuiM8.js';
 import './common.js';
 import './webhook.js';
@@ -1903,7 +1903,7 @@ export type { SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, Ti
 `;
 
 exports[`@koi/core API surface ./sandbox-profile has stable type surface 1`] = `
-"import { a7 as TrustTier } from './ecs-DM4-kRhl.js';
+"import { a7 as TrustTier } from './ecs-A4154tTj.js';
 import './assembly-Bp5WuiM8.js';
 import './common.js';
 import './webhook.js';
@@ -1956,10 +1956,10 @@ export type { FilesystemPolicy, NetworkPolicy, ResourceLimits, SandboxProfile };
 `;
 
 exports[`@koi/core API surface ./skill-registry has stable type surface 1`] = `
-"import { c as BrickRequires, q as SkillArtifact } from './brick-store-CwEzke-n.js';
+"import { c as BrickRequires, p as SkillArtifact } from './brick-store-CJyruIR5.js';
 import { Result, KoiError } from './errors.js';
-import './brick-snapshot-Dmt58l7c.js';
-import './ecs-DM4-kRhl.js';
+import './brick-snapshot-Di4fLamW.js';
+import './ecs-A4154tTj.js';
 import './assembly-Bp5WuiM8.js';
 import './common.js';
 import './webhook.js';
