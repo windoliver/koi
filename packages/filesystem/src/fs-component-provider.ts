@@ -8,6 +8,8 @@
 
 import type { Agent, ComponentProvider, FileSystemBackend, Tool, TrustTier } from "@koi/core";
 import { FILESYSTEM, toolToken } from "@koi/core";
+import type { FileSystemScope } from "@koi/scope";
+import { createScopedFileSystem } from "@koi/scope";
 import type { FileSystemOperation } from "./constants.js";
 import { DEFAULT_PREFIX, OPERATIONS } from "./constants.js";
 import { createFsEditTool } from "./tools/edit.js";
@@ -21,6 +23,11 @@ export interface FileSystemProviderConfig {
   readonly trustTier?: TrustTier;
   readonly prefix?: string;
   readonly operations?: readonly FileSystemOperation[];
+  /**
+   * Filesystem scope restriction. When set, the backend is wrapped in a
+   * scoped proxy that enforces root path containment and read-only mode.
+   */
+  readonly scope?: FileSystemScope;
 }
 
 const TOOL_FACTORIES: Readonly<
@@ -35,11 +42,14 @@ const TOOL_FACTORIES: Readonly<
 
 export function createFileSystemProvider(config: FileSystemProviderConfig): ComponentProvider {
   const {
-    backend,
+    backend: rawBackend,
     trustTier = "verified",
     prefix = DEFAULT_PREFIX,
     operations = OPERATIONS,
+    scope,
   } = config;
+
+  const backend = scope !== undefined ? createScopedFileSystem(rawBackend, scope) : rawBackend;
 
   return {
     name: `filesystem:${backend.name}`,

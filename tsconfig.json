@@ -47,6 +47,7 @@
     { "path": "packages/ralph" },
     { "path": "packages/registry-event-sourced" },
     { "path": "packages/sandbox" },
+    { "path": "packages/scope" },
     { "path": "packages/sandbox-cloud-base" },
     { "path": "packages/sandbox-cloudflare" },
     { "path": "packages/sandbox-daytona" },

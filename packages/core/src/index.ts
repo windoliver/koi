@@ -184,7 +184,9 @@ export type {
   CredentialComponent,
   EventComponent,
   MemoryComponent,
+  MemoryRecallOptions,
   MemoryResult,
+  MemoryStoreOptions,
   ProcessAccounter,
   ProcessId,
   ProcessState,
@@ -455,6 +457,12 @@ export type {
 } from "./scheduler.js";
 // scheduler — runtime values (branded constructors + defaults)
 export { DEFAULT_SCHEDULER_CONFIG, scheduleId, taskId } from "./scheduler.js";
+// scope enforcement — pluggable policy backend for subsystem access checks
+export type {
+  ScopeAccessRequest,
+  ScopeEnforcer,
+  ScopeSubsystem,
+} from "./scope-enforcement.js";
 // session — persistence contract for crash recovery
 export type {
   PendingFrame,

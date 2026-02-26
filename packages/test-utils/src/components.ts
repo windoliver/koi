@@ -5,13 +5,30 @@
  * defined in @koi/core's ECS layer.
  */
 
-import type { MemoryComponent, MemoryResult } from "@koi/core";
+import type {
+  MemoryComponent,
+  MemoryRecallOptions,
+  MemoryResult,
+  MemoryStoreOptions,
+} from "@koi/core";
 
 export interface MockMemoryComponentOptions {
   /** Results to return from recall(). Defaults to empty array. */
   readonly results?: readonly MemoryResult[];
   /** If provided, recall() will throw this error. */
   readonly recallError?: Error;
+  /** When set, recall() filters results by namespace metadata before returning. */
+  readonly namespaceFilter?: string;
+}
+
+export interface RecallCall {
+  readonly query: string;
+  readonly options?: MemoryRecallOptions;
+}
+
+export interface StoreCall {
+  readonly content: string;
+  readonly options?: MemoryStoreOptions;
 }
 
 /**
@@ -23,24 +40,34 @@ export interface MockMemoryComponentOptions {
  * Returns the component plus tracking arrays for assertions.
  */
 export function createMockMemoryComponent(options?: MockMemoryComponentOptions): MemoryComponent & {
-  readonly recallCalls: readonly string[];
-  readonly storeCalls: readonly string[];
+  readonly recallCalls: readonly RecallCall[];
+  readonly storeCalls: readonly StoreCall[];
 } {
-  const recallCalls: string[] = [];
-  const storeCalls: string[] = [];
+  const recallCalls: RecallCall[] = [];
+  const storeCalls: StoreCall[] = [];
   const results = options?.results ?? [];
 
   return {
-    async recall(query: string): Promise<readonly MemoryResult[]> {
-      recallCalls.push(query);
+    async recall(
+      query: string,
+      recallOptions?: MemoryRecallOptions,
+    ): Promise<readonly MemoryResult[]> {
+      const call: RecallCall =
+        recallOptions !== undefined ? { query, options: recallOptions } : { query };
+      recallCalls.push(call);
       if (options?.recallError !== undefined) {
         throw options.recallError;
+      }
+      if (options?.namespaceFilter !== undefined) {
+        return results.filter((r) => r.metadata?.namespace === options.namespaceFilter);
       }
       return results;
     },
 
-    async store(content: string): Promise<void> {
-      storeCalls.push(content);
+    async store(content: string, storeOptions?: MemoryStoreOptions): Promise<void> {
+      const call: StoreCall =
+        storeOptions !== undefined ? { content, options: storeOptions } : { content };
+      storeCalls.push(call);
     },
 
     recallCalls,

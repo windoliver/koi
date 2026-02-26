@@ -14,9 +14,12 @@
     "@koi/core": "workspace:*",
     "@koi/engine": "workspace:*",
     "@koi/errors": "workspace:*",
-    "@koi/middleware-goal-anchor": "workspace:*",
+    "@koi/filesystem": "workspace:*",
+    "@koi/manifest": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
-    "@koi/soul": "workspace:*"
+    "@koi/middleware-soul": "workspace:*",
+    "@koi/scope": "workspace:*",
+    "@koi/tool-browser": "workspace:*"
   },
   "devDependencies": {
     "@koi/test-utils": "workspace:*"

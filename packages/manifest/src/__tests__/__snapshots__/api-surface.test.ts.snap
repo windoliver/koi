@@ -26,6 +26,33 @@ type SoulUserConfig = string | {
     readonly path: string;
     readonly maxTokens?: number;
 };
+/** Filesystem scope: root path + read-only/read-write mode. */
+interface ManifestFileSystemScope {
+    readonly root: string;
+    readonly mode?: "rw" | "ro" | undefined;
+}
+/** Browser scope: navigation security + trust tier. */
+interface ManifestBrowserScope {
+    readonly allowedProtocols?: readonly string[] | undefined;
+    readonly allowedDomains?: readonly string[] | undefined;
+    readonly blockPrivateAddresses?: boolean | undefined;
+    readonly trustTier?: "sandbox" | "verified" | "promoted" | undefined;
+}
+/** Credentials scope: key glob pattern filter. */
+interface ManifestCredentialsScope {
+    readonly keyPattern: string;
+}
+/** Memory scope: namespace isolation. */
+interface ManifestMemoryScope {
+    readonly namespace: string;
+}
+/** Declarative scope section in koi.yaml — agents declare their boundaries. */
+interface ManifestScopeConfig {
+    readonly filesystem?: ManifestFileSystemScope | undefined;
+    readonly browser?: ManifestBrowserScope | undefined;
+    readonly credentials?: ManifestCredentialsScope | undefined;
+    readonly memory?: ManifestMemoryScope | undefined;
+}
 /**
  * Extension fields that exist in koi.yaml but are outside L0 core contracts.
  * All values are validated by the schema layer.
@@ -39,6 +66,7 @@ interface ManifestExtensions {
     readonly soul?: SoulUserConfig | undefined;
     readonly user?: SoulUserConfig | undefined;
     readonly deploy?: DeployConfig | undefined;
+    readonly scope?: ManifestScopeConfig | undefined;
 }
 /**
  * The fully loaded and validated agent manifest.
@@ -82,6 +110,6 @@ declare function loadManifest(filePath: string, env?: Readonly<Record<string, st
  */
 declare function loadManifestFromString(yaml: string, env?: Readonly<Record<string, string | undefined>>): Result<LoadResult, KoiError>;
 
-export { type DeployConfig, type LoadResult, type LoadedManifest, type ManifestWarning, type SoulUserConfig, loadManifest, loadManifestFromString };
+export { type DeployConfig, type LoadResult, type LoadedManifest, type ManifestBrowserScope, type ManifestCredentialsScope, type ManifestFileSystemScope, type ManifestMemoryScope, type ManifestScopeConfig, type ManifestWarning, type SoulUserConfig, loadManifest, loadManifestFromString };
 "
 `;

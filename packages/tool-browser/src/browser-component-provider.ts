@@ -8,6 +8,8 @@
 
 import type { Agent, BrowserDriver, ComponentProvider, Tool, TrustTier } from "@koi/core";
 import { BROWSER, toolToken } from "@koi/core";
+import type { BrowserScope } from "@koi/scope";
+import { createScopedBrowser } from "@koi/scope";
 import {
   type BrowserOperation,
   EVALUATE_OPERATION,
@@ -59,16 +61,18 @@ export interface BrowserProviderConfig {
    * domains outside the allowlist) returns a PERMISSION error with an
    * AI-friendly explanation instead of forwarding to the driver.
    *
-   * Can be populated from koi.yaml via manifest.metadata.browser.security:
-   * ```yaml
-   * metadata:
-   *   browser:
-   *     security:
-   *       allowedDomains: ["example.com", "*.api.example.com"]
-   *       allowedProtocols: ["https:"]
-   * ```
+   * Prefer `scope` for new code — it wraps the entire driver and also
+   * gates evaluate() behind trustTier. `security` is kept for backward
+   * compatibility and applies only to navigate/tab_new tools.
    */
   readonly security?: NavigationSecurityConfig;
+  /**
+   * Browser scope restriction. When set, the backend is wrapped in a scoped
+   * proxy that enforces URL allowlists, private address blocking, and
+   * trust-tier gating for evaluate(). Supersedes `security` — if both are
+   * provided, `scope` takes precedence.
+   */
+  readonly scope?: BrowserScope;
 }
 
 // Re-export for callers using tool factories directly.
@@ -104,16 +108,22 @@ const TOOL_FACTORIES: Readonly<
 
 export function createBrowserProvider(config: BrowserProviderConfig): ComponentProvider {
   const {
-    backend,
+    backend: rawBackend,
     trustTier = "verified",
     prefix = "browser",
     operations = OPERATIONS,
     security,
+    scope,
   } = config;
 
+  // When scope is provided, wrap the entire driver. Scope handles navigation
+  // security and evaluate trust-tier gating at the driver level.
+  const backend = scope !== undefined ? createScopedBrowser(rawBackend, scope) : rawBackend;
+
   // Compile security config once at construction time for efficient per-call use.
+  // Only used when scope is NOT provided (scope handles this internally).
   const compiledSecurity: CompiledNavigationSecurity | undefined =
-    security !== undefined ? compileNavigationSecurity(security) : undefined;
+    scope === undefined && security !== undefined ? compileNavigationSecurity(security) : undefined;
 
   return {
     name: `browser:${backend.name}`,

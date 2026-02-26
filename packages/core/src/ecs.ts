@@ -256,9 +256,23 @@ export interface MemoryResult {
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
+/** Options for MemoryComponent.store() — namespace isolation and tagging. */
+export interface MemoryStoreOptions {
+  readonly namespace?: string;
+  readonly tags?: readonly string[];
+}
+
+/** Options for MemoryComponent.recall() — namespace isolation. */
+export interface MemoryRecallOptions {
+  readonly namespace?: string;
+}
+
 export interface MemoryComponent {
-  readonly recall: (query: string) => Promise<readonly MemoryResult[]>;
-  readonly store: (content: string) => Promise<void>;
+  readonly recall: (
+    query: string,
+    options?: MemoryRecallOptions,
+  ) => Promise<readonly MemoryResult[]>;
+  readonly store: (content: string, options?: MemoryStoreOptions) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

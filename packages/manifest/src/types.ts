@@ -22,6 +22,42 @@ export interface DeployConfig {
 /** Manifest-level soul/user config: string path/inline or object with path + maxTokens. */
 export type SoulUserConfig = string | { readonly path: string; readonly maxTokens?: number };
 
+// ---------------------------------------------------------------------------
+// Scope configuration — declarative subsystem boundaries
+// ---------------------------------------------------------------------------
+
+/** Filesystem scope: root path + read-only/read-write mode. */
+export interface ManifestFileSystemScope {
+  readonly root: string;
+  readonly mode?: "rw" | "ro" | undefined;
+}
+
+/** Browser scope: navigation security + trust tier. */
+export interface ManifestBrowserScope {
+  readonly allowedProtocols?: readonly string[] | undefined;
+  readonly allowedDomains?: readonly string[] | undefined;
+  readonly blockPrivateAddresses?: boolean | undefined;
+  readonly trustTier?: "sandbox" | "verified" | "promoted" | undefined;
+}
+
+/** Credentials scope: key glob pattern filter. */
+export interface ManifestCredentialsScope {
+  readonly keyPattern: string;
+}
+
+/** Memory scope: namespace isolation. */
+export interface ManifestMemoryScope {
+  readonly namespace: string;
+}
+
+/** Declarative scope section in koi.yaml — agents declare their boundaries. */
+export interface ManifestScopeConfig {
+  readonly filesystem?: ManifestFileSystemScope | undefined;
+  readonly browser?: ManifestBrowserScope | undefined;
+  readonly credentials?: ManifestCredentialsScope | undefined;
+  readonly memory?: ManifestMemoryScope | undefined;
+}
+
 /**
  * Extension fields that exist in koi.yaml but are outside L0 core contracts.
  * All values are validated by the schema layer.
@@ -35,6 +71,7 @@ export interface ManifestExtensions {
   readonly soul?: SoulUserConfig | undefined;
   readonly user?: SoulUserConfig | undefined;
   readonly deploy?: DeployConfig | undefined;
+  readonly scope?: ManifestScopeConfig | undefined;
 }
 
 /**

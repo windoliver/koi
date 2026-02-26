@@ -312,9 +312,9 @@
       "devDependencies": {
         "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
+        "@koi/filesystem": "workspace:*",
         "@koi/model-router": "workspace:*",
-        "@koi/scheduler": "workspace:*",
-        "@koi/scheduler-provider": "workspace:*",
+        "@koi/scope": "workspace:*",
       },
     },
     "packages/engine-claude": {
@@ -453,6 +453,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/scope": "workspace:*",
       },
     },
     "packages/forge": {
@@ -1050,6 +1051,13 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/scope": {
+      "name": "@koi/scope",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/search": {
       "name": "@koi/search",
       "version": "0.0.0",
@@ -1133,9 +1141,12 @@
         "@koi/core": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/errors": "workspace:*",
-        "@koi/middleware-goal-anchor": "workspace:*",
+        "@koi/filesystem": "workspace:*",
+        "@koi/manifest": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
-        "@koi/soul": "workspace:*",
+        "@koi/middleware-soul": "workspace:*",
+        "@koi/scope": "workspace:*",
+        "@koi/tool-browser": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -1192,6 +1203,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/scope": "workspace:*",
       },
     },
     "packages/tracing": {
@@ -1779,6 +1791,8 @@
     "@koi/scheduler": ["@koi/scheduler@workspace:packages/scheduler"],
 
     "@koi/scheduler-provider": ["@koi/scheduler-provider@workspace:packages/scheduler-provider"],
+
+    "@koi/scope": ["@koi/scope@workspace:packages/scope"],
 
     "@koi/search": ["@koi/search@workspace:packages/search"],
 

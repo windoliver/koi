@@ -32,7 +32,7 @@ export type { CapturedOutput } from "./capture-output.js";
 export { captureOutput } from "./capture-output.js";
 export type { ChannelContractOptions } from "./channel-contract.js";
 export { testChannelAdapter } from "./channel-contract.js";
-export type { MockMemoryComponentOptions } from "./components.js";
+export type { MockMemoryComponentOptions, RecallCall, StoreCall } from "./components.js";
 export { createMockMemoryComponent } from "./components.js";
 export { createTestConfig, createTestConfigStore } from "./config.js";
 export {
