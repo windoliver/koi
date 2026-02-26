@@ -208,22 +208,25 @@ describe("createSubprocessExecutor", () => {
     }
   });
 
-  test("subprocess: executes normally with networkAllowed=false (no fetch)", async () => {
-    const entryPath = await writeEntry(
-      "net-denied-nofetch",
-      "export default function run(input: { val: number }) { return input.val + 1; }",
-    );
-    const result = await executor.execute(
-      "",
-      { val: 9 },
-      10_000,
-      ctx(entryPath, { networkAllowed: false }),
-    );
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.output).toBe(10);
-    }
-  });
+  test.skipIf(detectSandboxPlatform() === "none")(
+    "subprocess: executes normally with networkAllowed=false (no fetch)",
+    async () => {
+      const entryPath = await writeEntry(
+        "net-denied-nofetch",
+        "export default function run(input: { val: number }) { return input.val + 1; }",
+      );
+      const result = await executor.execute(
+        "",
+        { val: 9 },
+        10_000,
+        ctx(entryPath, { networkAllowed: false }),
+      );
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.output).toBe(10);
+      }
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
