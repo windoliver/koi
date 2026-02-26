@@ -5,10 +5,5 @@
     "rootDir": "src"
   },
   "include": ["src/**/*"],
-  "references": [
-    { "path": "../core" },
-    { "path": "../file-resolution" },
-    { "path": "../resolve" },
-    { "path": "../soul" }
-  ]
+  "references": [{ "path": "../core" }, { "path": "../file-resolution" }]
 }

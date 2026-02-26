@@ -8,7 +8,7 @@
  *
  * Registered names:
  *  - "agent-monitor" (also "monitor" alias) — @koi/agent-monitor
- *  - "soul"                                 — @koi/middleware-soul
+ *  - "soul"                                 — @koi/soul
  *  - "permissions"                          — @koi/middleware-permissions
  *  - "goal-anchor"                          — @koi/middleware-goal-anchor
  */

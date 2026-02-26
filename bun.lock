@@ -439,6 +439,13 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/file-resolution": {
+      "name": "@koi/file-resolution",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/filesystem": {
       "name": "@koi/filesystem",
       "version": "0.0.0",
@@ -795,7 +802,9 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/file-resolution": "workspace:*",
         "@koi/resolve": "workspace:*",
+        "@koi/soul": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -1085,6 +1094,19 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/soul": {
+      "name": "@koi/soul",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/file-resolution": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/sqlite-utils": {
       "name": "@koi/sqlite-utils",
       "version": "0.0.0",
@@ -1103,7 +1125,7 @@
         "@koi/errors": "workspace:*",
         "@koi/middleware-goal-anchor": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
-        "@koi/middleware-soul": "workspace:*",
+        "@koi/soul": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -1634,6 +1656,8 @@
 
     "@koi/execution-context": ["@koi/execution-context@workspace:packages/execution-context"],
 
+    "@koi/file-resolution": ["@koi/file-resolution@workspace:packages/file-resolution"],
+
     "@koi/filesystem": ["@koi/filesystem@workspace:packages/filesystem"],
 
     "@koi/forge": ["@koi/forge@workspace:packages/forge"],
@@ -1747,6 +1771,8 @@
     "@koi/skill-scanner": ["@koi/skill-scanner@workspace:packages/skill-scanner"],
 
     "@koi/snapshot-chain-store": ["@koi/snapshot-chain-store@workspace:packages/snapshot-chain-store"],
+
+    "@koi/soul": ["@koi/soul@workspace:packages/soul"],
 
     "@koi/sqlite-utils": ["@koi/sqlite-utils@workspace:packages/sqlite-utils"],
 
