@@ -62,6 +62,12 @@ export {
   createSpyModelStreamHandler,
   createSpyToolHandler,
 } from "./handlers.js";
+export { runHarnessContractTests } from "./harness-contract.js";
+export {
+  createMockContextSummary,
+  createMockHarness,
+  createMockTaskPlan,
+} from "./harness-mocks.js";
 export { createInMemoryBrickRegistry } from "./in-memory-brick-registry.js";
 export type { MiddlewareContractOptions } from "./middleware-contract/index.js";
 export { testMiddlewareContract } from "./middleware-contract/index.js";

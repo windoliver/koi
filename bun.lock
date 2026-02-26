@@ -528,6 +528,17 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/long-running": {
+      "name": "@koi/long-running",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/snapshot-chain-store": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/lsp": {
       "name": "@koi/lsp",
       "version": "0.0.0",
@@ -1716,6 +1727,8 @@
     "@koi/hash": ["@koi/hash@workspace:packages/hash"],
 
     "@koi/identity": ["@koi/identity@workspace:packages/identity"],
+
+    "@koi/long-running": ["@koi/long-running@workspace:packages/long-running"],
 
     "@koi/lsp": ["@koi/lsp@workspace:packages/lsp"],
 
