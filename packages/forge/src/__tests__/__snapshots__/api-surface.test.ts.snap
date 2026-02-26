@@ -344,6 +344,27 @@ declare function signAttestation(provenance: ForgeProvenance, signer: SigningBac
 declare function verifyAttestation(provenance: ForgeProvenance, signer: SigningBackend): Promise<boolean>;
 
 /**
+ * Attestation verification cache — avoids re-verifying the same content hash.
+ *
+ * Keyed by content hash (SHA-256 hex). Invalidated on store change events.
+ */
+interface CacheEntry {
+    readonly valid: boolean;
+    readonly verifiedAt: number;
+}
+interface AttestationCache {
+    readonly get: (contentHash: string) => CacheEntry | undefined;
+    readonly set: (contentHash: string, valid: boolean) => void;
+    readonly invalidate: (contentHash: string) => void;
+    readonly clear: () => void;
+    readonly size: () => number;
+}
+/**
+ * Create an in-memory attestation verification cache.
+ */
+declare function createAttestationCache(): AttestationCache;
+
+/**
  * Shared brick content extraction — maps brick kind to hashable primary content.
  *
  * Used by both integrity verification and forge pipeline for content-addressed ID computation.
@@ -366,27 +387,6 @@ declare function extractBrickContent(brick: HasKindAndContent): {
     readonly kind: string;
     readonly content: string;
 };
-
-/**
- * Attestation verification cache — avoids re-verifying the same content hash.
- *
- * Keyed by content hash (SHA-256 hex). Invalidated on store change events.
- */
-interface CacheEntry {
-    readonly valid: boolean;
-    readonly verifiedAt: number;
-}
-interface AttestationCache {
-    readonly get: (contentHash: string) => CacheEntry | undefined;
-    readonly set: (contentHash: string, valid: boolean) => void;
-    readonly invalidate: (contentHash: string) => void;
-    readonly clear: () => void;
-    readonly size: () => number;
-}
-/**
- * Create an in-memory attestation verification cache.
- */
-declare function createAttestationCache(): AttestationCache;
 
 /**
  * Brick → Tool conversion — shared utility for converting ToolArtifact bricks
