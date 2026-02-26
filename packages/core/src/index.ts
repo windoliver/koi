@@ -109,6 +109,9 @@ export type {
   BrowserWaitOptions,
   BrowserWaitUntil,
 } from "./browser-driver.js";
+// bundle types — portable agent export/import envelope
+export type { AgentBundle, BundleId } from "./bundle-types.js";
+export { BUNDLE_FORMAT_VERSION, bundleId } from "./bundle-types.js";
 // capability registry — shared wire types for node capability advertisement
 export type {
   AdvertisedTool,

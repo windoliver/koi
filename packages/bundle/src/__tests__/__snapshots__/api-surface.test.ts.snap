@@ -1,0 +1,80 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/bundle API surface . has stable type surface 1`] = `
+"import { ForgeStore, AgentBundle, Result, KoiError } from '@koi/core';
+
+/**
+ * Config and result types for bundle export/import operations.
+ */
+
+/** Configuration for creating an agent bundle. */
+interface ExportBundleConfig {
+    readonly name: string;
+    readonly description: string;
+    readonly manifestYaml: string;
+    readonly brickIds: readonly string[];
+    readonly store: ForgeStore;
+    readonly metadata?: Readonly<Record<string, unknown>>;
+}
+/** Configuration for importing an agent bundle into a store. */
+interface ImportBundleConfig {
+    readonly bundle: AgentBundle;
+    readonly store: ForgeStore;
+}
+/** Result of a bundle import operation. */
+interface ImportBundleResult {
+    readonly imported: number;
+    readonly skipped: number;
+    readonly errors: readonly ImportBrickError[];
+}
+/** Details about a brick that failed to import. */
+interface ImportBrickError {
+    readonly brickId: string;
+    readonly reason: string;
+}
+
+/**
+ * Bundle export — serialize an agent's manifest + bricks into a portable artifact.
+ *
+ * Algorithm:
+ * 1. Validate inputs (name, manifestYaml, brickIds non-empty)
+ * 2. Deduplicate brick IDs
+ * 3. Load all bricks in parallel from ForgeStore
+ * 4. Verify integrity of each loaded brick
+ * 5. Compute content hash for the bundle envelope
+ * 6. Return AgentBundle
+ */
+
+/** Create a portable agent bundle from a manifest + brick IDs. */
+declare function createBundle(config: ExportBundleConfig): Promise<Result<AgentBundle, KoiError>>;
+
+/**
+ * Bundle import — load bricks from a portable artifact into a ForgeStore.
+ *
+ * Algorithm:
+ * 1. Validate bundle version
+ * 2. Verify bundle content hash (detect manifest/brick-list tampering)
+ * 3. Validate each brick with validateBrickArtifact()
+ * 4. Verify integrity: recompute BrickId from content, compare to stored ID
+ * 5. For each valid brick, check-then-save with dedup and trust downgrade
+ * 6. Return imported/skipped/errors counts
+ */
+
+/** Import bricks from an agent bundle into a store with dedup and trust downgrade. */
+declare function importBundle(config: ImportBundleConfig): Promise<Result<ImportBundleResult, KoiError>>;
+
+/**
+ * Bundle serialization — JSON encode/decode for \`.koibundle\` files.
+ *
+ * Serialize: JSON.stringify with 2-space indent for inspectability.
+ * Deserialize: JSON.parse + field-by-field validation + brick validation.
+ */
+
+/** Serialize an AgentBundle to a pretty-printed JSON string. */
+declare function serializeBundle(bundle: AgentBundle): string;
+/** Deserialize a JSON string into a validated AgentBundle. */
+declare function deserializeBundle(json: string): Result<AgentBundle, KoiError>;
+
+export { type ExportBundleConfig, type ImportBrickError, type ImportBundleConfig, type ImportBundleResult, createBundle, deserializeBundle, importBundle, serializeBundle };
+"
+`;
