@@ -76,6 +76,8 @@ export interface ParsedBaseInput {
         readonly bins?: readonly string[] | undefined;
         readonly env?: readonly string[] | undefined;
         readonly tools?: readonly string[] | undefined;
+        readonly packages?: Readonly<Record<string, string>> | undefined;
+        readonly network?: boolean | undefined;
       }
     | undefined;
   readonly configSchema?: Readonly<Record<string, unknown>> | undefined;
@@ -137,6 +139,8 @@ const baseInputFields = {
       bins: z.array(z.string()).optional(),
       env: z.array(z.string()).optional(),
       tools: z.array(z.string()).optional(),
+      packages: z.record(z.string(), z.string()).optional(),
+      network: z.boolean().optional(),
     })
     .optional(),
   configSchema: z.record(z.string(), z.unknown()).optional(),

@@ -224,8 +224,123 @@ function validateFiles(files: Readonly<Record<string, string>>): ForgeError | un
   return undefined;
 }
 
+// ---------------------------------------------------------------------------
+// Network access validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Patterns that indicate network access in brick implementations.
+ * If any match and `requires.network` is not true, the brick is rejected.
+ *
+ * Defence-in-depth: patterns cover direct calls, property access via
+ * globalThis/self/window, variable aliasing, and Node.js-prefixed modules.
+ */
+const NETWORK_PATTERNS: readonly RegExp[] = [
+  // Direct calls
+  /\bfetch\s*\(/,
+  /\bnew\s+WebSocket\s*\(/,
+  /\bnew\s+XMLHttpRequest\s*\(/,
+
+  // Property access: globalThis.fetch, self.fetch, window.fetch
+  /\b(?:globalThis|self|window)\s*\.\s*fetch\b/,
+  /\b(?:globalThis|self|window)\s*\[\s*['"]fetch['"]\s*\]/,
+  /\b(?:globalThis|self|window)\s*\[\s*['"]WebSocket['"]\s*\]/,
+
+  // Variable aliasing: const f = fetch; const ws = WebSocket; const b = Bun
+  /=\s*\bfetch\b/,
+  /=\s*\bWebSocket\b/,
+  /=\s*\bXMLHttpRequest\b/,
+
+  // Node.js network modules (bare and node:-prefixed)
+  /\brequire\s*\(\s*['"](?:node:)?(?:http|https|net|dgram|tls|dns|http2)['"]\s*\)/,
+  /\bimport\s.*['"](?:node:)?(?:http|https|net|dgram|tls|dns|http2)['"]/,
+  /\bfrom\s+['"](?:node:)?(?:http|https|net|dgram|tls|dns|http2)['"]/,
+  /\bimport\s*\(\s*['"](?:node:)?(?:http|https|net|dgram|tls|dns|http2)['"]\s*\)/,
+
+  // Bun network APIs (direct and via aliasing)
+  /\bBun\.serve\s*\(/,
+  /\bBun\.connect\s*\(/,
+  /\bBun\.listen\s*\(/,
+  /=\s*\bBun\s*$/m,
+  /=\s*\bBun\s*[;,)]/,
+
+  // Popular network client packages
+  /['"](?:undici|axios|got|node-fetch|superagent|ky|needle)['"]/,
+];
+
+function detectsNetworkAccess(code: string): boolean {
+  return NETWORK_PATTERNS.some((pattern) => pattern.test(code));
+}
+
+/**
+ * Validate that implementations declaring no network access don't use network APIs.
+ * Returns an error if network patterns are detected without `requires.network: true`.
+ */
+function validateNetworkAccess(input: ForgeInput): ForgeError | undefined {
+  // If network access is explicitly declared, no restriction
+  if (input.requires?.network === true) {
+    return undefined;
+  }
+
+  // Only check kinds that have implementation code
+  const implementation =
+    input.kind === "tool" || input.kind === "middleware" || input.kind === "channel"
+      ? input.implementation
+      : undefined;
+
+  if (implementation !== undefined && detectsNetworkAccess(implementation)) {
+    return staticError(
+      "NETWORK_ACCESS_DENIED",
+      "Implementation uses network APIs (fetch, http, WebSocket, etc.) but requires.network is not set to true. " +
+        "Declare requires: { network: true } to allow network access.",
+    );
+  }
+
+  // Also scan companion files
+  if (input.files !== undefined) {
+    for (const [path, content] of Object.entries(input.files)) {
+      if (detectsNetworkAccess(content)) {
+        return staticError(
+          "NETWORK_ACCESS_DENIED",
+          `File "${path}" uses network APIs but requires.network is not set to true. ` +
+            "Declare requires: { network: true } to allow network access.",
+        );
+      }
+    }
+  }
+
+  return undefined;
+}
+
 function isStringArray(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isStringRecord(value: unknown): value is Readonly<Record<string, string>> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  return Object.values(value as Record<string, unknown>).every((v) => typeof v === "string");
+}
+
+function validatePackages(packages: Readonly<Record<string, string>>): ForgeError | undefined {
+  const entries = Object.entries(packages);
+  if (entries.length === 0) {
+    return undefined; // Empty packages is fine — no deps needed
+  }
+
+  for (const [name, version] of entries) {
+    if (name.length === 0) {
+      return staticError("INVALID_SCHEMA", "requires.packages contains empty package name");
+    }
+    if (typeof version !== "string" || version.length === 0) {
+      return staticError(
+        "INVALID_SCHEMA",
+        `requires.packages["${name}"] must be a non-empty version string`,
+      );
+    }
+  }
+  return undefined;
 }
 
 function validateRequires(requires: unknown): ForgeError | undefined {
@@ -242,6 +357,21 @@ function validateRequires(requires: unknown): ForgeError | undefined {
   }
   if (rec.tools !== undefined && !isStringArray(rec.tools)) {
     return staticError("INVALID_SCHEMA", "requires.tools must be an array of strings");
+  }
+  if (rec.packages !== undefined) {
+    if (!isStringRecord(rec.packages)) {
+      return staticError(
+        "INVALID_SCHEMA",
+        "requires.packages must be a Record<string, string> (package name → version)",
+      );
+    }
+    const packagesErr = validatePackages(rec.packages);
+    if (packagesErr !== undefined) {
+      return packagesErr;
+    }
+  }
+  if (rec.network !== undefined && typeof rec.network !== "boolean") {
+    return staticError("INVALID_SCHEMA", "requires.network must be a boolean");
   }
   return undefined;
 }
@@ -301,6 +431,12 @@ export function verifyStatic(
     if (requiresErr !== undefined) {
       return { ok: false, error: requiresErr };
     }
+  }
+
+  // Universal: validate network access — reject network APIs without requires.network
+  const networkErr = validateNetworkAccess(input);
+  if (networkErr !== undefined) {
+    return { ok: false, error: networkErr };
   }
 
   // Universal: validate configSchema if present (structure only — no value validation)

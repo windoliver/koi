@@ -25,6 +25,7 @@ import { brickToTool } from "./brick-conversion.js";
 import { verifyBrickAttestation, verifyBrickIntegrity } from "./integrity.js";
 import { checkBrickRequires } from "./requires-check.js";
 import type { TieredSandboxExecutor } from "./types.js";
+import { computeDependencyHash, resolveWorkspacePath } from "./workspace-manager.js";
 
 // Re-use the ForgeRuntime interface from L1 types.
 // Import it as a type-only import to avoid L2→L1 dependency.
@@ -175,6 +176,16 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
     }
 
     const { executor: tierExecutor } = executor.forTier(artifact.trustTier);
+
+    // Resolve workspace path for bricks with npm dependencies
+    const packages = artifact.requires?.packages;
+    if (packages !== undefined && Object.keys(packages).length > 0) {
+      const depHash = computeDependencyHash(packages);
+      const wsPath = resolveWorkspacePath(depHash);
+      const entryPath = `${wsPath}/${artifact.name}.ts`;
+      return brickToTool(artifact, tierExecutor, sandboxTimeoutMs, wsPath, entryPath);
+    }
+
     return brickToTool(artifact, tierExecutor, sandboxTimeoutMs);
   };
 

@@ -3,7 +3,7 @@
  * Only applies to "tool", "middleware", and "channel" kinds; skills/agents skip with a pass.
  */
 
-import type { Result } from "@koi/core";
+import type { ExecutionContext, Result } from "@koi/core";
 import type { VerificationConfig } from "./config.js";
 import type { ForgeError } from "./errors.js";
 import { sandboxError } from "./errors.js";
@@ -17,6 +17,7 @@ export async function verifySandbox(
   input: ForgeInput,
   executor: SandboxExecutor,
   config: VerificationConfig,
+  executionContext?: ExecutionContext,
 ): Promise<Result<StageReport, ForgeError>> {
   // Skills and agents skip sandbox execution
   if (input.kind === "skill" || input.kind === "agent") {
@@ -32,7 +33,12 @@ export async function verifySandbox(
   }
 
   // Implementation-bearing kinds: tool, middleware, channel — run in sandbox
-  const result = await executor.execute(input.implementation, {}, config.sandboxTimeoutMs);
+  const result = await executor.execute(
+    input.implementation,
+    {},
+    config.sandboxTimeoutMs,
+    executionContext,
+  );
 
   if (!result.ok) {
     return {

@@ -67,17 +67,21 @@ export { createAttestationCache } from "./attestation-cache.js";
 export { extractBrickContent } from "./brick-content.js";
 export type {
   AutoPromotionConfig,
+  DependencyConfig,
   ForgeConfig,
   ScopePromotionConfig,
   VerificationConfig,
 } from "./config.js";
 // runtime values — config
 export { createDefaultForgeConfig, validateForgeConfig } from "./config.js";
+// runtime values — dependency management
+export { auditDependencies, auditTransitiveDependencies } from "./dependency-audit.js";
 export { descriptor } from "./descriptor.js";
 export type { ForgeError, TestFailure } from "./errors.js";
 // runtime values — errors
 export {
   governanceError,
+  resolveError,
   sandboxError,
   selfTestError,
   staticError,
@@ -155,6 +159,7 @@ export type {
   ForgeChannelInput,
   ForgeContext,
   ForgeInput,
+  ForgeInputBase,
   ForgeMiddlewareInput,
   ForgeResult,
   ForgeResultMetadata,
@@ -165,6 +170,7 @@ export type {
   ManifestParser,
   PromoteChange,
   PromoteResult,
+  ResolveStageReport,
   SandboxError,
   SandboxErrorCode,
   SandboxExecutor,
@@ -182,7 +188,18 @@ export type { UsagePromotedResult, UsageRecordedResult, UsageResult } from "./us
 export { computeAutoPromotion, recordBrickUsage } from "./usage.js";
 // runtime values — verification
 export { verify } from "./verify.js";
+export { verifyResolve } from "./verify-resolve.js";
 export { verifySandbox } from "./verify-sandbox.js";
 export { verifySelfTest } from "./verify-self-test.js";
 export { verifyStatic } from "./verify-static.js";
 export { assignTrust } from "./verify-trust.js";
+export type { WorkspaceResult } from "./workspace-manager.js";
+export {
+  cleanupStaleWorkspaces,
+  computeDependencyHash,
+  createBrickWorkspace,
+  resolveWorkspacePath,
+  writeBrickEntry,
+} from "./workspace-manager.js";
+export type { ScanFinding, ScanResult } from "./workspace-scan.js";
+export { scanWorkspaceCode } from "./workspace-scan.js";

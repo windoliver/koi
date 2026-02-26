@@ -406,6 +406,7 @@ export type {
 } from "./sandbox-adapter.js";
 // sandbox executor — code execution in isolation (forge verification contract)
 export type {
+  ExecutionContext,
   SandboxError,
   SandboxErrorCode,
   SandboxExecutor,

@@ -20,12 +20,13 @@ sandbox-tested, trust-scored, and cryptographically signed before it can be used
          that adds two       ───────> │  @koi/forge              │
          numbers"                     │                          │
                                       │  1. Static analysis      │
-                                      │  2. Sandbox execution    │
-                                      │  3. Self-test            │
-                                      │  4. Trust scoring        │
-                                      │  5. Content hash (BrickId)│
-                                      │  6. Sign attestation     │
-                                      │  7. Store in ForgeStore  │
+                                      │  2. Dependency resolve   │
+                                      │  3. Sandbox execution    │
+                                      │  4. Self-test            │
+                                      │  5. Trust scoring        │
+                                      │  6. Content hash (BrickId)│
+                                      │  7. Sign attestation     │
+                                      │  8. Store in ForgeStore  │
                                       └────────────┬─────────────┘
                                                    │
                                                    ▼
@@ -49,8 +50,10 @@ sandbox-tested, trust-scored, and cryptographically signed before it can be used
 ### Layer position
 
 ```
-L0  @koi/core         ─ BrickArtifact, ForgeStore, ForgeProvenance, SigningBackend (types only)
-L0u @koi/hash          ─ computeContentHash()
+L0  @koi/core         ─ BrickArtifact, ForgeStore, ForgeProvenance, SigningBackend,
+                        SandboxExecutor, ExecutionContext (types only)
+L0u @koi/hash          ─ computeContentHash() (dep hash for workspaces)
+L0u @koi/validation    ─ validateWith() (config validation)
 L0u @koi/test-utils    ─ DEFAULT_PROVENANCE fixture
 L2  @koi/forge         ─ this package (no L1 dependency)
 ```
@@ -77,11 +80,16 @@ index.ts                         ← public re-exports (60+ symbols)
 │   ├── forge-channel.ts         ← forge_channel
 │   └── promote-forge.ts         ← promote_forge, search_forge
 │
-├── verify.ts                    ← 4-stage verification orchestrator
-├── verify-static.ts             ← stage 1: static analysis
+├── verify.ts                    ← 5-stage verification orchestrator
+├── verify-static.ts             ← stage 1: static analysis (+ network evasion detection)
+├── verify-resolve.ts            ← stage 1.5: dependency audit + install + entry file
 ├── verify-sandbox.ts            ← stage 2: sandbox execution
 ├── verify-self-test.ts          ← stage 3: self-test + pluggable verifiers
 ├── verify-trust.ts              ← stage 4: trust assignment
+│
+├── dependency-audit.ts          ← allowlist/blocklist + transitive dep audit
+├── workspace-manager.ts         ← per-dep-hash workspace creation + LRU cleanup
+├── workspace-scan.ts            ← post-install node_modules code scanner
 │
 ├── attestation.ts               ← provenance creation, signing, verification
 ├── attestation-cache.ts         ← integrity result caching
@@ -104,6 +112,7 @@ index.ts                         ← public re-exports (60+ symbols)
 └── __tests__/
     ├── forge-lifecycle.test.ts  ← unit E2E: forge → sign → verify → resolve → tamper
     ├── e2e.test.ts              ← real LLM E2E with createKoi + forge tools
+    ├── e2e-deps.test.ts         ← real LLM E2E: dependency management + subprocess
     └── e2e-provenance.test.ts   ← real LLM E2E: provenance + SLSA + attestation
 ```
 
@@ -122,9 +131,10 @@ index.ts                         ← public re-exports (60+ symbols)
                                  │ pass
                                  ▼
                      ┌────────────────────────┐
-                     │   4-STAGE VERIFICATION  │──── fail ──> ForgeError
-                     │  static → sandbox →     │
-                     │  self-test → trust      │
+                     │   5-STAGE VERIFICATION  │──── fail ──> ForgeError
+                     │  static → resolve →     │
+                     │  sandbox → self-test →  │
+                     │  trust                  │
                      └───────────┬────────────┘
                                  │ pass
                                  ▼
@@ -250,27 +260,107 @@ Only `active` bricks are discoverable by `ForgeRuntime` and `ForgeComponentProvi
                    global sees only global
 ```
 
+### Dependency management
+
+Bricks can declare npm package dependencies via `requires.packages`. The forge pipeline
+audits, installs, and isolates these dependencies automatically.
+
+```
+  Agent says:                              What @koi/forge does:
+  "Create a tool that
+   validates emails             ┌─────────────────────────────────────────┐
+   using zod"                   │  requires: { packages: { zod: "3.23.8" } }
+                                │                                         │
+                                │  1. Audit:                              │
+  ┌──────────────────┐          │     allowlist/blocklist check           │
+  │  BrickRequires   │          │     max 20 direct deps                  │
+  │  ├── packages    │──────────│     exact semver only (no ranges)       │
+  │  ├── network     │          │     package name format validation      │
+  │  ├── bins        │          │                                         │
+  │  ├── env         │          │  2. Install:                            │
+  │  └── tools       │          │     bun install --ignore-scripts        │
+  └──────────────────┘          │     content-addressed workspace         │
+                                │     timeout: 15s (capped to budget)     │
+                                │                                         │
+                                │  3. Post-install scan:                  │
+                                │     transitive dep count (≤ 200)        │
+                                │     code scan for child_process, etc.   │
+                                │     symlink escape detection (lstat)    │
+                                │                                         │
+                                │  4. Write entry file:                   │
+                                │     <workspace>/<brick-name>.ts         │
+                                └─────────────────────────────────────────┘
+```
+
+**Workspace layout** (content-addressed by dep hash):
+
+```
+  $XDG_CACHE_HOME/koi/brick-workspaces/    (default: ~/.cache/koi/brick-workspaces/)
+    <sha256(sorted deps)>/
+      ├── package.json         ← generated from requires.packages
+      ├── bun.lock             ← generated by bun install
+      ├── node_modules/        ← installed dependencies
+      └── my-brick.ts          ← brick entry file (import() target)
+```
+
+Bricks with identical dependencies share the same workspace (deduplication).
+Workspaces are evicted by LRU: age > 30 days or total size > 1 GB.
+
+**Execution path** depends on trust tier:
+
+```
+  sandbox / verified tier:
+    subprocess-executor → spawns child process → restricted env
+    ├── env: only PATH, HOME, TMPDIR, NODE_ENV, BUN_INSTALL
+    ├── NODE_PATH: <workspace>/node_modules
+    ├── timeout: SIGKILL
+    ├── stdout cap: 10 MB
+    └── no access to host secrets (ANTHROPIC_API_KEY, etc.)
+
+  promoted tier:
+    promoted-executor → in-process import() → LRU cache (256 cap)
+    ├── query-string cache busting for fresh imports
+    └── Promise.race timeout with cleanup
+```
+
+**Network detection**: static analysis catches 19 evasion patterns for bricks that
+declare `requires.network: false` — `globalThis.fetch`, variable aliasing, `node:` prefix
+imports, third-party HTTP libraries, computed property access, and more.
+
 ---
 
 ## Verification pipeline
 
-Four sequential stages. Fail-fast: stops on first failure if `config.verification.failFast = true`.
+Five sequential stages. Fail-fast: stops on first failure if `config.verification.failFast = true`.
 
 ```
   ┌─────────────────────────────────────────────────────────────────┐
   │                                                                 │
   │  Stage 1: STATIC ANALYSIS                       (sync, ≤1s)    │
-  │  ├── Name pattern: alphanumeric, 3-50 chars                     │
+  │  ├── Name: starts with letter, alphanumeric/hyphen/underscore, 3-50 │
   │  ├── Description length: ≤500 chars                             │
   │  ├── Schema structure: valid JSON Schema                        │
   │  ├── Size check: ≤50KB                                          │
+  │  ├── Syntax check: Bun.Transpiler on tool/middleware/channel    │
   │  ├── Security: no path traversal, no dangerous keys             │
-  │  ├── Manifest parsing: valid YAML (for agent kind)              │
+  │  ├── Network evasion: 19 patterns (fetch, axios, etc.)          │
+  │  ├── Package validation: name format, exact semver              │
+  │  ├── Manifest: non-empty + size check (YAML parsed pre-pipeline)│
   │  └── All brick kinds validated                                  │
+  │                                                                 │
+  │  Stage 1.5: RESOLVE DEPENDENCIES               (async, ≤15s)   │
+  │  ├── Audit: allowlist/blocklist, max deps, semver format        │
+  │  ├── Install: bun install --ignore-scripts (timeout capped      │
+  │  │   to remaining pipeline budget)                              │
+  │  ├── Transitive audit: parse bun.lock, count ≤ 200, blocklist   │
+  │  ├── Code scan: child_process, execSync → reject                │
+  │  ├── Symlink check: lstat, skip symlinks                        │
+  │  ├── Write entry file: <workspace>/<brick>.ts                   │
+  │  └── Skipped if: no requires.packages declared                  │
   │                                                                 │
   │  Stage 2: SANDBOX EXECUTION                     (async, ≤5s)    │
   │  ├── Runs implementation in isolated sandbox                    │
-  │  ├── No network, no filesystem, no process access               │
+  │  ├── Uses subprocess executor if workspace available            │
   │  ├── Validates: no crash, no timeout, no OOM                    │
   │  └── Skipped for: skill, agent (no executable code)             │
   │                                                                 │
@@ -293,7 +383,7 @@ Four sequential stages. Fail-fast: stops on first failure if `config.verificatio
   │                                                                 │
   └─────────────────────────────────────────────────────────────────┘
 
-  Overall timeout: 30s (configurable)
+  Overall timeout: 60s (configurable, install timeout capped to remaining budget)
 ```
 
 Result:
@@ -598,11 +688,18 @@ const config = createDefaultForgeConfig({
 | `verification.staticTimeoutMs` | `1,000` | Stage 1 timeout |
 | `verification.sandboxTimeoutMs` | `5,000` | Stage 2 timeout |
 | `verification.selfTestTimeoutMs` | `10,000` | Stage 3 timeout |
-| `verification.totalTimeoutMs` | `30,000` | Overall pipeline timeout |
+| `verification.totalTimeoutMs` | `60,000` | Overall pipeline timeout |
 | `verification.maxBrickSizeBytes` | `50,000` | Max brick content size |
 | `verification.failFast` | `true` | Stop on first failure |
 | `autoPromotion.enabled` | `false` | Auto-promote on usage |
 | `scopePromotion.requireHumanApproval` | `true` | Human-in-the-loop |
+| `dependencies.maxDependencies` | `20` | Max direct npm deps per brick |
+| `dependencies.installTimeoutMs` | `15,000` | Per-install timeout |
+| `dependencies.maxCacheSizeBytes` | `1,073,741,824` | Max total workspace disk (1 GB) |
+| `dependencies.maxWorkspaceAgeDays` | `30` | LRU eviction age |
+| `dependencies.maxTransitiveDependencies` | `200` | Max transitive deps after install |
+| `dependencies.allowedPackages` | `undefined` | Allowlist (empty = all allowed) |
+| `dependencies.blockedPackages` | `undefined` | Blocklist (takes precedence) |
 
 ---
 
@@ -623,6 +720,7 @@ These are the tools an agent calls to forge bricks:
 | `promote_forge` | `{ brickId, scope?, trustTier?, lifecycle? }` | `PromoteResult` |
 
 All inputs accept optional `classification`, `contentMarkers`, `tags`, `requires`, and `files`.
+`requires.packages` enables npm dependency management (audit → install → scan → execute).
 
 ### Factory functions
 
@@ -654,6 +752,16 @@ createForgeComponentProvider(config: ForgeComponentProviderConfig): ForgeCompone
 createInMemoryForgeStore(): ForgeStore
 createMemoryStoreChangeNotifier(): StoreChangeNotifier
 createAttestationCache(): AttestationCache
+
+// Dependencies
+auditDependencies(packages, config): Result<void, ForgeError>
+auditTransitiveDependencies(lockContent, config): Result<void, ForgeError>
+computeDependencyHash(packages): string
+resolveWorkspacePath(depHash, cacheDir?): string
+createBrickWorkspace(packages, config, cacheDir?): Promise<Result<WorkspaceResult, ForgeError>>
+writeBrickEntry(workspacePath, implementation, brickName): Promise<string>
+cleanupStaleWorkspaces(config, cacheDir?): Promise<number>
+scanWorkspaceCode(workspacePath, config): Promise<Result<ScanResult, ForgeError>>
 
 // Configuration
 createDefaultForgeConfig(overrides?: Partial<ForgeConfig>): ForgeConfig
@@ -696,6 +804,33 @@ const result = await forgeTool.execute({
 
 // result.value.id = "sha256:..." (content-addressed)
 // result.value.trustTier = "sandbox"
+```
+
+### With npm dependencies
+
+```typescript
+const result = await forgeTool.execute({
+  name: "validate-email",
+  description: "Validates email addresses using zod",
+  inputSchema: { type: "object", properties: { email: { type: "string" } } },
+  implementation: `
+    import { z } from "zod";
+    const schema = z.string().email();
+    export default function run(input: { email: string }) {
+      const result = schema.safeParse(input.email);
+      return { valid: result.success, error: result.error?.message };
+    }
+  `,
+  requires: {
+    packages: { zod: "3.23.8" },   // exact semver required
+    network: false,                  // static analysis enforces this
+  },
+});
+
+// Pipeline: static → resolve (audit + install + scan) → sandbox → trust
+// Workspace created at ~/.cache/koi/brick-workspaces/<dep-hash>/
+// Entry file written: <workspace>/validate-email.ts
+// Executed via subprocess with restricted env
 ```
 
 ### With signing: cryptographic attestation
@@ -805,3 +940,6 @@ for await (const event of runtime.run({ kind: "text", text: "Use adder to add 2 
 - [Koi Architecture](../architecture/Koi.md) — system overview and layer rules
 - [Brick Auto-Discovery](../architecture/brick-auto-discovery.md) — how bricks are discovered at scale
 - [@koi/doctor](./doctor.md) — static security scanning for agent manifests
+- `@koi/sandbox-executor` — trust-tiered executor dispatch (subprocess + promoted + fallback)
+- [#72](https://github.com/windoliver/koi/issues/72) — OS-level sandbox isolation (Seatbelt/bubblewrap/gVisor)
+- [#394](https://github.com/windoliver/koi/issues/394) — cross-device workspace sync via Nexus

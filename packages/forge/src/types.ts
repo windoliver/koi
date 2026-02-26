@@ -47,13 +47,21 @@ export interface ForgeResult {
 // Verification report
 // ---------------------------------------------------------------------------
 
-export type VerificationStage = "static" | "sandbox" | "self_test" | "trust";
+export type VerificationStage = "static" | "resolve" | "sandbox" | "self_test" | "trust";
 
 export interface StageReport {
   readonly stage: VerificationStage;
   readonly passed: boolean;
   readonly durationMs: number;
   readonly message?: string;
+}
+
+export interface ResolveStageReport extends StageReport {
+  readonly stage: "resolve";
+  /** Workspace path for bricks with npm dependencies, undefined if no packages. */
+  readonly workspacePath?: string;
+  /** Entry file path for the brick's implementation, undefined if no packages. */
+  readonly entryPath?: string;
 }
 
 export interface TrustStageReport extends StageReport {
@@ -74,90 +82,59 @@ export interface VerificationReport {
 
 export type { TestCase } from "@koi/core";
 
-export interface ForgeToolInput {
-  readonly kind: "tool";
+/** Shared fields present on every forge input variant. */
+export interface ForgeInputBase {
   readonly name: string;
   readonly description: string;
   readonly tags?: readonly string[];
+  readonly files?: Readonly<Record<string, string>>;
+  readonly requires?: BrickRequires;
+  readonly classification?: DataClassification;
+  readonly contentMarkers?: readonly ContentMarker[];
+}
+
+export interface ForgeToolInput extends ForgeInputBase {
+  readonly kind: "tool";
   readonly inputSchema: Readonly<Record<string, unknown>>;
   readonly implementation: string;
   readonly testCases?: readonly TestCase[];
-  readonly files?: Readonly<Record<string, string>>;
-  readonly requires?: BrickRequires;
   readonly configSchema?: Readonly<Record<string, unknown>>;
-  readonly classification?: DataClassification;
-  readonly contentMarkers?: readonly ContentMarker[];
 }
 
-export interface ForgeSkillInput {
+export interface ForgeSkillInput extends ForgeInputBase {
   readonly kind: "skill";
-  readonly name: string;
-  readonly description: string;
   /** Markdown body of the skill (the raw content, not the generated SKILL.md). */
   readonly body: string;
-  readonly tags?: readonly string[];
-  readonly files?: Readonly<Record<string, string>>;
-  readonly requires?: BrickRequires;
-  readonly classification?: DataClassification;
-  readonly contentMarkers?: readonly ContentMarker[];
 }
 
-export interface ForgeAgentInputWithManifest {
+export interface ForgeAgentInputWithManifest extends ForgeInputBase {
   readonly kind: "agent";
-  readonly name: string;
-  readonly description: string;
-  readonly tags?: readonly string[];
   readonly manifestYaml: string;
   readonly brickIds?: undefined;
-  readonly files?: Readonly<Record<string, string>>;
-  readonly requires?: BrickRequires;
-  readonly classification?: DataClassification;
-  readonly contentMarkers?: readonly ContentMarker[];
 }
 
-export interface ForgeAgentInputWithBricks {
+export interface ForgeAgentInputWithBricks extends ForgeInputBase {
   readonly kind: "agent";
-  readonly name: string;
-  readonly description: string;
-  readonly tags?: readonly string[];
   readonly brickIds: readonly string[];
   readonly manifestYaml?: undefined;
   readonly model?: string;
   readonly agentType?: string;
-  readonly files?: Readonly<Record<string, string>>;
-  readonly requires?: BrickRequires;
-  readonly classification?: DataClassification;
-  readonly contentMarkers?: readonly ContentMarker[];
 }
 
 export type ForgeAgentInput = ForgeAgentInputWithManifest | ForgeAgentInputWithBricks;
 
-export interface ForgeMiddlewareInput {
+export interface ForgeMiddlewareInput extends ForgeInputBase {
   readonly kind: "middleware";
-  readonly name: string;
-  readonly description: string;
-  readonly tags?: readonly string[];
   readonly implementation: string;
   readonly testCases?: readonly TestCase[];
-  readonly files?: Readonly<Record<string, string>>;
-  readonly requires?: BrickRequires;
   readonly configSchema?: Readonly<Record<string, unknown>>;
-  readonly classification?: DataClassification;
-  readonly contentMarkers?: readonly ContentMarker[];
 }
 
-export interface ForgeChannelInput {
+export interface ForgeChannelInput extends ForgeInputBase {
   readonly kind: "channel";
-  readonly name: string;
-  readonly description: string;
-  readonly tags?: readonly string[];
   readonly implementation: string;
   readonly testCases?: readonly TestCase[];
-  readonly files?: Readonly<Record<string, string>>;
-  readonly requires?: BrickRequires;
   readonly configSchema?: Readonly<Record<string, unknown>>;
-  readonly classification?: DataClassification;
-  readonly contentMarkers?: readonly ContentMarker[];
 }
 
 export type ForgeInput =

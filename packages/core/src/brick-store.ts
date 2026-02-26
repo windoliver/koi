@@ -34,6 +34,10 @@ export interface BrickRequires {
   readonly env?: readonly string[];
   /** Koi tool brick names that must be resolvable. */
   readonly tools?: readonly string[];
+  /** npm packages required at runtime: package name → exact semver version. */
+  readonly packages?: Readonly<Record<string, string>>;
+  /** Whether this brick requires network access at runtime. Default: false (no network). */
+  readonly network?: boolean;
 }
 
 // ---------------------------------------------------------------------------

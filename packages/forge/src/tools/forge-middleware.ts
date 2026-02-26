@@ -100,6 +100,12 @@ async function forgeMiddlewareHandler(
             ...(parsed.value.requires.tools !== undefined
               ? { tools: parsed.value.requires.tools }
               : {}),
+            ...(parsed.value.requires.packages !== undefined
+              ? { packages: parsed.value.requires.packages }
+              : {}),
+            ...(parsed.value.requires.network !== undefined
+              ? { network: parsed.value.requires.network }
+              : {}),
           },
         }
       : {}),
