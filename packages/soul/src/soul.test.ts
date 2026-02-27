@@ -354,6 +354,7 @@ describe("createSoulMiddleware — layer interactions", () => {
     const mw = await createSoulMiddleware({
       soul: "SOUL.md",
       basePath: tmpDir,
+      selfModify: false,
     });
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();

@@ -42,6 +42,12 @@ export interface CreateSoulOptions {
   readonly basePath: string;
   /** When true, user content is re-resolved on each model call. */
   readonly refreshUser?: boolean | undefined;
+  /**
+   * When true (default), injects meta-instructions telling the agent it can
+   * modify its own personality via `fs_write` to the soul file.
+   * Skipped automatically when soul content is inline (no file to modify).
+   */
+  readonly selfModify?: boolean | undefined;
 }
 
 /** Default token budgets. */
@@ -221,6 +227,12 @@ export function validateSoulConfig(config: unknown): Result<CreateSoulOptions, K
     return validationError("refreshUser must be a boolean");
   }
 
+  // Validate selfModify
+  const { selfModify } = config;
+  if (selfModify !== undefined && typeof selfModify !== "boolean") {
+    return validationError("selfModify must be a boolean");
+  }
+
   // Construct validated options — type guards re-narrow fields that were
   // validated above by validateContentInput/validatePersonaEntry.
   return {
@@ -231,6 +243,7 @@ export function validateSoulConfig(config: unknown): Result<CreateSoulOptions, K
       ...(user !== undefined && isContentInput(user) ? { user } : {}),
       ...(identity !== undefined && isIdentityConfig(identity) ? { identity } : {}),
       ...(typeof refreshUser === "boolean" ? { refreshUser } : {}),
+      ...(typeof selfModify === "boolean" ? { selfModify } : {}),
     },
   };
 }
