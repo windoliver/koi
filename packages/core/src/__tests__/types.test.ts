@@ -24,7 +24,10 @@ import type {
   KoiError,
   KoiErrorCode,
   KoiMiddleware,
+  MemoryRecallOptions,
   MemoryResult,
+  MemoryStoreOptions,
+  MemoryTier,
   ModelCapabilities,
   ModelConfig,
   ModelProvider,
@@ -525,6 +528,85 @@ describe("TrustTier", () => {
   test("accepts valid trust tier literals", () => {
     const tiers: readonly TrustTier[] = ["sandbox", "verified", "promoted"];
     expect(tiers).toHaveLength(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MemoryTier and extended memory types (#455)
+// ---------------------------------------------------------------------------
+
+describe("MemoryTier and extended memory types", () => {
+  test("MemoryTier accepts valid tier literals", () => {
+    const tiers: readonly MemoryTier[] = ["hot", "warm", "cold"];
+    expect(tiers).toHaveLength(3);
+  });
+
+  test("MemoryTier rejects invalid values at compile time", () => {
+    // @ts-expect-error — "lukewarm" is not a valid MemoryTier
+    const _bad: MemoryTier = "lukewarm";
+    void _bad;
+  });
+
+  test("MemoryResult with tier/decayScore/lastAccessed compiles", () => {
+    const result: MemoryResult = {
+      content: "test memory",
+      score: 0.95,
+      metadata: { source: "unit-test" },
+      tier: "hot",
+      decayScore: 0.87,
+      lastAccessed: "2026-02-26T00:00:00.000Z",
+    };
+    expect(result.tier).toBe("hot");
+    expect(result.decayScore).toBe(0.87);
+    expect(result.lastAccessed).toBe("2026-02-26T00:00:00.000Z");
+  });
+
+  test("MemoryResult without new fields still compiles (backward compat)", () => {
+    const result: MemoryResult = { content: "legacy memory" };
+    expect(result.content).toBe("legacy memory");
+    expect(result.tier).toBeUndefined();
+    expect(result.decayScore).toBeUndefined();
+    expect(result.lastAccessed).toBeUndefined();
+  });
+
+  test("MemoryRecallOptions with tierFilter and limit compiles", () => {
+    const options: MemoryRecallOptions = {
+      namespace: "research",
+      tierFilter: "hot",
+      limit: 10,
+    };
+    expect(options.tierFilter).toBe("hot");
+    expect(options.limit).toBe(10);
+  });
+
+  test("MemoryRecallOptions tierFilter accepts 'all' literal", () => {
+    const options: MemoryRecallOptions = { tierFilter: "all" };
+    expect(options.tierFilter).toBe("all");
+  });
+
+  test("MemoryRecallOptions without new fields still compiles (backward compat)", () => {
+    const options: MemoryRecallOptions = { namespace: "default" };
+    expect(options.namespace).toBe("default");
+    expect(options.tierFilter).toBeUndefined();
+    expect(options.limit).toBeUndefined();
+  });
+
+  test("MemoryStoreOptions with category and relatedEntities compiles", () => {
+    const options: MemoryStoreOptions = {
+      namespace: "research",
+      tags: ["important"],
+      category: "milestone",
+      relatedEntities: ["entity-1", "entity-2"],
+    };
+    expect(options.category).toBe("milestone");
+    expect(options.relatedEntities).toEqual(["entity-1", "entity-2"]);
+  });
+
+  test("MemoryStoreOptions without new fields still compiles (backward compat)", () => {
+    const options: MemoryStoreOptions = { namespace: "default", tags: ["test"] };
+    expect(options.namespace).toBe("default");
+    expect(options.category).toBeUndefined();
+    expect(options.relatedEntities).toBeUndefined();
   });
 });
 

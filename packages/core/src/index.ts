@@ -187,6 +187,7 @@ export type {
   MemoryRecallOptions,
   MemoryResult,
   MemoryStoreOptions,
+  MemoryTier,
   ProcessAccounter,
   ProcessId,
   ProcessState,

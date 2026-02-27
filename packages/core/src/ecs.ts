@@ -250,22 +250,39 @@ export interface ComponentEvent {
 // Singleton component types (sub-types deferred to L2)
 // ---------------------------------------------------------------------------
 
+/** Memory temperature tier for decay-based prioritization. */
+export type MemoryTier = "hot" | "warm" | "cold";
+
 /** A single memory recall result with content and optional metadata. */
 export interface MemoryResult {
   readonly content: string;
   readonly score?: number;
   readonly metadata?: Readonly<Record<string, unknown>>;
+  /** Temperature tier — backends that support tiering populate this. */
+  readonly tier?: MemoryTier | undefined;
+  /** Current decay factor in [0.0, 1.0] — 1.0 = no decay, 0.0 = fully decayed. */
+  readonly decayScore?: number | undefined;
+  /** ISO-8601 timestamp of last access — used by decay engine. */
+  readonly lastAccessed?: string | undefined;
 }
 
 /** Options for MemoryComponent.store() — namespace isolation and tagging. */
 export interface MemoryStoreOptions {
   readonly namespace?: string;
   readonly tags?: readonly string[];
+  /** Semantic category for fact classification (e.g., "milestone", "preference"). */
+  readonly category?: string | undefined;
+  /** Entity IDs this memory relates to — enables graph-aware retrieval. */
+  readonly relatedEntities?: readonly string[] | undefined;
 }
 
 /** Options for MemoryComponent.recall() — namespace isolation. */
 export interface MemoryRecallOptions {
   readonly namespace?: string;
+  /** Filter results by temperature tier. Omit or "all" to include all tiers. */
+  readonly tierFilter?: MemoryTier | "all" | undefined;
+  /** Maximum number of results to return. Backend-specific default if omitted. */
+  readonly limit?: number | undefined;
 }
 
 export interface MemoryComponent {
