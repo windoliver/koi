@@ -21,14 +21,42 @@ interface ResolvedDirectory {
 declare function resolveDirectoryContent(dirPath: string, label: string): Promise<ResolvedDirectory>;
 
 /**
- * Low-level file reading utilities for content resolution.
+ * Path segment validation for safe file path construction.
+ *
+ * Prevents path traversal and special character injection when
+ * building file paths from user-controlled segments (agent names, file names).
  */
 /**
- * Reads a file's text content.
+ * Returns true if the segment is safe to use in path construction.
+ * Validates against traversal attacks (../, ..), hidden files (.hidden),
+ * special characters (slashes, null bytes, spaces), and excessive length.
+ */
+declare function isValidPathSegment(segment: string): boolean;
+
+/**
+ * Low-level file reading utilities for content resolution.
+ */
+/** Result of a bounded file read with truncation metadata. */
+interface BoundedReadResult {
+    readonly content: string;
+    readonly truncated: boolean;
+    readonly originalSize: number;
+}
+/**
+ * Reads a file's text content, optionally bounded by a character budget.
+ *
+ * When \`maxChars\` is omitted, reads the entire file (unbounded).
+ * When \`maxChars\` is provided, reads at most \`maxChars * 4\` bytes (worst-case UTF-8)
+ * then truncates to \`maxChars\` characters — guaranteeing bounded I/O for large files.
+ *
  * Returns undefined when the file does not exist (ENOENT) or path is a directory (EISDIR).
  * Throws on unexpected errors (permission denied, disk failure, etc.).
+ *
+ * @overload Without maxChars — returns plain string (backward compatible)
+ * @overload With maxChars — returns BoundedReadResult with truncation metadata
  */
 declare function readBoundedFile(filePath: string): Promise<string | undefined>;
+declare function readBoundedFile(filePath: string, maxChars: number): Promise<BoundedReadResult | undefined>;
 /**
  * Returns true if the given path is a readable directory.
  * Returns false when the path does not exist (ENOENT) or is not a directory (ENOTDIR).
@@ -91,6 +119,21 @@ interface TruncateResult {
  */
 declare function truncateToTokenBudget(text: string, maxTokens: number, label: string): TruncateResult;
 
-export { CHARS_PER_TOKEN, type ResolveContentOptions, type ResolvedContent, type ResolvedDirectory, SECTION_HEADERS, SOUL_DIR_FILES, type TruncateResult, estimateTokens, isDirectory, isInlineContent, readBoundedFile, resolveContent, resolveDirectoryContent, resolveInputPath, truncateToTokenBudget };
+/**
+ * Surrogate-pair-safe string truncation.
+ *
+ * JavaScript strings are UTF-16. Characters outside the BMP (emoji, CJK extensions)
+ * are encoded as surrogate pairs (2 code units). A naive \`text.slice(0, n)\` can split
+ * a pair, producing a malformed string with a dangling high surrogate.
+ *
+ * This function backs off by one character when the slice boundary lands on a high surrogate.
+ */
+/**
+ * Truncates \`text\` to at most \`maxChars\` code units without splitting a surrogate pair.
+ * If the boundary lands on a high surrogate, backs off by one to keep the string valid.
+ */
+declare function truncateSafe(text: string, maxChars: number): string;
+
+export { type BoundedReadResult, CHARS_PER_TOKEN, type ResolveContentOptions, type ResolvedContent, type ResolvedDirectory, SECTION_HEADERS, SOUL_DIR_FILES, type TruncateResult, estimateTokens, isDirectory, isInlineContent, isValidPathSegment, readBoundedFile, resolveContent, resolveDirectoryContent, resolveInputPath, truncateSafe, truncateToTokenBudget };
 "
 `;

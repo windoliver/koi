@@ -6,23 +6,9 @@
  */
 
 import { join, resolve } from "node:path";
-import { mapFsError } from "@koi/errors";
+import { isValidPathSegment, readBoundedFile } from "@koi/file-resolution";
 import { fnv1a } from "@koi/hash";
 import type { BootstrapSlot, ResolvedSlot } from "./types.js";
-
-/** Allowlist for path segments (agent names and file names). */
-const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
-
-/** Maximum bytes to read per file (4 bytes per char worst-case UTF-8). */
-const BYTES_PER_CHAR_MAX = 4;
-
-/**
- * Validates that a path segment is safe (no traversal, no special chars).
- * Returns true if the segment is safe to use in path construction.
- */
-function isSafePathSegment(segment: string): boolean {
-  return SAFE_PATH_SEGMENT.test(segment);
-}
 
 /**
  * Resolves a single bootstrap slot from the .koi/ hierarchy.
@@ -38,7 +24,7 @@ export async function resolveSlot(
   agentName: string | undefined,
 ): Promise<ResolvedSlot | undefined> {
   // Validate fileName to prevent path traversal
-  if (!isSafePathSegment(slot.fileName)) {
+  if (!isValidPathSegment(slot.fileName)) {
     return undefined;
   }
 
@@ -46,7 +32,7 @@ export async function resolveSlot(
 
   // Try agent-specific path first
   if (agentName !== undefined) {
-    if (!isSafePathSegment(agentName)) {
+    if (!isValidPathSegment(agentName)) {
       return undefined;
     }
     const agentPath = join(koiDir, "agents", agentName, slot.fileName);
@@ -65,40 +51,26 @@ export async function resolveSlot(
  * Attempts to read a single file for a slot.
  * Returns undefined if the file does not exist.
  *
- * Budget is character-based. Reads a bounded number of bytes
- * (budget * 4 for worst-case UTF-8), then truncates by characters.
+ * Uses readBoundedFile with character budget for bounded I/O.
  */
 async function tryReadSlot(
   slot: BootstrapSlot,
   filePath: string,
 ): Promise<ResolvedSlot | undefined> {
-  const file = Bun.file(filePath);
-  const exists = await file.exists();
-  if (!exists) {
+  const result = await readBoundedFile(filePath, slot.budget);
+  if (result === undefined) {
     return undefined;
   }
 
-  try {
-    const originalSize = file.size;
-    // Read bounded bytes, then character-truncate for consistent budget semantics
-    const maxBytes = slot.budget * BYTES_PER_CHAR_MAX;
-    const raw = await file.slice(0, maxBytes).text();
-    const truncated = raw.length > slot.budget;
-    const content = truncated ? raw.slice(0, slot.budget) : raw;
-    const contentHash = fnv1a(content);
+  const contentHash = fnv1a(result.content);
 
-    return {
-      fileName: slot.fileName,
-      label: slot.label,
-      content,
-      contentHash,
-      resolvedFrom: filePath,
-      truncated,
-      originalSize,
-    };
-  } catch (e: unknown) {
-    // Re-throw with FS-aware error mapping for better diagnostics
-    const mapped = mapFsError(e, filePath);
-    throw new Error(mapped.message, { cause: e });
-  }
+  return {
+    fileName: slot.fileName,
+    label: slot.label,
+    content: result.content,
+    contentHash,
+    resolvedFrom: filePath,
+    truncated: result.truncated,
+    originalSize: result.originalSize,
+  };
 }

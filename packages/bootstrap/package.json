@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/errors": "workspace:*",
+    "@koi/file-resolution": "workspace:*",
     "@koi/hash": "workspace:*"
   },
   "devDependencies": {

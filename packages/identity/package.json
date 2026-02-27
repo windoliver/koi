@@ -10,9 +10,11 @@
     }
   },
   "dependencies": {
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "@koi/file-resolution": "workspace:*"
   },
   "devDependencies": {
+    "@koi/bootstrap": "workspace:*",
     "@koi/engine": "workspace:*",
     "@koi/engine-pi": "workspace:*",
     "@koi/manifest": "workspace:*",

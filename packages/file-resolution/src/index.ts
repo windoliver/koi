@@ -9,8 +9,11 @@
 
 export type { ResolvedDirectory } from "./directory.js";
 export { resolveDirectoryContent, SECTION_HEADERS, SOUL_DIR_FILES } from "./directory.js";
+export { isValidPathSegment } from "./path-safety.js";
+export type { BoundedReadResult } from "./read.js";
 export { isDirectory, isInlineContent, readBoundedFile, resolveInputPath } from "./read.js";
 export type { ResolveContentOptions, ResolvedContent } from "./resolve-content.js";
 export { resolveContent } from "./resolve-content.js";
 export type { TruncateResult } from "./tokens.js";
 export { CHARS_PER_TOKEN, estimateTokens, truncateToTokenBudget } from "./tokens.js";
+export { truncateSafe } from "./truncate.js";

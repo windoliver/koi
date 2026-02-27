@@ -4,20 +4,64 @@
 
 import { readdir } from "node:fs/promises";
 import { resolve } from "node:path";
+import { truncateSafe } from "./truncate.js";
+
+/** Maximum bytes per character in UTF-8 encoding. */
+const BYTES_PER_CHAR_MAX = 4;
 
 /** Returns true if the error has a `code` property matching the given value. */
 function hasErrorCode(err: unknown, code: string): boolean {
   return err instanceof Error && "code" in err && (err as { code: unknown }).code === code;
 }
 
+/** Result of a bounded file read with truncation metadata. */
+export interface BoundedReadResult {
+  readonly content: string;
+  readonly truncated: boolean;
+  readonly originalSize: number;
+}
+
 /**
- * Reads a file's text content.
+ * Reads a file's text content, optionally bounded by a character budget.
+ *
+ * When `maxChars` is omitted, reads the entire file (unbounded).
+ * When `maxChars` is provided, reads at most `maxChars * 4` bytes (worst-case UTF-8)
+ * then truncates to `maxChars` characters — guaranteeing bounded I/O for large files.
+ *
  * Returns undefined when the file does not exist (ENOENT) or path is a directory (EISDIR).
  * Throws on unexpected errors (permission denied, disk failure, etc.).
+ *
+ * @overload Without maxChars — returns plain string (backward compatible)
+ * @overload With maxChars — returns BoundedReadResult with truncation metadata
  */
-export async function readBoundedFile(filePath: string): Promise<string | undefined> {
+export async function readBoundedFile(filePath: string): Promise<string | undefined>;
+export async function readBoundedFile(
+  filePath: string,
+  maxChars: number,
+): Promise<BoundedReadResult | undefined>;
+export async function readBoundedFile(
+  filePath: string,
+  maxChars?: number,
+): Promise<string | BoundedReadResult | undefined> {
   try {
-    return await Bun.file(filePath).text();
+    const file = Bun.file(filePath);
+
+    if (maxChars === undefined) {
+      // Unbounded — read entire file
+      return await file.text();
+    }
+
+    // Bounded — check existence first, then byte-slice
+    const exists = await file.exists();
+    if (!exists) return undefined;
+
+    const originalSize = file.size;
+    const maxBytes = maxChars * BYTES_PER_CHAR_MAX;
+    const raw = await file.slice(0, maxBytes).text();
+    const truncated = raw.length > maxChars;
+    const content = truncated ? truncateSafe(raw, maxChars) : raw;
+
+    return { content, truncated, originalSize };
   } catch (err: unknown) {
     if (hasErrorCode(err, "ENOENT") || hasErrorCode(err, "EISDIR")) return undefined;
     throw new Error(`Failed to read file: ${filePath}`, { cause: err });

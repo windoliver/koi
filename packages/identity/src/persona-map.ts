@@ -2,9 +2,9 @@
  * Builds and manages the per-channel persona map.
  */
 
-import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { InboundMessage } from "@koi/core/message";
+import { readBoundedFile } from "@koi/file-resolution";
 import type { ChannelPersonaConfig, CreateIdentityOptions } from "./config.js";
 
 /** A resolved persona with loaded instruction text and tracked file paths. */
@@ -26,48 +26,53 @@ export interface CachedPersona {
 
 /**
  * Resolves instruction content for a single persona config entry.
- * If instructions is a `{ path }` object, reads from disk synchronously.
+ * If instructions is a `{ path }` object, reads from disk asynchronously.
  * If instructions is an inline string, uses it directly.
  */
-export function resolvePersonaContent(
+export async function resolvePersonaContent(
   persona: ChannelPersonaConfig,
   basePath: string | undefined,
-): ResolvedPersona {
-  let instructions = "";
-  const sources: string[] = [];
-
-  if (persona.instructions !== undefined) {
-    if (typeof persona.instructions === "string") {
-      instructions = persona.instructions;
-      // Inline — no file tracked
-    } else {
-      // { path: string } — load from file
-      const filePath =
-        basePath !== undefined
-          ? resolve(basePath, persona.instructions.path)
-          : resolve(persona.instructions.path);
-      instructions = readFileSync(filePath, "utf-8");
-      sources.push(filePath);
-    }
-  }
-
-  return {
-    channelId: persona.channelId,
+): Promise<ResolvedPersona> {
+  const optionalFields = {
     ...(persona.name !== undefined ? { name: persona.name } : {}),
     ...(persona.avatar !== undefined ? { avatar: persona.avatar } : {}),
-    instructions,
-    sources,
+  };
+
+  if (persona.instructions === undefined) {
+    return { channelId: persona.channelId, ...optionalFields, instructions: "", sources: [] };
+  }
+
+  if (typeof persona.instructions === "string") {
+    return {
+      channelId: persona.channelId,
+      ...optionalFields,
+      instructions: persona.instructions,
+      sources: [],
+    };
+  }
+
+  // { path: string } — load from file asynchronously
+  const filePath =
+    basePath !== undefined
+      ? resolve(basePath, persona.instructions.path)
+      : resolve(persona.instructions.path);
+  const content = await readBoundedFile(filePath);
+  return {
+    channelId: persona.channelId,
+    ...optionalFields,
+    instructions: content ?? "",
+    sources: content !== undefined ? [filePath] : [],
   };
 }
 
 /**
- * Builds the system message text from a resolved persona.
+ * Generates the persona text from a resolved persona.
  * Returns undefined when nothing meaningful to inject (no name, no instructions).
  *
  * Note: `avatar` is intentionally excluded — it is display metadata for the channel
  * UI layer, not LLM-visible content. Channel adapters may surface it independently.
  */
-function buildSystemText(resolved: ResolvedPersona): string | undefined {
+function generatePersonaText(resolved: ResolvedPersona): string | undefined {
   const parts: string[] = [];
   if (resolved.name !== undefined && resolved.name.length > 0) {
     parts.push(`You are ${resolved.name}.`);
@@ -83,7 +88,7 @@ function buildSystemText(resolved: ResolvedPersona): string | undefined {
  * Returns undefined when there is nothing to inject.
  */
 function buildPersonaMessage(resolved: ResolvedPersona): InboundMessage | undefined {
-  const text = buildSystemText(resolved);
+  const text = generatePersonaText(resolved);
   if (text === undefined) return undefined;
 
   return {
@@ -101,7 +106,7 @@ export async function buildPersonaMap(
   options: CreateIdentityOptions,
 ): Promise<Map<string, CachedPersona>> {
   const resolved = await Promise.all(
-    options.personas.map((p): ResolvedPersona => resolvePersonaContent(p, options.basePath)),
+    options.personas.map((p) => resolvePersonaContent(p, options.basePath)),
   );
 
   const map = new Map<string, CachedPersona>();
@@ -117,7 +122,7 @@ export async function buildPersonaMap(
 /**
  * Collects all tracked file paths from a persona map into a Set.
  */
-export function buildWatchedPaths(personaMap: Map<string, CachedPersona>): Set<string> {
+export function buildWatchedPaths(personaMap: ReadonlyMap<string, CachedPersona>): Set<string> {
   const paths = new Set<string>();
   for (const cached of personaMap.values()) {
     for (const s of cached.sources) {

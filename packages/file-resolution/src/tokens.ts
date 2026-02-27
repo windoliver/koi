@@ -2,6 +2,8 @@
  * Token estimation and budget enforcement for content resolution.
  */
 
+import { truncateSafe } from "./truncate.js";
+
 /** Approximate chars per token — same heuristic as @koi/context. */
 export const CHARS_PER_TOKEN = 4;
 
@@ -28,7 +30,7 @@ export function truncateToTokenBudget(
   const maxChars = maxTokens * CHARS_PER_TOKEN;
   if (text.length <= maxChars) return { text, warning: undefined };
   return {
-    text: text.slice(0, maxChars),
+    text: truncateSafe(text, maxChars),
     warning: `${label} content truncated from ~${estimateTokens(text)} to ${maxTokens} tokens`,
   };
 }
