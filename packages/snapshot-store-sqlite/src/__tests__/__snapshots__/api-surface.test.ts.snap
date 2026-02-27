@@ -1,0 +1,40 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/snapshot-store-sqlite API surface . has stable type surface 1`] = `
+"import { SnapshotChainStore } from '@koi/core';
+
+/**
+ * Configuration types for the SQLite-backed SnapshotChainStore.
+ */
+/** Configuration for createSqliteSnapshotStore. */
+interface SqliteSnapshotStoreConfig {
+    /** Path to the SQLite database file. Use ":memory:" for tests. */
+    readonly dbPath: string;
+    /**
+     * Durability mode — controls PRAGMA synchronous.
+     * - "process": NORMAL — durable against process crashes (default)
+     * - "os": FULL — durable against OS/power crashes
+     */
+    readonly durability?: "process" | "os" | undefined;
+    /** Table name for snapshot nodes. Default: "snapshot_nodes". Allows multiple stores per DB. */
+    readonly tableName?: string | undefined;
+}
+
+/**
+ * SQLite-backed SnapshotChainStore<T> — persistent DAG snapshot storage.
+ *
+ * Uses bun:sqlite with WAL mode. Supports full DAG topology,
+ * content-hash deduplication, ancestor walking, forking, and pruning.
+ * Heads are tracked in-memory for O(1) lookup, initialized from DB on construction.
+ *
+ * A node's chain membership is tracked in a separate \`chain_members\` table
+ * so that a single node can belong to multiple chains (via fork).
+ */
+
+declare function createSqliteSnapshotStore<T>(config: SqliteSnapshotStoreConfig): SnapshotChainStore<T> & {
+    readonly close: () => void;
+};
+
+export { type SqliteSnapshotStoreConfig, createSqliteSnapshotStore };
+"
+`;

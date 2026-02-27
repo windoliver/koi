@@ -54,6 +54,20 @@
         "@koi/hash": "workspace:*",
       },
     },
+    "packages/autonomous": {
+      "name": "@koi/autonomous",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/harness-scheduler": "workspace:*",
+        "@koi/long-running": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/snapshot-chain-store": "workspace:*",
+        "@koi/snapshot-store-sqlite": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/bootstrap": {
       "name": "@koi/bootstrap",
       "version": "0.0.0",
@@ -527,6 +541,16 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-loop": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/harness-scheduler": {
+      "name": "@koi/harness-scheduler",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -1178,6 +1202,19 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/snapshot-store-sqlite": {
+      "name": "@koi/snapshot-store-sqlite",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/sqlite-utils": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/snapshot-chain-store": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/soul": {
       "name": "@koi/soul",
       "version": "0.0.0",
@@ -1754,6 +1791,8 @@
 
     "@koi/artifact-client": ["@koi/artifact-client@workspace:packages/artifact-client"],
 
+    "@koi/autonomous": ["@koi/autonomous@workspace:packages/autonomous"],
+
     "@koi/bootstrap": ["@koi/bootstrap@workspace:packages/bootstrap"],
 
     "@koi/browser-playwright": ["@koi/browser-playwright@workspace:packages/browser-playwright"],
@@ -1831,6 +1870,8 @@
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/git-utils"],
 
     "@koi/handoff": ["@koi/handoff@workspace:packages/handoff"],
+
+    "@koi/harness-scheduler": ["@koi/harness-scheduler@workspace:packages/harness-scheduler"],
 
     "@koi/hash": ["@koi/hash@workspace:packages/hash"],
 
@@ -1945,6 +1986,8 @@
     "@koi/skill-scanner": ["@koi/skill-scanner@workspace:packages/skill-scanner"],
 
     "@koi/snapshot-chain-store": ["@koi/snapshot-chain-store@workspace:packages/snapshot-chain-store"],
+
+    "@koi/snapshot-store-sqlite": ["@koi/snapshot-store-sqlite@workspace:packages/snapshot-store-sqlite"],
 
     "@koi/soul": ["@koi/soul@workspace:packages/soul"],
 
