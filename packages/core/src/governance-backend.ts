@@ -1,82 +1,91 @@
 /**
- * GovernanceBackend — pluggable anomaly detection and constraint enforcement contract (Layer 0).
+ * Governance backend — pluggable rule-based policy evaluation contract (Layer 0).
  *
- * Defines the interface for evaluating governance events against policy rules,
- * checking constraints, recording compliance attestations, and querying violations.
+ * Defines the shapes for evaluating policy requests, checking constraints,
+ * recording compliance, and querying violation history. L2 packages implement
+ * GovernanceBackend for specific backends (OPA, Cedar, in-memory rule engine, etc.).
  *
- * L2 packages implement GovernanceBackend for specific backends:
- *   - @koi/governance: local in-process rule evaluation (default)
- *   - @koi/governance-nexus: Nexus governance brick (attestation, audit, compliance)
- *   - User-provided: any implementation of GovernanceBackend
+ * Complementary to GovernanceController (governance.ts) which handles numeric
+ * sensor/setpoint governance (turns, tokens, spawn depth). GovernanceBackend
+ * handles rule-based policy evaluation, constraint checking, compliance recording,
+ * and violation tracking. Both are composed by the unified governance controller (#261).
  *
- * Consumed by: agent-monitor (#59), spawn governance, ProposalGate (#223),
- *              unified governance controller (#261).
+ * Relationship to ScopeEnforcer (scope-enforcement.ts): ScopeEnforcer handles
+ * subsystem access checks (filesystem, browser, credentials, memory) with a
+ * boolean allow/deny result. GovernanceBackend handles broader policy evaluation
+ * with rich verdicts, violation details, and compliance recording. They are
+ * independent contracts — ScopeEnforcer is not subsumed.
  *
- * Fail-closed contract: if evaluate() or checkConstraint() throw, callers
- * MUST deny the operation. Infrastructure failures are not distinguished from
- * intentional denials — never treat a throwing backend as permissive.
+ * Fail-closed contract: callers MUST deny access when evaluate() throws or
+ * returns an error. A missing or errored backend means "deny all".
  *
- * Exception: governanceAttestationId() is a branded type constructor (identity cast),
- * permitted in L0 as a zero-logic operation for type safety.
- *
- * Exception: DEFAULT_VIOLATION_QUERY_LIMIT and VIOLATION_SEVERITIES are pure readonly
- * data constants derived from L0 type definitions, codifying architecture-doc
- * invariants with zero logic.
+ * Exception: constants (VIOLATION_SEVERITY_ORDER, GOVERNANCE_ALLOW,
+ * DEFAULT_VIOLATION_QUERY_LIMIT) are pure readonly data derived from L0 type
+ * definitions, permitted in L0 per architecture rules.
  */
 
 import type { JsonObject } from "./common.js";
-import type { AgentId } from "./ecs.js";
-import type { KoiError, Result } from "./errors.js";
+import type { AgentId, SessionId } from "./ecs.js";
 
 // ---------------------------------------------------------------------------
-// GovernanceBackendEvent — input event for policy evaluation
+// PolicyRequestKind — what kind of action is being evaluated
 // ---------------------------------------------------------------------------
 
 /**
- * An event submitted to the governance backend for policy evaluation.
- *
- * Distinct from GovernanceEvent (governance.ts), which is the controller's
- * sensor-update event (a closed discriminated union for the sensor/setpoint model).
- * GovernanceBackendEvent uses an open string kind with an arbitrary payload,
- * supporting any event the backend needs to evaluate — including custom event kinds
- * from L2 packages.
+ * Categorical kind for policy evaluation requests.
+ * Covers the core agent lifecycle actions. Use `custom:${string}` for
+ * domain-specific extensions without modifying the core union.
  */
-export interface GovernanceBackendEvent {
-  /**
-   * Semantic event type. Well-known kinds: "tool_call" | "spawn" | "forge" |
-   * "promotion" | "proposal". Backends may support additional kinds.
-   */
-  readonly kind: string;
-  /** The agent that produced this event. */
+export type PolicyRequestKind =
+  | "tool_call"
+  | "model_call"
+  | "spawn"
+  | "delegation"
+  | "forge"
+  | "handoff"
+  | `custom:${string}`;
+
+// ---------------------------------------------------------------------------
+// PolicyRequest — the input to policy evaluation
+// ---------------------------------------------------------------------------
+
+/**
+ * A request to evaluate against governance policy.
+ * Follows the PEP-PDP (Policy Enforcement Point / Policy Decision Point) pattern:
+ * the caller (PEP) constructs a PolicyRequest, the backend (PDP) returns a verdict.
+ */
+export interface PolicyRequest {
+  /** The kind of action being evaluated. */
+  readonly kind: PolicyRequestKind;
+  /** The agent requesting the action. */
   readonly agentId: AgentId;
-  /** Structured event payload — backend-specific content for rule evaluation. */
+  /** Action-specific payload for policy evaluation. */
   readonly payload: JsonObject;
-  /** Unix timestamp (ms) when the event occurred. */
+  /** Unix timestamp (ms) when the request was created. */
   readonly timestamp: number;
 }
 
 // ---------------------------------------------------------------------------
-// ViolationSeverity — categorical severity for policy violations
+// ViolationSeverity — how serious a policy violation is
 // ---------------------------------------------------------------------------
 
 /**
- * Severity level for a policy violation. Ordered from lowest to highest impact.
- * Use VIOLATION_SEVERITIES for the canonical ordering and comparison.
+ * Severity level for policy violations.
+ * Ordered from least to most severe — see VIOLATION_SEVERITY_ORDER for
+ * the canonical sequence.
  */
 export type ViolationSeverity = "info" | "warning" | "critical";
 
 /**
- * Canonical ordering of ViolationSeverity values from lowest to highest impact.
- * Use for severity comparison:
+ * Canonical ordering of ViolationSeverity values from least to most severe.
+ * Use this to avoid hardcoding the sequence in consumers:
  *
  * ```typescript
- * const infoIdx    = VIOLATION_SEVERITIES.indexOf("info");    // 0
- * const warningIdx = VIOLATION_SEVERITIES.indexOf("warning"); // 1
- * const critIdx    = VIOLATION_SEVERITIES.indexOf("critical"); // 2
- * if (VIOLATION_SEVERITIES.indexOf(v.severity) >= VIOLATION_SEVERITIES.indexOf("warning")) { ... }
+ * const idx = VIOLATION_SEVERITY_ORDER.indexOf(violation.severity);
+ * if (idx >= VIOLATION_SEVERITY_ORDER.indexOf("warning")) { ... }
  * ```
  */
-export const VIOLATION_SEVERITIES: readonly ViolationSeverity[] = Object.freeze([
+export const VIOLATION_SEVERITY_ORDER: readonly ViolationSeverity[] = Object.freeze([
   "info",
   "warning",
   "critical",
@@ -86,227 +95,198 @@ export const VIOLATION_SEVERITIES: readonly ViolationSeverity[] = Object.freeze(
 // Violation — a single policy rule violation
 // ---------------------------------------------------------------------------
 
-/**
- * A single policy rule violation produced by a GovernanceBackend.evaluate() call.
- *
- * A GovernanceVerdict may contain multiple Violations — one per violated rule.
- * Backends SHOULD include all violated rules (not just the first) to enable
- * consumers to make fully informed decisions.
- */
+/** A single policy rule violation found during evaluation. */
 export interface Violation {
-  /** The rule identifier that was violated (backend-defined). */
+  /** The rule identifier that was violated (e.g., "max-spawn-depth", "no-external-api"). */
   readonly rule: string;
-  /** Categorical impact level of this violation. */
+  /** How severe this violation is. */
   readonly severity: ViolationSeverity;
-  /** Human-readable description of the violation. Answers: what happened + why. */
+  /** Human-readable description of the violation. */
   readonly message: string;
-  /** Optional structured context for this violation (threshold values, agent state, etc.). */
+  /** Optional structured context for diagnostics. */
   readonly context?: JsonObject | undefined;
 }
 
 // ---------------------------------------------------------------------------
-// GovernanceVerdict — result of a policy evaluation
+// GovernanceVerdict — the output of policy evaluation
 // ---------------------------------------------------------------------------
 
 /**
- * The outcome of a GovernanceBackend.evaluate() call.
- *
- * Distinct from GovernanceCheck (governance.ts), which is the controller's
- * per-sensor check result ("did this one variable exceed its limit?", single
- * variable, retryable flag). GovernanceVerdict is the backend's policy evaluation
- * result: zero or more violations across all applicable rules for a single event.
+ * Result of evaluating a PolicyRequest against governance rules.
+ * Discriminated union on `ok`:
+ * - `ok: true` — request is allowed, with optional diagnostics (info-level observations)
+ * - `ok: false` — request is denied, with one or more violations
  */
 export type GovernanceVerdict =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly violations: readonly Violation[] };
+  | {
+      readonly ok: true;
+      /** Optional info-level observations (e.g., "approaching rate limit"). */
+      readonly diagnostics?: readonly Violation[] | undefined;
+    }
+  | {
+      readonly ok: false;
+      /** One or more violations that caused denial. Never empty when ok is false. */
+      readonly violations: readonly Violation[];
+    };
+
+/**
+ * Singleton allow verdict for the common case.
+ * Avoids allocating a new object on every allow decision.
+ * Frozen to prevent accidental mutation.
+ */
+export const GOVERNANCE_ALLOW: GovernanceVerdict = Object.freeze({
+  ok: true as const,
+});
 
 // ---------------------------------------------------------------------------
-// ConstraintQuery — input for a specific constraint check
+// ConstraintQuery — input to constraint checking
 // ---------------------------------------------------------------------------
 
 /**
- * Input for a point-in-time constraint check against a specific agent.
- * The constraint is identified by ID; the backend resolves the rule definition.
+ * Minimal query for checking a single constraint.
+ * Used by ConstraintChecker to evaluate numeric or boolean constraints
+ * (e.g., "can this agent spawn at depth 4?").
  */
 export interface ConstraintQuery {
-  /** The constraint identifier to check (backend-defined rule ID). */
-  readonly constraintId: string;
-  /** The agent to check the constraint against. */
+  /** The constraint kind to check (e.g., "spawn_depth", "token_budget"). */
+  readonly kind: string;
+  /** The agent the constraint applies to. */
   readonly agentId: AgentId;
-  /** Optional structured context for evaluating the constraint. */
+  /** Optional numeric or string value to check against the constraint limit. */
+  readonly value?: number | string | undefined;
+  /** Optional structured context for the check. */
   readonly context?: JsonObject | undefined;
 }
 
 // ---------------------------------------------------------------------------
-// ViolationQuery — filter for querying stored violation records
+// ComplianceRecord — lightweight attestation for audit trails
+// ---------------------------------------------------------------------------
+
+/** A recorded compliance event linking a request to its verdict. */
+export interface ComplianceRecord {
+  /** Unique identifier for this compliance record. */
+  readonly requestId: string;
+  /** The original policy request that was evaluated. */
+  readonly request: PolicyRequest;
+  /** The verdict returned by the evaluator. */
+  readonly verdict: GovernanceVerdict;
+  /** Unix timestamp (ms) when the evaluation occurred. */
+  readonly evaluatedAt: number;
+  /** Fingerprint of the policy version used for evaluation (for reproducibility). */
+  readonly policyFingerprint: string;
+}
+
+// ---------------------------------------------------------------------------
+// ViolationFilter + ViolationPage — querying violation history
 // ---------------------------------------------------------------------------
 
 /**
- * Default maximum number of violations returned by a single getViolations() call.
+ * Default maximum number of violation entries returned by a single getViolations() call.
  * Implementations SHOULD apply this when the caller omits `limit`.
  */
-export const DEFAULT_VIOLATION_QUERY_LIMIT = 100;
+export const DEFAULT_VIOLATION_QUERY_LIMIT: 100 = 100;
 
 /**
- * Filter for querying stored violation records.
+ * Filter for querying recorded violations.
  * All fields are optional — omitting a field means "no constraint on that dimension".
- * Providing no fields returns ALL violations up to `limit` — use with care.
  */
-export interface ViolationQuery {
-  /** Filter to violations for a specific agent. */
+export interface ViolationFilter {
+  /** Filter to violations for this agent. */
   readonly agentId?: AgentId | undefined;
-  /** Filter to violations matching any of these severity levels. */
-  readonly severity?: readonly ViolationSeverity[] | undefined;
-  /** Filter to violations from a specific rule. */
-  readonly ruleId?: string | undefined;
+  /** Filter to violations within this session. */
+  readonly sessionId?: SessionId | undefined;
+  /** Filter to violations at or above this severity. */
+  readonly severity?: ViolationSeverity | undefined;
+  /** Filter to violations matching this rule identifier. */
+  readonly rule?: string | undefined;
   /** Include only violations at or after this Unix timestamp (ms). */
-  readonly after?: number | undefined;
+  readonly since?: number | undefined;
   /** Include only violations before this Unix timestamp (ms). */
-  readonly before?: number | undefined;
-  /**
-   * Maximum number of violations to return.
-   * Defaults to DEFAULT_VIOLATION_QUERY_LIMIT when omitted.
-   */
+  readonly until?: number | undefined;
+  /** Maximum number of entries to return. Defaults to DEFAULT_VIOLATION_QUERY_LIMIT. */
   readonly limit?: number | undefined;
+  /** Opaque cursor for pagination (from a previous ViolationPage.cursor). */
+  readonly offset?: string | undefined;
+}
+
+/** Paginated result of a violation query. */
+export interface ViolationPage {
+  /** Violation entries matching the filter. */
+  readonly items: readonly Violation[];
+  /** Opaque cursor for fetching the next page. Absent when no more pages. */
+  readonly cursor?: string | undefined;
+  /** Total count of matching violations (if the backend supports it). */
+  readonly total?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
-// GovernanceAttestation — compliance claim recorded by the backend
+// Sub-interfaces (ISP split)
 // ---------------------------------------------------------------------------
 
-declare const __governanceAttestationBrand: unique symbol;
-
 /**
- * Branded string type for governance attestation identifiers.
- * Prevents accidental mixing with other string IDs (ProposalId, BrickId, etc.)
- * at compile time.
+ * Evaluates policy requests and returns verdicts.
+ *
+ * The `scope` field is a hot-path optimization: when present, the engine
+ * can skip invoking this evaluator for request kinds not in the scope set.
+ * When absent, the evaluator is invoked for all request kinds.
  */
-export type GovernanceAttestationId = string & {
-  readonly [__governanceAttestationBrand]: "GovernanceAttestationId";
-};
-
-/** Create a branded GovernanceAttestationId from a plain string. */
-export function governanceAttestationId(raw: string): GovernanceAttestationId {
-  return raw as GovernanceAttestationId;
-}
-
-/**
- * Data provided by the caller when recording a compliance attestation.
- * The backend assigns id, attestedAt, and attestedBy — callers provide
- * the agentId, ruleId, verdict, and optional evidence.
- */
-export interface GovernanceAttestationInput {
-  /** The agent this attestation is about. */
-  readonly agentId: AgentId;
-  /** The rule or policy this attestation covers (backend-defined rule ID). */
-  readonly ruleId: string;
-  /** The policy evaluation result being attested. */
-  readonly verdict: GovernanceVerdict;
-  /** Optional structured evidence supporting the attestation. */
-  readonly evidence?: JsonObject | undefined;
-}
-
-/**
- * A governance compliance attestation as stored and returned by the backend.
- * Immutable — each attestation is a point-in-time compliance claim.
- * Callers receive this from recordAttestation(); it is never mutated.
- */
-export interface GovernanceAttestation {
-  /** Backend-assigned unique identifier for this attestation. */
-  readonly id: GovernanceAttestationId;
-  /** The agent this attestation is about. */
-  readonly agentId: AgentId;
-  /** The rule or policy this attestation covers. */
-  readonly ruleId: string;
-  /** The policy evaluation result being attested. */
-  readonly verdict: GovernanceVerdict;
-  /** Optional structured evidence supporting the attestation. */
-  readonly evidence?: JsonObject | undefined;
-  /** Unix timestamp (ms) when this attestation was recorded. Backend-assigned. */
-  readonly attestedAt: number;
+export interface PolicyEvaluator {
+  /** Evaluate a policy request. Returns a verdict (allow/deny with details). */
+  readonly evaluate: (request: PolicyRequest) => GovernanceVerdict | Promise<GovernanceVerdict>;
   /**
-   * Identity of the backend that recorded this attestation.
-   * Allows consumers to distinguish attestations from different backends
-   * (e.g., "local", "nexus", "custom").
+   * Optional declarative scope filter. When present, this evaluator is only
+   * invoked for request kinds matching one of these values. When absent,
+   * the evaluator handles all request kinds.
    */
-  readonly attestedBy: string;
+  readonly scope?: readonly PolicyRequestKind[] | undefined;
+}
+
+/** Checks individual constraints (numeric/boolean limit checks). */
+export interface ConstraintChecker {
+  /** Check whether a constraint is satisfied. Returns true if the constraint passes. */
+  readonly checkConstraint: (query: ConstraintQuery) => boolean | Promise<boolean>;
+}
+
+/** Records compliance events for audit trails. */
+export interface ComplianceRecorder {
+  /** Record a compliance event. Returns the recorded entry. */
+  readonly recordCompliance: (
+    record: ComplianceRecord,
+  ) => ComplianceRecord | Promise<ComplianceRecord>;
+}
+
+/** Queries recorded violation history. */
+export interface ViolationStore {
+  /** Query recorded violations matching the filter. */
+  readonly getViolations: (filter: ViolationFilter) => ViolationPage | Promise<ViolationPage>;
 }
 
 // ---------------------------------------------------------------------------
-// GovernanceBackend — the main pluggable contract
+// GovernanceBackend — composite interface
 // ---------------------------------------------------------------------------
 
 /**
- * Pluggable anomaly detection and constraint enforcement backend.
+ * Pluggable governance backend for rule-based policy evaluation.
  *
- * All methods return `T | Promise<T>` — in-memory implementations return sync
- * values, database/network implementations return Promises. Callers must always
- * `await` the result.
+ * Composed of ISP-split sub-interfaces:
+ * - `evaluator` (required) — the core policy evaluation engine
+ * - `constraints` (optional) — individual constraint checks
+ * - `compliance` (optional) — compliance recording for audit
+ * - `violations` (optional) — violation history queries
  *
- * **Fail-closed contract**: `evaluate()` and `checkConstraint()` do NOT use
- * `Result<T, KoiError>`. If they throw, callers MUST treat the operation as
- * denied. Infrastructure failures are indistinguishable from intentional denials
- * — never treat a throwing backend as permissive.
- *
- * `recordAttestation()` and `getViolations()` use `Result<T, KoiError>` because
- * their callers need structured error information (retry vs. permanent failure,
- * storage unavailable vs. invalid input).
- *
- * @see GovernanceController (governance.ts) — sensor/setpoint runtime model.
- * @see ProposalGate (proposal.ts) — structural layer change governance.
- * @see AuditSink (audit-backend.ts) — structured audit logging.
+ * Fail-closed: if `evaluator.evaluate()` throws, callers MUST deny.
+ * Optional sub-interfaces degrade gracefully — constraint checks return
+ * true (allow) when no ConstraintChecker is configured, etc.
  */
 export interface GovernanceBackend {
-  /**
-   * Evaluate a governance event against all applicable policy rules.
-   *
-   * Returns `{ ok: true }` if no rules are violated.
-   * Returns `{ ok: false; violations }` if one or more rules are violated.
-   * Backends SHOULD include all violated rules (not only the first).
-   *
-   * **Fail closed**: if this method throws, callers MUST deny the operation.
-   * Never treat a throwing backend as permissive.
-   */
-  readonly evaluate: (
-    event: GovernanceBackendEvent,
-  ) => GovernanceVerdict | Promise<GovernanceVerdict>;
-
-  /**
-   * Check whether a specific constraint is satisfied for the given agent.
-   *
-   * Returns `true` if the constraint is satisfied.
-   * Returns `false` if the constraint is violated.
-   *
-   * **Fail closed**: if this method throws, callers MUST deny the operation.
-   * Never treat a throwing backend as permissive.
-   */
-  readonly checkConstraint: (constraint: ConstraintQuery) => boolean | Promise<boolean>;
-
-  /**
-   * Record a compliance attestation for a governance evaluation result.
-   *
-   * The backend assigns `id`, `attestedAt`, and `attestedBy`.
-   * Returns the stored GovernanceAttestation on success.
-   * Returns a KoiError on validation failure or storage error.
-   *
-   * Implementations SHOULD be idempotent for identical
-   * (agentId, ruleId, verdict, timestamp) tuples to handle retry scenarios.
-   */
-  readonly recordAttestation: (
-    input: GovernanceAttestationInput,
-  ) => Result<GovernanceAttestation, KoiError> | Promise<Result<GovernanceAttestation, KoiError>>;
-
-  /**
-   * Query stored violation records matching the filter.
-   *
-   * Returns violations ordered by timestamp descending (most recent first).
-   * Applies DEFAULT_VIOLATION_QUERY_LIMIT when `filter.limit` is omitted.
-   * Check the returned array length against `filter.limit` to detect truncation.
-   */
-  readonly getViolations: (
-    filter: ViolationQuery,
-  ) => Result<readonly Violation[], KoiError> | Promise<Result<readonly Violation[], KoiError>>;
-
-  /** Close the backend and release resources (connections, timers, file handles). */
+  /** The policy evaluator (required). */
+  readonly evaluator: PolicyEvaluator;
+  /** Optional constraint checker for individual limit checks. */
+  readonly constraints?: ConstraintChecker | undefined;
+  /** Optional compliance recorder for audit trails. */
+  readonly compliance?: ComplianceRecorder | undefined;
+  /** Optional violation store for querying violation history. */
+  readonly violations?: ViolationStore | undefined;
+  /** Optional cleanup for stateful backends (connection pools, timers). */
   readonly dispose?: () => void | Promise<void>;
 }

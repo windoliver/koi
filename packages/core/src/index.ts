@@ -315,24 +315,27 @@ export type {
 } from "./governance.js";
 // governance — runtime values
 export { GOVERNANCE_VARIABLES, governanceContributorToken } from "./governance.js";
-// governance backend — pluggable anomaly detection and constraint enforcement contract
+// governance backend — pluggable rule-based policy evaluation contract
 export type {
+  ComplianceRecord,
+  ComplianceRecorder,
+  ConstraintChecker,
   ConstraintQuery,
-  GovernanceAttestation,
-  GovernanceAttestationId,
-  GovernanceAttestationInput,
   GovernanceBackend,
-  GovernanceBackendEvent,
   GovernanceVerdict,
+  PolicyEvaluator,
+  PolicyRequest,
+  PolicyRequestKind,
   Violation,
-  ViolationQuery,
+  ViolationFilter,
+  ViolationPage,
   ViolationSeverity,
+  ViolationStore,
 } from "./governance-backend.js";
-// governance backend — runtime values
 export {
   DEFAULT_VIOLATION_QUERY_LIMIT,
-  governanceAttestationId,
-  VIOLATION_SEVERITIES,
+  GOVERNANCE_ALLOW,
+  VIOLATION_SEVERITY_ORDER,
 } from "./governance-backend.js";
 // handoff — types
 export type {
