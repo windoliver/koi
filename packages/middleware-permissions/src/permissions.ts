@@ -12,8 +12,12 @@ import type {
 } from "@koi/core/middleware";
 import { KoiRuntimeError } from "@koi/errors";
 import type { ApprovalCacheConfig, PermissionsMiddlewareConfig } from "./config.js";
-import { DEFAULT_APPROVAL_CACHE_MAX_ENTRIES } from "./config.js";
+import { DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, DEFAULT_APPROVAL_CACHE_TTL_MS } from "./config.js";
 import { fnv1a } from "./hash.js";
+
+interface CacheEntry {
+  readonly cachedAt: number;
+}
 
 const DEFAULT_APPROVAL_TIMEOUT_MS = 30_000;
 
@@ -29,13 +33,27 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
   // Resolve cache config: true → defaults, false/undefined → disabled, object → custom
   const resolvedCache: ApprovalCacheConfig | false =
     approvalCacheOption === true
-      ? { maxEntries: DEFAULT_APPROVAL_CACHE_MAX_ENTRIES }
+      ? { maxEntries: DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, ttlMs: DEFAULT_APPROVAL_CACHE_TTL_MS }
       : approvalCacheOption === false || approvalCacheOption === undefined
         ? false
-        : { maxEntries: approvalCacheOption.maxEntries ?? DEFAULT_APPROVAL_CACHE_MAX_ENTRIES };
+        : {
+            maxEntries: approvalCacheOption.maxEntries ?? DEFAULT_APPROVAL_CACHE_MAX_ENTRIES,
+            ttlMs: approvalCacheOption.ttlMs ?? DEFAULT_APPROVAL_CACHE_TTL_MS,
+          };
 
-  /** Cache keyed by fnv1a(toolId + ":" + JSON.stringify(input)). Only approvals are cached. */
-  const cache = resolvedCache !== false ? new Map<number, true>() : undefined;
+  // Precompute rules fingerprint — rules are readonly, so this is stable for the middleware lifetime
+  const rulesFingerprint =
+    resolvedCache !== false
+      ? fnv1a(
+          JSON.stringify([[...rules.allow].sort(), [...rules.deny].sort(), [...rules.ask].sort()]),
+        )
+      : 0;
+
+  const ttlMs =
+    resolvedCache !== false ? (resolvedCache.ttlMs ?? DEFAULT_APPROVAL_CACHE_TTL_MS) : 0;
+
+  /** Cache keyed by fnv1a(rulesFingerprint:userId:toolId:input). Only approvals are cached. */
+  const cache = resolvedCache !== false ? new Map<number, CacheEntry>() : undefined;
 
   const capabilityFragment: CapabilityFragment = {
     label: "permissions",
@@ -48,7 +66,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
     describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
 
     async wrapToolCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
@@ -68,11 +86,19 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
 
       // Check approval cache before prompting (true LRU: delete+reinsert on hit)
       if (cache !== undefined) {
-        const cacheKey = fnv1a(`${request.toolId}:${JSON.stringify(request.input)}`);
-        if (cache.has(cacheKey)) {
-          cache.delete(cacheKey);
-          cache.set(cacheKey, true);
-          return next(request);
+        const userId = ctx.session.userId ?? "__anonymous__";
+        const cacheKey = computeCacheKey(rulesFingerprint, userId, request.toolId, request.input);
+        const entry = cache.get(cacheKey);
+        if (entry !== undefined) {
+          const expired = ttlMs > 0 && Date.now() - entry.cachedAt >= ttlMs;
+          if (expired) {
+            cache.delete(cacheKey);
+          } else {
+            // LRU refresh: delete + reinsert moves to end of iteration order
+            cache.delete(cacheKey);
+            cache.set(cacheKey, { cachedAt: entry.cachedAt });
+            return next(request);
+          }
         }
       }
 
@@ -110,13 +136,14 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       if (approved) {
         // Cache the approval (only approvals, not denials)
         if (cache !== undefined && resolvedCache !== false) {
-          const cacheKey = fnv1a(`${request.toolId}:${JSON.stringify(request.input)}`);
+          const userId = ctx.session.userId ?? "__anonymous__";
+          const cacheKey = computeCacheKey(rulesFingerprint, userId, request.toolId, request.input);
           if (cache.size >= (resolvedCache.maxEntries ?? DEFAULT_APPROVAL_CACHE_MAX_ENTRIES)) {
             // LRU eviction: Map iteration order is insertion order, so first key is oldest
             const oldest = cache.keys().next().value;
             if (oldest !== undefined) cache.delete(oldest);
           }
-          cache.set(cacheKey, true);
+          cache.set(cacheKey, { cachedAt: Date.now() });
         }
         return next(request);
       }
@@ -126,4 +153,20 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       });
     },
   };
+}
+
+/**
+ * Compose a cache key from all authorization-relevant dimensions.
+ * Uses null-byte separator to avoid collisions when components contain colons
+ * (e.g. toolId "fs:delete"). JSON.stringify ordering is engine-deterministic
+ * for objects constructed in the same code path; callers constructing input
+ * from heterogeneous sources should pre-sort keys.
+ */
+function computeCacheKey(
+  rulesFingerprint: number,
+  userId: string,
+  toolId: string,
+  input: unknown,
+): number {
+  return fnv1a(`${rulesFingerprint}\0${userId}\0${toolId}\0${JSON.stringify(input)}`);
 }

@@ -48,8 +48,11 @@ declare function createAutoApprovalHandler(): ApprovalHandler;
 
 interface ApprovalCacheConfig {
     readonly maxEntries?: number;
+    /** Time-to-live in ms for cached approvals. 0 = no expiry. Default: 300_000 (5 min). */
+    readonly ttlMs?: number;
 }
 declare const DEFAULT_APPROVAL_CACHE_MAX_ENTRIES = 256;
+declare const DEFAULT_APPROVAL_CACHE_TTL_MS = 300000;
 interface PermissionsMiddlewareConfig {
     readonly engine: PermissionEngine;
     readonly rules: PermissionRules;
@@ -80,6 +83,6 @@ declare const descriptor: BrickDescriptor<KoiMiddleware>;
 
 declare function createPermissionsMiddleware(config: PermissionsMiddlewareConfig): KoiMiddleware$1;
 
-export { type ApprovalCacheConfig, type ApprovalHandler, DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, type PermissionDecision, type PermissionEngine, type PermissionRules, type PermissionsMiddlewareConfig, createAutoApprovalHandler, createPatternPermissionEngine, createPermissionsMiddleware, descriptor, validatePermissionsConfig };
+export { type ApprovalCacheConfig, type ApprovalHandler, DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, DEFAULT_APPROVAL_CACHE_TTL_MS, type PermissionDecision, type PermissionEngine, type PermissionRules, type PermissionsMiddlewareConfig, createAutoApprovalHandler, createPatternPermissionEngine, createPermissionsMiddleware, descriptor, validatePermissionsConfig };
 "
 `;

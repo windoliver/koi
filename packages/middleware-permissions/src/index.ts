@@ -7,7 +7,11 @@
  */
 
 export type { ApprovalCacheConfig, PermissionsMiddlewareConfig } from "./config.js";
-export { DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, validatePermissionsConfig } from "./config.js";
+export {
+  DEFAULT_APPROVAL_CACHE_MAX_ENTRIES,
+  DEFAULT_APPROVAL_CACHE_TTL_MS,
+  validatePermissionsConfig,
+} from "./config.js";
 export { descriptor } from "./descriptor.js";
 export type {
   ApprovalHandler,
