@@ -5,6 +5,7 @@
 import type { KoiError, Result, TrustTier } from "@koi/core";
 import { validateWith } from "@koi/validation";
 import { z } from "zod";
+import type { ReverificationConfig } from "./reverification.js";
 import type { ForgeScope } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -53,6 +54,13 @@ export interface DependencyConfig {
   readonly maxBrickPids: number;
 }
 
+export interface FormatConfig {
+  readonly enabled: boolean;
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly timeoutMs: number;
+}
+
 export interface ForgeConfig {
   readonly enabled: boolean;
   readonly maxForgeDepth: number;
@@ -63,6 +71,8 @@ export interface ForgeConfig {
   readonly verification: VerificationConfig;
   readonly autoPromotion: AutoPromotionConfig;
   readonly dependencies: DependencyConfig;
+  readonly format: FormatConfig;
+  readonly reverification?: ReverificationConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +120,13 @@ const dependencySchema = z.object({
   maxBrickPids: z.number().int().positive().optional(),
 });
 
+const formatSchema = z.object({
+  enabled: z.boolean().optional(),
+  command: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  timeoutMs: z.number().int().positive().optional(),
+});
+
 const forgeConfigInputSchema = z.object({
   enabled: z.boolean().optional(),
   maxForgeDepth: z.number().int().min(0).optional(),
@@ -120,6 +137,7 @@ const forgeConfigInputSchema = z.object({
   verification: verificationSchema.optional(),
   autoPromotion: autoPromotionSchema.optional(),
   dependencies: dependencySchema.optional(),
+  format: formatSchema.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -147,6 +165,13 @@ const DEFAULT_AUTO_PROMOTION: AutoPromotionConfig = {
   verifiedToPromotedThreshold: 20,
 } as const;
 
+const DEFAULT_FORMAT: FormatConfig = {
+  enabled: false,
+  command: "biome",
+  args: ["format", "--write"],
+  timeoutMs: 5_000,
+} as const;
+
 const DEFAULT_DEPENDENCY: DependencyConfig = {
   maxDependencies: 20,
   installTimeoutMs: 15_000,
@@ -167,6 +192,7 @@ const DEFAULT_CONFIG: ForgeConfig = {
   verification: DEFAULT_VERIFICATION,
   autoPromotion: DEFAULT_AUTO_PROMOTION,
   dependencies: DEFAULT_DEPENDENCY,
+  format: DEFAULT_FORMAT,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -196,6 +222,8 @@ export function createDefaultForgeConfig(overrides?: Partial<ForgeConfig>): Forg
       overrides.dependencies !== undefined
         ? { ...DEFAULT_DEPENDENCY, ...overrides.dependencies }
         : DEFAULT_DEPENDENCY,
+    format:
+      overrides.format !== undefined ? { ...DEFAULT_FORMAT, ...overrides.format } : DEFAULT_FORMAT,
   };
 }
 
@@ -282,6 +310,15 @@ export function validateForgeConfig(raw: unknown): Result<ForgeConfig, KoiError>
             maxBrickPids: p.dependencies.maxBrickPids ?? DEFAULT_DEPENDENCY.maxBrickPids,
           }
         : DEFAULT_DEPENDENCY,
+    format:
+      p.format !== undefined
+        ? {
+            enabled: p.format.enabled ?? DEFAULT_FORMAT.enabled,
+            command: p.format.command ?? DEFAULT_FORMAT.command,
+            args: p.format.args ?? DEFAULT_FORMAT.args,
+            timeoutMs: p.format.timeoutMs ?? DEFAULT_FORMAT.timeoutMs,
+          }
+        : DEFAULT_FORMAT,
   };
   return { ok: true, value: config };
 }

@@ -176,11 +176,19 @@ export type {
 } from "./delegation.js";
 // delegation — runtime values
 export { DEFAULT_CIRCUIT_BREAKER_CONFIG, delegationId } from "./delegation.js";
+// diagnostic provider — vendor-neutral code diagnostics contract
+export type {
+  DiagnosticItem,
+  DiagnosticProvider,
+  DiagnosticRange,
+  DiagnosticSeverity,
+} from "./diagnostic-provider.js";
 // ecs — types
 export type {
   Agent,
   AgentDescriptor,
   AgentId,
+  AttachResult,
   ChildHandle,
   ChildLifecycleEvent,
   ComponentEvent,
@@ -200,6 +208,7 @@ export type {
   SessionId,
   SkillComponent,
   SkillMetadata,
+  SkippedComponent,
   SpawnLedger,
   SubsystemToken,
   Tool,
@@ -224,6 +233,7 @@ export {
   GOVERNANCE,
   GOVERNANCE_BACKEND,
   HANDOFF,
+  isAttachResult,
   MEMORY,
   middlewareToken,
   runId,

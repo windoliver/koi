@@ -286,6 +286,16 @@
       "name": "@koi/core",
       "version": "0.0.0",
     },
+    "packages/crystallize": {
+      "name": "@koi/crystallize",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/dashboard-api": {
       "name": "@koi/dashboard-api",
       "version": "0.0.0",
@@ -351,6 +361,16 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/edit-match": {
+      "name": "@koi/edit-match",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -521,6 +541,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/edit-match": "workspace:*",
         "@koi/hash": "workspace:*",
         "@koi/resolve": "workspace:*",
         "@koi/validation": "workspace:*",
@@ -1083,6 +1104,16 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/registry-http": {
+      "name": "@koi/registry-http",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/resolve": {
       "name": "@koi/resolve",
       "version": "0.0.0",
@@ -1222,6 +1253,13 @@
     },
     "packages/search": {
       "name": "@koi/search",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/search-brave": {
+      "name": "@koi/search-brave",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
@@ -1391,6 +1429,18 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-loop": "workspace:*",
+      },
+    },
+    "packages/tools-web": {
+      "name": "@koi/tools-web",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/search-brave": "workspace:*",
       },
     },
     "packages/tracing": {
@@ -1901,6 +1951,8 @@
 
     "@koi/core": ["@koi/core@workspace:packages/core"],
 
+    "@koi/crystallize": ["@koi/crystallize@workspace:packages/crystallize"],
+
     "@koi/dashboard-api": ["@koi/dashboard-api@workspace:packages/dashboard-api"],
 
     "@koi/dashboard-types": ["@koi/dashboard-types@workspace:packages/dashboard-types"],
@@ -1914,6 +1966,8 @@
     "@koi/doctor": ["@koi/doctor@workspace:packages/doctor"],
 
     "@koi/e2e-contracts": ["@koi/e2e-contracts@workspace:tests/e2e"],
+
+    "@koi/edit-match": ["@koi/edit-match@workspace:packages/edit-match"],
 
     "@koi/engine": ["@koi/engine@workspace:packages/engine"],
 
@@ -2033,6 +2087,8 @@
 
     "@koi/registry-event-sourced": ["@koi/registry-event-sourced@workspace:packages/registry-event-sourced"],
 
+    "@koi/registry-http": ["@koi/registry-http@workspace:packages/registry-http"],
+
     "@koi/resolve": ["@koi/resolve@workspace:packages/resolve"],
 
     "@koi/sandbox": ["@koi/sandbox@workspace:packages/sandbox"],
@@ -2063,6 +2119,8 @@
 
     "@koi/search": ["@koi/search@workspace:packages/search"],
 
+    "@koi/search-brave": ["@koi/search-brave@workspace:packages/search-brave"],
+
     "@koi/self-test": ["@koi/self-test@workspace:packages/self-test"],
 
     "@koi/session-store": ["@koi/session-store@workspace:packages/session-store"],
@@ -2092,6 +2150,8 @@
     "@koi/tool-browser": ["@koi/tool-browser@workspace:packages/tool-browser"],
 
     "@koi/tools-github": ["@koi/tools-github@workspace:packages/tools-github"],
+
+    "@koi/tools-web": ["@koi/tools-web@workspace:packages/tools-web"],
 
     "@koi/tracing": ["@koi/tracing@workspace:packages/tracing"],
 

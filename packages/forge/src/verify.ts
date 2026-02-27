@@ -2,7 +2,7 @@
  * Pipeline orchestrator — runs verification stages sequentially with early termination.
  *
  * Governance checks are handled by the createForgeTool factory (shared.ts),
- * NOT here. This function is purely the 5-stage verification pipeline.
+ * NOT here. This function is purely the 6-stage verification pipeline.
  */
 
 import type { ExecutionContext, Result } from "@koi/core";
@@ -17,6 +17,7 @@ import type {
   StageReport,
   VerificationReport,
 } from "./types.js";
+import { verifyFormat } from "./verify-format.js";
 import { verifyResolve } from "./verify-resolve.js";
 import { verifySandbox } from "./verify-sandbox.js";
 import { verifySelfTest } from "./verify-self-test.js";
@@ -67,6 +68,25 @@ export async function verify(
     return { ok: false, error: timeoutAfterStatic };
   }
 
+  // Stage 1.25: Auto-format implementation code
+  const formatResult = await verifyFormat(input, config.format);
+  if (!formatResult.ok) {
+    return { ok: false, error: formatResult.error };
+  }
+  stages.push(formatResult.value);
+
+  // If format changed the implementation, create a new input for downstream stages
+  // let justified: effectiveInput is conditionally reassigned based on format output
+  let effectiveInput: ForgeInput = input;
+  if (formatResult.value.formattedImplementation !== undefined && "implementation" in input) {
+    effectiveInput = { ...input, implementation: formatResult.value.formattedImplementation };
+  }
+
+  const timeoutAfterFormat = checkTimeout(pipelineStart, totalTimeoutMs);
+  if (timeoutAfterFormat !== undefined) {
+    return { ok: false, error: timeoutAfterFormat };
+  }
+
   // Stage 1.5: Resolve dependencies (audit + install)
   // Cap install timeout to remaining pipeline budget to prevent overshoot
   const remainingAfterStatic = totalTimeoutMs - (performance.now() - pipelineStart);
@@ -74,7 +94,7 @@ export async function verify(
     remainingAfterStatic < config.dependencies.installTimeoutMs
       ? { ...config.dependencies, installTimeoutMs: Math.max(0, Math.round(remainingAfterStatic)) }
       : config.dependencies;
-  const resolveResult = await verifyResolve(input, cappedDeps);
+  const resolveResult = await verifyResolve(effectiveInput, cappedDeps);
   if (!resolveResult.ok) {
     return { ok: false, error: resolveResult.error };
   }
@@ -96,7 +116,7 @@ export async function verify(
     ...(hasWorkspace && "entryPath" in resolveReport && resolveReport.entryPath !== undefined
       ? { entryPath: resolveReport.entryPath }
       : {}),
-    networkAllowed: input.requires?.network === true,
+    networkAllowed: effectiveInput.requires?.network === true,
     resourceLimits: {
       maxMemoryMb: config.dependencies.maxBrickMemoryMb,
       maxPids: config.dependencies.maxBrickPids,
@@ -104,7 +124,12 @@ export async function verify(
   };
 
   // Stage 2: Sandbox execution
-  const sandboxResult = await verifySandbox(input, executor, config.verification, executionContext);
+  const sandboxResult = await verifySandbox(
+    effectiveInput,
+    executor,
+    config.verification,
+    executionContext,
+  );
   if (!sandboxResult.ok) {
     return { ok: false, error: sandboxResult.error };
   }
@@ -117,7 +142,7 @@ export async function verify(
 
   // Stage 3: Self-test + verifiers
   const selfTestResult = await verifySelfTest(
-    input,
+    effectiveInput,
     executor,
     verifiers,
     context,
@@ -134,7 +159,7 @@ export async function verify(
   }
 
   // Stage 4: Trust assignment
-  const trustResult = assignTrust(input, config, stages);
+  const trustResult = assignTrust(effectiveInput, config, stages);
   if (!trustResult.ok) {
     return { ok: false, error: trustResult.error };
   }

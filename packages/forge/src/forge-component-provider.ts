@@ -15,11 +15,13 @@
 import type {
   Agent,
   AgentDescriptor,
+  AttachResult,
   BrickArtifact,
   ComponentProvider,
   ForgeScope,
   ForgeStore,
   SkillComponent,
+  SkippedComponent,
   StoreChangeNotifier,
   TieredSandboxExecutor,
 } from "@koi/core";
@@ -41,7 +43,7 @@ import { checkBrickRequires } from "./requires-check.js";
 // Per-brick attachment (exhaustive switch over all 5 BrickKinds)
 // ---------------------------------------------------------------------------
 
-interface AttachResult {
+interface BrickAttachEntry {
   readonly token: string;
   readonly value: unknown;
 }
@@ -50,7 +52,7 @@ function attachBrick(
   brick: BrickArtifact,
   executor: TieredSandboxExecutor,
   timeoutMs: number,
-): AttachResult | undefined {
+): BrickAttachEntry | undefined {
   // Trust enforcement (universal — all kinds checked)
   const minTrust = MIN_TRUST_BY_KIND[brick.kind];
   if (!meetsMinTrust(brick.trustTier, minTrust)) return undefined;
@@ -173,6 +175,7 @@ export function createForgeComponentProvider(
     cached = undefined;
     cachedBrickScopes = undefined;
     nameToBrickId = undefined;
+    cachedSkipped = undefined;
   };
 
   const invalidateByScope = (scope: ForgeScope): void => {
@@ -192,9 +195,16 @@ export function createForgeComponentProvider(
     }
   };
 
-  const loadComponents = async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
+  // let justified: mutable skip list cleared on invalidate
+  let cachedSkipped: readonly SkippedComponent[] | undefined;
+
+  const loadComponents = async (
+    _agent: Agent,
+  ): Promise<AttachResult | ReadonlyMap<string, unknown>> => {
     if (cached !== undefined) {
-      return cached;
+      return cachedSkipped !== undefined && cachedSkipped.length > 0
+        ? { components: cached, skipped: cachedSkipped }
+        : cached;
     }
 
     // Optimize store query when possible (Issue M1).
@@ -216,6 +226,7 @@ export function createForgeComponentProvider(
     const components: Map<string, unknown> = new Map();
     const scopeTracker: Map<string, ForgeScope> = new Map();
     const nameTracker: Map<string, string> = new Map();
+    const skipped: SkippedComponent[] = [];
 
     // Pass 1: Build available tool names set for requires.tools checking
     const availableToolNames: Set<string> = new Set();
@@ -230,25 +241,43 @@ export function createForgeComponentProvider(
       }
     }
 
-    // Pass 2: Register components with requires enforcement
+    // Pass 2: Register components with requires enforcement + skip reporting
     for (const brick of searchResult.value) {
       // Scope filtering (Issue 8A)
-      if (!isScopeVisible(brick.scope, config.scope)) continue;
+      if (!isScopeVisible(brick.scope, config.scope)) {
+        skipped.push({
+          name: brick.name,
+          reason: `scope ${brick.scope} not visible to ${config.scope ?? "any"}`,
+        });
+        continue;
+      }
 
       // Zone filtering: zone-scoped bricks only visible if zoneId matches a tag
       if (brick.scope === "zone" && config.zoneId !== undefined) {
         const zoneTag = `zone:${config.zoneId}`;
-        if (!brick.tags.includes(zoneTag)) continue;
+        if (!brick.tags.includes(zoneTag)) {
+          skipped.push({ name: brick.name, reason: `zone tag ${zoneTag} not found` });
+          continue;
+        }
       }
 
       // Requires enforcement: skip bricks with unsatisfied requirements
       const requiresResult = checkBrickRequires(brick.requires, availableToolNames);
       if (!requiresResult.satisfied) {
+        const v = requiresResult.violation;
+        const detail = v !== undefined ? `${v.kind}:${v.name}` : "unknown";
+        skipped.push({ name: brick.name, reason: `unsatisfied requires: ${detail}` });
         continue;
       }
 
       const result = attachBrick(brick, config.executor, timeoutMs);
-      if (result === undefined) continue;
+      if (result === undefined) {
+        skipped.push({
+          name: brick.name,
+          reason: `trust tier ${brick.trustTier} below minimum for ${brick.kind}`,
+        });
+        continue;
+      }
       components.set(result.token, result.value);
       scopeTracker.set(brick.id, brick.scope);
       nameTracker.set(brick.name, brick.id);
@@ -257,7 +286,9 @@ export function createForgeComponentProvider(
     cached = components;
     cachedBrickScopes = scopeTracker;
     nameToBrickId = nameTracker;
-    return cached;
+    cachedSkipped = skipped;
+
+    return skipped.length > 0 ? { components: cached, skipped: cachedSkipped } : cached;
   };
 
   // Subscribe to notifier for automatic cache invalidation

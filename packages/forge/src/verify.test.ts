@@ -34,7 +34,7 @@ describe("verify — full pipeline", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.passed).toBe(true);
-      expect(result.value.stages).toHaveLength(5);
+      expect(result.value.stages).toHaveLength(6);
       expect(result.value.finalTrustTier).toBe("sandbox");
       expect(result.value.totalDurationMs).toBeGreaterThanOrEqual(0);
     }
@@ -52,7 +52,7 @@ describe("verify — full pipeline", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.passed).toBe(true);
-      expect(result.value.stages).toHaveLength(5);
+      expect(result.value.stages).toHaveLength(6);
     }
   });
 
@@ -151,7 +151,7 @@ describe("verify — timing", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.totalDurationMs).toBeGreaterThanOrEqual(0);
-      expect(result.value.stages).toHaveLength(5);
+      expect(result.value.stages).toHaveLength(6);
     }
   });
 });
@@ -285,13 +285,13 @@ describe("verify — error field completeness", () => {
 });
 
 describe("verify — stage ordering", () => {
-  test("on success, stages are ordered static → sandbox → self_test → trust", async () => {
+  test("on success, stages are ordered static → format → resolve → sandbox → self_test → trust", async () => {
     const config = createDefaultForgeConfig();
     const result = await verify(validToolInput, DEFAULT_CONTEXT, mockExecutor(), [], config);
     expect(result.ok).toBe(true);
     if (result.ok) {
       const stageNames = result.value.stages.map((s) => s.stage);
-      expect(stageNames).toEqual(["static", "resolve", "sandbox", "self_test", "trust"]);
+      expect(stageNames).toEqual(["static", "format", "resolve", "sandbox", "self_test", "trust"]);
     }
   });
 

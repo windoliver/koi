@@ -3,11 +3,43 @@
  * Only applies to "tool", "middleware", and "channel" kinds; skills/agents skip with a pass.
  */
 
-import type { ExecutionContext, Result } from "@koi/core";
+import type { ExecutionContext, Result, SandboxError as SandboxErrorType } from "@koi/core";
 import type { VerificationConfig } from "./config.js";
 import type { ForgeError } from "./errors.js";
 import { sandboxError } from "./errors.js";
+import { enrichSandboxError } from "./sandbox-error-enrichment.js";
 import type { ForgeInput, SandboxExecutor, StageReport } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Format an enriched sandbox error into a human-readable message.
+ * Returns undefined if enrichment fails, allowing fallback to original message.
+ */
+function formatEnrichedMessage(
+  error: SandboxErrorType,
+  implementation: string,
+  input: unknown,
+): string | undefined {
+  try {
+    const enriched = enrichSandboxError(error, implementation, input);
+    const parts: readonly string[] = [
+      enriched.message,
+      `[${enriched.code}] Remediation: ${enriched.remediation}`,
+      ...(enriched.snippet !== undefined
+        ? [
+            `Code near line ${String(enriched.snippet.highlightLine ?? enriched.snippet.startLine)}:\n${enriched.snippet.lines.join("\n")}`,
+          ]
+        : []),
+    ];
+    return parts.join("\n");
+  } catch (_: unknown) {
+    // Enrichment is additive — if it fails, return undefined to fall through
+    return undefined;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -41,9 +73,11 @@ export async function verifySandbox(
   );
 
   if (!result.ok) {
+    const enrichedMessage = formatEnrichedMessage(result.error, input.implementation, {});
+    const message = enrichedMessage ?? result.error.message;
     return {
       ok: false,
-      error: sandboxError(result.error.code, result.error.message, result.error.durationMs),
+      error: sandboxError(result.error.code, message, result.error.durationMs),
     };
   }
 

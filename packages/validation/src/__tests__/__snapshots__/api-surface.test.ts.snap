@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/validation API surface . has stable type surface 1`] = `
-"import { Result, BrickArtifact, KoiError } from '@koi/core';
+"import { Result, BrickArtifact, KoiError, BrickArtifactBase, ForgeQuery } from '@koi/core';
 import { z } from 'zod';
 
 /**
@@ -19,6 +19,17 @@ import { z } from 'zod';
  * @param source - Backend-agnostic context for error messages (file path, DB row id, etc.)
  */
 declare function validateBrickArtifact(data: unknown, source: string): Result<BrickArtifact, KoiError>;
+
+/**
+ * Pure query-matching logic for ForgeStore.search().
+ *
+ * Operates on BrickArtifactBase (metadata) — all filter dimensions
+ * including classification and contentMarkers. Extracted from
+ * duplicate implementations in @koi/forge and @koi/store-fs.
+ */
+
+/** Returns true if the brick metadata matches all non-undefined query filters. */
+declare function matchesBrickQuery(brick: BrickArtifactBase, query: ForgeQuery): boolean;
 
 /**
  * Shared severity types and utilities.
@@ -53,6 +64,6 @@ declare function zodToKoiError(zodError: z.core.$ZodError, prefix?: string): Koi
  */
 declare function validateWith<T>(schema: z.ZodType<T>, raw: unknown, prefix?: string): Result<T, KoiError>;
 
-export { SEVERITY_ORDER, type Severity, severityAtOrAbove, validateBrickArtifact, validateWith, zodToKoiError };
+export { SEVERITY_ORDER, type Severity, matchesBrickQuery, severityAtOrAbove, validateBrickArtifact, validateWith, zodToKoiError };
 "
 `;

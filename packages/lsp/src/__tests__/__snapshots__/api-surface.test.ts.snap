@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/lsp API surface . has stable type surface 1`] = `
-"import { Result, KoiError, ComponentProvider, Tool } from '@koi/core';
+"import { Result, KoiError, ComponentProvider, Tool, DiagnosticProvider } from '@koi/core';
 import { ChildProcess } from 'node:child_process';
 import { Writable, Readable } from 'node:stream';
 
@@ -298,6 +298,51 @@ declare function detectLspServers(): readonly DetectedLspServer[];
  */
 declare function createLspTools(client: LspClient, serverName: string, maxReferences?: number, maxSymbols?: number): readonly Tool[];
 
-export { type CreateClientFn, type CreateTransportFn, type DetectedLspServer, type Diagnostic, type DiagnosticSeverity, type DiagnosticTag, type DocumentSymbol, type HoverResult, type Location, type LspClient, type LspComponentProviderResult, type LspProviderConfig, type LspServerConfig, type LspServerFailure, type LspTransport, type MarkupContent, type Position, type PublishDiagnosticsParams, type Range, type ReferenceContext, type ReferenceParams, type ResolvedLspProviderConfig, type ResolvedLspServerConfig, type ServerCapabilities, type SymbolInfo, type SymbolKind, type TextDocumentIdentifier, type TextDocumentItem, type TextDocumentPositionParams, capabilityNotSupportedError, connectionTimeoutError, createLspClient, createLspComponentProvider, createLspTools, createStdioTransport, detectLanguageId, detectLspServers, jsonRpcError, mapLspError, notConnectedError, reconnectExhaustedError, resolveProviderConfig, resolveServerConfig, serverStartError, validateLspConfig };
+/**
+ * LSP client pool — manages a pool of warm LSP clients keyed by server name.
+ *
+ * Provides idle timeout eviction to prevent resource leaks while keeping
+ * frequently-used clients warm for fast diagnostics.
+ */
+
+interface LspClientPoolConfig {
+    /** Whether the pool is enabled. When false, acquire() always returns undefined. */
+    readonly enabled: boolean;
+    /** Maximum number of pooled clients. */
+    readonly maxClients: number;
+    /** Idle timeout in ms before a client is evicted. Default: 5 minutes. */
+    readonly idleTimeoutMs: number;
+}
+declare const DEFAULT_LSP_CLIENT_POOL_CONFIG: LspClientPoolConfig;
+interface LspClientPool {
+    /** Acquire a pooled client by server name. Returns undefined if not pooled. */
+    readonly acquire: (serverName: string) => LspClient | undefined;
+    /** Return a client to the pool (with idle timeout). */
+    readonly release: (serverName: string, client: LspClient) => void;
+    /** Number of clients currently in the pool. */
+    readonly size: () => number;
+    /** Evict a specific client from the pool and close it. */
+    readonly evict: (serverName: string) => Promise<void>;
+    /** Dispose all pooled clients. */
+    readonly dispose: () => Promise<void>;
+}
+declare function createLspClientPool(config: LspClientPoolConfig): LspClientPool;
+
+/**
+ * LSP diagnostic adapter — maps LSP diagnostics to vendor-neutral DiagnosticProvider.
+ *
+ * Bridges the @koi/lsp client's getDiagnostics() output to the L0
+ * DiagnosticProvider interface defined in @koi/core.
+ */
+
+/**
+ * Create a DiagnosticProvider backed by an LSP client.
+ *
+ * The \`diagnose\` method opens the document, waits briefly for diagnostics
+ * to arrive (LSP publishes diagnostics asynchronously), then maps them.
+ */
+declare function createLspDiagnosticProvider(client: LspClient, serverName: string): DiagnosticProvider;
+
+export { type CreateClientFn, type CreateTransportFn, DEFAULT_LSP_CLIENT_POOL_CONFIG, type DetectedLspServer, type Diagnostic, type DiagnosticSeverity, type DiagnosticTag, type DocumentSymbol, type HoverResult, type Location, type LspClient, type LspClientPool, type LspClientPoolConfig, type LspComponentProviderResult, type LspProviderConfig, type LspServerConfig, type LspServerFailure, type LspTransport, type MarkupContent, type Position, type PublishDiagnosticsParams, type Range, type ReferenceContext, type ReferenceParams, type ResolvedLspProviderConfig, type ResolvedLspServerConfig, type ServerCapabilities, type SymbolInfo, type SymbolKind, type TextDocumentIdentifier, type TextDocumentItem, type TextDocumentPositionParams, capabilityNotSupportedError, connectionTimeoutError, createLspClient, createLspClientPool, createLspComponentProvider, createLspDiagnosticProvider, createLspTools, createStdioTransport, detectLanguageId, detectLspServers, jsonRpcError, mapLspError, notConnectedError, reconnectExhaustedError, resolveProviderConfig, resolveServerConfig, serverStartError, validateLspConfig };
 "
 `;

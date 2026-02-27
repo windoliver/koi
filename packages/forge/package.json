@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
+    "@koi/edit-match": "workspace:*",
     "@koi/hash": "workspace:*",
     "@koi/resolve": "workspace:*",
     "@koi/validation": "workspace:*",

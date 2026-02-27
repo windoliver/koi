@@ -11,10 +11,11 @@ import type {
   ComponentProvider,
   ProcessId,
   ProcessState,
+  SkippedComponent,
   SubsystemToken,
   TerminationOutcome,
 } from "@koi/core";
-import { COMPONENT_PRIORITY, mapStopReasonToOutcome } from "@koi/core";
+import { COMPONENT_PRIORITY, isAttachResult, mapStopReasonToOutcome } from "@koi/core";
 import type { TransitionValidator } from "./extension-composer.js";
 import type { AgentLifecycle, LifecycleEvent } from "./lifecycle.js";
 import { createLifecycle, transition } from "./lifecycle.js";
@@ -32,6 +33,7 @@ export interface AssemblyConflict {
 export interface AssemblyResult {
   readonly agent: AgentEntity;
   readonly conflicts: readonly AssemblyConflict[];
+  readonly skipped: readonly SkippedComponent[];
 }
 
 export class AgentEntity implements Agent {
@@ -155,8 +157,14 @@ export class AgentEntity implements Agent {
     const winnerByKey = new Map<string, string>();
     const shadowedByKey = new Map<string, string[]>();
 
+    const allSkipped: SkippedComponent[] = [];
+
     for (const provider of sorted) {
-      const components = await provider.attach(agent);
+      const result = await provider.attach(agent);
+      const components = isAttachResult(result) ? result.components : result;
+      if (isAttachResult(result) && result.skipped.length > 0) {
+        allSkipped.push(...result.skipped);
+      }
       for (const [key, value] of components) {
         if (!merged.has(key)) {
           // First-write-wins: highest-priority provider claims the key
@@ -187,6 +195,6 @@ export class AgentEntity implements Agent {
     );
 
     agent._queryCache.clear();
-    return { agent, conflicts };
+    return { agent, conflicts, skipped: allSkipped };
   }
 }

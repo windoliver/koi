@@ -19,6 +19,8 @@ export interface SandboxError {
   readonly code: SandboxErrorCode;
   readonly message: string;
   readonly durationMs: number;
+  /** Raw stack trace from the sandbox subprocess, if available. */
+  readonly stack?: string;
 }
 
 // ---------------------------------------------------------------------------

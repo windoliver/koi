@@ -1,0 +1,58 @@
+/**
+ * Types for @koi/crystallize — pattern detection and crystallization candidates.
+ */
+
+import type { ChainId, KoiMiddleware, SnapshotChainStore, TurnTrace } from "@koi/core";
+
+// ---------------------------------------------------------------------------
+// Tool step & n-gram
+// ---------------------------------------------------------------------------
+
+/** A single tool invocation in a sequence. */
+export interface ToolStep {
+  readonly toolId: string;
+}
+
+/** An ordered sequence of tool steps with a deduplication key. */
+export interface ToolNgram {
+  readonly steps: readonly ToolStep[];
+  readonly key: string;
+}
+
+// ---------------------------------------------------------------------------
+// Crystallization candidate
+// ---------------------------------------------------------------------------
+
+/** A detected repeating pattern surfaced for potential forging. */
+export interface CrystallizationCandidate {
+  readonly ngram: ToolNgram;
+  readonly occurrences: number;
+  readonly turnIndices: readonly number[];
+  readonly detectedAt: number;
+  readonly suggestedName: string;
+}
+
+// ---------------------------------------------------------------------------
+// Config & handle
+// ---------------------------------------------------------------------------
+
+/** Configuration for the crystallize middleware factory. */
+export interface CrystallizeConfig {
+  readonly store: SnapshotChainStore<TurnTrace>;
+  readonly chainId: ChainId;
+  readonly minNgramSize?: number;
+  readonly maxNgramSize?: number;
+  readonly minOccurrences?: number;
+  readonly maxCandidates?: number;
+  readonly minTurnsBeforeAnalysis?: number;
+  readonly analysisCooldownTurns?: number;
+  readonly clock?: () => number;
+  readonly onCandidatesDetected: (candidates: readonly CrystallizationCandidate[]) => void;
+}
+
+/** Handle returned by the crystallize middleware factory. */
+export interface CrystallizeHandle {
+  readonly middleware: KoiMiddleware;
+  readonly getCandidates: () => readonly CrystallizationCandidate[];
+  readonly dismiss: (ngramKey: string) => void;
+}

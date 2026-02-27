@@ -63,6 +63,8 @@ export interface BrickArtifactBase {
   readonly requires?: BrickRequires;
   /** Optional JSON Schema describing brick instantiation config parameters. */
   readonly configSchema?: Readonly<Record<string, unknown>>;
+  /** Epoch millis of last successful re-verification. Undefined = never re-verified. */
+  readonly lastVerifiedAt?: number;
 }
 
 export interface ToolArtifact extends BrickArtifactBase {
@@ -119,6 +121,8 @@ export interface BrickUpdate {
   readonly scope?: ForgeScope;
   readonly usageCount?: number;
   readonly tags?: readonly string[] | undefined;
+  /** Epoch millis of last successful re-verification. */
+  readonly lastVerifiedAt?: number;
 }
 
 // ---------------------------------------------------------------------------

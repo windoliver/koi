@@ -17,7 +17,7 @@ import type {
   Result,
   SubsystemToken,
 } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core";
+import { isAttachResult, RETRYABLE_DEFAULTS } from "@koi/core";
 import type { CapacityReport, NodeEventListener, ResourcesConfig } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -161,8 +161,9 @@ export function createAgentHost(config: ResourcesConfig): AgentHost {
       // Attach components from providers (async — providers may perform I/O)
       const snapshot = toAgentSnapshot(managed);
       for (const provider of providers) {
-        const provided = await provider.attach(snapshot);
-        for (const [key, value] of provided) {
+        const result = await provider.attach(snapshot);
+        const components = isAttachResult(result) ? result.components : result;
+        for (const [key, value] of components) {
           managed.components.set(key, value);
         }
       }

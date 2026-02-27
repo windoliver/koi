@@ -61,6 +61,11 @@ export type ForgeError =
       readonly message: string;
     }
   | {
+      readonly stage: "format";
+      readonly code: "FORMAT_FAILED" | "FORMAT_TIMEOUT";
+      readonly message: string;
+    }
+  | {
       readonly stage: "resolve";
       readonly code:
         | "AUDIT_FAILED"
@@ -89,6 +94,13 @@ export function staticError(
 
 export function typeError(message: string): ForgeError {
   return { stage: "static", code: "INVALID_TYPE", message };
+}
+
+export function formatError(
+  code: Extract<ForgeError, { readonly stage: "format" }>["code"],
+  message: string,
+): ForgeError {
+  return { stage: "format", code, message };
 }
 
 export function sandboxError(

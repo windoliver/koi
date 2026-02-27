@@ -47,7 +47,7 @@ export interface ForgeResult {
 // Verification report
 // ---------------------------------------------------------------------------
 
-export type VerificationStage = "static" | "resolve" | "sandbox" | "self_test" | "trust";
+export type VerificationStage = "static" | "format" | "resolve" | "sandbox" | "self_test" | "trust";
 
 export interface StageReport {
   readonly stage: VerificationStage;

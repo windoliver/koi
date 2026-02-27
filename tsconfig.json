@@ -14,6 +14,7 @@
     { "path": "packages/config" },
     { "path": "packages/context" },
     { "path": "packages/core" },
+    { "path": "packages/crystallize" },
     { "path": "packages/dashboard-api" },
     { "path": "packages/dashboard-types" },
     { "path": "packages/dashboard-ui" },
@@ -47,6 +48,7 @@
     { "path": "packages/node" },
     { "path": "packages/ralph" },
     { "path": "packages/registry-event-sourced" },
+    { "path": "packages/registry-http" },
     { "path": "packages/sandbox" },
     { "path": "packages/scope" },
     { "path": "packages/sandbox-cloud-base" },
@@ -58,6 +60,7 @@
     { "path": "packages/sandbox-vercel" },
     { "path": "packages/scheduler" },
     { "path": "packages/search" },
+    { "path": "packages/search-brave" },
     { "path": "packages/session-store" },
     { "path": "packages/shutdown" },
     { "path": "packages/skill-scanner" },
@@ -65,6 +68,7 @@
     { "path": "packages/store-fs" },
     { "path": "packages/store-sqlite" },
     { "path": "packages/test-utils" },
+    { "path": "packages/tools-web" },
     { "path": "packages/validation" }
   ]
 }
