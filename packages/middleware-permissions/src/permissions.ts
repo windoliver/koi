@@ -108,9 +108,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
   const approvalCacheTtlMs =
     cacheConfig !== false ? (cacheConfig.ttlMs ?? DEFAULT_APPROVAL_CACHE_TTL_MS) : 0;
   const approvalCacheMaxEntries =
-    cacheConfig !== false
-      ? (cacheConfig.maxEntries ?? DEFAULT_APPROVAL_CACHE_MAX_ENTRIES)
-      : 0;
+    cacheConfig !== false ? (cacheConfig.maxEntries ?? DEFAULT_APPROVAL_CACHE_MAX_ENTRIES) : 0;
   const approvalCache = cacheConfig !== false ? new Map<number, ApprovalCacheEntry>() : undefined;
 
   // Precompute a fingerprint for the backend config so different middleware instances
