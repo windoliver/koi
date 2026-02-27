@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge API surface . has stable type surface 1`] = `
-"import { BrickRequires, DataClassification, ContentMarker, TestCase, TrustTier, BrickId, BrickKind, ToolDescriptor, ForgeScope, BrickLifecycle, SandboxExecutor, BrickArtifact, ForgeStore, Result, KoiError, ForgeProvenance, SigningBackend, ToolArtifact, Tool, TieredSandboxExecutor, StoreChangeNotifier, ComponentProvider, SubsystemToken, GovernanceVariableContributor, DiagnosticProvider, Resolver, StoreChangeEvent, BrickComponentMap, KoiMiddleware, GovernanceController, InTotoStatementV1, AgentArtifact, SandboxErrorCode, SandboxError, ExecutionContext } from '@koi/core';
+"import { BrickRequires, DataClassification, ContentMarker, TestCase, TrustTier, BrickId, BrickKind, ToolDescriptor, ForgeScope, BrickLifecycle, SandboxExecutor, BrickArtifact, ForgeStore, Result, KoiError, ForgeProvenance, SigningBackend, ToolArtifact, Tool, TieredSandboxExecutor, StoreChangeNotifier, ComponentProvider, DiagnosticProvider, SubsystemToken, GovernanceVariableContributor, Resolver, StoreChangeEvent, BrickComponentMap, KoiMiddleware, GovernanceController, SandboxErrorCode, SandboxError, InTotoStatementV1, AgentArtifact, ExecutionContext } from '@koi/core';
 export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, ContentMarker, DataClassification, ForgeAttestationSignature, ForgeBuildDefinition, ForgeBuilder, ForgeProvenance, ForgeQuery, ForgeResourceRef, ForgeRunMetadata, ForgeStageDigest, ForgeStore, ForgeVerificationSummary, LockHandle, LockMode, LockRequest, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, SigningBackend, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, TierResolution, TieredSandboxExecutor, ToolArtifact } from '@koi/core';
 import { BrickDescriptor } from '@koi/resolve';
 
@@ -568,17 +568,6 @@ interface ForgeComponentProviderInstance extends ComponentProvider {
 declare function createForgeComponentProvider(config: ForgeComponentProviderConfig): ForgeComponentProviderInstance;
 
 /**
- * Forge governance contributor — L2 package that declares forge-specific
- * governance variables via the GovernanceVariableContributor pattern.
- *
- * Attached as an ECS component under "governance:contrib:forge".
- * The L1 governance extension discovers it via generic prefix query.
- */
-
-declare const FORGE_GOVERNANCE: SubsystemToken<GovernanceVariableContributor>;
-declare function createForgeGovernanceContributor(config: ForgeConfig, readDepth: () => number, readForgeCount: () => number): GovernanceVariableContributor;
-
-/**
  * Forge diagnostic verifier — plugs DiagnosticProvider into the Stage 3
  * verifier chain. Rejects on error-level diagnostics, warns on warning-level.
  */
@@ -597,6 +586,17 @@ interface DiagnosticVerifierConfig {
  * 4. Optionally rejects on warning-level diagnostics
  */
 declare function createDiagnosticVerifier(provider: DiagnosticProvider, config?: DiagnosticVerifierConfig): ForgeVerifier;
+
+/**
+ * Forge governance contributor — L2 package that declares forge-specific
+ * governance variables via the GovernanceVariableContributor pattern.
+ *
+ * Attached as an ECS component under "governance:contrib:forge".
+ * The L1 governance extension discovers it via generic prefix query.
+ */
+
+declare const FORGE_GOVERNANCE: SubsystemToken<GovernanceVariableContributor>;
+declare function createForgeGovernanceContributor(config: ForgeConfig, readDepth: () => number, readForgeCount: () => number): GovernanceVariableContributor;
 
 /**
  * ForgeResolver — Resolver adapter backed by a ForgeStore.
@@ -807,26 +807,6 @@ interface RequiresCheckResult {
 declare function checkBrickRequires(requires: BrickRequires | undefined, availableToolNames: ReadonlySet<string>, networkPolicy?: NetworkPolicy): RequiresCheckResult;
 
 /**
- * Scope-based visibility filtering for forge bricks.
- *
- * Pure functions used by search_forge and ForgeResolver to enforce
- * agent-scoped brick visibility. Zone scope is deferred (Phase 2).
- */
-
-/**
- * Returns true if the given brick is visible to the specified agent.
- * - \`global\` and \`zone\` scoped bricks are visible to all agents.
- * - \`agent\` scoped bricks are only visible to their creator.
- *
- * Fail-closed: unknown scope values deny access.
- */
-declare function isVisibleToAgent(brick: BrickArtifact, agentId: string): boolean;
-/**
- * Filters an array of bricks to only those visible to the specified agent.
- */
-declare function filterByAgentScope(bricks: readonly BrickArtifact[], agentId: string): readonly BrickArtifact[];
-
-/**
  * Bounded concurrency queue for brick re-verification.
  *
  * Priority: promoted bricks first, then verified.
@@ -846,6 +826,67 @@ interface ReverificationQueue {
 }
 type ReverificationHandler = (brick: BrickArtifact) => Promise<boolean>;
 declare function createReverificationQueue(config: ReverificationConfig, handler: ReverificationHandler): ReverificationQueue;
+
+/**
+ * Sandbox error enrichment -- adds code snippets, remediation suggestions,
+ * and sanitized input data to raw sandbox errors for better diagnostics.
+ */
+
+interface CodeSnippet {
+    readonly lines: readonly string[];
+    readonly startLine: number;
+    readonly highlightLine?: number;
+}
+interface EnrichedSandboxError {
+    readonly code: SandboxErrorCode;
+    readonly message: string;
+    readonly durationMs: number;
+    readonly stack?: string;
+    readonly snippet?: CodeSnippet;
+    readonly remediation: string;
+    readonly sanitizedInput?: unknown;
+}
+/**
+ * Parse a line number from a stack trace and extract surrounding lines
+ * from the implementation source for context.
+ */
+declare function extractSnippet(implementation: string, stack: string | undefined): CodeSnippet | undefined;
+/**
+ * Return a human-readable remediation suggestion for the given error code.
+ */
+declare function computeRemediation(code: SandboxErrorCode): string;
+/**
+ * Sanitize input data for inclusion in error reports:
+ * - Truncate long strings
+ * - Redact sensitive keys (secret, password, token, key, auth)
+ * - Cap recursion at 3 levels
+ */
+declare function sanitizeInput(input: unknown): unknown;
+/**
+ * Compose snippet extraction, remediation lookup, and input sanitization
+ * into a single enriched sandbox error for diagnostics.
+ */
+declare function enrichSandboxError(error: SandboxError, implementation: string, input: unknown): EnrichedSandboxError;
+
+/**
+ * Scope-based visibility filtering for forge bricks.
+ *
+ * Pure functions used by search_forge and ForgeResolver to enforce
+ * agent-scoped brick visibility. Zone scope is deferred (Phase 2).
+ */
+
+/**
+ * Returns true if the given brick is visible to the specified agent.
+ * - \`global\` and \`zone\` scoped bricks are visible to all agents.
+ * - \`agent\` scoped bricks are only visible to their creator.
+ *
+ * Fail-closed: unknown scope values deny access.
+ */
+declare function isVisibleToAgent(brick: BrickArtifact, agentId: string): boolean;
+/**
+ * Filters an array of bricks to only those visible to the specified agent.
+ */
+declare function filterByAgentScope(bricks: readonly BrickArtifact[], agentId: string): readonly BrickArtifact[];
 
 /**
  * SLSA v1.0 serializer — maps Koi-native ForgeProvenance to SLSA predicate.
@@ -947,6 +988,18 @@ interface ForgeToolConfig {
 declare function createForgeTool(toolConfig: ForgeToolConfig, deps: ForgeDeps): Tool;
 
 /**
+ * compose_forge — Composes multiple bricks of the same kind into a single composite.
+ *
+ * Loads all referenced bricks from the store, validates they are the same kind,
+ * merges their content, and runs the result through the standard forge pipeline
+ * (verify → content-addressed ID → save).
+ *
+ * v1: same-kind only (tool+tool or skill+skill). Mixed kinds are rejected.
+ */
+
+declare function createComposeForge(deps: ForgeDeps): Tool;
+
+/**
  * forge_agent — Creates a new sub-agent with manifest validation.
  * Supports two input modes:
  *   1. \`manifestYaml\` — raw YAML manifest (existing behavior)
@@ -968,16 +1021,10 @@ type OnForgeAgentSpawn = (artifact: AgentArtifact) => void | Promise<void>;
 declare function createForgeAgentTool(deps: ForgeDeps, onSpawn?: OnForgeAgentSpawn): Tool;
 
 /**
- * compose_forge — Composes multiple bricks of the same kind into a single composite.
- *
- * Loads all referenced bricks from the store, validates they are the same kind,
- * merges their content, and runs the result through the standard forge pipeline
- * (verify → content-addressed ID → save).
- *
- * v1: same-kind only (tool+tool or skill+skill). Mixed kinds are rejected.
+ * forge_channel — Creates a new channel brick through the verification pipeline.
  */
 
-declare function createComposeForge(deps: ForgeDeps): Tool;
+declare function createForgeChannelTool(deps: ForgeDeps): Tool;
 
 /**
  * forge_edit — Edit an existing forged brick's implementation via search-and-replace.
@@ -988,12 +1035,6 @@ declare function createComposeForge(deps: ForgeDeps): Tool;
  */
 
 declare function createForgeEditTool(deps: ForgeDeps): Tool;
-
-/**
- * forge_channel — Creates a new channel brick through the verification pipeline.
- */
-
-declare function createForgeChannelTool(deps: ForgeDeps): Tool;
 
 /**
  * forge_middleware — Creates a new middleware brick through the verification pipeline.
@@ -1114,47 +1155,6 @@ declare function verifyInstallIntegrity(workspacePath: string, declaredPackages:
  */
 
 declare function verifyResolve(input: ForgeInput, config: DependencyConfig): Promise<Result<ResolveStageReport, ForgeError>>;
-
-/**
- * Sandbox error enrichment -- adds code snippets, remediation suggestions,
- * and sanitized input data to raw sandbox errors for better diagnostics.
- */
-
-interface CodeSnippet {
-    readonly lines: readonly string[];
-    readonly startLine: number;
-    readonly highlightLine?: number;
-}
-interface EnrichedSandboxError {
-    readonly code: SandboxErrorCode;
-    readonly message: string;
-    readonly durationMs: number;
-    readonly stack?: string;
-    readonly snippet?: CodeSnippet;
-    readonly remediation: string;
-    readonly sanitizedInput?: unknown;
-}
-/**
- * Parse a line number from a stack trace and extract surrounding lines
- * from the implementation source for context.
- */
-declare function extractSnippet(implementation: string, stack: string | undefined): CodeSnippet | undefined;
-/**
- * Return a human-readable remediation suggestion for the given error code.
- */
-declare function computeRemediation(code: SandboxErrorCode): string;
-/**
- * Sanitize input data for inclusion in error reports:
- * - Truncate long strings
- * - Redact sensitive keys (secret, password, token, key, auth)
- * - Cap recursion at 3 levels
- */
-declare function sanitizeInput(input: unknown): unknown;
-/**
- * Compose snippet extraction, remediation lookup, and input sanitization
- * into a single enriched sandbox error for diagnostics.
- */
-declare function enrichSandboxError(error: SandboxError, implementation: string, input: unknown): EnrichedSandboxError;
 
 /**
  * Stage 2: Sandbox execution — runs tool implementation in a sandboxed environment.
