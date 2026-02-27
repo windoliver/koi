@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import type { AgentManifest } from "./assembly.js";
 import type { ServiceProviderConfig } from "./create-service-provider.js";
 import { createServiceProvider } from "./create-service-provider.js";
-import type { Agent, AgentManifest, ProcessId, Tool, TrustTier } from "./ecs.js";
+import type { Agent, ProcessId, SubsystemToken, Tool, TrustTier } from "./ecs.js";
 import { agentId, token, toolToken } from "./ecs.js";
 
 // ---------------------------------------------------------------------------
@@ -39,8 +40,7 @@ function createMockAgent(overrides?: { readonly pid?: Partial<ProcessId> }): Age
     has: (t: { toString(): string }): boolean => components.has(t as string),
     hasAll: (...tokens: readonly { toString(): string }[]): boolean =>
       tokens.every((t) => components.has(t as string)),
-    query: <T>(_prefix: string): ReadonlyMap<string & { readonly [Symbol.toStringTag]: T }, T> =>
-      new Map(),
+    query: <T>(_prefix: string): ReadonlyMap<SubsystemToken<T>, T> => new Map(),
     components: (): ReadonlyMap<string, unknown> => components,
   };
 }

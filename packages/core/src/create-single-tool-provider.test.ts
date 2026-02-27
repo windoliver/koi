@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import type { AgentManifest } from "./assembly.js";
 import { createSingleToolProvider } from "./create-single-tool-provider.js";
-import type { Agent, AgentManifest, ProcessId, Tool } from "./ecs.js";
+import type { Agent, ProcessId, SubsystemToken, Tool } from "./ecs.js";
 import { agentId } from "./ecs.js";
 
 // ---------------------------------------------------------------------------
@@ -32,8 +33,7 @@ function createMockAgent(): Agent {
     has: (t: { toString(): string }): boolean => components.has(t as string),
     hasAll: (...tokens: readonly { toString(): string }[]): boolean =>
       tokens.every((t) => components.has(t as string)),
-    query: <T>(_prefix: string): ReadonlyMap<string & { readonly [Symbol.toStringTag]: T }, T> =>
-      new Map(),
+    query: <T>(_prefix: string): ReadonlyMap<SubsystemToken<T>, T> => new Map(),
     components: (): ReadonlyMap<string, unknown> => components,
   };
 }
