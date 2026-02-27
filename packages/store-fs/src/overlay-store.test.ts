@@ -537,6 +537,114 @@ describe("OverlayForgeStore", () => {
     });
   });
 
+  // -- promoteAndUpdate (atomic scope + metadata) ----------------------------
+
+  describe("promoteAndUpdate", () => {
+    test("moves brick to target tier with metadata updated in single operation", async () => {
+      const brick = createBrick({
+        id: brickId("brick_atomic"),
+        scope: "agent",
+        trustTier: "sandbox",
+        lifecycle: "draft",
+        tags: ["old"],
+      });
+      await seedTier(tiers.agent, brick);
+
+      const store = await createOverlayForgeStore(config);
+      const result = await store.promoteAndUpdate(brickId("brick_atomic"), "zone", {
+        trustTier: "verified",
+        lifecycle: "active",
+        tags: ["new", "zone:team-1"],
+      });
+      expect(result.ok).toBe(true);
+
+      // Should be in shared tier now (zone → shared)
+      const tierResult = await store.locateTier(brickId("brick_atomic"));
+      expect(tierResult.ok).toBe(true);
+      if (tierResult.ok) {
+        expect(tierResult.value).toBe("shared");
+      }
+
+      // Metadata should be updated atomically
+      const loaded = await store.load(brickId("brick_atomic"));
+      expect(loaded.ok).toBe(true);
+      if (loaded.ok) {
+        expect(loaded.value.scope).toBe("zone");
+        expect(loaded.value.trustTier).toBe("verified");
+        expect(loaded.value.lifecycle).toBe("active");
+        expect(loaded.value.tags).toEqual(["new", "zone:team-1"]);
+      }
+    });
+
+    test("applies metadata update only when brick is already in target tier", async () => {
+      const brick = createBrick({
+        id: brickId("brick_same_tier"),
+        scope: "agent",
+        trustTier: "sandbox",
+      });
+      await seedTier(tiers.agent, brick);
+
+      const store = await createOverlayForgeStore(config);
+      // Promote to agent scope (already in agent tier)
+      const result = await store.promoteAndUpdate(brickId("brick_same_tier"), "agent", {
+        trustTier: "verified",
+      });
+      expect(result.ok).toBe(true);
+
+      // Still in agent tier
+      const tierResult = await store.locateTier(brickId("brick_same_tier"));
+      expect(tierResult.ok).toBe(true);
+      if (tierResult.ok) {
+        expect(tierResult.value).toBe("agent");
+      }
+
+      // Metadata updated
+      const loaded = await store.load(brickId("brick_same_tier"));
+      expect(loaded.ok).toBe(true);
+      if (loaded.ok) {
+        expect(loaded.value.trustTier).toBe("verified");
+      }
+    });
+
+    test("returns ok when source removal fails (non-fatal orphan)", async () => {
+      // Seed in shared tier, promote to agent tier — source removal is non-fatal
+      const brick = createBrick({
+        id: brickId("brick_orphan"),
+        scope: "zone",
+        trustTier: "sandbox",
+      });
+      await seedTier(tiers.shared, brick);
+
+      const store = await createOverlayForgeStore(config);
+      const result = await store.promoteAndUpdate(brickId("brick_orphan"), "agent", {
+        trustTier: "verified",
+      });
+
+      // Should succeed regardless of source removal outcome
+      expect(result.ok).toBe(true);
+
+      // Brick should be loadable from agent tier with updated metadata
+      const loaded = await store.load(brickId("brick_orphan"));
+      expect(loaded.ok).toBe(true);
+      if (loaded.ok) {
+        expect(loaded.value.scope).toBe("agent");
+        expect(loaded.value.trustTier).toBe("verified");
+      }
+    });
+
+    test("returns NOT_FOUND for nonexistent brick", async () => {
+      const store = await createOverlayForgeStore(config);
+      const result = await store.promoteAndUpdate(brickId("nonexistent"), "zone", {
+        trustTier: "verified",
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("NOT_FOUND");
+      }
+    });
+  });
+
   // -- dispose ---------------------------------------------------------------
 
   describe("dispose", () => {

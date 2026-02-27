@@ -616,6 +616,137 @@ Scope promotion requires governance approval:
 
 ---
 
+## Atomic scope promotion (Issue #404)
+
+When an agent promotes a brick's scope (e.g., `agent → zone`), the store must update
+**both** the storage tier (physical location) **and** metadata (trust, lifecycle, tags)
+in a single operation. Without atomicity, a crash or failure between the two steps leaves
+the brick in a partial state — physically moved but with stale metadata.
+
+### The problem
+
+```
+  promote_forge(scope: "zone", trust: "verified")
+                      │
+                      ▼
+          ┌───────────────────────┐
+          │  store.promote(id,    │   Step 1: move brick
+          │    "zone")            │   agent/ → zone/
+          └───────────┬───────────┘
+                      │ ✅ success
+                      ▼
+          ┌───────────────────────┐
+          │  store.update(id,     │   Step 2: update metadata
+          │    {trust: "verified"})│
+          └───────────┬───────────┘
+                      │ ❌ FAILS
+                      ▼
+      ╔═══════════════════════════════╗
+      ║   PARTIAL STATE               ║
+      ║   Brick in zone/ tier         ║
+      ║   but trust still "sandbox"   ║
+      ║   tags stale                  ║
+      ╚═══════════════════════════════╝
+```
+
+### The solution: `promoteAndUpdate()`
+
+`ForgeStore` exposes an optional `promoteAndUpdate()` method that combines scope promotion
+with metadata update in a single operation.
+
+```
+  promote_forge(scope: "zone", trust: "verified")
+                      │
+                      ▼
+          ┌───────────────────────────────┐
+          │  store.promoteAndUpdate(      │
+          │    id, "zone",               │
+          │    {trust: "verified",       │   Single operation:
+          │     tags: ["zone:team-1"]})  │   all or nothing
+          └───────────┬─────────────────┘
+                      │
+             ┌────────┴────────┐
+          ✅ success         ❌ failure
+             │                 │
+             ▼                 ▼
+  ┌──────────────────┐  ┌──────────────────┐
+  │ ALL changes      │  │ NO changes       │
+  │ applied:         │  │ applied:         │
+  │ • scope → zone   │  │ • brick stays    │
+  │ • trust → verified│ │   where it was   │
+  │ • tags updated   │  │ • clean error    │
+  └──────────────────┘  └──────────────────┘
+```
+
+### How it works (overlay store)
+
+The overlay store implements `promoteAndUpdate()` as a single load-merge-save:
+
+```
+  1. Load brick from source tier (e.g., agent/)
+  2. Merge ALL updates in memory:
+     { ...brick, scope: "zone", trustTier: "verified", tags: [...] }
+  3. Save merged brick to target tier (zone/) ← single write
+  4. Remove from source tier (non-fatal if fails — content-addressed = harmless dup)
+```
+
+No window exists where the brick is in the new tier with old metadata.
+
+For the in-memory store, it's trivially atomic — a single `Map.set()`.
+
+### Fallback chain
+
+The `promote_forge` handler tries methods in priority order for backward compatibility:
+
+```
+  ┌──────────────────────────┐
+  │ store.promoteAndUpdate?  │── yes ──▶ ATOMIC (preferred)
+  └──────────┬───────────────┘          single operation
+             │ undefined
+             ▼
+  ┌──────────────────────────┐
+  │ store.promote?           │── yes ──▶ LEGACY (two-step)
+  └──────────┬───────────────┘          promote() + update()
+             │ undefined
+             ▼
+  ┌──────────────────────────┐
+  │ store.update()           │────────▶ BASIC (metadata only)
+  └──────────────────────────┘          no tier move
+```
+
+Both `promoteAndUpdate` and `promote` are optional on `ForgeStore` — existing store
+implementations compile without them. The handler degrades gracefully.
+
+### L0 interface
+
+```typescript
+// packages/core/src/brick-store.ts
+
+interface ForgeStore {
+  // ... existing methods ...
+
+  /** Atomic scope promotion with metadata update. Optional. */
+  readonly promoteAndUpdate?: (
+    id: BrickId,
+    targetScope: ForgeScope,
+    updates: BrickUpdate,
+  ) => Promise<Result<void, KoiError>>;
+}
+```
+
+### Store change events
+
+When `promoteAndUpdate()` succeeds, a `"promoted"` event is emitted:
+
+```typescript
+{ kind: "promoted", brickId: "sha256:...", scope: "zone" }
+```
+
+This triggers cache invalidation in `ForgeRuntime` and notifies any
+`StoreChangeNotifier` subscribers for cross-agent invalidation.
+
+---
+
 ## Runtime integration
 
 ### ForgeComponentProvider (assembly-time)
@@ -932,6 +1063,49 @@ if (tool !== undefined) {
 // Integrity result cached — O(1) for repeat lookups
 
 runtime.dispose?.();
+```
+
+### Atomic promote through L1 runtime
+
+```typescript
+import { createKoi } from "@koi/engine";
+import { createLoopAdapter } from "@koi/engine-loop";
+import {
+  createDefaultForgeConfig,
+  createInMemoryForgeStore,
+  createPromoteForgeTool,
+} from "@koi/forge";
+import { toolToken } from "@koi/core";
+
+// 1. Store with a brick
+const store = createInMemoryForgeStore();
+await store.save(myBrick); // scope: "agent", trustTier: "sandbox"
+
+// 2. Create promote_forge as entity tool
+const promoteTool = createPromoteForgeTool({
+  store,
+  executor: tieredExecutor,
+  verifiers: [],
+  config: createDefaultForgeConfig(),
+  context: { agentId: "agent-1", depth: 0, sessionId: "s1", forgesThisSession: 0 },
+});
+
+// 3. Register via ComponentProvider
+const toolProvider = {
+  name: "promote-provider",
+  attach: async () => new Map([[ toolToken("promote_forge"), promoteTool ]]),
+};
+
+// 4. Wire through createKoi — promote_forge is now callable by the LLM
+const runtime = await createKoi({
+  manifest: { name: "my-agent", version: "1.0.0", model: { name: "claude-haiku-4-5-20251001" } },
+  adapter: createLoopAdapter({ modelCall, maxTurns: 5 }),
+  providers: [toolProvider],
+});
+
+// When the LLM calls promote_forge with:
+//   { brickId: "sha256:...", targetScope: "zone", targetTrustTier: "verified" }
+// The handler uses store.promoteAndUpdate() → atomic scope + metadata change.
 ```
 
 ### Full L1 integration: createKoi with forge

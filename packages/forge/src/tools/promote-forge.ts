@@ -240,10 +240,39 @@ async function promoteForgeHandler(
       ...(tagUpdate !== undefined ? { tags: tagUpdate } : {}),
     };
 
-    // Wire scope promotion to store.promote() if available (Issue 1A)
-    // NOTE: promote() + update() are NOT atomic. If update() fails after promote()
-    // succeeds, the brick is in the new tier with stale trust/lifecycle metadata.
-    if (scopeChange !== undefined && deps.store.promote !== undefined) {
+    // Atomic path: promoteAndUpdate() combines scope move + metadata in one operation.
+    // Fallback: promote() + update() (non-atomic, legacy).
+    // Last resort: update() only (no tier move).
+    if (scopeChange !== undefined && deps.store.promoteAndUpdate !== undefined) {
+      // Atomic: scope + metadata in one operation (Issue #404)
+      const atomicUpdates: BrickUpdate = {
+        ...(trustChange !== undefined ? { trustTier: trustChange.to } : {}),
+        ...(lifecycleChange !== undefined ? { lifecycle: lifecycleChange.to } : {}),
+        ...(tagUpdate !== undefined ? { tags: tagUpdate } : {}),
+      };
+      const result = await deps.store.promoteAndUpdate(typedBrickId, scopeChange.to, atomicUpdates);
+      if (!result.ok) {
+        return {
+          ok: false,
+          error: storeError(
+            "SAVE_FAILED",
+            `Atomic scope promotion failed: ${result.error.message}`,
+          ),
+        };
+      }
+
+      // Fire-and-forget: notify promoted
+      if (deps.notifier !== undefined) {
+        void Promise.resolve(
+          deps.notifier.notify({
+            kind: "promoted",
+            brickId: typedBrickId,
+            scope: scopeChange.to,
+          }),
+        ).catch(() => {});
+      }
+    } else if (scopeChange !== undefined && deps.store.promote !== undefined) {
+      // Legacy fallback: two-step (non-atomic, kept for backward compat)
       const promoteResult = await deps.store.promote(typedBrickId, scopeChange.to);
       if (!promoteResult.ok) {
         return {
@@ -286,7 +315,7 @@ async function promoteForgeHandler(
         ).catch(() => {});
       }
     } else {
-      // No store.promote — update all fields via store.update()
+      // No promote support — update all fields via store.update()
       const updateResult = await deps.store.update(typedBrickId, updates);
       if (!updateResult.ok) {
         return {

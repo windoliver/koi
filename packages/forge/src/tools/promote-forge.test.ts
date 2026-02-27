@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import type {
   BrickId,
   BrickLifecycle,
+  BrickUpdate,
+  ForgeScope,
   SandboxExecutor,
   StoreChangeEvent,
   TieredSandboxExecutor,
@@ -494,16 +496,18 @@ describe("createPromoteForgeTool", () => {
 
   // --- Wire to store.promote() (Issue 1A) ---
 
-  test("calls store.promote() for scope changes when available", async () => {
+  test("calls store.promote() for scope changes when available (legacy path)", async () => {
     const store = createInMemoryForgeStore();
     await store.save(
       createToolBrick({ id: brickId("brick_wire"), scope: "agent", trustTier: "verified" }),
     );
 
+    // Strip promoteAndUpdate to test the legacy promote-only path
     let promoteCalled = false;
     let promoteArgs: { id: BrickId; scope: string } | undefined;
+    const { promoteAndUpdate: _omitWire, ...storeWithoutAtomic } = store;
     const storeWithPromote = {
-      ...store,
+      ...storeWithoutAtomic,
       promote: async (id: BrickId, targetScope: string) => {
         promoteCalled = true;
         promoteArgs = { id, scope: targetScope };
@@ -659,8 +663,10 @@ describe("createPromoteForgeTool", () => {
       createToolBrick({ id: brickId("brick_prfail"), scope: "agent", trustTier: "verified" }),
     );
 
+    // Strip promoteAndUpdate to test the legacy promote-only path
+    const { promoteAndUpdate: _omitPr, ...storeWithoutAtomic } = store;
     const failingPromoteStore = {
-      ...store,
+      ...storeWithoutAtomic,
       promote: async () => ({
         ok: false as const,
         error: { code: "INTERNAL" as const, message: "promote disk error", retryable: false },
@@ -856,7 +862,7 @@ describe("createPromoteForgeTool", () => {
   // Notifier integration (fire-and-forget events after mutations)
   // -------------------------------------------------------------------------
 
-  test("fires 'promoted' notification when store.promote() is used", async () => {
+  test("fires 'promoted' notification when promoteAndUpdate is used (atomic path)", async () => {
     const store = createInMemoryForgeStore();
     await store.save(
       createToolBrick({ id: brickId("brick_notify"), scope: "agent", trustTier: "verified" }),
@@ -866,8 +872,50 @@ describe("createPromoteForgeTool", () => {
     const events: StoreChangeEvent[] = [];
     notifier.subscribe((event) => events.push(event));
 
+    const config = createDefaultForgeConfig({
+      scopePromotion: {
+        requireHumanApproval: false,
+        minTrustForZone: "sandbox",
+        minTrustForGlobal: "promoted",
+      },
+    });
+    // Memory store has promoteAndUpdate — handler uses atomic path
+    const tool = createPromoteForgeTool(createDeps({ store, config, notifier }));
+
+    const result = (await tool.execute({
+      brickId: "brick_notify",
+      targetScope: "zone",
+    })) as { readonly ok: true; readonly value: PromoteResult };
+
+    expect(result.ok).toBe(true);
+
+    // Allow fire-and-forget to settle
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(events.length).toBe(1);
+    expect(events[0]?.kind).toBe("promoted");
+    expect(events[0]?.brickId).toBe(brickId("brick_notify"));
+    expect(events[0]?.scope).toBe("zone");
+  });
+
+  test("fires 'promoted' notification when legacy store.promote() is used", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      createToolBrick({
+        id: brickId("brick_notify_legacy"),
+        scope: "agent",
+        trustTier: "verified",
+      }),
+    );
+
+    const notifier = createMemoryStoreChangeNotifier();
+    const events: StoreChangeEvent[] = [];
+    notifier.subscribe((event) => events.push(event));
+
+    // Strip promoteAndUpdate to force legacy path
+    const { promoteAndUpdate: _omitNotify, ...storeWithoutAtomic } = store;
     const storeWithPromote = {
-      ...store,
+      ...storeWithoutAtomic,
       promote: async (id: BrickId, targetScope: string) => {
         return store.update(id, { scope: targetScope as "agent" | "zone" | "global" });
       },
@@ -883,7 +931,7 @@ describe("createPromoteForgeTool", () => {
     const tool = createPromoteForgeTool(createDeps({ store: storeWithPromote, config, notifier }));
 
     const result = (await tool.execute({
-      brickId: "brick_notify",
+      brickId: "brick_notify_legacy",
       targetScope: "zone",
     })) as { readonly ok: true; readonly value: PromoteResult };
 
@@ -894,7 +942,7 @@ describe("createPromoteForgeTool", () => {
 
     expect(events.length).toBe(1);
     expect(events[0]?.kind).toBe("promoted");
-    expect(events[0]?.brickId).toBe(brickId("brick_notify"));
+    expect(events[0]?.brickId).toBe(brickId("brick_notify_legacy"));
     expect(events[0]?.scope).toBe("zone");
   });
 
@@ -1024,5 +1072,205 @@ describe("createPromoteForgeTool", () => {
     })) as { readonly ok: true; readonly value: PromoteResult };
 
     expect(result.ok).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // Atomic promoteAndUpdate (Issue #404)
+  // -------------------------------------------------------------------------
+
+  test("regression: non-atomic path leaves partial state when update fails after promote", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      createToolBrick({
+        id: brickId("brick_partial"),
+        scope: "agent",
+        trustTier: "sandbox",
+        lifecycle: "active",
+      }),
+    );
+
+    // Store with promote (legacy) but failing update — simulates the old bug.
+    // We need to omit promoteAndUpdate to force the legacy two-step path.
+    let promoteCalled = false;
+    const { promoteAndUpdate: _omit, ...storeWithoutAtomic } = store;
+    const storeWithPartialFailure = {
+      ...storeWithoutAtomic,
+      promote: async (id: BrickId, targetScope: string) => {
+        promoteCalled = true;
+        return store.update(id, { scope: targetScope as "agent" | "zone" | "global" });
+      },
+      update: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "disk full", retryable: false },
+      }),
+    };
+
+    const config = createDefaultForgeConfig({
+      scopePromotion: {
+        requireHumanApproval: false,
+        minTrustForZone: "sandbox",
+        minTrustForGlobal: "promoted",
+      },
+    });
+    const tool = createPromoteForgeTool(createDeps({ store: storeWithPartialFailure, config }));
+
+    const result = (await tool.execute({
+      brickId: "brick_partial",
+      targetScope: "zone",
+      targetTrustTier: "verified",
+    })) as { readonly ok: false; readonly error: { readonly code: string } };
+
+    // promote() succeeded but update() failed — partial state
+    expect(promoteCalled).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.error.code).toBe("SAVE_FAILED");
+
+    // The scope was changed by promote(), but trustTier is stale — partial state exists
+    const loaded = await store.load(brickId("brick_partial"));
+    if (loaded.ok) {
+      expect(loaded.value.scope).toBe("zone"); // changed by promote
+      expect(loaded.value.trustTier).toBe("sandbox"); // stale — update failed
+    }
+  });
+
+  test("uses promoteAndUpdate for atomic scope + metadata changes", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      createToolBrick({
+        id: brickId("brick_atomic"),
+        scope: "agent",
+        trustTier: "sandbox",
+        lifecycle: "active",
+      }),
+    );
+
+    let promoteAndUpdateCalled = false;
+    const storeWithAtomic = {
+      ...store,
+      promoteAndUpdate: async (id: BrickId, targetScope: ForgeScope, updates: BrickUpdate) => {
+        promoteAndUpdateCalled = true;
+        // Simulate atomic: apply scope + all metadata in one go
+        return store.update(id, {
+          scope: targetScope,
+          ...(updates.trustTier !== undefined ? { trustTier: updates.trustTier } : {}),
+          ...(updates.lifecycle !== undefined ? { lifecycle: updates.lifecycle } : {}),
+          ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
+        });
+      },
+    };
+
+    const config = createDefaultForgeConfig({
+      scopePromotion: {
+        requireHumanApproval: false,
+        minTrustForZone: "sandbox",
+        minTrustForGlobal: "promoted",
+      },
+    });
+    const tool = createPromoteForgeTool(createDeps({ store: storeWithAtomic, config }));
+
+    const result = (await tool.execute({
+      brickId: "brick_atomic",
+      targetScope: "zone",
+      targetTrustTier: "verified",
+    })) as { readonly ok: true; readonly value: PromoteResult };
+
+    expect(result.ok).toBe(true);
+    expect(promoteAndUpdateCalled).toBe(true);
+    expect(result.value.changes.scope).toEqual({ from: "agent", to: "zone" });
+    expect(result.value.changes.trustTier).toEqual({ from: "sandbox", to: "verified" });
+
+    // Verify both scope and metadata updated
+    const loaded = await store.load(brickId("brick_atomic"));
+    if (loaded.ok) {
+      expect(loaded.value.scope).toBe("zone");
+      expect(loaded.value.trustTier).toBe("verified");
+    }
+  });
+
+  test("returns clean error when promoteAndUpdate fails (no partial state)", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      createToolBrick({
+        id: brickId("brick_fail_atomic"),
+        scope: "agent",
+        trustTier: "sandbox",
+      }),
+    );
+
+    const storeWithFailingAtomic = {
+      ...store,
+      promoteAndUpdate: async () => ({
+        ok: false as const,
+        error: { code: "INTERNAL" as const, message: "disk full", retryable: false },
+      }),
+    };
+
+    const config = createDefaultForgeConfig({
+      scopePromotion: {
+        requireHumanApproval: false,
+        minTrustForZone: "sandbox",
+        minTrustForGlobal: "promoted",
+      },
+    });
+    const tool = createPromoteForgeTool(createDeps({ store: storeWithFailingAtomic, config }));
+
+    const result = (await tool.execute({
+      brickId: "brick_fail_atomic",
+      targetScope: "zone",
+    })) as {
+      readonly ok: false;
+      readonly error: { readonly stage: string; readonly code: string };
+    };
+
+    expect(result.ok).toBe(false);
+    expect(result.error.stage).toBe("store");
+    expect(result.error.code).toBe("SAVE_FAILED");
+
+    // No partial state — brick unchanged
+    const loaded = await store.load(brickId("brick_fail_atomic"));
+    if (loaded.ok) {
+      expect(loaded.value.scope).toBe("agent"); // unchanged
+      expect(loaded.value.trustTier).toBe("sandbox"); // unchanged
+    }
+  });
+
+  test("falls back to legacy promote when promoteAndUpdate is undefined", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      createToolBrick({
+        id: brickId("brick_fallback"),
+        scope: "agent",
+        trustTier: "verified",
+      }),
+    );
+
+    // Omit promoteAndUpdate to force legacy promote-only path
+    let legacyPromoteCalled = false;
+    const { promoteAndUpdate: _omitAtomic, ...storeWithoutAtomic2 } = store;
+    const storeWithLegacyOnly = {
+      ...storeWithoutAtomic2,
+      promote: async (id: BrickId, targetScope: string) => {
+        legacyPromoteCalled = true;
+        return store.update(id, { scope: targetScope as "agent" | "zone" | "global" });
+      },
+    };
+
+    const config = createDefaultForgeConfig({
+      scopePromotion: {
+        requireHumanApproval: false,
+        minTrustForZone: "sandbox",
+        minTrustForGlobal: "promoted",
+      },
+    });
+    const tool = createPromoteForgeTool(createDeps({ store: storeWithLegacyOnly, config }));
+
+    const result = (await tool.execute({
+      brickId: "brick_fallback",
+      targetScope: "zone",
+    })) as { readonly ok: true; readonly value: PromoteResult };
+
+    expect(result.ok).toBe(true);
+    expect(legacyPromoteCalled).toBe(true);
+    expect(result.value.changes.scope).toEqual({ from: "agent", to: "zone" });
   });
 });

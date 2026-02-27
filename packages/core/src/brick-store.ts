@@ -138,6 +138,18 @@ export interface ForgeStore {
    * When available, promote_forge wires scope metadata changes to physical tier moves.
    */
   readonly promote?: (id: BrickId, targetScope: ForgeScope) => Promise<Result<void, KoiError>>;
+  /**
+   * Atomic scope promotion with metadata update.
+   * Moves brick to target scope's tier AND applies metadata changes in a single operation.
+   * Prevents partial state where brick is moved but metadata is stale.
+   *
+   * Optional: not all store backends support tiered storage with atomic promotion.
+   */
+  readonly promoteAndUpdate?: (
+    id: BrickId,
+    targetScope: ForgeScope,
+    updates: BrickUpdate,
+  ) => Promise<Result<void, KoiError>>;
   /** Optional typed watch for store mutations. Returns unsubscribe. */
   readonly watch?: (listener: (event: StoreChangeEvent) => void) => () => void;
   /** Clean up resources (filesystem watchers, timers). Not all backends hold resources. */
