@@ -42,38 +42,38 @@ function makeBrick(
     case "tool":
       return {
         ...base,
-        kind: "tool" as const,
         implementation: "return 42;",
         inputSchema: {},
         ...overrides,
+        kind: "tool" as const,
       } as BrickArtifact;
     case "skill":
       return {
         ...base,
-        kind: "skill" as const,
         content: "# Test skill",
         ...overrides,
+        kind: "skill" as const,
       } as BrickArtifact;
     case "agent":
       return {
         ...base,
-        kind: "agent" as const,
         manifestYaml: "name: test",
         ...overrides,
+        kind: "agent" as const,
       } as BrickArtifact;
     case "middleware":
       return {
         ...base,
-        kind: "middleware" as const,
         implementation: "export default {};",
         ...overrides,
+        kind: "middleware" as const,
       } as BrickArtifact;
     case "channel":
       return {
         ...base,
-        kind: "channel" as const,
         implementation: "export default {};",
         ...overrides,
+        kind: "channel" as const,
       } as BrickArtifact;
   }
 }
@@ -133,7 +133,7 @@ describe("mapBrickToComponent", () => {
 
   test("maps skill without tags omits tags field", () => {
     const brick = makeBrick({ kind: "skill", tags: [] });
-    const component = mapBrickToComponent(brick) as Record<string, unknown>;
+    const component = mapBrickToComponent(brick) as unknown as Record<string, unknown>;
     expect(component).not.toHaveProperty("tags");
   });
 
@@ -148,13 +148,13 @@ describe("mapBrickToComponent", () => {
   test("maps middleware artifact to itself", () => {
     const brick = makeBrick({ kind: "middleware" });
     const component = mapBrickToComponent(brick);
-    expect(component).toBe(brick);
+    expect(component as unknown).toBe(brick);
   });
 
   test("maps channel artifact to itself", () => {
     const brick = makeBrick({ kind: "channel" });
     const component = mapBrickToComponent(brick);
-    expect(component).toBe(brick);
+    expect(component as unknown).toBe(brick);
   });
 });
 
