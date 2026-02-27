@@ -3,12 +3,13 @@
  *
  * These tests use pseudo-random generation to exercise the core properties:
  * 1. Monotonic attenuation — no child scope exceeds parent scope
- * 2. Signature integrity — any mutation invalidates the signature
+ * 2. Proof integrity — any mutation invalidates the proof
  * 3. Expiry monotonicity — child expiresAt <= parent expiresAt
  */
 
 import { describe, expect, test } from "bun:test";
 import type { DelegationScope, PermissionConfig } from "@koi/core";
+import { agentId } from "@koi/core";
 import { attenuateGrant, createGrant } from "../grant.js";
 import { verifySignature } from "../sign.js";
 
@@ -67,8 +68,8 @@ describe("property: monotonic attenuation", () => {
     for (let seed = 0; seed < 50; seed++) {
       const parentScope = makeRandomScope(seed);
       const parentResult = createGrant({
-        issuerId: "agent-root",
-        delegateeId: "agent-1",
+        issuerId: agentId("agent-root"),
+        delegateeId: agentId("agent-1"),
         scope: parentScope,
         maxChainDepth: 5,
         ttlMs: 3600000,
@@ -80,7 +81,7 @@ describe("property: monotonic attenuation", () => {
       const childScope = makeNarrowerScope(parentScope, seed + 100);
       const childResult = attenuateGrant(
         parent,
-        { delegateeId: "agent-2", scope: childScope },
+        { delegateeId: agentId("agent-2"), scope: childScope },
         SECRET,
       );
 
@@ -100,24 +101,17 @@ describe("property: monotonic attenuation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Property 2: Signature integrity
+// Property 2: Proof integrity
 // ---------------------------------------------------------------------------
 
-describe("property: signature integrity", () => {
-  const MUTATION_FIELDS = [
-    "issuerId",
-    "delegateeId",
-    "chainDepth",
-    "maxChainDepth",
-    "createdAt",
-    "expiresAt",
-  ] as const;
+describe("property: proof integrity", () => {
+  const MUTATION_FIELDS = ["chainDepth", "maxChainDepth", "createdAt", "expiresAt"] as const;
 
-  test("any single-field mutation invalidates the signature (30 iterations)", () => {
+  test("any single-field mutation invalidates the proof (30 iterations)", () => {
     for (let seed = 0; seed < 30; seed++) {
       const grantResult = createGrant({
-        issuerId: `agent-${String(seed)}`,
-        delegateeId: `agent-${String(seed + 100)}`,
+        issuerId: agentId(`agent-${String(seed)}`),
+        delegateeId: agentId(`agent-${String(seed + 100)}`),
         scope: makeRandomScope(seed),
         maxChainDepth: 3,
         ttlMs: 3600000,
@@ -126,20 +120,30 @@ describe("property: signature integrity", () => {
       if (!grantResult.ok) continue;
       const grant = grantResult.value;
 
-      // Original signature is valid
+      // Original proof is valid
       expect(verifySignature(grant, SECRET)).toBe(true);
 
-      // Mutate each field and verify signature is invalid
+      // Mutate numeric fields and verify proof is invalid
       for (const field of MUTATION_FIELDS) {
         const mutated = {
           ...grant,
-          [field]:
-            typeof grant[field] === "number"
-              ? (grant[field] as number) + 1
-              : `mutated-${String(grant[field])}`,
+          [field]: (grant[field] as number) + 1,
         };
         expect(verifySignature(mutated, SECRET)).toBe(false);
       }
+
+      // Mutate issuer/delegatee IDs
+      const mutatedIssuerId = {
+        ...grant,
+        issuerId: agentId(`mutated-${grant.issuerId}`),
+      };
+      expect(verifySignature(mutatedIssuerId, SECRET)).toBe(false);
+
+      const mutatedDelegateeId = {
+        ...grant,
+        delegateeId: agentId(`mutated-${grant.delegateeId}`),
+      };
+      expect(verifySignature(mutatedDelegateeId, SECRET)).toBe(false);
     }
   });
 });
@@ -153,8 +157,8 @@ describe("property: expiry monotonicity", () => {
     for (let seed = 0; seed < 50; seed++) {
       const parentScope = makeRandomScope(seed);
       const parentResult = createGrant({
-        issuerId: "agent-root",
-        delegateeId: "agent-1",
+        issuerId: agentId("agent-root"),
+        delegateeId: agentId("agent-1"),
         scope: parentScope,
         maxChainDepth: 5,
         ttlMs: 3600000,
@@ -168,7 +172,7 @@ describe("property: expiry monotonicity", () => {
       const childTtl = Math.floor((3600000 * (((seed * 13) % 80) + 5)) / 100);
       const childResult = attenuateGrant(
         parent,
-        { delegateeId: "agent-2", scope: childScope, ttlMs: childTtl },
+        { delegateeId: agentId("agent-2"), scope: childScope, ttlMs: childTtl },
         SECRET,
       );
 
@@ -180,7 +184,7 @@ describe("property: expiry monotonicity", () => {
         const grandchildTtl = Math.floor((childTtl * (((seed * 11) % 80) + 5)) / 100);
         const grandchildResult = attenuateGrant(
           childResult.value,
-          { delegateeId: "agent-3", scope: grandchildScope, ttlMs: grandchildTtl },
+          { delegateeId: agentId("agent-3"), scope: grandchildScope, ttlMs: grandchildTtl },
           SECRET,
         );
 

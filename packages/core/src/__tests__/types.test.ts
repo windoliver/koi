@@ -833,50 +833,50 @@ describe("DelegationGrant readonly enforcement", () => {
   test("all properties are readonly", () => {
     const grant: DelegationGrant = {
       id: "g1" as DelegationId,
-      issuerId: "agent-1",
-      delegateeId: "agent-2",
+      issuerId: agentId("agent-1"),
+      delegateeId: agentId("agent-2"),
       scope: { permissions: { allow: ["read_file"] } },
       chainDepth: 0,
       maxChainDepth: 3,
       createdAt: Date.now(),
       expiresAt: Date.now() + 3600000,
-      signature: "abc",
+      proof: { kind: "hmac-sha256", digest: "a".repeat(64) },
     };
     // @ts-expect-error — cannot assign to readonly property
     grant.id = "g2" as DelegationId;
     // @ts-expect-error — cannot assign to readonly property
-    grant.issuerId = "other";
+    grant.issuerId = agentId("other");
     // @ts-expect-error — cannot assign to readonly property
     grant.scope = { permissions: {} };
     // @ts-expect-error — cannot assign to readonly property
-    grant.signature = "tampered";
+    grant.proof = { kind: "hmac-sha256", digest: "tampered".repeat(8) };
   });
 
   test("parentId is optional", () => {
     const root: DelegationGrant = {
       id: "g1" as DelegationId,
-      issuerId: "a1",
-      delegateeId: "a2",
+      issuerId: agentId("a1"),
+      delegateeId: agentId("a2"),
       scope: { permissions: {} },
       chainDepth: 0,
       maxChainDepth: 3,
       createdAt: 0,
       expiresAt: 1,
-      signature: "sig",
+      proof: { kind: "hmac-sha256", digest: "a".repeat(64) },
     };
     expect(root.parentId).toBeUndefined();
 
     const child: DelegationGrant = {
       id: "g2" as DelegationId,
-      issuerId: "a2",
-      delegateeId: "a3",
+      issuerId: agentId("a2"),
+      delegateeId: agentId("a3"),
       scope: { permissions: {} },
       parentId: "g1" as DelegationId,
       chainDepth: 1,
       maxChainDepth: 3,
       createdAt: 0,
       expiresAt: 1,
-      signature: "sig",
+      proof: { kind: "hmac-sha256", digest: "a".repeat(64) },
     };
     expect(child.parentId).toBe("g1" as DelegationId);
   });
@@ -910,14 +910,14 @@ describe("DelegationVerifyResult narrowing", () => {
       ok: true,
       grant: {
         id: "g1" as DelegationId,
-        issuerId: "a1",
-        delegateeId: "a2",
+        issuerId: agentId("a1"),
+        delegateeId: agentId("a2"),
         scope: { permissions: {} },
         chainDepth: 0,
         maxChainDepth: 3,
         createdAt: 0,
         expiresAt: 1,
-        signature: "sig",
+        proof: { kind: "hmac-sha256", digest: "a".repeat(64) },
       },
     };
     if (result.ok) {
@@ -939,14 +939,14 @@ describe("DelegationVerifyResult narrowing", () => {
       ok: true,
       grant: {
         id: "g1" as DelegationId,
-        issuerId: "a1",
-        delegateeId: "a2",
+        issuerId: agentId("a1"),
+        delegateeId: agentId("a2"),
         scope: { permissions: {} },
         chainDepth: 0,
         maxChainDepth: 3,
         createdAt: 0,
         expiresAt: 1,
-        signature: "sig",
+        proof: { kind: "hmac-sha256", digest: "a".repeat(64) },
       },
     };
     if (result.ok) {

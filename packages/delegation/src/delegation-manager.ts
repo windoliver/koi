@@ -45,26 +45,26 @@ export interface CreateDelegationManagerParams {
 export interface DelegationManager {
   // Grant lifecycle
   readonly grant: (
-    issuerId: string,
-    delegateeId: string,
+    issuerId: AgentId,
+    delegateeId: AgentId,
     scope: DelegationScope,
     ttlMs?: number,
   ) => Result<DelegationGrant, KoiError>;
   readonly attenuate: (
     parentId: DelegationId,
-    delegateeId: string,
+    delegateeId: AgentId,
     scope: DelegationScope,
     ttlMs?: number,
   ) => Result<DelegationGrant, KoiError>;
   readonly revoke: (id: DelegationId, cascade?: boolean) => Promise<readonly DelegationId[]>;
   readonly verify: (grantId: DelegationId, toolId: string) => Promise<DelegationVerifyResult>;
-  readonly list: (agentId?: string) => readonly DelegationGrant[];
+  readonly list: (agentId?: AgentId) => readonly DelegationGrant[];
 
   // Circuit breaker
-  readonly recordSuccess: (delegateeId: string) => void;
-  readonly recordFailure: (delegateeId: string) => void;
-  readonly canDelegate: (delegateeId: string) => boolean;
-  readonly circuitState: (delegateeId: string) => CircuitState;
+  readonly recordSuccess: (delegateeId: AgentId) => void;
+  readonly recordFailure: (delegateeId: AgentId) => void;
+  readonly canDelegate: (delegateeId: AgentId) => boolean;
+  readonly circuitState: (delegateeId: AgentId) => CircuitState;
 
   // Cleanup
   readonly dispose: () => void;
@@ -90,7 +90,7 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
     params.revocationRegistry ?? inMemoryReg ?? createInMemoryRegistry();
 
   // Track previous circuit states for event emission
-  const prevCircuitStates = new Map<string, CircuitState>();
+  const prevCircuitStates = new Map<AgentId, CircuitState>();
 
   function emit(event: DelegationEvent): void {
     onEvent?.(event);
@@ -126,8 +126,8 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
   // ---------------------------------------------------------------------------
 
   function grant(
-    issuerId: string,
-    delegateeId: string,
+    issuerId: AgentId,
+    delegateeId: AgentId,
     scope: DelegationScope,
     ttlMs?: number,
   ): Result<DelegationGrant, KoiError> {
@@ -151,7 +151,7 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
 
   function attenuate(
     parentId: DelegationId,
-    delegateeId: string,
+    delegateeId: AgentId,
     scope: DelegationScope,
     ttlMs?: number,
   ): Result<DelegationGrant, KoiError> {
@@ -248,7 +248,7 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
     return result;
   }
 
-  function list(agentId?: string): readonly DelegationGrant[] {
+  function list(agentId?: AgentId): readonly DelegationGrant[] {
     if (agentId === undefined) {
       return [...grantStore.values()];
     }
@@ -261,7 +261,7 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
   // Circuit breaker wrappers (with event emission)
   // ---------------------------------------------------------------------------
 
-  function recordSuccess(delegateeId: string): void {
+  function recordSuccess(delegateeId: AgentId): void {
     circuitBreaker.recordSuccess(delegateeId);
 
     const newState = circuitBreaker.getState(delegateeId);
@@ -278,7 +278,7 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
     }
   }
 
-  function recordFailure(delegateeId: string): void {
+  function recordFailure(delegateeId: AgentId): void {
     circuitBreaker.recordFailure(delegateeId);
 
     const newState = circuitBreaker.getState(delegateeId);
@@ -294,11 +294,11 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
     prevCircuitStates.set(delegateeId, newState);
   }
 
-  function canDelegate(delegateeId: string): boolean {
+  function canDelegate(delegateeId: AgentId): boolean {
     return circuitBreaker.canExecute(delegateeId);
   }
 
-  function circuitState(delegateeId: string): CircuitState {
+  function circuitState(delegateeId: AgentId): CircuitState {
     return circuitBreaker.getState(delegateeId);
   }
 

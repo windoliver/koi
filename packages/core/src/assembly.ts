@@ -51,6 +51,26 @@ export interface PermissionConfig {
   readonly ask?: readonly string[];
 }
 
+/**
+ * Configuration for the capability token subsystem, embedded in AgentManifest.
+ *
+ * Controls whether an agent participates in the capability system, how deep
+ * delegation chains are permitted, and the default token TTL.
+ *
+ * `requiresPoP` is reserved for v2 Proof-of-Possession enforcement.
+ * When set to true in the manifest, the engine will eventually enforce PoP
+ * challenges before granting capability-protected resources. Not enforced in v1.
+ */
+export interface CapabilityConfig {
+  readonly enabled: boolean;
+  /** Maximum delegation chain depth. Root token = depth 0. */
+  readonly maxChainDepth: number;
+  /** Default token TTL in milliseconds. */
+  readonly defaultTtlMs: number;
+  /** Reserved for v2 PoP enforcement. Not enforced in v1. */
+  readonly requiresPoP?: boolean;
+}
+
 export interface AgentManifest {
   readonly name: string;
   readonly version: string;
@@ -61,6 +81,7 @@ export interface AgentManifest {
   readonly middleware?: readonly MiddlewareConfig[];
   readonly permissions?: PermissionConfig;
   readonly delegation?: DelegationConfig;
+  readonly capability?: CapabilityConfig;
   readonly supervision?: SupervisionConfig;
   readonly outboundWebhooks?: readonly OutboundWebhookConfig[] | undefined;
   /**

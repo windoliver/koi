@@ -9,7 +9,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import type { DelegationEvent, DelegationId } from "@koi/core";
-import { DEFAULT_CIRCUIT_BREAKER_CONFIG } from "@koi/core";
+import { agentId, DEFAULT_CIRCUIT_BREAKER_CONFIG } from "@koi/core";
 import { createDelegationManager } from "../delegation-manager.js";
 
 const SECRET = "test-secret-key-32-bytes-minimum";
@@ -35,7 +35,9 @@ describe("concurrency", () => {
     cleanups.push(manager.dispose);
 
     const results = Array.from({ length: 50 }, () =>
-      manager.grant("agent-1", "agent-2", { permissions: { allow: ["read_file"] } }),
+      manager.grant(agentId("agent-1"), agentId("agent-2"), {
+        permissions: { allow: ["read_file"] },
+      }),
     );
 
     const ids = new Set<DelegationId>();
@@ -54,7 +56,7 @@ describe("concurrency", () => {
     cleanups.push(manager.dispose);
 
     // Create a grant
-    const grantResult = manager.grant("agent-1", "agent-2", {
+    const grantResult = manager.grant(agentId("agent-1"), agentId("agent-2"), {
       permissions: { allow: ["read_file"] },
     });
     expect(grantResult.ok).toBe(true);
@@ -93,7 +95,9 @@ describe("concurrency", () => {
 
     // Create 10 grants concurrently (sync operation, but creates events)
     const grantResults = Array.from({ length: 10 }, (_, i) =>
-      manager.grant("agent-1", `agent-${String(i + 2)}`, { permissions: { allow: ["read_file"] } }),
+      manager.grant(agentId("agent-1"), agentId(`agent-${String(i + 2)}`), {
+        permissions: { allow: ["read_file"] },
+      }),
     );
 
     // All should succeed

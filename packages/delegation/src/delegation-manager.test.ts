@@ -13,7 +13,7 @@ import type {
   DelegationId,
   RegistryEvent,
 } from "@koi/core";
-import { DEFAULT_CIRCUIT_BREAKER_CONFIG } from "@koi/core";
+import { agentId, DEFAULT_CIRCUIT_BREAKER_CONFIG } from "@koi/core";
 import { createDelegationManager } from "./delegation-manager.js";
 
 const SECRET = "test-secret-key-32-bytes-minimum";
@@ -92,17 +92,19 @@ describe("DelegationManager", () => {
 
   test("creates a grant and stores it internally", () => {
     const manager = createManager();
-    const result = manager.grant("agent-1", "agent-2", { permissions: { allow: ["read_file"] } });
+    const result = manager.grant(agentId("agent-1"), agentId("agent-2"), {
+      permissions: { allow: ["read_file"] },
+    });
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    expect(result.value.issuerId).toBe("agent-1");
-    expect(result.value.delegateeId).toBe("agent-2");
+    expect(result.value.issuerId).toBe(agentId("agent-1"));
+    expect(result.value.delegateeId).toBe(agentId("agent-2"));
     expect(result.value.chainDepth).toBe(0);
 
     // Verify it's stored
-    const grants = manager.list("agent-2");
+    const grants = manager.list(agentId("agent-2"));
     expect(grants).toHaveLength(1);
     expect(grants[0]?.id).toBe(result.value.id);
   });
@@ -110,20 +112,30 @@ describe("DelegationManager", () => {
   test("lists all active grants for an agent", () => {
     const manager = createManager();
 
-    manager.grant("agent-1", "agent-2", { permissions: { allow: ["read_file"] } });
-    manager.grant("agent-1", "agent-2", { permissions: { allow: ["write_file"] } });
-    manager.grant("agent-1", "agent-3", { permissions: { allow: ["read_file"] } });
+    manager.grant(agentId("agent-1"), agentId("agent-2"), {
+      permissions: { allow: ["read_file"] },
+    });
+    manager.grant(agentId("agent-1"), agentId("agent-2"), {
+      permissions: { allow: ["write_file"] },
+    });
+    manager.grant(agentId("agent-1"), agentId("agent-3"), {
+      permissions: { allow: ["read_file"] },
+    });
 
-    expect(manager.list("agent-2")).toHaveLength(2);
-    expect(manager.list("agent-3")).toHaveLength(1);
-    expect(manager.list("agent-4")).toHaveLength(0);
+    expect(manager.list(agentId("agent-2"))).toHaveLength(2);
+    expect(manager.list(agentId("agent-3"))).toHaveLength(1);
+    expect(manager.list(agentId("agent-4"))).toHaveLength(0);
   });
 
   test("lists all grants when no agentId provided", () => {
     const manager = createManager();
 
-    manager.grant("agent-1", "agent-2", { permissions: { allow: ["read_file"] } });
-    manager.grant("agent-1", "agent-3", { permissions: { allow: ["write_file"] } });
+    manager.grant(agentId("agent-1"), agentId("agent-2"), {
+      permissions: { allow: ["read_file"] },
+    });
+    manager.grant(agentId("agent-1"), agentId("agent-3"), {
+      permissions: { allow: ["write_file"] },
+    });
 
     expect(manager.list()).toHaveLength(2);
   });
@@ -131,27 +143,29 @@ describe("DelegationManager", () => {
   test("revokes a grant and removes from store", async () => {
     const manager = createManager();
 
-    const result = manager.grant("agent-1", "agent-2", { permissions: { allow: ["read_file"] } });
+    const result = manager.grant(agentId("agent-1"), agentId("agent-2"), {
+      permissions: { allow: ["read_file"] },
+    });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
     const revoked = await manager.revoke(result.value.id);
     expect(revoked).toContain(result.value.id);
-    expect(manager.list("agent-2")).toHaveLength(0);
+    expect(manager.list(agentId("agent-2"))).toHaveLength(0);
   });
 
   test("cascading revocation removes all descendants", async () => {
     const manager = createManager();
 
     // Create root grant
-    const rootResult = manager.grant("agent-1", "agent-2", {
+    const rootResult = manager.grant(agentId("agent-1"), agentId("agent-2"), {
       permissions: { allow: ["read_file", "write_file"] },
     });
     expect(rootResult.ok).toBe(true);
     if (!rootResult.ok) return;
 
     // Attenuate to create child
-    const childResult = manager.attenuate(rootResult.value.id, "agent-3", {
+    const childResult = manager.attenuate(rootResult.value.id, agentId("agent-3"), {
       permissions: { allow: ["read_file"] },
     });
     expect(childResult.ok).toBe(true);
@@ -172,7 +186,9 @@ describe("DelegationManager", () => {
     const manager = createManager({ registry });
 
     // Create grant FROM agent-1 TO agent-2
-    const result = manager.grant("agent-1", "agent-2", { permissions: { allow: ["read_file"] } });
+    const result = manager.grant(agentId("agent-1"), agentId("agent-2"), {
+      permissions: { allow: ["read_file"] },
+    });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -196,14 +212,14 @@ describe("DelegationManager", () => {
     const manager = createManager({ registry });
 
     // agent-1 grants to agent-2
-    const rootResult = manager.grant("agent-1", "agent-2", {
+    const rootResult = manager.grant(agentId("agent-1"), agentId("agent-2"), {
       permissions: { allow: ["read_file", "write_file"] },
     });
     expect(rootResult.ok).toBe(true);
     if (!rootResult.ok) return;
 
     // agent-2 attenuates to agent-3
-    const childResult = manager.attenuate(rootResult.value.id, "agent-3", {
+    const childResult = manager.attenuate(rootResult.value.id, agentId("agent-3"), {
       permissions: { allow: ["read_file"] },
     });
     expect(childResult.ok).toBe(true);
@@ -226,7 +242,9 @@ describe("DelegationManager", () => {
     const registry = createMockAgentRegistry();
     const manager = createManager({ registry });
 
-    manager.grant("agent-1", "agent-2", { permissions: { allow: ["read_file"] } });
+    manager.grant(agentId("agent-1"), agentId("agent-2"), {
+      permissions: { allow: ["read_file"] },
+    });
 
     registry.emit({ kind: "deregistered", agentId: "agent-1" as AgentId });
 
@@ -237,7 +255,9 @@ describe("DelegationManager", () => {
   test("returns Result error for invalid grant params", () => {
     const manager = createManager();
 
-    const result = manager.grant("", "agent-2", { permissions: { allow: ["read_file"] } });
+    const result = manager.grant(agentId(""), agentId("agent-2"), {
+      permissions: { allow: ["read_file"] },
+    });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
@@ -256,7 +276,7 @@ describe("DelegationManager", () => {
 
   test("verify succeeds for valid grant and matching tool", async () => {
     const manager = createManager();
-    const grantResult = manager.grant("agent-1", "agent-2", {
+    const grantResult = manager.grant(agentId("agent-1"), agentId("agent-2"), {
       permissions: { allow: ["read_file"] },
     });
     expect(grantResult.ok).toBe(true);
@@ -268,7 +288,7 @@ describe("DelegationManager", () => {
 
   test("verify returns denied for tool outside scope", async () => {
     const manager = createManager();
-    const grantResult = manager.grant("agent-1", "agent-2", {
+    const grantResult = manager.grant(agentId("agent-1"), agentId("agent-2"), {
       permissions: { allow: ["read_file"] },
     });
     expect(grantResult.ok).toBe(true);
@@ -285,7 +305,9 @@ describe("DelegationManager", () => {
     const events: DelegationEvent[] = [];
     const manager = createManager({ onEvent: (e) => events.push(e) });
 
-    const result = manager.grant("agent-1", "agent-2", { permissions: { allow: ["read_file"] } });
+    const result = manager.grant(agentId("agent-1"), agentId("agent-2"), {
+      permissions: { allow: ["read_file"] },
+    });
     expect(result.ok).toBe(true);
 
     expect(events).toHaveLength(1);
@@ -296,7 +318,9 @@ describe("DelegationManager", () => {
     const events: DelegationEvent[] = [];
     const manager = createManager({ onEvent: (e) => events.push(e) });
 
-    const result = manager.grant("agent-1", "agent-2", { permissions: { allow: ["read_file"] } });
+    const result = manager.grant(agentId("agent-1"), agentId("agent-2"), {
+      permissions: { allow: ["read_file"] },
+    });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -310,7 +334,9 @@ describe("DelegationManager", () => {
     const registry = createMockAgentRegistry();
     const manager = createDelegationManager({ config: DEFAULT_CONFIG, registry });
 
-    manager.grant("agent-1", "agent-2", { permissions: { allow: ["read_file"] } });
+    manager.grant(agentId("agent-1"), agentId("agent-2"), {
+      permissions: { allow: ["read_file"] },
+    });
     manager.dispose();
 
     // After dispose, registry events should not trigger cleanup
@@ -330,10 +356,10 @@ describe("DelegationManager", () => {
   test("circuit breaker methods delegate correctly", () => {
     const manager = createManager();
 
-    expect(manager.canDelegate("agent-1")).toBe(true);
-    expect(manager.circuitState("agent-1")).toBe("closed");
+    expect(manager.canDelegate(agentId("agent-1"))).toBe(true);
+    expect(manager.circuitState(agentId("agent-1"))).toBe("closed");
 
-    manager.recordSuccess("agent-1");
-    expect(manager.circuitState("agent-1")).toBe("closed");
+    manager.recordSuccess(agentId("agent-1"));
+    expect(manager.circuitState(agentId("agent-1"))).toBe("closed");
   });
 });

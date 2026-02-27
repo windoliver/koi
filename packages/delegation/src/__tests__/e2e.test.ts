@@ -22,7 +22,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
-import { runId, sessionId, turnId } from "@koi/core";
+import { agentId, runId, sessionId, turnId } from "@koi/core";
 import {
   attenuateGrant,
   createDelegationMiddleware,
@@ -101,8 +101,8 @@ describe("e2e: three-agent delegation chain lifecycle", () => {
     // Step 1: Orchestrator creates root grant for Worker
     // ------------------------------------------------------------------
     const rootGrant = mustCreateGrant({
-      issuerId: "orchestrator",
-      delegateeId: "worker",
+      issuerId: agentId("orchestrator"),
+      delegateeId: agentId("worker"),
       scope: {
         permissions: { allow: ["read_file", "write_file", "search"] },
         resources: ["read_file:/workspace/**", "write_file:/workspace/src/**"],
@@ -124,7 +124,7 @@ describe("e2e: three-agent delegation chain lifecycle", () => {
     const childResult = attenuateGrant(
       rootGrant,
       {
-        delegateeId: "sub-worker",
+        delegateeId: agentId("sub-worker"),
         scope: {
           permissions: { allow: ["read_file"] },
           resources: ["read_file:/workspace/src/**"],
@@ -140,8 +140,8 @@ describe("e2e: three-agent delegation chain lifecycle", () => {
     index.addGrant(childGrant);
 
     // Child grant chain metadata is correct
-    expect(childGrant.issuerId).toBe("worker"); // parent's delegateeId
-    expect(childGrant.delegateeId).toBe("sub-worker");
+    expect(childGrant.issuerId).toBe(agentId("worker")); // parent's delegateeId
+    expect(childGrant.delegateeId).toBe(agentId("sub-worker"));
     expect(childGrant.chainDepth).toBe(1);
     expect(childGrant.parentId).toBe(rootGrant.id);
     expect(childGrant.expiresAt).toBeLessThanOrEqual(rootGrant.expiresAt);
@@ -170,7 +170,7 @@ describe("e2e: three-agent delegation chain lifecycle", () => {
     const widenResult = attenuateGrant(
       childGrant,
       {
-        delegateeId: "rogue-agent",
+        delegateeId: agentId("rogue-agent"),
         scope: { permissions: { allow: ["read_file", "write_file"] } }, // write_file not in child
       },
       SECRET,
@@ -181,7 +181,7 @@ describe("e2e: three-agent delegation chain lifecycle", () => {
     const extendResult = attenuateGrant(
       childGrant,
       {
-        delegateeId: "another-agent",
+        delegateeId: agentId("another-agent"),
         scope: { permissions: { allow: ["read_file"] } },
         ttlMs: 9999999999, // way beyond parent expiry
       },
@@ -232,8 +232,8 @@ describe("e2e: middleware integration", () => {
     const grantStore = new Map<DelegationId, DelegationGrant>();
 
     const grant = mustCreateGrant({
-      issuerId: "orchestrator",
-      delegateeId: "worker",
+      issuerId: agentId("orchestrator"),
+      delegateeId: agentId("worker"),
       scope: { permissions: { allow: ["read_file", "search"] } },
       maxChainDepth: 2,
       ttlMs: 3600000,
@@ -299,8 +299,8 @@ describe("e2e: pluggable ScopeChecker", () => {
 
     // Grant with empty allow — default checker would deny everything
     const grant = mustCreateGrant({
-      issuerId: "orchestrator",
-      delegateeId: "worker",
+      issuerId: agentId("orchestrator"),
+      delegateeId: agentId("worker"),
       scope: { permissions: {} },
       maxChainDepth: 2,
       ttlMs: 3600000,
@@ -349,8 +349,8 @@ describe("e2e: pluggable ScopeChecker", () => {
 describe("e2e: deny list monotonicity", () => {
   test("child must preserve all parent deny rules", () => {
     const rootGrant = mustCreateGrant({
-      issuerId: "orchestrator",
-      delegateeId: "worker",
+      issuerId: agentId("orchestrator"),
+      delegateeId: agentId("worker"),
       scope: {
         permissions: { allow: ["read_file", "write_file", "exec"], deny: ["exec"] },
       },
@@ -363,7 +363,7 @@ describe("e2e: deny list monotonicity", () => {
     const stricterResult = attenuateGrant(
       rootGrant,
       {
-        delegateeId: "sub-worker",
+        delegateeId: agentId("sub-worker"),
         scope: {
           permissions: {
             allow: ["read_file"],
@@ -379,7 +379,7 @@ describe("e2e: deny list monotonicity", () => {
     const dropDenyResult = attenuateGrant(
       rootGrant,
       {
-        delegateeId: "sub-worker",
+        delegateeId: agentId("sub-worker"),
         scope: {
           permissions: { allow: ["read_file"] }, // missing deny: ["exec"]
         },

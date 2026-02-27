@@ -9,7 +9,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
-import { runId, sessionId, turnId } from "@koi/core";
+import { agentId, runId, sessionId, turnId } from "@koi/core";
 import { createGrant } from "./grant.js";
 import { createDelegationMiddleware } from "./middleware.js";
 import { signGrant } from "./sign.js";
@@ -85,8 +85,8 @@ describe("createDelegationMiddleware", () => {
 
   test("case 1: tool call with valid delegation passes through", async () => {
     const grant = mustCreateGrant({
-      issuerId: "agent-1",
-      delegateeId: "agent-2",
+      issuerId: agentId("agent-1"),
+      delegateeId: agentId("agent-2"),
       scope: { permissions: { allow: ["read_file"] } },
       maxChainDepth: 3,
       ttlMs: 3600000,
@@ -111,16 +111,16 @@ describe("createDelegationMiddleware", () => {
     // Fabricate an expired grant directly (createGrant validates ttlMs > 0)
     const unsigned = {
       id: crypto.randomUUID() as DelegationId,
-      issuerId: "agent-1",
-      delegateeId: "agent-2",
+      issuerId: agentId("agent-1"),
+      delegateeId: agentId("agent-2"),
       scope: { permissions: { allow: ["read_file"] } },
       chainDepth: 0,
       maxChainDepth: 3,
       createdAt: Date.now() - 2000,
       expiresAt: Date.now() - 1000,
     };
-    const signature = signGrant(unsigned, SECRET);
-    const grant: DelegationGrant = { ...unsigned, signature };
+    const proof = signGrant(unsigned, SECRET);
+    const grant: DelegationGrant = { ...unsigned, proof };
 
     const grantStore = new Map<DelegationId, DelegationGrant>([[grant.id, grant]]);
     const mw = createDelegationMiddleware({
@@ -142,8 +142,8 @@ describe("createDelegationMiddleware", () => {
 
   test("case 3: tool call with revoked delegation returns PERMISSION error", async () => {
     const grant = mustCreateGrant({
-      issuerId: "agent-1",
-      delegateeId: "agent-2",
+      issuerId: agentId("agent-1"),
+      delegateeId: agentId("agent-2"),
       scope: { permissions: { allow: ["read_file"] } },
       maxChainDepth: 3,
       ttlMs: 3600000,
@@ -168,8 +168,8 @@ describe("createDelegationMiddleware", () => {
 
   test("case 4: tool call outside delegated scope returns PERMISSION error", async () => {
     const grant = mustCreateGrant({
-      issuerId: "agent-1",
-      delegateeId: "agent-2",
+      issuerId: agentId("agent-1"),
+      delegateeId: agentId("agent-2"),
       scope: { permissions: { allow: ["read_file"] } },
       maxChainDepth: 3,
       ttlMs: 3600000,
@@ -223,8 +223,8 @@ describe("createDelegationMiddleware", () => {
   test("case 7: custom ScopeChecker overrides default scope matching", async () => {
     // Grant only allows read_file, but custom checker allows everything
     const grant = mustCreateGrant({
-      issuerId: "agent-1",
-      delegateeId: "agent-2",
+      issuerId: agentId("agent-1"),
+      delegateeId: agentId("agent-2"),
       scope: { permissions: { allow: ["read_file"] } },
       maxChainDepth: 3,
       ttlMs: 3600000,
@@ -249,8 +249,8 @@ describe("createDelegationMiddleware", () => {
 
   test("case 8: custom ScopeChecker can deny normally-allowed tools", async () => {
     const grant = mustCreateGrant({
-      issuerId: "agent-1",
-      delegateeId: "agent-2",
+      issuerId: agentId("agent-1"),
+      delegateeId: agentId("agent-2"),
       scope: { permissions: { allow: ["read_file"] } },
       maxChainDepth: 3,
       ttlMs: 3600000,

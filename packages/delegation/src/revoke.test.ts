@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { DelegationGrant, DelegationId, RevocationRegistry } from "@koi/core";
+import { agentId } from "@koi/core";
 import { createGrant } from "./grant.js";
 import { createGrantIndex } from "./registry.js";
 import { revokeGrant } from "./revoke.js";
@@ -19,8 +20,8 @@ function makeRegistry(): RevocationRegistry & { readonly _revoked: Set<Delegatio
 
 function makeGrant(issuerId: string, delegateeId: string): DelegationGrant {
   const result = createGrant({
-    issuerId,
-    delegateeId,
+    issuerId: agentId(issuerId),
+    delegateeId: agentId(delegateeId),
     scope: { permissions: { allow: ["read_file"] } },
     maxChainDepth: 5,
     ttlMs: 3600000,

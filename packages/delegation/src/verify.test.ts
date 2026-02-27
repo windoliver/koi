@@ -6,6 +6,7 @@ import type {
   RevocationRegistry,
   ScopeChecker,
 } from "@koi/core";
+import { agentId } from "@koi/core";
 import { attenuateGrant, createGrant } from "./grant.js";
 import { signGrant } from "./sign.js";
 import { defaultScopeChecker, matchToolAgainstScope, verifyGrant } from "./verify.js";
@@ -34,21 +35,21 @@ function makeGrant(
   if (overrides?.expiresAt !== undefined) {
     const unsigned = {
       id: crypto.randomUUID() as DelegationId,
-      issuerId: "agent-1",
-      delegateeId: "agent-2",
+      issuerId: agentId("agent-1"),
+      delegateeId: agentId("agent-2"),
       scope: overrides.scope ?? { permissions: { allow: ["read_file", "write_file"] } },
       chainDepth: overrides.chainDepth ?? 0,
       maxChainDepth: overrides.maxChainDepth ?? 3,
       createdAt: Date.now(),
       expiresAt: overrides.expiresAt,
     };
-    const signature = signGrant(unsigned, SECRET);
-    return { ...unsigned, signature };
+    const proof = signGrant(unsigned, SECRET);
+    return { ...unsigned, proof };
   }
 
   const result = createGrant({
-    issuerId: "agent-1",
-    delegateeId: "agent-2",
+    issuerId: agentId("agent-1"),
+    delegateeId: agentId("agent-2"),
     scope: overrides?.scope ?? {
       permissions: { allow: ["read_file", "write_file"] },
     },
@@ -104,7 +105,7 @@ describe("verifyGrant — 12-case matrix", () => {
     const childResult = attenuateGrant(
       parent,
       {
-        delegateeId: "agent-3",
+        delegateeId: agentId("agent-3"),
         scope: { permissions: { allow: ["read_file"] } },
       },
       SECRET,
@@ -142,16 +143,16 @@ describe("verifyGrant — 12-case matrix", () => {
     // Fabricate a grant with chainDepth > maxChainDepth
     const unsigned = {
       id: "fabricated" as DelegationId,
-      issuerId: "agent-1",
-      delegateeId: "agent-2",
+      issuerId: agentId("agent-1"),
+      delegateeId: agentId("agent-2"),
       scope: { permissions: { allow: ["read_file"] } } as DelegationScope,
       chainDepth: 5,
       maxChainDepth: 3,
       createdAt: Date.now(),
       expiresAt: Date.now() + 3600000,
     };
-    const signature = signGrant(unsigned, SECRET);
-    const grant: DelegationGrant = { ...unsigned, signature };
+    const proof = signGrant(unsigned, SECRET);
+    const grant: DelegationGrant = { ...unsigned, proof };
     const registry = makeRegistry();
 
     const result = await verifyGrant(grant, "read_file", registry, SECRET);
@@ -165,8 +166,8 @@ describe("verifyGrant — 12-case matrix", () => {
   // Case 7: Self-delegation (agent → itself) — valid, just unusual
   test("case 7: self-delegation returns ok: true", async () => {
     const grantResult = createGrant({
-      issuerId: "agent-1",
-      delegateeId: "agent-1",
+      issuerId: agentId("agent-1"),
+      delegateeId: agentId("agent-1"),
       scope: { permissions: { allow: ["read_file"] } },
       maxChainDepth: 3,
       ttlMs: 3600000,
@@ -194,12 +195,12 @@ describe("verifyGrant — 12-case matrix", () => {
     }
   });
 
-  // Case 9: Invalid/tampered signature
-  test("case 9: tampered signature returns reason: invalid_signature", async () => {
+  // Case 9: Invalid/tampered proof
+  test("case 9: tampered proof returns reason: invalid_signature", async () => {
     const grant = makeGrant();
     const tampered: DelegationGrant = {
       ...grant,
-      signature: "0".repeat(64),
+      proof: { kind: "hmac-sha256", digest: "0".repeat(64) },
     };
     const registry = makeRegistry();
     const result = await verifyGrant(tampered, "read_file", registry, SECRET);
@@ -210,21 +211,24 @@ describe("verifyGrant — 12-case matrix", () => {
     }
   });
 
-  // Case 10: Unknown grant — verifyGrant is stateless, so this tests signature
-  test("case 10: grant with empty signature returns reason: invalid_signature", async () => {
+  // Case 10: Unknown grant — verifyGrant is stateless, so this tests proof
+  test("case 10: grant with empty digest returns reason: invalid_signature", async () => {
     const unsigned = {
       id: "unknown-1" as DelegationId,
-      issuerId: "agent-1",
-      delegateeId: "agent-2",
+      issuerId: agentId("agent-1"),
+      delegateeId: agentId("agent-2"),
       scope: { permissions: { allow: ["read_file"] } } as DelegationScope,
       chainDepth: 0,
       maxChainDepth: 3,
       createdAt: Date.now(),
       expiresAt: Date.now() + 3600000,
-      signature: "",
+    };
+    const grant: DelegationGrant = {
+      ...unsigned,
+      proof: { kind: "hmac-sha256", digest: "" },
     };
     const registry = makeRegistry();
-    const result = await verifyGrant(unsigned, "read_file", registry, SECRET);
+    const result = await verifyGrant(grant, "read_file", registry, SECRET);
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -239,7 +243,7 @@ describe("verifyGrant — 12-case matrix", () => {
     const childResult = attenuateGrant(
       parent,
       {
-        delegateeId: "agent-3",
+        delegateeId: agentId("agent-3"),
         scope: { permissions: { allow: ["read_file"] } },
       },
       SECRET,
@@ -261,8 +265,8 @@ describe("verifyGrant — 12-case matrix", () => {
   // Case 12: Delegation to non-existent agent — verification is stateless
   test("case 12: delegation to non-existent agent returns ok: true", async () => {
     const grantResult = createGrant({
-      issuerId: "agent-1",
-      delegateeId: "non-existent-agent",
+      issuerId: agentId("agent-1"),
+      delegateeId: agentId("non-existent-agent"),
       scope: { permissions: { allow: ["read_file"] } },
       maxChainDepth: 3,
       ttlMs: 3600000,

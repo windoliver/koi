@@ -6,7 +6,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { DelegationId, DelegationScope } from "@koi/core";
+import type { DelegationGrant, DelegationId, DelegationScope } from "@koi/core";
+import { agentId } from "@koi/core";
 import { createGrantIndex } from "../registry.js";
 import { revokeGrant } from "../revoke.js";
 import { signGrant } from "../sign.js";
@@ -15,29 +16,19 @@ import { verifyGrant } from "../verify.js";
 
 const SECRET = "test-secret-key-32-bytes-minimum";
 
-function makeValidGrant(id?: string): {
-  readonly id: DelegationId;
-  readonly issuerId: string;
-  readonly delegateeId: string;
-  readonly scope: DelegationScope;
-  readonly chainDepth: number;
-  readonly maxChainDepth: number;
-  readonly createdAt: number;
-  readonly expiresAt: number;
-  readonly signature: string;
-} {
+function makeValidGrant(id?: string): DelegationGrant {
   const unsigned = {
     id: (id ?? crypto.randomUUID()) as DelegationId,
-    issuerId: "agent-1",
-    delegateeId: "agent-2",
+    issuerId: agentId("agent-1"),
+    delegateeId: agentId("agent-2"),
     scope: { permissions: { allow: ["read_file"] } } as DelegationScope,
     chainDepth: 0,
     maxChainDepth: 3,
     createdAt: Date.now(),
     expiresAt: Date.now() + 3600000,
   };
-  const signature = signGrant(unsigned, SECRET);
-  return { ...unsigned, signature };
+  const proof = signGrant(unsigned, SECRET);
+  return { ...unsigned, proof };
 }
 
 describe("async RevocationRegistry", () => {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { DelegationGrant, DelegationId } from "@koi/core";
+import { agentId } from "@koi/core";
 import { createGrantIndex, createInMemoryRegistry } from "./registry.js";
 
 describe("createInMemoryRegistry", () => {
@@ -72,14 +73,14 @@ describe("createGrantIndex", () => {
   function makeGrant(id: DelegationId, parentId?: DelegationId): DelegationGrant {
     const base = {
       id,
-      issuerId: "a1",
-      delegateeId: "a2",
+      issuerId: agentId("a1"),
+      delegateeId: agentId("a2"),
       scope: { permissions: { allow: ["read_file"] } },
       chainDepth: parentId !== undefined ? 1 : 0,
       maxChainDepth: 3,
       createdAt: Date.now(),
       expiresAt: Date.now() + 3600000,
-      signature: "test",
+      proof: { kind: "hmac-sha256" as const, digest: "test" },
     };
     return parentId !== undefined ? { ...base, parentId } : base;
   }
