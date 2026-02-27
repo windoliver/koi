@@ -8,15 +8,22 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { BROWSER, toolToken } from "@koi/core";
+import type { AttachResult } from "@koi/core";
+import { BROWSER, isAttachResult, toolToken } from "@koi/core";
 import { createBrowserProvider, createMockAgent, createMockDriver, OPERATIONS } from "../index.js";
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 describe("createBrowserProvider (integration)", () => {
   test("attaches all default tools to agent component map", async () => {
     const driver = createMockDriver();
     const provider = createBrowserProvider({ backend: driver });
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
 
     // BROWSER singleton token should be present
     expect(components.has(BROWSER as string)).toBe(true);
@@ -32,7 +39,7 @@ describe("createBrowserProvider (integration)", () => {
     const driver = createMockDriver();
     const provider = createBrowserProvider({ backend: driver });
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
 
     expect(components.has(toolToken("browser_evaluate") as string)).toBe(false);
   });
@@ -44,7 +51,7 @@ describe("createBrowserProvider (integration)", () => {
       operations: [...OPERATIONS, "evaluate"],
     });
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
 
     expect(components.has(toolToken("browser_evaluate") as string)).toBe(true);
     // evaluate must use promoted tier regardless of config
@@ -58,7 +65,7 @@ describe("createBrowserProvider (integration)", () => {
     const driver = createMockDriver();
     const provider = createBrowserProvider({ backend: driver, prefix: "web" });
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
 
     expect(components.has(toolToken("web_snapshot") as string)).toBe(true);
     expect(components.has(toolToken("browser_snapshot") as string)).toBe(false);

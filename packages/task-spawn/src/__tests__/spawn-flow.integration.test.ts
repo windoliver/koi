@@ -9,11 +9,18 @@
 import { describe, expect, it } from "bun:test";
 import type { EngineEvent, EngineOutput, ModelRequest, ModelResponse } from "@koi/core";
 import type { AgentManifest } from "@koi/core/assembly";
-import type { Tool } from "@koi/core/ecs";
+import type { AttachResult, Tool } from "@koi/core/ecs";
+import { isAttachResult } from "@koi/core/ecs";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { createMockAgent } from "@koi/test-utils";
 import { createTaskSpawnProvider } from "../provider.js";
 import type { TaskSpawnConfig, TaskSpawnRequest, TaskSpawnResult } from "../types.js";
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -122,7 +129,7 @@ describe("@koi/task-spawn integration", () => {
 
     const provider = createTaskSpawnProvider(config);
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     const tool = components.get("tool:task") as Tool;
 
     expect(tool).toBeDefined();
@@ -161,7 +168,7 @@ describe("@koi/task-spawn integration", () => {
 
     const provider = createTaskSpawnProvider(config);
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     const tool = components.get("tool:task") as Tool;
 
     const result = await tool.execute({
@@ -211,7 +218,7 @@ describe("@koi/task-spawn integration", () => {
 
     const provider = createTaskSpawnProvider(config);
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     const tool = components.get("tool:task") as Tool;
 
     const result = await tool.execute({

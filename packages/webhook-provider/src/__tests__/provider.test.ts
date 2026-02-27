@@ -1,8 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import type { Tool } from "@koi/core";
-import { toolToken, WEBHOOK } from "@koi/core";
+import type { AttachResult, Tool } from "@koi/core";
+import { isAttachResult, toolToken, WEBHOOK } from "@koi/core";
 import { createMockAgent, createMockWebhookComponent } from "../test-helpers.js";
 import { createWebhookProvider } from "../webhook-component-provider.js";
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 describe("createWebhookProvider — attach", () => {
   test("provider name is 'webhook'", () => {
@@ -16,7 +22,7 @@ describe("createWebhookProvider — attach", () => {
     const provider = createWebhookProvider({
       webhookComponent: createMockWebhookComponent(),
     });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     // 2 tools + WEBHOOK token
     expect(components.size).toBe(3);
@@ -27,7 +33,7 @@ describe("createWebhookProvider — attach", () => {
   test("attaches the component under WEBHOOK token", async () => {
     const webhookComponent = createMockWebhookComponent();
     const provider = createWebhookProvider({ webhookComponent });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     expect(components.get(WEBHOOK as string)).toBe(webhookComponent);
   });
@@ -37,7 +43,7 @@ describe("createWebhookProvider — attach", () => {
       webhookComponent: createMockWebhookComponent(),
       prefix: "wh",
     });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     expect(components.has(toolToken("wh_list") as string)).toBe(true);
     expect(components.has(toolToken("wh_status") as string)).toBe(true);
@@ -49,7 +55,7 @@ describe("createWebhookProvider — attach", () => {
       webhookComponent: createMockWebhookComponent(),
       trustTier: "sandbox",
     });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     const tool = components.get(toolToken("webhook_list") as string) as Tool;
     expect(tool.trustTier).toBe("sandbox");
@@ -60,7 +66,7 @@ describe("createWebhookProvider — attach", () => {
       webhookComponent: createMockWebhookComponent(),
       operations: ["list"],
     });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     // 1 tool + WEBHOOK token
     expect(components.size).toBe(2);
@@ -92,7 +98,7 @@ describe("tool descriptors", () => {
     const provider = createWebhookProvider({
       webhookComponent: createMockWebhookComponent(),
     });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     const expectedNames = ["webhook_list", "webhook_status"];
     for (const name of expectedNames) {

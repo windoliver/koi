@@ -9,8 +9,8 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import type { JsonObject, Tool } from "@koi/core";
-import { agentId, toolToken } from "@koi/core";
+import type { AttachResult, JsonObject, Tool } from "@koi/core";
+import { agentId, isAttachResult, toolToken } from "@koi/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -20,6 +20,12 @@ import { createMcpComponentProvider } from "../component-provider.js";
 import type { ResolvedMcpServerConfig } from "../config.js";
 import { createMcpResolver } from "../resolver.js";
 import { mapMcpToolToKoi } from "../tool-adapter.js";
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 // ---------------------------------------------------------------------------
 // Test server setup
@@ -359,7 +365,7 @@ describe("E2E: Koi adapter layers with real MCP server", () => {
       components: () => new Map(),
     };
 
-    const components = await result.provider.attach(agent);
+    const components = extractMap(await result.provider.attach(agent));
     expect(components.size).toBe(3);
 
     // Execute echo tool through the component

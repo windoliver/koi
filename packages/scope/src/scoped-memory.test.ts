@@ -1,11 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import type {
+  AttachResult,
   MemoryComponent,
   MemoryRecallOptions,
   MemoryResult,
   MemoryStoreOptions,
 } from "@koi/core";
-import { COMPONENT_PRIORITY, MEMORY } from "@koi/core";
+import { COMPONENT_PRIORITY, isAttachResult, MEMORY } from "@koi/core";
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
+
 import { createScopedMemory, createScopedMemoryProvider } from "./scoped-memory.js";
 
 // ---------------------------------------------------------------------------
@@ -143,7 +151,7 @@ describe("createScopedMemoryProvider", () => {
     const backend = createMockMemory();
     const provider = createScopedMemoryProvider(backend, { namespace: "agent-a" });
     const agent = {} as Parameters<typeof provider.attach>[0];
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     expect(components.has(MEMORY as string)).toBe(true);
   });
 
