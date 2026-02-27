@@ -204,11 +204,12 @@ describe("createDefaultRegistry", () => {
     expect(mw).toBeDefined();
   });
 
-  test("permissions factory uses provided engine from callbacks", () => {
-    const customEngine = {
-      check: (_toolId: string, _input: unknown) => ({ allowed: true }) as { allowed: true },
+  test("permissions factory uses provided backend from callbacks", () => {
+    const customBackend = {
+      check: (_query: { principal: string; action: string; resource: string }) =>
+        ({ effect: "allow" }) as { readonly effect: "allow" },
     };
-    const registry = createDefaultRegistry({ permissions: { engine: customEngine } });
+    const registry = createDefaultRegistry({ permissions: { backend: customBackend } });
     const factory = registry.get("permissions");
     if (factory === undefined) throw new Error("factory should be registered");
     const mw = factory({
