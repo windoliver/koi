@@ -68,16 +68,16 @@ function makeContext(overrides?: Partial<VerifyContext>): VerifyContext {
 const verifier = createHmacVerifier(SECRET);
 
 describe("createHmacVerifier", () => {
-  test("ok: true — valid token, matching tool, active session", () => {
+  test("ok: true — valid token, matching tool, active session", async () => {
     const token = makeToken();
-    const result = verifier.verify(token, makeContext());
+    const result = await verifier.verify(token, makeContext());
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.token.id).toBe(token.id);
     }
   });
 
-  test("proof_type_unsupported — nexus proof returns unsupported", () => {
+  test("proof_type_unsupported — nexus proof returns unsupported", async () => {
     const base: Omit<CapabilityToken, "proof"> = {
       id: capabilityId("cap-2"),
       issuerId: agentId("agent-issuer"),
@@ -89,12 +89,12 @@ describe("createHmacVerifier", () => {
       expiresAt: FUTURE,
     };
     const token: CapabilityToken = { ...base, proof: { kind: "nexus", token: "nexus-tok" } };
-    const result = verifier.verify(token, makeContext());
+    const result = await verifier.verify(token, makeContext());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("proof_type_unsupported");
   });
 
-  test("proof_type_unsupported — ed25519 proof returns unsupported (hmac verifier)", () => {
+  test("proof_type_unsupported — ed25519 proof returns unsupported (hmac verifier)", async () => {
     const base: Omit<CapabilityToken, "proof"> = {
       id: capabilityId("cap-3"),
       issuerId: agentId("agent-issuer"),
@@ -109,34 +109,34 @@ describe("createHmacVerifier", () => {
       ...base,
       proof: { kind: "ed25519", publicKey: "pk", signature: "sig" },
     };
-    const result = verifier.verify(token, makeContext());
+    const result = await verifier.verify(token, makeContext());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("proof_type_unsupported");
   });
 
-  test("invalid_signature — tampered digest returns invalid_signature", () => {
+  test("invalid_signature — tampered digest returns invalid_signature", async () => {
     const token = makeToken();
     const tampered: CapabilityToken = {
       ...token,
       proof: { kind: "hmac-sha256", digest: "0".repeat(64) },
     };
-    const result = verifier.verify(tampered, makeContext());
+    const result = await verifier.verify(tampered, makeContext());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("invalid_signature");
   });
 
-  test("invalid_signature — empty digest returns invalid_signature", () => {
+  test("invalid_signature — empty digest returns invalid_signature", async () => {
     const token = makeToken();
     const tampered: CapabilityToken = {
       ...token,
       proof: { kind: "hmac-sha256", digest: "" },
     };
-    const result = verifier.verify(tampered, makeContext());
+    const result = await verifier.verify(tampered, makeContext());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("invalid_signature");
   });
 
-  test("invalid_signature — wrong secret used to sign returns invalid_signature", () => {
+  test("invalid_signature — wrong secret used to sign returns invalid_signature", async () => {
     const base: Omit<CapabilityToken, "proof"> = {
       id: capabilityId("cap-4"),
       issuerId: agentId("agent-issuer"),
@@ -148,12 +148,12 @@ describe("createHmacVerifier", () => {
       expiresAt: FUTURE,
     };
     const token = makeSigned(base, "wrong-secret-32-bytes-minimum---");
-    const result = verifier.verify(token, makeContext());
+    const result = await verifier.verify(token, makeContext());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("invalid_signature");
   });
 
-  test("expired — expiresAt < now returns expired", () => {
+  test("expired — expiresAt < now returns expired", async () => {
     const base: Omit<CapabilityToken, "proof"> = {
       id: capabilityId("cap-5"),
       issuerId: agentId("agent-issuer"),
@@ -165,12 +165,12 @@ describe("createHmacVerifier", () => {
       expiresAt: PAST,
     };
     const token = makeSigned(base);
-    const result = verifier.verify(token, makeContext());
+    const result = await verifier.verify(token, makeContext());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("expired");
   });
 
-  test("expired — expiresAt === now returns expired (boundary condition)", () => {
+  test("expired — expiresAt === now returns expired (boundary condition)", async () => {
     const base: Omit<CapabilityToken, "proof"> = {
       id: capabilityId("cap-6"),
       issuerId: agentId("agent-issuer"),
@@ -182,14 +182,14 @@ describe("createHmacVerifier", () => {
       expiresAt: NOW, // exactly now = expired
     };
     const token = makeSigned(base);
-    const result = verifier.verify(token, makeContext());
+    const result = await verifier.verify(token, makeContext());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("expired");
   });
 
-  test("session_invalid — sessionId not in activeSessionIds", () => {
+  test("session_invalid — sessionId not in activeSessionIds", async () => {
     const token = makeToken();
-    const result = verifier.verify(
+    const result = await verifier.verify(
       token,
       makeContext({ activeSessionIds: new Set([sessionId("other-session")]) }),
     );
@@ -197,14 +197,14 @@ describe("createHmacVerifier", () => {
     if (!result.ok) expect(result.reason).toBe("session_invalid");
   });
 
-  test("session_invalid — empty activeSessionIds set", () => {
+  test("session_invalid — empty activeSessionIds set", async () => {
     const token = makeToken();
-    const result = verifier.verify(token, makeContext({ activeSessionIds: new Set() }));
+    const result = await verifier.verify(token, makeContext({ activeSessionIds: new Set() }));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("session_invalid");
   });
 
-  test("chain_depth_exceeded — chainDepth > maxChainDepth", () => {
+  test("chain_depth_exceeded — chainDepth > maxChainDepth", async () => {
     const base: Omit<CapabilityToken, "proof"> = {
       id: capabilityId("cap-7"),
       issuerId: agentId("agent-issuer"),
@@ -216,19 +216,19 @@ describe("createHmacVerifier", () => {
       expiresAt: FUTURE,
     };
     const token = makeSigned(base);
-    const result = verifier.verify(token, makeContext());
+    const result = await verifier.verify(token, makeContext());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("chain_depth_exceeded");
   });
 
-  test("scope_exceeded — tool not in allow list", () => {
+  test("scope_exceeded — tool not in allow list", async () => {
     const token = makeToken();
-    const result = verifier.verify(token, makeContext({ toolId: "execute_command" }));
+    const result = await verifier.verify(token, makeContext({ toolId: "execute_command" }));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("scope_exceeded");
   });
 
-  test("scope_exceeded — tool in deny list overrides allow", () => {
+  test("scope_exceeded — tool in deny list overrides allow", async () => {
     const base: Omit<CapabilityToken, "proof"> = {
       id: capabilityId("cap-8"),
       issuerId: agentId("agent-issuer"),
@@ -243,12 +243,12 @@ describe("createHmacVerifier", () => {
       expiresAt: FUTURE,
     };
     const token = makeSigned(base);
-    const result = verifier.verify(token, makeContext({ toolId: "write_file" }));
+    const result = await verifier.verify(token, makeContext({ toolId: "write_file" }));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("scope_exceeded");
   });
 
-  test("wildcard allow — '*' permits any tool", () => {
+  test("wildcard allow — '*' permits any tool", async () => {
     const base: Omit<CapabilityToken, "proof"> = {
       id: capabilityId("cap-9"),
       issuerId: agentId("agent-issuer"),
@@ -260,11 +260,11 @@ describe("createHmacVerifier", () => {
       expiresAt: FUTURE,
     };
     const token = makeSigned(base);
-    const result = verifier.verify(token, makeContext({ toolId: "any_exotic_tool" }));
+    const result = await verifier.verify(token, makeContext({ toolId: "any_exotic_tool" }));
     expect(result.ok).toBe(true);
   });
 
-  test("checks are ordered — tampered proof fails before expiry check", () => {
+  test("checks are ordered — tampered proof fails before expiry check", async () => {
     // Expired + tampered — should fail with invalid_signature (proof checked first)
     const base: Omit<CapabilityToken, "proof"> = {
       id: capabilityId("cap-10"),
@@ -280,7 +280,7 @@ describe("createHmacVerifier", () => {
       ...base,
       proof: { kind: "hmac-sha256", digest: "0".repeat(64) }, // tampered
     };
-    const result = verifier.verify(token, makeContext());
+    const result = await verifier.verify(token, makeContext());
     // invalid_signature checked before expired
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("invalid_signature");

@@ -102,16 +102,16 @@ function makeContext(overrides?: Partial<VerifyContext>): VerifyContext {
 const verifier = createEd25519Verifier();
 
 describe("createEd25519Verifier", () => {
-  test("ok: true — valid token, matching tool, active session", () => {
+  test("ok: true — valid token, matching tool, active session", async () => {
     const token = makeToken();
-    const result = verifier.verify(token, makeContext());
+    const result = await verifier.verify(token, makeContext());
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.token.id).toBe(token.id);
     }
   });
 
-  test("proof_type_unsupported — hmac-sha256 proof returns unsupported", () => {
+  test("proof_type_unsupported — hmac-sha256 proof returns unsupported", async () => {
     const token: CapabilityToken = {
       id: capabilityId("cap-2"),
       issuerId: agentId("agent-issuer"),
@@ -123,12 +123,12 @@ describe("createEd25519Verifier", () => {
       expiresAt: FUTURE,
       proof: { kind: "hmac-sha256", digest: "a".repeat(64) },
     };
-    const result = verifier.verify(token, makeContext());
+    const result = await verifier.verify(token, makeContext());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("proof_type_unsupported");
   });
 
-  test("proof_type_unsupported — nexus proof returns unsupported", () => {
+  test("proof_type_unsupported — nexus proof returns unsupported", async () => {
     const token: CapabilityToken = {
       id: capabilityId("cap-3"),
       issuerId: agentId("agent-issuer"),
@@ -140,12 +140,12 @@ describe("createEd25519Verifier", () => {
       expiresAt: FUTURE,
       proof: { kind: "nexus", token: "nexus-tok" },
     };
-    const result = verifier.verify(token, makeContext());
+    const result = await verifier.verify(token, makeContext());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("proof_type_unsupported");
   });
 
-  test("invalid_signature — tampered signature returns invalid_signature", () => {
+  test("invalid_signature — tampered signature returns invalid_signature", async () => {
     const token = makeToken();
     const tampered: CapabilityToken = {
       ...token,
@@ -156,12 +156,12 @@ describe("createEd25519Verifier", () => {
           "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       },
     };
-    const result = verifier.verify(tampered, makeContext());
+    const result = await verifier.verify(tampered, makeContext());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("invalid_signature");
   });
 
-  test("invalid_signature — wrong private key used to sign returns invalid_signature", () => {
+  test("invalid_signature — wrong private key used to sign returns invalid_signature", async () => {
     const base: Omit<CapabilityToken, "proof"> = {
       id: capabilityId("cap-4"),
       issuerId: agentId("agent-issuer"),
@@ -174,12 +174,12 @@ describe("createEd25519Verifier", () => {
     };
     // Sign with wrong key, embed correct public key → signature won't verify
     const wrongSigned = signToken(base, wrongPrivateKeyB64, publicKeyB64);
-    const result = verifier.verify(wrongSigned, makeContext());
+    const result = await verifier.verify(wrongSigned, makeContext());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("invalid_signature");
   });
 
-  test("invalid_signature — signature for different payload returns invalid_signature", () => {
+  test("invalid_signature — signature for different payload returns invalid_signature", async () => {
     const base: Omit<CapabilityToken, "proof"> = {
       id: capabilityId("cap-4b"),
       issuerId: agentId("agent-issuer"),
@@ -197,12 +197,12 @@ describe("createEd25519Verifier", () => {
       // Steal the signature but change the token ID → payload mismatch
       id: capabilityId("cap-4b-tampered"),
     };
-    const result = verifier.verify(tampered, makeContext());
+    const result = await verifier.verify(tampered, makeContext());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("invalid_signature");
   });
 
-  test("expired — expiresAt < now returns expired", () => {
+  test("expired — expiresAt < now returns expired", async () => {
     const base: Omit<CapabilityToken, "proof"> = {
       id: capabilityId("cap-5"),
       issuerId: agentId("agent-issuer"),
@@ -214,12 +214,12 @@ describe("createEd25519Verifier", () => {
       expiresAt: PAST,
     };
     const token = signToken(base);
-    const result = verifier.verify(token, makeContext());
+    const result = await verifier.verify(token, makeContext());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("expired");
   });
 
-  test("expired — expiresAt === now returns expired (boundary condition)", () => {
+  test("expired — expiresAt === now returns expired (boundary condition)", async () => {
     const base: Omit<CapabilityToken, "proof"> = {
       id: capabilityId("cap-6"),
       issuerId: agentId("agent-issuer"),
@@ -231,14 +231,14 @@ describe("createEd25519Verifier", () => {
       expiresAt: NOW, // exactly now = expired
     };
     const token = signToken(base);
-    const result = verifier.verify(token, makeContext());
+    const result = await verifier.verify(token, makeContext());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("expired");
   });
 
-  test("session_invalid — sessionId not in activeSessionIds", () => {
+  test("session_invalid — sessionId not in activeSessionIds", async () => {
     const token = makeToken();
-    const result = verifier.verify(
+    const result = await verifier.verify(
       token,
       makeContext({ activeSessionIds: new Set([sessionId("other-session")]) }),
     );
@@ -246,14 +246,14 @@ describe("createEd25519Verifier", () => {
     if (!result.ok) expect(result.reason).toBe("session_invalid");
   });
 
-  test("session_invalid — empty activeSessionIds set", () => {
+  test("session_invalid — empty activeSessionIds set", async () => {
     const token = makeToken();
-    const result = verifier.verify(token, makeContext({ activeSessionIds: new Set() }));
+    const result = await verifier.verify(token, makeContext({ activeSessionIds: new Set() }));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("session_invalid");
   });
 
-  test("chain_depth_exceeded — chainDepth > maxChainDepth", () => {
+  test("chain_depth_exceeded — chainDepth > maxChainDepth", async () => {
     const base: Omit<CapabilityToken, "proof"> = {
       id: capabilityId("cap-7"),
       issuerId: agentId("agent-issuer"),
@@ -265,19 +265,19 @@ describe("createEd25519Verifier", () => {
       expiresAt: FUTURE,
     };
     const token = signToken(base);
-    const result = verifier.verify(token, makeContext());
+    const result = await verifier.verify(token, makeContext());
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("chain_depth_exceeded");
   });
 
-  test("scope_exceeded — tool not in allow list", () => {
+  test("scope_exceeded — tool not in allow list", async () => {
     const token = makeToken();
-    const result = verifier.verify(token, makeContext({ toolId: "execute_command" }));
+    const result = await verifier.verify(token, makeContext({ toolId: "execute_command" }));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("scope_exceeded");
   });
 
-  test("scope_exceeded — tool in deny list overrides allow", () => {
+  test("scope_exceeded — tool in deny list overrides allow", async () => {
     const base: Omit<CapabilityToken, "proof"> = {
       id: capabilityId("cap-8"),
       issuerId: agentId("agent-issuer"),
@@ -292,12 +292,12 @@ describe("createEd25519Verifier", () => {
       expiresAt: FUTURE,
     };
     const token = signToken(base);
-    const result = verifier.verify(token, makeContext({ toolId: "write_file" }));
+    const result = await verifier.verify(token, makeContext({ toolId: "write_file" }));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("scope_exceeded");
   });
 
-  test("wildcard allow — '*' permits any tool", () => {
+  test("wildcard allow — '*' permits any tool", async () => {
     const base: Omit<CapabilityToken, "proof"> = {
       id: capabilityId("cap-9"),
       issuerId: agentId("agent-issuer"),
@@ -309,11 +309,11 @@ describe("createEd25519Verifier", () => {
       expiresAt: FUTURE,
     };
     const token = signToken(base);
-    const result = verifier.verify(token, makeContext({ toolId: "any_exotic_tool" }));
+    const result = await verifier.verify(token, makeContext({ toolId: "any_exotic_tool" }));
     expect(result.ok).toBe(true);
   });
 
-  test("checks are ordered — tampered proof fails before expiry check", () => {
+  test("checks are ordered — tampered proof fails before expiry check", async () => {
     // Expired + tampered — should fail with invalid_signature (proof checked first)
     const token: CapabilityToken = {
       id: capabilityId("cap-10"),
@@ -326,13 +326,13 @@ describe("createEd25519Verifier", () => {
       expiresAt: PAST, // expired
       proof: { kind: "ed25519", publicKey: publicKeyB64, signature: "invalidsig==" },
     };
-    const result = verifier.verify(token, makeContext());
+    const result = await verifier.verify(token, makeContext());
     // invalid_signature checked before expired
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("invalid_signature");
   });
 
-  test("verifies with correct matching keypair — different key pair test", () => {
+  test("verifies with correct matching keypair — different key pair test", async () => {
     const base: Omit<CapabilityToken, "proof"> = {
       id: capabilityId("cap-11"),
       issuerId: agentId("agent-issuer"),
@@ -345,7 +345,7 @@ describe("createEd25519Verifier", () => {
     };
     // Sign with second keypair — it has its own public key embedded, should verify
     const token = signToken(base, wrongPrivateKeyB64, wrongPublicKeyB64);
-    const result = verifier.verify(token, makeContext());
+    const result = await verifier.verify(token, makeContext());
     expect(result.ok).toBe(true);
   });
 });

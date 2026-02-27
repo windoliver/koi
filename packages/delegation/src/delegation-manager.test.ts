@@ -99,8 +99,8 @@ describe("DelegationManager", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    expect(result.value.issuerId).toBe("agent-1");
-    expect(result.value.delegateeId).toBe("agent-2");
+    expect(result.value.issuerId).toBe(agentId("agent-1"));
+    expect(result.value.delegateeId).toBe(agentId("agent-2"));
     expect(result.value.chainDepth).toBe(0);
 
     // Verify it's stored
@@ -356,10 +356,10 @@ describe("DelegationManager", () => {
   test("circuit breaker methods delegate correctly", () => {
     const manager = createManager();
 
-    expect(manager.canDelegate("agent-1")).toBe(true);
-    expect(manager.circuitState("agent-1")).toBe("closed");
+    expect(manager.canDelegate(agentId("agent-1"))).toBe(true);
+    expect(manager.circuitState(agentId("agent-1"))).toBe("closed");
 
-    manager.recordSuccess("agent-1");
-    expect(manager.circuitState("agent-1")).toBe("closed");
+    manager.recordSuccess(agentId("agent-1"));
+    expect(manager.circuitState(agentId("agent-1"))).toBe("closed");
   });
 });

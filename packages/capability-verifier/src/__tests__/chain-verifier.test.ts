@@ -44,7 +44,7 @@ function makeToken(
     maxChainDepth: 5,
     createdAt: NOW - 1000,
     expiresAt: FUTURE,
-    parentId: parentId !== undefined ? capabilityId(parentId) : undefined,
+    ...(parentId !== undefined ? { parentId: capabilityId(parentId) } : {}),
     proof: { kind: "hmac-sha256", digest: "a".repeat(64) }, // proof not verified by verifyChain
     ...overrides,
   };

@@ -68,7 +68,7 @@ const defaultContext = {
 // ─────────────────────────────────────────────────────────────
 
 describe("adversarial: HMAC tamper", () => {
-  test("rejects token with signature computed over different payload", () => {
+  test("rejects token with signature computed over different payload", async () => {
     // Compute a valid HMAC for one payload, inject it into a different token
     const legitBase: Omit<CapabilityToken, "proof"> = {
       id: capabilityId("legit"),
@@ -93,7 +93,7 @@ describe("adversarial: HMAC tamper", () => {
       expiresAt: FUTURE,
       proof: legitToken.proof, // stolen signature from different payload
     };
-    const result = verifier.verify(tamperedToken, defaultContext);
+    const result = await verifier.verify(tamperedToken, defaultContext);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("invalid_signature");
   });
@@ -104,7 +104,7 @@ describe("adversarial: HMAC tamper", () => {
 // ─────────────────────────────────────────────────────────────
 
 describe("adversarial: session replay", () => {
-  test("rejects session replay: token from terminated session", () => {
+  test("rejects session replay: token from terminated session", async () => {
     const store = createSessionRevocationStore();
     store.add(SESSION_A);
 
@@ -120,7 +120,7 @@ describe("adversarial: session replay", () => {
     });
 
     // Token works while session is active
-    const activeResult = verifier.verify(token, {
+    const activeResult = await verifier.verify(token, {
       ...defaultContext,
       activeSessionIds: store.snapshot(),
     });
@@ -130,7 +130,7 @@ describe("adversarial: session replay", () => {
     store.delete(SESSION_A);
 
     // Same token is now rejected
-    const revokedResult = verifier.verify(token, {
+    const revokedResult = await verifier.verify(token, {
       ...defaultContext,
       activeSessionIds: store.snapshot(),
     });
@@ -189,7 +189,7 @@ describe("adversarial: chain gap", () => {
 // ─────────────────────────────────────────────────────────────
 
 describe("adversarial: clock skew", () => {
-  test("rejects token with createdAt in the future (not expired but implausible)", () => {
+  test("rejects token with createdAt in the future (not expired but implausible)", async () => {
     // The verifier checks expiresAt, not createdAt — future createdAt passes but is
     // suspicious. However, if expiresAt is also in the future, HMAC still protects integrity.
     // Test: token created in far future should still pass signature check but be flagged
@@ -204,13 +204,13 @@ describe("adversarial: clock skew", () => {
       createdAt: FUTURE + 1000, // created in the "future"
       expiresAt: NOW - 1, // already expired (expiresAt < now)
     });
-    const result = verifier.verify(futureCreated, defaultContext);
+    const result = await verifier.verify(futureCreated, defaultContext);
     expect(result.ok).toBe(false);
     // expiresAt < now → expired (signature is valid but token is past its window)
     if (!result.ok) expect(result.reason).toBe("expired");
   });
 
-  test("token with createdAt in future but valid expiresAt passes HMAC check", () => {
+  test("token with createdAt in future but valid expiresAt passes HMAC check", async () => {
     // The verifier does not enforce createdAt ≤ now; only expiresAt matters.
     // An issuer with a misconfigured clock could issue a token that appears "from the future".
     // This is acceptable behavior — HMAC integrity is still preserved.
@@ -224,7 +224,7 @@ describe("adversarial: clock skew", () => {
       createdAt: NOW + 999999, // future createdAt
       expiresAt: FUTURE, // but valid expiry
     });
-    const result = verifier.verify(futureCreated, defaultContext);
+    const result = await verifier.verify(futureCreated, defaultContext);
     expect(result.ok).toBe(true); // passes — createdAt is not verified
   });
 });
@@ -245,7 +245,7 @@ describe("adversarial: false chainDepth", () => {
       maxChainDepth: 10,
       createdAt: NOW - 1000,
       expiresAt: FUTURE,
-      parentId: i > 0 ? capabilityId(`depth-token-${i - 1}`) : undefined,
+      ...(i > 0 ? { parentId: capabilityId(`depth-token-${i - 1}`) } : {}),
       proof: { kind: "hmac-sha256" as const, digest: "a".repeat(64) },
     }));
 
@@ -347,7 +347,7 @@ describe("adversarial: scope escalation", () => {
 // ─────────────────────────────────────────────────────────────
 
 describe("adversarial: TTL boundary", () => {
-  test("rejects expired token at TTL boundary (expiresAt === now)", () => {
+  test("rejects expired token at TTL boundary (expiresAt === now)", async () => {
     const boundary = signHmac({
       id: capabilityId("boundary-cap"),
       issuerId: agentId("issuer"),
@@ -358,12 +358,12 @@ describe("adversarial: TTL boundary", () => {
       createdAt: NOW - 5000,
       expiresAt: NOW, // boundary: exactly equal to now → expired
     });
-    const result = verifier.verify(boundary, defaultContext);
+    const result = await verifier.verify(boundary, defaultContext);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("expired");
   });
 
-  test("token expiring 1ms after now is still valid", () => {
+  test("token expiring 1ms after now is still valid", async () => {
     const almost = signHmac({
       id: capabilityId("almost-expired"),
       issuerId: agentId("issuer"),
@@ -374,7 +374,7 @@ describe("adversarial: TTL boundary", () => {
       createdAt: NOW - 5000,
       expiresAt: NOW + 1, // 1ms in the future → still valid
     });
-    const result = verifier.verify(almost, defaultContext);
+    const result = await verifier.verify(almost, defaultContext);
     expect(result.ok).toBe(true);
   });
 });
@@ -384,7 +384,7 @@ describe("adversarial: TTL boundary", () => {
 // ─────────────────────────────────────────────────────────────
 
 describe("adversarial: signature transplant", () => {
-  test("signature from valid token cannot be reused on a different token ID", () => {
+  test("signature from valid token cannot be reused on a different token ID", async () => {
     const legitToken = signHmac({
       id: capabilityId("legit-id"),
       issuerId: agentId("issuer"),
@@ -403,7 +403,7 @@ describe("adversarial: signature transplant", () => {
       proof: legitToken.proof,
     };
 
-    const result = verifier.verify(transplanted, defaultContext);
+    const result = await verifier.verify(transplanted, defaultContext);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("invalid_signature");
   });
@@ -414,7 +414,7 @@ describe("adversarial: signature transplant", () => {
 // ─────────────────────────────────────────────────────────────
 
 describe("adversarial: composite verifier rejects unknown proof kinds", () => {
-  test("nexus proof always returns proof_type_unsupported via composite verifier", () => {
+  test("nexus proof always returns proof_type_unsupported via composite verifier", async () => {
     const composite = createCompositeVerifier({ hmacSecret: HMAC_SECRET });
     const nexusToken: CapabilityToken = {
       id: capabilityId("nexus-token"),
@@ -427,11 +427,9 @@ describe("adversarial: composite verifier rejects unknown proof kinds", () => {
       expiresAt: FUTURE,
       proof: { kind: "nexus", token: "nexus-bearer-xyz" },
     };
-    const result = composite.verify(nexusToken, defaultContext);
-    expect((result as { ok: boolean; reason?: string }).ok).toBe(false);
-    if (!(result as { ok: boolean; reason?: string }).ok) {
-      expect((result as { ok: false; reason: string }).reason).toBe("proof_type_unsupported");
-    }
+    const result = await composite.verify(nexusToken, defaultContext);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("proof_type_unsupported");
   });
 });
 

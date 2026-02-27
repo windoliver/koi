@@ -181,7 +181,7 @@ describe("DelegationManager middleware integration", () => {
     const circuitEvents = events.filter((e) => e.kind === "delegation:circuit_opened");
     expect(circuitEvents).toHaveLength(1);
     if (circuitEvents[0]?.kind === "delegation:circuit_opened") {
-      expect(circuitEvents[0].delegateeId).toBe("agent-2");
+      expect(circuitEvents[0].delegateeId).toBe(agentId("agent-2"));
       expect(circuitEvents[0].failureCount).toBe(2);
     }
   });

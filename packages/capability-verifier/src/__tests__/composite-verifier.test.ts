@@ -85,19 +85,19 @@ const defaultCtx: VerifyContext = {
 describe("createCompositeVerifier — routing", () => {
   const composite = createCompositeVerifier({ hmacSecret: HMAC_SECRET });
 
-  test("routes hmac-sha256 token through hmac verifier — ok: true", () => {
+  test("routes hmac-sha256 token through hmac verifier — ok: true", async () => {
     const token = makeHmacToken("hmac-1");
-    const result = composite.verify(token, defaultCtx);
+    const result = await composite.verify(token, defaultCtx);
     expect(result.ok).toBe(true);
   });
 
-  test("routes ed25519 token through ed25519 verifier — ok: true", () => {
+  test("routes ed25519 token through ed25519 verifier — ok: true", async () => {
     const token = makeEd25519Token("ed25519-1");
-    const result = composite.verify(token, defaultCtx);
+    const result = await composite.verify(token, defaultCtx);
     expect(result.ok).toBe(true);
   });
 
-  test("nexus proof returns proof_type_unsupported", () => {
+  test("nexus proof returns proof_type_unsupported", async () => {
     const token: CapabilityToken = {
       id: capabilityId("nexus-1"),
       issuerId: agentId("issuer"),
@@ -109,7 +109,7 @@ describe("createCompositeVerifier — routing", () => {
       expiresAt: FUTURE,
       proof: { kind: "nexus", token: "nexus-bearer-xyz" },
     };
-    const result = composite.verify(token, defaultCtx);
+    const result = await composite.verify(token, defaultCtx);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("proof_type_unsupported");
   });
@@ -120,7 +120,7 @@ describe("createCompositeVerifier — routing", () => {
 // ─────────────────────────────────────────────────────────────
 
 describe("createCompositeVerifier — caching", () => {
-  test("cache hit: second verify call returns cached result", () => {
+  test("cache hit: second verify call returns cached result", async () => {
     const cache = createInMemoryVerifierCache();
     const token = makeHmacToken("cache-test-1");
 
@@ -128,7 +128,7 @@ describe("createCompositeVerifier — caching", () => {
     const composite = createCompositeVerifier({ hmacSecret: HMAC_SECRET, cache });
 
     // First call: computes and caches
-    const result1 = composite.verify(token, defaultCtx);
+    const result1 = await composite.verify(token, defaultCtx);
     expect(result1.ok).toBe(true);
 
     // Manually confirm cache is populated
@@ -137,11 +137,11 @@ describe("createCompositeVerifier — caching", () => {
     expect(cached?.ok).toBe(true);
 
     // Second call: returns cached result
-    const result2 = composite.verify(token, defaultCtx);
+    const result2 = await composite.verify(token, defaultCtx);
     expect(result2.ok).toBe(true);
   });
 
-  test("cache stores denial results too (deny caching)", () => {
+  test("cache stores denial results too (deny caching)", async () => {
     const cache = createInMemoryVerifierCache();
     const token: CapabilityToken = {
       id: capabilityId("cache-deny-1"),
@@ -156,7 +156,7 @@ describe("createCompositeVerifier — caching", () => {
     };
     const composite = createCompositeVerifier({ hmacSecret: HMAC_SECRET, cache });
 
-    const result = composite.verify(token, defaultCtx);
+    const result = await composite.verify(token, defaultCtx);
     expect(result.ok).toBe(false);
 
     // Denial result cached
@@ -165,14 +165,14 @@ describe("createCompositeVerifier — caching", () => {
     expect(cached?.ok).toBe(false);
   });
 
-  test("cache evict removes all entries for tokenId", () => {
+  test("cache evict removes all entries for tokenId", async () => {
     const cache = createInMemoryVerifierCache();
     const token = makeHmacToken("evict-test-1");
     const composite = createCompositeVerifier({ hmacSecret: HMAC_SECRET, cache });
 
     // Verify with two different tools to populate cache with multiple entries
-    composite.verify(token, { ...defaultCtx, toolId: "read_file" });
-    composite.verify(token, { ...defaultCtx, toolId: "write_file" });
+    await composite.verify(token, { ...defaultCtx, toolId: "read_file" });
+    await composite.verify(token, { ...defaultCtx, toolId: "write_file" });
 
     expect(cache.get(token.id, "read_file")).toBeDefined();
     expect(cache.get(token.id, "write_file")).toBeDefined();
