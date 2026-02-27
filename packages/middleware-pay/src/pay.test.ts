@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import type { KoiError } from "@koi/core/errors";
 import type { ModelRequest } from "@koi/core/middleware";
 import {
+  createMockModelStreamHandler,
   createMockTurnContext,
   createSpyModelHandler,
+  createSpyModelStreamHandler,
   createSpyToolHandler,
 } from "@koi/test-utils";
 import { createPayMiddleware } from "./pay.js";
@@ -269,6 +271,169 @@ describe("createPayMiddleware", () => {
     });
     await mw.wrapModelCall?.(ctx, { messages: [] }, noUsageHandler);
     expect(await tracker.totalSpend("session-test-1")).toBe(0);
+  });
+
+  describe("wrapModelStream", () => {
+    async function drainStream(iter: AsyncIterable<unknown>): Promise<void> {
+      for await (const _ of iter) {
+        /* drain */
+      }
+    }
+
+    // Unwrap the optional wrapModelStream method, throwing if not implemented.
+    function streamOf(
+      mw: ReturnType<typeof createPayMiddleware>,
+    ): NonNullable<(typeof mw)["wrapModelStream"]> {
+      const fn = mw.wrapModelStream;
+      if (!fn) throw new Error("wrapModelStream not defined on pay middleware");
+      return fn;
+    }
+
+    test("passes chunks through unchanged", async () => {
+      const mw = makeMiddleware(10);
+      const spy = createSpyModelStreamHandler([
+        { kind: "text_delta", delta: "hello" },
+        { kind: "done", response: { content: "hello", model: "test-model" } },
+      ]);
+
+      const collected: string[] = [];
+      for await (const chunk of streamOf(mw)(ctx, { messages: [] }, spy.handler)) {
+        if (chunk.kind === "text_delta") collected.push(chunk.delta);
+      }
+      expect(collected).toEqual(["hello"]);
+      expect(spy.calls).toHaveLength(1);
+    });
+
+    test("records cost from done chunk usage", async () => {
+      const tracker = createInMemoryBudgetTracker();
+      const mw = createPayMiddleware({
+        tracker,
+        calculator: createDefaultCostCalculator({
+          "test-model": { input: 0.01, output: 0.02 },
+        }),
+        budget: 10,
+      });
+      const handler = createMockModelStreamHandler([
+        {
+          kind: "done",
+          response: {
+            content: "ok",
+            model: "test-model",
+            usage: { inputTokens: 100, outputTokens: 50 },
+          },
+        },
+      ]);
+
+      await drainStream(streamOf(mw)(ctx, { messages: [] }, handler));
+      const total = await tracker.totalSpend("session-test-1");
+      // 100 * 0.01 + 50 * 0.02 = 1.00 + 1.00 = 2.00
+      expect(total).toBeCloseTo(2.0);
+    });
+
+    test("budget exhausted blocks stream before LLM call", async () => {
+      const tracker = createInMemoryBudgetTracker();
+      await tracker.record("session-test-1", {
+        inputTokens: 1000,
+        outputTokens: 1000,
+        model: "x",
+        costUsd: 100,
+        timestamp: Date.now(),
+      });
+      const mw = createPayMiddleware({
+        tracker,
+        calculator: createDefaultCostCalculator(),
+        budget: 1, // already exceeded
+      });
+      const spy = createSpyModelStreamHandler([
+        { kind: "done", response: { content: "ok", model: "test-model" } },
+      ]);
+
+      await expect(drainStream(streamOf(mw)(ctx, { messages: [] }, spy.handler))).rejects.toThrow();
+      expect(spy.calls).toHaveLength(0); // next() never called
+    });
+
+    test("zero-budget blocks stream immediately", async () => {
+      const mw = createPayMiddleware({
+        tracker: createInMemoryBudgetTracker(),
+        calculator: createDefaultCostCalculator(),
+        budget: 0,
+      });
+      const spy = createSpyModelStreamHandler([
+        { kind: "done", response: { content: "ok", model: "test-model" } },
+      ]);
+
+      await expect(drainStream(streamOf(mw)(ctx, { messages: [] }, spy.handler))).rejects.toThrow();
+      expect(spy.calls).toHaveLength(0);
+    });
+
+    test("hardKill=false allows over-budget stream", async () => {
+      const tracker = createInMemoryBudgetTracker();
+      await tracker.record("session-test-1", {
+        inputTokens: 1000,
+        outputTokens: 1000,
+        model: "x",
+        costUsd: 100,
+        timestamp: Date.now(),
+      });
+      const mw = createPayMiddleware({
+        tracker,
+        calculator: createDefaultCostCalculator(),
+        budget: 1,
+        hardKill: false,
+      });
+      const handler = createMockModelStreamHandler([
+        { kind: "done", response: { content: "ok", model: "test-model" } },
+      ]);
+
+      await expect(
+        drainStream(streamOf(mw)(ctx, { messages: [] }, handler)),
+      ).resolves.toBeUndefined();
+    });
+
+    test("done chunk without usage does not record cost", async () => {
+      const tracker = createInMemoryBudgetTracker();
+      const mw = createPayMiddleware({
+        tracker,
+        calculator: createDefaultCostCalculator(),
+        budget: 10,
+      });
+      const handler = createMockModelStreamHandler([
+        { kind: "done", response: { content: "ok", model: "test-model" } }, // no usage
+      ]);
+
+      await drainStream(streamOf(mw)(ctx, { messages: [] }, handler));
+      expect(await tracker.totalSpend("session-test-1")).toBe(0);
+    });
+
+    test("threshold alert fires after stream completes", async () => {
+      const tracker = createInMemoryBudgetTracker();
+      const alerts: number[] = [];
+      const mw = createPayMiddleware({
+        tracker,
+        calculator: createDefaultCostCalculator({
+          "test-model": { input: 0.001, output: 0.001 },
+        }),
+        budget: 1,
+        alertThresholds: [0.5],
+        onAlert: (pct) => {
+          alerts.push(pct);
+        },
+      });
+      // Spend 60% via stream
+      const handler = createMockModelStreamHandler([
+        {
+          kind: "done",
+          response: {
+            content: "ok",
+            model: "test-model",
+            usage: { inputTokens: 300, outputTokens: 300 },
+          },
+        },
+      ]);
+
+      await drainStream(streamOf(mw)(ctx, { messages: [] }, handler));
+      expect(alerts.length).toBeGreaterThan(0);
+    });
   });
 
   describe("describeCapabilities", () => {

@@ -6,9 +6,11 @@ import type { AuditEntry } from "@koi/core";
 import type {
   CapabilityFragment,
   KoiMiddleware,
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   SessionContext,
   ToolHandler,
   ToolRequest,
@@ -124,6 +126,42 @@ export function createAuditMiddleware(config: AuditMiddlewareConfig): KoiMiddlew
           kind: "model_call",
           request: config.redactRequestBodies ? "[redacted]" : processPayload(request, config),
           response: response ? processPayload(response, config) : undefined,
+          error: error ? processPayload(error, config) : undefined,
+          durationMs,
+        };
+        fireAndForget(entry);
+      }
+    },
+
+    async *wrapModelStream(
+      ctx: TurnContext,
+      request: ModelRequest,
+      next: ModelStreamHandler,
+    ): AsyncIterable<ModelChunk> {
+      const startTime = Date.now();
+      let lastResponse: ModelResponse | undefined;
+      let error: unknown;
+
+      try {
+        for await (const chunk of next(request)) {
+          if (chunk.kind === "done") {
+            lastResponse = chunk.response;
+          }
+          yield chunk;
+        }
+      } catch (e: unknown) {
+        error = e;
+        throw e;
+      } finally {
+        const durationMs = Date.now() - startTime;
+        const entry: AuditEntry = {
+          timestamp: startTime,
+          sessionId: ctx.session.sessionId,
+          agentId: ctx.session.agentId,
+          turnIndex: ctx.turnIndex,
+          kind: "model_call",
+          request: config.redactRequestBodies ? "[redacted]" : processPayload(request, config),
+          response: lastResponse ? processPayload(lastResponse, config) : undefined,
           error: error ? processPayload(error, config) : undefined,
           durationMs,
         };

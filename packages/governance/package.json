@@ -1,0 +1,36 @@
+{
+  "name": "@koi/governance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/middleware-audit": "workspace:*",
+    "@koi/middleware-permissions": "workspace:*",
+    "@koi/middleware-pay": "workspace:*",
+    "@koi/middleware-pii": "workspace:*",
+    "@koi/middleware-sanitize": "workspace:*",
+    "@koi/middleware-guardrails": "workspace:*",
+    "@koi/delegation": "workspace:*",
+    "@koi/exec-approvals": "workspace:*",
+    "@koi/middleware-governance-backend": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/engine": "workspace:*",
+    "@koi/engine-pi": "workspace:*",
+    "@koi/test-utils": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test",
+    "test:api": "bun test src/__tests__/api-surface.test.ts"
+  }
+}

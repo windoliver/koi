@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { runId, sessionId } from "@koi/core";
 import {
+  createMockModelStreamHandler,
   createMockSessionContext,
   createMockTurnContext,
   createSpyModelHandler,
+  createSpyModelStreamHandler,
   createSpyToolHandler,
 } from "@koi/test-utils";
 import { createAuditMiddleware } from "./audit.js";
@@ -243,6 +245,133 @@ describe("createAuditMiddleware", () => {
     await mw.wrapModelCall?.(ctxTurn5, { messages: [] }, spy.handler);
     await new Promise((r) => setTimeout(r, 10));
     expect(sink.entries[0]?.turnIndex).toBe(5);
+  });
+
+  describe("wrapModelStream", () => {
+    async function drainStream(iter: AsyncIterable<unknown>): Promise<void> {
+      for await (const _ of iter) {
+        /* drain */
+      }
+    }
+
+    // Unwrap the optional wrapModelStream method, throwing if not implemented.
+    function streamOf(
+      mw: ReturnType<typeof createAuditMiddleware>,
+    ): NonNullable<(typeof mw)["wrapModelStream"]> {
+      const fn = mw.wrapModelStream;
+      if (!fn) throw new Error("wrapModelStream not defined on audit middleware");
+      return fn;
+    }
+
+    test("logs model_call entry after stream completes", async () => {
+      const sink = createInMemoryAuditSink();
+      const mw = createAuditMiddleware({ sink });
+      const spy = createSpyModelStreamHandler([
+        { kind: "text_delta", delta: "hi" },
+        { kind: "done", response: { content: "hi", model: "test-model" } },
+      ]);
+
+      await drainStream(streamOf(mw)(ctx, { messages: [] }, spy.handler));
+
+      // Allow fire-and-forget
+      await new Promise((r) => setTimeout(r, 10));
+      const entry = sink.entries.find((e) => e.kind === "model_call");
+      expect(entry).toBeDefined();
+      expect(entry?.kind).toBe("model_call");
+      expect(entry?.durationMs).toBeGreaterThanOrEqual(0);
+    });
+
+    test("captures done chunk response in audit entry", async () => {
+      const sink = createInMemoryAuditSink();
+      const mw = createAuditMiddleware({ sink });
+      const response = {
+        content: "answer",
+        model: "test-model",
+        usage: { inputTokens: 10, outputTokens: 5 },
+      };
+      const handler = createMockModelStreamHandler([{ kind: "done", response }]);
+
+      await drainStream(streamOf(mw)(ctx, { messages: [] }, handler));
+      await new Promise((r) => setTimeout(r, 10));
+
+      const entry = sink.entries.find((e) => e.kind === "model_call");
+      expect(entry).toBeDefined();
+      // Response should be captured (not undefined)
+      expect(entry?.response).toBeDefined();
+    });
+
+    test("logs model_call with error when stream throws", async () => {
+      const sink = createInMemoryAuditSink();
+      const mw = createAuditMiddleware({ sink });
+      const throwingHandler = (): AsyncIterable<never> => ({
+        [Symbol.asyncIterator](): AsyncIterator<never> {
+          return {
+            next: async (): Promise<IteratorResult<never>> => {
+              throw new Error("stream-failed");
+            },
+          };
+        },
+      });
+
+      await expect(
+        drainStream(streamOf(mw)(ctx, { messages: [] }, throwingHandler)),
+      ).rejects.toThrow("stream-failed");
+
+      await new Promise((r) => setTimeout(r, 10));
+      const entry = sink.entries.find((e) => e.kind === "model_call");
+      expect(entry).toBeDefined();
+      expect(entry?.error).toBeDefined();
+    });
+
+    test("re-throws stream errors", async () => {
+      const sink = createInMemoryAuditSink();
+      const mw = createAuditMiddleware({ sink });
+      const throwingHandler = (): AsyncIterable<never> => ({
+        [Symbol.asyncIterator](): AsyncIterator<never> {
+          return {
+            next: async (): Promise<IteratorResult<never>> => {
+              throw new Error("propagated-error");
+            },
+          };
+        },
+      });
+
+      await expect(
+        drainStream(streamOf(mw)(ctx, { messages: [] }, throwingHandler)),
+      ).rejects.toThrow("propagated-error");
+    });
+
+    test("redactRequestBodies hides request in stream entry", async () => {
+      const sink = createInMemoryAuditSink();
+      const mw = createAuditMiddleware({ sink, redactRequestBodies: true });
+      const handler = createMockModelStreamHandler([
+        { kind: "done", response: { content: "ok", model: "test-model" } },
+      ]);
+
+      await drainStream(streamOf(mw)(ctx, { messages: [], model: "secret-model" }, handler));
+      await new Promise((r) => setTimeout(r, 10));
+
+      const entry = sink.entries.find((e) => e.kind === "model_call");
+      expect(entry?.request).toBe("[redacted]");
+    });
+
+    test("yields all chunks from next handler", async () => {
+      const sink = createInMemoryAuditSink();
+      const mw = createAuditMiddleware({ sink });
+      const spy = createSpyModelStreamHandler([
+        { kind: "text_delta", delta: "hello" },
+        { kind: "text_delta", delta: " world" },
+        { kind: "done", response: { content: "hello world", model: "test-model" } },
+      ]);
+
+      const collected: string[] = [];
+      for await (const chunk of streamOf(mw)(ctx, { messages: [] }, spy.handler)) {
+        if (chunk.kind === "text_delta") collected.push(chunk.delta);
+      }
+
+      expect(collected).toEqual(["hello", " world"]);
+      expect(spy.calls).toHaveLength(1);
+    });
   });
 
   describe("describeCapabilities", () => {

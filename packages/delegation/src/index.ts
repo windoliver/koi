@@ -20,6 +20,7 @@ export { createDelegationManager } from "./delegation-manager.js";
 export type { AttenuateParams, CreateGrantParams } from "./grant.js";
 // grant creation & attenuation
 export { attenuateGrant, createGrant } from "./grant.js";
+export type { DelegationMiddlewareConfig } from "./middleware.js";
 // middleware
 export { createDelegationMiddleware } from "./middleware.js";
 export type { GrantIndex, InMemoryRegistry } from "./registry.js";

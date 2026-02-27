@@ -1,0 +1,86 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/governance API surface . has stable type surface 1`] = `
+"import { DelegationMiddlewareConfig } from '@koi/delegation';
+export { DelegationMiddlewareConfig } from '@koi/delegation';
+import { ExecApprovalsConfig } from '@koi/exec-approvals';
+export { ExecApprovalsConfig } from '@koi/exec-approvals';
+import { AuditMiddlewareConfig } from '@koi/middleware-audit';
+export { AuditMiddlewareConfig } from '@koi/middleware-audit';
+import { GovernanceBackendMiddlewareConfig } from '@koi/middleware-governance-backend';
+export { GovernanceBackendMiddlewareConfig } from '@koi/middleware-governance-backend';
+import { GuardrailsConfig } from '@koi/middleware-guardrails';
+export { GuardrailsConfig } from '@koi/middleware-guardrails';
+import { PayMiddlewareConfig } from '@koi/middleware-pay';
+export { PayMiddlewareConfig } from '@koi/middleware-pay';
+import { PermissionsMiddlewareConfig } from '@koi/middleware-permissions';
+export { PermissionsMiddlewareConfig } from '@koi/middleware-permissions';
+import { PIIConfig } from '@koi/middleware-pii';
+export { PIIConfig } from '@koi/middleware-pii';
+import { SanitizeMiddlewareConfig } from '@koi/middleware-sanitize';
+export { SanitizeMiddlewareConfig } from '@koi/middleware-sanitize';
+import { KoiMiddleware } from '@koi/core/middleware';
+
+/**
+ * createGovernanceStack — enterprise compliance middleware assembly.
+ *
+ * Composes up to 9 middleware into a single stack with a fixed priority order.
+ * All fields are optional — include only what your deployment needs.
+ *
+ * Priority order (lower = outer layer, runs first on request):
+ *   100  koi:permissions
+ *   110  koi:exec-approvals  (overridden from default 100)
+ *   120  koi:delegation      (overridden from default undefined/500)
+ *   150  koi:governance-backend
+ *   200  koi:pay
+ *   300  koi:audit
+ *   340  koi:pii
+ *   350  koi:sanitize
+ *   375  koi:guardrails
+ */
+
+/**
+ * Configuration for the governance compliance stack.
+ * All fields are optional — include only the middleware you need.
+ */
+interface GovernanceStackConfig {
+    /** Coarse-grained tool allow/deny/ask rules. Priority 100. */
+    readonly permissions?: PermissionsMiddlewareConfig;
+    /** Progressive command allowlisting. Priority 110 (overridden from default). */
+    readonly execApprovals?: ExecApprovalsConfig;
+    /** Delegation grant verification. Priority 120 (overridden from default). */
+    readonly delegation?: DelegationMiddlewareConfig;
+    /** Pluggable policy evaluation gate. Priority 150. */
+    readonly governanceBackend?: GovernanceBackendMiddlewareConfig;
+    /** Token budget enforcement. Priority 200. */
+    readonly pay?: PayMiddlewareConfig;
+    /** Compliance audit logging. Priority 300. */
+    readonly audit?: AuditMiddlewareConfig;
+    /** PII detection and redaction. Priority 340. */
+    readonly pii?: PIIConfig;
+    /** Content sanitization. Priority 350. */
+    readonly sanitize?: SanitizeMiddlewareConfig;
+    /** Output schema validation. Priority 375. */
+    readonly guardrails?: GuardrailsConfig;
+}
+/**
+ * Assemble a governance compliance middleware stack.
+ *
+ * Returns an object with \`middlewares\` — pass it directly to createKoi():
+ *
+ * \`\`\`typescript
+ * const { middlewares } = createGovernanceStack({ audit: { sink: myAuditSink } });
+ * const runtime = await createKoi({ ..., middleware: middlewares });
+ * \`\`\`
+ *
+ * Middleware are ordered by priority. Priority overrides are applied for
+ * exec-approvals (110) and delegation (120) so they slot correctly between
+ * permissions (100) and governance-backend (150).
+ */
+declare function createGovernanceStack(config: GovernanceStackConfig): {
+    readonly middlewares: readonly KoiMiddleware[];
+};
+
+export { type GovernanceStackConfig, createGovernanceStack };
+"
+`;
