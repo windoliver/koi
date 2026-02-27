@@ -37,6 +37,24 @@ describe("normalizeConfigItem", () => {
     const result = normalizeConfigItem(input);
     expect(result).toEqual({ name: "@koi/middleware-log", options: {} });
   });
+
+  test("passes through version and publisher", () => {
+    const input = { name: "@koi/calc", options: { x: 1 }, version: "1.0.0", publisher: "alice" };
+    const result = normalizeConfigItem(input);
+    expect(result).toEqual({
+      name: "@koi/calc",
+      options: { x: 1 },
+      version: "1.0.0",
+      publisher: "alice",
+    });
+  });
+
+  test("omits version and publisher when absent", () => {
+    const input = { name: "@koi/calc" };
+    const result = normalizeConfigItem(input);
+    expect("version" in result).toBe(false);
+    expect("publisher" in result).toBe(false);
+  });
 });
 
 describe("normalizeChannelConfig", () => {
@@ -74,6 +92,26 @@ describe("normalizeChannelConfig", () => {
     expect(result.identity).toEqual({ name: "Alex" });
     expect("avatar" in (result.identity ?? {})).toBe(false);
     expect("instructions" in (result.identity ?? {})).toBe(false);
+  });
+
+  test("passes through version and publisher", () => {
+    const input = { name: "@koi/channel-cli", version: "2.0.0", publisher: "bob" };
+    const result = normalizeChannelConfig(input);
+    expect(result.version).toBe("2.0.0");
+    expect(result.publisher).toBe("bob");
+  });
+
+  test("passes through version and publisher with identity", () => {
+    const input = {
+      name: "@koi/channel-telegram",
+      identity: { name: "Alex" },
+      version: "1.0.0",
+      publisher: "alice",
+    };
+    const result = normalizeChannelConfig(input);
+    expect(result.version).toBe("1.0.0");
+    expect(result.publisher).toBe("alice");
+    expect(result.identity).toEqual({ name: "Alex" });
   });
 });
 
@@ -212,6 +250,56 @@ describe("transformToLoadedManifest", () => {
     expect(result.channels).toHaveLength(2);
     expect(result.channels?.[0]?.identity).toEqual({ name: "Alex", instructions: "Be casual." });
     expect(result.channels?.[1]?.identity).toBeUndefined();
+  });
+
+  test("passes through version and publisher on tools", () => {
+    const raw = {
+      name: "my-agent",
+      version: "1.0.0",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+      tools: [{ name: "calculator", version: "2.0.0", publisher: "alice" }],
+    };
+    const result = transformToLoadedManifest(raw);
+    expect(result.tools?.[0]?.version).toBe("2.0.0");
+    expect(result.tools?.[0]?.publisher).toBe("alice");
+  });
+
+  test("passes through version and publisher on keyed-section tools", () => {
+    const raw = {
+      name: "my-agent",
+      version: "1.0.0",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+      tools: {
+        mcp: [{ name: "fs", command: "npx mcp-server", version: "1.0.0", publisher: "bob" }],
+      },
+    };
+    const result = transformToLoadedManifest(raw);
+    expect(result.tools?.[0]?.version).toBe("1.0.0");
+    expect(result.tools?.[0]?.publisher).toBe("bob");
+  });
+
+  test("passes through version and publisher on middleware", () => {
+    const raw = {
+      name: "my-agent",
+      version: "1.0.0",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+      middleware: [{ name: "@koi/middleware-audit", version: "3.0.0", publisher: "koi-team" }],
+    };
+    const result = transformToLoadedManifest(raw);
+    expect(result.middleware?.[0]?.version).toBe("3.0.0");
+    expect(result.middleware?.[0]?.publisher).toBe("koi-team");
+  });
+
+  test("passes through version and publisher on channels", () => {
+    const raw = {
+      name: "my-agent",
+      version: "1.0.0",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+      channels: [{ name: "@koi/channel-cli", version: "1.0.0", publisher: "alice" }],
+    };
+    const result = transformToLoadedManifest(raw);
+    expect(result.channels?.[0]?.version).toBe("1.0.0");
+    expect(result.channels?.[0]?.publisher).toBe("alice");
   });
 
   test("transforms permissions", () => {

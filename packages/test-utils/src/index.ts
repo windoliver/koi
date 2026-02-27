@@ -90,3 +90,6 @@ export {
   createMockValidator,
   createThrowingValidator,
 } from "./validators.js";
+export type { VersionIndexContractOptions } from "./version-index-contract.js";
+export { testVersionIndexContract } from "./version-index-contract.js";
+export { createInMemoryVersionIndex } from "./version-index-memory.js";

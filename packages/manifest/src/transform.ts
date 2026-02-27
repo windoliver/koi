@@ -77,6 +77,8 @@ export function normalizeModelConfig(
 interface NormalizedConfig {
   readonly name: string;
   readonly options?: JsonObject;
+  readonly version?: string;
+  readonly publisher?: string;
 }
 
 /**
@@ -87,9 +89,15 @@ interface NormalizedConfig {
 export function normalizeConfigItem(raw: Readonly<Record<string, unknown>>): NormalizedConfig {
   // If it has a `name` property that's a string, it's already in standard format
   if (typeof raw.name === "string") {
-    return raw.options !== undefined
-      ? { name: raw.name, options: toJsonObject(raw.options) }
-      : { name: raw.name };
+    const base: NormalizedConfig =
+      raw.options !== undefined
+        ? { name: raw.name, options: toJsonObject(raw.options) }
+        : { name: raw.name };
+    return {
+      ...base,
+      ...(typeof raw.version === "string" ? { version: raw.version } : {}),
+      ...(typeof raw.publisher === "string" ? { publisher: raw.publisher } : {}),
+    };
   }
 
   // Key-value format: single key is the package name, value is options
@@ -115,7 +123,12 @@ export function normalizeChannelConfig(raw: Readonly<Record<string, unknown>>): 
       ...(typeof id.avatar === "string" ? { avatar: id.avatar } : {}),
       ...(typeof id.instructions === "string" ? { instructions: id.instructions } : {}),
     };
-    return { ...base, identity };
+    return {
+      ...base,
+      identity,
+      ...(typeof raw.version === "string" ? { version: raw.version } : {}),
+      ...(typeof raw.publisher === "string" ? { publisher: raw.publisher } : {}),
+    };
   }
   return base;
 }
@@ -132,13 +145,24 @@ function flattenToolsSections(
   return Object.entries(tools).flatMap(([section, items]) =>
     items.map((item): ToolConfig => {
       const normalized = normalizeConfigItem(item);
-      const { name: _name, options: _options, ...extraFields } = item;
+      const {
+        name: _name,
+        options: _options,
+        version: _version,
+        publisher: _publisher,
+        ...extraFields
+      } = item;
       const mergedOptions: JsonObject = {
         ...extraFields,
         ...(normalized.options ?? {}),
         section,
       };
-      return { name: normalized.name, options: mergedOptions };
+      return {
+        name: normalized.name,
+        options: mergedOptions,
+        ...(normalized.version !== undefined ? { version: normalized.version } : {}),
+        ...(normalized.publisher !== undefined ? { publisher: normalized.publisher } : {}),
+      };
     }),
   );
 }
