@@ -28,6 +28,8 @@ export { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstan
 export { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, TierResolution, TieredSandboxExecutor } from './sandbox-HASH.js';
 export { FilesystemPolicy, NetworkPolicy, ResourceLimits, SandboxProfile } from './sandbox-HASH.js';
 export { DEFAULT_SKILL_SEARCH_LIMIT, SkillId, SkillPage, SkillPublishRequest, SkillRegistryBackend, SkillRegistryChangeEvent, SkillRegistryChangeKind, SkillRegistryEntry, SkillRegistryReader, SkillRegistryWriter, SkillSearchQuery, SkillVersion, skillId } from './skill-HASH.js';
+export { VersionIndexBackend, VersionIndexReader, VersionIndexWriter } from './version-index.js';
+export { PublisherId, ShadowWarning, VersionChangeEvent, VersionChangeKind, VersionEntry, VersionedBrickRef, publisherId } from './version-types.js';
 export { OutboundWebhookConfig, WebhookComponent, WebhookDeliveryStatus, WebhookEndpointHealth, WebhookEventKind, WebhookPayload, WebhookSummary } from './webhook.js';
 
 /**
@@ -2697,5 +2699,160 @@ interface SkillRegistryBackend extends SkillRegistryReader, SkillRegistryWriter 
 }
 
 export { DEFAULT_SKILL_SEARCH_LIMIT, type SkillId, type SkillPage, type SkillPublishRequest, type SkillRegistryBackend, type SkillRegistryChangeEvent, type SkillRegistryChangeKind, type SkillRegistryEntry, type SkillRegistryReader, type SkillRegistryWriter, type SkillSearchQuery, type SkillVersion, skillId };
+"
+`;
+
+exports[`@koi/core API surface ./version-index has stable type surface 1`] = `
+"import { a as BrickKind, b as BrickId } from './brick-snapshot-HASH.js';
+import { Result, KoiError } from './errors.js';
+import { VersionEntry, VersionChangeEvent, PublisherId } from './version-types.js';
+import './ecs-HASH.js';
+import './assembly-HASH.js';
+import './common.js';
+import './webhook.js';
+import './channel.js';
+import './message.js';
+import './filesystem-HASH.js';
+
+/**
+ * VersionIndex contract — version label → BrickId resolution.
+ *
+ * Orthogonal to ForgeStore and BrickRegistry (like AdvisoryLock).
+ * Maps human-readable version labels to content-addressed BrickIds,
+ * enabling reproducible agent assembly and publisher attribution.
+ *
+ * Reader/Writer split follows the SkillRegistry/BrickRegistry pattern.
+ */
+
+/** Read-only interface for resolving version labels to BrickIds. */
+interface VersionIndexReader {
+    /**
+     * Resolve an exact version label to its entry.
+     * Returns NOT_FOUND if the label does not exist or was yanked.
+     */
+    readonly resolve: (name: string, kind: BrickKind, version: string) => Result<VersionEntry, KoiError> | Promise<Result<VersionEntry, KoiError>>;
+    /**
+     * Resolve the latest (most recently published) version.
+     * Returns NOT_FOUND if no versions exist for this brick.
+     */
+    readonly resolveLatest: (name: string, kind: BrickKind) => Result<VersionEntry, KoiError> | Promise<Result<VersionEntry, KoiError>>;
+    /**
+     * List all versions for a brick, newest first (by publishedAt).
+     * Returns NOT_FOUND if no versions exist for this brick.
+     */
+    readonly listVersions: (name: string, kind: BrickKind) => Result<readonly VersionEntry[], KoiError> | Promise<Result<readonly VersionEntry[], KoiError>>;
+    /**
+     * Subscribe to version change events for cache invalidation.
+     * Returns an unsubscribe function. Optional — implementations
+     * that don't support push notifications may omit this.
+     */
+    readonly onChange?: (listener: (event: VersionChangeEvent) => void) => () => void;
+}
+/** Write interface for managing version label → BrickId mappings. */
+interface VersionIndexWriter {
+    /**
+     * Publish a version label binding.
+     *
+     * - Returns CONFLICT if the same label maps to a different BrickId
+     *   (content-addressed hashes are immutable — re-binding is a shadow).
+     * - Idempotent for the same (name, kind, version, brickId) tuple.
+     * - Returns VALIDATION if name or version is empty/whitespace-only.
+     */
+    readonly publish: (name: string, kind: BrickKind, version: string, brickId: BrickId, publisher: PublisherId) => Result<VersionEntry, KoiError> | Promise<Result<VersionEntry, KoiError>>;
+    /**
+     * Soft-deprecate a version — still resolvable, but flagged.
+     * Returns NOT_FOUND if the version label does not exist.
+     * Idempotent — deprecating an already-deprecated version succeeds.
+     */
+    readonly deprecate: (name: string, kind: BrickKind, version: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    /**
+     * Hard-remove a version label — resolve returns NOT_FOUND after.
+     * Returns NOT_FOUND if the version label does not exist.
+     */
+    readonly yank: (name: string, kind: BrickKind, version: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+}
+/** Full VersionIndex backend — implements both read and write operations. */
+interface VersionIndexBackend extends VersionIndexReader, VersionIndexWriter {
+}
+
+export type { VersionIndexBackend, VersionIndexReader, VersionIndexWriter };
+"
+`;
+
+exports[`@koi/core API surface ./version-types has stable type surface 1`] = `
+"import { a as BrickKind, b as BrickId } from './brick-snapshot-HASH.js';
+import './errors.js';
+import './common.js';
+import './ecs-HASH.js';
+import './assembly-HASH.js';
+import './webhook.js';
+import './channel.js';
+import './message.js';
+import './filesystem-HASH.js';
+
+/**
+ * Version types — version labels + publisher identity.
+ *
+ * Shared types used by VersionIndex and assembly configs for
+ * versioned brick resolution. Enables human-readable version labels
+ * over content-addressed BrickIds and publisher attribution.
+ *
+ * Exception: \`publisherId()\` is a branded type constructor (zero-logic
+ * identity cast), permitted in L0 per architecture doc.
+ */
+
+declare const __publisherIdBrand: unique symbol;
+/**
+ * Branded string for publisher identity.
+ * Prevents mixing publisher IDs with other string-typed IDs at compile time.
+ */
+type PublisherId = string & {
+    readonly [__publisherIdBrand]: "PublisherId";
+};
+/** Create a PublisherId from a raw string. */
+declare function publisherId(raw: string): PublisherId;
+/** A version label bound to a content-addressed BrickId. */
+interface VersionEntry {
+    /** Human-readable version label (e.g., "1.0.0", "beta"). */
+    readonly version: string;
+    /** Content-addressed brick identity this label resolves to. */
+    readonly brickId: BrickId;
+    /** Who published this version. */
+    readonly publisher: PublisherId;
+    /** Unix epoch ms when this version was published. */
+    readonly publishedAt: number;
+    /** Soft-deprecated — still resolvable but flagged for consumers. */
+    readonly deprecated?: boolean;
+}
+/** What manifests use to request a versioned brick. */
+interface VersionedBrickRef {
+    readonly name: string;
+    readonly kind: BrickKind;
+    /** Exact version label. If omitted, resolve latest. */
+    readonly version?: string;
+    /** Optional publisher filter — only resolve versions from this publisher. */
+    readonly publisher?: PublisherId;
+}
+/** Kind of version change event. */
+type VersionChangeKind = "published" | "deprecated" | "yanked";
+/** Emitted when a version binding changes. */
+interface VersionChangeEvent {
+    readonly kind: VersionChangeKind;
+    readonly brickKind: BrickKind;
+    readonly name: string;
+    readonly version: string;
+    readonly brickId: BrickId;
+    readonly publisher: PublisherId;
+}
+/** Emitted when a version label would re-bind to different content. */
+interface ShadowWarning {
+    readonly name: string;
+    readonly kind: BrickKind;
+    readonly version: string;
+    readonly existingBrickId: BrickId;
+    readonly newBrickId: BrickId;
+}
+
+export { type PublisherId, type ShadowWarning, type VersionChangeEvent, type VersionChangeKind, type VersionEntry, type VersionedBrickRef, publisherId };
 "
 `;

@@ -17,6 +17,8 @@ export interface ModelConfig {
 export interface ToolConfig {
   readonly name: string;
   readonly options?: JsonObject;
+  readonly version?: string;
+  readonly publisher?: string;
 }
 
 export interface ChannelIdentity {
@@ -32,11 +34,15 @@ export interface ChannelConfig {
   readonly name: string;
   readonly options?: JsonObject;
   readonly identity?: ChannelIdentity;
+  readonly version?: string;
+  readonly publisher?: string;
 }
 
 export interface MiddlewareConfig {
   readonly name: string;
   readonly options?: JsonObject;
+  readonly version?: string;
+  readonly publisher?: string;
 }
 
 export interface PermissionConfig {

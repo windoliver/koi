@@ -103,6 +103,14 @@
     "./skill-registry": {
       "types": "./dist/skill-registry.d.ts",
       "import": "./dist/skill-registry.js"
+    },
+    "./version-index": {
+      "types": "./dist/version-index.d.ts",
+      "import": "./dist/version-index.js"
+    },
+    "./version-types": {
+      "types": "./dist/version-types.d.ts",
+      "import": "./dist/version-types.js"
     }
   },
   "scripts": {

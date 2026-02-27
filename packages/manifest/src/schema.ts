@@ -111,6 +111,8 @@ const namedConfigSchema = z.union([
   z.object({
     name: z.string(),
     options: jsonObjectSchema.optional(),
+    version: z.string().optional(),
+    publisher: z.string().optional(),
   }),
   jsonObjectSchema,
 ]);
@@ -136,6 +138,8 @@ const rawChannelSchema = z.union([
     name: z.string(),
     options: jsonObjectSchema.optional(),
     identity: channelIdentitySchema,
+    version: z.string().optional(),
+    publisher: z.string().optional(),
   }),
   jsonObjectSchema,
 ]);

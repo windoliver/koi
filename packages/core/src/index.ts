@@ -584,6 +584,22 @@ export type {
 export { DEFAULT_TASK_BOARD_CONFIG, taskItemId } from "./task-board.js";
 // validation utilities — runtime type guards and validators
 export { isProcessState, validateNonEmpty } from "./validation-utils.js";
+// version index — version label → BrickId resolution contract
+export type {
+  VersionIndexBackend,
+  VersionIndexReader,
+  VersionIndexWriter,
+} from "./version-index.js";
+// version types — version labels + publisher identity
+export type {
+  PublisherId,
+  ShadowWarning,
+  VersionChangeEvent,
+  VersionChangeKind,
+  VersionEntry,
+  VersionedBrickRef,
+} from "./version-types.js";
+export { publisherId } from "./version-types.js";
 // webhook — outbound webhook delivery contract
 export type {
   OutboundWebhookConfig,

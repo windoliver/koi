@@ -28,6 +28,8 @@ export default defineConfig({
     "src/sandbox-executor.ts",
     "src/sandbox-profile.ts",
     "src/skill-registry.ts",
+    "src/version-index.ts",
+    "src/version-types.ts",
     "src/webhook.ts",
   ],
   format: ["esm"],
