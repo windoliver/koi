@@ -152,3 +152,57 @@ describe("InMemoryForgeStore watch", () => {
     expect(listener2).toHaveBeenCalledTimes(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// promoteAndUpdate tests
+// ---------------------------------------------------------------------------
+
+describe("InMemoryForgeStore promoteAndUpdate", () => {
+  test("atomically updates scope and metadata in a single operation", async () => {
+    const store = createInMemoryForgeStore();
+    const brick = testToolArtifact({
+      id: brickId("brick_atomic"),
+      scope: "agent",
+      trustTier: "sandbox",
+      lifecycle: "draft",
+      tags: ["old"],
+    });
+    await store.save(brick);
+
+    if (store.promoteAndUpdate === undefined) {
+      throw new Error("promoteAndUpdate should be defined");
+    }
+    const result = await store.promoteAndUpdate(brickId("brick_atomic"), "zone", {
+      trustTier: "verified",
+      lifecycle: "active",
+      tags: ["new", "zone:team-1"],
+    });
+
+    expect(result.ok).toBe(true);
+
+    const loaded = await store.load(brickId("brick_atomic"));
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) {
+      expect(loaded.value.scope).toBe("zone");
+      expect(loaded.value.trustTier).toBe("verified");
+      expect(loaded.value.lifecycle).toBe("active");
+      expect(loaded.value.tags).toEqual(["new", "zone:team-1"]);
+    }
+  });
+
+  test("returns NOT_FOUND for nonexistent brick", async () => {
+    const store = createInMemoryForgeStore();
+
+    if (store.promoteAndUpdate === undefined) {
+      throw new Error("promoteAndUpdate should be defined");
+    }
+    const result = await store.promoteAndUpdate(brickId("nonexistent"), "zone", {
+      trustTier: "verified",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("NOT_FOUND");
+    }
+  });
+});

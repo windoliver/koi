@@ -8,6 +8,7 @@ import type {
   BrickId,
   BrickUpdate,
   ForgeQuery,
+  ForgeScope,
   ForgeStore,
   KoiError,
   Result,
@@ -155,5 +156,27 @@ export function createInMemoryForgeStore(): ForgeStore {
     return { ok: true, value: bricks.has(id) };
   };
 
-  return { save, load, search, remove, update, exists, watch };
+  const promoteAndUpdate = async (
+    id: BrickId,
+    targetScope: ForgeScope,
+    updates: BrickUpdate,
+  ): Promise<Result<void, KoiError>> => {
+    const existing = bricks.get(id);
+    if (existing === undefined) {
+      return { ok: false, error: notFoundError(id) };
+    }
+    const merged: BrickArtifact = {
+      ...existing,
+      scope: targetScope,
+      ...(updates.lifecycle !== undefined ? { lifecycle: updates.lifecycle } : {}),
+      ...(updates.trustTier !== undefined ? { trustTier: updates.trustTier } : {}),
+      ...(updates.usageCount !== undefined ? { usageCount: updates.usageCount } : {}),
+      ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
+    };
+    bricks.set(id, merged);
+    notifyListeners({ kind: "promoted", brickId: id, scope: targetScope });
+    return { ok: true, value: undefined };
+  };
+
+  return { save, load, search, remove, update, exists, promoteAndUpdate, watch };
 }

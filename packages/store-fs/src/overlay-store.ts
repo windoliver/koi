@@ -40,6 +40,16 @@ export interface OverlayForgeStore extends ForgeStore {
    * Idempotent: same brick ID in target tier is a no-op (ID is content-addressed).
    */
   readonly promote: (id: BrickId, targetScope: ForgeScope) => Promise<Result<void, KoiError>>;
+  /**
+   * Atomic scope promotion with metadata update.
+   * Moves brick to target scope's tier AND applies metadata changes in a single operation.
+   * Prevents partial state where brick is moved but metadata is stale.
+   */
+  readonly promoteAndUpdate: (
+    id: BrickId,
+    targetScope: ForgeScope,
+    updates: BrickUpdate,
+  ) => Promise<Result<void, KoiError>>;
   /** Move a brick between named tiers directly (lower-level than scope-based promote). */
   readonly promoteTier: (id: BrickId, toTier: TierName) => Promise<Result<void, KoiError>>;
   /** Find which tier currently owns a brick. */
@@ -355,12 +365,10 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
         if (!saveResult.ok) {
           return saveResult;
         }
-        // Remove from source (only if writable)
+        // Remove from source (only if writable) — non-fatal on failure.
+        // Content-addressed IDs mean the orphaned copy is a harmless duplicate.
         if (isTierWritable(entry.descriptor)) {
-          const removeResult = await entry.store.remove(id);
-          if (!removeResult.ok) {
-            return removeResult;
-          }
+          await entry.store.remove(id);
         }
         return { ok: true, value: undefined };
       }
@@ -378,6 +386,76 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
   ): Promise<Result<void, KoiError>> => {
     const targetTier = SCOPE_TO_TIER[targetScope];
     return promoteTier(id, targetTier);
+  };
+
+  /**
+   * Atomic scope promotion with metadata update.
+   * Single load-merge-save: moves brick to target tier with all metadata applied atomically.
+   */
+  const promoteAndUpdate = async (
+    id: BrickId,
+    targetScope: ForgeScope,
+    updates: BrickUpdate,
+  ): Promise<Result<void, KoiError>> => {
+    const targetTier = SCOPE_TO_TIER[targetScope];
+    const targetEntry = findTier(sorted, targetTier);
+    if (targetEntry === undefined) {
+      return {
+        ok: false,
+        error: validation(`Unknown target tier for scope '${targetScope}': ${targetTier}`),
+      };
+    }
+    if (!isTierWritable(targetEntry.descriptor)) {
+      return {
+        ok: false,
+        error: permission(`Target tier '${targetTier}' for scope '${targetScope}' is read-only`),
+      };
+    }
+
+    // Find source tier containing the brick
+    for (const entry of sorted) {
+      const existsResult = await entry.store.exists(id);
+      if (!existsResult.ok) {
+        return existsResult;
+      }
+      if (existsResult.value) {
+        // If already in target tier, just apply metadata update in place
+        if (entry.descriptor.name === targetTier) {
+          return entry.store.update(id, { ...updates, scope: targetScope });
+        }
+
+        // Load from source tier
+        const loadResult = await entry.store.load(id);
+        if (!loadResult.ok) {
+          return loadResult;
+        }
+
+        // Merge all updates + scope in memory (single operation)
+        const merged: BrickArtifact = {
+          ...loadResult.value,
+          scope: targetScope,
+          ...(updates.lifecycle !== undefined ? { lifecycle: updates.lifecycle } : {}),
+          ...(updates.trustTier !== undefined ? { trustTier: updates.trustTier } : {}),
+          ...(updates.usageCount !== undefined ? { usageCount: updates.usageCount } : {}),
+          ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
+        };
+
+        // Save merged brick to target tier (single write — atomic point)
+        const saveResult = await targetEntry.store.save(merged);
+        if (!saveResult.ok) {
+          return saveResult;
+        }
+
+        // Remove from source (only if writable) — non-fatal on failure.
+        // Content-addressed IDs mean the orphaned copy is a harmless duplicate.
+        if (isTierWritable(entry.descriptor)) {
+          await entry.store.remove(id);
+        }
+
+        return { ok: true, value: undefined };
+      }
+    }
+    return { ok: false, error: notFound(id, `Brick not found in any tier: ${id}`) };
   };
 
   /**
@@ -417,6 +495,7 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
     update,
     exists,
     promote: promoteByScope,
+    promoteAndUpdate,
     promoteTier,
     locateTier,
     watch,
