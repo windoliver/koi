@@ -1,15 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import type { DelegationGrant } from "@koi/core";
+import { agentId } from "@koi/core";
 import { attenuateGrant, createGrant } from "./grant.js";
 import { verifySignature } from "./sign.js";
 
 const SECRET = "test-secret-key-32-bytes-minimum";
 
 describe("createGrant", () => {
-  test("creates a root grant with chainDepth=0 and valid signature", () => {
+  test("creates a root grant with chainDepth=0 and valid proof", () => {
     const result = createGrant({
-      issuerId: "agent-1",
-      delegateeId: "agent-2",
+      issuerId: agentId("agent-1"),
+      delegateeId: agentId("agent-2"),
       scope: { permissions: { allow: ["read_file", "write_file"] } },
       maxChainDepth: 3,
       ttlMs: 3600000,
@@ -22,18 +23,19 @@ describe("createGrant", () => {
 
     expect(grant.chainDepth).toBe(0);
     expect(grant.parentId).toBeUndefined();
-    expect(grant.issuerId).toBe("agent-1");
-    expect(grant.delegateeId).toBe("agent-2");
+    expect(grant.issuerId).toBe(agentId("agent-1"));
+    expect(grant.delegateeId).toBe(agentId("agent-2"));
     expect(grant.maxChainDepth).toBe(3);
     expect(grant.expiresAt).toBeGreaterThan(grant.createdAt);
     expect(grant.expiresAt - grant.createdAt).toBe(3600000);
+    expect(grant.proof.kind).toBe("hmac-sha256");
     expect(verifySignature(grant, SECRET)).toBe(true);
   });
 
   test("returns error on empty issuerId", () => {
     const result = createGrant({
-      issuerId: "",
-      delegateeId: "agent-2",
+      issuerId: agentId(""),
+      delegateeId: agentId("agent-2"),
       scope: { permissions: { allow: ["read_file"] } },
       maxChainDepth: 3,
       ttlMs: 3600000,
@@ -49,8 +51,8 @@ describe("createGrant", () => {
 
   test("returns error on non-positive ttlMs", () => {
     const result = createGrant({
-      issuerId: "agent-1",
-      delegateeId: "agent-2",
+      issuerId: agentId("agent-1"),
+      delegateeId: agentId("agent-2"),
       scope: { permissions: { allow: ["read_file"] } },
       maxChainDepth: 3,
       ttlMs: 0,
@@ -66,8 +68,8 @@ describe("createGrant", () => {
 
   test("returns error on negative maxChainDepth", () => {
     const result = createGrant({
-      issuerId: "agent-1",
-      delegateeId: "agent-2",
+      issuerId: agentId("agent-1"),
+      delegateeId: agentId("agent-2"),
       scope: { permissions: { allow: ["read_file"] } },
       maxChainDepth: -1,
       ttlMs: 3600000,
@@ -83,8 +85,8 @@ describe("createGrant", () => {
 
   test("each grant gets a unique DelegationId", () => {
     const params = {
-      issuerId: "agent-1",
-      delegateeId: "agent-2",
+      issuerId: agentId("agent-1"),
+      delegateeId: agentId("agent-2"),
       scope: { permissions: { allow: ["*"] } },
       maxChainDepth: 3,
       ttlMs: 3600000,
@@ -104,8 +106,8 @@ describe("createGrant", () => {
 describe("attenuateGrant", () => {
   function makeParent(): DelegationGrant {
     const result = createGrant({
-      issuerId: "agent-1",
-      delegateeId: "agent-2",
+      issuerId: agentId("agent-1"),
+      delegateeId: agentId("agent-2"),
       scope: {
         permissions: { allow: ["read_file", "write_file"], deny: ["delete_file"] },
         resources: ["read_file:/workspace/**", "write_file:/workspace/src/**"],
@@ -123,7 +125,7 @@ describe("attenuateGrant", () => {
     const result = attenuateGrant(
       parent,
       {
-        delegateeId: "agent-3",
+        delegateeId: agentId("agent-3"),
         scope: {
           permissions: { allow: ["read_file"], deny: ["delete_file"] },
           resources: ["read_file:/workspace/**"],
@@ -136,8 +138,8 @@ describe("attenuateGrant", () => {
     if (result.ok) {
       expect(result.value.chainDepth).toBe(1);
       expect(result.value.parentId).toBe(parent.id);
-      expect(result.value.issuerId).toBe("agent-2"); // delegatee becomes issuer
-      expect(result.value.delegateeId).toBe("agent-3");
+      expect(result.value.issuerId).toBe(agentId("agent-2")); // delegatee becomes issuer
+      expect(result.value.delegateeId).toBe(agentId("agent-3"));
       expect(result.value.maxChainDepth).toBe(3);
       expect(result.value.expiresAt).toBeLessThanOrEqual(parent.expiresAt);
       expect(verifySignature(result.value, SECRET)).toBe(true);
@@ -149,7 +151,7 @@ describe("attenuateGrant", () => {
     const result = attenuateGrant(
       parent,
       {
-        delegateeId: "agent-3",
+        delegateeId: agentId("agent-3"),
         scope: {
           permissions: { allow: ["read_file", "write_file", "execute_command"] },
         },
@@ -169,7 +171,7 @@ describe("attenuateGrant", () => {
     const result = attenuateGrant(
       parent,
       {
-        delegateeId: "agent-3",
+        delegateeId: agentId("agent-3"),
         scope: {
           permissions: { allow: ["read_file"], deny: ["delete_file"] },
         },
@@ -189,7 +191,7 @@ describe("attenuateGrant", () => {
     const result = attenuateGrant(
       parent,
       {
-        delegateeId: "agent-3",
+        delegateeId: agentId("agent-3"),
         scope: {
           permissions: { allow: ["read_file"], deny: ["delete_file"] },
         },
@@ -208,8 +210,8 @@ describe("attenuateGrant", () => {
   test("attenuate with depth exceeded is rejected", () => {
     // Create parent at maxChainDepth=1, chainDepth=0
     const parentResult = createGrant({
-      issuerId: "agent-1",
-      delegateeId: "agent-2",
+      issuerId: agentId("agent-1"),
+      delegateeId: agentId("agent-2"),
       scope: { permissions: { allow: ["read_file"] } },
       maxChainDepth: 1,
       ttlMs: 3600000,
@@ -223,7 +225,7 @@ describe("attenuateGrant", () => {
     const child = attenuateGrant(
       parent,
       {
-        delegateeId: "agent-3",
+        delegateeId: agentId("agent-3"),
         scope: { permissions: { allow: ["read_file"] } },
       },
       SECRET,
@@ -235,7 +237,7 @@ describe("attenuateGrant", () => {
       const grandchild = attenuateGrant(
         child.value,
         {
-          delegateeId: "agent-4",
+          delegateeId: agentId("agent-4"),
           scope: { permissions: { allow: ["read_file"] } },
         },
         SECRET,
@@ -254,7 +256,7 @@ describe("attenuateGrant", () => {
     const result = attenuateGrant(
       parent,
       {
-        delegateeId: "agent-3",
+        delegateeId: agentId("agent-3"),
         scope: {
           permissions: { allow: ["read_file"] },
           // Missing deny: ["delete_file"] from parent

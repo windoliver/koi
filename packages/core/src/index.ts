@@ -23,6 +23,7 @@ export {
 // assembly
 export type {
   AgentManifest,
+  CapabilityConfig,
   ChannelConfig,
   ChannelIdentity,
   MiddlewareConfig,
@@ -112,6 +113,19 @@ export type {
 // bundle types — portable agent export/import envelope
 export type { AgentBundle, BundleId } from "./bundle-types.js";
 export { BUNDLE_FORMAT_VERSION, bundleId } from "./bundle-types.js";
+// capability — unforgeable capability tokens (L0 types + contracts)
+export type {
+  CapabilityDenyReason,
+  CapabilityId,
+  CapabilityScope,
+  CapabilityToken,
+  CapabilityVerifier,
+  CapabilityVerifyResult,
+  VerifierCache,
+  VerifyContext,
+} from "./capability.js";
+// capability — runtime values (branded constructor + type guard)
+export { capabilityId, isCapabilityToken } from "./capability.js";
 // capability registry — shared wire types for node capability advertisement
 export type {
   AdvertisedTool,
@@ -161,6 +175,7 @@ export type { SingleToolProviderConfig } from "./create-single-tool-provider.js"
 export { createSingleToolProvider } from "./create-single-tool-provider.js";
 // delegation — types
 export type {
+  CapabilityProof,
   CircuitBreakerConfig,
   DelegationComponent,
   DelegationConfig,
