@@ -41,6 +41,34 @@ export interface BrickRequires {
 }
 
 // ---------------------------------------------------------------------------
+// Fitness metrics — runtime performance tracking for brick discovery ranking
+// ---------------------------------------------------------------------------
+
+/** Bounded sorted-sample buffer for percentile estimation (e.g., P99 latency). */
+export interface LatencySampler {
+  readonly samples: readonly number[];
+  readonly count: number;
+  readonly cap: number;
+}
+
+/** Runtime fitness metrics tracked per brick for discovery ranking. */
+export interface BrickFitnessMetrics {
+  readonly successCount: number;
+  readonly errorCount: number;
+  readonly latency: LatencySampler;
+  /** Epoch ms of the most recent usage (success or failure). */
+  readonly lastUsedAt: number;
+}
+
+/** Zero-usage default — immutable singleton for newly forged bricks. */
+export const DEFAULT_BRICK_FITNESS: BrickFitnessMetrics = Object.freeze({
+  successCount: 0,
+  errorCount: 0,
+  latency: Object.freeze({ samples: Object.freeze([]) as readonly number[], count: 0, cap: 200 }),
+  lastUsedAt: 0,
+});
+
+// ---------------------------------------------------------------------------
 // Brick artifact — discriminated union on `kind`
 // ---------------------------------------------------------------------------
 
@@ -65,6 +93,8 @@ export interface BrickArtifactBase {
   readonly configSchema?: Readonly<Record<string, unknown>>;
   /** Epoch millis of last successful re-verification. Undefined = never re-verified. */
   readonly lastVerifiedAt?: number;
+  /** Runtime fitness metrics for discovery ranking. Undefined = never used. */
+  readonly fitness?: BrickFitnessMetrics | undefined;
 }
 
 export interface ToolArtifact extends BrickArtifactBase {
@@ -109,6 +139,10 @@ export interface ForgeQuery {
   /** Case-insensitive substring match against brick name and description. */
   readonly text?: string;
   readonly limit?: number;
+  /** Sort order for results. Default: "fitness". */
+  readonly orderBy?: "fitness" | "recency" | "usage";
+  /** Minimum fitness score threshold (0–1). Bricks scoring below are excluded. */
+  readonly minFitnessScore?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +157,8 @@ export interface BrickUpdate {
   readonly tags?: readonly string[] | undefined;
   /** Epoch millis of last successful re-verification. */
   readonly lastVerifiedAt?: number;
+  /** Updated fitness metrics (replaces entire fitness object). */
+  readonly fitness?: BrickFitnessMetrics | undefined;
 }
 
 // ---------------------------------------------------------------------------

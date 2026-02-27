@@ -122,7 +122,7 @@ describe("createForgeUsageMiddleware", () => {
     expect(response.output).toBe("ok");
   });
 
-  test("propagates tool call errors without recording usage", async () => {
+  test("propagates tool call errors and records failure in fitness", async () => {
     const store = createInMemoryForgeStore();
     const brick = createToolBrick({ id: brickId("brick_fail"), name: "fail_tool" });
     await store.save(brick);
@@ -142,11 +142,17 @@ describe("createForgeUsageMiddleware", () => {
 
     await expect(getWrapToolCall(mw)(ctx, request, next)).rejects.toThrow("Tool execution failed");
 
-    // Usage should NOT be recorded for failed calls
+    // Allow fire-and-forget to complete
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Usage IS recorded for failed calls (as error in fitness)
     const loaded = await store.load(brickId("brick_fail"));
     expect(loaded.ok).toBe(true);
     if (loaded.ok) {
-      expect(loaded.value.usageCount).toBe(0);
+      expect(loaded.value.usageCount).toBe(1);
+      expect(loaded.value.fitness).toBeDefined();
+      expect(loaded.value.fitness?.errorCount).toBe(1);
+      expect(loaded.value.fitness?.successCount).toBe(0);
     }
   });
 
@@ -211,6 +217,12 @@ describe("createForgeUsageMiddleware", () => {
       name: "promo_tool",
       trustTier: "sandbox",
       usageCount: 4, // One more will cross the threshold
+      fitness: {
+        successCount: 4,
+        errorCount: 0,
+        latency: { samples: [50, 60, 70, 80], count: 4, cap: 200 },
+        lastUsedAt: Date.now() - 1000,
+      },
     });
     await store.save(brick);
 
@@ -250,7 +262,11 @@ describe("createForgeUsageMiddleware", () => {
 
   test("fires 'updated' notification after successful usage recording", async () => {
     const store = createInMemoryForgeStore();
-    const brick = createToolBrick({ id: brickId("brick_notify"), name: "notify_tool" });
+    const brick = createToolBrick({
+      id: brickId("brick_notify"),
+      name: "notify_tool",
+      usageCount: 0,
+    });
     await store.save(brick);
 
     const notifier = createMemoryStoreChangeNotifier();
@@ -343,6 +359,68 @@ describe("createForgeUsageMiddleware", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(events.length).toBe(0);
+  });
+
+  describe("fitness tracking", () => {
+    test("records success with fitness metrics after successful call", async () => {
+      const store = createInMemoryForgeStore();
+      const brick = createToolBrick({ id: brickId("brick_fit"), name: "fit_tool" });
+      await store.save(brick);
+
+      const mw = createForgeUsageMiddleware({
+        store,
+        config: createDefaultForgeConfig(),
+        resolveBrickId: (name) => (name === "fit_tool" ? "brick_fit" : undefined),
+      });
+
+      const next = async (_req: ToolRequest): Promise<ToolResponse> => ({ output: "ok" });
+      const ctx = stubTurnContext();
+      await getWrapToolCall(mw)(ctx, { toolId: "fit_tool", input: {} }, next);
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const loaded = await store.load(brickId("brick_fit"));
+      expect(loaded.ok).toBe(true);
+      if (loaded.ok) {
+        expect(loaded.value.fitness).toBeDefined();
+        expect(loaded.value.fitness?.successCount).toBe(1);
+        expect(loaded.value.fitness?.errorCount).toBe(0);
+        expect(loaded.value.fitness?.latency.count).toBe(1);
+        expect(loaded.value.fitness?.lastUsedAt).toBeGreaterThan(0);
+      }
+    });
+
+    test("records latency in fitness metrics", async () => {
+      const store = createInMemoryForgeStore();
+      const brick = createToolBrick({ id: brickId("brick_lat"), name: "lat_tool" });
+      await store.save(brick);
+
+      const mw = createForgeUsageMiddleware({
+        store,
+        config: createDefaultForgeConfig(),
+        resolveBrickId: (name) => (name === "lat_tool" ? "brick_lat" : undefined),
+      });
+
+      // Simulate a slow tool call
+      const next = async (_req: ToolRequest): Promise<ToolResponse> => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return { output: "ok" };
+      };
+
+      const ctx = stubTurnContext();
+      await getWrapToolCall(mw)(ctx, { toolId: "lat_tool", input: {} }, next);
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const loaded = await store.load(brickId("brick_lat"));
+      expect(loaded.ok).toBe(true);
+      if (loaded.ok) {
+        expect(loaded.value.fitness?.latency.samples.length).toBe(1);
+        // Latency should be at least 20ms (the simulated delay)
+        const sample = loaded.value.fitness?.latency.samples[0];
+        expect(sample).toBeGreaterThanOrEqual(15); // allow small timing variance
+      }
+    });
   });
 
   describe("describeCapabilities", () => {
