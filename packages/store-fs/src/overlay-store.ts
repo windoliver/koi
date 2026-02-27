@@ -20,6 +20,7 @@ import type {
   StoreChangeEvent,
 } from "@koi/core";
 import { notFound, permission, validation } from "@koi/core";
+import { applyBrickUpdate } from "@koi/validation";
 import type { FsForgeStoreExtended } from "./fs-store.js";
 import { createFsForgeStore } from "./fs-store.js";
 import type { TierDescriptor, TierName } from "./tier.js";
@@ -288,14 +289,7 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
           return loadResult;
         }
         // Merge updates in memory to avoid a redundant save→read→save cycle
-        const merged: BrickArtifact = {
-          ...loadResult.value,
-          ...(updates.lifecycle !== undefined ? { lifecycle: updates.lifecycle } : {}),
-          ...(updates.trustTier !== undefined ? { trustTier: updates.trustTier } : {}),
-          ...(updates.scope !== undefined ? { scope: updates.scope } : {}),
-          ...(updates.usageCount !== undefined ? { usageCount: updates.usageCount } : {}),
-          ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
-        };
+        const merged = applyBrickUpdate(loadResult.value, updates);
         return writable.store.save(merged);
       }
     }
@@ -431,14 +425,7 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
         }
 
         // Merge all updates + scope in memory (single operation)
-        const merged: BrickArtifact = {
-          ...loadResult.value,
-          scope: targetScope,
-          ...(updates.lifecycle !== undefined ? { lifecycle: updates.lifecycle } : {}),
-          ...(updates.trustTier !== undefined ? { trustTier: updates.trustTier } : {}),
-          ...(updates.usageCount !== undefined ? { usageCount: updates.usageCount } : {}),
-          ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
-        };
+        const merged = applyBrickUpdate(loadResult.value, { ...updates, scope: targetScope });
 
         // Save merged brick to target tier (single write — atomic point)
         const saveResult = await targetEntry.store.save(merged);

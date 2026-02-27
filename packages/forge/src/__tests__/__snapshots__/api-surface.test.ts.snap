@@ -1091,6 +1091,12 @@ interface UsagePromotedResult {
     readonly newTier: TrustTier;
 }
 type UsageResult = UsageRecordedResult | UsagePromotedResult;
+/** Optional signal providing success/failure and latency for fitness tracking. */
+interface UsageSignal {
+    readonly success: boolean;
+    readonly latencyMs: number;
+    readonly timestamp?: number;
+}
 /**
  * Given a brick's current trust tier and its new usage count, returns the
  * tier it should be promoted to — or \`undefined\` if no promotion applies.
@@ -1100,8 +1106,12 @@ declare function computeAutoPromotion(currentTier: TrustTier, newUsageCount: num
  * Records a single usage of a brick. Increments \`usageCount\` and, when
  * auto-promotion is enabled and a threshold is crossed, promotes the
  * brick's trust tier.
+ *
+ * When \`signal\` is provided, also updates fitness metrics (success/error
+ * counts, latency, recency). The \`usageCount\` is derived from total
+ * fitness calls to stay DRY.
  */
-declare function recordBrickUsage(store: ForgeStore, brickId: string, config: ForgeConfig): Promise<Result<UsageResult, ForgeError>>;
+declare function recordBrickUsage(store: ForgeStore, brickId: string, config: ForgeConfig, signal?: UsageSignal): Promise<Result<UsageResult, ForgeError>>;
 
 /**
  * Pipeline orchestrator — runs verification stages sequentially with early termination.

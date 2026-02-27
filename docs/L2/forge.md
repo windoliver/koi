@@ -78,7 +78,11 @@ index.ts                         ← public re-exports (60+ symbols)
 │   ├── forge-agent.ts           ← forge_agent
 │   ├── forge-middleware.ts      ← forge_middleware
 │   ├── forge-channel.ts         ← forge_channel
-│   └── promote-forge.ts         ← promote_forge, search_forge
+│   └── promote-forge.ts         ← promote_forge
+│       search-forge.ts          ← search_forge (fitness-ranked discovery)
+│
+├── usage.ts                     ← recordBrickUsage(), UsageSignal, auto-promotion
+├── forge-usage-middleware.ts    ← wrapToolCall: timing + success/error tracking
 │
 ├── verify.ts                    ← 5-stage verification orchestrator
 ├── verify-static.ts             ← stage 1: static analysis (+ network evasion detection)
@@ -229,7 +233,7 @@ Every brick's ID **is** its integrity proof:
   promoted:  human-approved for interposition (middleware, channel)
 ```
 
-Auto-promotion (optional):
+Auto-promotion (optional, driven by fitness metrics — see [Fitness-scored discovery](#fitness-scored-discovery-issue-151)):
 
 ```
   ForgeConfig.autoPromotion = {
@@ -616,6 +620,171 @@ Scope promotion requires governance approval:
 
 ---
 
+## Fitness-scored discovery (Issue #151)
+
+When multiple bricks match a `search_forge` query, the runtime ranks results by a **composite
+fitness score** computed from runtime signals — no LLM in the scoring loop. Battle-tested bricks
+surface above untested ones, creating evolutionary pressure toward reliability.
+
+### How fitness is recorded
+
+The `forge-usage-middleware` wraps every tool call. For bricks forged through the forge pipeline,
+it mechanically records timing and outcome:
+
+```
+  Agent calls tool "calc"
+          │
+          ▼
+  ┌───────────────────────────────────┐
+  │  forge-usage-middleware           │
+  │  (wrapToolCall)                   │
+  │                                   │
+  │  1. Is this a forged brick?       │──── no ──▶ pass through
+  │     resolveBrickId("calc")        │
+  │                                   │
+  │  2. start = Date.now()            │
+  │  3. call next(request)            │
+  │  4. latencyMs = Date.now() - start│
+  │  5. success = !threw              │
+  │                                   │
+  │  6. recordBrickUsage(store, id, { │   fire-and-forget:
+  │       success: true,              │   never blocks the tool response,
+  │       latencyMs: 47               │   errors routed to onUsageError
+  │     })                            │
+  └───────────────────────────────────┘
+          │
+          ▼
+  response back to agent
+```
+
+Every call updates `BrickFitnessMetrics` on the brick:
+
+```typescript
+interface BrickFitnessMetrics {
+  readonly successCount: number;    // incremented on success
+  readonly errorCount: number;      // incremented on failure
+  readonly latency: LatencySampler; // bounded sorted-sample buffer (P99)
+  readonly lastUsedAt: number;      // epoch ms of last call
+}
+```
+
+The `usageCount` field is derived: `successCount + errorCount`. No double-bookkeeping.
+
+### How fitness is scored
+
+At **query time**, `search_forge` computes a composite score for each matching brick.
+Scores are always fresh — never cached or stale.
+
+```
+  computeBrickFitness(metrics, nowMs)
+      │
+      ├── successRate = success / (success + errors)
+      │   successFactor = successRate ^ 2.0              [0, 1]
+      │
+      ├── daysSinceUsed = (now - lastUsedAt) / 86400000
+      │   recencyFactor = e^(-λ × daysSinceUsed)         [0, 1]
+      │   (half-life: 30 days)
+      │
+      ├── totalCalls = success + errors
+      │   usageNorm = log₂(1 + total) / log₂(101)       [0, ~1]
+      │
+      ├── p99 = computePercentile(latency, 0.99)
+      │   latencyFactor = 1 - 0.1 × min(1, p99/5000)    [0.9, 1]
+      │
+      └── fitness = min(1, successFactor × recencyFactor × usageNorm × latencyFactor)
+```
+
+The formula is **multiplicative** — all factors must be strong. A brick with 100% success but
+zero usage scores 0 (no evidence). A brick with high usage but 50% errors scores low
+(unreliable). A brick unused for months decays toward 0 (stale).
+
+### Latency sampler
+
+P99 latency uses a bounded sorted-sample buffer with reservoir sampling:
+
+```
+  Buffer:  [12, 23, 34, 42, 55, 67, 89, 120, 340, 510]   cap: 200
+                                                             │
+  New sample arrives: 45ms                                   │
+    ├── below cap? → binary insert to maintain sort order    │
+    └── at cap?    → reservoir sampling (random replacement) │
+                                                             │
+  computePercentile(sampler, 0.99) → 510ms                   │
+```
+
+All functions are pure (`@koi/validation`). No I/O, no side effects.
+
+### Search ranking
+
+`search_forge` returns results sorted by fitness score (descending), with two new query fields:
+
+```
+  search_forge({
+    kind: "tool",
+    tags: ["math"],
+    orderBy: "fitness",       ← "fitness" (default), "recency", or "usage"
+    minFitnessScore: 0.3      ← exclude bricks below this threshold [0, 1]
+  })
+
+  Results:
+  ┌──────────────────────────────────────────────────────────┐
+  │  1. calc_v2  ██████████████████░░ fitness: 0.91          │
+  │     usage:83  success:98.8%  p99:42ms  last:2h ago       │
+  │                                                           │
+  │  2. calc_v1  ████████░░░░░░░░░░░░ fitness: 0.34          │
+  │     usage:47  success:74.5%  p99:310ms last:3d ago       │
+  │                                                           │
+  │  ✗  calc_v3  ░░░░░░░░░░░░░░░░░░░░ fitness: 0.00          │
+  │     (filtered: below minFitnessScore 0.3)                │
+  └──────────────────────────────────────────────────────────┘
+```
+
+Tiebreak: alphabetical by brick name when scores are equal.
+
+### Trust tier auto-promotion
+
+Auto-promotion is driven by usage count (derived from fitness metrics):
+
+```
+  sandbox ──── 5 successful uses ────▶ verified ──── 20 uses ────▶ promoted
+     │                                    │
+     └── ForgeConfig.autoPromotion:       └── thresholds are configurable
+         sandboxToVerifiedThreshold: 5
+         verifiedToPromotedThreshold: 20
+```
+
+When `recordBrickUsage` detects the usage count has crossed a threshold, it promotes the
+brick's `trustTier` in the same store update — no separate call needed.
+
+### Scoring config
+
+All scoring parameters are configurable via `FitnessScoringConfig`:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `halfLifeDays` | `30` | Recency decay half-life |
+| `usageSaturation` | `100` | Usage count where normalization plateaus |
+| `successExponent` | `2.0` | How harshly to penalize errors (higher = harsher) |
+| `latencyWeight` | `0.1` | Blend factor for P99 latency penalty |
+| `maxAcceptableLatencyMs` | `5000` | P99 above this gets maximum penalty |
+
+### The evolutionary loop
+
+```
+  ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+  │  FORGE   │────▶│   USE    │────▶│  SCORE   │────▶│ DISCOVER │
+  │ new brick│     │ in agent │     │ fitness  │     │ ranked   │
+  └──────────┘     │  turns   │     │ (auto)   │     │ results  │
+                   └──────────┘     └──────────┘     └────┬─────┘
+                                                          │
+                        ┌─────────────────────────────────┘
+                        │  agents prefer top-ranked bricks
+                        ▼  → more usage → more signal → better ranking
+                   Natural selection: reliable bricks rise, broken bricks fade
+```
+
+---
+
 ## Atomic scope promotion (Issue #404)
 
 When an agent promotes a brick's scope (e.g., `agent → zone`), the store must update
@@ -871,7 +1040,7 @@ These are the tools an agent calls to forge bricks:
 | `forge_agent` | `{ name, description, manifestYaml }` or `{ name, description, brickIds }` | `ForgeResult` |
 | `forge_middleware` | `{ name, description, implementation }` | `ForgeResult` |
 | `forge_channel` | `{ name, description, implementation }` | `ForgeResult` |
-| `search_forge` | `{ query?, kind?, scope?, lifecycle? }` | `BrickArtifact[]` |
+| `search_forge` | `{ kind?, scope?, lifecycle?, tags?, orderBy?, minFitnessScore? }` | `BrickArtifact[]` (fitness-ranked) |
 | `promote_forge` | `{ brickId, scope?, trustTier?, lifecycle? }` | `PromoteResult` |
 
 All inputs accept optional `classification`, `contentMarkers`, `tags`, `requires`, and `files`.
@@ -1304,3 +1473,4 @@ with a real LLM.
 - [@koi/sandbox-executor](./sandbox-executor.md) — trust-tiered executor dispatch (subprocess + promoted + fallback)
 - [#72](https://github.com/windoliver/koi/issues/72) — OS-level sandbox isolation (Seatbelt/bubblewrap/gVisor)
 - [#394](https://github.com/windoliver/koi/issues/394) — cross-device workspace sync via Nexus
+- [#151](https://github.com/windoliver/koi/issues/151) — fitness-scored brick discovery (runtime natural selection)

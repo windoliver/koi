@@ -3,8 +3,16 @@
  * when configurable thresholds are crossed.
  */
 
-import type { BrickArtifact, ForgeStore, KoiError, Result, TrustTier } from "@koi/core";
-import { brickId as toBrickId } from "@koi/core";
+import type {
+  BrickArtifact,
+  BrickFitnessMetrics,
+  ForgeStore,
+  KoiError,
+  Result,
+  TrustTier,
+} from "@koi/core";
+import { DEFAULT_BRICK_FITNESS, brickId as toBrickId } from "@koi/core";
+import { recordLatency } from "@koi/validation";
 import type { AutoPromotionConfig, ForgeConfig } from "./config.js";
 import type { ForgeError } from "./errors.js";
 import { storeError } from "./errors.js";
@@ -28,6 +36,17 @@ export interface UsagePromotedResult {
 }
 
 export type UsageResult = UsageRecordedResult | UsagePromotedResult;
+
+// ---------------------------------------------------------------------------
+// Usage signal (fitness-aware usage tracking)
+// ---------------------------------------------------------------------------
+
+/** Optional signal providing success/failure and latency for fitness tracking. */
+export interface UsageSignal {
+  readonly success: boolean;
+  readonly latencyMs: number;
+  readonly timestamp?: number; // defaults to Date.now()
+}
 
 // ---------------------------------------------------------------------------
 // Trust tier ordering (for threshold comparisons)
@@ -76,14 +95,36 @@ function toForgeError(err: KoiError): ForgeError {
 }
 
 /**
+ * Computes updated fitness metrics from an existing brick and a usage signal.
+ * Returns a new BrickFitnessMetrics object (never mutates).
+ */
+function computeUpdatedFitness(
+  existing: BrickFitnessMetrics,
+  signal: UsageSignal,
+): BrickFitnessMetrics {
+  const now = signal.timestamp ?? Date.now();
+  return {
+    successCount: existing.successCount + (signal.success ? 1 : 0),
+    errorCount: existing.errorCount + (signal.success ? 0 : 1),
+    latency: recordLatency(existing.latency, signal.latencyMs),
+    lastUsedAt: now,
+  };
+}
+
+/**
  * Records a single usage of a brick. Increments `usageCount` and, when
  * auto-promotion is enabled and a threshold is crossed, promotes the
  * brick's trust tier.
+ *
+ * When `signal` is provided, also updates fitness metrics (success/error
+ * counts, latency, recency). The `usageCount` is derived from total
+ * fitness calls to stay DRY.
  */
 export async function recordBrickUsage(
   store: ForgeStore,
   brickId: string,
   config: ForgeConfig,
+  signal?: UsageSignal,
 ): Promise<Result<UsageResult, ForgeError>> {
   const loadResult = await store.load(toBrickId(brickId));
   if (!loadResult.ok) {
@@ -91,12 +132,23 @@ export async function recordBrickUsage(
   }
 
   const brick: BrickArtifact = loadResult.value;
-  const newUsageCount = brick.usageCount + 1;
+
+  // When signal is provided, update fitness and derive usageCount from it
+  const updatedFitness =
+    signal !== undefined
+      ? computeUpdatedFitness(brick.fitness ?? DEFAULT_BRICK_FITNESS, signal)
+      : undefined;
+  const newUsageCount =
+    updatedFitness !== undefined
+      ? updatedFitness.successCount + updatedFitness.errorCount
+      : brick.usageCount + 1;
+
   const promotedTier = computeAutoPromotion(brick.trustTier, newUsageCount, config.autoPromotion);
 
   const updateResult = await store.update(toBrickId(brickId), {
     usageCount: newUsageCount,
     ...(promotedTier !== undefined ? { trustTier: promotedTier } : {}),
+    ...(updatedFitness !== undefined ? { fitness: updatedFitness } : {}),
   });
 
   if (!updateResult.ok) {

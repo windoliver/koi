@@ -18,6 +18,7 @@ import type {
 } from "@koi/core";
 import { brickId as toBrickId } from "@koi/core";
 import type { ForgeConfig } from "./config.js";
+import type { UsageSignal } from "./usage.js";
 import { recordBrickUsage } from "./usage.js";
 
 // ---------------------------------------------------------------------------
@@ -64,37 +65,50 @@ export function createForgeUsageMiddleware(cfg: ForgeUsageMiddlewareConfig): Koi
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> => {
-      const response = await next(request);
+      const brickIdStr = cfg.resolveBrickId(request.toolId);
 
-      const brickId = cfg.resolveBrickId(request.toolId);
-      if (brickId !== undefined) {
-        void recordBrickUsage(cfg.store, brickId, cfg.config)
+      // Non-forged tools: pass through without timing overhead
+      if (brickIdStr === undefined) {
+        return next(request);
+      }
+
+      const startMs = Date.now();
+      let success = true;
+      try {
+        const response = await next(request);
+        return response;
+      } catch (error: unknown) {
+        success = false;
+        throw error;
+      } finally {
+        const latencyMs = Date.now() - startMs;
+        const signal: UsageSignal = { success, latencyMs };
+
+        void recordBrickUsage(cfg.store, brickIdStr, cfg.config, signal)
           .then((result) => {
             if (!result.ok) {
               if (cfg.onUsageError !== undefined) {
-                cfg.onUsageError(request.toolId, brickId, result.error);
+                cfg.onUsageError(request.toolId, brickIdStr, result.error);
               }
               return;
             }
             // Notify after successful usage recording (trust tier may have changed)
             if (cfg.notifier !== undefined) {
               void Promise.resolve(
-                cfg.notifier.notify({ kind: "updated", brickId: toBrickId(brickId) }),
+                cfg.notifier.notify({ kind: "updated", brickId: toBrickId(brickIdStr) }),
               ).catch(() => {});
             }
           })
           .catch((error: unknown) => {
             try {
               if (cfg.onUsageError !== undefined) {
-                cfg.onUsageError(request.toolId, brickId, error);
+                cfg.onUsageError(request.toolId, brickIdStr, error);
               }
             } catch (_: unknown) {
               // Error handler must not crash the process
             }
           });
       }
-
-      return response;
     },
   };
 }
