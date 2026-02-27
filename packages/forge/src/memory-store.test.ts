@@ -169,8 +169,10 @@ describe("InMemoryForgeStore promoteAndUpdate", () => {
     });
     await store.save(brick);
 
-    expect(store.promoteAndUpdate).toBeDefined();
-    const result = await store.promoteAndUpdate?.(brickId("brick_atomic"), "zone", {
+    if (store.promoteAndUpdate === undefined) {
+      throw new Error("promoteAndUpdate should be defined");
+    }
+    const result = await store.promoteAndUpdate(brickId("brick_atomic"), "zone", {
       trustTier: "verified",
       lifecycle: "active",
       tags: ["new", "zone:team-1"],
@@ -191,8 +193,10 @@ describe("InMemoryForgeStore promoteAndUpdate", () => {
   test("returns NOT_FOUND for nonexistent brick", async () => {
     const store = createInMemoryForgeStore();
 
-    expect(store.promoteAndUpdate).toBeDefined();
-    const result = await store.promoteAndUpdate?.(brickId("nonexistent"), "zone", {
+    if (store.promoteAndUpdate === undefined) {
+      throw new Error("promoteAndUpdate should be defined");
+    }
+    const result = await store.promoteAndUpdate(brickId("nonexistent"), "zone", {
       trustTier: "verified",
     });
 
