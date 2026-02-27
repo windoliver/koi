@@ -52,6 +52,12 @@ interface CreateSoulOptions {
     readonly basePath: string;
     /** When true, user content is re-resolved on each model call. */
     readonly refreshUser?: boolean | undefined;
+    /**
+     * When true (default), injects meta-instructions telling the agent it can
+     * modify its own personality via \`fs_write\` to the soul file.
+     * Skipped automatically when soul content is inline (no file to modify).
+     */
+    readonly selfModify?: boolean | undefined;
 }
 /** Default token budgets. */
 declare const DEFAULT_SOUL_MAX_TOKENS = 4000;
@@ -188,20 +194,39 @@ interface SoulState {
     readonly userText: string;
     readonly userSources: readonly string[];
     readonly watchedPaths: ReadonlySet<string>;
+    /** Pre-computed meta-instruction text for self-modification awareness. Empty when disabled. */
+    readonly metaInstructionText: string;
 }
 /**
  * Creates the set of all file paths watched for auto-reload.
  * Excludes "inline" sources (no file to watch).
  */
 declare function createAllWatchedPaths(soulSources: readonly string[], personaMap: ReadonlyMap<string, CachedPersona>, userSources: readonly string[]): Set<string>;
+/** Sources grouped by layer for meta-instruction generation. */
+interface MetaInstructionSources {
+    /** Resolved soul file paths (global personality). */
+    readonly soul: readonly string[];
+    /** Resolved identity file paths (per-channel persona). */
+    readonly identity: readonly string[];
+    /** Resolved user file paths (user context). */
+    readonly user: readonly string[];
+}
 /**
- * Concatenates non-empty soul, identity, and user layers into a single
- * InboundMessage for system prompt injection.
+ * Generates the meta-instruction text that teaches the agent about self-modification.
+ *
+ * Returns empty string when:
+ * - \`selfModify\` is false
+ * - No resolvable file sources exist (all inline or empty)
+ */
+declare function generateMetaInstructionText(sources: MetaInstructionSources, selfModify: boolean): string;
+/**
+ * Concatenates non-empty soul, identity, user, and meta-instruction layers
+ * into a single InboundMessage for system prompt injection.
  *
  * Returns undefined when all layers are empty.
  */
-declare function createSoulMessage(soulText: string, identityText: string | undefined, userText: string): InboundMessage | undefined;
+declare function createSoulMessage(soulText: string, identityText: string | undefined, userText: string, metaInstructionText?: string): InboundMessage | undefined;
 
-export { type CachedPersona, type ChannelPersonaConfig, type ContentInput, type CreateSoulOptions, DEFAULT_IDENTITY_MAX_TOKENS, DEFAULT_SOUL_MAX_TOKENS, DEFAULT_TOTAL_MAX_TOKENS, DEFAULT_USER_MAX_TOKENS, type ResolvedPersona, type SoulMiddleware, type SoulState, createAllWatchedPaths, createPersonaMap, createPersonaWatchedPaths, createSoulMessage, createSoulMiddleware, enrichRequest, extractInput, extractMaxTokens, generatePersonaText, personasFromManifest, resolvePersonaContent, validateSoulConfig };
+export { type CachedPersona, type ChannelPersonaConfig, type ContentInput, type CreateSoulOptions, DEFAULT_IDENTITY_MAX_TOKENS, DEFAULT_SOUL_MAX_TOKENS, DEFAULT_TOTAL_MAX_TOKENS, DEFAULT_USER_MAX_TOKENS, type MetaInstructionSources, type ResolvedPersona, type SoulMiddleware, type SoulState, createAllWatchedPaths, createPersonaMap, createPersonaWatchedPaths, createSoulMessage, createSoulMiddleware, enrichRequest, extractInput, extractMaxTokens, generateMetaInstructionText, generatePersonaText, personasFromManifest, resolvePersonaContent, validateSoulConfig };
 "
 `;

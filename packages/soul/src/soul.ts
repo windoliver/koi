@@ -30,7 +30,7 @@ import {
 } from "./config.js";
 import { createPersonaMap } from "./persona-map.js";
 import type { SoulState } from "./state.js";
-import { createAllWatchedPaths, createSoulMessage } from "./state.js";
+import { createAllWatchedPaths, createSoulMessage, generateMetaInstructionText } from "./state.js";
 
 /**
  * Extended middleware with a `reload()` method for HITL-approved soul updates.
@@ -116,6 +116,14 @@ async function createState(options: CreateSoulOptions): Promise<SoulState> {
   emitWarnings(userResult.warnings);
 
   const watchedPaths = createAllWatchedPaths(soulResult.sources, personaMap, userResult.sources);
+  const selfModify = options.selfModify ?? true;
+
+  // Collect identity file paths from all personas for meta-instruction
+  const identitySources = Array.from(personaMap.values()).flatMap((cached) => [...cached.sources]);
+  const metaInstructionText = generateMetaInstructionText(
+    { soul: soulResult.sources, identity: identitySources, user: userResult.sources },
+    selfModify,
+  );
 
   return {
     soulText: soulResult.text,
@@ -124,6 +132,7 @@ async function createState(options: CreateSoulOptions): Promise<SoulState> {
     userText: userResult.text,
     userSources: userResult.sources,
     watchedPaths,
+    metaInstructionText,
   };
 }
 
@@ -151,7 +160,12 @@ export async function createSoulMiddleware(options: CreateSoulOptions): Promise<
     const cached = channelId !== undefined ? state.personaMap.get(channelId) : undefined;
     const identityText = cached?.text;
 
-    return createSoulMessage(state.soulText, identityText, state.userText);
+    return createSoulMessage(
+      state.soulText,
+      identityText,
+      state.userText,
+      state.metaInstructionText,
+    );
   }
 
   async function getSoulMessageAsync(ctx: TurnContext): Promise<InboundMessage | undefined> {
@@ -161,22 +175,30 @@ export async function createSoulMiddleware(options: CreateSoulOptions): Promise<
     const userResult = await resolveUserLayer(options);
     const channelId = ctx.session.channelId;
     const cached = channelId !== undefined ? state.personaMap.get(channelId) : undefined;
-    return createSoulMessage(state.soulText, cached?.text, userResult.text);
+    return createSoulMessage(
+      state.soulText,
+      cached?.text,
+      userResult.text,
+      state.metaInstructionText,
+    );
   }
 
   async function reload(): Promise<void> {
     state = await createState(options);
   }
 
-  const capabilityFragment: CapabilityFragment = {
-    label: "soul",
-    description: "Persona active",
-  };
+  const selfModify = options.selfModify ?? true;
 
   return {
     name: "soul",
     priority: 500,
-    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => ({
+      label: "soul",
+      description:
+        selfModify && state.metaInstructionText.length > 0
+          ? "Persona active — self-modification enabled"
+          : "Persona active",
+    }),
 
     reload,
 

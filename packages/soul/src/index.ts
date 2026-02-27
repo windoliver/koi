@@ -33,5 +33,5 @@ export {
 } from "./persona-map.js";
 export type { SoulMiddleware } from "./soul.js";
 export { createSoulMiddleware, enrichRequest } from "./soul.js";
-export type { SoulState } from "./state.js";
-export { createAllWatchedPaths, createSoulMessage } from "./state.js";
+export type { MetaInstructionSources, SoulState } from "./state.js";
+export { createAllWatchedPaths, createSoulMessage, generateMetaInstructionText } from "./state.js";

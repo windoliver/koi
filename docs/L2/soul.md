@@ -82,6 +82,7 @@ index.ts                 ← public re-exports
 │                           createPersonaMap(), createPersonaWatchedPaths()
 ├── state.ts             ← SoulState (atomic closure state)
 │                           createAllWatchedPaths(), createSoulMessage()
+│                           MetaInstructionSources, generateMetaInstructionText()
 ├── soul.ts              ← createSoulMiddleware() factory
 │                           SoulMiddleware (extends KoiMiddleware with reload())
 │                           enrichRequest() pure function
@@ -95,7 +96,7 @@ index.ts                 ← public re-exports
 | `wrapModelCall` | Resolve soul message (with optional user refresh); prepend to request |
 | `wrapModelStream` | Same as `wrapModelCall` but for streaming responses |
 | `wrapToolCall` | After `next()`, check if `fs_write` targeted a tracked file → auto-reload |
-| `describeCapabilities` | Returns `{ label: "soul", description: "Persona active" }` |
+| `describeCapabilities` | Returns `{ label: "soul", description: "Persona active — self-modification enabled" }` when `selfModify` is true and file sources exist; otherwise `"Persona active"` |
 
 ### Data flow (model call)
 
@@ -106,9 +107,10 @@ wrapModelCall(ctx, request, next)  /  wrapModelStream(ctx, request, next)
        ├─ lookup state.personaMap.get(channelId) → identityText | undefined
        ├─ if refreshUser: re-resolve user content from disk
        │
-       ├─ createSoulMessage(soulText, identityText, userText)
+       ├─ createSoulMessage(soulText, identityText, userText, metaInstructionText)
        │     │
        │     ├─ filter out empty layers
+       │     ├─ append meta-instruction (if non-empty)
        │     ├─ join with "\n\n"
        │     ├─ truncate to DEFAULT_TOTAL_MAX_TOKENS (8000 tokens)
        │     └─ return InboundMessage { senderId: "system:soul" }
@@ -196,6 +198,9 @@ The final system message is built by concatenating non-empty layers in order:
 │  2. Identity (per-channel persona)       │  ← "You are {name}.\n\n{instructions}"
 │                                          │     Only if channelId matches a persona
 │  3. User (per-user context)              │  ← USER.md / inline
+│                                          │
+│  4. Meta-instruction (self-modification) │  ← [Soul System] block
+│                                          │     Only if selfModify: true + file sources exist
 └──────────────────────────────────────────┘
          joined with "\n\n"
          capped at 8000 tokens (32,000 chars)
@@ -203,6 +208,8 @@ The final system message is built by concatenating non-empty layers in order:
 ```
 
 Empty layers are skipped — no extra `\n\n` separators appear when a layer is absent.
+The meta-instruction layer is pre-computed at factory time and included in the atomic
+`SoulState` — no per-call computation.
 
 ### Soul layer (global)
 
@@ -275,6 +282,120 @@ await soul.reload(); // Force re-resolve all layers
 
 ---
 
+## Self-modification awareness
+
+When `selfModify` is `true` (the default) and at least one layer has a file source (not
+inline), the middleware appends a `[Soul System]` meta-instruction to the system message.
+This teaches the agent that it can propose changes to its own personality files, subject
+to human approval.
+
+### What the agent sees
+
+**Single-file mode** (one soul file, no identity/user files):
+
+```
+[Soul System]
+Your personality is defined in /app/SOUL.md.
+You may propose changes by writing to these files.
+Changes require human approval and take effect on your next response.
+
+When to update:
+- When the user gives persistent feedback about your behavior
+- When you learn a pattern that should be permanent
+- When the user explicitly asks you to remember something about yourself
+
+Do NOT update for:
+- One-time task preferences
+- Transient conversation context
+- Information that belongs in memory, not personality
+```
+
+**Multi-file mode** (soul + identity + user, with file routing hints):
+
+```
+[Soul System]
+Your personality is defined in these files:
+- /app/SOUL.md (global personality) — core behavior, tone, values
+- /app/telegram.md (channel persona) — channel-specific style and rules
+- /app/USER.md (user context) — user preferences and context
+You may propose changes by writing to these files.
+Changes require human approval and take effect on your next response.
+...
+```
+
+### How it works
+
+```
+createState(options)
+       │
+       ├─ resolve all three layers in parallel
+       ├─ collect file paths from each layer (filter out "inline")
+       │
+       ├─ generateMetaInstructionText(sources, selfModify)
+       │     │
+       │     ├─ selfModify === false?  → return ""
+       │     ├─ no file paths at all?  → return ""
+       │     ├─ single soul file?      → compact format
+       │     └─ multiple files?        → grouped listing with routing hints
+       │
+       └─ state.metaInstructionText = result  (pre-computed, not per-call)
+```
+
+### HITL integration
+
+The self-modification flow integrates with the middleware chain:
+
+```
+Agent decides to update SOUL.md
+       │
+       ▼
+Agent calls fs_write("SOUL.md", "new content")
+       │
+       ▼
+┌─ Middleware chain (onion) ──────────────────┐
+│  Permissions MW → HITL approval gate        │
+│       │ (approved)                          │
+│       ▼                                     │
+│  Soul MW (wrapToolCall)                     │
+│       ├─ next(request)  ← write executes    │
+│       ├─ detect tracked path                │
+│       └─ reload()       ← atomic state swap │
+└─────────────────────────────────────────────┘
+       │
+       ▼
+Next model call uses updated personality
+```
+
+The write must pass the entire middleware chain — including any permissions or HITL
+middleware — before it reaches the soul middleware's `wrapToolCall`. This is **structural
+pre-approval**, not just a soft instruction to the LLM.
+
+### Kill switch
+
+Set `selfModify: false` to completely disable self-modification awareness:
+
+```typescript
+const mw = await createSoulMiddleware({
+  soul: "SOUL.md",
+  basePath: import.meta.dir,
+  selfModify: false,  // no [Soul System] block, agent has no idea it can self-modify
+});
+```
+
+When disabled:
+- No `[Soul System]` meta-instruction is injected
+- `describeCapabilities` returns `"Persona active"` (no mention of self-modification)
+- Auto-reload on `fs_write` still works (the agent can still write files; it just
+  doesn't know it has personality files to target)
+
+### Inline content
+
+When all layers use inline content (no files on disk), self-modification awareness is
+automatically suppressed regardless of `selfModify` — there's no file path to tell the
+agent about.
+
+---
+
 ## API
 
 ### `createSoulMiddleware(options)`
@@ -316,6 +437,8 @@ interface CreateSoulOptions {
   readonly basePath: string;
   /** When true, user content is re-resolved on each model call. */
   readonly refreshUser?: boolean | undefined;
+  /** Enable self-modification awareness meta-instruction. Default: true. */
+  readonly selfModify?: boolean | undefined;
 }
 ```
 
@@ -365,8 +488,41 @@ interface SoulState {
   readonly userText: string;
   readonly userSources: readonly string[];
   readonly watchedPaths: ReadonlySet<string>;
+  /** Pre-computed meta-instruction text for self-modification awareness. Empty when disabled. */
+  readonly metaInstructionText: string;
 }
 ```
+
+### `MetaInstructionSources`
+
+```typescript
+interface MetaInstructionSources {
+  /** Resolved soul file paths (global personality). */
+  readonly soul: readonly string[];
+  /** Resolved identity file paths (per-channel persona). */
+  readonly identity: readonly string[];
+  /** Resolved user file paths (user context). */
+  readonly user: readonly string[];
+}
+```
+
+### `generateMetaInstructionText(sources, selfModify)`
+
+Pure function that produces the `[Soul System]` meta-instruction text. Returns empty
+string when `selfModify` is false or no file sources exist.
+
+```typescript
+import { generateMetaInstructionText } from "@koi/soul";
+
+const text = generateMetaInstructionText(
+  { soul: ["/app/SOUL.md"], identity: ["/app/persona.md"], user: ["/app/USER.md"] },
+  true,
+);
+// → "[Soul System]\nYour personality is defined in these files:\n- /app/SOUL.md ..."
+```
+
+Pre-computed at factory time and stored in `SoulState.metaInstructionText`. Not called
+per model request.
 
 ### Token budget defaults
 
@@ -545,6 +701,28 @@ const koi = createKoi({
 });
 ```
 
+### 7. Self-modification enabled (default)
+
+```typescript
+// selfModify defaults to true — the agent learns about its personality files
+const mw = await createSoulMiddleware({
+  soul: "SOUL.md",
+  user: "USER.md",
+  basePath: import.meta.dir,
+});
+// Agent sees: "[Soul System] Your personality is defined in these files: ..."
+```
+
+### 8. Self-modification disabled
+
+```typescript
+const mw = await createSoulMiddleware({
+  soul: "SOUL.md",
+  basePath: import.meta.dir,
+  selfModify: false,  // agent has no idea it has a personality file
+});
+```
+
 ---
 
 ## Performance properties
@@ -554,7 +732,8 @@ const koi = createKoi({
 | Soul resolution | Resolved once at factory time, cached in closure | O(file size) |
 | Persona map | `Map<channelId, CachedPersona>` — O(1) lookup | O(personas) |
 | Identity routing | Single `Map.get(channelId)` per model call | O(1) |
-| Message assembly | Filter + join of 3 strings | O(total text) |
+| Meta-instruction | Pre-computed once at factory time / reload | O(file paths) |
+| Message assembly | Filter + join of 4 strings (soul + identity + user + meta) | O(total text) |
 | Reload | Full parallel re-resolve, atomic state swap | O(file size) |
 | Watched paths | `Set<string>` — O(1) membership check per `fs_write` | O(tracked files) |
 | User refresh | Re-reads one file per model call (when `refreshUser: true`) | O(file size) |
@@ -575,6 +754,9 @@ createSoulMiddleware(options)
        │    resolveUserLayer(),         ← file/inline → text
        │  ])
        │
+       ├─ generateMetaInstructionText(sources, selfModify)
+       │     └─ pre-computed → state.metaInstructionText
+       │
        └─ return SoulMiddleware {
             name: "soul",
             priority: 500,
@@ -589,7 +771,7 @@ createSoulMiddleware(options)
     │  wrapModelCall / wrapModelStream                     │
     │    ├─ look up identity for ctx.session.channelId     │
     │    ├─ (optional) re-resolve user content              │
-    │    ├─ createSoulMessage(soul, identity?, user)        │
+    │    ├─ createSoulMessage(soul, identity?, user, meta)  │
     │    ├─ enrichRequest(request, message)                 │
     │    └─ next(enrichedRequest)                           │
     │                                                      │
