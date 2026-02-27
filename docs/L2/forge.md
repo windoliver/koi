@@ -111,10 +111,13 @@ index.ts                         ← public re-exports (60+ symbols)
 ├── generate-skill-md.ts         ← skill body → markdown template
 │
 └── __tests__/
-    ├── forge-lifecycle.test.ts  ← unit E2E: forge → sign → verify → resolve → tamper
-    ├── e2e.test.ts              ← real LLM E2E with createKoi + forge tools
-    ├── e2e-deps.test.ts         ← real LLM E2E: dependency management + subprocess
-    └── e2e-provenance.test.ts   ← real LLM E2E: provenance + SLSA + attestation
+    ├── forge-lifecycle.test.ts      ← unit E2E: forge → sign → verify → resolve → tamper
+    ├── e2e.test.ts                  ← real LLM E2E with createKoi + forge tools
+    ├── e2e-agent.test.ts            ← cooperating adapter E2E: forge → reuse → hot-attach
+    ├── e2e-full-assembly.test.ts    ← real LLM E2E: full pipeline (lifecycle, hot-attach,
+    │                                   priority ordering, cache invalidation)
+    ├── e2e-deps.test.ts             ← real LLM E2E: dependency management + subprocess
+    └── e2e-provenance.test.ts       ← real LLM E2E: provenance + SLSA + attestation
 ```
 
 ### Data flow
@@ -954,6 +957,168 @@ for await (const event of runtime.run({ kind: "text", text: "Use adder to add 2 
   // events stream: model_start, tool_start, tool_end, model_end, done
 }
 ```
+
+### Hot-attach via ForgeRuntime (mid-session)
+
+```typescript
+import { createKoi } from "@koi/engine";
+import { createForgeRuntime, createForgeComponentProvider } from "@koi/forge";
+
+// ForgeRuntime enables hot-attach: tools forged mid-session become
+// callable in the next turn without restarting the agent.
+const forgeRuntime = createForgeRuntime({ store, executor });
+
+const runtime = await createKoi({
+  manifest,
+  adapter: loopAdapter,
+  providers: [primordialProvider],  // includes forge_tool
+  forge: forgeRuntime,              // ← enables hot-attach
+});
+
+// Turn 0: LLM calls forge_tool → "adder" saved to store
+//         store.watch fires → forgeRuntime cache invalidated
+// Turn 1: LLM sees "adder" in tool list → calls it → result returned
+//
+// No restart. No invalidate(). Same session. Same createKoi.
+```
+
+### Cache invalidation + re-assembly
+
+```typescript
+// Assembly 1: only tool-alpha visible
+const forgeProvider = createForgeComponentProvider({ store, executor });
+const runtime1 = await createKoi({ manifest, adapter, providers: [forgeProvider] });
+
+// ... forge tool-beta into the same store ...
+
+// Invalidate the SAME provider instance
+forgeProvider.invalidate();
+
+// Assembly 2: both tool-alpha AND tool-beta visible
+const runtime2 = await createKoi({ manifest, adapter, providers: [forgeProvider] });
+```
+
+---
+
+## Full L1 assembly pipeline
+
+The full assembly pipeline connects all forge subsystems through the L1 runtime
+(`createKoi`). This is what the `e2e-full-assembly.test.ts` validates end-to-end
+with a real LLM.
+
+```
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │                    createKoi() Assembly                            │
+  │                                                                     │
+  │  Inputs:                                                           │
+  │    manifest ──────┐                                                │
+  │    adapter ───────┤                                                │
+  │    providers[] ───┤── createKoi() ──▶ KoiRuntime                   │
+  │    middleware[] ───┤                                                │
+  │    forge? ────────┘                                                │
+  │                                                                     │
+  │  ┌──────────────────────────────────────────────────────────────┐  │
+  │  │  Middleware Lifecycle (onion model)                          │  │
+  │  │                                                              │  │
+  │  │   ① onSessionStart                                          │  │
+  │  │   │                                                          │  │
+  │  │   │  ┌─── per turn ────────────────────────────────┐        │  │
+  │  │   │  │                                              │        │  │
+  │  │   │  │  ② onBeforeTurn                              │        │  │
+  │  │   │  │  │                                            │        │  │
+  │  │   │  │  │  ③ wrapModelCall ──▶ LLM ──▶ response     │        │  │
+  │  │   │  │  │  │                                         │        │  │
+  │  │   │  │  │  │  ④ wrapToolCall ──▶ tool ──▶ result    │        │  │
+  │  │   │  │  │  │     (if LLM requested a tool call)     │        │  │
+  │  │   │  │  │                                            │        │  │
+  │  │   │  │  ⑤ onAfterTurn                               │        │  │
+  │  │   │  │                                              │        │  │
+  │  │   │  └──────────────────────────────────────────────┘        │  │
+  │  │   │                                                          │  │
+  │  │   ⑥ onSessionEnd                                            │  │
+  │  └──────────────────────────────────────────────────────────────┘  │
+  │                                                                     │
+  │  ┌──────────────────────────────────────────────────────────────┐  │
+  │  │  Middleware Priority Ordering                                │  │
+  │  │                                                              │  │
+  │  │   Lower priority = outer onion layer (executes first)       │  │
+  │  │                                                              │  │
+  │  │   ┌─────────────────────────────────────────┐               │  │
+  │  │   │  priority: 100 (outer)                   │               │  │
+  │  │   │  ┌─────────────────────────────────────┐ │               │  │
+  │  │   │  │  priority: 300 (middle)             │ │               │  │
+  │  │   │  │  ┌─────────────────────────────────┐│ │               │  │
+  │  │   │  │  │  priority: 500 (inner)          ││ │               │  │
+  │  │   │  │  │  ┌─────────────────────────────┐││ │               │  │
+  │  │   │  │  │  │   tool / model executes     │││ │               │  │
+  │  │   │  │  │  └─────────────────────────────┘││ │               │  │
+  │  │   │  │  └─────────────────────────────────┘│ │               │  │
+  │  │   │  └─────────────────────────────────────┘ │               │  │
+  │  │   └─────────────────────────────────────────┘               │  │
+  │  │                                                              │  │
+  │  │   Execution order: outer → middle → inner → tool → inner    │  │
+  │  │                    → middle → outer                          │  │
+  │  └──────────────────────────────────────────────────────────────┘  │
+  │                                                                     │
+  │  ┌──────────────────────────────────────────────────────────────┐  │
+  │  │  Hot-Attach (forge: ForgeRuntime)                           │  │
+  │  │                                                              │  │
+  │  │   Turn 0: tools = [forge_tool]                              │  │
+  │  │           LLM calls forge_tool({name: "adder", ...})        │  │
+  │  │                        │                                     │  │
+  │  │                        ▼                                     │  │
+  │  │           store.save() ──▶ store.watch fires                │  │
+  │  │                             │                                │  │
+  │  │                             ▼                                │  │
+  │  │           ForgeRuntime cache invalidated automatically      │  │
+  │  │                                                              │  │
+  │  │   Turn 1: tools = [forge_tool, adder]  ◀── hot-attached     │  │
+  │  │           LLM calls adder({a: 17, b: 25})                   │  │
+  │  │                        │                                     │  │
+  │  │                        ▼                                     │  │
+  │  │           {sum: 42}                                          │  │
+  │  │                                                              │  │
+  │  │   No restart. No manual invalidate(). Same session.         │  │
+  │  └──────────────────────────────────────────────────────────────┘  │
+  │                                                                     │
+  │  ┌──────────────────────────────────────────────────────────────┐  │
+  │  │  Cache Invalidation + Re-Assembly                           │  │
+  │  │                                                              │  │
+  │  │   Assembly 1: provider.attach()                             │  │
+  │  │                store has [tool-alpha]                        │  │
+  │  │                agent sees: tool-alpha ✓, tool-beta ✗        │  │
+  │  │                                                              │  │
+  │  │   forge tool-beta → store.save()                            │  │
+  │  │   provider.invalidate() → cached = undefined                │  │
+  │  │                                                              │  │
+  │  │   Assembly 2: provider.attach() re-queries store            │  │
+  │  │                store has [tool-alpha, tool-beta]             │  │
+  │  │                agent sees: tool-alpha ✓, tool-beta ✓        │  │
+  │  │                                                              │  │
+  │  │   Same provider instance. Cache cleared. Fresh query.       │  │
+  │  └──────────────────────────────────────────────────────────────┘  │
+  └─────────────────────────────────────────────────────────────────────┘
+```
+
+### E2E test coverage matrix
+
+| Test file | Test | What it proves |
+|-----------|------|----------------|
+| `e2e.test.ts` | Forged tool callable by LLM | forge → provider → createKoi → LLM calls tool |
+| `e2e.test.ts` | Middleware spy | forged tool call flows through middleware chain |
+| `e2e.test.ts` | Requires enforcement | bricks with missing env vars skipped |
+| `e2e.test.ts` | configSchema | stored and retrievable on middleware artifact |
+| `e2e.test.ts` | Listener guards | subscriber/listener limits enforced |
+| `e2e.test.ts` | Provenance + integrity | content hash + attestation round-trip |
+| `e2e.test.ts` | Tamper detection | modified brick rejected on load |
+| `e2e-agent.test.ts` | Cooperating adapter | forge → call → verify with mock adapter |
+| `e2e-agent.test.ts` | Cache invalidate | second run sees newly forged tools |
+| `e2e-agent.test.ts` | Self-extending | forge in run 1, reuse in run 2 |
+| `e2e-agent.test.ts` | Hot-attach (mock) | mid-session tool visibility via store.watch |
+| **`e2e-full-assembly.test.ts`** | **Lifecycle ordering** | **all 6 hooks fire in correct order with real LLM** |
+| **`e2e-full-assembly.test.ts`** | **Hot-attach (real LLM)** | **forge_tool → LLM forges → adder callable next turn** |
+| **`e2e-full-assembly.test.ts`** | **Priority ordering** | **3 middleware fire in ascending priority (100→300→500)** |
+| **`e2e-full-assembly.test.ts`** | **Cache invalidation** | **same provider, invalidate(), re-assembly sees new tools** |
 
 ---
 
