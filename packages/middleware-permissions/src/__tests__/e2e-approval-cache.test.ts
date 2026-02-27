@@ -118,12 +118,14 @@ function createMockModelHandler(): {
     if (lastMsg !== undefined && lastMsg.senderId === "tool") {
       return {
         content: "Deployment complete.",
+        model: "mock-model",
         usage: { inputTokens: 10, outputTokens: 5 },
       };
     }
     // Otherwise, request the deploy tool
     return {
       content: "",
+      model: "mock-model",
       metadata: {
         toolCalls: [
           {

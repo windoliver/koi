@@ -1,7 +1,11 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { KoiError } from "@koi/core/errors";
-import type { ToolRequest } from "@koi/core/middleware";
-import { createMockTurnContext, createSpyToolHandler } from "@koi/test-utils";
+import type { SessionContext, ToolRequest } from "@koi/core/middleware";
+import {
+  createMockSessionContext,
+  createMockTurnContext,
+  createSpyToolHandler,
+} from "@koi/test-utils";
 import type { ApprovalHandler } from "./engine.js";
 import { createAutoApprovalHandler, createPatternPermissionEngine } from "./engine.js";
 import { createPermissionsMiddleware } from "./permissions.js";
@@ -379,8 +383,12 @@ describe("approval cache", () => {
       approvalCache: true,
     });
     const spy = createSpyToolHandler();
-    const ctxA = createMockTurnContext({ session: { userId: "user-a" } });
-    const ctxB = createMockTurnContext({ session: { userId: "user-b" } });
+    const ctxA = createMockTurnContext({
+      session: createMockSessionContext({ userId: "user-a" }),
+    });
+    const ctxB = createMockTurnContext({
+      session: createMockSessionContext({ userId: "user-b" }),
+    });
 
     // Approve for user-a
     await mw.wrapToolCall?.(ctxA, makeRequest("deploy"), spy.handler);
@@ -401,8 +409,14 @@ describe("approval cache", () => {
       approvalCache: true,
     });
     const spy = createSpyToolHandler();
-    const anonCtx = createMockTurnContext({ session: { userId: undefined } });
-    const authCtx = createMockTurnContext({ session: { userId: "real-user" } });
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { userId: _dropped, ...anonSession } = createMockSessionContext();
+    const anonCtx = createMockTurnContext({
+      session: anonSession as SessionContext,
+    });
+    const authCtx = createMockTurnContext({
+      session: createMockSessionContext({ userId: "real-user" }),
+    });
 
     // Approve as anonymous
     await mw.wrapToolCall?.(anonCtx, makeRequest("deploy"), spy.handler);
