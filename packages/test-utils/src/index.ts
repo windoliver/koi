@@ -51,8 +51,11 @@ export type {
 } from "./event-sourced-registry-contract.js";
 export { runEventSourcedRegistryContractTests } from "./event-sourced-registry-contract.js";
 export { createFactory } from "./factory.js";
-export type { MockGovernanceControllerOverrides } from "./governance.js";
-export { createMockGovernanceController } from "./governance.js";
+export type {
+  MockGovernanceBackendOverrides,
+  MockGovernanceControllerOverrides,
+} from "./governance.js";
+export { createMockGovernanceBackend, createMockGovernanceController } from "./governance.js";
 export type { SpyModelHandler, SpyModelStreamHandler, SpyToolHandler } from "./handlers.js";
 export {
   createMockModelHandler,
