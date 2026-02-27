@@ -20,6 +20,39 @@ import type {
 export type EngineStopReason = "completed" | "max_turns" | "interrupted" | "error";
 
 /**
+ * Outcome of agent termination — success, error, or interrupted.
+ * Used by L2 consumers (e.g., workspace cleanup) to distinguish
+ * normal completion from failure without depending on L1 internals.
+ */
+export type TerminationOutcome = "success" | "error" | "interrupted";
+
+/**
+ * Maps an engine stop reason to a termination outcome.
+ * Pure function — no side effects, no dependencies.
+ *
+ * - "completed" → "success" (clean task completion)
+ * - "max_turns" → "success" (turn budget is a capacity constraint, not an error;
+ *   use cleanupPolicy "never" to inspect workspaces after budget-exceeded runs)
+ * - "error" → "error"
+ * - "interrupted" → "interrupted"
+ */
+export function mapStopReasonToOutcome(reason: EngineStopReason): TerminationOutcome {
+  switch (reason) {
+    case "completed":
+    case "max_turns":
+      return "success";
+    case "error":
+      return "error";
+    case "interrupted":
+      return "interrupted";
+    default: {
+      const _exhaustive: never = reason;
+      throw new Error(`Unhandled stop reason: ${_exhaustive}`);
+    }
+  }
+}
+
+/**
  * Typed abort reasons for discriminating _why_ a signal fired.
  * Passed as the `reason` argument to `AbortController.abort(reason)`.
  * Consumers can inspect `signal.reason` to choose behavior

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
-import type { Agent, AgentId, Result, WorkspaceComponent } from "@koi/core";
+import type { Agent, AgentId, Result, TerminationOutcome, WorkspaceComponent } from "@koi/core";
 import { agentId, WORKSPACE } from "@koi/core";
 import { createMockAgent } from "@koi/test-utils";
 import { createWorkspaceProvider } from "./provider.js";
@@ -60,10 +60,15 @@ function createMockBackend(): WorkspaceBackend & {
   };
 }
 
-function makeAgent(id: string, state: string = "running"): Agent {
+function makeAgent(
+  id: string,
+  state: string = "running",
+  terminationOutcome?: TerminationOutcome,
+): Agent {
   return createMockAgent({
     pid: { id: agentId(id) },
     state: state as "running" | "terminated",
+    ...(terminationOutcome !== undefined ? { terminationOutcome } : {}),
   });
 }
 
@@ -165,7 +170,49 @@ describe("WorkspaceProvider.detach", () => {
     backend = createMockBackend();
   });
 
-  it("disposes with cleanup policy 'always'", async () => {
+  // ---------------------------------------------------------------------------
+  // Full cleanup matrix: 3 policies × 4 outcomes = 12 cases
+  // ---------------------------------------------------------------------------
+
+  // -- "always" policy: always clean up regardless of outcome --
+
+  it("'always' cleans up on success", async () => {
+    const result = createWorkspaceProvider({ backend, cleanupPolicy: "always" });
+    if (!result.ok) throw new Error("Provider creation failed");
+    if (!result.value.detach) throw new Error("detach missing");
+
+    const agent = makeAgent("agent-1", "terminated", "success");
+    await result.value.attach(agent);
+    await result.value.detach(agent);
+
+    expect(backend.disposeCalls.length).toBe(1);
+  });
+
+  it("'always' cleans up on error", async () => {
+    const result = createWorkspaceProvider({ backend, cleanupPolicy: "always" });
+    if (!result.ok) throw new Error("Provider creation failed");
+    if (!result.value.detach) throw new Error("detach missing");
+
+    const agent = makeAgent("agent-1", "terminated", "error");
+    await result.value.attach(agent);
+    await result.value.detach(agent);
+
+    expect(backend.disposeCalls.length).toBe(1);
+  });
+
+  it("'always' cleans up on interrupted", async () => {
+    const result = createWorkspaceProvider({ backend, cleanupPolicy: "always" });
+    if (!result.ok) throw new Error("Provider creation failed");
+    if (!result.value.detach) throw new Error("detach missing");
+
+    const agent = makeAgent("agent-1", "terminated", "interrupted");
+    await result.value.attach(agent);
+    await result.value.detach(agent);
+
+    expect(backend.disposeCalls.length).toBe(1);
+  });
+
+  it("'always' cleans up when agent is still running", async () => {
     const result = createWorkspaceProvider({ backend, cleanupPolicy: "always" });
     if (!result.ok) throw new Error("Provider creation failed");
     if (!result.value.detach) throw new Error("detach missing");
@@ -177,20 +224,8 @@ describe("WorkspaceProvider.detach", () => {
     expect(backend.disposeCalls.length).toBe(1);
   });
 
-  it("does NOT dispose with cleanup policy 'never'", async () => {
-    const result = createWorkspaceProvider({ backend, cleanupPolicy: "never" });
-    if (!result.ok) throw new Error("Provider creation failed");
-    if (!result.value.detach) throw new Error("detach missing");
-
-    const agent = makeAgent("agent-1");
-    await result.value.attach(agent);
-    await result.value.detach(agent);
-
-    expect(backend.disposeCalls.length).toBe(0);
-  });
-
-  it("disposes with 'on_success' when agent is terminated", async () => {
-    const result = createWorkspaceProvider({ backend, cleanupPolicy: "on_success" });
+  it("'always' cleans up when terminated with undefined outcome", async () => {
+    const result = createWorkspaceProvider({ backend, cleanupPolicy: "always" });
     if (!result.ok) throw new Error("Provider creation failed");
     if (!result.value.detach) throw new Error("detach missing");
 
@@ -201,8 +236,96 @@ describe("WorkspaceProvider.detach", () => {
     expect(backend.disposeCalls.length).toBe(1);
   });
 
-  it("does NOT dispose with 'on_success' when agent is NOT terminated", async () => {
+  // -- "on_success" policy: clean up only on confirmed success --
+
+  it("'on_success' cleans up on success", async () => {
     const result = createWorkspaceProvider({ backend, cleanupPolicy: "on_success" });
+    if (!result.ok) throw new Error("Provider creation failed");
+    if (!result.value.detach) throw new Error("detach missing");
+
+    const agent = makeAgent("agent-1", "terminated", "success");
+    await result.value.attach(agent);
+    await result.value.detach(agent);
+
+    expect(backend.disposeCalls.length).toBe(1);
+  });
+
+  it("'on_success' preserves workspace on error", async () => {
+    const result = createWorkspaceProvider({ backend, cleanupPolicy: "on_success" });
+    if (!result.ok) throw new Error("Provider creation failed");
+    if (!result.value.detach) throw new Error("detach missing");
+
+    const agent = makeAgent("agent-1", "terminated", "error");
+    await result.value.attach(agent);
+    await result.value.detach(agent);
+
+    expect(backend.disposeCalls.length).toBe(0);
+  });
+
+  it("'on_success' preserves workspace on interrupted", async () => {
+    const result = createWorkspaceProvider({ backend, cleanupPolicy: "on_success" });
+    if (!result.ok) throw new Error("Provider creation failed");
+    if (!result.value.detach) throw new Error("detach missing");
+
+    const agent = makeAgent("agent-1", "terminated", "interrupted");
+    await result.value.attach(agent);
+    await result.value.detach(agent);
+
+    expect(backend.disposeCalls.length).toBe(0);
+  });
+
+  it("'on_success' preserves workspace when outcome is undefined (fail-closed)", async () => {
+    const result = createWorkspaceProvider({ backend, cleanupPolicy: "on_success" });
+    if (!result.ok) throw new Error("Provider creation failed");
+    if (!result.value.detach) throw new Error("detach missing");
+
+    const agent = makeAgent("agent-1", "terminated");
+    await result.value.attach(agent);
+    await result.value.detach(agent);
+
+    expect(backend.disposeCalls.length).toBe(0);
+  });
+
+  // -- "never" policy: never clean up regardless of outcome --
+
+  it("'never' preserves workspace on success", async () => {
+    const result = createWorkspaceProvider({ backend, cleanupPolicy: "never" });
+    if (!result.ok) throw new Error("Provider creation failed");
+    if (!result.value.detach) throw new Error("detach missing");
+
+    const agent = makeAgent("agent-1", "terminated", "success");
+    await result.value.attach(agent);
+    await result.value.detach(agent);
+
+    expect(backend.disposeCalls.length).toBe(0);
+  });
+
+  it("'never' preserves workspace on error", async () => {
+    const result = createWorkspaceProvider({ backend, cleanupPolicy: "never" });
+    if (!result.ok) throw new Error("Provider creation failed");
+    if (!result.value.detach) throw new Error("detach missing");
+
+    const agent = makeAgent("agent-1", "terminated", "error");
+    await result.value.attach(agent);
+    await result.value.detach(agent);
+
+    expect(backend.disposeCalls.length).toBe(0);
+  });
+
+  it("'never' preserves workspace on interrupted", async () => {
+    const result = createWorkspaceProvider({ backend, cleanupPolicy: "never" });
+    if (!result.ok) throw new Error("Provider creation failed");
+    if (!result.value.detach) throw new Error("detach missing");
+
+    const agent = makeAgent("agent-1", "terminated", "interrupted");
+    await result.value.attach(agent);
+    await result.value.detach(agent);
+
+    expect(backend.disposeCalls.length).toBe(0);
+  });
+
+  it("'never' preserves workspace when outcome is undefined", async () => {
+    const result = createWorkspaceProvider({ backend, cleanupPolicy: "never" });
     if (!result.ok) throw new Error("Provider creation failed");
     if (!result.value.detach) throw new Error("detach missing");
 
@@ -212,6 +335,64 @@ describe("WorkspaceProvider.detach", () => {
 
     expect(backend.disposeCalls.length).toBe(0);
   });
+
+  // -- pruneStale hook --
+
+  it("calls pruneStale when workspace is preserved", async () => {
+    const pruneStale = mock(async (): Promise<void> => {});
+    const result = createWorkspaceProvider({
+      backend,
+      cleanupPolicy: "on_success",
+      pruneStale,
+    });
+    if (!result.ok) throw new Error("Provider creation failed");
+    if (!result.value.detach) throw new Error("detach missing");
+
+    const agent = makeAgent("agent-1", "terminated", "error");
+    await result.value.attach(agent);
+    await result.value.detach(agent);
+
+    expect(pruneStale).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not call pruneStale when workspace is cleaned up", async () => {
+    const pruneStale = mock(async (): Promise<void> => {});
+    const result = createWorkspaceProvider({
+      backend,
+      cleanupPolicy: "always",
+      pruneStale,
+    });
+    if (!result.ok) throw new Error("Provider creation failed");
+    if (!result.value.detach) throw new Error("detach missing");
+
+    const agent = makeAgent("agent-1", "terminated", "success");
+    await result.value.attach(agent);
+    await result.value.detach(agent);
+
+    expect(pruneStale).not.toHaveBeenCalled();
+  });
+
+  it("handles pruneStale failure gracefully", async () => {
+    const pruneStale = mock(async (): Promise<void> => {
+      throw new Error("prune crashed");
+    });
+    const result = createWorkspaceProvider({
+      backend,
+      cleanupPolicy: "never",
+      pruneStale,
+    });
+    if (!result.ok) throw new Error("Provider creation failed");
+    if (!result.value.detach) throw new Error("detach missing");
+
+    const agent = makeAgent("agent-1", "terminated", "success");
+    await result.value.attach(agent);
+
+    // Should not throw despite pruneStale throwing
+    await expect(result.value.detach(agent)).resolves.toBeUndefined();
+    expect(pruneStale).toHaveBeenCalledTimes(1);
+  });
+
+  // -- Edge cases --
 
   it("is a no-op when agent has no workspace", async () => {
     const result = createWorkspaceProvider({ backend });

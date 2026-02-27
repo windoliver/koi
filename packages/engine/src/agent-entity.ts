@@ -12,8 +12,9 @@ import type {
   ProcessId,
   ProcessState,
   SubsystemToken,
+  TerminationOutcome,
 } from "@koi/core";
-import { COMPONENT_PRIORITY } from "@koi/core";
+import { COMPONENT_PRIORITY, mapStopReasonToOutcome } from "@koi/core";
 import type { TransitionValidator } from "./extension-composer.js";
 import type { AgentLifecycle, LifecycleEvent } from "./lifecycle.js";
 import { createLifecycle, transition } from "./lifecycle.js";
@@ -59,6 +60,11 @@ export class AgentEntity implements Agent {
 
   get state(): ProcessState {
     return this._lifecycle.state;
+  }
+
+  get terminationOutcome(): TerminationOutcome | undefined {
+    if (this._lifecycle.state !== "terminated") return undefined;
+    return mapStopReasonToOutcome(this._lifecycle.stopReason);
   }
 
   component<T>(token: SubsystemToken<T>): T | undefined {

@@ -3,8 +3,8 @@
 exports[`@koi/core API surface . has stable type surface 1`] = `
 "import { B as BrickRef, a as BrickKind } from './brick-snapshot-HASH.js';
 export { A as ALL_BRICK_KINDS, b as BrickId, c as BrickLifecycle, d as BrickSnapshot, e as BrickSource, F as ForgeScope, M as MIN_TRUST_BY_KIND, S as SnapshotEvent, f as SnapshotId, g as SnapshotQuery, h as SnapshotStore, V as VALID_LIFECYCLE_TRANSITIONS, i as brickId, s as snapshotId } from './brick-snapshot-HASH.js';
-import { A as AgentId, E as EngineState, P as ProcessState, T as Tool, S as SkillComponent, a as AgentDescriptor, b as SubsystemToken, c as TrustTier, d as Agent, C as ComponentProvider, K as KoiMiddleware, e as SessionId, f as ToolCallId } from './ecs-HASH.js';
-export { g as AbortReason, h as ApprovalDecision, i as ApprovalHandler, j as ApprovalRequest, k as ArtifactRef, B as BROWSER, l as BrowserActionOptions, m as BrowserConsoleEntry, n as BrowserConsoleLevel, o as BrowserConsoleOptions, p as BrowserConsoleResult, q as BrowserDriver, r as BrowserEvaluateOptions, s as BrowserEvaluateResult, t as BrowserFormField, u as BrowserNavigateOptions, v as BrowserNavigateResult, w as BrowserRefInfo, x as BrowserScreenshotOptions, y as BrowserScreenshotResult, z as BrowserScrollOptions, D as BrowserSnapshotOptions, F as BrowserSnapshotResult, G as BrowserTabCloseOptions, H as BrowserTabFocusOptions, I as BrowserTabInfo, J as BrowserTabNewOptions, L as BrowserTraceOptions, M as BrowserTraceResult, N as BrowserTypeOptions, O as BrowserUploadFile, Q as BrowserUploadOptions, R as BrowserWaitOptions, U as BrowserWaitUntil, V as COMPONENT_PRIORITY, W as CREDENTIALS, X as CapabilityFragment, Y as ChildHandle, Z as ChildLifecycleEvent, _ as ComplianceRecord, $ as ComplianceRecorder, a0 as ComponentEvent, a1 as ComponentEventKind, a2 as ComposedCallHandlers, a3 as ConstraintChecker, a4 as ConstraintQuery, a5 as CorrelationIds, a6 as CredentialComponent, a7 as CronSchedule, a8 as DEFAULT_SCHEDULER_CONFIG, a9 as DEFAULT_VIOLATION_QUERY_LIMIT, aa as DELEGATION, ab as DecisionRecord, ac as EVENTS, ad as EngineAdapter, ae as EngineEvent, af as EngineInput, ag as EngineInputBase, ah as EngineMetrics, ai as EngineOutput, aj as EngineStopReason, ak as EventComponent, al as FILESYSTEM, am as GOVERNANCE, an as GOVERNANCE_ALLOW, ao as GOVERNANCE_BACKEND, ap as GOVERNANCE_VARIABLES, aq as GovernanceBackend, ar as GovernanceCheck, as as GovernanceController, at as GovernanceEvent, au as GovernanceSnapshot, av as GovernanceVariable, aw as GovernanceVariableContributor, ax as GovernanceVerdict, ay as HANDOFF, az as HandoffAcceptError, aA as HandoffAcceptResult, aB as HandoffComponent, aC as HandoffEnvelope, aD as HandoffEvent, aE as HandoffId, aF as HandoffStatus, aG as MEMORY, aH as MemoryComponent, aI as MemoryRecallOptions, aJ as MemoryResult, aK as MemoryStoreOptions, aL as MemoryTier, aM as ModelChunk, aN as ModelHandler, aO as ModelRequest, aP as ModelResponse, aQ as ModelStreamHandler, aR as PolicyEvaluator, aS as PolicyRequest, aT as PolicyRequestKind, aU as ProcessAccounter, aV as ProcessId, aW as RunId, aX as SCHEDULER, aY as ScheduleId, aZ as ScheduleStore, a_ as ScheduledTask, a$ as SchedulerComponent, b0 as SchedulerConfig, b1 as SchedulerEvent, b2 as SchedulerStats, b3 as SensorReading, b4 as SessionContext, b5 as SkillMetadata, b6 as SpawnLedger, b7 as TaskFilter, b8 as TaskHistoryFilter, b9 as TaskId, ba as TaskOptions, bb as TaskRunRecord, bc as TaskScheduler, bd as TaskStatus, be as TaskStore, bf as ToolDescriptor, bg as ToolExecuteOptions, bh as ToolHandler, bi as ToolRequest, bj as ToolResponse, bk as TurnContext, bl as TurnId, bm as VIOLATION_SEVERITY_ORDER, bn as Violation, bo as ViolationFilter, bp as ViolationPage, bq as ViolationSeverity, br as ViolationStore, bs as WEBHOOK, bt as WORKSPACE, bu as WorkspaceComponent, bv as agentId, bw as agentToken, bx as channelToken, by as governanceContributorToken, bz as handoffId, bA as middlewareToken, bB as runId, bC as scheduleId, bD as sessionId, bE as skillToken, bF as taskId, bG as token, bH as toolCallId, bI as toolToken, bJ as turnId } from './ecs-HASH.js';
+import { A as AgentId, E as EngineState, P as ProcessState, T as Tool, S as SkillComponent, a as AgentDescriptor, b as Agent, K as KoiMiddleware, c as SessionId, d as ToolCallId } from './ecs-HASH.js';
+export { e as AbortReason, f as ApprovalDecision, g as ApprovalHandler, h as ApprovalRequest, i as ArtifactRef, B as BROWSER, j as BrowserActionOptions, k as BrowserConsoleEntry, l as BrowserConsoleLevel, m as BrowserConsoleOptions, n as BrowserConsoleResult, o as BrowserDriver, p as BrowserEvaluateOptions, q as BrowserEvaluateResult, r as BrowserFormField, s as BrowserNavigateOptions, t as BrowserNavigateResult, u as BrowserRefInfo, v as BrowserScreenshotOptions, w as BrowserScreenshotResult, x as BrowserScrollOptions, y as BrowserSnapshotOptions, z as BrowserSnapshotResult, C as BrowserTabCloseOptions, D as BrowserTabFocusOptions, F as BrowserTabInfo, G as BrowserTabNewOptions, H as BrowserTraceOptions, I as BrowserTraceResult, J as BrowserTypeOptions, L as BrowserUploadFile, M as BrowserUploadOptions, N as BrowserWaitOptions, O as BrowserWaitUntil, Q as COMPONENT_PRIORITY, R as CREDENTIALS, U as CapabilityFragment, V as ChildHandle, W as ChildLifecycleEvent, X as ComponentEvent, Y as ComponentEventKind, Z as ComponentProvider, _ as ComposedCallHandlers, $ as CorrelationIds, a0 as CredentialComponent, a1 as CronSchedule, a2 as DEFAULT_SCHEDULER_CONFIG, a3 as DELEGATION, a4 as DecisionRecord, a5 as EVENTS, a6 as EngineAdapter, a7 as EngineEvent, a8 as EngineInput, a9 as EngineInputBase, aa as EngineMetrics, ab as EngineOutput, ac as EngineStopReason, ad as EventComponent, ae as FILESYSTEM, af as GOVERNANCE, ag as GOVERNANCE_VARIABLES, ah as GovernanceCheck, ai as GovernanceController, aj as GovernanceEvent, ak as GovernanceSnapshot, al as GovernanceVariable, am as GovernanceVariableContributor, an as HANDOFF, ao as HandoffAcceptError, ap as HandoffAcceptResult, aq as HandoffComponent, ar as HandoffEnvelope, as as HandoffEvent, at as HandoffId, au as HandoffStatus, av as MEMORY, aw as MemoryComponent, ax as MemoryRecallOptions, ay as MemoryResult, az as MemoryStoreOptions, aA as MemoryTier, aB as ModelChunk, aC as ModelHandler, aD as ModelRequest, aE as ModelResponse, aF as ModelStreamHandler, aG as ProcessAccounter, aH as ProcessId, aI as RunId, aJ as SCHEDULER, aK as ScheduleId, aL as ScheduleStore, aM as ScheduledTask, aN as SchedulerComponent, aO as SchedulerConfig, aP as SchedulerEvent, aQ as SchedulerStats, aR as SensorReading, aS as SessionContext, aT as SkillMetadata, aU as SpawnLedger, aV as SubsystemToken, aW as TaskFilter, aX as TaskHistoryFilter, aY as TaskId, aZ as TaskOptions, a_ as TaskRunRecord, a$ as TaskScheduler, b0 as TaskStatus, b1 as TaskStore, b2 as TerminationOutcome, b3 as ToolDescriptor, b4 as ToolExecuteOptions, b5 as ToolHandler, b6 as ToolRequest, b7 as ToolResponse, b8 as TrustTier, b9 as TurnContext, ba as TurnId, bb as WEBHOOK, bc as WORKSPACE, bd as WorkspaceComponent, be as agentId, bf as agentToken, bg as channelToken, bh as governanceContributorToken, bi as handoffId, bj as mapStopReasonToOutcome, bk as middlewareToken, bl as runId, bm as scheduleId, bn as sessionId, bo as skillToken, bp as taskId, bq as token, br as toolCallId, bs as toolToken, bt as turnId } from './ecs-HASH.js';
 import { Result, KoiError } from './errors.js';
 export { BackendErrorMapper, KoiErrorCode, RETRYABLE_DEFAULTS } from './errors.js';
 import { TransitionReason, AgentCondition, AgentStatus, RegistryEntry, AgentRegistry } from './lifecycle.js';
@@ -20,6 +20,7 @@ export { CompactionResult, ContextCompactor, TokenEstimator } from './context.js
 export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, EventEnvelope, EventInput, ReadOptions, ReadResult, SubscribeOptions, SubscriptionHandle } from './event-HASH.js';
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
 export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileRenameResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-HASH.js';
+export { ConstraintQuery, DEFAULT_VIOLATION_QUERY_LIMIT, GovernanceAttestation, GovernanceAttestationId, GovernanceAttestationInput, GovernanceBackend, GovernanceBackendEvent, GovernanceVerdict, VIOLATION_SEVERITIES, Violation, ViolationQuery, ViolationSeverity, governanceAttestationId } from './governance-HASH.js';
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
 export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
 export { ModelCapabilities, ModelProvider, ModelTarget } from './model-HASH.js';
@@ -422,93 +423,6 @@ interface CapabilityRegistry {
 }
 /** Type guard — validates ToolCallPayload shape without \`as\` assertion. */
 declare function isToolCallPayload(value: unknown): value is ToolCallPayload;
-
-/**
- * Generic Backend+Tools ComponentProvider factory.
- *
- * Extracts the common pattern from FileSystemProvider, BrowserProvider,
- * WebhookProvider, and SchedulerProvider into a reusable factory.
- *
- * Exception: permitted in L0 as a pure function operating only on L0 types
- * (ComponentProvider, SubsystemToken, Tool, TrustTier, Agent).
- */
-
-interface ServiceProviderConfig<TBackend, TOperation extends string> {
-    /** Provider name (e.g., "filesystem:local", "browser:playwright"). */
-    readonly name: string;
-    /**
-     * Well-known singleton token (e.g., FILESYSTEM, BROWSER, WEBHOOK).
-     * When provided, the backend is attached under this token alongside tools.
-     * Omit for tool-only providers.
-     */
-    readonly singletonToken?: SubsystemToken<TBackend> | undefined;
-    /** Backend instance attached under singletonToken and passed to tool factories. */
-    readonly backend?: TBackend | undefined;
-    /** Operations to include — each maps to a tool factory. Must be non-empty, no duplicates. */
-    readonly operations: readonly TOperation[];
-    /** Map of operation name → tool factory function. */
-    readonly factories: Readonly<Record<TOperation, (backend: TBackend, prefix: string, tier: TrustTier) => Tool>>;
-    /** Trust tier for all standard tools. Defaults to "verified". */
-    readonly trustTier?: TrustTier | undefined;
-    /** Prefix for tool names. Defaults to empty string. */
-    readonly prefix?: string | undefined;
-    /** Assembly priority. Lower = higher precedence. */
-    readonly priority?: number | undefined;
-    /**
-     * Cache the component Map after first attach. Defaults to true.
-     * Set to false for providers that create per-agent components (e.g., Scheduler).
-     */
-    readonly cache?: boolean | undefined;
-    /**
-     * Hook to append extra tools alongside the standard TOOL_FACTORIES tools.
-     * Receives the backend and agent, returns additional [key, value] pairs.
-     * Use for special-cased tools (e.g., Browser's navigate with security config).
-     */
-    readonly customTools?: (backend: TBackend, agent: Agent) => ReadonlyArray<readonly [string, unknown]>;
-    /**
-     * Cleanup callback invoked on detach. Receives the backend.
-     * Omit if no cleanup is needed (provider will have no detach method).
-     */
-    readonly detach?: (backend: TBackend) => Promise<void>;
-}
-/**
- * Creates a ComponentProvider that attaches a backend singleton token
- * and Tool components from a factories map.
- *
- * Centralizes the repeated pattern of:
- * 1. Iterate operations → call factory → collect [toolToken(name), tool]
- * 2. Return Map([[SINGLETON_TOKEN, backend], ...toolEntries])
- * 3. Optionally cache the Map after first attach
- * 4. Optionally call backend.dispose on detach
- *
- * @throws {Error} if operations is empty or contains duplicates.
- */
-declare function createServiceProvider<TBackend, TOperation extends string>(config: ServiceProviderConfig<TBackend, TOperation>): ComponentProvider;
-
-/**
- * Minimal ComponentProvider factory for single-tool providers.
- *
- * Eliminates copy-paste between TaskSpawnProvider, ParallelMinionsProvider,
- * and similar providers that attach exactly one tool with lazy caching.
- *
- * Exception: permitted in L0 as a pure function operating only on L0 types.
- */
-
-interface SingleToolProviderConfig {
-    /** Provider name (e.g., "task-spawn", "parallel-minions"). */
-    readonly name: string;
-    /** Tool name without the "tool:" prefix (e.g., "task", "parallel_task"). */
-    readonly toolName: string;
-    /** Factory function that creates the Tool instance. Called once (cached). */
-    readonly createTool: () => Tool;
-    /** Assembly priority. Lower = higher precedence. */
-    readonly priority?: number | undefined;
-}
-/**
- * Creates a ComponentProvider that attaches a single \`tool:<toolName>\` component.
- * The tool is created once on first attach and cached for subsequent calls.
- */
-declare function createSingleToolProvider(config: SingleToolProviderConfig): ComponentProvider;
 
 /**
  * Pure data constructors for KoiError objects.
@@ -1528,7 +1442,7 @@ declare function isProcessState(value: string): value is ProcessState;
  */
 declare function validateNonEmpty(value: string, name: string): Result<void, KoiError>;
 
-export { ALL_CHANGE_TARGETS, type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentId, AgentManifest, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickKind, type BrickPage, BrickRef, type BrickRegistryBackend, type BrickRegistryChangeEvent, type BrickRegistryChangeKind, type BrickRegistryReader, type BrickRegistryWriter, type BrickSearchQuery, type BundleId, type CapabilityRegistry, type CapacityReport, type ChainCompactor, type ChainId, type ChangeKind, type ChangeTarget, type CompensatingOp, ComponentProvider, type ContextSummary, DEFAULT_BRICK_SEARCH_LIMIT, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_REPUTATION_QUERY_LIMIT, DEFAULT_TASK_BOARD_CONFIG, EXTENSION_PRIORITY, EngineState, type EventCursor, type FeedbackKind, type FileOpKind, type FileOpRecord, type ForkRef, type GateRequirement, type GuardContext, type HarnessId, type HarnessMetrics, type HarnessPhase, type HarnessSnapshot, type HarnessSnapshotStore, type HarnessStatus, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, type KeyArtifact, KoiError, KoiMiddleware, type NodeCapability, type NodeId, PROPOSAL_GATE_REQUIREMENTS, type PendingFrame, ProcessState, type Proposal, type ProposalEvent, type ProposalGate, type ProposalId, type ProposalInput, type ProposalResult, type ProposalStatus, type ProposalUnsubscribe, type PruningPolicy, type PutOptions, REPUTATION_LEVEL_ORDER, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, type ReputationBackend, type ReputationFeedback, type ReputationLevel, type ReputationQuery, type ReputationQueryResult, type ReputationScore, Result, type ReviewDecision, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type ServiceProviderConfig, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SingleToolProviderConfig, SkillComponent, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, SubsystemToken, type TaskBoard, type TaskBoardConfig, type TaskBoardEvent, type TaskBoardSnapshot, type TaskItem, type TaskItemId, type TaskItemInput, type TaskItemPatch, type TaskItemStatus, type TaskResult, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TransitionContext, TransitionReason, TrustTier, type TurnTrace, type ValidationDiagnostic, type ValidationResult, bundleId, chainId, conflict, createServiceProvider, createSingleToolProvider, evolveRegistryEntry, external, harnessId, internal, isAgentStateEvent, isProcessState, isToolCallPayload, nodeId, notFound, permission, proposalId, rateLimit, staleRef, taskItemId, timeout, validateNonEmpty, validation };
+export { ALL_CHANGE_TARGETS, type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentId, AgentManifest, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickKind, type BrickPage, BrickRef, type BrickRegistryBackend, type BrickRegistryChangeEvent, type BrickRegistryChangeKind, type BrickRegistryReader, type BrickRegistryWriter, type BrickSearchQuery, type BundleId, type CapabilityRegistry, type CapacityReport, type ChainCompactor, type ChainId, type ChangeKind, type ChangeTarget, type CompensatingOp, type ContextSummary, DEFAULT_BRICK_SEARCH_LIMIT, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_REPUTATION_QUERY_LIMIT, DEFAULT_TASK_BOARD_CONFIG, EXTENSION_PRIORITY, EngineState, type EventCursor, type FeedbackKind, type FileOpKind, type FileOpRecord, type ForkRef, type GateRequirement, type GuardContext, type HarnessId, type HarnessMetrics, type HarnessPhase, type HarnessSnapshot, type HarnessSnapshotStore, type HarnessStatus, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, type KeyArtifact, KoiError, KoiMiddleware, type NodeCapability, type NodeId, PROPOSAL_GATE_REQUIREMENTS, type PendingFrame, ProcessState, type Proposal, type ProposalEvent, type ProposalGate, type ProposalId, type ProposalInput, type ProposalResult, type ProposalStatus, type ProposalUnsubscribe, type PruningPolicy, type PutOptions, REPUTATION_LEVEL_ORDER, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, type ReputationBackend, type ReputationFeedback, type ReputationLevel, type ReputationQuery, type ReputationQueryResult, type ReputationScore, Result, type ReviewDecision, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, SkillComponent, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, type TaskBoard, type TaskBoardConfig, type TaskBoardEvent, type TaskBoardSnapshot, type TaskItem, type TaskItemId, type TaskItemInput, type TaskItemPatch, type TaskItemStatus, type TaskResult, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TransitionContext, TransitionReason, type TurnTrace, type ValidationDiagnostic, type ValidationResult, bundleId, chainId, conflict, evolveRegistryEntry, external, harnessId, internal, isAgentStateEvent, isProcessState, isToolCallPayload, nodeId, notFound, permission, proposalId, rateLimit, staleRef, taskItemId, timeout, validateNonEmpty, validation };
 "
 `;
 
@@ -1738,7 +1652,7 @@ import './webhook.js';
 
 exports[`@koi/core API surface ./ecs has stable type surface 1`] = `
 "import './assembly-HASH.js';
-export { d as Agent, a as AgentDescriptor, A as AgentId, B as BROWSER, V as COMPONENT_PRIORITY, W as CREDENTIALS, Y as ChildHandle, Z as ChildLifecycleEvent, a0 as ComponentEvent, a1 as ComponentEventKind, C as ComponentProvider, a6 as CredentialComponent, aa as DELEGATION, ac as EVENTS, ak as EventComponent, al as FILESYSTEM, am as GOVERNANCE, ao as GOVERNANCE_BACKEND, ay as HANDOFF, aG as MEMORY, aH as MemoryComponent, aI as MemoryRecallOptions, aJ as MemoryResult, aK as MemoryStoreOptions, aL as MemoryTier, aU as ProcessAccounter, aV as ProcessId, P as ProcessState, aW as RunId, aX as SCHEDULER, e as SessionId, S as SkillComponent, b5 as SkillMetadata, b6 as SpawnLedger, b as SubsystemToken, T as Tool, f as ToolCallId, bf as ToolDescriptor, bg as ToolExecuteOptions, c as TrustTier, bl as TurnId, bs as WEBHOOK, bt as WORKSPACE, bu as WorkspaceComponent, bv as agentId, bw as agentToken, bx as channelToken, bA as middlewareToken, bB as runId, bD as sessionId, bE as skillToken, bG as token, bH as toolCallId, bI as toolToken, bJ as turnId } from './ecs-HASH.js';
+export { b as Agent, a as AgentDescriptor, A as AgentId, B as BROWSER, Q as COMPONENT_PRIORITY, R as CREDENTIALS, V as ChildHandle, W as ChildLifecycleEvent, X as ComponentEvent, Y as ComponentEventKind, Z as ComponentProvider, a0 as CredentialComponent, a3 as DELEGATION, a5 as EVENTS, ad as EventComponent, ae as FILESYSTEM, af as GOVERNANCE, an as HANDOFF, av as MEMORY, aw as MemoryComponent, ax as MemoryRecallOptions, ay as MemoryResult, az as MemoryStoreOptions, aA as MemoryTier, aG as ProcessAccounter, aH as ProcessId, P as ProcessState, aI as RunId, aJ as SCHEDULER, c as SessionId, S as SkillComponent, aT as SkillMetadata, aU as SpawnLedger, aV as SubsystemToken, T as Tool, d as ToolCallId, b3 as ToolDescriptor, b4 as ToolExecuteOptions, b8 as TrustTier, ba as TurnId, bb as WEBHOOK, bc as WORKSPACE, bd as WorkspaceComponent, be as agentId, bf as agentToken, bg as channelToken, bk as middlewareToken, bl as runId, bn as sessionId, bo as skillToken, bq as token, br as toolCallId, bs as toolToken, bt as turnId } from './ecs-HASH.js';
 import './channel.js';
 import './common.js';
 import './filesystem-HASH.js';
@@ -1751,7 +1665,7 @@ import './message.js';
 exports[`@koi/core API surface ./handoff has stable type surface 1`] = `
 "import './common.js';
 import './assembly-HASH.js';
-export { k as ArtifactRef, ab as DecisionRecord, az as HandoffAcceptError, aA as HandoffAcceptResult, aB as HandoffComponent, aC as HandoffEnvelope, aD as HandoffEvent, aE as HandoffId, aF as HandoffStatus, bz as handoffId } from './ecs-HASH.js';
+export { i as ArtifactRef, a4 as DecisionRecord, ao as HandoffAcceptError, ap as HandoffAcceptResult, aq as HandoffComponent, ar as HandoffEnvelope, as as HandoffEvent, at as HandoffId, au as HandoffStatus, bi as handoffId } from './ecs-HASH.js';
 import './webhook.js';
 import './errors.js';
 import './channel.js';
@@ -1762,7 +1676,7 @@ import './filesystem-HASH.js';
 
 exports[`@koi/core API surface ./engine has stable type surface 1`] = `
 "import './common.js';
-export { g as AbortReason, a2 as ComposedCallHandlers, ad as EngineAdapter, ae as EngineEvent, af as EngineInput, ag as EngineInputBase, ah as EngineMetrics, ai as EngineOutput, E as EngineState, aj as EngineStopReason } from './ecs-HASH.js';
+export { e as AbortReason, _ as ComposedCallHandlers, a6 as EngineAdapter, a7 as EngineEvent, a8 as EngineInput, a9 as EngineInputBase, aa as EngineMetrics, ab as EngineOutput, E as EngineState, ac as EngineStopReason, b2 as TerminationOutcome, bj as mapStopReasonToOutcome } from './ecs-HASH.js';
 import './message.js';
 import './assembly-HASH.js';
 import './webhook.js';
@@ -1923,14 +1837,267 @@ export type { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfi
 `;
 
 exports[`@koi/core API surface ./governance-backend has stable type surface 1`] = `
-"import './common.js';
-export { _ as ComplianceRecord, $ as ComplianceRecorder, a3 as ConstraintChecker, a4 as ConstraintQuery, a9 as DEFAULT_VIOLATION_QUERY_LIMIT, an as GOVERNANCE_ALLOW, aq as GovernanceBackend, ax as GovernanceVerdict, aR as PolicyEvaluator, aS as PolicyRequest, aT as PolicyRequestKind, bm as VIOLATION_SEVERITY_ORDER, bn as Violation, bo as ViolationFilter, bp as ViolationPage, bq as ViolationSeverity, br as ViolationStore } from './ecs-HASH.js';
+"import { JsonObject } from './common.js';
+import { A as AgentId } from './ecs-HASH.js';
+import { Result, KoiError } from './errors.js';
 import './assembly-HASH.js';
 import './webhook.js';
-import './errors.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+
+/**
+ * GovernanceBackend — pluggable anomaly detection and constraint enforcement contract (Layer 0).
+ *
+ * Defines the interface for evaluating governance events against policy rules,
+ * checking constraints, recording compliance attestations, and querying violations.
+ *
+ * L2 packages implement GovernanceBackend for specific backends:
+ *   - @koi/governance: local in-process rule evaluation (default)
+ *   - @koi/governance-nexus: Nexus governance brick (attestation, audit, compliance)
+ *   - User-provided: any implementation of GovernanceBackend
+ *
+ * Consumed by: agent-monitor (#59), spawn governance, ProposalGate (#223),
+ *              unified governance controller (#261).
+ *
+ * Fail-closed contract: if evaluate() or checkConstraint() throw, callers
+ * MUST deny the operation. Infrastructure failures are not distinguished from
+ * intentional denials — never treat a throwing backend as permissive.
+ *
+ * Exception: governanceAttestationId() is a branded type constructor (identity cast),
+ * permitted in L0 as a zero-logic operation for type safety.
+ *
+ * Exception: DEFAULT_VIOLATION_QUERY_LIMIT and VIOLATION_SEVERITIES are pure readonly
+ * data constants derived from L0 type definitions, codifying architecture-doc
+ * invariants with zero logic.
+ */
+
+/**
+ * An event submitted to the governance backend for policy evaluation.
+ *
+ * Distinct from GovernanceEvent (governance.ts), which is the controller's
+ * sensor-update event (a closed discriminated union for the sensor/setpoint model).
+ * GovernanceBackendEvent uses an open string kind with an arbitrary payload,
+ * supporting any event the backend needs to evaluate — including custom event kinds
+ * from L2 packages.
+ */
+interface GovernanceBackendEvent {
+    /**
+     * Semantic event type. Well-known kinds: "tool_call" | "spawn" | "forge" |
+     * "promotion" | "proposal". Backends may support additional kinds.
+     */
+    readonly kind: string;
+    /** The agent that produced this event. */
+    readonly agentId: AgentId;
+    /** Structured event payload — backend-specific content for rule evaluation. */
+    readonly payload: JsonObject;
+    /** Unix timestamp (ms) when the event occurred. */
+    readonly timestamp: number;
+}
+/**
+ * Severity level for a policy violation. Ordered from lowest to highest impact.
+ * Use VIOLATION_SEVERITIES for the canonical ordering and comparison.
+ */
+type ViolationSeverity = "info" | "warning" | "critical";
+/**
+ * Canonical ordering of ViolationSeverity values from lowest to highest impact.
+ * Use for severity comparison:
+ *
+ * \`\`\`typescript
+ * const infoIdx    = VIOLATION_SEVERITIES.indexOf("info");    // 0
+ * const warningIdx = VIOLATION_SEVERITIES.indexOf("warning"); // 1
+ * const critIdx    = VIOLATION_SEVERITIES.indexOf("critical"); // 2
+ * if (VIOLATION_SEVERITIES.indexOf(v.severity) >= VIOLATION_SEVERITIES.indexOf("warning")) { ... }
+ * \`\`\`
+ */
+declare const VIOLATION_SEVERITIES: readonly ViolationSeverity[];
+/**
+ * A single policy rule violation produced by a GovernanceBackend.evaluate() call.
+ *
+ * A GovernanceVerdict may contain multiple Violations — one per violated rule.
+ * Backends SHOULD include all violated rules (not just the first) to enable
+ * consumers to make fully informed decisions.
+ */
+interface Violation {
+    /** The rule identifier that was violated (backend-defined). */
+    readonly rule: string;
+    /** Categorical impact level of this violation. */
+    readonly severity: ViolationSeverity;
+    /** Human-readable description of the violation. Answers: what happened + why. */
+    readonly message: string;
+    /** Optional structured context for this violation (threshold values, agent state, etc.). */
+    readonly context?: JsonObject | undefined;
+}
+/**
+ * The outcome of a GovernanceBackend.evaluate() call.
+ *
+ * Distinct from GovernanceCheck (governance.ts), which is the controller's
+ * per-sensor check result ("did this one variable exceed its limit?", single
+ * variable, retryable flag). GovernanceVerdict is the backend's policy evaluation
+ * result: zero or more violations across all applicable rules for a single event.
+ */
+type GovernanceVerdict = {
+    readonly ok: true;
+} | {
+    readonly ok: false;
+    readonly violations: readonly Violation[];
+};
+/**
+ * Input for a point-in-time constraint check against a specific agent.
+ * The constraint is identified by ID; the backend resolves the rule definition.
+ */
+interface ConstraintQuery {
+    /** The constraint identifier to check (backend-defined rule ID). */
+    readonly constraintId: string;
+    /** The agent to check the constraint against. */
+    readonly agentId: AgentId;
+    /** Optional structured context for evaluating the constraint. */
+    readonly context?: JsonObject | undefined;
+}
+/**
+ * Default maximum number of violations returned by a single getViolations() call.
+ * Implementations SHOULD apply this when the caller omits \`limit\`.
+ */
+declare const DEFAULT_VIOLATION_QUERY_LIMIT = 100;
+/**
+ * Filter for querying stored violation records.
+ * All fields are optional — omitting a field means "no constraint on that dimension".
+ * Providing no fields returns ALL violations up to \`limit\` — use with care.
+ */
+interface ViolationQuery {
+    /** Filter to violations for a specific agent. */
+    readonly agentId?: AgentId | undefined;
+    /** Filter to violations matching any of these severity levels. */
+    readonly severity?: readonly ViolationSeverity[] | undefined;
+    /** Filter to violations from a specific rule. */
+    readonly ruleId?: string | undefined;
+    /** Include only violations at or after this Unix timestamp (ms). */
+    readonly after?: number | undefined;
+    /** Include only violations before this Unix timestamp (ms). */
+    readonly before?: number | undefined;
+    /**
+     * Maximum number of violations to return.
+     * Defaults to DEFAULT_VIOLATION_QUERY_LIMIT when omitted.
+     */
+    readonly limit?: number | undefined;
+}
+declare const __governanceAttestationBrand: unique symbol;
+/**
+ * Branded string type for governance attestation identifiers.
+ * Prevents accidental mixing with other string IDs (ProposalId, BrickId, etc.)
+ * at compile time.
+ */
+type GovernanceAttestationId = string & {
+    readonly [__governanceAttestationBrand]: "GovernanceAttestationId";
+};
+/** Create a branded GovernanceAttestationId from a plain string. */
+declare function governanceAttestationId(raw: string): GovernanceAttestationId;
+/**
+ * Data provided by the caller when recording a compliance attestation.
+ * The backend assigns id, attestedAt, and attestedBy — callers provide
+ * the agentId, ruleId, verdict, and optional evidence.
+ */
+interface GovernanceAttestationInput {
+    /** The agent this attestation is about. */
+    readonly agentId: AgentId;
+    /** The rule or policy this attestation covers (backend-defined rule ID). */
+    readonly ruleId: string;
+    /** The policy evaluation result being attested. */
+    readonly verdict: GovernanceVerdict;
+    /** Optional structured evidence supporting the attestation. */
+    readonly evidence?: JsonObject | undefined;
+}
+/**
+ * A governance compliance attestation as stored and returned by the backend.
+ * Immutable — each attestation is a point-in-time compliance claim.
+ * Callers receive this from recordAttestation(); it is never mutated.
+ */
+interface GovernanceAttestation {
+    /** Backend-assigned unique identifier for this attestation. */
+    readonly id: GovernanceAttestationId;
+    /** The agent this attestation is about. */
+    readonly agentId: AgentId;
+    /** The rule or policy this attestation covers. */
+    readonly ruleId: string;
+    /** The policy evaluation result being attested. */
+    readonly verdict: GovernanceVerdict;
+    /** Optional structured evidence supporting the attestation. */
+    readonly evidence?: JsonObject | undefined;
+    /** Unix timestamp (ms) when this attestation was recorded. Backend-assigned. */
+    readonly attestedAt: number;
+    /**
+     * Identity of the backend that recorded this attestation.
+     * Allows consumers to distinguish attestations from different backends
+     * (e.g., "local", "nexus", "custom").
+     */
+    readonly attestedBy: string;
+}
+/**
+ * Pluggable anomaly detection and constraint enforcement backend.
+ *
+ * All methods return \`T | Promise<T>\` — in-memory implementations return sync
+ * values, database/network implementations return Promises. Callers must always
+ * \`await\` the result.
+ *
+ * **Fail-closed contract**: \`evaluate()\` and \`checkConstraint()\` do NOT use
+ * \`Result<T, KoiError>\`. If they throw, callers MUST treat the operation as
+ * denied. Infrastructure failures are indistinguishable from intentional denials
+ * — never treat a throwing backend as permissive.
+ *
+ * \`recordAttestation()\` and \`getViolations()\` use \`Result<T, KoiError>\` because
+ * their callers need structured error information (retry vs. permanent failure,
+ * storage unavailable vs. invalid input).
+ *
+ * @see GovernanceController (governance.ts) — sensor/setpoint runtime model.
+ * @see ProposalGate (proposal.ts) — structural layer change governance.
+ * @see AuditSink (audit-backend.ts) — structured audit logging.
+ */
+interface GovernanceBackend {
+    /**
+     * Evaluate a governance event against all applicable policy rules.
+     *
+     * Returns \`{ ok: true }\` if no rules are violated.
+     * Returns \`{ ok: false; violations }\` if one or more rules are violated.
+     * Backends SHOULD include all violated rules (not only the first).
+     *
+     * **Fail closed**: if this method throws, callers MUST deny the operation.
+     * Never treat a throwing backend as permissive.
+     */
+    readonly evaluate: (event: GovernanceBackendEvent) => GovernanceVerdict | Promise<GovernanceVerdict>;
+    /**
+     * Check whether a specific constraint is satisfied for the given agent.
+     *
+     * Returns \`true\` if the constraint is satisfied.
+     * Returns \`false\` if the constraint is violated.
+     *
+     * **Fail closed**: if this method throws, callers MUST deny the operation.
+     * Never treat a throwing backend as permissive.
+     */
+    readonly checkConstraint: (constraint: ConstraintQuery) => boolean | Promise<boolean>;
+    /**
+     * Record a compliance attestation for a governance evaluation result.
+     *
+     * The backend assigns \`id\`, \`attestedAt\`, and \`attestedBy\`.
+     * Returns the stored GovernanceAttestation on success.
+     * Returns a KoiError on validation failure or storage error.
+     *
+     * Implementations SHOULD be idempotent for identical
+     * (agentId, ruleId, verdict, timestamp) tuples to handle retry scenarios.
+     */
+    readonly recordAttestation: (input: GovernanceAttestationInput) => Result<GovernanceAttestation, KoiError> | Promise<Result<GovernanceAttestation, KoiError>>;
+    /**
+     * Query stored violation records matching the filter.
+     *
+     * Returns violations ordered by timestamp descending (most recent first).
+     * Applies DEFAULT_VIOLATION_QUERY_LIMIT when \`filter.limit\` is omitted.
+     * Check the returned array length against \`filter.limit\` to detect truncation.
+     */
+    readonly getViolations: (filter: ViolationQuery) => Result<readonly Violation[], KoiError> | Promise<Result<readonly Violation[], KoiError>>;
+    /** Close the backend and release resources (connections, timers, file handles). */
+    readonly dispose?: () => void | Promise<void>;
+}
+
+export { type ConstraintQuery, DEFAULT_VIOLATION_QUERY_LIMIT, type GovernanceAttestation, type GovernanceAttestationId, type GovernanceAttestationInput, type GovernanceBackend, type GovernanceBackendEvent, type GovernanceVerdict, VIOLATION_SEVERITIES, type Violation, type ViolationQuery, type ViolationSeverity, governanceAttestationId };
 "
 `;
 
@@ -2062,7 +2229,7 @@ export type { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, Inb
 exports[`@koi/core API surface ./middleware has stable type surface 1`] = `
 "import './channel.js';
 import './common.js';
-export { h as ApprovalDecision, i as ApprovalHandler, j as ApprovalRequest, X as CapabilityFragment, K as KoiMiddleware, aM as ModelChunk, aN as ModelHandler, aO as ModelRequest, aP as ModelResponse, aQ as ModelStreamHandler, b4 as SessionContext, bh as ToolHandler, bi as ToolRequest, bj as ToolResponse, bk as TurnContext } from './ecs-HASH.js';
+export { f as ApprovalDecision, g as ApprovalHandler, h as ApprovalRequest, U as CapabilityFragment, K as KoiMiddleware, aB as ModelChunk, aC as ModelHandler, aD as ModelRequest, aE as ModelResponse, aF as ModelStreamHandler, aS as SessionContext, b5 as ToolHandler, b6 as ToolRequest, b7 as ToolResponse, b9 as TurnContext } from './ecs-HASH.js';
 import './message.js';
 import './assembly-HASH.js';
 import './webhook.js';
@@ -2535,7 +2702,7 @@ export type { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxI
 `;
 
 exports[`@koi/core API surface ./sandbox-executor has stable type surface 1`] = `
-"import { c as TrustTier } from './ecs-HASH.js';
+"import { b8 as TrustTier } from './ecs-HASH.js';
 import './assembly-HASH.js';
 import './common.js';
 import './webhook.js';
@@ -2616,7 +2783,7 @@ export type { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor,
 `;
 
 exports[`@koi/core API surface ./sandbox-profile has stable type surface 1`] = `
-"import { c as TrustTier } from './ecs-HASH.js';
+"import { b8 as TrustTier } from './ecs-HASH.js';
 import './assembly-HASH.js';
 import './common.js';
 import './webhook.js';
@@ -2995,7 +3162,7 @@ export { type PublisherId, type ShadowWarning, type VersionChangeEvent, type Ver
 
 exports[`@koi/core API surface ./run-report has stable type surface 1`] = `
 "import { JsonObject } from './common.js';
-import { A as AgentId, e as SessionId, aW as RunId, k as ArtifactRef } from './ecs-HASH.js';
+import { A as AgentId, c as SessionId, aI as RunId, i as ArtifactRef } from './ecs-HASH.js';
 import './assembly-HASH.js';
 import './webhook.js';
 import './errors.js';

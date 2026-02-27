@@ -17,6 +17,7 @@ import type {
   ProcessId,
   ProcessState,
   SubsystemToken,
+  TerminationOutcome,
 } from "@koi/core";
 import { agentId } from "@koi/core";
 
@@ -70,6 +71,7 @@ export interface MockAgentOptions {
   readonly pid?: Partial<ProcessId>;
   readonly manifest?: Partial<AgentManifest>;
   readonly state?: ProcessState;
+  readonly terminationOutcome?: TerminationOutcome;
   readonly components?: ReadonlyMap<string, unknown>;
 }
 
@@ -86,7 +88,7 @@ export function createMockAgent(options?: MockAgentOptions): Agent {
   const componentMap: ReadonlyMap<string, unknown> =
     options?.components ?? new Map<string, unknown>();
 
-  return {
+  const base = {
     pid,
     manifest,
     state,
@@ -113,6 +115,11 @@ export function createMockAgent(options?: MockAgentOptions): Agent {
       return componentMap;
     },
   };
+
+  // exactOptionalPropertyTypes: only include terminationOutcome when defined
+  return options?.terminationOutcome !== undefined
+    ? { ...base, terminationOutcome: options.terminationOutcome }
+    : base;
 }
 
 // ---------------------------------------------------------------------------

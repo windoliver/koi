@@ -22,6 +22,7 @@ export interface ValidatedWorkspaceConfig {
   readonly config: ResolvedWorkspaceConfig;
   readonly backend: WorkspaceBackend;
   readonly postCreate?: ((workspace: WorkspaceInfo) => Promise<void>) | undefined;
+  readonly pruneStale?: (() => Promise<void>) | undefined;
 }
 
 /** Validate workspace provider config, applying defaults for optional fields. */
@@ -73,6 +74,7 @@ export function validateWorkspaceConfig(
       },
       backend: raw.backend,
       postCreate: raw.postCreate,
+      pruneStale: raw.pruneStale,
     },
   };
 }

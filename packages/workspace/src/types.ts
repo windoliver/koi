@@ -47,6 +47,7 @@ export interface WorkspaceProviderConfig {
   readonly backend: WorkspaceBackend;
   readonly cleanupPolicy?: "always" | "on_success" | "never";
   readonly postCreate?: (workspace: WorkspaceInfo) => Promise<void>;
+  readonly pruneStale?: () => Promise<void>;
   readonly cleanupTimeoutMs?: number;
 }
 

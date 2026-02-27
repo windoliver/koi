@@ -92,7 +92,7 @@ describe("workspace integration", () => {
     expect(existsSync(ws.path)).toBe(true);
   });
 
-  it("on_success policy cleans up when agent is terminated", async () => {
+  it("on_success policy cleans up when agent terminated with success", async () => {
     const backendResult = createGitWorktreeBackend({ repoPath: repo.repoPath });
     if (!backendResult.ok) throw new Error("Backend creation failed");
 
@@ -106,6 +106,7 @@ describe("workspace integration", () => {
     const agent: Agent = createMockAgent({
       pid: { id: agentId("terminated-agent") },
       state: "terminated",
+      terminationOutcome: "success",
     });
 
     const components = await provider.attach(agent);
@@ -114,8 +115,62 @@ describe("workspace integration", () => {
     if (!provider.detach) throw new Error("detach missing");
     await provider.detach(agent);
 
-    // Workspace should be cleaned up (agent terminated)
+    // Workspace should be cleaned up (agent terminated successfully)
     expect(existsSync(ws.path)).toBe(false);
+  });
+
+  it("on_success policy preserves workspace when agent terminated with error", async () => {
+    const backendResult = createGitWorktreeBackend({ repoPath: repo.repoPath });
+    if (!backendResult.ok) throw new Error("Backend creation failed");
+
+    const providerResult = createWorkspaceProvider({
+      backend: backendResult.value,
+      cleanupPolicy: "on_success",
+    });
+    if (!providerResult.ok) throw new Error("Provider creation failed");
+
+    const provider = providerResult.value;
+    const agent: Agent = createMockAgent({
+      pid: { id: agentId("error-agent") },
+      state: "terminated",
+      terminationOutcome: "error",
+    });
+
+    const components = await provider.attach(agent);
+    const ws = getWorkspaceComponent(components);
+
+    if (!provider.detach) throw new Error("detach missing");
+    await provider.detach(agent);
+
+    // Workspace should be preserved (agent failed)
+    expect(existsSync(ws.path)).toBe(true);
+  });
+
+  it("on_success policy preserves workspace when agent terminated with interrupted", async () => {
+    const backendResult = createGitWorktreeBackend({ repoPath: repo.repoPath });
+    if (!backendResult.ok) throw new Error("Backend creation failed");
+
+    const providerResult = createWorkspaceProvider({
+      backend: backendResult.value,
+      cleanupPolicy: "on_success",
+    });
+    if (!providerResult.ok) throw new Error("Provider creation failed");
+
+    const provider = providerResult.value;
+    const agent: Agent = createMockAgent({
+      pid: { id: agentId("interrupted-agent") },
+      state: "terminated",
+      terminationOutcome: "interrupted",
+    });
+
+    const components = await provider.attach(agent);
+    const ws = getWorkspaceComponent(components);
+
+    if (!provider.detach) throw new Error("detach missing");
+    await provider.detach(agent);
+
+    // Workspace should be preserved (agent was interrupted, not successful)
+    expect(existsSync(ws.path)).toBe(true);
   });
 
   it("never policy always preserves workspace", async () => {

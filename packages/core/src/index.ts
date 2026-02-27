@@ -249,7 +249,9 @@ export type {
   EngineOutput,
   EngineState,
   EngineStopReason,
+  TerminationOutcome,
 } from "./engine.js";
+export { mapStopReasonToOutcome } from "./engine.js";
 // error factories — pure data constructors for KoiError objects
 export {
   conflict,
