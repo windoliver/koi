@@ -6,8 +6,8 @@
  * available to any engine with zero engine changes.
  */
 
-import type { Agent, ComponentProvider, FileSystemBackend, Tool, TrustTier } from "@koi/core";
-import { FILESYSTEM, toolToken } from "@koi/core";
+import type { ComponentProvider, FileSystemBackend, Tool, TrustTier } from "@koi/core";
+import { createServiceProvider, FILESYSTEM } from "@koi/core";
 import type { FileSystemScope } from "@koi/scope";
 import { createScopedFileSystem } from "@koi/scope";
 import type { FileSystemOperation } from "./constants.js";
@@ -51,23 +51,18 @@ export function createFileSystemProvider(config: FileSystemProviderConfig): Comp
 
   const backend = scope !== undefined ? createScopedFileSystem(rawBackend, scope) : rawBackend;
 
-  return {
+  return createServiceProvider({
     name: `filesystem:${backend.name}`,
-
-    attach: async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
-      const toolEntries = operations.map((op) => {
-        const factory = TOOL_FACTORIES[op];
-        const tool = factory(backend, prefix, trustTier);
-        return [toolToken(tool.descriptor.name) as string, tool] as const;
-      });
-
-      return new Map<string, unknown>([[FILESYSTEM as string, backend], ...toolEntries]);
-    },
-
-    detach: async (_agent: Agent): Promise<void> => {
-      if (backend.dispose) {
-        await backend.dispose();
+    singletonToken: FILESYSTEM,
+    backend,
+    operations,
+    factories: TOOL_FACTORIES,
+    trustTier,
+    prefix,
+    detach: async (b) => {
+      if (b.dispose) {
+        await b.dispose();
       }
     },
-  };
+  });
 }

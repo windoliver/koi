@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SchedulerComponent, TaskScheduler, Tool } from "@koi/core";
-import { SCHEDULER, scheduleId, taskId, toolToken } from "@koi/core";
+import { agentId, SCHEDULER, scheduleId, taskId, toolToken } from "@koi/core";
 import { createSchedulerProvider } from "../scheduler-component-provider.js";
 import { createMockAgent } from "../test-helpers.js";
 
@@ -103,8 +103,14 @@ describe("createSchedulerProvider — attach", () => {
   test("creates per-agent component with pinned agentId", async () => {
     const provider = createSchedulerProvider({ scheduler: createMockTaskScheduler() });
 
-    const agent1 = createMockAgent("agent-1");
-    const agent2 = createMockAgent("agent-2");
+    const agent1 = createMockAgent({
+      pid: { id: agentId("agent-1") },
+      manifest: { name: "agent-1" },
+    });
+    const agent2 = createMockAgent({
+      pid: { id: agentId("agent-2") },
+      manifest: { name: "agent-2" },
+    });
 
     const components1 = await provider.attach(agent1);
     const components2 = await provider.attach(agent2);

@@ -81,13 +81,11 @@ describe("createFileSystemProvider", () => {
     expect(components.has(toolToken("fs_search") as string)).toBe(false);
   });
 
-  test("empty operations creates only FILESYSTEM token", async () => {
+  test("empty operations throws", () => {
     const backend = createMockBackend("local");
-    const provider = createFileSystemProvider({ backend, operations: [] });
-    const components = await provider.attach(createMockAgent());
-
-    expect(components.size).toBe(1);
-    expect(components.has(FILESYSTEM as string)).toBe(true);
+    expect(() => createFileSystemProvider({ backend, operations: [] })).toThrow(
+      /operations must not be empty/,
+    );
   });
 });
 

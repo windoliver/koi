@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentId, TaskFilter, TaskHistoryFilter, TaskScheduler, Tool } from "@koi/core";
-import { scheduleId, taskId, toolToken } from "@koi/core";
+import { agentId, scheduleId, taskId, toolToken } from "@koi/core";
 import { createSchedulerProvider } from "../scheduler-component-provider.js";
 import { createMockAgent } from "../test-helpers.js";
 
@@ -54,7 +54,9 @@ describe("scheduler security — agentId pinning", () => {
   test("no tool inputSchema contains an agentId property", async () => {
     const { scheduler } = createCapturingTaskScheduler();
     const provider = createSchedulerProvider({ scheduler });
-    const components = await provider.attach(createMockAgent("pinned-agent"));
+    const components = await provider.attach(
+      createMockAgent({ pid: { id: agentId("pinned-agent") }, manifest: { name: "pinned-agent" } }),
+    );
 
     for (const [key, value] of components) {
       if (typeof key === "string" && key.startsWith("tool:")) {
@@ -71,7 +73,10 @@ describe("scheduler security — agentId pinning", () => {
   test("scheduler_submit always uses attached agent's ID", async () => {
     const { scheduler, submitCalls } = createCapturingTaskScheduler();
     const provider = createSchedulerProvider({ scheduler });
-    const agent = createMockAgent("my-agent");
+    const agent = createMockAgent({
+      pid: { id: agentId("my-agent") },
+      manifest: { name: "my-agent" },
+    });
     const components = await provider.attach(agent);
 
     const submitTool = components.get(toolToken("scheduler_submit") as string) as Tool;
@@ -84,7 +89,10 @@ describe("scheduler security — agentId pinning", () => {
   test("scheduler_schedule always uses attached agent's ID", async () => {
     const { scheduler, scheduleCalls } = createCapturingTaskScheduler();
     const provider = createSchedulerProvider({ scheduler });
-    const agent = createMockAgent("sched-agent");
+    const agent = createMockAgent({
+      pid: { id: agentId("sched-agent") },
+      manifest: { name: "sched-agent" },
+    });
     const components = await provider.attach(agent);
 
     const scheduleTool = components.get(toolToken("scheduler_schedule") as string) as Tool;
@@ -101,7 +109,10 @@ describe("scheduler security — agentId pinning", () => {
   test("scheduler_query auto-filters by own agentId", async () => {
     const { scheduler, queryCalls } = createCapturingTaskScheduler();
     const provider = createSchedulerProvider({ scheduler });
-    const agent = createMockAgent("query-agent");
+    const agent = createMockAgent({
+      pid: { id: agentId("query-agent") },
+      manifest: { name: "query-agent" },
+    });
     const components = await provider.attach(agent);
 
     const queryTool = components.get(toolToken("scheduler_query") as string) as Tool;
@@ -114,7 +125,10 @@ describe("scheduler security — agentId pinning", () => {
   test("scheduler_history auto-filters by own agentId", async () => {
     const { scheduler, historyCalls } = createCapturingTaskScheduler();
     const provider = createSchedulerProvider({ scheduler });
-    const agent = createMockAgent("history-agent");
+    const agent = createMockAgent({
+      pid: { id: agentId("history-agent") },
+      manifest: { name: "history-agent" },
+    });
     const components = await provider.attach(agent);
 
     const historyTool = components.get(toolToken("scheduler_history") as string) as Tool;

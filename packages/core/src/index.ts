@@ -154,6 +154,11 @@ export type {
 export type { CompactionResult, ContextCompactor, TokenEstimator } from "./context.js";
 // correlation
 export type { CorrelationIds } from "./correlation.js";
+// ecs — generic ComponentProvider factories (pure functions on L0 types)
+export type { ServiceProviderConfig } from "./create-service-provider.js";
+export { createServiceProvider } from "./create-service-provider.js";
+export type { SingleToolProviderConfig } from "./create-single-tool-provider.js";
+export { createSingleToolProvider } from "./create-single-tool-provider.js";
 // delegation — types
 export type {
   CircuitBreakerConfig,

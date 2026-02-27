@@ -68,15 +68,13 @@ describe("createWebhookProvider — attach", () => {
     expect(components.has(toolToken("webhook_status") as string)).toBe(false);
   });
 
-  test("empty operations creates only WEBHOOK token", async () => {
-    const provider = createWebhookProvider({
-      webhookComponent: createMockWebhookComponent(),
-      operations: [],
-    });
-    const components = await provider.attach(createMockAgent());
-
-    expect(components.size).toBe(1);
-    expect(components.has(WEBHOOK as string)).toBe(true);
+  test("empty operations throws", () => {
+    expect(() =>
+      createWebhookProvider({
+        webhookComponent: createMockWebhookComponent(),
+        operations: [],
+      }),
+    ).toThrow(/operations must not be empty/);
   });
 });
 

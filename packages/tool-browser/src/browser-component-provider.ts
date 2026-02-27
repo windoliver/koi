@@ -6,8 +6,8 @@
  * available to any engine with zero engine changes.
  */
 
-import type { Agent, BrowserDriver, ComponentProvider, Tool, TrustTier } from "@koi/core";
-import { BROWSER, toolToken } from "@koi/core";
+import type { BrowserDriver, ComponentProvider, Tool, TrustTier } from "@koi/core";
+import { BROWSER, createServiceProvider, toolToken } from "@koi/core";
 import type { BrowserScope } from "@koi/scope";
 import { createScopedBrowser } from "@koi/scope";
 import {
@@ -78,17 +78,33 @@ export interface BrowserProviderConfig {
 // Re-export for callers using tool factories directly.
 export type { CompiledNavigationSecurity, NavigationSecurityConfig };
 
-// navigate and tab_new are handled separately in createBrowserProvider
-// because they accept an optional security config (4th arg).
-// upload, trace_start, trace_stop are handled separately because they are
-// driver-optional (guarded with if (backend.method) before registering).
-type ToolFactory = (driver: BrowserDriver, prefix: string, trustTier: TrustTier) => Tool;
+// ---------------------------------------------------------------------------
+// Standard tools — 3-arg factory signature (backend, prefix, trustTier)
+// ---------------------------------------------------------------------------
+
+type StandardOperation = Exclude<
+  BrowserOperation,
+  "navigate" | "tab_new" | "upload" | "trace_start" | "trace_stop" | "evaluate"
+>;
+
+const STANDARD_OPS = new Set<BrowserOperation>([
+  "snapshot",
+  "click",
+  "hover",
+  "press",
+  "type",
+  "select",
+  "fill_form",
+  "scroll",
+  "screenshot",
+  "wait",
+  "tab_close",
+  "tab_focus",
+  "console",
+]);
 
 const TOOL_FACTORIES: Readonly<
-  Omit<
-    Record<BrowserOperation, ToolFactory>,
-    "navigate" | "tab_new" | "upload" | "trace_start" | "trace_stop"
-  >
+  Record<StandardOperation, (driver: BrowserDriver, prefix: string, trustTier: TrustTier) => Tool>
 > = {
   snapshot: createBrowserSnapshotTool,
   click: createBrowserClickTool,
@@ -103,8 +119,57 @@ const TOOL_FACTORIES: Readonly<
   tab_close: createBrowserTabCloseTool,
   tab_focus: createBrowserTabFocusTool,
   console: createBrowserConsoleTool,
-  evaluate: createBrowserEvaluateTool,
 };
+
+// ---------------------------------------------------------------------------
+// Custom tools — special factory signatures or driver-optional
+// ---------------------------------------------------------------------------
+
+/**
+ * Creates the [key, Tool] entries for non-standard browser operations:
+ * - navigate/tab_new: 4th arg (security config)
+ * - upload/trace_start/trace_stop: driver-optional (skip if not implemented)
+ * - evaluate: uses EVALUATE_TRUST_TIER instead of config trustTier
+ */
+function createCustomToolEntries(
+  ops: readonly BrowserOperation[],
+  backend: BrowserDriver,
+  prefix: string,
+  trustTier: TrustTier,
+  compiledSecurity: CompiledNavigationSecurity | undefined,
+): ReadonlyArray<readonly [string, Tool]> {
+  const entries: Array<readonly [string, Tool]> = [];
+
+  for (const op of ops) {
+    if (STANDARD_OPS.has(op)) continue;
+
+    if (op === "navigate") {
+      const tool = createBrowserNavigateTool(backend, prefix, trustTier, compiledSecurity);
+      entries.push([toolToken(tool.descriptor.name) as string, tool]);
+    } else if (op === "tab_new") {
+      const tool = createBrowserTabNewTool(backend, prefix, trustTier, compiledSecurity);
+      entries.push([toolToken(tool.descriptor.name) as string, tool]);
+    } else if (op === UPLOAD_OPERATION && backend.upload) {
+      const tool = createBrowserUploadTool(backend, prefix, trustTier);
+      entries.push([toolToken(tool.descriptor.name) as string, tool]);
+    } else if (op === TRACE_OPERATION_START && backend.traceStart) {
+      const tool = createBrowserTraceStartTool(backend, prefix, trustTier);
+      entries.push([toolToken(tool.descriptor.name) as string, tool]);
+    } else if (op === TRACE_OPERATION_STOP && backend.traceStop) {
+      const tool = createBrowserTraceStopTool(backend, prefix, trustTier);
+      entries.push([toolToken(tool.descriptor.name) as string, tool]);
+    } else if (op === EVALUATE_OPERATION) {
+      const tool = createBrowserEvaluateTool(backend, prefix, EVALUATE_TRUST_TIER);
+      entries.push([toolToken(tool.descriptor.name) as string, tool]);
+    }
+  }
+
+  return entries;
+}
+
+// ---------------------------------------------------------------------------
+// Provider factory
+// ---------------------------------------------------------------------------
 
 export function createBrowserProvider(config: BrowserProviderConfig): ComponentProvider {
   const {
@@ -125,45 +190,41 @@ export function createBrowserProvider(config: BrowserProviderConfig): ComponentP
   const compiledSecurity: CompiledNavigationSecurity | undefined =
     scope === undefined && security !== undefined ? compileNavigationSecurity(security) : undefined;
 
-  return {
+  // Split operations into standard (handled by createServiceProvider factories)
+  // and custom (handled by customTools hook).
+  const standardOps = operations.filter((op): op is StandardOperation => STANDARD_OPS.has(op));
+
+  // Guard: if no standard ops, we still need at least one for createServiceProvider.
+  // Fall back to manual provider construction for the degenerate case.
+  if (standardOps.length === 0) {
+    const customEntries = createCustomToolEntries(
+      operations,
+      backend,
+      prefix,
+      trustTier,
+      compiledSecurity,
+    );
+    const components = new Map<string, unknown>([[BROWSER as string, backend], ...customEntries]);
+    return {
+      name: `browser:${backend.name}`,
+      attach: async () => components,
+      detach: async () => {
+        if (backend.dispose) await backend.dispose();
+      },
+    };
+  }
+
+  return createServiceProvider({
     name: `browser:${backend.name}`,
-
-    attach: async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
-      const toolEntries = operations.flatMap((op) => {
-        // evaluate always uses promoted tier regardless of config
-        const tier: TrustTier = op === EVALUATE_OPERATION ? EVALUATE_TRUST_TIER : trustTier;
-
-        // navigate and tab_new accept an optional security config (4th arg).
-        // upload, trace_start, trace_stop are driver-optional — skip if not implemented.
-        // All other tools use the standard 3-arg factory signature.
-        let tool: Tool;
-        if (op === "navigate") {
-          tool = createBrowserNavigateTool(backend, prefix, tier, compiledSecurity);
-        } else if (op === "tab_new") {
-          tool = createBrowserTabNewTool(backend, prefix, tier, compiledSecurity);
-        } else if (op === UPLOAD_OPERATION) {
-          if (!backend.upload) return [];
-          tool = createBrowserUploadTool(backend, prefix, tier);
-        } else if (op === TRACE_OPERATION_START) {
-          if (!backend.traceStart) return [];
-          tool = createBrowserTraceStartTool(backend, prefix, tier);
-        } else if (op === TRACE_OPERATION_STOP) {
-          if (!backend.traceStop) return [];
-          tool = createBrowserTraceStopTool(backend, prefix, tier);
-        } else {
-          const factory = TOOL_FACTORIES[op];
-          tool = factory(backend, prefix, tier);
-        }
-        return [[toolToken(tool.descriptor.name) as string, tool] as const];
-      });
-
-      return new Map<string, unknown>([[BROWSER as string, backend], ...toolEntries]);
+    singletonToken: BROWSER,
+    backend,
+    operations: standardOps,
+    factories: TOOL_FACTORIES,
+    trustTier,
+    prefix,
+    customTools: (b) => createCustomToolEntries(operations, b, prefix, trustTier, compiledSecurity),
+    detach: async (b) => {
+      if (b.dispose) await b.dispose();
     },
-
-    detach: async (_agent: Agent): Promise<void> => {
-      if (backend.dispose) {
-        await backend.dispose();
-      }
-    },
-  };
+  });
 }
