@@ -8,9 +8,12 @@ import type { ApprovalHandler, PermissionEngine, PermissionRules } from "./engin
 
 export interface ApprovalCacheConfig {
   readonly maxEntries?: number;
+  /** Time-to-live in ms for cached approvals. 0 = no expiry. Default: 300_000 (5 min). */
+  readonly ttlMs?: number;
 }
 
 export const DEFAULT_APPROVAL_CACHE_MAX_ENTRIES = 256;
+export const DEFAULT_APPROVAL_CACHE_TTL_MS = 300_000;
 
 export interface PermissionsMiddlewareConfig {
   readonly engine: PermissionEngine;
@@ -116,6 +119,18 @@ export function validatePermissionsConfig(
           error: {
             code: "VALIDATION",
             message: "approvalCache.maxEntries must be a positive number",
+            retryable: RETRYABLE_DEFAULTS.VALIDATION,
+          },
+        };
+      }
+    }
+    if (cache.ttlMs !== undefined) {
+      if (typeof cache.ttlMs !== "number" || cache.ttlMs < 0) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: "approvalCache.ttlMs must be a non-negative number",
             retryable: RETRYABLE_DEFAULTS.VALIDATION,
           },
         };

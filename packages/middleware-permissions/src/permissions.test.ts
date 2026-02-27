@@ -369,6 +369,125 @@ describe("approval cache", () => {
     expect(requestApproval).toHaveBeenCalledTimes(4);
   });
 
+  test("different userId triggers separate approval", async () => {
+    const requestApproval = mock(async () => true);
+    const approvalHandler: ApprovalHandler = { requestApproval };
+    const mw = createPermissionsMiddleware({
+      engine,
+      rules: { allow: [], deny: [], ask: ["deploy"] },
+      approvalHandler,
+      approvalCache: true,
+    });
+    const spy = createSpyToolHandler();
+    const ctxA = createMockTurnContext({ session: { userId: "user-a" } });
+    const ctxB = createMockTurnContext({ session: { userId: "user-b" } });
+
+    // Approve for user-a
+    await mw.wrapToolCall?.(ctxA, makeRequest("deploy"), spy.handler);
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+
+    // Same tool for user-b — cache miss, prompts again
+    await mw.wrapToolCall?.(ctxB, makeRequest("deploy"), spy.handler);
+    expect(requestApproval).toHaveBeenCalledTimes(2);
+  });
+
+  test("anonymous userId does not leak to authenticated userId", async () => {
+    const requestApproval = mock(async () => true);
+    const approvalHandler: ApprovalHandler = { requestApproval };
+    const mw = createPermissionsMiddleware({
+      engine,
+      rules: { allow: [], deny: [], ask: ["deploy"] },
+      approvalHandler,
+      approvalCache: true,
+    });
+    const spy = createSpyToolHandler();
+    const anonCtx = createMockTurnContext({ session: { userId: undefined } });
+    const authCtx = createMockTurnContext({ session: { userId: "real-user" } });
+
+    // Approve as anonymous
+    await mw.wrapToolCall?.(anonCtx, makeRequest("deploy"), spy.handler);
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+
+    // Same tool with real identity — must re-prompt
+    await mw.wrapToolCall?.(authCtx, makeRequest("deploy"), spy.handler);
+    expect(requestApproval).toHaveBeenCalledTimes(2);
+  });
+
+  test("expired TTL causes re-prompt", async () => {
+    const requestApproval = mock(async () => true);
+    const approvalHandler: ApprovalHandler = { requestApproval };
+    const mw = createPermissionsMiddleware({
+      engine,
+      rules: { allow: [], deny: [], ask: ["deploy"] },
+      approvalHandler,
+      approvalCache: { ttlMs: 50 },
+    });
+    const spy = createSpyToolHandler();
+
+    // Approve
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy"), spy.handler);
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+
+    // Wait for TTL to expire
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    // Same call — expired, should re-prompt
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy"), spy.handler);
+    expect(requestApproval).toHaveBeenCalledTimes(2);
+  });
+
+  test("ttlMs: 0 disables expiry", async () => {
+    const requestApproval = mock(async () => true);
+    const approvalHandler: ApprovalHandler = { requestApproval };
+    const mw = createPermissionsMiddleware({
+      engine,
+      rules: { allow: [], deny: [], ask: ["deploy"] },
+      approvalHandler,
+      approvalCache: { ttlMs: 0 },
+    });
+    const spy = createSpyToolHandler();
+
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy"), spy.handler);
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+
+    // Wait a bit — cache should still hit
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    await mw.wrapToolCall?.(ctx, makeRequest("deploy"), spy.handler);
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+  });
+
+  test("different rules produce independent caches", async () => {
+    const requestApprovalA = mock(async () => true);
+    const requestApprovalB = mock(async () => true);
+    // mwA has rules { ask: ["deploy"] }, mwB has rules { ask: ["deploy", "restart"] }
+    const mwA = createPermissionsMiddleware({
+      engine,
+      rules: { allow: [], deny: [], ask: ["deploy"] },
+      approvalHandler: { requestApproval: requestApprovalA },
+      approvalCache: true,
+    });
+    const mwB = createPermissionsMiddleware({
+      engine,
+      rules: { allow: [], deny: [], ask: ["deploy", "restart"] },
+      approvalHandler: { requestApproval: requestApprovalB },
+      approvalCache: true,
+    });
+    const spy = createSpyToolHandler();
+
+    // Approve "deploy" on mwA
+    await mwA.wrapToolCall?.(ctx, makeRequest("deploy"), spy.handler);
+    expect(requestApprovalA).toHaveBeenCalledTimes(1);
+
+    // Same "deploy" on mwA — cache hit
+    await mwA.wrapToolCall?.(ctx, makeRequest("deploy"), spy.handler);
+    expect(requestApprovalA).toHaveBeenCalledTimes(1);
+
+    // Same "deploy" on mwB — different rules fingerprint, must prompt
+    await mwB.wrapToolCall?.(ctx, makeRequest("deploy"), spy.handler);
+    expect(requestApprovalB).toHaveBeenCalledTimes(1);
+  });
+
   test("allowed tools bypass cache entirely", async () => {
     const requestApproval = mock(async () => true);
     const approvalHandler: ApprovalHandler = { requestApproval };

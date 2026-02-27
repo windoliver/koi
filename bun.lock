@@ -764,6 +764,9 @@
         "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },

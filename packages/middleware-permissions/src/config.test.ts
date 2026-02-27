@@ -133,6 +133,45 @@ describe("validatePermissionsConfig", () => {
     }
   });
 
+  test("accepts approvalCache with ttlMs: 0 (TTL disabled)", () => {
+    const result = validatePermissionsConfig({ engine, rules, approvalCache: { ttlMs: 0 } });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts approvalCache with positive ttlMs", () => {
+    const result = validatePermissionsConfig({ engine, rules, approvalCache: { ttlMs: 60_000 } });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects approvalCache with negative ttlMs", () => {
+    const result = validatePermissionsConfig({ engine, rules, approvalCache: { ttlMs: -1 } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("ttlMs");
+    }
+  });
+
+  test("rejects approvalCache with non-number ttlMs", () => {
+    const result = validatePermissionsConfig({
+      engine,
+      rules,
+      approvalCache: { ttlMs: "fast" as unknown as number },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("ttlMs");
+    }
+  });
+
+  test("accepts approvalCache with both maxEntries and ttlMs", () => {
+    const result = validatePermissionsConfig({
+      engine,
+      rules,
+      approvalCache: { maxEntries: 100, ttlMs: 60_000 },
+    });
+    expect(result.ok).toBe(true);
+  });
+
   test("all errors are non-retryable", () => {
     const result = validatePermissionsConfig(null);
     if (!result.ok) {
