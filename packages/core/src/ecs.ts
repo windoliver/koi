@@ -14,6 +14,7 @@ import type { JsonObject } from "./common.js";
 import type { DelegationComponent } from "./delegation.js";
 import type { FileSystemBackend } from "./filesystem-backend.js";
 import type { GovernanceController } from "./governance.js";
+import type { HandoffComponent } from "./handoff.js";
 import type { SchedulerComponent } from "./scheduler.js";
 import type { WebhookComponent } from "./webhook.js";
 
@@ -388,6 +389,7 @@ export const CREDENTIALS: SubsystemToken<CredentialComponent> =
 export const EVENTS: SubsystemToken<EventComponent> = token<EventComponent>("events");
 export const DELEGATION: SubsystemToken<DelegationComponent> =
   token<DelegationComponent>("delegation");
+export const HANDOFF: SubsystemToken<HandoffComponent> = token<HandoffComponent>("handoff");
 export const FILESYSTEM: SubsystemToken<FileSystemBackend> = token<FileSystemBackend>("filesystem");
 export const BROWSER: SubsystemToken<BrowserDriver> = token<BrowserDriver>("browser");
 export const WORKSPACE: SubsystemToken<WorkspaceComponent> = token<WorkspaceComponent>("workspace");

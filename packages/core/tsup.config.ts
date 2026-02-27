@@ -10,6 +10,7 @@ export default defineConfig({
     "src/context.ts",
     "src/delegation.ts",
     "src/ecs.ts",
+    "src/handoff.ts",
     "src/engine.ts",
     "src/event-backend.ts",
     "src/errors.ts",

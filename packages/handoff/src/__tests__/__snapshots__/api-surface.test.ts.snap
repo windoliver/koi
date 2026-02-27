@@ -1,0 +1,161 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/handoff API surface . has stable type surface 1`] = `
+"import { HandoffEnvelope, HandoffId, HandoffStatus, AgentId, AgentRegistry, HandoffEvent, Tool, ToolDescriptor, KoiMiddleware, ComponentProvider, JsonObject, ArtifactRef } from '@koi/core';
+
+/**
+ * HandoffStore — thin wrapper around Map<HandoffId, HandoffEnvelope>
+ * with CAS status transitions and registry-bound cleanup.
+ */
+
+interface HandoffStore {
+    readonly put: (envelope: HandoffEnvelope) => void;
+    readonly get: (id: HandoffId) => HandoffEnvelope | undefined;
+    /** CAS status transition. Returns updated envelope or undefined on mismatch. */
+    readonly transition: (id: HandoffId, from: HandoffStatus, to: HandoffStatus) => HandoffEnvelope | undefined;
+    readonly listByAgent: (agentId: AgentId) => readonly HandoffEnvelope[];
+    readonly remove: (id: HandoffId) => boolean;
+    readonly removeByAgent: (agentId: AgentId) => void;
+    readonly findPendingForAgent: (agentId: AgentId) => HandoffEnvelope | undefined;
+    /** Bind to AgentRegistry — removes envelopes when agents terminate. */
+    readonly bindRegistry: (registry: AgentRegistry) => void;
+    readonly dispose: () => void;
+}
+declare function createHandoffStore(): HandoffStore;
+
+/**
+ * accept_handoff tool factory — creates a Tool that accepts and
+ * unpacks a HandoffEnvelope, returning full context to the agent.
+ */
+
+interface CreateAcceptToolConfig {
+    readonly store: HandoffStore;
+    readonly agentId: AgentId;
+    readonly onEvent?: ((event: HandoffEvent) => void) | undefined;
+}
+declare function createAcceptTool(config: CreateAcceptToolConfig): Tool;
+
+/**
+ * Configuration types and tool descriptors for @koi/handoff.
+ */
+
+/** Configuration for the handoff provider and its tools/middleware. */
+interface HandoffConfig {
+    readonly store: HandoffStore;
+    /** Current agent's ID (used for target matching on accept). */
+    readonly agentId: AgentId;
+    /** Optional registry for cleanup on agent termination. */
+    readonly registry?: AgentRegistry | undefined;
+    /** Optional event listener for handoff lifecycle events. */
+    readonly onEvent?: ((event: HandoffEvent) => void) | undefined;
+}
+/** Configuration for the handoff middleware. */
+interface HandoffMiddlewareConfig {
+    readonly store: HandoffStore;
+    /** Current agent's ID (used to find pending envelopes). */
+    readonly agentId: AgentId;
+    /** Optional event listener for injection events. */
+    readonly onEvent?: ((event: HandoffEvent) => void) | undefined;
+}
+declare const PREPARE_HANDOFF_DESCRIPTOR: ToolDescriptor;
+declare const ACCEPT_HANDOFF_DESCRIPTOR: ToolDescriptor;
+
+/**
+ * HandoffMiddleware — injects handoff context into the first model call
+ * and attaches metadata on every turn.
+ */
+
+/**
+ * Creates middleware that:
+ * 1. Injects handoffId + handoffPhase into turn metadata (every turn)
+ * 2. Prepends a summary system message on the first model call (once)
+ * 3. Transitions envelope status from pending → injected
+ */
+declare function createHandoffMiddleware(config: HandoffMiddlewareConfig): KoiMiddleware;
+
+/**
+ * prepare_handoff tool factory — creates a Tool that packages work
+ * into a typed HandoffEnvelope for the next agent.
+ */
+
+interface CreatePrepareToolConfig {
+    readonly store: HandoffStore;
+    readonly agentId: AgentId;
+    readonly onEvent?: ((event: HandoffEvent) => void) | undefined;
+}
+declare function createPrepareTool(config: CreatePrepareToolConfig): Tool;
+
+/**
+ * ComponentProvider that attaches handoff tools to an agent.
+ */
+
+/**
+ * Creates a ComponentProvider that attaches prepare_handoff and
+ * accept_handoff tools. Optionally binds the store to the registry
+ * for cleanup on agent termination.
+ *
+ * Tools are created once and cached — subsequent attach() calls
+ * return the same instances.
+ */
+declare function createHandoffProvider(config: HandoffConfig): ComponentProvider;
+
+/**
+ * Generate concise prompt summaries from handoff envelopes.
+ */
+
+/**
+ * Generate a system prompt summary from a handoff envelope.
+ * Designed to be ~200-400 tokens — enough context for the agent
+ * to understand its task without overloading the context window.
+ * Full details are available via the accept_handoff tool.
+ */
+declare function generateHandoffSummary(envelope: HandoffEnvelope): string;
+
+/**
+ * Validation functions for handoff envelope input and artifact references.
+ */
+
+interface PrepareInput {
+    readonly to: string;
+    readonly completed: string;
+    readonly next: string;
+    readonly results?: JsonObject | undefined;
+    readonly artifacts?: readonly ArtifactRef[] | undefined;
+    readonly decisions?: readonly {
+        readonly agentId: string;
+        readonly action: string;
+        readonly reasoning: string;
+        readonly timestamp: number;
+        readonly toolCallId?: string | undefined;
+    }[] | undefined;
+    readonly warnings?: readonly string[] | undefined;
+    readonly delegation?: unknown | undefined;
+    readonly metadata?: JsonObject | undefined;
+}
+type ValidatePrepareResult = {
+    readonly ok: true;
+    readonly value: PrepareInput;
+} | {
+    readonly ok: false;
+    readonly message: string;
+};
+/** Validate and extract prepare_handoff tool input. */
+declare function validatePrepareInput(args: JsonObject): ValidatePrepareResult;
+type ValidateAcceptResult = {
+    readonly ok: true;
+    readonly handoffId: string;
+} | {
+    readonly ok: false;
+    readonly message: string;
+};
+/** Validate accept_handoff tool input. */
+declare function validateAcceptInput(args: JsonObject): ValidateAcceptResult;
+/**
+ * Validate artifact references. Returns warnings for unsupported or
+ * inaccessible URIs — does not hard-fail (Decision #14).
+ */
+declare function validateArtifactRefs(refs: readonly ArtifactRef[]): readonly string[];
+
+export { ACCEPT_HANDOFF_DESCRIPTOR, type CreateAcceptToolConfig, type CreatePrepareToolConfig, type HandoffConfig, type HandoffMiddlewareConfig, type HandoffStore, PREPARE_HANDOFF_DESCRIPTOR, type PrepareInput, type ValidateAcceptResult, type ValidatePrepareResult, createAcceptTool, createHandoffMiddleware, createHandoffProvider, createHandoffStore, createPrepareTool, generateHandoffSummary, validateAcceptInput, validateArtifactRefs, validatePrepareInput };
+"
+`;
