@@ -48,13 +48,7 @@ declare function createAutoApprovalHandler(): ApprovalHandler;
 
 interface ApprovalCacheConfig {
     readonly maxEntries?: number;
-    /**
-     * Maximum age of a cached approval in milliseconds.
-     * Approvals older than this are evicted and re-prompted.
-     * Defaults to DEFAULT_APPROVAL_CACHE_TTL_MS (5 minutes) when not specified.
-     * Set to a very large number (e.g. Number.MAX_SAFE_INTEGER) to effectively disable expiry.
-     * Must be a positive number if provided.
-     */
+    /** Time-to-live in ms for cached approvals. 0 = no expiry. Default: 300_000 (5 min). */
     readonly ttlMs?: number;
 }
 declare const DEFAULT_APPROVAL_CACHE_MAX_ENTRIES = 256;
