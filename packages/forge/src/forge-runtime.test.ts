@@ -590,3 +590,187 @@ describe("resolve() specific behavior", () => {
     expect(result).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// resolveTool — npm package dependency wire-up
+// ---------------------------------------------------------------------------
+
+describe("createForgeRuntime — npm dependency wire-up", () => {
+  test("resolveTool returns undefined when requires.packages fails audit (blocked package)", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      testToolArtifact({
+        name: "dep-tool",
+        requires: { packages: { "blocked-pkg": "1.0.0" } },
+      }),
+    );
+
+    const runtime = createForgeRuntime({
+      store,
+      executor: mockTiered(),
+      dependencyConfig: {
+        blockedPackages: ["blocked-pkg"],
+        maxDependencies: 20,
+        installTimeoutMs: 15_000,
+        maxCacheSizeBytes: 1_073_741_824,
+        maxWorkspaceAgeDays: 30,
+        maxTransitiveDependencies: 200,
+        maxBrickMemoryMb: 256,
+        maxBrickPids: 32,
+      },
+    });
+
+    const tool = await runtime.resolveTool("dep-tool");
+    expect(tool).toBeUndefined();
+  });
+
+  test("resolveTool returns undefined when requires.packages exceeds max dependencies", async () => {
+    const store = createInMemoryForgeStore();
+    const tooManyDeps: Record<string, string> = {};
+    for (let i = 0; i < 5; i++) {
+      tooManyDeps[`pkg-${String(i)}`] = "1.0.0";
+    }
+    await store.save(
+      testToolArtifact({
+        name: "heavy-tool",
+        requires: { packages: tooManyDeps },
+      }),
+    );
+
+    const runtime = createForgeRuntime({
+      store,
+      executor: mockTiered(),
+      dependencyConfig: {
+        maxDependencies: 2, // Limit to 2 — tool has 5
+        installTimeoutMs: 15_000,
+        maxCacheSizeBytes: 1_073_741_824,
+        maxWorkspaceAgeDays: 30,
+        maxTransitiveDependencies: 200,
+        maxBrickMemoryMb: 256,
+        maxBrickPids: 32,
+      },
+    });
+
+    const tool = await runtime.resolveTool("heavy-tool");
+    expect(tool).toBeUndefined();
+  });
+
+  test("resolveTool returns undefined when requires.packages has invalid semver range", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      testToolArtifact({
+        name: "range-tool",
+        requires: { packages: { lodash: "^4.0.0" } }, // Range, not exact
+      }),
+    );
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const tool = await runtime.resolveTool("range-tool");
+    expect(tool).toBeUndefined();
+  });
+
+  test("resolveTool succeeds for tool with no requires.packages", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(testToolArtifact({ name: "simple-tool" }));
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const tool = await runtime.resolveTool("simple-tool");
+    expect(tool).toBeDefined();
+    expect(tool?.descriptor.name).toBe("simple-tool");
+  });
+
+  test("resolveTool succeeds for tool with empty requires.packages", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      testToolArtifact({
+        name: "empty-deps-tool",
+        requires: { packages: {} },
+      }),
+    );
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const tool = await runtime.resolveTool("empty-deps-tool");
+    expect(tool).toBeDefined();
+    expect(tool?.descriptor.name).toBe("empty-deps-tool");
+  });
+
+  test("resolveTool returns undefined when package name not on allowlist", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      testToolArtifact({
+        name: "allow-tool",
+        requires: { packages: { "not-allowed": "1.0.0" } },
+      }),
+    );
+
+    const runtime = createForgeRuntime({
+      store,
+      executor: mockTiered(),
+      dependencyConfig: {
+        allowedPackages: ["only-this-one"],
+        maxDependencies: 20,
+        installTimeoutMs: 15_000,
+        maxCacheSizeBytes: 1_073_741_824,
+        maxWorkspaceAgeDays: 30,
+        maxTransitiveDependencies: 200,
+        maxBrickMemoryMb: 256,
+        maxBrickPids: 32,
+      },
+    });
+
+    const tool = await runtime.resolveTool("allow-tool");
+    expect(tool).toBeUndefined();
+  });
+
+  test("concurrent resolveTool calls for same audit-failing brick both return undefined", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      testToolArtifact({
+        name: "concurrent-blocked",
+        requires: { packages: { "evil-pkg": "1.0.0" } },
+      }),
+    );
+
+    const runtime = createForgeRuntime({
+      store,
+      executor: mockTiered(),
+      dependencyConfig: {
+        blockedPackages: ["evil-pkg"],
+        maxDependencies: 20,
+        installTimeoutMs: 15_000,
+        maxCacheSizeBytes: 1_073_741_824,
+        maxWorkspaceAgeDays: 30,
+        maxTransitiveDependencies: 200,
+        maxBrickMemoryMb: 256,
+        maxBrickPids: 32,
+      },
+    });
+
+    // Fire two concurrent resolves — both must return undefined (audit gate)
+    const [tool1, tool2] = await Promise.all([
+      runtime.resolveTool("concurrent-blocked"),
+      runtime.resolveTool("concurrent-blocked"),
+    ]);
+
+    expect(tool1).toBeUndefined();
+    expect(tool2).toBeUndefined();
+  });
+
+  test("concurrent resolveTool calls for non-dep tools both resolve correctly", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(testToolArtifact({ name: "tool-a", implementation: "return 1;" }));
+    await store.save(testToolArtifact({ name: "tool-b", implementation: "return 2;" }));
+
+    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+
+    const [toolA, toolB] = await Promise.all([
+      runtime.resolveTool("tool-a"),
+      runtime.resolveTool("tool-b"),
+    ]);
+
+    expect(toolA).toBeDefined();
+    expect(toolA?.descriptor.name).toBe("tool-a");
+    expect(toolB).toBeDefined();
+    expect(toolB?.descriptor.name).toBe("tool-b");
+  });
+});

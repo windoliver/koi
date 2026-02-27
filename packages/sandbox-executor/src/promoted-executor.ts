@@ -6,10 +6,11 @@
  *
  * Two execution modes:
  * - **import()**: When `context.entryPath` is provided (brick has npm dependencies),
- *   uses dynamic `import()` with query-string cache busting for in-process execution.
+ *   uses content-addressed module paths for in-process execution.
  * - **new Function()**: Fallback for bricks without dependencies (existing behavior).
  *
  * Uses an LRU cache (256-entry cap) keyed by code/path to avoid repeated parsing.
+ * Both paths enforce the caller-supplied timeout via Promise.race.
  */
 
 import type { ExecutionContext, SandboxError, SandboxExecutor, SandboxResult } from "@koi/core";
@@ -76,7 +77,46 @@ function classifyError(e: unknown, durationMs: number): SandboxError {
     return { code: "PERMISSION", message, durationMs };
   }
 
+  if (message.includes("timed out")) {
+    return { code: "TIMEOUT", message, durationMs };
+  }
+
   return { code: "CRASH", message, durationMs };
+}
+
+// ---------------------------------------------------------------------------
+// Shared timeout-guarded execution
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute a function with a timeout guard.
+ * Both import() and new Function() paths share this to avoid DRY violation.
+ */
+async function executeWithTimeout(
+  fn: (input: unknown) => unknown,
+  input: unknown,
+  timeoutMs: number,
+  start: number,
+): Promise<ExecuteResult> {
+  // let justified: timeoutId set inside Promise constructor, cleared in finally
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result: unknown = await Promise.race([
+      Promise.resolve(fn(input)),
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error(`Execution timed out after ${String(timeoutMs)}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+
+    const durationMs = performance.now() - start;
+    return { ok: true, value: { output: result, durationMs } };
+  } finally {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -85,9 +125,6 @@ function classifyError(e: unknown, durationMs: number): SandboxError {
 
 type CompiledFn = (input: unknown) => unknown;
 type ImportedModule = { readonly default: CompiledFn };
-
-// let justified: mutable monotonic counter for cache busting
-let bustCounter = 0;
 
 export function createPromotedExecutor(): SandboxExecutor {
   const fnCache = createLruCache<string, CompiledFn>(DEFAULT_LRU_CAP);
@@ -102,7 +139,8 @@ export function createPromotedExecutor(): SandboxExecutor {
     const start = performance.now();
 
     try {
-      // Import path: use dynamic import() when entryPath is provided
+      // Import path: use dynamic import() when entryPath is provided.
+      // Content-addressed: different brick content → different entryPath → fresh import.
       if (context?.entryPath !== undefined) {
         const cached = importCache.get(context.entryPath);
         // let justified: mod is conditionally assigned from cache or import
@@ -111,10 +149,9 @@ export function createPromotedExecutor(): SandboxExecutor {
         if (cached !== undefined) {
           mod = cached;
         } else {
-          // Query-string cache busting to force fresh import after content changes
-          bustCounter += 1;
-          const importPath = `${context.entryPath}?bust=${String(bustCounter)}`;
-          mod = (await import(importPath)) as ImportedModule;
+          // Content-addressed paths: same content = same path = cached ESM import.
+          // No query-string cache busting needed — path changes when content changes.
+          mod = (await import(context.entryPath)) as ImportedModule;
           importCache.set(context.entryPath, mod);
         }
 
@@ -130,25 +167,7 @@ export function createPromotedExecutor(): SandboxExecutor {
           };
         }
 
-        // let justified: timeoutId set inside Promise constructor, cleared in finally
-        let timeoutId: ReturnType<typeof setTimeout> | undefined;
-        try {
-          const result: unknown = await Promise.race([
-            Promise.resolve(fn(input)),
-            new Promise<never>((_, reject) => {
-              timeoutId = setTimeout(() => {
-                reject(new Error(`Execution timed out after ${String(timeoutMs)}ms`));
-              }, timeoutMs);
-            }),
-          ]);
-
-          const durationMs = performance.now() - start;
-          return { ok: true, value: { output: result, durationMs } };
-        } finally {
-          if (timeoutId !== undefined) {
-            clearTimeout(timeoutId);
-          }
-        }
+        return await executeWithTimeout(fn, input, timeoutMs, start);
       }
 
       // Fallback: new Function() for bricks without dependencies
@@ -162,10 +181,7 @@ export function createPromotedExecutor(): SandboxExecutor {
         fnCache.set(code, fn);
       }
 
-      const result: unknown = await Promise.resolve(fn(input));
-      const durationMs = performance.now() - start;
-
-      return { ok: true, value: { output: result, durationMs } };
+      return await executeWithTimeout(fn, input, timeoutMs, start);
     } catch (e: unknown) {
       const durationMs = performance.now() - start;
       return { ok: false, error: classifyError(e, durationMs) };

@@ -1,5 +1,14 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createPromotedExecutor } from "./promoted-executor.js";
+
+const TEST_MODULE_DIR = join(tmpdir(), "koi-promoted-executor-test");
+
+afterEach(async () => {
+  await rm(TEST_MODULE_DIR, { recursive: true, force: true }).catch(() => {});
+});
 
 describe("createPromotedExecutor", () => {
   const executor = createPromotedExecutor();
@@ -96,6 +105,132 @@ describe("createPromotedExecutor", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("PERMISSION");
+    }
+  });
+
+  test("times out on long-running new Function code", async () => {
+    // Async infinite loop that yields control to allow timeout to fire
+    const code = `
+      return new Promise((resolve) => {
+        const start = Date.now();
+        const spin = () => {
+          if (Date.now() - start < 10000) setTimeout(spin, 10);
+          else resolve("done");
+        };
+        spin();
+      });
+    `;
+    const result = await executor.execute(code, {}, 50);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("TIMEOUT");
+      expect(result.error.message).toContain("timed out");
+      expect(result.error.durationMs).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  test("classifies timeout error with TIMEOUT code", async () => {
+    const code = "return new Promise(() => {});"; // Never resolves
+    const result = await executor.execute(code, {}, 50);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("TIMEOUT");
+    }
+  });
+});
+
+describe("createPromotedExecutor — import() path", () => {
+  const executor = createPromotedExecutor();
+
+  async function writeModule(filename: string, source: string): Promise<string> {
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(TEST_MODULE_DIR, { recursive: true });
+    const path = join(TEST_MODULE_DIR, filename);
+    await Bun.write(path, source);
+    return path;
+  }
+
+  test("executes module with default export function", async () => {
+    const entryPath = await writeModule(
+      "add-one.ts",
+      "export default function(input: { readonly x: number }) { return input.x + 1; }",
+    );
+
+    const result = await executor.execute("", { x: 5 }, 5_000, { entryPath });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.output).toBe(6);
+      expect(result.value.durationMs).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  test("caches imported module by path", async () => {
+    const entryPath = await writeModule(
+      "cached-mod.ts",
+      "export default function() { return 99; }",
+    );
+
+    const result1 = await executor.execute("", {}, 5_000, { entryPath });
+    const result2 = await executor.execute("", {}, 5_000, { entryPath });
+
+    expect(result1.ok).toBe(true);
+    expect(result2.ok).toBe(true);
+    if (result1.ok && result2.ok) {
+      expect(result1.value.output).toBe(99);
+      expect(result2.value.output).toBe(99);
+    }
+  });
+
+  test("different entry paths load different modules", async () => {
+    const path1 = await writeModule("mod-a.ts", 'export default function() { return "a"; }');
+    const path2 = await writeModule("mod-b.ts", 'export default function() { return "b"; }');
+
+    const result1 = await executor.execute("", {}, 5_000, { entryPath: path1 });
+    const result2 = await executor.execute("", {}, 5_000, { entryPath: path2 });
+
+    expect(result1.ok).toBe(true);
+    expect(result2.ok).toBe(true);
+    if (result1.ok && result2.ok) {
+      expect(result1.value.output).toBe("a");
+      expect(result2.value.output).toBe("b");
+    }
+  });
+
+  test("returns error when module has no default export", async () => {
+    const entryPath = await writeModule(
+      "no-default.ts",
+      "export function notDefault() { return 1; }",
+    );
+
+    const result = await executor.execute("", {}, 5_000, { entryPath });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("CRASH");
+      expect(result.error.message).toContain("must export a default function");
+    }
+  });
+
+  test("times out on slow import-path execution", async () => {
+    const entryPath = await writeModule(
+      "slow-mod.ts",
+      "export default function() { return new Promise(() => {}); }", // Never resolves
+    );
+
+    const result = await executor.execute("", {}, 50, { entryPath });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("TIMEOUT");
+      expect(result.error.message).toContain("timed out");
+    }
+  });
+
+  test("handles import failure for non-existent file", async () => {
+    const result = await executor.execute("", {}, 5_000, {
+      entryPath: join(TEST_MODULE_DIR, "nonexistent.ts"),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("CRASH");
     }
   });
 });

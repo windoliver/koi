@@ -21,8 +21,7 @@ import type {
   ToolArtifact,
   ToolDescriptor,
 } from "@koi/core";
-
-const DEFAULT_SANDBOX_TIMEOUT_MS = 5_000;
+import { DEFAULT_SANDBOX_TIMEOUT_MS } from "./forge-defaults.js";
 
 /**
  * Convert a ToolArtifact into an executable Tool backed by a sandbox executor.
