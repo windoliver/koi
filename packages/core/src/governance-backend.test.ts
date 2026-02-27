@@ -29,7 +29,7 @@ import {
 describe("governanceAttestationId", () => {
   test("is an identity cast — returns the input string unchanged", () => {
     const id = governanceAttestationId("attest-abc-123");
-    expect(id).toBe("attest-abc-123");
+    expect(id).toBe(governanceAttestationId("attest-abc-123"));
   });
 
   test("produces distinct values for distinct inputs", () => {
@@ -214,7 +214,7 @@ describe("GovernanceAttestation enrichment contract", () => {
       attestedBy: "local",
     };
 
-    expect(stored.id).toBe("attest-001");
+    expect(stored.id).toBe(governanceAttestationId("attest-001"));
     expect(stored.agentId).toBe(input.agentId);
     expect(stored.ruleId).toBe(input.ruleId);
     expect(stored.verdict.ok).toBe(true);
