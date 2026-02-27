@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import type { CredentialComponent } from "@koi/core";
-import { COMPONENT_PRIORITY, CREDENTIALS } from "@koi/core";
+import type { AttachResult, CredentialComponent } from "@koi/core";
+import { COMPONENT_PRIORITY, CREDENTIALS, isAttachResult } from "@koi/core";
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
+
 import {
   compileCredentialsScope,
   createScopedCredentials,
@@ -128,7 +135,7 @@ describe("createScopedCredentialsProvider", () => {
     const creds = createMockCredentials({ OPENAI_KEY: "sk-123" });
     const provider = createScopedCredentialsProvider(creds, { keyPattern: "OPENAI_*" });
     const agent = {} as Parameters<typeof provider.attach>[0];
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     expect(components.has(CREDENTIALS as string)).toBe(true);
     const scoped = components.get(CREDENTIALS as string) as CredentialComponent;
     expect(await scoped.get("OPENAI_KEY")).toBe("sk-123");

@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
-import type { Agent, AgentId, Result, TerminationOutcome, WorkspaceComponent } from "@koi/core";
-import { agentId, WORKSPACE } from "@koi/core";
+import type {
+  Agent,
+  AgentId,
+  AttachResult,
+  Result,
+  TerminationOutcome,
+  WorkspaceComponent,
+} from "@koi/core";
+import { agentId, isAttachResult, WORKSPACE } from "@koi/core";
 import { createMockAgent } from "@koi/test-utils";
 import { createWorkspaceProvider } from "./provider.js";
 import type { ResolvedWorkspaceConfig, WorkspaceBackend, WorkspaceInfo } from "./types.js";
@@ -10,6 +17,12 @@ import type { ResolvedWorkspaceConfig, WorkspaceBackend, WorkspaceInfo } from ".
 // ---------------------------------------------------------------------------
 
 const WORKSPACE_KEY: string = WORKSPACE;
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 function getWorkspaceComponent(components: ReadonlyMap<string, unknown>): WorkspaceComponent {
   const ws = components.get(WORKSPACE_KEY);
@@ -100,7 +113,7 @@ describe("WorkspaceProvider.attach", () => {
     if (!result.ok) throw new Error("Provider creation failed");
 
     const agent = makeAgent("agent-1");
-    const components = await result.value.attach(agent);
+    const components = extractMap(await result.value.attach(agent));
 
     expect(components.has(WORKSPACE_KEY)).toBe(true);
   });
@@ -110,7 +123,7 @@ describe("WorkspaceProvider.attach", () => {
     if (!result.ok) throw new Error("Provider creation failed");
 
     const agent = makeAgent("agent-1");
-    const components = await result.value.attach(agent);
+    const components = extractMap(await result.value.attach(agent));
     const ws = getWorkspaceComponent(components);
 
     expect(ws.id).toStartWith("mock-ws-");

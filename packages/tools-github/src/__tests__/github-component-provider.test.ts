@@ -1,14 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import type { Tool } from "@koi/core";
+import type { AttachResult, Tool } from "@koi/core";
+import { isAttachResult } from "@koi/core";
 import { createGithubProvider } from "../github-component-provider.js";
 import { createMockAgent, createMockGhExecutor } from "../test-helpers.js";
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 describe("createGithubProvider", () => {
   test("attaches all 5 tools by default", async () => {
     const executor = createMockGhExecutor([]);
     const provider = createGithubProvider({ executor });
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
 
     expect(components.size).toBe(5);
     const keys = [...components.keys()];
@@ -23,7 +30,7 @@ describe("createGithubProvider", () => {
     const executor = createMockGhExecutor([]);
     const provider = createGithubProvider({ executor, prefix: "gh" });
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
 
     const keys = [...components.keys()];
     expect(keys).toContain("tool:gh_pr_create");
@@ -34,7 +41,7 @@ describe("createGithubProvider", () => {
     const executor = createMockGhExecutor([]);
     const provider = createGithubProvider({ executor });
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
 
     const prCreate = components.get("tool:github_pr_create") as Tool;
     const prMerge = components.get("tool:github_pr_merge") as Tool;
@@ -48,7 +55,7 @@ describe("createGithubProvider", () => {
     const executor = createMockGhExecutor([]);
     const provider = createGithubProvider({ executor, trustTier: "sandbox" });
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
 
     const prStatus = components.get("tool:github_pr_status") as Tool;
     const ciWait = components.get("tool:github_ci_wait") as Tool;
@@ -60,7 +67,7 @@ describe("createGithubProvider", () => {
     const executor = createMockGhExecutor([]);
     const provider = createGithubProvider({ executor });
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
 
     const prStatus = components.get("tool:github_pr_status") as Tool;
     expect(prStatus.trustTier).toBe("verified");
@@ -73,7 +80,7 @@ describe("createGithubProvider", () => {
       operations: ["pr_create", "pr_status"],
     });
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
 
     expect(components.size).toBe(2);
     const keys = [...components.keys()];
@@ -98,7 +105,7 @@ describe("createGithubProvider", () => {
     const executor = createMockGhExecutor([]);
     const provider = createGithubProvider({ executor });
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
 
     for (const [_key, value] of components) {
       const tool = value as Tool;

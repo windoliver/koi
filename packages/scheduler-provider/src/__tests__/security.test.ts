@@ -1,8 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import type { AgentId, TaskFilter, TaskHistoryFilter, TaskScheduler, Tool } from "@koi/core";
-import { agentId, scheduleId, taskId, toolToken } from "@koi/core";
+import type {
+  AgentId,
+  AttachResult,
+  TaskFilter,
+  TaskHistoryFilter,
+  TaskScheduler,
+  Tool,
+} from "@koi/core";
+import { agentId, isAttachResult, scheduleId, taskId, toolToken } from "@koi/core";
+
 import { createSchedulerProvider } from "../scheduler-component-provider.js";
 import { createMockAgent } from "../test-helpers.js";
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 /**
  * Creates a TaskScheduler that captures all calls for assertion.
@@ -54,8 +68,13 @@ describe("scheduler security — agentId pinning", () => {
   test("no tool inputSchema contains an agentId property", async () => {
     const { scheduler } = createCapturingTaskScheduler();
     const provider = createSchedulerProvider({ scheduler });
-    const components = await provider.attach(
-      createMockAgent({ pid: { id: agentId("pinned-agent") }, manifest: { name: "pinned-agent" } }),
+    const components = extractMap(
+      await provider.attach(
+        createMockAgent({
+          pid: { id: agentId("pinned-agent") },
+          manifest: { name: "pinned-agent" },
+        }),
+      ),
     );
 
     for (const [key, value] of components) {
@@ -77,7 +96,7 @@ describe("scheduler security — agentId pinning", () => {
       pid: { id: agentId("my-agent") },
       manifest: { name: "my-agent" },
     });
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
 
     const submitTool = components.get(toolToken("scheduler_submit") as string) as Tool;
     await submitTool.execute({ input: "test", mode: "spawn" });
@@ -93,7 +112,7 @@ describe("scheduler security — agentId pinning", () => {
       pid: { id: agentId("sched-agent") },
       manifest: { name: "sched-agent" },
     });
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
 
     const scheduleTool = components.get(toolToken("scheduler_schedule") as string) as Tool;
     await scheduleTool.execute({
@@ -113,7 +132,7 @@ describe("scheduler security — agentId pinning", () => {
       pid: { id: agentId("query-agent") },
       manifest: { name: "query-agent" },
     });
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
 
     const queryTool = components.get(toolToken("scheduler_query") as string) as Tool;
     await queryTool.execute({ status: "pending" });
@@ -129,7 +148,7 @@ describe("scheduler security — agentId pinning", () => {
       pid: { id: agentId("history-agent") },
       manifest: { name: "history-agent" },
     });
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
 
     const historyTool = components.get(toolToken("scheduler_history") as string) as Tool;
     await historyTool.execute({ status: "completed" });

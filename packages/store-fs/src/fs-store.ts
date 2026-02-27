@@ -26,7 +26,7 @@ import { notFound } from "@koi/core";
 import { validateBrickArtifact } from "@koi/validation";
 import { mapFsError, mapParseError } from "./errors.js";
 import { brickPath, shardDir, tmpPath } from "./paths.js";
-import { matchesQuery } from "./query.js";
+import { matchesBrickQuery } from "./query.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -317,7 +317,7 @@ export async function createFsForgeStore(
     // Filter metadata index in memory
     const matchingIds: BrickId[] = [];
     for (const [id, meta] of index) {
-      if (matchesQuery(meta, query)) {
+      if (matchesBrickQuery(meta, query)) {
         matchingIds.push(id);
         if (query.limit !== undefined && matchingIds.length >= query.limit) {
           break;
@@ -404,7 +404,7 @@ export async function createFsForgeStore(
   const searchIndex = (query: ForgeQuery): readonly BrickArtifactBase[] => {
     const results: BrickArtifactBase[] = [];
     for (const [, meta] of index) {
-      if (matchesQuery(meta, query)) {
+      if (matchesBrickQuery(meta, query)) {
         results.push(meta);
         if (query.limit !== undefined && results.length >= query.limit) {
           break;

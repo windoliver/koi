@@ -69,6 +69,7 @@ export type {
   AutoPromotionConfig,
   DependencyConfig,
   ForgeConfig,
+  FormatConfig,
   ScopePromotionConfig,
   VerificationConfig,
 } from "./config.js";
@@ -80,6 +81,7 @@ export { descriptor } from "./descriptor.js";
 export type { ForgeError, TestFailure } from "./errors.js";
 // runtime values — errors
 export {
+  formatError,
   governanceError,
   resolveError,
   sandboxError,
@@ -95,6 +97,9 @@ export type {
   ForgeComponentProviderInstance,
 } from "./forge-component-provider.js";
 export { brickToTool, createForgeComponentProvider } from "./forge-component-provider.js";
+// runtime values — diagnostic verifier
+export type { DiagnosticVerifierConfig } from "./forge-diagnostic-verifier.js";
+export { createDiagnosticVerifier } from "./forge-diagnostic-verifier.js";
 // runtime values — forge governance contributor
 export {
   createForgeGovernanceContributor,
@@ -123,8 +128,21 @@ export type {
 export { loadAndVerify, verifyBrickAttestation, verifyBrickIntegrity } from "./integrity.js";
 // runtime values — storage
 export { createInMemoryForgeStore } from "./memory-store.js";
-export type { RequiresCheckResult } from "./requires-check.js";
+export type { NetworkPolicy, RequiresCheckResult } from "./requires-check.js";
 export { checkBrickRequires } from "./requires-check.js";
+// runtime values — re-verification
+export type { ReverificationConfig } from "./reverification.js";
+export { computeTtl, DEFAULT_REVERIFICATION_CONFIG, isStale } from "./reverification.js";
+export type { ReverificationHandler, ReverificationQueue } from "./reverification-queue.js";
+export { createReverificationQueue } from "./reverification-queue.js";
+// runtime values — sandbox error enrichment
+export type { CodeSnippet, EnrichedSandboxError } from "./sandbox-error-enrichment.js";
+export {
+  computeRemediation,
+  enrichSandboxError,
+  extractSnippet,
+  sanitizeInput,
+} from "./sandbox-error-enrichment.js";
 export { filterByAgentScope, isVisibleToAgent } from "./scope-filter.js";
 // runtime values — SLSA serializer
 export type {
@@ -140,9 +158,11 @@ export type {
 export { mapProvenanceToSlsa, mapProvenanceToStatement } from "./slsa-serializer.js";
 // runtime values — store change notification
 export { createMemoryStoreChangeNotifier } from "./store-notifier.js";
+export { createComposeForge } from "./tools/compose-forge.js";
 export type { OnForgeAgentSpawn } from "./tools/forge-agent.js";
 export { createForgeAgentTool } from "./tools/forge-agent.js";
 export { createForgeChannelTool } from "./tools/forge-channel.js";
+export { createForgeEditTool } from "./tools/forge-edit.js";
 export { createForgeMiddlewareTool } from "./tools/forge-middleware.js";
 export { createForgeSkillTool } from "./tools/forge-skill.js";
 export { createForgeToolTool } from "./tools/forge-tool.js";
@@ -188,6 +208,9 @@ export type { UsagePromotedResult, UsageRecordedResult, UsageResult } from "./us
 export { computeAutoPromotion, recordBrickUsage } from "./usage.js";
 // runtime values — verification
 export { verify } from "./verify.js";
+// runtime values — format verification
+export type { FormatStageReport } from "./verify-format.js";
+export { verifyFormat } from "./verify-format.js";
 // runtime values — install integrity verification
 export { verifyInstallIntegrity } from "./verify-install-integrity.js";
 export { verifyResolve } from "./verify-resolve.js";

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type {
   Agent,
   AgentDescriptor,
+  AttachResult,
   SkillComponent,
   SubsystemToken,
   TieredSandboxExecutor,
@@ -12,6 +13,7 @@ import {
   brickId,
   COMPONENT_PRIORITY,
   channelToken,
+  isAttachResult,
   middlewareToken,
   skillToken,
   toolToken,
@@ -35,6 +37,13 @@ import type {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Extract ReadonlyMap from attach() result (handles both AttachResult and bare Map). */
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 function createMockAgent(): Agent {
   const components = new Map<string, unknown>();
@@ -169,7 +178,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
 
     expect(provider.name).toBe("forge");
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     expect(components.size).toBe(2);
 
     const addToken = toolToken("add") as string;
@@ -185,7 +194,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
       executor: mockTiered(echoExecutor()),
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     expect(components.size).toBe(0);
   });
 
@@ -213,7 +222,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
       executor: mockTiered(echoExecutor()),
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     expect(components.size).toBe(2);
     expect(components.has(toolToken("myTool") as string)).toBe(true);
     expect(components.has(skillToken("mySkill") as string)).toBe(true);
@@ -231,7 +240,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
       executor: mockTiered(echoExecutor()),
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     expect(components.size).toBe(1);
   });
 
@@ -245,7 +254,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
       sandboxTimeoutMs: 10_000,
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     expect(components.size).toBe(1);
   });
 
@@ -291,7 +300,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
       executor: mockTiered(echoExecutor()),
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     const token = toolToken("echo") as string;
     const tool = components.get(token) as { execute: (input: unknown) => Promise<unknown> };
 
@@ -336,7 +345,7 @@ describe("createForgeComponentProvider", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     expect(components.size).toBe(1);
     expect(components.has(toolToken("lazyTool") as string)).toBe(true);
   });
@@ -359,8 +368,8 @@ describe("createForgeComponentProvider", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    const first = await provider.attach(createMockAgent());
-    const second = await provider.attach(createMockAgent());
+    const first = extractMap(await provider.attach(createMockAgent()));
+    const second = extractMap(await provider.attach(createMockAgent()));
 
     // Same reference — cached
     expect(first).toBe(second);
@@ -387,7 +396,7 @@ describe("createForgeComponentProvider", () => {
     });
 
     // First attach — loads from store
-    const first = await provider.attach(createMockAgent());
+    const first = extractMap(await provider.attach(createMockAgent()));
     expect(first.size).toBe(1);
     expect(searchCount).toBe(1);
 
@@ -395,7 +404,7 @@ describe("createForgeComponentProvider", () => {
     await realStore.save(createToolBrick({ name: "added" }));
 
     // Second attach without invalidate — still returns cached
-    const second = await provider.attach(createMockAgent());
+    const second = extractMap(await provider.attach(createMockAgent()));
     expect(second).toBe(first);
     expect(searchCount).toBe(1);
 
@@ -403,7 +412,7 @@ describe("createForgeComponentProvider", () => {
     provider.invalidate();
 
     // Third attach — re-queries store and picks up the new tool
-    const third = await provider.attach(createMockAgent());
+    const third = extractMap(await provider.attach(createMockAgent()));
     expect(third).not.toBe(first);
     expect(third.size).toBe(2);
     expect(searchCount).toBe(2);
@@ -422,7 +431,7 @@ describe("createForgeComponentProvider", () => {
     provider.invalidate();
 
     // First attach still works normally
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     expect(components.size).toBe(1);
   });
 
@@ -444,7 +453,7 @@ describe("createForgeComponentProvider", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(1);
 
     // Multiple invalidations
@@ -453,7 +462,7 @@ describe("createForgeComponentProvider", () => {
     provider.invalidate();
 
     // Single attach — only one store query
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(2);
   });
 });
@@ -475,7 +484,7 @@ describe("createForgeComponentProvider — scope filtering", () => {
       scope: "zone",
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     // Zone scope should see zone + global, not agent
     expect(components.size).toBe(2);
     expect(components.has(toolToken("zoneTool") as string)).toBe(true);
@@ -495,7 +504,7 @@ describe("createForgeComponentProvider — scope filtering", () => {
       scope: "agent",
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     expect(components.size).toBe(3);
   });
 
@@ -511,7 +520,7 @@ describe("createForgeComponentProvider — scope filtering", () => {
       scope: "global",
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     expect(components.size).toBe(1);
     expect(components.has(toolToken("globalTool") as string)).toBe(true);
   });
@@ -526,7 +535,7 @@ describe("createForgeComponentProvider — scope filtering", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     expect(components.size).toBe(2);
   });
 
@@ -557,7 +566,7 @@ describe("createForgeComponentProvider — scope filtering", () => {
       zoneId: "team-alpha",
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     // Should see: myZoneTool (matching zone), globalTool. NOT otherZoneTool.
     // Agent-scoped bricks not in this store, so 2 total.
     expect(components.size).toBe(2);
@@ -590,14 +599,14 @@ describe("createForgeComponentProvider — delta invalidation", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(1);
 
     // Invalidate by matching scope
     provider.invalidateByScope("agent");
 
     // Next attach should re-query
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(2);
   });
 
@@ -619,14 +628,14 @@ describe("createForgeComponentProvider — delta invalidation", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(1);
 
     // Invalidate by non-matching scope
     provider.invalidateByScope("global");
 
     // Next attach should use cache (no re-query)
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(1);
   });
 
@@ -648,12 +657,12 @@ describe("createForgeComponentProvider — delta invalidation", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(1);
 
     provider.invalidateByBrickId("b1");
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(2);
   });
 
@@ -675,12 +684,12 @@ describe("createForgeComponentProvider — delta invalidation", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(1);
 
     provider.invalidateByBrickId("unknown_id");
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(1);
   });
 });
@@ -709,7 +718,7 @@ describe("createForgeComponentProvider — lookupBrickId", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(provider.lookupBrickId("calc")).toBe("brick_abc");
   });
 
@@ -722,7 +731,7 @@ describe("createForgeComponentProvider — lookupBrickId", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(provider.lookupBrickId("unknown_tool")).toBeUndefined();
   });
 
@@ -735,7 +744,7 @@ describe("createForgeComponentProvider — lookupBrickId", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(provider.lookupBrickId("calc")).toBe("brick_abc");
 
     provider.invalidate();
@@ -768,14 +777,14 @@ describe("createForgeComponentProvider — notifier integration", () => {
       notifier,
     });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(1);
 
     // Simulate a new brick being saved elsewhere
     notifier.notify({ kind: "saved", brickId: brickId("b2"), scope: "agent" });
 
     // Cache should be invalidated — next attach re-queries
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(2);
   });
 
@@ -799,12 +808,12 @@ describe("createForgeComponentProvider — notifier integration", () => {
       notifier,
     });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(1);
 
     notifier.notify({ kind: "removed", brickId: brickId("b1") });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(2);
   });
 
@@ -828,13 +837,13 @@ describe("createForgeComponentProvider — notifier integration", () => {
       notifier,
     });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(1);
 
     // Update event for cached brick
     notifier.notify({ kind: "updated", brickId: brickId("b1") });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(2);
   });
 
@@ -858,13 +867,13 @@ describe("createForgeComponentProvider — notifier integration", () => {
       notifier,
     });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(1);
 
     // Update event for a brick NOT in cache
     notifier.notify({ kind: "updated", brickId: brickId("b_unknown") });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(1); // Cache NOT invalidated
   });
 
@@ -888,13 +897,13 @@ describe("createForgeComponentProvider — notifier integration", () => {
       notifier,
     });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(1);
 
     // Promoted event with matching scope
     notifier.notify({ kind: "promoted", brickId: brickId("b_other"), scope: "agent" });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(2);
   });
 
@@ -918,7 +927,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
       notifier,
     });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(1);
 
     // Dispose — unsubscribe from notifier
@@ -927,7 +936,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
     // Events after dispose should NOT invalidate
     notifier.notify({ kind: "saved", brickId: brickId("b2"), scope: "agent" });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(1); // Still cached
   });
 
@@ -990,7 +999,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     expect(components.has(middlewareToken("myMiddleware") as string)).toBe(true);
 
     const artifact = components.get(
@@ -1012,7 +1021,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     expect(components.size).toBe(2);
     expect(components.has(middlewareToken("my-middleware") as string)).toBe(true);
     expect(components.has(channelToken("my-channel") as string)).toBe(true);
@@ -1030,7 +1039,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     expect(components.size).toBe(2);
     expect(components.has(toolToken("calc") as string)).toBe(true);
     expect(components.has(middlewareToken("myMiddleware") as string)).toBe(true);
@@ -1073,7 +1082,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     expect(components.size).toBe(5);
     expect(components.has(toolToken("myTool") as string)).toBe(true);
     expect(components.has(middlewareToken("myMiddleware") as string)).toBe(true);
@@ -1105,7 +1114,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
       scope: "global",
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     // Global scope sees only global bricks
     expect(components.size).toBe(1);
     expect(components.has(middlewareToken("globalMw") as string)).toBe(true);
@@ -1127,7 +1136,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(provider.lookupBrickId("audit")).toBe("brick_mw1");
   });
 
@@ -1153,7 +1162,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     expect(components.size).toBe(1);
     expect(components.has(middlewareToken("activeMw") as string)).toBe(true);
   });
@@ -1180,7 +1189,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
       notifier,
     });
 
-    const first = await provider.attach(createMockAgent());
+    const first = extractMap(await provider.attach(createMockAgent()));
     expect(first.size).toBe(1);
     expect(searchCount).toBe(1);
 
@@ -1193,7 +1202,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
     notifier.notify({ kind: "saved", brickId: brickId("b2"), scope: "agent" });
 
     // Cache should be invalidated — next attach re-queries
-    const second = await provider.attach(createMockAgent());
+    const second = extractMap(await provider.attach(createMockAgent()));
     expect(second.size).toBe(2);
     expect(searchCount).toBe(2);
   });
@@ -1267,7 +1276,7 @@ describe.each(NON_TOOL_KINDS)("$kind brick attachment", ({ kind, factory, tokenP
       executor: mockTiered(echoExecutor()),
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     expect(components.has(`${tokenPrefix}my-${kind}`)).toBe(true);
   });
 
@@ -1286,7 +1295,7 @@ describe.each(NON_TOOL_KINDS)("$kind brick attachment", ({ kind, factory, tokenP
       scope: "global",
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     expect(components.has(`${tokenPrefix}global-${kind}`)).toBe(true);
     expect(components.has(`${tokenPrefix}agent-${kind}`)).toBe(false);
   });
@@ -1317,7 +1326,7 @@ describe.each(NON_TOOL_KINDS)("$kind brick attachment", ({ kind, factory, tokenP
       zoneId: "alpha",
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     expect(components.has(`${tokenPrefix}zone-a-${kind}`)).toBe(true);
     expect(components.has(`${tokenPrefix}zone-b-${kind}`)).toBe(false);
   });
@@ -1336,7 +1345,7 @@ describe.each(NON_TOOL_KINDS)("$kind brick attachment", ({ kind, factory, tokenP
       executor: mockTiered(echoExecutor()),
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     expect(components.has(`${tokenPrefix}guarded-${kind}`)).toBe(false);
   });
 
@@ -1360,12 +1369,12 @@ describe.each(NON_TOOL_KINDS)("$kind brick attachment", ({ kind, factory, tokenP
       notifier,
     });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(1);
 
     notifier.notify({ kind: "saved", brickId: brickId("new-brick"), scope: "agent" });
 
-    await provider.attach(createMockAgent());
+    extractMap(await provider.attach(createMockAgent()));
     expect(searchCount).toBe(2);
   });
 });
@@ -1391,7 +1400,7 @@ describe("createForgeComponentProvider — component shapes", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     const skill = components.get(skillToken("research") as string) as SkillComponent;
     expect(skill.name).toBe("research");
     expect(skill.description).toBe("Research skill");
@@ -1414,7 +1423,7 @@ describe("createForgeComponentProvider — component shapes", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     const skill = components.get(skillToken("no-tags") as string) as SkillComponent;
     expect(skill.tags).toBeUndefined();
   });
@@ -1434,7 +1443,7 @@ describe("createForgeComponentProvider — component shapes", () => {
       executor: mockTiered(echoExecutor()),
     });
 
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
     const agent = components.get(agentToken("planner") as string) as AgentDescriptor;
     expect(agent.name).toBe("planner");
     expect(agent.description).toBe("Planning agent");

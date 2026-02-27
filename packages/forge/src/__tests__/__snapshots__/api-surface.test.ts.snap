@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge API surface . has stable type surface 1`] = `
-"import { BrickRequires, DataClassification, ContentMarker, TestCase, TrustTier, BrickId, BrickKind, ToolDescriptor, ForgeScope, BrickLifecycle, SandboxExecutor, BrickArtifact, ForgeStore, Result, KoiError, ForgeProvenance, SigningBackend, ToolArtifact, Tool, TieredSandboxExecutor, StoreChangeNotifier, ComponentProvider, SubsystemToken, GovernanceVariableContributor, Resolver, StoreChangeEvent, BrickComponentMap, KoiMiddleware, GovernanceController, InTotoStatementV1, AgentArtifact, ExecutionContext } from '@koi/core';
+"import { BrickRequires, DataClassification, ContentMarker, TestCase, TrustTier, BrickId, BrickKind, ToolDescriptor, ForgeScope, BrickLifecycle, SandboxExecutor, BrickArtifact, ForgeStore, Result, KoiError, ForgeProvenance, SigningBackend, ToolArtifact, Tool, TieredSandboxExecutor, StoreChangeNotifier, ComponentProvider, DiagnosticProvider, SubsystemToken, GovernanceVariableContributor, Resolver, StoreChangeEvent, BrickComponentMap, KoiMiddleware, GovernanceController, SandboxErrorCode, SandboxError, InTotoStatementV1, AgentArtifact, ExecutionContext } from '@koi/core';
 export { AdvisoryLock, AgentArtifact, BrickArtifact, BrickArtifactBase, BrickRequires, BrickUpdate, ContentMarker, DataClassification, ForgeAttestationSignature, ForgeBuildDefinition, ForgeBuilder, ForgeProvenance, ForgeQuery, ForgeResourceRef, ForgeRunMetadata, ForgeStageDigest, ForgeStore, ForgeVerificationSummary, LockHandle, LockMode, LockRequest, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, SigningBackend, SkillArtifact, StoreChangeEvent, StoreChangeKind, StoreChangeNotifier, TestCase, TierResolution, TieredSandboxExecutor, ToolArtifact } from '@koi/core';
 import { BrickDescriptor } from '@koi/resolve';
 
@@ -28,7 +28,7 @@ interface ForgeResult {
     /** Number of forge operations consumed (caller must increment forgesThisSession by this amount). */
     readonly forgesConsumed: number;
 }
-type VerificationStage = "static" | "resolve" | "sandbox" | "self_test" | "trust";
+type VerificationStage = "static" | "format" | "resolve" | "sandbox" | "self_test" | "trust";
 interface StageReport {
     readonly stage: VerificationStage;
     readonly passed: boolean;
@@ -195,6 +195,10 @@ type ForgeError = {
     readonly code: "FORGE_DISABLED" | "MAX_DEPTH" | "MAX_SESSION_FORGES" | "SCOPE_VIOLATION" | "TRUST_DEMOTION_NOT_ALLOWED" | "LIFECYCLE_INVALID_TRANSITION" | "DEPTH_TOOL_RESTRICTED";
     readonly message: string;
 } | {
+    readonly stage: "format";
+    readonly code: "FORMAT_FAILED" | "FORMAT_TIMEOUT";
+    readonly message: string;
+} | {
     readonly stage: "resolve";
     readonly code: "AUDIT_FAILED" | "INSTALL_FAILED" | "INSTALL_TIMEOUT" | "INTEGRITY_MISMATCH" | "WORKSPACE_FAILED";
     readonly message: string;
@@ -207,6 +211,9 @@ declare function staticError(code: Extract<ForgeError, {
     readonly stage: "static";
 }>["code"], message: string): ForgeError;
 declare function typeError(message: string): ForgeError;
+declare function formatError(code: Extract<ForgeError, {
+    readonly stage: "format";
+}>["code"], message: string): ForgeError;
 declare function sandboxError(code: Extract<ForgeError, {
     readonly stage: "sandbox";
 }>["code"], message: string, durationMs?: number): ForgeError;
@@ -245,6 +252,38 @@ interface AssembleManifestResult {
     readonly loadedBricks: readonly BrickArtifact[];
 }
 declare function assembleManifest(brickIds: readonly string[], store: ForgeStore, options: AssembleManifestOptions): Promise<Result<AssembleManifestResult, ForgeError>>;
+
+/**
+ * TTL-based re-verification — checks whether bricks are stale and
+ * need re-verification. Provides config types and staleness logic.
+ */
+
+interface ReverificationConfig {
+    /** TTL in millis for promoted bricks (default: 24h). */
+    readonly promotedTtlMs: number;
+    /** TTL in millis for verified bricks (default: 1h). */
+    readonly verifiedTtlMs: number;
+    /** Maximum concurrent re-verifications. */
+    readonly maxConcurrency: number;
+    /** Re-verify promoted before verified. */
+    readonly promotedFirst: boolean;
+    /** Injectable clock for testing. Defaults to Date.now. */
+    readonly now?: () => number;
+}
+declare const DEFAULT_REVERIFICATION_CONFIG: ReverificationConfig;
+/**
+ * Returns TTL for a given trust tier.
+ * Sandbox bricks are never re-verified — returns undefined.
+ */
+declare function computeTtl(trustTier: TrustTier, config: ReverificationConfig): number | undefined;
+/**
+ * Returns true if the brick needs re-verification based on its
+ * lastVerifiedAt timestamp and the TTL for its trust tier.
+ */
+declare function isStale(artifact: {
+    readonly trustTier: TrustTier;
+    readonly lastVerifiedAt?: number;
+}, config: ReverificationConfig): boolean;
 
 /**
  * Forge configuration — Zod schema, validation, factory with defaults.
@@ -288,6 +327,12 @@ interface DependencyConfig {
     /** Maximum number of child processes for brick subprocess (Linux only). */
     readonly maxBrickPids: number;
 }
+interface FormatConfig {
+    readonly enabled: boolean;
+    readonly command: string;
+    readonly args: readonly string[];
+    readonly timeoutMs: number;
+}
 interface ForgeConfig {
     readonly enabled: boolean;
     readonly maxForgeDepth: number;
@@ -298,6 +343,8 @@ interface ForgeConfig {
     readonly verification: VerificationConfig;
     readonly autoPromotion: AutoPromotionConfig;
     readonly dependencies: DependencyConfig;
+    readonly format: FormatConfig;
+    readonly reverification?: ReverificationConfig;
 }
 declare function createDefaultForgeConfig(overrides?: Partial<ForgeConfig>): ForgeConfig;
 /**
@@ -521,6 +568,26 @@ interface ForgeComponentProviderInstance extends ComponentProvider {
 declare function createForgeComponentProvider(config: ForgeComponentProviderConfig): ForgeComponentProviderInstance;
 
 /**
+ * Forge diagnostic verifier — plugs DiagnosticProvider into the Stage 3
+ * verifier chain. Rejects on error-level diagnostics, warns on warning-level.
+ */
+
+interface DiagnosticVerifierConfig {
+    /** Whether to reject bricks with warning-level diagnostics (default: false — warnings are advisory). */
+    readonly rejectOnWarning?: boolean;
+}
+/**
+ * Create a ForgeVerifier backed by a DiagnosticProvider.
+ *
+ * Plugs into the existing Stage 3 verifier chain. The verifier:
+ * 1. Extracts implementation from the forge input
+ * 2. Runs diagnostics via the provider
+ * 3. Rejects on error-level diagnostics
+ * 4. Optionally rejects on warning-level diagnostics
+ */
+declare function createDiagnosticVerifier(provider: DiagnosticProvider, config?: DiagnosticVerifierConfig): ForgeVerifier;
+
+/**
  * Forge governance contributor — L2 package that declares forge-specific
  * governance variables via the GovernanceVariableContributor pattern.
  *
@@ -715,21 +782,91 @@ declare function loadAndVerify(store: ForgeStore, id: BrickId): Promise<Result<{
 declare function createInMemoryForgeStore(): ForgeStore;
 
 /**
- * Runtime enforcement of BrickRequires — checks bins, env vars, and tool availability.
+ * Runtime enforcement of BrickRequires — checks bins, env vars, tool availability,
+ * package resolvability, and network policy.
  */
 
+/** Simplified network policy for requires-check: does the environment allow network? */
+interface NetworkPolicy {
+    readonly allowed: boolean;
+}
+type ViolationKind = "bin" | "env" | "tool" | "package" | "network";
 interface RequiresCheckResult {
     readonly satisfied: boolean;
     readonly violation?: {
-        readonly kind: "bin" | "env" | "tool";
+        readonly kind: ViolationKind;
         readonly name: string;
     };
 }
 /**
  * Validates that all runtime requirements declared by a brick are satisfied.
- * Returns the first violation found (fail-fast). No requires → always satisfied.
+ * Returns the first violation found (fail-fast). No requires -> always satisfied.
+ *
+ * Check order: bins -> env -> tools -> packages -> network.
  */
-declare function checkBrickRequires(requires: BrickRequires | undefined, availableToolNames: ReadonlySet<string>): RequiresCheckResult;
+declare function checkBrickRequires(requires: BrickRequires | undefined, availableToolNames: ReadonlySet<string>, networkPolicy?: NetworkPolicy): RequiresCheckResult;
+
+/**
+ * Bounded concurrency queue for brick re-verification.
+ *
+ * Priority: promoted bricks first, then verified.
+ * Dedup: skips bricks already in-flight.
+ * Bounded: max N concurrent re-verifications.
+ */
+
+interface ReverificationQueue {
+    /** Enqueue a brick for re-verification. Returns false if already in-flight or at capacity. */
+    readonly enqueue: (brick: BrickArtifact) => boolean;
+    /** Number of currently in-flight re-verifications. */
+    readonly activeCount: () => number;
+    /** Number of bricks waiting in the queue. */
+    readonly pendingCount: () => number;
+    /** Dispose: clear all pending items. */
+    readonly dispose: () => void;
+}
+type ReverificationHandler = (brick: BrickArtifact) => Promise<boolean>;
+declare function createReverificationQueue(config: ReverificationConfig, handler: ReverificationHandler): ReverificationQueue;
+
+/**
+ * Sandbox error enrichment -- adds code snippets, remediation suggestions,
+ * and sanitized input data to raw sandbox errors for better diagnostics.
+ */
+
+interface CodeSnippet {
+    readonly lines: readonly string[];
+    readonly startLine: number;
+    readonly highlightLine?: number;
+}
+interface EnrichedSandboxError {
+    readonly code: SandboxErrorCode;
+    readonly message: string;
+    readonly durationMs: number;
+    readonly stack?: string;
+    readonly snippet?: CodeSnippet;
+    readonly remediation: string;
+    readonly sanitizedInput?: unknown;
+}
+/**
+ * Parse a line number from a stack trace and extract surrounding lines
+ * from the implementation source for context.
+ */
+declare function extractSnippet(implementation: string, stack: string | undefined): CodeSnippet | undefined;
+/**
+ * Return a human-readable remediation suggestion for the given error code.
+ */
+declare function computeRemediation(code: SandboxErrorCode): string;
+/**
+ * Sanitize input data for inclusion in error reports:
+ * - Truncate long strings
+ * - Redact sensitive keys (secret, password, token, key, auth)
+ * - Cap recursion at 3 levels
+ */
+declare function sanitizeInput(input: unknown): unknown;
+/**
+ * Compose snippet extraction, remediation lookup, and input sanitization
+ * into a single enriched sandbox error for diagnostics.
+ */
+declare function enrichSandboxError(error: SandboxError, implementation: string, input: unknown): EnrichedSandboxError;
 
 /**
  * Scope-based visibility filtering for forge bricks.
@@ -851,6 +988,18 @@ interface ForgeToolConfig {
 declare function createForgeTool(toolConfig: ForgeToolConfig, deps: ForgeDeps): Tool;
 
 /**
+ * compose_forge — Composes multiple bricks of the same kind into a single composite.
+ *
+ * Loads all referenced bricks from the store, validates they are the same kind,
+ * merges their content, and runs the result through the standard forge pipeline
+ * (verify → content-addressed ID → save).
+ *
+ * v1: same-kind only (tool+tool or skill+skill). Mixed kinds are rejected.
+ */
+
+declare function createComposeForge(deps: ForgeDeps): Tool;
+
+/**
  * forge_agent — Creates a new sub-agent with manifest validation.
  * Supports two input modes:
  *   1. \`manifestYaml\` — raw YAML manifest (existing behavior)
@@ -876,6 +1025,16 @@ declare function createForgeAgentTool(deps: ForgeDeps, onSpawn?: OnForgeAgentSpa
  */
 
 declare function createForgeChannelTool(deps: ForgeDeps): Tool;
+
+/**
+ * forge_edit — Edit an existing forged brick's implementation via search-and-replace.
+ *
+ * Loads the brick from the store, applies the edit via @koi/edit-match cascading
+ * match strategies, re-runs verification, and saves the result as a new brick
+ * (immutable — new content-addressed BrickId).
+ */
+
+declare function createForgeEditTool(deps: ForgeDeps): Tool;
 
 /**
  * forge_middleware — Creates a new middleware brick through the verification pipeline.
@@ -948,10 +1107,24 @@ declare function recordBrickUsage(store: ForgeStore, brickId: string, config: Fo
  * Pipeline orchestrator — runs verification stages sequentially with early termination.
  *
  * Governance checks are handled by the createForgeTool factory (shared.ts),
- * NOT here. This function is purely the 5-stage verification pipeline.
+ * NOT here. This function is purely the 6-stage verification pipeline.
  */
 
 declare function verify(input: ForgeInput, context: ForgeContext, executor: SandboxExecutor, verifiers: readonly ForgeVerifier[], config: ForgeConfig): Promise<Result<VerificationReport, ForgeError>>;
+
+/**
+ * Format stage (1.25) — auto-format implementation source code.
+ *
+ * Spawns a formatter subprocess on a temp file, reads back the result.
+ * Only applies to implementation-bearing kinds (tool, middleware, channel).
+ * Gracefully skips if formatter binary not found (warning, not error).
+ */
+
+interface FormatStageReport extends StageReport {
+    readonly stage: "format";
+    readonly formattedImplementation?: string;
+}
+declare function verifyFormat(input: ForgeInput, config: FormatConfig): Promise<Result<FormatStageReport, ForgeError>>;
 
 /**
  * Post-install integrity verification — ensures installed packages match
@@ -1078,6 +1251,6 @@ interface ScanResult {
  */
 declare function scanWorkspaceCode(workspacePath: string, _config: DependencyConfig): Promise<Result<ScanResult, ForgeError>>;
 
-export { type AssembleManifestOptions, type AssembleManifestResult, type AttestationCache, type AutoPromotionConfig, type CreateForgeRuntimeOptions, type CreateProvenanceOptions, type DependencyConfig, FORGE_GOVERNANCE, type ForgeAgentInput, type ForgeAgentInputWithBricks, type ForgeAgentInputWithManifest, type ForgeChannelInput, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeConfig, type ForgeContext, type ForgeDeps, type ForgeError, type ForgeInput, type ForgeInputBase, type ForgeMiddlewareInput, type ForgeResolverContext, type ForgeResult, type ForgeResultMetadata, type ForgeRuntimeInstance, type ForgeSkillInput, type ForgeToolConfig, type ForgeToolInput, type ForgeUsageMiddlewareConfig, type ForgeVerifier, type GovernanceResult, type IntegrityAttestationFailed, type IntegrityContentMismatch, type IntegrityOk, type IntegrityResult, type ManifestParseResult, type ManifestParser, type OnForgeAgentSpawn, type PromoteChange, type PromoteResult, type RequiresCheckResult, type ResolveStageReport, type ScanFinding, type ScanResult, type ScopePromotionConfig, type SkillMdInput, type SlsaBuildDefinition, type SlsaBuildMetadata, type SlsaBuilder, type SlsaKoiExtensions, type SlsaProvenanceV1, type SlsaProvenanceV1WithExtensions, type SlsaResourceDescriptor, type SlsaRunDetails, type StageReport, type TestFailure, type TrustStageReport, type UsagePromotedResult, type UsageRecordedResult, type UsageResult, type VerificationConfig, type VerificationReport, type VerificationStage, type VerifierResult, type WorkspaceResult, assembleManifest, assignTrust, auditDependencies, auditTransitiveDependencies, brickToTool, canonicalJsonSerialize, checkBrickRequires, checkGovernance, checkScopePromotion, cleanupStaleWorkspaces, computeAutoPromotion, computeDependencyHash, createAdversarialVerifiers, createAttestationCache, createBrickWorkspace, createContentScanningVerifier, createDefaultForgeConfig, createExfiltrationVerifier, createForgeAgentTool, createForgeChannelTool, createForgeComponentProvider, createForgeGovernanceContributor, createForgeMiddlewareTool, createForgeProvenance, createForgeResolver, createForgeRuntime, createForgeSkillTool, createForgeTool, createForgeToolTool, createForgeUsageMiddleware, createInMemoryForgeStore, createInjectionVerifier, createMemoryStoreChangeNotifier, createPromoteForgeTool, createResourceExhaustionVerifier, createSearchForgeTool, createStructuralHidingVerifier, descriptor, extractBrickContent, filterByAgentScope, generateSkillMd, governanceError, isVisibleToAgent, loadAndVerify, mapProvenanceToSlsa, mapProvenanceToStatement, recordBrickUsage, resolveError, resolveWorkspacePath, sandboxError, scanWorkspaceCode, selfTestError, signAttestation, staticError, storeError, trustError, typeError, validateForgeConfig, verify, verifyAttestation, verifyBrickAttestation, verifyBrickIntegrity, verifyInstallIntegrity, verifyResolve, verifySandbox, verifySelfTest, verifyStatic, writeBrickEntry };
+export { type AssembleManifestOptions, type AssembleManifestResult, type AttestationCache, type AutoPromotionConfig, type CodeSnippet, type CreateForgeRuntimeOptions, type CreateProvenanceOptions, DEFAULT_REVERIFICATION_CONFIG, type DependencyConfig, type DiagnosticVerifierConfig, type EnrichedSandboxError, FORGE_GOVERNANCE, type ForgeAgentInput, type ForgeAgentInputWithBricks, type ForgeAgentInputWithManifest, type ForgeChannelInput, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeConfig, type ForgeContext, type ForgeDeps, type ForgeError, type ForgeInput, type ForgeInputBase, type ForgeMiddlewareInput, type ForgeResolverContext, type ForgeResult, type ForgeResultMetadata, type ForgeRuntimeInstance, type ForgeSkillInput, type ForgeToolConfig, type ForgeToolInput, type ForgeUsageMiddlewareConfig, type ForgeVerifier, type FormatConfig, type FormatStageReport, type GovernanceResult, type IntegrityAttestationFailed, type IntegrityContentMismatch, type IntegrityOk, type IntegrityResult, type ManifestParseResult, type ManifestParser, type NetworkPolicy, type OnForgeAgentSpawn, type PromoteChange, type PromoteResult, type RequiresCheckResult, type ResolveStageReport, type ReverificationConfig, type ReverificationHandler, type ReverificationQueue, type ScanFinding, type ScanResult, type ScopePromotionConfig, type SkillMdInput, type SlsaBuildDefinition, type SlsaBuildMetadata, type SlsaBuilder, type SlsaKoiExtensions, type SlsaProvenanceV1, type SlsaProvenanceV1WithExtensions, type SlsaResourceDescriptor, type SlsaRunDetails, type StageReport, type TestFailure, type TrustStageReport, type UsagePromotedResult, type UsageRecordedResult, type UsageResult, type VerificationConfig, type VerificationReport, type VerificationStage, type VerifierResult, type WorkspaceResult, assembleManifest, assignTrust, auditDependencies, auditTransitiveDependencies, brickToTool, canonicalJsonSerialize, checkBrickRequires, checkGovernance, checkScopePromotion, cleanupStaleWorkspaces, computeAutoPromotion, computeDependencyHash, computeRemediation, computeTtl, createAdversarialVerifiers, createAttestationCache, createBrickWorkspace, createComposeForge, createContentScanningVerifier, createDefaultForgeConfig, createDiagnosticVerifier, createExfiltrationVerifier, createForgeAgentTool, createForgeChannelTool, createForgeComponentProvider, createForgeEditTool, createForgeGovernanceContributor, createForgeMiddlewareTool, createForgeProvenance, createForgeResolver, createForgeRuntime, createForgeSkillTool, createForgeTool, createForgeToolTool, createForgeUsageMiddleware, createInMemoryForgeStore, createInjectionVerifier, createMemoryStoreChangeNotifier, createPromoteForgeTool, createResourceExhaustionVerifier, createReverificationQueue, createSearchForgeTool, createStructuralHidingVerifier, descriptor, enrichSandboxError, extractBrickContent, extractSnippet, filterByAgentScope, formatError, generateSkillMd, governanceError, isStale, isVisibleToAgent, loadAndVerify, mapProvenanceToSlsa, mapProvenanceToStatement, recordBrickUsage, resolveError, resolveWorkspacePath, sandboxError, sanitizeInput, scanWorkspaceCode, selfTestError, signAttestation, staticError, storeError, trustError, typeError, validateForgeConfig, verify, verifyAttestation, verifyBrickAttestation, verifyBrickIntegrity, verifyFormat, verifyInstallIntegrity, verifyResolve, verifySandbox, verifySelfTest, verifyStatic, writeBrickEntry };
 "
 `;

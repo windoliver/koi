@@ -83,13 +83,14 @@ const defaultConfig: ForgeConfig = createDefaultForgeConfig();
 const defaultReport: VerificationReport = {
   stages: [
     { stage: "static", passed: true, durationMs: 50 },
+    { stage: "format", passed: true, durationMs: 5 },
     { stage: "resolve", passed: true, durationMs: 10 },
     { stage: "sandbox", passed: true, durationMs: 200 },
     { stage: "self_test", passed: true, durationMs: 150 },
     { stage: "trust", passed: true, durationMs: 100 },
   ],
   finalTrustTier: "sandbox",
-  totalDurationMs: 510,
+  totalDurationMs: 515,
   passed: true,
 };
 
@@ -125,7 +126,7 @@ describe("createForgeProvenance", () => {
     expect(provenance.metadata.sessionId).toBe("sess-test");
     expect(provenance.metadata.depth).toBe(0);
     expect(provenance.verification.passed).toBe(true);
-    expect(provenance.verification.stageResults).toHaveLength(5);
+    expect(provenance.verification.stageResults).toHaveLength(6);
     expect(provenance.contentHash).toBe("abc123");
     expect(provenance.attestation).toBeUndefined();
   });

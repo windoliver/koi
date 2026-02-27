@@ -1,8 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentManifest } from "./assembly.js";
 import { createSingleToolProvider } from "./create-single-tool-provider.js";
-import type { Agent, ProcessId, SubsystemToken, Tool } from "./ecs.js";
-import { agentId } from "./ecs.js";
+import type { Agent, AttachResult, ProcessId, SubsystemToken, Tool } from "./ecs.js";
+import { agentId, isAttachResult } from "./ecs.js";
+
+/** Extract ReadonlyMap from attach() result (handles both AttachResult and bare Map). */
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 // ---------------------------------------------------------------------------
 // Test helpers — inline (core has zero deps)
@@ -70,7 +77,7 @@ describe("createSingleToolProvider", () => {
       toolName: "task",
       createTool: () => createMockTool("task"),
     });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     expect(components.size).toBe(1);
     expect(components.has("tool:task")).toBe(true);
@@ -83,7 +90,7 @@ describe("createSingleToolProvider", () => {
       toolName: "task",
       createTool: () => tool,
     });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     expect(components.get("tool:task")).toBe(tool);
   });

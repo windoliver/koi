@@ -268,9 +268,9 @@ describe("e2e-deps: verification pipeline stages", () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.stages).toHaveLength(5);
+      expect(result.value.stages).toHaveLength(6);
       const stageNames = result.value.stages.map((s) => s.stage);
-      expect(stageNames).toEqual(["static", "resolve", "sandbox", "self_test", "trust"]);
+      expect(stageNames).toEqual(["static", "format", "resolve", "sandbox", "self_test", "trust"]);
       expect(result.value.finalTrustTier).toBe("sandbox");
     }
   });
@@ -611,7 +611,7 @@ describe("e2e-deps: network access validation", () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.stages).toHaveLength(5);
+      expect(result.value.stages).toHaveLength(6);
       expect(result.value.passed).toBe(true);
     }
   });

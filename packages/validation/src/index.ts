@@ -7,5 +7,6 @@
  */
 
 export { validateBrickArtifact } from "./brick-validation.js";
+export { matchesBrickQuery } from "./query-match.js";
 export { SEVERITY_ORDER, type Severity, severityAtOrAbove } from "./severity.js";
 export { validateWith, zodToKoiError } from "./validation.js";

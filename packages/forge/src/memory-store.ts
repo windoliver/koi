@@ -15,60 +15,11 @@ import type {
   StoreChangeEvent,
 } from "@koi/core";
 import { notFound } from "@koi/core";
+import { matchesBrickQuery } from "@koi/validation";
 
 // Error helpers use shared factories from @koi/core.
 function notFoundError(id: BrickId): KoiError {
   return notFound(id, `Brick not found: ${id}`);
-}
-
-function matchesQuery(brick: BrickArtifact, query: ForgeQuery): boolean {
-  if (query.kind !== undefined && brick.kind !== query.kind) {
-    return false;
-  }
-  if (query.scope !== undefined && brick.scope !== query.scope) {
-    return false;
-  }
-  if (query.trustTier !== undefined && brick.trustTier !== query.trustTier) {
-    return false;
-  }
-  if (query.lifecycle !== undefined && brick.lifecycle !== query.lifecycle) {
-    return false;
-  }
-  if (query.createdBy !== undefined && brick.provenance.metadata.agentId !== query.createdBy) {
-    return false;
-  }
-  if (
-    query.classification !== undefined &&
-    brick.provenance.classification !== query.classification
-  ) {
-    return false;
-  }
-  if (query.contentMarkers !== undefined && query.contentMarkers.length > 0) {
-    for (const marker of query.contentMarkers) {
-      if (!brick.provenance.contentMarkers.includes(marker)) {
-        return false;
-      }
-    }
-  }
-  // Tags use AND-subset matching: brick must contain all query tags
-  if (query.tags !== undefined && query.tags.length > 0) {
-    for (const tag of query.tags) {
-      if (!brick.tags.includes(tag)) {
-        return false;
-      }
-    }
-  }
-  // Case-insensitive substring match against name + description
-  if (query.text !== undefined && query.text.length > 0) {
-    const lower = query.text.toLowerCase();
-    if (
-      !brick.name.toLowerCase().includes(lower) &&
-      !brick.description.toLowerCase().includes(lower)
-    ) {
-      return false;
-    }
-  }
-  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +66,7 @@ export function createInMemoryForgeStore(): ForgeStore {
   const search = async (query: ForgeQuery): Promise<Result<readonly BrickArtifact[], KoiError>> => {
     const results: BrickArtifact[] = [];
     for (const brick of bricks.values()) {
-      if (matchesQuery(brick, query)) {
+      if (matchesBrickQuery(brick, query)) {
         results.push(brick);
         if (query.limit !== undefined && results.length >= query.limit) {
           break;
@@ -146,6 +97,7 @@ export function createInMemoryForgeStore(): ForgeStore {
       ...(updates.scope !== undefined ? { scope: updates.scope } : {}),
       ...(updates.usageCount !== undefined ? { usageCount: updates.usageCount } : {}),
       ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
+      ...(updates.lastVerifiedAt !== undefined ? { lastVerifiedAt: updates.lastVerifiedAt } : {}),
     };
     bricks.set(id, updated);
     notifyListeners({ kind: "updated", brickId: id });

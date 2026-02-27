@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import type { FileSystemBackend, Tool } from "@koi/core";
-import { FILESYSTEM, toolToken } from "@koi/core";
+import type { AttachResult, FileSystemBackend, Tool } from "@koi/core";
+import { FILESYSTEM, isAttachResult, toolToken } from "@koi/core";
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
+
 import { createFileSystemProvider } from "./fs-component-provider.js";
 import { createMockAgent, createMockBackend } from "./test-helpers.js";
 
@@ -18,7 +25,7 @@ describe("createFileSystemProvider", () => {
   test("attaches all 5 tools by default", async () => {
     const backend = createMockBackend("local");
     const provider = createFileSystemProvider({ backend });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     expect(components.size).toBe(6); // 5 tools + FILESYSTEM token
     expect(components.has(toolToken("fs_read") as string)).toBe(true);
@@ -31,7 +38,7 @@ describe("createFileSystemProvider", () => {
   test("attaches the backend under FILESYSTEM token", async () => {
     const backend = createMockBackend("nexus");
     const provider = createFileSystemProvider({ backend });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     expect(components.get(FILESYSTEM as string)).toBe(backend);
   });
@@ -39,7 +46,7 @@ describe("createFileSystemProvider", () => {
   test("respects custom prefix", async () => {
     const backend = createMockBackend("s3");
     const provider = createFileSystemProvider({ backend, prefix: "s3" });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     expect(components.has(toolToken("s3_read") as string)).toBe(true);
     expect(components.has(toolToken("s3_write") as string)).toBe(true);
@@ -49,7 +56,7 @@ describe("createFileSystemProvider", () => {
   test("respects custom trust tier", async () => {
     const backend = createMockBackend("local");
     const provider = createFileSystemProvider({ backend, trustTier: "sandbox" });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     const tool = components.get(toolToken("fs_read") as string) as Tool;
     expect(tool.trustTier).toBe("sandbox");
@@ -58,7 +65,7 @@ describe("createFileSystemProvider", () => {
   test("defaults trust tier to verified", async () => {
     const backend = createMockBackend("local");
     const provider = createFileSystemProvider({ backend });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     const tool = components.get(toolToken("fs_read") as string) as Tool;
     expect(tool.trustTier).toBe("verified");
@@ -70,7 +77,7 @@ describe("createFileSystemProvider", () => {
       backend,
       operations: ["read", "list"],
     });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     // 2 tools + FILESYSTEM token
     expect(components.size).toBe(3);
@@ -140,7 +147,7 @@ describe("tool descriptors", () => {
   test("each tool has correct name and non-empty description", async () => {
     const backend = createMockBackend("test");
     const provider = createFileSystemProvider({ backend });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     const expectedNames = ["fs_read", "fs_write", "fs_edit", "fs_list", "fs_search"];
     for (const name of expectedNames) {
@@ -154,7 +161,7 @@ describe("tool descriptors", () => {
   test("each tool has inputSchema with required fields", async () => {
     const backend = createMockBackend("test");
     const provider = createFileSystemProvider({ backend });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     for (const name of ["fs_read", "fs_write", "fs_edit", "fs_list", "fs_search"]) {
       const tool = components.get(toolToken(name) as string) as Tool;

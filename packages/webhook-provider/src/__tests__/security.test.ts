@@ -1,16 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import type { OutboundWebhookConfig, Tool, WebhookSummary } from "@koi/core";
-import { toolToken } from "@koi/core";
+import type { AttachResult, OutboundWebhookConfig, Tool, WebhookSummary } from "@koi/core";
+import { isAttachResult, toolToken } from "@koi/core";
 import { createMockAgent, createMockWebhookComponent } from "../test-helpers.js";
 import { createWebhookComponentFromService } from "../webhook-component-adapter.js";
 import { createWebhookProvider } from "../webhook-component-provider.js";
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 describe("webhook security — no secrets in output", () => {
   test("webhook_list output never contains secret field", async () => {
     const provider = createWebhookProvider({
       webhookComponent: createMockWebhookComponent(),
     });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     const listTool = components.get(toolToken("webhook_list") as string) as Tool;
     const result = (await listTool.execute({})) as {
@@ -67,7 +73,7 @@ describe("webhook security — no secrets in output", () => {
     const provider = createWebhookProvider({
       webhookComponent: createMockWebhookComponent(),
     });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     // Verify tool instances don't expose mutation methods
     const listTool = components.get(toolToken("webhook_list") as string) as Tool;

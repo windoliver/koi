@@ -107,7 +107,7 @@ describe("createForgeAgentTool", () => {
     })) as { readonly ok: true; readonly value: ForgeResult };
 
     expect(result.ok).toBe(true);
-    expect(result.value.verificationReport.stages).toHaveLength(5);
+    expect(result.value.verificationReport.stages).toHaveLength(6);
     expect(result.value.verificationReport.passed).toBe(true);
   });
 

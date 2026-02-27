@@ -7,14 +7,20 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync } from "node:fs";
-import type { Agent, WorkspaceComponent } from "@koi/core";
-import { agentId, WORKSPACE } from "@koi/core";
+import type { Agent, AttachResult, WorkspaceComponent } from "@koi/core";
+import { agentId, isAttachResult, WORKSPACE } from "@koi/core";
 import type { TempGitRepo } from "@koi/test-utils";
 import { createMockAgent, createTempGitRepo } from "@koi/test-utils";
 import { createGitWorktreeBackend } from "../git-backend.js";
 import { createWorkspaceProvider } from "../provider.js";
 
 const WORKSPACE_KEY: string = WORKSPACE;
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 function getWorkspaceComponent(components: ReadonlyMap<string, unknown>): WorkspaceComponent {
   const ws = components.get(WORKSPACE_KEY);
@@ -50,7 +56,7 @@ describe("workspace integration", () => {
     });
 
     // Attach
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     const ws = getWorkspaceComponent(components);
 
     expect(ws).toBeDefined();
@@ -82,7 +88,7 @@ describe("workspace integration", () => {
       state: "running",
     });
 
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     const ws = getWorkspaceComponent(components);
 
     if (!provider.detach) throw new Error("detach missing");
@@ -109,7 +115,7 @@ describe("workspace integration", () => {
       terminationOutcome: "success",
     });
 
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     const ws = getWorkspaceComponent(components);
 
     if (!provider.detach) throw new Error("detach missing");
@@ -136,7 +142,7 @@ describe("workspace integration", () => {
       terminationOutcome: "error",
     });
 
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     const ws = getWorkspaceComponent(components);
 
     if (!provider.detach) throw new Error("detach missing");
@@ -163,7 +169,7 @@ describe("workspace integration", () => {
       terminationOutcome: "interrupted",
     });
 
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     const ws = getWorkspaceComponent(components);
 
     if (!provider.detach) throw new Error("detach missing");
@@ -189,7 +195,7 @@ describe("workspace integration", () => {
       state: "terminated",
     });
 
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     const ws = getWorkspaceComponent(components);
 
     if (!provider.detach) throw new Error("detach missing");

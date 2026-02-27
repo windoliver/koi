@@ -9,11 +9,18 @@
 import { describe, expect, it } from "bun:test";
 import type { EngineEvent, EngineOutput, ModelRequest, ModelResponse } from "@koi/core";
 import type { AgentManifest } from "@koi/core/assembly";
-import type { Tool } from "@koi/core/ecs";
+import type { AttachResult, Tool } from "@koi/core/ecs";
+import { isAttachResult } from "@koi/core/ecs";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { createMockAgent } from "@koi/test-utils";
 import { createParallelMinionsProvider } from "../provider.js";
 import type { MinionSpawnRequest, MinionSpawnResult, ParallelMinionsConfig } from "../types.js";
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -122,7 +129,7 @@ describe("@koi/parallel-minions integration", () => {
 
     const provider = createParallelMinionsProvider(config);
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     const tool = components.get("tool:parallel_task") as Tool;
 
     expect(tool).toBeDefined();
@@ -208,7 +215,7 @@ describe("@koi/parallel-minions integration", () => {
 
     const provider = createParallelMinionsProvider(config);
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     const tool = components.get("tool:parallel_task") as Tool;
 
     const result = await tool.execute({
@@ -267,7 +274,7 @@ describe("@koi/parallel-minions integration", () => {
 
     const provider = createParallelMinionsProvider(config);
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     const tool = components.get("tool:parallel_task") as Tool;
 
     const result = await tool.execute({
@@ -341,7 +348,7 @@ describe("@koi/parallel-minions integration", () => {
 
     const provider = createParallelMinionsProvider(config);
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     const tool = components.get("tool:parallel_task") as Tool;
 
     const result = await tool.execute({
@@ -395,7 +402,7 @@ describe("@koi/parallel-minions integration", () => {
 
     const provider = createParallelMinionsProvider(config);
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     const tool = components.get("tool:parallel_task") as Tool;
 
     await tool.execute({

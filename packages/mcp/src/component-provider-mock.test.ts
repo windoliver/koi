@@ -6,11 +6,17 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { Agent, Tool } from "@koi/core";
-import { agentId, toolToken } from "@koi/core";
+import type { Agent, AttachResult, Tool } from "@koi/core";
+import { agentId, isAttachResult, toolToken } from "@koi/core";
 import type { McpClientManager } from "./client-manager.js";
 import { createMcpComponentProvider } from "./component-provider.js";
 import type { McpProviderConfig, ResolvedMcpServerConfig } from "./config.js";
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -222,7 +228,7 @@ describe("createMcpComponentProvider (with mock factory)", () => {
     expect(result.clients).toHaveLength(1);
 
     const agent = createMockAgent();
-    const components = await result.provider.attach(agent);
+    const components = extractMap(await result.provider.attach(agent));
     expect(components.size).toBe(2);
     expect(components.has(toolToken("mcp/filesystem/read_file") as string)).toBe(true);
     expect(components.has(toolToken("mcp/filesystem/write_file") as string)).toBe(true);
@@ -252,7 +258,7 @@ describe("createMcpComponentProvider (with mock factory)", () => {
 
     const result = await createMcpComponentProvider(config, createMockFactory(registry));
     const agent = createMockAgent();
-    const components = await result.provider.attach(agent);
+    const components = extractMap(await result.provider.attach(agent));
 
     const tool = components.get(toolToken("mcp/fs/read") as string) as Tool;
     expect(tool).toBeDefined();
@@ -298,7 +304,7 @@ describe("createMcpComponentProvider (with mock factory)", () => {
     expect(result.clients).toHaveLength(1);
 
     const agent = createMockAgent();
-    const components = await result.provider.attach(agent);
+    const components = extractMap(await result.provider.attach(agent));
     expect(components.size).toBe(2);
     expect(components.has(toolToken("mcp/api/mcp_search") as string)).toBe(true);
     expect(components.has(toolToken("mcp/api/mcp_execute") as string)).toBe(true);
@@ -402,7 +408,7 @@ describe("createMcpComponentProvider (with mock factory)", () => {
     expect(result.failures[0]?.serverName).toBe("broken");
 
     const agent = createMockAgent();
-    const components = await result.provider.attach(agent);
+    const components = extractMap(await result.provider.attach(agent));
     expect(components.size).toBe(1);
     expect(components.has(toolToken("mcp/healthy/ping") as string)).toBe(true);
   });
@@ -415,7 +421,7 @@ describe("createMcpComponentProvider (with mock factory)", () => {
     expect(result.failures).toHaveLength(0);
 
     const agent = createMockAgent();
-    const components = await result.provider.attach(agent);
+    const components = extractMap(await result.provider.attach(agent));
     expect(components.size).toBe(0);
   });
 
@@ -466,8 +472,8 @@ describe("createMcpComponentProvider (with mock factory)", () => {
 
     const result = await createMcpComponentProvider(config, createMockFactory(registry));
     const agent = createMockAgent();
-    const first = await result.provider.attach(agent);
-    const second = await result.provider.attach(agent);
+    const first = extractMap(await result.provider.attach(agent));
+    const second = extractMap(await result.provider.attach(agent));
     expect(first.size).toBe(second.size);
     for (const [key, value] of first) {
       expect(second.get(key)).toBe(value);
@@ -515,7 +521,7 @@ describe("createMcpComponentProvider (with mock factory)", () => {
     expect(result.failures).toHaveLength(0);
 
     const agent = createMockAgent();
-    const components = await result.provider.attach(agent);
+    const components = extractMap(await result.provider.attach(agent));
     expect(components.size).toBe(3);
   });
 });

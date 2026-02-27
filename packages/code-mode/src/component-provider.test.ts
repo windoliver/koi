@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import type { Tool } from "@koi/core";
-import { toolToken } from "@koi/core";
+import type { AttachResult, Tool } from "@koi/core";
+import { isAttachResult, toolToken } from "@koi/core";
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
+
 import { createCodeModeProvider } from "./component-provider.js";
 import { DEFAULT_PREFIX } from "./constants.js";
 import { createMockAgent, createMockBackend } from "./test-helpers.js";
@@ -11,7 +18,7 @@ describe("createCodeModeProvider", () => {
     const agent = createMockAgent(backend);
     const provider = createCodeModeProvider();
 
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     expect(components.size).toBe(3);
 
     const createTool = components.get(toolToken(`${DEFAULT_PREFIX}_create`) as string) as
@@ -35,7 +42,7 @@ describe("createCodeModeProvider", () => {
     const agent = createMockAgent();
     const provider = createCodeModeProvider();
 
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     expect(components.size).toBe(0);
   });
 
@@ -44,7 +51,7 @@ describe("createCodeModeProvider", () => {
     const agent = createMockAgent(backend);
     const provider = createCodeModeProvider({ prefix: "my_plan" });
 
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     const createTool = components.get(toolToken("my_plan_create") as string) as Tool | undefined;
     expect(createTool).toBeDefined();
     expect(createTool?.descriptor.name).toBe("my_plan_create");
@@ -55,7 +62,7 @@ describe("createCodeModeProvider", () => {
     const agent = createMockAgent(backend);
     const provider = createCodeModeProvider({ trustTier: "sandbox" });
 
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     const tool = components.get(toolToken(`${DEFAULT_PREFIX}_create`) as string) as
       | Tool
       | undefined;

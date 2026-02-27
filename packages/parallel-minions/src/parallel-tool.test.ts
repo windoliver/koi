@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { AgentManifest } from "@koi/core/assembly";
-import type { Tool } from "@koi/core/ecs";
+import type { AttachResult, Tool } from "@koi/core/ecs";
+import { isAttachResult } from "@koi/core/ecs";
 import { createMockAgent } from "@koi/test-utils";
 import { createParallelTool } from "./parallel-tool.js";
 import { createParallelMinionsProvider } from "./provider.js";
@@ -15,6 +16,12 @@ const TEST_MANIFEST: AgentManifest = {
   version: "0.0.1",
   model: { name: "mock" },
 };
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 function makeConfig(overrides?: Partial<ParallelMinionsConfig>): ParallelMinionsConfig {
   const spawn: MinionSpawnFn = async (req) => ({
@@ -136,7 +143,7 @@ describe("createParallelMinionsProvider", () => {
     expect(provider.name).toBe("parallel-minions");
 
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     const tool = components.get("tool:parallel_task") as Tool;
 
     expect(tool).toBeDefined();
@@ -156,7 +163,7 @@ describe("createParallelMinionsProvider", () => {
   it("tool executes through provider", async () => {
     const provider = createParallelMinionsProvider(makeConfig());
     const agent = createMockAgent();
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     const tool = components.get("tool:parallel_task") as Tool;
 
     const result = await tool.execute({

@@ -38,18 +38,25 @@ export interface GovernanceResult {
 // Depth-aware tool filtering (per architecture doc)
 // ---------------------------------------------------------------------------
 
-/** Depth 0 (root): all 6 primordial tools */
+/** Depth 0 (root): all primordial tools + forge_edit */
 const DEPTH_0_TOOLS = new Set([
   "forge_tool",
   "forge_skill",
   "forge_agent",
+  "forge_edit",
   "search_forge",
   "compose_forge",
   "promote_forge",
 ]);
 
 /** Depth 1 (sub-agent): limited set */
-const DEPTH_1_TOOLS = new Set(["forge_tool", "forge_skill", "search_forge", "promote_forge"]);
+const DEPTH_1_TOOLS = new Set([
+  "forge_tool",
+  "forge_skill",
+  "forge_edit",
+  "search_forge",
+  "promote_forge",
+]);
 
 /** Depth 2+ (deeper): search only */
 const DEPTH_2_TOOLS = new Set(["search_forge"]);

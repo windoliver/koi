@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { agentId } from "@koi/core";
+import type { AttachResult } from "@koi/core";
+import { agentId, isAttachResult } from "@koi/core";
 import { createMcpComponentProvider } from "./component-provider.js";
 import type { McpProviderConfig } from "./config.js";
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 /**
  * Component provider tests use invalid server configs to test failure paths.
@@ -67,7 +74,7 @@ describe("createMcpComponentProvider", () => {
     expect(result.failures).toHaveLength(2);
 
     const agent = createMockAgent();
-    const components = await result.provider.attach(agent);
+    const components = extractMap(await result.provider.attach(agent));
     expect(components.size).toBe(0);
   });
 

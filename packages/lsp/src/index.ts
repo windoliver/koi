@@ -11,6 +11,10 @@
 export type { CreateTransportFn, LspClient } from "./client.js";
 // runtime values — client
 export { createLspClient } from "./client.js";
+// types — client pool
+export type { LspClientPool, LspClientPoolConfig } from "./client-pool.js";
+// runtime values — client pool
+export { createLspClientPool, DEFAULT_LSP_CLIENT_POOL_CONFIG } from "./client-pool.js";
 // types — component provider
 export type {
   CreateClientFn,
@@ -32,6 +36,8 @@ export {
   resolveServerConfig,
   validateLspConfig,
 } from "./config.js";
+// runtime values — diagnostic adapter
+export { createLspDiagnosticProvider } from "./diagnostic-adapter.js";
 // runtime values — errors
 export {
   capabilityNotSupportedError,

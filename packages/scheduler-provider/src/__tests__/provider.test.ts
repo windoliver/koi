@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import type { SchedulerComponent, TaskScheduler, Tool } from "@koi/core";
-import { agentId, SCHEDULER, scheduleId, taskId, toolToken } from "@koi/core";
+import type { AttachResult, SchedulerComponent, TaskScheduler, Tool } from "@koi/core";
+import { agentId, isAttachResult, SCHEDULER, scheduleId, taskId, toolToken } from "@koi/core";
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
+
 import { createSchedulerProvider } from "../scheduler-component-provider.js";
 import { createMockAgent } from "../test-helpers.js";
 
@@ -37,7 +44,7 @@ describe("createSchedulerProvider — attach", () => {
 
   test("attaches all 9 tools by default", async () => {
     const provider = createSchedulerProvider({ scheduler: createMockTaskScheduler() });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     // 9 tools + SCHEDULER token
     expect(components.size).toBe(10);
@@ -54,7 +61,7 @@ describe("createSchedulerProvider — attach", () => {
 
   test("attaches the component under SCHEDULER token", async () => {
     const provider = createSchedulerProvider({ scheduler: createMockTaskScheduler() });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     const component = components.get(SCHEDULER as string) as SchedulerComponent;
     expect(component).toBeDefined();
@@ -68,7 +75,7 @@ describe("createSchedulerProvider — attach", () => {
       scheduler: createMockTaskScheduler(),
       prefix: "sched",
     });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     expect(components.has(toolToken("sched_submit") as string)).toBe(true);
     expect(components.has(toolToken("sched_cancel") as string)).toBe(true);
@@ -80,7 +87,7 @@ describe("createSchedulerProvider — attach", () => {
       scheduler: createMockTaskScheduler(),
       trustTier: "sandbox",
     });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     const tool = components.get(toolToken("scheduler_submit") as string) as Tool;
     expect(tool.trustTier).toBe("sandbox");
@@ -91,7 +98,7 @@ describe("createSchedulerProvider — attach", () => {
       scheduler: createMockTaskScheduler(),
       operations: ["submit", "stats"],
     });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     // 2 tools + SCHEDULER token
     expect(components.size).toBe(3);
@@ -112,8 +119,8 @@ describe("createSchedulerProvider — attach", () => {
       manifest: { name: "agent-2" },
     });
 
-    const components1 = await provider.attach(agent1);
-    const components2 = await provider.attach(agent2);
+    const components1 = extractMap(await provider.attach(agent1));
+    const components2 = extractMap(await provider.attach(agent2));
 
     // Different component instances
     const comp1 = components1.get(SCHEDULER as string);
@@ -132,7 +139,7 @@ describe("createSchedulerProvider — detach", () => {
 describe("tool descriptors", () => {
   test("each tool has correct name and non-empty description", async () => {
     const provider = createSchedulerProvider({ scheduler: createMockTaskScheduler() });
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     const expectedNames = [
       "scheduler_submit",

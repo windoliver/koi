@@ -16,12 +16,13 @@ import { describe, expect, test } from "bun:test";
 import type {
   Agent,
   AgentManifest,
+  AttachResult,
   ImplementationArtifact,
   ProcessId,
   SandboxExecutor,
   TieredSandboxExecutor,
 } from "@koi/core";
-import { agentId, channelToken, middlewareToken } from "@koi/core";
+import { agentId, channelToken, isAttachResult, middlewareToken } from "@koi/core";
 import { createDefaultForgeConfig } from "../config.js";
 import { createForgeComponentProvider } from "../forge-component-provider.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
@@ -49,6 +50,13 @@ function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
       fallback: false,
     }),
   };
+}
+
+/** Extract ReadonlyMap from attach() result (handles both AttachResult and bare Map). */
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
 }
 
 function stubAgent(): Agent {
@@ -107,7 +115,7 @@ describe("Forge non-tool bricks — integration", () => {
 
     // Step 3: ComponentProvider should load the promoted middleware
     const provider = createForgeComponentProvider({ store, executor });
-    const components = await provider.attach(stubAgent());
+    const components = extractMap(await provider.attach(stubAgent()));
 
     const tok = middlewareToken("auditMiddleware") as string;
     expect(components.has(tok)).toBe(true);
@@ -154,7 +162,7 @@ describe("Forge non-tool bricks — integration", () => {
 
     // Step 3: ComponentProvider loads the promoted channel
     const provider = createForgeComponentProvider({ store, executor });
-    const components = await provider.attach(stubAgent());
+    const components = extractMap(await provider.attach(stubAgent()));
 
     const tok = channelToken("slackChannel") as string;
     expect(components.has(tok)).toBe(true);
@@ -196,7 +204,7 @@ describe("Forge non-tool bricks — integration", () => {
 
     // ComponentProvider should skip this middleware
     const provider = createForgeComponentProvider({ store, executor });
-    const components = await provider.attach(stubAgent());
+    const components = extractMap(await provider.attach(stubAgent()));
 
     const tok = middlewareToken("untrustedMw") as string;
     expect(components.has(tok)).toBe(false);
@@ -226,7 +234,7 @@ describe("Forge non-tool bricks — integration", () => {
 
     // First: verify middleware at sandbox trust is NOT loaded
     const provider1 = createForgeComponentProvider({ store, executor });
-    const components1 = await provider1.attach(stubAgent());
+    const components1 = extractMap(await provider1.attach(stubAgent()));
     expect(components1.has(middlewareToken("trustedMw") as string)).toBe(false);
     provider1.dispose();
 
@@ -239,7 +247,7 @@ describe("Forge non-tool bricks — integration", () => {
 
     // After promotion: ComponentProvider loads it
     const provider2 = createForgeComponentProvider({ store, executor });
-    const components2 = await provider2.attach(stubAgent());
+    const components2 = extractMap(await provider2.attach(stubAgent()));
     expect(components2.has(middlewareToken("trustedMw") as string)).toBe(true);
     provider2.dispose();
   });
@@ -280,7 +288,7 @@ describe("Forge non-tool bricks — integration", () => {
       executor,
       zoneId: "team-alpha",
     });
-    const componentsMatch = await providerMatch.attach(stubAgent());
+    const componentsMatch = extractMap(await providerMatch.attach(stubAgent()));
     expect(componentsMatch.has(middlewareToken("zonedMiddleware") as string)).toBe(true);
     providerMatch.dispose();
 
@@ -290,7 +298,7 @@ describe("Forge non-tool bricks — integration", () => {
       executor,
       zoneId: "team-beta",
     });
-    const componentsOther = await providerOther.attach(stubAgent());
+    const componentsOther = extractMap(await providerOther.attach(stubAgent()));
     expect(componentsOther.has(middlewareToken("zonedMiddleware") as string)).toBe(false);
     providerOther.dispose();
   });
@@ -327,7 +335,7 @@ describe("Forge non-tool bricks — integration", () => {
 
     // ComponentProvider should skip this brick due to unsatisfied requires
     const provider = createForgeComponentProvider({ store, executor });
-    const components = await provider.attach(stubAgent());
+    const components = extractMap(await provider.attach(stubAgent()));
 
     const tok = middlewareToken("requiresMiddleware") as string;
     expect(components.has(tok)).toBe(false);

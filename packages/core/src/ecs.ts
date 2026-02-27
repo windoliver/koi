@@ -211,6 +211,25 @@ export interface AgentDescriptor {
 // Component provider
 // ---------------------------------------------------------------------------
 
+/** A component that was skipped during attach with a human-readable reason. */
+export interface SkippedComponent {
+  readonly name: string;
+  readonly reason: string;
+}
+
+/** Rich result from ComponentProvider.attach() with skip reporting. */
+export interface AttachResult {
+  readonly components: ReadonlyMap<string, unknown>;
+  readonly skipped: readonly SkippedComponent[];
+}
+
+/** Type guard: returns true when value is an AttachResult (not a bare ReadonlyMap). */
+export function isAttachResult(
+  value: AttachResult | ReadonlyMap<string, unknown>,
+): value is AttachResult {
+  return typeof value === "object" && value !== null && "components" in value && "skipped" in value;
+}
+
 export interface ComponentProvider {
   readonly name: string;
   /**
@@ -220,7 +239,11 @@ export interface ComponentProvider {
    * Defaults to COMPONENT_PRIORITY.BUNDLED (100) if omitted.
    */
   readonly priority?: number;
-  readonly attach: (agent: Agent) => Promise<ReadonlyMap<string, unknown>>;
+  /**
+   * Attach components to an agent. Returns either a bare ReadonlyMap (legacy)
+   * or an AttachResult with skip reporting. Use isAttachResult() to discriminate.
+   */
+  readonly attach: (agent: Agent) => Promise<AttachResult | ReadonlyMap<string, unknown>>;
   readonly detach?: (agent: Agent) => Promise<void>;
   readonly watch?: (listener: (event: ComponentEvent) => void) => () => void;
 }

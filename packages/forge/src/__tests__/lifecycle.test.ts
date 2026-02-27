@@ -73,7 +73,7 @@ describe("Forge lifecycle — end-to-end", () => {
     expect(toolResult.value.trustTier).toBe("sandbox");
     expect(toolResult.value.lifecycle).toBe("active");
     expect(toolResult.value.verificationReport.passed).toBe(true);
-    expect(toolResult.value.verificationReport.stages).toHaveLength(5);
+    expect(toolResult.value.verificationReport.stages).toHaveLength(6);
     expect(toolResult.value.metadata.forgedBy).toBe("agent-lifecycle");
     expect(toolResult.value.metadata.sessionId).toBe("session-e2e");
     expect(toolResult.value.forgesConsumed).toBe(1);
