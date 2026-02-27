@@ -1,5 +1,6 @@
 /**
- * @koi/crystallize — Auto-discovery of repeating tool call patterns (L0u)
+ * @koi/crystallize — Auto-discovery of repeating tool call patterns (L0u).
+ * @packageDocumentation
  *
  * Observes tool call sequences via SnapshotChainStore<TurnTrace>, detects
  * repeating n-gram patterns, and surfaces crystallization candidates for
