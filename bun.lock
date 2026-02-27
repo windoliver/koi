@@ -259,6 +259,18 @@
         "@koi/model-router": "workspace:*",
       },
     },
+    "packages/competitive-broadcast": {
+      "name": "@koi/competitive-broadcast",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/config": {
       "name": "@koi/config",
       "version": "0.0.0",
@@ -791,7 +803,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
@@ -1894,6 +1905,8 @@
     "@koi/cli": ["@koi/cli@workspace:packages/cli"],
 
     "@koi/code-mode": ["@koi/code-mode@workspace:packages/code-mode"],
+
+    "@koi/competitive-broadcast": ["@koi/competitive-broadcast@workspace:packages/competitive-broadcast"],
 
     "@koi/config": ["@koi/config@workspace:packages/config"],
 
