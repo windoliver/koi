@@ -15,7 +15,7 @@ import {
   createPayMiddleware,
 } from "@koi/middleware-pay";
 import {
-  createPatternPermissionEngine,
+  createPatternPermissionBackend,
   createPermissionsMiddleware,
 } from "@koi/middleware-permissions";
 import {
@@ -73,8 +73,9 @@ describe("Full pipeline scenario", () => {
     const memStore = createInMemoryStore();
 
     const perm = createPermissionsMiddleware({
-      engine: createPatternPermissionEngine(),
-      rules: { allow: ["*"], deny: ["blocked"], ask: [] },
+      backend: createPatternPermissionBackend({
+        rules: { allow: ["*"], deny: ["blocked"], ask: [] },
+      }),
     });
 
     const pay = createPayMiddleware({

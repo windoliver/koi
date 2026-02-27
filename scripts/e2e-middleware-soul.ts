@@ -31,7 +31,7 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { composeModelChain, composeToolChain } from "../packages/engine/src/compose.js";
-import { createPatternPermissionEngine } from "../packages/middleware-permissions/src/engine.js";
+import { createPatternPermissionBackend } from "../packages/middleware-permissions/src/engine.js";
 import { createPermissionsMiddleware } from "../packages/middleware-permissions/src/permissions.js";
 import type { SoulMiddleware } from "../packages/middleware-soul/src/soul.js";
 import { createSoulMiddleware } from "../packages/middleware-soul/src/soul.js";
@@ -533,12 +533,14 @@ const toolTerminal: ToolHandler = async (request: ToolRequest): Promise<ToolResp
 console.log("  [8a] Permissions deny fs_write by policy");
 
 const denyPermMw = createPermissionsMiddleware({
-  engine: createPatternPermissionEngine(/* defaultDeny */ true),
-  rules: {
-    allow: ["search", "read"],
-    deny: ["fs_write", "fs_delete"],
-    ask: [],
-  },
+  backend: createPatternPermissionBackend({
+    rules: {
+      allow: ["search", "read"],
+      deny: ["fs_write", "fs_delete"],
+      ask: [],
+    },
+    defaultDeny: true,
+  }),
 });
 
 const denyToolChain = composeToolChain([denyPermMw], toolTerminal);
@@ -578,12 +580,14 @@ console.log("  [8b] Permissions ask + HITL denies");
 let hitlRequests: { toolId: string; input: JsonObject }[] = [];
 
 const askDenyPermMw = createPermissionsMiddleware({
-  engine: createPatternPermissionEngine(true),
-  rules: {
-    allow: ["search", "read"],
-    deny: [],
-    ask: ["fs_write"],
-  },
+  backend: createPatternPermissionBackend({
+    rules: {
+      allow: ["search", "read"],
+      deny: [],
+      ask: ["fs_write"],
+    },
+    defaultDeny: true,
+  }),
   approvalHandler: {
     requestApproval: async (
       toolId: string,
@@ -637,12 +641,14 @@ console.log("  [8c] Permissions ask + HITL approves → auto-reload via wrapTool
 hitlRequests = [];
 
 const askApprovePermMw = createPermissionsMiddleware({
-  engine: createPatternPermissionEngine(true),
-  rules: {
-    allow: ["search", "read"],
-    deny: [],
-    ask: ["fs_write"],
-  },
+  backend: createPatternPermissionBackend({
+    rules: {
+      allow: ["search", "read"],
+      deny: [],
+      ask: ["fs_write"],
+    },
+    defaultDeny: true,
+  }),
   approvalHandler: {
     requestApproval: async (
       toolId: string,

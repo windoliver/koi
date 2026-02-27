@@ -17,7 +17,7 @@ import {
   createPayMiddleware,
 } from "@koi/middleware-pay";
 import {
-  createPatternPermissionEngine,
+  createPatternPermissionBackend,
   createPermissionsMiddleware,
 } from "@koi/middleware-permissions";
 import {
@@ -71,8 +71,9 @@ function sortByPriority(middleware: readonly KoiMiddleware[]): readonly KoiMiddl
 describe("Middleware composition — execution order", () => {
   test("priorities sort correctly: permissions(100) < pay(200) < audit(300) < memory(400)", () => {
     const perm = createPermissionsMiddleware({
-      engine: createPatternPermissionEngine(),
-      rules: { allow: ["*"], deny: [], ask: [] },
+      backend: createPatternPermissionBackend({
+        rules: { allow: ["*"], deny: [], ask: [] },
+      }),
     });
     const pay = createPayMiddleware({
       tracker: createInMemoryBudgetTracker(),
@@ -153,8 +154,9 @@ describe("Middleware composition — error propagation", () => {
   test("permission denied prevents pay from recording cost", async () => {
     const tracker = createInMemoryBudgetTracker();
     const perm = createPermissionsMiddleware({
-      engine: createPatternPermissionEngine(),
-      rules: { allow: [], deny: ["blocked-tool"], ask: [] },
+      backend: createPatternPermissionBackend({
+        rules: { allow: [], deny: ["blocked-tool"], ask: [] },
+      }),
     });
     const pay = createPayMiddleware({
       tracker,
@@ -183,8 +185,9 @@ describe("Middleware composition — error propagation", () => {
   test("permission denied but audit still logs the denial", async () => {
     const sink = createInMemoryAuditSink();
     const perm = createPermissionsMiddleware({
-      engine: createPatternPermissionEngine(),
-      rules: { allow: [], deny: ["blocked"], ask: [] },
+      backend: createPatternPermissionBackend({
+        rules: { allow: [], deny: ["blocked"], ask: [] },
+      }),
     });
     const audit = createAuditMiddleware({ sink });
 
