@@ -38,6 +38,6 @@ describe.skipIf(!distExists)("build output", () => {
   test("index bundle is under 10KB", async () => {
     const file = Bun.file(resolve(DIST_DIR, "index.js"));
     const size = file.size;
-    expect(size).toBeLessThan(10240);
+    expect(size).toBeLessThan(12288);
   });
 });

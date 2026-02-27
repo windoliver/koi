@@ -3249,7 +3249,7 @@ export { type PublisherId, type ShadowWarning, type VersionChangeEvent, type Ver
 
 exports[`@koi/core API surface ./run-report has stable type surface 1`] = `
 "import { JsonObject } from './common.js';
-import { A as AgentId, c as SessionId, aI as RunId, i as ArtifactRef } from './ecs-HASH.js';
+import { A as AgentId, e as SessionId, aK as RunId, k as ArtifactRef } from './ecs-HASH.js';
 import './assembly-HASH.js';
 import './webhook.js';
 import './errors.js';
