@@ -20,27 +20,32 @@ const IDENTITY_MATCHES: readonly PIIMatch[] = [];
  * Input must be sorted by start ascending.
  */
 function resolveOverlaps(sorted: readonly PIIMatch[]): readonly PIIMatch[] {
-  if (sorted.length <= 1) return sorted;
+  const first = sorted[0];
+  if (sorted.length <= 1 || first === undefined) return sorted;
 
-  const resolved: PIIMatch[] = [sorted[0]!];
+  const resolved: PIIMatch[] = [first];
+  // let justified: tracks tail of resolved to avoid re-indexing under noUncheckedIndexedAccess
+  let last: PIIMatch = first;
 
   for (let i = 1; i < sorted.length; i++) {
-    const current = sorted[i]!;
-    const prev = resolved[resolved.length - 1]!;
+    const current = sorted[i];
+    if (current === undefined) continue; // noUncheckedIndexedAccess guard (i < sorted.length)
 
     // No overlap — keep both
-    if (current.start >= prev.end) {
+    if (current.start >= last.end) {
       resolved.push(current);
+      last = current;
       continue;
     }
 
     // Overlap — keep the longer match
-    const prevLen = prev.end - prev.start;
+    const prevLen = last.end - last.start;
     const currLen = current.end - current.start;
     if (currLen > prevLen) {
       resolved[resolved.length - 1] = current;
+      last = current;
     }
-    // else: keep prev (earlier or equal length wins)
+    // else: keep last (earlier or equal length wins)
   }
 
   return resolved;
@@ -77,7 +82,8 @@ export function applyMatches(
   // let justified: accumulates the modified text through replacements
   let result = text;
   for (let i = resolved.length - 1; i >= 0; i--) {
-    const match = resolved[i]!;
+    const match = resolved[i];
+    if (match === undefined) continue; // noUncheckedIndexedAccess guard (i < resolved.length);
     // let justified: holds the replacement string for current match
     let replacement: string;
 

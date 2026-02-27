@@ -52,7 +52,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
   const ttlMs =
     resolvedCache !== false ? (resolvedCache.ttlMs ?? DEFAULT_APPROVAL_CACHE_TTL_MS) : 0;
 
-  /** Cache keyed by fnv1a(rulesFingerprint:userId:toolId:input). Only approvals are cached. */
+  /** Cache keyed by fnv1a(rulesFingerprint:userId:toolId:sortedInput). Only approvals are cached. */
   const cache = resolvedCache !== false ? new Map<number, CacheEntry>() : undefined;
 
   const capabilityFragment: CapabilityFragment = {
@@ -157,10 +157,11 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
 
 /**
  * Compose a cache key from all authorization-relevant dimensions.
- * Uses null-byte separator to avoid collisions when components contain colons
- * (e.g. toolId "fs:delete"). JSON.stringify ordering is engine-deterministic
- * for objects constructed in the same code path; callers constructing input
- * from heterogeneous sources should pre-sort keys.
+ *
+ * Uses null-byte separator to avoid collisions between components.
+ * Input keys are sorted before serialization so `{a:1,b:2}` and `{b:2,a:1}`
+ * produce the same cache key — property insertion order is an implementation
+ * detail, not a semantic difference.
  */
 function computeCacheKey(
   rulesFingerprint: number,
@@ -168,5 +169,21 @@ function computeCacheKey(
   toolId: string,
   input: unknown,
 ): number {
-  return fnv1a(`${rulesFingerprint}\0${userId}\0${toolId}\0${JSON.stringify(input)}`);
+  let serialized: string;
+  try {
+    const sorted =
+      input !== null && typeof input === "object" && !Array.isArray(input)
+        ? Object.fromEntries(
+            Object.entries(input as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)),
+          )
+        : input;
+    serialized = JSON.stringify(sorted);
+  } catch (_e: unknown) {
+    throw KoiRuntimeError.from(
+      "VALIDATION",
+      `Failed to serialize input for cache key — input must be JSON-serializable`,
+      { context: { toolId } },
+    );
+  }
+  return fnv1a(`${rulesFingerprint}\0${userId}\0${toolId}\0${serialized}`);
 }
