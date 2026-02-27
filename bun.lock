@@ -664,6 +664,19 @@
         "zod": "4.3.6",
       },
     },
+    "packages/memory-fs": {
+      "name": "@koi/memory-fs",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-ace": {
       "name": "@koi/middleware-ace",
       "version": "0.0.0",
@@ -1953,6 +1966,8 @@
     "@koi/manifest": ["@koi/manifest@workspace:packages/manifest"],
 
     "@koi/mcp": ["@koi/mcp@workspace:packages/mcp"],
+
+    "@koi/memory-fs": ["@koi/memory-fs@workspace:packages/memory-fs"],
 
     "@koi/middleware-ace": ["@koi/middleware-ace@workspace:packages/middleware-ace"],
 

@@ -1,0 +1,50 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/memory-fs API surface . has stable type surface 1`] = `
+"import { MemoryComponent } from '@koi/core';
+
+interface FsSearchRetriever {
+    readonly retrieve: (query: string, limit: number) => Promise<readonly FsSearchHit[]>;
+}
+interface FsSearchIndexer {
+    readonly index: (docs: readonly FsIndexDoc[]) => Promise<void>;
+    readonly remove: (ids: readonly string[]) => Promise<void>;
+}
+interface FsSearchHit {
+    readonly id: string;
+    readonly score: number;
+    readonly content: string;
+}
+interface FsIndexDoc {
+    readonly id: string;
+    readonly content: string;
+    readonly metadata?: Readonly<Record<string, unknown>>;
+}
+interface FsMemoryConfig {
+    readonly baseDir: string;
+    readonly retriever?: FsSearchRetriever | undefined;
+    readonly indexer?: FsSearchIndexer | undefined;
+    readonly dedupThreshold?: number | undefined;
+    readonly freqProtectThreshold?: number | undefined;
+    readonly decayHalfLifeDays?: number | undefined;
+    readonly maxSummaryFacts?: number | undefined;
+}
+interface FsMemory {
+    readonly component: MemoryComponent;
+    readonly rebuildSummaries: () => Promise<void>;
+    readonly getTierDistribution: () => Promise<TierDistribution>;
+    readonly listEntities: () => Promise<readonly string[]>;
+    readonly close: () => Promise<void>;
+}
+interface TierDistribution {
+    readonly hot: number;
+    readonly warm: number;
+    readonly cold: number;
+    readonly total: number;
+}
+
+declare function createFsMemory(config: FsMemoryConfig): Promise<FsMemory>;
+
+export { type FsIndexDoc, type FsMemory, type FsMemoryConfig, type FsSearchHit, type FsSearchIndexer, type FsSearchRetriever, type TierDistribution, createFsMemory };
+"
+`;

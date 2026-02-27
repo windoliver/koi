@@ -32,6 +32,7 @@
     { "path": "packages/hash" },
     { "path": "packages/manifest" },
     { "path": "packages/mcp" },
+    { "path": "packages/memory-fs" },
     { "path": "packages/middleware-audit" },
     { "path": "packages/middleware-event-trace" },
     { "path": "packages/middleware-feedback-loop" },
