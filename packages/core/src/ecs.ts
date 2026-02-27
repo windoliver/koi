@@ -12,6 +12,7 @@ import type { BrowserDriver } from "./browser-driver.js";
 import type { ChannelAdapter } from "./channel.js";
 import type { JsonObject } from "./common.js";
 import type { DelegationComponent } from "./delegation.js";
+import type { TerminationOutcome } from "./engine.js";
 import type { FileSystemBackend } from "./filesystem-backend.js";
 import type { GovernanceController } from "./governance.js";
 import type { GovernanceBackend } from "./governance-backend.js";
@@ -132,6 +133,16 @@ export interface Agent {
   readonly pid: ProcessId;
   readonly manifest: AgentManifest;
   readonly state: ProcessState;
+  /**
+   * Termination outcome — defined only when `state === "terminated"`.
+   * Maps the engine's stop reason to a coarse success/error/interrupted
+   * signal so L2 consumers (e.g., workspace cleanup) can distinguish
+   * normal completion from failure without depending on L1 internals.
+   *
+   * `undefined` on a terminated agent means the outcome is unknown —
+   * consumers should fail-closed (treat as NOT success).
+   */
+  readonly terminationOutcome?: TerminationOutcome | undefined;
   readonly component: <T>(token: SubsystemToken<T>) => T | undefined;
   readonly has: (token: SubsystemToken<unknown>) => boolean;
   readonly hasAll: (...tokens: readonly SubsystemToken<unknown>[]) => boolean;

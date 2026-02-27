@@ -425,3 +425,45 @@ describe("lifecycle transitions", () => {
     expect(agent.state).toBe("terminated");
   });
 });
+
+// ---------------------------------------------------------------------------
+// terminationOutcome getter
+// ---------------------------------------------------------------------------
+
+describe("terminationOutcome", () => {
+  test("returns undefined when not terminated", () => {
+    const agent = new AgentEntity(testPid(), testManifest());
+    expect(agent.terminationOutcome).toBeUndefined();
+
+    agent.transition({ kind: "start" });
+    expect(agent.terminationOutcome).toBeUndefined();
+  });
+
+  test("returns 'success' for completed stop reason", () => {
+    const agent = new AgentEntity(testPid(), testManifest());
+    agent.transition({ kind: "start" });
+    agent.transition({ kind: "complete", stopReason: "completed" });
+    expect(agent.terminationOutcome).toBe("success");
+  });
+
+  test("returns 'success' for max_turns stop reason", () => {
+    const agent = new AgentEntity(testPid(), testManifest());
+    agent.transition({ kind: "start" });
+    agent.transition({ kind: "complete", stopReason: "max_turns" });
+    expect(agent.terminationOutcome).toBe("success");
+  });
+
+  test("returns 'error' for error stop reason", () => {
+    const agent = new AgentEntity(testPid(), testManifest());
+    agent.transition({ kind: "start" });
+    agent.transition({ kind: "error", error: new Error("boom") });
+    expect(agent.terminationOutcome).toBe("error");
+  });
+
+  test("returns 'interrupted' for interrupted stop reason", () => {
+    const agent = new AgentEntity(testPid(), testManifest());
+    agent.transition({ kind: "start" });
+    agent.transition({ kind: "complete", stopReason: "interrupted" });
+    expect(agent.terminationOutcome).toBe("interrupted");
+  });
+});

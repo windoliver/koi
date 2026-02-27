@@ -166,9 +166,19 @@ Control what happens when an agent detaches:
 
 | Policy | Behavior |
 |--------|----------|
-| `"on_success"` (default) | Dispose if agent terminated normally, keep on failure |
+| `"on_success"` (default) | Dispose only when `terminationOutcome === "success"`. Preserve on `"error"`, `"interrupted"`, or unknown outcome (fail-closed) |
 | `"always"` | Always dispose regardless of outcome |
 | `"never"` | Never dispose — workspace persists for debugging |
+
+The cleanup decision uses the agent's `TerminationOutcome`, which is derived from the engine's stop reason:
+
+| Engine Stop Reason | Termination Outcome | `on_success` Action |
+|--------------------|--------------------|--------------------|
+| `"completed"` | `"success"` | Cleanup |
+| `"max_turns"` | `"success"` | Cleanup |
+| `"error"` | `"error"` | **Preserve** |
+| `"interrupted"` | `"interrupted"` | **Preserve** |
+| Agent still running | `undefined` | **Preserve** |
 
 ```typescript
 const provider = createWorkspaceProvider({
@@ -177,6 +187,16 @@ const provider = createWorkspaceProvider({
   cleanupTimeoutMs: 5_000,      // default: 5 seconds
 });
 ```
+
+### Preservation Logging
+
+When a workspace is preserved (not cleaned up), the provider emits a structured log line so operators can see why workspaces persist:
+
+```
+[workspace] preserved workspace ws-abc for agent agent-123 (policy=on_success, outcome=error)
+```
+
+This answers: which workspace, which agent, which policy, and which outcome caused preservation.
 
 ## Post-Create Hooks
 
@@ -202,6 +222,53 @@ const provider = createWorkspaceProvider({
 ```
 
 If `postCreate` throws, the workspace is disposed automatically and the error propagates.
+
+## Automatic Stale Pruning
+
+Preserved workspaces accumulate over time. The `pruneStale` config hook triggers automatic cleanup of orphaned workspaces whenever a workspace is preserved:
+
+```typescript
+import {
+  createGitWorktreeBackend,
+  createWorkspaceProvider,
+  pruneStaleWorkspaces,
+} from "@koi/workspace";
+
+const repoPath = "/path/to/repo";
+const backend = createGitWorktreeBackend({ repoPath });
+
+const provider = createWorkspaceProvider({
+  backend: backend.value,
+  cleanupPolicy: "on_success",
+  pruneStale: () => pruneStaleWorkspaces(repoPath),
+});
+```
+
+**How it works:**
+
+```
+  detach(agent)
+       │
+       ├── shouldCleanup=true ──► dispose workspace, done
+       │
+       └── shouldCleanup=false
+            │
+            ├── log: "[workspace] preserved workspace ws-abc ..."
+            │
+            └── pruneStale()   ◄── fires here, best-effort
+                 │
+                 ├── success ──► stale workspaces removed
+                 └── failure ──► swallowed, logged as warning
+```
+
+The hook is **backend-agnostic** — it's just `() => Promise<void>`. Wire it to `pruneStaleWorkspaces` for git worktrees, or your own implementation for containers, cloud VMs, etc.
+
+**Design decisions:**
+
+- **Best-effort** — `pruneStale` failure never blocks or breaks detach
+- **Caller-controlled** — the provider doesn't import any pruning logic; you choose the implementation
+- **Only on preservation** — never fires when cleanup succeeds (no orphans to prune)
+- **Not a hot path** — detach is a lifecycle event, not per-request
 
 ## Orphan Cleanup
 
@@ -323,7 +390,7 @@ const provider = createWorkspaceProvider({
 | `validateWorkspaceConfig` | Validation | Validate and apply defaults to config |
 | `WorkspaceBackend` | Interface | Strategy interface for custom backends |
 | `WorkspaceInfo` | Interface | Workspace metadata returned by backends |
-| `WorkspaceProviderConfig` | Interface | User-facing provider configuration |
+| `WorkspaceProviderConfig` | Interface | User-facing provider configuration (includes `pruneStale` hook) |
 | `CleanupPolicy` | Type | `"always" \| "on_success" \| "never"` |
 
 ## L0 Types (in @koi/core)

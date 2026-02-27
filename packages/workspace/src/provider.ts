@@ -5,7 +5,7 @@
  * Implements attach/detach lifecycle with configurable cleanup policies.
  */
 
-import type { Agent, ComponentProvider, KoiError, ProcessState, Result } from "@koi/core";
+import type { Agent, ComponentProvider, KoiError, Result } from "@koi/core";
 import { WORKSPACE } from "@koi/core";
 import type { CleanupPolicy, WorkspaceProviderConfig } from "./types.js";
 import { type ValidatedWorkspaceConfig, validateWorkspaceConfig } from "./validate-config.js";
@@ -22,7 +22,7 @@ export function createWorkspaceProvider(
   const validated = validateWorkspaceConfig(config);
   if (!validated.ok) return validated;
 
-  const { config: resolved, backend, postCreate } = validated.value;
+  const { config: resolved, backend, postCreate, pruneStale } = validated.value;
 
   // Mutable Map justified: internal tracking state encapsulated in closure,
   // not exposed to callers. Functional alternative would require
@@ -73,8 +73,24 @@ export function createWorkspaceProvider(
 
       workspaces.delete(agent.pid.id);
 
-      const shouldCleanup = resolveCleanup(resolved.cleanupPolicy, agent.state);
-      if (!shouldCleanup) return;
+      const shouldCleanup = resolveCleanup(resolved.cleanupPolicy, agent);
+      if (!shouldCleanup) {
+        console.warn(
+          `[workspace] preserved workspace ${workspaceId} for agent ${agent.pid.id} ` +
+            `(policy=${resolved.cleanupPolicy}, outcome=${agent.terminationOutcome ?? "unknown"})`,
+        );
+
+        if (pruneStale) {
+          try {
+            await pruneStale();
+          } catch (e: unknown) {
+            console.warn(
+              `[workspace] pruneStale failed: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
+        }
+        return;
+      }
 
       await disposeWithTimeout(backend, workspaceId, resolved.cleanupTimeoutMs);
     },
@@ -83,14 +99,16 @@ export function createWorkspaceProvider(
   return { ok: true, value: provider };
 }
 
-function resolveCleanup(policy: CleanupPolicy, agentState: ProcessState): boolean {
+function resolveCleanup(policy: CleanupPolicy, agent: Agent): boolean {
   switch (policy) {
     case "always":
       return true;
     case "never":
       return false;
     case "on_success":
-      return agentState === "terminated";
+      // Fail-closed: only clean up when we can confirm success.
+      // undefined outcome on a terminated agent → preserve workspace.
+      return agent.state === "terminated" && agent.terminationOutcome === "success";
   }
 }
 
