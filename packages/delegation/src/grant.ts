@@ -7,6 +7,7 @@
 
 import { randomUUID } from "node:crypto";
 import type {
+  AgentId,
   DelegationGrant,
   DelegationId,
   DelegationScope,
@@ -21,8 +22,8 @@ import { signGrant } from "./sign.js";
 // ---------------------------------------------------------------------------
 
 export interface CreateGrantParams {
-  readonly issuerId: string;
-  readonly delegateeId: string;
+  readonly issuerId: AgentId;
+  readonly delegateeId: AgentId;
   readonly scope: DelegationScope;
   readonly maxChainDepth: number;
   readonly ttlMs: number;
@@ -30,7 +31,7 @@ export interface CreateGrantParams {
 }
 
 export interface AttenuateParams {
-  readonly delegateeId: string;
+  readonly delegateeId: AgentId;
   readonly scope: DelegationScope;
   readonly ttlMs?: number;
 }
@@ -86,8 +87,8 @@ export function createGrant(params: CreateGrantParams): Result<DelegationGrant, 
     createdAt: now,
     expiresAt: now + params.ttlMs,
   };
-  const signature = signGrant(unsigned, params.secret);
-  return { ok: true, value: { ...unsigned, signature } };
+  const proof = signGrant(unsigned, params.secret);
+  return { ok: true, value: { ...unsigned, proof } };
 }
 
 // ---------------------------------------------------------------------------
@@ -155,8 +156,8 @@ export function attenuateGrant(
     expiresAt: childExpiresAt,
   };
 
-  const signature = signGrant(unsigned, secret);
-  return { ok: true, value: { ...unsigned, signature } };
+  const proof = signGrant(unsigned, secret);
+  return { ok: true, value: { ...unsigned, proof } };
 }
 
 // ---------------------------------------------------------------------------

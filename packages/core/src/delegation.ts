@@ -7,6 +7,26 @@
  */
 
 import type { PermissionConfig } from "./assembly.js";
+import type { AgentId } from "./ecs.js";
+
+// ---------------------------------------------------------------------------
+// Capability proof — replaces opaque signature: string
+// ---------------------------------------------------------------------------
+
+/**
+ * Cryptographic proof backing a delegation grant or capability token.
+ *
+ * - `hmac-sha256`: HMAC-SHA256 digest for root→engine internal auth.
+ *   The secret is known only to the issuing engine instance.
+ * - `ed25519`: Ed25519 signature for agent-to-agent delegation chains.
+ *   Provides cryptographic unforgeability without a shared secret.
+ * - `nexus`: Nexus-issued opaque token for external authorization services.
+ *   Interface defined here; L2 backend implementation deferred to v2.
+ */
+export type CapabilityProof =
+  | { readonly kind: "hmac-sha256"; readonly digest: string }
+  | { readonly kind: "ed25519"; readonly publicKey: string; readonly signature: string }
+  | { readonly kind: "nexus"; readonly token: string };
 
 // ---------------------------------------------------------------------------
 // Branded delegation ID
@@ -50,9 +70,9 @@ export interface DelegationScope {
 export interface DelegationGrant {
   readonly id: DelegationId;
   /** Agent ID of the delegator. */
-  readonly issuerId: string;
+  readonly issuerId: AgentId;
   /** Agent ID of the receiver. */
-  readonly delegateeId: string;
+  readonly delegateeId: AgentId;
   /** What is being delegated. */
   readonly scope: DelegationScope;
   /** Chain link to parent delegation (undefined = root grant). */
@@ -65,8 +85,13 @@ export interface DelegationGrant {
   readonly createdAt: number;
   /** Unix timestamp ms — when the grant expires. */
   readonly expiresAt: number;
-  /** HMAC-SHA256 hex digest over the canonical grant payload. */
-  readonly signature: string;
+  /**
+   * Cryptographic proof binding this grant to its issuer.
+   * Replaces the previous opaque `signature: string` field.
+   * Use `kind: "hmac-sha256"` for root→engine internal grants;
+   * use `kind: "ed25519"` for agent-to-agent delegation chains.
+   */
+  readonly proof: CapabilityProof;
 }
 
 // ---------------------------------------------------------------------------
@@ -109,6 +134,16 @@ export interface ScopeChecker {
 /** Pluggable revocation store. Default implementation is in-memory (L2). */
 export interface RevocationRegistry {
   readonly isRevoked: (id: DelegationId) => boolean | Promise<boolean>;
+  /**
+   * Batch revocation check. Optional — when present, used by chain-verifier
+   * to avoid N+1 async lookups when traversing delegation chains.
+   *
+   * Returns a map from DelegationId → revoked (true = revoked).
+   * IDs not present in the map are assumed not revoked.
+   */
+  readonly isRevokedBatch?: (
+    ids: readonly DelegationId[],
+  ) => ReadonlyMap<DelegationId, boolean> | Promise<ReadonlyMap<DelegationId, boolean>>;
   readonly revoke: (id: DelegationId, cascade: boolean) => void | Promise<void>;
 }
 
@@ -133,7 +168,7 @@ export interface DelegationConfig {
 export interface DelegationComponent {
   readonly grant: (
     scope: DelegationScope,
-    delegateeId: string,
+    delegateeId: AgentId,
     ttlMs?: number,
   ) => Promise<DelegationGrant>;
   readonly revoke: (id: DelegationId, cascade?: boolean) => Promise<void>;
@@ -166,10 +201,10 @@ export type DelegationEvent =
     }
   | {
       readonly kind: "delegation:circuit_opened";
-      readonly delegateeId: string;
+      readonly delegateeId: AgentId;
       readonly failureCount: number;
     }
-  | { readonly kind: "delegation:circuit_closed"; readonly delegateeId: string };
+  | { readonly kind: "delegation:circuit_closed"; readonly delegateeId: AgentId };
 
 // ---------------------------------------------------------------------------
 // Circuit breaker configuration

@@ -13,7 +13,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
-import { DEFAULT_CIRCUIT_BREAKER_CONFIG, runId, sessionId, turnId } from "@koi/core";
+import { agentId, DEFAULT_CIRCUIT_BREAKER_CONFIG, runId, sessionId, turnId } from "@koi/core";
 import { createDelegationManager } from "./delegation-manager.js";
 import { createDelegationMiddleware } from "./middleware.js";
 
@@ -82,7 +82,7 @@ describe("DelegationManager middleware integration", () => {
     const manager = createDelegationManager({ config: DEFAULT_CONFIG });
     cleanups.push(manager.dispose);
 
-    const grantResult = manager.grant("agent-1", "agent-2", {
+    const grantResult = manager.grant(agentId("agent-1"), agentId("agent-2"), {
       permissions: { allow: ["read_file"] },
     });
     expect(grantResult.ok).toBe(true);
@@ -105,7 +105,7 @@ describe("DelegationManager middleware integration", () => {
     const manager = createDelegationManager({ config: DEFAULT_CONFIG });
     cleanups.push(manager.dispose);
 
-    const grantResult = manager.grant("agent-1", "agent-2", {
+    const grantResult = manager.grant(agentId("agent-1"), agentId("agent-2"), {
       permissions: { allow: ["read_file"] },
     });
     expect(grantResult.ok).toBe(true);
@@ -132,11 +132,11 @@ describe("DelegationManager middleware integration", () => {
     cleanups.push(manager.dispose);
 
     // Trip the circuit
-    manager.recordFailure("agent-2");
-    manager.recordFailure("agent-2");
+    manager.recordFailure(agentId("agent-2"));
+    manager.recordFailure(agentId("agent-2"));
 
-    expect(manager.canDelegate("agent-2")).toBe(false);
-    expect(manager.circuitState("agent-2")).toBe("open");
+    expect(manager.canDelegate(agentId("agent-2"))).toBe(false);
+    expect(manager.circuitState(agentId("agent-2"))).toBe("open");
   });
 
   test("emits delegation:denied event on verification failure", async () => {
@@ -147,7 +147,7 @@ describe("DelegationManager middleware integration", () => {
     });
     cleanups.push(manager.dispose);
 
-    const grantResult = manager.grant("agent-1", "agent-2", {
+    const grantResult = manager.grant(agentId("agent-1"), agentId("agent-2"), {
       permissions: { allow: ["read_file"] },
     });
     expect(grantResult.ok).toBe(true);
@@ -175,8 +175,8 @@ describe("DelegationManager middleware integration", () => {
     });
     cleanups.push(manager.dispose);
 
-    manager.recordFailure("agent-2");
-    manager.recordFailure("agent-2");
+    manager.recordFailure(agentId("agent-2"));
+    manager.recordFailure(agentId("agent-2"));
 
     const circuitEvents = events.filter((e) => e.kind === "delegation:circuit_opened");
     expect(circuitEvents).toHaveLength(1);
@@ -194,7 +194,9 @@ describe("DelegationManager middleware integration", () => {
     });
     cleanups.push(manager.dispose);
 
-    manager.grant("agent-1", "agent-2", { permissions: { allow: ["read_file"] } });
+    manager.grant(agentId("agent-1"), agentId("agent-2"), {
+      permissions: { allow: ["read_file"] },
+    });
 
     const grantedEvents = events.filter((e) => e.kind === "delegation:granted");
     expect(grantedEvents).toHaveLength(1);

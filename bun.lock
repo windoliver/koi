@@ -116,6 +116,14 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/capability-verifier": {
+      "name": "@koi/capability-verifier",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/channel-base": {
       "name": "@koi/channel-base",
       "version": "0.0.0",
@@ -760,7 +768,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
@@ -1845,6 +1852,8 @@
     "@koi/bundle": ["@koi/bundle@workspace:packages/bundle"],
 
     "@koi/canvas": ["@koi/canvas@workspace:packages/canvas"],
+
+    "@koi/capability-verifier": ["@koi/capability-verifier@workspace:packages/capability-verifier"],
 
     "@koi/channel-base": ["@koi/channel-base@workspace:packages/channel-base"],
 

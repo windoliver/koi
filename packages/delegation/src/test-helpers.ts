@@ -6,12 +6,14 @@
  */
 
 import type {
+  AgentId,
   DelegationGrant,
   DelegationId,
   KoiError,
   Result,
   RevocationRegistry,
 } from "@koi/core";
+import { agentId } from "@koi/core";
 import { createGrant } from "./grant.js";
 import type { InMemoryRegistry } from "./registry.js";
 
@@ -75,8 +77,8 @@ const TEST_SECRET = "test-secret-key-32-bytes-minimum";
 /** Creates a grant for testing, throwing if creation fails. */
 export function mustCreateGrant(
   overrides?: Partial<{
-    readonly issuerId: string;
-    readonly delegateeId: string;
+    readonly issuerId: AgentId;
+    readonly delegateeId: AgentId;
     readonly scope: DelegationGrant["scope"];
     readonly maxChainDepth: number;
     readonly ttlMs: number;
@@ -84,8 +86,8 @@ export function mustCreateGrant(
   }>,
 ): DelegationGrant {
   const result: Result<DelegationGrant, KoiError> = createGrant({
-    issuerId: overrides?.issuerId ?? "agent-1",
-    delegateeId: overrides?.delegateeId ?? "agent-2",
+    issuerId: overrides?.issuerId ?? agentId("agent-1"),
+    delegateeId: overrides?.delegateeId ?? agentId("agent-2"),
     scope: overrides?.scope ?? { permissions: { allow: ["read_file", "write_file"] } },
     maxChainDepth: overrides?.maxChainDepth ?? 3,
     ttlMs: overrides?.ttlMs ?? 3600000,

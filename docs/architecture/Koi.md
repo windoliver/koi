@@ -678,11 +678,11 @@ The sandbox profile is inside the terminal. No "stale authorization" — middlew
 | 7. Audit Logging | Immutable trail, agent attribution |
 | 8. Adversarial Detection | Goal-drift monitoring, deception detection |
 
-### Capability-Based Security (#252, planned)
+### Capability-Based Security (#252)
 
 ```
 Current: permission = (subject, action, resource) checked per call
-Target:  capability = unforgeable token granting specific rights
+Implemented: capability = unforgeable token granting specific rights
 
 ┌──────────────┐     delegate      ┌──────────────┐
 │  Parent Agent │───────────────────│  Child Agent  │
@@ -698,7 +698,35 @@ Properties:
   • Composable — multiple capabilities combine via intersection
 ```
 
-This replaces ambient authority (checking "is this agent allowed?") with capability authority (the token IS the permission). Aligns with the existing `DelegationComponent` + HMAC-signed grants. See also: **Scoped Component Views** — the Linux namespace model for infrastructure tokens (FILESYSTEM, BROWSER, CREDENTIALS, MEMORY) where each L2 consumer receives a restricted proxy of the same backend.
+**Implemented in `@koi/capability-verifier` (L2).** This replaces ambient authority
+(checking "is this agent allowed?") with capability authority (the token IS the
+permission). Aligns with seL4/UCAN/Fuchsia capability principles.
+
+**`CapabilityProof` discriminated union** — three proof kinds:
+- `hmac-sha256` — HMAC-SHA256 digest for root→engine internal auth (shared secret)
+- `ed25519` — Ed25519 signature for agent-to-agent delegation chains (public key embedded)
+- `nexus` — reserved for Nexus-issued tokens (v2, interface defined, no implementation yet)
+
+**Session-scoped revocation** — `CapabilityToken.scope.sessionId` binds each token to a
+session. When a session terminates, all tokens for that session become invalid without
+modifying the registry. The verifier checks `VerifyContext.activeSessionIds` (a
+`ReadonlySet<SessionId>`) on every call. Parent death = all child tokens invalid.
+
+**Delegation chain integrity** — `verifyChain()` traverses the full `root → leaf` chain,
+checking: each `chainDepth` matches position, child scope ⊆ parent scope (monotonic
+attenuation), child `expiresAt` ≤ parent `expiresAt`. Batch revocation via optional
+`RevocationRegistry.isRevokedBatch()` avoids N+1 async lookups for deep chains.
+
+**Hybrid HMAC/Ed25519 signing:**
+- Root→engine tokens: HMAC-SHA256 (shared secret, high-throughput)
+- Agent-to-agent delegation: Ed25519 keypair (cryptographically unforgeable, no shared secret)
+
+**Optional `requiresPoP?: boolean`** field reserved on `CapabilityToken` for v2
+Proof-of-Possession challenge/response (not yet implemented).
+
+See also: **Scoped Component Views** — the Linux namespace model for infrastructure
+tokens (FILESYSTEM, BROWSER, CREDENTIALS, MEMORY) where each L2 consumer receives a
+restricted proxy of the same backend.
 
 ### Pattern-Based Permissions
 
