@@ -59,7 +59,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
+        "@koi/file-resolution": "workspace:*",
         "@koi/hash": "workspace:*",
       },
       "devDependencies": {
@@ -542,8 +542,10 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/file-resolution": "workspace:*",
       },
       "devDependencies": {
+        "@koi/bootstrap": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
         "@koi/manifest": "workspace:*",

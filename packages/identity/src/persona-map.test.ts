@@ -2,12 +2,25 @@
  * Unit tests for buildPersonaMap and resolvePersonaContent.
  */
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { buildPersonaMap, buildWatchedPaths, resolvePersonaContent } from "./persona-map.js";
 
+let tmpDir: string;
+
+beforeEach(async () => {
+  tmpDir = join(import.meta.dir, "__test_tmp__", crypto.randomUUID());
+  await mkdir(tmpDir, { recursive: true });
+});
+
+afterEach(async () => {
+  await rm(tmpDir, { recursive: true, force: true });
+});
+
 describe("resolvePersonaContent", () => {
-  it("returns inline instructions with no sources tracked", () => {
-    const result = resolvePersonaContent(
+  it("returns inline instructions with no sources tracked", async () => {
+    const result = await resolvePersonaContent(
       { channelId: "@koi/channel-telegram", instructions: "Be casual." },
       undefined,
     );
@@ -16,14 +29,14 @@ describe("resolvePersonaContent", () => {
     expect(result.sources).toHaveLength(0);
   });
 
-  it("returns empty instructions when not provided", () => {
-    const result = resolvePersonaContent({ channelId: "@koi/channel-cli" }, undefined);
+  it("returns empty instructions when not provided", async () => {
+    const result = await resolvePersonaContent({ channelId: "@koi/channel-cli" }, undefined);
     expect(result.instructions).toBe("");
     expect(result.sources).toHaveLength(0);
   });
 
-  it("includes name and avatar when provided", () => {
-    const result = resolvePersonaContent(
+  it("includes name and avatar when provided", async () => {
+    const result = await resolvePersonaContent(
       { channelId: "@koi/channel-slack", name: "Alex", avatar: "casual.png" },
       undefined,
     );
@@ -31,10 +44,30 @@ describe("resolvePersonaContent", () => {
     expect(result.avatar).toBe("casual.png");
   });
 
-  it("omits name and avatar when not provided", () => {
-    const result = resolvePersonaContent({ channelId: "@koi/channel-cli" }, undefined);
+  it("omits name and avatar when not provided", async () => {
+    const result = await resolvePersonaContent({ channelId: "@koi/channel-cli" }, undefined);
     expect("name" in result).toBe(false);
     expect("avatar" in result).toBe(false);
+  });
+
+  it("reads instructions from file path", async () => {
+    const filePath = join(tmpDir, "persona.md");
+    await writeFile(filePath, "You are a helpful bot.");
+    const result = await resolvePersonaContent(
+      { channelId: "@koi/channel-slack", instructions: { path: "persona.md" } },
+      tmpDir,
+    );
+    expect(result.instructions).toBe("You are a helpful bot.");
+    expect(result.sources).toEqual([filePath]);
+  });
+
+  it("returns empty instructions when file not found", async () => {
+    const result = await resolvePersonaContent(
+      { channelId: "@koi/channel-slack", instructions: { path: "missing.md" } },
+      tmpDir,
+    );
+    expect(result.instructions).toBe("");
+    expect(result.sources).toHaveLength(0);
   });
 });
 
@@ -102,6 +135,21 @@ describe("buildPersonaMap", () => {
     const cached = map.get("@koi/channel-telegram");
     expect(cached?.message.senderId).toBe("system:identity");
   });
+
+  it("reads file-based instructions and builds message", async () => {
+    const filePath = join(tmpDir, "instructions.md");
+    await writeFile(filePath, "Follow these guidelines.");
+    const map = await buildPersonaMap({
+      personas: [{ channelId: "@koi/channel-telegram", instructions: { path: "instructions.md" } }],
+      basePath: tmpDir,
+    });
+    const cached = map.get("@koi/channel-telegram");
+    expect(cached).toBeDefined();
+    if (cached?.message.content[0]?.kind === "text") {
+      expect(cached.message.content[0].text).toBe("Follow these guidelines.");
+    }
+    expect(cached?.sources).toEqual([filePath]);
+  });
 });
 
 describe("buildWatchedPaths", () => {
@@ -117,5 +165,17 @@ describe("buildWatchedPaths", () => {
   it("returns empty set for empty map", () => {
     const paths = buildWatchedPaths(new Map());
     expect(paths.size).toBe(0);
+  });
+
+  it("collects file paths from file-based personas", async () => {
+    const filePath = join(tmpDir, "soul.md");
+    await writeFile(filePath, "Be helpful.");
+    const map = await buildPersonaMap({
+      personas: [{ channelId: "@koi/channel-slack", instructions: { path: "soul.md" } }],
+      basePath: tmpDir,
+    });
+    const paths = buildWatchedPaths(map);
+    expect(paths.size).toBe(1);
+    expect(paths.has(filePath)).toBe(true);
   });
 });

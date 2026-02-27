@@ -33,10 +33,10 @@ Koi agents need bootstrap context: system instructions, tool usage guidelines, a
 ├──────────────────────────────────────────────────────┤
 │  Dependencies                                        │
 │                                                      │
-│  @koi/core    (L0)   KoiError, Result types          │
-│  @koi/errors  (L0u)  mapFsError()                    │
-│  @koi/hash    (L0u)  fnv1a() content hashing         │
-│  Bun.file()   (rt)   bounded file reads              │
+│  @koi/core             (L0)   KoiError, Result types │
+│  @koi/file-resolution  (L0u)  readBoundedFile(),     │
+│                                isValidPathSegment()   │
+│  @koi/hash             (L0u)  fnv1a() content hashing│
 └──────────────────────────────────────────────────────┘
 ```
 
