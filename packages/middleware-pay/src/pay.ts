@@ -5,9 +5,11 @@
 import type {
   CapabilityFragment,
   KoiMiddleware,
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -107,6 +109,46 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
       }
 
       return response;
+    },
+
+    async *wrapModelStream(
+      ctx: TurnContext,
+      request: ModelRequest,
+      next: ModelStreamHandler,
+    ): AsyncIterable<ModelChunk> {
+      const sessionId = ctx.session.sessionId;
+      await checkBudget(sessionId);
+
+      for await (const chunk of next(request)) {
+        yield chunk;
+
+        // Record cost from the done chunk, which carries the full ModelResponse + usage.
+        if (chunk.kind === "done" && chunk.response.usage) {
+          const { model } = chunk.response;
+          const { inputTokens, outputTokens } = chunk.response.usage;
+          const costUsd = calculator.calculate(model, inputTokens, outputTokens);
+          const costEntry = {
+            inputTokens,
+            outputTokens,
+            model,
+            costUsd,
+            timestamp: Date.now(),
+          };
+          await tracker.record(sessionId, costEntry);
+
+          const [totalSpent, remainingBudget] = await Promise.all([
+            tracker.totalSpend(sessionId),
+            tracker.remaining(sessionId, budget),
+          ]);
+          lastKnownRemaining = remainingBudget;
+          const pctUsed = budget > 0 ? totalSpent / budget : 1;
+          checkAndFireAlerts(pctUsed, remainingBudget);
+
+          if (onUsage) {
+            onUsage({ entry: costEntry, totalSpent, remaining: remainingBudget });
+          }
+        }
+      }
     },
 
     async wrapToolCall(
