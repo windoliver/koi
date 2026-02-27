@@ -13,6 +13,7 @@ export interface ApprovalCacheConfig {
 }
 
 export const DEFAULT_APPROVAL_CACHE_MAX_ENTRIES = 256;
+/** Default approval cache TTL: 5 minutes. Prevents stale authorizations surviving policy or identity changes. */
 export const DEFAULT_APPROVAL_CACHE_TTL_MS = 300_000;
 
 export interface PermissionsMiddlewareConfig {

@@ -207,6 +207,17 @@ userId = ctx.session.userId ?? "__anonymous__"
 
 Anonymous and authenticated users produce different cache keys. Switching users mid-session causes cache misses.
 
+**Input serialization** — top-level input keys are sorted before `JSON.stringify`:
+
+```
+{ b: 8, a: 7 }  →  sorted  →  { a: 7, b: 8 }  →  '{"a":7,"b":8}'
+{ a: 7, b: 8 }  →  sorted  →  { a: 7, b: 8 }  →  '{"a":7,"b":8}'  ← same key
+```
+
+Property insertion order is an implementation detail. Both calls above hit the same cache entry.
+If the input is not JSON-serializable (e.g. contains a circular reference), the middleware throws
+a `VALIDATION` error before the approval prompt is shown.
+
 **TTL** — checked on every cache hit:
 
 ```
