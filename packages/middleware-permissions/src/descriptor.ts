@@ -9,7 +9,7 @@ import type { KoiError, KoiMiddleware, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "@koi/resolve";
 import type { PermissionRules } from "./engine.js";
-import { createPatternPermissionEngine } from "./engine.js";
+import { createPatternPermissionBackend } from "./engine.js";
 import { createPermissionsMiddleware } from "./permissions.js";
 
 /**
@@ -91,18 +91,17 @@ export const descriptor: BrickDescriptor<KoiMiddleware> = {
       ask: isStringArray(options.ask) ? options.ask : [],
     };
 
-    const engine = createPatternPermissionEngine();
+    const backend = createPatternPermissionBackend({ rules });
 
     // Build config — only include approvalHandler when present
     // (exactOptionalPropertyTypes forbids setting optional props to undefined)
     if (context.approvalHandler !== undefined) {
       return createPermissionsMiddleware({
-        engine,
-        rules,
+        backend,
         approvalHandler: { requestApproval: context.approvalHandler.requestApproval },
       });
     }
 
-    return createPermissionsMiddleware({ engine, rules });
+    return createPermissionsMiddleware({ backend });
   },
 };

@@ -1,8 +1,8 @@
 /**
  * E2E: Approval cache through the full L1 runtime (createKoi + engine adapter).
  *
- * Validates that the three cache-key dimensions — policy fingerprint, user identity,
- * and TTL — work correctly when wired through the real middleware composition chain.
+ * Validates that the approval cache dimensions — user identity and TTL —
+ * work correctly when wired through the real middleware composition chain.
  *
  * Two tiers:
  *   1. Deterministic (createLoopAdapter + mock ModelHandler) — fast, stable, CI-safe
@@ -32,7 +32,7 @@ import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { createPiAdapter } from "@koi/engine-pi";
 import type { ApprovalHandler } from "../engine.js";
-import { createPatternPermissionEngine } from "../engine.js";
+import { createPatternPermissionBackend } from "../engine.js";
 import { createPermissionsMiddleware } from "../permissions.js";
 
 // ---------------------------------------------------------------------------
@@ -146,18 +146,17 @@ function createMockModelHandler(): {
 // ---------------------------------------------------------------------------
 
 describe("e2e: approval cache through createKoi + createLoopAdapter", () => {
-  const permissionEngine = createPatternPermissionEngine();
-
   test("approval cache skips re-prompt on second identical tool call", async () => {
     const requestApproval = mock(async () => true);
     const approvalHandler: ApprovalHandler = { requestApproval };
     const { modelCall } = createMockModelHandler();
 
     const permissionsMw = createPermissionsMiddleware({
-      engine: permissionEngine,
-      rules: { allow: [], deny: [], ask: ["deploy"] },
+      backend: createPatternPermissionBackend({
+        rules: { allow: [], deny: [], ask: ["deploy"] },
+      }),
       approvalHandler,
-      approvalCache: true,
+      cache: true,
     });
 
     const adapter = createLoopAdapter({ modelCall, maxTurns: 5 });
@@ -203,10 +202,11 @@ describe("e2e: approval cache through createKoi + createLoopAdapter", () => {
     const { modelCall } = createMockModelHandler();
 
     const permissionsMw = createPermissionsMiddleware({
-      engine: permissionEngine,
-      rules: { allow: [], deny: [], ask: ["deploy"] },
+      backend: createPatternPermissionBackend({
+        rules: { allow: [], deny: [], ask: ["deploy"] },
+      }),
       approvalHandler,
-      approvalCache: true,
+      cache: true,
     });
 
     // Run as user-a
@@ -246,10 +246,11 @@ describe("e2e: approval cache through createKoi + createLoopAdapter", () => {
     const { modelCall } = createMockModelHandler();
 
     const permissionsMw = createPermissionsMiddleware({
-      engine: permissionEngine,
-      rules: { allow: [], deny: [], ask: ["deploy"] },
+      backend: createPatternPermissionBackend({
+        rules: { allow: [], deny: [], ask: ["deploy"] },
+      }),
       approvalHandler,
-      approvalCache: { ttlMs: 50 },
+      cache: { ttlMs: 50 },
     });
 
     // First run — prompts
@@ -290,10 +291,11 @@ describe("e2e: approval cache through createKoi + createLoopAdapter", () => {
     const { modelCall } = createMockModelHandler();
 
     const permissionsMw = createPermissionsMiddleware({
-      engine: permissionEngine,
-      rules: { allow: [], deny: [], ask: ["deploy"] },
+      backend: createPatternPermissionBackend({
+        rules: { allow: [], deny: [], ask: ["deploy"] },
+      }),
       approvalHandler,
-      approvalCache: { ttlMs: 0 },
+      cache: { ttlMs: 0 },
     });
 
     const adapter1 = createLoopAdapter({ modelCall, maxTurns: 5 });
@@ -327,25 +329,27 @@ describe("e2e: approval cache through createKoi + createLoopAdapter", () => {
     await runtime2.dispose();
   });
 
-  test("different rules fingerprint causes cache miss", async () => {
+  test("different backend instances have independent caches", async () => {
     const requestApprovalA = mock(async () => true);
     const requestApprovalB = mock(async () => true);
     const { modelCall } = createMockModelHandler();
 
     // Middleware A: ask only ["deploy"]
     const mwA = createPermissionsMiddleware({
-      engine: permissionEngine,
-      rules: { allow: [], deny: [], ask: ["deploy"] },
+      backend: createPatternPermissionBackend({
+        rules: { allow: [], deny: [], ask: ["deploy"] },
+      }),
       approvalHandler: { requestApproval: requestApprovalA },
-      approvalCache: true,
+      cache: true,
     });
 
-    // Middleware B: ask ["deploy", "restart"] — different rules fingerprint
+    // Middleware B: ask ["deploy", "restart"] — different backend instance
     const mwB = createPermissionsMiddleware({
-      engine: permissionEngine,
-      rules: { allow: [], deny: [], ask: ["deploy", "restart"] },
+      backend: createPatternPermissionBackend({
+        rules: { allow: [], deny: [], ask: ["deploy", "restart"] },
+      }),
       approvalHandler: { requestApproval: requestApprovalB },
-      approvalCache: true,
+      cache: true,
     });
 
     // Approve on mwA
@@ -374,7 +378,7 @@ describe("e2e: approval cache through createKoi + createLoopAdapter", () => {
     expect(requestApprovalA).toHaveBeenCalledTimes(1);
     await runtime2.dispose();
 
-    // mwB is a separate middleware instance with different rules — must prompt
+    // mwB is a separate middleware instance with different backend — must prompt
     const adapter3 = createLoopAdapter({ modelCall, maxTurns: 5 });
     const runtime3 = await createKoi({
       manifest: testManifest(),
@@ -392,8 +396,9 @@ describe("e2e: approval cache through createKoi + createLoopAdapter", () => {
     const { modelCall } = createMockModelHandler();
 
     const permissionsMw = createPermissionsMiddleware({
-      engine: permissionEngine,
-      rules: { allow: [], deny: ["deploy"], ask: [] },
+      backend: createPatternPermissionBackend({
+        rules: { allow: [], deny: ["deploy"], ask: [] },
+      }),
     });
 
     const adapter = createLoopAdapter({ modelCall, maxTurns: 5 });
@@ -427,10 +432,11 @@ describe("e2e: approval cache through createKoi + createLoopAdapter", () => {
     const { modelCall } = createMockModelHandler();
 
     const permissionsMw = createPermissionsMiddleware({
-      engine: permissionEngine,
-      rules: { allow: ["deploy"], deny: [], ask: [] },
+      backend: createPatternPermissionBackend({
+        rules: { allow: ["deploy"], deny: [], ask: [] },
+      }),
       approvalHandler,
-      approvalCache: true,
+      cache: true,
     });
 
     const adapter = createLoopAdapter({ modelCall, maxTurns: 5 });
@@ -457,8 +463,6 @@ describe("e2e: approval cache through createKoi + createLoopAdapter", () => {
 // ---------------------------------------------------------------------------
 
 describeRealLLM("e2e: approval cache with real LLM (createPiAdapter)", () => {
-  const permissionEngine = createPatternPermissionEngine();
-
   test(
     "permissions middleware intercepts tool call from real LLM and caches approval",
     async () => {
@@ -466,10 +470,11 @@ describeRealLLM("e2e: approval cache with real LLM (createPiAdapter)", () => {
       const approvalHandler: ApprovalHandler = { requestApproval };
 
       const permissionsMw = createPermissionsMiddleware({
-        engine: permissionEngine,
-        rules: { allow: [], deny: [], ask: ["get_weather"] },
+        backend: createPatternPermissionBackend({
+          rules: { allow: [], deny: [], ask: ["get_weather"] },
+        }),
         approvalHandler,
-        approvalCache: true,
+        cache: true,
       });
 
       const weatherTool: Tool = {
@@ -565,10 +570,11 @@ describeRealLLM("e2e: approval cache with real LLM (createPiAdapter)", () => {
       const approvalHandler: ApprovalHandler = { requestApproval };
 
       const permissionsMw = createPermissionsMiddleware({
-        engine: permissionEngine,
-        rules: { allow: [], deny: [], ask: ["multiply"] },
+        backend: createPatternPermissionBackend({
+          rules: { allow: [], deny: [], ask: ["multiply"] },
+        }),
         approvalHandler,
-        approvalCache: true,
+        cache: true,
       });
 
       const multiplyTool: Tool = {
@@ -659,10 +665,11 @@ describeRealLLM("e2e: approval cache with real LLM (createPiAdapter)", () => {
       const approvalHandler: ApprovalHandler = { requestApproval };
 
       const permissionsMw = createPermissionsMiddleware({
-        engine: permissionEngine,
-        rules: { allow: [], deny: [], ask: ["multiply"] },
+        backend: createPatternPermissionBackend({
+          rules: { allow: [], deny: [], ask: ["multiply"] },
+        }),
         approvalHandler,
-        approvalCache: true,
+        cache: true,
       });
 
       const multiplyTool: Tool = {

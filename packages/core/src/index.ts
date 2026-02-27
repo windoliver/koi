@@ -402,6 +402,12 @@ export type {
 } from "./middleware.js";
 // model provider
 export type { ModelCapabilities, ModelProvider, ModelTarget } from "./model-provider.js";
+// permission backend — pluggable authorization contract
+export type {
+  PermissionBackend,
+  PermissionDecision,
+  PermissionQuery,
+} from "./permission-backend.js";
 // proposal — unified change governance contract
 export type {
   ChangeKind,

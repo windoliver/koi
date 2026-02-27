@@ -26,6 +26,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test",
-    "test:api": "bun test src/__tests__/api-surface.test.ts"
+    "test:api": "bun test src/__tests__/api-surface.test.ts",
+    "test:e2e": "E2E_TESTS=1 bun test src/__tests__/e2e-permissions.test.ts"
   }
 }

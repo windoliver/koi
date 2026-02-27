@@ -1,17 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { validatePermissionsConfig } from "./config.js";
-import { createAutoApprovalHandler, createPatternPermissionEngine } from "./engine.js";
+import { createPatternPermissionBackend } from "./engine.js";
 
 describe("validatePermissionsConfig", () => {
-  const engine = createPatternPermissionEngine();
-  const rules = { allow: ["*"], deny: [], ask: [] } as const;
+  const backend = createPatternPermissionBackend({
+    rules: { allow: ["*"], deny: [], ask: [] },
+  });
 
   test("accepts valid config with required fields", () => {
-    const result = validatePermissionsConfig({ engine, rules });
+    const result = validatePermissionsConfig({ backend });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.engine).toBe(engine);
-      expect(result.value.rules).toBe(rules);
+      expect(result.value.backend).toBe(backend);
     }
   });
 
@@ -28,59 +28,32 @@ describe("validatePermissionsConfig", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("rejects config without engine", () => {
-    const result = validatePermissionsConfig({ rules });
+  test("rejects config without backend", () => {
+    const result = validatePermissionsConfig({});
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error.message).toContain("engine");
+      expect(result.error.message).toContain("backend");
     }
   });
 
-  test("rejects config without rules", () => {
-    const result = validatePermissionsConfig({ engine });
+  test("rejects backend without check method", () => {
+    const result = validatePermissionsConfig({ backend: {} });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error.message).toContain("rules");
+      expect(result.error.message).toContain("backend");
     }
   });
 
-  test("rejects rules missing allow array", () => {
-    const result = validatePermissionsConfig({ engine, rules: { deny: [], ask: [] } });
-    expect(result.ok).toBe(false);
-  });
-
-  test("rejects rules missing deny array", () => {
-    const result = validatePermissionsConfig({ engine, rules: { allow: [], ask: [] } });
-    expect(result.ok).toBe(false);
-  });
-
-  test("rejects rules missing ask array", () => {
-    const result = validatePermissionsConfig({ engine, rules: { allow: [], deny: [] } });
-    expect(result.ok).toBe(false);
-  });
-
-  test("requires approvalHandler when ask rules exist", () => {
-    const rulesWithAsk = { allow: [], deny: [], ask: ["dangerous:*"] } as const;
-    const result = validatePermissionsConfig({ engine, rules: rulesWithAsk });
+  test("rejects backend with non-function check", () => {
+    const result = validatePermissionsConfig({ backend: { check: "not a function" } });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error.message).toContain("approvalHandler");
+      expect(result.error.message).toContain("check");
     }
-  });
-
-  test("accepts ask rules with approvalHandler", () => {
-    const rulesWithAsk = { allow: [], deny: [], ask: ["dangerous:*"] } as const;
-    const handler = createAutoApprovalHandler();
-    const result = validatePermissionsConfig({
-      engine,
-      rules: rulesWithAsk,
-      approvalHandler: handler,
-    });
-    expect(result.ok).toBe(true);
   });
 
   test("rejects negative approvalTimeoutMs", () => {
-    const result = validatePermissionsConfig({ engine, rules, approvalTimeoutMs: -1 });
+    const result = validatePermissionsConfig({ backend, approvalTimeoutMs: -1 });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("approvalTimeoutMs");
@@ -88,74 +61,73 @@ describe("validatePermissionsConfig", () => {
   });
 
   test("rejects zero approvalTimeoutMs", () => {
-    const result = validatePermissionsConfig({ engine, rules, approvalTimeoutMs: 0 });
+    const result = validatePermissionsConfig({ backend, approvalTimeoutMs: 0 });
     expect(result.ok).toBe(false);
   });
 
   test("accepts positive approvalTimeoutMs", () => {
-    const result = validatePermissionsConfig({ engine, rules, approvalTimeoutMs: 5000 });
+    const result = validatePermissionsConfig({ backend, approvalTimeoutMs: 5000 });
     expect(result.ok).toBe(true);
   });
 
   test("applies default values for optional fields", () => {
-    const result = validatePermissionsConfig({ engine, rules });
+    const result = validatePermissionsConfig({ backend });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.approvalHandler).toBeUndefined();
       expect(result.value.approvalTimeoutMs).toBeUndefined();
-      expect(result.value.defaultDeny).toBeUndefined();
+      expect(result.value.cache).toBeUndefined();
     }
   });
 
-  test("accepts approvalCache: true", () => {
-    const result = validatePermissionsConfig({ engine, rules, approvalCache: true });
+  test("accepts cache: true", () => {
+    const result = validatePermissionsConfig({ backend, cache: true });
     expect(result.ok).toBe(true);
   });
 
-  test("accepts approvalCache: { maxEntries: 100 }", () => {
-    const result = validatePermissionsConfig({ engine, rules, approvalCache: { maxEntries: 100 } });
+  test("accepts cache: { maxEntries: 100 }", () => {
+    const result = validatePermissionsConfig({ backend, cache: { maxEntries: 100 } });
     expect(result.ok).toBe(true);
   });
 
-  test("rejects approvalCache with negative maxEntries", () => {
-    const result = validatePermissionsConfig({ engine, rules, approvalCache: { maxEntries: -1 } });
+  test("rejects cache with negative maxEntries", () => {
+    const result = validatePermissionsConfig({ backend, cache: { maxEntries: -1 } });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("maxEntries");
     }
   });
 
-  test("rejects approvalCache with zero maxEntries", () => {
-    const result = validatePermissionsConfig({ engine, rules, approvalCache: { maxEntries: 0 } });
+  test("rejects cache with zero maxEntries", () => {
+    const result = validatePermissionsConfig({ backend, cache: { maxEntries: 0 } });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("maxEntries");
     }
   });
 
-  test("accepts approvalCache with ttlMs: 0 (TTL disabled)", () => {
-    const result = validatePermissionsConfig({ engine, rules, approvalCache: { ttlMs: 0 } });
+  test("accepts cache with ttlMs: 0 (TTL disabled)", () => {
+    const result = validatePermissionsConfig({ backend, cache: { ttlMs: 0 } });
     expect(result.ok).toBe(true);
   });
 
-  test("accepts approvalCache with positive ttlMs", () => {
-    const result = validatePermissionsConfig({ engine, rules, approvalCache: { ttlMs: 60_000 } });
+  test("accepts cache with positive ttlMs", () => {
+    const result = validatePermissionsConfig({ backend, cache: { ttlMs: 60_000 } });
     expect(result.ok).toBe(true);
   });
 
-  test("rejects approvalCache with negative ttlMs", () => {
-    const result = validatePermissionsConfig({ engine, rules, approvalCache: { ttlMs: -1 } });
+  test("rejects cache with negative ttlMs", () => {
+    const result = validatePermissionsConfig({ backend, cache: { ttlMs: -1 } });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("ttlMs");
     }
   });
 
-  test("rejects approvalCache with non-number ttlMs", () => {
+  test("rejects cache with non-number ttlMs", () => {
     const result = validatePermissionsConfig({
-      engine,
-      rules,
-      approvalCache: { ttlMs: "fast" as unknown as number },
+      backend,
+      cache: { ttlMs: "fast" as unknown as number },
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -163,13 +135,71 @@ describe("validatePermissionsConfig", () => {
     }
   });
 
-  test("accepts approvalCache with both maxEntries and ttlMs", () => {
+  test("accepts cache with both maxEntries and ttlMs", () => {
     const result = validatePermissionsConfig({
-      engine,
-      rules,
-      approvalCache: { maxEntries: 100, ttlMs: 60_000 },
+      backend,
+      cache: { maxEntries: 100, ttlMs: 60_000 },
     });
     expect(result.ok).toBe(true);
+  });
+
+  test("rejects cache with negative allowTtlMs", () => {
+    const result = validatePermissionsConfig({ backend, cache: { allowTtlMs: -1 } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("allowTtlMs");
+    }
+  });
+
+  test("rejects cache with negative denyTtlMs", () => {
+    const result = validatePermissionsConfig({ backend, cache: { denyTtlMs: -1 } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("denyTtlMs");
+    }
+  });
+
+  test("accepts valid auditSink", () => {
+    const sink = { log: async () => {} };
+    const result = validatePermissionsConfig({ backend, auditSink: sink });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects auditSink without log method", () => {
+    const result = validatePermissionsConfig({ backend, auditSink: {} });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("auditSink");
+    }
+  });
+
+  test("accepts valid circuitBreaker config", () => {
+    const result = validatePermissionsConfig({
+      backend,
+      circuitBreaker: {
+        failureThreshold: 5,
+        cooldownMs: 30_000,
+        failureWindowMs: 60_000,
+        failureStatusCodes: [],
+      },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects non-object circuitBreaker", () => {
+    const result = validatePermissionsConfig({ backend, circuitBreaker: "invalid" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("circuitBreaker");
+    }
+  });
+
+  test("rejects circuitBreaker with missing required fields", () => {
+    const result = validatePermissionsConfig({ backend, circuitBreaker: {} });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("failureThreshold");
+    }
   });
 
   test("all errors are non-retryable", () => {

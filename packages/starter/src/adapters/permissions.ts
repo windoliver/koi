@@ -2,9 +2,9 @@
  * Manifest adapter for @koi/middleware-permissions.
  *
  * Reads manifest.middleware[].options (JSON-serializable values only) and
- * instantiates createPermissionsMiddleware. The PermissionEngine and optional
+ * instantiates createPermissionsMiddleware. The PermissionBackend and optional
  * ApprovalHandler cannot be expressed in JSON, so they are supplied via
- * PermissionsCallbacks. The engine defaults to createPatternPermissionEngine().
+ * PermissionsCallbacks. The backend defaults to createPatternPermissionBackend().
  *
  * Rules normalization: allow/deny/ask default to [] if omitted so users can
  * write minimal manifests (e.g. `rules: { allow: ["*"] }`) without listing
@@ -12,9 +12,9 @@
  */
 
 import type { JsonObject, KoiMiddleware, MiddlewareConfig } from "@koi/core";
-import type { ApprovalHandler, PermissionEngine } from "@koi/middleware-permissions";
+import type { ApprovalHandler, PermissionBackend } from "@koi/middleware-permissions";
 import {
-  createPatternPermissionEngine,
+  createPatternPermissionBackend,
   createPermissionsMiddleware,
   validatePermissionsConfig,
 } from "@koi/middleware-permissions";
@@ -26,8 +26,8 @@ import type { RuntimeOpts } from "../registry.js";
  * be expressed in JSON manifests.
  */
 export interface PermissionsCallbacks {
-  /** Permission decision engine. Defaults to createPatternPermissionEngine(). */
-  readonly engine?: PermissionEngine;
+  /** Permission decision backend. Defaults to createPatternPermissionBackend(). */
+  readonly backend?: PermissionBackend;
   /** HITL approval handler. Required if any 'ask' rules are defined. */
   readonly approvalHandler?: ApprovalHandler;
 }
@@ -60,9 +60,8 @@ export function createPermissionsAdapter(
 
   const rawConfig: unknown = {
     ...options,
-    rules: normalizedRules,
-    // Engine defaults to pattern engine; callers can override via callbacks.
-    engine: callbacks?.engine ?? createPatternPermissionEngine(),
+    // Backend defaults to pattern backend; callers can override via callbacks.
+    backend: callbacks?.backend ?? createPatternPermissionBackend({ rules: normalizedRules }),
     ...(callbacks?.approvalHandler !== undefined
       ? { approvalHandler: callbacks.approvalHandler }
       : {}),

@@ -5,6 +5,7 @@ exports[`@koi/test-utils API surface . has stable type surface 1`] = `
 import { Result, KoiError } from '@koi/core/errors';
 import { InboundMessage } from '@koi/core/message';
 import { SessionContext, TurnContext, ModelHandler, ModelRequest, ModelStreamHandler, ToolHandler, ToolRequest, ModelResponse, ModelChunk, ToolResponse, KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
+import { PermissionBackend, PermissionQuery, PermissionDecision } from '@koi/core/permission-backend';
 import { Resolver } from '@koi/core/resolver';
 
 /**
@@ -529,6 +530,24 @@ interface MiddlewareContractOptions {
 declare function testMiddlewareContract(options: MiddlewareContractOptions): void;
 
 /**
+ * Fake PermissionBackend for testing — configurable per-resource decisions.
+ */
+
+interface FakePermissionBackendOptions {
+    readonly async?: boolean;
+}
+interface FakePermissionBackend extends PermissionBackend {
+    readonly calls: readonly PermissionQuery[];
+}
+/**
+ * Creates a fake PermissionBackend that returns pre-configured decisions
+ * keyed by resource name. Unknown resources default to deny.
+ *
+ * Set \`options.async\` to wrap decisions in \`Promise.resolve()\`.
+ */
+declare function createFakePermissionBackend(decisions: ReadonlyMap<string, PermissionDecision>, options?: FakePermissionBackendOptions): FakePermissionBackend;
+
+/**
  * Resolver contract test suite.
  *
  * Validates that any Resolver<TMeta, TFull> implementation satisfies the L0 contract.
@@ -725,6 +744,6 @@ declare function testVersionIndexContract(options: VersionIndexContractOptions):
 /** Create an in-memory VersionIndexBackend for testing. */
 declare function createInMemoryVersionIndex(): VersionIndexBackend;
 
-export { type BrickRegistryContractOptions, type CapturedOutput, type ChannelContractOptions, DEFAULT_PROVENANCE, type EngineContractOptions, type EventSourcedRegistryForTest, type EventSourcedRegistryTestContext, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockGovernanceControllerOverrides, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type RecallCall, type ResolverContractOptions, type SkillRegistryContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, type StoreCall, type TempGitRepo, type VersionIndexContractOptions, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createInMemoryBrickRegistry, createInMemorySkillRegistry, createInMemoryVersionIndex, createManifestFile, createMockAgent, createMockContextSummary, createMockEngineAdapter, createMockEventBackend, createMockGovernanceController, createMockHarness, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockTaskPlan, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTempGitRepo, createTestAgentArtifact, createTestConfig, createTestConfigStore, createTestImplementationArtifact, createTestSkillArtifact, createTestToolArtifact, createThrowingValidator, makeTempDir, runEventBackendContractTests, runEventSourcedRegistryContractTests, runForgeStoreContractTests, runHarnessContractTests, runSessionPersistenceContractTests, runSnapshotChainStoreContractTests, testBrickRegistryContract, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, testSkillRegistryContract, testVersionIndexContract, withTempDir };
+export { type BrickRegistryContractOptions, type CapturedOutput, type ChannelContractOptions, DEFAULT_PROVENANCE, type EngineContractOptions, type EventSourcedRegistryForTest, type EventSourcedRegistryTestContext, type FakePermissionBackend, type FakePermissionBackendOptions, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockGovernanceControllerOverrides, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type RecallCall, type ResolverContractOptions, type SkillRegistryContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, type StoreCall, type TempGitRepo, type VersionIndexContractOptions, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createFakePermissionBackend, createInMemoryBrickRegistry, createInMemorySkillRegistry, createInMemoryVersionIndex, createManifestFile, createMockAgent, createMockContextSummary, createMockEngineAdapter, createMockEventBackend, createMockGovernanceController, createMockHarness, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockTaskPlan, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTempGitRepo, createTestAgentArtifact, createTestConfig, createTestConfigStore, createTestImplementationArtifact, createTestSkillArtifact, createTestToolArtifact, createThrowingValidator, makeTempDir, runEventBackendContractTests, runEventSourcedRegistryContractTests, runForgeStoreContractTests, runHarnessContractTests, runSessionPersistenceContractTests, runSnapshotChainStoreContractTests, testBrickRegistryContract, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, testSkillRegistryContract, testVersionIndexContract, withTempDir };
 "
 `;

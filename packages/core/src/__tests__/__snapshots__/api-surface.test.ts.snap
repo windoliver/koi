@@ -23,6 +23,7 @@ export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryK
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
 export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
 export { ModelCapabilities, ModelProvider, ModelTarget } from './model-HASH.js';
+export { PermissionBackend, PermissionDecision, PermissionQuery } from './permission-HASH.js';
 export { Resolver, SourceBundle, SourceLanguage } from './resolver.js';
 export { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance } from './sandbox-HASH.js';
 export { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, TierResolution, TieredSandboxExecutor } from './sandbox-HASH.js';
@@ -2699,6 +2700,41 @@ interface SkillRegistryBackend extends SkillRegistryReader, SkillRegistryWriter 
 }
 
 export { DEFAULT_SKILL_SEARCH_LIMIT, type SkillId, type SkillPage, type SkillPublishRequest, type SkillRegistryBackend, type SkillRegistryChangeEvent, type SkillRegistryChangeKind, type SkillRegistryEntry, type SkillRegistryReader, type SkillRegistryWriter, type SkillSearchQuery, type SkillVersion, skillId };
+"
+`;
+
+exports[`@koi/core API surface ./permission-backend has stable type surface 1`] = `
+"import { JsonObject } from './common.js';
+
+/**
+ * PermissionBackend — pluggable authorization contract (L0).
+ *
+ * Supports sync (in-memory pattern matching) and async (OPA, OpenFGA, Cedar,
+ * HTTP ReBAC) backends behind the same interface.
+ */
+
+interface PermissionQuery {
+    readonly principal: string;
+    readonly action: string;
+    readonly resource: string;
+    readonly context?: JsonObject;
+}
+type PermissionDecision = {
+    readonly effect: "allow";
+} | {
+    readonly effect: "deny";
+    readonly reason: string;
+} | {
+    readonly effect: "ask";
+    readonly reason: string;
+};
+interface PermissionBackend {
+    readonly check: (query: PermissionQuery) => PermissionDecision | Promise<PermissionDecision>;
+    readonly checkBatch?: (queries: readonly PermissionQuery[]) => readonly PermissionDecision[] | Promise<readonly PermissionDecision[]>;
+    readonly dispose?: () => void | Promise<void>;
+}
+
+export type { PermissionBackend, PermissionDecision, PermissionQuery };
 "
 `;
 
