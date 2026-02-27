@@ -410,6 +410,59 @@ describe("createLlmCompactor", () => {
     expect(result.strategy).toBe("llm-summary");
   });
 
+  test("pinned messages survive compaction", async () => {
+    const summarizer = createMockSummarizer("Summary");
+
+    const compactor = createLlmCompactor({
+      summarizer,
+      contextWindowSize: 1000,
+      trigger: { messageCount: 3 },
+      preserveRecent: 1,
+      maxSummaryTokens: 100,
+    });
+
+    const pinned: InboundMessage = {
+      content: [{ kind: "text", text: "harness context — do not compact" }],
+      senderId: "harness",
+      timestamp: 1,
+      pinned: true,
+    };
+
+    // Pinned at index 1 — only index 0 can be compacted
+    const msgs = [userMsg("old"), pinned, userMsg("mid"), userMsg("recent")];
+    const result = await compactor.compact(msgs, 1000);
+
+    // Pinned message must be in the output
+    const hasPinned = result.messages.some((m) => m.pinned === true);
+    expect(hasPinned).toBe(true);
+  });
+
+  test("pinned message at start prevents all compaction", async () => {
+    const summarizer = createMockSummarizer("Summary");
+
+    const compactor = createLlmCompactor({
+      summarizer,
+      contextWindowSize: 1000,
+      trigger: { messageCount: 2 },
+      preserveRecent: 1,
+      maxSummaryTokens: 100,
+    });
+
+    const pinned: InboundMessage = {
+      content: [{ kind: "text", text: "harness context" }],
+      senderId: "harness",
+      timestamp: 1,
+      pinned: true,
+    };
+
+    const msgs = [pinned, userMsg("a"), userMsg("b"), userMsg("c")];
+    const result = await compactor.compact(msgs, 1000);
+
+    // No valid split points — should noop
+    expect(result.strategy).toBe("noop");
+    expect(result.messages).toBe(msgs);
+  });
+
   test("forceCompact bypasses trigger checks", async () => {
     const compactor = createLlmCompactor({
       summarizer: createMockSummarizer("Forced summary"),

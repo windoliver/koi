@@ -49,4 +49,6 @@ export interface InboundMessage {
   readonly threadId?: string;
   readonly timestamp: number;
   readonly metadata?: JsonObject;
+  /** When true, compaction middleware must preserve this message verbatim. */
+  readonly pinned?: boolean | undefined;
 }

@@ -1,0 +1,124 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/long-running API surface . has stable type surface 1`] = `
+"import { HarnessId, TaskBoardSnapshot, HarnessSnapshot, Result, InboundMessage, KoiError, PruningPolicy, AgentId, HarnessSnapshotStore, SessionPersistence, EngineState, EngineInput, EngineMetrics, TaskItemId, TaskResult, HarnessStatus, KoiMiddleware } from '@koi/core';
+
+/**
+ * Checkpoint timing policy — pure functions, no I/O.
+ *
+ * Determines when soft checkpoints should fire and generates
+ * deterministic checkpoint identifiers.
+ */
+
+/**
+ * Determine whether a soft checkpoint should fire at the given turn.
+ *
+ * Fires at every \`interval\`-th turn, starting from the first interval.
+ * Turn 0 never triggers a checkpoint (session just started).
+ */
+declare function shouldSoftCheckpoint(turnIndex: number, interval: number): boolean;
+/**
+ * Generate a deterministic checkpoint ID from harness, session, and turn.
+ *
+ * Format: \`{harnessId}:{sessionId}:t{turnIndex}\`
+ */
+declare function computeCheckpointId(harnessId: HarnessId, sessionId: string, turnIndex: number): string;
+
+/**
+ * Context bridge — builds resume context from a harness snapshot.
+ *
+ * Pure function that assembles InboundMessage[] from the snapshot's
+ * task board, context summaries, and key artifacts, respecting a
+ * token budget. No I/O, depends only on L0 types.
+ */
+
+/**
+ * Build initial prompt from a task plan for the first session.
+ *
+ * Returns a text string describing the task plan for the engine.
+ */
+declare function buildInitialPrompt(plan: TaskBoardSnapshot): string;
+/**
+ * Build resume context from a harness snapshot.
+ *
+ * Assembles InboundMessage[] with:
+ * 1. Task plan (always included)
+ * 2. Context summaries (newest first, up to half remaining budget)
+ * 3. Key artifacts (newest first, up to half remaining budget)
+ *
+ * @returns Result with messages on success, VALIDATION error if task board is empty.
+ */
+declare function buildResumeContext(snapshot: HarnessSnapshot, config: {
+    readonly maxContextTokens: number;
+}): Result<readonly InboundMessage[], KoiError>;
+
+/**
+ * L2-local configuration and interface types for @koi/long-running.
+ *
+ * These types are internal to the package — L0 types live in @koi/core/harness.
+ */
+
+/** Optional callback to capture real engine state during soft checkpoints. */
+type SaveStateCallback = () => EngineState | Promise<EngineState>;
+interface LongRunningConfig {
+    readonly harnessId: HarnessId;
+    readonly agentId: AgentId;
+    readonly harnessStore: HarnessSnapshotStore;
+    readonly sessionPersistence: SessionPersistence;
+    readonly softCheckpointInterval?: number | undefined;
+    readonly maxKeyArtifacts?: number | undefined;
+    readonly maxContextTokens?: number | undefined;
+    readonly artifactToolNames?: readonly string[] | undefined;
+    readonly pruningPolicy?: PruningPolicy | undefined;
+    readonly saveState?: SaveStateCallback | undefined;
+}
+interface LongRunningHarness {
+    readonly harnessId: HarnessId;
+    readonly start: (taskPlan: TaskBoardSnapshot) => Promise<Result<StartResult, KoiError>>;
+    readonly resume: () => Promise<Result<ResumeResult, KoiError>>;
+    readonly pause: (sessionResult: SessionResult) => Promise<Result<void, KoiError>>;
+    readonly fail: (error: KoiError) => Promise<Result<void, KoiError>>;
+    readonly completeTask: (taskId: TaskItemId, result: TaskResult) => Promise<Result<void, KoiError>>;
+    readonly status: () => HarnessStatus;
+    readonly createMiddleware: () => KoiMiddleware;
+    readonly dispose: () => Promise<void>;
+}
+interface StartResult {
+    readonly engineInput: EngineInput;
+    readonly sessionId: string;
+}
+interface ResumeResult {
+    readonly engineInput: EngineInput;
+    readonly sessionId: string;
+    readonly engineStateRecovered: boolean;
+}
+interface SessionResult {
+    readonly sessionId: string;
+    readonly engineState?: EngineState | undefined;
+    readonly metrics: EngineMetrics;
+    readonly summary?: string | undefined;
+}
+declare const DEFAULT_LONG_RUNNING_CONFIG: {
+    readonly softCheckpointInterval: 5;
+    readonly maxKeyArtifacts: 10;
+    readonly maxContextTokens: 3000;
+    readonly pruningPolicy: PruningPolicy;
+};
+
+/**
+ * Long-running harness — state manager for multi-session agent operation.
+ *
+ * Called at session boundaries by Node (not a middleware or engine decorator).
+ * Owns the task plan, context summaries, and progress tracking.
+ * Engine state lives in SessionPersistence (crash recovery).
+ * Harness state lives in SnapshotChainStore<HarnessSnapshot> (semantic history).
+ */
+
+/**
+ * Create a long-running harness for multi-session agent operation.
+ */
+declare function createLongRunningHarness(config: LongRunningConfig): LongRunningHarness;
+
+export { DEFAULT_LONG_RUNNING_CONFIG, type LongRunningConfig, type LongRunningHarness, type ResumeResult, type SaveStateCallback, type SessionResult, type StartResult, buildInitialPrompt, buildResumeContext, computeCheckpointId, createLongRunningHarness, shouldSoftCheckpoint };
+"
+`;

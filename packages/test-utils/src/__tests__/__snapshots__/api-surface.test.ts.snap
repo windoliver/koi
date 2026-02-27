@@ -1,10 +1,10 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/test-utils API surface . has stable type surface 1`] = `
-"import { ProcessId, AgentManifest, ProcessState, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, ForgeProvenance, AgentArtifact, ImplementationArtifact, SkillArtifact, ToolArtifact, BrickRegistryBackend, ChannelAdapter, MemoryResult, MemoryRecallOptions, MemoryStoreOptions, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, RegistryEntry, AgentId, TransitionReason, Result as Result$1, KoiError as KoiError$1, RegistryEvent, GovernanceCheck, GovernanceEvent, GovernanceSnapshot, GovernanceVariable, SensorReading, GovernanceController, SessionPersistence, SkillRegistryBackend, SnapshotChainStore, ForgeStore } from '@koi/core';
+"import { ProcessId, AgentManifest, ProcessState, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, ForgeProvenance, AgentArtifact, ImplementationArtifact, SkillArtifact, ToolArtifact, BrickRegistryBackend, ChannelAdapter, MemoryResult, MemoryRecallOptions, MemoryStoreOptions, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, RegistryEntry, AgentId, TransitionReason, Result as Result$1, KoiError as KoiError$1, RegistryEvent, GovernanceCheck, GovernanceEvent, GovernanceSnapshot, GovernanceVariable, SensorReading, GovernanceController, HarnessId, TaskBoardSnapshot, EngineMetrics, TaskItemId, TaskResult, HarnessStatus, KoiMiddleware, ContextSummary, SessionPersistence, SkillRegistryBackend, SnapshotChainStore, ForgeStore } from '@koi/core';
 import { Result, KoiError } from '@koi/core/errors';
 import { InboundMessage } from '@koi/core/message';
-import { SessionContext, TurnContext, ModelHandler, ModelRequest, ModelStreamHandler, ToolHandler, ToolRequest, ModelResponse, ModelChunk, ToolResponse, KoiMiddleware } from '@koi/core/middleware';
+import { SessionContext, TurnContext, ModelHandler, ModelRequest, ModelStreamHandler, ToolHandler, ToolRequest, ModelResponse, ModelChunk, ToolResponse, KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
 import { Resolver } from '@koi/core/resolver';
 
 /**
@@ -429,6 +429,73 @@ declare function createSpyModelStreamHandler(chunks: readonly ModelChunk[]): Spy
 declare function createMockModelStreamHandler(chunks: readonly ModelChunk[]): ModelStreamHandler;
 
 /**
+ * Contract test suite for LongRunningHarness implementations.
+ *
+ * Validates the core start → pause → resume lifecycle, status transitions,
+ * and dispose idempotency. Designed to be reused by any harness implementation.
+ */
+
+interface ContractSessionResult {
+    readonly sessionId: string;
+    readonly metrics: EngineMetrics;
+    readonly summary?: string | undefined;
+}
+interface ContractHarness {
+    readonly harnessId: HarnessId;
+    readonly start: (plan: TaskBoardSnapshot) => Promise<Result$1<unknown, KoiError$1>>;
+    readonly resume: () => Promise<Result$1<unknown, KoiError$1>>;
+    readonly pause: (result: ContractSessionResult) => Promise<Result$1<void, KoiError$1>>;
+    readonly fail: (error: KoiError$1) => Promise<Result$1<void, KoiError$1>>;
+    readonly completeTask: (taskId: TaskItemId, result: TaskResult) => Promise<Result$1<void, KoiError$1>>;
+    readonly status: () => HarnessStatus;
+    readonly createMiddleware: () => KoiMiddleware;
+    readonly dispose: () => Promise<void>;
+}
+/**
+ * Run the harness contract test suite against a factory.
+ *
+ * The factory is called before each test group to create a fresh harness.
+ * Tests validate lifecycle transitions, status reporting, and dispose behavior.
+ */
+declare function runHarnessContractTests(factory: () => ContractHarness | Promise<ContractHarness>): void;
+
+/**
+ * Mock factories for @koi/long-running harness testing.
+ *
+ * Provides pre-built mocks for LongRunningHarness, TaskBoardSnapshot,
+ * and ContextSummary — usable across all packages that test harness integration.
+ */
+
+/**
+ * Minimal harness interface matching @koi/long-running's LongRunningHarness.
+ * Defined locally to avoid L2→L2 dependency from test-utils to long-running.
+ */
+interface MockLongRunningHarness {
+    readonly harnessId: HarnessId;
+    readonly start: (taskPlan: TaskBoardSnapshot) => Promise<Result$1<unknown, KoiError$1>>;
+    readonly resume: () => Promise<Result$1<unknown, KoiError$1>>;
+    readonly pause: (sessionResult: unknown) => Promise<Result$1<void, KoiError$1>>;
+    readonly fail: (error: KoiError$1) => Promise<Result$1<void, KoiError$1>>;
+    readonly completeTask: (taskId: TaskItemId, result: TaskResult) => Promise<Result$1<void, KoiError$1>>;
+    readonly status: () => HarnessStatus;
+    readonly createMiddleware: () => KoiMiddleware;
+    readonly dispose: () => Promise<void>;
+}
+/**
+ * Create a mock harness with sensible defaults. Override individual methods
+ * for test-specific behavior.
+ */
+declare function createMockHarness(overrides?: Partial<MockLongRunningHarness>): MockLongRunningHarness;
+/**
+ * Create a mock TaskBoardSnapshot with the given number of pending tasks.
+ */
+declare function createMockTaskPlan(taskCount?: number): TaskBoardSnapshot;
+/**
+ * Create a mock ContextSummary for the given session sequence.
+ */
+declare function createMockContextSummary(sessionSeq?: number): ContextSummary;
+
+/**
  * In-memory BrickRegistryBackend implementation for testing.
  *
  * Stores bricks in a Map keyed by "kind:name". Supports search, get,
@@ -447,7 +514,7 @@ declare function createInMemoryBrickRegistry(): BrickRegistryBackend;
 
 interface MiddlewareContractOptions {
     /** Factory that creates a fresh middleware instance for each test. */
-    readonly createMiddleware: () => KoiMiddleware | Promise<KoiMiddleware>;
+    readonly createMiddleware: () => KoiMiddleware$1 | Promise<KoiMiddleware$1>;
     /** Optional custom session context factory. */
     readonly createSessionContext?: (() => SessionContext) | undefined;
     /** Optional custom turn context factory. */
@@ -629,6 +696,6 @@ declare function createThrowingValidator(error: Error, name?: string): MockValid
 /** Creates a validator that passes or fails based on a predicate. */
 declare function createConditionalValidator(fn: (output: unknown) => boolean, name?: string): MockValidator;
 
-export { type BrickRegistryContractOptions, type CapturedOutput, type ChannelContractOptions, DEFAULT_PROVENANCE, type EngineContractOptions, type EventSourcedRegistryForTest, type EventSourcedRegistryTestContext, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockGovernanceControllerOverrides, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type RecallCall, type ResolverContractOptions, type SkillRegistryContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, type StoreCall, type TempGitRepo, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createInMemoryBrickRegistry, createInMemorySkillRegistry, createManifestFile, createMockAgent, createMockEngineAdapter, createMockEventBackend, createMockGovernanceController, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTempGitRepo, createTestAgentArtifact, createTestConfig, createTestConfigStore, createTestImplementationArtifact, createTestSkillArtifact, createTestToolArtifact, createThrowingValidator, makeTempDir, runEventBackendContractTests, runEventSourcedRegistryContractTests, runForgeStoreContractTests, runSessionPersistenceContractTests, runSnapshotChainStoreContractTests, testBrickRegistryContract, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, testSkillRegistryContract, withTempDir };
+export { type BrickRegistryContractOptions, type CapturedOutput, type ChannelContractOptions, DEFAULT_PROVENANCE, type EngineContractOptions, type EventSourcedRegistryForTest, type EventSourcedRegistryTestContext, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockGovernanceControllerOverrides, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type RecallCall, type ResolverContractOptions, type SkillRegistryContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, type StoreCall, type TempGitRepo, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createInMemoryBrickRegistry, createInMemorySkillRegistry, createManifestFile, createMockAgent, createMockContextSummary, createMockEngineAdapter, createMockEventBackend, createMockGovernanceController, createMockHarness, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockTaskPlan, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTempGitRepo, createTestAgentArtifact, createTestConfig, createTestConfigStore, createTestImplementationArtifact, createTestSkillArtifact, createTestToolArtifact, createThrowingValidator, makeTempDir, runEventBackendContractTests, runEventSourcedRegistryContractTests, runForgeStoreContractTests, runHarnessContractTests, runSessionPersistenceContractTests, runSnapshotChainStoreContractTests, testBrickRegistryContract, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, testSkillRegistryContract, withTempDir };
 "
 `;

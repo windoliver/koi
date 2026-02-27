@@ -133,4 +133,91 @@ describe("findValidSplitPoints", () => {
     const result = findValidSplitPoints(msgs, 1);
     expect(result).toEqual([1, 2]);
   });
+
+  test("pinned message at start — no valid splits (all messages protected)", () => {
+    const pinned: InboundMessage = {
+      content: [{ kind: "text", text: "harness context" }],
+      senderId: "harness",
+      timestamp: 1,
+      pinned: true,
+    };
+    const msgs = [pinned, userMsg("a"), userMsg("b"), userMsg("c")];
+    // First pinned at index 0 → cap = 0 → no splits possible
+    const result = findValidSplitPoints(msgs, 1);
+    expect(result).toEqual([]);
+  });
+
+  test("pinned message in middle — splits only before it", () => {
+    const pinned: InboundMessage = {
+      content: [{ kind: "text", text: "harness context" }],
+      senderId: "harness",
+      timestamp: 1,
+      pinned: true,
+    };
+    const msgs = [userMsg("old-1"), userMsg("old-2"), pinned, userMsg("recent")];
+    // First pinned at index 2 → cap = 2, preserveRecent=1 → maxSplit = 3
+    // effectiveMax = min(3, 2) = 2 → splits at 1, 2
+    const result = findValidSplitPoints(msgs, 1);
+    expect(result).toEqual([1, 2]);
+  });
+
+  test("pinned message at end — all normal splits valid", () => {
+    const pinned: InboundMessage = {
+      content: [{ kind: "text", text: "harness context" }],
+      senderId: "harness",
+      timestamp: 1,
+      pinned: true,
+    };
+    const msgs = [userMsg("a"), userMsg("b"), userMsg("c"), pinned];
+    // First pinned at index 3 → cap = 3, preserveRecent=1 → maxSplit = 3
+    // effectiveMax = min(3, 3) = 3 → splits at 1, 2, 3
+    const result = findValidSplitPoints(msgs, 1);
+    expect(result).toEqual([1, 2, 3]);
+  });
+
+  test("multiple pinned messages — caps at the first one", () => {
+    const pin1: InboundMessage = {
+      content: [{ kind: "text", text: "ctx 1" }],
+      senderId: "harness",
+      timestamp: 1,
+      pinned: true,
+    };
+    const pin2: InboundMessage = {
+      content: [{ kind: "text", text: "ctx 2" }],
+      senderId: "harness",
+      timestamp: 2,
+      pinned: true,
+    };
+    const msgs = [userMsg("old"), pin1, userMsg("mid"), pin2, userMsg("recent")];
+    // First pinned at index 1 → cap = 1 → only split at 1
+    const result = findValidSplitPoints(msgs, 1);
+    expect(result).toEqual([1]);
+  });
+
+  test("no pinned messages — normal behavior unchanged", () => {
+    const msgs = [userMsg("a"), userMsg("b"), userMsg("c"), userMsg("d")];
+    const result = findValidSplitPoints(msgs, 1);
+    expect(result).toEqual([1, 2, 3]);
+  });
+
+  test("pinned message combined with atomic pair", () => {
+    const pinned: InboundMessage = {
+      content: [{ kind: "text", text: "harness context" }],
+      senderId: "harness",
+      timestamp: 1,
+      pinned: true,
+    };
+    const msgs = [
+      userMsg("old"),
+      assistantMsg("calling", "c1"),
+      toolResultMsg("c1", "result"),
+      pinned,
+      userMsg("recent"),
+    ];
+    // Pair: [1,2] are atomic. Pinned at index 3 → cap = 3.
+    // preserveRecent=1 → maxSplit = 4. effectiveMax = min(4, 3) = 3.
+    // Split 1: valid (before pair). Split 2: forbidden (interior). Split 3: valid.
+    const result = findValidSplitPoints(msgs, 1);
+    expect(result).toEqual([1, 3]);
+  });
 });

@@ -328,6 +328,18 @@ export type {
 } from "./handoff.js";
 // handoff — runtime values
 export { handoffId } from "./handoff.js";
+// harness — multi-session long-horizon task harness types
+export type {
+  ContextSummary,
+  HarnessId,
+  HarnessMetrics,
+  HarnessPhase,
+  HarnessSnapshot,
+  HarnessSnapshotStore,
+  HarnessStatus,
+  KeyArtifact,
+} from "./harness.js";
+export { harnessId } from "./harness.js";
 // health
 export type {
   HealthMonitor,

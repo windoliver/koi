@@ -59,6 +59,21 @@ function findAtomicGroupInteriors(messages: readonly InboundMessage[]): Readonly
 }
 
 /**
+ * Find the first pinned message index.
+ *
+ * All split points must be <= this index so that pinned messages
+ * remain in the preserved tail and are never summarized away.
+ * Returns `len` if no messages are pinned (no additional constraint).
+ */
+function findFirstPinnedIndex(messages: readonly InboundMessage[]): number {
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg !== undefined && msg.pinned === true) return i;
+  }
+  return messages.length;
+}
+
+/**
  * Find valid split point indices in a message array.
  *
  * A split at index `s` means: messages[0..s-1] go to the summary,
@@ -68,6 +83,7 @@ function findAtomicGroupInteriors(messages: readonly InboundMessage[]): Readonly
  * 1. Split index must be >= 1 (can't summarize zero messages).
  * 2. Split index must not be inside an atomic assistant+tool group.
  * 3. The tail (messages[s..end]) must contain at least `preserveRecent` messages.
+ * 4. Split index must not place a pinned message in the head (summarized portion).
  *
  * Returns indices in ascending order.
  */
@@ -80,10 +96,14 @@ export function findValidSplitPoints(
   const maxSplitIndex = len - preserveRecent;
   if (maxSplitIndex < 1) return [];
 
+  // Pinned messages must stay in the tail — cap split index before first pinned
+  const pinnedCap = findFirstPinnedIndex(messages);
+
   const interiors = findAtomicGroupInteriors(messages);
   const validPoints: number[] = [];
+  const effectiveMax = Math.min(maxSplitIndex, pinnedCap);
 
-  for (let s = 1; s <= maxSplitIndex; s++) {
+  for (let s = 1; s <= effectiveMax; s++) {
     if (!interiors.has(s)) {
       validPoints.push(s);
     }
