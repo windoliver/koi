@@ -22,7 +22,7 @@ export function normalizeIndentation(text: string): string {
   const minIndent = Math.min(
     ...nonEmptyLines.map((line) => {
       const match = /^(\s*)/.exec(line);
-      return match !== null ? match[1].length : 0;
+      return match !== null ? (match[1]?.length ?? 0) : 0;
     }),
   );
 

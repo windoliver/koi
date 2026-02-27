@@ -1,7 +1,21 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { Agent, AgentManifest, ForgeScope, ProcessId, SubsystemToken, Tool } from "@koi/core";
-import { agentId, COMPONENT_PRIORITY } from "@koi/core";
+import type {
+  Agent,
+  AgentManifest,
+  AttachResult,
+  ForgeScope,
+  ProcessId,
+  SubsystemToken,
+  Tool,
+} from "@koi/core";
+import { agentId, COMPONENT_PRIORITY, isAttachResult } from "@koi/core";
 import { createInheritedComponentProvider } from "./inherited-component-provider.js";
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -105,7 +119,7 @@ describe("createInheritedComponentProvider", () => {
     const parent = mockParentAgent(tools);
     const provider = createInheritedComponentProvider({ parent });
 
-    const result = await provider.attach(mockChildAgent());
+    const result = extractMap(await provider.attach(mockChildAgent()));
 
     expect(result.size).toBe(3);
     expect(result.has("tool:calc")).toBe(true);
@@ -119,7 +133,7 @@ describe("createInheritedComponentProvider", () => {
     const scopeChecker = (): ForgeScope => "zone";
     const provider = createInheritedComponentProvider({ parent, scopeChecker });
 
-    const result = await provider.attach(mockChildAgent());
+    const result = extractMap(await provider.attach(mockChildAgent()));
 
     expect(result.size).toBe(1);
     expect(result.has("tool:shared")).toBe(true);
@@ -131,7 +145,7 @@ describe("createInheritedComponentProvider", () => {
     const scopeChecker = (): ForgeScope => "global";
     const provider = createInheritedComponentProvider({ parent, scopeChecker });
 
-    const result = await provider.attach(mockChildAgent());
+    const result = extractMap(await provider.attach(mockChildAgent()));
 
     expect(result.size).toBe(1);
     expect(result.has("tool:global-util")).toBe(true);
@@ -143,7 +157,7 @@ describe("createInheritedComponentProvider", () => {
     const scopeChecker = (): ForgeScope => "agent";
     const provider = createInheritedComponentProvider({ parent, scopeChecker });
 
-    const result = await provider.attach(mockChildAgent());
+    const result = extractMap(await provider.attach(mockChildAgent()));
 
     expect(result.size).toBe(0);
     expect(result.has("tool:private")).toBe(false);
@@ -155,7 +169,7 @@ describe("createInheritedComponentProvider", () => {
     const scopeChecker = (): ForgeScope | undefined => undefined;
     const provider = createInheritedComponentProvider({ parent, scopeChecker });
 
-    const result = await provider.attach(mockChildAgent());
+    const result = extractMap(await provider.attach(mockChildAgent()));
 
     expect(result.size).toBe(1);
     expect(result.has("tool:manifest-tool")).toBe(true);
@@ -165,7 +179,7 @@ describe("createInheritedComponentProvider", () => {
     const parent = mockParentAgent(new Map());
     const provider = createInheritedComponentProvider({ parent });
 
-    const result = await provider.attach(mockChildAgent());
+    const result = extractMap(await provider.attach(mockChildAgent()));
 
     expect(result.size).toBe(0);
   });
@@ -188,7 +202,7 @@ describe("createInheritedComponentProvider", () => {
     const scopeChecker = (toolName: string): ForgeScope | undefined => scopeMap[toolName];
     const provider = createInheritedComponentProvider({ parent, scopeChecker });
 
-    const result = await provider.attach(mockChildAgent());
+    const result = extractMap(await provider.attach(mockChildAgent()));
 
     expect(result.size).toBe(3);
     expect(result.has("tool:zone-tool")).toBe(true);
@@ -232,7 +246,7 @@ describe("createInheritedComponentProvider", () => {
     const parent = mockParentAgent(tools);
     const provider = createInheritedComponentProvider({ parent });
 
-    const result = await provider.attach(mockChildAgent());
+    const result = extractMap(await provider.attach(mockChildAgent()));
 
     const inherited = result.get("tool:secure") as Tool;
     expect(inherited).toBeDefined();

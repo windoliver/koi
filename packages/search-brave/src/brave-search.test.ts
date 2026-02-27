@@ -47,10 +47,10 @@ describe("createBraveSearch", () => {
   });
 
   test("sends API key in X-Subscription-Token header", async () => {
-    let capturedHeaders: HeadersInit | undefined;
+    let capturedHeaders: Record<string, string> | undefined;
     const fetchFn = mock(
       async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-        capturedHeaders = init?.headers;
+        capturedHeaders = init?.headers as Record<string, string> | undefined;
         return braveResponse([]);
       },
     ) as unknown as typeof globalThis.fetch;
@@ -58,8 +58,7 @@ describe("createBraveSearch", () => {
     const search = createBraveSearch({ apiKey: "my-secret-key", fetchFn });
     await search("test");
 
-    const headers = capturedHeaders as Record<string, string>;
-    expect(headers["X-Subscription-Token"]).toBe("my-secret-key");
+    expect(capturedHeaders?.["X-Subscription-Token"]).toBe("my-secret-key");
   });
 
   test("passes query and count in URL params", async () => {

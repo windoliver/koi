@@ -28,7 +28,9 @@ describe("findMatch", () => {
     const result = findMatch(source, search);
     expect(result).toBeDefined();
     // Could be whitespace-normalized or indentation-flexible
-    expect(["whitespace-normalized", "indentation-flexible"]).toContain(result?.strategy);
+    if (result !== undefined) {
+      expect(["whitespace-normalized", "indentation-flexible"]).toContain(result.strategy);
+    }
   });
 
   test("falls back to fuzzy for close-but-not-identical text", () => {

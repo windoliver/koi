@@ -2,8 +2,15 @@ import { describe, expect, test } from "bun:test";
 import type { AgentManifest } from "./assembly.js";
 import type { ServiceProviderConfig } from "./create-service-provider.js";
 import { createServiceProvider } from "./create-service-provider.js";
-import type { Agent, ProcessId, SubsystemToken, Tool, TrustTier } from "./ecs.js";
-import { agentId, token, toolToken } from "./ecs.js";
+import type { Agent, AttachResult, ProcessId, SubsystemToken, Tool, TrustTier } from "./ecs.js";
+import { agentId, isAttachResult, token, toolToken } from "./ecs.js";
+
+/** Extract ReadonlyMap from attach() result (handles both AttachResult and bare Map). */
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 // ---------------------------------------------------------------------------
 // Test helpers — inline (core has zero deps)
@@ -95,7 +102,7 @@ describe("createServiceProvider", () => {
 
   test("attaches singleton token + all operation tools", async () => {
     const provider = createServiceProvider(createTestConfig());
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     // 3 tools + 1 singleton token = 4
     expect(components.size).toBe(4);
@@ -108,7 +115,7 @@ describe("createServiceProvider", () => {
   test("attaches correct backend under singleton token", async () => {
     const backend: MockBackend = { name: "my-backend" };
     const provider = createServiceProvider(createTestConfig({ backend }));
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     expect(components.get(BACKEND_TOKEN as string)).toBe(backend);
   });
@@ -117,7 +124,7 @@ describe("createServiceProvider", () => {
     const provider = createServiceProvider(
       createTestConfig({ singletonToken: undefined, backend: undefined }),
     );
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     // 3 tools only, no singleton
     expect(components.size).toBe(3);
@@ -127,7 +134,7 @@ describe("createServiceProvider", () => {
 
   test("respects operations filter (subset)", async () => {
     const provider = createServiceProvider(createTestConfig({ operations: ["alpha", "gamma"] }));
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     // 2 tools + 1 singleton = 3
     expect(components.size).toBe(3);
@@ -138,7 +145,7 @@ describe("createServiceProvider", () => {
 
   test("respects custom prefix", async () => {
     const provider = createServiceProvider(createTestConfig({ prefix: "custom" }));
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     expect(components.has(toolToken("custom_alpha") as string)).toBe(true);
     expect(components.has(toolToken("test_alpha") as string)).toBe(false);
@@ -146,7 +153,7 @@ describe("createServiceProvider", () => {
 
   test("respects custom trust tier", async () => {
     const provider = createServiceProvider(createTestConfig({ trustTier: "sandbox" }));
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     const tool = components.get(toolToken("test_alpha") as string) as Tool;
     expect(tool.trustTier).toBe("sandbox");
@@ -154,7 +161,7 @@ describe("createServiceProvider", () => {
 
   test("defaults trust tier to verified", async () => {
     const provider = createServiceProvider(createTestConfig());
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     const tool = components.get(toolToken("test_alpha") as string) as Tool;
     expect(tool.trustTier).toBe("verified");
@@ -203,7 +210,7 @@ describe("createServiceProvider — caching", () => {
     const second = await provider.attach(agent);
 
     expect(first).not.toBe(second); // different references
-    expect(first.size).toBe(second.size); // but same content
+    expect(extractMap(first).size).toBe(extractMap(second).size); // but same content
   });
 });
 
@@ -219,7 +226,7 @@ describe("createServiceProvider — customTools", () => {
         customTools: () => [[toolToken("test_extra") as string, extraTool]],
       }),
     );
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     // 3 standard + 1 custom + 1 singleton = 5
     expect(components.size).toBe(5);
@@ -254,7 +261,7 @@ describe("createServiceProvider — customTools", () => {
 
   test("customTools returning empty array adds nothing extra", async () => {
     const provider = createServiceProvider(createTestConfig({ customTools: () => [] }));
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     // 3 standard + 1 singleton = 4 (no extras)
     expect(components.size).toBe(4);
@@ -337,7 +344,7 @@ describe("createServiceProvider — detach", () => {
 describe("createServiceProvider — edge cases", () => {
   test("single operation works correctly", async () => {
     const provider = createServiceProvider(createTestConfig({ operations: ["beta"] }));
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     // 1 tool + 1 singleton = 2
     expect(components.size).toBe(2);
@@ -346,7 +353,7 @@ describe("createServiceProvider — edge cases", () => {
 
   test("default prefix is empty string when not specified", async () => {
     const provider = createServiceProvider(createTestConfig({ prefix: undefined }));
-    const components = await provider.attach(createMockAgent());
+    const components = extractMap(await provider.attach(createMockAgent()));
 
     // Tools should use default prefix from config (test for "test" prefix which is the default in our test config)
     // Actually, we need to check what happens when prefix is undefined

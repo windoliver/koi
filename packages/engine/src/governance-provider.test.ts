@@ -1,8 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import type { Agent } from "@koi/core";
-import { agentId, GOVERNANCE } from "@koi/core";
+import type { Agent, AttachResult } from "@koi/core";
+import { agentId, GOVERNANCE, isAttachResult } from "@koi/core";
 import type { GovernanceControllerBuilder } from "./governance-controller.js";
 import { createGovernanceProvider } from "./governance-provider.js";
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 function mockAgent(depth = 0): Agent {
   return {
@@ -26,7 +32,7 @@ describe("createGovernanceProvider", () => {
 
   test("attaches GovernanceControllerBuilder under GOVERNANCE key", async () => {
     const provider = createGovernanceProvider();
-    const components = await provider.attach(mockAgent());
+    const components = extractMap(await provider.attach(mockAgent()));
     const builder = components.get(GOVERNANCE as string) as GovernanceControllerBuilder | undefined;
     expect(builder).toBeDefined();
     expect(typeof builder?.check).toBe("function");
@@ -38,7 +44,7 @@ describe("createGovernanceProvider", () => {
   test("passes agent depth to controller", async () => {
     const provider = createGovernanceProvider({ spawn: { maxDepth: 2, maxFanOut: 5 } });
     const agent = mockAgent(3);
-    const components = await provider.attach(agent);
+    const components = extractMap(await provider.attach(agent));
     const builder = components.get(GOVERNANCE as string) as GovernanceControllerBuilder | undefined;
     expect(builder).toBeDefined();
     if (builder === undefined) throw new Error("builder not found");
@@ -51,7 +57,7 @@ describe("createGovernanceProvider", () => {
     const provider = createGovernanceProvider({
       iteration: { maxTurns: 5, maxTokens: 1000, maxDurationMs: 10000 },
     });
-    const components = await provider.attach(mockAgent());
+    const components = extractMap(await provider.attach(mockAgent()));
     const builder = components.get(GOVERNANCE as string) as GovernanceControllerBuilder | undefined;
     expect(builder).toBeDefined();
     if (builder === undefined) throw new Error("builder not found");

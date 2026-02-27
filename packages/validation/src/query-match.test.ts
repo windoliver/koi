@@ -60,7 +60,7 @@ describe("matchesBrickQuery", () => {
     const brick = createBrickBase();
     // DEFAULT_PROVENANCE.classification === "public"
     expect(matchesBrickQuery(brick, { classification: "public" })).toBe(true);
-    expect(matchesBrickQuery(brick, { classification: "confidential" })).toBe(false);
+    expect(matchesBrickQuery(brick, { classification: "secret" })).toBe(false);
   });
 
   test("filters by contentMarkers (AND-subset)", () => {
@@ -69,7 +69,7 @@ describe("matchesBrickQuery", () => {
     });
     expect(matchesBrickQuery(brick, { contentMarkers: ["pii"] })).toBe(true);
     expect(matchesBrickQuery(brick, { contentMarkers: ["pii", "credentials"] })).toBe(true);
-    expect(matchesBrickQuery(brick, { contentMarkers: ["pii", "financial"] })).toBe(false);
+    expect(matchesBrickQuery(brick, { contentMarkers: ["pii", "payment"] })).toBe(false);
   });
 
   test("skips contentMarkers filter when empty array", () => {
@@ -133,17 +133,8 @@ describe("matchesBrickQuery", () => {
 
   test("ignores undefined query fields", () => {
     const brick = createBrickBase();
-    const query: ForgeQuery = {
-      kind: undefined,
-      scope: undefined,
-      trustTier: undefined,
-      lifecycle: undefined,
-      createdBy: undefined,
-      classification: undefined,
-      contentMarkers: undefined,
-      tags: undefined,
-      text: undefined,
-    };
+    // Empty object — all optional fields are absent (not explicitly undefined)
+    const query: ForgeQuery = {};
     expect(matchesBrickQuery(brick, query)).toBe(true);
   });
 });

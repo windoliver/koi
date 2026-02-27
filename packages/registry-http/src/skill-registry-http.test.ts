@@ -52,7 +52,7 @@ describe("search", () => {
 
     const page = await registry.search({ text: "test" });
     expect(page.items).toHaveLength(1);
-    expect(page.items[0]?.id).toBe("skill-1");
+    expect(page.items[0]?.id).toBe(skillId("skill-1"));
   });
 
   test("returns empty page on network failure", async () => {
@@ -314,16 +314,15 @@ describe("deprecate", () => {
 
 describe("auth", () => {
   test("sends Bearer token in Authorization header", async () => {
-    let capturedHeaders: HeadersInit | undefined;
+    let capturedHeaders: Record<string, string> | undefined;
     const fetchFn = createMockFetch((_url, init) => {
-      capturedHeaders = init?.headers;
+      capturedHeaders = init?.headers as Record<string, string> | undefined;
       return Response.json(createMockEntry("auth-test"));
     });
     const registry = createSkillRegistryHttp(createConfig(fetchFn));
 
     await registry.get(skillId("auth-test"));
-    const headers = capturedHeaders as Record<string, string>;
-    expect(headers?.Authorization).toBe("Bearer test-token");
+    expect(capturedHeaders?.Authorization).toBe("Bearer test-token");
   });
 });
 
