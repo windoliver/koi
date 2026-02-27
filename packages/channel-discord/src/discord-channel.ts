@@ -51,6 +51,7 @@ const DISCORD_CAPABILITIES: ChannelCapabilities = {
   audio: true,
   video: true,
   threads: true,
+  supportsA2ui: false,
 } as const satisfies ChannelCapabilities;
 
 // ---------------------------------------------------------------------------

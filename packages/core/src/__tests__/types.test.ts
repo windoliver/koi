@@ -392,6 +392,7 @@ describe("ChannelAdapter negative types", () => {
       audio: false,
       video: false,
       threads: false,
+      supportsA2ui: false,
     };
     // @ts-expect-error — send is required on ChannelAdapter
     const _c: ChannelAdapter = {
