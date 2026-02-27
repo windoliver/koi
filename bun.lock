@@ -1259,6 +1259,17 @@
         "@koi/scope": "workspace:*",
       },
     },
+    "packages/tools-github": {
+      "name": "@koi/tools-github",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+      },
+    },
     "packages/tracing": {
       "name": "@koi/tracing",
       "version": "0.0.0",
@@ -1934,6 +1945,8 @@
     "@koi/test-utils": ["@koi/test-utils@workspace:packages/test-utils"],
 
     "@koi/tool-browser": ["@koi/tool-browser@workspace:packages/tool-browser"],
+
+    "@koi/tools-github": ["@koi/tools-github@workspace:packages/tools-github"],
 
     "@koi/tracing": ["@koi/tracing@workspace:packages/tracing"],
 
