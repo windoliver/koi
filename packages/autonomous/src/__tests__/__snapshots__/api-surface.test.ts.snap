@@ -1,0 +1,42 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/autonomous API surface . has stable type surface 1`] = `
+"import { KoiMiddleware } from '@koi/core';
+import { HarnessScheduler } from '@koi/harness-scheduler';
+import { LongRunningHarness } from '@koi/long-running';
+
+/**
+ * Types for @koi/autonomous — coordinated autonomous agent composition.
+ */
+
+interface AutonomousAgentParts {
+    /** The long-running harness managing multi-session lifecycle. */
+    readonly harness: LongRunningHarness;
+    /** The scheduler that auto-resumes the harness when suspended. */
+    readonly scheduler: HarnessScheduler;
+    /** Optional compactor middleware for context compaction. */
+    readonly compactorMiddleware?: KoiMiddleware | undefined;
+}
+interface AutonomousAgent {
+    /** The underlying harness. */
+    readonly harness: LongRunningHarness;
+    /** The scheduler managing auto-resume. */
+    readonly scheduler: HarnessScheduler;
+    /** Collect all middleware (harness + optional compactor). */
+    readonly middleware: () => readonly KoiMiddleware[];
+    /** Dispose all parts in correct order (scheduler first, then harness). */
+    readonly dispose: () => Promise<void>;
+}
+
+/**
+ * Autonomous agent factory — composes harness + scheduler + optional compactor
+ * into a coordinated autonomous agent.
+ *
+ * Disposal order: stop scheduler first (prevents new resumes), then dispose harness.
+ */
+
+declare function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAgent;
+
+export { type AutonomousAgent, type AutonomousAgentParts, createAutonomousAgent };
+"
+`;

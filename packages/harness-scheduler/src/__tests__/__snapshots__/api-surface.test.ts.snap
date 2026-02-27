@@ -1,0 +1,69 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/harness-scheduler API surface . has stable type surface 1`] = `
+"import { KoiError, Result } from '@koi/core';
+
+/**
+ * Types for @koi/harness-scheduler — auto-resume scheduler for long-running harness.
+ *
+ * Uses a minimal structural interface (SchedulableHarness) to avoid
+ * L2→L2 dependency on @koi/long-running.
+ */
+
+/**
+ * Minimal interface the scheduler needs from a harness.
+ * Structurally compatible with LongRunningHarness from @koi/long-running.
+ */
+interface SchedulableHarness {
+    readonly status: () => {
+        readonly phase: string;
+    };
+    readonly resume: () => Promise<Result<unknown, KoiError>>;
+}
+interface HarnessSchedulerConfig {
+    /** The harness to poll and auto-resume. */
+    readonly harness: SchedulableHarness;
+    /** Polling interval in milliseconds. Default: 5000. */
+    readonly pollIntervalMs?: number | undefined;
+    /** Base backoff delay in ms after a failed resume. Default: 1000. */
+    readonly backoffBaseMs?: number | undefined;
+    /** Maximum backoff cap in ms. Default: 60_000. */
+    readonly backoffCapMs?: number | undefined;
+    /** Maximum consecutive resume failures before stopping. Default: 3. */
+    readonly maxRetries?: number | undefined;
+    /** AbortSignal for external cancellation. */
+    readonly signal?: AbortSignal | undefined;
+    /** Injectable delay function for tests. Default: Bun.sleep. */
+    readonly delay?: ((ms: number) => Promise<void>) | undefined;
+}
+type SchedulerPhase = "idle" | "running" | "stopped" | "failed";
+interface HarnessSchedulerStatus {
+    readonly phase: SchedulerPhase;
+    readonly retriesRemaining: number;
+    readonly lastError?: KoiError | undefined;
+    readonly totalResumes: number;
+}
+interface HarnessScheduler {
+    /** Begin polling the harness. */
+    readonly start: () => void;
+    /** Gracefully stop polling. */
+    readonly stop: () => void;
+    /** Current scheduler status. */
+    readonly status: () => HarnessSchedulerStatus;
+    /** Stop polling and release resources. */
+    readonly dispose: () => Promise<void>;
+}
+
+/**
+ * Poll-based harness scheduler — auto-resumes a suspended harness.
+ *
+ * Polls the harness status at a configurable interval. When the harness
+ * is suspended, calls resume(). On failure, applies exponential backoff
+ * with jitter. Stops with "failed" phase after maxRetries exhausted.
+ */
+
+declare function createHarnessScheduler(config: HarnessSchedulerConfig): HarnessScheduler;
+
+export { type HarnessScheduler, type HarnessSchedulerConfig, type HarnessSchedulerStatus, type SchedulableHarness, type SchedulerPhase, createHarnessScheduler };
+"
+`;
