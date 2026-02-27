@@ -17,6 +17,7 @@ const ALL_CAPS: ChannelCapabilities = {
   audio: true,
   video: true,
   threads: true,
+  supportsA2ui: true,
 };
 
 const NO_CAPS: ChannelCapabilities = {
@@ -27,6 +28,7 @@ const NO_CAPS: ChannelCapabilities = {
   audio: false,
   video: false,
   threads: false,
+  supportsA2ui: false,
 };
 
 const imageBlock: ContentBlock = {

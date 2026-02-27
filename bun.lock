@@ -132,6 +132,13 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/channel-canvas-fallback": {
+      "name": "@koi/channel-canvas-fallback",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/channel-chat-sdk": {
       "name": "@koi/channel-chat-sdk",
       "version": "0.0.0",
@@ -1535,6 +1542,7 @@
       "version": "0.0.0",
       "devDependencies": {
         "@koi/canvas": "workspace:*",
+        "@koi/channel-canvas-fallback": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/delegation": "workspace:*",
         "@koi/engine": "workspace:*",
@@ -1952,6 +1960,8 @@
     "@koi/capability-verifier": ["@koi/capability-verifier@workspace:packages/capability-verifier"],
 
     "@koi/channel-base": ["@koi/channel-base@workspace:packages/channel-base"],
+
+    "@koi/channel-canvas-fallback": ["@koi/channel-canvas-fallback@workspace:packages/channel-canvas-fallback"],
 
     "@koi/channel-chat-sdk": ["@koi/channel-chat-sdk@workspace:packages/channel-chat-sdk"],
 

@@ -36,6 +36,7 @@
     "@koi/engine-external": "workspace:*",
     "@koi/sandbox-executor": "workspace:*",
     "@koi/canvas": "workspace:*",
+    "@koi/channel-canvas-fallback": "workspace:*",
     "@koi/orchestrator": "workspace:*",
     "@koi/test-utils": "workspace:*",
     "@koi/git-utils": "workspace:*",

@@ -40,6 +40,7 @@ const CLI_CAPABILITIES = {
   audio: false,
   video: false,
   threads: false,
+  supportsA2ui: false,
 } as const satisfies ChannelCapabilities;
 
 /**

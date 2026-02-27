@@ -44,6 +44,7 @@ const VOICE_CAPABILITIES: ChannelCapabilities = {
   buttons: false,
   video: false,
   threads: false,
+  supportsA2ui: false,
 } as const satisfies ChannelCapabilities;
 
 /** Tight retry config for TTS speak() — fast retries on transient failures. */

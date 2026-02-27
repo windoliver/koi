@@ -124,6 +124,7 @@ const AGUI_CAPABILITIES: ChannelCapabilities = {
   audio: false,
   video: false,
   threads: true,
+  supportsA2ui: true,
 } as const satisfies ChannelCapabilities;
 
 /** Encode a BaseEvent as UTF-8 SSE bytes. */

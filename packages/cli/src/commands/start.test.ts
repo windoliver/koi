@@ -30,6 +30,7 @@ mock.module("@koi/channel-cli", () => ({
       audio: false,
       video: false,
       threads: false,
+      supportsA2ui: false,
     },
     connect: mockConnect,
     disconnect: mockDisconnect,

@@ -89,6 +89,7 @@ describe("createDiscordChannel — capabilities", () => {
       audio: true,
       video: true,
       threads: true,
+      supportsA2ui: false,
     });
   });
 

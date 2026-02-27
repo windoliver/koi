@@ -16,6 +16,7 @@ const SLACK_CAPABILITIES: ChannelCapabilities = {
   audio: false,
   video: false,
   threads: true,
+  supportsA2ui: false,
 } as const satisfies ChannelCapabilities;
 
 const DISCORD_CAPABILITIES: ChannelCapabilities = {
@@ -26,6 +27,7 @@ const DISCORD_CAPABILITIES: ChannelCapabilities = {
   audio: false,
   video: false,
   threads: true,
+  supportsA2ui: false,
 } as const satisfies ChannelCapabilities;
 
 const TEAMS_CAPABILITIES: ChannelCapabilities = {
@@ -36,6 +38,7 @@ const TEAMS_CAPABILITIES: ChannelCapabilities = {
   audio: false,
   video: false,
   threads: true,
+  supportsA2ui: false,
 } as const satisfies ChannelCapabilities;
 
 const GCHAT_CAPABILITIES: ChannelCapabilities = {
@@ -46,6 +49,7 @@ const GCHAT_CAPABILITIES: ChannelCapabilities = {
   audio: false,
   video: false,
   threads: true,
+  supportsA2ui: false,
 } as const satisfies ChannelCapabilities;
 
 const GITHUB_CAPABILITIES: ChannelCapabilities = {
@@ -56,6 +60,7 @@ const GITHUB_CAPABILITIES: ChannelCapabilities = {
   audio: false,
   video: false,
   threads: true,
+  supportsA2ui: false,
 } as const satisfies ChannelCapabilities;
 
 const LINEAR_CAPABILITIES: ChannelCapabilities = {
@@ -66,6 +71,7 @@ const LINEAR_CAPABILITIES: ChannelCapabilities = {
   audio: false,
   video: false,
   threads: true,
+  supportsA2ui: false,
 } as const satisfies ChannelCapabilities;
 
 const CAPABILITIES_MAP: Readonly<Record<PlatformName, ChannelCapabilities>> = {

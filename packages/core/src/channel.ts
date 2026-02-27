@@ -13,6 +13,7 @@ export interface ChannelCapabilities {
   readonly audio: boolean;
   readonly video: boolean;
   readonly threads: boolean;
+  readonly supportsA2ui: boolean;
 }
 
 export type MessageHandler = (message: InboundMessage) => Promise<void>;
