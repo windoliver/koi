@@ -518,6 +518,27 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/governance": {
+      "name": "@koi/governance",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/delegation": "workspace:*",
+        "@koi/exec-approvals": "workspace:*",
+        "@koi/middleware-audit": "workspace:*",
+        "@koi/middleware-governance-backend": "workspace:*",
+        "@koi/middleware-guardrails": "workspace:*",
+        "@koi/middleware-pay": "workspace:*",
+        "@koi/middleware-permissions": "workspace:*",
+        "@koi/middleware-pii": "workspace:*",
+        "@koi/middleware-sanitize": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/handoff": {
       "name": "@koi/handoff",
       "version": "0.0.0",
@@ -703,6 +724,19 @@
         "@koi/engine": "workspace:*",
         "@koi/engine-loop": "workspace:*",
         "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware-governance-backend": {
+      "name": "@koi/middleware-governance-backend",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -1805,6 +1839,8 @@
 
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/git-utils"],
 
+    "@koi/governance": ["@koi/governance@workspace:packages/governance"],
+
     "@koi/handoff": ["@koi/handoff@workspace:packages/handoff"],
 
     "@koi/hash": ["@koi/hash@workspace:packages/hash"],
@@ -1836,6 +1872,8 @@
     "@koi/middleware-fs-rollback": ["@koi/middleware-fs-rollback@workspace:packages/middleware-fs-rollback"],
 
     "@koi/middleware-goal-anchor": ["@koi/middleware-goal-anchor@workspace:packages/middleware-goal-anchor"],
+
+    "@koi/middleware-governance-backend": ["@koi/middleware-governance-backend@workspace:packages/middleware-governance-backend"],
 
     "@koi/middleware-guardrails": ["@koi/middleware-guardrails@workspace:packages/middleware-guardrails"],
 

@@ -1,0 +1,30 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-governance-backend API surface . has stable type surface 1`] = `
+"import { KoiMiddleware } from '@koi/core/middleware';
+import { GovernanceBackend, GovernanceVerdict, GovernanceBackendEvent } from '@koi/core/governance-backend';
+import { Result, KoiError } from '@koi/core/errors';
+
+/**
+ * GovernanceBackendMiddlewareConfig interface and validation.
+ */
+
+interface GovernanceBackendMiddlewareConfig {
+    readonly backend: GovernanceBackend;
+    readonly onViolation?: (verdict: GovernanceVerdict, event: GovernanceBackendEvent) => void;
+}
+declare function validateGovernanceBackendConfig(config: unknown): Result<GovernanceBackendMiddlewareConfig, KoiError>;
+
+/**
+ * Governance backend middleware factory — pluggable policy evaluation gate.
+ *
+ * Wraps every model call and tool call with a GovernanceBackend.evaluate()
+ * call. Fail-closed: if evaluate() throws, the error propagates as a denial.
+ * Never treats a throwing backend as permissive.
+ */
+
+declare function createGovernanceBackendMiddleware(config: GovernanceBackendMiddlewareConfig): KoiMiddleware;
+
+export { type GovernanceBackendMiddlewareConfig, createGovernanceBackendMiddleware, validateGovernanceBackendConfig };
+"
+`;
