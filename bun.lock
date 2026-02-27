@@ -1121,6 +1121,19 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/registry-store": {
+      "name": "@koi/registry-store",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/sqlite-utils": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/resolve": {
       "name": "@koi/resolve",
       "version": "0.0.0",
@@ -2097,6 +2110,8 @@
     "@koi/registry-event-sourced": ["@koi/registry-event-sourced@workspace:packages/registry-event-sourced"],
 
     "@koi/registry-http": ["@koi/registry-http@workspace:packages/registry-http"],
+
+    "@koi/registry-store": ["@koi/registry-store@workspace:packages/registry-store"],
 
     "@koi/resolve": ["@koi/resolve@workspace:packages/resolve"],
 
