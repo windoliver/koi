@@ -1,0 +1,100 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-report API surface . has stable type surface 1`] = `
+"import { RunReport, ActionEntry, ArtifactRef, IssueEntry, RunDuration, RunCost, ReportSummary, KoiMiddleware } from '@koi/core';
+import { Result, KoiError } from '@koi/core/errors';
+import { BrickDescriptor } from '@koi/resolve';
+
+/**
+ * Report middleware configuration and validation.
+ */
+
+/** Snapshot of cost data from an external provider. */
+interface CostSnapshot {
+    readonly estimatedCostUsd: number;
+}
+/** Data passed to the summarizer callback. */
+interface ReportData {
+    readonly objective?: string | undefined;
+    readonly actions: readonly ActionEntry[];
+    readonly artifacts: readonly ArtifactRef[];
+    readonly issues: readonly IssueEntry[];
+    readonly duration: RunDuration;
+    readonly cost: RunCost;
+}
+/** Async callback that produces a human-readable summary + recommendations. */
+type ReportSummarizer = (data: ReportData) => Promise<ReportSummary>;
+/** Async callback that returns the current cost snapshot. */
+type CostProvider = () => CostSnapshot | Promise<CostSnapshot>;
+/** Custom formatter that converts a RunReport to a string. */
+type ReportFormatter = (report: RunReport) => string;
+/** Callback invoked when a report is finalized. */
+type ReportCallback = (report: RunReport, formatted: string) => void | Promise<void>;
+/** Live progress snapshot emitted after each turn. */
+interface ProgressSnapshot {
+    readonly turnIndex: number;
+    readonly totalActions: number;
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly totalTokens: number;
+    readonly issueCount: number;
+    readonly elapsedMs: number;
+    readonly truncated: boolean;
+}
+/** Callback invoked after each turn with live progress data. */
+type ProgressCallback = (progress: ProgressSnapshot) => void | Promise<void>;
+/** Configuration for createReportMiddleware. */
+interface ReportConfig {
+    readonly objective?: string | undefined;
+    readonly summarizer?: ReportSummarizer | undefined;
+    readonly summarizerTimeoutMs?: number | undefined;
+    readonly costProvider?: CostProvider | undefined;
+    readonly formatter?: ReportFormatter | undefined;
+    readonly maxActions?: number | undefined;
+    readonly onReport?: ReportCallback | undefined;
+    readonly onProgress?: ProgressCallback | undefined;
+}
+declare function validateReportConfig(config: unknown): Result<ReportConfig, KoiError>;
+
+/**
+ * BrickDescriptor for @koi/middleware-report.
+ *
+ * Enables manifest auto-resolution: validates report config,
+ * then creates the report middleware with defaults.
+ */
+
+/**
+ * Descriptor for report middleware.
+ * Exported for registration with createRegistry().
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
+
+/**
+ * Output formatters for RunReport — Markdown and JSON.
+ */
+
+/** Format a RunReport as a Markdown document. */
+declare function mapReportToMarkdown(report: RunReport): string;
+/** Format a RunReport as pretty-printed JSON. */
+declare function mapReportToJson(report: RunReport): string;
+
+/**
+ * Package-internal types for @koi/middleware-report.
+ */
+
+/** Handle returned by createReportMiddleware for report retrieval. */
+interface ReportHandle {
+    readonly middleware: KoiMiddleware;
+    readonly getReport: () => RunReport | undefined;
+    readonly getProgress: () => ProgressSnapshot;
+}
+
+/**
+ * Report middleware factory — generates structured run reports.
+ */
+
+declare function createReportMiddleware(config?: ReportConfig): ReportHandle;
+
+export { type CostProvider, type CostSnapshot, type ProgressCallback, type ProgressSnapshot, type ReportCallback, type ReportConfig, type ReportData, type ReportFormatter, type ReportHandle, type ReportSummarizer, createReportMiddleware, descriptor, mapReportToJson, mapReportToMarkdown, validateReportConfig };
+"
+`;
