@@ -87,12 +87,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
       // Check approval cache before prompting (true LRU: delete+reinsert on hit)
       if (cache !== undefined) {
         const userId = ctx.session.userId ?? "__anonymous__";
-        const cacheKey = computeCacheKey(
-          rulesFingerprint,
-          userId,
-          request.toolId,
-          request.input,
-        );
+        const cacheKey = computeCacheKey(rulesFingerprint, userId, request.toolId, request.input);
         const entry = cache.get(cacheKey);
         if (entry !== undefined) {
           const expired = ttlMs > 0 && Date.now() - entry.cachedAt >= ttlMs;
@@ -142,12 +137,7 @@ export function createPermissionsMiddleware(config: PermissionsMiddlewareConfig)
         // Cache the approval (only approvals, not denials)
         if (cache !== undefined && resolvedCache !== false) {
           const userId = ctx.session.userId ?? "__anonymous__";
-          const cacheKey = computeCacheKey(
-            rulesFingerprint,
-            userId,
-            request.toolId,
-            request.input,
-          );
+          const cacheKey = computeCacheKey(rulesFingerprint, userId, request.toolId, request.input);
           if (cache.size >= (resolvedCache.maxEntries ?? DEFAULT_APPROVAL_CACHE_MAX_ENTRIES)) {
             // LRU eviction: Map iteration order is insertion order, so first key is oldest
             const oldest = cache.keys().next().value;
@@ -183,7 +173,9 @@ function computeCacheKey(
   try {
     const sorted =
       input !== null && typeof input === "object" && !Array.isArray(input)
-        ? Object.fromEntries(Object.entries(input as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)))
+        ? Object.fromEntries(
+            Object.entries(input as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)),
+          )
         : input;
     serialized = JSON.stringify(sorted);
   } catch (_e: unknown) {

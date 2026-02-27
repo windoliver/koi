@@ -520,64 +520,55 @@ describe("approval cache", () => {
     expect(spy.calls).toHaveLength(2);
   });
 
-describe("approval cache — key determinism and serialization", () => {
-  const engine = createPatternPermissionEngine();
-  const ctx = createMockTurnContext();
+  describe("approval cache — key determinism and serialization", () => {
+    const engine = createPatternPermissionEngine();
+    const ctx = createMockTurnContext();
 
-  test("different property insertion order produces same cache key (sorted input)", async () => {
-    const requestApproval = mock(async () => true);
-    const mw = createPermissionsMiddleware({
-      engine,
-      rules: { allow: [], deny: [], ask: ["multiply"] },
-      approvalHandler: { requestApproval },
-      approvalCache: true,
+    test("different property insertion order produces same cache key (sorted input)", async () => {
+      const requestApproval = mock(async () => true);
+      const mw = createPermissionsMiddleware({
+        engine,
+        rules: { allow: [], deny: [], ask: ["multiply"] },
+        approvalHandler: { requestApproval },
+        approvalCache: true,
+      });
+      const spy = createSpyToolHandler();
+
+      // Call 1: {a: 7, b: 8}
+      await mw.wrapToolCall?.(ctx, { toolId: "multiply", input: { a: 7, b: 8 } }, spy.handler);
+      expect(requestApproval).toHaveBeenCalledTimes(1);
+
+      // Call 2: {b: 8, a: 7} — same logical input, different insertion order
+      // Sorted serialization must produce the same key → cache hit
+      await mw.wrapToolCall?.(ctx, { toolId: "multiply", input: { b: 8, a: 7 } }, spy.handler);
+      expect(requestApproval).toHaveBeenCalledTimes(1); // no re-prompt
     });
-    const spy = createSpyToolHandler();
 
-    // Call 1: {a: 7, b: 8}
-    await mw.wrapToolCall?.(
-      ctx,
-      { toolId: "multiply", input: { a: 7, b: 8 } },
-      spy.handler,
-    );
-    expect(requestApproval).toHaveBeenCalledTimes(1);
+    test("circular reference in input throws VALIDATION error before prompting", async () => {
+      const requestApproval = mock(async () => true);
+      const mw = createPermissionsMiddleware({
+        engine,
+        rules: { allow: [], deny: [], ask: ["deploy"] },
+        approvalHandler: { requestApproval },
+        approvalCache: true,
+      });
+      const spy = createSpyToolHandler();
 
-    // Call 2: {b: 8, a: 7} — same logical input, different insertion order
-    // Sorted serialization must produce the same key → cache hit
-    await mw.wrapToolCall?.(
-      ctx,
-      { toolId: "multiply", input: { b: 8, a: 7 } },
-      spy.handler,
-    );
-    expect(requestApproval).toHaveBeenCalledTimes(1); // no re-prompt
-  });
+      // Circular reference violates JsonObject contract — only reachable via unsafe cast.
+      const circular: Record<string, unknown> = {};
+      circular.self = circular;
 
-  test("circular reference in input throws VALIDATION error before prompting", async () => {
-    const requestApproval = mock(async () => true);
-    const mw = createPermissionsMiddleware({
-      engine,
-      rules: { allow: [], deny: [], ask: ["deploy"] },
-      approvalHandler: { requestApproval },
-      approvalCache: true,
+      try {
+        await mw.wrapToolCall?.(ctx, { toolId: "deploy", input: circular as never }, spy.handler);
+        expect.unreachable("should have thrown");
+      } catch (e) {
+        const err = e as KoiError;
+        expect(err.code).toBe("VALIDATION");
+        expect(spy.calls).toHaveLength(0); // tool never called
+        expect(requestApproval).not.toHaveBeenCalled(); // error before prompt
+      }
     });
-    const spy = createSpyToolHandler();
-
-    // Circular reference violates JsonObject contract — only reachable via unsafe cast.
-    const circular: Record<string, unknown> = {};
-    circular.self = circular;
-
-    try {
-      await mw.wrapToolCall?.(ctx, { toolId: "deploy", input: circular as never }, spy.handler);
-      expect.unreachable("should have thrown");
-    } catch (e) {
-      const err = e as KoiError;
-      expect(err.code).toBe("VALIDATION");
-      expect(spy.calls).toHaveLength(0); // tool never called
-      expect(requestApproval).not.toHaveBeenCalled(); // error before prompt
-    }
   });
-});
-
 });
 
 // ---------------------------------------------------------------------------
