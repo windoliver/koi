@@ -16,6 +16,7 @@ import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
+  AttachResult,
   BrickArtifact,
   ForgeProvenance,
   ForgeScope,
@@ -23,7 +24,7 @@ import type {
   TieredSandboxExecutor,
   ToolArtifact,
 } from "@koi/core";
-import { brickId } from "@koi/core";
+import { brickId, isAttachResult } from "@koi/core";
 import type { ForgeDeps } from "@koi/forge";
 import {
   createDefaultForgeConfig,
@@ -33,6 +34,12 @@ import {
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import type { OverlayConfig, OverlayForgeStore } from "../overlay-store.js";
 import { createOverlayForgeStore } from "../overlay-store.js";
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -425,21 +432,23 @@ describe("cross-agent brick reuse e2e", () => {
       scope: "agent",
     });
 
-    const agentComponents = await agentProvider.attach({
-      pid: {
-        id: "alpha" as unknown as ReturnType<typeof import("@koi/core").agentId>,
-        name: "alpha",
-        type: "worker",
-        depth: 0,
-      },
-      manifest: { name: "alpha", version: "0.0.0", model: { name: "test" } },
-      state: "running",
-      component: () => undefined,
-      has: () => false,
-      hasAll: () => false,
-      query: () => new Map(),
-      components: () => new Map(),
-    });
+    const agentComponents = extractMap(
+      await agentProvider.attach({
+        pid: {
+          id: "alpha" as unknown as ReturnType<typeof import("@koi/core").agentId>,
+          name: "alpha",
+          type: "worker",
+          depth: 0,
+        },
+        manifest: { name: "alpha", version: "0.0.0", model: { name: "test" } },
+        state: "running",
+        component: () => undefined,
+        has: () => false,
+        hasAll: () => false,
+        query: () => new Map(),
+        components: () => new Map(),
+      }),
+    );
     expect(agentComponents.size).toBe(2);
 
     // Provider with global scope sees neither (both are narrower than global)
@@ -449,21 +458,23 @@ describe("cross-agent brick reuse e2e", () => {
       scope: "global",
     });
 
-    const globalComponents = await globalProvider.attach({
-      pid: {
-        id: "global" as unknown as ReturnType<typeof import("@koi/core").agentId>,
-        name: "global",
-        type: "worker",
-        depth: 0,
-      },
-      manifest: { name: "global", version: "0.0.0", model: { name: "test" } },
-      state: "running",
-      component: () => undefined,
-      has: () => false,
-      hasAll: () => false,
-      query: () => new Map(),
-      components: () => new Map(),
-    });
+    const globalComponents = extractMap(
+      await globalProvider.attach({
+        pid: {
+          id: "global" as unknown as ReturnType<typeof import("@koi/core").agentId>,
+          name: "global",
+          type: "worker",
+          depth: 0,
+        },
+        manifest: { name: "global", version: "0.0.0", model: { name: "test" } },
+        state: "running",
+        component: () => undefined,
+        has: () => false,
+        hasAll: () => false,
+        query: () => new Map(),
+        components: () => new Map(),
+      }),
+    );
     expect(globalComponents.size).toBe(0);
   });
 });

@@ -371,10 +371,14 @@ describeE2E("e2e: @koi/tools-web through createKoi + createPiAdapter", () => {
       // let justified: count actual HTTP requests made
       let fetchCount = 0;
       const realFetch = globalThis.fetch;
-      const countingFetch: typeof globalThis.fetch = async (input, init) => {
-        fetchCount++;
-        return realFetch(input, init);
-      };
+      // Wrap fetch to count real HTTP requests
+      const countingFetch: typeof globalThis.fetch = Object.assign(
+        async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+          fetchCount++;
+          return realFetch(input, init);
+        },
+        { preconnect: realFetch.preconnect },
+      );
 
       const executor = createWebExecutor({
         fetchFn: countingFetch,
@@ -547,7 +551,8 @@ describeE2E("e2e: @koi/tools-web through createKoi + createPiAdapter", () => {
       expect(output?.metrics.inputTokens).toBeGreaterThan(0);
       expect(output?.metrics.outputTokens).toBeGreaterThan(0);
       // stopReason should be either "completed" or "max_turns"
-      expect(["completed", "max_turns"]).toContain(output?.stopReason);
+      const stopReason = output?.stopReason ?? "";
+      expect(["completed", "max_turns"]).toContain(stopReason);
 
       // Agent state should be terminated
       expect(runtime.agent.state).toBe("terminated");

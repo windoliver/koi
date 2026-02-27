@@ -11,7 +11,14 @@ function mockExecutor(results: readonly WebSearchResult[]): WebExecutor {
   return {
     fetch: async () => ({
       ok: true,
-      value: { status: 200, statusText: "OK", headers: {}, body: "", truncated: false },
+      value: {
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        body: "",
+        truncated: false,
+        finalUrl: "",
+      },
     }),
     search: async () => ({ ok: true, value: results }),
   };
@@ -92,7 +99,14 @@ describe("web_search", () => {
     const executor: WebExecutor = {
       fetch: async () => ({
         ok: true,
-        value: { status: 200, statusText: "OK", headers: {}, body: "", truncated: false },
+        value: {
+          status: 200,
+          statusText: "OK",
+          headers: {},
+          body: "",
+          truncated: false,
+          finalUrl: "",
+        },
       }),
       search: async (query) => {
         capturedQuery = query;
@@ -107,7 +121,14 @@ describe("web_search", () => {
     const executor: WebExecutor = {
       fetch: async () => ({
         ok: true,
-        value: { status: 200, statusText: "OK", headers: {}, body: "", truncated: false },
+        value: {
+          status: 200,
+          statusText: "OK",
+          headers: {},
+          body: "",
+          truncated: false,
+          finalUrl: "",
+        },
       }),
       search: async () => ({
         ok: false,

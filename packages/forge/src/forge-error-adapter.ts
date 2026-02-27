@@ -84,6 +84,14 @@ const GOVERNANCE_MAP: Readonly<
   DEPTH_TOOL_RESTRICTED: { koiCode: "PERMISSION", retryable: RETRYABLE_DEFAULTS.PERMISSION },
 };
 
+/** Format stage: formatting failures are INTERNAL, timeouts are retryable. */
+const FORMAT_MAP: Readonly<
+  Record<Extract<ForgeError, { readonly stage: "format" }>["code"], ForgeMapping>
+> = {
+  FORMAT_FAILED: { koiCode: "INTERNAL", retryable: RETRYABLE_DEFAULTS.INTERNAL },
+  FORMAT_TIMEOUT: { koiCode: "TIMEOUT", retryable: RETRYABLE_DEFAULTS.TIMEOUT },
+};
+
 /** Store stage: persistence failures are INTERNAL. */
 const STORE_MAP: Readonly<
   Record<Extract<ForgeError, { readonly stage: "store" }>["code"], ForgeMapping>
@@ -122,7 +130,13 @@ function lookupMapping(error: ForgeError): ForgeMapping {
       return TRUST_MAP[error.code];
     case "governance":
       return GOVERNANCE_MAP[error.code];
+    case "format":
+      return FORMAT_MAP[error.code];
     case "store":
       return STORE_MAP[error.code];
+    default: {
+      const _exhaustive: never = error;
+      throw new Error(`Unknown forge error stage: ${(_exhaustive as ForgeError).stage}`);
+    }
   }
 }

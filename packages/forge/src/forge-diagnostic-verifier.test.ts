@@ -33,10 +33,12 @@ function agentInput(): ForgeInput {
   } as ForgeInput;
 }
 
-const MOCK_CONTEXT: ForgeContext = {
+const MOCK_CONTEXT = {
   agentId: "agent-1",
   depth: 0,
   scope: "agent",
+  sessionId: "session-1",
+  forgesThisSession: 0,
 } as ForgeContext;
 
 function errorDiagnostic(message: string): DiagnosticItem {

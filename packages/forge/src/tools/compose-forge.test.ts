@@ -16,8 +16,8 @@ function createMockStore(overrides?: Partial<ForgeStore>): ForgeStore {
   return {
     save: mock(async () => ({ ok: true, value: undefined }) as Result<void, never>),
     load: mock(async () => ({
-      ok: false,
-      error: { code: "NOT_FOUND", message: "Not found", retryable: false },
+      ok: false as const,
+      error: { code: "NOT_FOUND" as const, message: "Not found", retryable: false },
     })),
     search: mock(async () => ({ ok: true, value: [] })),
     remove: mock(async () => ({ ok: true, value: undefined })),
@@ -99,7 +99,7 @@ describe("compose_forge", () => {
         if (idStr === skillBrick.id) return { ok: true as const, value: skillBrick };
         return {
           ok: false as const,
-          error: { code: "NOT_FOUND", message: "nf", retryable: false },
+          error: { code: "NOT_FOUND" as const, message: "nf", retryable: false },
         };
       }),
     });
@@ -177,7 +177,7 @@ describe("compose_forge", () => {
         if (idStr === toolB.id) return { ok: true as const, value: toolB };
         return {
           ok: false as const,
-          error: { code: "NOT_FOUND", message: "nf", retryable: false },
+          error: { code: "NOT_FOUND" as const, message: "nf", retryable: false },
         };
       }),
       exists: mock(async () => ({ ok: true as const, value: false })),
@@ -217,7 +217,7 @@ describe("compose_forge", () => {
         if (idStr === skillB.id) return { ok: true as const, value: skillB };
         return {
           ok: false as const,
-          error: { code: "NOT_FOUND", message: "nf", retryable: false },
+          error: { code: "NOT_FOUND" as const, message: "nf", retryable: false },
         };
       }),
       exists: mock(async () => ({ ok: true as const, value: false })),

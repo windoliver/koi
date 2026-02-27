@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import type { Tool } from "@koi/core";
+import type { AttachResult, Tool } from "@koi/core";
+import { isAttachResult } from "@koi/core";
 import { createWebProvider } from "./web-component-provider.js";
 import type { WebExecutor } from "./web-executor.js";
+
+function extractMap(
+  result: AttachResult | ReadonlyMap<string, unknown>,
+): ReadonlyMap<string, unknown> {
+  return isAttachResult(result) ? result.components : result;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -11,7 +18,14 @@ function createMockExecutor(): WebExecutor {
   return {
     fetch: async () => ({
       ok: true,
-      value: { status: 200, statusText: "OK", headers: {}, body: "", truncated: false },
+      value: {
+        status: 200,
+        statusText: "OK",
+        headers: {},
+        body: "",
+        truncated: false,
+        finalUrl: "",
+      },
     }),
     search: async () => ({ ok: true, value: [] }),
   };
@@ -27,7 +41,7 @@ const MOCK_AGENT = {} as Parameters<ReturnType<typeof createWebProvider>["attach
 describe("createWebProvider", () => {
   test("attaches all tools by default", async () => {
     const provider = createWebProvider({ executor: createMockExecutor() });
-    const components = await provider.attach(MOCK_AGENT);
+    const components = extractMap(await provider.attach(MOCK_AGENT));
 
     expect(components.size).toBe(2);
     expect(components.has("tool:web_fetch")).toBe(true);
@@ -36,7 +50,7 @@ describe("createWebProvider", () => {
 
   test("respects custom prefix", async () => {
     const provider = createWebProvider({ executor: createMockExecutor(), prefix: "agent" });
-    const components = await provider.attach(MOCK_AGENT);
+    const components = extractMap(await provider.attach(MOCK_AGENT));
 
     expect(components.has("tool:agent_fetch")).toBe(true);
     expect(components.has("tool:agent_search")).toBe(true);
@@ -47,7 +61,7 @@ describe("createWebProvider", () => {
       executor: createMockExecutor(),
       operations: ["fetch"],
     });
-    const components = await provider.attach(MOCK_AGENT);
+    const components = extractMap(await provider.attach(MOCK_AGENT));
 
     expect(components.size).toBe(1);
     expect(components.has("tool:web_fetch")).toBe(true);
@@ -59,7 +73,7 @@ describe("createWebProvider", () => {
       executor: createMockExecutor(),
       trustTier: "promoted",
     });
-    const components = await provider.attach(MOCK_AGENT);
+    const components = extractMap(await provider.attach(MOCK_AGENT));
 
     const fetchTool = components.get("tool:web_fetch") as Tool;
     expect(fetchTool.trustTier).toBe("promoted");
