@@ -8,7 +8,7 @@
  * pattern is found, which returns an error.
  */
 
-import { lstat, readdir, readFile } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Result } from "@koi/core";
 import type { DependencyConfig } from "./config.js";
@@ -152,7 +152,7 @@ export async function scanWorkspaceCode(
 
   for (const filePath of files) {
     try {
-      const content = await readFile(filePath, "utf8");
+      const content = await Bun.file(filePath).text();
       const relativePath = filePath.slice(nodeModulesPath.length + 1);
       scanContent(content, relativePath, findings);
     } catch (_: unknown) {

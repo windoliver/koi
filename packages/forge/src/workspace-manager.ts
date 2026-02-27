@@ -8,7 +8,7 @@
  * Workspace location: `$XDG_CACHE_HOME/koi/brick-workspaces/<dep-hash>/`
  */
 
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Result } from "@koi/core";
 import { computeContentHash } from "@koi/hash";
@@ -136,7 +136,7 @@ async function createBrickWorkspaceInner(
   );
 
   try {
-    await writeFile(join(workspacePath, "package.json"), packageJson, "utf8");
+    await Bun.write(join(workspacePath, "package.json"), packageJson);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     return {
@@ -204,7 +204,7 @@ async function createBrickWorkspaceInner(
   // Post-install: audit transitive dependencies against blocklist
   try {
     const lockPath = join(workspacePath, "bun.lock");
-    const lockContent = await readFile(lockPath, "utf8");
+    const lockContent = await Bun.file(lockPath).text();
     const transitiveResult = auditTransitiveDependencies(lockContent, config);
     if (!transitiveResult.ok) {
       // Clean up workspace — blocked transitive dep found
@@ -245,7 +245,7 @@ export async function writeBrickEntry(
   brickName: string,
 ): Promise<string> {
   const entryPath = join(workspacePath, `${brickName}.ts`);
-  await writeFile(entryPath, implementation, "utf8");
+  await Bun.write(entryPath, implementation);
   return entryPath;
 }
 

@@ -22,7 +22,6 @@ import type {
   SkillComponent,
   StoreChangeNotifier,
   TieredSandboxExecutor,
-  TrustTier,
 } from "@koi/core";
 import {
   agentToken,
@@ -34,25 +33,9 @@ import {
   toolToken,
 } from "@koi/core";
 import { brickToTool } from "./brick-conversion.js";
+import { meetsMinTrust } from "./brick-resolver.js";
+import { DEFAULT_SANDBOX_TIMEOUT_MS } from "./forge-defaults.js";
 import { checkBrickRequires } from "./requires-check.js";
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const DEFAULT_SANDBOX_TIMEOUT_MS = 5_000;
-
-/** Trust tier ordering: sandbox < verified < promoted. */
-const TRUST_TIER_LEVEL: Readonly<Record<TrustTier, number>> = {
-  sandbox: 0,
-  verified: 1,
-  promoted: 2,
-} as const;
-
-/** Returns true if `actual` meets or exceeds `required` trust tier. */
-function meetsMinTrust(actual: TrustTier, required: TrustTier): boolean {
-  return TRUST_TIER_LEVEL[actual] >= TRUST_TIER_LEVEL[required];
-}
 
 // ---------------------------------------------------------------------------
 // Per-brick attachment (exhaustive switch over all 5 BrickKinds)

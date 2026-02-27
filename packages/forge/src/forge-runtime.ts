@@ -7,13 +7,11 @@
  */
 
 import type {
-  AgentDescriptor,
   BrickArtifact,
   BrickComponentMap,
   BrickKind,
   ForgeStore,
   SigningBackend,
-  SkillComponent,
   StoreChangeEvent,
   Tool,
   ToolArtifact,
@@ -22,19 +20,19 @@ import type {
 import type { AttestationCache } from "./attestation-cache.js";
 import { createAttestationCache } from "./attestation-cache.js";
 import { brickToTool } from "./brick-conversion.js";
+import { createDeltaInvalidator, mapBrickToComponent } from "./brick-resolver.js";
+import type { DependencyConfig } from "./config.js";
+import { createDefaultForgeConfig } from "./config.js";
+import { auditDependencies } from "./dependency-audit.js";
+import { DEFAULT_SANDBOX_TIMEOUT_MS, MAX_EXTERNAL_LISTENERS } from "./forge-defaults.js";
 import { verifyBrickAttestation, verifyBrickIntegrity } from "./integrity.js";
 import { checkBrickRequires } from "./requires-check.js";
 import type { TieredSandboxExecutor } from "./types.js";
-import { computeDependencyHash, resolveWorkspacePath } from "./workspace-manager.js";
+import { createBrickWorkspace, writeBrickEntry } from "./workspace-manager.js";
 
 // Re-use the ForgeRuntime interface from L1 types.
 // Import it as a type-only import to avoid L2→L1 dependency.
 // The factory returns a structurally compatible object.
-
-const DEFAULT_SANDBOX_TIMEOUT_MS = 5_000;
-
-/** Safety cap — catches leaked listeners before they accumulate unboundedly. */
-const MAX_EXTERNAL_LISTENERS = 64;
 
 export interface CreateForgeRuntimeOptions {
   readonly store: ForgeStore;
@@ -42,6 +40,8 @@ export interface CreateForgeRuntimeOptions {
   readonly sandboxTimeoutMs?: number;
   /** When provided, verifies attestation signatures on tool load. */
   readonly signer?: SigningBackend;
+  /** Dependency policy for bricks with npm packages. Defaults to ForgeConfig defaults. */
+  readonly dependencyConfig?: DependencyConfig;
 }
 
 /**
@@ -69,7 +69,13 @@ export interface ForgeRuntimeInstance {
  * - Provides onChange pass-through from the underlying store
  */
 export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRuntimeInstance {
-  const { store, executor, sandboxTimeoutMs = DEFAULT_SANDBOX_TIMEOUT_MS, signer } = options;
+  const {
+    store,
+    executor,
+    sandboxTimeoutMs = DEFAULT_SANDBOX_TIMEOUT_MS,
+    signer,
+    dependencyConfig = createDefaultForgeConfig().dependencies,
+  } = options;
 
   // let justified: mutable cache invalidated by store.watch
   let cachedTools: ReadonlyMap<string, ToolArtifact> | undefined;
@@ -114,10 +120,28 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
     return cache;
   }
 
+  const deltaInvalidator = createDeltaInvalidator<BrickArtifact>();
+
   function invalidateCache(): void {
     cachedTools = undefined;
     kindCaches.clear();
     integrityCache.clear();
+  }
+
+  /** Delta invalidation: remove a specific brick by ID from all caches. */
+  function invalidateByBrickId(brickId: string): void {
+    if (cachedTools !== undefined) {
+      const toolsMap = new Map(cachedTools);
+      deltaInvalidator.invalidateByBrickId(brickId as BrickArtifact["id"], toolsMap);
+      cachedTools = toolsMap;
+    }
+    for (const [kind, cache] of kindCaches) {
+      const mutableCache = new Map(cache);
+      if (deltaInvalidator.invalidateByBrickId(brickId as BrickArtifact["id"], mutableCache)) {
+        kindCaches.set(kind, mutableCache);
+      }
+    }
+    integrityCache.invalidate(brickId);
   }
 
   /**
@@ -177,13 +201,35 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
 
     const { executor: tierExecutor } = executor.forTier(artifact.trustTier);
 
-    // Resolve workspace path for bricks with npm dependencies
+    // Resolve workspace for bricks with npm dependencies
     const packages = artifact.requires?.packages;
     if (packages !== undefined && Object.keys(packages).length > 0) {
-      const depHash = computeDependencyHash(packages);
-      const wsPath = resolveWorkspacePath(depHash);
-      const entryPath = `${wsPath}/${artifact.name}.ts`;
-      return brickToTool(artifact, tierExecutor, sandboxTimeoutMs, wsPath, entryPath);
+      // Pre-install audit: validate package names, versions, allow/blocklist
+      const auditResult = auditDependencies(packages, dependencyConfig);
+      if (!auditResult.ok) {
+        return undefined;
+      }
+
+      // Create workspace: installs deps, audits transitives, scans code, verifies integrity
+      const wsResult = await createBrickWorkspace(packages, dependencyConfig);
+      if (!wsResult.ok) {
+        return undefined;
+      }
+
+      // Write the brick implementation as a .ts entry file in the workspace
+      const entryPath = await writeBrickEntry(
+        wsResult.value.workspacePath,
+        artifact.implementation,
+        artifact.name,
+      );
+
+      return brickToTool(
+        artifact,
+        tierExecutor,
+        sandboxTimeoutMs,
+        wsResult.value.workspacePath,
+        entryPath,
+      );
     }
 
     return brickToTool(artifact, tierExecutor, sandboxTimeoutMs);
@@ -228,30 +274,7 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
     const requiresResult = checkBrickRequires(artifact.requires, new Set(toolNames.keys()));
     if (!requiresResult.satisfied) return undefined;
 
-    switch (artifact.kind) {
-      case "skill": {
-        const component: SkillComponent = {
-          name: artifact.name,
-          description: artifact.description,
-          content: artifact.content,
-          ...(artifact.tags.length > 0 ? { tags: artifact.tags } : {}),
-        };
-        return component as BrickComponentMap[K];
-      }
-      case "agent": {
-        const component: AgentDescriptor = {
-          name: artifact.name,
-          description: artifact.description,
-          manifestYaml: artifact.manifestYaml,
-        };
-        return component as BrickComponentMap[K];
-      }
-      case "middleware":
-      case "channel":
-        return artifact as BrickComponentMap[K];
-      default:
-        return undefined;
-    }
+    return mapBrickToComponent<K>(artifact);
   };
 
   // Self-subscribe to store.watch for automatic cache invalidation.
@@ -262,7 +285,14 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
   let unsubStore: (() => void) | undefined;
   if (store.watch !== undefined) {
     unsubStore = store.watch((event) => {
-      invalidateCache();
+      // Delta invalidation: only clear the specific brick for update/remove/promote.
+      // "saved" (new brick) requires full invalidation since it may match filter criteria.
+      const strategy = deltaInvalidator.classifyEvent(event);
+      if (strategy === "full") {
+        invalidateCache();
+      } else {
+        invalidateByBrickId(event.brickId);
+      }
       // Snapshot to avoid issues if a listener unsubscribes during iteration
       const snapshot = [...externalListeners];
       for (const listener of snapshot) {

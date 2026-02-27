@@ -351,6 +351,8 @@ declare function verifyAttestation(provenance: ForgeProvenance, signer: SigningB
  * Attestation verification cache — avoids re-verifying the same content hash.
  *
  * Keyed by content hash (SHA-256 hex). Invalidated on store change events.
+ * Uses an LRU eviction policy to prevent unbounded memory growth in
+ * long-running agents with many brick versions.
  */
 interface CacheEntry {
     readonly valid: boolean;
@@ -364,9 +366,11 @@ interface AttestationCache {
     readonly size: () => number;
 }
 /**
- * Create an in-memory attestation verification cache.
+ * Create an LRU-capped attestation verification cache.
+ * Defaults to DEFAULT_ATTESTATION_CACHE_CAP entries; oldest entries
+ * are evicted when capacity is reached.
  */
-declare function createAttestationCache(): AttestationCache;
+declare function createAttestationCache(capacity?: number): AttestationCache;
 
 /**
  * Shared brick content extraction — maps brick kind to hashable primary content.
@@ -551,6 +555,8 @@ interface CreateForgeRuntimeOptions {
     readonly sandboxTimeoutMs?: number;
     /** When provided, verifies attestation signatures on tool load. */
     readonly signer?: SigningBackend;
+    /** Dependency policy for bricks with npm packages. Defaults to ForgeConfig defaults. */
+    readonly dependencyConfig?: DependencyConfig;
 }
 /**
  * ForgeRuntime shape — structurally matches the L1 ForgeRuntime interface.
