@@ -170,7 +170,7 @@ describe("InMemoryForgeStore promoteAndUpdate", () => {
     await store.save(brick);
 
     expect(store.promoteAndUpdate).toBeDefined();
-    const result = await store.promoteAndUpdate!(brickId("brick_atomic"), "zone", {
+    const result = await store.promoteAndUpdate?.(brickId("brick_atomic"), "zone", {
       trustTier: "verified",
       lifecycle: "active",
       tags: ["new", "zone:team-1"],
@@ -192,7 +192,7 @@ describe("InMemoryForgeStore promoteAndUpdate", () => {
     const store = createInMemoryForgeStore();
 
     expect(store.promoteAndUpdate).toBeDefined();
-    const result = await store.promoteAndUpdate!(brickId("nonexistent"), "zone", {
+    const result = await store.promoteAndUpdate?.(brickId("nonexistent"), "zone", {
       trustTier: "verified",
     });
 
