@@ -4,7 +4,7 @@ exports[`@koi/core API surface . has stable type surface 1`] = `
 "import { B as BrickRef, a as BrickKind } from './brick-snapshot-HASH.js';
 export { A as ALL_BRICK_KINDS, b as BrickId, c as BrickLifecycle, d as BrickSnapshot, e as BrickSource, F as ForgeScope, M as MIN_TRUST_BY_KIND, S as SnapshotEvent, f as SnapshotId, g as SnapshotQuery, h as SnapshotStore, V as VALID_LIFECYCLE_TRANSITIONS, i as brickId, s as snapshotId } from './brick-snapshot-HASH.js';
 import { A as AgentId, E as EngineState, P as ProcessState, T as Tool, S as SkillComponent, a as AgentDescriptor, b as SubsystemToken, c as TrustTier, d as Agent, C as ComponentProvider, K as KoiMiddleware, e as SessionId, f as ToolCallId } from './ecs-HASH.js';
-export { g as AbortReason, h as ApprovalDecision, i as ApprovalHandler, j as ApprovalRequest, k as ArtifactRef, B as BROWSER, l as BrowserActionOptions, m as BrowserConsoleEntry, n as BrowserConsoleLevel, o as BrowserConsoleOptions, p as BrowserConsoleResult, q as BrowserDriver, r as BrowserEvaluateOptions, s as BrowserEvaluateResult, t as BrowserFormField, u as BrowserNavigateOptions, v as BrowserNavigateResult, w as BrowserRefInfo, x as BrowserScreenshotOptions, y as BrowserScreenshotResult, z as BrowserScrollOptions, D as BrowserSnapshotOptions, F as BrowserSnapshotResult, G as BrowserTabCloseOptions, H as BrowserTabFocusOptions, I as BrowserTabInfo, J as BrowserTabNewOptions, L as BrowserTraceOptions, M as BrowserTraceResult, N as BrowserTypeOptions, O as BrowserUploadFile, Q as BrowserUploadOptions, R as BrowserWaitOptions, U as BrowserWaitUntil, V as COMPONENT_PRIORITY, W as CREDENTIALS, X as CapabilityFragment, Y as ChildHandle, Z as ChildLifecycleEvent, _ as ComponentEvent, $ as ComponentEventKind, a0 as ComposedCallHandlers, a1 as CorrelationIds, a2 as CredentialComponent, a3 as CronSchedule, a4 as DEFAULT_SCHEDULER_CONFIG, a5 as DELEGATION, a6 as DecisionRecord, a7 as EVENTS, a8 as EngineAdapter, a9 as EngineEvent, aa as EngineInput, ab as EngineInputBase, ac as EngineMetrics, ad as EngineOutput, ae as EngineStopReason, af as EventComponent, ag as FILESYSTEM, ah as GOVERNANCE, ai as GOVERNANCE_VARIABLES, aj as GovernanceCheck, ak as GovernanceController, al as GovernanceEvent, am as GovernanceSnapshot, an as GovernanceVariable, ao as GovernanceVariableContributor, ap as HANDOFF, aq as HandoffAcceptError, ar as HandoffAcceptResult, as as HandoffComponent, at as HandoffEnvelope, au as HandoffEvent, av as HandoffId, aw as HandoffStatus, ax as MEMORY, ay as MemoryComponent, az as MemoryRecallOptions, aA as MemoryResult, aB as MemoryStoreOptions, aC as MemoryTier, aD as ModelChunk, aE as ModelHandler, aF as ModelRequest, aG as ModelResponse, aH as ModelStreamHandler, aI as ProcessAccounter, aJ as ProcessId, aK as RunId, aL as SCHEDULER, aM as ScheduleId, aN as ScheduleStore, aO as ScheduledTask, aP as SchedulerComponent, aQ as SchedulerConfig, aR as SchedulerEvent, aS as SchedulerStats, aT as SensorReading, aU as SessionContext, aV as SkillMetadata, aW as SpawnLedger, aX as TaskFilter, aY as TaskHistoryFilter, aZ as TaskId, a_ as TaskOptions, a$ as TaskRunRecord, b0 as TaskScheduler, b1 as TaskStatus, b2 as TaskStore, b3 as ToolDescriptor, b4 as ToolExecuteOptions, b5 as ToolHandler, b6 as ToolRequest, b7 as ToolResponse, b8 as TurnContext, b9 as TurnId, ba as WEBHOOK, bb as WORKSPACE, bc as WorkspaceComponent, bd as agentId, be as agentToken, bf as channelToken, bg as governanceContributorToken, bh as handoffId, bi as middlewareToken, bj as runId, bk as scheduleId, bl as sessionId, bm as skillToken, bn as taskId, bo as token, bp as toolCallId, bq as toolToken, br as turnId } from './ecs-HASH.js';
+export { g as AbortReason, h as ApprovalDecision, i as ApprovalHandler, j as ApprovalRequest, k as ArtifactRef, B as BROWSER, l as BrowserActionOptions, m as BrowserConsoleEntry, n as BrowserConsoleLevel, o as BrowserConsoleOptions, p as BrowserConsoleResult, q as BrowserDriver, r as BrowserEvaluateOptions, s as BrowserEvaluateResult, t as BrowserFormField, u as BrowserNavigateOptions, v as BrowserNavigateResult, w as BrowserRefInfo, x as BrowserScreenshotOptions, y as BrowserScreenshotResult, z as BrowserScrollOptions, D as BrowserSnapshotOptions, F as BrowserSnapshotResult, G as BrowserTabCloseOptions, H as BrowserTabFocusOptions, I as BrowserTabInfo, J as BrowserTabNewOptions, L as BrowserTraceOptions, M as BrowserTraceResult, N as BrowserTypeOptions, O as BrowserUploadFile, Q as BrowserUploadOptions, R as BrowserWaitOptions, U as BrowserWaitUntil, V as COMPONENT_PRIORITY, W as CREDENTIALS, X as CapabilityFragment, Y as ChildHandle, Z as ChildLifecycleEvent, _ as ComplianceRecord, $ as ComplianceRecorder, a0 as ComponentEvent, a1 as ComponentEventKind, a2 as ComposedCallHandlers, a3 as ConstraintChecker, a4 as ConstraintQuery, a5 as CorrelationIds, a6 as CredentialComponent, a7 as CronSchedule, a8 as DEFAULT_SCHEDULER_CONFIG, a9 as DEFAULT_VIOLATION_QUERY_LIMIT, aa as DELEGATION, ab as DecisionRecord, ac as EVENTS, ad as EngineAdapter, ae as EngineEvent, af as EngineInput, ag as EngineInputBase, ah as EngineMetrics, ai as EngineOutput, aj as EngineStopReason, ak as EventComponent, al as FILESYSTEM, am as GOVERNANCE, an as GOVERNANCE_ALLOW, ao as GOVERNANCE_BACKEND, ap as GOVERNANCE_VARIABLES, aq as GovernanceBackend, ar as GovernanceCheck, as as GovernanceController, at as GovernanceEvent, au as GovernanceSnapshot, av as GovernanceVariable, aw as GovernanceVariableContributor, ax as GovernanceVerdict, ay as HANDOFF, az as HandoffAcceptError, aA as HandoffAcceptResult, aB as HandoffComponent, aC as HandoffEnvelope, aD as HandoffEvent, aE as HandoffId, aF as HandoffStatus, aG as MEMORY, aH as MemoryComponent, aI as MemoryRecallOptions, aJ as MemoryResult, aK as MemoryStoreOptions, aL as MemoryTier, aM as ModelChunk, aN as ModelHandler, aO as ModelRequest, aP as ModelResponse, aQ as ModelStreamHandler, aR as PolicyEvaluator, aS as PolicyRequest, aT as PolicyRequestKind, aU as ProcessAccounter, aV as ProcessId, aW as RunId, aX as SCHEDULER, aY as ScheduleId, aZ as ScheduleStore, a_ as ScheduledTask, a$ as SchedulerComponent, b0 as SchedulerConfig, b1 as SchedulerEvent, b2 as SchedulerStats, b3 as SensorReading, b4 as SessionContext, b5 as SkillMetadata, b6 as SpawnLedger, b7 as TaskFilter, b8 as TaskHistoryFilter, b9 as TaskId, ba as TaskOptions, bb as TaskRunRecord, bc as TaskScheduler, bd as TaskStatus, be as TaskStore, bf as ToolDescriptor, bg as ToolExecuteOptions, bh as ToolHandler, bi as ToolRequest, bj as ToolResponse, bk as TurnContext, bl as TurnId, bm as VIOLATION_SEVERITY_ORDER, bn as Violation, bo as ViolationFilter, bp as ViolationPage, bq as ViolationSeverity, br as ViolationStore, bs as WEBHOOK, bt as WORKSPACE, bu as WorkspaceComponent, bv as agentId, bw as agentToken, bx as channelToken, by as governanceContributorToken, bz as handoffId, bA as middlewareToken, bB as runId, bC as scheduleId, bD as sessionId, bE as skillToken, bF as taskId, bG as token, bH as toolCallId, bI as toolToken, bJ as turnId } from './ecs-HASH.js';
 import { Result, KoiError } from './errors.js';
 export { BackendErrorMapper, KoiErrorCode, RETRYABLE_DEFAULTS } from './errors.js';
 import { TransitionReason, AgentCondition, AgentStatus, RegistryEntry, AgentRegistry } from './lifecycle.js';
@@ -20,7 +20,6 @@ export { CompactionResult, ContextCompactor, TokenEstimator } from './context.js
 export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, EventEnvelope, EventInput, ReadOptions, ReadResult, SubscribeOptions, SubscriptionHandle } from './event-HASH.js';
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
 export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileRenameResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-HASH.js';
-export { ConstraintQuery, DEFAULT_VIOLATION_QUERY_LIMIT, GovernanceAttestation, GovernanceAttestationId, GovernanceAttestationInput, GovernanceBackend, GovernanceBackendEvent, GovernanceVerdict, VIOLATION_SEVERITIES, Violation, ViolationQuery, ViolationSeverity, governanceAttestationId } from './governance-HASH.js';
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
 export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
 export { ModelCapabilities, ModelProvider, ModelTarget } from './model-HASH.js';
@@ -1739,7 +1738,7 @@ import './webhook.js';
 
 exports[`@koi/core API surface ./ecs has stable type surface 1`] = `
 "import './assembly-HASH.js';
-export { d as Agent, a as AgentDescriptor, A as AgentId, B as BROWSER, V as COMPONENT_PRIORITY, W as CREDENTIALS, Y as ChildHandle, Z as ChildLifecycleEvent, _ as ComponentEvent, $ as ComponentEventKind, C as ComponentProvider, a2 as CredentialComponent, a5 as DELEGATION, a7 as EVENTS, af as EventComponent, ag as FILESYSTEM, ah as GOVERNANCE, ap as HANDOFF, ax as MEMORY, ay as MemoryComponent, az as MemoryRecallOptions, aA as MemoryResult, aB as MemoryStoreOptions, aC as MemoryTier, aI as ProcessAccounter, aJ as ProcessId, P as ProcessState, aK as RunId, aL as SCHEDULER, e as SessionId, S as SkillComponent, aV as SkillMetadata, aW as SpawnLedger, b as SubsystemToken, T as Tool, f as ToolCallId, b3 as ToolDescriptor, b4 as ToolExecuteOptions, c as TrustTier, b9 as TurnId, ba as WEBHOOK, bb as WORKSPACE, bc as WorkspaceComponent, bd as agentId, be as agentToken, bf as channelToken, bi as middlewareToken, bj as runId, bl as sessionId, bm as skillToken, bo as token, bp as toolCallId, bq as toolToken, br as turnId } from './ecs-HASH.js';
+export { d as Agent, a as AgentDescriptor, A as AgentId, B as BROWSER, V as COMPONENT_PRIORITY, W as CREDENTIALS, Y as ChildHandle, Z as ChildLifecycleEvent, a0 as ComponentEvent, a1 as ComponentEventKind, C as ComponentProvider, a6 as CredentialComponent, aa as DELEGATION, ac as EVENTS, ak as EventComponent, al as FILESYSTEM, am as GOVERNANCE, ao as GOVERNANCE_BACKEND, ay as HANDOFF, aG as MEMORY, aH as MemoryComponent, aI as MemoryRecallOptions, aJ as MemoryResult, aK as MemoryStoreOptions, aL as MemoryTier, aU as ProcessAccounter, aV as ProcessId, P as ProcessState, aW as RunId, aX as SCHEDULER, e as SessionId, S as SkillComponent, b5 as SkillMetadata, b6 as SpawnLedger, b as SubsystemToken, T as Tool, f as ToolCallId, bf as ToolDescriptor, bg as ToolExecuteOptions, c as TrustTier, bl as TurnId, bs as WEBHOOK, bt as WORKSPACE, bu as WorkspaceComponent, bv as agentId, bw as agentToken, bx as channelToken, bA as middlewareToken, bB as runId, bD as sessionId, bE as skillToken, bG as token, bH as toolCallId, bI as toolToken, bJ as turnId } from './ecs-HASH.js';
 import './channel.js';
 import './common.js';
 import './filesystem-HASH.js';
@@ -1752,7 +1751,7 @@ import './message.js';
 exports[`@koi/core API surface ./handoff has stable type surface 1`] = `
 "import './common.js';
 import './assembly-HASH.js';
-export { k as ArtifactRef, a6 as DecisionRecord, aq as HandoffAcceptError, ar as HandoffAcceptResult, as as HandoffComponent, at as HandoffEnvelope, au as HandoffEvent, av as HandoffId, aw as HandoffStatus, bh as handoffId } from './ecs-HASH.js';
+export { k as ArtifactRef, ab as DecisionRecord, az as HandoffAcceptError, aA as HandoffAcceptResult, aB as HandoffComponent, aC as HandoffEnvelope, aD as HandoffEvent, aE as HandoffId, aF as HandoffStatus, bz as handoffId } from './ecs-HASH.js';
 import './webhook.js';
 import './errors.js';
 import './channel.js';
@@ -1763,7 +1762,7 @@ import './filesystem-HASH.js';
 
 exports[`@koi/core API surface ./engine has stable type surface 1`] = `
 "import './common.js';
-export { g as AbortReason, a0 as ComposedCallHandlers, a8 as EngineAdapter, a9 as EngineEvent, aa as EngineInput, ab as EngineInputBase, ac as EngineMetrics, ad as EngineOutput, E as EngineState, ae as EngineStopReason } from './ecs-HASH.js';
+export { g as AbortReason, a2 as ComposedCallHandlers, ad as EngineAdapter, ae as EngineEvent, af as EngineInput, ag as EngineInputBase, ah as EngineMetrics, ai as EngineOutput, E as EngineState, aj as EngineStopReason } from './ecs-HASH.js';
 import './message.js';
 import './assembly-HASH.js';
 import './webhook.js';
@@ -1924,267 +1923,14 @@ export type { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfi
 `;
 
 exports[`@koi/core API surface ./governance-backend has stable type surface 1`] = `
-"import { JsonObject } from './common.js';
-import { A as AgentId } from './ecs-HASH.js';
-import { Result, KoiError } from './errors.js';
+"import './common.js';
+export { _ as ComplianceRecord, $ as ComplianceRecorder, a3 as ConstraintChecker, a4 as ConstraintQuery, a9 as DEFAULT_VIOLATION_QUERY_LIMIT, an as GOVERNANCE_ALLOW, aq as GovernanceBackend, ax as GovernanceVerdict, aR as PolicyEvaluator, aS as PolicyRequest, aT as PolicyRequestKind, bm as VIOLATION_SEVERITY_ORDER, bn as Violation, bo as ViolationFilter, bp as ViolationPage, bq as ViolationSeverity, br as ViolationStore } from './ecs-HASH.js';
 import './assembly-HASH.js';
 import './webhook.js';
+import './errors.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
-
-/**
- * GovernanceBackend — pluggable anomaly detection and constraint enforcement contract (Layer 0).
- *
- * Defines the interface for evaluating governance events against policy rules,
- * checking constraints, recording compliance attestations, and querying violations.
- *
- * L2 packages implement GovernanceBackend for specific backends:
- *   - @koi/governance: local in-process rule evaluation (default)
- *   - @koi/governance-nexus: Nexus governance brick (attestation, audit, compliance)
- *   - User-provided: any implementation of GovernanceBackend
- *
- * Consumed by: agent-monitor (#59), spawn governance, ProposalGate (#223),
- *              unified governance controller (#261).
- *
- * Fail-closed contract: if evaluate() or checkConstraint() throw, callers
- * MUST deny the operation. Infrastructure failures are not distinguished from
- * intentional denials — never treat a throwing backend as permissive.
- *
- * Exception: governanceAttestationId() is a branded type constructor (identity cast),
- * permitted in L0 as a zero-logic operation for type safety.
- *
- * Exception: DEFAULT_VIOLATION_QUERY_LIMIT and VIOLATION_SEVERITIES are pure readonly
- * data constants derived from L0 type definitions, codifying architecture-doc
- * invariants with zero logic.
- */
-
-/**
- * An event submitted to the governance backend for policy evaluation.
- *
- * Distinct from GovernanceEvent (governance.ts), which is the controller's
- * sensor-update event (a closed discriminated union for the sensor/setpoint model).
- * GovernanceBackendEvent uses an open string kind with an arbitrary payload,
- * supporting any event the backend needs to evaluate — including custom event kinds
- * from L2 packages.
- */
-interface GovernanceBackendEvent {
-    /**
-     * Semantic event type. Well-known kinds: "tool_call" | "spawn" | "forge" |
-     * "promotion" | "proposal". Backends may support additional kinds.
-     */
-    readonly kind: string;
-    /** The agent that produced this event. */
-    readonly agentId: AgentId;
-    /** Structured event payload — backend-specific content for rule evaluation. */
-    readonly payload: JsonObject;
-    /** Unix timestamp (ms) when the event occurred. */
-    readonly timestamp: number;
-}
-/**
- * Severity level for a policy violation. Ordered from lowest to highest impact.
- * Use VIOLATION_SEVERITIES for the canonical ordering and comparison.
- */
-type ViolationSeverity = "info" | "warning" | "critical";
-/**
- * Canonical ordering of ViolationSeverity values from lowest to highest impact.
- * Use for severity comparison:
- *
- * \`\`\`typescript
- * const infoIdx    = VIOLATION_SEVERITIES.indexOf("info");    // 0
- * const warningIdx = VIOLATION_SEVERITIES.indexOf("warning"); // 1
- * const critIdx    = VIOLATION_SEVERITIES.indexOf("critical"); // 2
- * if (VIOLATION_SEVERITIES.indexOf(v.severity) >= VIOLATION_SEVERITIES.indexOf("warning")) { ... }
- * \`\`\`
- */
-declare const VIOLATION_SEVERITIES: readonly ViolationSeverity[];
-/**
- * A single policy rule violation produced by a GovernanceBackend.evaluate() call.
- *
- * A GovernanceVerdict may contain multiple Violations — one per violated rule.
- * Backends SHOULD include all violated rules (not just the first) to enable
- * consumers to make fully informed decisions.
- */
-interface Violation {
-    /** The rule identifier that was violated (backend-defined). */
-    readonly rule: string;
-    /** Categorical impact level of this violation. */
-    readonly severity: ViolationSeverity;
-    /** Human-readable description of the violation. Answers: what happened + why. */
-    readonly message: string;
-    /** Optional structured context for this violation (threshold values, agent state, etc.). */
-    readonly context?: JsonObject | undefined;
-}
-/**
- * The outcome of a GovernanceBackend.evaluate() call.
- *
- * Distinct from GovernanceCheck (governance.ts), which is the controller's
- * per-sensor check result ("did this one variable exceed its limit?", single
- * variable, retryable flag). GovernanceVerdict is the backend's policy evaluation
- * result: zero or more violations across all applicable rules for a single event.
- */
-type GovernanceVerdict = {
-    readonly ok: true;
-} | {
-    readonly ok: false;
-    readonly violations: readonly Violation[];
-};
-/**
- * Input for a point-in-time constraint check against a specific agent.
- * The constraint is identified by ID; the backend resolves the rule definition.
- */
-interface ConstraintQuery {
-    /** The constraint identifier to check (backend-defined rule ID). */
-    readonly constraintId: string;
-    /** The agent to check the constraint against. */
-    readonly agentId: AgentId;
-    /** Optional structured context for evaluating the constraint. */
-    readonly context?: JsonObject | undefined;
-}
-/**
- * Default maximum number of violations returned by a single getViolations() call.
- * Implementations SHOULD apply this when the caller omits \`limit\`.
- */
-declare const DEFAULT_VIOLATION_QUERY_LIMIT = 100;
-/**
- * Filter for querying stored violation records.
- * All fields are optional — omitting a field means "no constraint on that dimension".
- * Providing no fields returns ALL violations up to \`limit\` — use with care.
- */
-interface ViolationQuery {
-    /** Filter to violations for a specific agent. */
-    readonly agentId?: AgentId | undefined;
-    /** Filter to violations matching any of these severity levels. */
-    readonly severity?: readonly ViolationSeverity[] | undefined;
-    /** Filter to violations from a specific rule. */
-    readonly ruleId?: string | undefined;
-    /** Include only violations at or after this Unix timestamp (ms). */
-    readonly after?: number | undefined;
-    /** Include only violations before this Unix timestamp (ms). */
-    readonly before?: number | undefined;
-    /**
-     * Maximum number of violations to return.
-     * Defaults to DEFAULT_VIOLATION_QUERY_LIMIT when omitted.
-     */
-    readonly limit?: number | undefined;
-}
-declare const __governanceAttestationBrand: unique symbol;
-/**
- * Branded string type for governance attestation identifiers.
- * Prevents accidental mixing with other string IDs (ProposalId, BrickId, etc.)
- * at compile time.
- */
-type GovernanceAttestationId = string & {
-    readonly [__governanceAttestationBrand]: "GovernanceAttestationId";
-};
-/** Create a branded GovernanceAttestationId from a plain string. */
-declare function governanceAttestationId(raw: string): GovernanceAttestationId;
-/**
- * Data provided by the caller when recording a compliance attestation.
- * The backend assigns id, attestedAt, and attestedBy — callers provide
- * the agentId, ruleId, verdict, and optional evidence.
- */
-interface GovernanceAttestationInput {
-    /** The agent this attestation is about. */
-    readonly agentId: AgentId;
-    /** The rule or policy this attestation covers (backend-defined rule ID). */
-    readonly ruleId: string;
-    /** The policy evaluation result being attested. */
-    readonly verdict: GovernanceVerdict;
-    /** Optional structured evidence supporting the attestation. */
-    readonly evidence?: JsonObject | undefined;
-}
-/**
- * A governance compliance attestation as stored and returned by the backend.
- * Immutable — each attestation is a point-in-time compliance claim.
- * Callers receive this from recordAttestation(); it is never mutated.
- */
-interface GovernanceAttestation {
-    /** Backend-assigned unique identifier for this attestation. */
-    readonly id: GovernanceAttestationId;
-    /** The agent this attestation is about. */
-    readonly agentId: AgentId;
-    /** The rule or policy this attestation covers. */
-    readonly ruleId: string;
-    /** The policy evaluation result being attested. */
-    readonly verdict: GovernanceVerdict;
-    /** Optional structured evidence supporting the attestation. */
-    readonly evidence?: JsonObject | undefined;
-    /** Unix timestamp (ms) when this attestation was recorded. Backend-assigned. */
-    readonly attestedAt: number;
-    /**
-     * Identity of the backend that recorded this attestation.
-     * Allows consumers to distinguish attestations from different backends
-     * (e.g., "local", "nexus", "custom").
-     */
-    readonly attestedBy: string;
-}
-/**
- * Pluggable anomaly detection and constraint enforcement backend.
- *
- * All methods return \`T | Promise<T>\` — in-memory implementations return sync
- * values, database/network implementations return Promises. Callers must always
- * \`await\` the result.
- *
- * **Fail-closed contract**: \`evaluate()\` and \`checkConstraint()\` do NOT use
- * \`Result<T, KoiError>\`. If they throw, callers MUST treat the operation as
- * denied. Infrastructure failures are indistinguishable from intentional denials
- * — never treat a throwing backend as permissive.
- *
- * \`recordAttestation()\` and \`getViolations()\` use \`Result<T, KoiError>\` because
- * their callers need structured error information (retry vs. permanent failure,
- * storage unavailable vs. invalid input).
- *
- * @see GovernanceController (governance.ts) — sensor/setpoint runtime model.
- * @see ProposalGate (proposal.ts) — structural layer change governance.
- * @see AuditSink (audit-backend.ts) — structured audit logging.
- */
-interface GovernanceBackend {
-    /**
-     * Evaluate a governance event against all applicable policy rules.
-     *
-     * Returns \`{ ok: true }\` if no rules are violated.
-     * Returns \`{ ok: false; violations }\` if one or more rules are violated.
-     * Backends SHOULD include all violated rules (not only the first).
-     *
-     * **Fail closed**: if this method throws, callers MUST deny the operation.
-     * Never treat a throwing backend as permissive.
-     */
-    readonly evaluate: (event: GovernanceBackendEvent) => GovernanceVerdict | Promise<GovernanceVerdict>;
-    /**
-     * Check whether a specific constraint is satisfied for the given agent.
-     *
-     * Returns \`true\` if the constraint is satisfied.
-     * Returns \`false\` if the constraint is violated.
-     *
-     * **Fail closed**: if this method throws, callers MUST deny the operation.
-     * Never treat a throwing backend as permissive.
-     */
-    readonly checkConstraint: (constraint: ConstraintQuery) => boolean | Promise<boolean>;
-    /**
-     * Record a compliance attestation for a governance evaluation result.
-     *
-     * The backend assigns \`id\`, \`attestedAt\`, and \`attestedBy\`.
-     * Returns the stored GovernanceAttestation on success.
-     * Returns a KoiError on validation failure or storage error.
-     *
-     * Implementations SHOULD be idempotent for identical
-     * (agentId, ruleId, verdict, timestamp) tuples to handle retry scenarios.
-     */
-    readonly recordAttestation: (input: GovernanceAttestationInput) => Result<GovernanceAttestation, KoiError> | Promise<Result<GovernanceAttestation, KoiError>>;
-    /**
-     * Query stored violation records matching the filter.
-     *
-     * Returns violations ordered by timestamp descending (most recent first).
-     * Applies DEFAULT_VIOLATION_QUERY_LIMIT when \`filter.limit\` is omitted.
-     * Check the returned array length against \`filter.limit\` to detect truncation.
-     */
-    readonly getViolations: (filter: ViolationQuery) => Result<readonly Violation[], KoiError> | Promise<Result<readonly Violation[], KoiError>>;
-    /** Close the backend and release resources (connections, timers, file handles). */
-    readonly dispose?: () => void | Promise<void>;
-}
-
-export { type ConstraintQuery, DEFAULT_VIOLATION_QUERY_LIMIT, type GovernanceAttestation, type GovernanceAttestationId, type GovernanceAttestationInput, type GovernanceBackend, type GovernanceBackendEvent, type GovernanceVerdict, VIOLATION_SEVERITIES, type Violation, type ViolationQuery, type ViolationSeverity, governanceAttestationId };
 "
 `;
 
@@ -2316,7 +2062,7 @@ export type { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, Inb
 exports[`@koi/core API surface ./middleware has stable type surface 1`] = `
 "import './channel.js';
 import './common.js';
-export { h as ApprovalDecision, i as ApprovalHandler, j as ApprovalRequest, X as CapabilityFragment, K as KoiMiddleware, aD as ModelChunk, aE as ModelHandler, aF as ModelRequest, aG as ModelResponse, aH as ModelStreamHandler, aU as SessionContext, b5 as ToolHandler, b6 as ToolRequest, b7 as ToolResponse, b8 as TurnContext } from './ecs-HASH.js';
+export { h as ApprovalDecision, i as ApprovalHandler, j as ApprovalRequest, X as CapabilityFragment, K as KoiMiddleware, aM as ModelChunk, aN as ModelHandler, aO as ModelRequest, aP as ModelResponse, aQ as ModelStreamHandler, b4 as SessionContext, bh as ToolHandler, bi as ToolRequest, bj as ToolResponse, bk as TurnContext } from './ecs-HASH.js';
 import './message.js';
 import './assembly-HASH.js';
 import './webhook.js';
@@ -3249,7 +2995,7 @@ export { type PublisherId, type ShadowWarning, type VersionChangeEvent, type Ver
 
 exports[`@koi/core API surface ./run-report has stable type surface 1`] = `
 "import { JsonObject } from './common.js';
-import { A as AgentId, e as SessionId, aK as RunId, k as ArtifactRef } from './ecs-HASH.js';
+import { A as AgentId, e as SessionId, aW as RunId, k as ArtifactRef } from './ecs-HASH.js';
 import './assembly-HASH.js';
 import './webhook.js';
 import './errors.js';

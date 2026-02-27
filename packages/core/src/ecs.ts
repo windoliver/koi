@@ -14,6 +14,7 @@ import type { JsonObject } from "./common.js";
 import type { DelegationComponent } from "./delegation.js";
 import type { FileSystemBackend } from "./filesystem-backend.js";
 import type { GovernanceController } from "./governance.js";
+import type { GovernanceBackend } from "./governance-backend.js";
 import type { HandoffComponent } from "./handoff.js";
 import type { SchedulerComponent } from "./scheduler.js";
 import type { WebhookComponent } from "./webhook.js";
@@ -401,6 +402,8 @@ export interface ChildHandle {
 export const MEMORY: SubsystemToken<MemoryComponent> = token<MemoryComponent>("memory");
 export const GOVERNANCE: SubsystemToken<GovernanceController> =
   token<GovernanceController>("governance");
+export const GOVERNANCE_BACKEND: SubsystemToken<GovernanceBackend> =
+  token<GovernanceBackend>("governance-backend");
 export const CREDENTIALS: SubsystemToken<CredentialComponent> =
   token<CredentialComponent>("credentials");
 export const EVENTS: SubsystemToken<EventComponent> = token<EventComponent>("events");
