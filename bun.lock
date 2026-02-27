@@ -906,6 +906,17 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-output-verifier": {
+      "name": "@koi/middleware-output-verifier",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-pay": {
       "name": "@koi/middleware-pay",
       "version": "0.0.0",
@@ -2096,6 +2107,8 @@
     "@koi/middleware-integration": ["@koi/middleware-integration@workspace:packages/middleware-integration"],
 
     "@koi/middleware-memory": ["@koi/middleware-memory@workspace:packages/middleware-memory"],
+
+    "@koi/middleware-output-verifier": ["@koi/middleware-output-verifier@workspace:packages/middleware-output-verifier"],
 
     "@koi/middleware-pay": ["@koi/middleware-pay@workspace:packages/middleware-pay"],
 
