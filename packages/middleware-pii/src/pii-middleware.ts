@@ -51,9 +51,10 @@ export function createPIIMiddleware(config: PIIConfig): KoiMiddleware {
   const detectors: readonly PIIDetector[] = [...builtIn, ...custom];
 
   // Build hasher factory if using hash strategy
+  const hashSecret = validated.hashSecret;
   const createHasher: PIIHasherFactory | undefined =
-    strategy === "hash" && validated.hashSecret !== undefined
-      ? () => new Bun.CryptoHasher("sha256", validated.hashSecret!)
+    strategy === "hash" && hashSecret !== undefined
+      ? () => new Bun.CryptoHasher("sha256", hashSecret)
       : undefined;
 
   const capabilityFragment: CapabilityFragment = {

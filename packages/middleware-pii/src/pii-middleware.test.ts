@@ -63,7 +63,8 @@ describe("wrapModelCall — input scanning", () => {
     });
 
     expect(capturedRequest).toBeDefined();
-    expect(firstText(capturedRequest!)).toBe("Contact [REDACTED_EMAIL]");
+    if (capturedRequest === undefined) throw new Error("capturedRequest should be defined");
+    expect(firstText(capturedRequest)).toBe("Contact [REDACTED_EMAIL]");
   });
 
   test("calls onDetection callback on input PII", async () => {
@@ -225,7 +226,8 @@ describe("hash strategy", () => {
     });
 
     expect(capturedRequest).toBeDefined();
-    expect(firstText(capturedRequest!)).toMatch(/^<email:[0-9a-f]{16}>$/);
+    if (capturedRequest === undefined) throw new Error("capturedRequest should be defined");
+    expect(firstText(capturedRequest)).toMatch(/^<email:[0-9a-f]{16}>$/);
   });
 });
 
@@ -243,7 +245,8 @@ describe("mask strategy", () => {
     });
 
     expect(capturedRequest).toBeDefined();
-    expect(firstText(capturedRequest!)).toBe("j***@example.com");
+    if (capturedRequest === undefined) throw new Error("capturedRequest should be defined");
+    expect(firstText(capturedRequest)).toBe("j***@example.com");
   });
 });
 
