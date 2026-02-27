@@ -64,7 +64,10 @@ import type {
   KoiErrorCode,
   KoiMiddleware,
   MemoryComponent,
+  MemoryRecallOptions,
   MemoryResult,
+  MemoryStoreOptions,
+  MemoryTier,
   MessageHandler,
   MiddlewareConfig,
   // assembly
@@ -200,7 +203,10 @@ type _TypeGuard =
   | AssertDefined<SkillMetadata>
   | AssertDefined<ComponentProvider>
   | AssertDefined<MemoryComponent>
+  | AssertDefined<MemoryRecallOptions>
   | AssertDefined<MemoryResult>
+  | AssertDefined<MemoryStoreOptions>
+  | AssertDefined<MemoryTier>
   | AssertDefined<GovernanceController>
   | AssertDefined<GovernanceCheck>
   | AssertDefined<CredentialComponent>
