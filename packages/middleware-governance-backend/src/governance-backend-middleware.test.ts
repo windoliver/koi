@@ -1,17 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { agentId } from "@koi/core";
 import type {
   GovernanceBackend,
-  GovernanceBackendEvent,
   GovernanceVerdict,
+  PolicyRequest,
 } from "@koi/core/governance-backend";
-import { governanceAttestationId } from "@koi/core/governance-backend";
 import {
   createMockSessionContext,
   createMockTurnContext,
   createSpyModelHandler,
   createSpyToolHandler,
 } from "@koi/test-utils";
+import { validateGovernanceBackendConfig } from "./config.js";
 import { createGovernanceBackendMiddleware } from "./governance-backend-middleware.js";
 
 // ---------------------------------------------------------------------------
@@ -20,69 +19,32 @@ import { createGovernanceBackendMiddleware } from "./governance-backend-middlewa
 
 function makeAllowBackend(): GovernanceBackend {
   return {
-    evaluate: async (): Promise<GovernanceVerdict> => ({ ok: true }),
-    checkConstraint: async () => true,
-    recordAttestation: async () => ({
-      ok: true,
-      value: {
-        id: governanceAttestationId("test-id"),
-        agentId: agentId("agent"),
-        ruleId: "governance-backend",
-        verdict: { ok: true },
-        attestedAt: Date.now(),
-        attestedBy: "test",
-      },
-    }),
-    getViolations: async () => ({ ok: true, value: [] }),
+    evaluator: { evaluate: async (): Promise<GovernanceVerdict> => ({ ok: true }) },
   };
 }
 
 function makeDenyBackend(messages: readonly string[]): GovernanceBackend {
   return {
-    evaluate: async (): Promise<GovernanceVerdict> => ({
-      ok: false,
-      violations: messages.map((message) => ({
-        rule: "test-rule",
-        severity: "critical" as const,
-        message,
-      })),
-    }),
-    checkConstraint: async () => false,
-    recordAttestation: async () => ({
-      ok: true,
-      value: {
-        id: governanceAttestationId("test-id"),
-        agentId: agentId("agent"),
-        ruleId: "governance-backend",
-        verdict: { ok: false, violations: [] },
-        attestedAt: Date.now(),
-        attestedBy: "test",
-      },
-    }),
-    getViolations: async () => ({ ok: true, value: [] }),
+    evaluator: {
+      evaluate: async (): Promise<GovernanceVerdict> => ({
+        ok: false,
+        violations: messages.map((message) => ({
+          rule: "test-rule",
+          severity: "critical" as const,
+          message,
+        })),
+      }),
+    },
   };
 }
 
 function makeThrowingBackend(): GovernanceBackend {
   return {
-    evaluate: async (): Promise<GovernanceVerdict> => {
-      throw new Error("backend unreachable");
-    },
-    checkConstraint: async () => {
-      throw new Error("backend unreachable");
-    },
-    recordAttestation: async () => ({
-      ok: true,
-      value: {
-        id: governanceAttestationId("test-id"),
-        agentId: agentId("agent"),
-        ruleId: "governance-backend",
-        verdict: { ok: true },
-        attestedAt: Date.now(),
-        attestedBy: "test",
+    evaluator: {
+      evaluate: async (): Promise<GovernanceVerdict> => {
+        throw new Error("backend unreachable");
       },
-    }),
-    getViolations: async () => ({ ok: true, value: [] }),
+    },
   };
 }
 
@@ -178,9 +140,9 @@ describe("createGovernanceBackendMiddleware", () => {
   // ── onViolation callback ───────────────────────────────────────────────
 
   test("onViolation callback fires on violation verdict", async () => {
-    const violations: Array<{ verdict: GovernanceVerdict; event: GovernanceBackendEvent }> = [];
-    const onViolation = (verdict: GovernanceVerdict, event: GovernanceBackendEvent) => {
-      violations.push({ verdict, event });
+    const violations: Array<{ verdict: GovernanceVerdict; request: PolicyRequest }> = [];
+    const onViolation = (verdict: GovernanceVerdict, request: PolicyRequest) => {
+      violations.push({ verdict, request });
     };
     const mw = createGovernanceBackendMiddleware({
       backend: makeDenyBackend(["violating rule"]),
@@ -193,7 +155,7 @@ describe("createGovernanceBackendMiddleware", () => {
       // expected
     }
     expect(violations).toHaveLength(1);
-    expect(violations[0]?.event.kind).toBe("tool_call");
+    expect(violations[0]?.request.kind).toBe("tool_call");
     if (violations[0] !== undefined && !violations[0].verdict.ok) {
       expect(violations[0].verdict.violations[0]?.message).toBe("violating rule");
     }
@@ -255,5 +217,108 @@ describe("createGovernanceBackendMiddleware", () => {
     } catch (e: unknown) {
       expect((e as Error).message).toContain("first; second; third");
     }
+  });
+
+  // ── wrapModelStream ────────────────────────────────────────────────────
+
+  describe("wrapModelStream", () => {
+    function streamOf(
+      mw: ReturnType<typeof createGovernanceBackendMiddleware>,
+    ): NonNullable<(typeof mw)["wrapModelStream"]> {
+      const fn = mw.wrapModelStream;
+      if (!fn) throw new Error("wrapModelStream not defined");
+      return fn;
+    }
+
+    test("allows stream when evaluate() returns ok:true", async () => {
+      const mw = createGovernanceBackendMiddleware({ backend: makeAllowBackend() });
+      const chunks: unknown[] = [];
+      for await (const chunk of streamOf(mw)(ctx, { messages: [] }, () => ({
+        async *[Symbol.asyncIterator]() {
+          yield { kind: "text_delta" as const, delta: "hi" };
+        },
+      }))) {
+        chunks.push(chunk);
+      }
+      expect(chunks).toHaveLength(1);
+    });
+
+    test("throws before stream when evaluate() returns ok:false", async () => {
+      const mw = createGovernanceBackendMiddleware({
+        backend: makeDenyBackend(["stream denied"]),
+      });
+      try {
+        for await (const _ of streamOf(mw)(ctx, { messages: [] }, () => ({
+          async *[Symbol.asyncIterator]() {
+            yield { kind: "text_delta" as const, delta: "never" };
+          },
+        }))) {
+          // should not get here
+        }
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect((e as Error).message).toContain("stream denied");
+      }
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateGovernanceBackendConfig
+// ---------------------------------------------------------------------------
+
+describe("validateGovernanceBackendConfig", () => {
+  test("returns error when config is null", () => {
+    const result = validateGovernanceBackendConfig(null);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+
+  test("returns error when config is not an object", () => {
+    const result = validateGovernanceBackendConfig("string");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+
+  test("returns error when backend is missing", () => {
+    const result = validateGovernanceBackendConfig({});
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+
+  test("returns error when backend has no evaluator", () => {
+    const result = validateGovernanceBackendConfig({ backend: {} });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("evaluator");
+  });
+
+  test("returns error when evaluator is not an object", () => {
+    const result = validateGovernanceBackendConfig({ backend: { evaluator: 42 } });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+
+  test("returns error when onViolation is not a function", () => {
+    const result = validateGovernanceBackendConfig({
+      backend: { evaluator: { evaluate: () => ({ ok: true }) } },
+      onViolation: "not a function",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("onViolation");
+  });
+
+  test("succeeds with minimal valid config", () => {
+    const result = validateGovernanceBackendConfig({
+      backend: { evaluator: { evaluate: () => ({ ok: true }) } },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("succeeds with onViolation function", () => {
+    const result = validateGovernanceBackendConfig({
+      backend: { evaluator: { evaluate: () => ({ ok: true }) } },
+      onViolation: () => undefined,
+    });
+    expect(result.ok).toBe(true);
   });
 });

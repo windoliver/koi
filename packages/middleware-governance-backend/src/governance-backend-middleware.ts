@@ -1,13 +1,13 @@
 /**
  * Governance backend middleware factory — pluggable policy evaluation gate.
  *
- * Wraps every model call and tool call with a GovernanceBackend.evaluate()
+ * Wraps every model call and tool call with a GovernanceBackend.evaluator.evaluate()
  * call. Fail-closed: if evaluate() throws, the error propagates as a denial.
  * Never treats a throwing backend as permissive.
  */
 
 import { agentId } from "@koi/core";
-import type { GovernanceBackendEvent } from "@koi/core/governance-backend";
+import type { PolicyRequest } from "@koi/core/governance-backend";
 import type { KoiMiddleware } from "@koi/core/middleware";
 import type { GovernanceBackendMiddlewareConfig } from "./config.js";
 
@@ -19,21 +19,23 @@ export function createGovernanceBackendMiddleware(
 ): KoiMiddleware {
   const { backend, onViolation } = config;
 
-  async function gate(event: GovernanceBackendEvent): Promise<void> {
+  async function gate(request: PolicyRequest): Promise<void> {
     // Fail-closed: if evaluate() throws, the error propagates as a denial.
-    const verdict = await backend.evaluate(event);
+    const verdict = await backend.evaluator.evaluate(request);
     if (!verdict.ok) {
-      onViolation?.(verdict, event);
-      // Record attestation best-effort — does not block the violation throw.
+      onViolation?.(verdict, request);
+      // Record compliance best-effort — does not block the violation throw.
       void Promise.resolve(
-        backend.recordAttestation({
-          agentId: event.agentId,
-          ruleId: "governance-backend",
+        backend.compliance?.recordCompliance({
+          requestId: `${request.agentId}:${request.kind}:${request.timestamp}`,
+          request,
           verdict,
+          evaluatedAt: Date.now(),
+          policyFingerprint: "koi:governance-backend",
         }),
       ).catch((e: unknown) => {
-        console.warn("[koi:governance-backend] Failed to record attestation", {
-          agentId: event.agentId,
+        console.warn("[koi:governance-backend] Failed to record compliance", {
+          agentId: request.agentId,
           cause: e,
         });
       });

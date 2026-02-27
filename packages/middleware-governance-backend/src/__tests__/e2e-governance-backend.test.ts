@@ -21,9 +21,8 @@ import type {
   EngineOutput,
   KoiMiddleware,
 } from "@koi/core";
-import { agentId, toolToken } from "@koi/core";
+import { toolToken } from "@koi/core";
 import type { GovernanceBackend, GovernanceVerdict } from "@koi/core/governance-backend";
-import { governanceAttestationId } from "@koi/core/governance-backend";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createGovernanceBackendMiddleware } from "../index.js";
@@ -46,44 +45,20 @@ const E2E_MODEL = "anthropic:claude-haiku-4-5-20251001";
 
 function makeAllowBackend(): GovernanceBackend {
   return {
-    evaluate: async (): Promise<GovernanceVerdict> => ({ ok: true }),
-    checkConstraint: async () => true,
-    recordAttestation: async () => ({
-      ok: true,
-      value: {
-        id: governanceAttestationId("attest-1"),
-        agentId: agentId("agent"),
-        ruleId: "governance-backend",
-        verdict: { ok: true },
-        attestedAt: Date.now(),
-        attestedBy: "test",
-      },
-    }),
-    getViolations: async () => ({ ok: true, value: [] }),
+    evaluator: { evaluate: async (): Promise<GovernanceVerdict> => ({ ok: true }) },
   };
 }
 
 function makeDenyBackend(): GovernanceBackend {
   return {
-    evaluate: async (): Promise<GovernanceVerdict> => ({
-      ok: false,
-      violations: [
-        { rule: "test-policy", severity: "critical" as const, message: "policy denied" },
-      ],
-    }),
-    checkConstraint: async () => false,
-    recordAttestation: async () => ({
-      ok: true,
-      value: {
-        id: governanceAttestationId("attest-2"),
-        agentId: agentId("agent"),
-        ruleId: "governance-backend",
-        verdict: { ok: false, violations: [] },
-        attestedAt: Date.now(),
-        attestedBy: "test",
-      },
-    }),
-    getViolations: async () => ({ ok: true, value: [] }),
+    evaluator: {
+      evaluate: async (): Promise<GovernanceVerdict> => ({
+        ok: false,
+        violations: [
+          { rule: "test-policy", severity: "critical" as const, message: "policy denied" },
+        ],
+      }),
+    },
   };
 }
 

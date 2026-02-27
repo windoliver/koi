@@ -6,13 +6,13 @@ import type { KoiError, Result } from "@koi/core/errors";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type {
   GovernanceBackend,
-  GovernanceBackendEvent,
   GovernanceVerdict,
+  PolicyRequest,
 } from "@koi/core/governance-backend";
 
 export interface GovernanceBackendMiddlewareConfig {
   readonly backend: GovernanceBackend;
-  readonly onViolation?: (verdict: GovernanceVerdict, event: GovernanceBackendEvent) => void;
+  readonly onViolation?: (verdict: GovernanceVerdict, request: PolicyRequest) => void;
 }
 
 export function validateGovernanceBackendConfig(
@@ -34,14 +34,14 @@ export function validateGovernanceBackendConfig(
   if (
     !c.backend ||
     typeof c.backend !== "object" ||
-    !("evaluate" in c.backend) ||
-    typeof (c.backend as Record<string, unknown>).evaluate !== "function"
+    !("evaluator" in c.backend) ||
+    typeof (c.backend as Record<string, unknown>).evaluator !== "object"
   ) {
     return {
       ok: false,
       error: {
         code: "VALIDATION",
-        message: "Config requires a 'backend' with an 'evaluate' method",
+        message: "Config requires a 'backend' with an 'evaluator' object",
         retryable: RETRYABLE_DEFAULTS.VALIDATION,
       },
     };

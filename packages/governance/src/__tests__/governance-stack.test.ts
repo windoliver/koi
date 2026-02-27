@@ -20,9 +20,7 @@ import type {
   EngineInput,
   EngineOutput,
 } from "@koi/core";
-import { agentId } from "@koi/core";
 import type { GovernanceBackend, GovernanceVerdict } from "@koi/core/governance-backend";
-import { governanceAttestationId } from "@koi/core/governance-backend";
 import { createKoi } from "@koi/engine";
 import { createInMemoryAuditSink } from "@koi/middleware-audit";
 import { createGovernanceStack } from "../governance-stack.js";
@@ -33,20 +31,7 @@ import { createGovernanceStack } from "../governance-stack.js";
 
 function makeAllowGovernanceBackend(): GovernanceBackend {
   return {
-    evaluate: async (): Promise<GovernanceVerdict> => ({ ok: true }),
-    checkConstraint: async () => true,
-    recordAttestation: async () => ({
-      ok: true,
-      value: {
-        id: governanceAttestationId("attest-1"),
-        agentId: agentId("agent"),
-        ruleId: "governance-backend",
-        verdict: { ok: true },
-        attestedAt: Date.now(),
-        attestedBy: "test",
-      },
-    }),
-    getViolations: async () => ({ ok: true, value: [] }),
+    evaluator: { evaluate: async (): Promise<GovernanceVerdict> => ({ ok: true }) },
   };
 }
 

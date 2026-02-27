@@ -1,17 +1,16 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/governance API surface . has stable type surface 1`] = `
-"import { KoiMiddleware } from '@koi/core/middleware';
-import { AuditMiddlewareConfig } from '@koi/middleware-audit';
-export { AuditMiddlewareConfig } from '@koi/middleware-audit';
-import { DelegationMiddlewareConfig } from '@koi/delegation';
+"import { DelegationMiddlewareConfig } from '@koi/delegation';
 export { DelegationMiddlewareConfig } from '@koi/delegation';
 import { ExecApprovalsConfig } from '@koi/exec-approvals';
 export { ExecApprovalsConfig } from '@koi/exec-approvals';
-import { GuardrailsConfig } from '@koi/middleware-guardrails';
-export { GuardrailsConfig } from '@koi/middleware-guardrails';
+import { AuditMiddlewareConfig } from '@koi/middleware-audit';
+export { AuditMiddlewareConfig } from '@koi/middleware-audit';
 import { GovernanceBackendMiddlewareConfig } from '@koi/middleware-governance-backend';
 export { GovernanceBackendMiddlewareConfig } from '@koi/middleware-governance-backend';
+import { GuardrailsConfig } from '@koi/middleware-guardrails';
+export { GuardrailsConfig } from '@koi/middleware-guardrails';
 import { PayMiddlewareConfig } from '@koi/middleware-pay';
 export { PayMiddlewareConfig } from '@koi/middleware-pay';
 import { PermissionsMiddlewareConfig } from '@koi/middleware-permissions';
@@ -20,6 +19,7 @@ import { PIIConfig } from '@koi/middleware-pii';
 export { PIIConfig } from '@koi/middleware-pii';
 import { SanitizeMiddlewareConfig } from '@koi/middleware-sanitize';
 export { SanitizeMiddlewareConfig } from '@koi/middleware-sanitize';
+import { KoiMiddleware } from '@koi/core/middleware';
 
 /**
  * createGovernanceStack — enterprise compliance middleware assembly.

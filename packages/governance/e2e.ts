@@ -28,9 +28,8 @@
  */
 
 import type { AgentManifest, EngineEvent } from "@koi/core";
-import { agentId, toolToken } from "@koi/core";
+import { toolToken } from "@koi/core";
 import type { GovernanceBackend, GovernanceVerdict } from "@koi/core/governance-backend";
-import { governanceAttestationId } from "@koi/core/governance-backend";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createInMemoryAuditSink } from "@koi/middleware-audit";
@@ -149,20 +148,7 @@ function makeAddNumbersProvider(onExecute?: () => void): {
 
 function makeAllowBackend(onDispose?: () => void): GovernanceBackend {
   return {
-    evaluate: async (): Promise<GovernanceVerdict> => ({ ok: true }),
-    checkConstraint: async () => true,
-    recordAttestation: async () => ({
-      ok: true,
-      value: {
-        id: governanceAttestationId("attest-allow"),
-        agentId: agentId("e2e-agent"),
-        ruleId: "governance-backend",
-        verdict: { ok: true },
-        attestedAt: Date.now(),
-        attestedBy: "e2e",
-      },
-    }),
-    getViolations: async () => ({ ok: true, value: [] }),
+    evaluator: { evaluate: async (): Promise<GovernanceVerdict> => ({ ok: true }) },
     dispose: async () => {
       onDispose?.();
     },
@@ -171,46 +157,24 @@ function makeAllowBackend(onDispose?: () => void): GovernanceBackend {
 
 function makeDenyBackend(): GovernanceBackend {
   return {
-    evaluate: async (): Promise<GovernanceVerdict> => ({
-      ok: false,
-      violations: [
-        { rule: "e2e-policy", severity: "critical" as const, message: "e2e-deny-signal" },
-      ],
-    }),
-    checkConstraint: async () => false,
-    recordAttestation: async () => ({
-      ok: true,
-      value: {
-        id: governanceAttestationId("attest-deny"),
-        agentId: agentId("e2e-agent"),
-        ruleId: "governance-backend",
-        verdict: { ok: false, violations: [] },
-        attestedAt: Date.now(),
-        attestedBy: "e2e",
-      },
-    }),
-    getViolations: async () => ({ ok: true, value: [] }),
+    evaluator: {
+      evaluate: async (): Promise<GovernanceVerdict> => ({
+        ok: false,
+        violations: [
+          { rule: "e2e-policy", severity: "critical" as const, message: "e2e-deny-signal" },
+        ],
+      }),
+    },
   };
 }
 
 function makeThrowingBackend(): GovernanceBackend {
   return {
-    evaluate: async (): Promise<GovernanceVerdict> => {
-      throw new Error("backend-exploded");
-    },
-    checkConstraint: async () => false,
-    recordAttestation: async () => ({
-      ok: true,
-      value: {
-        id: governanceAttestationId("attest-throw"),
-        agentId: agentId("e2e-agent"),
-        ruleId: "governance-backend",
-        verdict: { ok: true },
-        attestedAt: Date.now(),
-        attestedBy: "e2e",
+    evaluator: {
+      evaluate: async (): Promise<GovernanceVerdict> => {
+        throw new Error("backend-exploded");
       },
-    }),
-    getViolations: async () => ({ ok: true, value: [] }),
+    },
   };
 }
 
