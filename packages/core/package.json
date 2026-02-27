@@ -119,6 +119,10 @@
     "./version-types": {
       "types": "./dist/version-types.d.ts",
       "import": "./dist/version-types.js"
+    },
+    "./run-report": {
+      "types": "./dist/run-report.d.ts",
+      "import": "./dist/run-report.js"
     }
   },
   "scripts": {

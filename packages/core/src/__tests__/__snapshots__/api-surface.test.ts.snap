@@ -26,6 +26,7 @@ export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundM
 export { ModelCapabilities, ModelProvider, ModelTarget } from './model-HASH.js';
 export { PermissionBackend, PermissionDecision, PermissionQuery } from './permission-HASH.js';
 export { Resolver, SourceBundle, SourceLanguage } from './resolver.js';
+export { ActionEntry, IssueEntry, ReportStore, ReportSummary, RunCost, RunDuration, RunReport } from './run-HASH.js';
 export { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance } from './sandbox-HASH.js';
 export { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, TierResolution, TieredSandboxExecutor } from './sandbox-HASH.js';
 export { FilesystemPolicy, NetworkPolicy, ResourceLimits, SandboxProfile } from './sandbox-HASH.js';
@@ -3156,5 +3157,90 @@ interface ShadowWarning {
 }
 
 export { type PublisherId, type ShadowWarning, type VersionChangeEvent, type VersionChangeKind, type VersionEntry, type VersionedBrickRef, publisherId };
+"
+`;
+
+exports[`@koi/core API surface ./run-report has stable type surface 1`] = `
+"import { JsonObject } from './common.js';
+import { A as AgentId, c as SessionId, aI as RunId, i as ArtifactRef } from './ecs-HASH.js';
+import './assembly-HASH.js';
+import './webhook.js';
+import './errors.js';
+import './channel.js';
+import './message.js';
+import './filesystem-HASH.js';
+
+/**
+ * Run report types — structured summary of an autonomous agent run.
+ *
+ * Pure types only. No runtime code, no imports from other packages.
+ * Reuses ArtifactRef from handoff.ts for artifact references.
+ */
+
+/** A single action (model call or tool call) recorded during a run. */
+interface ActionEntry {
+    readonly kind: "model_call" | "tool_call";
+    readonly name: string;
+    readonly turnIndex: number;
+    readonly durationMs: number;
+    readonly success: boolean;
+    readonly errorMessage?: string | undefined;
+    readonly tokenUsage?: {
+        readonly inputTokens: number;
+        readonly outputTokens: number;
+    } | undefined;
+}
+/** An issue (error, warning, informational) encountered during a run. */
+interface IssueEntry {
+    readonly severity: "critical" | "warning" | "info";
+    readonly message: string;
+    readonly turnIndex: number;
+    readonly resolved: boolean;
+    readonly resolution?: string | undefined;
+}
+/** AI-generated or template summary with recommendations. */
+interface ReportSummary {
+    readonly summary: string;
+    readonly recommendations: readonly string[];
+}
+/** Timing metadata for the run. */
+interface RunDuration {
+    readonly startedAt: number;
+    readonly completedAt: number;
+    readonly durationMs: number;
+    readonly totalTurns: number;
+    readonly totalActions: number;
+    readonly truncated: boolean;
+}
+/** Token usage and estimated cost for the run. */
+interface RunCost {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly totalTokens: number;
+    readonly estimatedCostUsd?: number | undefined;
+}
+/** Structured report of an autonomous agent run. */
+interface RunReport {
+    readonly agentId: AgentId;
+    readonly sessionId: SessionId;
+    readonly runId: RunId;
+    readonly summary: string;
+    readonly objective?: string | undefined;
+    readonly duration: RunDuration;
+    readonly actions: readonly ActionEntry[];
+    readonly artifacts: readonly ArtifactRef[];
+    readonly issues: readonly IssueEntry[];
+    readonly cost: RunCost;
+    readonly recommendations: readonly string[];
+    readonly childReports?: readonly RunReport[] | undefined;
+    readonly metadata?: JsonObject | undefined;
+}
+/** Persistence backend for run reports. */
+interface ReportStore {
+    readonly put: (report: RunReport) => void | Promise<void>;
+    readonly getBySession: (sessionId: SessionId) => readonly RunReport[] | Promise<readonly RunReport[]>;
+}
+
+export type { ActionEntry, IssueEntry, ReportStore, ReportSummary, RunCost, RunDuration, RunReport };
 "
 `;

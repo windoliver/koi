@@ -481,6 +481,16 @@ export type {
 export { DEFAULT_REPUTATION_QUERY_LIMIT, REPUTATION_LEVEL_ORDER } from "./reputation-backend.js";
 // resolver
 export type { Resolver, SourceBundle, SourceLanguage } from "./resolver.js";
+// run report — structured summary of an autonomous agent run
+export type {
+  ActionEntry,
+  IssueEntry,
+  ReportStore,
+  ReportSummary,
+  RunCost,
+  RunDuration,
+  RunReport,
+} from "./run-report.js";
 // sandbox adapter — pluggable sandbox backends (OS-level, cloud, WASM)
 export type {
   SandboxAdapter,

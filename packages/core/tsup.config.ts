@@ -32,6 +32,7 @@ export default defineConfig({
     "src/skill-registry.ts",
     "src/version-index.ts",
     "src/version-types.ts",
+    "src/run-report.ts",
     "src/webhook.ts",
   ],
   format: ["esm"],
