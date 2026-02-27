@@ -1,0 +1,109 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/channel-chat-sdk API surface . has stable type surface 1`] = `
+"import { Result, KoiError, ChannelAdapter } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
+
+/**
+ * Configuration types and validation for @koi/channel-chat-sdk.
+ *
+ * Each platform uses a discriminated union on the \`platform\` field.
+ * Credentials are optional — the Chat SDK adapters auto-detect from
+ * environment variables when not provided explicitly.
+ */
+
+declare const VALID_PLATFORMS: readonly ["slack", "discord", "teams", "gchat", "github", "linear"];
+type PlatformName = (typeof VALID_PLATFORMS)[number];
+interface SlackPlatformConfig {
+    readonly platform: "slack";
+    readonly botToken?: string;
+    readonly signingSecret?: string;
+}
+interface DiscordPlatformConfig {
+    readonly platform: "discord";
+    readonly botToken?: string;
+    readonly publicKey?: string;
+    readonly applicationId?: string;
+}
+interface TeamsPlatformConfig {
+    readonly platform: "teams";
+    readonly appId?: string;
+    readonly appPassword?: string;
+}
+interface GchatPlatformConfig {
+    readonly platform: "gchat";
+    readonly credentials?: {
+        readonly client_email: string;
+        readonly private_key: string;
+        readonly project_id?: string;
+    };
+}
+interface GithubPlatformConfig {
+    readonly platform: "github";
+    readonly token?: string;
+    readonly webhookSecret?: string;
+    readonly userName?: string;
+}
+interface LinearPlatformConfig {
+    readonly platform: "linear";
+    readonly apiKey?: string;
+    readonly webhookSecret?: string;
+    readonly userName?: string;
+}
+type PlatformConfig = SlackPlatformConfig | DiscordPlatformConfig | TeamsPlatformConfig | GchatPlatformConfig | GithubPlatformConfig | LinearPlatformConfig;
+interface ChatSdkChannelConfig {
+    readonly platforms: readonly PlatformConfig[];
+    readonly userName?: string;
+}
+declare function validateChatSdkChannelConfig(input: unknown): Result<ChatSdkChannelConfig, KoiError>;
+
+/**
+ * Main factory for @koi/channel-chat-sdk.
+ *
+ * Creates a shared Chat SDK instance and returns one ChannelAdapter
+ * per configured platform. Each adapter routes through the shared
+ * Chat instance for webhook handling, event normalization, and sending.
+ */
+
+interface ChatSdkChannelAdapter extends ChannelAdapter {
+    readonly handleWebhook: (request: Request, options?: {
+        readonly waitUntil?: (p: Promise<unknown>) => void;
+    }) => Promise<Response>;
+    readonly platform: string;
+}
+/**
+ * Internal test overrides. Not part of the public API.
+ */
+interface ChatSdkTestOverrides {
+    /** Injected Chat instance for testing. Typed as unknown to accept partial mocks. */
+    readonly _chat?: unknown;
+    /** Injected platform adapters for testing. Typed as unknown to accept partial mocks. */
+    readonly _adapters?: Readonly<Record<string, unknown>>;
+}
+/**
+ * Creates N ChannelAdapters backed by a shared Chat SDK instance.
+ *
+ * @param config - Validated ChatSdkChannelConfig with platforms array.
+ * @param overrides - Test-only overrides for the Chat instance and adapters.
+ * @returns One ChatSdkChannelAdapter per configured platform.
+ */
+declare function createChatSdkChannels(config: ChatSdkChannelConfig, overrides?: ChatSdkTestOverrides): readonly ChatSdkChannelAdapter[];
+
+/**
+ * BrickDescriptor for @koi/channel-chat-sdk.
+ *
+ * Enables manifest auto-resolution for the Chat SDK multi-platform
+ * channel adapter. Each platform in the config gets its own ChannelAdapter.
+ */
+
+/**
+ * Descriptor for Chat SDK multi-platform channel adapter.
+ *
+ * The factory returns the first channel adapter from the configured
+ * platforms. For multiple platforms, use createChatSdkChannels() directly.
+ */
+declare const descriptor: BrickDescriptor<ChannelAdapter>;
+
+export { type ChatSdkChannelAdapter, type ChatSdkChannelConfig, type DiscordPlatformConfig, type GchatPlatformConfig, type GithubPlatformConfig, type LinearPlatformConfig, type PlatformConfig, type PlatformName, type SlackPlatformConfig, type TeamsPlatformConfig, createChatSdkChannels, descriptor, validateChatSdkChannelConfig };
+"
+`;
