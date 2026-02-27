@@ -1,19 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import type { Agent } from "@koi/core";
+import { createMockAgent } from "@koi/test-utils";
 import { createOrchestratorProvider } from "./provider.js";
 import type { OrchestratorConfig } from "./types.js";
 
-// Minimal mock Agent for testing attach()
-const mockAgent = {
-  pid: "test-pid",
-  manifest: { name: "test" },
-  state: "running",
-  component: () => undefined,
-  has: () => false,
-  hasAll: () => false,
-  query: () => new Map(),
-  components: () => new Map(),
-} as unknown as Agent;
+const mockAgent = createMockAgent();
 
 describe("createOrchestratorProvider", () => {
   const config: OrchestratorConfig = {

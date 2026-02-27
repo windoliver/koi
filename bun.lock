@@ -353,6 +353,7 @@
         "@koi/scheduler": "workspace:*",
         "@koi/scheduler-provider": "workspace:*",
         "@koi/scope": "workspace:*",
+        "@koi/webhook-provider": "workspace:*",
       },
     },
     "packages/engine-claude": {
@@ -492,6 +493,9 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/scope": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
       },
     },
     "packages/forge": {
@@ -1140,6 +1144,9 @@
       "dependencies": {
         "@koi/core": "workspace:*",
       },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
     },
     "packages/scope": {
       "name": "@koi/scope",
@@ -1360,6 +1367,9 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
       },
     },
     "packages/workspace": {

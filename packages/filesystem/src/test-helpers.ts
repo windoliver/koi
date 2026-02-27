@@ -3,7 +3,6 @@
  */
 
 import type {
-  Agent,
   FileEditResult,
   FileListResult,
   FileReadResult,
@@ -12,29 +11,9 @@ import type {
   FileWriteResult,
   KoiError,
   Result,
-  SubsystemToken,
 } from "@koi/core";
-import { agentId } from "@koi/core";
 
-export function createMockAgent(): Agent {
-  const components = new Map<string, unknown>();
-  return {
-    pid: { id: agentId("test-agent"), name: "test", type: "worker", depth: 0 },
-    manifest: {
-      name: "test-agent",
-      version: "0.0.0",
-      model: { name: "test-model" },
-    },
-    state: "running",
-    component: <T>(token: { toString: () => string }): T | undefined =>
-      components.get(token.toString()) as T | undefined,
-    has: (token: { toString: () => string }): boolean => components.has(token.toString()),
-    hasAll: (...tokens: readonly { toString: () => string }[]): boolean =>
-      tokens.every((t) => components.has(t.toString())),
-    query: <T>(_prefix: string): ReadonlyMap<SubsystemToken<T>, T> => new Map(),
-    components: (): ReadonlyMap<string, unknown> => components,
-  };
-}
+export { createMockAgent } from "@koi/test-utils";
 
 export function createMockBackend(name = "mock"): FileSystemBackend {
   return {

@@ -5,8 +5,8 @@
  * delivery health. No CRUD — registration stays manifest-driven.
  */
 
-import type { Agent, ComponentProvider, Tool, TrustTier, WebhookComponent } from "@koi/core";
-import { toolToken, WEBHOOK } from "@koi/core";
+import type { ComponentProvider, Tool, TrustTier, WebhookComponent } from "@koi/core";
+import { createServiceProvider, WEBHOOK } from "@koi/core";
 import type { WebhookOperation } from "./constants.js";
 import { DEFAULT_PREFIX, OPERATIONS } from "./constants.js";
 import { createListTool } from "./tools/list.js";
@@ -34,21 +34,13 @@ export function createWebhookProvider(config: WebhookProviderConfig): ComponentP
     operations = OPERATIONS,
   } = config;
 
-  return {
+  return createServiceProvider({
     name: "webhook",
-
-    attach: async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
-      const toolEntries = operations.map((op) => {
-        const factory = TOOL_FACTORIES[op];
-        const tool = factory(webhookComponent, prefix, trustTier);
-        return [toolToken(tool.descriptor.name) as string, tool] as const;
-      });
-
-      return new Map<string, unknown>([[WEBHOOK as string, webhookComponent], ...toolEntries]);
-    },
-
-    detach: async (_agent: Agent): Promise<void> => {
-      // Webhook lifecycle managed externally — no-op
-    },
-  };
+    singletonToken: WEBHOOK,
+    backend: webhookComponent,
+    operations,
+    factories: TOOL_FACTORIES,
+    trustTier,
+    prefix,
+  });
 }

@@ -22,7 +22,8 @@
     "@koi/model-router": "workspace:*",
     "@koi/scheduler": "workspace:*",
     "@koi/scheduler-provider": "workspace:*",
-    "@koi/scope": "workspace:*"
+    "@koi/scope": "workspace:*",
+    "@koi/webhook-provider": "workspace:*"
   },
   "scripts": {
     "build": "tsup",

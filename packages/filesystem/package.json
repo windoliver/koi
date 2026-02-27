@@ -18,5 +18,8 @@
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/scope": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*"
   }
 }
