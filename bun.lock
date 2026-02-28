@@ -1599,6 +1599,19 @@
         "@koi/scope": "workspace:*",
       },
     },
+    "packages/tool-squash": {
+      "name": "@koi/tool-squash",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/snapshot-chain-store": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/tools-github": {
       "name": "@koi/tools-github",
       "version": "0.0.0",
@@ -2413,6 +2426,8 @@
     "@koi/tool-ask-user": ["@koi/tool-ask-user@workspace:packages/tool-ask-user"],
 
     "@koi/tool-browser": ["@koi/tool-browser@workspace:packages/tool-browser"],
+
+    "@koi/tool-squash": ["@koi/tool-squash@workspace:packages/tool-squash"],
 
     "@koi/tools-github": ["@koi/tools-github@workspace:packages/tools-github"],
 
