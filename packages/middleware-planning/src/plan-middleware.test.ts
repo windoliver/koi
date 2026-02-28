@@ -150,7 +150,7 @@ describe("wrapToolCall — write_plan interception", () => {
 
     expect(response?.output).toContain("Plan updated");
     expect(capturedPlan).toBeDefined();
-    expect(capturedPlan!).toHaveLength(2);
+    expect(capturedPlan).toHaveLength(2);
     expect(capturedPlan?.[0]?.content).toBe("Step 1");
   });
 
@@ -283,7 +283,7 @@ describe("wrapToolCall — write_plan interception", () => {
 
     expect(callCount).toBe(2);
     expect(lastCapturedPlan).toBeDefined();
-    expect(lastCapturedPlan!).toHaveLength(1);
+    expect(lastCapturedPlan).toHaveLength(1);
     expect(lastCapturedPlan?.[0]?.content).toBe("C");
   });
 });
