@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import type { AttachResult, Tool } from "@koi/core";
+import type { AttachResult, SkillComponent, Tool } from "@koi/core";
 import { isAttachResult } from "@koi/core";
+import { GITHUB_SYSTEM_PROMPT } from "../constants.js";
 import { createGithubProvider } from "../github-component-provider.js";
 import { createMockAgent, createMockGhExecutor } from "../test-helpers.js";
 
@@ -11,19 +12,20 @@ function extractMap(
 }
 
 describe("createGithubProvider", () => {
-  test("attaches all 5 tools by default", async () => {
+  test("attaches all 5 tools and skill by default", async () => {
     const executor = createMockGhExecutor([]);
     const provider = createGithubProvider({ executor });
     const agent = createMockAgent();
     const components = extractMap(await provider.attach(agent));
 
-    expect(components.size).toBe(5);
+    expect(components.size).toBe(6);
     const keys = [...components.keys()];
     expect(keys).toContain("tool:github_pr_create");
     expect(keys).toContain("tool:github_pr_status");
     expect(keys).toContain("tool:github_pr_review");
     expect(keys).toContain("tool:github_pr_merge");
     expect(keys).toContain("tool:github_ci_wait");
+    expect(keys).toContain("skill:github");
   });
 
   test("uses custom prefix", async () => {
@@ -82,11 +84,12 @@ describe("createGithubProvider", () => {
     const agent = createMockAgent();
     const components = extractMap(await provider.attach(agent));
 
-    expect(components.size).toBe(2);
+    expect(components.size).toBe(3);
     const keys = [...components.keys()];
     expect(keys).toContain("tool:github_pr_create");
     expect(keys).toContain("tool:github_pr_status");
     expect(keys).not.toContain("tool:github_pr_merge");
+    expect(keys).toContain("skill:github");
   });
 
   test("provider has correct name", () => {
@@ -107,12 +110,49 @@ describe("createGithubProvider", () => {
     const agent = createMockAgent();
     const components = extractMap(await provider.attach(agent));
 
-    for (const [_key, value] of components) {
+    for (const [key, value] of components) {
+      if (!key.startsWith("tool:")) continue;
       const tool = value as Tool;
       expect(tool.descriptor.name).toBeTruthy();
       expect(tool.descriptor.description).toBeTruthy();
       expect(tool.descriptor.inputSchema).toBeTruthy();
       expect(typeof tool.execute).toBe("function");
     }
+  });
+
+  test("attaches github skill with correct metadata", async () => {
+    const executor = createMockGhExecutor([]);
+    const provider = createGithubProvider({ executor });
+    const agent = createMockAgent();
+    const components = extractMap(await provider.attach(agent));
+
+    const skill = components.get("skill:github") as SkillComponent;
+    expect(skill.name).toBe("github");
+    expect(skill.description).toBe(
+      "GitHub PR lifecycle best practices and error handling guidance",
+    );
+    expect(skill.tags).toEqual(["github", "pr"]);
+  });
+
+  test("skill content matches GITHUB_SYSTEM_PROMPT", async () => {
+    const executor = createMockGhExecutor([]);
+    const provider = createGithubProvider({ executor });
+    const agent = createMockAgent();
+    const components = extractMap(await provider.attach(agent));
+
+    const skill = components.get("skill:github") as SkillComponent;
+    expect(skill.content).toBe(GITHUB_SYSTEM_PROMPT);
+  });
+
+  test("skill is attached regardless of operations filter", async () => {
+    const executor = createMockGhExecutor([]);
+    const provider = createGithubProvider({
+      executor,
+      operations: ["pr_status"],
+    });
+    const agent = createMockAgent();
+    const components = extractMap(await provider.attach(agent));
+
+    expect(components.has("skill:github")).toBe(true);
   });
 });

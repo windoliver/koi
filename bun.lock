@@ -611,6 +611,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
         "@koi/scope": "workspace:*",
       },
       "devDependencies": {

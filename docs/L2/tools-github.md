@@ -1,6 +1,6 @@
 # @koi/tools-github — GitHub PR Lifecycle Tools
 
-Wraps the GitHub CLI (`gh`) as 5 Koi Tool components for PR lifecycle management: create, status, review, merge, and CI wait. One factory call attaches all tools to any agent via ECS — engines discover them with zero engine changes.
+Wraps the GitHub CLI (`gh`) as 5 Koi Tool components for PR lifecycle management: create, status, review, merge, and CI wait. One factory call attaches all tools plus a `SkillComponent` with PR best-practice guidance to any agent via ECS — engines discover them with zero engine changes.
 
 ---
 
@@ -39,7 +39,7 @@ Agents that manage code need to interact with GitHub pull requests: check CI sta
               ┌──────────────────────────▼──────────────────────────────┐
               │         createGithubProvider() — THIS PACKAGE           │
               │                                                         │
-              │  ONE factory → 5 Tool components → ECS-attached         │
+              │  ONE factory → 5 Tool components + 1 Skill → ECS-attached│
               │                                                         │
               │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐  │
               │  │pr_create │ │pr_status │ │pr_review │ │pr_merge  │  │
@@ -278,13 +278,14 @@ createGithubProvider(config)
 ├── config.trustTier     → "verified" (default)
 ├── config.operations    → all 5 (default)
 │
-└── attach(agent) → Map<SubsystemToken, Tool>
+└── attach(agent) → Map<SubsystemToken, Tool | SkillComponent>
     │
     ├── toolToken("github_pr_create")  → createGithubPrCreateTool(executor, prefix, "promoted")
     ├── toolToken("github_pr_status")  → createGithubPrStatusTool(executor, prefix, "verified")
     ├── toolToken("github_pr_review")  → createGithubPrReviewTool(executor, prefix, "promoted")
     ├── toolToken("github_pr_merge")   → createGithubPrMergeTool(executor, prefix, "promoted")
-    └── toolToken("github_ci_wait")    → createGithubCiWaitTool(executor, prefix, "verified")
+    ├── toolToken("github_ci_wait")    → createGithubCiWaitTool(executor, prefix, "verified")
+    └── skillToken("github")           → SkillComponent { name, description, content, tags }
 
 Trust tiers:
   Read operations  (pr_status, ci_wait)   → configTier (default: "verified")
@@ -492,7 +493,7 @@ Tier 3: Real LLM E2E (opt-in, needs ANTHROPIC_API_KEY)
 
 ### Coverage
 
-110 tests total, 0 failures. Unit + CI-safe E2E run on every build. Real LLM tests gated behind `E2E_TESTS=1`.
+113 tests total, 0 failures. Unit + CI-safe E2E run on every build. Real LLM tests gated behind `E2E_TESTS=1`.
 
 ```bash
 # Unit + CI-safe E2E (default)
@@ -517,7 +518,7 @@ bun turbo run build typecheck lint test --filter=@koi/tools-github
 | Pre-validation in `pr_merge` | Checks draft status, CI, merge conflicts BEFORE attempting merge — avoids partial failures |
 | `parseGhError` maps stderr patterns | Structured `KoiError` codes enable LLM-driven error handling ("rate limited → wait and retry") |
 | No external dependencies | `gh` CLI is the only external dependency; zero npm packages beyond `@koi/core` |
-| `GITHUB_SYSTEM_PROMPT` exported | Agents can include PR lifecycle best practices in their system prompt |
+| Auto-attached `SkillComponent` | Provider attaches `skill:github` with PR best practices — engines inject it into the system prompt automatically. `GITHUB_SYSTEM_PROMPT` is deprecated; no manual wiring needed |
 | Configurable prefix and operation subset | Same provider works for `github_*`, `gh_*`, or read-only subsets |
 | CI-safe E2E via scripted model | Validates full assembly pipeline without API keys — catches integration regressions in CI |
 | Sequential mock executor (queue) | Deterministic test ordering; routing executor for non-deterministic LLM tests |
@@ -529,6 +530,7 @@ bun turbo run build typecheck lint test --filter=@koi/tools-github
 ```
 L0  @koi/core ────────────────────────────────────────┐
     Tool, ToolDescriptor, ComponentProvider,            │
+    SkillComponent, skillToken,                         │
     KoiError, Result, JsonObject, TrustTier,            │
     toolToken, agentId                                  │
                                                         │
