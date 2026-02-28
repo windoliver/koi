@@ -6,7 +6,7 @@ export { l as ALL_BRICK_KINDS, m as AbortReason, n as AdvisoryLock, o as AgentAr
 import { Result, KoiError } from './errors.js';
 export { BackendErrorMapper, KoiErrorCode, RETRYABLE_DEFAULTS } from './errors.js';
 import { TransitionReason, AgentCondition, AgentStatus, RegistryEntry, AgentRegistry } from './lifecycle.js';
-export { RegistryEvent, RegistryFilter, VALID_TRANSITIONS } from './lifecycle.js';
+export { RegistryEvent, RegistryFilter, VALID_TRANSITIONS, matchesFilter } from './lifecycle.js';
 import { JsonObject } from './common.js';
 export { ChannelAdapter, ChannelCapabilities, ChannelStatus, ChannelStatusKind, MessageHandler } from './channel.js';
 export { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, FeatureFlags, ForgeConfigSection, KoiConfig, LimitsConfig, LogLevel, LoopDetectionConfigSection, ModelRouterConfigSection, ModelTargetConfigEntry, SpawnConfig, TelemetryConfig } from './config.js';
@@ -2652,6 +2652,16 @@ interface RegistryFilter {
     readonly parentId?: AgentId;
 }
 /**
+ * Check whether a RegistryEntry matches a RegistryFilter.
+ *
+ * Pure function — no side effects, no I/O. Shared across all AgentRegistry
+ * implementations to avoid duplicating filter logic.
+ *
+ * Exception: Pure function operating only on L0 types, permitted in L0
+ * per architecture doc.
+ */
+declare function matchesFilter(entry: RegistryEntry, filter: RegistryFilter): boolean;
+/**
  * Pluggable agent lifecycle registry. Manages registration, state transitions
  * (with CAS via generation counter), and change notification.
  *
@@ -2677,7 +2687,7 @@ interface AgentRegistry extends AsyncDisposable {
     readonly watch: (listener: (event: RegistryEvent) => void) => () => void;
 }
 
-export { type AgentCondition, type AgentRegistry, type AgentStatus, type RegistryEntry, type RegistryEvent, type RegistryFilter, type TransitionReason, VALID_TRANSITIONS };
+export { type AgentCondition, type AgentRegistry, type AgentStatus, type RegistryEntry, type RegistryEvent, type RegistryFilter, type TransitionReason, VALID_TRANSITIONS, matchesFilter };
 "
 `;
 

@@ -478,7 +478,7 @@ export type {
   TransitionReason,
 } from "./lifecycle.js";
 // lifecycle — runtime values
-export { VALID_TRANSITIONS } from "./lifecycle.js";
+export { matchesFilter, VALID_TRANSITIONS } from "./lifecycle.js";
 // mailbox — agent-to-agent messaging types
 export type {
   AgentMessage,

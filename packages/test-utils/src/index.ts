@@ -6,6 +6,7 @@
  * ChannelAdapter implementations. Depends on @koi/core only.
  */
 
+export { runAgentRegistryContractTests } from "./agent-registry-contract.js";
 export type {
   MockAgentOptions,
   MockEngineAdapterOptions,

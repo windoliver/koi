@@ -9,14 +9,22 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import type { EventBackend, RegistryEntry } from "@koi/core";
 import { agentId } from "@koi/core";
 import { createInMemoryEventBackend } from "@koi/events-memory";
-import { runEventSourcedRegistryContractTests } from "@koi/test-utils";
+import {
+  runAgentRegistryContractTests,
+  runEventSourcedRegistryContractTests,
+} from "@koi/test-utils";
 import type { EventSourcedRegistry } from "./event-sourced-registry.js";
 import { createEventSourcedRegistry } from "./event-sourced-registry.js";
 import { agentStreamId, parseAgentStreamId, REGISTRY_INDEX_STREAM } from "./stream-ids.js";
 
 // ---------------------------------------------------------------------------
-// Run shared contract tests
+// Run shared contract tests (generic AgentRegistry + event-sourced specific)
 // ---------------------------------------------------------------------------
+
+runAgentRegistryContractTests(async () => {
+  const backend = createInMemoryEventBackend();
+  return createEventSourcedRegistry(backend);
+});
 
 runEventSourcedRegistryContractTests(async () => {
   const backend = createInMemoryEventBackend();

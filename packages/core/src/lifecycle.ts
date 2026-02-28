@@ -142,6 +142,29 @@ export interface RegistryFilter {
 }
 
 // ---------------------------------------------------------------------------
+// Filter matching (pure function)
+// ---------------------------------------------------------------------------
+
+/**
+ * Check whether a RegistryEntry matches a RegistryFilter.
+ *
+ * Pure function — no side effects, no I/O. Shared across all AgentRegistry
+ * implementations to avoid duplicating filter logic.
+ *
+ * Exception: Pure function operating only on L0 types, permitted in L0
+ * per architecture doc.
+ */
+export function matchesFilter(entry: RegistryEntry, filter: RegistryFilter): boolean {
+  if (filter.phase !== undefined && entry.status.phase !== filter.phase) return false;
+  if (filter.agentType !== undefined && entry.agentType !== filter.agentType) return false;
+  if (filter.condition !== undefined && !entry.status.conditions.includes(filter.condition)) {
+    return false;
+  }
+  if (filter.parentId !== undefined && entry.parentId !== filter.parentId) return false;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Agent registry (7th L0 contract)
 // ---------------------------------------------------------------------------
 
