@@ -458,6 +458,23 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/context-arena": {
+      "name": "@koi/context-arena",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/context": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/memory-fs": "workspace:*",
+        "@koi/middleware-compactor": "workspace:*",
+        "@koi/middleware-context-editing": "workspace:*",
+        "@koi/snapshot-chain-store": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+        "@koi/tool-squash": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/core": {
       "name": "@koi/core",
       "version": "0.0.0",
@@ -2389,6 +2406,8 @@
     "@koi/config": ["@koi/config@workspace:packages/config"],
 
     "@koi/context": ["@koi/context@workspace:packages/context"],
+
+    "@koi/context-arena": ["@koi/context-arena@workspace:packages/context-arena"],
 
     "@koi/core": ["@koi/core@workspace:packages/core"],
 
