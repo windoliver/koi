@@ -431,6 +431,7 @@ describeE2E("e2e: createServiceProvider through full L1 runtime", () => {
 
       const observer: KoiMiddleware = {
         name: "tool-observer",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: unknown,
           request: ToolRequest,
@@ -523,6 +524,7 @@ describeE2E("e2e: createServiceProvider through full L1 runtime", () => {
 
       const observer: KoiMiddleware = {
         name: "prefix-observer",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: unknown,
           request: ToolRequest,
@@ -665,6 +667,7 @@ describeE2E("e2e: createServiceProvider through full L1 runtime", () => {
 
       const lifecycle: KoiMiddleware = {
         name: "lifecycle-tracker",
+        describeCapabilities: () => undefined,
         onSessionStart: async () => {
           lifecyclePhases.push("session_start");
         },

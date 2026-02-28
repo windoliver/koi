@@ -23,7 +23,7 @@ import { testMiddlewareContract } from "./index.js";
 // ---------------------------------------------------------------------------
 
 function createMinimalMiddleware(): KoiMiddleware {
-  return { name: "minimal-test" };
+  return { name: "minimal-test", describeCapabilities: () => undefined };
 }
 
 describe("middleware contract — minimal (no hooks)", () => {
@@ -37,6 +37,7 @@ describe("middleware contract — minimal (no hooks)", () => {
 function createFullMiddleware(): KoiMiddleware {
   return {
     name: "full-test",
+    describeCapabilities: () => undefined,
     priority: 100,
 
     onSessionStart: async () => {},

@@ -169,6 +169,7 @@ describeE2E("e2e: full L1 runtime without middleware-memory (#512)", () => {
 
       const auditStub: KoiMiddleware = {
         name: "audit-stub",
+        describeCapabilities: () => undefined,
         priority: 300,
         async onSessionStart() {
           sessionStarted = true;
@@ -224,6 +225,7 @@ describeE2E("e2e: full L1 runtime without middleware-memory (#512)", () => {
 
       const outerMw: KoiMiddleware = {
         name: "outer-observer",
+        describeCapabilities: () => undefined,
         priority: 100,
         async onSessionStart() {
           hookOrder.push("outer:session_start");
@@ -246,6 +248,7 @@ describeE2E("e2e: full L1 runtime without middleware-memory (#512)", () => {
 
       const innerMw: KoiMiddleware = {
         name: "inner-observer",
+        describeCapabilities: () => undefined,
         priority: 500,
         async onSessionStart() {
           hookOrder.push("inner:session_start");
@@ -311,6 +314,7 @@ describeE2E("e2e: full L1 runtime without middleware-memory (#512)", () => {
 
       const toolObserver: KoiMiddleware = {
         name: "tool-observer",
+        describeCapabilities: () => undefined,
         priority: 200,
         wrapToolCall: async (
           _ctx: unknown,
@@ -371,6 +375,7 @@ describeE2E("e2e: full L1 runtime without middleware-memory (#512)", () => {
 
       const modelCounter: KoiMiddleware = {
         name: "model-counter",
+        describeCapabilities: () => undefined,
         priority: 300,
         async *wrapModelStream(
           _ctx: unknown,
@@ -384,6 +389,7 @@ describeE2E("e2e: full L1 runtime without middleware-memory (#512)", () => {
 
       const toolObserver: KoiMiddleware = {
         name: "tool-observer",
+        describeCapabilities: () => undefined,
         priority: 450,
         wrapToolCall: async (
           _ctx: unknown,

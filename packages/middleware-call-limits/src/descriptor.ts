@@ -114,6 +114,7 @@ export const descriptor: BrickDescriptor<KoiMiddleware> = {
     const combined: KoiMiddleware = {
       name: "call-limits",
       priority: 175,
+      describeCapabilities: (ctx) => modelMw.describeCapabilities(ctx),
       ...(modelMw.wrapModelCall !== undefined ? { wrapModelCall: modelMw.wrapModelCall } : {}),
       ...(toolMw.wrapToolCall !== undefined ? { wrapToolCall: toolMw.wrapToolCall } : {}),
     };

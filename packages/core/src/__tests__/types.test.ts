@@ -407,20 +407,21 @@ describe("ChannelAdapter negative types", () => {
 });
 
 describe("KoiMiddleware negative types", () => {
-  test("name-only middleware satisfies interface", () => {
-    const mw: KoiMiddleware = { name: "passthrough" };
+  test("minimal middleware requires name + describeCapabilities", () => {
+    const mw: KoiMiddleware = { name: "passthrough", describeCapabilities: () => undefined };
     expect(mw.name).toBe("passthrough");
   });
 
   test("name is required", () => {
     // @ts-expect-error — name is required on KoiMiddleware
-    const _mw: KoiMiddleware = {};
+    const _mw: KoiMiddleware = { describeCapabilities: () => undefined };
     void _mw;
   });
 
   test("middleware with session hooks is valid", () => {
     const mw: KoiMiddleware = {
       name: "session-only",
+      describeCapabilities: () => undefined,
       onSessionStart: async () => {},
       onSessionEnd: async () => {},
     };
@@ -428,17 +429,25 @@ describe("KoiMiddleware negative types", () => {
   });
 
   test("priority is optional", () => {
-    const mw: KoiMiddleware = { name: "no-priority" };
+    const mw: KoiMiddleware = { name: "no-priority", describeCapabilities: () => undefined };
     expect(mw.priority).toBeUndefined();
   });
 
   test("priority accepts a number", () => {
-    const mw: KoiMiddleware = { name: "with-priority", priority: 100 };
+    const mw: KoiMiddleware = {
+      name: "with-priority",
+      priority: 100,
+      describeCapabilities: () => undefined,
+    };
     expect(mw.priority).toBe(100);
   });
 
   test("priority is readonly", () => {
-    const mw: KoiMiddleware = { name: "readonly-priority", priority: 200 };
+    const mw: KoiMiddleware = {
+      name: "readonly-priority",
+      priority: 200,
+      describeCapabilities: () => undefined,
+    };
     // @ts-expect-error — cannot assign to readonly property
     mw.priority = 300;
   });
@@ -1609,12 +1618,29 @@ describe("CapabilityFragment", () => {
 });
 
 describe("KoiMiddleware.describeCapabilities", () => {
-  test("middleware without describeCapabilities is valid", () => {
-    const mw: KoiMiddleware = { name: "simple" };
-    expect(mw.describeCapabilities).toBeUndefined();
+  test("middleware without describeCapabilities fails type check", () => {
+    // @ts-expect-error — describeCapabilities is required
+    const _mw: KoiMiddleware = { name: "simple" };
   });
 
-  test("middleware with describeCapabilities is valid", () => {
+  test("minimal valid middleware requires name + describeCapabilities", () => {
+    const rid = runId("r1");
+    const ctx: TurnContext = {
+      session: { agentId: "a1", sessionId: sessionId("s1"), runId: rid, metadata: {} },
+      turnIndex: 0,
+      turnId: turnId(rid, 0),
+      messages: [],
+      metadata: {},
+    };
+    const mw: KoiMiddleware = {
+      name: "minimal",
+      describeCapabilities: () => undefined,
+    };
+    expect(mw.name).toBe("minimal");
+    expect(mw.describeCapabilities(ctx)).toBeUndefined();
+  });
+
+  test("middleware with describeCapabilities returning a fragment is valid", () => {
     const rid = runId("r1");
     const ctx: TurnContext = {
       session: { agentId: "a1", sessionId: sessionId("s1"), runId: rid, metadata: {} },
@@ -1627,7 +1653,7 @@ describe("KoiMiddleware.describeCapabilities", () => {
       name: "with-caps",
       describeCapabilities: () => ({ label: "test", description: "test desc" }),
     };
-    const result = mw.describeCapabilities?.(ctx);
+    const result = mw.describeCapabilities(ctx);
     expect(result).toEqual({ label: "test", description: "test desc" });
   });
 
@@ -1644,7 +1670,7 @@ describe("KoiMiddleware.describeCapabilities", () => {
       name: "conditional-caps",
       describeCapabilities: () => undefined,
     };
-    expect(mw.describeCapabilities?.(ctx)).toBeUndefined();
+    expect(mw.describeCapabilities(ctx)).toBeUndefined();
   });
 });
 

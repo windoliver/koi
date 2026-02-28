@@ -114,7 +114,7 @@ export function createMockHarness(
       return { ...defaultStatus, phase: currentPhase };
     },
     createMiddleware() {
-      return { name: "mock-harness-middleware" };
+      return { name: "mock-harness-middleware", describeCapabilities: () => undefined };
     },
     async dispose() {
       // no-op

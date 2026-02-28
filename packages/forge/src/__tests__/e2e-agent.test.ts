@@ -181,6 +181,7 @@ describe("forge → agent e2e", () => {
     const interceptedToolIds: string[] = [];
     const middlewareSpy: KoiMiddleware = {
       name: "e2e-spy",
+      describeCapabilities: () => undefined,
       wrapToolCall: async (_ctx, req: ToolRequest, next) => {
         interceptedToolIds.push(req.toolId);
         return next(req);
@@ -669,6 +670,7 @@ describe("forge → reuse: agent self-extends", () => {
     const interceptedToolIds: string[] = [];
     const middlewareSpy: KoiMiddleware = {
       name: "tool-spy",
+      describeCapabilities: () => undefined,
       wrapToolCall: async (_ctx, req: ToolRequest, next) => {
         interceptedToolIds.push(req.toolId);
         return next(req);

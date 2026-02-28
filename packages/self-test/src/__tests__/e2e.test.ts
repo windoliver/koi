@@ -87,6 +87,7 @@ describeE2E("e2e: self-test with real Anthropic API via createKoi + createPiAdap
     async () => {
       const observerMw: KoiMiddleware = {
         name: "e2e-observer",
+        describeCapabilities: () => undefined,
         async onSessionStart() {
           // no-op — validates structural check passes
         },

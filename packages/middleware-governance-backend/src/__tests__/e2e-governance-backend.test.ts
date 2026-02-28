@@ -266,6 +266,7 @@ describe("e2e: governance-backend middleware + cooperating adapter", () => {
     let executed = false;
     const noopMiddleware: KoiMiddleware = {
       name: "noop",
+      describeCapabilities: () => undefined,
       priority: 200,
     };
     const govMiddleware = createGovernanceBackendMiddleware({ backend: makeAllowBackend() });

@@ -776,6 +776,7 @@ describe("exec-approvals middleware integration via createKoi (cooperating adapt
     // We verify lifecycle by adding a second tracking middleware alongside exec-approvals
     const trackingMiddleware = {
       name: "session-tracker",
+      describeCapabilities: () => undefined,
       priority: 200,
       onSessionStart: async () => {
         sessionStartCount++;

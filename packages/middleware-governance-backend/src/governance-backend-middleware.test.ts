@@ -66,6 +66,16 @@ describe("createGovernanceBackendMiddleware", () => {
     expect(mw.priority).toBe(150);
   });
 
+  test("describeCapabilities returns governance fragment", () => {
+    const mw = createGovernanceBackendMiddleware({ backend: makeAllowBackend() });
+    const fragment = mw.describeCapabilities(ctx);
+    expect(fragment).toEqual({
+      label: "governance",
+      description:
+        "Policy evaluation gate active. Model and tool calls are subject to governance rules.",
+    });
+  });
+
   // ── wrapModelCall ──────────────────────────────────────────────────────
 
   test("wrapModelCall: allows when evaluate() returns ok:true", async () => {

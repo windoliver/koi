@@ -247,6 +247,7 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
       const interceptedToolIds: string[] = [];
       const middlewareSpy: KoiMiddleware = {
         name: "e2e-spy",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (_ctx, req: ToolRequest, next) => {
           interceptedToolIds.push(req.toolId);
           return next(req);

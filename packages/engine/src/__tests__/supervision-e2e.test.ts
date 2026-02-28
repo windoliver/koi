@@ -195,6 +195,7 @@ describeE2E("supervision e2e: real LLM through createKoi", () => {
 
       const observerMiddleware: KoiMiddleware = {
         name: "e2e:observer",
+        describeCapabilities: () => undefined,
         priority: 500,
         async wrapModelCall(_ctx, req, next) {
           modelCallIntercepted = true;

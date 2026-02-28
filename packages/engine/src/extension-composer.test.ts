@@ -36,7 +36,11 @@ function testManifest(overrides?: Partial<AgentManifest>): AgentManifest {
 }
 
 function stubMiddleware(name: string, priority?: number): KoiMiddleware {
-  return { name, ...(priority !== undefined ? { priority } : {}) };
+  return {
+    name,
+    describeCapabilities: () => undefined,
+    ...(priority !== undefined ? { priority } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------

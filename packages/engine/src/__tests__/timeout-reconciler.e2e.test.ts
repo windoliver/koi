@@ -161,6 +161,7 @@ function createHeartbeatMiddleware(
 ): KoiMiddleware {
   return {
     name: "e2e:heartbeat",
+    describeCapabilities: () => undefined,
     priority: 100,
     wrapModelCall: async (_ctx, request, next) => {
       const id = getAgentId();

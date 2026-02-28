@@ -53,6 +53,10 @@ export function createWebhookMiddleware(
 
   return {
     name: "webhook",
+    describeCapabilities: () => ({
+      label: "webhook",
+      description: "Webhook event delivery active",
+    }),
     priority: 900,
 
     async onSessionStart(ctx: SessionContext): Promise<void> {

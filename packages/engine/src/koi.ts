@@ -156,6 +156,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     ...middleware,
   ]);
 
+  // Runtime warning for JS consumers that omit describeCapabilities (TS catches at compile time)
+  for (const mw of allMiddleware) {
+    if (mw.describeCapabilities === undefined) {
+      console.warn(
+        `[koi] Middleware "${mw.name}" does not implement describeCapabilities(). ` +
+          `This will be a hard error in a future release.`,
+      );
+    }
+  }
+
   // --- 4. Default tool terminal (forge first, then entity fallback) ---
   const defaultToolTerminal = async (request: ToolRequest): Promise<ToolResponse> => {
     // Forge-first: forged tools shadow entity tools (Agent-forged > Bundled)
@@ -403,11 +413,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                     // Capture stream chain presence — the mutable ref is read inside the closure
                     const hasStreamChain = activeStreamChain !== undefined;
 
-                    // Pre-compute capability injection flag at composition time (fast-path)
-                    const hasCapabilities = allMiddleware.some(
-                      (mw) => mw.describeCapabilities !== undefined,
-                    );
-
                     // Inject tool descriptors + capability descriptions into ModelRequest
                     const prepareRequest = (request: ModelRequest): ModelRequest => {
                       // Inject tool descriptors if not already present
@@ -415,7 +420,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                         request.tools !== undefined
                           ? request
                           : { ...request, tools: callHandlers.tools };
-                      if (!hasCapabilities) return withTools;
                       return injectCapabilities(allMiddleware, getTurnContext(), withTools);
                     };
 

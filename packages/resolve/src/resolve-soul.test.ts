@@ -32,6 +32,7 @@ function makeSoulDescriptor(): BrickDescriptor<KoiMiddleware> {
     optionsValidator: (input: unknown) => ({ ok: true, value: input }),
     factory: (options): KoiMiddleware => ({
       name: "soul",
+      describeCapabilities: () => undefined,
       priority: 500,
       // Store options for test assertions
       ...({ _testOptions: options } as Record<string, unknown>),

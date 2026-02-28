@@ -198,6 +198,7 @@ describeE2E("e2e: workspace through full L1 runtime", () => {
     // --- Middleware that inspects the workspace ---
     const inspectorMiddleware: KoiMiddleware = {
       name: "e2e:workspace-inspector",
+      describeCapabilities: () => undefined,
       priority: 100,
       wrapModelCall: async (_ctx, request, next) => {
         // At this point the agent is assembled — workspace should be there

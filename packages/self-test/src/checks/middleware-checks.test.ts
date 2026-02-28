@@ -17,7 +17,7 @@ describe("runMiddlewareChecks", () => {
   });
 
   test("passes for middleware with valid name and no hooks", async () => {
-    const mw: KoiMiddleware = { name: "noop" };
+    const mw: KoiMiddleware = { name: "noop", describeCapabilities: () => undefined };
     const results = await runMiddlewareChecks([mw], createSessionCtx, TIMEOUT);
     const nameCheck = results.find((r) => r.name.includes("has valid name"));
     const hookCheck = results.find((r) => r.name.includes("hooks are functions"));
@@ -26,7 +26,7 @@ describe("runMiddlewareChecks", () => {
   });
 
   test("fails for middleware with empty name", async () => {
-    const mw: KoiMiddleware = { name: "" };
+    const mw: KoiMiddleware = { name: "", describeCapabilities: () => undefined };
     const results = await runMiddlewareChecks([mw], createSessionCtx, TIMEOUT);
     const nameCheck = results.find((r) => r.name.includes("has valid name"));
     expect(nameCheck?.status).toBe("fail");
@@ -35,6 +35,7 @@ describe("runMiddlewareChecks", () => {
   test("passes when onSessionStart executes without error", async () => {
     const mw: KoiMiddleware = {
       name: "good-lifecycle",
+      describeCapabilities: () => undefined,
       async onSessionStart() {},
     };
     const results = await runMiddlewareChecks([mw], createSessionCtx, TIMEOUT);
@@ -45,6 +46,7 @@ describe("runMiddlewareChecks", () => {
   test("fails when onSessionStart throws", async () => {
     const mw: KoiMiddleware = {
       name: "bad-lifecycle",
+      describeCapabilities: () => undefined,
       async onSessionStart() {
         throw new Error("session start failed");
       },
@@ -58,6 +60,7 @@ describe("runMiddlewareChecks", () => {
   test("passes when onSessionEnd executes without error", async () => {
     const mw: KoiMiddleware = {
       name: "good-end",
+      describeCapabilities: () => undefined,
       async onSessionEnd() {},
     };
     const results = await runMiddlewareChecks([mw], createSessionCtx, TIMEOUT);
@@ -68,6 +71,7 @@ describe("runMiddlewareChecks", () => {
   test("fails when onSessionEnd throws", async () => {
     const mw: KoiMiddleware = {
       name: "bad-end",
+      describeCapabilities: () => undefined,
       async onSessionEnd() {
         throw new Error("session end failed");
       },
@@ -78,8 +82,12 @@ describe("runMiddlewareChecks", () => {
   });
 
   test("handles multiple middleware sequentially", async () => {
-    const mw1: KoiMiddleware = { name: "mw-a", async onSessionStart() {} };
-    const mw2: KoiMiddleware = { name: "mw-b" };
+    const mw1: KoiMiddleware = {
+      name: "mw-a",
+      describeCapabilities: () => undefined,
+      async onSessionStart() {},
+    };
+    const mw2: KoiMiddleware = { name: "mw-b", describeCapabilities: () => undefined };
     const results = await runMiddlewareChecks([mw1, mw2], createSessionCtx, TIMEOUT);
     // mw-a: name + hooks + onSessionStart = 3 checks
     // mw-b: name + hooks = 2 checks
@@ -87,7 +95,7 @@ describe("runMiddlewareChecks", () => {
   });
 
   test("does not test onSessionStart/End when not provided", async () => {
-    const mw: KoiMiddleware = { name: "minimal" };
+    const mw: KoiMiddleware = { name: "minimal", describeCapabilities: () => undefined };
     const results = await runMiddlewareChecks([mw], createSessionCtx, TIMEOUT);
     // Only structural checks: name + hooks
     expect(results).toHaveLength(2);

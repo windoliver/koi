@@ -255,6 +255,7 @@ describeE2E("e2e: soul self-modification awareness through createKoi + createPiA
 
       const observerMw: KoiMiddleware = {
         name: "e2e-meta-observer",
+        describeCapabilities: () => undefined,
         priority: 501, // Run after soul middleware (500)
         async *wrapModelStream(_ctx, request, next) {
           const firstMsg = request.messages[0];
@@ -313,6 +314,7 @@ describeE2E("e2e: soul self-modification awareness through createKoi + createPiA
 
       const observerMw: KoiMiddleware = {
         name: "e2e-meta-observer",
+        describeCapabilities: () => undefined,
         priority: 501,
         async *wrapModelStream(_ctx, request, next) {
           const firstMsg = request.messages[0];
@@ -362,6 +364,7 @@ describeE2E("e2e: soul self-modification awareness through createKoi + createPiA
 
       const observerMw: KoiMiddleware = {
         name: "e2e-multifile-observer",
+        describeCapabilities: () => undefined,
         priority: 501,
         async *wrapModelStream(_ctx, request, next) {
           const firstMsg = request.messages[0];
@@ -429,6 +432,7 @@ describeE2E("e2e: soul self-modification awareness through createKoi + createPiA
 
       const observerMw: KoiMiddleware = {
         name: "e2e-routing-observer",
+        describeCapabilities: () => undefined,
         priority: 501,
         async *wrapModelStream(_ctx, request, next) {
           const firstMsg = request.messages[0];

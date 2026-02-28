@@ -342,6 +342,7 @@ describeE2E("e2e: bundle export → import → real LLM agent", () => {
 
       const observerMiddleware: KoiMiddleware = {
         name: "e2e-bundle-observer",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: unknown,
           request: ToolRequest,
@@ -568,6 +569,7 @@ describeE2E("e2e: bundle export → import → real LLM agent", () => {
 
       const spy: KoiMiddleware = {
         name: "weather-spy",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (_ctx, req: ToolRequest, next) => {
           toolCalls.push(req.toolId);
           return next(req);

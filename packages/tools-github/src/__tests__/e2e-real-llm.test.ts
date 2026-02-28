@@ -666,6 +666,7 @@ describeReal("e2e: real Anthropic LLM — @koi/tools-github through full Koi run
 
     const observerMiddleware: KoiMiddleware = {
       name: "tool-call-observer",
+      describeCapabilities: () => undefined,
       wrapToolCall: async (_ctx: TurnContext, request: ToolRequest, next: ToolHandler) => {
         observedToolIds.push(request.toolId);
         return next(request);

@@ -240,6 +240,7 @@ describe("e2e: CI-safe full-stack — tools-github through createKoi + createLoo
 
     const observerMiddleware: KoiMiddleware = {
       name: "tool-call-observer",
+      describeCapabilities: () => undefined,
       wrapToolCall: async (_ctx: TurnContext, request: ToolRequest, next: ToolHandler) => {
         observedToolIds.push(request.toolId);
         return next(request);

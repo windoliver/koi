@@ -239,6 +239,7 @@ describeE2E("e2e: resolve pipeline → createLoopAdapter → real Anthropic LLM"
 
       const toolObserver: KoiMiddleware = {
         name: "e2e-tool-observer",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: unknown,
           request: ToolRequest,
@@ -302,6 +303,7 @@ describeE2E("e2e: resolve pipeline → createLoopAdapter → real Anthropic LLM"
 
       const lifecycleObserver: KoiMiddleware = {
         name: "e2e-lifecycle-observer",
+        describeCapabilities: () => undefined,
         onSessionStart: async () => {
           hookOrder.push("session_start");
         },
@@ -345,6 +347,7 @@ describeE2E("e2e: resolve pipeline → createLoopAdapter → real Anthropic LLM"
 
       const toolLogger: KoiMiddleware = {
         name: "e2e-tool-logger",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: unknown,
           request: ToolRequest,
@@ -480,6 +483,7 @@ describeE2E("e2e: createPiAdapter → full createKoi runtime with real LLM", () 
 
       const observerMiddleware: KoiMiddleware = {
         name: "e2e-pi-tool-observer",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: unknown,
           request: ToolRequest,
@@ -733,6 +737,7 @@ describeWithKey("e2e: external engine → createKoi → runtime.run() (real proc
 
     const lifecycleMiddleware: KoiMiddleware = {
       name: "e2e-external-lifecycle",
+      describeCapabilities: () => undefined,
       onSessionStart: async () => {
         hooksFired.push("session_start");
       },

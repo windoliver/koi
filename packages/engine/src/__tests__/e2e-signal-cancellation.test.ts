@@ -279,6 +279,7 @@ describeE2E("e2e: AbortSignal cooperative cancellation (full stack)", () => {
 
       const signalObserver: KoiMiddleware = {
         name: "signal-observer",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: TurnContext,
           request: ToolRequest,

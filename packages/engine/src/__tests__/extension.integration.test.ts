@@ -114,6 +114,7 @@ describe("custom extension with guard", () => {
       guards: () => {
         const mw: KoiMiddleware = {
           name: "test:logger",
+          describeCapabilities: () => undefined,
           priority: 999,
           onBeforeTurn: async () => {
             callLog.push("custom-before-turn");
@@ -154,6 +155,7 @@ describe("extension priority ordering", () => {
       guards: () => [
         {
           name: "low-mw",
+          describeCapabilities: () => undefined,
           priority: 5,
           onBeforeTurn: async () => {
             order.push("low");
@@ -168,6 +170,7 @@ describe("extension priority ordering", () => {
       guards: () => [
         {
           name: "high-mw",
+          describeCapabilities: () => undefined,
           priority: 6,
           onBeforeTurn: async () => {
             order.push("high");
@@ -357,6 +360,7 @@ describe("multiple extensions compose", () => {
       guards: () => [
         {
           name: "test:extra-guard",
+          describeCapabilities: () => undefined,
           priority: 998,
           onBeforeTurn: async () => {
             guardCalled.push("guard-ext");

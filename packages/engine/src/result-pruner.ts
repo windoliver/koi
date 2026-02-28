@@ -46,6 +46,7 @@ export function createResultPruner(config?: Partial<ResultPrunerConfig>): KoiMid
 
   return {
     name: "koi:result-pruner",
+    describeCapabilities: () => undefined,
 
     wrapToolCall: async (_ctx, request, next) => {
       const response = await next(request);

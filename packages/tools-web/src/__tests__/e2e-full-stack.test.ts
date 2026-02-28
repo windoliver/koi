@@ -94,6 +94,7 @@ describeE2E("e2e: @koi/tools-web through createKoi + createPiAdapter", () => {
 
       const observer: KoiMiddleware = {
         name: "web-tool-observer",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: unknown,
           request: ToolRequest,
@@ -167,6 +168,7 @@ describeE2E("e2e: @koi/tools-web through createKoi + createPiAdapter", () => {
 
       const argCapture: KoiMiddleware = {
         name: "arg-capture",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: unknown,
           request: ToolRequest,
@@ -232,6 +234,7 @@ describeE2E("e2e: @koi/tools-web through createKoi + createPiAdapter", () => {
 
       const resultCapture: KoiMiddleware = {
         name: "result-capture",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: unknown,
           request: ToolRequest,
@@ -302,6 +305,7 @@ describeE2E("e2e: @koi/tools-web through createKoi + createPiAdapter", () => {
 
       const lifecycle: KoiMiddleware = {
         name: "lifecycle-tracker",
+        describeCapabilities: () => undefined,
         onSessionStart: async () => {
           hookOrder.push("session_start");
         },
@@ -435,6 +439,7 @@ describeE2E("e2e: @koi/tools-web through createKoi + createPiAdapter", () => {
 
       const tracker: KoiMiddleware = {
         name: "multi-tool-tracker",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: unknown,
           request: ToolRequest,
@@ -577,6 +582,7 @@ describeSearch("e2e: web_search with Brave Search through full L1 runtime", () =
 
       const observer: KoiMiddleware = {
         name: "search-observer",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: unknown,
           request: ToolRequest,
@@ -646,6 +652,7 @@ describeSearch("e2e: web_search with Brave Search through full L1 runtime", () =
 
       const observer: KoiMiddleware = {
         name: "pipeline-observer",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: unknown,
           request: ToolRequest,
