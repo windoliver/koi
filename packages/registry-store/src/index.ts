@@ -13,6 +13,8 @@ export type {
   RegistryStoreDbConfig,
   RegistryStorePathConfig,
 } from "./config.js";
+export type { RegistryProviderConfig } from "./registry-component-provider.js";
+export { createRegistryProvider } from "./registry-component-provider.js";
 export type { SqliteSkillRegistry } from "./skill-registry.js";
 export { createSqliteSkillRegistry } from "./skill-registry.js";
 export type { SqliteVersionIndex } from "./version-index.js";
