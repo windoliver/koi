@@ -1,0 +1,112 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-tool-audit API surface . has stable type surface 1`] = `
+"import { Result, KoiError } from '@koi/core/errors';
+import { KoiMiddleware } from '@koi/core/middleware';
+import { KoiMiddleware as KoiMiddleware$1 } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
+
+/**
+ * Domain types for tool audit middleware.
+ */
+
+/**
+ * External persistence interface — snapshot-based load/save.
+ * In-memory fallback used when no store is provided.
+ */
+interface ToolAuditStore {
+    readonly load: () => ToolAuditSnapshot | Promise<ToolAuditSnapshot>;
+    readonly save: (snapshot: ToolAuditSnapshot) => void | Promise<void>;
+}
+/** Serializable audit state — safe to persist to disk/DB. */
+interface ToolAuditSnapshot {
+    readonly tools: Readonly<Record<string, ToolUsageRecord>>;
+    readonly totalSessions: number;
+    readonly lastUpdatedAt: number;
+}
+/** Per-tool cumulative usage statistics. */
+interface ToolUsageRecord {
+    readonly toolName: string;
+    readonly callCount: number;
+    readonly successCount: number;
+    readonly failureCount: number;
+    readonly lastUsedAt: number;
+    readonly avgLatencyMs: number;
+    readonly minLatencyMs: number;
+    readonly maxLatencyMs: number;
+    /** Internal: running total for incremental average computation. */
+    readonly totalLatencyMs: number;
+    readonly sessionsAvailable: number;
+    readonly sessionsUsed: number;
+}
+/** Lifecycle signal kinds — 4 per-tool signals (redundancy deferred to v2). */
+type ToolLifecycleSignal = "unused" | "low_adoption" | "high_failure" | "high_value";
+/** Per-tool analysis output with signal, confidence, and human-readable explanation. */
+interface ToolAuditResult {
+    readonly toolName: string;
+    readonly signal: ToolLifecycleSignal;
+    readonly confidence: number;
+    readonly details: string;
+    readonly record: ToolUsageRecord;
+}
+/** Extended middleware interface — adds on-demand report/snapshot methods. */
+interface ToolAuditMiddleware extends KoiMiddleware {
+    readonly generateReport: () => readonly ToolAuditResult[];
+    readonly getSnapshot: () => ToolAuditSnapshot;
+}
+
+/**
+ * Tool audit middleware configuration and validation.
+ */
+
+interface ToolAuditConfig {
+    readonly store?: ToolAuditStore;
+    readonly unusedThresholdSessions?: number;
+    readonly lowAdoptionThreshold?: number;
+    readonly highFailureThreshold?: number;
+    readonly highValueSuccessThreshold?: number;
+    readonly highValueMinCalls?: number;
+    readonly minCallsForFailure?: number;
+    readonly minSessionsForAdoption?: number;
+    readonly onAuditResult?: (results: readonly ToolAuditResult[]) => void;
+    readonly onError?: (error: unknown) => void;
+    readonly clock?: () => number;
+}
+declare function validateToolAuditConfig(config: unknown): Result<ToolAuditConfig, KoiError>;
+
+/**
+ * BrickDescriptor for @koi/middleware-tool-audit.
+ *
+ * Enables manifest auto-resolution: validates audit options,
+ * then creates tool audit middleware.
+ */
+
+/**
+ * Descriptor for tool-audit middleware.
+ *
+ * Creates a tool audit middleware from validated manifest options.
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware$1>;
+
+/**
+ * Pure lifecycle signal analysis — computes per-tool signals from audit snapshot.
+ */
+
+/** Compute lifecycle signals for all tools in the snapshot. Pure function. */
+declare function computeLifecycleSignals(snapshot: ToolAuditSnapshot, config: ToolAuditConfig): readonly ToolAuditResult[];
+
+/**
+ * Tool audit middleware — tracks tool usage and emits lifecycle signals.
+ *
+ * Observes tool availability via wrapModelCall, records call outcomes via
+ * wrapToolCall, and computes lifecycle signals on session end.
+ *
+ * Priority 100: outermost layer, sees all tool call attempts.
+ */
+
+/** Creates tool audit middleware that tracks usage and emits lifecycle signals. */
+declare function createToolAuditMiddleware(config: ToolAuditConfig): ToolAuditMiddleware;
+
+export { type ToolAuditConfig, type ToolAuditMiddleware, type ToolAuditResult, type ToolAuditSnapshot, type ToolAuditStore, type ToolLifecycleSignal, type ToolUsageRecord, computeLifecycleSignals, createToolAuditMiddleware, descriptor, validateToolAuditConfig };
+"
+`;
