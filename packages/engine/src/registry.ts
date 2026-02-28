@@ -16,6 +16,7 @@ import type {
   Result,
   TransitionReason,
 } from "@koi/core";
+import { matchesFilter } from "@koi/core";
 import { applyTransition } from "./transitions.js";
 
 // ---------------------------------------------------------------------------
@@ -80,16 +81,7 @@ export function createInMemoryRegistry(): InMemoryRegistry {
   function list(filter?: RegistryFilter): readonly RegistryEntry[] {
     const entries = [...store.values()];
     if (filter === undefined) return entries;
-
-    return entries.filter((e) => {
-      if (filter.phase !== undefined && e.status.phase !== filter.phase) return false;
-      if (filter.agentType !== undefined && e.agentType !== filter.agentType) return false;
-      if (filter.condition !== undefined && !e.status.conditions.includes(filter.condition)) {
-        return false;
-      }
-      if (filter.parentId !== undefined && e.parentId !== filter.parentId) return false;
-      return true;
-    });
+    return entries.filter((e) => matchesFilter(e, filter));
   }
 
   function transition(
