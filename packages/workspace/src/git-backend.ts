@@ -75,6 +75,7 @@ export function createGitWorktreeBackend(
 
   const backend: WorkspaceBackend = {
     name: "git-worktree",
+    isSandboxed: false,
 
     create: async (
       agentId: AgentId,
