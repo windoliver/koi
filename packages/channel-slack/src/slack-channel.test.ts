@@ -207,23 +207,26 @@ describe("createSlackChannel", () => {
   });
 
   test("media send fallback retries with text warning on failure", async () => {
-    const webClient = createMockWebClient();
+    // let justified: track calls to fail on the first real send (skip auth.test)
+    let sendCallCount = 0;
+    const failingWebClient = {
+      chat: {
+        postMessage: mock(async (_args: Record<string, unknown>) => {
+          sendCallCount++;
+          // First two calls: auth.test (connect) and the actual media send
+          if (sendCallCount === 2) {
+            throw new Error("Upload failed");
+          }
+          return { ok: true };
+        }),
+      },
+    };
     const socketClient = createMockSocketClient();
-
-    // let justified: track calls to fail on the first one with media
-    let callCount = 0;
-    webClient.chat.postMessage = mock(async (_args: Record<string, unknown>) => {
-      callCount++;
-      if (callCount === 1) {
-        throw new Error("Upload failed");
-      }
-      return { ok: true };
-    });
 
     const adapter = createSlackChannel({
       botToken: "xoxb-test",
       deployment: { mode: "socket", appToken: "xapp-test" },
-      _webClient: webClient,
+      _webClient: failingWebClient,
       _socketClient: socketClient,
     });
 
@@ -237,8 +240,8 @@ describe("createSlackChannel", () => {
       threadId: "C456",
     });
 
-    // First call fails, second call should succeed with fallback text
-    expect(callCount).toBe(2);
+    // auth.test (1) + failed media send (2) + fallback text send (3)
+    expect(sendCallCount).toBe(3);
 
     await adapter.disconnect();
   });

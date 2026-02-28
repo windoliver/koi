@@ -25,7 +25,7 @@ describe("whatsapp channel e2e lifecycle", () => {
       received.push(msg);
       const reply: OutboundMessage = {
         content: [{ kind: "text", text: `Echo: ${(msg.content[0] as { text: string }).text}` }],
-        threadId: msg.threadId,
+        ...(msg.threadId !== undefined ? { threadId: msg.threadId } : {}),
       };
       await adapter.send(reply);
     });
