@@ -258,6 +258,7 @@ export {
   channelToken,
   DELEGATION,
   EVENTS,
+  EXTERNAL_AGENTS,
   FILESYSTEM,
   GOVERNANCE,
   GOVERNANCE_BACKEND,
@@ -333,6 +334,12 @@ export type {
   EvictionReason,
   EvictionResult,
 } from "./eviction.js";
+// external agent — types for runtime discovery of external coding agents
+export type {
+  ExternalAgentDescriptor,
+  ExternalAgentSource,
+  ExternalAgentTransport,
+} from "./external-agent.js";
 // filesystem backend
 export type {
   FileDeleteResult,
