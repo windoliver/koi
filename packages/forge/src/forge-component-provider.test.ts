@@ -1428,6 +1428,51 @@ describe("createForgeComponentProvider — component shapes", () => {
     expect(skill.tags).toBeUndefined();
   });
 
+  test("skill SkillComponent includes requires when present on artifact", async () => {
+    const store = createInMemoryForgeStore();
+    // Add tool bricks that satisfy the requires.tools constraint
+    await store.save(createToolBrick({ name: "docker-run" }));
+    await store.save(createToolBrick({ name: "kubectl" }));
+    await store.save(
+      createTestSkillArtifact({
+        name: "deploy",
+        description: "Deploy skill",
+        content: "# Deploy",
+        tags: [],
+        requires: { tools: ["docker-run", "kubectl"] },
+      }),
+    );
+
+    const provider = createForgeComponentProvider({
+      store,
+      executor: mockTiered(echoExecutor()),
+    });
+
+    const components = extractMap(await provider.attach(createMockAgent()));
+    const skill = components.get(skillToken("deploy") as string) as SkillComponent;
+    expect(skill.requires).toEqual({ tools: ["docker-run", "kubectl"] });
+  });
+
+  test("skill SkillComponent omits requires when not present on artifact", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      createTestSkillArtifact({
+        name: "basic",
+        content: "# Basic",
+        tags: [],
+      }),
+    );
+
+    const provider = createForgeComponentProvider({
+      store,
+      executor: mockTiered(echoExecutor()),
+    });
+
+    const components = extractMap(await provider.attach(createMockAgent()));
+    const skill = components.get(skillToken("basic") as string) as SkillComponent;
+    expect(skill.requires).toBeUndefined();
+  });
+
   test("agent AgentDescriptor has manifestYaml field", async () => {
     const store = createInMemoryForgeStore();
     await store.save(

@@ -49,6 +49,7 @@ import {
 import { composeExtensions, createDefaultGuardExtension } from "./extension-composer.js";
 import { createGovernanceExtension } from "./governance-extension.js";
 import { createGovernanceProvider } from "./governance-provider.js";
+import { createSkillRequiresExtension } from "./skill-requires-extension.js";
 import type { CreateKoiOptions, KoiRuntime } from "./types.js";
 
 /** Generate a unique process ID for a new agent. */
@@ -126,7 +127,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     ...(options.loopDetection !== undefined ? { loopDetection: options.loopDetection } : {}),
     ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
   });
-  const allExtensions = [governanceExt, defaultGuardExt, ...(options.extensions ?? [])];
+  const skillRequiresExt = createSkillRequiresExtension();
+  const allExtensions = [
+    governanceExt,
+    defaultGuardExt,
+    skillRequiresExt,
+    ...(options.extensions ?? []),
+  ];
 
   const guardCtx = {
     agentDepth: pid.depth,

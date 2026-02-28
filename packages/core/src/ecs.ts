@@ -8,6 +8,7 @@
  */
 
 import type { AgentManifest } from "./assembly.js";
+import type { BrickRequires } from "./brick-store.js";
 import type { BrowserDriver } from "./browser-driver.js";
 import type { ChannelAdapter } from "./channel.js";
 import type { JsonObject } from "./common.js";
@@ -195,6 +196,7 @@ export interface SkillMetadata {
  */
 export interface SkillComponent extends SkillMetadata {
   readonly content: string;
+  readonly requires?: BrickRequires;
 }
 
 /**

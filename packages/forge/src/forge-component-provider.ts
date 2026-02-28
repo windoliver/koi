@@ -71,6 +71,7 @@ function attachBrick(
         description: brick.description,
         content: brick.content,
         ...(brick.tags.length > 0 ? { tags: brick.tags } : {}),
+        ...(brick.requires !== undefined ? { requires: brick.requires } : {}),
       };
       return { token: skillToken(brick.name) as string, value: skillValue };
     }
