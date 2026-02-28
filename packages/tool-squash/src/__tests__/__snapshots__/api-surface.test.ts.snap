@@ -1,0 +1,90 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/tool-squash API surface . has stable type surface 1`] = `
+"import { ToolDescriptor, MemoryComponent, SessionId, ComponentProvider } from '@koi/core/ecs';
+import { InboundMessage } from '@koi/core/message';
+import { KoiMiddleware } from '@koi/core/middleware';
+import { SnapshotChainStore, SkillComponent } from '@koi/core';
+import { TokenEstimator } from '@koi/core/context';
+
+/**
+ * Configuration, constants, and tool descriptor for @koi/tool-squash.
+ *
+ * L2 — imports from @koi/core only.
+ */
+
+/** User-facing configuration for createSquashProvider. */
+interface SquashConfig {
+    /** Required: archive store for snapshotting squashed messages. */
+    readonly archiver: SnapshotChainStore<readonly InboundMessage[]>;
+    /** Optional: memory component for fact extraction. */
+    readonly memory?: MemoryComponent | undefined;
+    /** Optional: token estimator override. Defaults to 4 chars/token heuristic. */
+    readonly tokenEstimator?: TokenEstimator | undefined;
+    /** Number of most recent messages to preserve. Default: 4. */
+    readonly preserveRecent?: number | undefined;
+    /** Maximum pending squashes before oldest is dropped. Default: 3. */
+    readonly maxPendingSquashes?: number | undefined;
+    /** Session ID for archive chain naming. */
+    readonly sessionId: SessionId;
+}
+/** Structured metrics returned to the agent after a squash call. */
+type SquashResult = {
+    readonly ok: true;
+    readonly phase: string;
+    readonly originalMessages: number;
+    readonly originalTokens: number;
+    readonly compactedTokens: number;
+    readonly archivedNodeId: string | undefined;
+    readonly factsStored: number;
+} | {
+    readonly ok: false;
+    readonly error: string;
+    readonly code: string;
+};
+interface SquashDefaults {
+    readonly preserveRecent: number;
+    readonly maxPendingSquashes: number;
+}
+declare const SQUASH_DEFAULTS: Readonly<SquashDefaults>;
+/** Tool descriptor exposed to the model for the squash tool. */
+declare const SQUASH_TOOL_DESCRIPTOR: ToolDescriptor;
+
+/**
+ * Bundle factory — creates the squash tool provider + companion middleware.
+ *
+ * Both share a closure-scoped pending queue. The caller registers:
+ * - The ComponentProvider via assembly (attaches tool:squash)
+ * - The KoiMiddleware via middleware chain (applies squashes before model calls)
+ */
+
+/** Return value of createSquashProvider — both must be registered. */
+interface SquashProviderBundle {
+    readonly provider: ComponentProvider;
+    readonly middleware: KoiMiddleware;
+}
+/**
+ * Creates a ComponentProvider + KoiMiddleware bundle for the squash tool.
+ *
+ * @param config - User-facing configuration
+ * @param getMessages - Returns current conversation messages for the tool to partition
+ */
+declare function createSquashProvider(config: SquashConfig, getMessages: () => readonly InboundMessage[]): SquashProviderBundle;
+
+/**
+ * Skill component for the squash tool — teaches agents when and how to compress context.
+ *
+ * L2 — imports from @koi/core only.
+ */
+
+/** Skill component name. */
+declare const SQUASH_SKILL_NAME: "squash";
+/**
+ * Pre-built SkillComponent for squash behavioral guidance.
+ * Attached automatically by createSquashProvider alongside the tool.
+ */
+declare const SQUASH_SKILL: SkillComponent;
+
+export { SQUASH_DEFAULTS, SQUASH_SKILL, SQUASH_SKILL_NAME, SQUASH_TOOL_DESCRIPTOR, type SquashConfig, type SquashProviderBundle, type SquashResult, createSquashProvider };
+"
+`;
