@@ -8,7 +8,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { MemoryComponent, SkillMetadata, Tool } from "@koi/core";
+import type { MemoryComponent, SkillComponent, Tool } from "@koi/core";
 import { MEMORY, skillToken, toolToken } from "@koi/core";
 import { createMockAgent, createMockTurnContext, createSpyModelHandler } from "@koi/test-utils";
 import { validateContextConfig } from "../src/config.js";
@@ -165,9 +165,10 @@ describe("Hydration pipeline — end-to-end", () => {
       async store() {},
     };
 
-    const skill: SkillMetadata = {
+    const skill: SkillComponent = {
       name: "research",
       description: "Research topics from the web",
+      content: "",
       tags: ["web", "search"],
     };
 
