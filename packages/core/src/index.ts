@@ -275,6 +275,12 @@ export {
   WEBHOOK,
   WORKSPACE,
 } from "./ecs.js";
+// elicitation — structured user questioning contract
+export type {
+  ElicitationOption,
+  ElicitationQuestion,
+  ElicitationResult,
+} from "./elicitation.js";
 // engine
 export type {
   AbortReason,

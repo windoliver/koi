@@ -123,6 +123,10 @@
     "./run-report": {
       "types": "./dist/run-report.d.ts",
       "import": "./dist/run-report.js"
+    },
+    "./elicitation": {
+      "types": "./dist/elicitation.d.ts",
+      "import": "./dist/elicitation.js"
     }
   },
   "scripts": {

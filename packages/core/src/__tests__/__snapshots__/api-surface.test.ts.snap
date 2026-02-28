@@ -15,6 +15,7 @@ export { A as AdvisoryLock, a as AgentArtifact, b as BrickArtifactBase, c as Bri
 export { ChannelAdapter, ChannelCapabilities, ChannelStatus, ChannelStatusKind, MessageHandler } from './channel.js';
 export { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, FeatureFlags, ForgeConfigSection, KoiConfig, LimitsConfig, LogLevel, LoopDetectionConfigSection, ModelRouterConfigSection, ModelTargetConfigEntry, SpawnConfig, TelemetryConfig } from './config.js';
 export { CompactionResult, ContextCompactor, TokenEstimator } from './context.js';
+export { ElicitationOption, ElicitationQuestion, ElicitationResult } from './elicitation.js';
 export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, EventEnvelope, EventInput, ReadOptions, ReadResult, SubscribeOptions, SubscriptionHandle } from './event-HASH.js';
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
 export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileRenameResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-HASH.js';
@@ -3319,5 +3320,43 @@ interface ReportStore {
 }
 
 export type { ActionEntry, IssueEntry, ReportStore, ReportSummary, RunCost, RunDuration, RunReport };
+"
+`;
+
+exports[`@koi/core API surface ./elicitation has stable type surface 1`] = `
+"/**
+ * Elicitation types — structured user questioning contract (Layer 0).
+ *
+ * Defines the data shapes for asking users structured questions
+ * (multi-choice or free-text) and receiving their responses.
+ * No runtime code — types only.
+ */
+/** A single predefined choice within a question. */
+interface ElicitationOption {
+    /** Concise choice text (1-5 words). */
+    readonly label: string;
+    /** Explanation of what this option means or what happens if chosen. */
+    readonly description: string;
+}
+/** A structured question to present to a user. */
+interface ElicitationQuestion {
+    /** Full question text. Should be clear, specific, and end with a question mark. */
+    readonly question: string;
+    /** Short label for UI grouping (max 12 chars). E.g., "Approach", "Library". */
+    readonly header?: string | undefined;
+    /** Predefined choices for the user (2+). */
+    readonly options: readonly ElicitationOption[];
+    /** Whether the user can select multiple options. Default: false. */
+    readonly multiSelect?: boolean | undefined;
+}
+/** The user's response to an elicitation question. */
+interface ElicitationResult {
+    /** Labels of selected options (empty if free-text only). */
+    readonly selected: readonly string[];
+    /** Custom text input when the user chooses "Other" or types freely. */
+    readonly freeText?: string | undefined;
+}
+
+export type { ElicitationOption, ElicitationQuestion, ElicitationResult };
 "
 `;
