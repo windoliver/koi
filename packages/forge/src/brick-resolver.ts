@@ -117,6 +117,7 @@ export interface DeltaInvalidator<V> {
  * - "removed" → delta (only the specific brick needs eviction)
  * - "updated" → delta (only the specific brick needs eviction)
  * - "promoted" → delta (scope/tier changed for specific brick)
+ * - "demoted" → delta (trust tier decreased for specific brick)
  */
 export function createDeltaInvalidator<V>(): DeltaInvalidator<V> {
   const classifyEvent = (event: StoreChangeEvent): "full" | "delta" | "none" => {
@@ -128,6 +129,7 @@ export function createDeltaInvalidator<V>(): DeltaInvalidator<V> {
       case "removed":
       case "updated":
       case "promoted":
+      case "demoted":
         return "delta";
     }
   };
