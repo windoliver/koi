@@ -8,7 +8,7 @@
  *   successRate^exponent × recencyDecay × usageNorm × latencyFactor
  */
 
-import type { BrickFitnessMetrics } from "@koi/core";
+import type { BrickArtifactBase, BrickFitnessMetrics, TrustTier } from "@koi/core";
 import { computePercentile } from "./latency-sampler.js";
 
 // ---------------------------------------------------------------------------
@@ -82,4 +82,56 @@ export function computeBrickFitness(
   const latencyFactor = 1 - cfg.latencyWeight * latencyRatio;
 
   return Math.min(1, successFactor * recencyFactor * usageNorm * latencyFactor);
+}
+
+// ---------------------------------------------------------------------------
+// Trust decay evaluation — lazy check at brick load/discover time
+// ---------------------------------------------------------------------------
+
+/** Thresholds for fitness-based trust decay. */
+export interface DecayThresholds {
+  /** Fitness score below which a promoted brick should be demoted to verified. Default: 0.3. */
+  readonly promotedDemotionThreshold: number;
+  /** Fitness score below which a verified brick should be demoted to sandbox. Default: 0.1. */
+  readonly verifiedDemotionThreshold: number;
+}
+
+export const DEFAULT_DECAY_THRESHOLDS: DecayThresholds = Object.freeze({
+  promotedDemotionThreshold: 0.3,
+  verifiedDemotionThreshold: 0.1,
+});
+
+/**
+ * Evaluates whether a brick's fitness has decayed enough to warrant trust demotion.
+ *
+ * Returns the target tier if demotion is needed, `undefined` if no change.
+ * This is a pure scoring function — callers are responsible for executing the demotion.
+ *
+ * Does NOT demote bricks with zero usage (no evidence = no demotion).
+ */
+export function evaluateTrustDecay(
+  brick: BrickArtifactBase,
+  nowMs: number,
+  config?: Partial<FitnessScoringConfig>,
+  thresholds?: Partial<DecayThresholds>,
+): TrustTier | undefined {
+  // No fitness data = no evidence = no demotion
+  if (brick.fitness === undefined) return undefined;
+
+  const totalCalls = brick.fitness.successCount + brick.fitness.errorCount;
+  if (totalCalls === 0) return undefined;
+
+  const score = computeBrickFitness(brick.fitness, nowMs, config);
+  const decay: DecayThresholds = { ...DEFAULT_DECAY_THRESHOLDS, ...thresholds };
+
+  if (brick.trustTier === "promoted" && score < decay.promotedDemotionThreshold) {
+    return "verified";
+  }
+
+  if (brick.trustTier === "verified" && score < decay.verifiedDemotionThreshold) {
+    return "sandbox";
+  }
+
+  // sandbox is floor — never demote further
+  return undefined;
 }

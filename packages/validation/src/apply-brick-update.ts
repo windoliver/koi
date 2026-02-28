@@ -26,5 +26,7 @@ export function applyBrickUpdate<T extends BrickArtifactBase>(
     ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
     ...(updates.lastVerifiedAt !== undefined ? { lastVerifiedAt: updates.lastVerifiedAt } : {}),
     ...(updates.fitness !== undefined ? { fitness: updates.fitness } : {}),
+    ...(updates.lastPromotedAt !== undefined ? { lastPromotedAt: updates.lastPromotedAt } : {}),
+    ...(updates.lastDemotedAt !== undefined ? { lastDemotedAt: updates.lastDemotedAt } : {}),
   };
 }
