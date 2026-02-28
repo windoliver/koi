@@ -34,6 +34,7 @@ export default defineConfig({
     "src/version-types.ts",
     "src/run-report.ts",
     "src/elicitation.ts",
+    "src/mailbox.ts",
     "src/webhook.ts",
   ],
   format: ["esm"],

@@ -266,6 +266,7 @@ export {
   GOVERNANCE_BACKEND,
   HANDOFF,
   isAttachResult,
+  MAILBOX,
   MEMORY,
   middlewareToken,
   REGISTRY,
@@ -468,6 +469,16 @@ export type {
 } from "./lifecycle.js";
 // lifecycle — runtime values
 export { VALID_TRANSITIONS } from "./lifecycle.js";
+// mailbox — agent-to-agent messaging types
+export type {
+  AgentMessage,
+  AgentMessageInput,
+  MailboxComponent,
+  MessageFilter,
+  MessageId,
+  MessageKind,
+} from "./mailbox.js";
+export { messageId } from "./mailbox.js";
 // message
 export type {
   ButtonBlock,

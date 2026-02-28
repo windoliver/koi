@@ -1,0 +1,92 @@
+/**
+ * ComponentProvider factory for @koi/ipc-nexus.
+ *
+ * Wraps createNexusMailbox as a MailboxComponent and exposes
+ * send/list as agent-facing tools via createServiceProvider.
+ */
+
+import type { AgentId, ComponentProvider, MailboxComponent, TrustTier } from "@koi/core";
+import { createServiceProvider, MAILBOX } from "@koi/core";
+import type { IpcOperation } from "./constants.js";
+import { DEFAULT_PREFIX, OPERATIONS } from "./constants.js";
+import { createNexusMailbox } from "./mailbox-adapter.js";
+import { createListTool } from "./tools/list.js";
+import { createSendTool } from "./tools/send.js";
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+export interface IpcNexusProviderConfig {
+  readonly agentId: AgentId;
+  readonly nexusBaseUrl?: string | undefined;
+  readonly authToken?: string | undefined;
+  readonly trustTier?: TrustTier | undefined;
+  readonly prefix?: string | undefined;
+  readonly pollMinMs?: number | undefined;
+  readonly pollMaxMs?: number | undefined;
+  readonly pageLimit?: number | undefined;
+  readonly timeoutMs?: number | undefined;
+  readonly operations?: readonly IpcOperation[] | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Tool factories map
+// ---------------------------------------------------------------------------
+
+const TOOL_FACTORIES: Readonly<
+  Record<
+    IpcOperation,
+    (
+      backend: MailboxComponent,
+      prefix: string,
+      tier: TrustTier,
+    ) => ReturnType<typeof createSendTool>
+  >
+> = {
+  send: createSendTool,
+  list: createListTool,
+};
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
+/** Create a ComponentProvider that attaches a MailboxComponent + IPC tools. */
+export function createIpcNexusProvider(config: IpcNexusProviderConfig): ComponentProvider {
+  const {
+    agentId,
+    nexusBaseUrl,
+    authToken,
+    trustTier = "verified",
+    prefix = DEFAULT_PREFIX,
+    pollMinMs,
+    pollMaxMs,
+    pageLimit,
+    timeoutMs,
+    operations = OPERATIONS,
+  } = config;
+
+  const mailbox = createNexusMailbox({
+    agentId,
+    baseUrl: nexusBaseUrl,
+    authToken,
+    pollMinMs,
+    pollMaxMs,
+    pageLimit,
+    timeoutMs,
+  });
+
+  return createServiceProvider<MailboxComponent, IpcOperation>({
+    name: "ipc-nexus",
+    singletonToken: MAILBOX,
+    backend: mailbox,
+    operations,
+    factories: TOOL_FACTORIES,
+    trustTier,
+    prefix,
+    detach: async () => {
+      mailbox[Symbol.dispose]();
+    },
+  });
+}

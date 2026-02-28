@@ -842,6 +842,16 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/ipc-nexus": {
+      "name": "@koi/ipc-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/long-running": {
       "name": "@koi/long-running",
       "version": "0.0.0",
@@ -1819,6 +1829,7 @@
         "@koi/gateway": "workspace:*",
         "@koi/git-utils": "workspace:*",
         "@koi/hash": "workspace:*",
+        "@koi/ipc-nexus": "workspace:*",
         "@koi/manifest": "workspace:*",
         "@koi/middleware-ace": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
@@ -2377,6 +2388,8 @@
     "@koi/harness-scheduler": ["@koi/harness-scheduler@workspace:packages/harness-scheduler"],
 
     "@koi/hash": ["@koi/hash@workspace:packages/hash"],
+
+    "@koi/ipc-nexus": ["@koi/ipc-nexus@workspace:packages/ipc-nexus"],
 
     "@koi/long-running": ["@koi/long-running@workspace:packages/long-running"],
 

@@ -1,0 +1,72 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/ipc-nexus API surface . has stable type surface 1`] = `
+"import { AgentId, MailboxComponent, TrustTier, ComponentProvider, Tool } from '@koi/core';
+export { AgentMessage, AgentMessageInput, MailboxComponent, MessageFilter, MessageId, MessageKind } from '@koi/core';
+
+/** Default tool name prefix. */
+declare const DEFAULT_PREFIX: "ipc";
+/** All IPC operation names. */
+declare const OPERATIONS: readonly ["send", "list"];
+type IpcOperation = (typeof OPERATIONS)[number];
+
+/**
+ * MailboxComponent implementation backed by Nexus IPC REST API.
+ *
+ * - send: maps to Nexus, returns Result<AgentMessage, KoiError>
+ * - onMessage: registers handler, starts/stops polling automatically
+ * - list: fetches inbox with optional filter
+ *
+ * Polling uses exponential backoff (1s→30s), resets on message received.
+ */
+
+interface NexusMailboxConfig {
+    readonly agentId: AgentId;
+    readonly baseUrl?: string | undefined;
+    readonly authToken?: string | undefined;
+    readonly pollMinMs?: number | undefined;
+    readonly pollMaxMs?: number | undefined;
+    readonly pollMultiplier?: number | undefined;
+    readonly pageLimit?: number | undefined;
+    readonly timeoutMs?: number | undefined;
+}
+/** Create a MailboxComponent backed by Nexus IPC. Implements Disposable for cleanup. */
+declare function createNexusMailbox(config: NexusMailboxConfig): MailboxComponent & Disposable;
+
+/**
+ * ComponentProvider factory for @koi/ipc-nexus.
+ *
+ * Wraps createNexusMailbox as a MailboxComponent and exposes
+ * send/list as agent-facing tools via createServiceProvider.
+ */
+
+interface IpcNexusProviderConfig {
+    readonly agentId: AgentId;
+    readonly nexusBaseUrl?: string | undefined;
+    readonly authToken?: string | undefined;
+    readonly trustTier?: TrustTier | undefined;
+    readonly prefix?: string | undefined;
+    readonly pollMinMs?: number | undefined;
+    readonly pollMaxMs?: number | undefined;
+    readonly pageLimit?: number | undefined;
+    readonly timeoutMs?: number | undefined;
+    readonly operations?: readonly IpcOperation[] | undefined;
+}
+/** Create a ComponentProvider that attaches a MailboxComponent + IPC tools. */
+declare function createIpcNexusProvider(config: IpcNexusProviderConfig): ComponentProvider;
+
+/**
+ * Tool factory for ipc_list — list messages in the agent's inbox.
+ */
+
+declare function createListTool(component: MailboxComponent, prefix: string, trustTier: TrustTier): Tool;
+
+/**
+ * Tool factory for ipc_send — dispatch a message to another agent's mailbox.
+ */
+
+declare function createSendTool(component: MailboxComponent, prefix: string, trustTier: TrustTier): Tool;
+
+export { DEFAULT_PREFIX, type IpcNexusProviderConfig, type IpcOperation, type NexusMailboxConfig, OPERATIONS, createIpcNexusProvider, createListTool, createNexusMailbox, createSendTool };
+"
+`;

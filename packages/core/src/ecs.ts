@@ -20,6 +20,7 @@ import type { FileSystemBackend } from "./filesystem-backend.js";
 import type { GovernanceController } from "./governance.js";
 import type { GovernanceBackend } from "./governance-backend.js";
 import type { HandoffComponent } from "./handoff.js";
+import type { MailboxComponent } from "./mailbox.js";
 import type { SchedulerComponent } from "./scheduler.js";
 import type { SkillRegistryReader } from "./skill-registry.js";
 import type { VersionIndexReader } from "./version-index.js";
@@ -128,6 +129,8 @@ export interface ProcessId {
   readonly type: "copilot" | "worker";
   readonly depth: number;
   readonly parent?: AgentId;
+  /** External user/system identity that owns this agent process. */
+  readonly ownerId?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -480,3 +483,4 @@ export const WEBHOOK: SubsystemToken<WebhookComponent> = token<WebhookComponent>
 export const EXTERNAL_AGENTS: SubsystemToken<readonly ExternalAgentDescriptor[]> =
   token<readonly ExternalAgentDescriptor[]>("external-agents");
 export const REGISTRY: SubsystemToken<RegistryComponent> = token<RegistryComponent>("registry");
+export const MAILBOX: SubsystemToken<MailboxComponent> = token<MailboxComponent>("mailbox");
