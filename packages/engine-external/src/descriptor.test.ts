@@ -33,6 +33,8 @@ describe("engine-external descriptor", () => {
     expect(descriptor.companionSkills).toHaveLength(1);
 
     const skill = descriptor.companionSkills?.[0];
+    expect(skill).toBeDefined();
+    if (skill === undefined) return;
     expect(skill.name).toBe("engine-external-guide");
     expect(skill.description).toBe("When to use engine: external");
     expect(skill.content).toContain("## When to use");

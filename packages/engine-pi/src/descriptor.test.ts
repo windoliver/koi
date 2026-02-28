@@ -33,6 +33,8 @@ describe("engine-pi descriptor", () => {
     expect(descriptor.companionSkills).toHaveLength(1);
 
     const skill = descriptor.companionSkills?.[0];
+    expect(skill).toBeDefined();
+    if (skill === undefined) return;
     expect(skill.name).toBe("engine-pi-guide");
     expect(skill.description).toBe("When to use engine: pi");
     expect(skill.content).toContain("## When to use");
