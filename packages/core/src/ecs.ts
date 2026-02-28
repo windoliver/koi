@@ -8,6 +8,7 @@
  */
 
 import type { AgentManifest } from "./assembly.js";
+import type { BrickRegistryReader } from "./brick-registry.js";
 import type { BrickRequires } from "./brick-store.js";
 import type { BrowserDriver } from "./browser-driver.js";
 import type { ChannelAdapter } from "./channel.js";
@@ -20,6 +21,8 @@ import type { GovernanceController } from "./governance.js";
 import type { GovernanceBackend } from "./governance-backend.js";
 import type { HandoffComponent } from "./handoff.js";
 import type { SchedulerComponent } from "./scheduler.js";
+import type { SkillRegistryReader } from "./skill-registry.js";
+import type { VersionIndexReader } from "./version-index.js";
 import type { WebhookComponent } from "./webhook.js";
 
 // ---------------------------------------------------------------------------
@@ -398,6 +401,13 @@ export interface EventComponent {
   readonly on: (type: string, handler: (data: unknown) => void) => () => void;
 }
 
+/** Read-only registry facade for agent-facing tools to query bricks, skills, and versions. */
+export interface RegistryComponent {
+  readonly bricks: BrickRegistryReader;
+  readonly skills: SkillRegistryReader;
+  readonly versions: VersionIndexReader;
+}
+
 // ---------------------------------------------------------------------------
 // Process accounting
 // ---------------------------------------------------------------------------
@@ -457,3 +467,4 @@ export const SCHEDULER: SubsystemToken<SchedulerComponent> = token<SchedulerComp
 export const WEBHOOK: SubsystemToken<WebhookComponent> = token<WebhookComponent>("webhook");
 export const EXTERNAL_AGENTS: SubsystemToken<readonly ExternalAgentDescriptor[]> =
   token<readonly ExternalAgentDescriptor[]>("external-agents");
+export const REGISTRY: SubsystemToken<RegistryComponent> = token<RegistryComponent>("registry");
