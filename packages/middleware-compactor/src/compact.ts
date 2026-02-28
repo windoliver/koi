@@ -15,14 +15,23 @@ import type { CompactionTrigger, CompactorConfig, ResolvedCompactorConfig } from
 import { COMPACTOR_DEFAULTS } from "./types.js";
 
 /**
- * Extended compactor with a `forceCompact` method that bypasses trigger checks.
+ * Extended compactor with epoch-aware compact and a `forceCompact` method
+ * that bypasses trigger checks.
  * Used by overflow recovery to compact regardless of thresholds.
  */
 export interface LlmCompactor extends ContextCompactor {
+  /** Epoch-aware compact — overrides ContextCompactor.compact with optional epoch param. */
+  readonly compact: (
+    messages: readonly InboundMessage[],
+    maxTokens: number,
+    model?: string,
+    epoch?: number,
+  ) => Promise<CompactionResult>;
   readonly forceCompact: (
     messages: readonly InboundMessage[],
     maxTokens: number,
     model?: string,
+    epoch?: number,
   ) => Promise<CompactionResult>;
 }
 
@@ -99,6 +108,7 @@ export function createLlmCompactor(config: CompactorConfig): LlmCompactor {
       messages: readonly InboundMessage[],
       maxTokens: number,
       model?: string,
+      epoch?: number,
     ): Promise<CompactionResult> {
       // Re-entrancy guard: set synchronously before any awaits to block concurrent calls
       if (compacting) {
@@ -122,7 +132,7 @@ export function createLlmCompactor(config: CompactorConfig): LlmCompactor {
       // Set guard before any async work
       compacting = true;
       try {
-        return await performCompaction(messages, maxTokens, model, resolved);
+        return await performCompaction(messages, maxTokens, model, resolved, false, epoch);
       } catch (_e: unknown) {
         // Graceful degradation: return original messages on any failure.
         // L0 contract: "Always succeeds — worst case returns an empty message array."
@@ -136,8 +146,9 @@ export function createLlmCompactor(config: CompactorConfig): LlmCompactor {
       messages: readonly InboundMessage[],
       maxTokens: number,
       model?: string,
+      epoch?: number,
     ): Promise<CompactionResult> {
-      return performCompaction(messages, maxTokens, model, resolved, true);
+      return performCompaction(messages, maxTokens, model, resolved, true, epoch);
     },
   };
 }
@@ -149,6 +160,7 @@ async function performCompaction(
   model: string | undefined,
   resolved: ResolvedCompactorConfig,
   force = false,
+  epoch?: number,
 ): Promise<CompactionResult> {
   const contextWindowSize = Math.min(maxTokens, resolved.contextWindowSize);
 
@@ -211,7 +223,7 @@ async function performCompaction(
     content: [{ kind: "text", text: response.content }],
     senderId: "system:compactor",
     timestamp: Date.now(),
-    metadata: { compacted: true },
+    metadata: { compacted: true, ...(epoch !== undefined ? { compactionEpoch: epoch } : {}) },
   };
 
   const compactedMessages: readonly InboundMessage[] = [summaryMessage, ...tailMessages];

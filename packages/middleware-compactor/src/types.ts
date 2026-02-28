@@ -38,8 +38,10 @@ export interface OverflowRecoveryConfig {
  * All thresholds are optional — at least one must be set.
  */
 export interface CompactionTrigger {
-  /** Fraction of contextWindowSize (0.0–1.0). Default: 0.75. */
+  /** Fraction of contextWindowSize (0.0–1.0). Default: 0.60. */
   readonly tokenFraction?: number;
+  /** Soft trigger — emits warning only, no compaction. Default: 0.50. */
+  readonly softTriggerFraction?: number;
   /** Absolute token count threshold. */
   readonly tokenCount?: number;
   /** Message count threshold. */
@@ -56,7 +58,7 @@ export interface CompactorConfig {
   readonly summarizerModel?: string;
   /** Context window size in tokens. Default: 200_000. */
   readonly contextWindowSize?: number;
-  /** When to trigger compaction. Default: { tokenFraction: 0.75 }. */
+  /** When to trigger compaction. Default: { tokenFraction: 0.60, softTriggerFraction: 0.50 }. */
   readonly trigger?: CompactionTrigger;
   /** Number of most recent messages to always preserve. Default: 4. */
   readonly preserveRecent?: number;
@@ -100,8 +102,16 @@ interface CompactorDefaults {
 
 export const COMPACTOR_DEFAULTS: CompactorDefaults = Object.freeze({
   contextWindowSize: 200_000,
-  trigger: Object.freeze({ tokenFraction: 0.75 }),
+  trigger: Object.freeze({ tokenFraction: 0.6, softTriggerFraction: 0.5 }),
   preserveRecent: 4,
   maxSummaryTokens: 1000,
   overflowRecovery: Object.freeze({ maxRetries: 1 }),
+});
+
+/** Named presets for common compactor configurations. */
+export const COMPACTOR_PRESETS: Readonly<Record<string, Partial<CompactorConfig>>> = Object.freeze({
+  /** Pre-v2 behavior: hard trigger at 75%, no soft trigger. */
+  aggressive: Object.freeze({
+    trigger: Object.freeze({ tokenFraction: 0.75 }),
+  }),
 });

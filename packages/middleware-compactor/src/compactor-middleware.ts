@@ -30,6 +30,13 @@ interface CompactionOutcome {
   readonly result: CompactionResult | undefined;
 }
 
+/** Mutable state record for the compactor middleware closure. */
+interface CompactorState {
+  readonly epoch: number;
+  readonly lastTokenFraction: number;
+  readonly cachedRestore: CompactionResult | undefined;
+}
+
 /**
  * Creates a middleware that compacts old messages into LLM summaries.
  */
@@ -40,16 +47,17 @@ export function createCompactorMiddleware(config: CompactorConfig): KoiMiddlewar
     config.overflowRecovery?.maxRetries ?? COMPACTOR_DEFAULTS.overflowRecovery.maxRetries ?? 1;
   const hasOverflowRecovery = config.overflowRecovery !== undefined;
   const store = config.store;
+  const softTriggerFraction =
+    config.trigger?.softTriggerFraction ?? COMPACTOR_DEFAULTS.trigger.softTriggerFraction;
 
-  // Cached restore result from onSessionStart — applied once to first model call
-  // let required: set in onSessionStart, consumed in first wrapModelCall/wrapModelStream
-  let cachedRestore: CompactionResult | undefined;
+  // let required: single mutable state record — each mutation returns a new object
+  let state: CompactorState = { epoch: 0, lastTokenFraction: 0, cachedRestore: undefined };
 
   async function applyCompaction(request: ModelRequest): Promise<CompactionOutcome> {
     // Apply cached restore from session start (one-shot)
-    if (cachedRestore !== undefined) {
-      const restored = cachedRestore;
-      cachedRestore = undefined;
+    if (state.cachedRestore !== undefined) {
+      const restored = state.cachedRestore;
+      state = { ...state, cachedRestore: undefined };
       if (restored.strategy !== "noop" && restored.messages.length > 0) {
         return {
           request: { ...request, messages: [...restored.messages, ...request.messages] },
@@ -58,10 +66,26 @@ export function createCompactorMiddleware(config: CompactorConfig): KoiMiddlewar
       }
     }
 
-    const result = await compactor.compact(request.messages, contextWindowSize);
+    const result = await compactor.compact(
+      request.messages,
+      contextWindowSize,
+      undefined,
+      state.epoch,
+    );
+
+    // Cache token fraction for soft trigger (describeCapabilities reads this)
+    if (result.originalTokens > 0) {
+      const fraction = result.originalTokens / contextWindowSize;
+      state = { ...state, lastTokenFraction: fraction };
+    }
+
     if (result.strategy === "noop") {
       return { request, result: undefined };
     }
+
+    // Increment epoch after successful compaction
+    state = { ...state, epoch: state.epoch + 1 };
+
     return { request: { ...request, messages: result.messages }, result };
   }
 
@@ -76,20 +100,32 @@ export function createCompactorMiddleware(config: CompactorConfig): KoiMiddlewar
   }
 
   async function forceCompactRequest(request: ModelRequest): Promise<ModelRequest> {
-    const result = await compactor.forceCompact(request.messages, contextWindowSize, request.model);
+    const result = await compactor.forceCompact(
+      request.messages,
+      contextWindowSize,
+      request.model,
+      state.epoch,
+    );
     return { ...request, messages: result.messages };
   }
 
   return {
     name: "koi:compactor",
     priority: 225,
-    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => ({
-      label: "compactor",
-      description:
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => {
+      const base =
         `Context compaction above ${String(contextWindowSize)} tokens` +
         (hasOverflowRecovery ? `, overflow recovery (${String(overflowMaxRetries)} retries)` : "") +
-        (store !== undefined ? ", session restore enabled" : ""),
-    }),
+        (store !== undefined ? ", session restore enabled" : "");
+      if (softTriggerFraction !== undefined && state.lastTokenFraction >= softTriggerFraction) {
+        const pct = Math.round(state.lastTokenFraction * 100);
+        return {
+          label: "compactor",
+          description: `${base}. Context pressure: ${String(pct)}% — consider summarizing completed work phases`,
+        };
+      }
+      return { label: "compactor", description: base };
+    },
 
     // Restore previous compaction on session start
     ...(store !== undefined
@@ -98,7 +134,7 @@ export function createCompactorMiddleware(config: CompactorConfig): KoiMiddlewar
             try {
               const result = await store.load(ctx.sessionId);
               if (result !== undefined && result.strategy !== "noop") {
-                cachedRestore = result;
+                state = { ...state, cachedRestore: result };
               }
             } catch (_e: unknown) {
               console.warn(

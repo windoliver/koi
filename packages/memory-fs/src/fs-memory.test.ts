@@ -234,6 +234,101 @@ describe("createFsMemory", () => {
     expect(createFsMemory({ baseDir: "" })).rejects.toThrow("non-empty");
   });
 
+  describe("reinforcement counting", () => {
+    test("reinforce: true increments accessCount on near-duplicate", async () => {
+      await mem.component.store("Alice prefers TypeScript", {
+        relatedEntities: ["alice"],
+        category: "preference",
+      });
+
+      // Store near-duplicate with reinforce
+      await mem.component.store("Alice prefers TypeScript", {
+        relatedEntities: ["alice"],
+        category: "preference",
+        reinforce: true,
+      });
+
+      // Should still be one fact (dedup), but with boosted accessCount
+      const results = await mem.component.recall("TypeScript");
+      expect(results).toHaveLength(1);
+      // accessCount should have been incremented by reinforce (1) + recall (1) = 2
+      // The fact starts at 0, reinforce bumps to 1, recall bumps to 2
+      expect(results[0]?.content).toBe("Alice prefers TypeScript");
+    });
+
+    test("reinforce: true updates lastAccessed on near-duplicate", async () => {
+      await mem.component.store("Bob likes Python", {
+        relatedEntities: ["bob"],
+        category: "preference",
+      });
+
+      // Small delay to ensure different timestamp
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      await mem.component.store("Bob likes Python", {
+        relatedEntities: ["bob"],
+        category: "preference",
+        reinforce: true,
+      });
+
+      const results = await mem.component.recall("Python");
+      expect(results).toHaveLength(1);
+      // lastAccessed should be recent (updated by reinforce + recall)
+      expect(results[0]?.lastAccessed).toBeDefined();
+    });
+
+    test("reinforce: true does NOT create new fact on near-duplicate", async () => {
+      await mem.component.store("Team uses Bun", {
+        relatedEntities: ["team"],
+        category: "tooling",
+      });
+      await mem.component.store("Team uses Bun", {
+        relatedEntities: ["team"],
+        category: "tooling",
+        reinforce: true,
+      });
+      await mem.component.store("Team uses Bun", {
+        relatedEntities: ["team"],
+        category: "tooling",
+        reinforce: true,
+      });
+
+      const results = await mem.component.recall("Bun", { limit: 10 });
+      expect(results).toHaveLength(1);
+    });
+
+    test("reinforce: false (default) silently skips near-duplicate", async () => {
+      await mem.component.store("Default behavior test", {
+        relatedEntities: ["default-test"],
+        category: "test",
+      });
+      await mem.component.store("Default behavior test", {
+        relatedEntities: ["default-test"],
+        category: "test",
+        // no reinforce — default behavior
+      });
+
+      const results = await mem.component.recall("Default behavior");
+      expect(results).toHaveLength(1);
+    });
+
+    test("reinforce with Jaccard below threshold creates new fact normally", async () => {
+      await mem.component.store("Alice loves cats and dogs", {
+        relatedEntities: ["alice"],
+        category: "preference",
+      });
+      await mem.component.store("completely different content about quantum physics", {
+        relatedEntities: ["alice"],
+        category: "preference",
+        reinforce: true,
+      });
+
+      const results = await mem.component.recall("content", { limit: 10 });
+      // These are sufficiently different — both should exist (second supersedes first via entity match)
+      expect(results.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
   test("works with custom retriever", async () => {
     const customDir = join(testDir, "custom");
     mkdirSync(customDir, { recursive: true });

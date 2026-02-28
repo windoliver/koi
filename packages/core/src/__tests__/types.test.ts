@@ -617,6 +617,17 @@ describe("MemoryTier and extended memory types", () => {
     expect(options.namespace).toBe("default");
     expect(options.category).toBeUndefined();
     expect(options.relatedEntities).toBeUndefined();
+    expect(options.reinforce).toBeUndefined();
+  });
+
+  test("MemoryStoreOptions with reinforce compiles", () => {
+    const options: MemoryStoreOptions = {
+      namespace: "compaction",
+      category: "decision",
+      relatedEntities: ["entity-1"],
+      reinforce: true,
+    };
+    expect(options.reinforce).toBe(true);
   });
 });
 

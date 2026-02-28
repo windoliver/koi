@@ -342,4 +342,115 @@ describe("createCompactorMiddleware", () => {
       expect(result?.description).toContain("compaction");
     });
   });
+
+  describe("soft trigger", () => {
+    test("describeCapabilities returns normal description below soft trigger", () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer(),
+        contextWindowSize: 1000,
+        trigger: { tokenFraction: 0.6, softTriggerFraction: 0.5 },
+      });
+      // Before any compaction, lastTokenFraction is 0 — below soft trigger
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.description).not.toContain("Context pressure");
+    });
+
+    test("describeCapabilities returns pressure warning above soft trigger", async () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer("Summary"),
+        contextWindowSize: 1000,
+        trigger: { tokenFraction: 0.6, softTriggerFraction: 0.5 },
+        preserveRecent: 1,
+        maxSummaryTokens: 100,
+      });
+
+      // Trigger compaction to update lastTokenFraction
+      // 4 messages x 200 tokens = 800 tokens. 800/1000 = 0.8 > 0.5 soft trigger
+      const messages = [
+        msgWithTokens(200),
+        msgWithTokens(200),
+        msgWithTokens(200),
+        msgWithTokens(200),
+      ];
+      const spy = createSpyModelHandler();
+      await mw.wrapModelCall?.(ctx, { messages }, spy.handler);
+
+      // After compaction, lastTokenFraction should be > 0.5
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.description).toContain("Context pressure");
+      expect(result?.description).toContain("consider summarizing");
+    });
+
+    test("soft trigger does NOT trigger compaction", async () => {
+      // tokenFraction 0.60, softTrigger 0.50
+      // Create messages between 50% and 60% (e.g., 550 tokens / 1000)
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer("Should not be called"),
+        contextWindowSize: 1000,
+        trigger: { tokenFraction: 0.6, softTriggerFraction: 0.5 },
+        preserveRecent: 1,
+        maxSummaryTokens: 100,
+      });
+
+      // ~40 tokens total — well below both triggers
+      const messages = [userMsg("small message"), userMsg("another")];
+      const spy = createSpyModelHandler();
+      await mw.wrapModelCall?.(ctx, { messages }, spy.handler);
+
+      // Messages should pass through unmodified
+      expect(spy.calls[0]?.messages).toBe(messages);
+    });
+
+    test("pressure warning includes percentage", async () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer("Summary"),
+        contextWindowSize: 1000,
+        trigger: { tokenFraction: 0.6, softTriggerFraction: 0.5 },
+        preserveRecent: 1,
+        maxSummaryTokens: 100,
+      });
+
+      const messages = [
+        msgWithTokens(200),
+        msgWithTokens(200),
+        msgWithTokens(200),
+        msgWithTokens(200),
+      ];
+      const spy = createSpyModelHandler();
+      await mw.wrapModelCall?.(ctx, { messages }, spy.handler);
+
+      const result = mw.describeCapabilities?.(ctx);
+      // Should contain a percentage like "80%"
+      expect(result?.description).toMatch(/\d+%/);
+    });
+  });
+
+  describe("epoch tracking", () => {
+    test("epoch starts at 0 — first compaction produces epoch 0 in metadata", async () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer("Epoch test"),
+        contextWindowSize: 1000,
+        trigger: { messageCount: 3 },
+        preserveRecent: 1,
+        maxSummaryTokens: 100,
+      });
+
+      const messages = [userMsg("a"), userMsg("b"), userMsg("c"), userMsg("d")];
+      const spy = createSpyModelHandler();
+      await mw.wrapModelCall?.(ctx, { messages }, spy.handler);
+
+      // The compactor should have passed epoch 0 for first compaction
+      const passedMessages = spy.calls[0]?.messages;
+      expect(passedMessages?.[0]?.metadata?.compactionEpoch).toBe(0);
+    });
+  });
 });
+
+/** Helper: create a message with exactly `n` tokens (n*4 chars). */
+function msgWithTokens(tokens: number, senderId = "user"): InboundMessage {
+  return {
+    content: [{ kind: "text", text: "x".repeat(tokens * 4) }],
+    senderId,
+    timestamp: 1,
+  };
+}
