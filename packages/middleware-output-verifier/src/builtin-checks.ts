@@ -45,7 +45,7 @@ export function validJson(action: VerifierAction = DEFAULT_ACTION): Deterministi
       try {
         JSON.parse(content);
         return true;
-      } catch {
+      } catch (_e: unknown) {
         return "Output must be valid JSON";
       }
     },

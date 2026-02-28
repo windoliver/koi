@@ -30,7 +30,7 @@ const MIDDLEWARE_NAME = "output-verifier";
 const MIDDLEWARE_PRIORITY = 385;
 const DEFAULT_MAX_BUFFER_SIZE = 262_144; // 256 KB
 const DEFAULT_VETO_THRESHOLD = 0.75;
-const DEFAULT_SAMPLING_RATE = 1.0;
+const DEFAULT_SAMPLING_RATE = 0.3;
 const DEFAULT_MAX_REVISIONS = 1;
 const DEFAULT_REVISION_FEEDBACK_MAX_LENGTH = 400;
 const VERIFIER_SENDER_ID = "system" as const;
@@ -57,7 +57,12 @@ type JudgeOutcome =
       readonly judgeError?: string;
     };
 
-/** Mutable stats counters (not exported). */
+/**
+ * Mutable stats counters — internal only, never exported.
+ * Properties are intentionally non-readonly: these are accumulator
+ * counters mutated via stats helper functions within the closure.
+ * The public VerifierStats interface (returned by getStats) is readonly.
+ */
 interface MutableStats {
   totalChecks: number;
   vetoed: number;
@@ -88,7 +93,12 @@ export function createOutputVerifierMiddleware(config: VerifierConfig): Verifier
   }
 
   const maxBufferSize = config.maxBufferSize ?? DEFAULT_MAX_BUFFER_SIZE;
+  const maxRevisions = config.maxRevisions ?? DEFAULT_MAX_REVISIONS;
+  const feedbackMaxLength =
+    config.revisionFeedbackMaxLength ?? DEFAULT_REVISION_FEEDBACK_MAX_LENGTH;
   const onVeto = config.onVeto;
+  const randomFn = config.judge?.randomFn ?? Math.random;
+  const maxContentLength = config.judge?.maxContentLength;
 
   // let: mutable judge rubric — updated via handle.setRubric()
   let currentRubric = config.judge?.rubric ?? "";
@@ -103,6 +113,26 @@ export function createOutputVerifierMiddleware(config: VerifierConfig): Verifier
   };
 
   // ---------------------------------------------------------------------------
+  // Stats helpers (#8)
+  // ---------------------------------------------------------------------------
+
+  function recordDeterministicVeto(): void {
+    stats.deterministicVetoes++;
+  }
+  function recordJudgeVeto(): void {
+    stats.judgeVetoes++;
+  }
+  function recordWarn(): void {
+    stats.warned++;
+  }
+  function recordVetoed(): void {
+    stats.vetoed++;
+  }
+  function recordJudgeRun(): void {
+    stats.judgedChecks++;
+  }
+
+  // ---------------------------------------------------------------------------
   // Stage 2 helpers
   // ---------------------------------------------------------------------------
 
@@ -111,16 +141,14 @@ export function createOutputVerifierMiddleware(config: VerifierConfig): Verifier
     if (judge === undefined) return { kind: "skip" };
 
     const samplingRate = judge.samplingRate ?? DEFAULT_SAMPLING_RATE;
-    if (Math.random() > samplingRate) return { kind: "skip" };
+    if (randomFn() > samplingRate) return { kind: "skip" };
 
-    stats.judgedChecks++;
+    recordJudgeRun();
 
     const vetoThreshold = judge.vetoThreshold ?? DEFAULT_VETO_THRESHOLD;
     const judgeAction = judge.action ?? "block";
-    const feedbackMaxLength =
-      judge.revisionFeedbackMaxLength ?? DEFAULT_REVISION_FEEDBACK_MAX_LENGTH;
 
-    const prompt = buildJudgePrompt(currentRubric, content);
+    const prompt = buildJudgePrompt(currentRubric, content, maxContentLength);
 
     let score = 0;
     let reasoning = "";
@@ -175,12 +203,7 @@ export function createOutputVerifierMiddleware(config: VerifierConfig): Verifier
     return `Check "${checkName}" failed: ${reason}. Please revise your output.`;
   }
 
-  function judgeRevisionFeedback(
-    score: number,
-    vetoThreshold: number,
-    reasoning: string,
-    feedbackMaxLength: number,
-  ): string {
+  function judgeRevisionFeedback(score: number, vetoThreshold: number, reasoning: string): string {
     const reasonPart = reasoning.slice(0, feedbackMaxLength);
     return [
       `Your output was rejected by the quality judge (score: ${score.toFixed(2)}, required: ≥${vetoThreshold}).`,
@@ -193,6 +216,40 @@ export function createOutputVerifierMiddleware(config: VerifierConfig): Verifier
   }
 
   // ---------------------------------------------------------------------------
+  // Revision helper (#5)
+  // ---------------------------------------------------------------------------
+
+  function attemptRevision(
+    revision: number,
+    feedback: string,
+    source: string,
+    currentRequest: ModelRequest,
+  ): { readonly request: ModelRequest; readonly revision: number } {
+    if (revision >= maxRevisions) {
+      throw KoiRuntimeError.from(
+        "VALIDATION",
+        `Output verifier: ${source} failed after ${String(maxRevisions)} revision(s)`,
+      );
+    }
+    return {
+      request: injectRevisionMessage(currentRequest, feedback),
+      revision: revision + 1,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Veto event helper (#3 — wrapped in try/catch)
+  // ---------------------------------------------------------------------------
+
+  function fireVeto(event: VerifierVetoEvent): void {
+    try {
+      onVeto?.(event);
+    } catch (_e: unknown) {
+      // Observer errors must never affect verification correctness
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Core verification loop (iterative)
   // ---------------------------------------------------------------------------
 
@@ -201,10 +258,7 @@ export function createOutputVerifierMiddleware(config: VerifierConfig): Verifier
     next: ModelHandler,
     ctx: TurnContext,
   ): Promise<ModelResponse> {
-    const maxRevisions = config.judge?.maxRevisions ?? DEFAULT_MAX_REVISIONS;
     const vetoThreshold = config.judge?.vetoThreshold ?? DEFAULT_VETO_THRESHOLD;
-    const feedbackMaxLength =
-      config.judge?.revisionFeedbackMaxLength ?? DEFAULT_REVISION_FEEDBACK_MAX_LENGTH;
 
     // let justified: current request may change across revision attempts
     let currentRequest = request;
@@ -229,7 +283,14 @@ export function createOutputVerifierMiddleware(config: VerifierConfig): Verifier
         // let justified: tracks whether a revise was triggered this iteration
         let deterministicRevised = false;
         for (const check of config.deterministic ?? []) {
-          const result = check.check(content);
+          // #7 — wrap check.check() in try/catch (fail-closed)
+          let result: boolean | string;
+          try {
+            result = check.check(content);
+          } catch (e: unknown) {
+            const errorMsg = e instanceof Error ? e.message : "Unknown error";
+            result = `Check "${check.name}" threw: ${errorMsg}`;
+          }
           if (result === true) continue;
 
           const reason = typeof result === "string" ? result : `Check "${check.name}" failed`;
@@ -271,18 +332,14 @@ export function createOutputVerifierMiddleware(config: VerifierConfig): Verifier
             checkReason: reason,
             action: "revise",
           });
-          if (revision >= maxRevisions) {
-            throw KoiRuntimeError.from(
-              "VALIDATION",
-              `Output verifier: deterministic check "${check.name}" failed after ${maxRevisions} revision(s): ${reason}`,
-              { context: { checkName: check.name, reason, revision } },
-            );
-          }
-          revision++;
-          currentRequest = injectRevisionMessage(
-            currentRequest,
+          const revised = attemptRevision(
+            revision,
             deterministicRevisionFeedback(check.name, reason),
+            `deterministic check "${check.name}"`,
+            currentRequest,
           );
+          currentRequest = revised.request;
+          revision = revised.revision;
           deterministicRevised = true;
           break; // Inject feedback for first revise; restart loop
         }
@@ -319,7 +376,7 @@ export function createOutputVerifierMiddleware(config: VerifierConfig): Verifier
           });
           throw KoiRuntimeError.from(
             "VALIDATION",
-            `Output verifier: judge blocked output (score ${judge.score.toFixed(2)} < ${vetoThreshold})${judge.reasoning ? `: ${judge.reasoning.slice(0, 200)}` : ""}`,
+            `Output verifier: judge blocked output (score ${judge.score.toFixed(2)} < ${String(vetoThreshold)})${judge.reasoning ? `: ${judge.reasoning.slice(0, 200)}` : ""}`,
             { context: { score: judge.score, vetoThreshold } },
           );
         }
@@ -334,33 +391,21 @@ export function createOutputVerifierMiddleware(config: VerifierConfig): Verifier
           reasoning: judge.reasoning || undefined,
           ...(judge.judgeError !== undefined ? { judgeError: judge.judgeError } : {}),
         });
-        if (revision >= maxRevisions) {
-          throw KoiRuntimeError.from(
-            "VALIDATION",
-            `Output verifier: judge blocked output after ${maxRevisions} revision(s) (score ${judge.score.toFixed(2)} < ${vetoThreshold})`,
-            { context: { score: judge.score, vetoThreshold, revision } },
-          );
-        }
-        revision++;
-        currentRequest = injectRevisionMessage(
+        const revised = attemptRevision(
+          revision,
+          judgeRevisionFeedback(judge.score, vetoThreshold, judge.reasoning),
+          "judge",
           currentRequest,
-          judgeRevisionFeedback(judge.score, vetoThreshold, judge.reasoning, feedbackMaxLength),
         );
+        currentRequest = revised.request;
+        revision = revised.revision;
       }
     } finally {
-      if (callVetoed) stats.vetoed++;
-      if (callWarned) stats.warned++;
-      if (callDeterministicVeto) stats.deterministicVetoes++;
-      if (callJudgeVeto) stats.judgeVetoes++;
+      if (callVetoed) recordVetoed();
+      if (callWarned) recordWarn();
+      if (callDeterministicVeto) recordDeterministicVeto();
+      if (callJudgeVeto) recordJudgeVeto();
     }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Veto event helper
-  // ---------------------------------------------------------------------------
-
-  function fireVeto(event: VerifierVetoEvent): void {
-    onVeto?.(event);
   }
 
   // ---------------------------------------------------------------------------
@@ -370,15 +415,22 @@ export function createOutputVerifierMiddleware(config: VerifierConfig): Verifier
   async function verifyStream(content: string, ctx: TurnContext): Promise<void> {
     // Stage 1: deterministic (streaming: ALL actions degrade to warn — content already yielded)
     for (const check of config.deterministic ?? []) {
-      const result = check.check(content);
+      // #7 — wrap check.check() in try/catch (fail-closed)
+      let result: boolean | string;
+      try {
+        result = check.check(content);
+      } catch (e: unknown) {
+        const errorMsg = e instanceof Error ? e.message : "Unknown error";
+        result = `Check "${check.name}" threw: ${errorMsg}`;
+      }
       if (result === true) continue;
 
       const reason = typeof result === "string" ? result : `Check "${check.name}" failed`;
       const action = check.action;
       const degraded = action === "block" || action === "revise";
 
-      stats.deterministicVetoes++;
-      stats.warned++;
+      recordDeterministicVeto();
+      recordWarn();
       fireVeto({
         source: "deterministic",
         checkName: check.name,
@@ -392,8 +444,8 @@ export function createOutputVerifierMiddleware(config: VerifierConfig): Verifier
     // Stage 2: judge (streaming: revise/block degrade to warn)
     const judge = await runJudge(content, ctx.signal);
     if (judge.kind === "warn") {
-      stats.judgeVetoes++;
-      stats.warned++;
+      recordJudgeVeto();
+      recordWarn();
       fireVeto({
         source: "judge",
         action: "warn",
@@ -401,8 +453,8 @@ export function createOutputVerifierMiddleware(config: VerifierConfig): Verifier
         reasoning: judge.reasoning || undefined,
       });
     } else if (judge.kind === "block" || judge.kind === "revise") {
-      stats.judgeVetoes++;
-      stats.warned++; // degraded
+      recordJudgeVeto();
+      recordWarn(); // degraded
       fireVeto({
         source: "judge",
         action: judge.kind,
@@ -415,22 +467,22 @@ export function createOutputVerifierMiddleware(config: VerifierConfig): Verifier
   }
 
   // ---------------------------------------------------------------------------
-  // Capability fragment
+  // Capability fragment (#15 — cache static prefix)
   // ---------------------------------------------------------------------------
 
+  const stages: readonly string[] = [
+    ...(hasDeterministic ? ["deterministic checks"] : []),
+    ...(hasJudge
+      ? [`judge (score ≥${String(config.judge?.vetoThreshold ?? DEFAULT_VETO_THRESHOLD)})`]
+      : []),
+  ];
+  const revisionNote = maxRevisions > 0 ? `, up to ${String(maxRevisions)} revision(s)` : "";
+  const capabilityPrefix = `Output gate: ${stages.join(" + ")}${revisionNote}. `;
+
   function buildCapabilityFragment(): CapabilityFragment {
-    const { totalChecks, vetoed } = stats;
-    const maxRevisions = config.judge?.maxRevisions ?? DEFAULT_MAX_REVISIONS;
-    const stages: string[] = [];
-    if (hasDeterministic) stages.push("deterministic checks");
-    if (hasJudge) {
-      const threshold = config.judge?.vetoThreshold ?? DEFAULT_VETO_THRESHOLD;
-      stages.push(`judge (score ≥${String(threshold)})`);
-    }
-    const revisionNote = maxRevisions > 0 ? `, up to ${String(maxRevisions)} revision(s)` : "";
     return {
       label: "output-gate",
-      description: `Output gate: ${stages.join(" + ")}${revisionNote}. ${String(vetoed)}/${String(totalChecks)} vetoed this session.`,
+      description: `${capabilityPrefix}${String(stats.vetoed)}/${String(stats.totalChecks)} vetoed this session.`,
     };
   }
 
@@ -459,25 +511,30 @@ export function createOutputVerifierMiddleware(config: VerifierConfig): Verifier
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
       stats.totalChecks++;
-      // let justified: buffer grows across stream chunks
-      let buffer = "";
+      // #13 — Array + join for streaming buffer
+      // Mutation justified: local buffer accumulates stream chunks in a hot loop;
+      // immutable pattern (spread) would cause O(n²) allocations per chunk.
+      const bufferChunks: string[] = [];
+      // let justified: tracks total buffer length for overflow checks
+      let bufferLength = 0;
       // let justified: tracks buffer overflow state
       let overflowed = false;
 
       for await (const chunk of next(request)) {
         if (chunk.kind === "text_delta") {
           if (!overflowed) {
-            if (buffer.length + chunk.delta.length > maxBufferSize) {
+            if (bufferLength + chunk.delta.length > maxBufferSize) {
               overflowed = true;
               fireVeto({
                 source: "deterministic",
                 checkName: "stream-buffer-overflow",
-                checkReason: `Stream buffer exceeded ${maxBufferSize} characters; validation skipped`,
+                checkReason: `Stream buffer exceeded ${String(maxBufferSize)} characters; validation skipped`,
                 action: "warn",
                 degraded: true,
               });
             } else {
-              buffer += chunk.delta;
+              bufferChunks.push(chunk.delta);
+              bufferLength += chunk.delta.length;
             }
           }
           yield chunk;
@@ -485,12 +542,12 @@ export function createOutputVerifierMiddleware(config: VerifierConfig): Verifier
         }
 
         if (chunk.kind === "done") {
-          if (!overflowed && buffer.length > 0) {
-            const content = buffer;
-            buffer = ""; // Release memory before async work
+          if (!overflowed && bufferLength > 0) {
+            const content = bufferChunks.join("");
+            bufferChunks.length = 0; // Release memory before async work
             await verifyStream(content, ctx);
           } else {
-            buffer = ""; // Release memory
+            bufferChunks.length = 0; // Release memory
           }
           yield chunk;
           continue;

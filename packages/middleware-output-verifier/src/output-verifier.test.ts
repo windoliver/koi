@@ -11,6 +11,7 @@ import {
   createSpyModelStreamHandler,
 } from "@koi/test-utils";
 import { BUILTIN_CHECKS } from "./builtin-checks.js";
+import { buildJudgePrompt, clampScore, normalizeScore, truncateContent } from "./judge.js";
 import { createOutputVerifierMiddleware } from "./output-verifier.js";
 import type { DeterministicCheck, JudgeConfig, VerifierVetoEvent } from "./types.js";
 
@@ -45,21 +46,30 @@ const reviseCheck: DeterministicCheck = {
   action: "revise",
 };
 
-function makePassingJudge(score = 0.9): JudgeConfig {
+/** Check that returns boolean false (not a string). */
+const falseCheck: DeterministicCheck = {
+  name: "boolean-false",
+  check: () => false,
+  action: "block",
+};
+
+function makePassingJudge(score = 5): JudgeConfig {
   return {
     rubric: "Be helpful and accurate",
     modelCall: mock(async () => JSON.stringify({ score, reasoning: "Good output" })),
     vetoThreshold: 0.75,
     action: "block",
+    randomFn: () => 0, // Ensure judge always runs in tests (0 ≤ any samplingRate)
   };
 }
 
-function makeBlockingJudge(score = 0.5): JudgeConfig {
+function makeBlockingJudge(score = 2): JudgeConfig {
   return {
     rubric: "Be helpful and accurate",
     modelCall: mock(async () => JSON.stringify({ score, reasoning: "Poor quality" })),
     vetoThreshold: 0.75,
     action: "block",
+    randomFn: () => 0,
   };
 }
 
@@ -213,7 +223,7 @@ describe("wrapModelCall — deterministic checks", () => {
     const handler = createMockModelHandler({ content: "always-bad" });
     const { middleware } = createOutputVerifierMiddleware({
       deterministic: [reviseCheck],
-      judge: { ...makePassingJudge(), maxRevisions: 1 },
+      maxRevisions: 1,
     });
 
     await expect(middleware.wrapModelCall?.(ctx, request, handler)).rejects.toBeInstanceOf(
@@ -254,6 +264,165 @@ describe("wrapModelCall — deterministic checks", () => {
 });
 
 // ---------------------------------------------------------------------------
+// wrapModelCall — boolean false check (#9)
+// ---------------------------------------------------------------------------
+
+describe("wrapModelCall — boolean false deterministic checks", () => {
+  test("boolean false with block action throws KoiRuntimeError", async () => {
+    const handler = createMockModelHandler({ content: "output" });
+    const { middleware } = createOutputVerifierMiddleware({ deterministic: [falseCheck] });
+
+    await expect(middleware.wrapModelCall?.(ctx, request, handler)).rejects.toBeInstanceOf(
+      KoiRuntimeError,
+    );
+  });
+
+  test("boolean false fires event with default message 'Check \"name\" failed'", async () => {
+    const handler = createMockModelHandler({ content: "output" });
+    const events: VerifierVetoEvent[] = [];
+    const { middleware } = createOutputVerifierMiddleware({
+      deterministic: [falseCheck],
+      onVeto: (e) => events.push(e),
+    });
+
+    await expect(middleware.wrapModelCall?.(ctx, request, handler)).rejects.toThrow();
+    expect(events).toHaveLength(1);
+    expect(events[0]?.checkReason).toBe('Check "boolean-false" failed');
+  });
+
+  test("boolean false with warn action delivers output and fires event", async () => {
+    const falseWarn: DeterministicCheck = {
+      name: "false-warn",
+      check: () => false,
+      action: "warn",
+    };
+    const handler = createMockModelHandler({ content: "output" });
+    const events: VerifierVetoEvent[] = [];
+    const { middleware } = createOutputVerifierMiddleware({
+      deterministic: [falseWarn],
+      onVeto: (e) => events.push(e),
+    });
+
+    const response = await middleware.wrapModelCall?.(ctx, request, handler);
+    expect(response?.content).toBe("output");
+    expect(events[0]?.checkReason).toBe('Check "false-warn" failed');
+    expect(events[0]?.action).toBe("warn");
+  });
+
+  test("boolean false with revise action retries and uses default message", async () => {
+    // let justified: call count for multi-attempt tracking
+    let callCount = 0;
+    const handler = async (_req: ModelRequest): Promise<ModelResponse> => {
+      callCount++;
+      if (callCount === 1) return { content: "bad", model: "test" };
+      return { content: "good", model: "test" };
+    };
+
+    const falseRevise: DeterministicCheck = {
+      name: "false-revise",
+      check: (c) => c === "good",
+      action: "revise",
+    };
+
+    const events: VerifierVetoEvent[] = [];
+    const { middleware } = createOutputVerifierMiddleware({
+      deterministic: [falseRevise],
+      onVeto: (e) => events.push(e),
+    });
+
+    const response = await middleware.wrapModelCall?.(ctx, request, handler);
+    expect(callCount).toBe(2);
+    expect(response?.content).toBe("good");
+    expect(events[0]?.checkReason).toBe('Check "false-revise" failed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// wrapModelCall — deterministic check throwing (#7)
+// ---------------------------------------------------------------------------
+
+describe("wrapModelCall — deterministic check throws", () => {
+  test("check that throws is treated as failure (fail-closed)", async () => {
+    const throwingCheck: DeterministicCheck = {
+      name: "throws",
+      check: () => {
+        throw new Error("Unexpected error in check");
+      },
+      action: "block",
+    };
+    const handler = createMockModelHandler({ content: "output" });
+    const events: VerifierVetoEvent[] = [];
+    const { middleware } = createOutputVerifierMiddleware({
+      deterministic: [throwingCheck],
+      onVeto: (e) => events.push(e),
+    });
+
+    await expect(middleware.wrapModelCall?.(ctx, request, handler)).rejects.toBeInstanceOf(
+      KoiRuntimeError,
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]?.checkReason).toContain("threw");
+    expect(events[0]?.checkReason).toContain("Unexpected error in check");
+  });
+
+  test("check that throws non-Error is handled", async () => {
+    const throwingCheck: DeterministicCheck = {
+      name: "throws-string",
+      check: () => {
+        throw "oops"; // eslint-disable-line no-throw-literal
+      },
+      action: "block",
+    };
+    const handler = createMockModelHandler({ content: "output" });
+    const events: VerifierVetoEvent[] = [];
+    const { middleware } = createOutputVerifierMiddleware({
+      deterministic: [throwingCheck],
+      onVeto: (e) => events.push(e),
+    });
+
+    await expect(middleware.wrapModelCall?.(ctx, request, handler)).rejects.toBeInstanceOf(
+      KoiRuntimeError,
+    );
+    expect(events[0]?.checkReason).toContain("Unknown error");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// wrapModelCall — onVeto observer resilience (#3)
+// ---------------------------------------------------------------------------
+
+describe("wrapModelCall — onVeto observer resilience", () => {
+  test("onVeto throwing does not affect verification correctness", async () => {
+    const handler = createMockModelHandler({ content: "output" });
+    const { middleware } = createOutputVerifierMiddleware({
+      deterministic: [warnCheck],
+      onVeto: () => {
+        throw new Error("Observer crashed");
+      },
+    });
+
+    // Should not throw — onVeto error is swallowed
+    const response = await middleware.wrapModelCall?.(ctx, request, handler);
+    expect(response?.content).toBe("output");
+  });
+
+  test("onVeto throwing during block does not prevent the block throw", async () => {
+    const handler = createMockModelHandler({ content: "output" });
+    const { middleware } = createOutputVerifierMiddleware({
+      deterministic: [blockCheck],
+      onVeto: () => {
+        throw new Error("Observer crashed");
+      },
+    });
+
+    // The KoiRuntimeError from block should still propagate
+    await expect(middleware.wrapModelCall?.(ctx, request, handler)).rejects.toBeInstanceOf(
+      KoiRuntimeError,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // wrapModelCall — judge stage
 // ---------------------------------------------------------------------------
 
@@ -279,13 +448,14 @@ describe("wrapModelCall — judge stage", () => {
     const handler = createMockModelHandler({ content: "Bad output" });
     const events: VerifierVetoEvent[] = [];
     const { middleware } = createOutputVerifierMiddleware({
-      judge: makeBlockingJudge(0.4),
+      judge: makeBlockingJudge(2),
       onVeto: (e) => events.push(e),
     });
 
     await expect(middleware.wrapModelCall?.(ctx, request, handler)).rejects.toThrow();
     expect(events[0]?.source).toBe("judge");
-    expect(events[0]?.score).toBe(0.4);
+    // score 2 → normalizeScore → 0.25
+    expect(events[0]?.score).toBe(0.25);
     expect(events[0]?.action).toBe("block");
     expect(events[0]?.reasoning).toBe("Poor quality");
   });
@@ -294,9 +464,11 @@ describe("wrapModelCall — judge stage", () => {
     const handler = createMockModelHandler({ content: "Borderline output" });
     const judge: JudgeConfig = {
       rubric: "Test",
-      modelCall: async () => JSON.stringify({ score: 0.75, reasoning: "Borderline" }),
+      // score 4 → normalizeScore → 0.75, which equals threshold
+      modelCall: async () => JSON.stringify({ score: 4, reasoning: "Borderline" }),
       vetoThreshold: 0.75,
       action: "block",
+      randomFn: () => 0,
     };
     const { middleware } = createOutputVerifierMiddleware({ judge });
 
@@ -309,9 +481,11 @@ describe("wrapModelCall — judge stage", () => {
     const events: VerifierVetoEvent[] = [];
     const judge: JudgeConfig = {
       rubric: "Test",
-      modelCall: async () => JSON.stringify({ score: 0.5, reasoning: "Mediocre" }),
+      // score 3 → normalizeScore → 0.5, below threshold
+      modelCall: async () => JSON.stringify({ score: 3, reasoning: "Mediocre" }),
       vetoThreshold: 0.75,
       action: "warn",
+      randomFn: () => 0,
     };
     const { middleware } = createOutputVerifierMiddleware({
       judge,
@@ -331,21 +505,21 @@ describe("wrapModelCall — judge stage", () => {
       callCount++;
       return { content: `output-${callCount}`, model: "test" };
     };
-    const scores = [0.5, 0.9];
+    const scores = [2, 5]; // 2 → 0.25 (fail), 5 → 1.0 (pass)
     // let justified: index tracks which score to return
     let scoreIndex = 0;
     const judge: JudgeConfig = {
       rubric: "Test",
       modelCall: async () => {
-        const score = scores[scoreIndex] ?? 0.9;
+        const score = scores[scoreIndex] ?? 5;
         scoreIndex++;
         return JSON.stringify({ score, reasoning: "Needs improvement" });
       },
       vetoThreshold: 0.75,
       action: "revise",
-      maxRevisions: 1,
+      randomFn: () => 0,
     };
-    const { middleware } = createOutputVerifierMiddleware({ judge });
+    const { middleware } = createOutputVerifierMiddleware({ judge, maxRevisions: 1 });
     const response = await middleware.wrapModelCall?.(ctx, request, handler);
     expect(callCount).toBe(2);
     expect(response?.content).toBe("output-2");
@@ -355,12 +529,13 @@ describe("wrapModelCall — judge stage", () => {
     const handler = createMockModelHandler({ content: "Bad output" });
     const judge: JudgeConfig = {
       rubric: "Test",
-      modelCall: async () => JSON.stringify({ score: 0.3, reasoning: "Always bad" }),
+      // score 1 → 0.0, always below threshold
+      modelCall: async () => JSON.stringify({ score: 1, reasoning: "Always bad" }),
       vetoThreshold: 0.75,
       action: "revise",
-      maxRevisions: 1,
+      randomFn: () => 0,
     };
-    const { middleware } = createOutputVerifierMiddleware({ judge });
+    const { middleware } = createOutputVerifierMiddleware({ judge, maxRevisions: 1 });
 
     await expect(middleware.wrapModelCall?.(ctx, request, handler)).rejects.toBeInstanceOf(
       KoiRuntimeError,
@@ -377,22 +552,25 @@ describe("wrapModelCall — judge stage", () => {
       capturedMessages.push(req);
       return { content: "output", model: "test" };
     };
-    const scores = [0.3, 0.9];
+    const scores = [1, 5]; // 1 → 0.0 (fail), 5 → 1.0 (pass)
     // let justified: index tracks which score to return
     let scoreIndex = 0;
     const judge: JudgeConfig = {
       rubric: "Test",
       modelCall: async () => {
-        const score = scores[scoreIndex] ?? 0.9;
+        const score = scores[scoreIndex] ?? 5;
         scoreIndex++;
         return JSON.stringify({ score, reasoning: longReasoning });
       },
       vetoThreshold: 0.75,
       action: "revise",
+      randomFn: () => 0,
+    };
+    const { middleware } = createOutputVerifierMiddleware({
+      judge,
       maxRevisions: 1,
       revisionFeedbackMaxLength: 100,
-    };
-    const { middleware } = createOutputVerifierMiddleware({ judge });
+    });
     await middleware.wrapModelCall?.(ctx, request, handler);
 
     // Second call should have an injected message with truncated reasoning
@@ -405,6 +583,113 @@ describe("wrapModelCall — judge stage", () => {
       // Verify truncation (feedback message contains judge reasoning, bounded)
       expect(textBlock.text.length).toBeLessThan(300); // 100-char reasoning + fixed prefix
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-revision tests (#10)
+// ---------------------------------------------------------------------------
+
+describe("wrapModelCall — multi-revision", () => {
+  test("maxRevisions=2 allows 3 handler calls and passes on 3rd attempt", async () => {
+    // let justified: call count for multi-attempt tracking
+    let callCount = 0;
+    const handler = async (_req: ModelRequest): Promise<ModelResponse> => {
+      callCount++;
+      return { content: `output-${callCount}`, model: "test" };
+    };
+    const scores = [1, 2, 5]; // 0.0, 0.25, 1.0
+    // let justified: index tracks which score to return
+    let scoreIndex = 0;
+    const judge: JudgeConfig = {
+      rubric: "Test",
+      modelCall: async () => {
+        const score = scores[scoreIndex] ?? 5;
+        scoreIndex++;
+        return JSON.stringify({ score, reasoning: "Improving" });
+      },
+      vetoThreshold: 0.75,
+      action: "revise",
+      randomFn: () => 0,
+    };
+    const { middleware } = createOutputVerifierMiddleware({ judge, maxRevisions: 2 });
+    const response = await middleware.wrapModelCall?.(ctx, request, handler);
+    expect(callCount).toBe(3);
+    expect(response?.content).toBe("output-3");
+  });
+
+  test("maxRevisions=2 throws after exhausting all revisions", async () => {
+    const handler = createMockModelHandler({ content: "always-bad" });
+    const judge: JudgeConfig = {
+      rubric: "Test",
+      modelCall: async () => JSON.stringify({ score: 1, reasoning: "Always bad" }),
+      vetoThreshold: 0.75,
+      action: "revise",
+      randomFn: () => 0,
+    };
+    const { middleware } = createOutputVerifierMiddleware({ judge, maxRevisions: 2 });
+
+    await expect(middleware.wrapModelCall?.(ctx, request, handler)).rejects.toBeInstanceOf(
+      KoiRuntimeError,
+    );
+  });
+
+  test("multi-revision accumulates messages across revisions", async () => {
+    const capturedRequests: ModelRequest[] = [];
+    // let justified: call count for multi-attempt tracking
+    let callCount = 0;
+    const handler = async (req: ModelRequest): Promise<ModelResponse> => {
+      callCount++;
+      capturedRequests.push(req);
+      return { content: `output-${callCount}`, model: "test" };
+    };
+    const scores = [1, 1, 5]; // fail, fail, pass
+    // let justified: index tracks which score to return
+    let scoreIndex = 0;
+    const judge: JudgeConfig = {
+      rubric: "Test",
+      modelCall: async () => {
+        const score = scores[scoreIndex] ?? 5;
+        scoreIndex++;
+        return JSON.stringify({ score, reasoning: "Revise" });
+      },
+      vetoThreshold: 0.75,
+      action: "revise",
+      randomFn: () => 0,
+    };
+    const { middleware } = createOutputVerifierMiddleware({ judge, maxRevisions: 2 });
+    await middleware.wrapModelCall?.(ctx, request, handler);
+
+    // 1st call: original request (0 messages)
+    expect(capturedRequests[0]?.messages).toHaveLength(0);
+    // 2nd call: 1 injected revision message
+    expect(capturedRequests[1]?.messages).toHaveLength(1);
+    // 3rd call: 2 injected revision messages (accumulated)
+    expect(capturedRequests[2]?.messages).toHaveLength(2);
+  });
+
+  test("deterministic multi-revision with maxRevisions=2", async () => {
+    // let justified: call count for multi-attempt tracking
+    let callCount = 0;
+    const handler = async (_req: ModelRequest): Promise<ModelResponse> => {
+      callCount++;
+      if (callCount <= 2) return { content: "bad", model: "test" };
+      return { content: "good", model: "test" };
+    };
+
+    const conditionalCheck: DeterministicCheck = {
+      name: "quality",
+      check: (c) => c === "good" || "Not good enough",
+      action: "revise",
+    };
+
+    const { middleware } = createOutputVerifierMiddleware({
+      deterministic: [conditionalCheck],
+      maxRevisions: 2,
+    });
+    const response = await middleware.wrapModelCall?.(ctx, request, handler);
+    expect(callCount).toBe(3);
+    expect(response?.content).toBe("good");
   });
 });
 
@@ -423,6 +708,7 @@ describe("wrapModelCall — judge failure modes (fail-closed)", () => {
       },
       vetoThreshold: 0.75,
       action: "block",
+      randomFn: () => 0,
     };
     const { middleware } = createOutputVerifierMiddleware({
       judge,
@@ -444,6 +730,7 @@ describe("wrapModelCall — judge failure modes (fail-closed)", () => {
       modelCall: async () => "not json at all",
       vetoThreshold: 0.75,
       action: "block",
+      randomFn: () => 0,
     };
     const { middleware } = createOutputVerifierMiddleware({
       judge,
@@ -465,6 +752,7 @@ describe("wrapModelCall — judge failure modes (fail-closed)", () => {
       modelCall: async () => "{malformed: json}",
       vetoThreshold: 0.75,
       action: "block",
+      randomFn: () => 0,
     };
     const { middleware } = createOutputVerifierMiddleware({
       judge,
@@ -485,6 +773,7 @@ describe("wrapModelCall — judge failure modes (fail-closed)", () => {
       modelCall: async () => "",
       vetoThreshold: 0.75,
       action: "block",
+      randomFn: () => 0,
     };
     const { middleware } = createOutputVerifierMiddleware({ judge });
 
@@ -500,11 +789,11 @@ describe("wrapModelCall — judge failure modes (fail-closed)", () => {
 
 describe("wrapModelCall — short-circuit logic", () => {
   test("block in deterministic skips judge", async () => {
-    const judgeModelCall = mock(async () => JSON.stringify({ score: 0.9, reasoning: "good" }));
+    const judgeModelCall = mock(async () => JSON.stringify({ score: 5, reasoning: "good" }));
     const handler = createMockModelHandler({ content: "output" });
     const { middleware } = createOutputVerifierMiddleware({
       deterministic: [blockCheck],
-      judge: { rubric: "Test", modelCall: judgeModelCall, vetoThreshold: 0.75 },
+      judge: { rubric: "Test", modelCall: judgeModelCall, vetoThreshold: 0.75, randomFn: () => 0 },
     });
 
     await expect(middleware.wrapModelCall?.(ctx, request, handler)).rejects.toThrow();
@@ -512,11 +801,11 @@ describe("wrapModelCall — short-circuit logic", () => {
   });
 
   test("warn in deterministic still runs judge", async () => {
-    const judgeModelCall = mock(async () => JSON.stringify({ score: 0.9, reasoning: "good" }));
+    const judgeModelCall = mock(async () => JSON.stringify({ score: 5, reasoning: "good" }));
     const handler = createMockModelHandler({ content: "output" });
     const { middleware } = createOutputVerifierMiddleware({
       deterministic: [warnCheck],
-      judge: { rubric: "Test", modelCall: judgeModelCall, vetoThreshold: 0.75 },
+      judge: { rubric: "Test", modelCall: judgeModelCall, vetoThreshold: 0.75, randomFn: () => 0 },
     });
 
     await middleware.wrapModelCall?.(ctx, request, handler);
@@ -663,7 +952,7 @@ describe("getStats", () => {
   });
 
   test("samplingRate=0 means judge never runs", async () => {
-    const judgeModelCall = mock(async () => JSON.stringify({ score: 0.9, reasoning: "good" }));
+    const judgeModelCall = mock(async () => JSON.stringify({ score: 5, reasoning: "good" }));
     const handler = createMockModelHandler({ content: "output" });
     const { middleware, getStats } = createOutputVerifierMiddleware({
       judge: {
@@ -682,6 +971,51 @@ describe("getStats", () => {
 });
 
 // ---------------------------------------------------------------------------
+// randomFn injection (#16)
+// ---------------------------------------------------------------------------
+
+describe("randomFn injection", () => {
+  test("injected randomFn controls sampling", async () => {
+    const judgeModelCall = mock(async () => JSON.stringify({ score: 5, reasoning: "good" }));
+    const handler = createMockModelHandler({ content: "output" });
+
+    // randomFn returns 0.8 → > 0.5 samplingRate → judge skipped
+    const { middleware, getStats } = createOutputVerifierMiddleware({
+      judge: {
+        rubric: "Test",
+        modelCall: judgeModelCall,
+        vetoThreshold: 0.75,
+        samplingRate: 0.5,
+        randomFn: () => 0.8,
+      },
+    });
+
+    await middleware.wrapModelCall?.(ctx, request, handler);
+    expect(judgeModelCall).not.toHaveBeenCalled();
+    expect(getStats().judgedChecks).toBe(0);
+  });
+
+  test("injected randomFn returning 0 always samples", async () => {
+    const judgeModelCall = mock(async () => JSON.stringify({ score: 5, reasoning: "good" }));
+    const handler = createMockModelHandler({ content: "output" });
+
+    const { middleware, getStats } = createOutputVerifierMiddleware({
+      judge: {
+        rubric: "Test",
+        modelCall: judgeModelCall,
+        vetoThreshold: 0.75,
+        samplingRate: 0.5,
+        randomFn: () => 0,
+      },
+    });
+
+    await middleware.wrapModelCall?.(ctx, request, handler);
+    expect(judgeModelCall).toHaveBeenCalledTimes(1);
+    expect(getStats().judgedChecks).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Handle control
 // ---------------------------------------------------------------------------
 
@@ -693,9 +1027,10 @@ describe("setRubric", () => {
       rubric: "Original rubric",
       modelCall: async (prompt) => {
         capturedPrompts.push(prompt);
-        return JSON.stringify({ score: 0.9, reasoning: "ok" });
+        return JSON.stringify({ score: 5, reasoning: "ok" });
       },
       vetoThreshold: 0.75,
+      randomFn: () => 0,
     };
     const handle = createOutputVerifierMiddleware({ judge });
 
@@ -742,9 +1077,10 @@ describe("AbortSignal propagation", () => {
       rubric: "Test",
       modelCall: async (_prompt, signal) => {
         capturedSignals.push(signal);
-        return JSON.stringify({ score: 0.9, reasoning: "ok" });
+        return JSON.stringify({ score: 5, reasoning: "ok" });
       },
       vetoThreshold: 0.75,
+      randomFn: () => 0,
     };
     const { middleware } = createOutputVerifierMiddleware({ judge });
 
@@ -847,9 +1183,11 @@ describe("wrapModelStream", () => {
     const events: VerifierVetoEvent[] = [];
     const judge: JudgeConfig = {
       rubric: "Test",
-      modelCall: async () => JSON.stringify({ score: 0.5, reasoning: "Mediocre" }),
+      // score 3 → 0.5, below threshold
+      modelCall: async () => JSON.stringify({ score: 3, reasoning: "Mediocre" }),
       vetoThreshold: 0.75,
       action: "warn",
+      randomFn: () => 0,
     };
     const { middleware, getStats } = createOutputVerifierMiddleware({
       judge,
@@ -932,6 +1270,52 @@ describe("wrapModelStream", () => {
 });
 
 // ---------------------------------------------------------------------------
+// wrapModelStream — setRubric (#11)
+// ---------------------------------------------------------------------------
+
+describe("wrapModelStream — setRubric", () => {
+  test("streaming path uses updated rubric after setRubric", async () => {
+    const capturedPrompts: string[] = [];
+    const doneResponse: ModelResponse = { content: "output", model: "test" };
+    const chunks: readonly ModelChunk[] = [
+      { kind: "text_delta", delta: "output" },
+      { kind: "done", response: doneResponse },
+    ];
+
+    const judge: JudgeConfig = {
+      rubric: "Original rubric",
+      modelCall: async (prompt) => {
+        capturedPrompts.push(prompt);
+        return JSON.stringify({ score: 5, reasoning: "ok" });
+      },
+      vetoThreshold: 0.75,
+      randomFn: () => 0,
+    };
+    const handle = createOutputVerifierMiddleware({ judge });
+
+    // First streaming call with original rubric
+    const handler1 = createSpyModelStreamHandler(chunks);
+    const stream1 = assertStream(
+      handle.middleware.wrapModelStream?.(ctx, request, handler1.handler),
+    );
+    await collectStream(stream1);
+
+    // Update rubric
+    handle.setRubric("New rubric");
+
+    // Second streaming call with new rubric
+    const handler2 = createSpyModelStreamHandler(chunks);
+    const stream2 = assertStream(
+      handle.middleware.wrapModelStream?.(ctx, request, handler2.handler),
+    );
+    await collectStream(stream2);
+
+    expect(capturedPrompts[0]).toContain("Original rubric");
+    expect(capturedPrompts[1]).toContain("New rubric");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // describeCapabilities
 // ---------------------------------------------------------------------------
 
@@ -986,5 +1370,80 @@ describe("BUILTIN_CHECKS", () => {
     const check = BUILTIN_CHECKS.matchesPattern(/^\d+$/, "digits-only");
     expect(check.check("123")).toBe(true);
     expect(check.check("abc")).not.toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// judge.ts helpers
+// ---------------------------------------------------------------------------
+
+describe("normalizeScore", () => {
+  test("normalizes 1-5 integer scale to 0.0-1.0", () => {
+    expect(normalizeScore(1)).toBe(0);
+    expect(normalizeScore(2)).toBe(0.25);
+    expect(normalizeScore(3)).toBe(0.5);
+    expect(normalizeScore(4)).toBe(0.75);
+    expect(normalizeScore(5)).toBe(1);
+  });
+
+  test("clamps values outside 1-5 range", () => {
+    expect(normalizeScore(0)).toBe(0); // clamped to 1 → 0
+    expect(normalizeScore(-1)).toBe(0);
+    expect(normalizeScore(6)).toBe(1); // clamped to 5 → 1
+    expect(normalizeScore(100)).toBe(1);
+  });
+
+  test("rounds fractional scores to nearest integer before normalizing", () => {
+    expect(normalizeScore(2.4)).toBe(0.25); // rounds to 2
+    expect(normalizeScore(2.6)).toBe(0.5); // rounds to 3
+  });
+});
+
+describe("clampScore (deprecated alias)", () => {
+  test("delegates to normalizeScore", () => {
+    expect(clampScore(3)).toBe(normalizeScore(3));
+    expect(clampScore(5)).toBe(normalizeScore(5));
+  });
+});
+
+describe("truncateContent", () => {
+  test("returns content unchanged when within limit", () => {
+    expect(truncateContent("hello", 100)).toBe("hello");
+  });
+
+  test("truncates with 60/40 split and elision marker", () => {
+    const content = "a".repeat(100);
+    const result = truncateContent(content, 50);
+    // 60% of 50 = 30 head, 40% of 50 = 20 tail
+    expect(result).toContain("a".repeat(30));
+    expect(result).toContain("[...truncated 50 chars...]");
+    expect(result.endsWith("a".repeat(20))).toBe(true);
+  });
+
+  test("exact length is not truncated", () => {
+    const content = "x".repeat(50);
+    expect(truncateContent(content, 50)).toBe(content);
+  });
+});
+
+describe("buildJudgePrompt", () => {
+  test("includes 1-5 scale instructions", () => {
+    const prompt = buildJudgePrompt("test rubric", "test content");
+    expect(prompt).toContain('{"score": <1-5>');
+    expect(prompt).toContain("1 — Completely fails");
+    expect(prompt).toContain("5 — Fully meets");
+  });
+
+  test("truncates content when maxContentLength provided", () => {
+    const longContent = "x".repeat(200);
+    const prompt = buildJudgePrompt("rubric", longContent, 50);
+    expect(prompt).toContain("[...truncated");
+    expect(prompt).not.toContain("x".repeat(200));
+  });
+
+  test("does not truncate when maxContentLength not provided", () => {
+    const longContent = "x".repeat(200);
+    const prompt = buildJudgePrompt("rubric", longContent);
+    expect(prompt).toContain(longContent);
   });
 });
