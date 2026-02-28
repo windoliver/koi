@@ -6,7 +6,8 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core";
+import type { NexusClient } from "@koi/nexus-client";
+import { createNexusClient } from "@koi/nexus-client";
 import type { ArtifactClient } from "./client.js";
 import { conflictError, notFoundError, validationError } from "./errors.js";
 import { computeContentHash } from "./hash.js";
@@ -28,126 +29,22 @@ export interface NexusStoreConfig {
 }
 
 // ---------------------------------------------------------------------------
-// JSON-RPC helpers
-// ---------------------------------------------------------------------------
-
-interface JsonRpcRequest {
-  readonly jsonrpc: "2.0";
-  readonly id: number;
-  readonly method: string;
-  readonly params: Record<string, unknown>;
-}
-
-interface JsonRpcSuccess<T> {
-  readonly jsonrpc: "2.0";
-  readonly id: number;
-  readonly result: T;
-}
-
-interface JsonRpcError {
-  readonly jsonrpc: "2.0";
-  readonly id: number;
-  readonly error: { readonly code: number; readonly message: string };
-}
-
-type JsonRpcResponse<T> = JsonRpcSuccess<T> | JsonRpcError;
-
-function createRpcIdGenerator(): () => number {
-  // let justified: monotonically increasing counter for JSON-RPC request IDs
-  let counter = 0;
-  return () => {
-    counter += 1;
-    return counter;
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Error mapping
-// ---------------------------------------------------------------------------
-
-function mapHttpError(status: number, message: string): KoiError {
-  if (status === 404) {
-    return { code: "NOT_FOUND", message, retryable: RETRYABLE_DEFAULTS.NOT_FOUND };
-  }
-  if (status === 403 || status === 401) {
-    return { code: "PERMISSION", message, retryable: RETRYABLE_DEFAULTS.PERMISSION };
-  }
-  if (status === 409) {
-    return { code: "CONFLICT", message, retryable: RETRYABLE_DEFAULTS.CONFLICT };
-  }
-  if (status === 429) {
-    return { code: "RATE_LIMIT", message, retryable: RETRYABLE_DEFAULTS.RATE_LIMIT };
-  }
-  return { code: "EXTERNAL", message, retryable: true };
-}
-
-function mapRpcError(rpcError: { readonly code: number; readonly message: string }): KoiError {
-  // JSON-RPC error codes: -32600..-32603 are protocol errors, app-specific are positive
-  if (rpcError.code === -32601) {
-    return {
-      code: "EXTERNAL",
-      message: `RPC method not found: ${rpcError.message}`,
-      retryable: false,
-    };
-  }
-  return { code: "EXTERNAL", message: rpcError.message, retryable: true };
-}
-
-// ---------------------------------------------------------------------------
 // Implementation
 // ---------------------------------------------------------------------------
 
 export function createNexusArtifactStore(config: NexusStoreConfig): ArtifactClient {
   const basePath = config.basePath ?? "/artifacts";
-  const fetchFn = config.fetch ?? globalThis.fetch;
-  const nextRpcId = createRpcIdGenerator();
+  const client: NexusClient = createNexusClient({
+    baseUrl: config.baseUrl,
+    apiKey: config.apiKey,
+    fetch: config.fetch,
+  });
 
   async function rpc<T>(
     method: string,
     params: Record<string, unknown>,
   ): Promise<Result<T, KoiError>> {
-    const body: JsonRpcRequest = { jsonrpc: "2.0", id: nextRpcId(), method, params };
-    let response: Response;
-    try {
-      response = await fetchFn(config.baseUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${config.apiKey}`,
-        },
-        body: JSON.stringify(body),
-      });
-    } catch (err: unknown) {
-      return {
-        ok: false,
-        error: {
-          code: "EXTERNAL",
-          message: `Nexus request failed: ${err instanceof Error ? err.message : String(err)}`,
-          retryable: true,
-          cause: err,
-        },
-      };
-    }
-
-    if (!response.ok) {
-      return { ok: false, error: mapHttpError(response.status, `Nexus HTTP ${response.status}`) };
-    }
-
-    let json: JsonRpcResponse<T>;
-    try {
-      json = (await response.json()) as JsonRpcResponse<T>;
-    } catch {
-      return {
-        ok: false,
-        error: { code: "INTERNAL", message: "Failed to parse Nexus response", retryable: false },
-      };
-    }
-
-    if ("error" in json) {
-      return { ok: false, error: mapRpcError(json.error) };
-    }
-
-    return { ok: true, value: json.result };
+    return client.rpc<T>(method, params);
   }
 
   function artifactPath(id: string): string {

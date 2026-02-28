@@ -66,6 +66,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/hash": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
       },
     },
     "packages/autonomous": {
@@ -1245,6 +1246,13 @@
         "zod": "4.3.6",
       },
     },
+    "packages/nexus-client": {
+      "name": "@koi/nexus-client",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/node": {
       "name": "@koi/node",
       "version": "0.0.0",
@@ -1280,6 +1288,18 @@
         "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
         "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/permissions-nexus": {
+      "name": "@koi/permissions-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+      "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -2442,11 +2462,15 @@
 
     "@koi/model-router": ["@koi/model-router@workspace:packages/model-router"],
 
+    "@koi/nexus-client": ["@koi/nexus-client@workspace:packages/nexus-client"],
+
     "@koi/node": ["@koi/node@workspace:packages/node"],
 
     "@koi/orchestrator": ["@koi/orchestrator@workspace:packages/orchestrator"],
 
     "@koi/parallel-minions": ["@koi/parallel-minions@workspace:packages/parallel-minions"],
+
+    "@koi/permissions-nexus": ["@koi/permissions-nexus@workspace:packages/permissions-nexus"],
 
     "@koi/redaction": ["@koi/redaction@workspace:packages/redaction"],
 

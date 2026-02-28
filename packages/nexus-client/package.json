@@ -1,5 +1,5 @@
 {
-  "name": "@koi/artifact-client",
+  "name": "@koi/nexus-client",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -16,8 +16,6 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@koi/core": "workspace:*",
-    "@koi/hash": "workspace:*",
-    "@koi/nexus-client": "workspace:*"
+    "@koi/core": "workspace:*"
   }
 }
