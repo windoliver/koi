@@ -40,7 +40,6 @@
     { "path": "packages/middleware-fs-rollback" },
     { "path": "packages/middleware-guided-retry" },
     { "path": "packages/middleware-semantic-retry" },
-    { "path": "packages/middleware-memory" },
     { "path": "packages/middleware-output-verifier" },
     { "path": "packages/middleware-pay" },
     { "path": "packages/middleware-permissions" },

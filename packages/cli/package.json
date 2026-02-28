@@ -35,7 +35,6 @@
     "@koi/middleware-compactor": "workspace:*",
     "@koi/middleware-context-editing": "workspace:*",
     "@koi/middleware-guided-retry": "workspace:*",
-    "@koi/middleware-memory": "workspace:*",
     "@koi/middleware-pay": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
     "@koi/middleware-pii": "workspace:*",

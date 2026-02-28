@@ -1,15 +1,14 @@
 /**
- * Cross-middleware integration: context hydrator + memory middleware.
+ * Cross-middleware integration: context hydrator + higher-priority middleware.
  *
- * Verifies that context hydrator (priority 300) and memory middleware (priority 400)
- * compose correctly, with context system message appearing before memory messages.
+ * Verifies that context hydrator (priority 300) composes correctly with
+ * middleware at higher priority (400+), with context system message appearing first.
  */
 
 import { describe, expect, test } from "bun:test";
 import type { ContextManifestConfig } from "@koi/context";
 import { createContextHydrator } from "@koi/context";
 import type { KoiMiddleware, ModelHandler, ModelRequest, TurnContext } from "@koi/core";
-import { createInMemoryStore, createMemoryMiddleware } from "@koi/middleware-memory";
 import { createMockAgent, createMockTurnContext, createSpyModelHandler } from "@koi/test-utils";
 
 function composeModelChain(
@@ -30,38 +29,47 @@ function composeModelChain(
   return handler;
 }
 
-describe("Context hydrator + memory middleware composition", () => {
-  test("context hydrator has lower priority (300) than memory (400)", () => {
+/** Stub middleware at priority 400 for composition tests. */
+function createStubMiddleware(): KoiMiddleware {
+  return {
+    name: "stub-400",
+    priority: 400,
+    async wrapModelCall(_ctx, req, next) {
+      return next(req);
+    },
+  };
+}
+
+describe("Context hydrator + higher-priority middleware composition", () => {
+  test("context hydrator has lower priority (300) than middleware at 400", () => {
     const agent = createMockAgent();
     const contextMw = createContextHydrator({
       config: { sources: [{ kind: "text", text: "test" }] },
       agent,
     });
-    const memoryMw = createMemoryMiddleware({ store: createInMemoryStore() });
+    const stubMw = createStubMiddleware();
 
     expect(contextMw.priority).toBe(300);
-    expect(memoryMw.priority).toBe(400);
-    expect(contextMw.priority ?? 0).toBeLessThan(memoryMw.priority ?? 0);
+    expect(stubMw.priority).toBe(400);
+    expect(contextMw.priority ?? 0).toBeLessThan(stubMw.priority ?? 0);
   });
 
-  test("context system message appears before memory messages in composed chain", async () => {
+  test("context system message appears first in composed chain", async () => {
     const agent = createMockAgent();
     const config: ContextManifestConfig = {
       sources: [{ kind: "text", text: "System policy context", label: "Policy" }],
     };
 
     const contextMw = createContextHydrator({ config, agent });
-    const memoryMw = createMemoryMiddleware({ store: createInMemoryStore() });
+    const stubMw = createStubMiddleware();
 
-    // Initialize both middlewares
+    // Initialize
     const sessionCtx = { agentId: "test", sessionId: "s1", metadata: {} };
     await contextMw.onSessionStart?.(sessionCtx);
-    if (memoryMw.onSessionStart) await memoryMw.onSessionStart(sessionCtx);
 
-    // First turn (memory records)
     const ctx0 = createMockTurnContext({ turnIndex: 0 });
     const spy0 = createSpyModelHandler({ content: "Turn 0 response" });
-    const chain0 = composeModelChain([contextMw, memoryMw], ctx0, spy0.handler);
+    const chain0 = composeModelChain([contextMw, stubMw], ctx0, spy0.handler);
     await chain0({
       messages: [
         { senderId: "user", timestamp: Date.now(), content: [{ kind: "text", text: "Hello" }] },
@@ -88,16 +96,16 @@ describe("Context hydrator + memory middleware composition", () => {
     };
 
     const contextMw = createContextHydrator({ config, agent });
-    const memoryMw = createMemoryMiddleware({ store: createInMemoryStore() });
+    const stubMw = createStubMiddleware();
 
     const sessionCtx = { agentId: "test", sessionId: "s1", metadata: {} };
 
     // Both should support onSessionStart without interfering
     await contextMw.onSessionStart?.(sessionCtx);
-    if (memoryMw.onSessionStart) await memoryMw.onSessionStart(sessionCtx);
+    if (stubMw.onSessionStart) await stubMw.onSessionStart(sessionCtx);
 
     // Both should support onSessionEnd without interfering
     if (contextMw.onSessionEnd) await contextMw.onSessionEnd(sessionCtx);
-    if (memoryMw.onSessionEnd) await memoryMw.onSessionEnd(sessionCtx);
+    if (stubMw.onSessionEnd) await stubMw.onSessionEnd(sessionCtx);
   });
 });
