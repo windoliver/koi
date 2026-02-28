@@ -679,6 +679,21 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/events-nexus": {
+      "name": "@koi/events-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/event-delivery": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/registry-event-sourced": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/events-sqlite": {
       "name": "@koi/events-sqlite",
       "version": "0.0.0",
@@ -2330,6 +2345,8 @@
     "@koi/event-delivery": ["@koi/event-delivery@workspace:packages/event-delivery"],
 
     "@koi/events-memory": ["@koi/events-memory@workspace:packages/events-memory"],
+
+    "@koi/events-nexus": ["@koi/events-nexus@workspace:packages/events-nexus"],
 
     "@koi/events-sqlite": ["@koi/events-sqlite@workspace:packages/events-sqlite"],
 
