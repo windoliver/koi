@@ -11,6 +11,8 @@ import type { KoiError, KoiMiddleware, Result, TurnTrace } from "@koi/core";
 /** A single tool invocation in a sequence. */
 export interface ToolStep {
   readonly toolId: string;
+  /** Outcome of the tool call, derived from trace output. */
+  readonly outcome?: "success" | "failure";
 }
 
 /** An ordered sequence of tool steps with a deduplication key. */

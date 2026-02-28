@@ -43,7 +43,11 @@ describe("extractToolSequences", () => {
     const traces = [createTrace(0, ["fetch", "parse", "save"])];
     const result = extractToolSequences(traces);
     expect(result).toHaveLength(1);
-    expect(result[0]).toEqual([{ toolId: "fetch" }, { toolId: "parse" }, { toolId: "save" }]);
+    expect(result[0]).toEqual([
+      { toolId: "fetch", outcome: "success" },
+      { toolId: "parse", outcome: "success" },
+      { toolId: "save", outcome: "success" },
+    ]);
   });
 
   test("filters non-tool events", () => {
@@ -75,7 +79,7 @@ describe("extractToolSequences", () => {
       durationMs: 15,
     };
     const result = extractToolSequences([trace]);
-    expect(result[0]).toEqual([{ toolId: "fetch" }]);
+    expect(result[0]).toEqual([{ toolId: "fetch", outcome: "success" }]);
   });
 
   test("returns empty arrays for turns with no tool calls", () => {

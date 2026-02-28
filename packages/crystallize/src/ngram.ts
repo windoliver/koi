@@ -24,8 +24,23 @@ export interface NgramEntry {
 // ---------------------------------------------------------------------------
 
 /**
+ * Infer outcome from a tool call's output.
+ * Undefined output indicates missing result (failure). Null is treated as
+ * a valid void return (success). Objects with a truthy `error` field are failures.
+ */
+function inferOutcome(output: unknown): "success" | "failure" {
+  if (output === undefined) return "failure";
+  if (typeof output === "object" && output !== null && "error" in output) {
+    const obj = output as Readonly<Record<string, unknown>>;
+    if (obj.error) return "failure";
+  }
+  return "success";
+}
+
+/**
  * Extract ordered tool ID sequences from turn traces.
  * Filters to `tool_call` events and preserves per-turn order.
+ * Populates outcome from tool call output for downstream scoring.
  */
 export function extractToolSequences(
   traces: readonly TurnTrace[],
@@ -34,8 +49,9 @@ export function extractToolSequences(
     const steps: ToolStep[] = [];
     for (const event of trace.events) {
       if (event.event.kind === "tool_call") {
+        const outcome = inferOutcome(event.event.output);
         // justified: mutable local array being constructed, not shared state
-        steps.push({ toolId: event.event.toolId });
+        steps.push({ toolId: event.event.toolId, outcome });
       }
     }
     return steps;

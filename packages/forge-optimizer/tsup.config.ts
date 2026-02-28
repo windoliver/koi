@@ -1,7 +1,7 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/index.ts", "src/auto-forge-middleware.ts", "src/pipeline-executor.ts"],
+  entry: ["src/index.ts"],
   format: ["esm"],
   dts: {
     compilerOptions: {

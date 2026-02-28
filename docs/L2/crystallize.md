@@ -52,10 +52,12 @@ index.ts                         ← public re-exports
 ├── types.ts                     ← CrystallizeConfig, CrystallizationCandidate, etc.
 ├── ngram.ts                     ← extractNgrams(), extractNgramsIncremental()
 ├── detect-patterns.ts           ← detectPatterns(), filterSubsumed()
-├── compute-score.ts             ← computeCrystallizeScore()
-├── crystallize-middleware.ts    ← createCrystallizeMiddleware()
+├── compute-score.ts             ← computeCrystallizeScore(), computeSuccessRate()
+├── crystallize-middleware.ts    ← createCrystallizeMiddleware() (incremental)
 ├── forge-handler.ts             ← createCrystallizeForgeHandler()
 ├── generate-composite.ts       ← generateCompositeImplementation()
+├── pipeline-executor.ts         ← executePipeline(), generatePipelineExecutorCode()
+├── auto-forge-middleware.ts     ← createAutoForgeMiddleware()
 ├── validate-config.ts           ← validateCrystallizeConfig()
 │
 └── __test-helpers__/
@@ -139,21 +141,24 @@ This prevents surfacing redundant sub-patterns when a more complete pattern exis
 
 ### Scoring
 
-Candidates are ranked by: `occurrences x stepsReduction x recencyBoost`
+Candidates are ranked by: `occurrences x stepsReduction x recencyBoost x successRate`
 
 ```
 ┌──────────────────────────────────────────────┐
 │  occurrences: 5 times observed               │
 │  stepsReduction: max(1, 3 steps - 1) = 2     │
 │  recencyBoost: 0.5^(age / halfLife)          │
+│  successRate: fraction of steps with         │
+│               outcome === "success" (1.0     │
+│               when no outcome data)          │
 │                                              │
-│  At detection:  5 × 2 × 1.0 = 10.0          │
-│  After 30 min:  5 × 2 × 0.5 = 5.0           │
-│  After 60 min:  5 × 2 × 0.25 = 2.5          │
+│  At detection:  5 × 2 × 1.0 × 0.9 = 9.0    │
+│  After 30 min:  5 × 2 × 0.5 × 0.9 = 4.5    │
+│  After 60 min:  5 × 2 × 0.25 × 0.9 = 2.25  │
 └──────────────────────────────────────────────┘
 ```
 
-Recency decay (default half-life: 30 minutes) ensures stale patterns naturally lose priority.
+Recency decay (default half-life: 30 minutes) ensures stale patterns naturally lose priority. Success rate weighting penalizes patterns where tools frequently fail.
 
 ### Crystallize Middleware Lifecycle
 
@@ -168,7 +173,7 @@ createCrystallizeMiddleware()
     │
     ├── evict stale known/dismissed keys (TTL)
     ├── readTraces() → TurnTrace[]
-    ├── detectPatterns() → candidates[]
+    ├── detectPatternsIncremental() → candidates[]
     ├── filter already-known candidates
     │
     ├── new candidates found?
