@@ -20,6 +20,7 @@ import { GOVERNANCE } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
 import { fnv1a } from "@koi/hash";
 import type {
+  DepthToolRule,
   IterationLimits,
   LoopDetectionConfig,
   LoopWarningInfo,
@@ -546,6 +547,22 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
 }
 
 // ---------------------------------------------------------------------------
+// Depth-based tool restriction helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a Set of denied tool IDs for the given agent depth.
+ * Returns undefined if no rules match (avoids allocating an empty Set).
+ */
+function computeDeniedTools(
+  rules: readonly DepthToolRule[],
+  agentDepth: number,
+): ReadonlySet<string> | undefined {
+  const denied = rules.filter((rule) => agentDepth >= rule.minDepth).map((rule) => rule.toolId);
+  return denied.length > 0 ? new Set(denied) : undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Spawn Guard
 // ---------------------------------------------------------------------------
 
@@ -588,6 +605,12 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
   // Build spawn tool ID set for O(1) lookup
   const spawnToolIds = new Set<string>(policy.spawnToolIds ?? DEFAULT_SPAWN_TOOL_IDS);
 
+  // Build denied tool set for this agent's depth (computed once at construction)
+  const deniedTools =
+    policy.toolRestrictions !== undefined
+      ? computeDeniedTools(policy.toolRestrictions, agentDepth)
+      : undefined;
+
   // Cache GovernanceController lookup — fixed after assembly, no need to look up per-call
   const governance = agent?.component<GovernanceController>(GOVERNANCE);
 
@@ -603,6 +626,17 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
     priority: 2,
 
     wrapToolCall: async (_ctx, request, next) => {
+      // 0. Check depth-based tool restrictions (applies to ALL tools)
+      if (deniedTools?.has(request.toolId)) {
+        throw KoiRuntimeError.from(
+          "PERMISSION",
+          `Tool "${request.toolId}" is not allowed at depth ${agentDepth}`,
+          {
+            context: { toolId: request.toolId, agentDepth },
+          },
+        );
+      }
+
       // Early return for non-spawn tools (hot path — O(1) set lookup)
       if (!spawnToolIds.has(request.toolId)) {
         return next(request);

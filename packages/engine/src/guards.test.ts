@@ -1240,6 +1240,169 @@ describe("createSpawnGuard", () => {
     await wrap(ctx, mockToolRequest("forge_agent"), next);
     expect(next).toHaveBeenCalledTimes(1);
   });
+
+  // -------------------------------------------------------------------------
+  // Depth-based tool restrictions
+  // -------------------------------------------------------------------------
+
+  describe("toolRestrictions", () => {
+    test("blocks restricted tool at matching depth", async () => {
+      const guard = createSpawnGuard({
+        agentDepth: 2,
+        policy: { toolRestrictions: [{ toolId: "exec", minDepth: 2 }] },
+      });
+      const wrap = getToolWrap(guard);
+      const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+      const ctx = mockTurnContext();
+
+      try {
+        await wrap(ctx, mockToolRequest("exec"), next);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        if (e instanceof KoiRuntimeError) {
+          expect(e.code).toBe("PERMISSION");
+          expect(e.message).toContain('"exec"');
+          expect(e.message).toContain("depth 2");
+        }
+      }
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    test("allows tool when depth is below minDepth", async () => {
+      const guard = createSpawnGuard({
+        agentDepth: 1,
+        policy: { toolRestrictions: [{ toolId: "exec", minDepth: 2 }] },
+      });
+      const wrap = getToolWrap(guard);
+      const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+      const ctx = mockTurnContext();
+
+      await wrap(ctx, mockToolRequest("exec"), next);
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+
+    test("blocks at depth greater than minDepth (endowment rule)", async () => {
+      const guard = createSpawnGuard({
+        agentDepth: 5,
+        policy: { toolRestrictions: [{ toolId: "exec", minDepth: 2 }] },
+      });
+      const wrap = getToolWrap(guard);
+      const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+      const ctx = mockTurnContext();
+
+      try {
+        await wrap(ctx, mockToolRequest("exec"), next);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        if (e instanceof KoiRuntimeError) {
+          expect(e.code).toBe("PERMISSION");
+        }
+      }
+    });
+
+    test("does not affect unrestricted tools", async () => {
+      const guard = createSpawnGuard({
+        agentDepth: 3,
+        policy: { toolRestrictions: [{ toolId: "exec", minDepth: 1 }] },
+      });
+      const wrap = getToolWrap(guard);
+      const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+      const ctx = mockTurnContext();
+
+      await wrap(ctx, mockToolRequest("calc"), next);
+      await wrap(ctx, mockToolRequest("search"), next);
+      expect(next).toHaveBeenCalledTimes(2);
+    });
+
+    test("multiple rules restrict different tools at different depths", async () => {
+      const guard = createSpawnGuard({
+        agentDepth: 1,
+        policy: {
+          toolRestrictions: [
+            { toolId: "admin", minDepth: 1 },
+            { toolId: "fs:write", minDepth: 2 },
+          ],
+        },
+      });
+      const wrap = getToolWrap(guard);
+      const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+      const ctx = mockTurnContext();
+
+      // admin blocked at depth 1
+      try {
+        await wrap(ctx, mockToolRequest("admin"), next);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        if (e instanceof KoiRuntimeError) {
+          expect(e.code).toBe("PERMISSION");
+        }
+      }
+
+      // fs:write allowed at depth 1 (minDepth is 2)
+      await wrap(ctx, mockToolRequest("fs:write"), next);
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+
+    test("restriction on spawn tool blocks before spawn depth check", async () => {
+      const guard = createSpawnGuard({
+        agentDepth: 1,
+        policy: {
+          maxDepth: 5,
+          toolRestrictions: [{ toolId: "forge_agent", minDepth: 1 }],
+        },
+      });
+      const wrap = getToolWrap(guard);
+      const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+      const ctx = mockTurnContext();
+
+      try {
+        await wrap(ctx, mockToolRequest("forge_agent"), next);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        if (e instanceof KoiRuntimeError) {
+          // Should be tool restriction error, not depth error
+          expect(e.code).toBe("PERMISSION");
+          expect(e.message).toContain("not allowed at depth");
+        }
+      }
+    });
+
+    test("no restrictions when toolRestrictions is undefined", async () => {
+      const guard = createSpawnGuard({ agentDepth: 5 });
+      const wrap = getToolWrap(guard);
+      const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+      const ctx = mockTurnContext();
+
+      // Non-spawn tool should pass through without restriction
+      await wrap(ctx, mockToolRequest("exec"), next);
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+
+    test("restriction at minDepth 0 blocks tool at root", async () => {
+      const guard = createSpawnGuard({
+        agentDepth: 0,
+        policy: { toolRestrictions: [{ toolId: "dangerous", minDepth: 0 }] },
+      });
+      const wrap = getToolWrap(guard);
+      const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+      const ctx = mockTurnContext();
+
+      try {
+        await wrap(ctx, mockToolRequest("dangerous"), next);
+        expect.unreachable("should have thrown");
+      } catch (e: unknown) {
+        expect(e).toBeInstanceOf(KoiRuntimeError);
+        if (e instanceof KoiRuntimeError) {
+          expect(e.code).toBe("PERMISSION");
+          expect(e.message).toContain("depth 0");
+        }
+      }
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

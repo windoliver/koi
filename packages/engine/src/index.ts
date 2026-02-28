@@ -108,6 +108,7 @@ export { applyTransition, validateTransition } from "./transitions.js";
 // types
 export type {
   CreateKoiOptions,
+  DepthToolRule,
   ForgeRuntime,
   GovernanceConfig,
   IterationLimits,

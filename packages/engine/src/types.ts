@@ -138,6 +138,27 @@ export interface SpawnPolicy {
    * Fires at most once per limit kind per guard instance.
    */
   readonly onWarning?: (info: SpawnWarningInfo) => void;
+  /**
+   * Depth-based tool restrictions. Each rule denies a specific tool at
+   * agents with depth >= minDepth. Rules are additive (union of denials).
+   * Applies to ALL tool calls, not just spawn tools.
+   * Defaults to undefined (no restrictions).
+   */
+  readonly toolRestrictions?: readonly DepthToolRule[];
+}
+
+/**
+ * A single depth-based tool restriction rule.
+ *
+ * Semantics: deny `toolId` at `agentDepth >= minDepth`.
+ * Once denied at depth N, the tool remains denied at all deeper depths
+ * (object-capability endowment rule: capabilities only narrow with depth).
+ */
+export interface DepthToolRule {
+  /** The tool ID to restrict. */
+  readonly toolId: string;
+  /** Minimum agent depth at which this tool is denied (inclusive). */
+  readonly minDepth: number;
 }
 
 // ---------------------------------------------------------------------------
