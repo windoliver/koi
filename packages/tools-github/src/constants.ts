@@ -57,8 +57,9 @@ export const CI_WAIT_FIELDS = "statusCheckRollup" as const;
 /**
  * System prompt guidance for agents using GitHub tools.
  *
- * Include this in your agent's system prompt or koi.yaml `instructions` field
- * to prime the agent with PR lifecycle best practices.
+ * @deprecated Use `createGithubProvider()` instead — it auto-attaches this
+ * content as a `SkillComponent` (keyed `"skill:github"`). Manual wiring is
+ * no longer necessary.
  */
 export const GITHUB_SYSTEM_PROMPT: string = `
 ## GitHub PR lifecycle — best practices

@@ -30,6 +30,9 @@ export type { FileSystemOperation } from "./constants.js";
 // constants
 export { CLAUDE_SDK_FILE_TOOLS, DEFAULT_PREFIX, OPERATIONS } from "./constants.js";
 
+// descriptor
+export { descriptor } from "./descriptor.js";
+
 // provider
 export type { FileSystemProviderConfig } from "./fs-component-provider.js";
 export { createFileSystemProvider } from "./fs-component-provider.js";

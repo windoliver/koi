@@ -6,9 +6,14 @@
  * available to any engine with zero engine changes.
  */
 
-import type { Agent, ComponentProvider, Tool, TrustTier } from "@koi/core";
-import { toolToken } from "@koi/core";
-import { type GithubOperation, OPERATIONS, trustTierForOperation } from "./constants.js";
+import type { Agent, ComponentProvider, SkillComponent, Tool, TrustTier } from "@koi/core";
+import { skillToken, toolToken } from "@koi/core";
+import {
+  GITHUB_SYSTEM_PROMPT,
+  type GithubOperation,
+  OPERATIONS,
+  trustTierForOperation,
+} from "./constants.js";
 import type { GhExecutor } from "./gh-executor.js";
 import { createGithubCiWaitTool } from "./tools/ci-wait.js";
 import { createGithubPrCreateTool } from "./tools/pr-create.js";
@@ -43,17 +48,22 @@ export function createGithubProvider(config: GithubProviderConfig): ComponentPro
     name: `github:${prefix}`,
 
     attach: async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
-      const entries: ReadonlyMap<string, unknown> = new Map(
-        operations.map((op) => {
-          const tier = trustTierForOperation(op, trustTier);
-          const factory = TOOL_FACTORIES[op];
-          const tool = factory(executor, prefix, tier);
-          // SubsystemToken<T> extends string — safe to use as Map key directly
-          const key: string = toolToken(tool.descriptor.name);
-          return [key, tool] as const;
-        }),
-      );
-      return entries;
+      const toolEntries: ReadonlyArray<readonly [string, unknown]> = operations.map((op) => {
+        const tier = trustTierForOperation(op, trustTier);
+        const factory = TOOL_FACTORIES[op];
+        const tool = factory(executor, prefix, tier);
+        return [toolToken(tool.descriptor.name) as string, tool] as const;
+      });
+
+      const skill: SkillComponent = {
+        name: "github",
+        description: "GitHub PR lifecycle best practices and error handling guidance",
+        content: GITHUB_SYSTEM_PROMPT,
+        tags: ["github", "pr"],
+      };
+      const skillEntry: readonly [string, unknown] = [skillToken("github") as string, skill];
+
+      return new Map([...toolEntries, skillEntry]);
     },
   };
 }
