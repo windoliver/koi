@@ -16,6 +16,7 @@ export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, Ev
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
 export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileRenameResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-HASH.js';
 export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
+export { CapsuleId, CapsulePayloadVersion, CapsuleVerifier, CapsuleVerifyResult, CapsuleViolationReason, IntentCapsule, capsuleId, isIntentCapsule } from './intent-HASH.js';
 export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
 export { ModelCapabilities, ModelProvider, ModelTarget } from './model-HASH.js';
 export { PermissionBackend, PermissionDecision, PermissionQuery } from './permission-HASH.js';
@@ -2213,6 +2214,122 @@ type Result<T, E = KoiError> = {
 type BackendErrorMapper = (error: unknown, context: string) => KoiError;
 
 export { type BackendErrorMapper, type KoiError, type KoiErrorCode, RETRYABLE_DEFAULTS, type Result };
+"
+`;
+
+exports[`@koi/core API surface ./intent-capsule has stable type surface 1`] = `
+"import { A as AgentId, d as SessionId } from './assembly-HASH.js';
+import './common.js';
+import './webhook.js';
+import './errors.js';
+import './channel.js';
+import './message.js';
+import './filesystem-HASH.js';
+
+/**
+ * Intent Capsule types — cryptographic mandate binding for ASI01 defense.
+ *
+ * An IntentCapsule is an unforgeable, signed record of an agent's mandate
+ * (system prompt + objectives) created at session start. It defends against
+ * OWASP ASI01 (Agentic Goal Hijacking) by making the original mandate
+ * tamper-evident and verifiable at runtime.
+ *
+ * Design decisions:
+ * - Mandate is hashed and signed with Ed25519 at onSessionStart (one-time cost)
+ * - wrapModelCall verifies hash consistency (cheap — no crypto on hot path)
+ * - publicKey is embedded in the capsule for offline/external verification
+ * - sessionId is included in the mandate hash for replay-attack prevention
+ * - version byte in the canonical payload enables future format evolution
+ *
+ * Layer: L0 — types only. No implementations, no imports from other packages.
+ */
+
+declare const __capsuleBrand: unique symbol;
+/**
+ * Branded string type for intent capsule identifiers.
+ * Prevents accidental mixing with other ID types at compile time.
+ */
+type CapsuleId = string & {
+    readonly [__capsuleBrand]: "CapsuleId";
+};
+/** Create a branded CapsuleId from a plain string. */
+declare function capsuleId(raw: string): CapsuleId;
+/**
+ * Schema version for the canonical mandate payload.
+ * Increment when the serialization format changes.
+ * Old capsules with a lower version are rejected as incompatible.
+ */
+type CapsulePayloadVersion = 1;
+/**
+ * An immutable, cryptographically signed record of an agent's mandate.
+ *
+ * Created at session start. The mandateHash binds the capsule to the
+ * agent's original instructions (system prompt + objectives + session).
+ * The Ed25519 signature proves the capsule was created legitimately
+ * and enables offline/external verification.
+ *
+ * Invariants:
+ * - mandateHash === sha256Hex(canonicalize({ version, agentId, sessionId, systemPrompt, objectives }))
+ * - signature === Ed25519.sign(mandateHash, privateKey)
+ * - publicKey is the SPKI DER base64 counterpart of the signing private key
+ */
+interface IntentCapsule {
+    /** Unique identifier for this capsule. */
+    readonly id: CapsuleId;
+    /** Agent that created this capsule. */
+    readonly agentId: AgentId;
+    /** Session this capsule is bound to. */
+    readonly sessionId: SessionId;
+    /** SHA-256 hex digest of the canonical mandate payload. */
+    readonly mandateHash: string;
+    /** Base64-encoded Ed25519 signature of mandateHash. */
+    readonly signature: string;
+    /** Base64-encoded SPKI DER Ed25519 public key for external verification. */
+    readonly publicKey: string;
+    /** Unix timestamp ms — when this capsule was created. */
+    readonly createdAt: number;
+    /** Payload format version — enables future format evolution. */
+    readonly version: CapsulePayloadVersion;
+}
+/** Why an intent capsule check failed. */
+type CapsuleViolationReason = "mandate_hash_mismatch" | "capsule_not_found" | "invalid_signature";
+/** Result of checking the intent capsule for a session. */
+type CapsuleVerifyResult = {
+    readonly ok: true;
+    readonly capsule: IntentCapsule;
+} | {
+    readonly ok: false;
+    readonly reason: CapsuleViolationReason;
+};
+/**
+ * L0 contract for verifying the intent capsule for a session.
+ *
+ * The default implementation checks that the stored mandateHash matches
+ * the hash of the current mandate fields (config values + agentId + sessionId).
+ *
+ * Implementations may also:
+ * - Re-verify the Ed25519 signature (for audit/forensic use cases)
+ * - Check against an external attestation store
+ *
+ * Callers must always await — sync implementations return directly.
+ */
+interface CapsuleVerifier {
+    /**
+     * Verify the intent capsule for the given session.
+     *
+     * @param capsule - The stored capsule to verify.
+     * @param currentMandateHash - SHA-256 of the current canonical mandate payload.
+     * @returns CapsuleVerifyResult — ok=true if the mandate is intact.
+     */
+    readonly verify: (capsule: IntentCapsule, currentMandateHash: string) => CapsuleVerifyResult | Promise<CapsuleVerifyResult>;
+}
+/**
+ * Type guard for IntentCapsule.
+ * Pure function — permitted in L0 as a side-effect-free data inspector.
+ */
+declare function isIntentCapsule(value: unknown): value is IntentCapsule;
+
+export { type CapsuleId, type CapsulePayloadVersion, type CapsuleVerifier, type CapsuleVerifyResult, type CapsuleViolationReason, type IntentCapsule, capsuleId, isIntentCapsule };
 "
 `;
 
