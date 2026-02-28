@@ -14,6 +14,7 @@ import type { ChannelAdapter } from "./channel.js";
 import type { JsonObject } from "./common.js";
 import type { DelegationComponent } from "./delegation.js";
 import type { TerminationOutcome } from "./engine.js";
+import type { ExternalAgentDescriptor } from "./external-agent.js";
 import type { FileSystemBackend } from "./filesystem-backend.js";
 import type { GovernanceController } from "./governance.js";
 import type { GovernanceBackend } from "./governance-backend.js";
@@ -452,3 +453,5 @@ export const BROWSER: SubsystemToken<BrowserDriver> = token<BrowserDriver>("brow
 export const WORKSPACE: SubsystemToken<WorkspaceComponent> = token<WorkspaceComponent>("workspace");
 export const SCHEDULER: SubsystemToken<SchedulerComponent> = token<SchedulerComponent>("scheduler");
 export const WEBHOOK: SubsystemToken<WebhookComponent> = token<WebhookComponent>("webhook");
+export const EXTERNAL_AGENTS: SubsystemToken<readonly ExternalAgentDescriptor[]> =
+  token<readonly ExternalAgentDescriptor[]>("external-agents");
