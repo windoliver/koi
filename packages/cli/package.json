@@ -26,6 +26,7 @@
     "@koi/core": "workspace:*",
     "@koi/deploy": "workspace:*",
     "@koi/engine": "workspace:*",
+    "@koi/engine-external": "workspace:*",
     "@koi/engine-loop": "workspace:*",
     "@koi/channel-cli": "workspace:*",
     "@koi/manifest": "workspace:*",
@@ -48,5 +49,8 @@
     "@koi/model-router": "workspace:*",
     "@koi/resolve": "workspace:*",
     "@koi/shutdown": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/engine-pi": "workspace:*"
   }
 }

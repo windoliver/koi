@@ -87,10 +87,21 @@ export async function runStart(flags: StartFlags): Promise<void> {
   }
 
   // 3. DRY RUN: If --dry-run, print manifest and exit
+  const engineName =
+    typeof manifest.engine === "string"
+      ? manifest.engine
+      : manifest.engine !== undefined &&
+          typeof manifest.engine === "object" &&
+          manifest.engine !== null &&
+          "name" in manifest.engine &&
+          typeof manifest.engine.name === "string"
+        ? manifest.engine.name
+        : "loop";
+
   if (flags.dryRun) {
     process.stderr.write(`Manifest: ${manifest.name} v${manifest.version}\n`);
     process.stderr.write(`Model: ${manifest.model.name}\n`);
-    process.stderr.write("Engine: loop\n");
+    process.stderr.write(`Engine: ${engineName}\n`);
     process.stderr.write("Dry run complete.\n");
     return;
   }
@@ -103,8 +114,8 @@ export async function runStart(flags: StartFlags): Promise<void> {
     process.exit(EXIT_CONFIG);
   }
 
-  // 5. ASSEMBLE: Create engine adapter with resolved model handler
-  const adapter = createLoopAdapter({ modelCall: resolved.value.model });
+  // 5. ASSEMBLE: Use resolved engine or fall back to loop adapter
+  const adapter = resolved.value.engine ?? createLoopAdapter({ modelCall: resolved.value.model });
 
   // 6. WIRE: Create the Koi runtime with resolved middleware
   const runtime = await createKoi({
@@ -138,7 +149,7 @@ export async function runStart(flags: StartFlags): Promise<void> {
   // 8. Print startup info
   if (flags.verbose) {
     process.stderr.write(`Agent: ${manifest.name} v${manifest.version}\n`);
-    process.stderr.write("Engine: loop\n");
+    process.stderr.write(`Engine: ${engineName}\n`);
     process.stderr.write(`Model: ${modelName}\n`);
   }
 
