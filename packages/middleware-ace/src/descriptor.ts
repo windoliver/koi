@@ -27,7 +27,9 @@ function validateAceDescriptorOptions(input: unknown): Result<unknown, KoiError>
 
   if (
     opts.maxInjectionTokens !== undefined &&
-    (typeof opts.maxInjectionTokens !== "number" || opts.maxInjectionTokens <= 0)
+    (typeof opts.maxInjectionTokens !== "number" ||
+      !Number.isFinite(opts.maxInjectionTokens) ||
+      opts.maxInjectionTokens <= 0)
   ) {
     return {
       ok: false,
