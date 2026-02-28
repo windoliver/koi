@@ -64,7 +64,8 @@ export function createAguiStreamMiddleware(config: AguiStreamMiddlewareConfig): 
     name: "@koi/agui/stream",
     describeCapabilities: () => ({
       label: "agui",
-      description: "Agent GUI streaming bridge active",
+      description:
+        "AG-UI SSE bridge: emits stream events (text, reasoning, tool calls) and tool call results",
     }),
     priority: 200, // Run after outer governance/pay middleware, before context hydration
 

@@ -82,7 +82,9 @@ export function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMid
 
   const capabilityFragment: CapabilityFragment = {
     label: "tool-filter",
-    description: "Tool filtering active",
+    description:
+      `Tool filtering: selects up to ${String(maxTools)} tools per call (skip below ${String(minTools)})` +
+      (alwaysInclude.length > 0 ? `, always includes ${alwaysInclude.join(", ")}` : ""),
   };
 
   return {

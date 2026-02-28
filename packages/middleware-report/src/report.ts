@@ -54,15 +54,17 @@ export function createReportMiddleware(config: ReportConfig = {}): ReportHandle 
   let turnCount = 0;
   let report: RunReport | undefined;
 
-  const capabilityFragment: CapabilityFragment = {
-    label: "report",
-    description: "Structured run report will be generated at session end",
-  };
-
   const middleware: KoiMiddleware = {
     name: "report",
     priority: 275,
-    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => {
+      const snap = accumulator.snapshot();
+      const tokens = snap.inputTokens + snap.outputTokens;
+      return {
+        label: "report",
+        description: `Run report tracking: ${String(snap.totalActions)} actions, ${String(tokens)} tokens, ${String(snap.issues.length)} issues across ${String(turnCount)} turns`,
+      };
+    },
 
     async onSessionStart(_ctx: SessionContext): Promise<void> {
       startedAt = Date.now();

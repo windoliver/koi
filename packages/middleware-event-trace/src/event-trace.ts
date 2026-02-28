@@ -36,15 +36,13 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
   // Mutable turn-scoped state — reset each turn
   let turnStartTime = 0;
 
-  const capabilityFragment: CapabilityFragment = {
-    label: "tracing",
-    description: "Event tracing active",
-  };
-
   const middleware: KoiMiddleware = {
     name: "event-trace",
     priority: 475,
-    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => ({
+      label: "tracing",
+      description: `Per-event tracing persisted to chain store (${String(collector.currentIndex())} events this turn)`,
+    }),
 
     async onBeforeTurn(_ctx: TurnContext): Promise<void> {
       collector.reset();

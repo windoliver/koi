@@ -38,15 +38,18 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
   const healthClock = config.forgeHealth?.clock ?? Date.now;
   const resolveBrickId = config.forgeHealth?.resolveBrickId;
 
-  const capabilityFragment: CapabilityFragment = {
-    label: "feedback",
-    description: "Validation with feedback loop active",
-  };
-
   return {
     name: "feedback-loop",
     priority: 450,
-    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => ({
+      label: "feedback",
+      description:
+        `Model validation (${String(validators.length)} validators, ${String(gates.length)} gates)` +
+        (toolValidators.length > 0 || toolGates.length > 0
+          ? `, tool validation (${String(toolValidators.length)} validators, ${String(toolGates.length)} gates)`
+          : "") +
+        (healthTracker !== undefined ? ", forge tool health tracking with quarantine" : ""),
+    }),
 
     async wrapModelCall(
       ctx: TurnContext,

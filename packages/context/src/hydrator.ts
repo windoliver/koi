@@ -449,15 +449,22 @@ export function createContextHydrator(options: ContextHydratorOptions): ContextH
   // Frozen hydration state — set once in onSessionStart, refreshed on interval
   const state: { hydration: HydrationCache | undefined } = { hydration: undefined };
 
-  const capabilityFragment: CapabilityFragment = {
-    label: "context",
-    description: `Context hydration active with ${String(config.sources.length)} sources`,
-  };
+  const globalBudgetForDisplay = config.maxTokens ?? DEFAULT_MAX_TOKENS;
 
   return {
     name: "context-hydrator",
     priority: 300,
-    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => {
+      const hydratedTokens = state.hydration?.result.totalTokens;
+      return {
+        label: "context",
+        description:
+          `Context: ${String(config.sources.length)} sources, ${String(hydratedTokens ?? 0)}/${String(globalBudgetForDisplay)} token budget` +
+          (config.refreshInterval !== undefined
+            ? `, refresh every ${String(config.refreshInterval)} turns`
+            : ""),
+      };
+    },
 
     getHydrationResult(): HydrationResult | undefined {
       return state.hydration?.result;

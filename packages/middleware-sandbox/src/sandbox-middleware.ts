@@ -46,7 +46,9 @@ export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMid
 
   const capabilityFragment: CapabilityFragment = {
     label: "sandbox",
-    description: "Tool sandboxing active for untrusted tools",
+    description:
+      `Tool sandboxing: timeout + ${String(timeoutGraceMs)}ms grace, output limit ${String(outputLimitBytes)} bytes` +
+      (failClosedOnLookupError ? ", fail-closed on unknown tools" : ""),
   };
 
   return {

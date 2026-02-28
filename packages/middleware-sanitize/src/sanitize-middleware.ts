@@ -61,9 +61,12 @@ export function createSanitizeMiddleware(config: SanitizeMiddlewareConfig): KoiM
     return { ...request, messages: sanitizedMessages };
   }
 
+  const scopes: string[] = ["model input", "model output"];
+  if (sanitizeToolInput) scopes.push("tool input");
+  if (sanitizeToolOutput) scopes.push("tool output");
   const capabilityFragment: CapabilityFragment = {
     label: "sanitize",
-    description: "Input/output sanitization active",
+    description: `Sanitization: ${String(allRules.length)} rules on ${scopes.join(", ")}`,
   };
 
   return {

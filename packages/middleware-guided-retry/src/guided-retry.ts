@@ -37,15 +37,16 @@ export function createGuidedRetryMiddleware(config: GuidedRetryConfig): GuidedRe
     remainingInjections = 0;
   }
 
-  const capabilityFragment: CapabilityFragment = {
-    label: "guided-retry",
-    description: "Guided retry with structural repair",
-  };
-
   const middleware: KoiMiddleware = {
     name: MIDDLEWARE_NAME,
     priority: MIDDLEWARE_PRIORITY,
-    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => capabilityFragment,
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => ({
+      label: "guided-retry",
+      description:
+        constraint !== undefined
+          ? `Constraint active (${String(remainingInjections)} injections remaining): injects hint into model calls`
+          : "Guided retry idle — no active constraint",
+    }),
 
     async wrapModelCall(
       _ctx: TurnContext,
