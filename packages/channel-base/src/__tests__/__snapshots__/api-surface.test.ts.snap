@@ -160,6 +160,16 @@ declare function formatErrorForChannel(error: KoiError, options?: FormatErrorOpt
  */
 declare function renderBlocks(blocks: readonly ContentBlock[], capabilities: ChannelCapabilities): readonly ContentBlock[];
 
-export { type ChannelAdapterConfig, type FormatErrorOptions, type MessageNormalizer, button, createChannelAdapter, custom, file, formatErrorForChannel, image, renderBlocks, text };
+/**
+ * Splits text into chunks of at most \`limit\` characters.
+ * Prefers splitting at newlines to avoid cutting mid-sentence.
+ *
+ * @param inputText - The text to split.
+ * @param limit - Maximum character count per chunk.
+ * @returns An array of text chunks, each at most \`limit\` characters.
+ */
+declare function splitText(inputText: string, limit: number): readonly string[];
+
+export { type ChannelAdapterConfig, type FormatErrorOptions, type MessageNormalizer, button, createChannelAdapter, custom, file, formatErrorForChannel, image, renderBlocks, splitText, text };
 "
 `;

@@ -197,7 +197,9 @@ export function createDiscordChannel(config: DiscordChannelConfig): DiscordChann
       };
     },
 
-    normalize: createNormalizer(botUserId),
+    // Wrap in a lambda so the normalizer reads the *current* botUserId value
+    // (updated by platformConnect after login), not the initial "unknown" value.
+    normalize: (event: DiscordEvent) => createNormalizer(botUserId)(event),
     platformSendStatus,
     ...(config.onHandlerError !== undefined && { onHandlerError: config.onHandlerError }),
     ...(config.queueWhenDisconnected !== undefined && {

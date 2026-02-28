@@ -2,7 +2,7 @@
  * Soul/user section resolver.
  *
  * Resolves soul/user manifest sections into a KoiMiddleware via the
- * "@koi/middleware-soul" descriptor in the registry.
+ * "@koi/soul" descriptor in the registry.
  */
 
 import type { KoiError, KoiMiddleware, Result } from "@koi/core";
@@ -21,7 +21,7 @@ interface SoulManifestSlice {
  *
  * - If neither soul nor user is present: returns undefined (no middleware needed)
  * - Constructs options from manifest soul/user sections
- * - Looks up "@koi/middleware-soul" in the registry
+ * - Looks up "@koi/soul" in the registry
  * - Factory receives options + context (context.manifestDir used as basePath)
  */
 export async function resolveSoul(
@@ -35,13 +35,13 @@ export async function resolveSoul(
   }
 
   // Check if soul descriptor is registered
-  if (!registry.has("middleware", "@koi/middleware-soul")) {
+  if (!registry.has("middleware", "@koi/soul")) {
     return {
       ok: false,
       error: {
         code: "NOT_FOUND",
         message:
-          'Manifest defines soul/user configuration but "@koi/middleware-soul" is not registered. ' +
+          'Manifest defines soul/user configuration but "@koi/soul" is not registered. ' +
           "Ensure the soul middleware descriptor is included in the registry.",
         retryable: RETRYABLE_DEFAULTS.NOT_FOUND,
       },
@@ -54,10 +54,5 @@ export async function resolveSoul(
     ...(manifest.user !== undefined ? { user: manifest.user } : {}),
   };
 
-  return resolveOne<KoiMiddleware>(
-    "middleware",
-    { name: "@koi/middleware-soul", options },
-    registry,
-    context,
-  );
+  return resolveOne<KoiMiddleware>("middleware", { name: "@koi/soul", options }, registry, context);
 }

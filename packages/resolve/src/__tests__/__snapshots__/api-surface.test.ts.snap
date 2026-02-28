@@ -29,7 +29,7 @@ type BrickFactory<T> = (options: JsonObject, context: ResolutionContext) => T | 
 interface BrickDescriptor<T> {
     /** What kind of brick this descriptor creates. */
     readonly kind: ResolveKind;
-    /** Canonical name (e.g., "@koi/middleware-soul", "anthropic"). */
+    /** Canonical name (e.g., "@koi/soul", "anthropic"). */
     readonly name: string;
     /** Short aliases for convenience (e.g., ["soul", "memory"]). */
     readonly aliases?: readonly string[];
@@ -285,7 +285,7 @@ declare function resolvePermissions(permissions: PermissionConfig | undefined, r
  * Soul/user section resolver.
  *
  * Resolves soul/user manifest sections into a KoiMiddleware via the
- * "@koi/middleware-soul" descriptor in the registry.
+ * "@koi/soul" descriptor in the registry.
  */
 
 /** The manifest sections relevant to soul resolution. */
@@ -298,7 +298,7 @@ interface SoulManifestSlice {
  *
  * - If neither soul nor user is present: returns undefined (no middleware needed)
  * - Constructs options from manifest soul/user sections
- * - Looks up "@koi/middleware-soul" in the registry
+ * - Looks up "@koi/soul" in the registry
  * - Factory receives options + context (context.manifestDir used as basePath)
  */
 declare function resolveSoul(manifest: SoulManifestSlice, registry: ResolveRegistry, context: ResolutionContext): Promise<Result<KoiMiddleware | undefined, KoiError>>;

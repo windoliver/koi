@@ -32,6 +32,7 @@ export {
   DEFAULT_RETRY_CONFIG,
   isRetryable,
   type RetryConfig,
+  sleep,
   withRetry,
 } from "./retry.js";
 export { KoiRuntimeError } from "./runtime-error.js";

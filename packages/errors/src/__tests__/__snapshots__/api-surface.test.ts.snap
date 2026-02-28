@@ -122,7 +122,8 @@ declare function computeBackoff(attempt: number, config: RetryConfig, retryAfter
  * @param config - Retry configuration
  * @param clock - Injectable clock for deterministic delay testing
  */
-declare function withRetry<T>(fn: () => Promise<T>, config?: RetryConfig, clock?: () => number): Promise<T>;
+declare function withRetry<T>(fn: () => Promise<T>, config?: RetryConfig, _clock?: () => number): Promise<T>;
+declare function sleep(ms: number): Promise<void>;
 
 /**
  * KoiRuntimeError — concrete Error subclass wrapping KoiError for L2 packages.
@@ -159,6 +160,6 @@ declare class KoiRuntimeError extends Error {
     toKoiError(): KoiError;
 }
 
-export { type CircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerSnapshot, type CircuitState, DEFAULT_CIRCUIT_BREAKER_CONFIG, DEFAULT_RETRY_CONFIG, KoiRuntimeError, type RetryConfig, computeBackoff, createCircuitBreaker, extractCode, extractMessage, isContextOverflowError, isKoiError, isRetryable, mapFsError, mapParseError, swallowError, toKoiError, withRetry };
+export { type CircuitBreaker, type CircuitBreakerConfig, type CircuitBreakerSnapshot, type CircuitState, DEFAULT_CIRCUIT_BREAKER_CONFIG, DEFAULT_RETRY_CONFIG, KoiRuntimeError, type RetryConfig, computeBackoff, createCircuitBreaker, extractCode, extractMessage, isContextOverflowError, isKoiError, isRetryable, mapFsError, mapParseError, sleep, swallowError, toKoiError, withRetry };
 "
 `;

@@ -278,7 +278,18 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
         return { ok: false, error: notFound(id, `Brick not found: ${id}`) };
       }
 
-      const existing = JSON.parse(row.data) as Record<string, unknown>;
+      const parsed: unknown = JSON.parse(row.data);
+      const validated = validateBrickArtifact(parsed, `sqlite:update:${id}`);
+      if (!validated.ok) {
+        return { ok: false, error: validated.error };
+      }
+      const existing = validated.value;
+
+      const lifecycle = updates.lifecycle ?? existing.lifecycle;
+      const trustTier = updates.trustTier ?? existing.trustTier;
+      const scope = updates.scope ?? existing.scope;
+      const usageCount = updates.usageCount ?? existing.usageCount;
+
       const updated = {
         ...existing,
         ...(updates.lifecycle !== undefined ? { lifecycle: updates.lifecycle } : {}),
@@ -289,14 +300,7 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
       };
       const dataJson = JSON.stringify(updated);
 
-      updateStmt.run(
-        updated.lifecycle as string,
-        updated.trustTier as string,
-        updated.scope as string,
-        updated.usageCount as number,
-        dataJson,
-        id,
-      );
+      updateStmt.run(lifecycle, trustTier, scope, usageCount, dataJson, id);
 
       // Sync brick_tags when tags are updated
       if (updates.tags !== undefined) {

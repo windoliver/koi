@@ -134,7 +134,7 @@ Every L2 package that participates in manifest resolution exports a `BrickDescri
   BrickDescriptor<T>
   ┌─────────────────────────────────────────────────┐
   │ kind:             ResolveKind                    │  "middleware" | "model" | ...
-  │ name:             string                         │  "@koi/middleware-soul"
+  │ name:             string                         │  "@koi/soul"
   │ aliases?:         readonly string[]              │  ["soul"]
   │ optionsValidator: (input) → Result<config>       │  Zod-compatible
   │ factory:          (options, context) → T         │  Creates runtime instance
@@ -150,7 +150,7 @@ Resolution flow for a single brick:
   registry.get("middleware", "soul")
        │
        ├── lookup by name → not found
-       ├── lookup by alias → found: @koi/middleware-soul descriptor
+       ├── lookup by alias → found: @koi/soul descriptor
        │
        ▼
   descriptor.optionsValidator(rawOptions)

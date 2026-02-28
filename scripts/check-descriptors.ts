@@ -18,7 +18,6 @@ const PACKAGES_DIR = new URL("../packages/", import.meta.url).pathname;
 
 /** Packages that intentionally skip descriptor export. */
 const SKIP_LIST = new Set([
-  "middleware-integration",
   "middleware-guardrails",
   "middleware-feedback-loop",
   "middleware-event-trace",

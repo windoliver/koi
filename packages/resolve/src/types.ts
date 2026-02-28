@@ -58,7 +58,7 @@ export type BrickFactory<T> = (options: JsonObject, context: ResolutionContext) 
 export interface BrickDescriptor<T> {
   /** What kind of brick this descriptor creates. */
   readonly kind: ResolveKind;
-  /** Canonical name (e.g., "@koi/middleware-soul", "anthropic"). */
+  /** Canonical name (e.g., "@koi/soul", "anthropic"). */
   readonly name: string;
   /** Short aliases for convenience (e.g., ["soul", "memory"]). */
   readonly aliases?: readonly string[];

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * E2E test script for @koi/middleware-soul — validates that soul personality
+ * E2E test script for @koi/soul — validates that soul personality
  * injection actually changes LLM output via real Anthropic API calls.
  *
  * Tests:
@@ -33,8 +33,8 @@ import type {
 import { composeModelChain, composeToolChain } from "../packages/engine/src/compose.js";
 import { createPatternPermissionBackend } from "../packages/middleware-permissions/src/engine.js";
 import { createPermissionsMiddleware } from "../packages/middleware-permissions/src/permissions.js";
-import type { SoulMiddleware } from "../packages/middleware-soul/src/soul.js";
-import { createSoulMiddleware } from "../packages/middleware-soul/src/soul.js";
+import type { SoulMiddleware } from "../packages/soul/src/soul.js";
+import { createSoulMiddleware } from "../packages/soul/src/soul.js";
 import { createMockTurnContext } from "../packages/test-utils/src/index.js";
 
 // ---------------------------------------------------------------------------

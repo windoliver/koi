@@ -165,10 +165,12 @@ function createInMemoryGovernanceBackend(initialMode: BackendMode = "allow"): {
           filtered = filtered.filter((v) => v.rule === filter.rule);
         }
         if (filter.since !== undefined) {
-          filtered = filtered.filter((v) => v.recordedAt >= filter.since!);
+          const since = filter.since;
+          filtered = filtered.filter((v) => v.recordedAt >= since);
         }
         if (filter.until !== undefined) {
-          filtered = filtered.filter((v) => v.recordedAt < filter.until!);
+          const until = filter.until;
+          filtered = filtered.filter((v) => v.recordedAt < until);
         }
 
         const limit = filter.limit ?? DEFAULT_VIOLATION_QUERY_LIMIT;
@@ -323,7 +325,12 @@ describeE2E("GovernanceBackend E2E through createKoi + createPiAdapter", () => {
       const agent = createKoi({
         name: "governance-e2e-permissive",
         adapter,
-        middleware: [createGovernanceBackendMiddleware(backend, () => capturedAgentId!)],
+        middleware: [
+          createGovernanceBackendMiddleware(backend, () => {
+            if (capturedAgentId === undefined) throw new Error("agentId not yet captured");
+            return capturedAgentId;
+          }),
+        ],
       });
 
       capturedAgentId = agent.id;
@@ -383,7 +390,12 @@ describeE2E("GovernanceBackend E2E through createKoi + createPiAdapter", () => {
       const agent = createKoi({
         name: "governance-e2e-blocking",
         adapter,
-        middleware: [createGovernanceBackendMiddleware(backend, () => capturedAgentId!)],
+        middleware: [
+          createGovernanceBackendMiddleware(backend, () => {
+            if (capturedAgentId === undefined) throw new Error("agentId not yet captured");
+            return capturedAgentId;
+          }),
+        ],
       });
 
       capturedAgentId = agent.id;
@@ -443,7 +455,12 @@ describeE2E("GovernanceBackend E2E through createKoi + createPiAdapter", () => {
       const agent = createKoi({
         name: "governance-e2e-failclosed",
         adapter,
-        middleware: [createGovernanceBackendMiddleware(backend, () => capturedAgentId!)],
+        middleware: [
+          createGovernanceBackendMiddleware(backend, () => {
+            if (capturedAgentId === undefined) throw new Error("agentId not yet captured");
+            return capturedAgentId;
+          }),
+        ],
       });
 
       capturedAgentId = agent.id;
@@ -697,7 +714,12 @@ describeE2E("GovernanceBackend E2E through createKoi + createPiAdapter", () => {
       const agent = createKoi({
         name: "governance-e2e-coexist",
         adapter,
-        middleware: [createGovernanceBackendMiddleware(backend, () => capturedAgentId!)],
+        middleware: [
+          createGovernanceBackendMiddleware(backend, () => {
+            if (capturedAgentId === undefined) throw new Error("agentId not yet captured");
+            return capturedAgentId;
+          }),
+        ],
         governance: {
           maxTurns: 5,
         },

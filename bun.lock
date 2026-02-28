@@ -209,6 +209,7 @@
       "dependencies": {
         "@koi/channel-base": "workspace:*",
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
         "@koi/resolve": "workspace:*",
         "grammy": "1.40.0",
       },
@@ -264,12 +265,12 @@
         "@koi/middleware-sandbox": "workspace:*",
         "@koi/middleware-sanitize": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
-        "@koi/middleware-soul": "workspace:*",
         "@koi/middleware-tool-selector": "workspace:*",
         "@koi/middleware-turn-ack": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/resolve": "workspace:*",
         "@koi/shutdown": "workspace:*",
+        "@koi/soul": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine-pi": "workspace:*",
@@ -321,6 +322,10 @@
         "zod": "4.3.6",
       },
       "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/middleware-memory": "workspace:*",
+        "@koi/model-router": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -429,11 +434,20 @@
         "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
         "@koi/filesystem": "workspace:*",
+        "@koi/middleware-audit": "workspace:*",
+        "@koi/middleware-event-trace": "workspace:*",
+        "@koi/middleware-fs-rollback": "workspace:*",
+        "@koi/middleware-guided-retry": "workspace:*",
+        "@koi/middleware-memory": "workspace:*",
+        "@koi/middleware-pay": "workspace:*",
         "@koi/middleware-sandbox": "workspace:*",
         "@koi/model-router": "workspace:*",
+        "@koi/node": "workspace:*",
         "@koi/scheduler": "workspace:*",
         "@koi/scheduler-provider": "workspace:*",
         "@koi/scope": "workspace:*",
+        "@koi/snapshot-chain-store": "workspace:*",
+        "@koi/test-utils": "workspace:*",
         "@koi/webhook-provider": "workspace:*",
       },
     },
@@ -668,21 +682,6 @@
         "@koi/core": "workspace:*",
       },
     },
-    "packages/identity": {
-      "name": "@koi/identity",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/file-resolution": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/bootstrap": "workspace:*",
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/manifest": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
     "packages/long-running": {
       "name": "@koi/long-running",
       "version": "0.0.0",
@@ -888,24 +887,15 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/middleware-integration": {
-      "name": "@koi/middleware-integration",
+    "packages/middleware-memory": {
+      "name": "@koi/middleware-memory",
       "version": "0.0.0",
-      "devDependencies": {
-        "@koi/context": "workspace:*",
+      "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/engine": "workspace:*",
-        "@koi/engine-loop": "workspace:*",
-        "@koi/execution-context": "workspace:*",
-        "@koi/middleware-audit": "workspace:*",
-        "@koi/middleware-event-trace": "workspace:*",
-        "@koi/middleware-fs-rollback": "workspace:*",
-        "@koi/middleware-guided-retry": "workspace:*",
-        "@koi/middleware-pay": "workspace:*",
-        "@koi/middleware-permissions": "workspace:*",
-        "@koi/model-router": "workspace:*",
-        "@koi/node": "workspace:*",
-        "@koi/snapshot-chain-store": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -1016,19 +1006,6 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-soul": {
-      "name": "@koi/middleware-soul",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/file-resolution": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "@koi/soul": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -1172,6 +1149,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
       },
     },
     "packages/sandbox": {
@@ -1337,6 +1315,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/sqlite-utils": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -1384,6 +1363,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/file-resolution": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
@@ -1494,6 +1474,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
@@ -1609,7 +1590,6 @@
         "@koi/middleware-sandbox": "workspace:*",
         "@koi/middleware-sanitize": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
-        "@koi/middleware-soul": "workspace:*",
         "@koi/middleware-tool-selector": "workspace:*",
         "@koi/middleware-turn-ack": "workspace:*",
         "@koi/model-router": "workspace:*",
@@ -1617,6 +1597,7 @@
         "@koi/orchestrator": "workspace:*",
         "@koi/resolve": "workspace:*",
         "@koi/sandbox-executor": "workspace:*",
+        "@koi/soul": "workspace:*",
         "@koi/test-utils": "workspace:*",
         "@koi/worktree-merge": "workspace:*",
       },
@@ -2088,8 +2069,6 @@
 
     "@koi/hash": ["@koi/hash@workspace:packages/hash"],
 
-    "@koi/identity": ["@koi/identity@workspace:packages/identity"],
-
     "@koi/long-running": ["@koi/long-running@workspace:packages/long-running"],
 
     "@koi/lsp": ["@koi/lsp@workspace:packages/lsp"],
@@ -2124,7 +2103,7 @@
 
     "@koi/middleware-guided-retry": ["@koi/middleware-guided-retry@workspace:packages/middleware-guided-retry"],
 
-    "@koi/middleware-integration": ["@koi/middleware-integration@workspace:packages/middleware-integration"],
+    "@koi/middleware-memory": ["@koi/middleware-memory@workspace:packages/middleware-memory"],
 
     "@koi/middleware-output-verifier": ["@koi/middleware-output-verifier@workspace:packages/middleware-output-verifier"],
 
@@ -2143,8 +2122,6 @@
     "@koi/middleware-sanitize": ["@koi/middleware-sanitize@workspace:packages/middleware-sanitize"],
 
     "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/middleware-semantic-retry"],
-
-    "@koi/middleware-soul": ["@koi/middleware-soul@workspace:packages/middleware-soul"],
 
     "@koi/middleware-tool-selector": ["@koi/middleware-tool-selector@workspace:packages/middleware-tool-selector"],
 

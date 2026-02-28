@@ -12,6 +12,7 @@
   "dependencies": {
     "@koi/channel-base": "workspace:*",
     "@koi/core": "workspace:*",
+    "@koi/errors": "workspace:*",
     "@koi/resolve": "workspace:*",
     "grammy": "1.40.0"
   },

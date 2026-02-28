@@ -3,8 +3,9 @@
  */
 
 import { describe, expect, mock, test } from "bun:test";
+import { splitText } from "@koi/channel-base";
 import type { DiscordSendTarget } from "./platform-send.js";
-import { discordSend, splitText } from "./platform-send.js";
+import { discordSend } from "./platform-send.js";
 
 // ---------------------------------------------------------------------------
 // Mock channel factory
@@ -209,14 +210,14 @@ describe("discordSend — batching", () => {
 // splitText
 // ---------------------------------------------------------------------------
 
-describe("splitText", () => {
+describe("splitText (via @koi/channel-base)", () => {
   test("returns single-element array for short text", () => {
-    expect(splitText("hello")).toEqual(["hello"]);
+    expect(splitText("hello", 2000)).toEqual(["hello"]);
   });
 
   test("splits at 2000-char boundary", () => {
     const text = "a".repeat(2001);
-    const parts = splitText(text);
+    const parts = splitText(text, 2000);
     expect(parts.length).toBe(2);
     expect(parts[0]?.length).toBeLessThanOrEqual(2000);
     expect(parts.join("")).toBe(text);
@@ -224,23 +225,23 @@ describe("splitText", () => {
 
   test("prefers splitting at newlines", () => {
     const text = `${"a".repeat(1990)}\n${"b".repeat(100)}`;
-    const parts = splitText(text);
+    const parts = splitText(text, 2000);
     expect(parts.length).toBe(2);
     expect(parts[0]?.endsWith("a")).toBe(true);
   });
 
   test("handles text with no newlines", () => {
     const text = "x".repeat(4001);
-    const parts = splitText(text);
+    const parts = splitText(text, 2000);
     expect(parts.length).toBe(3);
     for (const part of parts) {
       expect(part.length).toBeLessThanOrEqual(2000);
     }
   });
 
-  test("returns empty array for empty string", () => {
+  test("returns single-element array for empty string", () => {
     // splitText is not called with empty strings (guarded in buildPayloads)
     // but should handle it gracefully
-    expect(splitText("")).toEqual([""]);
+    expect(splitText("", 2000)).toEqual([""]);
   });
 });

@@ -22,7 +22,6 @@ import { descriptor as planningDescriptor } from "@koi/middleware-planning";
 import { descriptor as sandboxDescriptor } from "@koi/middleware-sandbox";
 import { descriptor as sanitizeDescriptor } from "@koi/middleware-sanitize";
 import { descriptor as semanticRetryDescriptor } from "@koi/middleware-semantic-retry";
-import { descriptor as soulDescriptor } from "@koi/middleware-soul";
 import { descriptor as toolSelectorDescriptor } from "@koi/middleware-tool-selector";
 import { descriptor as turnAckDescriptor } from "@koi/middleware-turn-ack";
 import type { ProviderAdapter, ProviderAdapterConfig } from "@koi/model-router";
@@ -38,6 +37,7 @@ import type {
   ResolvedManifest,
 } from "@koi/resolve";
 import { createRegistry, resolveManifest } from "@koi/resolve";
+import { descriptor as soulDescriptor } from "@koi/soul";
 
 // ---------------------------------------------------------------------------
 // Model provider descriptors — kept in CLI for Phase 1

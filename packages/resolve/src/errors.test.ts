@@ -3,12 +3,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import {
-  aggregateErrors,
-  findClosestName,
-  formatResolutionError,
-  levenshteinDistance,
-} from "./errors.js";
+import { levenshteinDistance } from "@koi/validation";
+import { aggregateErrors, findClosestName, formatResolutionError } from "./errors.js";
 import type { ResolutionFailure } from "./types.js";
 
 // ---------------------------------------------------------------------------

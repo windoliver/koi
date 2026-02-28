@@ -86,7 +86,8 @@ export function topologicalSort(items: ReadonlyMap<TaskItemId, TaskItem>): reado
 
   const result: TaskItemId[] = [];
   while (queue.length > 0) {
-    const current = queue.shift()!;
+    const current = queue.shift();
+    if (current === undefined) break;
     result.push(current);
     // Decrease in-degree of dependents
     for (const [id, item] of items) {

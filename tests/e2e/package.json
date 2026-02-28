@@ -22,7 +22,7 @@
     "@koi/middleware-sandbox": "workspace:*",
     "@koi/middleware-sanitize": "workspace:*",
     "@koi/middleware-semantic-retry": "workspace:*",
-    "@koi/middleware-soul": "workspace:*",
+    "@koi/soul": "workspace:*",
     "@koi/middleware-tool-selector": "workspace:*",
     "@koi/middleware-turn-ack": "workspace:*",
     "@koi/model-router": "workspace:*",

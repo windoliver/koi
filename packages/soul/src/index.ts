@@ -23,6 +23,7 @@ export {
   extractMaxTokens,
   validateSoulConfig,
 } from "./config.js";
+export { descriptor } from "./descriptor.js";
 export { personasFromManifest } from "./manifest.js";
 export type { CachedPersona, ResolvedPersona } from "./persona-map.js";
 export {

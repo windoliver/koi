@@ -6,7 +6,7 @@
  */
 
 import type { JsonObject, KoiError, Result } from "@koi/core";
-import { isKoiError } from "@koi/errors";
+import { isKoiError, sleep } from "@koi/errors";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { McpTransportConfig, ResolvedMcpServerConfig } from "./config.js";
 import {
@@ -327,14 +327,4 @@ export function createMcpClientManager(
     serverName: () => config.name,
     onToolsChanged,
   };
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
 }
