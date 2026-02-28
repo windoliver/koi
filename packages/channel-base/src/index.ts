@@ -14,7 +14,15 @@ export type { ChannelAdapterConfig, MessageNormalizer } from "./channel-adapter-
 export { createChannelAdapter } from "./channel-adapter-factory.js";
 export type { ContentBlock } from "./content-block-builders.js";
 export { button, custom, file, image, text } from "./content-block-builders.js";
+export type { Debouncer, DebouncerConfig } from "./debounce.js";
+export { createDebouncer } from "./debounce.js";
 export type { FormatErrorOptions } from "./format-error.js";
 export { formatErrorForChannel } from "./format-error.js";
+export type { MediaFallbackConfig } from "./media-fallback.js";
+export { createMediaFallback } from "./media-fallback.js";
+export type { Reconnector, ReconnectorConfig } from "./reconnect.js";
+export { createReconnector } from "./reconnect.js";
 export { renderBlocks } from "./render-blocks.js";
+export type { RetryQueue, RetryQueueConfig } from "./retry-queue.js";
+export { createRetryQueue } from "./retry-queue.js";
 export { splitText } from "./split-text.js";
