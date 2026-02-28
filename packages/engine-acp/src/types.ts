@@ -44,6 +44,12 @@ export interface AcpAdapterConfig {
         readonly version?: string | undefined;
       }
     | undefined;
+  /**
+   * Extra parameters merged into every `session/new` request.
+   * Use this to satisfy agent-specific requirements (e.g., codex-acp requires
+   * `mcpServers: []`).
+   */
+  readonly sessionNewParams?: Readonly<Record<string, unknown>> | undefined;
 }
 
 // ---------------------------------------------------------------------------

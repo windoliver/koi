@@ -368,7 +368,9 @@ export function createAcpAdapter(config: AcpAdapterConfig): AcpEngineAdapter {
         if (msg.method === "session/update") {
           const parsed = parseSessionUpdateParams(msg.params);
           if (parsed === undefined) {
-            console.warn("[engine-acp] Invalid session/update params: failed to parse");
+            // Unknown or unrecognised update kind — skip silently.
+            // Real agents (codex-acp, openclaw, etc.) emit extension update
+            // kinds beyond the ACP spec (e.g., available_commands_update).
             return;
           }
           const events = mapSessionUpdate(parsed.update);
@@ -445,6 +447,9 @@ export function createAcpAdapter(config: AcpAdapterConfig): AcpEngineAdapter {
         env[k] = v;
       }
     }
+    // Unset CLAUDECODE so the ACP subprocess can start even when Koi itself runs
+    // inside a Claude Code session (the nested-session guard checks this var).
+    delete env.CLAUDECODE;
 
     const spawnedProc = Bun.spawn([config.command, ...(config.args ?? [])], {
       ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
@@ -517,6 +522,7 @@ export function createAcpAdapter(config: AcpAdapterConfig): AcpEngineAdapter {
       terminalRegistry = createTerminalRegistry();
       const sessionResult = await sendRequest("session/new", {
         cwd: config.cwd ?? process.cwd(),
+        ...(config.sessionNewParams ?? {}),
       });
 
       const sessionParsed = parseSessionNewResult(sessionResult);
@@ -603,6 +609,10 @@ export function createAcpAdapter(config: AcpAdapterConfig): AcpEngineAdapter {
                 (promptResult.usage.inputTokens ?? 0) + (promptResult.usage.outputTokens ?? 0),
             }
           : metrics;
+
+      // Emit turn_end so L1's onAfterTurn hook fires symmetrically with onBeforeTurn.
+      // The entire ACP session maps to a single L1 turn (turnIndex 0).
+      yield { kind: "turn_end", turnIndex: 0 };
 
       const output: EngineOutput = {
         content: [],

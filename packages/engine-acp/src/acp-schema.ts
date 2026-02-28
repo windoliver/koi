@@ -457,7 +457,10 @@ export interface SessionUpdateParams {
 
 const AgentMessageChunkUpdateSchema = z.object({
   sessionUpdate: z.literal("agent_message_chunk"),
-  content: z.array(ContentBlockSchema),
+  // ACP spec defines content as an array of blocks, but some agents (e.g.,
+  // codex-acp 0.9.x) send a single content block object instead of a
+  // single-element array. Normalize via preprocess so both forms are accepted.
+  content: z.preprocess((c) => (Array.isArray(c) ? c : [c]), z.array(ContentBlockSchema)),
 });
 
 const AgentThoughtChunkUpdateSchema = z.object({
@@ -511,7 +514,18 @@ const SessionUpdateParamsSchema = z.object({
 /** Parse a session/update notification params. Returns undefined if invalid. */
 export function parseSessionUpdateParams(value: unknown): SessionUpdateParams | undefined {
   const r = SessionUpdateParamsSchema.safeParse(value);
-  return r.success ? r.data : undefined;
+  if (r.success) return r.data;
+
+  // If the sessionUpdate kind itself is unrecognised (agent-specific extension),
+  // return undefined silently — the caller should skip, not warn.
+  const update =
+    typeof value === "object" && value !== null
+      ? ((value as Record<string, unknown>).update as Record<string, unknown> | undefined)
+      : undefined;
+  if (typeof update?.sessionUpdate === "string") return undefined;
+
+  // Genuine schema error on a known kind — caller will warn.
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
