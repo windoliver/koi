@@ -97,4 +97,34 @@ describe("mapMcpToolToKoi", () => {
     const result = tool.execute({});
     expect(result).toBeInstanceOf(Promise);
   });
+
+  test("forwards tags from McpToolInfo to ToolDescriptor", () => {
+    const toolInfo: McpToolInfo = {
+      ...createTestToolInfo(),
+      tags: ["coding", "filesystem"],
+    };
+    const client = createMockMcpClientManager({ name: "filesystem" });
+    const tool = mapMcpToolToKoi(toolInfo, client, "filesystem");
+
+    expect(tool.descriptor.tags).toEqual(["coding", "filesystem"]);
+  });
+
+  test("omits tags when McpToolInfo has no tags", () => {
+    const toolInfo = createTestToolInfo();
+    const client = createMockMcpClientManager({ name: "filesystem" });
+    const tool = mapMcpToolToKoi(toolInfo, client, "filesystem");
+
+    expect(tool.descriptor.tags).toBeUndefined();
+  });
+
+  test("omits tags when McpToolInfo has empty tags", () => {
+    const toolInfo: McpToolInfo = {
+      ...createTestToolInfo(),
+      tags: [],
+    };
+    const client = createMockMcpClientManager({ name: "filesystem" });
+    const tool = mapMcpToolToKoi(toolInfo, client, "filesystem");
+
+    expect(tool.descriptor.tags).toBeUndefined();
+  });
 });

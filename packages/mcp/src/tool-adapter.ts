@@ -26,6 +26,7 @@ export function mapMcpToolToKoi(
     name: namespacedName,
     description: toolInfo.description,
     inputSchema: toolInfo.inputSchema,
+    ...(toolInfo.tags !== undefined && toolInfo.tags.length > 0 ? { tags: toolInfo.tags } : {}),
   };
 
   const execute = async (args: JsonObject): Promise<unknown> => {

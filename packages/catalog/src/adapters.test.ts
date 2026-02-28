@@ -166,4 +166,78 @@ describe("createMcpAdapter", () => {
 
     expect(results).toHaveLength(0);
   });
+
+  test("forwards tags from ToolDescriptor to CatalogEntry", async () => {
+    const descriptors: readonly ToolDescriptor[] = [
+      {
+        name: "shell_exec",
+        description: "Execute shell commands",
+        inputSchema: { type: "object" },
+        tags: ["coding", "automation"],
+      },
+    ];
+
+    const resolver: Resolver<ToolDescriptor, Tool> = {
+      discover: async () => descriptors,
+      load: async () => ({
+        ok: false,
+        error: { code: "NOT_FOUND", message: "N/A", retryable: false },
+      }),
+    };
+
+    const adapter = createMcpAdapter(resolver);
+    const results = await adapter.search({});
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.tags).toEqual(["coding", "automation"]);
+  });
+
+  test("omits tags from CatalogEntry when ToolDescriptor has no tags", async () => {
+    const descriptors: readonly ToolDescriptor[] = [
+      {
+        name: "read_file",
+        description: "Reads a file",
+        inputSchema: { type: "object" },
+      },
+    ];
+
+    const resolver: Resolver<ToolDescriptor, Tool> = {
+      discover: async () => descriptors,
+      load: async () => ({
+        ok: false,
+        error: { code: "NOT_FOUND", message: "N/A", retryable: false },
+      }),
+    };
+
+    const adapter = createMcpAdapter(resolver);
+    const results = await adapter.search({});
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.tags).toBeUndefined();
+  });
+
+  test("omits tags from CatalogEntry when ToolDescriptor has empty tags", async () => {
+    const descriptors: readonly ToolDescriptor[] = [
+      {
+        name: "read_file",
+        description: "Reads a file",
+        inputSchema: { type: "object" },
+        tags: [],
+      },
+    ];
+
+    const resolver: Resolver<ToolDescriptor, Tool> = {
+      discover: async () => descriptors,
+      load: async () => ({
+        ok: false,
+        error: { code: "NOT_FOUND", message: "N/A", retryable: false },
+      }),
+    };
+
+    const adapter = createMcpAdapter(resolver);
+    const results = await adapter.search({});
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.tags).toBeUndefined();
+  });
 });
