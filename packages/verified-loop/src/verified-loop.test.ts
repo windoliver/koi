@@ -3,24 +3,24 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readLearnings } from "./learnings.js";
-import { createRalphLoop } from "./ralph-loop.js";
 import type {
   EngineEvent,
   EngineInput,
   GateContext,
   IterationRecord,
   PRDFile,
-  RalphConfig,
   RunIterationFn,
   VerificationFn,
   VerificationResult,
+  VerifiedLoopConfig,
 } from "./types.js";
+import { createVerifiedLoop } from "./verified-loop.js";
 
 let tmpDir: string;
 let prdPath: string;
 
 beforeEach(async () => {
-  tmpDir = await mkdtemp(join(tmpdir(), "ralph-loop-"));
+  tmpDir = await mkdtemp(join(tmpdir(), "verified-loop-"));
   prdPath = join(tmpDir, "prd.json");
 });
 
@@ -69,7 +69,7 @@ function writePrd(items: PRDFile): Promise<number> {
   return Bun.write(prdPath, JSON.stringify(items, null, 2));
 }
 
-function makeConfig(overrides?: Partial<RalphConfig>): RalphConfig {
+function makeConfig(overrides?: Partial<VerifiedLoopConfig>): VerifiedLoopConfig {
   return {
     runIteration: mockRunner(),
     prdPath,
@@ -80,10 +80,10 @@ function makeConfig(overrides?: Partial<RalphConfig>): RalphConfig {
   };
 }
 
-describe("createRalphLoop", () => {
+describe("createVerifiedLoop", () => {
   test("throws on missing prdPath", () => {
     expect(() =>
-      createRalphLoop({
+      createVerifiedLoop({
         ...makeConfig(),
         prdPath: "",
       }),
@@ -92,7 +92,7 @@ describe("createRalphLoop", () => {
 
   test("throws on missing runIteration", () => {
     expect(() =>
-      createRalphLoop({
+      createVerifiedLoop({
         ...makeConfig(),
         runIteration: undefined as unknown as RunIterationFn,
       }),
@@ -101,7 +101,7 @@ describe("createRalphLoop", () => {
 
   test("throws on missing verify", () => {
     expect(() =>
-      createRalphLoop({
+      createVerifiedLoop({
         ...makeConfig(),
         verify: undefined as unknown as VerificationFn,
       }),
@@ -110,15 +110,15 @@ describe("createRalphLoop", () => {
 
   test("throws on missing iterationPrompt", () => {
     expect(() =>
-      createRalphLoop({
+      createVerifiedLoop({
         ...makeConfig(),
-        iterationPrompt: undefined as unknown as RalphConfig["iterationPrompt"],
+        iterationPrompt: undefined as unknown as VerifiedLoopConfig["iterationPrompt"],
       }),
     ).toThrow("iterationPrompt");
   });
 });
 
-describe("RalphLoop.run", () => {
+describe("VerifiedLoop.run", () => {
   test("completes all PRD items", async () => {
     await writePrd({
       items: [
@@ -128,7 +128,7 @@ describe("RalphLoop.run", () => {
       ],
     });
 
-    const loop = createRalphLoop(makeConfig());
+    const loop = createVerifiedLoop(makeConfig());
     const result = await loop.run();
 
     expect(result.iterations).toBe(3);
@@ -146,7 +146,7 @@ describe("RalphLoop.run", () => {
       ],
     });
 
-    const loop = createRalphLoop(
+    const loop = createVerifiedLoop(
       makeConfig({
         maxIterations: 1,
         verify: failGate(),
@@ -167,7 +167,7 @@ describe("RalphLoop.run", () => {
       ],
     });
 
-    const loop = createRalphLoop(
+    const loop = createVerifiedLoop(
       makeConfig({
         verify: async (_ctx) => {
           // Stop after first iteration passes
@@ -191,7 +191,7 @@ describe("RalphLoop.run", () => {
       ],
     });
 
-    const loop = createRalphLoop(
+    const loop = createVerifiedLoop(
       makeConfig({
         runIteration: throwingRunner(1), // fails on first call
       }),
@@ -210,7 +210,7 @@ describe("RalphLoop.run", () => {
 
     // Use let — justified: mutable call counter for gate behavior change
     let gateCalls = 0;
-    const loop = createRalphLoop(
+    const loop = createVerifiedLoop(
       makeConfig({
         maxIterations: 2,
         verify: async (_ctx) => {
@@ -236,7 +236,7 @@ describe("RalphLoop.run", () => {
       items: [{ id: "a", description: "Done", done: true, verifiedAt: "2024-01-01T00:00:00.000Z" }],
     });
 
-    const loop = createRalphLoop(makeConfig());
+    const loop = createVerifiedLoop(makeConfig());
     const result = await loop.run();
 
     expect(result.iterations).toBe(0);
@@ -245,7 +245,7 @@ describe("RalphLoop.run", () => {
   });
 
   test("returns 0 iterations if PRD file missing", async () => {
-    const loop = createRalphLoop(makeConfig({ prdPath: join(tmpDir, "missing.json") }));
+    const loop = createVerifiedLoop(makeConfig({ prdPath: join(tmpDir, "missing.json") }));
     const result = await loop.run();
 
     expect(result.iterations).toBe(0);
@@ -258,7 +258,7 @@ describe("RalphLoop.run", () => {
       items: [{ id: "a", description: "Task A", done: false }],
     });
 
-    const loop = createRalphLoop(makeConfig());
+    const loop = createVerifiedLoop(makeConfig());
     const result = await loop.run();
 
     expect(result.iterationRecords).toHaveLength(1);
@@ -275,7 +275,7 @@ describe("RalphLoop.run", () => {
       items: [{ id: "a", description: "Task A", done: false }],
     });
 
-    const loop = createRalphLoop(makeConfig());
+    const loop = createVerifiedLoop(makeConfig());
     await loop.run();
 
     const learnings = await readLearnings(join(tmpDir, "learnings.json"));
@@ -295,7 +295,7 @@ describe("RalphLoop.run", () => {
 
     // Use let — justified: mutable call counter for gate behavior change
     let gateCalls = 0;
-    const loop = createRalphLoop(
+    const loop = createVerifiedLoop(
       makeConfig({
         verify: async (_ctx) => {
           gateCalls++;
@@ -324,7 +324,7 @@ describe("RalphLoop.run", () => {
     });
 
     const controller = new AbortController();
-    const loop = createRalphLoop(
+    const loop = createVerifiedLoop(
       makeConfig({
         signal: controller.signal,
         verify: async (_ctx) => {
@@ -348,7 +348,7 @@ describe("RalphLoop.run", () => {
     const controller = new AbortController();
     controller.abort("pre-aborted");
 
-    const loop = createRalphLoop(makeConfig({ signal: controller.signal }));
+    const loop = createVerifiedLoop(makeConfig({ signal: controller.signal }));
     const result = await loop.run();
     expect(result.iterations).toBe(0);
   });
@@ -363,7 +363,7 @@ describe("RalphLoop.run", () => {
 
     // Use let — justified: mutable call counter
     let calls = 0;
-    const loop = createRalphLoop(
+    const loop = createVerifiedLoop(
       makeConfig({
         iterationTimeoutMs: 50,
         maxIterations: 2,
@@ -400,7 +400,7 @@ describe("RalphLoop.run", () => {
     });
 
     const observed: IterationRecord[] = [];
-    const loop = createRalphLoop(
+    const loop = createVerifiedLoop(
       makeConfig({
         onIteration: (record) => {
           observed.push(record);
@@ -427,7 +427,7 @@ describe("RalphLoop.run", () => {
 
     // Use let — justified: mutable counter to pass gate after item "a" is skipped
     let gateCalls = 0;
-    const loop = createRalphLoop(
+    const loop = createVerifiedLoop(
       makeConfig({
         maxConsecutiveFailures: 2,
         maxIterations: 10,
@@ -456,7 +456,7 @@ describe("RalphLoop.run", () => {
 
     // Use let — justified: mutable counter for alternating gate behavior
     let gateCalls = 0;
-    const loop = createRalphLoop(
+    const loop = createVerifiedLoop(
       makeConfig({
         maxConsecutiveFailures: 3,
         maxIterations: 5,
@@ -482,7 +482,7 @@ describe("RalphLoop.run", () => {
       items: [{ id: "a", description: "Skipped", done: false, skipped: true }],
     });
 
-    const loop = createRalphLoop(makeConfig());
+    const loop = createVerifiedLoop(makeConfig());
     const result = await loop.run();
 
     expect(result.iterations).toBe(0);
@@ -506,7 +506,7 @@ describe("RalphLoop.run", () => {
       readonly completedCount: number;
     }> = [];
 
-    const loop = createRalphLoop(
+    const loop = createVerifiedLoop(
       makeConfig({
         verify: async (ctx) => {
           capturedContexts.push({
@@ -542,7 +542,7 @@ describe("RalphLoop.run", () => {
       ],
     });
 
-    const loop = createRalphLoop(makeConfig());
+    const loop = createVerifiedLoop(makeConfig());
     const result = await loop.run();
 
     // High priority item should be completed first (iteration 1)
@@ -562,7 +562,7 @@ describe("RalphLoop.run", () => {
 
     // Use let — justified: mutable counter for hanging gate
     let gateCalls = 0;
-    const loop = createRalphLoop(
+    const loop = createVerifiedLoop(
       makeConfig({
         gateTimeoutMs: 50,
         maxIterations: 3,
@@ -591,7 +591,7 @@ describe("RalphLoop.run", () => {
       items: [{ id: "a", description: "Task A", done: false }],
     });
 
-    const loop = createRalphLoop(
+    const loop = createVerifiedLoop(
       makeConfig({
         maxIterations: 2,
         runIteration: (_input: EngineInput): AsyncIterable<EngineEvent> => {

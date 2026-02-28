@@ -27,7 +27,7 @@ export async function readLearnings(path: string): Promise<readonly LearningsEnt
   try {
     parsed = JSON.parse(raw);
   } catch {
-    console.warn(`[ralph] Malformed learnings file, resetting: ${path}`);
+    console.warn(`[verified-loop] Malformed learnings file, resetting: ${path}`);
     return [];
   }
 
@@ -37,7 +37,7 @@ export async function readLearnings(path: string): Promise<readonly LearningsEnt
     !("entries" in parsed) ||
     !Array.isArray((parsed as { readonly entries?: unknown }).entries)
   ) {
-    console.warn(`[ralph] Learnings file missing 'entries' array, resetting: ${path}`);
+    console.warn(`[verified-loop] Learnings file missing 'entries' array, resetting: ${path}`);
     return [];
   }
 

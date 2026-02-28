@@ -1,5 +1,5 @@
 /**
- * Integration test for the full Ralph Loop.
+ * Integration test for the full VerifiedLoop.
  *
  * Uses real file I/O, real subprocess gates (via `test -f`),
  * and a mock RunIterationFn that writes marker files.
@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRalphLoop, createTestGate, readLearnings, readPRD } from "../index.js";
+import { createTestGate, createVerifiedLoop, readLearnings, readPRD } from "../index.js";
 import type {
   EngineEvent,
   EngineInput,
@@ -23,7 +23,7 @@ let prdPath: string;
 let learningsPath: string;
 
 beforeEach(async () => {
-  tmpDir = await mkdtemp(join(tmpdir(), "ralph-integ-"));
+  tmpDir = await mkdtemp(join(tmpdir(), "verified-loop-integ-"));
   prdPath = join(tmpDir, "prd.json");
   learningsPath = join(tmpDir, "learnings.json");
 });
@@ -71,7 +71,7 @@ function makePrompt(ctx: IterationContext): string {
   ].join("\n");
 }
 
-describe("Ralph Loop integration", () => {
+describe("VerifiedLoop integration", () => {
   test("completes 3-item PRD with real file I/O and subprocess gates", async () => {
     const prd: PRDFile = {
       items: [
@@ -87,7 +87,7 @@ describe("Ralph Loop integration", () => {
 
     // Use let — justified: mutable counter tracking gate calls for dynamic file check
     let gateCallCount = 0;
-    const loop = createRalphLoop({
+    const loop = createVerifiedLoop({
       runIteration: createMarkerRunner(markersDir),
       prdPath,
       learningsPath,
@@ -153,7 +153,7 @@ describe("Ralph Loop integration", () => {
     const markersDir = join(tmpDir, "markers2");
     await Bun.write(join(markersDir, ".gitkeep"), "");
 
-    const loop = createRalphLoop({
+    const loop = createVerifiedLoop({
       runIteration: createMarkerRunner(markersDir),
       prdPath,
       learningsPath,

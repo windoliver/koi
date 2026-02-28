@@ -1,5 +1,5 @@
 /**
- * Core Ralph Loop orchestration.
+ * Core VerifiedLoop orchestration.
  *
  * Iterates PRD items through external verification gates,
  * recording learnings and per-iteration metrics.
@@ -13,10 +13,10 @@ import type {
   EngineInput,
   IterationRecord,
   LearningsEntry,
-  RalphConfig,
-  RalphLoop,
-  RalphResult,
   VerificationResult,
+  VerifiedLoop,
+  VerifiedLoopConfig,
+  VerifiedLoopResult,
 } from "./types.js";
 
 const DEFAULT_MAX_ITERATIONS = 100;
@@ -51,19 +51,19 @@ async function drainWithAbort(
   }
 }
 
-/** Create a Ralph Loop orchestrator. */
-export function createRalphLoop(config: RalphConfig): RalphLoop {
+/** Create a VerifiedLoop orchestrator. */
+export function createVerifiedLoop(config: VerifiedLoopConfig): VerifiedLoop {
   if (!config.prdPath) {
-    throw new Error("RalphConfig.prdPath is required");
+    throw new Error("VerifiedLoopConfig.prdPath is required");
   }
   if (!config.runIteration) {
-    throw new Error("RalphConfig.runIteration is required");
+    throw new Error("VerifiedLoopConfig.runIteration is required");
   }
   if (!config.verify) {
-    throw new Error("RalphConfig.verify is required");
+    throw new Error("VerifiedLoopConfig.verify is required");
   }
   if (!config.iterationPrompt) {
-    throw new Error("RalphConfig.iterationPrompt is required");
+    throw new Error("VerifiedLoopConfig.iterationPrompt is required");
   }
 
   const maxIterations = config.maxIterations ?? DEFAULT_MAX_ITERATIONS;
@@ -88,7 +88,7 @@ export function createRalphLoop(config: RalphConfig): RalphLoop {
   }
 
   return {
-    run: async (): Promise<RalphResult> => {
+    run: async (): Promise<VerifiedLoopResult> => {
       const startTime = performance.now();
       const iterationRecords: IterationRecord[] = [];
       // Track consecutive failures per item for stuck-loop detection
@@ -256,7 +256,7 @@ export function createRalphLoop(config: RalphConfig): RalphLoop {
     },
 
     stop: (): void => {
-      abortController.abort("Ralph loop stopped");
+      abortController.abort("Verified loop stopped");
     },
   };
 }
