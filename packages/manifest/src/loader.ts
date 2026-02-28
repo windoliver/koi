@@ -19,6 +19,7 @@ const KNOWN_FIELDS = [
   "tools",
   "channels",
   "middleware",
+  "skills",
   "permissions",
   "metadata",
   "engine",

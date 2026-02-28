@@ -29,6 +29,7 @@ export type {
   MiddlewareConfig,
   ModelConfig,
   PermissionConfig,
+  SkillConfig,
   ToolConfig,
 } from "./assembly.js";
 // audit backend — structured audit logging contract

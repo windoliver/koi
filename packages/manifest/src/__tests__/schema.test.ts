@@ -588,6 +588,42 @@ describe("rawManifestSchema — channel identity", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Skills
+// ---------------------------------------------------------------------------
+
+describe("rawManifestSchema — skills", () => {
+  test("accepts skills array with name and path", () => {
+    const result = parse({
+      skills: [{ name: "code-review", path: "./skills/code-review" }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("accepts skills with options", () => {
+    const result = parse({
+      skills: [{ name: "code-review", path: "./skills/code-review", options: { verbose: true } }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("accepts empty skills array", () => {
+    expect(parse({ skills: [] }).success).toBe(true);
+  });
+
+  test("rejects skill without name", () => {
+    expect(parse({ skills: [{ path: "./skills/foo" }] }).success).toBe(false);
+  });
+
+  test("rejects skill without path", () => {
+    expect(parse({ skills: [{ name: "foo" }] }).success).toBe(false);
+  });
+
+  test("rejects skills as non-array", () => {
+    expect(parse({ skills: "code-review" }).success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // zodToKoiError
 // ---------------------------------------------------------------------------
 

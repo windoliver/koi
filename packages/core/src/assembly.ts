@@ -21,6 +21,13 @@ export interface ToolConfig {
   readonly publisher?: string;
 }
 
+export interface SkillConfig {
+  readonly name: string;
+  /** Path to directory containing SKILL.md. Relative to manifest location. */
+  readonly path: string;
+  readonly options?: JsonObject;
+}
+
 export interface ChannelIdentity {
   /** Display name for this channel persona — injected as "You are <name>." in the system prompt. */
   readonly name?: string;
@@ -83,6 +90,7 @@ export interface AgentManifest {
   readonly delegation?: DelegationConfig;
   readonly capability?: CapabilityConfig;
   readonly supervision?: SupervisionConfig;
+  readonly skills?: readonly SkillConfig[];
   readonly outboundWebhooks?: readonly OutboundWebhookConfig[] | undefined;
   /**
    * Lifecycle behavior declaration — "copilot" survives parent death,

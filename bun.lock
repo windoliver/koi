@@ -246,6 +246,7 @@
       "dependencies": {
         "@clack/prompts": "0.10.0",
         "@koi/channel-cli": "workspace:*",
+        "@koi/context": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/deploy": "workspace:*",
         "@koi/engine": "workspace:*",
@@ -1358,6 +1359,22 @@
         "oxc-parser": "0.114.0",
       },
     },
+    "packages/skills": {
+      "name": "@koi/skills",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/skill-scanner": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/snapshot-chain-store": {
       "name": "@koi/snapshot-chain-store",
       "version": "0.0.0",
@@ -2227,6 +2244,8 @@
     "@koi/shutdown": ["@koi/shutdown@workspace:packages/shutdown"],
 
     "@koi/skill-scanner": ["@koi/skill-scanner@workspace:packages/skill-scanner"],
+
+    "@koi/skills": ["@koi/skills@workspace:packages/skills"],
 
     "@koi/snapshot-chain-store": ["@koi/snapshot-chain-store@workspace:packages/snapshot-chain-store"],
 

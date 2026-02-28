@@ -318,4 +318,36 @@ describe("transformToLoadedManifest", () => {
       deny: ["bash:rm -rf *"],
     });
   });
+
+  test("transforms skills with name and path", () => {
+    const raw = {
+      name: "my-agent",
+      version: "1.0.0",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+      skills: [{ name: "code-review", path: "./skills/code-review" }],
+    };
+    const result = transformToLoadedManifest(raw);
+    expect(result.skills).toEqual([{ name: "code-review", path: "./skills/code-review" }]);
+  });
+
+  test("transforms skills with options", () => {
+    const raw = {
+      name: "my-agent",
+      version: "1.0.0",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+      skills: [{ name: "code-review", path: "./skills/cr", options: { verbose: true } }],
+    };
+    const result = transformToLoadedManifest(raw);
+    expect(result.skills?.[0]?.options).toEqual({ verbose: true });
+  });
+
+  test("omits skills when not present in raw", () => {
+    const raw = {
+      name: "my-agent",
+      version: "1.0.0",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+    };
+    const result = transformToLoadedManifest(raw);
+    expect("skills" in result).toBe(false);
+  });
 });
