@@ -388,6 +388,26 @@ describe("createSandboxMiddleware", () => {
     });
   });
 
+  describe("fast-path throwIfAborted", () => {
+    it("throws immediately when composed signal is already aborted", async () => {
+      const mw = createSandboxMiddleware(
+        makeConfig({ "abort-tool": "sandbox" }, { timeoutGraceMs: 5_000 }),
+      );
+      const spy = createSpyToolHandler({ output: { should: "not reach" } });
+      const controller = new AbortController();
+      controller.abort(new Error("pre-aborted"));
+      const request: ToolRequest = {
+        toolId: "abort-tool",
+        input: { arg: "value" },
+        signal: controller.signal,
+      };
+
+      await expect(mw.wrapToolCall?.(ctx, request, spy.handler)).rejects.toThrow();
+      // The handler should NOT have been called — fast-path rejects before executing
+      expect(spy.calls).toHaveLength(0);
+    });
+  });
+
   describe("describeCapabilities", () => {
     it("is defined on the middleware", () => {
       const mw = createSandboxMiddleware(makeConfig({}, { failClosedOnLookupError: false }));

@@ -116,7 +116,7 @@ interface AgentStatusPayload {
     readonly lastActivityMs: number;
 }
 type NodeState = "starting" | "connected" | "reconnecting" | "stopping" | "stopped";
-type NodeEventType = "connected" | "disconnected" | "reconnecting" | "reconnected" | "reconnect_exhausted" | "heartbeat_timeout" | "auth_started" | "auth_success" | "auth_failed" | "agent_dispatched" | "agent_terminated" | "agent_crashed" | "agent_recovered" | "memory_warning" | "memory_eviction" | "shutdown_started" | "shutdown_complete" | "pending_frame_sent" | "pending_frame_expired" | "pending_frame_dead_letter";
+type NodeEventType = "connected" | "disconnected" | "reconnecting" | "reconnected" | "reconnect_exhausted" | "heartbeat_timeout" | "auth_started" | "auth_success" | "auth_failed" | "agent_dispatched" | "agent_terminated" | "agent_crashed" | "agent_recovered" | "tool_timeout" | "tool_error" | "memory_warning" | "memory_eviction" | "shutdown_started" | "shutdown_complete" | "pending_frame_sent" | "pending_frame_expired" | "pending_frame_dead_letter";
 interface NodeEvent {
     readonly type: NodeEventType;
     readonly timestamp: number;
@@ -661,6 +661,8 @@ interface ToolCallHandlerDeps {
     readonly emit: (type: NodeEvent["type"], data?: unknown) => void;
     /** Milliseconds before a tool execution is considered timed out. Defaults to DEFAULT_TOOL_CALL_TIMEOUT_MS. */
     readonly timeoutMs?: number | undefined;
+    /** Optional shutdown signal — composed with timeout signal so tool calls are cancelled on graceful shutdown. */
+    readonly shutdownSignal?: AbortSignal | undefined;
 }
 /** Handle a tool_call frame: validate -> permission check -> resolve -> execute -> respond. */
 declare function handleToolCall(frame: NodeFrame, deps: ToolCallHandlerDeps): Promise<void>;
