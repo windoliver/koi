@@ -32,7 +32,6 @@ import type {
 import { GOVERNANCE, GOVERNANCE_VARIABLES, toolToken } from "@koi/core";
 import { createLoopAdapter } from "@koi/engine-loop";
 import type { CompactorMiddleware } from "@koi/middleware-compactor";
-import { COMPACTOR_GOVERNANCE, createCompactorMiddleware } from "@koi/middleware-compactor";
 import { createAnthropicAdapter } from "@koi/model-router";
 import { createMockTurnContext } from "@koi/test-utils";
 import type { GovernanceControllerBuilder } from "../src/governance-controller.js";
@@ -46,7 +45,13 @@ import type { GovernanceConfig } from "../src/types.js";
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const HAS_KEY = ANTHROPIC_KEY.length > 0;
 const E2E_OPTED_IN = process.env.E2E_TESTS === "1";
-const describeE2E = HAS_KEY && E2E_OPTED_IN ? describe : describe.skip;
+
+// Dynamic import: @koi/middleware-compactor is not a declared dependency of @koi/engine.
+// These E2E tests cross package boundaries and only run locally with E2E_TESTS=1.
+// let justified: lazily loaded module, undefined when E2E tests are disabled
+const compactorMod =
+  HAS_KEY && E2E_OPTED_IN ? await import("@koi/middleware-compactor") : undefined;
+const describeE2E = compactorMod !== undefined ? describe : describe.skip;
 
 const TIMEOUT_MS = 120_000;
 
@@ -87,11 +92,14 @@ function createModelCall(): (request: ModelRequest) => Promise<import("@koi/core
  * Create a ComponentProvider that attaches the compactor's governance
  * contributor to the agent entity, making it discoverable by L1.
  */
-function createCompactorGovernanceProvider(mw: CompactorMiddleware): ComponentProvider {
+function createCompactorGovernanceProvider(
+  mw: CompactorMiddleware,
+  governanceToken: string,
+): ComponentProvider {
   return {
     name: "compactor-governance",
     async attach(): Promise<ReadonlyMap<string, unknown>> {
-      return new Map([[COMPACTOR_GOVERNANCE as string, mw.governanceContributor]]);
+      return new Map([[governanceToken, mw.governanceContributor]]);
     },
   };
 }
@@ -101,6 +109,10 @@ function createCompactorGovernanceProvider(mw: CompactorMiddleware): ComponentPr
 // ---------------------------------------------------------------------------
 
 describeE2E("e2e: context occupancy through full createKoi + compactor middleware", () => {
+  const mod = compactorMod;
+  if (mod === undefined) return;
+  const { COMPACTOR_GOVERNANCE, createCompactorMiddleware } = mod;
+
   const modelCall = createModelCall();
 
   test(
@@ -123,7 +135,7 @@ describeE2E("e2e: context occupancy through full createKoi + compactor middlewar
         },
         adapter,
         middleware: [compactorMw],
-        providers: [createCompactorGovernanceProvider(compactorMw)],
+        providers: [createCompactorGovernanceProvider(compactorMw, COMPACTOR_GOVERNANCE as string)],
         loopDetection: false,
       });
 
@@ -196,7 +208,7 @@ describeE2E("e2e: context occupancy through full createKoi + compactor middlewar
         },
         adapter,
         middleware: [compactorMw],
-        providers: [createCompactorGovernanceProvider(compactorMw)],
+        providers: [createCompactorGovernanceProvider(compactorMw, COMPACTOR_GOVERNANCE as string)],
         governance: governanceConfig,
         loopDetection: false,
       });
@@ -289,7 +301,10 @@ describeE2E("e2e: context occupancy through full createKoi + compactor middlewar
         },
         adapter,
         middleware: [compactorMw],
-        providers: [toolProvider, createCompactorGovernanceProvider(compactorMw)],
+        providers: [
+          toolProvider,
+          createCompactorGovernanceProvider(compactorMw, COMPACTOR_GOVERNANCE as string),
+        ],
         loopDetection: false,
       });
 
@@ -359,7 +374,7 @@ describeE2E("e2e: context occupancy through full createKoi + compactor middlewar
         },
         adapter,
         middleware: [compactorMw],
-        providers: [createCompactorGovernanceProvider(compactorMw)],
+        providers: [createCompactorGovernanceProvider(compactorMw, COMPACTOR_GOVERNANCE as string)],
         loopDetection: false,
       });
 
@@ -410,7 +425,7 @@ describeE2E("e2e: context occupancy through full createKoi + compactor middlewar
         },
         adapter,
         middleware: [compactorMw],
-        providers: [createCompactorGovernanceProvider(compactorMw)],
+        providers: [createCompactorGovernanceProvider(compactorMw, COMPACTOR_GOVERNANCE as string)],
         loopDetection: false,
       });
 
@@ -471,7 +486,7 @@ describeE2E("e2e: context occupancy through full createKoi + compactor middlewar
         },
         adapter,
         middleware: [compactorMw],
-        providers: [createCompactorGovernanceProvider(compactorMw)],
+        providers: [createCompactorGovernanceProvider(compactorMw, COMPACTOR_GOVERNANCE as string)],
         governance: governanceConfig,
         loopDetection: false,
       });

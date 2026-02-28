@@ -20,7 +20,6 @@ import { GOVERNANCE, GOVERNANCE_VARIABLES, toolToken } from "@koi/core";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { createPiAdapter } from "@koi/engine-pi";
 import type { CompactorBundle } from "@koi/middleware-compactor";
-import { COMPACTOR_GOVERNANCE, createCompactorBundle } from "@koi/middleware-compactor";
 import { createAnthropicAdapter } from "@koi/model-router";
 import { createMockTurnContext } from "@koi/test-utils";
 import type { GovernanceControllerBuilder } from "../src/governance-controller.js";
@@ -34,7 +33,13 @@ import type { GovernanceConfig } from "../src/types.js";
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY ?? "";
 const HAS_KEY = ANTHROPIC_KEY.length > 0;
 const E2E_OPTED_IN = process.env.E2E_TESTS === "1";
-const describeE2E = HAS_KEY && E2E_OPTED_IN ? describe : describe.skip;
+
+// Dynamic import: @koi/middleware-compactor is not a declared dependency of @koi/engine.
+// These E2E tests cross package boundaries and only run locally with E2E_TESTS=1.
+// let justified: lazily loaded module, undefined when E2E tests are disabled
+const compactorMod =
+  HAS_KEY && E2E_OPTED_IN ? await import("@koi/middleware-compactor") : undefined;
+const describeE2E = compactorMod !== undefined ? describe : describe.skip;
 
 const TIMEOUT_MS = 120_000;
 const E2E_MODEL_LOOP = "claude-haiku-4-5-20251001";
@@ -83,11 +88,14 @@ function createModelCall(): (request: ModelRequest) => Promise<import("@koi/core
  * Create a ComponentProvider that attaches the compactor's governance
  * contributor so it's discoverable by L1's governance extension.
  */
-function createCompactorGovernanceProvider(bundle: CompactorBundle): ComponentProvider {
+function createCompactorGovernanceProvider(
+  bundle: CompactorBundle,
+  governanceToken: string,
+): ComponentProvider {
   return {
     name: "compactor-governance",
     async attach(): Promise<ReadonlyMap<string, unknown>> {
-      return new Map([[COMPACTOR_GOVERNANCE as string, bundle.middleware.governanceContributor]]);
+      return new Map([[governanceToken, bundle.middleware.governanceContributor]]);
     },
   };
 }
@@ -116,6 +124,10 @@ function createEchoTool(): { readonly tool: Tool; readonly provider: ComponentPr
 }
 
 describeE2E("e2e: compactor bundle through createKoi + createLoopAdapter", () => {
+  const mod = compactorMod;
+  if (mod === undefined) return;
+  const { COMPACTOR_GOVERNANCE, createCompactorBundle } = mod;
+
   const modelCall = createModelCall();
 
   test(
@@ -136,7 +148,10 @@ describeE2E("e2e: compactor bundle through createKoi + createLoopAdapter", () =>
         },
         adapter,
         middleware: [bundle.middleware],
-        providers: [...bundle.providers, createCompactorGovernanceProvider(bundle)],
+        providers: [
+          ...bundle.providers,
+          createCompactorGovernanceProvider(bundle, COMPACTOR_GOVERNANCE as string),
+        ],
         loopDetection: false,
       });
 
@@ -187,7 +202,10 @@ describeE2E("e2e: compactor bundle through createKoi + createLoopAdapter", () =>
         },
         adapter,
         middleware: [bundle.middleware],
-        providers: [...bundle.providers, createCompactorGovernanceProvider(bundle)],
+        providers: [
+          ...bundle.providers,
+          createCompactorGovernanceProvider(bundle, COMPACTOR_GOVERNANCE as string),
+        ],
         loopDetection: false,
       });
 
@@ -244,7 +262,10 @@ describeE2E("e2e: compactor bundle through createKoi + createLoopAdapter", () =>
         },
         adapter: adapter1,
         middleware: [bundle.middleware],
-        providers: [...bundle.providers, createCompactorGovernanceProvider(bundle)],
+        providers: [
+          ...bundle.providers,
+          createCompactorGovernanceProvider(bundle, COMPACTOR_GOVERNANCE as string),
+        ],
         loopDetection: false,
       });
 
@@ -276,7 +297,10 @@ describeE2E("e2e: compactor bundle through createKoi + createLoopAdapter", () =>
         },
         adapter: adapter2,
         middleware: [bundle.middleware],
-        providers: [...bundle.providers, createCompactorGovernanceProvider(bundle)],
+        providers: [
+          ...bundle.providers,
+          createCompactorGovernanceProvider(bundle, COMPACTOR_GOVERNANCE as string),
+        ],
         loopDetection: false,
       });
 
@@ -317,7 +341,11 @@ describeE2E("e2e: compactor bundle through createKoi + createLoopAdapter", () =>
         },
         adapter,
         middleware: [bundle.middleware],
-        providers: [...bundle.providers, echo.provider, createCompactorGovernanceProvider(bundle)],
+        providers: [
+          ...bundle.providers,
+          echo.provider,
+          createCompactorGovernanceProvider(bundle, COMPACTOR_GOVERNANCE as string),
+        ],
         loopDetection: false,
       });
 
@@ -380,7 +408,10 @@ describeE2E("e2e: compactor bundle through createKoi + createLoopAdapter", () =>
         },
         adapter,
         middleware: [bundle.middleware],
-        providers: [...bundle.providers, createCompactorGovernanceProvider(bundle)],
+        providers: [
+          ...bundle.providers,
+          createCompactorGovernanceProvider(bundle, COMPACTOR_GOVERNANCE as string),
+        ],
         governance: governanceConfig,
         loopDetection: false,
       });
@@ -432,7 +463,11 @@ describeE2E("e2e: compactor bundle through createKoi + createLoopAdapter", () =>
         },
         adapter,
         middleware: [bundle.middleware],
-        providers: [...bundle.providers, echo.provider, createCompactorGovernanceProvider(bundle)],
+        providers: [
+          ...bundle.providers,
+          echo.provider,
+          createCompactorGovernanceProvider(bundle, COMPACTOR_GOVERNANCE as string),
+        ],
         loopDetection: false,
       });
 
@@ -470,6 +505,10 @@ describeE2E("e2e: compactor bundle through createKoi + createLoopAdapter", () =>
 });
 
 describeE2E("e2e: compactor bundle through createKoi + createPiAdapter", () => {
+  const mod = compactorMod;
+  if (mod === undefined) return;
+  const { COMPACTOR_GOVERNANCE, createCompactorBundle } = mod;
+
   test(
     "pi adapter: bundle wires middleware + tool, agent completes",
     async () => {
@@ -489,7 +528,10 @@ describeE2E("e2e: compactor bundle through createKoi + createPiAdapter", () => {
         },
         adapter,
         middleware: [bundle.middleware],
-        providers: [...bundle.providers, createCompactorGovernanceProvider(bundle)],
+        providers: [
+          ...bundle.providers,
+          createCompactorGovernanceProvider(bundle, COMPACTOR_GOVERNANCE as string),
+        ],
         loopDetection: false,
       });
 
@@ -540,7 +582,10 @@ describeE2E("e2e: compactor bundle through createKoi + createPiAdapter", () => {
         },
         adapter,
         middleware: [bundle.middleware],
-        providers: [...bundle.providers, createCompactorGovernanceProvider(bundle)],
+        providers: [
+          ...bundle.providers,
+          createCompactorGovernanceProvider(bundle, COMPACTOR_GOVERNANCE as string),
+        ],
         loopDetection: false,
       });
 
@@ -591,7 +636,11 @@ describeE2E("e2e: compactor bundle through createKoi + createPiAdapter", () => {
         },
         adapter,
         middleware: [bundle.middleware],
-        providers: [...bundle.providers, echo.provider, createCompactorGovernanceProvider(bundle)],
+        providers: [
+          ...bundle.providers,
+          echo.provider,
+          createCompactorGovernanceProvider(bundle, COMPACTOR_GOVERNANCE as string),
+        ],
         loopDetection: false,
       });
 
@@ -644,7 +693,10 @@ describeE2E("e2e: compactor bundle through createKoi + createPiAdapter", () => {
         },
         adapter: adapter1,
         middleware: [bundle.middleware],
-        providers: [...bundle.providers, createCompactorGovernanceProvider(bundle)],
+        providers: [
+          ...bundle.providers,
+          createCompactorGovernanceProvider(bundle, COMPACTOR_GOVERNANCE as string),
+        ],
         loopDetection: false,
       });
 
@@ -670,7 +722,10 @@ describeE2E("e2e: compactor bundle through createKoi + createPiAdapter", () => {
         },
         adapter: adapter2,
         middleware: [bundle.middleware],
-        providers: [...bundle.providers, createCompactorGovernanceProvider(bundle)],
+        providers: [
+          ...bundle.providers,
+          createCompactorGovernanceProvider(bundle, COMPACTOR_GOVERNANCE as string),
+        ],
         loopDetection: false,
       });
 
@@ -719,7 +774,10 @@ describeE2E("e2e: compactor bundle through createKoi + createPiAdapter", () => {
         },
         adapter,
         middleware: [bundle.middleware],
-        providers: [...bundle.providers, createCompactorGovernanceProvider(bundle)],
+        providers: [
+          ...bundle.providers,
+          createCompactorGovernanceProvider(bundle, COMPACTOR_GOVERNANCE as string),
+        ],
         governance: governanceConfig,
         loopDetection: false,
       });
