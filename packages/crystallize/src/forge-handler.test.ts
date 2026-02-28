@@ -137,8 +137,9 @@ describe("createCrystallizeForgeHandler", () => {
     const candidate = createCandidate(["fetch", "parse"], 5, 1000);
     const result = handler.handleCandidates([candidate], 1000);
 
-    expect(result[0]?.implementation).toContain('ctx.executor("fetch"');
-    expect(result[0]?.implementation).toContain('ctx.executor("parse"');
+    expect(result[0]?.implementation).toContain("executePipeline");
+    expect(result[0]?.implementation).toContain('"fetch"');
+    expect(result[0]?.implementation).toContain('"parse"');
   });
 
   test("returns empty when maxForged already reached from prior calls", () => {

@@ -25,36 +25,39 @@ function createCandidate(
 // ---------------------------------------------------------------------------
 
 describe("generateCompositeImplementation", () => {
-  test("generates implementation with sequential tool calls", () => {
+  test("generates implementation with pipeline executor import", () => {
     const candidate = createCandidate(["fetch", "parse", "save"], 5);
     const impl = generateCompositeImplementation(candidate);
 
     expect(impl).toContain("export default async function execute");
-    expect(impl).toContain('ctx.executor("fetch"');
-    expect(impl).toContain('ctx.executor("parse"');
-    expect(impl).toContain('ctx.executor("save"');
+    expect(impl).toContain("executePipeline");
+    expect(impl).toContain('"fetch"');
+    expect(impl).toContain('"parse"');
+    expect(impl).toContain('"save"');
   });
 
-  test("first step receives undefined as input", () => {
+  test("includes step definitions as const array", () => {
     const candidate = createCandidate(["fetch", "parse"], 3);
     const impl = generateCompositeImplementation(candidate);
 
-    expect(impl).toContain('ctx.executor("fetch", undefined)');
+    expect(impl).toContain("as const");
+    expect(impl).toContain("STEPS");
   });
 
-  test("subsequent steps receive previous result", () => {
+  test("uses executePipeline for execution", () => {
     const candidate = createCandidate(["fetch", "parse", "save"], 3);
     const impl = generateCompositeImplementation(candidate);
 
-    expect(impl).toContain('ctx.executor("parse", result_0)');
-    expect(impl).toContain('ctx.executor("save", result_1)');
+    expect(impl).toContain("executePipeline(STEPS, ctx");
+    expect(impl).toContain("result.value");
   });
 
-  test("returns last result variable", () => {
+  test("handles errors from pipeline", () => {
     const candidate = createCandidate(["a", "b", "c"], 3);
     const impl = generateCompositeImplementation(candidate);
 
-    expect(impl).toContain("return result_2;");
+    expect(impl).toContain("!result.ok");
+    expect(impl).toContain("throw new Error");
   });
 
   test("includes pattern comment with arrow notation", () => {
@@ -65,19 +68,19 @@ describe("generateCompositeImplementation", () => {
     expect(impl).toContain("4 occurrences");
   });
 
-  test("includes auto-generated and deferred comments", () => {
+  test("includes auto-generated comment", () => {
     const candidate = createCandidate(["a", "b"], 2);
     const impl = generateCompositeImplementation(candidate);
 
     expect(impl).toContain("Auto-generated composite tool");
-    expect(impl).toContain("Parameters deferred");
+    expect(impl).toContain("pipeline executor");
   });
 
   test("handles single-step candidate", () => {
     const candidate = createCandidate(["only"], 5);
     const impl = generateCompositeImplementation(candidate);
 
-    expect(impl).toContain('ctx.executor("only", undefined)');
-    expect(impl).toContain("return result_0;");
+    expect(impl).toContain('"only"');
+    expect(impl).toContain("executePipeline");
   });
 });

@@ -779,6 +779,16 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/forge-optimizer": {
+      "name": "@koi/forge-optimizer",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/gateway": {
       "name": "@koi/gateway",
       "version": "0.0.0",
@@ -902,6 +912,17 @@
         "@koi/validation": "workspace:*",
         "@modelcontextprotocol/sdk": "1.12.1",
         "zod": "4.3.6",
+      },
+    },
+    "packages/mcp-server": {
+      "name": "@koi/mcp-server",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@modelcontextprotocol/sdk": "1.12.1",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
       },
     },
     "packages/memory-fs": {
@@ -2413,6 +2434,8 @@
 
     "@koi/forge": ["@koi/forge@workspace:packages/forge"],
 
+    "@koi/forge-optimizer": ["@koi/forge-optimizer@workspace:packages/forge-optimizer"],
+
     "@koi/gateway": ["@koi/gateway@workspace:packages/gateway"],
 
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/git-utils"],
@@ -2434,6 +2457,8 @@
     "@koi/manifest": ["@koi/manifest@workspace:packages/manifest"],
 
     "@koi/mcp": ["@koi/mcp@workspace:packages/mcp"],
+
+    "@koi/mcp-server": ["@koi/mcp-server@workspace:packages/mcp-server"],
 
     "@koi/memory-fs": ["@koi/memory-fs@workspace:packages/memory-fs"],
 

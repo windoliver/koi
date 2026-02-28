@@ -139,7 +139,15 @@ function createDescriptor(
     name: candidate.suggestedName,
     description: `Auto-crystallized composite: ${candidate.ngram.steps.map((s) => s.toolId).join(" \u2192 ")}`,
     implementation: generateCompositeImplementation(candidate),
-    inputSchema: {},
+    inputSchema: {
+      type: "object",
+      properties: {
+        firstToolArgs: {
+          type: "object",
+          description: "Arguments passed to the first tool in the chain",
+        },
+      },
+    },
     scope,
     trustTier,
     provenance: {

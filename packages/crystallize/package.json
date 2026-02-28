@@ -7,6 +7,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./auto-forge": {
+      "types": "./dist/auto-forge-middleware.d.ts",
+      "import": "./dist/auto-forge-middleware.js"
+    },
+    "./pipeline-executor": {
+      "types": "./dist/pipeline-executor.d.ts",
+      "import": "./dist/pipeline-executor.js"
     }
   },
   "dependencies": {

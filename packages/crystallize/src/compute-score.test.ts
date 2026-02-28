@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { computeCrystallizeScore } from "./compute-score.js";
+import { computeCrystallizeScore, computeSuccessRate } from "./compute-score.js";
 import type { CrystallizationCandidate } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -96,5 +96,104 @@ describe("computeCrystallizeScore", () => {
     const freshScore = computeCrystallizeScore(candidate, 2000);
     // Both should yield recency = 1.0
     expect(score).toBe(freshScore);
+  });
+
+  test("score is lower when steps have failure outcomes", () => {
+    const withFailures: CrystallizationCandidate = {
+      ngram: {
+        steps: [
+          { toolId: "fetch", outcome: "success" },
+          { toolId: "parse", outcome: "failure" },
+        ],
+        key: "fetch|parse",
+      },
+      occurrences: 5,
+      turnIndices: [0, 1, 2, 3, 4],
+      detectedAt: 1000,
+      suggestedName: "fetch-then-parse",
+    };
+    const allSuccess: CrystallizationCandidate = {
+      ngram: {
+        steps: [
+          { toolId: "fetch", outcome: "success" },
+          { toolId: "parse", outcome: "success" },
+        ],
+        key: "fetch|parse",
+      },
+      occurrences: 5,
+      turnIndices: [0, 1, 2, 3, 4],
+      detectedAt: 1000,
+      suggestedName: "fetch-then-parse",
+    };
+
+    const scoreFail = computeCrystallizeScore(withFailures, 1000);
+    const scorePass = computeCrystallizeScore(allSuccess, 1000);
+    expect(scorePass).toBeGreaterThan(scoreFail);
+  });
+
+  test("no outcome field defaults to successRate 1.0 (backward compat)", () => {
+    const noOutcome = createCandidate(["fetch", "parse"], 5, 1000);
+    const withSuccess: CrystallizationCandidate = {
+      ngram: {
+        steps: [
+          { toolId: "fetch", outcome: "success" },
+          { toolId: "parse", outcome: "success" },
+        ],
+        key: "fetch|parse",
+      },
+      occurrences: 5,
+      turnIndices: [0, 1, 2, 3, 4],
+      detectedAt: 1000,
+      suggestedName: "fetch-then-parse",
+    };
+
+    const scoreNoOutcome = computeCrystallizeScore(noOutcome, 1000);
+    const scoreWithSuccess = computeCrystallizeScore(withSuccess, 1000);
+    expect(scoreNoOutcome).toBe(scoreWithSuccess);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeSuccessRate
+// ---------------------------------------------------------------------------
+
+describe("computeSuccessRate", () => {
+  test("returns 1.0 when no outcome data", () => {
+    const candidate = createCandidate(["fetch", "parse"], 5, 1000);
+    expect(computeSuccessRate(candidate)).toBe(1.0);
+  });
+
+  test("returns 0.5 when half the steps failed", () => {
+    const candidate: CrystallizationCandidate = {
+      ngram: {
+        steps: [
+          { toolId: "a", outcome: "success" },
+          { toolId: "b", outcome: "failure" },
+        ],
+        key: "a|b",
+      },
+      occurrences: 3,
+      turnIndices: [0, 1, 2],
+      detectedAt: 1000,
+      suggestedName: "a-then-b",
+    };
+    expect(computeSuccessRate(candidate)).toBe(0.5);
+  });
+
+  test("returns 0 when all steps failed", () => {
+    const candidate: CrystallizationCandidate = {
+      ngram: {
+        steps: [
+          { toolId: "a", outcome: "failure" },
+          { toolId: "b", outcome: "failure" },
+        ],
+        key: "a|b",
+      },
+      occurrences: 3,
+      turnIndices: [0, 1, 2],
+      detectedAt: 1000,
+      suggestedName: "a-then-b",
+    };
+    expect(computeSuccessRate(candidate)).toBe(0);
   });
 });

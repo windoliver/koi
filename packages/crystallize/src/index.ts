@@ -4,16 +4,25 @@
  *
  * Observes tool call sequences via a `readTraces` callback, detects
  * repeating n-gram patterns, and surfaces crystallization candidates for
- * potential forging as reusable bricks. Never auto-forges -- suggestions only.
+ * potential forging as reusable bricks.
  *
  * The forge bridge handler evaluates candidates and produces tool descriptors
  * for high-confidence patterns, ready for the forge pipeline.
  *
+ * The auto-forge middleware closes the crystallize→forge pipeline gap by
+ * automatically forging and saving high-confidence patterns to the ForgeStore.
+ *
  * Depends on @koi/core and @koi/errors.
  */
 
+export type {
+  AutoForgeConfig,
+  AutoForgeVerifier,
+  AutoForgeVerifierResult,
+} from "./auto-forge-middleware.js";
+export { createAutoForgeMiddleware } from "./auto-forge-middleware.js";
 export type { ScoreConfig } from "./compute-score.js";
-export { computeCrystallizeScore } from "./compute-score.js";
+export { computeCrystallizeScore, computeSuccessRate } from "./compute-score.js";
 export { createCrystallizeMiddleware } from "./crystallize-middleware.js";
 export type { DetectPatternsConfig, IncrementalDetectionResult } from "./detect-patterns.js";
 export {
@@ -36,6 +45,8 @@ export {
   extractNgramsIncremental,
   extractToolSequences,
 } from "./ngram.js";
+export type { PipelineExecutor, PipelineResult, PipelineStep } from "./pipeline-executor.js";
+export { executePipeline, generatePipelineExecutorCode } from "./pipeline-executor.js";
 export type {
   CrystallizationCandidate,
   CrystallizeConfig,
