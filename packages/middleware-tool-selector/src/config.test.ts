@@ -103,4 +103,91 @@ describe("validateToolSelectorConfig", () => {
       expect(result.error.message).toContain("extractQuery");
     }
   });
+
+  // -----------------------------------------------------------------------
+  // Profile config validation
+  // -----------------------------------------------------------------------
+
+  test("accepts valid profile config", () => {
+    const result = validateToolSelectorConfig({ profile: "coding" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.kind).toBe("profile");
+    }
+  });
+
+  test("accepts profile config with include/exclude", () => {
+    const result = validateToolSelectorConfig({
+      profile: "coding",
+      include: ["extra"],
+      exclude: ["shell_exec"],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.kind).toBe("profile");
+    }
+  });
+
+  test("rejects invalid profile name", () => {
+    const result = validateToolSelectorConfig({ profile: "nonexistent" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("nonexistent");
+    }
+  });
+
+  test("rejects profile: 'auto' without autoScale", () => {
+    const result = validateToolSelectorConfig({ profile: "auto" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("auto");
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // Auto config validation
+  // -----------------------------------------------------------------------
+
+  test("accepts valid auto config", () => {
+    const result = validateToolSelectorConfig({
+      profile: "coding",
+      autoScale: true,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.kind).toBe("auto");
+    }
+  });
+
+  test("accepts auto config with profile: 'auto'", () => {
+    const result = validateToolSelectorConfig({
+      profile: "auto",
+      autoScale: true,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.kind).toBe("auto");
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // Mutual exclusion
+  // -----------------------------------------------------------------------
+
+  test("rejects config with both selectTools and profile", () => {
+    const result = validateToolSelectorConfig({
+      selectTools: validSelectTools,
+      profile: "coding",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("selectTools");
+      expect(result.error.message).toContain("profile");
+    }
+  });
+
+  test("rejects config with neither selectTools nor profile", () => {
+    const result = validateToolSelectorConfig({ maxTools: 10 });
+    expect(result.ok).toBe(false);
+  });
 });

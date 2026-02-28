@@ -5,29 +5,135 @@ exports[`@koi/middleware-tool-selector API surface . has stable type surface 1`]
 import { BrickDescriptor } from '@koi/resolve';
 
 /**
+ * Model capability tier detection — maps model names to capability tiers.
+ *
+ * Used by autoScale to cap tool surface based on the running model's capacity.
+ * Smaller models (Haiku, GPT-4o-mini) get fewer tools; larger models get more.
+ */
+/** Capability tier determines the maximum tool budget for a model. */
+type CapabilityTier = "minimal" | "standard" | "advanced" | "full";
+/** Per-tier tool budget configuration. */
+declare const MODEL_CAPABILITY_TIERS: Readonly<Record<CapabilityTier, {
+    readonly maxTools: number;
+}>>;
+/**
+ * Detects a model's capability tier from its name.
+ *
+ * Resolution order:
+ * 1. Exact match in overrides map (if provided)
+ * 2. First substring match in built-in patterns (ordered specific-to-general)
+ * 3. Default: "standard"
+ */
+declare function detectModelTier(modelName: string, overrides?: Readonly<Record<string, CapabilityTier>>): CapabilityTier;
+
+/**
+ * Named tool profiles — declarative presets for common agent roles.
+ *
+ * Instead of writing a custom selectTools function, declare \`profile: "coding"\`
+ * in the manifest and get a curated 4-10 tool set automatically.
+ */
+/**
+ * Predefined tool profiles. Each maps a role name to a readonly list of tool
+ * names. An empty list (like "full") means no filtering — all tools pass through.
+ */
+declare const TOOL_PROFILES: {
+    readonly minimal: readonly string[];
+    readonly coding: readonly string[];
+    readonly research: readonly string[];
+    readonly automation: readonly string[];
+    readonly conversation: readonly string[];
+    readonly full: readonly string[];
+};
+/** Valid profile name — one of the keys in TOOL_PROFILES. */
+type ToolProfileName = keyof typeof TOOL_PROFILES;
+/** Type guard for ToolProfileName. */
+declare function isToolProfileName(value: unknown): value is ToolProfileName;
+
+/**
  * Configuration for the tool-selector middleware.
+ *
+ * Supports three modes via discriminated union (kind is inferred from shape):
+ * - "custom": caller-provided selectTools function (backward compatible)
+ * - "profile": named tool profile (e.g., "coding", "research")
+ * - "auto": profile + model-capability-aware dynamic scaling
  */
 
-interface ToolSelectorConfig {
-    /** Caller-provided function that selects relevant tool names for a query. */
+interface ValidatedCustomConfig {
+    readonly kind: "custom";
     readonly selectTools: (query: string, tools: readonly ToolDescriptor[]) => Promise<readonly string[]>;
-    /** Tool names always included regardless of selection. */
     readonly alwaysInclude?: readonly string[];
-    /** Max tools to return from selector (default: 10). */
     readonly maxTools?: number;
-    /** Min tools threshold to activate filtering (default: 5). */
     readonly minTools?: number;
-    /** Custom query extraction from messages (default: last message text). */
     readonly extractQuery?: (messages: readonly InboundMessage[]) => string;
 }
-declare function validateToolSelectorConfig(config: unknown): Result<ToolSelectorConfig, KoiError>;
+interface ValidatedProfileConfig {
+    readonly kind: "profile";
+    readonly profile: ToolProfileName;
+    readonly include?: readonly string[];
+    readonly exclude?: readonly string[];
+    readonly maxTools?: number;
+    readonly minTools?: number;
+    readonly extractQuery?: (messages: readonly InboundMessage[]) => string;
+}
+interface ValidatedAutoConfig {
+    readonly kind: "auto";
+    readonly profile: ToolProfileName | "auto";
+    readonly autoScale: true;
+    readonly modelTierOverrides?: Readonly<Record<string, CapabilityTier>>;
+    readonly tier?: CapabilityTier;
+    readonly include?: readonly string[];
+    readonly exclude?: readonly string[];
+    readonly maxTools?: number;
+    readonly minTools?: number;
+    readonly extractQuery?: (messages: readonly InboundMessage[]) => string;
+}
+type ValidatedToolSelectorConfig = ValidatedCustomConfig | ValidatedProfileConfig | ValidatedAutoConfig;
+/**
+ * Public config — callers provide one of:
+ * 1. \`{ selectTools }\` — custom selector (backward compatible)
+ * 2. \`{ profile }\` — named profile
+ * 3. \`{ profile, autoScale: true }\` — auto-scaling profile
+ */
+type ToolSelectorConfig = {
+    readonly selectTools: (query: string, tools: readonly ToolDescriptor[]) => Promise<readonly string[]>;
+    readonly alwaysInclude?: readonly string[];
+    readonly maxTools?: number;
+    readonly minTools?: number;
+    readonly extractQuery?: (messages: readonly InboundMessage[]) => string;
+} | {
+    readonly profile: ToolProfileName;
+    readonly include?: readonly string[];
+    readonly exclude?: readonly string[];
+    readonly maxTools?: number;
+    readonly minTools?: number;
+    readonly extractQuery?: (messages: readonly InboundMessage[]) => string;
+} | {
+    readonly profile: ToolProfileName | "auto";
+    readonly autoScale: true;
+    readonly modelTierOverrides?: Readonly<Record<string, CapabilityTier>>;
+    readonly tier?: CapabilityTier;
+    readonly include?: readonly string[];
+    readonly exclude?: readonly string[];
+    readonly maxTools?: number;
+    readonly minTools?: number;
+    readonly extractQuery?: (messages: readonly InboundMessage[]) => string;
+};
+/**
+ * Validates and normalizes tool selector config. Infers \`kind\` from shape:
+ * - \`selectTools\` present -> "custom"
+ * - \`profile\` present, no \`autoScale\` -> "profile"
+ * - \`profile\` present + \`autoScale: true\` -> "auto"
+ */
+declare function validateToolSelectorConfig(config: unknown): Result<ValidatedToolSelectorConfig, KoiError>;
 
 /**
  * BrickDescriptor for @koi/middleware-tool-selector.
  *
- * Enables manifest auto-resolution: validates tool selector config,
- * then creates the tool selector middleware with a basic keyword-matching
- * selectTools implementation for YAML-driven use.
+ * Enables manifest auto-resolution: validates tool selector config from
+ * YAML options, then creates the middleware. Supports three modes:
+ * - No profile: keyword-based defaultSelectTools (backward compatible)
+ * - profile: named tool profile (static filtering)
+ * - profile + autoScale: model-capability-aware dynamic profiles
  */
 
 /**
@@ -47,16 +153,54 @@ declare const descriptor: BrickDescriptor<KoiMiddleware>;
 declare function extractLastUserText(messages: readonly InboundMessage[]): string;
 
 /**
+ * Three-phase profile resolution: Resolve -> Modify -> Cap.
+ *
+ * Composes a final tool name list from a named profile, optional
+ * include/exclude modifiers, and an optional model tier cap.
+ */
+
+/** Input to the composed resolution pipeline. */
+interface ProfileResolutionInput {
+    readonly profile: ToolProfileName | "auto";
+    readonly tier?: CapabilityTier | undefined;
+    readonly include?: readonly string[] | undefined;
+    readonly exclude?: readonly string[] | undefined;
+}
+/** Result of profile resolution. */
+interface ResolvedProfile {
+    readonly toolNames: readonly string[];
+    readonly isFullProfile: boolean;
+}
+/**
+ * Composed profile resolution: Resolve -> Modify -> Cap.
+ *
+ * Returns the final tool name list and whether this is a "full" profile
+ * (which should short-circuit filtering entirely).
+ */
+declare function resolveProfile(input: ProfileResolutionInput): ResolvedProfile;
+
+/**
  * Tool-selector middleware — pre-filters tools before each model call.
+ *
+ * Supports three modes:
+ * - custom: dynamic selectTools function per call
+ * - profile: static precomputed tool set from a named profile
+ * - auto: profile + model-capability-aware scaling
  */
 
 /**
- * Creates a middleware that filters tools before each model call using a
- * caller-provided selector function. When the agent has many tools (20+),
- * this reduces token usage and improves model selection accuracy.
+ * Creates a middleware that filters tools before each model call.
+ *
+ * - custom config: uses caller-provided selectTools per call
+ * - profile/auto config: precomputes allowed tool Set at factory time
+ * - full profile: short-circuits (no filtering)
+ *
+ * For profile/auto modes, the tool allowlist is resolved once at creation time.
+ * If the model changes after middleware creation (e.g., fallback), the tier cap
+ * will NOT be re-evaluated. Recreate the middleware to pick up model changes.
  */
 declare function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMiddleware;
 
-export { type ToolSelectorConfig, createToolSelectorMiddleware, descriptor, extractLastUserText, validateToolSelectorConfig };
+export { type CapabilityTier, MODEL_CAPABILITY_TIERS, type ProfileResolutionInput, type ResolvedProfile, TOOL_PROFILES, type ToolProfileName, type ToolSelectorConfig, type ValidatedToolSelectorConfig, createToolSelectorMiddleware, descriptor, detectModelTier, extractLastUserText, isToolProfileName, resolveProfile, validateToolSelectorConfig };
 "
 `;
