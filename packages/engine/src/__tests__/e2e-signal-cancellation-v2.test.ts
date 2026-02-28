@@ -409,7 +409,6 @@ describeE2E("e2e: signal cancellation improvements (Issue #406)", () => {
 
       const signalInspector: KoiMiddleware = {
         name: "signal-inspector",
-        describeCapabilities: () => undefined,
         priority: 300, // After sandbox (200), before tool terminal
         describeCapabilities: () => undefined,
         wrapToolCall: async (
@@ -627,7 +626,6 @@ describeE2E("e2e: signal cancellation improvements (Issue #406)", () => {
 
       const outerMiddleware: KoiMiddleware = {
         name: "outer-observer",
-        describeCapabilities: () => undefined,
         priority: 100, // Before sandbox (200)
         describeCapabilities: () => undefined,
         wrapToolCall: async (
@@ -642,7 +640,6 @@ describeE2E("e2e: signal cancellation improvements (Issue #406)", () => {
 
       const innerMiddleware: KoiMiddleware = {
         name: "inner-observer",
-        describeCapabilities: () => undefined,
         priority: 300, // After sandbox (200)
         describeCapabilities: () => undefined,
         wrapToolCall: async (

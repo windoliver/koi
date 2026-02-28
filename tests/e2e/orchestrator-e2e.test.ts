@@ -193,7 +193,8 @@ function createPhasedModelHandler(phases: readonly ModelResponse[]): {
       const phase = count;
       count++;
       if (phase < phases.length) {
-        return phases[phase]!;
+        const handler = phases[phase];
+        if (handler !== undefined) return handler;
       }
       // Final phase: real Anthropic LLM call
       const anthropic = await getAnthropicAdapter();
