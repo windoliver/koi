@@ -1,0 +1,334 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/engine-acp API surface . has stable type surface 1`] = `
+"import { ApprovalHandler, EngineAdapter, EngineEvent } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
+
+/**
+ * Zod schemas for ACP (Agent Client Protocol) wire types.
+ *
+ * All Zod schema consts are module-private (compatible with isolatedDeclarations).
+ * All exported TypeScript types are declared explicitly — never via z.infer<typeof Schema>.
+ * Only TypeScript types and parse functions are exported.
+ *
+ * This isolates all ACP spec definitions in one place — when the protocol
+ * changes, only this file needs updating.
+ *
+ * Based on ACP v0.10.x (JSON-RPC 2.0 over stdin/stdout).
+ */
+type RpcId = string | number | null;
+interface TextContent {
+    readonly type: "text";
+    readonly text: string;
+    readonly mimeType?: "text/plain" | "text/markdown" | undefined;
+}
+interface ImageContent {
+    readonly type: "image";
+    readonly mimeType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+    readonly data: string;
+}
+interface ResourceLinkContent {
+    readonly type: "resourceLink";
+    readonly uri: string;
+    readonly mimeType: string;
+}
+interface EmbeddedResourceContent {
+    readonly type: "resource";
+    readonly uri: string;
+    readonly mimeType: string;
+    readonly text?: string | undefined;
+    readonly blob?: string | undefined;
+}
+type ContentBlock = TextContent | ImageContent | ResourceLinkContent | EmbeddedResourceContent;
+type ToolCallKind = "read" | "edit" | "delete" | "move" | "search" | "execute" | "think" | "fetch" | "other";
+type ToolCallStatus = "pending" | "in_progress" | "completed" | "failed";
+interface ToolCallLocation {
+    readonly path: string;
+    readonly lineStart?: number | undefined;
+    readonly lineEnd?: number | undefined;
+}
+interface ToolCall {
+    readonly toolCallId: string;
+    readonly title: string;
+    readonly kind: ToolCallKind;
+    readonly status: ToolCallStatus;
+    readonly content?: readonly ContentBlock[] | undefined;
+    readonly locations?: readonly ToolCallLocation[] | undefined;
+    readonly rawInput?: Readonly<Record<string, unknown>> | undefined;
+    readonly rawOutput?: Readonly<Record<string, unknown>> | undefined;
+}
+interface ClientCapabilities {
+    readonly fs?: {
+        readonly readTextFile?: boolean | undefined;
+        readonly writeTextFile?: boolean | undefined;
+    } | undefined;
+    readonly terminal?: boolean | undefined;
+}
+interface AgentCapabilities {
+    readonly loadSession?: boolean | undefined;
+    readonly promptCapabilities?: {
+        readonly image?: boolean | undefined;
+        readonly audio?: boolean | undefined;
+        readonly embeddedContext?: boolean | undefined;
+    } | undefined;
+    readonly mcp?: {
+        readonly http?: boolean | undefined;
+        readonly sse?: boolean | undefined;
+    } | undefined;
+}
+interface AgentMessageChunkUpdate {
+    readonly sessionUpdate: "agent_message_chunk";
+    readonly content: readonly ContentBlock[];
+}
+interface AgentThoughtChunkUpdate {
+    readonly sessionUpdate: "agent_thought_chunk";
+    readonly content: {
+        readonly type: "text";
+        readonly text: string;
+    };
+}
+interface ToolCallUpdate {
+    readonly sessionUpdate: "tool_call";
+    readonly toolCallId: string;
+    readonly title: string;
+    readonly kind: ToolCallKind;
+    readonly status: ToolCallStatus;
+    readonly content?: readonly ContentBlock[] | undefined;
+    readonly locations?: readonly ToolCallLocation[] | undefined;
+    readonly rawInput?: Readonly<Record<string, unknown>> | undefined;
+    readonly rawOutput?: Readonly<Record<string, unknown>> | undefined;
+}
+interface ToolCallUpdateNotif {
+    readonly sessionUpdate: "tool_call_update";
+    readonly toolCallId: string;
+    readonly status?: ToolCallStatus | undefined;
+    readonly content?: readonly ContentBlock[] | undefined;
+}
+interface PlanUpdate {
+    readonly sessionUpdate: "plan";
+    readonly content: readonly ContentBlock[];
+}
+interface CurrentModeUpdate {
+    readonly sessionUpdate: "current_mode_update";
+    readonly mode: string;
+}
+type SessionUpdatePayload = AgentMessageChunkUpdate | AgentThoughtChunkUpdate | ToolCallUpdate | ToolCallUpdateNotif | PlanUpdate | CurrentModeUpdate;
+interface PermissionOption {
+    readonly optionId: string;
+    readonly name: string;
+    readonly kind: "allow_once" | "allow_always" | "reject_once" | "reject_always";
+}
+interface SessionRequestPermissionParams {
+    readonly sessionId: string;
+    readonly toolCall: ToolCall;
+    readonly options?: readonly PermissionOption[] | undefined;
+}
+
+/**
+ * Internal types for @koi/engine-acp.
+ *
+ * These are implementation details, not part of the public API.
+ */
+
+interface AcpAdapterConfig {
+    /** Command to spawn the ACP agent (e.g., "claude", "codex"). */
+    readonly command: string;
+    /** Arguments to pass to the agent command. */
+    readonly args?: readonly string[] | undefined;
+    /** Working directory for the spawned process. */
+    readonly cwd?: string | undefined;
+    /** Extra environment variables for the agent process. */
+    readonly env?: Readonly<Record<string, string>> | undefined;
+    /**
+     * Capabilities to advertise in the \`initialize\` request.
+     * Defaults to full fs + terminal support.
+     */
+    readonly clientCapabilities?: ClientCapabilities | undefined;
+    /**
+     * Timeout (ms) for each \`session/prompt\` call.
+     * 0 = no timeout. Default: 300_000 (5 minutes).
+     */
+    readonly timeoutMs?: number | undefined;
+    /**
+     * Optional approval handler for \`session/request_permission\`.
+     * If not provided, all permission requests are auto-allowed (headless mode).
+     */
+    readonly approvalHandler?: ApprovalHandler | undefined;
+    /**
+     * Client info to send in the \`initialize\` request.
+     */
+    readonly clientInfo?: {
+        readonly name?: string | undefined;
+        readonly version?: string | undefined;
+    } | undefined;
+}
+/** Engine adapter with ACP-specific properties. */
+interface AcpEngineAdapter extends EngineAdapter {
+    /** Capabilities negotiated during \`initialize\`. Undefined before first stream(). */
+    readonly agentCapabilities: AgentCapabilities | undefined;
+}
+
+/**
+ * @koi/engine-acp — main adapter factory.
+ *
+ * Creates a long-lived ACP engine adapter (decision 14A):
+ * - Spawns the agent process once on first stream() call
+ * - Creates a new ACP session per stream() call
+ * - Routes all inbound JSON-RPC messages via a background receive loop
+ * - Pending outbound requests tracked by ID for async response matching
+ */
+
+/**
+ * Create an ACP engine adapter (headless ACP client).
+ *
+ * The adapter:
+ * 1. Spawns the agent process on first stream() (long-lived)
+ * 2. Sends \`initialize\` + \`session/new\` once
+ * 3. Per stream(): sends \`session/prompt\`, yields EngineEvents until done
+ * 4. Handles agent callbacks: fs/*, terminal/*, session/request_permission
+ */
+declare function createAcpAdapter(config: AcpAdapterConfig): AcpEngineAdapter;
+
+/**
+ * Approval bridge for ACP session/request_permission (decision 1A).
+ *
+ * Maps ACP permission requests to Koi's ApprovalHandler interface,
+ * mirroring the pattern from @koi/engine-claude/approval-bridge.
+ *
+ * Fail-closed: if the handler throws, the permission is cancelled.
+ */
+
+/**
+ * Result of the approval bridge — an ACP-shaped outcome to send back to agent.
+ */
+type ApprovalBridgeResult = {
+    readonly outcome: "selected";
+    readonly optionId: string;
+} | {
+    readonly outcome: "cancelled";
+};
+/**
+ * Resolve an ACP session/request_permission to an ApprovalBridgeResult.
+ *
+ * If no approval handler is configured, defaults to allowing (headless mode).
+ * Fail-closed: handler errors → cancelled outcome.
+ */
+declare function resolvePermission(params: SessionRequestPermissionParams, handler: ApprovalHandler | undefined): Promise<ApprovalBridgeResult>;
+
+/**
+ * BrickDescriptor for @koi/engine-acp.
+ *
+ * Enables manifest-based auto-resolution for ACP-compatible agents.
+ * Requires a \`command\` field in the engine options.
+ */
+
+/**
+ * Descriptor for the ACP engine adapter.
+ * Registered under the name "@koi/engine-acp" with alias "acp".
+ */
+declare const descriptor: BrickDescriptor<EngineAdapter>;
+
+/**
+ * ACP session/update notification → Koi EngineEvent mapping.
+ *
+ * Maps each ACP update kind to the appropriate Koi EngineEvent
+ * discriminated union variant.
+ */
+
+/**
+ * Map an ACP session/update payload to zero or more Koi EngineEvents.
+ *
+ * - \`agent_message_chunk\` → \`text_delta\` for each text content block
+ * - \`agent_thought_chunk\` → \`custom(thought)\` event
+ * - \`tool_call\` → \`tool_call_start\`
+ * - \`tool_call_update\` with status \`completed\`/\`failed\` → \`tool_call_end\`
+ * - \`tool_call_update\` with other status → \`tool_call_delta\`
+ * - \`plan\` → \`custom(plan)\` event
+ * - \`current_mode_update\` → \`custom(mode_change)\` event
+ */
+declare function mapSessionUpdate(update: SessionUpdatePayload): readonly EngineEvent[];
+
+/**
+ * JSON-RPC 2.0 line-buffer parser and message router for ACP.
+ *
+ * Adapts engine-external's line-parser pattern (decision 13A) for the
+ * bidirectional JSON-RPC protocol ACP uses over stdin/stdout.
+ *
+ * Inbound message types (Agent → Koi):
+ * - Notification: has \`method\`, no \`id\` → pushed to notification queue
+ * - Request: has \`method\` and \`id\` → pushed to inbound request queue
+ * - Response: has \`id\`, no \`method\` → resolves a pending outbound request
+ */
+
+/** A notification from the agent (no \`id\`, has \`method\`). */
+interface RpcNotification {
+    readonly kind: "notification";
+    readonly method: string;
+    readonly params: unknown;
+}
+/** A request from the agent to Koi (has both \`method\` and \`id\`). */
+interface RpcInboundRequest {
+    readonly kind: "inbound_request";
+    readonly id: RpcId;
+    readonly method: string;
+    readonly params: unknown;
+}
+/** A successful response to one of Koi's outbound requests. */
+interface RpcSuccessResponse {
+    readonly kind: "success_response";
+    readonly id: RpcId;
+    readonly result: unknown;
+}
+/** An error response to one of Koi's outbound requests. */
+interface RpcErrorResponse {
+    readonly kind: "error_response";
+    readonly id: RpcId;
+    readonly error: {
+        readonly code: number;
+        readonly message: string;
+        readonly data?: unknown;
+    };
+}
+type RpcMessage = RpcNotification | RpcInboundRequest | RpcSuccessResponse | RpcErrorResponse;
+
+/**
+ * AcpTransport — thin abstraction over the ACP process I/O (decision 2A).
+ *
+ * The transport handles:
+ * - Writing JSON-RPC messages to the agent's stdin (one JSON line per message)
+ * - Reading JSON-RPC messages from the agent's stdout (line-framed)
+ *
+ * The transport is intentionally thin — it only handles byte framing.
+ * JSON-RPC routing happens in json-rpc-parser.ts.
+ */
+
+interface AcpTransport {
+    /** Send a raw JSON-RPC message string (must be a single line, no newline). */
+    readonly send: (messageJson: string) => void;
+    /** Async iterable of parsed inbound messages from the agent. */
+    readonly receive: () => AsyncIterable<RpcMessage>;
+    /** Close the transport. Subsequent send() calls are no-ops. */
+    readonly close: () => void;
+}
+interface AcpProcess {
+    readonly pid: number;
+    readonly stdin: {
+        write(data: string | Uint8Array): number | Promise<number>;
+        end(): void;
+    };
+    readonly stdout: ReadableStream<Uint8Array>;
+    readonly stderr: ReadableStream<Uint8Array>;
+    readonly exited: Promise<number>;
+    readonly kill: (signal?: number) => void;
+}
+/**
+ * Create an AcpTransport backed by a spawned process's stdin/stdout.
+ *
+ * Messages are framed as newline-delimited JSON lines.
+ * The caller owns the process lifecycle — close() only stops writing.
+ */
+declare function createStdioTransport(proc: AcpProcess): AcpTransport;
+
+export { type AcpAdapterConfig, type AcpEngineAdapter, type AcpProcess, type AcpTransport, type AgentCapabilities, type ApprovalBridgeResult, type ClientCapabilities, createAcpAdapter, createStdioTransport, descriptor, mapSessionUpdate, resolvePermission };
+"
+`;

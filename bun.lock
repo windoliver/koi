@@ -451,6 +451,18 @@
         "@koi/webhook-provider": "workspace:*",
       },
     },
+    "packages/engine-acp": {
+      "name": "@koi/engine-acp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/engine-claude": {
       "name": "@koi/engine-claude",
       "version": "0.0.0",
@@ -2055,6 +2067,8 @@
     "@koi/edit-match": ["@koi/edit-match@workspace:packages/edit-match"],
 
     "@koi/engine": ["@koi/engine@workspace:packages/engine"],
+
+    "@koi/engine-acp": ["@koi/engine-acp@workspace:packages/engine-acp"],
 
     "@koi/engine-claude": ["@koi/engine-claude@workspace:packages/engine-claude"],
 
