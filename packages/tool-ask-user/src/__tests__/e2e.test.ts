@@ -486,6 +486,7 @@ describePi("@koi/tool-ask-user E2E — Stack B (createPiAdapter full round-trip)
 
       const observerMiddleware: KoiMiddleware = {
         name: "ask-user-observer",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: unknown,
           request: ToolRequest,
@@ -551,6 +552,7 @@ describePi("@koi/tool-ask-user E2E — Stack B (createPiAdapter full round-trip)
 
       const lifecycleObserver: KoiMiddleware = {
         name: "lifecycle-observer",
+        describeCapabilities: () => undefined,
         onSessionStart: async () => {
           hookOrder.push("session_start");
         },
