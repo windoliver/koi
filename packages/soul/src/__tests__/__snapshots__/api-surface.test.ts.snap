@@ -1,25 +1,12 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/soul API surface . has stable type surface 1`] = `
-"import { KoiMiddleware } from '@koi/core';
+"import { Result, KoiError } from '@koi/core/errors';
+import { KoiMiddleware } from '@koi/core';
 import { BrickDescriptor } from '@koi/resolve';
-import { Result, KoiError } from '@koi/core/errors';
 import { AgentManifest } from '@koi/core/assembly';
 import { InboundMessage } from '@koi/core/message';
 import { KoiMiddleware as KoiMiddleware$1, ModelRequest } from '@koi/core/middleware';
-
-/**
- * BrickDescriptor for @koi/soul.
- *
- * Enables manifest auto-resolution: the resolve layer looks up this
- * descriptor, validates soul/user options, and calls the factory.
- */
-
-/**
- * Descriptor for soul middleware.
- * Exported for registration with createRegistry().
- */
-declare const descriptor: BrickDescriptor<KoiMiddleware>;
 
 /**
  * Unified soul middleware configuration and validation.
@@ -85,6 +72,19 @@ declare function extractInput(value: ContentInput): string;
 declare function extractMaxTokens(value: ContentInput, defaultTokens: number): number;
 /** Validates the unified CreateSoulOptions, returning a Result. */
 declare function validateSoulConfig(config: unknown): Result<CreateSoulOptions, KoiError>;
+
+/**
+ * BrickDescriptor for @koi/soul.
+ *
+ * Enables manifest auto-resolution: the resolve layer looks up this
+ * descriptor, validates soul/user options, and calls the factory.
+ */
+
+/**
+ * Descriptor for soul middleware.
+ * Exported for registration with createRegistry().
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
 
 /**
  * Helpers for wiring @koi/soul from a loaded manifest.
