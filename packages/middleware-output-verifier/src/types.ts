@@ -67,13 +67,18 @@ export interface JudgeConfig {
    * Deterministic checks always run regardless of this setting.
    */
   readonly samplingRate?: number | undefined;
-  /** Maximum revision attempts before throwing. Default: 1. */
-  readonly maxRevisions?: number | undefined;
   /**
-   * Maximum characters of judge reasoning injected during revise.
-   * Prevents context bloat from verbose judge explanations. Default: 400.
+   * Maximum characters of agent output sent to the judge prompt.
+   * Longer content is truncated (60% head + 40% tail) with an elision marker.
+   * Default: 16384 (16K chars).
    */
-  readonly revisionFeedbackMaxLength?: number | undefined;
+  readonly maxContentLength?: number | undefined;
+  /**
+   * Random number generator used for sampling decisions.
+   * Must return a value in [0, 1). Default: Math.random.
+   * Inject a deterministic function in tests for reproducibility.
+   */
+  readonly randomFn?: (() => number) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +94,16 @@ export interface VerifierConfig {
   readonly deterministic?: readonly DeterministicCheck[] | undefined;
   /** Stage 2: LLM-as-judge. Skipped if Stage 1 produced a "block". */
   readonly judge?: JudgeConfig | undefined;
+  /**
+   * Maximum revision attempts before throwing. Default: 1.
+   * Governs both deterministic revise and judge revise.
+   */
+  readonly maxRevisions?: number | undefined;
+  /**
+   * Maximum characters of judge reasoning injected during revise.
+   * Prevents context bloat from verbose judge explanations. Default: 400.
+   */
+  readonly revisionFeedbackMaxLength?: number | undefined;
   /** Called whenever a veto or warn is triggered. */
   readonly onVeto?: ((event: VerifierVetoEvent) => void) | undefined;
   /**

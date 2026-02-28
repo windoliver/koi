@@ -11,15 +11,19 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/errors": "workspace:*"
+    "@koi/errors": "workspace:*",
+    "@koi/resolve": "workspace:*"
   },
   "devDependencies": {
+    "@koi/engine": "workspace:*",
+    "@koi/engine-pi": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
-    "test": "bun test"
+    "test": "bun test",
+    "test:api": "bun test src/__tests__/api-surface.test.ts"
   }
 }

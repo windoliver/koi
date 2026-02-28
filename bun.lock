@@ -905,8 +905,11 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },

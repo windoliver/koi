@@ -1,0 +1,268 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-output-verifier API surface . has stable type surface 1`] = `
+"import { KoiMiddleware } from '@koi/core/middleware';
+import { Result, KoiError } from '@koi/core/errors';
+import { KoiMiddleware as KoiMiddleware$1 } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
+
+/**
+ * Type definitions for @koi/middleware-output-verifier.
+ *
+ * Two-stage output quality gate: deterministic checks (Stage 1) followed by
+ * an LLM-as-judge (Stage 2). Only "block" in Stage 1 short-circuits Stage 2.
+ */
+
+/** Action to take when a veto is triggered. */
+type VerifierAction = "block" | "warn" | "revise";
+/**
+ * A named deterministic check applied to the raw model output string.
+ *
+ * @example
+ * const nonEmpty: DeterministicCheck = {
+ *   name: "non-empty",
+ *   check: (c) => c.trim().length > 0 || "Output must not be empty",
+ *   action: "block",
+ * };
+ */
+interface DeterministicCheck {
+    /** Human-readable name used in veto events for debugging. */
+    readonly name: string;
+    /**
+     * Predicate function.
+     * - Return \`true\` to pass.
+     * - Return \`false\` or a \`string\` (failure reason) to fail.
+     */
+    readonly check: (content: string) => boolean | string;
+    /** Action to take when this check fails. */
+    readonly action: VerifierAction;
+}
+/** Configuration for the LLM-as-judge stage. */
+interface JudgeConfig {
+    /** Rubric describing what constitutes a high-quality output. */
+    readonly rubric: string;
+    /**
+     * Model call function. Receives the judge prompt and an optional AbortSignal.
+     * Must return the raw model response string.
+     */
+    readonly modelCall: (prompt: string, signal?: AbortSignal) => Promise<string>;
+    /**
+     * Minimum score required to pass. Outputs scoring below this are vetoed.
+     * Range: 0.0–1.0. Default: 0.75 (targeting ~25% veto rate baseline).
+     */
+    readonly vetoThreshold?: number | undefined;
+    /** Action to take when the judge vetoes. Default: "block". */
+    readonly action?: VerifierAction | undefined;
+    /**
+     * Fraction of calls on which the judge runs. Range: 0.0–1.0. Default: 1.0.
+     * Set below 1.0 in production to reduce latency at the cost of coverage.
+     * Deterministic checks always run regardless of this setting.
+     */
+    readonly samplingRate?: number | undefined;
+    /**
+     * Maximum characters of agent output sent to the judge prompt.
+     * Longer content is truncated (60% head + 40% tail) with an elision marker.
+     * Default: 16384 (16K chars).
+     */
+    readonly maxContentLength?: number | undefined;
+    /**
+     * Random number generator used for sampling decisions.
+     * Must return a value in [0, 1). Default: Math.random.
+     * Inject a deterministic function in tests for reproducibility.
+     */
+    readonly randomFn?: (() => number) | undefined;
+}
+/**
+ * Configuration for the output verifier middleware.
+ * At least one of \`deterministic\` or \`judge\` must be provided.
+ */
+interface VerifierConfig {
+    /** Stage 1: deterministic checks. Run sequentially; first "block" short-circuits. */
+    readonly deterministic?: readonly DeterministicCheck[] | undefined;
+    /** Stage 2: LLM-as-judge. Skipped if Stage 1 produced a "block". */
+    readonly judge?: JudgeConfig | undefined;
+    /**
+     * Maximum revision attempts before throwing. Default: 1.
+     * Governs both deterministic revise and judge revise.
+     */
+    readonly maxRevisions?: number | undefined;
+    /**
+     * Maximum characters of judge reasoning injected during revise.
+     * Prevents context bloat from verbose judge explanations. Default: 400.
+     */
+    readonly revisionFeedbackMaxLength?: number | undefined;
+    /** Called whenever a veto or warn is triggered. */
+    readonly onVeto?: ((event: VerifierVetoEvent) => void) | undefined;
+    /**
+     * Maximum characters to buffer for streaming validation. Default: 262144 (256 KB).
+     * If the stream exceeds this size, streaming validation is skipped with a warn event.
+     */
+    readonly maxBufferSize?: number | undefined;
+}
+/** Event fired when a check vetoes or warns on an output. */
+interface VerifierVetoEvent {
+    /** Which stage detected the issue. */
+    readonly source: "deterministic" | "judge";
+    /** Name of the deterministic check that failed (source = "deterministic" only). */
+    readonly checkName?: string | undefined;
+    /** Failure reason from the check function (source = "deterministic" only). */
+    readonly checkReason?: string | undefined;
+    /** Action taken (or that would have been taken for streaming degradation). */
+    readonly action: VerifierAction;
+    /** Judge score (0.0–1.0), present when source = "judge". */
+    readonly score?: number | undefined;
+    /** Judge reasoning, truncated to revisionFeedbackMaxLength. */
+    readonly reasoning?: string | undefined;
+    /** Set when the judge threw or returned an unparseable response. */
+    readonly judgeError?: string | undefined;
+    /**
+     * Set to true when streaming degraded "revise" or "block" to "warn".
+     * Content was already yielded; retry is impossible.
+     */
+    readonly degraded?: boolean | undefined;
+}
+/** Accumulated statistics for the verifier session. Manual reset via Handle. */
+interface VerifierStats {
+    /** Total model calls evaluated (regardless of sampling). */
+    readonly totalChecks: number;
+    /** Calls where action was "block" or "revise" (output was prevented or revised). */
+    readonly vetoed: number;
+    /** Calls where action was "warn" (output delivered with advisory event). */
+    readonly warned: number;
+    /** Veto events originating from Stage 1 deterministic checks. */
+    readonly deterministicVetoes: number;
+    /** Veto events originating from Stage 2 judge. */
+    readonly judgeVetoes: number;
+    /** Calls where the judge actually ran (affected by samplingRate). */
+    readonly judgedChecks: number;
+    /** vetoed / totalChecks. Returns 0 when totalChecks = 0. */
+    readonly vetoRate: number;
+}
+/** Returned by createOutputVerifierMiddleware. Provides runtime control and stats. */
+interface VerifierHandle {
+    /** The KoiMiddleware to add to your agent's middleware chain. */
+    readonly middleware: KoiMiddleware;
+    /** Returns a snapshot of accumulated stats since last reset. */
+    readonly getStats: () => VerifierStats;
+    /**
+     * Updates the judge rubric for subsequent calls.
+     * Takes effect on the next wrapModelCall / wrapModelStream invocation.
+     */
+    readonly setRubric: (rubric: string) => void;
+    /** Resets all stat counters to zero. Call in onSessionStart for per-session tracking. */
+    readonly reset: () => void;
+}
+
+/**
+ * Built-in deterministic checks for common output quality assertions.
+ *
+ * Use these as-is or as starting points for custom checks.
+ */
+
+/**
+ * Fails if the output is empty or contains only whitespace.
+ */
+declare function nonEmpty(action?: VerifierAction): DeterministicCheck;
+/**
+ * Fails if the output exceeds \`max\` characters.
+ */
+declare function maxLength(max: number, action?: VerifierAction): DeterministicCheck;
+/**
+ * Fails if the output does not contain valid JSON.
+ */
+declare function validJson(action?: VerifierAction): DeterministicCheck;
+/**
+ * Fails if the output does not match the given regular expression.
+ */
+declare function matchesPattern(pattern: RegExp, name: string, action?: VerifierAction): DeterministicCheck;
+/** Convenience namespace for built-in checks. */
+declare const BUILTIN_CHECKS: {
+    readonly nonEmpty: typeof nonEmpty;
+    readonly maxLength: typeof maxLength;
+    readonly validJson: typeof validJson;
+    readonly matchesPattern: typeof matchesPattern;
+};
+
+/**
+ * Configuration validation for @koi/middleware-output-verifier.
+ *
+ * Validates raw config input and returns a typed Result.
+ */
+
+/**
+ * Validates raw config input for the output verifier middleware.
+ *
+ * At least one of \`deterministic\` or \`judge\` must be present.
+ */
+declare function validateVerifierConfig(input: unknown): Result<VerifierConfig, KoiError>;
+
+/**
+ * BrickDescriptor for @koi/middleware-output-verifier.
+ *
+ * Enables manifest auto-resolution: validates verifier config,
+ * then creates the output verifier middleware with a nonEmpty deterministic
+ * check by default.
+ */
+
+/**
+ * Descriptor for output verifier middleware.
+ * Defaults to a nonEmpty deterministic check when no deterministic checks are provided.
+ * Exported for registration with createRegistry().
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware$1>;
+
+/**
+ * Inlined LLM-as-judge helpers.
+ *
+ * Duplicates ~30 lines from @koi/eval/src/graders/llm-judge.ts intentionally.
+ * Rule of Three: only 2 consumers exist. Extract to @koi/llm-judge-util at 3rd.
+ */
+interface JudgeResult {
+    readonly score: number;
+    readonly reasoning: string;
+    readonly parseError?: string | undefined;
+}
+/**
+ * Truncate content to fit within maxLength, preserving head and tail context.
+ *
+ * Split: 60% from the start, 40% from the end, with an elision marker.
+ * Returns content unchanged if it fits within maxLength.
+ */
+declare function truncateContent(content: string, maxLength: number): string;
+/** Build the judge prompt from a rubric and model output content. */
+declare function buildJudgePrompt(rubric: string, content: string, maxContentLength?: number): string;
+/**
+ * Normalize a raw 1-5 integer score to the 0.0–1.0 range.
+ *
+ * Formula: (clamp(raw, 1, 5) - 1) / 4
+ *   Score 1 → 0.00, Score 2 → 0.25, Score 3 → 0.50,
+ *   Score 4 → 0.75, Score 5 → 1.00
+ */
+declare function normalizeScore(raw: number): number;
+/**
+ * Parse the judge model response into a score + reasoning.
+ * On any parse failure, returns score=0 with a parseError field (fail-closed).
+ */
+declare function parseJudgeResponse(response: string): JudgeResult;
+/** @deprecated Use normalizeScore instead. Kept for backward compatibility. */
+declare function clampScore(score: number): number;
+
+/**
+ * Output verifier middleware factory — two-stage quality gate before delivery.
+ *
+ * Stage 1: Deterministic checks (fast, always runs).
+ * Stage 2: LLM-as-judge (async, optional, skipped if Stage 1 blocks).
+ *
+ * Priority 385: runs after guardrails (375), before memory (400).
+ */
+
+/**
+ * Creates the output verifier middleware.
+ *
+ * @throws {KoiRuntimeError} At factory time if neither \`deterministic\` nor \`judge\` is configured.
+ */
+declare function createOutputVerifierMiddleware(config: VerifierConfig): VerifierHandle;
+
+export { BUILTIN_CHECKS, type DeterministicCheck, type JudgeConfig, type JudgeResult, type VerifierAction, type VerifierConfig, type VerifierHandle, type VerifierStats, type VerifierVetoEvent, buildJudgePrompt, clampScore, createOutputVerifierMiddleware, descriptor, matchesPattern, maxLength, nonEmpty, normalizeScore, parseJudgeResponse, truncateContent, validJson, validateVerifierConfig };
+"
+`;

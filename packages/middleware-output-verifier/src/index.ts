@@ -12,7 +12,7 @@
  *
  * Priority 385: between guardrails (375) and memory (400).
  *
- * Depends on @koi/core and @koi/errors only.
+ * Depends on @koi/core, @koi/errors, and @koi/resolve.
  */
 
 export {
@@ -22,8 +22,16 @@ export {
   nonEmpty,
   validJson,
 } from "./builtin-checks.js";
+export { validateVerifierConfig } from "./config.js";
+export { descriptor } from "./descriptor.js";
 export type { JudgeResult } from "./judge.js";
-export { buildJudgePrompt, clampScore, parseJudgeResponse } from "./judge.js";
+export {
+  buildJudgePrompt,
+  clampScore,
+  normalizeScore,
+  parseJudgeResponse,
+  truncateContent,
+} from "./judge.js";
 export { createOutputVerifierMiddleware } from "./output-verifier.js";
 export type {
   DeterministicCheck,
