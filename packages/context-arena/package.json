@@ -1,0 +1,31 @@
+{
+  "name": "@koi/context-arena",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/context": "workspace:*",
+    "@koi/memory-fs": "workspace:*",
+    "@koi/middleware-compactor": "workspace:*",
+    "@koi/middleware-context-editing": "workspace:*",
+    "@koi/snapshot-chain-store": "workspace:*",
+    "@koi/token-estimator": "workspace:*",
+    "@koi/tool-squash": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/test-utils": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  }
+}
