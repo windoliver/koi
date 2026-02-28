@@ -347,7 +347,7 @@ describe("tool health integration", () => {
 
     // Verify onDemotion callback fired
     expect(onDemotion).toHaveBeenCalledTimes(1);
-    const event = onDemotion.mock.calls[0]?.[0] as Record<string, unknown>;
+    const event = (onDemotion.mock.calls[0] as unknown[])?.[0] as Record<string, unknown>;
     expect(event.from).toBe("promoted");
     expect(event.to).toBe("verified");
     expect(event.reason).toBe("error_rate");

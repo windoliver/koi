@@ -569,7 +569,10 @@ describe("trust demotion", () => {
     await tracker.checkAndDemote("forged-tool-1");
 
     expect(snapshotStore.record).toHaveBeenCalledTimes(1);
-    const snapshot = snapshotStore.record.mock.calls[0]?.[0] as Record<string, unknown>;
+    const snapshot = (snapshotStore.record.mock.calls[0] as unknown[])?.[0] as Record<
+      string,
+      unknown
+    >;
     const event = snapshot.event as Record<string, unknown>;
     expect(event.kind).toBe("demoted");
     expect(event.fromTier).toBe("promoted");
@@ -606,7 +609,7 @@ describe("trust demotion", () => {
     await tracker.checkAndDemote("forged-tool-1");
 
     expect(onDemotion).toHaveBeenCalledTimes(1);
-    const event = onDemotion.mock.calls[0]?.[0] as Record<string, unknown>;
+    const event = (onDemotion.mock.calls[0] as unknown[])?.[0] as Record<string, unknown>;
     expect(event.from).toBe("verified");
     expect(event.to).toBe("sandbox");
     expect(event.reason).toBe("error_rate");
