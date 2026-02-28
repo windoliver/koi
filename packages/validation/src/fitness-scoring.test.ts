@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import type { BrickFitnessMetrics } from "@koi/core";
+import type { BrickFitnessMetrics, TrustTier } from "@koi/core";
 import { DEFAULT_BRICK_FITNESS } from "@koi/core";
+import { createTestToolArtifact } from "@koi/test-utils";
 import {
   computeBrickFitness,
   DEFAULT_FITNESS_SCORING_CONFIG,
@@ -218,24 +219,8 @@ describe("computeBrickFitness", () => {
 // ---------------------------------------------------------------------------
 
 describe("evaluateTrustDecay", () => {
-  function createBrickBase(
-    trustTier: "sandbox" | "verified" | "promoted",
-    fitness?: BrickFitnessMetrics,
-  ) {
-    return {
-      id: "sha256:abc" as never,
-      kind: "tool" as const,
-      name: "test-brick",
-      description: "test",
-      scope: "agent" as const,
-      trustTier,
-      lifecycle: "active" as const,
-      provenance: { kind: "system" as const, metadata: {} },
-      version: "0.0.1",
-      tags: [],
-      usageCount: 0,
-      fitness,
-    };
+  function createBrickBase(trustTier: TrustTier, fitness: BrickFitnessMetrics | undefined) {
+    return createTestToolArtifact({ trustTier, fitness });
   }
 
   test("high fitness + promoted → no demotion", () => {
