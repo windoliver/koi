@@ -300,6 +300,7 @@ function createObserverMiddleware(): {
   const middleware: KoiMiddleware = {
     name: "e2e-observer",
     priority: 1, // outermost — sees all calls
+    describeCapabilities: () => undefined,
     wrapToolCall: async (
       _ctx,
       request: ToolRequest,
