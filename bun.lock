@@ -404,6 +404,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -1450,9 +1451,11 @@
         "zod": "4.3.6",
       },
       "devDependencies": {
+        "@koi/crystallize": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
+        "@koi/errors": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },

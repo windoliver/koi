@@ -1,17 +1,41 @@
 /**
- * @koi/crystallize — Auto-discovery of repeating tool call patterns (L0u).
+ * @koi/crystallize -- Auto-discovery of repeating tool call patterns (L0u).
  * @packageDocumentation
  *
- * Observes tool call sequences via SnapshotChainStore<TurnTrace>, detects
+ * Observes tool call sequences via a `readTraces` callback, detects
  * repeating n-gram patterns, and surfaces crystallization candidates for
- * potential forging as reusable bricks. Never auto-forges — suggestions only.
+ * potential forging as reusable bricks. Never auto-forges -- suggestions only.
  *
- * Depends on @koi/core only.
+ * The forge bridge handler evaluates candidates and produces tool descriptors
+ * for high-confidence patterns, ready for the forge pipeline.
+ *
+ * Depends on @koi/core and @koi/errors.
  */
 
+export type { ScoreConfig } from "./compute-score.js";
+export { computeCrystallizeScore } from "./compute-score.js";
 export { createCrystallizeMiddleware } from "./crystallize-middleware.js";
-export { computeSuggestedName, detectPatterns, filterSubsumed } from "./detect-patterns.js";
-export { computeNgramKey, extractNgrams, extractToolSequences } from "./ngram.js";
+export type { DetectPatternsConfig, IncrementalDetectionResult } from "./detect-patterns.js";
+export {
+  computeSuggestedName,
+  detectPatterns,
+  detectPatternsIncremental,
+  filterSubsumed,
+} from "./detect-patterns.js";
+export type {
+  CrystallizedToolDescriptor,
+  CrystallizeForgeConfig,
+  CrystallizeForgeHandler,
+} from "./forge-handler.js";
+export { createCrystallizeForgeHandler } from "./forge-handler.js";
+export { generateCompositeImplementation } from "./generate-composite.js";
+export type { NgramEntry } from "./ngram.js";
+export {
+  computeNgramKey,
+  extractNgrams,
+  extractNgramsIncremental,
+  extractToolSequences,
+} from "./ngram.js";
 export type {
   CrystallizationCandidate,
   CrystallizeConfig,
@@ -19,3 +43,5 @@ export type {
   ToolNgram,
   ToolStep,
 } from "./types.js";
+export type { ValidatedCrystallizeConfig } from "./validate-config.js";
+export { validateCrystallizeConfig } from "./validate-config.js";

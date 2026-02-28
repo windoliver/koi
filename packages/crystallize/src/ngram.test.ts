@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { TurnTrace } from "@koi/core";
 import { sessionId } from "@koi/core";
-import { computeNgramKey, extractNgrams, extractToolSequences } from "./ngram.js";
+import {
+  computeNgramKey,
+  extractNgrams,
+  extractNgramsIncremental,
+  extractToolSequences,
+} from "./ngram.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -149,5 +154,98 @@ describe("extractNgrams", () => {
     expect(entry).toBeDefined();
     // Should only have turn index 0 once (deduped per turn)
     expect(entry?.turnIndices).toEqual([0]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractNgramsIncremental
+// ---------------------------------------------------------------------------
+
+describe("extractNgramsIncremental", () => {
+  test("returns same result as full extraction on empty existing map", () => {
+    const sequences = [
+      [{ toolId: "fetch" }, { toolId: "parse" }],
+      [{ toolId: "fetch" }, { toolId: "parse" }],
+    ];
+    const full = extractNgrams(sequences, 2, 2);
+    const incremental = extractNgramsIncremental(sequences, 0, new Map(), 2, 2);
+
+    expect(incremental.size).toBe(full.size);
+    for (const [key, entry] of full) {
+      const incEntry = incremental.get(key);
+      expect(incEntry).toBeDefined();
+      expect(incEntry?.turnIndices).toEqual(entry.turnIndices);
+    }
+  });
+
+  test("merges new sequences into existing map", () => {
+    const firstBatch = [[{ toolId: "fetch" }, { toolId: "parse" }]];
+    const existing = extractNgrams(firstBatch, 2, 2);
+    expect(existing.get("fetch|parse")?.turnIndices).toEqual([0]);
+
+    const secondBatch = [[{ toolId: "fetch" }, { toolId: "parse" }]];
+    const merged = extractNgramsIncremental(secondBatch, 1, existing, 2, 2);
+
+    const entry = merged.get("fetch|parse");
+    expect(entry).toBeDefined();
+    expect(entry?.turnIndices).toEqual([0, 1]);
+  });
+
+  test("preserves existing entries when no new matches", () => {
+    const firstBatch = [[{ toolId: "fetch" }, { toolId: "parse" }]];
+    const existing = extractNgrams(firstBatch, 2, 2);
+
+    const secondBatch = [[{ toolId: "other" }]];
+    const merged = extractNgramsIncremental(secondBatch, 1, existing, 2, 2);
+
+    expect(merged.get("fetch|parse")).toBeDefined();
+    expect(merged.get("fetch|parse")?.turnIndices).toEqual([0]);
+  });
+
+  test("does not mutate the existing map", () => {
+    const firstBatch = [[{ toolId: "fetch" }, { toolId: "parse" }]];
+    const existing = extractNgrams(firstBatch, 2, 2);
+    const existingEntryBefore = existing.get("fetch|parse")?.turnIndices;
+
+    const secondBatch = [[{ toolId: "fetch" }, { toolId: "parse" }]];
+    extractNgramsIncremental(secondBatch, 1, existing, 2, 2);
+
+    // Original map should be unchanged
+    expect(existing.get("fetch|parse")?.turnIndices).toEqual(existingEntryBefore);
+  });
+
+  test("adds new n-grams not present in existing map", () => {
+    const existing = extractNgrams([[{ toolId: "fetch" }, { toolId: "parse" }]], 2, 2);
+
+    const newBatch = [[{ toolId: "read" }, { toolId: "write" }]];
+    const merged = extractNgramsIncremental(newBatch, 1, existing, 2, 2);
+
+    expect(merged.has("fetch|parse")).toBe(true);
+    expect(merged.has("read|write")).toBe(true);
+  });
+
+  test("uses correct turn indices based on startTurnIndex", () => {
+    const newBatch = [
+      [{ toolId: "a" }, { toolId: "b" }],
+      [{ toolId: "a" }, { toolId: "b" }],
+    ];
+    const result = extractNgramsIncremental(newBatch, 10, new Map(), 2, 2);
+
+    const entry = result.get("a|b");
+    expect(entry?.turnIndices).toEqual([10, 11]);
+  });
+
+  test("handles empty new sequences", () => {
+    const existing = extractNgrams([[{ toolId: "a" }, { toolId: "b" }]], 2, 2);
+    const merged = extractNgramsIncremental([], 1, existing, 2, 2);
+
+    expect(merged.size).toBe(existing.size);
+  });
+
+  test("does not duplicate turn index for same turn in incremental mode", () => {
+    const newBatch = [[{ toolId: "a" }, { toolId: "b" }, { toolId: "a" }, { toolId: "b" }]];
+    const result = extractNgramsIncremental(newBatch, 5, new Map(), 2, 2);
+    const entry = result.get("a|b");
+    expect(entry?.turnIndices).toEqual([5]);
   });
 });

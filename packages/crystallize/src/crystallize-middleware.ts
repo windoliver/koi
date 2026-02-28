@@ -1,21 +1,40 @@
 /**
- * Crystallize middleware — observes tool call patterns after each turn
+ * Crystallize middleware -- observes tool call patterns after each turn
  * and surfaces crystallization candidates via callback.
  *
  * Runs in `onAfterTurn` at priority 950 (after event-trace at 475).
- * Observe-only — never auto-forges.
+ * Observe-only -- never auto-forges.
+ *
+ * TTL-based eviction: known keys and dismissed keys expire after maxPatternAgeMs.
  */
 
 import type { CapabilityFragment, KoiMiddleware, TurnContext } from "@koi/core";
+import { KoiRuntimeError } from "@koi/errors";
 import { detectPatterns } from "./detect-patterns.js";
 import type { CrystallizationCandidate, CrystallizeConfig, CrystallizeHandle } from "./types.js";
+import { validateCrystallizeConfig } from "./validate-config.js";
 
 // ---------------------------------------------------------------------------
-// Default config values
+// TTL eviction helper
 // ---------------------------------------------------------------------------
 
-const DEFAULT_MIN_TURNS_BEFORE_ANALYSIS = 5;
-const DEFAULT_ANALYSIS_COOLDOWN_TURNS = 3;
+/**
+ * Evict entries older than maxAgeMs from a timestamp map.
+ * Returns a new map (immutable -- does not mutate input).
+ */
+function evictStaleEntries(
+  entries: ReadonlyMap<string, number>,
+  now: number,
+  maxAgeMs: number,
+): Map<string, number> {
+  const result = new Map<string, number>();
+  for (const [key, timestamp] of entries) {
+    if (now - timestamp < maxAgeMs) {
+      result.set(key, timestamp);
+    }
+  }
+  return result;
+}
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -24,20 +43,24 @@ const DEFAULT_ANALYSIS_COOLDOWN_TURNS = 3;
 /**
  * Create a crystallize middleware that detects repeating tool patterns.
  *
- * The middleware reads from a SnapshotChainStore<TurnTrace> (written by event-trace middleware)
+ * Reads traces via the `readTraces` callback (typically backed by a SnapshotChainStore)
  * and fires `onCandidatesDetected` when new patterns are found.
+ *
+ * @throws KoiRuntimeError with code "VALIDATION" if config is invalid.
  */
 export function createCrystallizeMiddleware(config: CrystallizeConfig): CrystallizeHandle {
-  const clock = config.clock ?? Date.now;
-  const minTurns = config.minTurnsBeforeAnalysis ?? DEFAULT_MIN_TURNS_BEFORE_ANALYSIS;
-  const cooldown = config.analysisCooldownTurns ?? DEFAULT_ANALYSIS_COOLDOWN_TURNS;
+  const result = validateCrystallizeConfig(config);
+  if (!result.ok) {
+    throw KoiRuntimeError.from("VALIDATION", result.error.message);
+  }
+  const validated = result.value;
 
   // Encapsulated mutable state
   // justified: mutable state is encapsulated within the factory closure
   let candidates: readonly CrystallizationCandidate[] = [];
-  const dismissed = new Set<string>();
+  let dismissed = new Map<string, number>(); // key -> timestamp
   let lastAnalysisTurn = -Infinity;
-  let knownKeys = new Set<string>();
+  let knownKeys = new Map<string, number>(); // key -> timestamp
 
   const middleware: KoiMiddleware = {
     name: "crystallize",
@@ -47,41 +70,54 @@ export function createCrystallizeMiddleware(config: CrystallizeConfig): Crystall
       const currentTurn = ctx.turnIndex;
 
       // Skip if not enough turns yet
-      if (currentTurn < minTurns) return;
+      if (currentTurn < validated.minTurnsBeforeAnalysis) return;
 
       // Skip if within cooldown
-      if (currentTurn - lastAnalysisTurn < cooldown) return;
+      if (currentTurn - lastAnalysisTurn < validated.analysisCooldownTurns) return;
 
       lastAnalysisTurn = currentTurn;
 
-      // Read all traces from the store
-      const listResult = await config.store.list(config.chainId);
-      if (!listResult.ok) return;
+      const now = validated.clock();
 
-      const traces = listResult.value.map((node) => node.data);
-      if (traces.length < minTurns) return;
+      // Evict stale entries before analysis
+      knownKeys = evictStaleEntries(knownKeys, now, validated.maxPatternAgeMs);
+      dismissed = evictStaleEntries(dismissed, now, validated.maxPatternAgeMs);
+
+      // Build a Set view of dismissed keys for the detectPatterns API
+      const dismissedSet = new Set(dismissed.keys());
+
+      // Read all traces via the decoupled callback
+      const tracesResult = await validated.readTraces();
+      if (!tracesResult.ok) return;
+
+      const traces = tracesResult.value;
+      if (traces.length < validated.minTurnsBeforeAnalysis) return;
 
       // Detect patterns
       const detected = detectPatterns(
         traces,
         {
-          minNgramSize: config.minNgramSize,
-          maxNgramSize: config.maxNgramSize,
-          minOccurrences: config.minOccurrences,
-          maxCandidates: config.maxCandidates,
+          minNgramSize: validated.minNgramSize,
+          maxNgramSize: validated.maxNgramSize,
+          minOccurrences: validated.minOccurrences,
+          maxCandidates: validated.maxCandidates,
         },
-        dismissed,
-        clock,
+        dismissedSet,
+        validated.clock,
       );
 
       // Fire callback only for NEW candidates (not previously seen)
       const newCandidates = detected.filter((c) => !knownKeys.has(c.ngram.key));
 
       if (newCandidates.length > 0) {
-        // Update known keys
-        knownKeys = new Set([...knownKeys, ...newCandidates.map((c) => c.ngram.key)]);
+        // Update known keys with current timestamp
+        const updatedKnown = new Map(knownKeys);
+        for (const c of newCandidates) {
+          updatedKnown.set(c.ngram.key, now);
+        }
+        knownKeys = updatedKnown;
         candidates = detected;
-        config.onCandidatesDetected(newCandidates);
+        validated.onCandidatesDetected(newCandidates);
       } else {
         candidates = detected;
       }
@@ -91,7 +127,7 @@ export function createCrystallizeMiddleware(config: CrystallizeConfig): Crystall
       if (candidates.length === 0) return undefined;
       return {
         label: "crystallize",
-        description: `${candidates.length} repeating tool pattern${candidates.length === 1 ? "" : "s"} detected — consider forging as reusable bricks`,
+        description: `${candidates.length} repeating tool pattern${candidates.length === 1 ? "" : "s"} detected \u2014 consider forging as reusable bricks`,
       };
     },
   };
@@ -100,9 +136,14 @@ export function createCrystallizeMiddleware(config: CrystallizeConfig): Crystall
     middleware,
     getCandidates: () => candidates,
     dismiss: (ngramKey: string): void => {
-      dismissed.add(ngramKey);
+      const now = validated.clock();
+      const updatedDismissed = new Map(dismissed);
+      updatedDismissed.set(ngramKey, now);
+      dismissed = updatedDismissed;
       candidates = candidates.filter((c) => c.ngram.key !== ngramKey);
-      knownKeys.delete(ngramKey);
+      const updatedKnown = new Map(knownKeys);
+      updatedKnown.delete(ngramKey);
+      knownKeys = updatedKnown;
     },
   };
 }

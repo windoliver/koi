@@ -9,6 +9,7 @@
 export { discoverSkillCatalogEntries, mapSkillToCatalogEntry } from "./catalog.js";
 // Loader
 export {
+  clearSkillCache,
   discoverSkillDirs,
   loadSkill,
   loadSkillBody,
@@ -21,8 +22,12 @@ export { parseSkillMd } from "./parse.js";
 // Provider
 export type { SkillProviderConfig } from "./provider.js";
 export { createSkillComponentProvider } from "./provider.js";
+// Skill activator middleware
+export type { SkillActivatorConfig } from "./skill-activator-middleware.js";
+export { createSkillActivatorMiddleware } from "./skill-activator-middleware.js";
 // Types
 export type {
+  ProgressiveSkillProvider,
   SkillBodyEntry,
   SkillBundledEntry,
   SkillEntry,
@@ -31,6 +36,7 @@ export type {
   SkillReference,
   SkillScript,
 } from "./types.js";
+export { isAtOrAbove, LEVEL_ORDER } from "./types.js";
 // Validate
 export type { ValidatedSkillFrontmatter } from "./validate.js";
 export { validateSkillFrontmatter } from "./validate.js";

@@ -4,6 +4,8 @@
  * Three levels: metadata (frontmatter only), body (+ markdown), bundled (+ scripts/references).
  */
 
+import type { ComponentProvider, KoiError, Result } from "@koi/core";
+
 /** Discriminant for progressive loading depth. */
 export type SkillLoadLevel = "metadata" | "body" | "bundled";
 
@@ -52,3 +54,27 @@ export interface SkillBundledEntry extends SkillEntryBase {
 
 /** Discriminated union of all progressive loading levels. */
 export type SkillEntry = SkillMetadataEntry | SkillBodyEntry | SkillBundledEntry;
+
+// ---------------------------------------------------------------------------
+// Progressive provider
+// ---------------------------------------------------------------------------
+
+/** Numeric ordering for load level comparisons. */
+export const LEVEL_ORDER: Readonly<Record<SkillLoadLevel, number>> = {
+  metadata: 0,
+  body: 1,
+  bundled: 2,
+} as const;
+
+/** Returns true when `current` is at or above `target` in the load hierarchy. */
+export function isAtOrAbove(current: SkillLoadLevel, target: SkillLoadLevel): boolean {
+  return LEVEL_ORDER[current] >= LEVEL_ORDER[target];
+}
+
+/** Extended ComponentProvider with dynamic level promotion. */
+export interface ProgressiveSkillProvider extends ComponentProvider {
+  /** Promote a skill to a higher load level. No-op if already at target level. */
+  readonly promote: (name: string, targetLevel?: SkillLoadLevel) => Promise<Result<void, KoiError>>;
+  /** Query the current load level for a skill. Returns undefined if skill not found. */
+  readonly getLevel: (name: string) => SkillLoadLevel | undefined;
+}

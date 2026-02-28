@@ -170,7 +170,10 @@ describe("e2e: @koi/skills + createLoopAdapter (deterministic)", () => {
     expect(codeReview).toBeDefined();
     expect((codeReview as SkillComponent).name).toBe("code-review");
     expect((codeReview as SkillComponent).description).toContain("Reviews code");
-    expect((codeReview as SkillComponent).content).toContain("# Code Review Skill");
+    // Progressive loading: initial attach is at "metadata" level — content is description
+    expect((codeReview as SkillComponent).content).toBe(
+      "Reviews code for quality, security, and best practices.",
+    );
 
     const minimal = runtime.agent.component(skillToken("minimal"));
     expect(minimal).toBeDefined();
@@ -400,11 +403,12 @@ describeE2E("e2e: @koi/skills + createPiAdapter (real LLM)", () => {
 
       expect(runtime.agent.state).toBe("created");
 
-      // Verify skill is attached before running
+      // Verify skill is attached before running (at metadata level initially)
       const skill = runtime.agent.component(skillToken("code-review")) as SkillComponent;
       expect(skill).toBeDefined();
       expect(skill.name).toBe("code-review");
-      expect(skill.content).toContain("# Code Review Skill");
+      // Progressive loading: initial attach is metadata — content is description
+      expect(skill.content).toBe("Reviews code for quality, security, and best practices.");
 
       // Real LLM call
       const events = await collectEvents(
@@ -496,7 +500,7 @@ describeE2E("e2e: @koi/skills + createPiAdapter (real LLM)", () => {
   );
 
   test(
-    "multiple skills loaded at body level with real LLM",
+    "multiple skills promoted to body level with real LLM",
     async () => {
       const skillProvider = createSkillComponentProvider({
         skills: [
@@ -520,15 +524,23 @@ describeE2E("e2e: @koi/skills + createPiAdapter (real LLM)", () => {
         loopDetection: false,
       });
 
-      // Both skills attached
+      // Both skills attached at metadata level initially
       const allSkills = runtime.agent.query<SkillMetadata>("skill:");
       expect(allSkills.size).toBe(2);
 
       const codeReview = runtime.agent.component(skillToken("code-review")) as SkillComponent;
-      expect(codeReview.content).toContain("```javascript");
+      expect(codeReview.content).toBe("Reviews code for quality, security, and best practices.");
 
-      const minimal = runtime.agent.component(skillToken("minimal")) as SkillComponent;
-      expect(minimal.content).toBe("Minimal body.");
+      // Promote both to body and verify via provider API
+      await skillProvider.promote("code-review", "body");
+      await skillProvider.promote("minimal", "body");
+
+      const attachResult = await skillProvider.attach(runtime.agent);
+      const components = "components" in attachResult ? attachResult.components : attachResult;
+      const promotedCR = components.get("skill:code-review") as SkillComponent;
+      expect(promotedCR.content).toContain("```javascript");
+      const promotedMinimal = components.get("skill:minimal") as SkillComponent;
+      expect(promotedMinimal.content).toBe("Minimal body.");
 
       // Real LLM interaction
       const events = await collectEvents(runtime.run({ kind: "text", text: "Say: hello world" }));
