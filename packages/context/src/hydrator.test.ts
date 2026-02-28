@@ -533,6 +533,6 @@ describe("describeCapabilities", () => {
     const ctx = createMockTurnContext();
     const result = mw.describeCapabilities?.(ctx) as CapabilityFragment;
     expect(result.label).toBe("context");
-    expect(result.description).toContain("hydration");
+    expect(result.description).toContain("sources");
   });
 });

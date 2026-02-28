@@ -328,12 +328,12 @@ describe("describeCapabilities", () => {
     const mw = createPlanMiddleware();
     const ctx = createMockTurnContext();
 
-    // Before any plan is written — disabled
+    // Before any plan is written — no active plan
     const before = mw.describeCapabilities?.(ctx) as CapabilityFragment;
     expect(before.label).toBe("planning");
-    expect(before.description).toContain("disabled");
+    expect(before.description).toContain("no active plan");
 
-    // Write a plan to enable it
+    // Write a plan to activate it
     await mw.onBeforeTurn?.(ctx);
     await mw.wrapToolCall?.(
       ctx,
@@ -346,9 +346,9 @@ describe("describeCapabilities", () => {
       async () => ({ output: "x" }),
     );
 
-    // After plan is written — enabled
+    // After plan is written — active with item counts
     const after = mw.describeCapabilities?.(ctx) as CapabilityFragment;
     expect(after.label).toBe("planning");
-    expect(after.description).toContain("enabled");
+    expect(after.description).toContain("Plan active");
   });
 });
