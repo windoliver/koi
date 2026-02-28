@@ -13,6 +13,7 @@ export interface TrajectoryEntry {
   readonly outcome: "success" | "failure" | "retry";
   readonly durationMs: number;
   readonly metadata?: JsonObject;
+  readonly bulletIds?: readonly string[];
 }
 
 /** Running stats per unique identifier (incremental aggregation). */
@@ -55,4 +56,77 @@ export interface AceFeedback {
   readonly rating?: number;
   readonly tags?: readonly string[];
   readonly note?: string;
+}
+
+// --- Structured Playbook types (ACE 3-agent upgrade) ---
+
+/** Structured playbook with sections and credit-assigned bullets. */
+export interface StructuredPlaybook {
+  readonly id: string;
+  readonly title: string;
+  readonly sections: readonly PlaybookSection[];
+  readonly tags: readonly string[];
+  readonly source: PlaybookSource;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  readonly sessionCount: number;
+}
+
+/** Named section within a structured playbook. */
+export interface PlaybookSection {
+  readonly name: string;
+  readonly slug: string;
+  readonly bullets: readonly PlaybookBullet[];
+}
+
+/** Individual bullet with credit-assignment counters. */
+export interface PlaybookBullet {
+  readonly id: string;
+  readonly content: string;
+  readonly helpful: number;
+  readonly harmful: number;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+// --- Reflector types ---
+
+/** Input to the reflector for trajectory analysis. */
+export interface ReflectorInput {
+  readonly trajectory: readonly TrajectoryEntry[];
+  readonly citedBulletIds: readonly string[];
+  readonly outcome: "success" | "failure" | "mixed";
+  readonly playbook: StructuredPlaybook;
+}
+
+/** Output of the reflector: root cause analysis + bullet credit assignment. */
+export interface ReflectionResult {
+  readonly rootCause: string;
+  readonly keyInsight: string;
+  readonly bulletTags: readonly BulletTag[];
+}
+
+/** Credit assignment tag for a single bullet. */
+export interface BulletTag {
+  readonly id: string;
+  readonly tag: "helpful" | "harmful" | "neutral";
+}
+
+// --- Curator types ---
+
+/** Delta operation produced by the curator. */
+export type CuratorOperation =
+  | { readonly kind: "add"; readonly section: string; readonly content: string }
+  | {
+      readonly kind: "merge";
+      readonly bulletIds: readonly [string, string];
+      readonly content: string;
+    }
+  | { readonly kind: "prune"; readonly bulletId: string };
+
+/** Input to the curator for playbook delta generation. */
+export interface CuratorInput {
+  readonly playbook: StructuredPlaybook;
+  readonly reflection: ReflectionResult;
+  readonly tokenBudget: number;
 }

@@ -6,11 +6,20 @@ import { describe, expect, test } from "bun:test";
 import type { InboundMessage } from "@koi/core/message";
 import type { ModelRequest } from "@koi/core/middleware";
 import { createAceMiddleware } from "../ace.js";
+import { applyOperations } from "../curator.js";
 import { estimateTokens, selectPlaybooks } from "../injector.js";
+import { estimateStructuredTokens } from "../playbook.js";
 import { computeCurationScore, computeRecencyFactor } from "../scoring.js";
 import { createInMemoryPlaybookStore, createInMemoryTrajectoryStore } from "../stores.js";
 import { createTrajectoryBuffer } from "../trajectory-buffer.js";
-import type { AggregatedStats, Playbook } from "../types.js";
+import type {
+  AggregatedStats,
+  CuratorOperation,
+  Playbook,
+  PlaybookBullet,
+  PlaybookSection,
+  StructuredPlaybook,
+} from "../types.js";
 
 function makeStats(overrides?: Partial<AggregatedStats>): AggregatedStats {
   return {
@@ -272,5 +281,137 @@ describe("safety: concurrent-safe scoring", () => {
     const score1 = computeCurationScore(stats, 5, 1000, 0.01);
     const score2 = computeCurationScore(stats, 5, 1000, 0.01);
     expect(score1).toBe(score2);
+  });
+});
+
+// --- Anti-collapse safety tests for structured playbooks ---
+
+function makeStructuredBullet(overrides?: Partial<PlaybookBullet>): PlaybookBullet {
+  return {
+    id: "[str-00001]",
+    content: "Default bullet",
+    helpful: 1,
+    harmful: 0,
+    createdAt: 1000,
+    updatedAt: 1000,
+    ...overrides,
+  };
+}
+
+function makeStructuredSection(overrides?: Partial<PlaybookSection>): PlaybookSection {
+  return {
+    name: "Strategy",
+    slug: "str",
+    bullets: [
+      makeStructuredBullet({ id: "[str-00001]", content: "First" }),
+      makeStructuredBullet({ id: "[str-00002]", content: "Second" }),
+    ],
+    ...overrides,
+  };
+}
+
+function makeStructuredPlaybook(overrides?: Partial<StructuredPlaybook>): StructuredPlaybook {
+  return {
+    id: "pb-1",
+    title: "Test",
+    sections: [makeStructuredSection()],
+    tags: [],
+    source: "curated",
+    createdAt: 1000,
+    updatedAt: 1000,
+    sessionCount: 1,
+    ...overrides,
+  };
+}
+
+describe("safety: anti-collapse invariants", () => {
+  test("playbook never shrinks below minimum after delta operations", () => {
+    const pb = makeStructuredPlaybook({
+      sections: [
+        makeStructuredSection({
+          bullets: [makeStructuredBullet({ id: "[str-00001]", helpful: 0, harmful: 10 })],
+        }),
+      ],
+    });
+
+    // Attempt to prune the only bullet
+    const ops: readonly CuratorOperation[] = [{ kind: "prune", bulletId: "[str-00001]" }];
+
+    const result = applyOperations(pb, ops, 10000, () => 2000);
+    // Should keep at least 1 bullet per section
+    expect(result.sections[0]?.bullets).toHaveLength(1);
+  });
+
+  test("token budget always respected after operations", () => {
+    const bullets = Array.from({ length: 30 }, (_, i) =>
+      makeStructuredBullet({
+        id: `[str-${String(i).padStart(5, "0")}]`,
+        content: "x".repeat(100),
+        helpful: i,
+        harmful: 0,
+      }),
+    );
+    const pb = makeStructuredPlaybook({
+      sections: [makeStructuredSection({ bullets })],
+    });
+
+    const budgets = [50, 100, 200, 500, 1000];
+    for (const budget of budgets) {
+      const result = applyOperations(pb, [], budget, () => 2000);
+      const tokens = estimateStructuredTokens(result);
+      expect(tokens).toBeLessThanOrEqual(budget);
+    }
+  });
+
+  test("positive-value bullets survive unless budget-forced", () => {
+    const pb = makeStructuredPlaybook({
+      sections: [
+        makeStructuredSection({
+          bullets: [
+            makeStructuredBullet({ id: "[str-00001]", helpful: 10, harmful: 0 }),
+            makeStructuredBullet({ id: "[str-00002]", helpful: 5, harmful: 0 }),
+          ],
+        }),
+      ],
+    });
+
+    // Generous budget
+    const result = applyOperations(pb, [], 10000, () => 2000);
+    expect(result.sections[0]?.bullets).toHaveLength(2);
+  });
+
+  test("delta operations are pure — no side effects on input", () => {
+    const pb = makeStructuredPlaybook();
+    const originalSections = JSON.stringify(pb.sections);
+
+    const ops: readonly CuratorOperation[] = [
+      { kind: "add", section: "str", content: "New bullet" },
+      { kind: "prune", bulletId: "[str-00001]" },
+    ];
+
+    applyOperations(pb, ops, 10000, () => 2000);
+
+    // Original playbook unchanged
+    expect(JSON.stringify(pb.sections)).toBe(originalSections);
+  });
+});
+
+describe("safety: structured playbook token estimation", () => {
+  test("empty structured playbook estimates to 0 tokens", () => {
+    const pb = makeStructuredPlaybook({ sections: [] });
+    expect(estimateStructuredTokens(pb)).toBe(0);
+  });
+
+  test("token estimation includes structural overhead", () => {
+    const pb = makeStructuredPlaybook({
+      sections: [
+        makeStructuredSection({
+          bullets: [makeStructuredBullet({ content: "x".repeat(100) })],
+        }),
+      ],
+    });
+    const tokens = estimateStructuredTokens(pb);
+    // Should be more than just 100/4 = 25 due to headers, IDs, etc.
+    expect(tokens).toBeGreaterThan(25);
   });
 });

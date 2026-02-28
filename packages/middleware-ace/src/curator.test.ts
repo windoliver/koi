@@ -1,176 +1,386 @@
 import { describe, expect, test } from "bun:test";
-import { curateTrajectorySummary } from "./curator.js";
-import type { AggregatedStats } from "./types.js";
+import type { InboundMessage } from "@koi/core/message";
+import { applyOperations, createDefaultCurator } from "./curator.js";
+import { estimateStructuredTokens } from "./playbook.js";
+import type {
+  CuratorInput,
+  CuratorOperation,
+  PlaybookBullet,
+  PlaybookSection,
+  ReflectionResult,
+  StructuredPlaybook,
+} from "./types.js";
 
-function makeStats(overrides?: Partial<AggregatedStats>): AggregatedStats {
+function makeBullet(overrides?: Partial<PlaybookBullet>): PlaybookBullet {
   return {
-    identifier: "tool-a",
-    kind: "tool_call",
-    successes: 8,
-    failures: 2,
-    retries: 0,
-    totalDurationMs: 500,
-    invocations: 10,
-    lastSeenMs: 1000,
+    id: "[str-00001]",
+    content: "Always validate inputs",
+    helpful: 3,
+    harmful: 1,
+    createdAt: 1000,
+    updatedAt: 1000,
     ...overrides,
   };
 }
 
-describe("curateTrajectorySummary", () => {
-  test("returns empty for empty stats", () => {
-    const result = curateTrajectorySummary(new Map(), 5, {
-      minScore: 0.1,
-      nowMs: 1000,
-      lambda: 0.01,
+function makeSection(overrides?: Partial<PlaybookSection>): PlaybookSection {
+  return {
+    name: "Strategy",
+    slug: "str",
+    bullets: [
+      makeBullet({ id: "[str-00001]", content: "Cache reads" }),
+      makeBullet({ id: "[str-00002]", content: "Retry errors" }),
+    ],
+    ...overrides,
+  };
+}
+
+function makePlaybook(overrides?: Partial<StructuredPlaybook>): StructuredPlaybook {
+  return {
+    id: "pb-1",
+    title: "Test Playbook",
+    sections: [makeSection()],
+    tags: ["tool_call"],
+    source: "curated",
+    createdAt: 1000,
+    updatedAt: 1000,
+    sessionCount: 1,
+    ...overrides,
+  };
+}
+
+function makeReflection(overrides?: Partial<ReflectionResult>): ReflectionResult {
+  return {
+    rootCause: "Test cause",
+    keyInsight: "Test insight",
+    bulletTags: [],
+    ...overrides,
+  };
+}
+
+const clock = (): number => 2000;
+
+describe("applyOperations", () => {
+  describe("ADD", () => {
+    test("appends new bullet to correct section", () => {
+      const pb = makePlaybook();
+      const ops: readonly CuratorOperation[] = [
+        { kind: "add", section: "str", content: "New strategy bullet" },
+      ];
+
+      const result = applyOperations(pb, ops, 10000, clock);
+      const section = result.sections[0]!;
+
+      expect(section.bullets).toHaveLength(3);
+      const newBullet = section.bullets[2]!;
+      expect(newBullet.content).toBe("New strategy bullet");
+      expect(newBullet.helpful).toBe(0);
+      expect(newBullet.harmful).toBe(0);
+      expect(newBullet.id).toMatch(/^\[str-\d{5}\]$/);
     });
-    expect(result).toHaveLength(0);
+
+    test("generates correct ID based on existing bullets", () => {
+      const pb = makePlaybook({
+        sections: [
+          makeSection({
+            bullets: [makeBullet({ id: "[str-00005]" })],
+          }),
+        ],
+      });
+      const ops: readonly CuratorOperation[] = [
+        { kind: "add", section: "str", content: "After 5" },
+      ];
+
+      const result = applyOperations(pb, ops, 10000, clock);
+      expect(result.sections[0]?.bullets[1]?.id).toBe("[str-00006]");
+    });
+
+    test("skips ADD for unknown section", () => {
+      const pb = makePlaybook();
+      const ops: readonly CuratorOperation[] = [
+        { kind: "add", section: "nonexistent", content: "Should skip" },
+      ];
+
+      const result = applyOperations(pb, ops, 10000, clock);
+      expect(result.sections[0]?.bullets).toHaveLength(2);
+    });
   });
 
-  test("filters out entries below minScore", () => {
-    const stats = new Map([["tool-a", makeStats({ successes: 0, failures: 10, invocations: 10 })]]);
-    const result = curateTrajectorySummary(stats, 5, {
-      minScore: 0.1,
-      nowMs: 1000,
-      lambda: 0.01,
+  describe("MERGE", () => {
+    test("combines two bullets with summed counters", () => {
+      const pb = makePlaybook({
+        sections: [
+          makeSection({
+            bullets: [
+              makeBullet({ id: "[str-00001]", helpful: 3, harmful: 1 }),
+              makeBullet({ id: "[str-00002]", helpful: 2, harmful: 0 }),
+            ],
+          }),
+        ],
+      });
+      const ops: readonly CuratorOperation[] = [
+        { kind: "merge", bulletIds: ["[str-00001]", "[str-00002]"], content: "Merged content" },
+      ];
+
+      const result = applyOperations(pb, ops, 10000, clock);
+      const section = result.sections[0]!;
+
+      // Two removed, one added
+      expect(section.bullets).toHaveLength(1);
+      const merged = section.bullets[0]!;
+      expect(merged.content).toBe("Merged content");
+      expect(merged.helpful).toBe(5); // 3 + 2
+      expect(merged.harmful).toBe(1); // 1 + 0
     });
-    expect(result).toHaveLength(0);
+
+    test("skips MERGE when bullet IDs not found", () => {
+      const pb = makePlaybook();
+      const ops: readonly CuratorOperation[] = [
+        { kind: "merge", bulletIds: ["[str-99999]", "[str-88888]"], content: "Should skip" },
+      ];
+
+      const result = applyOperations(pb, ops, 10000, clock);
+      expect(result.sections[0]?.bullets).toHaveLength(2);
+    });
   });
 
-  test("includes entries above minScore", () => {
-    const stats = new Map([["tool-a", makeStats({ successes: 8, failures: 2, invocations: 10 })]]);
-    const result = curateTrajectorySummary(stats, 5, {
-      minScore: 0.1,
-      nowMs: 1000,
-      lambda: 0.01,
+  describe("PRUNE", () => {
+    test("removes bullet by ID", () => {
+      const pb = makePlaybook({
+        sections: [
+          makeSection({
+            bullets: [makeBullet({ id: "[str-00001]" }), makeBullet({ id: "[str-00002]" })],
+          }),
+        ],
+      });
+      const ops: readonly CuratorOperation[] = [{ kind: "prune", bulletId: "[str-00001]" }];
+
+      const result = applyOperations(pb, ops, 10000, clock);
+      expect(result.sections[0]?.bullets).toHaveLength(1);
+      expect(result.sections[0]?.bullets[0]?.id).toBe("[str-00002]");
     });
-    expect(result).toHaveLength(1);
-    expect(result[0]?.identifier).toBe("tool-a");
+
+    test("keeps minimum 1 bullet per section", () => {
+      const pb = makePlaybook({
+        sections: [
+          makeSection({
+            bullets: [makeBullet({ id: "[str-00001]" })],
+          }),
+        ],
+      });
+      const ops: readonly CuratorOperation[] = [{ kind: "prune", bulletId: "[str-00001]" }];
+
+      const result = applyOperations(pb, ops, 10000, clock);
+      expect(result.sections[0]?.bullets).toHaveLength(1);
+    });
   });
 
-  test("sorts by score descending", () => {
-    const stats = new Map([
-      [
-        "tool-low",
-        makeStats({
-          identifier: "tool-low",
-          successes: 3,
-          failures: 7,
-          invocations: 10,
+  describe("anti-collapse", () => {
+    test("auto-prunes lowest-value bullets when over budget", () => {
+      const bullets = Array.from({ length: 20 }, (_, i) =>
+        makeBullet({
+          id: `[str-${String(i).padStart(5, "0")}]`,
+          content: "x".repeat(50),
+          helpful: i, // Higher index = higher value
+          harmful: 0,
         }),
-      ],
-      [
-        "tool-high",
-        makeStats({
-          identifier: "tool-high",
-          successes: 10,
-          failures: 0,
-          invocations: 10,
-        }),
-      ],
-    ]);
-    const result = curateTrajectorySummary(stats, 5, {
-      minScore: 0.01,
-      nowMs: 1000,
-      lambda: 0.01,
+      );
+      const pb = makePlaybook({
+        sections: [makeSection({ bullets })],
+      });
+
+      // Set a very tight budget
+      const result = applyOperations(pb, [], 100, clock);
+      const totalTokens = estimateStructuredTokens(result);
+
+      expect(totalTokens).toBeLessThanOrEqual(100);
+      // Should have kept higher-value bullets
+      expect(result.sections[0]?.bullets.length).toBeLessThan(20);
+      expect(result.sections[0]?.bullets.length).toBeGreaterThanOrEqual(1);
     });
-    expect(result.length).toBeGreaterThan(1);
-    expect(result[0]?.identifier).toBe("tool-high");
+
+    test("positive-value bullets survive unless budget forces removal", () => {
+      const pb = makePlaybook({
+        sections: [
+          makeSection({
+            bullets: [
+              makeBullet({ id: "[str-00001]", content: "short", helpful: 10, harmful: 0 }),
+              makeBullet({ id: "[str-00002]", content: "short", helpful: 5, harmful: 0 }),
+            ],
+          }),
+        ],
+      });
+
+      // Generous budget — both should survive
+      const result = applyOperations(pb, [], 10000, clock);
+      expect(result.sections[0]?.bullets).toHaveLength(2);
+    });
   });
 
-  test("includes stats in each candidate", () => {
-    const stat = makeStats({ identifier: "tool-a" });
-    const stats = new Map([["tool-a", stat]]);
-    const result = curateTrajectorySummary(stats, 5, {
-      minScore: 0.01,
-      nowMs: 1000,
-      lambda: 0.01,
+  describe("immutability", () => {
+    test("input playbook is not mutated", () => {
+      const pb = makePlaybook();
+      const originalBulletCount = pb.sections[0]?.bullets.length;
+      const ops: readonly CuratorOperation[] = [{ kind: "add", section: "str", content: "New" }];
+
+      applyOperations(pb, ops, 10000, clock);
+
+      expect(pb.sections[0]?.bullets.length).toBe(originalBulletCount);
     });
-    expect(result[0]?.stats).toEqual(stat);
   });
 
-  test("preserves kind from stats", () => {
-    const stats = new Map([["model-x", makeStats({ identifier: "model-x", kind: "model_call" })]]);
-    const result = curateTrajectorySummary(stats, 5, {
-      minScore: 0.01,
-      nowMs: 1000,
-      lambda: 0.01,
+  describe("edge cases", () => {
+    test("empty playbook with ADD creates first bullet", () => {
+      const pb = makePlaybook({
+        sections: [makeSection({ bullets: [] })],
+      });
+      const ops: readonly CuratorOperation[] = [
+        { kind: "add", section: "str", content: "First bullet" },
+      ];
+
+      const result = applyOperations(pb, ops, 10000, clock);
+      expect(result.sections[0]?.bullets).toHaveLength(1);
+      expect(result.sections[0]?.bullets[0]?.id).toBe("[str-00000]");
     });
-    expect(result[0]?.kind).toBe("model_call");
+
+    test("all harmful bullets: anti-collapse keeps minimum", () => {
+      const pb = makePlaybook({
+        sections: [
+          makeSection({
+            bullets: [
+              makeBullet({ id: "[str-00001]", helpful: 0, harmful: 10 }),
+              makeBullet({ id: "[str-00002]", helpful: 0, harmful: 5 }),
+            ],
+          }),
+        ],
+      });
+
+      // Even with generous budget, bullets aren't removed just for being harmful
+      const result = applyOperations(pb, [], 10000, clock);
+      expect(result.sections[0]?.bullets).toHaveLength(2);
+    });
+
+    test("updates updatedAt timestamp", () => {
+      const pb = makePlaybook({ updatedAt: 1000 });
+      const result = applyOperations(pb, [], 10000, clock);
+      expect(result.updatedAt).toBe(2000);
+    });
+
+    test("handles ADD by section name (not just slug)", () => {
+      const pb = makePlaybook({
+        sections: [makeSection({ name: "Strategy", slug: "str", bullets: [] })],
+      });
+      const ops: readonly CuratorOperation[] = [
+        { kind: "add", section: "Strategy", content: "Via name" },
+      ];
+
+      const result = applyOperations(pb, ops, 10000, clock);
+      expect(result.sections[0]?.bullets).toHaveLength(1);
+    });
+  });
+});
+
+describe("createDefaultCurator", () => {
+  test("parses valid JSON operations from LLM response", async () => {
+    const modelCall = async (_msgs: readonly InboundMessage[]): Promise<string> =>
+      JSON.stringify([{ kind: "add", section: "str", content: "New insight" }]);
+
+    const curator = createDefaultCurator(modelCall);
+    const input: CuratorInput = {
+      playbook: makePlaybook(),
+      reflection: makeReflection(),
+      tokenBudget: 10000,
+    };
+
+    const ops = await curator.curate(input);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]).toEqual({ kind: "add", section: "str", content: "New insight" });
   });
 
-  test("uses custom scorer when provided", () => {
-    const stats = new Map([["tool-a", makeStats()]]);
-    const customScorer = (): number => 0.42;
-    const result = curateTrajectorySummary(stats, 5, {
-      scorer: customScorer,
-      minScore: 0.1,
-      nowMs: 1000,
-      lambda: 0.01,
-    });
-    expect(result).toHaveLength(1);
-    expect(result[0]?.score).toBeCloseTo(0.42, 5);
+  test("returns empty array for malformed LLM response", async () => {
+    const modelCall = async (): Promise<string> => "not valid json";
+
+    const curator = createDefaultCurator(modelCall);
+    const input: CuratorInput = {
+      playbook: makePlaybook(),
+      reflection: makeReflection(),
+      tokenBudget: 10000,
+    };
+
+    const ops = await curator.curate(input);
+    expect(ops).toHaveLength(0);
   });
 
-  test("fixture: multi-tool session produces expected candidates", () => {
-    const stats = new Map([
-      [
-        "read-file",
-        makeStats({
-          identifier: "read-file",
-          kind: "tool_call",
-          successes: 8,
-          failures: 2,
-          invocations: 10,
-          lastSeenMs: 1000,
-        }),
-      ],
-      [
-        "write-file",
-        makeStats({
-          identifier: "write-file",
-          kind: "tool_call",
-          successes: 5,
-          failures: 5,
-          invocations: 10,
-          lastSeenMs: 1000,
-        }),
-      ],
-      [
-        "gpt-4",
-        makeStats({
-          identifier: "gpt-4",
-          kind: "model_call",
-          successes: 20,
-          failures: 0,
-          invocations: 20,
-          lastSeenMs: 1000,
-        }),
-      ],
-    ]);
+  test("filters out operations with unknown section names", async () => {
+    const modelCall = async (): Promise<string> =>
+      JSON.stringify([
+        { kind: "add", section: "str", content: "Valid" },
+        { kind: "add", section: "nonexistent", content: "Invalid" },
+      ]);
 
-    const result = curateTrajectorySummary(stats, 10, {
-      minScore: 0.1,
-      nowMs: 1000,
-      lambda: 0.01,
-    });
+    const curator = createDefaultCurator(modelCall);
+    const input: CuratorInput = {
+      playbook: makePlaybook(),
+      reflection: makeReflection(),
+      tokenBudget: 10000,
+    };
 
-    // gpt-4: freq=2, successRate=1.0 → score=1.0 (capped)
-    // read-file: freq=1, successRate=0.8 → score=0.8
-    // write-file: freq=1, successRate=0.5 → score=0.5
-    expect(result[0]?.identifier).toBe("gpt-4");
-    // All three should pass min threshold
-    expect(result).toHaveLength(3);
+    const ops = await curator.curate(input);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]?.kind).toBe("add");
   });
 
-  test("zero invocation entries produce score 0", () => {
-    const stats = new Map([
-      ["empty", makeStats({ identifier: "empty", invocations: 0, successes: 0, failures: 0 })],
-    ]);
-    const result = curateTrajectorySummary(stats, 5, {
-      minScore: 0.1,
-      nowMs: 1000,
-      lambda: 0.01,
+  test("filters out merge ops with invalid bullet IDs", async () => {
+    const modelCall = async (): Promise<string> =>
+      JSON.stringify([
+        { kind: "merge", bulletIds: ["[str-00001]", "[str-99999]"], content: "Bad" },
+      ]);
+
+    const curator = createDefaultCurator(modelCall);
+    const input: CuratorInput = {
+      playbook: makePlaybook(),
+      reflection: makeReflection(),
+      tokenBudget: 10000,
+    };
+
+    const ops = await curator.curate(input);
+    expect(ops).toHaveLength(0);
+  });
+
+  test("propagates error when LLM throws", async () => {
+    const modelCall = async (): Promise<string> => {
+      throw new Error("Rate limited");
+    };
+
+    const curator = createDefaultCurator(modelCall);
+    const input: CuratorInput = {
+      playbook: makePlaybook(),
+      reflection: makeReflection(),
+      tokenBudget: 10000,
+    };
+
+    await expect(curator.curate(input)).rejects.toThrow("Rate limited");
+  });
+
+  test("passes playbook and reflection to model call message", async () => {
+    let capturedMessages: readonly InboundMessage[] = [];
+    const modelCall = async (msgs: readonly InboundMessage[]): Promise<string> => {
+      capturedMessages = msgs;
+      return "[]";
+    };
+
+    const curator = createDefaultCurator(modelCall);
+    await curator.curate({
+      playbook: makePlaybook(),
+      reflection: makeReflection({ rootCause: "Test root cause" }),
+      tokenBudget: 5000,
     });
-    expect(result).toHaveLength(0);
+
+    expect(capturedMessages).toHaveLength(1);
+    const content = capturedMessages[0]?.content[0];
+    if (content?.kind === "text") {
+      expect(content.text).toContain("Test root cause");
+      expect(content.text).toContain("5000");
+    }
   });
 });
