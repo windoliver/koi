@@ -123,6 +123,36 @@ declare function button(label: string, action: string, payload?: unknown): Butto
 declare function custom(type: string, data: unknown): CustomBlock;
 
 /**
+ * Inbound message debouncer.
+ *
+ * Batches rapid consecutive messages from the same sender/conversation
+ * into a single InboundMessage. Prevents duplicate LLM calls when
+ * users send multiple lines in quick succession.
+ */
+
+/** Configuration for the inbound debouncer. */
+interface DebouncerConfig {
+    /** Debounce window in milliseconds. Default: 500. */
+    readonly windowMs?: number;
+    /** Key extractor: determines which messages to merge. Default: senderId + threadId. */
+    readonly keyFn?: (msg: InboundMessage) => string;
+}
+/** Debouncer instance returned by createDebouncer(). */
+interface Debouncer {
+    /** Submit a message. Returns a Promise that resolves with the merged message after the window. */
+    readonly submit: (msg: InboundMessage) => Promise<InboundMessage>;
+    /** Cancel all pending timers and flush remaining messages immediately. */
+    readonly dispose: () => void;
+}
+/**
+ * Creates an inbound message debouncer.
+ *
+ * Messages with the same key arriving within \`windowMs\` are merged into
+ * a single InboundMessage with concatenated content blocks.
+ */
+declare function createDebouncer(config?: DebouncerConfig): Debouncer;
+
+/**
  * User-facing error message formatting for channel adapters.
  *
  * Maps KoiErrorCode to safe, user-friendly messages that never leak
@@ -262,36 +292,6 @@ declare function createRetryQueue(config?: RetryQueueConfig): RetryQueue;
  * @returns An array of text chunks, each at most \`limit\` characters.
  */
 declare function splitText(inputText: string, limit: number): readonly string[];
-
-/**
- * Inbound message debouncer.
- *
- * Batches rapid consecutive messages from the same sender/conversation
- * into a single InboundMessage. Prevents duplicate LLM calls when
- * users send multiple lines in quick succession.
- */
-
-/** Configuration for the inbound debouncer. */
-interface DebouncerConfig {
-    /** Debounce window in milliseconds. Default: 500. */
-    readonly windowMs?: number;
-    /** Key extractor: determines which messages to merge. Default: senderId + threadId. */
-    readonly keyFn?: (msg: InboundMessage) => string;
-}
-/** Debouncer instance returned by createDebouncer(). */
-interface Debouncer {
-    /** Submit a message. Returns a Promise that resolves with the merged message after the window. */
-    readonly submit: (msg: InboundMessage) => Promise<InboundMessage>;
-    /** Cancel all pending timers and flush remaining messages immediately. */
-    readonly dispose: () => void;
-}
-/**
- * Creates an inbound message debouncer.
- *
- * Messages with the same key arriving within \`windowMs\` are merged into
- * a single InboundMessage with concatenated content blocks.
- */
-declare function createDebouncer(config?: DebouncerConfig): Debouncer;
 
 export { type ChannelAdapterConfig, type Debouncer, type DebouncerConfig, type FormatErrorOptions, type MediaFallbackConfig, type MessageNormalizer, type Reconnector, type ReconnectorConfig, type RetryQueue, type RetryQueueConfig, button, createChannelAdapter, createDebouncer, createMediaFallback, createReconnector, createRetryQueue, custom, file, formatErrorForChannel, image, renderBlocks, splitText, text };
 "
