@@ -16,7 +16,5 @@
     "test": "bun test",
     "test:api": "bun test src/__tests__/api-surface.test.ts"
   },
-  "dependencies": {
-    "@koi/core": "workspace:*"
-  }
+  "dependencies": {}
 }

@@ -70,7 +70,7 @@ L3  Meta-packages    Convenience bundles (e.g., @koi/starter = L0 + L1 + selecte
   - Exception: pure functions operating only on L0 types (type guards like `isProcessState`, validation helpers like `validateNonEmpty`, error factories) are permitted as they are side-effect-free data constructors
 - NO `import` from any `@koi/*` package or external dependency
 - This package must compile with zero dependencies in `package.json`
-- Target: ~230 types across 7 contracts + ECS layer, ~3,200 LOC
+- Target: ~230+ types across 7 contracts + ECS layer, ~14,100 LOC (62 files, 27 export entry points)
 - Think of it as the Linux syscall table — it defines the plugs, not the things that plug in
 
 **When creating or editing `@koi/engine` (L1):**
@@ -81,7 +81,7 @@ L3  Meta-packages    Convenience bundles (e.g., @koi/starter = L0 + L1 + selecte
 
 **When creating or editing feature packages (L2):**
 - Import from `@koi/core` (L0) and L0-utility packages (L0u) only — never from `@koi/engine` or other L2 packages
-- L0u packages: `@koi/channel-base`, `@koi/errors`, `@koi/hash`, `@koi/manifest`, `@koi/shutdown`, `@koi/skill-scanner`, `@koi/snapshot-chain-store`, `@koi/test-utils`, `@koi/validation`
+- L0u packages: `@koi/channel-base`, `@koi/errors`, `@koi/execution-context`, `@koi/file-resolution`, `@koi/git-utils`, `@koi/hash`, `@koi/manifest`, `@koi/resolve`, `@koi/sandbox-cloud-base`, `@koi/scope`, `@koi/shutdown`, `@koi/skill-scanner`, `@koi/snapshot-chain-store`, `@koi/sqlite-utils`, `@koi/test-utils`, `@koi/validation`
 - L0u packages may import from `@koi/core` and from peer L0u packages
 - Each L2 package is independent and swappable
 - Examples: channel adapters, middleware implementations, engine adapters, MCP bridge
