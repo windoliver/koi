@@ -11,6 +11,7 @@
 export { validateContextConfig } from "./config.js";
 export { descriptor } from "./descriptor.js";
 export { CHARS_PER_TOKEN, heuristicTokenEstimator } from "./estimator.js";
+export { createContextExtension } from "./extension.js";
 export type { ContextHydratorMiddleware, ContextHydratorOptions } from "./hydrator.js";
 export { createContextHydrator } from "./hydrator.js";
 export type {

@@ -1,14 +1,18 @@
 /**
  * Skill source resolver — looks up a skill by name from the agent's components.
+ *
+ * Queries SkillComponent (not SkillMetadata) so the skill's behavioral
+ * instructions (content field) reach the system prompt — progressive
+ * loading level 2 (body).
  */
 
-import type { Agent, SkillMetadata } from "@koi/core";
+import type { Agent, SkillComponent } from "@koi/core";
 import type { SkillSource, SourceResult } from "../types.js";
 
 /** Resolves a skill source by querying the agent's skill components. */
 export function resolveSkillSource(source: SkillSource, agent: Agent): Promise<SourceResult> {
-  const skills = agent.query<SkillMetadata>("skill:");
-  let found: SkillMetadata | undefined;
+  const skills = agent.query<SkillComponent>("skill:");
+  let found: SkillComponent | undefined;
 
   for (const [, skill] of skills) {
     if (skill.name === source.name) {
@@ -22,6 +26,9 @@ export function resolveSkillSource(source: SkillSource, agent: Agent): Promise<S
   }
 
   const parts = [`Skill: ${found.name}`, found.description];
+  if (found.content.length > 0) {
+    parts.push(found.content);
+  }
   if (found.tags !== undefined && found.tags.length > 0) {
     parts.push(`Tags: ${found.tags.join(", ")}`);
   }
