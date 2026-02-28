@@ -1453,6 +1453,22 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/tool-ask-user": {
+      "name": "@koi/tool-ask-user",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/tool-browser": {
       "name": "@koi/tool-browser",
       "version": "0.0.0",
@@ -2195,6 +2211,8 @@
     "@koi/task-spawn": ["@koi/task-spawn@workspace:packages/task-spawn"],
 
     "@koi/test-utils": ["@koi/test-utils@workspace:packages/test-utils"],
+
+    "@koi/tool-ask-user": ["@koi/tool-ask-user@workspace:packages/tool-ask-user"],
 
     "@koi/tool-browser": ["@koi/tool-browser@workspace:packages/tool-browser"],
 
