@@ -121,7 +121,8 @@ describe("createPlatformSend", () => {
   test("silently skips when threadId is missing", async () => {
     const proc = makeMockProcess();
     const send = createPlatformSend(proc, "+0987654321");
-    await send(makeMessage({ threadId: undefined }));
+    const msg: OutboundMessage = { content: [{ kind: "text", text: "hello" }] };
+    await send(msg);
     expect(proc.send).not.toHaveBeenCalled();
   });
 });

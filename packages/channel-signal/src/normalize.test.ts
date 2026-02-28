@@ -5,14 +5,14 @@ import type { SignalEvent } from "./signal-process.js";
 const normalize = createNormalizer();
 
 describe("createNormalizer", () => {
-  test("returns InboundMessage for message event", () => {
+  test("returns InboundMessage for message event", async () => {
     const event: SignalEvent = {
       kind: "message",
       source: "+1234567890",
       timestamp: 1700000000000,
       body: "hello signal",
     };
-    const result = normalize(event);
+    const result = await normalize(event);
     expect(result).not.toBeNull();
     expect(result?.content).toEqual([{ kind: "text", text: "hello signal" }]);
     expect(result?.senderId).toBe("+1234567890");
@@ -20,7 +20,7 @@ describe("createNormalizer", () => {
     expect(result?.timestamp).toBe(1700000000000);
   });
 
-  test("uses groupId as threadId for group messages", () => {
+  test("uses groupId as threadId for group messages", async () => {
     const event: SignalEvent = {
       kind: "message",
       source: "+1234567890",
@@ -28,35 +28,35 @@ describe("createNormalizer", () => {
       body: "group msg",
       groupId: "group.abc123",
     };
-    const result = normalize(event);
+    const result = await normalize(event);
     expect(result?.threadId).toBe("group.abc123");
   });
 
-  test("returns null for receipt events", () => {
+  test("returns null for receipt events", async () => {
     const event: SignalEvent = {
       kind: "receipt",
       source: "+1234567890",
       timestamp: 1700000000000,
     };
-    expect(normalize(event)).toBeNull();
+    expect(await normalize(event)).toBeNull();
   });
 
-  test("returns null for typing events", () => {
+  test("returns null for typing events", async () => {
     const event: SignalEvent = {
       kind: "typing",
       source: "+1234567890",
       started: true,
     };
-    expect(normalize(event)).toBeNull();
+    expect(await normalize(event)).toBeNull();
   });
 
-  test("returns null for message with empty body", () => {
+  test("returns null for message with empty body", async () => {
     const event: SignalEvent = {
       kind: "message",
       source: "+1234567890",
       timestamp: 1700000000000,
       body: "",
     };
-    expect(normalize(event)).toBeNull();
+    expect(await normalize(event)).toBeNull();
   });
 });
