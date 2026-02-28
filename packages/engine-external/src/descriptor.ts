@@ -2,7 +2,8 @@
  * BrickDescriptor for @koi/engine-external.
  *
  * Enables manifest auto-resolution for external CLI process engines.
- * Requires a `command` option specifying the external process to run.
+ * Passes through `command`, `args`, `cwd`, `mode`, `timeoutMs`,
+ * `noOutputTimeoutMs`, and `maxOutputBytes` from YAML options.
  */
 
 import type { EngineAdapter, KoiError, Result } from "@koi/core";

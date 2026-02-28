@@ -1,8 +1,9 @@
 /**
  * Resolves the engine section of a manifest.
  *
+ * Supports both string shorthand (`engine: "external"`) and object form
+ * (`engine: { name: "external", options: { command: "echo" } }`).
  * If no engine is declared, returns undefined (CLI defaults to loop adapter).
- * Otherwise, resolves the engine by name via the registry.
  * Accepts both string shorthand ("external") and object form ({ name: "external", options: {...} }).
  */
 
