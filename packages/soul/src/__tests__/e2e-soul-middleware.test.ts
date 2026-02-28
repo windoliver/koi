@@ -602,7 +602,8 @@ describeE2E("e2e: @koi/soul through createKoi + createPiAdapter", () => {
         messages: [],
         metadata: {},
       });
-      expect(fragment).toEqual({ label: "soul", description: "Persona active" });
+      expect(fragment?.label).toBe("soul");
+      expect(fragment?.description).toContain("Persona system prompt injected");
     },
     TIMEOUT_MS,
   );

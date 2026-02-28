@@ -574,7 +574,7 @@ describeE2E("e2e: soul self-modification awareness through createKoi + createPiA
 
       const fragment = soulMw.describeCapabilities?.(ctx) as CapabilityFragment;
       expect(fragment.label).toBe("soul");
-      expect(fragment.description).toBe("Persona active");
+      expect(fragment.description).toContain("Persona system prompt injected");
     },
     TIMEOUT_MS,
   );

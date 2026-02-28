@@ -388,7 +388,7 @@ describe("describeCapabilities — selfModify", () => {
     const result = mw.describeCapabilities?.(ctx) as CapabilityFragment;
 
     expect(result.label).toBe("soul");
-    expect(result.description).toBe("Persona active");
+    expect(result.description).toContain("Persona system prompt injected");
     expect(result.description).not.toContain("self-modification");
   });
 
@@ -402,6 +402,6 @@ describe("describeCapabilities — selfModify", () => {
     const result = mw.describeCapabilities?.(ctx) as CapabilityFragment;
 
     expect(result.label).toBe("soul");
-    expect(result.description).toBe("Persona active");
+    expect(result.description).toContain("Persona system prompt injected");
   });
 });
