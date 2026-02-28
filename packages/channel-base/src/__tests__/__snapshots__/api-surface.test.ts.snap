@@ -3,6 +3,7 @@
 exports[`@koi/channel-base API surface . has stable type surface 1`] = `
 "import { ChannelCapabilities, OutboundMessage, InboundMessage, ChannelStatus, ChannelAdapter, ButtonBlock, CustomBlock, FileBlock, ImageBlock, TextBlock, KoiError, ContentBlock } from '@koi/core';
 export { ContentBlock } from '@koi/core';
+import { RetryConfig } from '@koi/errors';
 
 /**
  * Generic channel adapter factory.
@@ -122,6 +123,36 @@ declare function button(label: string, action: string, payload?: unknown): Butto
 declare function custom(type: string, data: unknown): CustomBlock;
 
 /**
+ * Inbound message debouncer.
+ *
+ * Batches rapid consecutive messages from the same sender/conversation
+ * into a single InboundMessage. Prevents duplicate LLM calls when
+ * users send multiple lines in quick succession.
+ */
+
+/** Configuration for the inbound debouncer. */
+interface DebouncerConfig {
+    /** Debounce window in milliseconds. Default: 500. */
+    readonly windowMs?: number;
+    /** Key extractor: determines which messages to merge. Default: senderId + threadId. */
+    readonly keyFn?: (msg: InboundMessage) => string;
+}
+/** Debouncer instance returned by createDebouncer(). */
+interface Debouncer {
+    /** Submit a message. Returns a Promise that resolves with the merged message after the window. */
+    readonly submit: (msg: InboundMessage) => Promise<InboundMessage>;
+    /** Cancel all pending timers and flush remaining messages immediately. */
+    readonly dispose: () => void;
+}
+/**
+ * Creates an inbound message debouncer.
+ *
+ * Messages with the same key arriving within \`windowMs\` are merged into
+ * a single InboundMessage with concatenated content blocks.
+ */
+declare function createDebouncer(config?: DebouncerConfig): Debouncer;
+
+/**
  * User-facing error message formatting for channel adapters.
  *
  * Maps KoiErrorCode to safe, user-friendly messages that never leak
@@ -140,6 +171,66 @@ interface FormatErrorOptions {
  * - Never leaks error.cause, error.context, or stack traces
  */
 declare function formatErrorForChannel(error: KoiError, options?: FormatErrorOptions): string;
+
+/**
+ * Media send fallback utility.
+ *
+ * Wraps a platform send function to catch media upload failures and
+ * send a text warning instead of silently dropping the content.
+ */
+
+/** Configuration for media fallback behavior. */
+interface MediaFallbackConfig {
+    /** The platform send function to wrap. */
+    readonly send: (message: OutboundMessage) => Promise<void>;
+    /** Optional maximum media size in MB. Media over this size triggers fallback. */
+    readonly mediaMaxMb?: number;
+    /** Custom fallback message template. Receives the original block kind. Default: "[Media failed to send: {kind}]" */
+    readonly formatWarning?: (block: ContentBlock) => string;
+}
+/**
+ * Creates a send function with media fallback.
+ *
+ * If sending a message with media blocks fails, retries with a text
+ * warning in place of each failed media block.
+ */
+declare function createMediaFallback(config: MediaFallbackConfig): (message: OutboundMessage) => Promise<void>;
+
+/**
+ * Reconnection manager for channel adapters.
+ *
+ * Manages automatic reconnection with exponential backoff using
+ * computeBackoff() from @koi/errors. Resets the attempt counter
+ * on successful connection.
+ */
+
+interface ReconnectorConfig {
+    /** Establishes the platform connection. Throws on failure. */
+    readonly connect: () => Promise<void>;
+    /** Called after a successful (re)connection. */
+    readonly onConnected: () => void;
+    /** Called when the connection drops before a reconnection attempt. */
+    readonly onDisconnected: () => void;
+    /** Called when all retry attempts are exhausted. */
+    readonly onGiveUp: (lastError: unknown) => void;
+    /** Retry configuration. Defaults to DEFAULT_RETRY_CONFIG. */
+    readonly retry?: RetryConfig;
+}
+interface Reconnector {
+    /** Starts the reconnection loop. Resolves after first successful connect. */
+    readonly start: () => Promise<void>;
+    /** Stops the reconnection loop and prevents further attempts. */
+    readonly stop: () => void;
+    /** Returns true if currently connected. */
+    readonly isConnected: () => boolean;
+    /** Triggers a reconnection attempt (e.g., on connection drop). */
+    readonly reconnect: () => void;
+}
+/**
+ * Creates a reconnection manager that wraps a connect() function
+ * with exponential backoff retry logic.
+ */
+declare function createReconnector(config: ReconnectorConfig): Reconnector;
 
 /**
  * Capability-aware ContentBlock renderer.
@@ -161,6 +252,38 @@ declare function formatErrorForChannel(error: KoiError, options?: FormatErrorOpt
 declare function renderBlocks(blocks: readonly ContentBlock[], capabilities: ChannelCapabilities): readonly ContentBlock[];
 
 /**
+ * Rate-limit-aware send queue for channel adapters.
+ *
+ * Pauses the queue on 429 / rate-limit errors and retries
+ * with exponential backoff. Errors from individual sends
+ * are propagated to the caller.
+ */
+
+interface RetryQueueConfig {
+    /** Retry configuration for rate-limited sends. */
+    readonly retry?: RetryConfig;
+    /**
+     * Extracts a retry-after delay (in ms) from a caught error.
+     * Return undefined if the error is not a rate-limit error.
+     */
+    readonly extractRetryAfterMs?: (error: unknown) => number | undefined;
+}
+interface RetryQueue {
+    /** Enqueues a send function. Resolves when the send completes (after any retries). */
+    readonly enqueue: (fn: () => Promise<void>) => Promise<void>;
+    /** Returns the number of items waiting in the queue. */
+    readonly size: () => number;
+}
+/**
+ * Creates a rate-limit-aware send queue.
+ *
+ * Sends are executed sequentially. On a rate-limit error the queue
+ * pauses for the retry-after duration (or computed backoff) before
+ * retrying.
+ */
+declare function createRetryQueue(config?: RetryQueueConfig): RetryQueue;
+
+/**
  * Splits text into chunks of at most \`limit\` characters.
  * Prefers splitting at newlines to avoid cutting mid-sentence.
  *
@@ -170,6 +293,6 @@ declare function renderBlocks(blocks: readonly ContentBlock[], capabilities: Cha
  */
 declare function splitText(inputText: string, limit: number): readonly string[];
 
-export { type ChannelAdapterConfig, type FormatErrorOptions, type MessageNormalizer, button, createChannelAdapter, custom, file, formatErrorForChannel, image, renderBlocks, splitText, text };
+export { type ChannelAdapterConfig, type Debouncer, type DebouncerConfig, type FormatErrorOptions, type MediaFallbackConfig, type MessageNormalizer, type Reconnector, type ReconnectorConfig, type RetryQueue, type RetryQueueConfig, button, createChannelAdapter, createDebouncer, createMediaFallback, createReconnector, createRetryQueue, custom, file, formatErrorForChannel, image, renderBlocks, splitText, text };
 "
 `;
