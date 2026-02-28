@@ -15,7 +15,7 @@ import { testChannelAdapter } from "@koi/test-utils";
 import type { Client } from "discord.js";
 import { createDiscordChannel } from "./discord-channel.js";
 import type { MockClient } from "./test-helpers.js";
-import { createMockClient } from "./test-helpers.js";
+import { createMockClient, createMockMessage } from "./test-helpers.js";
 
 const DUMMY_TOKEN = "test-discord-bot-token";
 
@@ -177,5 +177,144 @@ describe("createDiscordChannel — extended interface", () => {
     const { adapter } = makeAdapter();
     // Should not throw
     adapter.leaveVoice("guild-nonexistent");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: normalizer uses post-login botUserId, not "unknown"
+// ---------------------------------------------------------------------------
+
+describe("createDiscordChannel — botUserId normalizer regression", () => {
+  const REAL_BOT_ID = "real-bot-999";
+
+  /**
+   * Creates a mock client that simulates the real Discord.js login flow:
+   * client.user is null before login(), then populated after login() resolves.
+   */
+  function createLoginSimulatingClient(): MockClient & {
+    readonly user: { readonly id: string; readonly bot: boolean };
+  } {
+    // Mutable user reference — starts as null-like state, set after login
+    // let requires justification: simulates Discord.js client.user being set by login()
+    let userRef: { readonly id: string; readonly bot: boolean } | null = null;
+
+    const eventHandlers = new Map<string, ((...args: readonly unknown[]) => void)[]>();
+
+    const clientObj = {
+      get user() {
+        return userRef;
+      },
+      login: mock(async () => {
+        userRef = { id: REAL_BOT_ID, bot: true };
+        return "token";
+      }),
+      destroy: mock(async () => {}),
+      on: mock((event: string, handler: (...args: readonly unknown[]) => void) => {
+        const handlers = eventHandlers.get(event) ?? [];
+        eventHandlers.set(event, [...handlers, handler]);
+        return clientObj;
+      }),
+      removeAllListeners: mock(() => {
+        eventHandlers.clear();
+        return clientObj;
+      }),
+      channels: {
+        cache: {
+          get: mock(() => ({
+            send: mock(async () => ({})),
+            sendTyping: mock(async () => {}),
+            isThread: () => false,
+          })),
+        },
+      },
+      /** Fire a registered event handler for testing. */
+      emit(event: string, ...args: readonly unknown[]): void {
+        const handlers = eventHandlers.get(event);
+        if (handlers !== undefined) {
+          for (const h of handlers) {
+            h(...args);
+          }
+        }
+      },
+    };
+
+    return clientObj as unknown as MockClient & {
+      readonly user: { readonly id: string; readonly bot: boolean };
+    };
+  }
+
+  test("filters bot's own messages after login (botUserId is not stale 'unknown')", async () => {
+    const mockClient = createLoginSimulatingClient();
+    const voiceDeps = makeMockVoiceDeps();
+
+    const adapter = createDiscordChannel({
+      token: DUMMY_TOKEN,
+      _client: mockClient as unknown as Client,
+      _joinVoiceChannel: voiceDeps._joinVoiceChannel,
+      _createAudioPlayer: voiceDeps._createAudioPlayer,
+    });
+
+    const received: unknown[] = [];
+    adapter.onMessage(async (msg) => {
+      received.push(msg);
+    });
+
+    await adapter.connect();
+
+    // Simulate a message from the bot itself — should be filtered
+    const botMessage = createMockMessage({
+      authorId: REAL_BOT_ID,
+      authorBot: true,
+      content: "I am the bot",
+    });
+    (mockClient as unknown as { emit: (event: string, ...args: readonly unknown[]) => void }).emit(
+      "messageCreate",
+      botMessage,
+    );
+
+    // Yield to the microtask queue so the async normalizer runs
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(received).toHaveLength(0);
+
+    // Simulate a message from a real user — should be delivered
+    const userMessage = createMockMessage({
+      authorId: "human-user-42",
+      authorBot: false,
+      content: "Hello bot!",
+    });
+    (mockClient as unknown as { emit: (event: string, ...args: readonly unknown[]) => void }).emit(
+      "messageCreate",
+      userMessage,
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(received).toHaveLength(1);
+
+    await adapter.disconnect();
+  });
+
+  test("normalizer uses 'unknown' before login and real ID after login", async () => {
+    const mockClient = createLoginSimulatingClient();
+    const voiceDeps = makeMockVoiceDeps();
+
+    // Before login, client.user is null — botUserId should be "unknown"
+    expect(mockClient.user).toBeNull();
+
+    const adapter = createDiscordChannel({
+      token: DUMMY_TOKEN,
+      _client: mockClient as unknown as Client,
+      _joinVoiceChannel: voiceDeps._joinVoiceChannel,
+      _createAudioPlayer: voiceDeps._createAudioPlayer,
+    });
+
+    await adapter.connect();
+
+    // After login, client.user should be set
+    expect(mockClient.user).not.toBeNull();
+    expect(mockClient.user?.id).toBe(REAL_BOT_ID);
+
+    await adapter.disconnect();
   });
 });

@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/file-resolution": "workspace:*"
+    "@koi/file-resolution": "workspace:*",
+    "@koi/resolve": "workspace:*"
   },
   "devDependencies": {
     "@koi/engine": "workspace:*",

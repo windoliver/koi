@@ -36,7 +36,7 @@ function makeMwDescriptor(name: string, priority: number): BrickDescriptor<KoiMi
 function makeSoulDescriptor(): BrickDescriptor<KoiMiddleware> {
   return {
     kind: "middleware",
-    name: "@koi/middleware-soul",
+    name: "@koi/soul",
     aliases: ["soul"],
     optionsValidator: (input: unknown) => ({ ok: true, value: input }),
     factory: (): KoiMiddleware => ({

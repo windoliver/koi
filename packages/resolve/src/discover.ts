@@ -16,7 +16,6 @@ const DISCOVERABLE_PREFIXES: readonly string[] = ["middleware-", "channel-", "en
 
 /** Packages to skip during discovery. */
 const SKIP_LIST = new Set([
-  "middleware-integration",
   "middleware-guardrails",
   "middleware-feedback-loop",
   "middleware-event-trace",

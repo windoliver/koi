@@ -27,7 +27,7 @@ const MOCK_CONTEXT: ResolutionContext = {
 function makeSoulDescriptor(): BrickDescriptor<KoiMiddleware> {
   return {
     kind: "middleware",
-    name: "@koi/middleware-soul",
+    name: "@koi/soul",
     aliases: ["soul"],
     optionsValidator: (input: unknown) => ({ ok: true, value: input }),
     factory: (options): KoiMiddleware => ({
@@ -123,6 +123,6 @@ describe("resolveSoul", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("Expected error");
     expect(result.error.code).toBe("NOT_FOUND");
-    expect(result.error.message).toContain("@koi/middleware-soul");
+    expect(result.error.message).toContain("@koi/soul");
   });
 });

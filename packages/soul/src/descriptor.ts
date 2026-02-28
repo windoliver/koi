@@ -1,5 +1,5 @@
 /**
- * BrickDescriptor for @koi/middleware-soul.
+ * BrickDescriptor for @koi/soul.
  *
  * Enables manifest auto-resolution: the resolve layer looks up this
  * descriptor, validates soul/user options, and calls the factory.
@@ -8,8 +8,8 @@
 import type { KoiError, KoiMiddleware, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "@koi/resolve";
-import type { ContentInput, CreateSoulOptions } from "@koi/soul";
-import { createSoulMiddleware } from "@koi/soul";
+import type { ContentInput, CreateSoulOptions } from "./config.js";
+import { createSoulMiddleware } from "./soul.js";
 
 /**
  * Validates soul descriptor options from the manifest.
@@ -81,8 +81,8 @@ function isValidContentInput(value: unknown): value is ContentInput {
  */
 export const descriptor: BrickDescriptor<KoiMiddleware> = {
   kind: "middleware",
-  name: "@koi/middleware-soul",
-  aliases: ["soul"],
+  name: "@koi/soul",
+  aliases: ["soul", "@koi/middleware-soul"],
   optionsValidator: validateSoulDescriptorOptions,
   async factory(options, context): Promise<KoiMiddleware> {
     const soul = isValidContentInput(options.soul) ? options.soul : undefined;

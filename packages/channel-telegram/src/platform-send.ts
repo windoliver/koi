@@ -23,7 +23,9 @@
  * since we have no platform mapping for unknown custom types.
  */
 
+import { splitText } from "@koi/channel-base";
 import type { ContentBlock, OutboundMessage } from "@koi/core";
+import { sleep } from "@koi/errors";
 import type { Bot } from "grammy";
 import { GrammyError, InlineKeyboard } from "grammy";
 
@@ -185,7 +187,7 @@ async function sendChunk(
   const modeOpt = parseMode !== undefined ? { parse_mode: parseMode } : {};
 
   if (chunk.kind === "text") {
-    const parts = splitText(chunk.text);
+    const parts = splitText(chunk.text, TEXT_LIMIT);
     for (const part of parts) {
       await bot.api.sendMessage(chatId, part, { ...threadOpt, ...modeOpt });
     }
@@ -235,34 +237,6 @@ async function sendChunk(
 // ---------------------------------------------------------------------------
 
 /**
- * Splits text into chunks of at most TEXT_LIMIT characters.
- * Prefers splitting at newlines to avoid cutting mid-sentence.
- */
-function splitText(inputText: string): readonly string[] {
-  if (inputText.length <= TEXT_LIMIT) {
-    return [inputText];
-  }
-
-  const parts: string[] = [];
-  // let requires justification: cursor position advances through the remaining text
-  let remaining = inputText;
-
-  while (remaining.length > TEXT_LIMIT) {
-    const slice = remaining.slice(0, TEXT_LIMIT);
-    const lastNewline = slice.lastIndexOf("\n");
-    const splitAt = lastNewline > 0 ? lastNewline + 1 : TEXT_LIMIT;
-    parts.push(remaining.slice(0, splitAt).trimEnd());
-    remaining = remaining.slice(splitAt).trimStart();
-  }
-
-  if (remaining.length > 0) {
-    parts.push(remaining);
-  }
-
-  return parts;
-}
-
-/**
  * Encodes action + payload into a Telegram callback_data string (64-byte limit).
  *
  * Format: "action" or "action:JSON.stringify(payload)"
@@ -306,8 +280,4 @@ function truncateUtf8(str: string, maxBytes: number): string {
     return str;
   }
   return utf8Decoder.decode(encoded.slice(0, maxBytes)).replace(/\uFFFD+$/, "");
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }

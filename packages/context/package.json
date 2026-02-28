@@ -17,6 +17,10 @@
     "zod": "4.3.6"
   },
   "devDependencies": {
+    "@koi/engine": "workspace:*",
+    "@koi/engine-loop": "workspace:*",
+    "@koi/middleware-memory": "workspace:*",
+    "@koi/model-router": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },
   "scripts": {

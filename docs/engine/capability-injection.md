@@ -234,7 +234,7 @@ All middleware packages implement `describeCapabilities` (required since Issue #
 | `middleware-feedback-loop` | `feedback` | "Validation with feedback loop active" | Static |
 | `middleware-event-trace` | `tracing` | "Event tracing active" | Static |
 | `middleware-planning` | `planning` | "Planning mode: {enabled/disabled}" | Dynamic |
-| `middleware-soul` | `soul` | "Persona active: {name}" | Static |
+| `soul` | `soul` | "Persona active: {name}" | Static |
 | `middleware-sandbox` | `sandbox` | "Tool sandboxing active for untrusted tools" | Static |
 | `context` (hydrator) | `context` | "Context hydration active with {n} sources" | Static |
 | `identity` | `identity` | "Identity: {n} persona(s) configured" | Static |

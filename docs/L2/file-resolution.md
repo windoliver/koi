@@ -1,6 +1,6 @@
 # @koi/file-resolution — Shared File-Resolution Utilities
 
-Reads markdown files or inline text, resolves directory structures, enforces token budgets, and provides surrogate-safe string truncation. This is an **L0u utility package** — it depends only on `@koi/core` and has zero external dependencies. Three L2 packages (`@koi/bootstrap`, `@koi/soul`, `@koi/identity`) share it instead of each reimplementing file I/O.
+Reads markdown files or inline text, resolves directory structures, enforces token budgets, and provides surrogate-safe string truncation. This is an **L0u utility package** — it depends only on `@koi/core` and has zero external dependencies. Two L2 packages (`@koi/bootstrap`, `@koi/soul`) share it instead of each reimplementing file I/O.
 
 ---
 
@@ -9,19 +9,18 @@ Reads markdown files or inline text, resolves directory structures, enforces tok
 Before this package, three independent packages each had their own file-reading, token-estimating, and path-validating code:
 
 ```
-BEFORE: Duplicated file I/O across three packages
+BEFORE: Duplicated file I/O across packages
 
-  @koi/bootstrap              @koi/soul               @koi/identity
-  ┌────────────────┐          ┌────────────────┐      ┌────────────────┐
-  │ tryReadSlot()  │          │ readFile()     │      │ readFileSync() │ ← blocking!
-  │ isSafePath()   │          │ truncateTokens │      │                │
-  │ BYTES_PER_CHAR │          │ CHARS_PER_TOKEN│      │                │
-  └────────────────┘          └────────────────┘      └────────────────┘
+  @koi/bootstrap              @koi/soul
+  ┌────────────────┐          ┌────────────────┐
+  │ tryReadSlot()  │          │ readFile()     │
+  │ isSafePath()   │          │ truncateTokens │
+  │ BYTES_PER_CHAR │          │ CHARS_PER_TOKEN│
+  └────────────────┘          └────────────────┘
 
   Problems:
-  ✗  Three copies of file-read logic
-  ✗  Three copies of token estimation
-  ✗  Identity used sync I/O (blocked event loop)
+  ✗  Two copies of file-read logic
+  ✗  Two copies of token estimation
   ✗  No surrogate-pair safety (emoji corruption at truncation boundaries)
   ✗  Path validation duplicated between bootstrap and soul
 ```
@@ -37,11 +36,11 @@ AFTER: One shared L0u package
                  │  isValidPathSegment()             │
                  │  resolveContent()                 │
                  │  resolveDirectoryContent()        │
-                 └──────┬──────────┬──────────┬──────┘
-                        │          │          │
-            ┌───────────┘          │          └───────────┐
-            ▼                      ▼                      ▼
-   @koi/bootstrap (L2)      @koi/soul (L2)       @koi/identity (L2)
+                 └──────────┬──────────┬─────────────┘
+                            │          │
+                 ┌──────────┘          └──────────┐
+                 ▼                                ▼
+        @koi/bootstrap (L2)                @koi/soul (L2)
 ```
 
 Benefits:
@@ -62,7 +61,6 @@ L0   @koi/core              ─ types only (zero deps)
 L0u  @koi/file-resolution   ─ this package
 L2   @koi/bootstrap          ─ uses readBoundedFile(path, maxChars)
 L2   @koi/soul               ─ uses resolveContent(), resolveDirectoryContent()
-L2   @koi/identity           ─ uses readBoundedFile(path)
 ```
 
 `@koi/file-resolution` imports only from `@koi/core` (types) and Node builtins (`node:path`, `node:fs/promises`). It never touches `@koi/engine` (L1) or any vendor SDK.
@@ -103,7 +101,7 @@ readBoundedFile(path)             → string | undefined           (unbounded)
 readBoundedFile(path, maxChars)   → BoundedReadResult | undefined (bounded)
 ```
 
-**Unbounded** — reads the entire file. Used by identity (persona files are small).
+**Unbounded** — reads the entire file. Useful for small files (e.g. persona configs).
 
 **Bounded** — limits disk I/O to `maxChars × 4` bytes (worst-case UTF-8), then truncates the decoded string to `maxChars` characters. Used by bootstrap (budget-controlled slots).
 
@@ -196,20 +194,6 @@ createSoulMiddleware({ soul: "SOUL.md", basePath })
           │
           └── truncateToTokenBudget(text, 4000, "soul")
                 └── truncateSafe(text, 16000)  ← 4000 tokens × 4 chars
-```
-
-### @koi/identity — Unbounded async reads
-
-```
-createIdentityMiddleware({ personas: [...] })
-    │
-    └── buildPersonaMap()
-          │
-          └── Promise.all(personas.map(resolvePersonaContent))
-                │
-                ├── instructions is string?  → use directly
-                └── instructions is { path }?
-                      └── readBoundedFile(filePath)  ← unbounded (no maxChars)
 ```
 
 ---
@@ -386,7 +370,7 @@ Map of file names to markdown section headers used in directory mode concatenati
 | `resolveContent(opts)` | O(file size) | Single file read + truncation |
 | `resolveDirectoryContent(dir)` | O(3 files) | Sequential reads of up to 3 small files |
 
-All consumers (`@koi/bootstrap`, `@koi/soul`, `@koi/identity`) resolve their files in **parallel** via `Promise.all` or `Promise.allSettled`. The package itself handles single-file resolution; parallelism is the caller's responsibility.
+All consumers (`@koi/bootstrap`, `@koi/soul`) resolve their files in **parallel** via `Promise.all` or `Promise.allSettled`. The package itself handles single-file resolution; parallelism is the caller's responsibility.
 
 ---
 

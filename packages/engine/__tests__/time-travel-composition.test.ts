@@ -35,7 +35,7 @@ import {
 } from "@koi/test-utils";
 
 // ---------------------------------------------------------------------------
-// Inline compose helpers — same as composition.test.ts (avoids L2 → L1 import)
+// Inline compose helpers -- same as middleware-composition.test.ts (avoids L2 -> L1 import)
 // ---------------------------------------------------------------------------
 
 function composeModelChain(
@@ -118,7 +118,7 @@ function createMockFileSystem(
 // Test: Priority ordering
 // ---------------------------------------------------------------------------
 
-describe("Time-travel middleware — priority ordering", () => {
+describe("Time-travel middleware -- priority ordering", () => {
   test("fs-rollback(350) < guided-retry(425) < event-trace(475)", () => {
     const fsStore = createInMemorySnapshotChainStore<FileOpRecord>();
     const traceStore = createInMemorySnapshotChainStore<TurnTrace>();
@@ -140,7 +140,7 @@ describe("Time-travel middleware — priority ordering", () => {
     expect(eventTrace.middleware.priority).toBe(475);
   });
 
-  test("onion enter/exit order for tool calls: fs-rollback → event-trace", async () => {
+  test("onion enter/exit order for tool calls: fs-rollback -> event-trace", async () => {
     const order: string[] = [];
 
     const outer: KoiMiddleware = {
@@ -181,7 +181,7 @@ describe("Time-travel middleware — priority ordering", () => {
     ]);
   });
 
-  test("onion enter/exit order for model calls: guided-retry → event-trace", async () => {
+  test("onion enter/exit order for model calls: guided-retry -> event-trace", async () => {
     const order: string[] = [];
 
     const outer: KoiMiddleware = {
@@ -227,7 +227,7 @@ describe("Time-travel middleware — priority ordering", () => {
 // Test: Rollback + trace correlation
 // ---------------------------------------------------------------------------
 
-describe("Time-travel middleware — rollback + trace correlation", () => {
+describe("Time-travel middleware -- rollback + trace correlation", () => {
   test("FileOpRecord.eventIndex matches TraceEvent index when wired via getEventIndex", async () => {
     const fsStore = createInMemorySnapshotChainStore<FileOpRecord>();
     const traceStore = createInMemorySnapshotChainStore<TurnTrace>();
@@ -291,7 +291,7 @@ describe("Time-travel middleware — rollback + trace correlation", () => {
 // Test: Rollback + guided retry
 // ---------------------------------------------------------------------------
 
-describe("Time-travel middleware — rollback + guided retry", () => {
+describe("Time-travel middleware -- rollback + guided retry", () => {
   test("after fork, rollback undoes files and guided-retry injects constraint", async () => {
     const fsStore = createInMemorySnapshotChainStore<FileOpRecord>();
     const backend = createMockFileSystem();
@@ -373,10 +373,10 @@ describe("Time-travel middleware — rollback + guided retry", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Test: Full scenario — write across turns, fork, rollback, retry
+// Test: Full scenario -- write across turns, fork, rollback, retry
 // ---------------------------------------------------------------------------
 
-describe("Time-travel middleware — full scenario", () => {
+describe("Time-travel middleware -- full scenario", () => {
   let backend: ReturnType<typeof createMockFileSystem>;
   let fsStore: ReturnType<typeof createInMemorySnapshotChainStore<FileOpRecord>>;
   let traceStore: ReturnType<typeof createInMemorySnapshotChainStore<TurnTrace>>;

@@ -89,7 +89,7 @@ export function computeBackoff(
 export async function withRetry<T>(
   fn: () => Promise<T>,
   config: RetryConfig = DEFAULT_RETRY_CONFIG,
-  clock: () => number = Date.now,
+  _clock: () => number = Date.now,
 ): Promise<T> {
   let lastError: KoiError | undefined;
 
@@ -105,7 +105,7 @@ export async function withRetry<T>(
       }
 
       const delay = computeBackoff(attempt, config, koiError.retryAfterMs);
-      await sleep(delay, clock);
+      await sleep(delay);
     }
   }
 
@@ -113,6 +113,6 @@ export async function withRetry<T>(
   throw lastError;
 }
 
-function sleep(ms: number, _clock: () => number): Promise<void> {
+export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }

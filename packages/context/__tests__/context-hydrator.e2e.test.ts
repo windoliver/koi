@@ -1,7 +1,7 @@
 /**
  * E2E test for @koi/context hydrator with a real LLM.
  *
- * Gated on OPENROUTER_API_KEY + E2E_TESTS=1 — skipped when either is missing.
+ * Gated on OPENROUTER_API_KEY + E2E_TESTS=1 -- skipped when either is missing.
  * E2E tests require API keys AND explicit opt-in via E2E_TESTS=1 to avoid
  * rate-limit failures when 500+ test files run simultaneously.
  *
@@ -10,17 +10,17 @@
  * 2. Full pipeline: createKoi + engine-loop + hydrator middleware + real LLM
  *
  * Run:
- *   E2E_TESTS=1 OPENROUTER_API_KEY=... bun test src/__tests__/context-hydrator.e2e.test.ts
+ *   E2E_TESTS=1 OPENROUTER_API_KEY=... bun test __tests__/context-hydrator.e2e.test.ts
  */
 
 import { describe, expect, test } from "bun:test";
-import type { ContextManifestConfig } from "@koi/context";
-import { createContextHydrator } from "@koi/context";
 import type { EngineEvent, ModelRequest } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { createOpenRouterAdapter } from "@koi/model-router";
 import { createMockAgent, createMockTurnContext } from "@koi/test-utils";
+import { createContextHydrator } from "../src/hydrator.js";
+import type { ContextManifestConfig } from "../src/types.js";
 
 // ---------------------------------------------------------------------------
 // Environment gate
@@ -58,10 +58,10 @@ function extractTextFromEvents(events: readonly EngineEvent[]): string {
 }
 
 // ---------------------------------------------------------------------------
-// Level 1: Direct middleware E2E — hydrator wraps a real model call
+// Level 1: Direct middleware E2E -- hydrator wraps a real model call
 // ---------------------------------------------------------------------------
 
-describeE2E("E2E: context hydrator — direct middleware with real LLM", () => {
+describeE2E("E2E: context hydrator -- direct middleware with real LLM", () => {
   const openRouter = createOpenRouterAdapter({
     apiKey: OPENROUTER_KEY,
     appName: "koi-context-hydrator-e2e",
@@ -176,12 +176,12 @@ describeE2E("E2E: context hydrator — direct middleware with real LLM", () => {
   );
 
   test(
-    "budget enforcement works — dropped source is not seen by LLM",
+    "budget enforcement works -- dropped source is not seen by LLM",
     async () => {
       const agent = createMockAgent();
 
       const config: ContextManifestConfig = {
-        maxTokens: 30, // Tight budget — ~120 chars
+        maxTokens: 30, // Tight budget -- ~120 chars
         sources: [
           {
             kind: "text",
@@ -236,10 +236,10 @@ describeE2E("E2E: context hydrator — direct middleware with real LLM", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Level 2: Full pipeline E2E — createKoi + engine-loop + hydrator + real LLM
+// Level 2: Full pipeline E2E -- createKoi + engine-loop + hydrator + real LLM
 // ---------------------------------------------------------------------------
 
-describeE2E("E2E: context hydrator — full pipeline with createKoi", () => {
+describeE2E("E2E: context hydrator -- full pipeline with createKoi", () => {
   const openRouter = createOpenRouterAdapter({
     apiKey: OPENROUTER_KEY,
     appName: "koi-context-hydrator-e2e-pipeline",

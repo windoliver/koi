@@ -17,7 +17,8 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/errors": "workspace:*"
+    "@koi/errors": "workspace:*",
+    "@koi/sqlite-utils": "workspace:*"
   },
   "devDependencies": {
     "@koi/test-utils": "workspace:*"

@@ -3,6 +3,7 @@
  */
 
 import type { JsonObject, Tool, ToolExecuteOptions, TrustTier } from "@koi/core";
+import { sleep } from "@koi/errors";
 import {
   CI_WAIT_FIELDS,
   DEFAULT_CI_POLL_INTERVAL_MS,
@@ -190,10 +191,4 @@ async function pollChecks(executor: GhExecutor, prNumber: number): Promise<PollO
   );
 
   return { ok: true, value: { checks, allComplete, hasFailure } };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
 }

@@ -8,21 +8,40 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { createAuditMiddleware, createInMemoryAuditSink } from "@koi/middleware-audit";
+import { createInMemoryStore, createMemoryMiddleware } from "@koi/middleware-memory";
 import {
   createDefaultCostCalculator,
   createInMemoryBudgetTracker,
   createPayMiddleware,
 } from "@koi/middleware-pay";
 import {
-  createPatternPermissionBackend,
-  createPermissionsMiddleware,
-} from "@koi/middleware-permissions";
-import {
   createMockSessionContext,
   createMockTurnContext,
   createSpyModelHandler,
   createSpyToolHandler,
 } from "@koi/test-utils";
+
+// ---------------------------------------------------------------------------
+// Inline permission middleware stub — avoids L2 cycle (@koi/middleware-permissions -> @koi/engine)
+// ---------------------------------------------------------------------------
+
+function createStubPermissionsMiddleware(options: {
+  readonly allow: readonly string[];
+  readonly deny: readonly string[];
+}): KoiMiddleware {
+  return {
+    name: "koi:permissions",
+    priority: 100,
+    async wrapToolCall(_ctx, req, next) {
+      if (options.deny.includes(req.toolId)) {
+        throw Object.assign(new Error(`Permission denied: ${req.toolId}`), {
+          code: "PERMISSION",
+        });
+      }
+      return next(req);
+    },
+  };
+}
 
 function composeModelChain(
   middlewares: readonly KoiMiddleware[],
@@ -65,15 +84,13 @@ describe("Full pipeline scenario", () => {
     readonly middlewares: readonly KoiMiddleware[];
     readonly sink: ReturnType<typeof createInMemoryAuditSink>;
     readonly tracker: ReturnType<typeof createInMemoryBudgetTracker>;
+    readonly store: ReturnType<typeof createInMemoryStore>;
   } {
     const sink = createInMemoryAuditSink();
     const tracker = createInMemoryBudgetTracker();
+    const memStore = createInMemoryStore();
 
-    const perm = createPermissionsMiddleware({
-      backend: createPatternPermissionBackend({
-        rules: { allow: ["*"], deny: ["blocked"], ask: [] },
-      }),
-    });
+    const perm = createStubPermissionsMiddleware({ allow: ["*"], deny: ["blocked"] });
 
     const pay = createPayMiddleware({
       tracker,
@@ -83,14 +100,17 @@ describe("Full pipeline scenario", () => {
 
     const audit = createAuditMiddleware({ sink });
 
+    const memory = createMemoryMiddleware({ store: memStore });
+
     return {
-      middlewares: [perm, pay, audit],
+      middlewares: [perm, pay, audit, memory],
       sink,
       tracker,
+      store: memStore,
     };
   }
 
-  test("full model call pipeline — all middleware participate", async () => {
+  test("full model call pipeline -- all middleware participate", async () => {
     const { middlewares, sink, tracker } = createFullStack();
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler({
@@ -117,7 +137,7 @@ describe("Full pipeline scenario", () => {
     expect(modelEntry).toBeDefined();
   });
 
-  test("full tool call pipeline — permission check + budget check", async () => {
+  test("full tool call pipeline -- permission check + budget check", async () => {
     const { middlewares } = createFullStack();
     const ctx = createMockTurnContext();
     const spy = createSpyToolHandler();
@@ -148,7 +168,7 @@ describe("Full pipeline scenario", () => {
     expect(await tracker.totalSpend("session-test-1")).toBe(0);
   });
 
-  test("session lifecycle — start and end fire session hooks", async () => {
+  test("session lifecycle -- start and end fire session hooks", async () => {
     const { middlewares, sink } = createFullStack();
     const sessionCtx = createMockSessionContext();
 
@@ -171,8 +191,8 @@ describe("Full pipeline scenario", () => {
     expect(endEntries).toHaveLength(1);
   });
 
-  test("multi-turn session — middleware chain works across turns", async () => {
-    const { middlewares } = createFullStack();
+  test("multi-turn session -- memory accumulates across turns", async () => {
+    const { middlewares, store: memStore } = createFullStack();
 
     // Turn 0
     const ctx0 = createMockTurnContext({ turnIndex: 0 });
@@ -183,9 +203,8 @@ describe("Full pipeline scenario", () => {
         { senderId: "user-1", timestamp: Date.now(), content: [{ kind: "text", text: "Hello" }] },
       ],
     });
-    expect(spy0.calls).toHaveLength(1);
 
-    // Turn 1
+    // Turn 1 -- should have memory from turn 0
     const ctx1 = createMockTurnContext({ turnIndex: 1 });
     const spy1 = createSpyModelHandler({ content: "Turn 1 response" });
     const chain1 = composeModelChain(middlewares, ctx1, spy1.handler);
@@ -198,10 +217,13 @@ describe("Full pipeline scenario", () => {
         },
       ],
     });
-    expect(spy1.calls).toHaveLength(1);
+
+    // Memory store should have accumulated
+    const recalled = await memStore.recall("test", 4000);
+    expect(recalled.length).toBeGreaterThanOrEqual(2);
   });
 
-  test("error recovery — tool throws, chain unwinds correctly", async () => {
+  test("error recovery -- tool throws, chain unwinds correctly", async () => {
     const sink = createInMemoryAuditSink();
     const audit = createAuditMiddleware({ sink });
 

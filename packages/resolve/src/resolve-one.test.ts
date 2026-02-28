@@ -95,14 +95,14 @@ describe("resolveOne", () => {
 
   test("suggests closest name via Levenshtein distance", async () => {
     const regResult = createRegistry([
-      makeDescriptor("@koi/middleware-soul"),
+      makeDescriptor("@koi/soul"),
       makeDescriptor("@koi/middleware-audit"),
     ]);
     if (!regResult.ok) throw new Error("Registry failed");
 
     const result = await resolveOne(
       "middleware",
-      { name: "@koi/middleware-sol" }, // typo — close to "soul"
+      { name: "@koi/sol" }, // typo — close to "@koi/soul"
       regResult.value,
       MOCK_CONTEXT,
     );

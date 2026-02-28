@@ -17,3 +17,4 @@ export { button, custom, file, image, text } from "./content-block-builders.js";
 export type { FormatErrorOptions } from "./format-error.js";
 export { formatErrorForChannel } from "./format-error.js";
 export { renderBlocks } from "./render-blocks.js";
+export { splitText } from "./split-text.js";

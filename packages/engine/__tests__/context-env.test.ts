@@ -1,5 +1,5 @@
 /**
- * Cross-layer integration test: execution context → shell tool KOI_* env vars.
+ * Cross-layer integration test: execution context -> shell tool KOI_* env vars.
  *
  * Boots a full Koi session with userId and channelId, executes the shell tool
  * to echo KOI_* vars, and verifies the output contains the expected values.
@@ -17,8 +17,8 @@ import type {
   ToolResponse,
 } from "@koi/core";
 import { toolToken } from "@koi/core";
-import { createKoi } from "@koi/engine";
 import { createShellTool } from "@koi/node";
+import { createKoi } from "../src/koi.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -67,7 +67,7 @@ async function collectEvents(iter: AsyncIterable<EngineEvent>): Promise<readonly
 // Integration test
 // ---------------------------------------------------------------------------
 
-describe("execution context → shell tool KOI_* env vars", () => {
+describe("execution context -> shell tool KOI_* env vars", () => {
   test("shell tool child process sees KOI_AGENT_ID, KOI_SESSION_ID, KOI_USER_ID", async () => {
     // let justified: capture tool result from adapter
     let shellOutput: ToolResponse | undefined;
@@ -109,7 +109,7 @@ describe("execution context → shell tool KOI_* env vars", () => {
     expect(output.exitCode).toBe(0);
 
     const parts = output.stdout.trim().split(" ");
-    // Agent ID is a UUID — just verify it's non-empty
+    // Agent ID is a UUID -- just verify it's non-empty
     expect(parts[0]?.length).toBeGreaterThan(0);
     // Session ID has format "agent:{agentId}:{uuid}"
     expect(parts[1]).toContain("agent:");

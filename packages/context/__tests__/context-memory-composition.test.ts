@@ -6,10 +6,10 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { ContextManifestConfig } from "@koi/context";
-import { createContextHydrator } from "@koi/context";
 import type { KoiMiddleware, ModelHandler, ModelRequest, TurnContext } from "@koi/core";
 import { createMockAgent, createMockTurnContext, createSpyModelHandler } from "@koi/test-utils";
+import { createContextHydrator } from "../src/hydrator.js";
+import type { ContextManifestConfig } from "../src/types.js";
 
 function composeModelChain(
   middlewares: readonly KoiMiddleware[],

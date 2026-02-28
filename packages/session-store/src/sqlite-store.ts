@@ -8,7 +8,6 @@
  * Checkpoint retention: keeps latest N per agent, prunes oldest on save.
  */
 
-import { Database } from "bun:sqlite";
 import type {
   AgentId,
   AgentManifest,
@@ -32,6 +31,7 @@ import {
   validateNonEmpty,
 } from "@koi/core";
 import { extractMessage } from "@koi/errors";
+import { openDb } from "@koi/sqlite-utils";
 import type { SessionStoreConfig } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -164,12 +164,12 @@ export function createSqliteSessionPersistence(
   config: SessionStoreConfig,
 ): SessionPersistence & { readonly close: () => void } {
   const maxCheckpoints = config.maxCheckpointsPerAgent ?? DEFAULT_MAX_CHECKPOINTS;
-  const db = new Database(config.dbPath);
+  const db = openDb(config.dbPath);
 
-  // -- PRAGMAs -------------------------------------------------------------
-  db.run("PRAGMA journal_mode=WAL");
-  db.run("PRAGMA foreign_keys=ON");
-  db.run(config.durability === "os" ? "PRAGMA synchronous=FULL" : "PRAGMA synchronous=NORMAL");
+  // Override synchronous if "os" durability requested
+  if (config.durability === "os") {
+    db.run("PRAGMA synchronous = FULL");
+  }
 
   // -- Schema --------------------------------------------------------------
   db.run(`

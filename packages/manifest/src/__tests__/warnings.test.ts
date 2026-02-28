@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { detectUnknownFields, levenshteinDistance } from "../warnings.js";
+import { levenshteinDistance } from "@koi/validation";
+import { detectUnknownFields } from "../warnings.js";
 
 describe("levenshteinDistance", () => {
   test("returns 0 for identical strings", () => {

@@ -52,7 +52,7 @@ describe("createRegistry", () => {
   });
 
   test("get() returns descriptor by alias", () => {
-    const desc = makeDescriptor("middleware", "@koi/middleware-soul", ["soul", "memory"]);
+    const desc = makeDescriptor("middleware", "@koi/soul", ["soul", "memory"]);
     const result = createRegistry([desc]);
     if (!result.ok) throw new Error("Expected ok");
 
@@ -82,7 +82,7 @@ describe("createRegistry", () => {
   });
 
   test("has() returns true for alias", () => {
-    const result = createRegistry([makeDescriptor("middleware", "@koi/middleware-soul", ["soul"])]);
+    const result = createRegistry([makeDescriptor("middleware", "@koi/soul", ["soul"])]);
     if (!result.ok) throw new Error("Expected ok");
 
     expect(result.value.has("middleware", "soul")).toBe(true);
@@ -134,7 +134,7 @@ describe("createRegistry", () => {
   test("rejects alias that collides with canonical name", () => {
     const result = createRegistry([
       makeDescriptor("middleware", "soul"),
-      makeDescriptor("middleware", "@koi/middleware-soul", ["soul"]),
+      makeDescriptor("middleware", "@koi/soul", ["soul"]),
     ]);
 
     expect(result.ok).toBe(false);

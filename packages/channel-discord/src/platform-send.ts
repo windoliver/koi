@@ -19,6 +19,7 @@
  * - Other custom blocks → silently skipped
  */
 
+import { splitText } from "@koi/channel-base";
 import type { ContentBlock, OutboundMessage } from "@koi/core";
 
 /** Discord message content character limit. */
@@ -99,7 +100,7 @@ function buildPayloads(blocks: readonly ContentBlock[]): readonly DiscordPayload
   let files: { readonly attachment: string; readonly name: string }[] = [];
 
   const flush = (): void => {
-    const textParts = pendingText.length > 0 ? splitText(pendingText) : [];
+    const textParts = pendingText.length > 0 ? splitText(pendingText, TEXT_LIMIT) : [];
     pendingText = "";
 
     if (
@@ -199,36 +200,4 @@ function buildPayloads(blocks: readonly ContentBlock[]): readonly DiscordPayload
   flush();
 
   return payloads;
-}
-
-// ---------------------------------------------------------------------------
-// Text splitting
-// ---------------------------------------------------------------------------
-
-/**
- * Splits text into chunks of at most TEXT_LIMIT characters.
- * Prefers splitting at newlines to avoid cutting mid-sentence.
- */
-export function splitText(inputText: string): readonly string[] {
-  if (inputText.length <= TEXT_LIMIT) {
-    return [inputText];
-  }
-
-  const parts: string[] = [];
-  // let requires justification: cursor position advances through remaining text
-  let remaining = inputText;
-
-  while (remaining.length > TEXT_LIMIT) {
-    const slice = remaining.slice(0, TEXT_LIMIT);
-    const lastNewline = slice.lastIndexOf("\n");
-    const splitAt = lastNewline > 0 ? lastNewline + 1 : TEXT_LIMIT;
-    parts.push(remaining.slice(0, splitAt).trimEnd());
-    remaining = remaining.slice(splitAt).trimStart();
-  }
-
-  if (remaining.length > 0) {
-    parts.push(remaining);
-  }
-
-  return parts;
 }

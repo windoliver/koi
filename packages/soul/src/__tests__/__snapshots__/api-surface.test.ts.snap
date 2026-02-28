@@ -1,10 +1,25 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/soul API surface . has stable type surface 1`] = `
-"import { Result, KoiError } from '@koi/core/errors';
+"import { KoiMiddleware } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
+import { Result, KoiError } from '@koi/core/errors';
 import { AgentManifest } from '@koi/core/assembly';
 import { InboundMessage } from '@koi/core/message';
-import { KoiMiddleware, ModelRequest } from '@koi/core/middleware';
+import { KoiMiddleware as KoiMiddleware$1, ModelRequest } from '@koi/core/middleware';
+
+/**
+ * BrickDescriptor for @koi/soul.
+ *
+ * Enables manifest auto-resolution: the resolve layer looks up this
+ * descriptor, validates soul/user options, and calls the factory.
+ */
+
+/**
+ * Descriptor for soul middleware.
+ * Exported for registration with createRegistry().
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
 
 /**
  * Unified soul middleware configuration and validation.
@@ -153,7 +168,7 @@ declare function createPersonaWatchedPaths(personaMap: ReadonlyMap<string, Cache
  * (the write must pass through the middleware chain, including permissions/HITL).
  * Manual \`reload()\` is also available for programmatic use.
  */
-interface SoulMiddleware extends KoiMiddleware {
+interface SoulMiddleware extends KoiMiddleware$1 {
     /**
      * Re-resolves all soul, identity, and user content from original source paths.
      * Called automatically after successful \`fs_write\` to tracked files.
@@ -227,6 +242,6 @@ declare function generateMetaInstructionText(sources: MetaInstructionSources, se
  */
 declare function createSoulMessage(soulText: string, identityText: string | undefined, userText: string, metaInstructionText?: string): InboundMessage | undefined;
 
-export { type CachedPersona, type ChannelPersonaConfig, type ContentInput, type CreateSoulOptions, DEFAULT_IDENTITY_MAX_TOKENS, DEFAULT_SOUL_MAX_TOKENS, DEFAULT_TOTAL_MAX_TOKENS, DEFAULT_USER_MAX_TOKENS, type MetaInstructionSources, type ResolvedPersona, type SoulMiddleware, type SoulState, createAllWatchedPaths, createPersonaMap, createPersonaWatchedPaths, createSoulMessage, createSoulMiddleware, enrichRequest, extractInput, extractMaxTokens, generateMetaInstructionText, generatePersonaText, personasFromManifest, resolvePersonaContent, validateSoulConfig };
+export { type CachedPersona, type ChannelPersonaConfig, type ContentInput, type CreateSoulOptions, DEFAULT_IDENTITY_MAX_TOKENS, DEFAULT_SOUL_MAX_TOKENS, DEFAULT_TOTAL_MAX_TOKENS, DEFAULT_USER_MAX_TOKENS, type MetaInstructionSources, type ResolvedPersona, type SoulMiddleware, type SoulState, createAllWatchedPaths, createPersonaMap, createPersonaWatchedPaths, createSoulMessage, createSoulMiddleware, descriptor, enrichRequest, extractInput, extractMaxTokens, generateMetaInstructionText, generatePersonaText, personasFromManifest, resolvePersonaContent, validateSoulConfig };
 "
 `;

@@ -10,15 +10,12 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { createAuditMiddleware, createInMemoryAuditSink } from "@koi/middleware-audit";
+import { createInMemoryStore, createMemoryMiddleware } from "@koi/middleware-memory";
 import {
   createDefaultCostCalculator,
   createInMemoryBudgetTracker,
   createPayMiddleware,
 } from "@koi/middleware-pay";
-import {
-  createPatternPermissionBackend,
-  createPermissionsMiddleware,
-} from "@koi/middleware-permissions";
 import {
   createMockTurnContext,
   createSpyModelHandler,
@@ -26,7 +23,29 @@ import {
 } from "@koi/test-utils";
 
 // ---------------------------------------------------------------------------
-// Inline compose helpers — avoids L2 → L1 import of @koi/engine
+// Inline permission middleware stub — avoids L2 cycle (@koi/middleware-permissions -> @koi/engine)
+// ---------------------------------------------------------------------------
+
+function createStubPermissionsMiddleware(options: {
+  readonly allow: readonly string[];
+  readonly deny: readonly string[];
+}): KoiMiddleware {
+  return {
+    name: "koi:permissions",
+    priority: 100,
+    async wrapToolCall(_ctx, req, next) {
+      if (options.deny.includes(req.toolId)) {
+        throw Object.assign(new Error(`Permission denied: ${req.toolId}`), {
+          code: "PERMISSION",
+        });
+      }
+      return next(req);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Inline compose helpers — avoids L2 -> L1 import of @koi/engine
 // ---------------------------------------------------------------------------
 
 function composeModelChain(
@@ -67,23 +86,21 @@ function sortByPriority(middleware: readonly KoiMiddleware[]): readonly KoiMiddl
   return [...middleware].sort((a, b) => (a.priority ?? 500) - (b.priority ?? 500));
 }
 
-describe("Middleware composition — execution order", () => {
-  test("priorities sort correctly: permissions(100) < pay(200) < audit(300)", () => {
-    const perm = createPermissionsMiddleware({
-      backend: createPatternPermissionBackend({
-        rules: { allow: ["*"], deny: [], ask: [] },
-      }),
-    });
+describe("Middleware composition -- execution order", () => {
+  test("priorities sort correctly: permissions(100) < pay(200) < audit(300) < memory(400)", () => {
+    const perm = createStubPermissionsMiddleware({ allow: ["*"], deny: [] });
     const pay = createPayMiddleware({
       tracker: createInMemoryBudgetTracker(),
       calculator: createDefaultCostCalculator(),
       budget: 100,
     });
     const audit = createAuditMiddleware({ sink: createInMemoryAuditSink() });
+    const memory = createMemoryMiddleware({ store: createInMemoryStore() });
 
     expect(perm.priority).toBe(100);
     expect(pay.priority).toBe(200);
     expect(audit.priority).toBe(300);
+    expect(memory.priority).toBe(400);
   });
 
   test("onion enter order matches priority (outer first)", async () => {
@@ -122,7 +139,7 @@ describe("Middleware composition — execution order", () => {
     expect(order).toEqual(["outer-enter", "inner-enter", "inner-exit", "outer-exit"]);
   });
 
-  test("onion symmetry — enter order is reverse of exit order", async () => {
+  test("onion symmetry -- enter order is reverse of exit order", async () => {
     const enters: string[] = [];
     const exits: string[] = [];
 
@@ -150,14 +167,10 @@ describe("Middleware composition — execution order", () => {
   });
 });
 
-describe("Middleware composition — error propagation", () => {
+describe("Middleware composition -- error propagation", () => {
   test("permission denied prevents pay from recording cost", async () => {
     const tracker = createInMemoryBudgetTracker();
-    const perm = createPermissionsMiddleware({
-      backend: createPatternPermissionBackend({
-        rules: { allow: [], deny: ["blocked-tool"], ask: [] },
-      }),
-    });
+    const perm = createStubPermissionsMiddleware({ allow: [], deny: ["blocked-tool"] });
     const pay = createPayMiddleware({
       tracker,
       calculator: createDefaultCostCalculator(),
@@ -184,11 +197,7 @@ describe("Middleware composition — error propagation", () => {
 
   test("permission denied but audit still logs the denial", async () => {
     const sink = createInMemoryAuditSink();
-    const perm = createPermissionsMiddleware({
-      backend: createPatternPermissionBackend({
-        rules: { allow: [], deny: ["blocked"], ask: [] },
-      }),
-    });
+    const perm = createStubPermissionsMiddleware({ allow: [], deny: ["blocked"] });
     const audit = createAuditMiddleware({ sink });
 
     const ctx = createMockTurnContext();
@@ -236,7 +245,7 @@ describe("Middleware composition — error propagation", () => {
     expect(spy.calls).toHaveLength(0);
   });
 
-  test("inner middleware throws — outer middleware exit code still runs", async () => {
+  test("inner middleware throws -- outer middleware exit code still runs", async () => {
     const exitRan = { value: false };
 
     const outer: KoiMiddleware = {
@@ -275,7 +284,7 @@ describe("Middleware composition — error propagation", () => {
   });
 });
 
-describe("Middleware composition — no-op middleware", () => {
+describe("Middleware composition -- no-op middleware", () => {
   test("middleware without wrapModelCall is skipped in model chain", async () => {
     const toolOnly: KoiMiddleware = {
       name: "tool-only",
