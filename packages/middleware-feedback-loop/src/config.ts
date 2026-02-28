@@ -5,11 +5,17 @@
  * for runtime interfaces (validators, gates, repair strategies).
  */
 
-import type { ForgeStore, SnapshotStore } from "@koi/core";
+import type { DemotionCriteria, ForgeStore, SnapshotStore } from "@koi/core";
 import type { KoiError, Result } from "@koi/core/errors";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import { z } from "zod";
-import type { RepairStrategy, RetryConfig, ValidationError, Validator } from "./types.js";
+import type {
+  RepairStrategy,
+  RetryConfig,
+  TrustDemotionEvent,
+  ValidationError,
+  Validator,
+} from "./types.js";
 
 /** Configuration for forge tool runtime health tracking. */
 export interface ForgeHealthConfig {
@@ -27,6 +33,10 @@ export interface ForgeHealthConfig {
   readonly maxRecentFailures?: number;
   /** Callback fired when a tool is quarantined. Wire to forgeProvider.invalidate(). */
   readonly onQuarantine?: (brickId: string) => void | Promise<void>;
+  /** Demotion criteria overrides (merged with DEFAULT_DEMOTION_CRITERIA). */
+  readonly demotionCriteria?: Partial<DemotionCriteria>;
+  /** Callback fired when a tool's trust tier is demoted. */
+  readonly onDemotion?: (event: TrustDemotionEvent) => void | Promise<void>;
   /** Injectable clock for testing. Default: Date.now. */
   readonly clock?: () => number;
 }

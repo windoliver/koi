@@ -153,7 +153,11 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
         if (isForgedTool && healthTracker !== undefined) {
           const latencyMs = healthClock() - start;
           healthTracker.recordFailure(toolId, latencyMs, extractMessage(e));
-          await healthTracker.checkAndQuarantine(toolId);
+          const quarantined = await healthTracker.checkAndQuarantine(toolId);
+          if (!quarantined) {
+            // Not quarantined — check if demotion is warranted
+            await healthTracker.checkAndDemote(toolId).catch(() => {});
+          }
         }
         throw e;
       }
@@ -170,7 +174,10 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
               latencyMs,
               `Gate "${outputResult.failedGate}" failed`,
             );
-            await healthTracker.checkAndQuarantine(toolId);
+            const quarantined = await healthTracker.checkAndQuarantine(toolId);
+            if (!quarantined) {
+              await healthTracker.checkAndDemote(toolId).catch(() => {});
+            }
           }
           config.onGateFail?.(outputResult.failedGate, outputResult.errors);
           throw KoiRuntimeError.from(

@@ -81,6 +81,30 @@ export interface ForgeToolErrorFeedback {
   readonly suggestion: string;
 }
 
+// ---------------------------------------------------------------------------
+// Trust demotion event (fired when a tool's trust tier is lowered)
+// ---------------------------------------------------------------------------
+
+/** Reason for a trust tier demotion. */
+export type TrustDemotionReason =
+  | "error_rate"
+  | "dependency_failure"
+  | "manual"
+  | "re_verification_failed";
+
+/** Event emitted when a tool's trust tier is demoted. */
+export interface TrustDemotionEvent {
+  readonly brickId: string;
+  readonly from: string;
+  readonly to: string;
+  readonly reason: TrustDemotionReason;
+  readonly evidence: {
+    readonly errorRate: number;
+    readonly sampleSize: number;
+    readonly periodMs: number;
+  };
+}
+
 /** Category-aware retry budget configuration. */
 export interface RetryConfig {
   readonly validation?: {
