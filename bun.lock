@@ -244,7 +244,6 @@
         "@koi/middleware-compactor": "workspace:*",
         "@koi/middleware-context-editing": "workspace:*",
         "@koi/middleware-guided-retry": "workspace:*",
-        "@koi/middleware-memory": "workspace:*",
         "@koi/middleware-pay": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-pii": "workspace:*",
@@ -797,6 +796,21 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-extract": {
+      "name": "@koi/middleware-extract",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/middleware-memory": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-feedback-loop": {
       "name": "@koi/middleware-feedback-loop",
       "version": "0.0.0",
@@ -885,7 +899,6 @@
         "@koi/middleware-event-trace": "workspace:*",
         "@koi/middleware-fs-rollback": "workspace:*",
         "@koi/middleware-guided-retry": "workspace:*",
-        "@koi/middleware-memory": "workspace:*",
         "@koi/middleware-pay": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/model-router": "workspace:*",
@@ -2091,6 +2104,8 @@
     "@koi/middleware-context-editing": ["@koi/middleware-context-editing@workspace:packages/middleware-context-editing"],
 
     "@koi/middleware-event-trace": ["@koi/middleware-event-trace@workspace:packages/middleware-event-trace"],
+
+    "@koi/middleware-extract": ["@koi/middleware-extract@workspace:packages/middleware-extract"],
 
     "@koi/middleware-feedback-loop": ["@koi/middleware-feedback-loop@workspace:packages/middleware-feedback-loop"],
 

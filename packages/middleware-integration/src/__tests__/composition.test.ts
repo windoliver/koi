@@ -10,7 +10,6 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { createAuditMiddleware, createInMemoryAuditSink } from "@koi/middleware-audit";
-import { createInMemoryStore, createMemoryMiddleware } from "@koi/middleware-memory";
 import {
   createDefaultCostCalculator,
   createInMemoryBudgetTracker,
@@ -69,7 +68,7 @@ function sortByPriority(middleware: readonly KoiMiddleware[]): readonly KoiMiddl
 }
 
 describe("Middleware composition — execution order", () => {
-  test("priorities sort correctly: permissions(100) < pay(200) < audit(300) < memory(400)", () => {
+  test("priorities sort correctly: permissions(100) < pay(200) < audit(300)", () => {
     const perm = createPermissionsMiddleware({
       backend: createPatternPermissionBackend({
         rules: { allow: ["*"], deny: [], ask: [] },
@@ -81,12 +80,10 @@ describe("Middleware composition — execution order", () => {
       budget: 100,
     });
     const audit = createAuditMiddleware({ sink: createInMemoryAuditSink() });
-    const memory = createMemoryMiddleware({ store: createInMemoryStore() });
 
     expect(perm.priority).toBe(100);
     expect(pay.priority).toBe(200);
     expect(audit.priority).toBe(300);
-    expect(memory.priority).toBe(400);
   });
 
   test("onion enter order matches priority (outer first)", async () => {
