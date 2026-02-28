@@ -294,4 +294,65 @@ describe("tool health integration", () => {
     // Handler never called — input validation failed before execution
     expect(spy.calls).toHaveLength(0);
   });
+
+  test("checkAndDemote wired in failure path — demotes promoted tool", async () => {
+    const forgeStore = createMockForgeStore();
+    // Mock load to return a promoted brick
+    forgeStore.load = mock(() =>
+      Promise.resolve({
+        ok: true as const,
+        value: {
+          trustTier: "promoted",
+          lastPromotedAt: 0,
+          lastDemotedAt: 0,
+        } as never,
+      }),
+    );
+    const snapshotStore = createMockSnapshotStore();
+    const onDemotion = mock(() => {});
+
+    // Create tracker directly to test demotion behavior deterministically
+    const { createToolHealthTracker } = await import("../tool-health.js");
+    const tracker = createToolHealthTracker({
+      resolveBrickId: (toolId: string) =>
+        toolId.startsWith("forged-") ? `brick-${toolId}` : undefined,
+      forgeStore,
+      snapshotStore,
+      onDemotion,
+      windowSize: 3,
+      quarantineThreshold: 0.9,
+      clock: () => 100_000_000,
+      demotionCriteria: {
+        errorRateThreshold: 0.3,
+        windowSize: 3,
+        minSampleSize: 3,
+        gracePeriodMs: 1000,
+        demotionCooldownMs: 1000,
+      },
+    });
+
+    // Record failures to exceed demotion threshold (100% error rate)
+    tracker.recordFailure("forged-tool-1", 10, "e1");
+    tracker.recordFailure("forged-tool-1", 10, "e2");
+    tracker.recordFailure("forged-tool-1", 10, "e3");
+
+    // Explicitly call checkAndDemote (in production, middleware does this fire-and-forget)
+    const result = await tracker.checkAndDemote("forged-tool-1");
+    expect(result).toBe(true);
+
+    // Verify store update with demoted trust tier
+    expect(forgeStore.update).toHaveBeenCalledTimes(1);
+    const updateArgs = forgeStore.update.mock.calls[0] as unknown[];
+    expect(updateArgs[1]).toEqual(expect.objectContaining({ trustTier: "verified" }));
+
+    // Verify onDemotion callback fired
+    expect(onDemotion).toHaveBeenCalledTimes(1);
+    const event = (onDemotion.mock.calls[0] as unknown[])?.[0] as Record<string, unknown>;
+    expect(event.from).toBe("promoted");
+    expect(event.to).toBe("verified");
+    expect(event.reason).toBe("error_rate");
+
+    // Verify snapshot recorded
+    expect(snapshotStore.record).toHaveBeenCalledTimes(1);
+  });
 });

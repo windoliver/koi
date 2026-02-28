@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { GovernanceCheck } from "@koi/core";
 import { createMockGovernanceController } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "./config.js";
-import { checkGovernance, checkScopePromotion } from "./governance.js";
+import { checkGovernance, checkScopePromotion, validateTrustTransition } from "./governance.js";
 import type { ForgeContext } from "./types.js";
 
 const DEFAULT_CONTEXT: ForgeContext = {
@@ -265,6 +265,75 @@ describe("checkScopePromotion", () => {
     if (result.ok) {
       expect(result.value.requiresHumanApproval).toBe(true);
       expect(result.value.message).toContain("human approval");
+    }
+  });
+});
+
+describe("validateTrustTransition", () => {
+  test("same tier returns no change", () => {
+    const result = validateTrustTransition("sandbox", "sandbox", "agent");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toBeUndefined();
+    }
+  });
+
+  test("agent caller can promote", () => {
+    const result = validateTrustTransition("sandbox", "verified", "agent");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toEqual({ from: "sandbox", to: "verified" });
+    }
+  });
+
+  test("agent caller cannot demote", () => {
+    const result = validateTrustTransition("promoted", "verified", "agent");
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "governance") {
+      expect(result.error.code).toBe("TRUST_DEMOTION_NOT_ALLOWED");
+    }
+  });
+
+  test("system caller allows one-step demotion: promoted → verified", () => {
+    const result = validateTrustTransition("promoted", "verified", "system");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toEqual({ from: "promoted", to: "verified" });
+    }
+  });
+
+  test("system caller allows one-step demotion: verified → sandbox", () => {
+    const result = validateTrustTransition("verified", "sandbox", "system");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toEqual({ from: "verified", to: "sandbox" });
+    }
+  });
+
+  test("system caller blocks skip-demotion: promoted → sandbox", () => {
+    const result = validateTrustTransition("promoted", "sandbox", "system");
+    expect(result.ok).toBe(false);
+    if (!result.ok && result.error.stage === "governance") {
+      expect(result.error.code).toBe("TRUST_DEMOTION_NOT_ALLOWED");
+      expect(result.error.message).toContain("one step");
+    }
+  });
+
+  test("system caller blocks demotion from sandbox (floor)", () => {
+    // sandbox is already at floor, but target would need to be even lower
+    // which doesn't exist — so we test same-tier (returns no change)
+    const result = validateTrustTransition("sandbox", "sandbox", "system");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toBeUndefined();
+    }
+  });
+
+  test("system caller can also promote", () => {
+    const result = validateTrustTransition("sandbox", "promoted", "system");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toEqual({ from: "sandbox", to: "promoted" });
     }
   });
 });

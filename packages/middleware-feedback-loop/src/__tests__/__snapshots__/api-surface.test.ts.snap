@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/middleware-feedback-loop API surface . has stable type surface 1`] = `
-"import { ForgeStore, SnapshotStore } from '@koi/core';
+"import { ForgeStore, SnapshotStore, DemotionCriteria } from '@koi/core';
 import { Result, KoiError } from '@koi/core/errors';
 import { TurnContext, ModelRequest, ModelResponse, KoiMiddleware } from '@koi/core/middleware';
 
@@ -68,6 +68,20 @@ interface ForgeToolErrorFeedback {
     readonly recentFailures: readonly ToolFailureRecord[];
     readonly suggestion: string;
 }
+/** Reason for a trust tier demotion. */
+type TrustDemotionReason = "error_rate" | "dependency_failure" | "manual" | "re_verification_failed";
+/** Event emitted when a tool's trust tier is demoted. */
+interface TrustDemotionEvent {
+    readonly brickId: string;
+    readonly from: string;
+    readonly to: string;
+    readonly reason: TrustDemotionReason;
+    readonly evidence: {
+        readonly errorRate: number;
+        readonly sampleSize: number;
+        readonly periodMs: number;
+    };
+}
 /** Category-aware retry budget configuration. */
 interface RetryConfig {
     readonly validation?: {
@@ -104,6 +118,10 @@ interface ForgeHealthConfig {
     readonly maxRecentFailures?: number;
     /** Callback fired when a tool is quarantined. Wire to forgeProvider.invalidate(). */
     readonly onQuarantine?: (brickId: string) => void | Promise<void>;
+    /** Demotion criteria overrides (merged with DEFAULT_DEMOTION_CRITERIA). */
+    readonly demotionCriteria?: Partial<DemotionCriteria>;
+    /** Callback fired when a tool's trust tier is demoted. */
+    readonly onDemotion?: (event: TrustDemotionEvent) => void | Promise<void>;
     /** Injectable clock for testing. Default: Date.now. */
     readonly clock?: () => number;
 }
@@ -139,22 +157,24 @@ declare function validateFeedbackLoopConfig(config: unknown): Result<FeedbackLoo
 declare function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMiddleware;
 
 /**
- * Tool health tracker — ring buffer + quarantine state machine.
+ * Tool health tracker — ring buffer + quarantine/demotion state machine.
  *
- * Adapts circuit breaker pattern from @koi/model-router. Key difference:
- * no HALF_OPEN recovery — quarantine is terminal (agent must re-forge).
+ * Adapts circuit breaker pattern from @koi/model-router.
+ * Quarantine is terminal (agent must re-forge).
+ * Demotion lowers trust tier by one step on sustained error rate.
  */
 
-/** ToolHealthTracker interface — per-tool success/failure/latency tracking with quarantine. */
+/** ToolHealthTracker interface — per-tool success/failure/latency tracking with quarantine and demotion. */
 interface ToolHealthTracker {
     readonly recordSuccess: (toolId: string, latencyMs: number) => void;
     readonly recordFailure: (toolId: string, latencyMs: number, error: string) => void;
     readonly getSnapshot: (toolId: string) => ToolHealthSnapshot | undefined;
     readonly isQuarantined: (toolId: string) => boolean;
     readonly checkAndQuarantine: (toolId: string) => Promise<boolean>;
+    readonly checkAndDemote: (toolId: string) => Promise<boolean>;
     readonly getAllSnapshots: () => readonly ToolHealthSnapshot[];
 }
-/** Creates a ToolHealthTracker with ring buffer and quarantine support. */
+/** Creates a ToolHealthTracker with ring buffer, quarantine, and demotion support. */
 declare function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTracker;
 
 /**

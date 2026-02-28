@@ -105,6 +105,15 @@ export type SnapshotEvent =
       readonly reason: string;
       readonly errorRate: number;
       readonly failureCount: number;
+    }
+  | {
+      readonly kind: "demoted";
+      readonly actor: string;
+      readonly timestamp: number;
+      readonly fromTier: string;
+      readonly toTier: string;
+      readonly reason: string;
+      readonly errorRate: number;
     };
 
 // ---------------------------------------------------------------------------

@@ -21,7 +21,7 @@ import { brickId, VALID_LIFECYCLE_TRANSITIONS } from "@koi/core";
 import { z } from "zod";
 import type { ForgeError } from "../errors.js";
 import { governanceError, storeError } from "../errors.js";
-import { checkScopePromotion, TRUST_ORDER } from "../governance.js";
+import { checkScopePromotion, validateTrustTransition } from "../governance.js";
 import { isVisibleToAgent } from "../scope-filter.js";
 import type { PromoteChange, PromoteResult } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
@@ -109,19 +109,7 @@ function validateTrustChange(
   current: TrustTier,
   target: TrustTier,
 ): Result<PromoteChange<TrustTier> | undefined, ForgeError> {
-  if (target === current) {
-    return { ok: true, value: undefined };
-  }
-  if (TRUST_ORDER[target] < TRUST_ORDER[current]) {
-    return {
-      ok: false,
-      error: governanceError(
-        "TRUST_DEMOTION_NOT_ALLOWED",
-        `Trust tier demotion not allowed: "${current}" → "${target}"`,
-      ),
-    };
-  }
-  return { ok: true, value: { from: current, to: target } };
+  return validateTrustTransition(current, target, "agent");
 }
 
 function validateLifecycleChange(
@@ -235,7 +223,9 @@ async function promoteForgeHandler(
   if (hasNonHitlChanges) {
     const updates: BrickUpdate = {
       ...(scopeChange !== undefined ? { scope: scopeChange.to } : {}),
-      ...(trustChange !== undefined ? { trustTier: trustChange.to } : {}),
+      ...(trustChange !== undefined
+        ? { trustTier: trustChange.to, lastPromotedAt: Date.now() }
+        : {}),
       ...(lifecycleChange !== undefined ? { lifecycle: lifecycleChange.to } : {}),
       ...(tagUpdate !== undefined ? { tags: tagUpdate } : {}),
     };
@@ -246,7 +236,9 @@ async function promoteForgeHandler(
     if (scopeChange !== undefined && deps.store.promoteAndUpdate !== undefined) {
       // Atomic: scope + metadata in one operation (Issue #404)
       const atomicUpdates: BrickUpdate = {
-        ...(trustChange !== undefined ? { trustTier: trustChange.to } : {}),
+        ...(trustChange !== undefined
+          ? { trustTier: trustChange.to, lastPromotedAt: Date.now() }
+          : {}),
         ...(lifecycleChange !== undefined ? { lifecycle: lifecycleChange.to } : {}),
         ...(tagUpdate !== undefined ? { tags: tagUpdate } : {}),
       };
@@ -285,7 +277,9 @@ async function promoteForgeHandler(
       }
       // Apply remaining non-scope updates if any (includes zone tag assignment)
       const nonScopeUpdates: BrickUpdate = {
-        ...(trustChange !== undefined ? { trustTier: trustChange.to } : {}),
+        ...(trustChange !== undefined
+          ? { trustTier: trustChange.to, lastPromotedAt: Date.now() }
+          : {}),
         ...(lifecycleChange !== undefined ? { lifecycle: lifecycleChange.to } : {}),
         ...(tagUpdate !== undefined ? { tags: tagUpdate } : {}),
       };

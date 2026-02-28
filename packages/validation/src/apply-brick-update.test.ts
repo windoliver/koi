@@ -109,6 +109,20 @@ describe("applyBrickUpdate", () => {
     expect(result.fitness).toEqual(fitness);
   });
 
+  test("updates lastPromotedAt", () => {
+    const brick = createBrick();
+    const now = Date.now();
+    const result = applyBrickUpdate(brick, { lastPromotedAt: now });
+    expect(result.lastPromotedAt).toBe(now);
+  });
+
+  test("updates lastDemotedAt", () => {
+    const brick = createBrick();
+    const now = Date.now();
+    const result = applyBrickUpdate(brick, { lastDemotedAt: now });
+    expect(result.lastDemotedAt).toBe(now);
+  });
+
   // ---------------------------------------------------------------------------
   // Multiple fields
   // ---------------------------------------------------------------------------

@@ -15,6 +15,9 @@
     "zod": "4.3.6"
   },
   "devDependencies": {
+    "@koi/engine": "workspace:*",
+    "@koi/engine-pi": "workspace:*",
+    "@koi/forge": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },
   "scripts": {

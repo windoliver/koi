@@ -2,12 +2,12 @@
  * Governance — depth-aware forge policies and scope promotion checks.
  */
 
-import type { GovernanceController, Result, TrustTier } from "@koi/core";
+import type { GovernanceController, Result, TrustTier, TrustTransitionCaller } from "@koi/core";
 import { GOVERNANCE_VARIABLES } from "@koi/core";
 import type { ForgeConfig } from "./config.js";
 import type { ForgeError } from "./errors.js";
 import { governanceError } from "./errors.js";
-import type { ForgeContext, ForgeScope } from "./types.js";
+import type { ForgeContext, ForgeScope, PromoteChange } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Trust tier ordering (for comparison)
@@ -229,4 +229,72 @@ export function checkScopePromotion(
   }
 
   return { ok: true, value: { requiresHumanApproval: false } };
+}
+
+// ---------------------------------------------------------------------------
+// Trust tier demotion map (one step down)
+// ---------------------------------------------------------------------------
+
+const TRUST_DEMOTION_TARGET: Readonly<Record<TrustTier, TrustTier | undefined>> = {
+  promoted: "verified",
+  verified: "sandbox",
+  sandbox: undefined, // floor — cannot demote further
+} as const;
+
+// ---------------------------------------------------------------------------
+// Shared trust transition validator
+// ---------------------------------------------------------------------------
+
+/**
+ * Validates a trust tier transition.
+ *
+ * - `caller: "agent"` → blocks demotion (agents can only promote)
+ * - `caller: "system"` → allows one-step demotion, blocks skip-demotion
+ *
+ * Returns `undefined` value when current === target (no-op).
+ */
+export function validateTrustTransition(
+  current: TrustTier,
+  target: TrustTier,
+  caller: TrustTransitionCaller,
+): Result<PromoteChange<TrustTier> | undefined, ForgeError> {
+  if (target === current) {
+    return { ok: true, value: undefined };
+  }
+
+  const currentOrder = TRUST_ORDER[current];
+  const targetOrder = TRUST_ORDER[target];
+
+  // Promotion — allowed for both callers
+  if (targetOrder > currentOrder) {
+    return { ok: true, value: { from: current, to: target } };
+  }
+
+  // Demotion — only system caller can demote
+  if (caller === "agent") {
+    return {
+      ok: false,
+      error: governanceError(
+        "TRUST_DEMOTION_NOT_ALLOWED",
+        `Trust tier demotion not allowed: "${current}" → "${target}"`,
+      ),
+    };
+  }
+
+  // System caller — validate one-step demotion only
+  const expectedTarget = TRUST_DEMOTION_TARGET[current];
+  if (expectedTarget === undefined || target !== expectedTarget) {
+    return {
+      ok: false,
+      error: governanceError(
+        "TRUST_DEMOTION_NOT_ALLOWED",
+        `Trust demotion must be one step: "${current}" → "${target}" is not allowed. ` +
+          (expectedTarget !== undefined
+            ? `Expected: "${current}" → "${expectedTarget}"`
+            : `"${current}" is already at the floor`),
+      ),
+    };
+  }
+
+  return { ok: true, value: { from: current, to: target } };
 }
