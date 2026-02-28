@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import type { AgentManifest } from "@koi/core";
+import type { ResolutionContext } from "@koi/resolve";
 import { descriptor } from "./descriptor.js";
+
+const STUB_CONTEXT: ResolutionContext = {
+  manifestDir: "/tmp",
+  manifest: { name: "test-agent" } as AgentManifest,
+  env: {},
+};
 
 describe("descriptor", () => {
   test("has correct kind and name", () => {
@@ -68,21 +76,21 @@ describe("descriptor", () => {
 
   // ── factory ──
 
-  test("factory creates middleware with default stores", () => {
-    const middleware = descriptor.factory({});
+  test("factory creates middleware with default stores", async () => {
+    const middleware = await descriptor.factory({}, STUB_CONTEXT);
     expect(middleware.name).toBe("ace");
     expect(typeof middleware.wrapModelCall).toBe("function");
     expect(typeof middleware.wrapToolCall).toBe("function");
     expect(typeof middleware.onSessionEnd).toBe("function");
   });
 
-  test("factory creates middleware with maxInjectionTokens", () => {
-    const middleware = descriptor.factory({ maxInjectionTokens: 200 });
+  test("factory creates middleware with maxInjectionTokens", async () => {
+    const middleware = await descriptor.factory({ maxInjectionTokens: 200 }, STUB_CONTEXT);
     expect(middleware.name).toBe("ace");
   });
 
-  test("factory middleware has describeCapabilities", () => {
-    const middleware = descriptor.factory({});
+  test("factory middleware has describeCapabilities", async () => {
+    const middleware = await descriptor.factory({}, STUB_CONTEXT);
     expect(typeof middleware.describeCapabilities).toBe("function");
   });
 });

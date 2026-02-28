@@ -247,13 +247,12 @@ describe("createLlmPipeline", () => {
 
     // Reflector received empty playbook with 3 default sections
     expect(analyze).toHaveBeenCalledTimes(1);
-    const input = analyze.mock.calls[0]?.[0];
+    const calls = analyze.mock.calls as unknown as ReadonlyArray<readonly [unknown]>;
+    const input = calls[0]?.[0] as
+      | { readonly playbook: { readonly sections: ReadonlyArray<{ readonly slug: string }> } }
+      | undefined;
     expect(input?.playbook.sections).toHaveLength(3);
-    expect(input?.playbook.sections.map((s: { readonly slug: string }) => s.slug)).toEqual([
-      "str",
-      "err",
-      "tool",
-    ]);
+    expect(input?.playbook.sections.map((s) => s.slug)).toEqual(["str", "err", "tool"]);
   });
 
   test("uses existing playbook from store", async () => {
@@ -330,7 +329,8 @@ describe("createLlmPipeline", () => {
     await pipeline.consolidate(entries, "s1", 1, () => 6000, buffer);
 
     expect(analyze).toHaveBeenCalledTimes(1);
-    const input = analyze.mock.calls[0]?.[0];
+    const calls = analyze.mock.calls as unknown as ReadonlyArray<readonly [unknown]>;
+    const input = calls[0]?.[0] as { readonly citedBulletIds: readonly string[] } | undefined;
     expect(input?.citedBulletIds).toEqual(["[str-00000]", "[err-00001]", "[str-00000]"]);
   });
 

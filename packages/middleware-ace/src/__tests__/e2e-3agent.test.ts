@@ -726,6 +726,7 @@ describeE2E("e2e: 3-agent ACE pipeline with real LLM calls", () => {
       const capabilityObserver = {
         name: "e2e:capability-observer" as const,
         priority: 600,
+        describeCapabilities: () => ({ label: "observer", description: "e2e observer" }),
         async wrapModelCall(
           ctx: import("@koi/core").TurnContext,
           req: ModelRequest,

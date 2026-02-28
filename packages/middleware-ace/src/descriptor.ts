@@ -52,7 +52,7 @@ export const descriptor: BrickDescriptor<KoiMiddleware> = {
   name: "@koi/middleware-ace",
   aliases: ["ace"],
   optionsValidator: validateAceDescriptorOptions,
-  factory(options): KoiMiddleware {
+  factory(options, _context): KoiMiddleware {
     const trajectoryStore = createInMemoryTrajectoryStore();
     const playbookStore = createInMemoryPlaybookStore();
     const maxInjectionTokens =
