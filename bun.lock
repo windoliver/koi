@@ -559,6 +559,9 @@
         "@koi/hash": "workspace:*",
       },
       "devDependencies": {
+        "@koi/engine-acp": "workspace:*",
+        "@koi/engine-claude": "workspace:*",
+        "@koi/engine-external": "workspace:*",
         "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
         "@koi/filesystem": "workspace:*",
@@ -571,6 +574,7 @@
         "@koi/middleware-sandbox": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/node": "workspace:*",
+        "@koi/resolve": "workspace:*",
         "@koi/scheduler": "workspace:*",
         "@koi/scheduler-provider": "workspace:*",
         "@koi/scope": "workspace:*",
@@ -1621,7 +1625,9 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-loop": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
         "@koi/model-router": "workspace:*",
+        "@koi/node": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },

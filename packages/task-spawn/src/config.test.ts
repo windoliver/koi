@@ -32,7 +32,7 @@ describe("validateTaskSpawnConfig", () => {
     const result = validateTaskSpawnConfig(validConfig());
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.agents.size).toBe(1);
+      expect(result.value.agents?.size).toBe(1);
     }
   });
 
@@ -62,15 +62,49 @@ describe("validateTaskSpawnConfig", () => {
     }
   });
 
-  it("rejects non-Map agents", () => {
+  it("rejects non-Map agents when no agentResolver provided", () => {
     const result = validateTaskSpawnConfig({
       spawn: MOCK_SPAWN,
       agents: { test: MOCK_AGENT },
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error.message).toContain("Map");
+      expect(result.error.message).toContain("agents");
+      expect(result.error.message).toContain("agentResolver");
     }
+  });
+
+  it("accepts config with agentResolver instead of agents", () => {
+    const result = validateTaskSpawnConfig({
+      spawn: MOCK_SPAWN,
+      agentResolver: {
+        resolve: () => undefined,
+        list: () => [],
+      },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects config with neither agents nor agentResolver", () => {
+    const result = validateTaskSpawnConfig({
+      spawn: MOCK_SPAWN,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("agents");
+      expect(result.error.message).toContain("agentResolver");
+    }
+  });
+
+  it("accepts config with both agents and agentResolver", () => {
+    const result = validateTaskSpawnConfig({
+      ...validConfig(),
+      agentResolver: {
+        resolve: () => undefined,
+        list: () => [],
+      },
+    });
+    expect(result.ok).toBe(true);
   });
 
   it("rejects empty agents map", () => {

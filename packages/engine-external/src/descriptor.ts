@@ -6,11 +6,52 @@
  * `noOutputTimeoutMs`, and `maxOutputBytes` from YAML options.
  */
 
-import type { EngineAdapter, KoiError, Result } from "@koi/core";
+import type { CompanionSkillDefinition, EngineAdapter, KoiError, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "@koi/resolve";
 import { createExternalAdapter } from "./adapter.js";
 import type { ExternalAdapterConfig } from "./types.js";
+
+const EXTERNAL_COMPANION_SKILL: CompanionSkillDefinition = {
+  name: "engine-external-guide",
+  description: "When to use engine: external",
+  tags: ["engine", "cli", "subprocess", "external"],
+  content: `# Engine: external
+
+## When to use
+- Running arbitrary CLI subprocess as an agent engine
+- Non-ACP tools that communicate via stdin/stdout
+- Single-shot or long-lived external processes
+- Shell scripts, Python scripts, or any executable
+
+## Manifest example
+\`\`\`yaml
+engine:
+  name: external
+  options:
+    command: "python"
+    args: ["agent.py"]
+    mode: "single-shot"
+    timeoutMs: 30000
+\`\`\`
+
+## Required options
+- \`command\` (string): CLI command to spawn
+
+## Optional options
+- \`args\` (string[]): Arguments passed to the command
+- \`cwd\` (string): Working directory for the process
+- \`mode\` ("single-shot" | "long-lived"): Process lifecycle mode
+- \`timeoutMs\` (number): Overall process timeout
+- \`noOutputTimeoutMs\` (number): Timeout when no output is received
+- \`maxOutputBytes\` (number): Maximum output size before truncation
+
+## When NOT to use
+- For ACP-compatible agents like Claude Code (use \`acp\` instead)
+- For direct model API access (use \`pi\` instead)
+- For Koi's built-in loop (use \`loop\` instead)
+`,
+};
 
 function validateExternalEngineOptions(input: unknown): Result<unknown, KoiError> {
   if (input === null || input === undefined || typeof input !== "object") {
@@ -48,6 +89,9 @@ export const descriptor: BrickDescriptor<EngineAdapter> = {
   kind: "engine",
   name: "@koi/engine-external",
   aliases: ["external"],
+  description: "Arbitrary CLI subprocess engine for external tools",
+  tags: ["cli", "subprocess", "external"],
+  companionSkills: [EXTERNAL_COMPANION_SKILL],
   optionsValidator: validateExternalEngineOptions,
   factory(options): EngineAdapter {
     const command = options.command;

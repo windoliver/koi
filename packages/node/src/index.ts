@@ -11,6 +11,9 @@ export type { AgentHost } from "./agent/host.js";
 export { createAgentHost } from "./agent/host.js";
 export type { StatusReporter } from "./agent/status.js";
 export { createStatusReporter } from "./agent/status.js";
+export type { AgentInbox, AgentMessagePayload, QueuedAgentMessage } from "./agent-inbox.js";
+// -- Agent inbox ------------------------------------------------------------
+export { createAgentInbox, isAgentMessagePayload, MAX_INBOX_DEPTH } from "./agent-inbox.js";
 export type { CheckpointManager, CheckpointManagerDeps } from "./checkpoint.js";
 // -- Checkpoint manager -----------------------------------------------------
 export { createCheckpointManager } from "./checkpoint.js";

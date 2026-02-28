@@ -16,8 +16,12 @@
     "@koi/hash": "workspace:*"
   },
   "devDependencies": {
+    "@koi/engine-acp": "workspace:*",
+    "@koi/engine-claude": "workspace:*",
+    "@koi/engine-external": "workspace:*",
     "@koi/engine-loop": "workspace:*",
     "@koi/engine-pi": "workspace:*",
+    "@koi/resolve": "workspace:*",
     "@koi/filesystem": "workspace:*",
     "@koi/middleware-audit": "workspace:*",
     "@koi/middleware-event-trace": "workspace:*",

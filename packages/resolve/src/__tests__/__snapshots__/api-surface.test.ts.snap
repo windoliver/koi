@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/resolve API surface . has stable type surface 1`] = `
-"import { BrickKind, Result, KoiError, JsonObject, AgentManifest, KoiMiddleware, ModelHandler, ChannelAdapter, EngineAdapter, MiddlewareConfig, ModelConfig, PermissionConfig } from '@koi/core';
+"import { BrickKind, CompanionSkillDefinition, Result, KoiError, JsonObject, AgentManifest, KoiMiddleware, ModelHandler, ChannelAdapter, EngineAdapter, MiddlewareConfig, ModelConfig, PermissionConfig } from '@koi/core';
 
 /**
  * Core types for the manifest resolution layer.
@@ -33,6 +33,12 @@ interface BrickDescriptor<T> {
     readonly name: string;
     /** Short aliases for convenience (e.g., ["soul", "memory"]). */
     readonly aliases?: readonly string[];
+    /** Human-readable description of what this brick does. */
+    readonly description?: string;
+    /** Searchable tags for categorization and discovery. */
+    readonly tags?: readonly string[];
+    /** Skills auto-injected into copilot context to teach the LLM when to use this brick. */
+    readonly companionSkills?: readonly CompanionSkillDefinition[];
     /** Validates raw YAML options into typed config. */
     readonly optionsValidator: OptionsValidator<unknown>;
     /** Creates the runtime instance from validated options. */

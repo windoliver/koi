@@ -9,6 +9,7 @@ import type {
   AgentManifest,
   BrickKind,
   ChannelAdapter,
+  CompanionSkillDefinition,
   EngineAdapter,
   JsonObject,
   KoiError,
@@ -62,6 +63,12 @@ export interface BrickDescriptor<T> {
   readonly name: string;
   /** Short aliases for convenience (e.g., ["soul", "memory"]). */
   readonly aliases?: readonly string[];
+  /** Human-readable description of what this brick does. */
+  readonly description?: string;
+  /** Searchable tags for categorization and discovery. */
+  readonly tags?: readonly string[];
+  /** Skills auto-injected into copilot context to teach the LLM when to use this brick. */
+  readonly companionSkills?: readonly CompanionSkillDefinition[];
   /** Validates raw YAML options into typed config. */
   readonly optionsValidator: OptionsValidator<unknown>;
   /** Creates the runtime instance from validated options. */

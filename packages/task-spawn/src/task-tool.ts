@@ -5,28 +5,49 @@
 import type { JsonObject } from "@koi/core/common";
 import type { Tool } from "@koi/core/ecs";
 import { extractOutput } from "./output.js";
-import { DEFAULT_MAX_DURATION_MS, TASK_TOOL_DESCRIPTOR, type TaskSpawnConfig } from "./types.js";
+import {
+  type AgentResolver,
+  createMapAgentResolver,
+  createTaskToolDescriptor,
+  DEFAULT_MAX_DURATION_MS,
+  TASK_TOOL_DESCRIPTOR,
+  type TaskSpawnConfig,
+} from "./types.js";
+
+/**
+ * Resolves the effective AgentResolver from config.
+ * Prefers explicit agentResolver; falls back to creating one from agents map.
+ */
+function resolveAgentResolver(config: TaskSpawnConfig): AgentResolver {
+  if (config.agentResolver !== undefined) {
+    return config.agentResolver;
+  }
+  if (config.agents !== undefined) {
+    return createMapAgentResolver(config.agents);
+  }
+  throw new Error("TaskSpawnConfig requires either 'agents' or 'agentResolver'");
+}
 
 /**
  * Creates the `task` tool for subagent delegation.
  *
  * Flow:
- * 1. Parse input → extract `description` and `agent_type`
- * 2. Resolve agent from config.agents (fall back to config.defaultAgent)
- * 3. Create AbortController with timeout
- * 4. Call config.spawn() with the resolved manifest + signal
- * 5. Return extracted output as tool result
- *
- * Error boundary:
- * - config.spawn throws → re-throw (governance/infra failure)
- * - config.spawn returns { ok: false } → return error as tool result string
- * - config.spawn returns { ok: true } → return output as tool result
+ * 1. Build dynamic descriptor from agent summaries
+ * 2. Parse input → extract `description` and `agent_type`
+ * 3. Resolve agent via AgentResolver (may be async)
+ * 4. Create AbortController with timeout
+ * 5. Call config.spawn() with the resolved manifest + signal
+ * 6. Return extracted output as tool result
  */
-export function createTaskTool(config: TaskSpawnConfig): Tool {
+export async function createTaskTool(config: TaskSpawnConfig): Promise<Tool> {
   const maxDurationMs = config.maxDurationMs ?? DEFAULT_MAX_DURATION_MS;
+  const resolver = resolveAgentResolver(config);
+  const summaries = await Promise.resolve(resolver.list());
+  const descriptor =
+    summaries.length > 0 ? createTaskToolDescriptor(summaries) : TASK_TOOL_DESCRIPTOR;
 
   return {
-    descriptor: TASK_TOOL_DESCRIPTOR,
+    descriptor,
     trustTier: "verified",
 
     async execute(args: JsonObject): Promise<unknown> {
@@ -44,9 +65,9 @@ export function createTaskTool(config: TaskSpawnConfig): Tool {
         return "Error: 'agent_type' is required when no default agent is configured";
       }
 
-      const agent = config.agents.get(agentType);
+      const agent = await Promise.resolve(resolver.resolve(agentType));
       if (agent === undefined) {
-        const available = [...config.agents.keys()].join(", ");
+        const available = summaries.map((s) => s.key).join(", ");
         return `Error: unknown agent type '${agentType}'. Available: ${available}`;
       }
 
@@ -56,6 +77,20 @@ export function createTaskTool(config: TaskSpawnConfig): Tool {
       }, maxDurationMs);
 
       try {
+        // Copilot path: if a live agent of this type exists, message it instead of spawning
+        if (config.message !== undefined && resolver.findLive !== undefined) {
+          const liveId = await Promise.resolve(resolver.findLive(agentType));
+          if (liveId !== undefined) {
+            const result = await config.message({
+              agentId: liveId,
+              description,
+              signal: controller.signal,
+            });
+            return extractOutput(result);
+          }
+        }
+
+        // Spawn path: create a new worker agent
         const result = await config.spawn({
           description,
           agentName: agent.name,

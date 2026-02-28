@@ -205,6 +205,18 @@ export interface SkillComponent extends SkillMetadata {
 }
 
 /**
+ * A skill definition bundled with a BrickDescriptor to teach the LLM
+ * when and how to use this brick. Auto-injected into copilot context
+ * so the model can make informed engine/adapter selection decisions.
+ */
+export interface CompanionSkillDefinition {
+  readonly name: string;
+  readonly description: string;
+  readonly content: string;
+  readonly tags?: readonly string[];
+}
+
+/**
  * Lightweight agent descriptor for peer discovery.
  * Raw manifestYaml — consumers parse when needed (lazy philosophy).
  */

@@ -220,6 +220,7 @@ export type {
   AttachResult,
   ChildHandle,
   ChildLifecycleEvent,
+  CompanionSkillDefinition,
   ComponentEvent,
   ComponentEventKind,
   ComponentProvider,

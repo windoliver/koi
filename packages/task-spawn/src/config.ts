@@ -24,35 +24,14 @@ function validationError(message: string): {
   };
 }
 
-/**
- * Validates a TaskSpawnConfig from an unknown input.
- *
- * Checks:
- * - `agents` is a Map with at least one entry (each with name, description, manifest)
- * - `spawn` is a function
- * - `defaultAgent` (if provided) references a key in `agents`
- * - `maxDurationMs` (if provided) is a finite positive integer
- */
-export function validateTaskSpawnConfig(config: unknown): Result<TaskSpawnConfig, KoiError> {
-  if (!isRecord(config)) {
-    return validationError("Config must be a non-null object");
-  }
-
-  if (typeof config.spawn !== "function") {
-    return validationError(
-      "Config requires 'spawn' as a function (request: TaskSpawnRequest) => Promise<TaskSpawnResult>",
-    );
-  }
-
-  if (!(config.agents instanceof Map)) {
-    return validationError("Config requires 'agents' as a Map<string, TaskableAgent>");
-  }
-
-  if (config.agents.size === 0) {
+function validateAgentsMap(
+  agents: Map<unknown, unknown>,
+): ReturnType<typeof validationError> | undefined {
+  if (agents.size === 0) {
     return validationError("Config requires at least one agent in the 'agents' map");
   }
 
-  for (const [key, value] of config.agents as Map<unknown, unknown>) {
+  for (const [key, value] of agents) {
     if (typeof key !== "string") {
       return validationError(`Agent map key must be a string, got ${typeof key}`);
     }
@@ -71,16 +50,60 @@ export function validateTaskSpawnConfig(config: unknown): Result<TaskSpawnConfig
       return validationError(`Agent '${key}' requires a 'manifest' object (AgentManifest)`);
     }
   }
+  return undefined;
+}
+
+/**
+ * Validates a TaskSpawnConfig from an unknown input.
+ *
+ * Checks:
+ * - Either `agents` (Map with >=1 entry) or `agentResolver` (with resolve + list) is provided
+ * - `spawn` is a function
+ * - `defaultAgent` (if provided) is a string
+ * - `maxDurationMs` (if provided) is a finite positive integer
+ */
+export function validateTaskSpawnConfig(config: unknown): Result<TaskSpawnConfig, KoiError> {
+  if (!isRecord(config)) {
+    return validationError("Config must be a non-null object");
+  }
+
+  if (typeof config.spawn !== "function") {
+    return validationError(
+      "Config requires 'spawn' as a function (request: TaskSpawnRequest) => Promise<TaskSpawnResult>",
+    );
+  }
+
+  const hasAgents = config.agents instanceof Map;
+  const hasResolver =
+    isRecord(config.agentResolver) &&
+    typeof config.agentResolver.resolve === "function" &&
+    typeof config.agentResolver.list === "function";
+
+  if (!hasAgents && !hasResolver) {
+    return validationError(
+      "Config requires either 'agents' (Map<string, TaskableAgent>) or 'agentResolver' (AgentResolver with resolve + list)",
+    );
+  }
+
+  if (hasAgents) {
+    const mapError = validateAgentsMap(config.agents as Map<unknown, unknown>);
+    if (mapError !== undefined) return mapError;
+  }
 
   if (config.defaultAgent !== undefined) {
     if (typeof config.defaultAgent !== "string") {
       return validationError("'defaultAgent' must be a string");
     }
-    if (!(config.agents as Map<string, unknown>).has(config.defaultAgent)) {
+    // When using agentResolver, we can't validate defaultAgent against static map
+    if (hasAgents && !(config.agents as Map<string, unknown>).has(config.defaultAgent)) {
       return validationError(
         `'defaultAgent' value '${config.defaultAgent}' must reference a key in 'agents'`,
       );
     }
+  }
+
+  if (config.message !== undefined && typeof config.message !== "function") {
+    return validationError("'message' must be a function if provided");
   }
 
   if (config.maxDurationMs !== undefined) {
