@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/hash": "workspace:*"
+    "@koi/hash": "workspace:*",
+    "@koi/nexus-client": "workspace:*"
   }
 }
