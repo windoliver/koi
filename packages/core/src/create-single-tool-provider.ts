@@ -21,7 +21,7 @@ export interface SingleToolProviderConfig {
   readonly toolName: string;
 
   /** Factory function that creates the Tool instance. Called once (cached). */
-  readonly createTool: () => Tool;
+  readonly createTool: () => Tool | Promise<Tool>;
 
   /** Assembly priority. Lower = higher precedence. */
   readonly priority?: number | undefined;
@@ -48,7 +48,7 @@ export function createSingleToolProvider(config: SingleToolProviderConfig): Comp
     async attach(_agent: Agent): Promise<ReadonlyMap<string, unknown>> {
       if (cached !== undefined) return cached;
 
-      const tool = createTool();
+      const tool = await Promise.resolve(createTool());
       cached = new Map<string, unknown>([[`tool:${toolName}`, tool]]);
       return cached;
     },

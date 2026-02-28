@@ -168,6 +168,37 @@ describe("createRegistry", () => {
     expect(result.value.get("model", "anthropic")?.kind).toBe("model");
   });
 
+  test("registers descriptor with description, tags, and companionSkills", () => {
+    const desc: BrickDescriptor<unknown> = {
+      kind: "engine",
+      name: "@koi/engine-test",
+      aliases: ["test-engine"],
+      description: "A test engine",
+      tags: ["test", "example"],
+      companionSkills: [
+        {
+          name: "engine-test-guide",
+          description: "When to use engine: test",
+          content: "# Test engine guide",
+          tags: ["engine", "test"],
+        },
+      ],
+      optionsValidator: (input: unknown) => ({ ok: true as const, value: input }),
+      factory: () => ({ name: "test" }),
+    };
+
+    const result = createRegistry([desc]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected ok");
+
+    const retrieved = result.value.get("engine", "@koi/engine-test");
+    expect(retrieved).toBe(desc);
+    expect(retrieved?.description).toBe("A test engine");
+    expect(retrieved?.tags).toEqual(["test", "example"]);
+    expect(retrieved?.companionSkills).toHaveLength(1);
+    expect(retrieved?.companionSkills?.[0]?.name).toBe("engine-test-guide");
+  });
+
   test("creates empty registry from empty list", () => {
     const result = createRegistry([]);
 

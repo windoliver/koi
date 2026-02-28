@@ -1,9 +1,45 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/node API surface . has stable type surface 1`] = `
-"import { AdvertisedTool, SessionPersistence, CapacityReport, SessionCheckpoint, PendingFrame, RecoveryPlan, SessionRecord, Result, KoiError, ProcessId, AgentManifest, EngineAdapter, ComponentProvider, Agent, AgentId, Tool, SourceBundle, ScopeChecker, DelegationScope } from '@koi/core';
+"import { JsonObject } from '@koi/core/common';
+import { ContentBlock } from '@koi/core/message';
+import { AdvertisedTool, SessionPersistence, CapacityReport, SessionCheckpoint, PendingFrame, RecoveryPlan, SessionRecord, Result, KoiError, ProcessId, AgentManifest, EngineAdapter, ComponentProvider, Agent, AgentId, Tool, SourceBundle, ScopeChecker, DelegationScope } from '@koi/core';
 export { AdvertisedTool, CapacityReport, ToolCallPayload, ToolErrorPayload, ToolResultPayload, isToolCallPayload } from '@koi/core';
 export { ShutdownCallbacks, ShutdownEmit, ShutdownHandler, createShutdownHandler } from '@koi/shutdown';
+
+/**
+ * Queue-per-agent inbox for buffering inbound \`agent:message\` frames.
+ *
+ * Each agent gets an independent FIFO queue. When a queue exceeds
+ * MAX_INBOX_DEPTH the oldest message is dropped to bound memory.
+ */
+
+declare const MAX_INBOX_DEPTH: 100;
+/** Payload delivered via an \`agent:message\` frame. */
+interface AgentMessagePayload {
+    readonly content: readonly ContentBlock[];
+    readonly senderId?: string | undefined;
+    readonly metadata?: JsonObject | undefined;
+}
+/** A queued message with reception timestamp. */
+interface QueuedAgentMessage {
+    readonly payload: AgentMessagePayload;
+    readonly receivedAt: number;
+}
+/** Per-agent message inbox with FIFO semantics. */
+interface AgentInbox {
+    /** Append a message to the agent's queue. Drops oldest if over capacity. */
+    readonly push: (agentId: string, payload: AgentMessagePayload) => void;
+    /** Return all queued messages and clear the queue. */
+    readonly drain: (agentId: string) => readonly QueuedAgentMessage[];
+    /** Number of messages currently queued for the agent. */
+    readonly depth: (agentId: string) => number;
+    /** Remove all queued messages for the agent. */
+    readonly clear: (agentId: string) => void;
+}
+/** Validates that a value conforms to AgentMessagePayload at runtime. */
+declare function isAgentMessagePayload(value: unknown): value is AgentMessagePayload;
+declare function createAgentInbox(): AgentInbox;
 
 /**
  * @koi/node — Configuration schema (Zod) and domain types.
@@ -562,13 +598,6 @@ interface LocalResolver {
 }
 declare function createLocalResolver(config: ResolverConfig): LocalResolver;
 
-/**
- * createNode() — main entry point for the Koi Node runtime.
- *
- * Parses config → parallel startup [connect, mDNS, tools] → returns KoiNode handle.
- * The Node is a stateless host — agent state lives in Engine/Components.
- */
-
 /** Shared surface present on both Full and Thin nodes. */
 interface KoiNodeBase {
     /** Unique node identifier. */
@@ -599,6 +628,10 @@ interface FullKoiNode extends KoiNodeBase {
     readonly listAgents: () => readonly Agent[];
     /** Current capacity report. */
     readonly capacity: () => CapacityReport;
+    /** Drain queued agent:message payloads for a given agent. */
+    readonly drainInbox: (agentId: string) => readonly QueuedAgentMessage[];
+    /** Number of queued messages for a given agent. */
+    readonly inboxDepth: (agentId: string) => number;
     /** Checkpoint manager (available when sessionStore is provided). */
     readonly checkpoint: CheckpointManager | undefined;
 }
@@ -690,6 +723,6 @@ declare function createFilesystemTool(allowedPaths?: readonly string[]): Tool;
 
 declare function createShellTool(): Tool;
 
-export { type AgentHost, type AgentStatusPayload, type AuthAckPayload, type AuthChallengePayload, type AuthConfig, type AuthHandshake, type AuthHandshakeConfig, type AuthPayload, type AuthResponsePayload, type CapabilitiesPayload, type CheckpointManager, type CheckpointManagerDeps, type CheckpointingEngineConfig, DEFAULT_DELIVERY_CONFIG, DEFAULT_TOOL_CALL_TIMEOUT_MS, type DeliveryManager, type DeliveryManagerConfig, type DeliveryManagerDeps, type DiscoveryConfig, type DiscoveryService, type FrameCounterState, type FrameCounters, type FrameDeduplicator, type FullKoiNode, type GatewayConnectionConfig, type HandshakePayload, type HeartbeatCallbacks, type HeartbeatConfig, type HeartbeatMonitor, type KoiNode, type LocalResolver, type MemoryMetrics, type MemoryMonitor, type NodeCheckpoint, type NodeConfig, type NodeDeps, type NodeEvent, type NodeEventListener, type NodeEventType, type NodeFrame, type NodeFrameKind, type NodeMode, type NodePendingFrame, type NodeRecoveryPlan, type NodeSessionRecord, type NodeSessionStore, type NodeState, type ReconnectState, type RecoveryResult, type ResourcesConfig, type ServiceInfo, type StatusReporter, type ThinKoiNode, type ToolCallHandlerDeps, type ToolMeta, type ToolResolverConfig, type Transport, type TransportState, type WriteQueue, type WriteQueueConfig, computeReconnectDelay, createAgentHost, createAuthHandshake, createAuthPayload, createCheckpointManager, createCheckpointingEngine, createDeliveryManager, createDiscoveryService, createFilesystemTool, createFrameCounters, createFrameDeduplicator, createHeartbeatMonitor, createLocalResolver, createMemoryMonitor, createNode, createReconnectState, createShellTool, createStatusReporter, createTransport, createWriteQueue, decodeFrame, encodeFrame, generateCorrelationId, handleToolCall, isCleanClose, nextAttempt, parseNodeConfig, resetReconnectState, signChallenge };
+export { type AgentHost, type AgentInbox, type AgentMessagePayload, type AgentStatusPayload, type AuthAckPayload, type AuthChallengePayload, type AuthConfig, type AuthHandshake, type AuthHandshakeConfig, type AuthPayload, type AuthResponsePayload, type CapabilitiesPayload, type CheckpointManager, type CheckpointManagerDeps, type CheckpointingEngineConfig, DEFAULT_DELIVERY_CONFIG, DEFAULT_TOOL_CALL_TIMEOUT_MS, type DeliveryManager, type DeliveryManagerConfig, type DeliveryManagerDeps, type DiscoveryConfig, type DiscoveryService, type FrameCounterState, type FrameCounters, type FrameDeduplicator, type FullKoiNode, type GatewayConnectionConfig, type HandshakePayload, type HeartbeatCallbacks, type HeartbeatConfig, type HeartbeatMonitor, type KoiNode, type LocalResolver, MAX_INBOX_DEPTH, type MemoryMetrics, type MemoryMonitor, type NodeCheckpoint, type NodeConfig, type NodeDeps, type NodeEvent, type NodeEventListener, type NodeEventType, type NodeFrame, type NodeFrameKind, type NodeMode, type NodePendingFrame, type NodeRecoveryPlan, type NodeSessionRecord, type NodeSessionStore, type NodeState, type QueuedAgentMessage, type ReconnectState, type RecoveryResult, type ResourcesConfig, type ServiceInfo, type StatusReporter, type ThinKoiNode, type ToolCallHandlerDeps, type ToolMeta, type ToolResolverConfig, type Transport, type TransportState, type WriteQueue, type WriteQueueConfig, computeReconnectDelay, createAgentHost, createAgentInbox, createAuthHandshake, createAuthPayload, createCheckpointManager, createCheckpointingEngine, createDeliveryManager, createDiscoveryService, createFilesystemTool, createFrameCounters, createFrameDeduplicator, createHeartbeatMonitor, createLocalResolver, createMemoryMonitor, createNode, createReconnectState, createShellTool, createStatusReporter, createTransport, createWriteQueue, decodeFrame, encodeFrame, generateCorrelationId, handleToolCall, isAgentMessagePayload, isCleanClose, nextAttempt, parseNodeConfig, resetReconnectState, signChallenge };
 "
 `;

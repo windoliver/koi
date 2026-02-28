@@ -13,13 +13,19 @@ export { extractOutput } from "./output.js";
 export { createTaskSpawnProvider } from "./provider.js";
 export { createTaskTool } from "./task-tool.js";
 export type {
+  AgentResolver,
+  MessageFn,
   SpawnFn,
   TaskableAgent,
+  TaskableAgentSummary,
+  TaskMessageRequest,
   TaskSpawnConfig,
   TaskSpawnRequest,
   TaskSpawnResult,
 } from "./types.js";
 export {
+  createMapAgentResolver,
+  createTaskToolDescriptor,
   DEFAULT_MAX_DURATION_MS,
   isTaskSpawnFailure,
   isTaskSpawnSuccess,

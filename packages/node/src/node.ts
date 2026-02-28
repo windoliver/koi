@@ -22,6 +22,7 @@ import type { AgentHost } from "./agent/host.js";
 import { createAgentHost } from "./agent/host.js";
 import type { StatusReporter } from "./agent/status.js";
 import { createStatusReporter } from "./agent/status.js";
+import { createAgentInbox, isAgentMessagePayload } from "./agent-inbox.js";
 import type { CheckpointManager } from "./checkpoint.js";
 import { createCheckpointManager } from "./checkpoint.js";
 import { createCheckpointingEngine } from "./checkpointing-engine.js";
@@ -94,6 +95,12 @@ export interface FullKoiNode extends KoiNodeBase {
   readonly listAgents: () => readonly Agent[];
   /** Current capacity report. */
   readonly capacity: () => CapacityReport;
+  /** Drain queued agent:message payloads for a given agent. */
+  readonly drainInbox: (
+    agentId: string,
+  ) => readonly import("./agent-inbox.js").QueuedAgentMessage[];
+  /** Number of queued messages for a given agent. */
+  readonly inboxDepth: (agentId: string) => number;
   /** Checkpoint manager (available when sessionStore is provided). */
   readonly checkpoint: CheckpointManager | undefined;
 }
@@ -369,6 +376,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
   function buildFullNode(): Result<FullKoiNode, KoiError> {
     // -- Full-only subsystems ------------------------------------------------
     const engines = new Map<string, EngineAdapter>();
+    const inbox = createAgentInbox();
     const host: AgentHost = createAgentHost(config.resources);
     const monitor = createMemoryMonitor(config.resources, host, emit);
 
@@ -491,7 +499,9 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
           break;
         }
         case "agent:message": {
-          // TODO: wire to engine adapter's stream() when L1 is available
+          if (isAgentMessagePayload(frame.payload) && frame.agentId.length > 0) {
+            inbox.push(frame.agentId, frame.payload);
+          }
           break;
         }
         case "tool_call": {
@@ -721,6 +731,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
         if (result.ok) {
           engines.delete(agentId);
           frameCounters.remove(agentId);
+          inbox.clear(agentId);
         }
         return result;
       },
@@ -735,6 +746,14 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
 
       capacity() {
         return host.capacity();
+      },
+
+      drainInbox(agentId: string) {
+        return inbox.drain(agentId);
+      },
+
+      inboxDepth(agentId: string) {
+        return inbox.depth(agentId);
       },
 
       onEvent,

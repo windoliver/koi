@@ -126,6 +126,21 @@ describe("createSingleToolProvider", () => {
     expect(callCount).toBe(1);
   });
 
+  test("caches tool when createTool returns a Promise", async () => {
+    const tool = createMockTool("async-task");
+    const provider = createSingleToolProvider({
+      name: "async-provider",
+      toolName: "async_task",
+      createTool: async () => tool,
+    });
+
+    const first = extractMap(await provider.attach(createMockAgent()));
+    const second = extractMap(await provider.attach(createMockAgent()));
+
+    expect(first).toBe(second);
+    expect(first.get("tool:async_task")).toBe(tool);
+  });
+
   test("forwards priority to provider", () => {
     const provider = createSingleToolProvider({
       name: "task-spawn",
