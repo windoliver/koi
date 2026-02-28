@@ -5,8 +5,8 @@
  * Ed25519 provides cryptographic unforgeability for agent-to-agent
  * delegation chains without a shared secret.
  *
- * Key generation is lazy: keypairs are generated on first use (Issue 15).
  * Verification uses the public key embedded in the proof.
+ * Delegates Ed25519 verify to @koi/crypto-utils (fixes #508 DRY violation).
  *
  * Performs all checks in the same order as HmacVerifier:
  * 1. proof_type_unsupported
@@ -17,13 +17,13 @@
  * 6. scope_exceeded
  */
 
-import { verify as cryptoVerify } from "node:crypto";
 import type {
   CapabilityToken,
   CapabilityVerifier,
   CapabilityVerifyResult,
   VerifyContext,
 } from "@koi/core";
+import { verifyEd25519 } from "@koi/crypto-utils";
 
 /**
  * Recursively sorts object keys to produce deterministic JSON.
@@ -51,27 +51,17 @@ function canonicalize(token: Omit<CapabilityToken, "proof">): string {
  * Verifies an Ed25519 signature on a capability token.
  * Uses the publicKey embedded in token.proof to verify.
  *
- * The publicKey in the proof is expected to be base64-encoded DER/PEM.
+ * The publicKey in the proof is expected to be base64-encoded SPKI DER.
  * The signature is expected to be base64-encoded.
  */
 function verifyEd25519Proof(token: CapabilityToken): boolean {
   if (token.proof.kind !== "ed25519") return false;
 
   const { publicKey, signature } = token.proof;
+  const { proof: _proof, ...unsigned } = token;
+  const payload = canonicalize(unsigned);
 
-  try {
-    const { proof: _proof, ...unsigned } = token;
-    const payload = canonicalize(unsigned);
-
-    return cryptoVerify(
-      null, // null = use key's native algorithm (Ed25519 has built-in hash)
-      Buffer.from(payload),
-      { key: Buffer.from(publicKey, "base64"), format: "der", type: "spki" },
-      Buffer.from(signature, "base64"),
-    );
-  } catch {
-    return false;
-  }
+  return verifyEd25519(payload, publicKey, signature);
 }
 
 /**

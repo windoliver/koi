@@ -136,6 +136,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/crypto-utils": "workspace:*",
         "@koi/errors": "workspace:*",
       },
     },
@@ -458,6 +459,10 @@
     },
     "packages/core": {
       "name": "@koi/core",
+      "version": "0.0.0",
+    },
+    "packages/crypto-utils": {
+      "name": "@koi/crypto-utils",
       "version": "0.0.0",
     },
     "packages/crystallize": {
@@ -1053,6 +1058,15 @@
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware-intent-capsule": {
+      "name": "@koi/middleware-intent-capsule",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/crypto-utils": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
     },
     "packages/middleware-memory": {
@@ -2299,6 +2313,8 @@
 
     "@koi/core": ["@koi/core@workspace:packages/core"],
 
+    "@koi/crypto-utils": ["@koi/crypto-utils@workspace:packages/crypto-utils"],
+
     "@koi/crystallize": ["@koi/crystallize@workspace:packages/crystallize"],
 
     "@koi/dashboard-api": ["@koi/dashboard-api@workspace:packages/dashboard-api"],
@@ -2396,6 +2412,8 @@
     "@koi/middleware-guardrails": ["@koi/middleware-guardrails@workspace:packages/middleware-guardrails"],
 
     "@koi/middleware-guided-retry": ["@koi/middleware-guided-retry@workspace:packages/middleware-guided-retry"],
+
+    "@koi/middleware-intent-capsule": ["@koi/middleware-intent-capsule@workspace:packages/middleware-intent-capsule"],
 
     "@koi/middleware-memory": ["@koi/middleware-memory@workspace:packages/middleware-memory"],
 

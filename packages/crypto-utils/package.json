@@ -1,5 +1,5 @@
 {
-  "name": "@koi/capability-verifier",
+  "name": "@koi/crypto-utils",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,11 +9,7 @@
       "import": "./dist/index.js"
     }
   },
-  "dependencies": {
-    "@koi/core": "workspace:*",
-    "@koi/crypto-utils": "workspace:*",
-    "@koi/errors": "workspace:*"
-  },
+  "dependencies": {},
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",

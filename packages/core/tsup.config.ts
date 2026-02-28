@@ -35,6 +35,7 @@ export default defineConfig({
     "src/run-report.ts",
     "src/elicitation.ts",
     "src/webhook.ts",
+    "src/intent-capsule.ts",
   ],
   format: ["esm"],
   dts: {
