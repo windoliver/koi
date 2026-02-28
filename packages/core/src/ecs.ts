@@ -171,6 +171,7 @@ export interface ToolDescriptor {
   readonly name: string;
   readonly description: string;
   readonly inputSchema: JsonObject;
+  readonly tags?: readonly string[];
 }
 
 /** Options bag for Tool.execute — extensible without breaking existing callers. */

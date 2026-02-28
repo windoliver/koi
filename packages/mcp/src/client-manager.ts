@@ -26,6 +26,7 @@ export interface McpToolInfo {
   readonly name: string;
   readonly description: string;
   readonly inputSchema: JsonObject;
+  readonly tags?: readonly string[];
 }
 
 export interface McpClientManager {
@@ -230,11 +231,20 @@ export function createMcpClientManager(
 
     try {
       const response = await client.listTools();
-      const tools: readonly McpToolInfo[] = response.tools.map((t) => ({
-        name: t.name,
-        description: t.description ?? "",
-        inputSchema: (t.inputSchema ?? { type: "object" }) as JsonObject,
-      }));
+      const tools: readonly McpToolInfo[] = response.tools.map((t) => {
+        // Forward tags from MCP SDK response when present (future MCP spec extension)
+        const raw = t as Record<string, unknown>;
+        const tags =
+          Array.isArray(raw.tags) && raw.tags.every((x: unknown) => typeof x === "string")
+            ? (raw.tags as readonly string[])
+            : undefined;
+        return {
+          name: t.name,
+          description: t.description ?? "",
+          inputSchema: (t.inputSchema ?? { type: "object" }) as JsonObject,
+          ...(tags !== undefined && tags.length > 0 ? { tags } : {}),
+        };
+      });
       return { ok: true, value: tools };
     } catch (error: unknown) {
       connected = false;

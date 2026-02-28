@@ -74,6 +74,7 @@ interface McpToolInfo {
     readonly name: string;
     readonly description: string;
     readonly inputSchema: JsonObject;
+    readonly tags?: readonly string[];
 }
 interface McpClientManager {
     readonly connect: () => Promise<Result<void, KoiError>>;

@@ -130,12 +130,22 @@ declare function validateToolSelectorConfig(config: unknown): Result<ValidatedTo
  * BrickDescriptor for @koi/middleware-tool-selector.
  *
  * Enables manifest auto-resolution: validates tool selector config from
- * YAML options, then creates the middleware. Supports three modes:
- * - No profile: keyword-based defaultSelectTools (backward compatible)
+ * YAML options, then creates the middleware. Supports four modes:
+ * - No profile, no tags: keyword-based defaultSelectTools (backward compatible)
+ * - tags/exclude: tag-based selectTools (deterministic filtering)
  * - profile: named tool profile (static filtering)
  * - profile + autoScale: model-capability-aware dynamic profiles
  */
 
+/**
+ * Creates a tag-based selectTools function.
+ *
+ * - Include: tool must have ALL specified includeTags (AND semantics)
+ * - Exclude: tool must have NONE of specified excludeTags (ANY match removes)
+ * - Tools without tags are excluded when includeTags is specified
+ * - Ignores query — filtering is deterministic, not query-dependent
+ */
+declare function createTagSelectTools(includeTags: readonly string[] | undefined, excludeTags: readonly string[] | undefined): (query: string, tools: readonly ToolDescriptor[]) => Promise<readonly string[]>;
 /**
  * Descriptor for tool-selector middleware.
  * Exported for registration with createRegistry().
@@ -201,6 +211,6 @@ declare function resolveProfile(input: ProfileResolutionInput): ResolvedProfile;
  */
 declare function createToolSelectorMiddleware(config: ToolSelectorConfig): KoiMiddleware;
 
-export { type CapabilityTier, MODEL_CAPABILITY_TIERS, type ProfileResolutionInput, type ResolvedProfile, TOOL_PROFILES, type ToolProfileName, type ToolSelectorConfig, type ValidatedToolSelectorConfig, createToolSelectorMiddleware, descriptor, detectModelTier, extractLastUserText, isToolProfileName, resolveProfile, validateToolSelectorConfig };
+export { type CapabilityTier, MODEL_CAPABILITY_TIERS, type ProfileResolutionInput, type ResolvedProfile, TOOL_PROFILES, type ToolProfileName, type ToolSelectorConfig, type ValidatedToolSelectorConfig, createTagSelectTools, createToolSelectorMiddleware, descriptor, detectModelTier, extractLastUserText, isToolProfileName, resolveProfile, validateToolSelectorConfig };
 "
 `;

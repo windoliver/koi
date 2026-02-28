@@ -152,6 +152,9 @@ function mapToolDescriptorToEntry(descriptor: ToolDescriptor): CatalogEntry {
     kind: "tool",
     source: "mcp",
     description: descriptor.description,
+    ...(descriptor.tags !== undefined && descriptor.tags.length > 0
+      ? { tags: descriptor.tags }
+      : {}),
   };
 }
 

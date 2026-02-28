@@ -15,6 +15,20 @@ function makeTools(count: number): readonly ToolDescriptor[] {
   }));
 }
 
+function makeTaggedTools(): readonly ToolDescriptor[] {
+  return [
+    {
+      name: "shell_exec",
+      description: "Execute shell",
+      inputSchema: {},
+      tags: ["coding", "dangerous"],
+    },
+    { name: "file_read", description: "Read files", inputSchema: {}, tags: ["coding"] },
+    { name: "web_search", description: "Search web", inputSchema: {}, tags: ["research"] },
+    { name: "no_tags", description: "No tags", inputSchema: {} },
+  ];
+}
+
 function mockModelResponse(): ModelResponse {
   return { content: "ok", model: "test-model" };
 }
@@ -374,6 +388,52 @@ describe("createToolSelectorMiddleware", () => {
     expect(streamReceivedRequest).toBeDefined();
     expect(streamReceivedRequest?.tools).toHaveLength(2);
     expect(streamReceivedRequest?.tools?.map((t) => t.name)).toEqual(["tool-1", "tool-3"]);
+  });
+
+  describe("tools with tags field", () => {
+    test("selectTools receives tools with tags", async () => {
+      const tools = makeTaggedTools();
+      let receivedTools: readonly ToolDescriptor[] | undefined;
+
+      const mw = createToolSelectorMiddleware({
+        selectTools: async (_query, t) => {
+          receivedTools = t;
+          return t.map((tool) => tool.name);
+        },
+        minTools: 2,
+      });
+
+      const ctx = createMockTurnContext();
+      const next = async (_req: ModelRequest): Promise<ModelResponse> => mockModelResponse();
+      await mw.wrapModelCall?.(ctx, makeRequest(tools), next);
+
+      expect(receivedTools).toBeDefined();
+      expect(receivedTools?.[0]?.tags).toEqual(["coding", "dangerous"]);
+      expect(receivedTools?.[1]?.tags).toEqual(["coding"]);
+      expect(receivedTools?.[3]?.tags).toBeUndefined();
+    });
+
+    test("tag-based selectTools filters correctly", async () => {
+      const tools = makeTaggedTools();
+      let receivedRequest: ModelRequest | undefined;
+
+      const mw = createToolSelectorMiddleware({
+        selectTools: async (_query, t) =>
+          t.filter((tool) => tool.tags?.includes("coding")).map((tool) => tool.name),
+        minTools: 2,
+      });
+
+      const ctx = createMockTurnContext();
+      const next = async (req: ModelRequest): Promise<ModelResponse> => {
+        receivedRequest = req;
+        return mockModelResponse();
+      };
+
+      await mw.wrapModelCall?.(ctx, makeRequest(tools), next);
+
+      expect(receivedRequest?.tools).toHaveLength(2);
+      expect(receivedRequest?.tools?.map((t) => t.name)).toEqual(["shell_exec", "file_read"]);
+    });
   });
 
   describe("describeCapabilities", () => {

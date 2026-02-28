@@ -8,7 +8,7 @@
 
 export type { ToolSelectorConfig, ValidatedToolSelectorConfig } from "./config.js";
 export { validateToolSelectorConfig } from "./config.js";
-export { descriptor } from "./descriptor.js";
+export { createTagSelectTools, descriptor } from "./descriptor.js";
 export { extractLastUserText } from "./extract-query.js";
 export type { CapabilityTier } from "./model-tier.js";
 export { detectModelTier, MODEL_CAPABILITY_TIERS } from "./model-tier.js";
