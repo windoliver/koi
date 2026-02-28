@@ -3,6 +3,7 @@
  */
 
 import type { JsonObject } from "@koi/core/common";
+import { estimateTokens } from "@koi/token-estimator";
 
 export interface MemoryEntry {
   readonly content: string;
@@ -14,14 +15,6 @@ export interface MemoryEntry {
 export interface MemoryStore {
   readonly recall: (query: string, maxTokens: number) => Promise<readonly MemoryEntry[]>;
   readonly store: (sessionId: string, content: string, metadata?: JsonObject) => Promise<void>;
-}
-
-/**
- * Estimate token count from text length.
- * Rough heuristic: ~4 chars per token.
- */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
 }
 
 /**

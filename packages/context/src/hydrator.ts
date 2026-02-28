@@ -19,7 +19,7 @@ import type {
   TokenEstimator,
   TurnContext,
 } from "@koi/core";
-import { CHARS_PER_TOKEN, heuristicTokenEstimator } from "./estimator.js";
+import { CHARS_PER_TOKEN, HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
 import { resolveFileSource } from "./sources/file.js";
 import { resolveMemorySource } from "./sources/memory.js";
 import { resolveSkillSource } from "./sources/skill.js";
@@ -444,7 +444,7 @@ function mergeFreshWithCached(
  * @returns ContextHydratorMiddleware with priority 300
  */
 export function createContextHydrator(options: ContextHydratorOptions): ContextHydratorMiddleware {
-  const { config, agent, estimator = heuristicTokenEstimator, compactor, resolvers } = options;
+  const { config, agent, estimator = HEURISTIC_ESTIMATOR, compactor, resolvers } = options;
 
   // Frozen hydration state — set once in onSessionStart, refreshed on interval
   const state: { hydration: HydrationCache | undefined } = { hydration: undefined };

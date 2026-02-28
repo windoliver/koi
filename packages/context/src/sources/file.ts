@@ -4,7 +4,7 @@
  */
 
 import { mapFsError } from "@koi/errors";
-import { CHARS_PER_TOKEN } from "../estimator.js";
+import { CHARS_PER_TOKEN } from "@koi/token-estimator";
 import type { FileSource, SourceResult } from "../types.js";
 
 /** Resolves a file source by reading from the filesystem. */

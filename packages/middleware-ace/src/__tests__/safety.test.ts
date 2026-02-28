@@ -5,9 +5,10 @@
 import { describe, expect, test } from "bun:test";
 import type { InboundMessage } from "@koi/core/message";
 import type { ModelRequest } from "@koi/core/middleware";
+import { estimateTokens } from "@koi/token-estimator";
 import { createAceMiddleware } from "../ace.js";
 import { applyOperations } from "../curator.js";
-import { estimateTokens, selectPlaybooks } from "../injector.js";
+import { selectPlaybooks } from "../injector.js";
 import { estimateStructuredTokens } from "../playbook.js";
 import { computeCurationScore, computeRecencyFactor } from "../scoring.js";
 import { createInMemoryPlaybookStore, createInMemoryTrajectoryStore } from "../stores.js";

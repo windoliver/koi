@@ -1,16 +1,15 @@
 /**
- * Token estimation and budget enforcement for content resolution.
+ * Token-budget enforcement for content resolution.
+ *
+ * Token estimation delegated to @koi/token-estimator; this module
+ * owns truncation logic only.
  */
 
+import { CHARS_PER_TOKEN, estimateTokens } from "@koi/token-estimator";
 import { truncateSafe } from "./truncate.js";
 
-/** Approximate chars per token — same heuristic as @koi/context. */
-export const CHARS_PER_TOKEN = 4;
-
-/** Estimates token count from text length. */
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / CHARS_PER_TOKEN);
-}
+// Re-export for backward compatibility with existing consumers.
+export { CHARS_PER_TOKEN, estimateTokens } from "@koi/token-estimator";
 
 /** Result of truncating text to a token budget. */
 export interface TruncateResult {

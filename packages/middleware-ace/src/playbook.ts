@@ -3,6 +3,7 @@
  * citation extraction, counter ops, and token estimation.
  */
 
+import { estimateTokens } from "@koi/token-estimator";
 import type { PlaybookBullet, PlaybookSection, StructuredPlaybook } from "./types.js";
 
 const BULLET_ID_PATTERN = /\[([a-z]+-\d{5})\]/g;
@@ -68,7 +69,7 @@ export function estimateStructuredTokens(
   if (playbook.sections.length === 0) return 0;
 
   const text = serializeForInjection(playbook);
-  return tokenizer !== undefined ? tokenizer(text) : Math.ceil(text.length / 4);
+  return tokenizer !== undefined ? tokenizer(text) : estimateTokens(text);
 }
 
 /** Create an empty structured playbook with named sections. */

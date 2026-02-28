@@ -2,19 +2,12 @@
  * Playbook injector — priority selection within token budget.
  */
 
+import { estimateTokens } from "@koi/token-estimator";
 import type { Playbook } from "./types.js";
 
 export interface SelectOptions {
   readonly maxTokens: number;
   readonly clock: () => number;
-}
-
-/**
- * Estimate token count from text length.
- * Rough heuristic: ~4 chars per token (matches middleware-memory/store.ts).
- */
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
 }
 
 /**

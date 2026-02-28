@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { estimateTokens, selectPlaybooks } from "./injector.js";
+import { selectPlaybooks } from "./injector.js";
 import type { Playbook } from "./types.js";
+
+// estimateTokens canonical tests live in @koi/token-estimator.
 
 function makePlaybook(overrides?: Partial<Playbook>): Playbook {
   return {
@@ -16,22 +18,6 @@ function makePlaybook(overrides?: Partial<Playbook>): Playbook {
     ...overrides,
   };
 }
-
-describe("estimateTokens", () => {
-  test("estimates ~4 chars per token", () => {
-    expect(estimateTokens("abcd")).toBe(1);
-    expect(estimateTokens("abcde")).toBe(2);
-    expect(estimateTokens("")).toBe(0);
-  });
-
-  test("rounds up", () => {
-    expect(estimateTokens("a")).toBe(1);
-    expect(estimateTokens("ab")).toBe(1);
-    expect(estimateTokens("abc")).toBe(1);
-    expect(estimateTokens("abcd")).toBe(1);
-    expect(estimateTokens("abcde")).toBe(2);
-  });
-});
 
 describe("selectPlaybooks", () => {
   const clock = (): number => 1000;

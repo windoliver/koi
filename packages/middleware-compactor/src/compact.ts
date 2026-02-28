@@ -7,7 +7,7 @@
 
 import type { CompactionResult, ContextCompactor } from "@koi/core/context";
 import type { InboundMessage } from "@koi/core/message";
-import { heuristicTokenEstimator } from "./estimator.js";
+import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
 import { findOptimalSplit } from "./find-split.js";
 import { findValidSplitPoints } from "./pair-boundaries.js";
 import { buildSummaryPrompt } from "./prompt.js";
@@ -43,7 +43,7 @@ function resolveConfig(config: CompactorConfig): ResolvedCompactorConfig {
     trigger: config.trigger ?? COMPACTOR_DEFAULTS.trigger,
     preserveRecent: config.preserveRecent ?? COMPACTOR_DEFAULTS.preserveRecent,
     maxSummaryTokens: config.maxSummaryTokens ?? COMPACTOR_DEFAULTS.maxSummaryTokens,
-    tokenEstimator: config.tokenEstimator ?? heuristicTokenEstimator,
+    tokenEstimator: config.tokenEstimator ?? HEURISTIC_ESTIMATOR,
     promptBuilder: config.promptBuilder ?? buildSummaryPrompt,
     archiver: config.archiver,
     overflowRecovery: config.overflowRecovery ?? COMPACTOR_DEFAULTS.overflowRecovery,

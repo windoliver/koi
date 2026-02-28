@@ -1,31 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { CHARS_PER_TOKEN, estimateTokens, truncateToTokenBudget } from "./tokens.js";
+import { truncateToTokenBudget } from "./tokens.js";
 
-describe("estimateTokens", () => {
-  test("returns 0 for empty string", () => {
-    expect(estimateTokens("")).toBe(0);
-  });
-
-  test("estimates at 4 chars per token (rounds up)", () => {
-    // 11 chars => ceil(11/4) = 3
-    expect(estimateTokens("Hello World")).toBe(3);
-  });
-
-  test("exact multiple of CHARS_PER_TOKEN", () => {
-    // 8 chars => 8/4 = 2
-    expect(estimateTokens("12345678")).toBe(2);
-  });
-
-  test("single character is 1 token", () => {
-    expect(estimateTokens("A")).toBe(1);
-  });
-});
-
-describe("CHARS_PER_TOKEN", () => {
-  test("equals 4", () => {
-    expect(CHARS_PER_TOKEN).toBe(4);
-  });
-});
+// estimateTokens and CHARS_PER_TOKEN are re-exports from @koi/token-estimator;
+// canonical tests live there — only truncation logic is tested here.
 
 describe("truncateToTokenBudget", () => {
   test("returns text unchanged when within budget", () => {

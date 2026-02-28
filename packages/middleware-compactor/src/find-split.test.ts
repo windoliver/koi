@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { TokenEstimator } from "@koi/core/context";
 import type { InboundMessage } from "@koi/core/message";
+import { createHeuristicEstimator } from "@koi/token-estimator";
 import { findOptimalSplit } from "./find-split.js";
 
 /** Create a message with `n` characters of text (n/4 tokens at 4 chars/token). */
@@ -9,23 +9,8 @@ function msgWithTokens(tokenCount: number): InboundMessage {
   return { content: [{ kind: "text", text }], senderId: "user", timestamp: 1 };
 }
 
-/** Deterministic estimator: 4 chars = 1 token. */
-const estimator: TokenEstimator = {
-  estimateText(text: string): number {
-    return Math.ceil(text.length / 4);
-  },
-  estimateMessages(messages: readonly InboundMessage[]): number {
-    let total = 0;
-    for (const msg of messages) {
-      for (const block of msg.content) {
-        if (block.kind === "text") {
-          total += Math.ceil(block.text.length / 4);
-        }
-      }
-    }
-    return total;
-  },
-};
+/** Text-only estimator: no per-message/per-block overhead for deterministic split tests. */
+const estimator = createHeuristicEstimator({ perMessageOverhead: 0, perNonTextBlockOverhead: 0 });
 
 describe("findOptimalSplit", () => {
   test("returns -1 when no valid split points", async () => {

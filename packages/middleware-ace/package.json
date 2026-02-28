@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/resolve": "workspace:*"
+    "@koi/resolve": "workspace:*",
+    "@koi/token-estimator": "workspace:*"
   },
   "devDependencies": {
     "@koi/engine": "workspace:*",

@@ -11,6 +11,7 @@
  */
 
 import type { BrowserRefInfo, BrowserSnapshotOptions } from "@koi/core";
+import { CHARS_PER_TOKEN } from "@koi/token-estimator";
 
 /**
  * Minimal subset of Playwright's AccessibilityNode that we use.
@@ -72,9 +73,6 @@ export interface SerializeResult {
   /** Page title extracted from the first document/WebArea node, if present. */
   readonly title?: string;
 }
-
-// 1 token ≈ 4 chars (conservative estimate for structured text)
-const CHARS_PER_TOKEN = 4;
 
 /**
  * Serialize an accessibility node tree to compact text with [ref=eN] markers.

@@ -15,15 +15,7 @@ import type {
   TaskItem,
 } from "@koi/core";
 import { validation } from "@koi/core";
-
-// ---------------------------------------------------------------------------
-// Token estimation
-// ---------------------------------------------------------------------------
-
-/** Estimate token count from text length. ~4 chars per token. */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
+import { estimateTokens } from "@koi/token-estimator";
 
 // ---------------------------------------------------------------------------
 // Task plan formatting

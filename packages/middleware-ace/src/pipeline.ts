@@ -67,7 +67,10 @@ export function createLlmPipeline(config: AceConfig): ConsolidationPipeline {
   const curator = config.curator;
   const store = config.structuredPlaybookStore;
   const tokenBudget = config.playbookTokenBudget ?? DEFAULT_PLAYBOOK_TOKEN_BUDGET;
-  const tokenizer = config.estimateTokens;
+  const tokenizer =
+    config.tokenEstimator !== undefined
+      ? (text: string): number => config.tokenEstimator?.estimateText(text) as number
+      : undefined;
 
   return {
     async consolidate(entries, sessionId, _sessionCount, clock): Promise<void> {
@@ -176,5 +179,9 @@ export function isLlmPipelineEnabled(config: AceConfig): boolean {
 
 /** Estimate structured playbook tokens using configured or default tokenizer. */
 export function estimatePlaybookTokens(playbook: StructuredPlaybook, config: AceConfig): number {
-  return estimateStructuredTokens(playbook, config.estimateTokens);
+  const tokenizer =
+    config.tokenEstimator !== undefined
+      ? (text: string): number => config.tokenEstimator?.estimateText(text) as number
+      : undefined;
+  return estimateStructuredTokens(playbook, tokenizer);
 }

@@ -12,8 +12,8 @@ import type {
   ModelRequest,
   TurnContext,
 } from "@koi/core/middleware";
+import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
 import { editMessages } from "./edit-messages.js";
-import { heuristicTokenEstimator } from "./estimator.js";
 import type { ContextEditingConfig, ResolvedContextEditingConfig } from "./types.js";
 import { CONTEXT_EDITING_DEFAULTS } from "./types.js";
 
@@ -35,7 +35,7 @@ function resolveConfig(config?: ContextEditingConfig): ResolvedContextEditingCon
       config?.clearToolCallInputs ?? CONTEXT_EDITING_DEFAULTS.clearToolCallInputs,
     excludeTools: new Set(config?.excludeTools ?? []),
     placeholder: config?.placeholder ?? CONTEXT_EDITING_DEFAULTS.placeholder,
-    tokenEstimator: config?.tokenEstimator ?? heuristicTokenEstimator,
+    tokenEstimator: config?.tokenEstimator ?? HEURISTIC_ESTIMATOR,
   };
 }
 

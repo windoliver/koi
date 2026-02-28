@@ -100,6 +100,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
         "playwright": "^1.49.0",
       },
     },
@@ -382,6 +383,7 @@
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
         "@koi/resolve": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
       },
@@ -654,6 +656,9 @@
     "packages/file-resolution": {
       "name": "@koi/file-resolution",
       "version": "0.0.0",
+      "dependencies": {
+        "@koi/token-estimator": "workspace:*",
+      },
     },
     "packages/filesystem": {
       "name": "@koi/filesystem",
@@ -761,6 +766,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
       },
       "devDependencies": {
         "@koi/snapshot-chain-store": "workspace:*",
@@ -819,6 +825,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/resolve": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
@@ -858,6 +865,7 @@
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
         "@koi/resolve": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
@@ -873,6 +881,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/resolve": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -984,6 +993,7 @@
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
         "@koi/resolve": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -1146,6 +1156,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
       },
@@ -1549,6 +1560,13 @@
     },
     "packages/test-utils": {
       "name": "@koi/test-utils",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/token-estimator": {
+      "name": "@koi/token-estimator",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
@@ -2383,6 +2401,8 @@
     "@koi/task-spawn": ["@koi/task-spawn@workspace:packages/task-spawn"],
 
     "@koi/test-utils": ["@koi/test-utils@workspace:packages/test-utils"],
+
+    "@koi/token-estimator": ["@koi/token-estimator@workspace:packages/token-estimator"],
 
     "@koi/tool-ask-user": ["@koi/tool-ask-user@workspace:packages/tool-ask-user"],
 

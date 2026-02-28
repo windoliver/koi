@@ -1,5 +1,5 @@
 {
-  "name": "@koi/file-resolution",
+  "name": "@koi/token-estimator",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,14 +9,14 @@
       "import": "./dist/index.js"
     }
   },
+  "dependencies": {
+    "@koi/core": "workspace:*"
+  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test",
     "test:api": "bun test src/__tests__/api-surface.test.ts"
-  },
-  "dependencies": {
-    "@koi/token-estimator": "workspace:*"
   }
 }
