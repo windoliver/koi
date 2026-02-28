@@ -578,9 +578,6 @@
     "packages/file-resolution": {
       "name": "@koi/file-resolution",
       "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
     },
     "packages/filesystem": {
       "name": "@koi/filesystem",
@@ -843,6 +840,19 @@
       },
       "devDependencies": {
         "@koi/agent-monitor": "workspace:*",
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware-goal-reminder": {
+      "name": "@koi/middleware-goal-reminder",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-loop": "workspace:*",
         "@koi/model-router": "workspace:*",
@@ -2110,6 +2120,8 @@
     "@koi/middleware-fs-rollback": ["@koi/middleware-fs-rollback@workspace:packages/middleware-fs-rollback"],
 
     "@koi/middleware-goal-anchor": ["@koi/middleware-goal-anchor@workspace:packages/middleware-goal-anchor"],
+
+    "@koi/middleware-goal-reminder": ["@koi/middleware-goal-reminder@workspace:packages/middleware-goal-reminder"],
 
     "@koi/middleware-governance-backend": ["@koi/middleware-governance-backend@workspace:packages/middleware-governance-backend"],
 
