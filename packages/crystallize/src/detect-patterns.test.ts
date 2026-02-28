@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { TurnTrace } from "@koi/core";
 import { sessionId } from "@koi/core";
-import { computeSuggestedName, detectPatterns, filterSubsumed } from "./detect-patterns.js";
+import {
+  computeSuggestedName,
+  detectPatterns,
+  detectPatternsIncremental,
+  filterSubsumed,
+} from "./detect-patterns.js";
 import type { CrystallizationCandidate, ToolNgram } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -200,6 +205,144 @@ describe("detectPatterns", () => {
       if (first !== undefined && second !== undefined) {
         expect(first.occurrences).toBeGreaterThanOrEqual(second.occurrences);
       }
+    }
+  });
+
+  test("attaches score to candidates", () => {
+    const traces = [
+      createTrace(0, ["fetch", "parse"]),
+      createTrace(1, ["fetch", "parse"]),
+      createTrace(2, ["fetch", "parse"]),
+    ];
+    const result = detectPatterns(traces, { minOccurrences: 3 }, new Set(), () => 2000);
+    expect(result.length).toBeGreaterThan(0);
+    for (const c of result) {
+      expect(c.score).toBeDefined();
+      expect(typeof c.score).toBe("number");
+      expect(c.score).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectPatternsIncremental
+// ---------------------------------------------------------------------------
+
+describe("detectPatternsIncremental", () => {
+  test("detects patterns from new traces merged with existing map", () => {
+    const firstBatch = [createTrace(0, ["fetch", "parse"]), createTrace(1, ["fetch", "parse"])];
+    // Run full detection on first batch to build initial ngramMap
+    const initialResult = detectPatternsIncremental(
+      firstBatch,
+      0,
+      new Map(),
+      { minOccurrences: 3 },
+      new Set(),
+      () => 2000,
+    );
+    // Not enough occurrences yet
+    expect(initialResult.candidates).toHaveLength(0);
+
+    // Add third occurrence incrementally
+    const secondBatch = [createTrace(2, ["fetch", "parse"])];
+    const result = detectPatternsIncremental(
+      secondBatch,
+      2,
+      initialResult.ngramMap,
+      { minOccurrences: 3 },
+      new Set(),
+      () => 2000,
+    );
+
+    expect(result.candidates.length).toBeGreaterThan(0);
+    const keys = result.candidates.map((c) => c.ngram.key);
+    expect(keys).toContain("fetch|parse");
+  });
+
+  test("returns updated ngramMap for future calls", () => {
+    const traces = [createTrace(0, ["a", "b"])];
+    const result = detectPatternsIncremental(
+      traces,
+      0,
+      new Map(),
+      { minOccurrences: 3 },
+      new Set(),
+      () => 2000,
+    );
+
+    expect(result.ngramMap.has("a|b")).toBe(true);
+    expect(result.ngramMap.get("a|b")?.turnIndices).toEqual([0]);
+  });
+
+  test("returns correct lastProcessedTurnIndex", () => {
+    const traces = [
+      createTrace(5, ["a", "b"]),
+      createTrace(6, ["a", "b"]),
+      createTrace(7, ["c", "d"]),
+    ];
+    const result = detectPatternsIncremental(
+      traces,
+      5,
+      new Map(),
+      { minOccurrences: 3 },
+      new Set(),
+      () => 2000,
+    );
+
+    expect(result.lastProcessedTurnIndex).toBe(7);
+  });
+
+  test("returns startTurnIndex - 1 when no new traces", () => {
+    const result = detectPatternsIncremental(
+      [],
+      5,
+      new Map(),
+      { minOccurrences: 3 },
+      new Set(),
+      () => 2000,
+    );
+
+    expect(result.lastProcessedTurnIndex).toBe(4);
+  });
+
+  test("excludes dismissed patterns", () => {
+    const traces = [
+      createTrace(0, ["fetch", "parse"]),
+      createTrace(1, ["fetch", "parse"]),
+      createTrace(2, ["fetch", "parse"]),
+    ];
+    const dismissed = new Set(["fetch|parse"]);
+    const result = detectPatternsIncremental(
+      traces,
+      0,
+      new Map(),
+      { minOccurrences: 3 },
+      dismissed,
+      () => 2000,
+    );
+
+    const keys = result.candidates.map((c) => c.ngram.key);
+    expect(keys).not.toContain("fetch|parse");
+  });
+
+  test("candidates include scores", () => {
+    const traces = [
+      createTrace(0, ["fetch", "parse"]),
+      createTrace(1, ["fetch", "parse"]),
+      createTrace(2, ["fetch", "parse"]),
+    ];
+    const result = detectPatternsIncremental(
+      traces,
+      0,
+      new Map(),
+      { minOccurrences: 3 },
+      new Set(),
+      () => 2000,
+    );
+
+    for (const c of result.candidates) {
+      expect(c.score).toBeDefined();
+      expect(c.score).toBeGreaterThan(0);
     }
   });
 });

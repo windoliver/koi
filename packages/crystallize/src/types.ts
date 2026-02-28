@@ -2,7 +2,7 @@
  * Types for @koi/crystallize — pattern detection and crystallization candidates.
  */
 
-import type { ChainId, KoiMiddleware, SnapshotChainStore, TurnTrace } from "@koi/core";
+import type { KoiError, KoiMiddleware, Result, TurnTrace } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Tool step & n-gram
@@ -30,6 +30,7 @@ export interface CrystallizationCandidate {
   readonly turnIndices: readonly number[];
   readonly detectedAt: number;
   readonly suggestedName: string;
+  readonly score?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -38,14 +39,14 @@ export interface CrystallizationCandidate {
 
 /** Configuration for the crystallize middleware factory. */
 export interface CrystallizeConfig {
-  readonly store: SnapshotChainStore<TurnTrace>;
-  readonly chainId: ChainId;
+  readonly readTraces: () => Promise<Result<readonly TurnTrace[], KoiError>>;
   readonly minNgramSize?: number;
   readonly maxNgramSize?: number;
   readonly minOccurrences?: number;
   readonly maxCandidates?: number;
   readonly minTurnsBeforeAnalysis?: number;
   readonly analysisCooldownTurns?: number;
+  readonly maxPatternAgeMs?: number;
   readonly clock?: () => number;
   readonly onCandidatesDetected: (candidates: readonly CrystallizationCandidate[]) => void;
 }

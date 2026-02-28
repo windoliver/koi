@@ -26,4 +26,16 @@ describe("@koi/skills API surface", () => {
     expect(typeof skills.mapSkillToCatalogEntry).toBe("function");
     expect(typeof skills.discoverSkillCatalogEntries).toBe("function");
   });
+
+  test("exports createSkillActivatorMiddleware factory", () => {
+    expect(typeof skills.createSkillActivatorMiddleware).toBe("function");
+  });
+
+  test("exports progressive loading utilities", () => {
+    expect(typeof skills.isAtOrAbove).toBe("function");
+    expect(typeof skills.LEVEL_ORDER).toBe("object");
+    expect(skills.LEVEL_ORDER.metadata).toBe(0);
+    expect(skills.LEVEL_ORDER.body).toBe(1);
+    expect(skills.LEVEL_ORDER.bundled).toBe(2);
+  });
 });

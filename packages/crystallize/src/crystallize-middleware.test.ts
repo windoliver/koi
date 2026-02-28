@@ -1,8 +1,9 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { KoiError, SnapshotChainStore, SnapshotNode, TurnContext, TurnTrace } from "@koi/core";
-import { chainId, runId, sessionId, turnId } from "@koi/core";
+import type { TurnContext, TurnTrace } from "@koi/core";
+import { runId, sessionId, turnId } from "@koi/core";
+import { KoiRuntimeError } from "@koi/errors";
 import { createCrystallizeMiddleware } from "./crystallize-middleware.js";
-import type { CrystallizationCandidate } from "./types.js";
+import type { CrystallizationCandidate, CrystallizeConfig } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -30,38 +31,11 @@ function createTrace(turnIndex: number, toolIds: readonly string[]): TurnTrace {
   };
 }
 
-function wrapAsNode(trace: TurnTrace, index: number): SnapshotNode<TurnTrace> {
-  return {
-    nodeId: `node-${index}` as import("@koi/core").NodeId,
-    chainId: chainId("test-chain"),
-    parentIds: [],
-    contentHash: `hash-${index}`,
-    data: trace,
-    createdAt: 1000 + index,
-    metadata: {},
-  };
-}
-
-function createMockStore(traces: readonly TurnTrace[]): SnapshotChainStore<TurnTrace> {
-  return {
-    list: mock(async () => ({
-      ok: true as const,
-      value: traces.map((t, i) => wrapAsNode(t, i)),
-    })),
-    put: mock(async () => ({ ok: true as const, value: undefined })),
-    get: mock(async () => ({
-      ok: false as const,
-      error: { code: "NOT_FOUND", message: "nf", retryable: false } as KoiError,
-    })),
-    head: mock(async () => ({ ok: true as const, value: undefined })),
-    ancestors: mock(async () => ({ ok: true as const, value: [] })),
-    fork: mock(async () => ({
-      ok: true as const,
-      value: { parentNodeId: "n" as import("@koi/core").NodeId, label: "test" },
-    })),
-    prune: mock(async () => ({ ok: true as const, value: 0 })),
-    close: mock(async () => {}),
-  } as unknown as SnapshotChainStore<TurnTrace>;
+function createReadTraces(traces: readonly TurnTrace[]): CrystallizeConfig["readTraces"] {
+  return mock(async () => ({
+    ok: true as const,
+    value: traces,
+  }));
 }
 
 function createTurnContext(turnIndex: number): TurnContext {
@@ -92,12 +66,11 @@ describe("createCrystallizeMiddleware", () => {
       createTrace(1, ["fetch", "parse"]),
       createTrace(2, ["fetch", "parse"]),
     ];
-    const store = createMockStore(traces);
+    const readTraces = createReadTraces(traces);
     const onDetected = mock((_: readonly CrystallizationCandidate[]) => {});
 
     const handle = createCrystallizeMiddleware({
-      store,
-      chainId: chainId("test-chain"),
+      readTraces,
       minTurnsBeforeAnalysis: 5,
       minOccurrences: 3,
       onCandidatesDetected: onDetected,
@@ -117,12 +90,11 @@ describe("createCrystallizeMiddleware", () => {
       createTrace(3, ["fetch", "parse"]),
       createTrace(4, ["fetch", "parse"]),
     ];
-    const store = createMockStore(traces);
+    const readTraces = createReadTraces(traces);
     const onDetected = mock((_: readonly CrystallizationCandidate[]) => {});
 
     const handle = createCrystallizeMiddleware({
-      store,
-      chainId: chainId("test-chain"),
+      readTraces,
       minTurnsBeforeAnalysis: 5,
       minOccurrences: 3,
       onCandidatesDetected: onDetected,
@@ -143,12 +115,11 @@ describe("createCrystallizeMiddleware", () => {
       createTrace(3, ["fetch", "parse"]),
       createTrace(4, ["fetch", "parse"]),
     ];
-    const store = createMockStore(traces);
+    const readTraces = createReadTraces(traces);
     const onDetected = mock((_: readonly CrystallizationCandidate[]) => {});
 
     const handle = createCrystallizeMiddleware({
-      store,
-      chainId: chainId("test-chain"),
+      readTraces,
       minTurnsBeforeAnalysis: 5,
       minOccurrences: 3,
       analysisCooldownTurns: 3,
@@ -173,12 +144,11 @@ describe("createCrystallizeMiddleware", () => {
       createTrace(3, ["fetch", "parse"]),
       createTrace(4, ["fetch", "parse"]),
     ];
-    const store = createMockStore(traces);
+    const readTraces = createReadTraces(traces);
     const onDetected = mock((_: readonly CrystallizationCandidate[]) => {});
 
     const handle = createCrystallizeMiddleware({
-      store,
-      chainId: chainId("test-chain"),
+      readTraces,
       minTurnsBeforeAnalysis: 5,
       minOccurrences: 3,
       onCandidatesDetected: onDetected,
@@ -199,10 +169,9 @@ describe("createCrystallizeMiddleware", () => {
   });
 
   test("describeCapabilities returns undefined when no candidates", () => {
-    const store = createMockStore([]);
+    const readTraces = createReadTraces([]);
     const handle = createCrystallizeMiddleware({
-      store,
-      chainId: chainId("test-chain"),
+      readTraces,
       onCandidatesDetected: () => {},
       clock: () => 2000,
     });
@@ -219,11 +188,10 @@ describe("createCrystallizeMiddleware", () => {
       createTrace(3, ["fetch", "parse"]),
       createTrace(4, ["fetch", "parse"]),
     ];
-    const store = createMockStore(traces);
+    const readTraces = createReadTraces(traces);
 
     const handle = createCrystallizeMiddleware({
-      store,
-      chainId: chainId("test-chain"),
+      readTraces,
       minTurnsBeforeAnalysis: 5,
       minOccurrences: 3,
       onCandidatesDetected: () => {},
@@ -245,12 +213,11 @@ describe("createCrystallizeMiddleware", () => {
       createTrace(3, ["fetch", "parse"]),
       createTrace(4, ["fetch", "parse"]),
     ];
-    const store = createMockStore(traces);
+    const readTraces = createReadTraces(traces);
     const onDetected = mock((_: readonly CrystallizationCandidate[]) => {});
 
     const handle = createCrystallizeMiddleware({
-      store,
-      chainId: chainId("test-chain"),
+      readTraces,
       minTurnsBeforeAnalysis: 5,
       minOccurrences: 3,
       analysisCooldownTurns: 1,
@@ -265,5 +232,38 @@ describe("createCrystallizeMiddleware", () => {
     // Second analysis at turn 7 — same patterns, no new callback
     await handle.middleware.onAfterTurn?.(createTurnContext(7));
     expect(onDetected).toHaveBeenCalledTimes(1);
+  });
+
+  test("throws KoiRuntimeError for invalid config", () => {
+    expect(() =>
+      createCrystallizeMiddleware({
+        readTraces: createReadTraces([]),
+        minNgramSize: 10,
+        maxNgramSize: 2,
+        onCandidatesDetected: () => {},
+      }),
+    ).toThrow(KoiRuntimeError);
+  });
+
+  test("silently skips when readTraces returns error", async () => {
+    const readTraces = mock(async () => ({
+      ok: false as const,
+      error: {
+        code: "INTERNAL" as const,
+        message: "store unavailable",
+        retryable: false,
+      },
+    }));
+    const onDetected = mock((_: readonly CrystallizationCandidate[]) => {});
+
+    const handle = createCrystallizeMiddleware({
+      readTraces,
+      minTurnsBeforeAnalysis: 1,
+      onCandidatesDetected: onDetected,
+      clock: () => 2000,
+    });
+
+    await handle.middleware.onAfterTurn?.(createTurnContext(5));
+    expect(onDetected).not.toHaveBeenCalled();
   });
 });

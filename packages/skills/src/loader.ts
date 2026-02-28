@@ -10,6 +10,7 @@
 import { exists, realpath } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { KoiError, Result } from "@koi/core";
+import type { ScanFinding } from "@koi/skill-scanner";
 import { createScanner } from "@koi/skill-scanner";
 import { parseSkillMd } from "./parse.js";
 import type {
@@ -21,7 +22,27 @@ import type {
   SkillReference,
   SkillScript,
 } from "./types.js";
+import type { ValidatedSkillFrontmatter } from "./validate.js";
 import { validateSkillFrontmatter } from "./validate.js";
+
+// ---------------------------------------------------------------------------
+// Frontmatter cache — avoids re-parsing SKILL.md when escalating load levels
+// ---------------------------------------------------------------------------
+
+interface CachedSkillParse {
+  readonly frontmatter: ValidatedSkillFrontmatter;
+  readonly body: string;
+  readonly rawContent: string;
+}
+
+const skillCache = new Map<string, CachedSkillParse>();
+
+/**
+ * Clears the internal frontmatter cache. Exported for testing only.
+ */
+export function clearSkillCache(): void {
+  skillCache.clear();
+}
 
 // ---------------------------------------------------------------------------
 // Security: path traversal protection
@@ -108,24 +129,24 @@ async function readSkillMd(dirPath: string): Promise<Result<string, KoiError>> {
   }
 }
 
-async function readDirFiles(
-  dirPath: string,
-): Promise<readonly { readonly filename: string; readonly content: string }[]> {
+async function readDirFiles(dirPath: string): Promise<{
+  readonly files: readonly { readonly filename: string; readonly content: string }[];
+  readonly skipped: readonly string[];
+}> {
   const glob = new Bun.Glob("*");
-  const entries: { readonly filename: string; readonly content: string }[] = [];
+  const files: { readonly filename: string; readonly content: string }[] = [];
+  const skipped: string[] = [];
 
   for await (const filename of glob.scan({ cwd: dirPath, onlyFiles: true })) {
     try {
       const content = await Bun.file(join(dirPath, filename)).text();
-      entries.push({ filename, content });
-    } catch (cause: unknown) {
-      console.warn(
-        `[koi:skills] Skipping unreadable file ${filename} in ${dirPath}: ${cause instanceof Error ? cause.message : String(cause)}`,
-      );
+      files.push({ filename, content });
+    } catch (_cause: unknown) {
+      skipped.push(filename);
     }
   }
 
-  return entries;
+  return { files, skipped };
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +155,7 @@ async function readDirFiles(
 
 /**
  * Load skill at metadata level — frontmatter only.
+ * Populates the internal cache so subsequent body/bundled loads skip re-parsing.
  */
 export async function loadSkillMetadata(
   dirPath: string,
@@ -148,6 +170,14 @@ export async function loadSkillMetadata(
   if (!validateResult.ok) return validateResult;
 
   const fm = validateResult.value;
+
+  // Populate cache for subsequent body/bundled loads
+  skillCache.set(dirPath, {
+    frontmatter: fm,
+    body: parseResult.value.body,
+    rawContent: fileResult.value,
+  });
+
   return {
     ok: true,
     value: {
@@ -164,35 +194,56 @@ export async function loadSkillMetadata(
 }
 
 /**
- * Load skill at body level — frontmatter + markdown body + security scan (warn-only).
+ * Load skill at body level — frontmatter + markdown body + security scan.
+ * Uses cached parse results when available (populated by loadSkillMetadata).
  */
-export async function loadSkillBody(dirPath: string): Promise<Result<SkillBodyEntry, KoiError>> {
-  const fileResult = await readSkillMd(dirPath);
-  if (!fileResult.ok) return fileResult;
+export async function loadSkillBody(
+  dirPath: string,
+  onSecurityFinding?: (findings: readonly ScanFinding[]) => void,
+): Promise<Result<SkillBodyEntry, KoiError>> {
+  // Check cache first — reuse frontmatter and rawContent from prior metadata load
+  const cached = skillCache.get(dirPath);
 
-  const parseResult = parseSkillMd(fileResult.value);
-  if (!parseResult.ok) return parseResult;
+  let fm: ValidatedSkillFrontmatter;
+  let body: string;
+  let rawContent: string;
 
-  const validateResult = validateSkillFrontmatter(parseResult.value.frontmatter);
-  if (!validateResult.ok) return validateResult;
+  if (cached !== undefined) {
+    fm = cached.frontmatter;
+    body = cached.body;
+    rawContent = cached.rawContent;
+  } else {
+    const fileResult = await readSkillMd(dirPath);
+    if (!fileResult.ok) return fileResult;
 
-  // Security scan — warn only, don't block developer-authored skills
-  const scanner = createScanner();
-  const report = scanner.scanSkill(fileResult.value);
-  if (report.findings.length > 0) {
-    console.warn(
-      `[koi:skills] Security findings in ${dirPath}/SKILL.md: ${report.findings.length} issue(s)`,
-    );
+    const parseResult = parseSkillMd(fileResult.value);
+    if (!parseResult.ok) return parseResult;
+
+    const validateResult = validateSkillFrontmatter(parseResult.value.frontmatter);
+    if (!validateResult.ok) return validateResult;
+
+    fm = validateResult.value;
+    body = parseResult.value.body;
+    rawContent = fileResult.value;
+
+    // Populate cache for potential bundled escalation
+    skillCache.set(dirPath, { frontmatter: fm, body, rawContent });
   }
 
-  const fm = validateResult.value;
+  // Security scan — report findings via callback, don't block developer-authored skills
+  const scanner = createScanner();
+  const report = scanner.scanSkill(rawContent);
+  if (report.findings.length > 0 && onSecurityFinding !== undefined) {
+    onSecurityFinding(report.findings);
+  }
+
   return {
     ok: true,
     value: {
       level: "body",
       name: fm.name,
       description: fm.description,
-      body: parseResult.value.body,
+      body,
       dirPath,
       ...(fm.license !== undefined ? { license: fm.license } : {}),
       ...(fm.compatibility !== undefined ? { compatibility: fm.compatibility } : {}),
@@ -207,8 +258,9 @@ export async function loadSkillBody(dirPath: string): Promise<Result<SkillBodyEn
  */
 export async function loadSkillBundled(
   dirPath: string,
+  onSecurityFinding?: (findings: readonly ScanFinding[]) => void,
 ): Promise<Result<SkillBundledEntry, KoiError>> {
-  const bodyResult = await loadSkillBody(dirPath);
+  const bodyResult = await loadSkillBody(dirPath, onSecurityFinding);
   if (!bodyResult.ok) return bodyResult;
 
   const scriptsDir = join(dirPath, "scripts");
@@ -219,11 +271,13 @@ export async function loadSkillBundled(
   let references: readonly SkillReference[] = [];
 
   if (await exists(scriptsDir)) {
-    scripts = await readDirFiles(scriptsDir);
+    const result = await readDirFiles(scriptsDir);
+    scripts = result.files;
   }
 
   if (await exists(referencesDir)) {
-    references = await readDirFiles(referencesDir);
+    const result = await readDirFiles(referencesDir);
+    references = result.files;
   }
 
   const { level: _, ...rest } = bodyResult.value;
@@ -244,14 +298,15 @@ export async function loadSkillBundled(
 export async function loadSkill(
   dirPath: string,
   level: SkillLoadLevel = "body",
+  onSecurityFinding?: (findings: readonly ScanFinding[]) => void,
 ): Promise<Result<SkillEntry, KoiError>> {
   switch (level) {
     case "metadata":
       return loadSkillMetadata(dirPath);
     case "body":
-      return loadSkillBody(dirPath);
+      return loadSkillBody(dirPath, onSecurityFinding);
     case "bundled":
-      return loadSkillBundled(dirPath);
+      return loadSkillBundled(dirPath, onSecurityFinding);
   }
 }
 
