@@ -71,7 +71,9 @@ describe("happy path", () => {
 
     const turn = makeTurnCtx(ctx);
     const request = makeModelRequest();
-    const response = await mw.wrapModelCall?.(turn, request, nextFn);
+    const { wrapModelCall } = mw;
+    if (!wrapModelCall) throw new Error("wrapModelCall should be defined");
+    const response = await wrapModelCall(turn, request, nextFn);
 
     expect(response.content).toBe("I can help with that.");
     expect(nextFn).toHaveBeenCalledTimes(1);
