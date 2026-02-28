@@ -46,7 +46,11 @@ describe("SelfTest.run", () => {
     ];
 
     const adapter = createMockEngineAdapter({ events: [...events] });
-    const mw: KoiMiddleware = { name: "test-mw", async onSessionStart() {} };
+    const mw: KoiMiddleware = {
+      name: "test-mw",
+      describeCapabilities: () => undefined,
+      async onSessionStart() {},
+    };
     const tool: SelfTestTool = {
       descriptor: {
         name: "search",
@@ -93,7 +97,13 @@ describe("SelfTest.run", () => {
   test("failFast stops after first category failure", async () => {
     const st = createSelfTest({
       manifest: { ...VALID_MANIFEST, name: "" },
-      middleware: [{ name: "should-be-skipped", async onSessionStart() {} }],
+      middleware: [
+        {
+          name: "should-be-skipped",
+          describeCapabilities: () => undefined,
+          async onSessionStart() {},
+        },
+      ],
       failFast: true,
     });
 

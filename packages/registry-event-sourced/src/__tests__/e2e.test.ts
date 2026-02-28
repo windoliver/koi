@@ -438,6 +438,7 @@ describeE2E(
 
         const observerMiddleware = {
           name: "e2e-observer",
+          describeCapabilities: () => undefined,
           async onSessionStart() {
             sessionStarted = true;
           },

@@ -63,6 +63,10 @@ export function createExecApprovalsMiddleware(rawConfig: ExecApprovalsConfig): K
 
   return {
     name: "exec-approvals",
+    describeCapabilities: () => ({
+      label: "exec-approvals",
+      description: "Tool execution requires approval before proceeding",
+    }),
     priority: 100,
 
     async onSessionStart(ctx: SessionContext): Promise<void> {

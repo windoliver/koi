@@ -39,6 +39,7 @@ function makePermsDescriptor(): BrickDescriptor<KoiMiddleware> {
     optionsValidator: (input: unknown) => ({ ok: true, value: input }),
     factory: (options): KoiMiddleware => ({
       name: "permissions",
+      describeCapabilities: () => undefined,
       priority: 100,
       ...({ _testOptions: options } as Record<string, unknown>),
     }),

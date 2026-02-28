@@ -319,6 +319,7 @@ describeE2E("e2e provenance: signed forge → full L1 runtime with real LLM", ()
       const interceptedToolIds: string[] = [];
       const middlewareSpy: KoiMiddleware = {
         name: "provenance-spy",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (_ctx, req: ToolRequest, next) => {
           interceptedToolIds.push(req.toolId);
           return next(req);

@@ -29,7 +29,7 @@ function makeMwDescriptor(name: string, priority: number): BrickDescriptor<KoiMi
     kind: "middleware",
     name,
     optionsValidator: (input: unknown) => ({ ok: true, value: input }),
-    factory: (): KoiMiddleware => ({ name, priority }),
+    factory: (): KoiMiddleware => ({ name, describeCapabilities: () => undefined, priority }),
   };
 }
 
@@ -39,7 +39,11 @@ function makeSoulDescriptor(): BrickDescriptor<KoiMiddleware> {
     name: "@koi/middleware-soul",
     aliases: ["soul"],
     optionsValidator: (input: unknown) => ({ ok: true, value: input }),
-    factory: (): KoiMiddleware => ({ name: "soul", priority: 500 }),
+    factory: (): KoiMiddleware => ({
+      name: "soul",
+      describeCapabilities: () => undefined,
+      priority: 500,
+    }),
   };
 }
 
@@ -49,7 +53,11 @@ function makePermsDescriptor(): BrickDescriptor<KoiMiddleware> {
     name: "@koi/middleware-permissions",
     aliases: ["permissions"],
     optionsValidator: (input: unknown) => ({ ok: true, value: input }),
-    factory: (): KoiMiddleware => ({ name: "permissions", priority: 100 }),
+    factory: (): KoiMiddleware => ({
+      name: "permissions",
+      describeCapabilities: () => undefined,
+      priority: 100,
+    }),
   };
 }
 

@@ -207,33 +207,76 @@ describe("createGoalAnchorMiddleware", () => {
       await mw.onSessionStart?.(sessionCtx);
       const turnCtx = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
 
-      const originalMessages = [
-        { senderId: "user", timestamp: 0, content: [{ kind: "text" as const, text: "hello" }] },
-      ];
-
-      let _capturedRequest: ModelRequest | null = null;
+      // With empty objectives, wrapModelCall still exists but
+      // passes requests through (no session state → no injection)
       if (mw.wrapModelCall) {
+        let capturedRequest: ModelRequest | undefined;
+        const originalMessages = [
+          { senderId: "user", timestamp: 0, content: [{ kind: "text" as const, text: "hello" }] },
+        ];
         await mw.wrapModelCall(
           turnCtx,
           { messages: originalMessages },
           async (req: ModelRequest): Promise<ModelResponse> => {
-            _capturedRequest = req;
+            capturedRequest = req;
             return makeModelResponse("ok");
           },
         );
-      } else {
-        // No wrapModelCall = no-op middleware; pass-through confirmed
-        _capturedRequest = null;
+        // No goal-anchor message prepended (no session state for empty objectives)
+        expect(capturedRequest?.messages[0]?.senderId).not.toBe("system:goal-anchor");
       }
 
-      // Empty-objectives middleware has no wrapModelCall — it's a no-op
-      // The important check is that middleware creation succeeds and name/priority is correct
       expect(mw.name).toBe("goal-anchor");
     });
 
-    test("no-op middleware has no wrapModelCall", () => {
+    test("describeCapabilities returns undefined when objectives are empty", () => {
       const mw = createGoalAnchorMiddleware({ objectives: [] });
-      expect(mw.wrapModelCall).toBeUndefined();
+      const turnCtx = createMockTurnContext();
+      expect(mw.describeCapabilities(turnCtx)).toBeUndefined();
+    });
+  });
+
+  describe("describeCapabilities", () => {
+    test("returns undefined before session starts", () => {
+      const mw = createGoalAnchorMiddleware({ objectives: ["search the web"] });
+      const turnCtx = createMockTurnContext();
+      expect(mw.describeCapabilities(turnCtx)).toBeUndefined();
+    });
+
+    test("returns dynamic objective count after session starts", async () => {
+      const mw = createGoalAnchorMiddleware({
+        objectives: ["search the web", "write a report"],
+      });
+      const sessionCtx = createMockSessionContext();
+      await mw.onSessionStart?.(sessionCtx);
+      const turnCtx = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
+      const fragment = mw.describeCapabilities(turnCtx);
+      expect(fragment).toEqual({
+        label: "goals",
+        description: "0/2 objectives completed",
+      });
+    });
+
+    test("reflects completion progress", async () => {
+      const mw = createGoalAnchorMiddleware({
+        objectives: ["search the web"],
+      });
+      const sessionCtx = createMockSessionContext();
+      await mw.onSessionStart?.(sessionCtx);
+      const turnCtx = createMockTurnContext({ session: sessionCtx, turnIndex: 0 });
+
+      // Complete the objective
+      if (mw.wrapModelCall) {
+        await mw.wrapModelCall(turnCtx, { messages: [] }, async () =>
+          makeModelResponse("I have completed the search."),
+        );
+      }
+
+      const fragment = mw.describeCapabilities(turnCtx);
+      expect(fragment).toEqual({
+        label: "goals",
+        description: "1/1 objectives completed",
+      });
     });
   });
 

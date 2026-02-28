@@ -100,6 +100,11 @@ export function createTracingMiddleware(config: TracingConfig = {}): KoiMiddlewa
     // 450: after audit@300, before event-trace@475, before default@500
     priority: 450,
 
+    describeCapabilities: () => ({
+      label: "tracing",
+      description: "OpenTelemetry tracing active",
+    }),
+
     async onSessionStart(ctx: SessionContext): Promise<void> {
       try {
         const span = tracer.startSpan("koi.session", {

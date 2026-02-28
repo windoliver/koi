@@ -499,6 +499,7 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
 
     return {
       name: "long-running-harness",
+      describeCapabilities: () => undefined,
       priority: 50,
 
       async onAfterTurn(_ctx: TurnContext): Promise<void> {

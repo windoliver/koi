@@ -62,6 +62,10 @@ export function createAguiStreamMiddleware(config: AguiStreamMiddlewareConfig): 
 
   return {
     name: "@koi/agui/stream",
+    describeCapabilities: () => ({
+      label: "agui",
+      description: "Agent GUI streaming bridge active",
+    }),
     priority: 200, // Run after outer governance/pay middleware, before context hydration
 
     wrapModelStream: async function* (

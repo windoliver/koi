@@ -264,6 +264,7 @@ describeE2E("e2e: lifecycle governance with real LLM", () => {
       let childToolCalled = false;
       const childToolObserver: KoiMiddleware = {
         name: "child-tool-observer",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: unknown,
           request: ToolRequest,
@@ -799,6 +800,7 @@ describeE2E("e2e: lifecycle governance with real LLM", () => {
 
       const parentMiddleware: KoiMiddleware = {
         name: "parent-lifecycle-observer",
+        describeCapabilities: () => undefined,
         onSessionStart: async () => {
           parentHooks.push("session_start");
         },
@@ -812,6 +814,7 @@ describeE2E("e2e: lifecycle governance with real LLM", () => {
 
       const childMiddleware: KoiMiddleware = {
         name: "child-lifecycle-observer",
+        describeCapabilities: () => undefined,
         onSessionStart: async () => {
           childHooks.push("session_start");
         },

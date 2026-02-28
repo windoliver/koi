@@ -91,6 +91,7 @@ describe("Middleware composition — execution order", () => {
 
     const mwA: KoiMiddleware = {
       name: "outer",
+      describeCapabilities: () => undefined,
       priority: 100,
       async wrapModelCall(_ctx, req, next) {
         order.push("outer-enter");
@@ -102,6 +103,7 @@ describe("Middleware composition — execution order", () => {
 
     const mwB: KoiMiddleware = {
       name: "inner",
+      describeCapabilities: () => undefined,
       priority: 400,
       async wrapModelCall(_ctx, req, next) {
         order.push("inner-enter");
@@ -126,6 +128,7 @@ describe("Middleware composition — execution order", () => {
 
     const makeMw = (name: string, priority: number): KoiMiddleware => ({
       name,
+      describeCapabilities: () => undefined,
       priority,
       async wrapToolCall(_ctx, req, next) {
         enters.push(name);
@@ -238,6 +241,7 @@ describe("Middleware composition — error propagation", () => {
 
     const outer: KoiMiddleware = {
       name: "outer",
+      describeCapabilities: () => undefined,
       priority: 100,
       async wrapModelCall(_ctx, req, next) {
         try {
@@ -250,6 +254,7 @@ describe("Middleware composition — error propagation", () => {
 
     const inner: KoiMiddleware = {
       name: "inner",
+      describeCapabilities: () => undefined,
       priority: 200,
       async wrapModelCall(_ctx, _req, _next) {
         throw new Error("inner crash");
@@ -274,6 +279,7 @@ describe("Middleware composition — no-op middleware", () => {
   test("middleware without wrapModelCall is skipped in model chain", async () => {
     const toolOnly: KoiMiddleware = {
       name: "tool-only",
+      describeCapabilities: () => undefined,
       priority: 100,
       async wrapToolCall(_ctx, req, next) {
         return next(req);
@@ -291,6 +297,7 @@ describe("Middleware composition — no-op middleware", () => {
   test("middleware without wrapToolCall is skipped in tool chain", async () => {
     const modelOnly: KoiMiddleware = {
       name: "model-only",
+      describeCapabilities: () => undefined,
       priority: 100,
       async wrapModelCall(_ctx, req, next) {
         return next(req);
@@ -305,7 +312,7 @@ describe("Middleware composition — no-op middleware", () => {
   });
 
   test("name-only middleware works in chain", async () => {
-    const noop: KoiMiddleware = { name: "noop" };
+    const noop: KoiMiddleware = { name: "noop", describeCapabilities: () => undefined };
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler();
     const chain = composeModelChain([noop], spy.handler);

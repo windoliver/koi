@@ -145,6 +145,7 @@ describe("Time-travel middleware — priority ordering", () => {
 
     const outer: KoiMiddleware = {
       name: "fs-rollback-spy",
+      describeCapabilities: () => undefined,
       priority: 350,
       async wrapToolCall(_ctx, req, next) {
         order.push("fs-rollback-enter");
@@ -156,6 +157,7 @@ describe("Time-travel middleware — priority ordering", () => {
 
     const inner: KoiMiddleware = {
       name: "event-trace-spy",
+      describeCapabilities: () => undefined,
       priority: 475,
       async wrapToolCall(_ctx, req, next) {
         order.push("event-trace-enter");
@@ -184,6 +186,7 @@ describe("Time-travel middleware — priority ordering", () => {
 
     const outer: KoiMiddleware = {
       name: "guided-retry-spy",
+      describeCapabilities: () => undefined,
       priority: 425,
       async wrapModelCall(_ctx, req, next) {
         order.push("guided-retry-enter");
@@ -195,6 +198,7 @@ describe("Time-travel middleware — priority ordering", () => {
 
     const inner: KoiMiddleware = {
       name: "event-trace-spy",
+      describeCapabilities: () => undefined,
       priority: 475,
       async wrapModelCall(_ctx, req, next) {
         order.push("event-trace-enter");

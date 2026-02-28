@@ -238,6 +238,7 @@ describeE2E("full-stack e2e: createKoi + Pi adapter + @koi/doctor", () => {
 
       const observerMiddleware: KoiMiddleware = {
         name: "e2e:observer",
+        describeCapabilities: () => undefined,
         priority: 500,
         async *wrapModelStream(_ctx, req, next) {
           modelStreamIntercepted = true;

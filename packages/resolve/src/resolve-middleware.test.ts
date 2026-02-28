@@ -29,7 +29,7 @@ function makeMwDescriptor(name: string, priority: number): BrickDescriptor<KoiMi
     kind: "middleware",
     name,
     optionsValidator: (input: unknown) => ({ ok: true, value: input }),
-    factory: (): KoiMiddleware => ({ name, priority }),
+    factory: (): KoiMiddleware => ({ name, describeCapabilities: () => undefined, priority }),
   };
 }
 

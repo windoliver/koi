@@ -372,6 +372,7 @@ describeE2E("e2e: @koi/events-sqlite through full Koi runtime with real Anthropi
 
       const observerMiddleware = {
         name: "e2e-sqlite-observer",
+        describeCapabilities: () => undefined,
         async onSessionStart() {
           sessionStarted = true;
         },

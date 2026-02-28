@@ -43,6 +43,7 @@ export interface DelegationMiddlewareConfig {
 export function createDelegationMiddleware(config: DelegationMiddlewareConfig): KoiMiddleware {
   return {
     name: "koi:delegation",
+    describeCapabilities: () => undefined,
     wrapToolCall: async (ctx, request, next) => {
       const rawDelegationId = ctx.metadata.delegationId;
 

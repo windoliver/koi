@@ -166,6 +166,7 @@ function createRequestCaptureSpy(): {
   const middleware: KoiMiddleware = {
     name: "request-capture-spy",
     priority: 999, // innermost — sees the final request after all injection
+    describeCapabilities: () => undefined,
     wrapModelStream: (
       _ctx: TurnContext,
       request: ModelRequest,
@@ -364,6 +365,7 @@ describeE2E("e2e: capability injection through createKoi + createPiAdapter", () 
       const toolObserver: KoiMiddleware = {
         name: "tool-observer",
         priority: 500,
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: TurnContext,
           request: ToolRequest,
@@ -423,16 +425,17 @@ describeE2E("e2e: capability injection through createKoi + createPiAdapter", () 
     TIMEOUT_MS,
   );
 
-  // ── Test 5: No capability message when no middleware implements it ─
+  // ── Test 5: No capability message when all middleware returns undefined ─
   test(
-    "skips capability injection when no middleware has describeCapabilities",
+    "skips capability injection when all middleware returns undefined from describeCapabilities",
     async () => {
       const spy = createRequestCaptureSpy();
 
-      // Middleware with NO describeCapabilities
+      // Middleware that returns undefined from describeCapabilities
       const plainMiddleware: KoiMiddleware = {
         name: "plain-observer",
         priority: 400,
+        describeCapabilities: () => undefined,
         onAfterTurn: async () => {
           /* no-op */
         },

@@ -79,7 +79,7 @@ describe("composeModelChain", () => {
 
   test("skips middleware without wrapModelCall", async () => {
     const terminal = mock(() => Promise.resolve(mockModelResponse()));
-    const mw: KoiMiddleware = { name: "no-wrap" };
+    const mw: KoiMiddleware = { name: "no-wrap", describeCapabilities: () => undefined };
     const chain = composeModelChain([mw], terminal);
     await chain(mockTurnContext(), mockModelRequest());
     expect(terminal).toHaveBeenCalledTimes(1);
@@ -89,6 +89,7 @@ describe("composeModelChain", () => {
     const order: string[] = [];
     const mw1: KoiMiddleware = {
       name: "first",
+      describeCapabilities: () => undefined,
       wrapModelCall: async (_ctx, req, next) => {
         order.push("first:before");
         const res = await next(req);
@@ -98,6 +99,7 @@ describe("composeModelChain", () => {
     };
     const mw2: KoiMiddleware = {
       name: "second",
+      describeCapabilities: () => undefined,
       wrapModelCall: async (_ctx, req, next) => {
         order.push("second:before");
         const res = await next(req);
@@ -125,6 +127,7 @@ describe("composeModelChain", () => {
   test("middleware can modify request before next", async () => {
     const mw: KoiMiddleware = {
       name: "modifier",
+      describeCapabilities: () => undefined,
       wrapModelCall: async (_ctx, _req, next) => {
         return next({ messages: [], model: "modified-model" });
       },
@@ -142,6 +145,7 @@ describe("composeModelChain", () => {
   test("middleware can modify response after next", async () => {
     const mw: KoiMiddleware = {
       name: "response-modifier",
+      describeCapabilities: () => undefined,
       wrapModelCall: async (_ctx, req, next) => {
         const res = await next(req);
         return { ...res, content: `${res.content} modified` };
@@ -156,6 +160,7 @@ describe("composeModelChain", () => {
   test("middleware can short-circuit without calling next", async () => {
     const mw: KoiMiddleware = {
       name: "blocker",
+      describeCapabilities: () => undefined,
       wrapModelCall: async () => {
         return mockModelResponse("blocked");
       },
@@ -177,6 +182,7 @@ describe("composeModelChain error propagation", () => {
     const order: string[] = [];
     const mw: KoiMiddleware = {
       name: "logger",
+      describeCapabilities: () => undefined,
       wrapModelCall: async (_ctx, req, next) => {
         order.push("before");
         try {
@@ -197,6 +203,7 @@ describe("composeModelChain error propagation", () => {
   test("error from middleware before next propagates to caller", async () => {
     const mw: KoiMiddleware = {
       name: "thrower",
+      describeCapabilities: () => undefined,
       wrapModelCall: async () => {
         throw new Error("middleware error");
       },
@@ -211,6 +218,7 @@ describe("composeModelChain error propagation", () => {
     const terminal = mock(() => Promise.resolve(mockModelResponse()));
     const mw: KoiMiddleware = {
       name: "post-error",
+      describeCapabilities: () => undefined,
       wrapModelCall: async (_ctx, req, next) => {
         await next(req);
         throw new Error("post-next error");
@@ -224,6 +232,7 @@ describe("composeModelChain error propagation", () => {
   test("double next() call throws", async () => {
     const mw: KoiMiddleware = {
       name: "double-next",
+      describeCapabilities: () => undefined,
       wrapModelCall: async (_ctx, req, next) => {
         await next(req);
         return next(req); // Second call
@@ -246,6 +255,7 @@ describe("composeModelChain error propagation", () => {
     let callCount = 0;
     const mw: KoiMiddleware = {
       name: "retry-mw",
+      describeCapabilities: () => undefined,
       wrapModelCall: async (_ctx, req, next) => {
         try {
           return await next(req);
@@ -269,6 +279,7 @@ describe("composeModelChain error propagation", () => {
   test("next() still throws on double-call after success (not error)", async () => {
     const mw: KoiMiddleware = {
       name: "double-after-success",
+      describeCapabilities: () => undefined,
       wrapModelCall: async (_ctx, req, next) => {
         await next(req); // succeeds
         return next(req); // should still throw
@@ -299,6 +310,7 @@ describe("composeToolChain", () => {
     const order: string[] = [];
     const mw1: KoiMiddleware = {
       name: "first",
+      describeCapabilities: () => undefined,
       wrapToolCall: async (_ctx, req, next) => {
         order.push("first:before");
         const res = await next(req);
@@ -308,6 +320,7 @@ describe("composeToolChain", () => {
     };
     const mw2: KoiMiddleware = {
       name: "second",
+      describeCapabilities: () => undefined,
       wrapToolCall: async (_ctx, req, next) => {
         order.push("second:before");
         const res = await next(req);
@@ -335,6 +348,7 @@ describe("composeToolChain", () => {
   test("double next() call throws", async () => {
     const mw: KoiMiddleware = {
       name: "double-next",
+      describeCapabilities: () => undefined,
       wrapToolCall: async (_ctx, req, next) => {
         await next(req);
         return next(req);
@@ -364,12 +378,14 @@ describe("runSessionHooks", () => {
     const order: string[] = [];
     const mw1: KoiMiddleware = {
       name: "first",
+      describeCapabilities: () => undefined,
       onSessionStart: async () => {
         order.push("first");
       },
     };
     const mw2: KoiMiddleware = {
       name: "second",
+      describeCapabilities: () => undefined,
       onSessionStart: async () => {
         order.push("second");
       },
@@ -382,12 +398,14 @@ describe("runSessionHooks", () => {
     const order: string[] = [];
     const mw1: KoiMiddleware = {
       name: "first",
+      describeCapabilities: () => undefined,
       onSessionEnd: async () => {
         order.push("first");
       },
     };
     const mw2: KoiMiddleware = {
       name: "second",
+      describeCapabilities: () => undefined,
       onSessionEnd: async () => {
         order.push("second");
       },
@@ -398,8 +416,12 @@ describe("runSessionHooks", () => {
 
   test("skips middleware without the hook", async () => {
     const called = mock(() => Promise.resolve());
-    const mw1: KoiMiddleware = { name: "no-hook" };
-    const mw2: KoiMiddleware = { name: "has-hook", onSessionStart: called };
+    const mw1: KoiMiddleware = { name: "no-hook", describeCapabilities: () => undefined };
+    const mw2: KoiMiddleware = {
+      name: "has-hook",
+      describeCapabilities: () => undefined,
+      onSessionStart: called,
+    };
     await runSessionHooks([mw1, mw2], "onSessionStart", sessionCtx);
     expect(called).toHaveBeenCalledTimes(1);
   });
@@ -407,6 +429,7 @@ describe("runSessionHooks", () => {
   test("error in hook propagates", async () => {
     const mw: KoiMiddleware = {
       name: "throws",
+      describeCapabilities: () => undefined,
       onSessionStart: async () => {
         throw new Error("hook error");
       },
@@ -424,12 +447,14 @@ describe("runTurnHooks", () => {
     const order: string[] = [];
     const mw1: KoiMiddleware = {
       name: "first",
+      describeCapabilities: () => undefined,
       onBeforeTurn: async () => {
         order.push("first");
       },
     };
     const mw2: KoiMiddleware = {
       name: "second",
+      describeCapabilities: () => undefined,
       onBeforeTurn: async () => {
         order.push("second");
       },
@@ -442,12 +467,14 @@ describe("runTurnHooks", () => {
     const order: string[] = [];
     const mw1: KoiMiddleware = {
       name: "first",
+      describeCapabilities: () => undefined,
       onAfterTurn: async () => {
         order.push("first");
       },
     };
     const mw2: KoiMiddleware = {
       name: "second",
+      describeCapabilities: () => undefined,
       onAfterTurn: async () => {
         order.push("second");
       },
@@ -542,6 +569,7 @@ describe("createComposedCallHandlers", () => {
 
     const mw: KoiMiddleware = {
       name: "tracker",
+      describeCapabilities: () => undefined,
       wrapModelCall: async (_ctx, req, next) => {
         order.push("mw:before");
         const res = await next(req);
@@ -575,6 +603,7 @@ describe("createComposedCallHandlers", () => {
 
     const mw: KoiMiddleware = {
       name: "interceptor",
+      describeCapabilities: () => undefined,
       wrapToolCall: async (_ctx, req, next) => {
         intercepted();
         return next(req);
@@ -667,6 +696,7 @@ describe("createComposedCallHandlers", () => {
 
     const mw: KoiMiddleware = {
       name: "spy",
+      describeCapabilities: () => undefined,
       wrapModelCall: async (_ctx, req, next) => {
         receivedRequest = req;
         return next(req);
@@ -697,6 +727,7 @@ describe("createComposedCallHandlers", () => {
 
     const mw: KoiMiddleware = {
       name: "spy",
+      describeCapabilities: () => undefined,
       wrapModelCall: async (_ctx, req, next) => {
         receivedRequest = req;
         return next(req);
@@ -763,7 +794,7 @@ describe("composeModelStreamChain", () => {
 
   test("skips middleware without wrapModelStream", async () => {
     const terminal = mockStreamChunks(sampleChunks);
-    const mw: KoiMiddleware = { name: "no-wrap" };
+    const mw: KoiMiddleware = { name: "no-wrap", describeCapabilities: () => undefined };
     const chain = composeModelStreamChain([mw], terminal);
     const chunks = await collectChunks(chain(mockTurnContext(), mockModelRequest()));
     expect(chunks).toEqual(sampleChunks);
@@ -773,6 +804,7 @@ describe("composeModelStreamChain", () => {
     const observed: ModelChunk[] = [];
     const mw: KoiMiddleware = {
       name: "observer",
+      describeCapabilities: () => undefined,
       wrapModelStream: (_ctx, req, next) => ({
         async *[Symbol.asyncIterator]() {
           for await (const chunk of next(req)) {
@@ -792,6 +824,7 @@ describe("composeModelStreamChain", () => {
   test("middleware transforms chunks (e.g., uppercase text deltas)", async () => {
     const mw: KoiMiddleware = {
       name: "uppercaser",
+      describeCapabilities: () => undefined,
       wrapModelStream: (_ctx, req, next) => ({
         async *[Symbol.asyncIterator]() {
           for await (const chunk of next(req)) {
@@ -819,6 +852,7 @@ describe("composeModelStreamChain", () => {
     ];
     const mw: KoiMiddleware = {
       name: "blocker",
+      describeCapabilities: () => undefined,
       wrapModelStream: () => ({
         async *[Symbol.asyncIterator]() {
           for (const chunk of shortCircuitChunks) {
@@ -842,6 +876,7 @@ describe("composeModelStreamChain", () => {
     const order: string[] = [];
     const mw1: KoiMiddleware = {
       name: "first",
+      describeCapabilities: () => undefined,
       wrapModelStream: (_ctx, req, next) => ({
         async *[Symbol.asyncIterator]() {
           order.push("first:before");
@@ -852,6 +887,7 @@ describe("composeModelStreamChain", () => {
     };
     const mw2: KoiMiddleware = {
       name: "second",
+      describeCapabilities: () => undefined,
       wrapModelStream: (_ctx, req, next) => ({
         async *[Symbol.asyncIterator]() {
           order.push("second:before");
@@ -869,6 +905,7 @@ describe("composeModelStreamChain", () => {
   test("double next() call throws", async () => {
     const mw: KoiMiddleware = {
       name: "double-next",
+      describeCapabilities: () => undefined,
       wrapModelStream: (_ctx, req, next) => ({
         async *[Symbol.asyncIterator]() {
           yield* next(req);
@@ -896,6 +933,7 @@ describe("composeModelStreamChain", () => {
     const order: string[] = [];
     const mw: KoiMiddleware = {
       name: "logger",
+      describeCapabilities: () => undefined,
       wrapModelStream: (_ctx, req, next) => ({
         async *[Symbol.asyncIterator]() {
           order.push("before");
@@ -918,6 +956,7 @@ describe("composeModelStreamChain", () => {
     let callCount = 0;
     const mw: KoiMiddleware = {
       name: "stream-retry",
+      describeCapabilities: () => undefined,
       wrapModelStream: async function* (_ctx, req, next) {
         try {
           yield* next(req);
@@ -943,6 +982,7 @@ describe("composeModelStreamChain", () => {
   test("next() still throws on double-call after successful stream (not error)", async () => {
     const mw: KoiMiddleware = {
       name: "double-after-success-stream",
+      describeCapabilities: () => undefined,
       wrapModelStream: async function* (_ctx, req, next) {
         yield* next(req); // succeeds
         yield* next(req); // should still throw
@@ -1040,6 +1080,7 @@ describe("createComposedCallHandlers streaming", () => {
 
     const mw: KoiMiddleware = {
       name: "hitl-mw",
+      describeCapabilities: () => undefined,
       wrapToolCall: async (ctx, req, next) => {
         receivedHandler = ctx.requestApproval;
         return next(req);
@@ -1071,6 +1112,7 @@ describe("createComposedCallHandlers streaming", () => {
 
     const mw: KoiMiddleware = {
       name: "hitl-gate",
+      describeCapabilities: () => undefined,
       wrapToolCall: async (ctx, req, next) => {
         if (ctx.requestApproval) {
           const decision = await ctx.requestApproval({
@@ -1112,6 +1154,7 @@ describe("createComposedCallHandlers streaming", () => {
 
     const mw: KoiMiddleware = {
       name: "hitl-modify",
+      describeCapabilities: () => undefined,
       wrapToolCall: async (ctx, req, next) => {
         if (ctx.requestApproval) {
           const decision = await ctx.requestApproval({
@@ -1148,6 +1191,7 @@ describe("createComposedCallHandlers streaming", () => {
 
     const mw: KoiMiddleware = {
       name: "hitl-optional",
+      describeCapabilities: () => undefined,
       wrapToolCall: async (ctx, req, next) => {
         if (ctx.requestApproval) {
           const decision = await ctx.requestApproval({
@@ -1220,6 +1264,7 @@ describe("createComposedCallHandlers streaming", () => {
 
     const mw: KoiMiddleware = {
       name: "stream-observer",
+      describeCapabilities: () => undefined,
       wrapModelStream: (_ctx, req, next) => ({
         async *[Symbol.asyncIterator]() {
           observed.push("mw:start");
@@ -1257,7 +1302,7 @@ describe("createComposedCallHandlers streaming", () => {
 
 describe("collectCapabilities", () => {
   test("returns empty array when no middleware has describeCapabilities", () => {
-    const mw: KoiMiddleware = { name: "plain" };
+    const mw: KoiMiddleware = { name: "plain", describeCapabilities: () => undefined };
     const result = collectCapabilities([mw], mockTurnContext());
     expect(result).toEqual([]);
   });
@@ -1371,7 +1416,7 @@ describe("formatCapabilityMessage", () => {
 
 describe("injectCapabilities", () => {
   test("returns request unchanged when no middleware has describeCapabilities", () => {
-    const mw: KoiMiddleware = { name: "plain" };
+    const mw: KoiMiddleware = { name: "plain", describeCapabilities: () => undefined };
     const request = mockModelRequest();
     const result = injectCapabilities([mw], mockTurnContext(), request);
     expect(result).toBe(request); // same reference = zero allocation
@@ -1516,6 +1561,7 @@ describe("createComposedCallHandlers capability injection", () => {
 
     const mw: KoiMiddleware = {
       name: "no-caps",
+      describeCapabilities: () => undefined,
       wrapModelCall: async (_ctx, req, next) => {
         receivedRequest = req;
         return next(req);

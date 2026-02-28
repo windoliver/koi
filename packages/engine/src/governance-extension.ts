@@ -37,6 +37,7 @@ function createGovernanceGuard(
 ): KoiMiddleware {
   return {
     name: "koi:governance-guard",
+    describeCapabilities: () => undefined,
     priority: 0,
 
     async onBeforeTurn(_ctx: TurnContext): Promise<void> {

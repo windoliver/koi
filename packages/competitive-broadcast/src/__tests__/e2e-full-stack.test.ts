@@ -410,6 +410,7 @@ describeE2E("e2e: competitive-broadcast full stack", () => {
 
       const observer: KoiMiddleware = {
         name: "e2e-observer",
+        describeCapabilities: () => undefined,
         onSessionStart: async () => {
           turnHooks.push("session_start");
         },

@@ -92,6 +92,7 @@ describeE2E("e2e: KernelExtension through createKoi + Pi adapter", () => {
         guards: () => [
           {
             name: "e2e:before-turn-logger",
+            describeCapabilities: () => undefined,
             priority: 900,
             onBeforeTurn: async () => {
               guardLog.push("before-turn");
@@ -151,6 +152,7 @@ describeE2E("e2e: KernelExtension through createKoi + Pi adapter", () => {
         guards: () => [
           {
             name: "e2e:platform-logger",
+            describeCapabilities: () => undefined,
             priority: 5,
             onBeforeTurn: async () => {
               order.push("platform");
@@ -165,6 +167,7 @@ describeE2E("e2e: KernelExtension through createKoi + Pi adapter", () => {
         guards: () => [
           {
             name: "e2e:user-logger",
+            describeCapabilities: () => undefined,
             priority: 6,
             onBeforeTurn: async () => {
               order.push("user");
@@ -252,6 +255,7 @@ describeE2E("e2e: KernelExtension through createKoi + Pi adapter", () => {
 
       const customMiddleware: KoiMiddleware = {
         name: "e2e:session-tracker",
+        describeCapabilities: () => undefined,
         priority: 500,
         onSessionStart: async () => {
           sessionStarted = true;
@@ -268,6 +272,7 @@ describeE2E("e2e: KernelExtension through createKoi + Pi adapter", () => {
         guards: () => [
           {
             name: "e2e:noop-guard",
+            describeCapabilities: () => undefined,
             priority: 999,
             onBeforeTurn: async () => {
               // no-op — just verifies it participates in the chain

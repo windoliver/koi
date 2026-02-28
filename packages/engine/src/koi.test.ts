@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, spyOn, test } from "bun:test";
 import type {
   AgentManifest,
   ApprovalHandler,
@@ -347,7 +347,7 @@ describe("createKoi middleware hooks", () => {
     const runtime = await createKoi({
       manifest: testManifest(),
       adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
-      middleware: [{ name: "test-mw", onSessionStart }],
+      middleware: [{ name: "test-mw", describeCapabilities: () => undefined, onSessionStart }],
     });
 
     await collectEvents(runtime.run({ kind: "text", text: "test" }));
@@ -359,7 +359,7 @@ describe("createKoi middleware hooks", () => {
     const runtime = await createKoi({
       manifest: testManifest(),
       adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
-      middleware: [{ name: "test-mw", onSessionEnd }],
+      middleware: [{ name: "test-mw", describeCapabilities: () => undefined, onSessionEnd }],
     });
 
     await collectEvents(runtime.run({ kind: "text", text: "test" }));
@@ -374,7 +374,7 @@ describe("createKoi middleware hooks", () => {
         { kind: "turn_end", turnIndex: 0 },
         { kind: "done", output: doneOutput() },
       ]),
-      middleware: [{ name: "test-mw", onAfterTurn }],
+      middleware: [{ name: "test-mw", describeCapabilities: () => undefined, onAfterTurn }],
     });
 
     await collectEvents(runtime.run({ kind: "text", text: "test" }));
@@ -772,6 +772,7 @@ describe("createKoi HITL approval handler", () => {
 
     const mw: KoiMiddleware = {
       name: "ctx-capture",
+      describeCapabilities: () => undefined,
       wrapModelCall: async (ctx, req, next) => {
         capturedCtx = ctx;
         return next(req);
@@ -800,6 +801,7 @@ describe("createKoi HITL approval handler", () => {
 
     const mw: KoiMiddleware = {
       name: "ctx-capture",
+      describeCapabilities: () => undefined,
       wrapModelCall: async (ctx, req, next) => {
         capturedCtx = ctx;
         return next(req);
@@ -834,6 +836,7 @@ describe("createKoi HITL approval handler", () => {
 
     const mw: KoiMiddleware = {
       name: "hitl-gate",
+      describeCapabilities: () => undefined,
       wrapToolCall: async (ctx, req, next) => {
         if (ctx.requestApproval) {
           const decision = await ctx.requestApproval({
@@ -1013,7 +1016,7 @@ describe("createKoi early return", () => {
     const runtime = await createKoi({
       manifest: testManifest(),
       adapter,
-      middleware: [{ name: "test-mw", onSessionEnd }],
+      middleware: [{ name: "test-mw", describeCapabilities: () => undefined, onSessionEnd }],
       loopDetection: false,
     });
 
@@ -1044,7 +1047,7 @@ describe("createKoi early return", () => {
     const runtime = await createKoi({
       manifest: testManifest(),
       adapter,
-      middleware: [{ name: "test-mw", onSessionEnd }],
+      middleware: [{ name: "test-mw", describeCapabilities: () => undefined, onSessionEnd }],
       loopDetection: false,
     });
 
@@ -1449,6 +1452,7 @@ describe("createKoi live forge resolution", () => {
     // Forged middleware that logs calls
     const forgedMw: KoiMiddleware = {
       name: "forged-logger",
+      describeCapabilities: () => undefined,
       wrapToolCall: async (_ctx, req, next) => {
         callLog.push(`forged-mw:${req.toolId}`);
         return next(req);
@@ -1815,6 +1819,7 @@ describe("createKoi live forge resolution", () => {
         forgedMiddleware = [
           {
             name: "test-audit",
+            describeCapabilities: () => undefined,
             wrapToolCall: async (_ctx, req, next) => {
               intercepted.push(req.toolId);
               return next(req);
@@ -2075,7 +2080,7 @@ describe("createKoi onBeforeTurn hooks", () => {
     const runtime = await createKoi({
       manifest: testManifest(),
       adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
-      middleware: [{ name: "test-mw", onBeforeTurn }],
+      middleware: [{ name: "test-mw", describeCapabilities: () => undefined, onBeforeTurn }],
     });
 
     await collectEvents(runtime.run({ kind: "text", text: "test" }));
@@ -2091,7 +2096,7 @@ describe("createKoi onBeforeTurn hooks", () => {
         { kind: "turn_end", turnIndex: 1 },
         { kind: "done", output: doneOutput() },
       ]),
-      middleware: [{ name: "test-mw", onBeforeTurn }],
+      middleware: [{ name: "test-mw", describeCapabilities: () => undefined, onBeforeTurn }],
     });
 
     await collectEvents(runtime.run({ kind: "text", text: "test" }));
@@ -2109,6 +2114,7 @@ describe("createKoi onBeforeTurn hooks", () => {
       middleware: [
         {
           name: "ctx-capture",
+          describeCapabilities: () => undefined,
           onBeforeTurn: async (ctx) => {
             capturedCtx = ctx;
           },
@@ -2131,7 +2137,7 @@ describe("createKoi onBeforeTurn hooks", () => {
     const runtime = await createKoi({
       manifest: testManifest(),
       adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
-      middleware: [{ name: "test-mw", onBeforeTurn }],
+      middleware: [{ name: "test-mw", describeCapabilities: () => undefined, onBeforeTurn }],
     });
 
     for await (const event of runtime.run({ kind: "text", text: "test" })) {
@@ -2155,6 +2161,7 @@ describe("createKoi sendStatus threading", () => {
 
     const mw: KoiMiddleware = {
       name: "ctx-capture",
+      describeCapabilities: () => undefined,
       wrapModelCall: async (ctx, req, next) => {
         capturedCtx = ctx;
         return next(req);
@@ -2194,6 +2201,7 @@ describe("createKoi sendStatus threading", () => {
 
     const mw: KoiMiddleware = {
       name: "ctx-capture",
+      describeCapabilities: () => undefined,
       wrapModelCall: async (ctx, req, next) => {
         capturedCtx = ctx;
         return next(req);
@@ -2311,7 +2319,7 @@ describe("createKoi onSessionEnd error preservation", () => {
     const runtime = await createKoi({
       manifest: testManifest(),
       adapter,
-      middleware: [{ name: "test-mw", onSessionEnd }],
+      middleware: [{ name: "test-mw", describeCapabilities: () => undefined, onSessionEnd }],
       loopDetection: false,
     });
 
@@ -2332,6 +2340,7 @@ describe("createKoi middleware priority sorting", () => {
 
     const trackingMw: KoiMiddleware = {
       name: "tracker",
+      describeCapabilities: () => undefined,
       priority: 100,
       async wrapModelCall(_ctx, req, next) {
         order.push("tracker-enter");
@@ -2381,6 +2390,7 @@ describe("AbortSignal propagation", () => {
 
     const signalCapture: KoiMiddleware = {
       name: "signal-capture",
+      describeCapabilities: () => undefined,
       async onBeforeTurn(ctx) {
         receivedSignal = ctx.signal;
       },
@@ -2487,6 +2497,7 @@ describe("Canonical ID hierarchy", () => {
 
     const idCapture: KoiMiddleware = {
       name: "id-capture",
+      describeCapabilities: () => undefined,
       async onSessionStart(ctx) {
         capturedSessionId = ctx.sessionId;
         capturedRunId = ctx.runId;
@@ -2520,6 +2531,7 @@ describe("Canonical ID hierarchy", () => {
 
     const idCapture: KoiMiddleware = {
       name: "id-capture",
+      describeCapabilities: () => undefined,
       async onSessionStart(ctx) {
         capturedRunId = ctx.runId;
       },
@@ -2552,6 +2564,7 @@ describe("Canonical ID hierarchy", () => {
 
     const idCapture: KoiMiddleware = {
       name: "id-capture",
+      describeCapabilities: () => undefined,
       async onSessionStart(ctx) {
         capturedRunId = ctx.runId;
       },
@@ -2586,6 +2599,7 @@ describe("Canonical ID hierarchy", () => {
 
     const idCapture: KoiMiddleware = {
       name: "id-capture",
+      describeCapabilities: () => undefined,
       async onSessionStart(ctx) {
         runIds.push(ctx.runId);
       },
@@ -2619,6 +2633,7 @@ describe("Canonical ID hierarchy", () => {
 
     const idCapture: KoiMiddleware = {
       name: "id-capture",
+      describeCapabilities: () => undefined,
       async onSessionStart(ctx) {
         capturedSessionId = ctx.sessionId;
         capturedAgentId = ctx.agentId;
@@ -2925,5 +2940,57 @@ describe("createKoi forge watch", () => {
     // toolDescriptors called once at session start (initial refreshForgeState),
     // but NOT again at turn boundaries because watch is active and dirty flag is false
     expect(toolDescriptors).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// describeCapabilities runtime warning
+// ---------------------------------------------------------------------------
+
+describe("describeCapabilities runtime warning", () => {
+  test("warns when middleware lacks describeCapabilities", async () => {
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // Use `as unknown as KoiMiddleware` to bypass TypeScript — simulates a JS consumer
+      const badMiddleware = { name: "no-caps" } as unknown as KoiMiddleware;
+
+      await createKoi({
+        manifest: testManifest(),
+        adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+        middleware: [badMiddleware],
+        loopDetection: false,
+      });
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0]?.[0]).toContain("no-caps");
+      expect(warnSpy.mock.calls[0]?.[0]).toContain("describeCapabilities");
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("does not warn when all middleware has describeCapabilities", async () => {
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const goodMiddleware: KoiMiddleware = {
+        name: "has-caps",
+        describeCapabilities: () => undefined,
+      };
+
+      await createKoi({
+        manifest: testManifest(),
+        adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+        middleware: [goodMiddleware],
+        loopDetection: false,
+      });
+
+      // No warnings about describeCapabilities should be emitted
+      const capsWarnings = warnSpy.mock.calls.filter(
+        (args) => typeof args[0] === "string" && args[0].includes("describeCapabilities"),
+      );
+      expect(capsWarnings).toHaveLength(0);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

@@ -940,6 +940,7 @@ describeE2E("e2e: all features combined through full runtime with middleware", (
       let modelCallCount = 0;
       const observer: import("@koi/core").KoiMiddleware = {
         name: "e2e-model-observer",
+        describeCapabilities: () => undefined,
         wrapModelCall: async (_ctx, request, next) => {
           modelCallCount += 1;
           return next(request);

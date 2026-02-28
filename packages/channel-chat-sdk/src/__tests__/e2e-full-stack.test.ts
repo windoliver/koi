@@ -397,6 +397,7 @@ describeE2E("e2e: channel-chat-sdk + createKoi + createPiAdapter full stack", ()
       const toolCalls: string[] = [];
       const toolObserver: KoiMiddleware = {
         name: "e2e-tool-observer",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: unknown,
           request: ToolRequest,
@@ -679,6 +680,7 @@ describeE2E("e2e: channel-chat-sdk + createKoi + createPiAdapter full stack", ()
       const hookOrder: string[] = [];
       const lifecycleObserver: KoiMiddleware = {
         name: "lifecycle-observer",
+        describeCapabilities: () => undefined,
         onSessionStart: async () => {
           hookOrder.push("session_start");
         },

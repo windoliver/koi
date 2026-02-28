@@ -325,6 +325,7 @@ describeE2E("e2e: @koi/soul through createKoi + createPiAdapter", () => {
 
       const observerMw: KoiMiddleware = {
         name: "e2e-observer",
+        describeCapabilities: () => undefined,
         // Pi adapter uses streaming — observe via wrapModelStream
         async *wrapModelStream(_ctx, request, next) {
           modelStreamObserved = true;

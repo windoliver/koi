@@ -139,6 +139,6 @@ export interface KoiMiddleware {
     request: ToolRequest,
     next: ToolHandler,
   ) => Promise<ToolResponse>;
-  /** Optional self-description injected into model calls. Return undefined to skip. */
-  readonly describeCapabilities?: (ctx: TurnContext) => CapabilityFragment | undefined;
+  /** Self-description injected into model calls. Required. Return undefined to skip injection. */
+  readonly describeCapabilities: (ctx: TurnContext) => CapabilityFragment | undefined;
 }

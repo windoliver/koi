@@ -417,12 +417,8 @@ export function createComposedCallHandlers(
   const injectTools = (request: ModelRequest): ModelRequest =>
     request.tools !== undefined ? request : { ...request, tools: toolDescriptors };
 
-  // Pre-compute flag: skip capability injection when no middleware implements it
-  const hasCapabilities = middleware.some((mw) => mw.describeCapabilities !== undefined);
-
   const prepareRequest = (request: ModelRequest): ModelRequest => {
     const withTools = injectTools(request);
-    if (!hasCapabilities) return withTools;
     return injectCapabilities(middleware, getTurnContext(), withTools, capabilityConfig);
   };
 

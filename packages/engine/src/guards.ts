@@ -109,6 +109,7 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
 
   return {
     name: "koi:iteration-guard",
+    describeCapabilities: () => undefined,
     priority: 0,
 
     wrapModelCall: async (_ctx, request, next) => {
@@ -437,6 +438,7 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
 
   return {
     name: "koi:loop-detector",
+    describeCapabilities: () => undefined,
     priority: 1,
 
     // Only attach model hooks when injection is enabled — avoids per-call
@@ -597,6 +599,7 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
 
   return {
     name: "koi:spawn-guard",
+    describeCapabilities: () => undefined,
     priority: 2,
 
     wrapToolCall: async (_ctx, request, next) => {

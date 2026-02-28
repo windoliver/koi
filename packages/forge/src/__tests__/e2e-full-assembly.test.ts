@@ -170,6 +170,7 @@ describeE2E("e2e: full L1 runtime assembly with real LLM", () => {
       const hookOrder: string[] = [];
       const lifecycleObserver: KoiMiddleware = {
         name: "lifecycle-observer",
+        describeCapabilities: () => undefined,
         onSessionStart: async () => {
           hookOrder.push("session_start");
         },
@@ -377,6 +378,7 @@ describeE2E("e2e: full L1 runtime assembly with real LLM", () => {
 
       const outerMiddleware: KoiMiddleware = {
         name: "outer",
+        describeCapabilities: () => undefined,
         priority: 100,
         wrapToolCall: async (_ctx, req, next) => {
           interceptOrder.push("outer");
@@ -386,6 +388,7 @@ describeE2E("e2e: full L1 runtime assembly with real LLM", () => {
 
       const middleMiddleware: KoiMiddleware = {
         name: "middle",
+        describeCapabilities: () => undefined,
         priority: 300,
         wrapToolCall: async (_ctx, req, next) => {
           interceptOrder.push("middle");
@@ -395,6 +398,7 @@ describeE2E("e2e: full L1 runtime assembly with real LLM", () => {
 
       const innerMiddleware: KoiMiddleware = {
         name: "inner",
+        describeCapabilities: () => undefined,
         priority: 500,
         wrapToolCall: async (_ctx, req, next) => {
           interceptOrder.push("inner");
