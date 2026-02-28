@@ -131,6 +131,10 @@
     "./elicitation": {
       "types": "./dist/elicitation.d.ts",
       "import": "./dist/elicitation.js"
+    },
+    "./mailbox": {
+      "types": "./dist/mailbox.d.ts",
+      "import": "./dist/mailbox.js"
     }
   },
   "scripts": {
