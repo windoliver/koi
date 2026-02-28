@@ -10,6 +10,13 @@ export type { LlmCompactor } from "./compact.js";
 export { createLlmCompactor } from "./compact.js";
 export { createCompactorMiddleware } from "./compactor-middleware.js";
 export { descriptor } from "./descriptor.js";
+export { createFactExtractingArchiver } from "./fact-extracting-archiver.js";
+export type {
+  ExtractedFact,
+  FactExtractionConfig,
+  HeuristicPattern,
+} from "./fact-extraction.js";
+export { DEFAULT_HEURISTIC_PATTERNS } from "./fact-extraction.js";
 export { createMemoryCompactionStore } from "./memory-compaction-store.js";
 export type {
   CompactionArchiver,
@@ -18,4 +25,4 @@ export type {
   CompactorConfig,
   OverflowRecoveryConfig,
 } from "./types.js";
-export { COMPACTOR_DEFAULTS } from "./types.js";
+export { COMPACTOR_DEFAULTS, COMPACTOR_PRESETS } from "./types.js";

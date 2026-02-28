@@ -203,6 +203,57 @@ describe("createLlmCompactor", () => {
     }
   });
 
+  test("summary message metadata contains compactionEpoch when provided", async () => {
+    const summarizer = createMockSummarizer("Epoch summary");
+
+    const compactor = createLlmCompactor({
+      summarizer,
+      contextWindowSize: 1000,
+      trigger: { messageCount: 2 },
+      preserveRecent: 1,
+      maxSummaryTokens: 100,
+    });
+
+    const msgs = [userMsg("a"), userMsg("b"), userMsg("c")];
+    const result = await compactor.compact(msgs, 1000, undefined, 3);
+
+    const summaryMsg = result.messages[0];
+    expect(summaryMsg?.metadata?.compactionEpoch).toBe(3);
+  });
+
+  test("summary message metadata omits compactionEpoch when not provided", async () => {
+    const summarizer = createMockSummarizer("No epoch summary");
+
+    const compactor = createLlmCompactor({
+      summarizer,
+      contextWindowSize: 1000,
+      trigger: { messageCount: 2 },
+      preserveRecent: 1,
+      maxSummaryTokens: 100,
+    });
+
+    const msgs = [userMsg("a"), userMsg("b"), userMsg("c")];
+    const result = await compactor.compact(msgs, 1000);
+
+    const summaryMsg = result.messages[0];
+    expect(summaryMsg?.metadata?.compacted).toBe(true);
+    expect(summaryMsg?.metadata?.compactionEpoch).toBeUndefined();
+  });
+
+  test("forceCompact includes compactionEpoch in metadata", async () => {
+    const compactor = createLlmCompactor({
+      summarizer: createMockSummarizer("Forced epoch"),
+      contextWindowSize: 1000,
+      trigger: { messageCount: 100 },
+      preserveRecent: 1,
+      maxSummaryTokens: 100,
+    });
+
+    const msgs = [userMsg("a"), userMsg("b"), userMsg("c")];
+    const result = await compactor.forceCompact(msgs, 1000, undefined, 5);
+    expect(result.messages[0]?.metadata?.compactionEpoch).toBe(5);
+  });
+
   test("uses custom promptBuilder when provided", async () => {
     let customPromptCalled = false;
     const customBuilder = (msgs: readonly InboundMessage[], maxTokens: number): string => {

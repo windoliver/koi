@@ -133,10 +133,17 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
       (f) => f.status === "active" && f.category === category,
     );
 
-    // Jaccard dedup: skip if too similar
+    // Jaccard dedup: skip if too similar (or reinforce if requested)
     for (const old of activeInCategory) {
       if (jaccard(content, old.fact) >= dedupThreshold) {
-        return; // Duplicate — skip
+        if (options?.reinforce === true) {
+          // Reinforce: boost existing fact's salience instead of silently skipping
+          await factStore.updateFact(entity, old.id, {
+            lastAccessed: now.toISOString(),
+            accessCount: old.accessCount + 1,
+          });
+        }
+        return; // Duplicate — skip creating new fact
       }
     }
 

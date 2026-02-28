@@ -312,6 +312,8 @@ export interface MemoryStoreOptions {
   readonly category?: string | undefined;
   /** Entity IDs this memory relates to — enables graph-aware retrieval. */
   readonly relatedEntities?: readonly string[] | undefined;
+  /** When true and a near-duplicate exists, increment its accessCount instead of skipping. */
+  readonly reinforce?: boolean | undefined;
 }
 
 /** Options for MemoryComponent.recall() — namespace isolation. */
