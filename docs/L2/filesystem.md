@@ -409,3 +409,44 @@ L2  @koi/filesystem ◄───────────────────
     ✓ Tool execute returns Result-shaped objects (never throws)
     ✓ Engine adapter agnostic (works with loop, Pi, Claude)
 ```
+
+---
+
+## SkillComponent (skill:filesystem)
+
+`createFileSystemProvider` automatically attaches a `SkillComponent` to the agent under the token `skill:filesystem`. This is pure ECS data — a structured object the middleware stack and orchestrator can read to inject behavioral guidance into the system prompt.
+
+### What the skill teaches
+
+The `FS_SKILL_CONTENT` markdown covers four areas:
+
+| Area | Guidance |
+|------|----------|
+| **fs_edit vs fs_write** | Use `fs_edit` for targeted changes to existing files; `fs_write` only for new files or full replacements |
+| **fs_search vs fs_list** | `fs_search` for content lookup by pattern; `fs_list` for directory structure |
+| **Read before edit** | Always `fs_read` first to confirm `oldText` before calling `fs_edit` |
+| **Path safety** | Always use absolute paths; never construct paths from untrusted input |
+
+### Accessing the skill
+
+```typescript
+import type { SkillComponent } from "@koi/core";
+import { skillToken } from "@koi/core";
+import { FS_SKILL_NAME } from "@koi/filesystem";
+
+const skill = runtime.agent.component<SkillComponent>(skillToken(FS_SKILL_NAME));
+// skill.name     → "filesystem"
+// skill.content  → markdown guidance string
+// skill.tags     → ["filesystem", "best-practices"]
+```
+
+### Using standalone
+
+The `FS_SKILL` constant is exported for use in custom providers:
+
+```typescript
+import { FS_SKILL, FS_SKILL_NAME } from "@koi/filesystem";
+import { skillToken } from "@koi/core";
+
+customTools: () => [[skillToken(FS_SKILL_NAME) as string, FS_SKILL]],
+```

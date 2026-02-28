@@ -63,6 +63,9 @@ export { createBrowserProvider } from "./browser-component-provider.js";
 export type { BrowserOperation } from "./constants.js";
 export {
   ALL_OPERATIONS,
+  BROWSER_SKILL,
+  BROWSER_SKILL_CONTENT,
+  BROWSER_SKILL_NAME,
   BROWSER_SYSTEM_PROMPT,
   DEFAULT_PREFIX,
   EVALUATE_OPERATION,

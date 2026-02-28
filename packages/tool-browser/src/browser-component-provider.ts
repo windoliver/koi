@@ -7,10 +7,12 @@
  */
 
 import type { BrowserDriver, ComponentProvider, Tool, TrustTier } from "@koi/core";
-import { BROWSER, createServiceProvider, toolToken } from "@koi/core";
+import { BROWSER, createServiceProvider, skillToken, toolToken } from "@koi/core";
 import type { BrowserScope } from "@koi/scope";
 import { createScopedBrowser } from "@koi/scope";
 import {
+  BROWSER_SKILL,
+  BROWSER_SKILL_NAME,
   type BrowserOperation,
   EVALUATE_OPERATION,
   EVALUATE_TRUST_TIER,
@@ -204,7 +206,12 @@ export function createBrowserProvider(config: BrowserProviderConfig): ComponentP
       trustTier,
       compiledSecurity,
     );
-    const components = new Map<string, unknown>([[BROWSER as string, backend], ...customEntries]);
+    const skillEntry = [skillToken(BROWSER_SKILL_NAME) as string, BROWSER_SKILL] as const;
+    const components = new Map<string, unknown>([
+      [BROWSER as string, backend],
+      ...customEntries,
+      skillEntry,
+    ]);
     return {
       name: `browser:${backend.name}`,
       attach: async () => components,
@@ -222,7 +229,10 @@ export function createBrowserProvider(config: BrowserProviderConfig): ComponentP
     factories: TOOL_FACTORIES,
     trustTier,
     prefix,
-    customTools: (b) => createCustomToolEntries(operations, b, prefix, trustTier, compiledSecurity),
+    customTools: (b) => [
+      ...createCustomToolEntries(operations, b, prefix, trustTier, compiledSecurity),
+      [skillToken(BROWSER_SKILL_NAME) as string, BROWSER_SKILL],
+    ],
     detach: async (b) => {
       if (b.dispose) await b.dispose();
     },

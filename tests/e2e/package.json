@@ -40,7 +40,10 @@
     "@koi/orchestrator": "workspace:*",
     "@koi/test-utils": "workspace:*",
     "@koi/git-utils": "workspace:*",
-    "@koi/worktree-merge": "workspace:*"
+    "@koi/worktree-merge": "workspace:*",
+    "@koi/filesystem": "workspace:*",
+    "@koi/tool-browser": "workspace:*",
+    "@koi/browser-playwright": "workspace:*"
   },
   "scripts": {
     "test": "bun test",
