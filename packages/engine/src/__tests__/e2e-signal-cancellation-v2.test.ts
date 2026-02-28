@@ -123,10 +123,10 @@ function createTestSandboxMiddleware(opts: {
   readonly onTimeout?: ((toolId: string) => void) | undefined;
 }): KoiMiddleware {
   return createSandboxMiddleware({
-    profileFor: (tier) => makeSandboxProfile(tier, opts.sandboxTimeoutMs),
+    profileFor: (tier: TrustTier) => makeSandboxProfile(tier, opts.sandboxTimeoutMs),
     tierFor: () => "sandbox", // All tools are sandbox-tier in these tests
     timeoutGraceMs: opts.graceMs,
-    onSandboxError: (toolId, _tier, code) => {
+    onSandboxError: (toolId: string, _tier: TrustTier, code: string) => {
       if (code === "TIMEOUT") {
         opts.onTimeout?.(toolId);
       }
@@ -410,6 +410,7 @@ describeE2E("e2e: signal cancellation improvements (Issue #406)", () => {
       const signalInspector: KoiMiddleware = {
         name: "signal-inspector",
         priority: 300, // After sandbox (200), before tool terminal
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: TurnContext,
           request: ToolRequest,
@@ -517,10 +518,16 @@ describeE2E("e2e: signal cancellation improvements (Issue #406)", () => {
       }> = [];
 
       const sandbox = createSandboxMiddleware({
-        profileFor: (tier) => makeSandboxProfile(tier, 30_000),
+        profileFor: (tier: TrustTier) => makeSandboxProfile(tier, 30_000),
         tierFor: () => "sandbox",
         timeoutGraceMs: 5_000,
-        onSandboxMetrics: (toolId, _tier, durationMs, _bytes, truncated) => {
+        onSandboxMetrics: (
+          toolId: string,
+          _tier: TrustTier,
+          durationMs: number,
+          _bytes: number,
+          truncated: boolean,
+        ) => {
           metricsLog.push({ toolId, durationMs, truncated });
         },
       });
@@ -620,6 +627,7 @@ describeE2E("e2e: signal cancellation improvements (Issue #406)", () => {
       const outerMiddleware: KoiMiddleware = {
         name: "outer-observer",
         priority: 100, // Before sandbox (200)
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: TurnContext,
           request: ToolRequest,
@@ -633,6 +641,7 @@ describeE2E("e2e: signal cancellation improvements (Issue #406)", () => {
       const innerMiddleware: KoiMiddleware = {
         name: "inner-observer",
         priority: 300, // After sandbox (200)
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: TurnContext,
           request: ToolRequest,
