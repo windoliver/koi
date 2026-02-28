@@ -8,6 +8,7 @@
     { "path": "packages/agui" },
     { "path": "packages/artifact-client" },
     { "path": "packages/bootstrap" },
+    { "path": "packages/catalog" },
     { "path": "packages/channel-base" },
     { "path": "packages/channel-cli" },
     { "path": "packages/cli" },

@@ -140,6 +140,16 @@ export type {
   ToolResultPayload,
 } from "./capability-registry.js";
 export { isToolCallPayload } from "./capability-registry.js";
+// catalog — unified capability discovery across all sources
+export type {
+  CatalogEntry,
+  CatalogPage,
+  CatalogQuery,
+  CatalogReader,
+  CatalogSource,
+  CatalogSourceError,
+} from "./catalog.js";
+export { ALL_CATALOG_SOURCES, DEFAULT_CATALOG_SEARCH_LIMIT } from "./catalog.js";
 // channel
 export type {
   ChannelAdapter,
