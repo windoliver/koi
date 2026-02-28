@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { InboundMessage } from "@koi/core/message";
+import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
 import { editMessages } from "./edit-messages.js";
-import { heuristicTokenEstimator } from "./estimator.js";
 import type { ResolvedContextEditingConfig } from "./types.js";
 
 /** Helper to create a resolved config with overrides. */
@@ -14,7 +14,7 @@ function makeConfig(
     clearToolCallInputs: false,
     excludeTools: new Set<string>(),
     placeholder: "[cleared]",
-    tokenEstimator: heuristicTokenEstimator,
+    tokenEstimator: HEURISTIC_ESTIMATOR,
     ...overrides,
   };
 }

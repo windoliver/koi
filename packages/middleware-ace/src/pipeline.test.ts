@@ -502,12 +502,17 @@ describe("estimatePlaybookTokens", () => {
     expect(tokens).toBeGreaterThan(0);
   });
 
-  test("uses custom tokenizer when provided", () => {
-    const customTokenizer = mock(() => 42);
-    const config = makeMinimalConfig({ estimateTokens: customTokenizer });
+  test("uses custom tokenizer when provided via tokenEstimator", () => {
+    const customEstimateText = mock(() => 42);
+    const config = makeMinimalConfig({
+      tokenEstimator: {
+        estimateText: customEstimateText,
+        estimateMessages: mock(() => 0),
+      },
+    });
     const pb = makePlaybook();
     const tokens = estimatePlaybookTokens(pb, config);
-    expect(customTokenizer).toHaveBeenCalled();
+    expect(customEstimateText).toHaveBeenCalled();
     expect(tokens).toBe(42);
   });
 });

@@ -1,7 +1,9 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/file-resolution API surface . has stable type surface 1`] = `
-"/**
+"export { CHARS_PER_TOKEN, estimateTokens } from '@koi/token-estimator';
+
+/**
  * Soul directory resolution — reads structured SOUL.md + STYLE.md + INSTRUCTIONS.md directories.
  */
 /** Files to look for in a soul directory, in order. */
@@ -102,12 +104,12 @@ interface ResolveContentOptions {
 declare function resolveContent(options: ResolveContentOptions): Promise<ResolvedContent>;
 
 /**
- * Token estimation and budget enforcement for content resolution.
+ * Token-budget enforcement for content resolution.
+ *
+ * Token estimation delegated to @koi/token-estimator; this module
+ * owns truncation logic only.
  */
-/** Approximate chars per token — same heuristic as @koi/context. */
-declare const CHARS_PER_TOKEN = 4;
-/** Estimates token count from text length. */
-declare function estimateTokens(text: string): number;
+
 /** Result of truncating text to a token budget. */
 interface TruncateResult {
     readonly text: string;
@@ -134,6 +136,6 @@ declare function truncateToTokenBudget(text: string, maxTokens: number, label: s
  */
 declare function truncateSafe(text: string, maxChars: number): string;
 
-export { type BoundedReadResult, CHARS_PER_TOKEN, type ResolveContentOptions, type ResolvedContent, type ResolvedDirectory, SECTION_HEADERS, SOUL_DIR_FILES, type TruncateResult, estimateTokens, isDirectory, isInlineContent, isValidPathSegment, readBoundedFile, resolveContent, resolveDirectoryContent, resolveInputPath, truncateSafe, truncateToTokenBudget };
+export { type BoundedReadResult, type ResolveContentOptions, type ResolvedContent, type ResolvedDirectory, SECTION_HEADERS, SOUL_DIR_FILES, type TruncateResult, isDirectory, isInlineContent, isValidPathSegment, readBoundedFile, resolveContent, resolveDirectoryContent, resolveInputPath, truncateSafe, truncateToTokenBudget };
 "
 `;

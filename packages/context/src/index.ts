@@ -8,9 +8,14 @@
  * L2 package — depends on @koi/core only.
  */
 
+/** @deprecated Use HEURISTIC_ESTIMATOR from @koi/token-estimator instead. */
+export {
+  CHARS_PER_TOKEN,
+  HEURISTIC_ESTIMATOR,
+  HEURISTIC_ESTIMATOR as heuristicTokenEstimator,
+} from "@koi/token-estimator";
 export { validateContextConfig } from "./config.js";
 export { descriptor } from "./descriptor.js";
-export { CHARS_PER_TOKEN, heuristicTokenEstimator } from "./estimator.js";
 export { createContextExtension } from "./extension.js";
 export type { ContextHydratorMiddleware, ContextHydratorOptions } from "./hydrator.js";
 export { createContextHydrator } from "./hydrator.js";

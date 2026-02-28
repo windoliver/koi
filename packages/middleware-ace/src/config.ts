@@ -5,6 +5,7 @@
  * No Zod dependency — all fields are interfaces or primitives.
  */
 
+import type { TokenEstimator } from "@koi/core/context";
 import type { KoiError, Result } from "@koi/core/errors";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { CuratorAdapter } from "./curator.js";
@@ -54,7 +55,7 @@ export interface AceConfig {
   readonly curator?: CuratorAdapter;
   readonly structuredPlaybookStore?: StructuredPlaybookStore;
   readonly playbookTokenBudget?: number;
-  readonly estimateTokens?: (text: string) => number;
+  readonly tokenEstimator?: TokenEstimator;
 
   // Testability
   readonly clock?: () => number;
@@ -209,12 +210,14 @@ export function validateAceConfig(config: unknown): Result<AceConfig, KoiError> 
     }
   }
 
-  // Optional function: estimateTokens
-  if (c.estimateTokens !== undefined && typeof c.estimateTokens !== "function") {
-    return {
-      ok: false,
-      error: validationError("estimateTokens must be a function"),
-    };
+  // Optional: tokenEstimator (duck-typed TokenEstimator)
+  if (c.tokenEstimator !== undefined) {
+    if (!isStoreLike(c.tokenEstimator, ["estimateText", "estimateMessages"])) {
+      return {
+        ok: false,
+        error: validationError("tokenEstimator must implement estimateText and estimateMessages"),
+      };
+    }
   }
 
   // Optional function: scorer

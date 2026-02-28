@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
+    "@koi/token-estimator": "workspace:*",
     "playwright": "^1.49.0"
   }
 }

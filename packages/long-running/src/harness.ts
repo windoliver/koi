@@ -30,6 +30,7 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { chainId, sessionId as createSessionId, validation } from "@koi/core";
+import { estimateTokens } from "@koi/token-estimator";
 import { computeCheckpointId, shouldSoftCheckpoint } from "./checkpoint-policy.js";
 import { buildInitialPrompt, buildResumeContext } from "./context-bridge.js";
 import type {
@@ -330,7 +331,7 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
               narrative: sessionResult.summary,
               sessionSeq: currentSnapshot.sessionSeq,
               completedTaskIds: currentSnapshot.taskBoard.results.map((r: TaskResult) => r.taskId),
-              estimatedTokens: Math.ceil(sessionResult.summary.length / 4),
+              estimatedTokens: estimateTokens(sessionResult.summary),
               generatedAt: Date.now(),
             },
           ]

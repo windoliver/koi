@@ -31,7 +31,7 @@ export { applyOperations, createDefaultCurator } from "./curator.js";
 export { descriptor } from "./descriptor.js";
 
 // Injector
-export { estimateTokens, selectPlaybooks } from "./injector.js";
+export { selectPlaybooks } from "./injector.js";
 
 // Pipeline
 export type { ConsolidationPipeline } from "./pipeline.js";

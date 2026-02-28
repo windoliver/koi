@@ -7,6 +7,7 @@
  */
 
 import type { JsonObject, ModelRequest } from "@koi/core";
+import { CHARS_PER_TOKEN } from "@koi/token-estimator";
 import type { CascadeClassifier, ClassificationResult, ComplexityTier } from "./cascade-types.js";
 
 // ---------------------------------------------------------------------------
@@ -264,7 +265,6 @@ const DEFAULT_WEIGHTS: Readonly<Record<DimensionKey, number>> = {
 
 const DEFAULT_MEDIUM_THRESHOLD = 0.25;
 const DEFAULT_HEAVY_THRESHOLD = 0.6;
-const DEFAULT_CHARS_PER_TOKEN = 4;
 const DEFAULT_HEAVY_TOKEN_THRESHOLD = 50_000;
 const DEFAULT_HEAVY_REASONING_KEYWORD_COUNT = 2;
 
@@ -404,7 +404,7 @@ export function createComplexityClassifier(
 ): CascadeClassifier {
   const mediumThreshold = options?.tierThresholds?.medium ?? DEFAULT_MEDIUM_THRESHOLD;
   const heavyThreshold = options?.tierThresholds?.heavy ?? DEFAULT_HEAVY_THRESHOLD;
-  const charsPerToken = options?.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN;
+  const charsPerToken = options?.charsPerToken ?? CHARS_PER_TOKEN;
   const heavyTokenThreshold = options?.heavyTokenThreshold ?? DEFAULT_HEAVY_TOKEN_THRESHOLD;
   const heavyReasoningCount =
     options?.heavyReasoningKeywordCount ?? DEFAULT_HEAVY_REASONING_KEYWORD_COUNT;
