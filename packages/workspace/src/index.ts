@@ -5,6 +5,8 @@
  * via a pluggable WorkspaceBackend strategy (git worktrees, temp dirs, etc.).
  */
 
+export type { ContainerScope, DockerWorkspaceBackendConfig, MountMode } from "./docker-backend.js";
+export { createDockerWorkspaceBackend, createFilesystemPolicy } from "./docker-backend.js";
 export type { GitWorktreeBackendConfig } from "./git-backend.js";
 export { createGitWorktreeBackend } from "./git-backend.js";
 export { createWorkspaceProvider } from "./provider.js";

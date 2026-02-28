@@ -44,6 +44,7 @@ function createMockBackend(): WorkspaceBackend & {
 
   return {
     name: "mock",
+    isSandboxed: false,
     createCalls,
     disposeCalls,
 
@@ -162,6 +163,7 @@ describe("WorkspaceProvider.attach", () => {
   it("throws when backend.create fails", async () => {
     const failBackend: WorkspaceBackend = {
       name: "fail",
+      isSandboxed: false,
       create: async () => ({
         ok: false as const,
         error: { code: "EXTERNAL" as const, message: "disk full", retryable: false },
