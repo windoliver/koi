@@ -34,10 +34,13 @@ import type {
 } from "@koi/core";
 import { toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
+import { descriptor as externalEngineDescriptor } from "@koi/engine-external";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { createPiAdapter } from "@koi/engine-pi";
 import { loadManifest } from "@koi/manifest";
 import { createAnthropicAdapter } from "@koi/model-router";
+import type { ResolutionContext } from "@koi/resolve";
+import { createRegistry, resolveEngine } from "@koi/resolve";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
 
 // ---------------------------------------------------------------------------
@@ -973,63 +976,47 @@ describeCodex("e2e: Codex CLI as external engine through full pipeline", () => {
   );
 });
 
-// Error-path tests don't need a real API key — they fail before model instantiation
-describe("resolve pipeline error paths (deterministic)", () => {
-  test("resolveAgent with engine string shorthand fails without command option", async () => {
-    const dir = makeTempDir();
-    tempDirs.push(dir);
-    writeFileSync(
-      join(dir, "koi.yaml"),
-      [
-        "name: engine-shorthand-test",
-        "version: 0.1.0",
-        `model: "anthropic:${E2E_MODEL}"`,
-        'engine: "external"',
-      ].join("\n"),
-    );
+// Engine error-path tests: test resolveEngine directly to avoid model resolution dependency
+describe("engine resolution error paths (deterministic)", () => {
+  test("engine string shorthand without command option fails validation", async () => {
+    const registryResult = createRegistry([externalEngineDescriptor]);
+    expect(registryResult.ok).toBe(true);
+    if (!registryResult.ok) return;
 
-    const loadResult = await loadManifest(join(dir, "koi.yaml"));
-    expect(loadResult.ok).toBe(true);
-    if (!loadResult.ok) return;
+    const context: ResolutionContext = {
+      manifestDir: "/tmp",
+      manifest: { name: "test", version: "0.1.0", model: { name: "test:model" } },
+      env: {},
+    };
 
-    const resolved = await resolveAgent({
-      manifestPath: join(dir, "koi.yaml"),
-      manifest: loadResult.value.manifest,
-    });
+    // String shorthand "external" → no options → validation should fail
+    const result = await resolveEngine("external", registryResult.value, context);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
 
-    // Should fail — engine "external" requires a command option
-    expect(resolved.ok).toBe(false);
-    if (resolved.ok) return;
-
-    expect(resolved.error.message).toContain("command");
+    expect(result.error.message).toContain("command");
   });
 
-  test("resolveAgent returns error for unknown engine name", async () => {
-    const dir = makeTempDir();
-    tempDirs.push(dir);
-    writeFileSync(
-      join(dir, "koi.yaml"),
-      [
-        "name: unknown-engine-test",
-        "version: 0.1.0",
-        `model: "anthropic:${E2E_MODEL}"`,
-        "engine:",
-        '  name: "nonexistent-engine"',
-      ].join("\n"),
+  test("unknown engine name returns NOT_FOUND error", async () => {
+    const registryResult = createRegistry([externalEngineDescriptor]);
+    expect(registryResult.ok).toBe(true);
+    if (!registryResult.ok) return;
+
+    const context: ResolutionContext = {
+      manifestDir: "/tmp",
+      manifest: { name: "test", version: "0.1.0", model: { name: "test:model" } },
+      env: {},
+    };
+
+    // Object form with unknown engine name
+    const result = await resolveEngine(
+      { name: "nonexistent-engine" },
+      registryResult.value,
+      context,
     );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
 
-    const loadResult = await loadManifest(join(dir, "koi.yaml"));
-    expect(loadResult.ok).toBe(true);
-    if (!loadResult.ok) return;
-
-    const resolved = await resolveAgent({
-      manifestPath: join(dir, "koi.yaml"),
-      manifest: loadResult.value.manifest,
-    });
-
-    expect(resolved.ok).toBe(false);
-    if (resolved.ok) return;
-
-    expect(resolved.error.message).toContain("nonexistent-engine");
+    expect(result.error.message).toContain("nonexistent-engine");
   });
 });
