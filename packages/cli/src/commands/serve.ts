@@ -9,6 +9,7 @@
  */
 
 import { createContextExtension } from "@koi/context";
+import type { ContentBlock, EngineInput } from "@koi/core";
 import { createHealthServer } from "@koi/deploy";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
@@ -16,6 +17,17 @@ import { loadManifest } from "@koi/manifest";
 import { createShutdownHandler, EXIT_CONFIG, EXIT_ERROR } from "@koi/shutdown";
 import type { ServeFlags } from "../args.js";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
+
+// ---------------------------------------------------------------------------
+// Text extraction helper
+// ---------------------------------------------------------------------------
+
+function extractTextFromBlocks(blocks: readonly ContentBlock[]): string {
+  return blocks
+    .filter((b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text")
+    .map((b) => b.text)
+    .join("\n");
+}
 
 // ---------------------------------------------------------------------------
 // Main command
@@ -65,7 +77,39 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     extensions,
   });
 
-  // 6. Start health server
+  // 6b. Connect resolved channels and wire 1:1 response routing
+  // Empty fallback is intentional — headless serve mode has no stdin/stdout channel
+  const channels = resolved.value.channels ?? [];
+  for (const ch of channels) {
+    await ch.connect();
+  }
+
+  const unsubscribers = channels.map((ch) =>
+    ch.onMessage(async (inbound) => {
+      const text = extractTextFromBlocks(inbound.content);
+      if (text.trim() === "") return;
+
+      const input: EngineInput = { kind: "text", text };
+      const blocks: ContentBlock[] = [];
+
+      try {
+        for await (const event of runtime.run(input)) {
+          if (event.kind === "text_delta") {
+            blocks.push({ kind: "text", text: event.delta });
+          }
+        }
+
+        if (blocks.length > 0) {
+          await ch.send({ content: blocks });
+        }
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`Channel "${ch.name}" error: ${message}\n`);
+      }
+    }),
+  );
+
+  // 7. Start health server
   const healthServer = createHealthServer({
     port: healthPort,
     onReady: () => true, // Agent is ready once serve starts
@@ -82,7 +126,7 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     return; // unreachable but satisfies TypeScript
   }
 
-  // 7. Set up graceful shutdown
+  // 8. Set up graceful shutdown
   const controller = new AbortController();
 
   const shutdown = createShutdownHandler(
@@ -94,6 +138,12 @@ export async function runServe(flags: ServeFlags): Promise<void> {
         // Give the runtime a moment to finish current work
       },
       async onCleanup() {
+        for (const unsub of unsubscribers) {
+          unsub();
+        }
+        for (const ch of channels) {
+          await ch.disconnect();
+        }
         healthServer.stop();
         await runtime.dispose();
       },
