@@ -1,45 +1,11 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/node API surface . has stable type surface 1`] = `
-"import { JsonObject } from '@koi/core/common';
-import { ContentBlock } from '@koi/core/message';
-import { AdvertisedTool, SessionPersistence, CapacityReport, SessionCheckpoint, PendingFrame, RecoveryPlan, SessionRecord, Result, KoiError, ProcessId, AgentManifest, EngineAdapter, ComponentProvider, Agent, AgentId, Tool, SourceBundle, ScopeChecker, DelegationScope } from '@koi/core';
+"import { AdvertisedTool, SessionPersistence, CapacityReport, SessionCheckpoint, PendingFrame, RecoveryPlan, SessionRecord, Result, KoiError, ProcessId, AgentManifest, EngineAdapter, ComponentProvider, Agent, AgentId, Tool, SourceBundle, ScopeChecker, DelegationScope } from '@koi/core';
 export { AdvertisedTool, CapacityReport, ToolCallPayload, ToolErrorPayload, ToolResultPayload, isToolCallPayload } from '@koi/core';
+import { JsonObject } from '@koi/core/common';
+import { ContentBlock } from '@koi/core/message';
 export { ShutdownCallbacks, ShutdownEmit, ShutdownHandler, createShutdownHandler } from '@koi/shutdown';
-
-/**
- * Queue-per-agent inbox for buffering inbound \`agent:message\` frames.
- *
- * Each agent gets an independent FIFO queue. When a queue exceeds
- * MAX_INBOX_DEPTH the oldest message is dropped to bound memory.
- */
-
-declare const MAX_INBOX_DEPTH: 100;
-/** Payload delivered via an \`agent:message\` frame. */
-interface AgentMessagePayload {
-    readonly content: readonly ContentBlock[];
-    readonly senderId?: string | undefined;
-    readonly metadata?: JsonObject | undefined;
-}
-/** A queued message with reception timestamp. */
-interface QueuedAgentMessage {
-    readonly payload: AgentMessagePayload;
-    readonly receivedAt: number;
-}
-/** Per-agent message inbox with FIFO semantics. */
-interface AgentInbox {
-    /** Append a message to the agent's queue. Drops oldest if over capacity. */
-    readonly push: (agentId: string, payload: AgentMessagePayload) => void;
-    /** Return all queued messages and clear the queue. */
-    readonly drain: (agentId: string) => readonly QueuedAgentMessage[];
-    /** Number of messages currently queued for the agent. */
-    readonly depth: (agentId: string) => number;
-    /** Remove all queued messages for the agent. */
-    readonly clear: (agentId: string) => void;
-}
-/** Validates that a value conforms to AgentMessagePayload at runtime. */
-declare function isAgentMessagePayload(value: unknown): value is AgentMessagePayload;
-declare function createAgentInbox(): AgentInbox;
 
 /**
  * @koi/node — Configuration schema (Zod) and domain types.
@@ -222,6 +188,40 @@ interface StatusReporter {
     readonly collect: () => readonly AgentStatusPayload[];
 }
 declare function createStatusReporter(nodeId: string, host: AgentHost, sendFrame: (frame: NodeFrame) => void, intervalMs?: number): StatusReporter;
+
+/**
+ * Queue-per-agent inbox for buffering inbound \`agent:message\` frames.
+ *
+ * Each agent gets an independent FIFO queue. When a queue exceeds
+ * MAX_INBOX_DEPTH the oldest message is dropped to bound memory.
+ */
+
+declare const MAX_INBOX_DEPTH: 100;
+/** Payload delivered via an \`agent:message\` frame. */
+interface AgentMessagePayload {
+    readonly content: readonly ContentBlock[];
+    readonly senderId?: string | undefined;
+    readonly metadata?: JsonObject | undefined;
+}
+/** A queued message with reception timestamp. */
+interface QueuedAgentMessage {
+    readonly payload: AgentMessagePayload;
+    readonly receivedAt: number;
+}
+/** Per-agent message inbox with FIFO semantics. */
+interface AgentInbox {
+    /** Append a message to the agent's queue. Drops oldest if over capacity. */
+    readonly push: (agentId: string, payload: AgentMessagePayload) => void;
+    /** Return all queued messages and clear the queue. */
+    readonly drain: (agentId: string) => readonly QueuedAgentMessage[];
+    /** Number of messages currently queued for the agent. */
+    readonly depth: (agentId: string) => number;
+    /** Remove all queued messages for the agent. */
+    readonly clear: (agentId: string) => void;
+}
+/** Validates that a value conforms to AgentMessagePayload at runtime. */
+declare function isAgentMessagePayload(value: unknown): value is AgentMessagePayload;
+declare function createAgentInbox(): AgentInbox;
 
 /**
  * Per-agent outbound/inbound frame sequence counters.
