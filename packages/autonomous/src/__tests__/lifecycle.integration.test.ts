@@ -47,7 +47,10 @@ interface ControllableHarness {
 function createControllableHarness(): ControllableHarness {
   let currentPhase = "idle";
   let resumes = 0;
-  const mw: KoiMiddleware = { name: "controllable-harness-mw" };
+  const mw: KoiMiddleware = {
+    name: "controllable-harness-mw",
+    describeCapabilities: () => undefined,
+  };
   const disposeCalls: string[] = [];
 
   const harnessId = "integration-test" as LongRunningHarness["harnessId"];
@@ -219,7 +222,7 @@ describe("AutonomousAgent lifecycle integration", () => {
       delay: immediateDelay,
     });
 
-    const compactor: KoiMiddleware = { name: "compactor" };
+    const compactor: KoiMiddleware = { name: "compactor", describeCapabilities: () => undefined };
     const agent = createAutonomousAgent({
       harness: ctrl.harness,
       scheduler,

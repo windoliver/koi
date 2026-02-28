@@ -457,6 +457,7 @@ describeE2E("e2e: registry-store through full L1 runtime assembly", () => {
       const toolCallNames: string[] = [];
       const observer: KoiMiddleware = {
         name: "e2e-observer",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: unknown,
           req: ToolRequest,

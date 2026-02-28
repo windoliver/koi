@@ -65,6 +65,17 @@ export function validateWorkspaceConfig(
     };
   }
 
+  if (raw.requireSandbox === true && !raw.backend.isSandboxed) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: `requireSandbox is enabled but backend '${raw.backend.name}' does not provide container isolation`,
+        retryable: false,
+      },
+    };
+  }
+
   return {
     ok: true,
     value: {

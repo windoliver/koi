@@ -27,6 +27,8 @@ export interface WorkspaceInfo {
  */
 export interface WorkspaceBackend {
   readonly name: string;
+  /** Whether this backend provides OS-level container isolation. */
+  readonly isSandboxed: boolean;
   readonly create: (
     agentId: AgentId,
     config: ResolvedWorkspaceConfig,
@@ -49,6 +51,11 @@ export interface WorkspaceProviderConfig {
   readonly postCreate?: (workspace: WorkspaceInfo) => Promise<void>;
   readonly pruneStale?: () => Promise<void>;
   readonly cleanupTimeoutMs?: number;
+  /**
+   * When `true`, validation rejects backends that are not container-based.
+   * Default: `false`.
+   */
+  readonly requireSandbox?: boolean;
 }
 
 /** Validated configuration with defaults applied. */

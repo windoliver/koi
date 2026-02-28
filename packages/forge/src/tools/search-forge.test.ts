@@ -340,4 +340,129 @@ describe("createSearchForgeTool", () => {
     expect(ids).toContain(brickId("b1"));
     expect(ids).toContain(brickId("b2"));
   });
+
+  // ---------------------------------------------------------------------------
+  // Fitness-based ranking
+  // ---------------------------------------------------------------------------
+
+  test("ranks bricks with fitness higher than bricks without", async () => {
+    const store = createInMemoryForgeStore();
+    const now = Date.now();
+    await store.save(
+      createToolBrick({
+        id: brickId("b_unused"),
+        name: "unused-brick",
+      }),
+    );
+    await store.save(
+      createToolBrick({
+        id: brickId("b_used"),
+        name: "used-brick",
+        usageCount: 10,
+        fitness: {
+          successCount: 10,
+          errorCount: 0,
+          latency: { samples: [50], count: 1, cap: 200 },
+          lastUsedAt: now,
+        },
+      }),
+    );
+
+    const tool = createSearchForgeTool(createDeps({ store }));
+    const result = (await tool.execute({})) as {
+      readonly ok: true;
+      readonly value: readonly BrickArtifact[];
+    };
+    expect(result.ok).toBe(true);
+    expect(result.value).toHaveLength(2);
+    expect(result.value[0]?.name).toBe("used-brick");
+    expect(result.value[1]?.name).toBe("unused-brick");
+  });
+
+  test("orderBy 'usage' sorts by usageCount descending", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: brickId("b_few"), name: "few", usageCount: 2 }));
+    await store.save(createToolBrick({ id: brickId("b_many"), name: "many", usageCount: 50 }));
+
+    const tool = createSearchForgeTool(createDeps({ store }));
+    const result = (await tool.execute({ orderBy: "usage" })) as {
+      readonly ok: true;
+      readonly value: readonly BrickArtifact[];
+    };
+    expect(result.ok).toBe(true);
+    expect(result.value[0]?.name).toBe("many");
+    expect(result.value[1]?.name).toBe("few");
+  });
+
+  test("minFitnessScore filters out zero-fitness bricks", async () => {
+    const store = createInMemoryForgeStore();
+    const now = Date.now();
+    await store.save(createToolBrick({ id: brickId("b_no"), name: "no-fitness" }));
+    await store.save(
+      createToolBrick({
+        id: brickId("b_yes"),
+        name: "has-fitness",
+        usageCount: 10,
+        fitness: {
+          successCount: 10,
+          errorCount: 0,
+          latency: { samples: [50], count: 1, cap: 200 },
+          lastUsedAt: now,
+        },
+      }),
+    );
+
+    const tool = createSearchForgeTool(createDeps({ store }));
+    const result = (await tool.execute({ minFitnessScore: 0.01 })) as {
+      readonly ok: true;
+      readonly value: readonly BrickArtifact[];
+    };
+    expect(result.ok).toBe(true);
+    expect(result.value).toHaveLength(1);
+    expect(result.value[0]?.name).toBe("has-fitness");
+  });
+
+  test("invalid orderBy defaults to fitness", async () => {
+    const store = createInMemoryForgeStore();
+    const now = Date.now();
+    await store.save(
+      createToolBrick({
+        id: brickId("b1"),
+        name: "brick-a",
+        usageCount: 5,
+        fitness: {
+          successCount: 5,
+          errorCount: 0,
+          latency: { samples: [50], count: 1, cap: 200 },
+          lastUsedAt: now,
+        },
+      }),
+    );
+
+    const tool = createSearchForgeTool(createDeps({ store }));
+    const result = (await tool.execute({ orderBy: "invalid" })) as {
+      readonly ok: true;
+      readonly value: readonly BrickArtifact[];
+    };
+    expect(result.ok).toBe(true);
+    expect(result.value).toHaveLength(1);
+  });
+
+  test("tiebreak sorts alphabetically by name", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: brickId("b1"), name: "charlie" }));
+    await store.save(createToolBrick({ id: brickId("b2"), name: "alpha" }));
+    await store.save(createToolBrick({ id: brickId("b3"), name: "bravo" }));
+
+    const tool = createSearchForgeTool(createDeps({ store }));
+    const result = (await tool.execute({})) as {
+      readonly ok: true;
+      readonly value: readonly BrickArtifact[];
+    };
+    expect(result.ok).toBe(true);
+    // All have zero fitness, so tiebreak by name
+    expect(result.value[0]?.name).toBe("alpha");
+    expect(result.value[1]?.name).toBe("bravo");
+    expect(result.value[2]?.name).toBe("charlie");
+  });
 });

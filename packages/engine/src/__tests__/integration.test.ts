@@ -153,6 +153,7 @@ describe("middleware observation integration", () => {
 
     const observer: KoiMiddleware = {
       name: "observer",
+      describeCapabilities: () => undefined,
       onSessionStart: async () => {
         hookOrder.push("session_start");
       },
@@ -183,6 +184,7 @@ describe("middleware observation integration", () => {
 
     const mw1: KoiMiddleware = {
       name: "first",
+      describeCapabilities: () => undefined,
       onSessionStart: async () => {
         hookOrder.push("first:start");
       },
@@ -193,6 +195,7 @@ describe("middleware observation integration", () => {
 
     const mw2: KoiMiddleware = {
       name: "second",
+      describeCapabilities: () => undefined,
       onSessionStart: async () => {
         hookOrder.push("second:start");
       },
@@ -239,7 +242,7 @@ describe("error propagation integration", () => {
     const runtime = await createKoi({
       manifest: testManifest(),
       adapter: crashingAdapter("crash"),
-      middleware: [{ name: "cleanup", onSessionEnd }],
+      middleware: [{ name: "cleanup", describeCapabilities: () => undefined, onSessionEnd }],
     });
 
     try {
@@ -382,6 +385,7 @@ describe("cooperating adapter lifecycle integration", () => {
     // Use middleware to observe lifecycle transitions
     const observer: KoiMiddleware = {
       name: "state-observer",
+      describeCapabilities: () => undefined,
       wrapModelCall: async (_ctx, req, next) => {
         return next(req);
       },
@@ -414,6 +418,7 @@ describe("cooperating adapter lifecycle integration", () => {
       middleware: [
         {
           name: "spy-mw",
+          describeCapabilities: () => undefined,
           wrapModelCall: wrapModelCallSpy,
         },
       ],
@@ -546,6 +551,7 @@ describe("streaming lifecycle integration", () => {
     const streamWrapCalled = mock(() => {});
     const observer: KoiMiddleware = {
       name: "stream-observer",
+      describeCapabilities: () => undefined,
       wrapModelStream: (_ctx, req, next) => ({
         async *[Symbol.asyncIterator]() {
           streamWrapCalled();
@@ -680,6 +686,7 @@ describe("HITL approval lifecycle integration", () => {
   /** HITL gating middleware — asks requestApproval before every tool call. */
   const hitlGateMw: KoiMiddleware = {
     name: "hitl-gate",
+    describeCapabilities: () => undefined,
     wrapToolCall: async (ctx, req, next) => {
       if (ctx.requestApproval) {
         const decision = await ctx.requestApproval({

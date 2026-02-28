@@ -1,8 +1,23 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/validation API surface . has stable type surface 1`] = `
-"import { Result, BrickArtifact, KoiError, BrickArtifactBase, ForgeQuery } from '@koi/core';
+"import { BrickArtifactBase, BrickUpdate, Result, BrickArtifact, KoiError, BrickFitnessMetrics, LatencySampler, ForgeQuery } from '@koi/core';
 import { z } from 'zod';
+
+/**
+ * Brick update applicator — immutable merge of BrickUpdate onto a BrickArtifact.
+ *
+ * Replaces the repeated conditional-spread pattern across store implementations
+ * (memory-store, fs-store, overlay-store). Single source of truth for which
+ * BrickUpdate fields are applied and how.
+ */
+
+/**
+ * Applies defined fields from \`updates\` to \`existing\`, returning a new object.
+ * Never mutates either argument. Only fields explicitly present (not undefined)
+ * in \`updates\` override the corresponding field in \`existing\`.
+ */
+declare function applyBrickUpdate<T extends BrickArtifactBase>(existing: T, updates: BrickUpdate): T;
 
 /**
  * Lightweight type guard for BrickArtifact loaded from storage.
@@ -19,6 +34,71 @@ import { z } from 'zod';
  * @param source - Backend-agnostic context for error messages (file path, DB row id, etc.)
  */
 declare function validateBrickArtifact(data: unknown, source: string): Result<BrickArtifact, KoiError>;
+
+/**
+ * Fitness scoring — multiplicative composite score for brick discovery ranking.
+ *
+ * Pure function operating on BrickFitnessMetrics from @koi/core.
+ * All factors are in [0, 1]; the composite score is their product clamped to [0, 1].
+ *
+ * Formula:
+ *   successRate^exponent × recencyDecay × usageNorm × latencyFactor
+ */
+
+interface FitnessScoringConfig {
+    /** Half-life in days for the recency decay factor. Default: 30. */
+    readonly halfLifeDays: number;
+    /** Usage count at which usageNorm reaches ~1. Default: 100. */
+    readonly usageSaturation: number;
+    /** Exponent applied to success rate. Higher = harsher penalty for errors. Default: 2.0. */
+    readonly successExponent: number;
+    /** Blend factor for P99 latency penalty (0 = ignore latency). Default: 0.1. */
+    readonly latencyWeight: number;
+    /** Latency threshold in ms above which the penalty is maximal. Default: 5000. */
+    readonly maxAcceptableLatencyMs: number;
+}
+declare const DEFAULT_FITNESS_SCORING_CONFIG: FitnessScoringConfig;
+/**
+ * Computes a composite fitness score for a brick based on its runtime metrics.
+ *
+ * Returns 0 for bricks with zero usage (no data = no fitness signal).
+ * Returns a value in (0, 1] for bricks with usage data.
+ *
+ * @param metrics - Runtime fitness metrics from the brick.
+ * @param nowMs - Current time in epoch ms (injectable for testability).
+ * @param config - Optional partial config (merged with defaults).
+ */
+declare function computeBrickFitness(metrics: BrickFitnessMetrics, nowMs: number, config?: Partial<FitnessScoringConfig>): number;
+
+/**
+ * Bounded sorted-sample buffer for percentile estimation.
+ *
+ * Pure functions — no I/O, no side effects. Operates on LatencySampler
+ * from @koi/core. Uses reservoir sampling when the sample buffer is full,
+ * keeping samples sorted for O(1) percentile lookups.
+ */
+
+/** Creates an empty latency sampler with the given capacity. */
+declare function createLatencySampler(cap?: number): LatencySampler;
+/**
+ * Records a latency sample. Below cap: always inserts (sorted).
+ * At/above cap: reservoir sampling — replaces a random existing sample
+ * with probability \`cap / count\`, maintaining statistical representativeness.
+ */
+declare function recordLatency(sampler: LatencySampler, valueMs: number): LatencySampler;
+/**
+ * Computes a percentile from the sorted sample buffer.
+ * Returns undefined if the buffer is empty.
+ *
+ * @param p - Percentile in [0, 1], e.g. 0.99 for P99.
+ */
+declare function computePercentile(sampler: LatencySampler, p: number): number | undefined;
+/**
+ * Merges two samplers into one. The resulting sampler has capacity
+ * equal to the max of both inputs. Samples are merged and truncated
+ * to fit within the capacity using uniform random selection.
+ */
+declare function mergeSamplers(a: LatencySampler, b: LatencySampler): LatencySampler;
 
 /**
  * Pure query-matching logic for ForgeStore.search().
@@ -40,6 +120,29 @@ declare function matchesBrickQuery(brick: BrickArtifactBase, query: ForgeQuery):
 type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
 declare const SEVERITY_ORDER: Readonly<Record<Severity, number>>;
 declare function severityAtOrAbove(severity: Severity, threshold: Severity): boolean;
+
+/**
+ * Brick sorting — query-time ranking for search_forge results.
+ *
+ * Pure function. Computes fitness scores at query time (always fresh),
+ * applies minFitnessScore filtering, and sorts by the requested orderBy.
+ * Tiebreak: alphabetical by brick name.
+ */
+
+interface SortBricksOptions {
+    readonly nowMs: number;
+    readonly fitnessConfig?: Partial<FitnessScoringConfig>;
+}
+/**
+ * Sorts and optionally filters bricks based on ForgeQuery ordering options.
+ *
+ * - Computes fitness per brick at query time (no stale cached scores).
+ * - Filters by \`minFitnessScore\` if specified in the query.
+ * - Sorts by \`orderBy\` (default: \`"fitness"\`).
+ * - Tiebreak: alphabetical by \`brick.name\`.
+ * - Returns a new array — never mutates the input.
+ */
+declare function sortBricks<T extends BrickArtifactBase>(bricks: readonly T[], query: ForgeQuery, options: SortBricksOptions): readonly T[];
 
 /**
  * Shared Zod → KoiError validation utilities.
@@ -64,6 +167,6 @@ declare function zodToKoiError(zodError: z.core.$ZodError, prefix?: string): Koi
  */
 declare function validateWith<T>(schema: z.ZodType<T>, raw: unknown, prefix?: string): Result<T, KoiError>;
 
-export { SEVERITY_ORDER, type Severity, matchesBrickQuery, severityAtOrAbove, validateBrickArtifact, validateWith, zodToKoiError };
+export { DEFAULT_FITNESS_SCORING_CONFIG, type FitnessScoringConfig, SEVERITY_ORDER, type Severity, type SortBricksOptions, applyBrickUpdate, computeBrickFitness, computePercentile, createLatencySampler, matchesBrickQuery, mergeSamplers, recordLatency, severityAtOrAbove, sortBricks, validateBrickArtifact, validateWith, zodToKoiError };
 "
 `;

@@ -503,6 +503,7 @@ describeRealLLM("e2e: approval cache with real LLM (createPiAdapter)", () => {
       const toolCallsSeen: string[] = [];
       const observerMw: KoiMiddleware = {
         name: "tool-observer",
+        describeCapabilities: () => undefined,
         priority: 200, // After permissions (100)
         wrapToolCall: async (
           _ctx: unknown,

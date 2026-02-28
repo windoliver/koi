@@ -22,6 +22,11 @@ export function createModelRouterMiddleware(router: ModelRouter): KoiMiddleware 
     name: "model-router",
     priority: 900,
 
+    describeCapabilities: () => ({
+      label: "model-router",
+      description: "Model routing with retry, fallback, and circuit-breaker active",
+    }),
+
     async wrapModelCall(_ctx, request, _next) {
       const result = await router.route(request);
       if (!result.ok) {

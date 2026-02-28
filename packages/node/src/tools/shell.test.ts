@@ -104,6 +104,34 @@ describe("shell tool signal cancellation", () => {
     // Process was killed — either via signal abort handler or timeout check
     // The exact result depends on timing, but it should not take 10 seconds
   });
+
+  it("prefers signal-based cancellation over internal timeout when signal provided", async () => {
+    const tool = createShellTool();
+    const signal = AbortSignal.timeout(100);
+
+    const start = Date.now();
+    await tool.execute({ command: "sleep 10", timeoutMs: 30_000 }, { signal });
+    const elapsed = Date.now() - start;
+
+    // Signal should cancel well before the 30s internal timeout
+    expect(elapsed).toBeLessThan(5_000);
+  });
+
+  it("falls back to internal timeout when no signal provided", async () => {
+    const tool = createShellTool();
+
+    const start = Date.now();
+    const result = (await tool.execute({ command: "sleep 10", timeoutMs: 100 })) as {
+      error: string;
+      timedOut: boolean;
+    };
+    const elapsed = Date.now() - start;
+
+    // Internal timeout should fire at ~100ms
+    expect(result.timedOut).toBe(true);
+    expect(result.error).toContain("timed out");
+    expect(elapsed).toBeLessThan(5_000);
+  });
 });
 
 // ---------------------------------------------------------------------------

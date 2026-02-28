@@ -293,6 +293,7 @@ describeE2E("e2e: @koi/middleware-report through full L1 runtime", () => {
 
       const progressChecker: KoiMiddleware = {
         name: "progress-checker",
+        describeCapabilities: () => undefined,
         priority: 900, // runs after report middleware (275)
         onAfterTurn: async () => {
           midRunProgress = handle.getProgress();
@@ -424,6 +425,7 @@ describeE2E("e2e: @koi/middleware-report through full L1 runtime", () => {
 
       const lifecycleObserver: KoiMiddleware = {
         name: "lifecycle-observer",
+        describeCapabilities: () => undefined,
         priority: 100, // outer layer
         onSessionStart: async () => {
           hookOrder.push("observer:session_start");

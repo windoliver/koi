@@ -1,0 +1,91 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/channel-canvas-fallback API surface . has stable type surface 1`] = `
+"import { Result, KoiError, ChannelAdapter, ContentBlock, TextBlock } from '@koi/core';
+
+/**
+ * Lightweight HTTP client for Gateway canvas CRUD routes.
+ *
+ * Uses native fetch + AbortSignal.timeout() — no external dependencies.
+ * All operations return Result<T, KoiError> for typed error handling.
+ */
+
+interface GatewayClientConfig {
+    /** Base URL for the canvas API, e.g. "http://localhost:3000/gateway/canvas". */
+    readonly canvasBaseUrl: string;
+    /** Optional auth token sent as Bearer in Authorization header. */
+    readonly authToken?: string;
+    /** Request timeout in milliseconds. Default: 10_000. */
+    readonly timeoutMs?: number;
+}
+/** Result of a successful create/update operation. */
+interface SurfaceResult {
+    readonly surfaceId: string;
+}
+interface GatewayClient {
+    readonly createSurface: (surfaceId: string, content: string) => Promise<Result<SurfaceResult, KoiError>>;
+    readonly updateSurface: (surfaceId: string, content: string) => Promise<Result<SurfaceResult, KoiError>>;
+    readonly deleteSurface: (surfaceId: string) => Promise<Result<boolean, KoiError>>;
+    readonly computeSurfaceUrl: (surfaceId: string) => string;
+}
+/** Creates a Gateway canvas HTTP client. */
+declare function createGatewayClient(config: GatewayClientConfig): GatewayClient;
+
+/**
+ * Channel decorator that intercepts A2UI blocks and replaces them with
+ * text links to the Gateway canvas when the inner channel does not
+ * support A2UI rendering natively.
+ *
+ * If the inner channel declares supportsA2ui: true, the decorator is a
+ * no-op and returns the inner channel unchanged (zero overhead).
+ */
+
+interface CanvasFallbackConfig {
+    readonly gatewayClient: GatewayClient;
+    /** Optional callback invoked when a Gateway call fails. */
+    readonly onGatewayError?: (error: KoiError, surfaceId: string) => void;
+}
+/**
+ * Wraps a channel with A2UI-to-canvas fallback behavior.
+ *
+ * If the inner channel supports A2UI natively, returns it unchanged.
+ * Otherwise, intercepts send() to replace A2UI blocks with text links.
+ */
+declare function createCanvasFallbackChannel(inner: ChannelAdapter, config: CanvasFallbackConfig): ChannelAdapter;
+
+/**
+ * Runtime detection of A2UI content blocks without importing @koi/canvas.
+ *
+ * Uses structural narrowing on CustomBlock.data to identify A2UI messages
+ * and extract their metadata. This avoids an L2-to-L2 import violation.
+ */
+
+/** Extracted metadata from an A2UI content block. */
+interface A2uiBlockInfo {
+    readonly kind: string;
+    readonly surfaceId: string;
+    readonly title?: string;
+    readonly rawData: unknown;
+}
+/** Returns true if the content block is an A2UI custom block. */
+declare function isA2uiBlock(block: ContentBlock): boolean;
+/**
+ * Extracts A2UI metadata from a content block via runtime narrowing.
+ * Returns undefined if the block is not a valid A2UI block.
+ */
+declare function extractA2uiBlockInfo(block: ContentBlock): A2uiBlockInfo | undefined;
+
+/**
+ * Pure functions to generate fallback text blocks for A2UI surfaces.
+ *
+ * Produces TextBlock content for channels that cannot render A2UI natively.
+ */
+
+/** Generates a TextBlock with a link to the rendered surface. */
+declare function generateSuccessText(info: A2uiBlockInfo, url: string): TextBlock;
+/** Generates a degraded TextBlock when the Gateway call fails. */
+declare function generateDegradedText(info: A2uiBlockInfo, errorMessage: string): TextBlock;
+
+export { type A2uiBlockInfo, type CanvasFallbackConfig, type GatewayClient, type GatewayClientConfig, type SurfaceResult, createCanvasFallbackChannel, createGatewayClient, extractA2uiBlockInfo, generateDegradedText, generateSuccessText, isA2uiBlock };
+"
+`;

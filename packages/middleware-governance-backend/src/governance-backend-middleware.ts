@@ -48,6 +48,12 @@ export function createGovernanceBackendMiddleware(
     name: MIDDLEWARE_NAME,
     priority: MIDDLEWARE_PRIORITY,
 
+    describeCapabilities: () => ({
+      label: "governance",
+      description:
+        "Policy evaluation gate active. Model and tool calls are subject to governance rules.",
+    }),
+
     wrapModelCall: async (ctx, request, next) => {
       await gate({
         kind: "model_call",

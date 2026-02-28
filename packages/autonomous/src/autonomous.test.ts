@@ -9,7 +9,7 @@ import { createAutonomousAgent } from "./autonomous.js";
 // ---------------------------------------------------------------------------
 
 function createMockMiddleware(name: string): KoiMiddleware {
-  return { name };
+  return { name, describeCapabilities: () => undefined };
 }
 
 function createMockHarness(opts?: {

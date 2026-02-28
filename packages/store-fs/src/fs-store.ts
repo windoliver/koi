@@ -23,7 +23,7 @@ import type {
   StoreChangeEvent,
 } from "@koi/core";
 import { notFound } from "@koi/core";
-import { validateBrickArtifact } from "@koi/validation";
+import { applyBrickUpdate, validateBrickArtifact } from "@koi/validation";
 import { mapFsError, mapParseError } from "./errors.js";
 import { brickPath, shardDir, tmpPath } from "./paths.js";
 import { matchesBrickQuery } from "./query.js";
@@ -371,15 +371,7 @@ export async function createFsForgeStore(
     }
 
     // Merge updates immutably
-    const existing = readResult.value;
-    const updated: BrickArtifact = {
-      ...existing,
-      ...(updates.lifecycle !== undefined ? { lifecycle: updates.lifecycle } : {}),
-      ...(updates.trustTier !== undefined ? { trustTier: updates.trustTier } : {}),
-      ...(updates.scope !== undefined ? { scope: updates.scope } : {}),
-      ...(updates.usageCount !== undefined ? { usageCount: updates.usageCount } : {}),
-      ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
-    };
+    const updated = applyBrickUpdate(readResult.value, updates);
 
     // Atomic write back
     const temp = tmpPath(baseDir, id);

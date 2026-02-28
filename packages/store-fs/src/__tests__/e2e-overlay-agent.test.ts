@@ -606,6 +606,7 @@ describe("overlay store -> agent e2e", () => {
     const interceptedToolIds: string[] = [];
     const middlewareSpy: KoiMiddleware = {
       name: "lifecycle-spy",
+      describeCapabilities: () => undefined,
       wrapToolCall: async (_ctx, req: ToolRequest, next) => {
         interceptedToolIds.push(req.toolId);
         return next(req);

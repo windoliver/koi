@@ -185,6 +185,7 @@ describeE2E("e2e: createKoi + createPiAdapter full stack", () => {
 
       const observerMiddleware: KoiMiddleware = {
         name: "tool-call-observer",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: unknown,
           request: ToolRequest,
@@ -250,6 +251,7 @@ describeE2E("e2e: createKoi + createPiAdapter full stack", () => {
 
       const lifecycleObserver: KoiMiddleware = {
         name: "lifecycle-observer",
+        describeCapabilities: () => undefined,
         onSessionStart: async () => {
           hookOrder.push("session_start");
         },
@@ -295,6 +297,7 @@ describeE2E("e2e: createKoi + createPiAdapter full stack", () => {
 
       const toolLogger: KoiMiddleware = {
         name: "tool-logger",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: unknown,
           request: ToolRequest,

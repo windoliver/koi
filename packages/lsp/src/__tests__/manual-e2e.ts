@@ -124,6 +124,7 @@ const middlewareToolNames: string[] = [];
 
 const observer: KoiMiddleware = {
   name: "e2e-observer",
+  describeCapabilities: () => undefined,
   priority: 600,
   wrapToolCall: async (
     _ctx: TurnContext,

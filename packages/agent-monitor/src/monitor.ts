@@ -244,6 +244,10 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
 
   return {
     name: "agent-monitor",
+    describeCapabilities: () => ({
+      label: "monitor",
+      description: "Agent monitoring and metrics collection active",
+    }),
     priority: 350,
 
     async onSessionStart(ctx: SessionContext): Promise<void> {

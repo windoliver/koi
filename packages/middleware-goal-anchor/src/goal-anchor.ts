@@ -22,20 +22,30 @@ import { createTodoState, detectCompletions, renderTodoBlock } from "./todo.js";
 import type { TodoItem, TodoState } from "./types.js";
 
 export function createGoalAnchorMiddleware(config: GoalAnchorConfig): KoiMiddleware {
-  if (config.objectives.length === 0) {
-    // No-op middleware when objectives are empty
-    return { name: "goal-anchor", priority: 340 };
-  }
-
   const header = config.header ?? "## Current Objectives";
   const sessions = new Map<string, TodoState>();
+  const hasObjectives = config.objectives.length > 0;
 
   return {
     name: "goal-anchor",
     priority: 340,
 
+    describeCapabilities: (_ctx: TurnContext) => {
+      if (!hasObjectives) return undefined;
+      // Find session state from the turn context
+      const state = sessions.get(_ctx.session.sessionId as string);
+      if (!state) return undefined;
+      const completed = state.items.filter((i) => i.status === "completed").length;
+      return {
+        label: "goals",
+        description: `${completed}/${state.items.length} objectives completed`,
+      };
+    },
+
     async onSessionStart(ctx: SessionContext): Promise<void> {
-      sessions.set(ctx.sessionId as string, createTodoState(config.objectives));
+      if (hasObjectives) {
+        sessions.set(ctx.sessionId as string, createTodoState(config.objectives));
+      }
     },
 
     async wrapModelCall(

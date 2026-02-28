@@ -582,6 +582,7 @@ describeE2E("e2e: unified brick auto-discovery through createKoi + Pi adapter", 
       const interceptedTools: string[] = [];
       const middlewareSpy: KoiMiddleware = {
         name: "e2e-tool-spy",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (_ctx, req: ToolRequest, next) => {
           interceptedTools.push(req.toolId);
           return next(req);

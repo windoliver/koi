@@ -54,6 +54,7 @@ describe("createVoiceChannel — capabilities", () => {
       buttons: false,
       video: false,
       threads: false,
+      supportsA2ui: false,
     });
   });
 

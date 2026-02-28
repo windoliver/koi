@@ -15,7 +15,7 @@ import type {
   StoreChangeEvent,
 } from "@koi/core";
 import { notFound } from "@koi/core";
-import { matchesBrickQuery } from "@koi/validation";
+import { applyBrickUpdate, matchesBrickQuery } from "@koi/validation";
 
 // Error helpers use shared factories from @koi/core.
 function notFoundError(id: BrickId): KoiError {
@@ -90,16 +90,7 @@ export function createInMemoryForgeStore(): ForgeStore {
     if (existing === undefined) {
       return { ok: false, error: notFoundError(id) };
     }
-    const updated: BrickArtifact = {
-      ...existing,
-      ...(updates.lifecycle !== undefined ? { lifecycle: updates.lifecycle } : {}),
-      ...(updates.trustTier !== undefined ? { trustTier: updates.trustTier } : {}),
-      ...(updates.scope !== undefined ? { scope: updates.scope } : {}),
-      ...(updates.usageCount !== undefined ? { usageCount: updates.usageCount } : {}),
-      ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
-      ...(updates.lastVerifiedAt !== undefined ? { lastVerifiedAt: updates.lastVerifiedAt } : {}),
-    };
-    bricks.set(id, updated);
+    bricks.set(id, applyBrickUpdate(existing, updates));
     notifyListeners({ kind: "updated", brickId: id });
     return { ok: true, value: undefined };
   };
@@ -117,14 +108,7 @@ export function createInMemoryForgeStore(): ForgeStore {
     if (existing === undefined) {
       return { ok: false, error: notFoundError(id) };
     }
-    const merged: BrickArtifact = {
-      ...existing,
-      scope: targetScope,
-      ...(updates.lifecycle !== undefined ? { lifecycle: updates.lifecycle } : {}),
-      ...(updates.trustTier !== undefined ? { trustTier: updates.trustTier } : {}),
-      ...(updates.usageCount !== undefined ? { usageCount: updates.usageCount } : {}),
-      ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
-    };
+    const merged = applyBrickUpdate(existing, { ...updates, scope: targetScope });
     bricks.set(id, merged);
     notifyListeners({ kind: "promoted", brickId: id, scope: targetScope });
     return { ok: true, value: undefined };

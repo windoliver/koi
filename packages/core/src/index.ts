@@ -64,11 +64,13 @@ export type {
   AgentArtifact,
   BrickArtifact,
   BrickArtifactBase,
+  BrickFitnessMetrics,
   BrickRequires,
   BrickUpdate,
   ForgeQuery,
   ForgeStore,
   ImplementationArtifact,
+  LatencySampler,
   LockHandle,
   LockMode,
   LockRequest,
@@ -79,6 +81,7 @@ export type {
   TestCase,
   ToolArtifact,
 } from "./brick-store.js";
+export { DEFAULT_BRICK_FITNESS } from "./brick-store.js";
 // browser driver — cross-engine abstraction for browser automation
 export type {
   BrowserActionOptions,

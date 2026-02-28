@@ -50,8 +50,8 @@ export async function runServe(flags: ServeFlags): Promise<void> {
     process.exit(EXIT_CONFIG);
   }
 
-  // 5. ASSEMBLE: Create engine adapter with resolved model handler
-  const adapter = createLoopAdapter({ modelCall: resolved.value.model });
+  // 5. ASSEMBLE: Use resolved engine or fall back to loop adapter
+  const adapter = resolved.value.engine ?? createLoopAdapter({ modelCall: resolved.value.model });
 
   // 6. WIRE: Create the Koi runtime with resolved middleware
   const runtime = await createKoi({

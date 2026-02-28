@@ -50,7 +50,7 @@ The workspace is an **ECS component** attached to agents via a `ComponentProvide
      │          WorkspaceBackend                │
      │  ┌────────────┐ ┌────────┐ ┌─────────┐ │
      │  │Git Worktree│ │Temp Dir│ │ Docker  │ │
-     │  │ (shipped)  │ │(future)│ │(future) │ │
+     │  │ (shipped)  │ │(custom)│ │(shipped)│ │
      │  └────────────┘ └────────┘ └─────────┘ │
      └─────────────────────────────────────────┘
 ```
@@ -101,6 +101,7 @@ The strategy interface — implement this to add new isolation mechanisms:
 ```typescript
 interface WorkspaceBackend {
   readonly name: string;
+  readonly isSandboxed: boolean;
   readonly create: (agentId: AgentId, config: ResolvedWorkspaceConfig)
     => Promise<Result<WorkspaceInfo, KoiError>>;
   readonly dispose: (workspaceId: string)
@@ -110,8 +111,10 @@ interface WorkspaceBackend {
 }
 ```
 
-| Method | Purpose |
+| Member | Purpose |
 |--------|---------|
+| `name` | Backend identifier (e.g., `"docker"`, `"git-worktree"`) |
+| `isSandboxed` | Whether this backend provides OS-level container isolation |
 | `create` | Allocate an isolated workspace for the agent |
 | `dispose` | Tear down the workspace and free resources |
 | `isHealthy` | Check if the workspace is still usable |
@@ -159,6 +162,206 @@ repo-workspaces/               ← worktreeBasePath
     ├── src/
     └── README.md
 ```
+
+## Docker Container Backend
+
+Container-based workspace isolation via a pluggable `SandboxAdapter`. Each agent runs inside an isolated container with configurable filesystem access and container reuse policies.
+
+```typescript
+import { createDockerWorkspaceBackend, createWorkspaceProvider } from "@koi/workspace";
+
+const backend = createDockerWorkspaceBackend({
+  adapter: mySandboxAdapter,   // SandboxAdapter from L0 — Docker, E2B, Fly.io, etc.
+  mountMode: "ro",             // "none" | "ro" | "rw" (default: "none")
+  scope: "session",            // "session" | "per-agent" | "shared" (default: "per-agent")
+  workDir: "/workspace",       // default: "/workspace"
+});
+if (!backend.ok) throw new Error(backend.error.message);
+
+const provider = createWorkspaceProvider({
+  backend: backend.value,
+  requireSandbox: true,        // reject non-container backends
+  cleanupPolicy: "always",
+});
+```
+
+The `SandboxAdapter` is injected — the Docker backend doesn't import any Docker SDK. You bring your own adapter (Docker CLI wrapper, E2B client, Fly.io API, etc.) that implements `create(profile) → SandboxInstance`.
+
+### Mount Mode
+
+Controls what the container can see of the host filesystem:
+
+```
+  mountMode: "none" (DEFAULT — most restrictive)
+  ┌─────────────────────┐       Host /workspace
+  │  Container          │       ┌─────────────┐
+  │  /workspace (empty) │──✗───│ code/        │
+  │  Can't read host.   │       │ secrets/     │
+  │  Can't write host.  │       └─────────────┘
+  └─────────────────────┘
+
+  mountMode: "ro"
+  ┌─────────────────────┐       Host /workspace
+  │  Container          │       ┌─────────────┐
+  │  /workspace         │──👁───│ code/   [R]  │
+  │  Read-only access.  │──✗───│ secrets/ [R] │
+  └─────────────────────┘       └─────────────┘
+
+  mountMode: "rw"
+  ┌─────────────────────┐       Host /workspace
+  │  Container          │       ┌─────────────┐
+  │  /workspace         │──⟷───│ code/  [RW]  │
+  │  Full read+write.   │       │ secrets/[RW] │
+  └─────────────────────┘       └─────────────┘
+```
+
+| Mode | `allowRead` | `allowWrite` | Use case |
+|------|-------------|--------------|----------|
+| `"none"` (default) | `[]` | `[]` | Untrusted code execution, strongest isolation |
+| `"ro"` | `[workDir]` | `[]` | Code review agents, analysis, read-only inspection |
+| `"rw"` | `[workDir]` | `[workDir]` | Development agents that need to modify files |
+
+`profileOverrides.filesystem` takes precedence over `mountMode` if both are provided.
+
+### Container Scope
+
+Controls how containers are shared across agents:
+
+```
+  scope: "session" — fresh container per create(), destroyed on dispose
+  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+  │ Container #1 │  │ Container #2 │  │ Container #3 │
+  │ (Agent A)    │  │ (Agent A)    │  │ (Agent B)    │
+  │ born → dies  │  │ born → dies  │  │ born → dies  │
+  └──────────────┘  └──────────────┘  └──────────────┘
+  Three requests = three containers. Nothing persists.
+
+  scope: "per-agent" (DEFAULT) — one container per agentId
+  ┌────────────────────────────────┐  ┌──────────────┐
+  │     Container #1 (Agent A)     │  │ Container #2 │
+  │     reused across requests     │  │ (Agent B)    │
+  └────────────────────────────────┘  └──────────────┘
+
+  scope: "shared" — single container, unique sub-paths per agent
+  ┌──────────────────────────────────────────────┐
+  │           Container #1 (shared)              │
+  │  /workspace/agent-a/   ← Agent A's space     │
+  │  /workspace/agent-b/   ← Agent B's space     │
+  │  ref_count: 2                                │
+  │  destroyed when last agent disposes          │
+  └──────────────────────────────────────────────┘
+```
+
+| Scope | Containers created | Isolation | State persistence | Best for |
+|-------|-------------------|-----------|-------------------|----------|
+| `"session"` | One per `create()` | Strongest | None | Untrusted workloads |
+| `"per-agent"` (default) | One per `agentId` | Per-agent | Across requests | Long-running dev agents |
+| `"shared"` | One total | Sub-path only | Shared container | Cost-sensitive, many agents |
+
+### Require Sandbox
+
+Policy guard that rejects non-container backends at factory time:
+
+```typescript
+const provider = createWorkspaceProvider({
+  backend: gitWorktreeBackend,   // isSandboxed: false
+  requireSandbox: true,          // ← VALIDATION error!
+});
+// Result.error: "requireSandbox is enabled but backend 'git-worktree'
+//               does not provide container isolation"
+```
+
+Backends self-declare their isolation capability via `isSandboxed: boolean`:
+
+| Backend | `isSandboxed` | `requireSandbox: true` |
+|---------|---------------|------------------------|
+| Docker container | `true` | Allowed |
+| Git worktree | `false` | Rejected |
+| Temp directory | `false` | Rejected |
+| E2B (custom) | `true` | Allowed |
+
+### Blocked Path Patterns
+
+In shared scope, agent IDs become sub-path names (`/workspace/{agentId}`). To prevent agents from targeting credential directories, the backend rejects agent IDs containing sensitive segments:
+
+```
+Blocked: .ssh  .gnupg  .aws  .azure  .gcloud  .kube  .docker
+         .env  .netrc  .npmrc  .secret  credentials
+         id_rsa  id_ed25519  private_key
+```
+
+```typescript
+// ❌ Rejected — ".ssh" segment detected
+backend.create(agentId("agent-.ssh-keys"), config);
+// Result.error: 'Agent ID "agent-.ssh-keys" contains blocked path segment ".ssh"'
+
+// ❌ Rejected — path traversal
+backend.create(agentId("../../etc/passwd"), config);
+// Result.error: 'Agent ID "../../etc/passwd" would escape workDir boundary'
+
+// ✅ Allowed
+backend.create(agentId("code-reviewer-42"), config);
+```
+
+These checks only apply to shared scope (where agent IDs become sub-paths). Per-agent and session scopes use the root `workDir` directly.
+
+### Docker Backend Quick Start
+
+```typescript
+import { createKoi } from "@koi/engine";
+import { createPiAdapter } from "@koi/engine-pi";
+import { createDockerWorkspaceBackend, createWorkspaceProvider } from "@koi/workspace";
+import type { WorkspaceComponent } from "@koi/core";
+import { WORKSPACE } from "@koi/core";
+
+// 1. Create backend with your SandboxAdapter
+const backend = createDockerWorkspaceBackend({
+  adapter: myDockerAdapter,
+  mountMode: "ro",
+  scope: "session",
+});
+if (!backend.ok) throw new Error(backend.error.message);
+
+// 2. Create provider with sandbox enforcement
+const provider = createWorkspaceProvider({
+  backend: backend.value,
+  requireSandbox: true,
+  cleanupPolicy: "always",
+});
+if (!provider.ok) throw new Error(provider.error.message);
+
+// 3. Wire into runtime
+const runtime = await createKoi({
+  manifest: { name: "reviewer", version: "1.0.0", model: { name: "claude-haiku-4-5-20251001" } },
+  adapter: createPiAdapter({ model: "anthropic:claude-haiku-4-5-20251001", getApiKey }),
+  providers: [provider.value],
+});
+
+// 4. Agent runs inside container with read-only filesystem
+const ws = runtime.agent.component<WorkspaceComponent>(WORKSPACE);
+console.log(ws?.path);     // /workspace
+console.log(ws?.metadata); // { adapterName: "docker", workDir: "/workspace" }
+```
+
+### SandboxAdapter Contract
+
+The Docker backend delegates container lifecycle to a `SandboxAdapter` (defined in L0):
+
+```typescript
+interface SandboxAdapter {
+  readonly name: string;
+  readonly create: (profile: SandboxProfile) => Promise<SandboxInstance>;
+}
+
+interface SandboxInstance {
+  readonly exec: (command: string, args: readonly string[]) => Promise<SandboxAdapterResult>;
+  readonly readFile: (path: string) => Promise<Uint8Array>;
+  readonly writeFile: (path: string, content: Uint8Array) => Promise<void>;
+  readonly destroy: () => Promise<void>;
+}
+```
+
+You implement this interface to plug in any container runtime — Docker CLI, E2B, Fly.io, OrbStack, etc.
 
 ## Cleanup Policies
 
@@ -342,6 +545,7 @@ function createTmpDirBackend(): Result<WorkspaceBackend, KoiError> {
     ok: true,
     value: {
       name: "tmpdir",
+      isSandboxed: false,  // no container isolation
 
       create: async (agentId: AgentId, _config: ResolvedWorkspaceConfig) => {
         const dir = await mkdtemp(`/tmp/koi-ws-${agentId}-`);
@@ -385,13 +589,18 @@ const provider = createWorkspaceProvider({
 |--------|------|---------|
 | `createWorkspaceProvider` | Factory | Creates a `ComponentProvider` for workspace isolation |
 | `createGitWorktreeBackend` | Factory | Git worktree `WorkspaceBackend` implementation |
+| `createDockerWorkspaceBackend` | Factory | Docker container `WorkspaceBackend` implementation |
+| `createFilesystemPolicy` | Utility | Derive `FilesystemPolicy` from a `MountMode` and workDir (Docker backend) |
 | `createShellSetup` | Factory | Convenience `postCreate` hook for shell commands |
 | `pruneStaleWorkspaces` | Utility | Detect and clean up orphaned workspaces |
 | `validateWorkspaceConfig` | Validation | Validate and apply defaults to config |
 | `WorkspaceBackend` | Interface | Strategy interface for custom backends |
 | `WorkspaceInfo` | Interface | Workspace metadata returned by backends |
-| `WorkspaceProviderConfig` | Interface | User-facing provider configuration (includes `pruneStale` hook) |
+| `WorkspaceProviderConfig` | Interface | User-facing provider configuration |
+| `DockerWorkspaceBackendConfig` | Interface | Docker backend configuration |
 | `CleanupPolicy` | Type | `"always" \| "on_success" \| "never"` |
+| `MountMode` | Type | `"none" \| "ro" \| "rw"` |
+| `ContainerScope` | Type | `"session" \| "per-agent" \| "shared"` |
 
 ## L0 Types (in @koi/core)
 

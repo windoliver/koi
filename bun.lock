@@ -144,6 +144,13 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/channel-canvas-fallback": {
+      "name": "@koi/channel-canvas-fallback",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/channel-chat-sdk": {
       "name": "@koi/channel-chat-sdk",
       "version": "0.0.0",
@@ -241,6 +248,7 @@
         "@koi/core": "workspace:*",
         "@koi/deploy": "workspace:*",
         "@koi/engine": "workspace:*",
+        "@koi/engine-external": "workspace:*",
         "@koi/engine-loop": "workspace:*",
         "@koi/manifest": "workspace:*",
         "@koi/middleware-ace": "workspace:*",
@@ -249,7 +257,6 @@
         "@koi/middleware-compactor": "workspace:*",
         "@koi/middleware-context-editing": "workspace:*",
         "@koi/middleware-guided-retry": "workspace:*",
-        "@koi/middleware-memory": "workspace:*",
         "@koi/middleware-pay": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-pii": "workspace:*",
@@ -264,6 +271,9 @@
         "@koi/resolve": "workspace:*",
         "@koi/shutdown": "workspace:*",
       },
+      "devDependencies": {
+        "@koi/engine-pi": "workspace:*",
+      },
     },
     "packages/code-mode": {
       "name": "@koi/code-mode",
@@ -277,6 +287,18 @@
         "@koi/engine-loop": "workspace:*",
         "@koi/errors": "workspace:*",
         "@koi/model-router": "workspace:*",
+      },
+    },
+    "packages/competitive-broadcast": {
+      "name": "@koi/competitive-broadcast",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
       },
     },
     "packages/config": {
@@ -407,6 +429,7 @@
         "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
         "@koi/filesystem": "workspace:*",
+        "@koi/middleware-sandbox": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/scheduler": "workspace:*",
         "@koi/scheduler-provider": "workspace:*",
@@ -878,7 +901,6 @@
         "@koi/middleware-event-trace": "workspace:*",
         "@koi/middleware-fs-rollback": "workspace:*",
         "@koi/middleware-guided-retry": "workspace:*",
-        "@koi/middleware-memory": "workspace:*",
         "@koi/middleware-pay": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/model-router": "workspace:*",
@@ -887,13 +909,12 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/middleware-memory": {
-      "name": "@koi/middleware-memory",
+    "packages/middleware-output-verifier": {
+      "name": "@koi/middleware-output-verifier",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -1547,6 +1568,7 @@
       "version": "0.0.0",
       "devDependencies": {
         "@koi/canvas": "workspace:*",
+        "@koi/channel-canvas-fallback": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/delegation": "workspace:*",
         "@koi/engine": "workspace:*",
@@ -1564,7 +1586,6 @@
         "@koi/middleware-compactor": "workspace:*",
         "@koi/middleware-context-editing": "workspace:*",
         "@koi/middleware-guided-retry": "workspace:*",
-        "@koi/middleware-memory": "workspace:*",
         "@koi/middleware-pay": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-pii": "workspace:*",
@@ -1967,6 +1988,8 @@
 
     "@koi/channel-base": ["@koi/channel-base@workspace:packages/channel-base"],
 
+    "@koi/channel-canvas-fallback": ["@koi/channel-canvas-fallback@workspace:packages/channel-canvas-fallback"],
+
     "@koi/channel-chat-sdk": ["@koi/channel-chat-sdk@workspace:packages/channel-chat-sdk"],
 
     "@koi/channel-cli": ["@koi/channel-cli@workspace:packages/channel-cli"],
@@ -1980,6 +2003,8 @@
     "@koi/cli": ["@koi/cli@workspace:packages/cli"],
 
     "@koi/code-mode": ["@koi/code-mode@workspace:packages/code-mode"],
+
+    "@koi/competitive-broadcast": ["@koi/competitive-broadcast@workspace:packages/competitive-broadcast"],
 
     "@koi/config": ["@koi/config@workspace:packages/config"],
 
@@ -2085,7 +2110,7 @@
 
     "@koi/middleware-integration": ["@koi/middleware-integration@workspace:packages/middleware-integration"],
 
-    "@koi/middleware-memory": ["@koi/middleware-memory@workspace:packages/middleware-memory"],
+    "@koi/middleware-output-verifier": ["@koi/middleware-output-verifier@workspace:packages/middleware-output-verifier"],
 
     "@koi/middleware-pay": ["@koi/middleware-pay@workspace:packages/middleware-pay"],
 

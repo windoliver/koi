@@ -304,6 +304,8 @@ export type NodeEventType =
   | "agent_terminated"
   | "agent_crashed"
   | "agent_recovered"
+  | "tool_timeout"
+  | "tool_error"
   | "memory_warning"
   | "memory_eviction"
   | "shutdown_started"

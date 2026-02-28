@@ -1,8 +1,10 @@
 /**
  * Resolves the engine section of a manifest.
  *
+ * Supports both string shorthand (`engine: "external"`) and object form
+ * (`engine: { name: "external", options: { command: "echo" } }`).
  * If no engine is declared, returns undefined (CLI defaults to loop adapter).
- * Otherwise, resolves the engine by kind via the registry.
+ * Accepts both string shorthand ("external") and object form ({ name: "external", options: {...} }).
  */
 
 import type { EngineAdapter, KoiError, Result } from "@koi/core";
@@ -11,7 +13,7 @@ import type { ResolutionContext, ResolveRegistry } from "./types.js";
 
 /** Engine config shape as it appears in the manifest. */
 interface EngineConfig {
-  readonly kind: string;
+  readonly name: string;
   readonly options?: Record<string, unknown>;
 }
 
@@ -30,12 +32,18 @@ export async function resolveEngine(
     return { ok: true, value: undefined };
   }
 
-  if (typeof config !== "object" || !("kind" in config) || typeof config.kind !== "string") {
+  // String shorthand: "external" → { name: "external" }
+  if (typeof config === "string") {
+    const result = await resolveOne<EngineAdapter>("engine", { name: config }, registry, context);
+    return result.ok ? { ok: true, value: result.value } : result;
+  }
+
+  if (typeof config !== "object" || !("name" in config) || typeof config.name !== "string") {
     return {
       ok: false,
       error: {
         code: "VALIDATION",
-        message: "engine config must have a 'kind' string field",
+        message: "engine config must be a string or an object with a 'name' string field",
         retryable: false,
       },
     };
@@ -44,8 +52,8 @@ export async function resolveEngine(
   const typed = config as EngineConfig;
   const descriptor =
     typed.options !== undefined
-      ? { name: typed.kind, options: typed.options }
-      : { name: typed.kind };
+      ? { name: typed.name, options: typed.options }
+      : { name: typed.name };
 
   const result = await resolveOne<EngineAdapter>("engine", descriptor, registry, context);
 

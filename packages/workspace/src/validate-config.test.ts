@@ -5,6 +5,7 @@ import { validateWorkspaceConfig } from "./validate-config.js";
 
 const stubBackend: WorkspaceBackend = {
   name: "stub",
+  isSandboxed: false,
   create: async (
     _agentId: AgentId,
     _config: ResolvedWorkspaceConfig,

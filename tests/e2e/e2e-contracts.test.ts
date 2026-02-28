@@ -31,7 +31,6 @@ import type { Resolver, SourceBundle } from "@koi/core/resolver";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { createAuditMiddleware, createInMemoryAuditSink } from "@koi/middleware-audit";
-import { createInMemoryStore, createMemoryMiddleware } from "@koi/middleware-memory";
 import { createTurnAckMiddleware } from "@koi/middleware-turn-ack";
 import { createAnthropicAdapter, createOpenAIAdapter } from "@koi/model-router";
 import { testEngineAdapter, testMiddlewareContract, testResolverContract } from "@koi/test-utils";
@@ -493,17 +492,26 @@ describeOpenAI("e2e: middleware interposition with real OpenAI adapter", () => {
 describeAnthropic("e2e: middleware combination matrix", () => {
   /**
    * Tests that real middleware packages compose correctly when stacked.
-   * Uses audit (priority 300), memory (400), and turn-ack (50) —
+   * Uses audit (priority 300), observer stub (400), and turn-ack (50) —
    * three different priorities, three different hook patterns.
    */
   test(
-    "audit + memory + turn-ack compose without interference",
+    "audit + observer + turn-ack compose without interference",
     async () => {
       const auditSink = createInMemoryAuditSink();
-      const memoryStore = createInMemoryStore();
+      // let — mutable counter for assertions
+      let observerCallCount = 0;
+
+      const observerStub: KoiMiddleware = {
+        name: "observer-stub",
+        priority: 400,
+        async *wrapModelStream(_ctx: unknown, req: ModelRequest, next: ModelStreamHandler) {
+          observerCallCount++;
+          yield* next(req);
+        },
+      };
 
       const audit = createAuditMiddleware({ sink: auditSink });
-      const memory = createMemoryMiddleware({ store: memoryStore });
       const turnAck = createTurnAckMiddleware({ debounceMs: 10 });
 
       const modelCall = (request: ModelRequest): Promise<ModelResponse> =>
@@ -514,7 +522,7 @@ describeAnthropic("e2e: middleware combination matrix", () => {
       const runtime = await createKoi({
         manifest: { name: "e2e-matrix-agent", version: "0.0.1", model: { name: ANTHROPIC_MODEL } },
         adapter,
-        middleware: [audit, memory, turnAck],
+        middleware: [audit, observerStub, turnAck],
       });
 
       try {
@@ -533,9 +541,8 @@ describeAnthropic("e2e: middleware combination matrix", () => {
         expect(modelEntry).toBeDefined();
         expect(modelEntry?.durationMs).toBeGreaterThanOrEqual(0);
 
-        // Memory middleware stored the exchange
-        const recalled = await memoryStore.recall("hello", 4000);
-        expect(recalled.length).toBeGreaterThanOrEqual(1);
+        // Observer middleware intercepted the model stream
+        expect(observerCallCount).toBeGreaterThanOrEqual(1);
       } finally {
         await runtime.dispose?.();
       }
@@ -578,16 +585,22 @@ describeAnthropic("e2e: middleware combination matrix", () => {
   );
 
   test(
-    "memory + audit: both operate independently on the same call",
+    "observer + audit: both operate independently on the same call",
     async () => {
       const auditSink = createInMemoryAuditSink();
-      const memoryStore = createInMemoryStore();
+      // let — mutable counter for assertions
+      let observerCallCount = 0;
 
-      // Pre-seed a memory so it gets injected by memory middleware
-      await memoryStore.store("pre-seed", "The user likes TypeScript");
+      const observerStub: KoiMiddleware = {
+        name: "observer-stub",
+        priority: 400,
+        async *wrapModelStream(_ctx: unknown, req: ModelRequest, next: ModelStreamHandler) {
+          observerCallCount++;
+          yield* next(req);
+        },
+      };
 
       const audit = createAuditMiddleware({ sink: auditSink });
-      const memory = createMemoryMiddleware({ store: memoryStore });
 
       const modelCall = (request: ModelRequest): Promise<ModelResponse> =>
         getAnthropicAdapter().complete({ ...request, model: ANTHROPIC_MODEL, maxTokens: 30 });
@@ -597,7 +610,7 @@ describeAnthropic("e2e: middleware combination matrix", () => {
       const runtime = await createKoi({
         manifest: { name: "e2e-enrich-agent", version: "0.0.1", model: { name: ANTHROPIC_MODEL } },
         adapter,
-        middleware: [audit, memory],
+        middleware: [audit, observerStub],
       });
 
       try {
@@ -609,10 +622,8 @@ describeAnthropic("e2e: middleware combination matrix", () => {
         expect(modelEntry?.response).toBeDefined();
         expect(modelEntry?.durationMs).toBeGreaterThanOrEqual(0);
 
-        // Memory stored the model response for future recall
-        // (the pre-seeded entry + the new exchange)
-        const recalled = await memoryStore.recall("TypeScript", 4000);
-        expect(recalled.length).toBeGreaterThanOrEqual(1);
+        // Observer intercepted the stream
+        expect(observerCallCount).toBeGreaterThanOrEqual(1);
       } finally {
         await runtime.dispose?.();
       }

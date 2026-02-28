@@ -508,6 +508,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
 
       const observerMw: KoiMiddleware = {
         name: "ralph-e2e-observer",
+        describeCapabilities: () => undefined,
         async onSessionStart() {
           sessionStarts++;
         },

@@ -85,6 +85,7 @@ const TELEGRAM_CAPABILITIES: ChannelCapabilities = {
   audio: true,
   video: true,
   threads: true, // Forum topics routed via "chatId:messageThreadId" threadId encoding
+  supportsA2ui: false,
 } as const satisfies ChannelCapabilities;
 
 // ---------------------------------------------------------------------------

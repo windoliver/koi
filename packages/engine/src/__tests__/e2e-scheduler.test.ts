@@ -427,6 +427,7 @@ describeE2E("e2e: scheduler tools through createKoi + createPiAdapter", () => {
 
       const toolObserver: KoiMiddleware = {
         name: "scheduler-tool-observer",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (
           _ctx: unknown,
           request: ToolRequest,

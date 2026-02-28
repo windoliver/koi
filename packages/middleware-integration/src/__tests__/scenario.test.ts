@@ -8,7 +8,6 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { createAuditMiddleware, createInMemoryAuditSink } from "@koi/middleware-audit";
-import { createInMemoryStore, createMemoryMiddleware } from "@koi/middleware-memory";
 import {
   createDefaultCostCalculator,
   createInMemoryBudgetTracker,
@@ -66,11 +65,9 @@ describe("Full pipeline scenario", () => {
     readonly middlewares: readonly KoiMiddleware[];
     readonly sink: ReturnType<typeof createInMemoryAuditSink>;
     readonly tracker: ReturnType<typeof createInMemoryBudgetTracker>;
-    readonly store: ReturnType<typeof createInMemoryStore>;
   } {
     const sink = createInMemoryAuditSink();
     const tracker = createInMemoryBudgetTracker();
-    const memStore = createInMemoryStore();
 
     const perm = createPermissionsMiddleware({
       backend: createPatternPermissionBackend({
@@ -86,13 +83,10 @@ describe("Full pipeline scenario", () => {
 
     const audit = createAuditMiddleware({ sink });
 
-    const memory = createMemoryMiddleware({ store: memStore });
-
     return {
-      middlewares: [perm, pay, audit, memory],
+      middlewares: [perm, pay, audit],
       sink,
       tracker,
-      store: memStore,
     };
   }
 
@@ -177,8 +171,8 @@ describe("Full pipeline scenario", () => {
     expect(endEntries).toHaveLength(1);
   });
 
-  test("multi-turn session — memory accumulates across turns", async () => {
-    const { middlewares, store: memStore } = createFullStack();
+  test("multi-turn session — middleware chain works across turns", async () => {
+    const { middlewares } = createFullStack();
 
     // Turn 0
     const ctx0 = createMockTurnContext({ turnIndex: 0 });
@@ -189,8 +183,9 @@ describe("Full pipeline scenario", () => {
         { senderId: "user-1", timestamp: Date.now(), content: [{ kind: "text", text: "Hello" }] },
       ],
     });
+    expect(spy0.calls).toHaveLength(1);
 
-    // Turn 1 — should have memory from turn 0
+    // Turn 1
     const ctx1 = createMockTurnContext({ turnIndex: 1 });
     const spy1 = createSpyModelHandler({ content: "Turn 1 response" });
     const chain1 = composeModelChain(middlewares, ctx1, spy1.handler);
@@ -203,10 +198,7 @@ describe("Full pipeline scenario", () => {
         },
       ],
     });
-
-    // Memory store should have accumulated
-    const recalled = await memStore.recall("test", 4000);
-    expect(recalled.length).toBeGreaterThanOrEqual(2);
+    expect(spy1.calls).toHaveLength(1);
   });
 
   test("error recovery — tool throws, chain unwinds correctly", async () => {

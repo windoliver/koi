@@ -460,6 +460,7 @@ describeE2E("e2e: @koi/lsp through full L1 runtime (createKoi + createPiAdapter)
 
       const observerMiddleware: KoiMiddleware = {
         name: "lsp-observer",
+        describeCapabilities: () => undefined,
         priority: 600,
         wrapToolCall: async (
           _ctx: TurnContext,

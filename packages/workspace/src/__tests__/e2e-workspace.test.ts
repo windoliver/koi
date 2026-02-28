@@ -312,6 +312,7 @@ describeE2E("e2e: workspace provider + createKoi + createPiAdapter", () => {
       let toolCallCount = 0;
       const toolObserver: KoiMiddleware = {
         name: "tool-observer",
+        describeCapabilities: () => undefined,
         wrapToolCall: async (_ctx, request, next) => {
           toolCallCount += 1;
           return next(request);

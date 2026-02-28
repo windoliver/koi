@@ -367,6 +367,7 @@ describeE2E("canvas full-stack e2e: createKoi + Pi adapter + Canvas server + SSE
 
       const observerMiddleware: KoiMiddleware = {
         name: "e2e:canvas-observer",
+        describeCapabilities: () => undefined,
         priority: 500,
         async *wrapModelStream(_ctx, req, next) {
           modelStreamHit = true;

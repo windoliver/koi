@@ -93,6 +93,7 @@ function createStreamingRedactionMiddleware(_redactor: Redactor): {
 
   const middleware: KoiMiddleware = {
     name: "e2e:redaction-stream-observer",
+    describeCapabilities: () => undefined,
     priority: 450,
 
     async *wrapModelStream(

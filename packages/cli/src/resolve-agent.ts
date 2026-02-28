@@ -7,6 +7,7 @@
 
 import { dirname, resolve as pathResolve } from "node:path";
 import type { KoiError, ModelHandler, Result } from "@koi/core";
+import { descriptor as externalEngineDescriptor } from "@koi/engine-external";
 import type { LoadedManifest } from "@koi/manifest";
 import { descriptor as aceDescriptor } from "@koi/middleware-ace";
 import { descriptor as auditDescriptor } from "@koi/middleware-audit";
@@ -14,7 +15,6 @@ import { descriptor as callLimitsDescriptor } from "@koi/middleware-call-limits"
 import { descriptor as compactorDescriptor } from "@koi/middleware-compactor";
 import { descriptor as contextEditingDescriptor } from "@koi/middleware-context-editing";
 import { descriptor as guidedRetryDescriptor } from "@koi/middleware-guided-retry";
-import { descriptor as memoryDescriptor } from "@koi/middleware-memory";
 import { descriptor as payDescriptor } from "@koi/middleware-pay";
 import { descriptor as permissionsDescriptor } from "@koi/middleware-permissions";
 import { descriptor as piiDescriptor } from "@koi/middleware-pii";
@@ -124,7 +124,6 @@ const ALL_DESCRIPTORS: readonly BrickDescriptor<unknown>[] = [
   compactorDescriptor,
   contextEditingDescriptor,
   guidedRetryDescriptor,
-  memoryDescriptor,
   payDescriptor,
   permissionsDescriptor,
   piiDescriptor,
@@ -137,6 +136,8 @@ const ALL_DESCRIPTORS: readonly BrickDescriptor<unknown>[] = [
   turnAckDescriptor,
   // Model provider descriptors
   ...modelProviderDescriptors,
+  // Engine descriptors
+  externalEngineDescriptor,
 ];
 
 // ---------------------------------------------------------------------------

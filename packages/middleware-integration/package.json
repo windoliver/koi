@@ -11,7 +11,6 @@
     "@koi/node": "workspace:*",
     "@koi/engine-loop": "workspace:*",
     "@koi/middleware-audit": "workspace:*",
-    "@koi/middleware-memory": "workspace:*",
     "@koi/middleware-pay": "workspace:*",
     "@koi/middleware-event-trace": "workspace:*",
     "@koi/middleware-fs-rollback": "workspace:*",

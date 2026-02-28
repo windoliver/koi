@@ -26,6 +26,7 @@
     "@koi/core": "workspace:*",
     "@koi/deploy": "workspace:*",
     "@koi/engine": "workspace:*",
+    "@koi/engine-external": "workspace:*",
     "@koi/engine-loop": "workspace:*",
     "@koi/channel-cli": "workspace:*",
     "@koi/manifest": "workspace:*",
@@ -35,7 +36,6 @@
     "@koi/middleware-compactor": "workspace:*",
     "@koi/middleware-context-editing": "workspace:*",
     "@koi/middleware-guided-retry": "workspace:*",
-    "@koi/middleware-memory": "workspace:*",
     "@koi/middleware-pay": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
     "@koi/middleware-pii": "workspace:*",
@@ -49,5 +49,8 @@
     "@koi/model-router": "workspace:*",
     "@koi/resolve": "workspace:*",
     "@koi/shutdown": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/engine-pi": "workspace:*"
   }
 }

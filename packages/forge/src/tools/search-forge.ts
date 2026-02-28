@@ -3,6 +3,7 @@
  */
 
 import type { Result, Tool } from "@koi/core";
+import { sortBricks } from "@koi/validation";
 import type { ForgeError } from "../errors.js";
 import { staticError } from "../errors.js";
 import { filterByAgentScope } from "../scope-filter.js";
@@ -14,9 +15,12 @@ import { createForgeTool } from "./shared.js";
 // Tool config
 // ---------------------------------------------------------------------------
 
+const VALID_ORDER_BY = new Set(["fitness", "recency", "usage"]);
+
 const SEARCH_FORGE_CONFIG: ForgeToolConfig = {
   name: "search_forge",
-  description: "Discovers existing forged bricks by kind, scope, tags, and other criteria",
+  description:
+    "Discovers existing forged bricks by kind, scope, tags, and other criteria. Results are ranked by fitness score (composite of success rate, recency, usage, and latency).",
   inputSchema: {
     type: "object",
     properties: {
@@ -28,6 +32,14 @@ const SEARCH_FORGE_CONFIG: ForgeToolConfig = {
       createdBy: { type: "string" },
       text: { type: "string" },
       limit: { type: "number" },
+      orderBy: {
+        type: "string",
+        description: "Sort order: 'fitness' (default), 'recency', or 'usage'",
+      },
+      minFitnessScore: {
+        type: "number",
+        description: "Minimum fitness score (0-1). Bricks below this threshold are excluded.",
+      },
     },
   },
   handler: searchForgeHandler,
@@ -50,7 +62,23 @@ async function searchForgeHandler(
   }
 
   // All fields are optional — cast safely since ForgeQuery is all-optional
-  const query = (input ?? {}) as ForgeQuery;
+  const rawQuery = (input ?? {}) as ForgeQuery;
+
+  // Lightweight validation: clamp minFitnessScore to [0,1], default invalid orderBy
+  const orderBy =
+    rawQuery.orderBy !== undefined && VALID_ORDER_BY.has(rawQuery.orderBy)
+      ? rawQuery.orderBy
+      : "fitness";
+  const clampedMin =
+    rawQuery.minFitnessScore !== undefined
+      ? Math.max(0, Math.min(1, rawQuery.minFitnessScore))
+      : undefined;
+  const query: ForgeQuery = {
+    ...rawQuery,
+    orderBy,
+    ...(clampedMin !== undefined ? { minFitnessScore: clampedMin } : {}),
+  };
+
   const result = await deps.store.search(query);
 
   if (!result.ok) {
@@ -64,8 +92,9 @@ async function searchForgeHandler(
     };
   }
 
-  const filtered = filterByAgentScope(result.value, deps.context.agentId);
-  return { ok: true, value: filtered };
+  const scoped = filterByAgentScope(result.value, deps.context.agentId);
+  const ranked = sortBricks(scoped, query, { nowMs: Date.now() });
+  return { ok: true, value: ranked };
 }
 
 // ---------------------------------------------------------------------------
