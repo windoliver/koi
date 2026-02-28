@@ -325,6 +325,89 @@ describe("createCompactorMiddleware", () => {
     });
   });
 
+  describe("forceCompactNext flag", () => {
+    test("scheduleCompaction() causes next wrapModelCall to force-compact", async () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer("Forced summary"),
+        contextWindowSize: 1000,
+        trigger: { messageCount: 100 }, // Won't trigger normally
+        preserveRecent: 1,
+        maxSummaryTokens: 100,
+      });
+
+      const messages = [userMsg("a"), userMsg("b"), userMsg("c")];
+      mw.scheduleCompaction();
+
+      const spy = createSpyModelHandler();
+      await mw.wrapModelCall?.(ctx, { messages }, spy.handler);
+
+      // Force-compact should have compacted the messages
+      const passedMessages = spy.calls[0]?.messages;
+      expect(passedMessages).toBeDefined();
+      expect(passedMessages?.[0]?.senderId).toBe("system:compactor");
+      expect(passedMessages?.length).toBeLessThan(messages.length);
+    });
+
+    test("flag is consumed (one-shot) — second call without re-scheduling does NOT force-compact", async () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer("Forced summary"),
+        contextWindowSize: 1000,
+        trigger: { messageCount: 100 },
+        preserveRecent: 1,
+        maxSummaryTokens: 100,
+      });
+
+      const messages = [userMsg("a"), userMsg("b"), userMsg("c")];
+      mw.scheduleCompaction();
+
+      const spy = createSpyModelHandler();
+      // First call — should force-compact
+      await mw.wrapModelCall?.(ctx, { messages }, spy.handler);
+      expect(spy.calls[0]?.messages?.[0]?.senderId).toBe("system:compactor");
+
+      // Second call — should NOT force-compact (flag consumed)
+      await mw.wrapModelCall?.(ctx, { messages }, spy.handler);
+      expect(spy.calls[1]?.messages).toBe(messages);
+    });
+
+    test("wrapModelStream also respects the flag", async () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer("Stream forced summary"),
+        contextWindowSize: 1000,
+        trigger: { messageCount: 100 },
+        preserveRecent: 1,
+        maxSummaryTokens: 100,
+      });
+
+      const messages = [userMsg("a"), userMsg("b"), userMsg("c")];
+      mw.scheduleCompaction();
+
+      let capturedMessages: readonly InboundMessage[] | undefined;
+      const wrappingHandler = async function* (req: {
+        readonly messages: readonly InboundMessage[];
+      }) {
+        capturedMessages = req.messages;
+        yield { kind: "done" as const, response: { content: "ok", model: "test" } };
+      };
+
+      if (mw.wrapModelStream !== undefined) {
+        for await (const _chunk of mw.wrapModelStream(ctx, { messages }, wrappingHandler)) {
+          /* drain */
+        }
+      }
+
+      expect(capturedMessages).toBeDefined();
+      expect(capturedMessages?.[0]?.senderId).toBe("system:compactor");
+    });
+
+    test("formatOccupancy returns a string with percentage", () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer(),
+      });
+      expect(mw.formatOccupancy()).toMatch(/Context: \d+%/);
+    });
+  });
+
   describe("describeCapabilities", () => {
     test("is defined on the middleware", () => {
       const mw = createCompactorMiddleware({
@@ -333,13 +416,122 @@ describe("createCompactorMiddleware", () => {
       expect(mw.describeCapabilities).toBeDefined();
     });
 
-    test("returns label 'compactor' and description containing 'compaction'", () => {
+    test("returns label 'compactor' and description containing 'Compaction'", () => {
       const mw = createCompactorMiddleware({
         summarizer: createMockSummarizer(),
       });
       const result = mw.describeCapabilities?.(ctx);
       expect(result?.label).toBe("compactor");
-      expect(result?.description).toContain("compaction");
+      expect(result?.description).toContain("Compaction");
+    });
+
+    test("mentions compact_context tool when toolEnabled is true", () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer(),
+        toolEnabled: true,
+      });
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.description).toContain("compact_context");
+    });
+
+    test("does NOT mention compact_context tool when toolEnabled is omitted", () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer(),
+      });
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.description).not.toContain("compact_context");
+    });
+
+    test("does NOT mention compact_context tool when toolEnabled is false", () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer(),
+        toolEnabled: false,
+      });
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.description).not.toContain("compact_context");
+    });
+  });
+
+  describe("context occupancy tracking", () => {
+    test("describeCapabilities shows 0% before any model call", () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer(),
+      });
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.description).toMatch(/Context: 0%/);
+    });
+
+    test("describeCapabilities shows updated % after model call", async () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer(),
+        contextWindowSize: 1000,
+        trigger: { messageCount: 100 },
+      });
+
+      // "a".repeat(400) = 400 chars ≈ 100 tokens → 100/1000 = 10%
+      const messages = [userMsg("a".repeat(400))];
+      const spy = createSpyModelHandler();
+      await mw.wrapModelCall?.(ctx, { messages }, spy.handler);
+
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.description).toMatch(/Context: \d+%/);
+      // Should no longer be 0% after processing messages
+      expect(result?.description).not.toMatch(/Context: 0%/);
+    });
+
+    test("governanceContributor is defined with 1 variable", () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer(),
+      });
+      expect(mw.governanceContributor).toBeDefined();
+      expect(mw.governanceContributor.variables()).toHaveLength(1);
+    });
+
+    test("governanceContributor.variables()[0].read() returns 0 before model call, >0 after", async () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer(),
+        trigger: { messageCount: 100 },
+      });
+
+      const variable = mw.governanceContributor.variables()[0];
+      expect(variable).toBeDefined();
+      if (variable === undefined) return;
+      expect(variable.read()).toBe(0);
+
+      const messages = [userMsg("hello world, this is a test message")];
+      const spy = createSpyModelHandler();
+      await mw.wrapModelCall?.(ctx, { messages }, spy.handler);
+
+      expect(variable.read()).toBeGreaterThan(0);
+    });
+
+    test("pressureTrend() returns estimatedTurnsToCompaction=-1 before 2 samples", () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer(),
+      });
+      const trend = mw.pressureTrend();
+      expect(trend.estimatedTurnsToCompaction).toBe(-1);
+    });
+
+    test("describeCapabilities includes /turn after 2+ model calls", async () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer(),
+        contextWindowSize: 200_000,
+        trigger: { messageCount: 100 },
+      });
+
+      const spy = createSpyModelHandler();
+      // First call
+      await mw.wrapModelCall?.(ctx, { messages: [userMsg("a".repeat(1000))] }, spy.handler);
+      // Second call with more tokens
+      await mw.wrapModelCall?.(
+        ctx,
+        { messages: [userMsg("a".repeat(1000)), userMsg("b".repeat(1000))] },
+        spy.handler,
+      );
+
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.description).toMatch(/K\/turn/);
     });
   });
 

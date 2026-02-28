@@ -74,6 +74,8 @@ export interface CompactorConfig {
   readonly store?: CompactionStore;
   /** Enable overflow recovery — catches context-overflow errors, force-compacts, retries. */
   readonly overflowRecovery?: OverflowRecoveryConfig;
+  /** When true, describeCapabilities mentions the compact_context tool. */
+  readonly toolEnabled?: boolean;
 }
 
 /**

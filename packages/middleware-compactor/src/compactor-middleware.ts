@@ -11,7 +11,9 @@
  * - Session restore: loads previous compaction result on session start
  */
 
+import type { ContextPressureTrend, GovernanceVariableContributor } from "@koi/core";
 import type { CompactionResult } from "@koi/core/context";
+import type { InboundMessage } from "@koi/core/message";
 import type {
   CapabilityFragment,
   KoiMiddleware,
@@ -20,10 +22,26 @@ import type {
   TurnContext,
 } from "@koi/core/middleware";
 import { isContextOverflowError } from "@koi/errors";
+import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
 import { createLlmCompactor } from "./compact.js";
+import { createCompactorGovernanceContributor } from "./compactor-governance-contributor.js";
 import { wrapWithOverflowRecovery } from "./overflow-recovery.js";
+import { createPressureTrendTracker } from "./pressure-trend.js";
 import type { CompactorConfig } from "./types.js";
 import { COMPACTOR_DEFAULTS } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// CompactorMiddleware — extends KoiMiddleware with governance + trend
+// ---------------------------------------------------------------------------
+
+export interface CompactorMiddleware extends KoiMiddleware {
+  readonly governanceContributor: GovernanceVariableContributor;
+  readonly pressureTrend: () => ContextPressureTrend;
+  /** Set the one-shot flag — next wrapModelCall/wrapModelStream will force-compact. */
+  readonly scheduleCompaction: () => void;
+  /** Human-readable occupancy string, e.g. "Context: 62% (124K/200K)". */
+  readonly formatOccupancy: () => string;
+}
 
 interface CompactionOutcome {
   readonly request: ModelRequest;
@@ -37,10 +55,14 @@ interface CompactorState {
   readonly cachedRestore: CompactionResult | undefined;
 }
 
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
 /**
  * Creates a middleware that compacts old messages into LLM summaries.
  */
-export function createCompactorMiddleware(config: CompactorConfig): KoiMiddleware {
+export function createCompactorMiddleware(config: CompactorConfig): CompactorMiddleware {
   const compactor = createLlmCompactor(config);
   const contextWindowSize = config.contextWindowSize ?? COMPACTOR_DEFAULTS.contextWindowSize;
   const overflowMaxRetries =
@@ -49,9 +71,52 @@ export function createCompactorMiddleware(config: CompactorConfig): KoiMiddlewar
   const store = config.store;
   const softTriggerFraction =
     config.trigger?.softTriggerFraction ?? COMPACTOR_DEFAULTS.trigger.softTriggerFraction;
+  const tokenEstimator = config.tokenEstimator ?? HEURISTIC_ESTIMATOR;
+  const triggerFraction =
+    config.trigger?.tokenFraction ?? COMPACTOR_DEFAULTS.trigger.tokenFraction ?? 0.75;
+  const compactionThreshold = contextWindowSize * triggerFraction;
+
+  const hasToolEnabled = config.toolEnabled === true;
 
   // let required: single mutable state record — each mutation returns a new object
   let state: CompactorState = { epoch: 0, lastTokenFraction: 0, cachedRestore: undefined };
+
+  // let justified: one-shot flag set by compact_context tool, consumed by next wrapModelCall
+  let forceCompactNext = false;
+
+  // let justified: mutable token count updated per-turn, stale by one turn
+  let lastKnownTokenCount = 0;
+
+  const trendTracker = createPressureTrendTracker();
+  const contributor = createCompactorGovernanceContributor(
+    () => lastKnownTokenCount,
+    contextWindowSize,
+  );
+
+  async function updateOccupancyTracking(messages: readonly InboundMessage[]): Promise<void> {
+    const estimated = await tokenEstimator.estimateMessages(messages);
+    lastKnownTokenCount = estimated;
+    trendTracker.record(estimated);
+  }
+
+  function formatOccupancy(): string {
+    const pct =
+      contextWindowSize > 0 ? Math.round((lastKnownTokenCount / contextWindowSize) * 100) : 0;
+    const currentK = Math.round(lastKnownTokenCount / 1000);
+    const limitK = Math.round(contextWindowSize / 1000);
+    return `Context: ${String(pct)}% (${String(currentK)}K/${String(limitK)}K)`;
+  }
+
+  function formatTrend(): string {
+    const trend = trendTracker.compute(compactionThreshold);
+    if (trend.sampleCount < 2) return "";
+    const growthK = Math.round(trend.growthPerTurn / 1000);
+    const base = `, ${String(growthK)}K/turn`;
+    if (trend.estimatedTurnsToCompaction > 0) {
+      return `${base}, ~${String(trend.estimatedTurnsToCompaction)} turns to compaction`;
+    }
+    return base;
+  }
 
   async function applyCompaction(request: ModelRequest): Promise<CompactionOutcome> {
     // Apply cached restore from session start (one-shot)
@@ -59,8 +124,10 @@ export function createCompactorMiddleware(config: CompactorConfig): KoiMiddlewar
       const restored = state.cachedRestore;
       state = { ...state, cachedRestore: undefined };
       if (restored.strategy !== "noop" && restored.messages.length > 0) {
+        const mergedMessages = [...restored.messages, ...request.messages];
+        await updateOccupancyTracking(mergedMessages);
         return {
-          request: { ...request, messages: [...restored.messages, ...request.messages] },
+          request: { ...request, messages: mergedMessages },
           result: undefined,
         };
       }
@@ -80,11 +147,15 @@ export function createCompactorMiddleware(config: CompactorConfig): KoiMiddlewar
     }
 
     if (result.strategy === "noop") {
+      // No compaction — record the original messages for occupancy tracking
+      await updateOccupancyTracking(request.messages);
       return { request, result: undefined };
     }
 
     // Increment epoch after successful compaction
     state = { ...state, epoch: state.epoch + 1 };
+    // Record post-compaction occupancy (one sample per turn, not two)
+    await updateOccupancyTracking(result.messages);
 
     return { request: { ...request, messages: result.messages }, result };
   }
@@ -106,25 +177,39 @@ export function createCompactorMiddleware(config: CompactorConfig): KoiMiddlewar
       request.model,
       state.epoch,
     );
+    await updateOccupancyTracking(result.messages);
     return { ...request, messages: result.messages };
   }
 
   return {
     name: "koi:compactor",
     priority: 225,
+    governanceContributor: contributor,
+    /** Returns pressure trend relative to the compaction trigger threshold (default 75% of window). */
+    pressureTrend: () => trendTracker.compute(compactionThreshold),
+    scheduleCompaction: () => {
+      forceCompactNext = true;
+    },
+    formatOccupancy,
+
     describeCapabilities: (_ctx: TurnContext): CapabilityFragment => {
+      const occupancy = formatOccupancy();
+      const trend = formatTrend();
       const base =
-        `Context compaction above ${String(contextWindowSize)} tokens` +
+        `Compaction above ${String(contextWindowSize)} tokens` +
         (hasOverflowRecovery ? `, overflow recovery (${String(overflowMaxRetries)} retries)` : "") +
-        (store !== undefined ? ", session restore enabled" : "");
+        (store !== undefined ? ", session restore enabled" : "") +
+        (hasToolEnabled ? ". Use compact_context tool to trigger early compaction" : "");
+
+      // Soft trigger warning when above soft threshold
       if (softTriggerFraction !== undefined && state.lastTokenFraction >= softTriggerFraction) {
         const pct = Math.round(state.lastTokenFraction * 100);
         return {
           label: "compactor",
-          description: `${base}. Context pressure: ${String(pct)}% — consider summarizing completed work phases`,
+          description: `${occupancy}${trend}. ${base}. Context pressure: ${String(pct)}% — consider summarizing completed work phases`,
         };
       }
-      return { label: "compactor", description: base };
+      return { label: "compactor", description: `${occupancy}${trend}. ${base}` };
     },
 
     // Restore previous compaction on session start
@@ -146,6 +231,13 @@ export function createCompactorMiddleware(config: CompactorConfig): KoiMiddlewar
       : {}),
 
     async wrapModelCall(ctx, request, next) {
+      // One-shot forced compaction from compact_context tool
+      if (forceCompactNext) {
+        forceCompactNext = false;
+        const forcedRequest = await forceCompactRequest(request);
+        return next(forcedRequest);
+      }
+
       const { request: compactedRequest, result } = await applyCompaction(request);
       if (result !== undefined) {
         await persistToStore(ctx, result);
@@ -154,7 +246,7 @@ export function createCompactorMiddleware(config: CompactorConfig): KoiMiddlewar
       if (!hasOverflowRecovery) {
         return next(compactedRequest);
       }
-      // let required: mutable binding so recovery can update messages after force-compact
+      // let justified: mutable binding so recovery can update messages after force-compact
       let currentRequest = compactedRequest;
       return wrapWithOverflowRecovery(
         async () => next(currentRequest),
@@ -166,6 +258,14 @@ export function createCompactorMiddleware(config: CompactorConfig): KoiMiddlewar
     },
 
     async *wrapModelStream(ctx, request, next) {
+      // One-shot forced compaction from compact_context tool
+      if (forceCompactNext) {
+        forceCompactNext = false;
+        const forcedRequest = await forceCompactRequest(request);
+        yield* next(forcedRequest);
+        return;
+      }
+
       const { request: compactedRequest, result } = await applyCompaction(request);
       if (result !== undefined) {
         await persistToStore(ctx, result);
@@ -177,9 +277,9 @@ export function createCompactorMiddleware(config: CompactorConfig): KoiMiddlewar
       }
       // Overflow errors happen before any chunks are streamed (API-level rejection),
       // so catching inside yield* is safe — no partial data to undo.
-      // let required: mutable binding so recovery can update messages after force-compact
+      // let justified: mutable binding so recovery can update messages after force-compact
       let currentRequest = compactedRequest;
-      // let required: tracks remaining retry attempts for stream overflow recovery
+      // let justified: tracks remaining retry attempts for stream overflow recovery
       let retriesLeft = overflowMaxRetries;
       for (;;) {
         try {

@@ -1,351 +1,287 @@
-# @koi/middleware-compactor — Context Compaction with Fact Preservation
+# @koi/middleware-compactor — LLM Context Compaction + Agent-Initiated Compression
 
-Intercepts every model call/stream and compacts old conversation history into LLM-generated summaries when configurable thresholds are exceeded. Before compaction discards original messages, a fact-extracting archiver extracts structured facts (decisions, artifacts, resolutions, configuration changes) into long-term memory so critical information survives lossy summarization.
+`@koi/middleware-compactor` is an L2 middleware package that manages context window pressure through two complementary mechanisms:
+
+1. **System-initiated compaction** (Layer B) — automatically summarizes old messages when token thresholds are exceeded
+2. **Agent-initiated compaction** (Layer A) — exposes a `compact_context` tool so the agent can trigger compaction proactively when it sees pressure building
 
 ---
 
 ## Why It Exists
 
-Long-running agent sessions accumulate messages until the context window fills up. Without compaction:
+LLM agents accumulate context with every turn: user messages, tool results, model responses. Eventually the context window fills and one of three things happens:
 
-1. **Context rot** — attention quality degrades in the last 20-25% of the context window. The agent starts "forgetting" earlier messages, producing contradictory decisions and hallucinated state.
-2. **Hard overflow** — exceeding the model's context limit causes API rejections. The agent crashes mid-task.
-3. **Fact loss** — naive summarization discards structured information (file paths, decisions, config changes) that the agent needs to maintain coherence across long sessions.
+```
+Without compaction:
+  Turn 1 ─► Turn 5 ─► Turn 10 ─► Turn 15 ─► BOOM (context overflow)
+                                                API rejects the call
 
-Without this package:
-- Agents hit context limits and crash
-- Long sessions suffer progressive quality degradation
-- Compacted summaries lose critical structured facts
-- No observability into context pressure or compaction history
+With system-only compaction:
+  Turn 1 ─► ... ─► Turn 10 (75% full) ─► AUTO-COMPACT ─► Turn 11
+                         │                      │
+                         │                      └─ happens at arbitrary point
+                         └─ agent loses working context mid-task
+
+With agent-initiated compaction (this package):
+  Turn 1 ─► ... ─► Turn 8 (51%) ─► agent sees pressure ─► COMPACT ─► Turn 9
+                         │              │                      │
+                         │              │                      └─ agent chose the moment
+                         │              └─ "Context: 51%, ~3 turns to compaction"
+                         └─ agent finishes current subtask, then compacts
+```
+
+The agent-initiated approach produces higher-quality compaction because the agent knows which context is still relevant and can time the compression at natural phase boundaries.
 
 ---
 
 ## Architecture
 
-`@koi/middleware-compactor` is an **L2 feature package** — it depends only on `@koi/core` (L0), `@koi/errors` (L0u), and `@koi/resolve` (L0u). Zero external dependencies.
+### Layer Position
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│  @koi/middleware-compactor  (L2)                          │
-│                                                          │
-│  types.ts                ← config types, defaults,       │
-│                            presets, trigger thresholds    │
-│  compact.ts              ← core LlmCompactor: trigger    │
-│                            check, split, summarize       │
-│  compactor-middleware.ts ← KoiMiddleware factory,        │
-│                            CompactorState, soft trigger   │
-│  fact-extraction.ts      ← heuristic patterns, extract   │
-│  fact-extracting-         ← archiver that stores facts   │
-│    archiver.ts             to MemoryComponent before     │
-│                            compaction discards messages   │
-│  estimator.ts            ← heuristic token estimator     │
-│  find-split.ts           ← optimal split via prefix sums │
-│  pair-boundaries.ts      ← AI+Tool pair boundary finder  │
-│  prompt.ts               ← summary prompt builder        │
-│  overflow-recovery.ts    ← catch overflow, force-compact │
-│  memory-compaction-       ← in-memory CompactionStore    │
-│    store.ts                                              │
-│  descriptor.ts           ← BrickDescriptor for manifest  │
-│  index.ts                ← public API surface            │
-│                                                          │
-├──────────────────────────────────────────────────────────┤
-│  Dependencies                                            │
-│                                                          │
-│  @koi/core    (L0)   KoiMiddleware, ModelRequest,        │
-│                       InboundMessage, CompactionResult,   │
-│                       TokenEstimator, MemoryComponent     │
-│  @koi/errors  (L0u)  isContextOverflowError              │
-│  @koi/resolve (L0u)  BrickDescriptor                     │
-└──────────────────────────────────────────────────────────┘
+L0  @koi/core                     ─ KoiMiddleware, MiddlewareBundle,
+                                      ComponentProvider, Tool (types only)
+L2  @koi/middleware-compactor     ─ this package (no L1 dependency)
+    imports: @koi/core, @koi/errors (L0u)
 ```
 
-Priority **225** — runs after pay middleware (200), before context-editing (250).
+### Internal Module Map
+
+```
+index.ts                    ← public re-exports
+│
+├── types.ts                ← CompactorConfig, CompactionStore, CompactionTrigger
+├── compact.ts              ← LlmCompactor: threshold check + LLM summarization
+├── estimator.ts            ← heuristicTokenEstimator (4 chars ≈ 1 token)
+├── find-split.ts           ← optimal split point between old/recent messages
+├── pair-boundaries.ts      ← user-assistant pair boundary detection
+├── prompt.ts               ← summary prompt builder
+├── overflow-recovery.ts    ← catch context-overflow → force-compact → retry
+├── pressure-trend.ts       ← PressureTrendTracker: growth/turn + ETA
+├── compactor-governance-contributor.ts  ← CONTEXT_OCCUPANCY variable
+│
+├── compact-context-tool.ts      ← compact_context tool factory
+├── compactor-middleware.ts      ← createCompactorMiddleware() factory
+├── compactor-bundle.ts          ← createCompactorBundle() = middleware + tool
+│
+├── memory-compaction-store.ts   ← in-memory CompactionStore
+└── descriptor.ts                ← BrickDescriptor for manifest resolution
+```
 
 ---
 
 ## How It Works
 
-### Compaction Lifecycle
+### System Prompt Injection (Every Turn)
+
+The middleware injects a live status line into every model call via `describeCapabilities`:
 
 ```
-  Model Call / Stream
-       │
-       ▼
-┌──────────────────────────────────────────────┐
-│  wrapModelCall / wrapModelStream             │
-│                                              │
-│  1. Check cached session restore             │
-│  2. Estimate tokens (heuristic: 4 chars/tok) │
-│  3. Check trigger conditions                 │
-│  4. If triggered → compact                   │
-│  5. Cache token fraction for soft trigger     │
-│  6. Pass compacted request to next()         │
-└──────────────────┬───────────────────────────┘
-                   │
-       ┌───────────┴──────────────┐
-    not triggered              triggered
-       │                          │
-    pass through          ┌───────▼────────────────────┐
-                          │  performCompaction()        │
-                          │                            │
-                          │  1. Find valid split points │
-                          │     (respect AI+Tool pairs) │
-                          │  2. Find optimal split      │
-                          │     (prefix-sum + target)   │
-                          │  3. Extract facts → memory  │
-                          │     (archiver, if wired)    │
-                          │  4. Summarize head messages  │
-                          │     (LLM call)              │
-                          │  5. Tag summary with epoch  │
-                          │  6. Return [summary, ...tail]│
-                          └────────────────────────────┘
+[compactor] Context: 62% (124K/200K), 5K/turn, ~8 turns to compaction.
+            Use compact_context tool to trigger early compaction.
 ```
 
-### Trigger Conditions
+The agent sees this pressure reading and can decide to act.
 
-Any satisfied condition fires compaction. All are optional — at least one must be set.
-
-| Trigger | Default | Description |
-|---------|---------|-------------|
-| `tokenFraction` | **0.60** | Fraction of `contextWindowSize`. Fires when `tokens ≥ windowSize × 0.60`. |
-| `softTriggerFraction` | **0.50** | Warning only — no compaction. Surfaces pressure in `describeCapabilities`. |
-| `tokenCount` | — | Absolute token count threshold. |
-| `messageCount` | — | Message count threshold. |
+### Signal Mechanism
 
 ```
-Context Window
-0%─────────────────50%──────────60%──────────────────100%
-                     ▲            ▲
-                soft trigger   hard trigger
-                (warning)      (compact!)
-
-◄─── Sweet Spot ───►
-     (40-60%)
-Agent lives here with
-peak attention quality
+Turn N:                                     Turn N+1:
+┌──────────┐    ┌─────────────┐            ┌──────────────────┐
+│ wrapModel│───►│ LLM sees    │            │ wrapModelCall    │
+│ Call     │    │ "Context:   │            │ checks flag:     │
+│ (normal) │    │  85%..."    │            │ forceCompactNext │
+└──────────┘    └──────┬──────┘            │ = true!          │
+                       │                   │                  │
+                       ▼                   │ → forceCompact() │
+                ┌──────────────┐           │ → reset flag     │
+                │ LLM decides  │           │ → proceed with   │
+                │ to call      │           │   compacted msgs │
+                │ compact_ctx  │           └──────────────────┘
+                └──────┬───────┘
+                       │
+                       ▼
+                ┌──────────────┐
+                │ wrapToolCall │
+                │ executes     │
+                │ tool:        │
+                │ sets flag:   │
+                │ forceCompact │
+                │ Next = true  │
+                └──────────────┘
 ```
 
-### Soft Trigger (Context Pressure Warning)
+The one-shot flag ensures:
+- Tool call sets `forceCompactNext = true`
+- Next `wrapModelCall` or `wrapModelStream` consumes it (resets to `false`)
+- No permanent state change — if the model doesn't make another call, nothing happens
 
-When the token fraction exceeds `softTriggerFraction` but stays below the hard trigger, `describeCapabilities()` returns a pressure warning:
+### Before vs After
 
 ```
-Context pressure: 52% — consider summarizing completed work phases
+                      BEFORE (agent blind to pressure)
+
+Turn 1   Turn 2   Turn 3   Turn 4   Turn 5   Turn 6   Turn 7
+┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐
+│ 8% │  │22% │  │38% │  │51% │  │65% │  │78% │  │92% │
+│    │  │    │  │    │  │    │  │    │  │    │  │████│
+│    │  │    │  │    │  │    │  │    │  │████│  │████│
+│    │  │    │  │    │  │    │  │████│  │████│  │████│
+│    │  │    │  │    │  │████│  │████│  │████│  │████│
+│    │  │    │  │████│  │████│  │████│  │████│  │████│
+│    │  │████│  │████│  │████│  │████│  │████│  │████│
+│████│  │████│  │████│  │████│  │████│  │████│  │████│
+└────┘  └────┘  └────┘  └────┘  └────┘  └────┘  └────┘
+
+Agent sees: (nothing)    Auto-compact at 75% → agent loses context mid-task
+
+
+                     AFTER (agent sees + acts on pressure)
+
+Turn 1   Turn 2   Turn 3   Turn 4   Turn 5   Turn 6   Turn 7
+┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐
+│ 8% │  │22% │  │38% │  │51% │  │12% │  │25% │  │38% │
+│    │  │    │  │    │  │    │  │    │  │    │  │    │
+│    │  │    │  │    │  │    │  │    │  │    │  │████│
+│    │  │    │  │    │  │    │  │    │  │████│  │████│
+│    │  │    │  │    │  │████│  │    │  │████│  │████│
+│    │  │    │  │████│  │████│  │    │  │████│  │████│
+│    │  │████│  │████│  │████│  │████│  │████│  │████│
+│████│  │████│  │████│  │████│  │████│  │████│  │████│
+└────┘  └────┘  └────┘  └────┘  └────┘  └────┘  └────┘
+                           │
+                           ▼
+               Agent sees "51%, ~3 turns left"
+               Agent calls compact_context
+               → 51% drops to 12%
+               Agent continues with room to work
 ```
 
-This surfaces in the agent's system prompt, nudging it to proactively wrap up work phases before the hard trigger fires. No compaction occurs — it's advisory only.
+---
 
-### Epoch Tracking
+## Bundle Architecture
 
-Each successful compaction increments an epoch counter. The epoch is stamped on the summary message metadata:
+The `MiddlewareBundle` pattern packages middleware + tool provider for cohesive features:
+
+```
+createCompactorBundle(config)
+│
+├──► CompactorMiddleware          (registered as middleware)
+│    ├── wrapModelCall            reads forceCompactNext flag
+│    ├── wrapModelStream          reads forceCompactNext flag
+│    ├── describeCapabilities     "...Use compact_context tool..."
+│    ├── scheduleCompaction()  ◄──── shared closure ────┐
+│    └── formatOccupancy()     ◄──── shared closure ──┐ │
+│                                                      │ │
+└──► ComponentProvider            (registered as ECS)  │ │
+     └── tool:compact_context                          │ │
+          ├── descriptor.name = "compact_context"      │ │
+          ├── trustTier = "verified"                   │ │
+          └── execute() ───────────────────────────────┘ │
+                calls deps.formatOccupancy() ────────────┘
+                calls deps.scheduleCompaction() ──────────┘
+```
+
+Middleware and tool registration are separate concerns. The bundle is a convenience
+factory that returns both, registered separately — like Rust trait composition
+(`impl Middleware + ToolProvider`) or Passport.js exporting both `initialize()` and `routes()`.
+
+---
+
+## API
+
+### `createCompactorMiddleware(config)`
+
+Creates the middleware only (no tool). Use when you want system-initiated compaction
+without exposing the tool to the agent.
 
 ```typescript
-metadata: { compacted: true, compactionEpoch: 0 }  // first compaction
-metadata: { compacted: true, compactionEpoch: 1 }  // second compaction
-```
+import { createCompactorMiddleware } from "@koi/middleware-compactor";
 
-This enables downstream middleware and tooling to reason about compaction history — which generation of summary the agent is working from, and when information might have been compressed.
-
-### CompactorState
-
-The middleware uses a single immutable state record, updated via spread on each mutation:
-
-```typescript
-interface CompactorState {
-  readonly epoch: number;              // increments on each compaction
-  readonly lastTokenFraction: number;  // cached for soft trigger reads
-  readonly cachedRestore: CompactionResult | undefined;  // session restore
-}
-```
-
----
-
-## Fact Extraction Pipeline
-
-### Problem
-
-LLM summarization is lossy. When the compactor summarizes 30 messages into a paragraph, structured facts are lost:
-
-```
-BEFORE compaction:                  LLM Summary:
-"We decided to use Bun"            "The team discussed runtime
-"Created /src/server.ts"     →      options and set up a server
-"Fixed CORS by updating cfg"        with some configuration."
-"Set port to 3000"
-                                    ✗ Which runtime? Lost.
-                                    ✗ Which file? Lost.
-                                    ✗ What was fixed? Lost.
-                                    ✗ What port? Lost.
-```
-
-### Solution: Extract Before Summarize
-
-The `createFactExtractingArchiver` runs heuristic pattern matching on messages **before** the LLM summary replaces them, storing structured facts to a `MemoryComponent`:
-
-```
-Messages to compact:
-  [m1] [m2] [m3] [m4] [m5]
-    │    │    │    │    │
-    ▼    ▼    ▼    ▼    ▼
-┌────────────────────────────┐
-│  Heuristic Fact Extraction │
-│  (microseconds, zero cost) │
-└──────────┬─────────────────┘
-           │
-    ┌──────┴──────┐
-    ▼             ▼
- memory-fs    LLM Summary
- (facts       (lossy, but
-  survive)     that's ok now)
-```
-
-### Five Default Heuristic Patterns
-
-| # | Pattern | Matches | Category | Example |
-|---|---------|---------|----------|---------|
-| 1 | **Artifact Tool** | Tool results from `write_file`, `create_file`, `edit_file` | `artifact` | `[write_file] Created /src/server.ts` |
-| 2 | **Decision** | Messages with decision language (`decided`, `chose`, `going with`, etc.) | `decision` | `We decided to use Bun as the runtime` |
-| 3 | **Resolution** | Error resolution messages (`fixed`, `resolved`, `root cause was`, etc.) | `resolution` | `Fixed by updating the tsconfig` |
-| 4 | **Configuration** | Setting changes (`set X to Y`, `configured X to Y`) | `configuration` | `Configured port to 3000` |
-| 5 | **File Path** | Tool results containing file paths | `artifact` | `File paths: /src/a.ts, /src/b.ts` |
-
-Each message is tested against all patterns. First match wins per message.
-
-### Reinforcement
-
-When the same fact is extracted across multiple compactions (e.g., "We decided to use Bun" appears in epoch 0 and epoch 1), the archiver passes `reinforce: true` to `memory.store()`. This increments the existing fact's `accessCount` instead of creating a duplicate — boosting its salience in the memory tier system.
-
-```
-Compaction epoch 0:  "decided Bun" → store (new, accessCount: 0)
-Compaction epoch 1:  "decided Bun" → store (reinforce, accessCount: 1)
-Compaction epoch 2:  "decided Bun" → store (reinforce, accessCount: 2)
-                                                        ▲
-                                     Higher accessCount = stays in HOT tier longer
-```
-
----
-
-## Overflow Recovery
-
-When enabled, catches `ContextOverflowError` from the downstream model call, force-compacts the request, and retries:
-
-```
-  wrapModelCall(request)
-       │
-       ▼
-  compact(request)
-       │
-       ▼
-  next(compactedRequest) ──── ContextOverflowError
-       │                              │
-       │                     forceCompact(request)
-       │                              │
-       │                     next(recompactedRequest)
-       │                              │
-    success                        success
-```
-
-Configurable via `overflowRecovery: { maxRetries: N }`. Default: 1 retry.
-
----
-
-## Streaming Behavior
-
-Both `wrapModelCall` and `wrapModelStream` apply identical compaction logic before delegating to `next()`. For streaming, overflow recovery catches errors before any chunks are yielded (API-level rejection), so no partial data needs to be undone.
-
----
-
-## Presets
-
-Named presets for common configurations:
-
-| Preset | tokenFraction | softTriggerFraction | Use case |
-|--------|--------------|--------------------|----|
-| *(default)* | 0.60 | 0.50 | Recommended — Goldilocks zone |
-| `aggressive` | 0.75 | — | Pre-v2 behavior, max context usage |
-
-```typescript
-import { COMPACTOR_PRESETS } from "@koi/middleware-compactor";
-
-// Use aggressive preset (old behavior)
-createCompactorMiddleware({
-  summarizer: modelCall,
-  ...COMPACTOR_PRESETS.aggressive,
+const mw = createCompactorMiddleware({
+  summarizer: modelCall,          // LLM handler for generating summaries
+  contextWindowSize: 200_000,     // default
+  trigger: { tokenFraction: 0.75 }, // compact at 75% occupancy
+  preserveRecent: 4,              // always keep last 4 messages
+  toolEnabled: true,              // mention compact_context in describeCapabilities
 });
 ```
 
----
+Returns `CompactorMiddleware` extending `KoiMiddleware` with:
+- `governanceContributor` — declares `CONTEXT_OCCUPANCY` variable
+- `pressureTrend()` — returns `ContextPressureTrend` (growth/turn, ETA)
+- `scheduleCompaction()` — sets the one-shot force-compact flag
+- `formatOccupancy()` — returns human-readable string like `"Context: 62% (124K/200K)"`
 
-## API Reference
+### `createCompactorBundle(config)`
 
-### `createCompactorMiddleware(config: CompactorConfig): KoiMiddleware`
-
-Main factory. Returns a middleware at priority 225 with `wrapModelCall`, `wrapModelStream`, and state-aware `describeCapabilities`.
-
-### `createLlmCompactor(config: CompactorConfig): LlmCompactor`
-
-Core compaction logic without the middleware wrapper. Useful for testing or custom integration.
+Creates both middleware and tool provider. The bundle always sets `toolEnabled: true`.
 
 ```typescript
-interface LlmCompactor extends ContextCompactor {
-  readonly compact: (
-    messages: readonly InboundMessage[],
-    maxTokens: number,
-    model?: string,
-    epoch?: number,
-  ) => Promise<CompactionResult>;
-  readonly forceCompact: (
-    messages: readonly InboundMessage[],
-    maxTokens: number,
-    model?: string,
-    epoch?: number,
-  ) => Promise<CompactionResult>;
-}
+import { createCompactorBundle } from "@koi/middleware-compactor";
+
+const bundle = createCompactorBundle({
+  summarizer: modelCall,
+  contextWindowSize: 200_000,
+});
+
+// Register both parts separately
+const runtime = await createKoi({
+  manifest,
+  adapter,
+  middleware: [bundle.middleware],
+  providers: [...bundle.providers, governanceProvider],
+});
 ```
 
-### `createFactExtractingArchiver(memory: MemoryComponent, config?: Partial<FactExtractionConfig>): CompactionArchiver`
+Returns `CompactorBundle` extending `MiddlewareBundle`:
+- `middleware` — the `CompactorMiddleware` instance
+- `providers` — array with one `ComponentProvider` (attaches `tool:compact_context`)
 
-Creates an archiver that extracts structured facts from messages and stores them to a `MemoryComponent` before compaction discards the originals.
+### `createCompactContextTool(deps)`
 
-### `createMemoryCompactionStore(): CompactionStore`
+Low-level factory for the tool alone. Used internally by the bundle; exposed for
+advanced wiring.
 
-In-memory `CompactionStore` for session restore. Holds one `CompactionResult` per session ID.
+```typescript
+import { createCompactContextTool } from "@koi/middleware-compactor";
 
-### Key Types
+const tool = createCompactContextTool({
+  scheduleCompaction: () => { /* set your flag */ },
+  formatOccupancy: () => "Context: 42% (84K/200K)",
+});
+
+// tool.descriptor.name === "compact_context"
+// tool.trustTier === "verified"
+// tool.execute({}) → "Compaction scheduled for next model call. Current Context: 42%..."
+```
+
+### `CompactorConfig`
 
 ```typescript
 interface CompactorConfig {
   readonly summarizer: ModelHandler;
   readonly summarizerModel?: string;
-  readonly contextWindowSize?: number;        // Default: 200_000
-  readonly trigger?: CompactionTrigger;       // Default: { tokenFraction: 0.60, softTriggerFraction: 0.50 }
-  readonly preserveRecent?: number;           // Default: 4
-  readonly maxSummaryTokens?: number;         // Default: 1000
-  readonly tokenEstimator?: TokenEstimator;   // Default: heuristic (4 chars/token)
-  readonly promptBuilder?: PromptBuilder;
-  readonly archiver?: CompactionArchiver;     // Fact extraction hook
-  readonly store?: CompactionStore;           // Session restore
+  readonly contextWindowSize?: number;       // default: 200_000
+  readonly trigger?: CompactionTrigger;      // default: { tokenFraction: 0.75 }
+  readonly preserveRecent?: number;          // default: 4
+  readonly maxSummaryTokens?: number;        // default: 1000
+  readonly tokenEstimator?: TokenEstimator;
+  readonly promptBuilder?: (messages, maxTokens) => string;
+  readonly archiver?: CompactionArchiver;
+  readonly store?: CompactionStore;
   readonly overflowRecovery?: OverflowRecoveryConfig;
+  readonly toolEnabled?: boolean;            // mention tool in describeCapabilities
 }
+```
 
-interface CompactionTrigger {
-  readonly tokenFraction?: number;            // Default: 0.60
-  readonly softTriggerFraction?: number;      // Default: 0.50
-  readonly tokenCount?: number;
-  readonly messageCount?: number;
-}
+### `MiddlewareBundle` (L0 type)
 
-interface FactExtractionConfig {
-  readonly strategy: "heuristic";
-  readonly patterns?: readonly HeuristicPattern[];
-  readonly minFactLength?: number;            // Default: 10
-  readonly reinforce?: boolean;               // Default: true
-}
-
-interface HeuristicPattern {
-  readonly match: RegExp | ((msg: InboundMessage) => boolean);
-  readonly category: string;
-  readonly extractFact?: (msg: InboundMessage) => string | undefined;
+```typescript
+// Defined in @koi/core/middleware.ts
+interface MiddlewareBundle {
+  readonly middleware: KoiMiddleware;
+  readonly providers: readonly ComponentProvider[];
 }
 ```
 
@@ -353,116 +289,192 @@ interface HeuristicPattern {
 
 ## Examples
 
-### Basic: Compactor middleware with defaults
+### 1. Direct Wiring with `createKoi`
+
+```typescript
+import { createKoi } from "@koi/engine";
+import { createLoopAdapter } from "@koi/engine-loop";
+import {
+  COMPACTOR_GOVERNANCE,
+  createCompactorBundle,
+} from "@koi/middleware-compactor";
+
+const bundle = createCompactorBundle({
+  summarizer: modelCall,
+  contextWindowSize: 200_000,
+});
+
+// Governance provider makes CONTEXT_OCCUPANCY visible to GovernanceController
+const governanceProvider = {
+  name: "compactor-governance",
+  async attach() {
+    return new Map([[COMPACTOR_GOVERNANCE, bundle.middleware.governanceContributor]]);
+  },
+};
+
+const runtime = await createKoi({
+  manifest: { name: "my-agent", version: "1.0.0", model: { name: "..." } },
+  adapter: createLoopAdapter({ modelCall, maxTurns: 25 }),
+  middleware: [bundle.middleware],
+  providers: [...bundle.providers, governanceProvider],
+});
+```
+
+### 2. With Pi Adapter
+
+```typescript
+import { createPiAdapter } from "@koi/engine-pi";
+import { createCompactorBundle } from "@koi/middleware-compactor";
+
+const bundle = createCompactorBundle({ summarizer: modelCall });
+const adapter = createPiAdapter({ model: "anthropic:claude-sonnet-4-5-20250929" });
+
+const runtime = await createKoi({
+  manifest,
+  adapter,
+  middleware: [bundle.middleware],
+  providers: [...bundle.providers],
+});
+```
+
+### 3. Middleware Only (No Tool)
+
+When you want automatic compaction without giving the agent a tool:
 
 ```typescript
 import { createCompactorMiddleware } from "@koi/middleware-compactor";
 
-const middleware = createCompactorMiddleware({
+const mw = createCompactorMiddleware({
   summarizer: modelCall,
-  summarizerModel: "claude-haiku-4-5-20251001",
+  overflowRecovery: { maxRetries: 2 },
+  store: createMemoryCompactionStore(),
 });
 
 const runtime = await createKoi({
   manifest,
   adapter,
-  middleware: [middleware],
+  middleware: [mw],
 });
 ```
 
-### With fact extraction to memory-fs
+### 4. Reading Pressure Trend
 
 ```typescript
-import { createCompactorMiddleware, createFactExtractingArchiver } from "@koi/middleware-compactor";
-import { createFsMemory } from "@koi/memory-fs";
+const bundle = createCompactorBundle({ summarizer: modelCall });
 
-const fsMemory = await createFsMemory({ baseDir: "./memory" });
-const archiver = createFactExtractingArchiver(fsMemory.component);
+// After a few turns...
+const trend = bundle.middleware.pressureTrend();
+console.log(`Growth: ${trend.growthPerTurn} tokens/turn`);
+console.log(`ETA: ${trend.estimatedTurnsToCompaction} turns to compaction`);
+console.log(`Samples: ${trend.sampleCount}`);
 
-const middleware = createCompactorMiddleware({
-  summarizer: modelCall,
-  summarizerModel: "claude-haiku-4-5-20251001",
-  archiver,
-});
-```
-
-### With custom heuristic patterns
-
-```typescript
-import {
-  createFactExtractingArchiver,
-  DEFAULT_HEURISTIC_PATTERNS,
-} from "@koi/middleware-compactor";
-import type { HeuristicPattern } from "@koi/middleware-compactor";
-
-const customPattern: HeuristicPattern = {
-  match: /\b(deployed|shipped|released)\b/i,
-  category: "milestone",
-};
-
-const archiver = createFactExtractingArchiver(memory.component, {
-  patterns: [...DEFAULT_HEURISTIC_PATTERNS, customPattern],
-});
-```
-
-### With overflow recovery + session restore
-
-```typescript
-import {
-  createCompactorMiddleware,
-  createMemoryCompactionStore,
-} from "@koi/middleware-compactor";
-
-const middleware = createCompactorMiddleware({
-  summarizer: modelCall,
-  store: createMemoryCompactionStore(),
-  overflowRecovery: { maxRetries: 2 },
-});
-```
-
-### Aggressive preset (pre-v2 behavior)
-
-```typescript
-import { createCompactorMiddleware, COMPACTOR_PRESETS } from "@koi/middleware-compactor";
-
-const middleware = createCompactorMiddleware({
-  summarizer: modelCall,
-  ...COMPACTOR_PRESETS.aggressive,  // tokenFraction: 0.75, no soft trigger
-});
+// Programmatic access to occupancy
+const occupancy = bundle.middleware.formatOccupancy();
+// → "Context: 62% (124K/200K)"
 ```
 
 ---
 
-## Middleware Position (Onion)
+## Features
+
+### System-Initiated Compaction (Layer B)
+
+Triggers when any threshold is met:
+
+| Trigger | Default | Description |
+|---------|---------|-------------|
+| `tokenFraction` | 0.75 | Fraction of contextWindowSize |
+| `tokenCount` | — | Absolute token threshold |
+| `messageCount` | — | Message count threshold |
+
+Compaction flow: estimate tokens → check triggers → find split point → LLM summarize → replace old messages with summary.
+
+### Overflow Recovery
+
+Catches `context_length_exceeded` errors from the API, force-compacts, and retries:
+
+```typescript
+const mw = createCompactorMiddleware({
+  summarizer: modelCall,
+  overflowRecovery: { maxRetries: 2 },
+});
+```
+
+### Session Restore
+
+Persists compaction results across session restarts:
+
+```typescript
+import { createMemoryCompactionStore } from "@koi/middleware-compactor";
+
+const mw = createCompactorMiddleware({
+  summarizer: modelCall,
+  store: createMemoryCompactionStore(),
+});
+// onSessionStart loads previous result; first model call prepends it
+```
+
+### Governance Integration
+
+The `CONTEXT_OCCUPANCY` governance variable is tracked via `GovernanceVariableContributor`:
+
+```typescript
+const snapshot = await governanceController.snapshot();
+const occupancy = snapshot.readings.find(r => r.name === "context_occupancy");
+// { current: 124000, limit: 200000, utilization: 0.62 }
+```
+
+### Pressure Trend Tracking
+
+After 2+ model calls, the middleware estimates growth rate and turns until compaction:
 
 ```
-         Incoming Model Call
-                │
-                ▼
-  ┌─────────────────────────┐
-  │  middleware-pay          │  priority: 200
-  ├─────────────────────────┤
-  │  middleware-compactor    │  priority: 225  ◄─ THIS
-  │  (THIS)                 │
-  ├─────────────────────────┤
-  │  middleware-context-edit │  priority: 250
-  ├─────────────────────────┤
-  │  middleware-guardrails   │  priority: 375
-  ├─────────────────────────┤
-  │  engine adapter          │
-  │  → LLM API call         │
-  └─────────────────────────┘
+Context: 62% (124K/200K), 5K/turn, ~8 turns to compaction
 ```
+
+---
+
+## Priority and Middleware Ordering
+
+`@koi/middleware-compactor` has `priority: 225`:
+
+```
+priority: 200  @koi/middleware-pay        (budget check first)
+priority: 225  @koi/middleware-compactor   ← THIS (compact before context editing)
+priority: 250  context editing middleware
+priority: 300  @koi/middleware-audit       (audit all calls)
+```
+
+---
+
+## Performance Properties
+
+| Operation | Cost | Notes |
+|-----------|------|-------|
+| Token estimation | O(messages) | Heuristic: 4 chars ≈ 1 token |
+| Threshold check | O(1) | Compare estimated tokens vs threshold |
+| Compaction | O(messages) + 1 LLM call | Only when threshold exceeded |
+| Force-compact (tool) | O(messages) + 1 LLM call | One-shot, next model call only |
+| Pressure trend | O(1) | Rolling window of last 10 samples |
+| `describeCapabilities` | O(1) | String concatenation from cached values |
 
 ---
 
 ## Layer Compliance
 
-- [x] `@koi/core` (L0) — types only, zero logic
-- [x] `@koi/errors` (L0u) — `isContextOverflowError` utility
-- [x] `@koi/resolve` (L0u) — `BrickDescriptor` for manifest resolution
-- [x] No imports from `@koi/engine` (L1) or peer L2 packages
-- [x] All interface properties are `readonly`
-- [x] `MemoryComponent` injected via DI — no L2-to-L2 coupling with `@koi/memory-fs`
-- [x] `let` bindings justified with comments
-- [x] Immutable state updates via spread (`state = { ...state, epoch: state.epoch + 1 }`)
+```
+L0  @koi/core ──────────────────────────────────────────────┐
+    KoiMiddleware, MiddlewareBundle, ComponentProvider,      │
+    Tool, ContextPressureTrend, GovernanceVariableContributor│
+                                                             │
+L0u @koi/errors ────────────────────────────────────────┐    │
+    isContextOverflowError                              │    │
+                                                        ▼    ▼
+L2  @koi/middleware-compactor ◄─────────────────────────┘────┘
+    imports from L0 + L0u only
+    ✗ never imports @koi/engine (L1)
+    ✗ never imports peer L2 packages
+    ✗ zero external runtime dependencies
+```
+
+Dev-only dependency (`@koi/test-utils`) is used in tests but is not a runtime import.
