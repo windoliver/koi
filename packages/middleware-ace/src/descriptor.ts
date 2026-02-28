@@ -27,7 +27,9 @@ function validateAceDescriptorOptions(input: unknown): Result<unknown, KoiError>
 
   if (
     opts.maxInjectionTokens !== undefined &&
-    (typeof opts.maxInjectionTokens !== "number" || opts.maxInjectionTokens <= 0)
+    (typeof opts.maxInjectionTokens !== "number" ||
+      !Number.isFinite(opts.maxInjectionTokens) ||
+      opts.maxInjectionTokens <= 0)
   ) {
     return {
       ok: false,
@@ -52,7 +54,7 @@ export const descriptor: BrickDescriptor<KoiMiddleware> = {
   name: "@koi/middleware-ace",
   aliases: ["ace"],
   optionsValidator: validateAceDescriptorOptions,
-  factory(options): KoiMiddleware {
+  factory(options, _context): KoiMiddleware {
     const trajectoryStore = createInMemoryTrajectoryStore();
     const playbookStore = createInMemoryPlaybookStore();
     const maxInjectionTokens =

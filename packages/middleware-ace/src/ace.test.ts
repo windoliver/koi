@@ -3,7 +3,14 @@ import type { InboundMessage } from "@koi/core/message";
 import type { ModelRequest, ModelResponse, ToolResponse } from "@koi/core/middleware";
 import { testMiddlewareContract } from "@koi/test-utils";
 import { createAceMiddleware } from "./ace.js";
-import { createInMemoryPlaybookStore, createInMemoryTrajectoryStore } from "./stores.js";
+import type { CuratorAdapter } from "./curator.js";
+import { isLlmPipelineEnabled } from "./pipeline.js";
+import type { ReflectorAdapter } from "./reflector.js";
+import {
+  createInMemoryPlaybookStore,
+  createInMemoryStructuredPlaybookStore,
+  createInMemoryTrajectoryStore,
+} from "./stores.js";
 
 function createModelRequest(): ModelRequest {
   return {
@@ -333,6 +340,114 @@ describe("createAceMiddleware", () => {
       const result = mw.describeCapabilities?.(ctx);
       expect(result?.label).toBe("playbooks");
       expect(result?.description).toContain("playbooks");
+    });
+  });
+
+  // --- Stat-mode regression tests ---
+  describe("stat-mode regression", () => {
+    test("no reflector/curator config uses stat pipeline", () => {
+      const config = baseConfig();
+      expect(isLlmPipelineEnabled(config)).toBe(false);
+    });
+
+    test("stat pipeline produces playbooks via onSessionEnd", async () => {
+      const playbookStore = createInMemoryPlaybookStore();
+      const mw = createAceMiddleware({
+        ...baseConfig(),
+        playbookStore,
+      });
+      const ctx = {
+        session: { agentId: "a", sessionId: "s" as never, runId: "r" as never, metadata: {} },
+        turnIndex: 0,
+        turnId: "r:t0" as never,
+        messages: [],
+        metadata: {},
+      };
+
+      // Record entries
+      for (let i = 0; i < 5; i++) {
+        await mw.wrapModelCall?.({ ...ctx, turnIndex: i }, createModelRequest(), async () =>
+          createModelResponse(),
+        );
+      }
+
+      await mw.onSessionEnd?.({
+        agentId: "a",
+        sessionId: "s" as never,
+        runId: "r" as never,
+        metadata: {},
+      });
+
+      const playbooks = await playbookStore.list();
+      expect(playbooks.length).toBeGreaterThan(0);
+      // Verify stat-based playbook format
+      for (const pb of playbooks) {
+        expect(pb.id).toMatch(/^ace:(model_call|tool_call):/);
+        expect(pb.source).toBe("curated");
+      }
+    });
+  });
+
+  // --- Feature flag tests ---
+  describe("pipeline selection", () => {
+    test("LLM pipeline enabled when reflector + curator + store configured", () => {
+      const mockReflector: ReflectorAdapter = {
+        analyze: async () => ({ rootCause: "", keyInsight: "", bulletTags: [] }),
+      };
+      const mockCurator: CuratorAdapter = {
+        curate: async () => [],
+      };
+      const config = {
+        ...baseConfig(),
+        reflector: mockReflector,
+        curator: mockCurator,
+        structuredPlaybookStore: createInMemoryStructuredPlaybookStore(),
+      };
+      expect(isLlmPipelineEnabled(config)).toBe(true);
+    });
+
+    test("LLM pipeline disabled when only reflector configured", () => {
+      const mockReflector: ReflectorAdapter = {
+        analyze: async () => ({ rootCause: "", keyInsight: "", bulletTags: [] }),
+      };
+      const config = { ...baseConfig(), reflector: mockReflector };
+      expect(isLlmPipelineEnabled(config)).toBe(false);
+    });
+
+    test("LLM pipeline disabled when only curator configured", () => {
+      const mockCurator: CuratorAdapter = {
+        curate: async () => [],
+      };
+      const config = { ...baseConfig(), curator: mockCurator };
+      expect(isLlmPipelineEnabled(config)).toBe(false);
+    });
+  });
+
+  // --- Bullet ID extraction tests ---
+  describe("citation tracking", () => {
+    test("wrapModelCall extracts bullet IDs from model response", async () => {
+      const recorded: unknown[] = [];
+      const mw = createAceMiddleware({
+        ...baseConfig(),
+        onRecord: (entry) => recorded.push(entry),
+      });
+      const ctx = {
+        session: { agentId: "a", sessionId: "s" as never, runId: "r" as never, metadata: {} },
+        turnIndex: 0,
+        turnId: "r:t0" as never,
+        messages: [],
+        metadata: {},
+      };
+
+      await mw.wrapModelCall?.(ctx, createModelRequest(), async () => ({
+        content: "Per [str-00001] and [err-00002], use caching.",
+        model: "test-model",
+        usage: { inputTokens: 10, outputTokens: 20 },
+      }));
+
+      expect(recorded).toHaveLength(1);
+      const entry = recorded[0] as Record<string, unknown>;
+      expect(entry.bulletIds).toEqual(["[str-00001]", "[err-00002]"]);
     });
   });
 });

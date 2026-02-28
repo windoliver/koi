@@ -15,7 +15,13 @@ import type {
   TurnContext,
 } from "@koi/core/middleware";
 import { createAceMiddleware } from "../ace.js";
-import { createInMemoryPlaybookStore, createInMemoryTrajectoryStore } from "../stores.js";
+import type { CuratorAdapter } from "../curator.js";
+import type { ReflectorAdapter } from "../reflector.js";
+import {
+  createInMemoryPlaybookStore,
+  createInMemoryStructuredPlaybookStore,
+  createInMemoryTrajectoryStore,
+} from "../stores.js";
 import type { CurationCandidate, Playbook } from "../types.js";
 
 function makeSessionCtx(sessionId: string): SessionContext {
@@ -263,5 +269,118 @@ describe("ACE lifecycle integration", () => {
     }
 
     expect(evictions.length).toBeGreaterThan(0);
+  });
+
+  test("LLM pipeline: record → reflect → curate → persist structured playbook", async () => {
+    const trajectoryStore = createInMemoryTrajectoryStore();
+    const playbookStore = createInMemoryPlaybookStore();
+    const structuredPlaybookStore = createInMemoryStructuredPlaybookStore();
+
+    let reflectCalled = false; // let: flag for reflector callback detection
+    let curateCalled = false; // let: flag for curator callback detection
+
+    const mockReflector: ReflectorAdapter = {
+      async analyze() {
+        reflectCalled = true;
+        return {
+          rootCause: "Tool calls sometimes fail",
+          keyInsight: "Add retry logic for file operations",
+          bulletTags: [],
+        };
+      },
+    };
+
+    const mockCurator: CuratorAdapter = {
+      async curate() {
+        curateCalled = true;
+        return [
+          { kind: "add" as const, section: "str", content: "Retry file operations on failure" },
+        ];
+      },
+    };
+
+    const mw = createAceMiddleware({
+      trajectoryStore,
+      playbookStore,
+      structuredPlaybookStore,
+      reflector: mockReflector,
+      curator: mockCurator,
+      clock: () => 1000,
+    });
+
+    // Simulate turns
+    for (let i = 0; i < 3; i++) {
+      const turnCtx = makeTurnCtx(i);
+      await mw.wrapModelCall?.(turnCtx, makeModelRequest(), async () => makeModelResponse());
+      await mw.wrapToolCall?.(turnCtx, { toolId: "read-file", input: {} }, async () =>
+        makeToolResponse(),
+      );
+    }
+
+    // End session — stat pipeline runs synchronously, LLM pipeline fires-and-forgets
+    await mw.onSessionEnd?.(makeSessionCtx("s-llm"));
+
+    // Wait a tick for fire-and-forget to complete
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Verify LLM pipeline ran
+    expect(reflectCalled).toBe(true);
+    expect(curateCalled).toBe(true);
+
+    // Verify structured playbook was persisted
+    const structuredPlaybooks = await structuredPlaybookStore.list();
+    expect(structuredPlaybooks.length).toBeGreaterThan(0);
+
+    // Verify the ADD operation was applied
+    const pb = structuredPlaybooks[0]!;
+    const strSection = pb.sections.find((s) => s.slug === "str");
+    expect(strSection).toBeDefined();
+    expect(strSection?.bullets.length).toBeGreaterThan(0);
+    expect(strSection?.bullets.some((b) => b.content.includes("Retry"))).toBe(true);
+
+    // Verify stat-based playbooks also created (both pipelines run)
+    const statPlaybooks = await playbookStore.list();
+    expect(statPlaybooks.length).toBeGreaterThan(0);
+  });
+
+  test("LLM pipeline failure does not block session end", async () => {
+    const trajectoryStore = createInMemoryTrajectoryStore();
+    const playbookStore = createInMemoryPlaybookStore();
+    const structuredPlaybookStore = createInMemoryStructuredPlaybookStore();
+
+    const mockReflector: ReflectorAdapter = {
+      async analyze() {
+        throw new Error("LLM API down");
+      },
+    };
+
+    const mockCurator: CuratorAdapter = {
+      async curate() {
+        return [];
+      },
+    };
+
+    const mw = createAceMiddleware({
+      trajectoryStore,
+      playbookStore,
+      structuredPlaybookStore,
+      reflector: mockReflector,
+      curator: mockCurator,
+      clock: () => 1000,
+    });
+
+    // Record entries
+    const turnCtx = makeTurnCtx(0);
+    await mw.wrapModelCall?.(turnCtx, makeModelRequest(), async () => makeModelResponse());
+
+    // onSessionEnd should NOT throw even though LLM pipeline fails
+    await mw.onSessionEnd?.(makeSessionCtx("s-llm-fail"));
+
+    // Wait for fire-and-forget to settle
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Stat-based playbooks should still be created
+    const statPlaybooks = await playbookStore.list();
+    expect(statPlaybooks.length).toBeGreaterThan(0);
   });
 });

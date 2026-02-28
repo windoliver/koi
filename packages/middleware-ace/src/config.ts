@@ -7,7 +7,9 @@
 
 import type { KoiError, Result } from "@koi/core/errors";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
-import type { PlaybookStore, TrajectoryStore } from "./stores.js";
+import type { CuratorAdapter } from "./curator.js";
+import type { ReflectorAdapter } from "./reflector.js";
+import type { PlaybookStore, StructuredPlaybookStore, TrajectoryStore } from "./stores.js";
 import type { AggregatedStats, CurationCandidate, Playbook, TrajectoryEntry } from "./types.js";
 
 /** Configuration for the ACE middleware. */
@@ -45,6 +47,14 @@ export interface AceConfig {
   readonly onCurate?: (candidates: readonly CurationCandidate[]) => void;
   readonly onInject?: (playbooks: readonly Playbook[]) => void;
   readonly onBufferEvict?: (evictedCount: number) => void;
+  readonly onLlmPipelineError?: (error: unknown, sessionId: string) => void;
+
+  // 3-agent ACE pipeline (optional — stat-based pipeline used when absent)
+  readonly reflector?: ReflectorAdapter;
+  readonly curator?: CuratorAdapter;
+  readonly structuredPlaybookStore?: StructuredPlaybookStore;
+  readonly playbookTokenBudget?: number;
+  readonly estimateTokens?: (text: string) => number;
 
   // Testability
   readonly clock?: () => number;
@@ -56,6 +66,33 @@ function validationError(message: string): KoiError {
     message,
     retryable: RETRYABLE_DEFAULTS.VALIDATION,
   };
+}
+
+function validateOptionalNumber(
+  c: Record<string, unknown>,
+  field: string,
+  opts: {
+    readonly min?: number;
+    readonly max?: number;
+    readonly integer?: boolean;
+    readonly message: string;
+  },
+): { readonly ok: false; readonly error: KoiError } | undefined {
+  const value = c[field];
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return { ok: false, error: validationError(opts.message) };
+  }
+  if (opts.min !== undefined && value < opts.min) {
+    return { ok: false, error: validationError(opts.message) };
+  }
+  if (opts.max !== undefined && value > opts.max) {
+    return { ok: false, error: validationError(opts.message) };
+  }
+  if (opts.integer === true && !Number.isInteger(value)) {
+    return { ok: false, error: validationError(opts.message) };
+  }
+  return undefined;
 }
 
 function isStoreLike(v: unknown, requiredMethods: readonly string[]): boolean {
@@ -91,74 +128,93 @@ export function validateAceConfig(config: unknown): Result<AceConfig, KoiError> 
     };
   }
 
-  // Optional numeric: maxInjectionTokens
-  if (c.maxInjectionTokens !== undefined) {
-    if (
-      typeof c.maxInjectionTokens !== "number" ||
-      c.maxInjectionTokens < 0 ||
-      !Number.isFinite(c.maxInjectionTokens)
-    ) {
+  // Optional numerics
+  const numericChecks: readonly {
+    readonly field: string;
+    readonly min?: number;
+    readonly max?: number;
+    readonly integer?: boolean;
+    readonly message: string;
+  }[] = [
+    {
+      field: "maxInjectionTokens",
+      min: 0,
+      message: "maxInjectionTokens must be a non-negative finite number",
+    },
+    {
+      field: "minPlaybookConfidence",
+      min: 0,
+      max: 1,
+      message: "minPlaybookConfidence must be a number between 0 and 1",
+    },
+    {
+      field: "maxBufferEntries",
+      min: 1,
+      integer: true,
+      message: "maxBufferEntries must be a positive integer",
+    },
+    {
+      field: "minCurationScore",
+      min: 0,
+      max: 1,
+      message: "minCurationScore must be a number between 0 and 1",
+    },
+    {
+      field: "recencyDecayLambda",
+      min: 0,
+      message: "recencyDecayLambda must be a non-negative finite number",
+    },
+    {
+      field: "playbookTokenBudget",
+      min: 1,
+      integer: true,
+      message: "playbookTokenBudget must be a positive integer",
+    },
+  ];
+
+  for (const check of numericChecks) {
+    const err = validateOptionalNumber(c, check.field, check);
+    if (err !== undefined) return err;
+  }
+
+  // Optional store: structuredPlaybookStore
+  if (c.structuredPlaybookStore !== undefined) {
+    if (!isStoreLike(c.structuredPlaybookStore, ["get", "list", "save", "remove"])) {
       return {
         ok: false,
-        error: validationError("maxInjectionTokens must be a non-negative finite number"),
+        error: validationError(
+          "structuredPlaybookStore must implement get, list, save, and remove",
+        ),
       };
     }
   }
 
-  // Optional numeric: minPlaybookConfidence
-  if (c.minPlaybookConfidence !== undefined) {
-    if (
-      typeof c.minPlaybookConfidence !== "number" ||
-      c.minPlaybookConfidence < 0 ||
-      c.minPlaybookConfidence > 1
-    ) {
+  // Optional adapter: reflector
+  if (c.reflector !== undefined) {
+    if (!isStoreLike(c.reflector, ["analyze"])) {
       return {
         ok: false,
-        error: validationError("minPlaybookConfidence must be a number between 0 and 1"),
+        error: validationError("reflector must implement analyze"),
       };
     }
   }
 
-  // Optional numeric: maxBufferEntries
-  if (c.maxBufferEntries !== undefined) {
-    if (
-      typeof c.maxBufferEntries !== "number" ||
-      c.maxBufferEntries < 1 ||
-      !Number.isInteger(c.maxBufferEntries)
-    ) {
+  // Optional adapter: curator (the LLM curator, not stats-aggregator)
+  if (c.curator !== undefined) {
+    if (!isStoreLike(c.curator, ["curate"])) {
       return {
         ok: false,
-        error: validationError("maxBufferEntries must be a positive integer"),
+        error: validationError("curator must implement curate"),
       };
     }
   }
 
-  // Optional numeric: minCurationScore
-  if (c.minCurationScore !== undefined) {
-    if (
-      typeof c.minCurationScore !== "number" ||
-      c.minCurationScore < 0 ||
-      c.minCurationScore > 1
-    ) {
-      return {
-        ok: false,
-        error: validationError("minCurationScore must be a number between 0 and 1"),
-      };
-    }
-  }
-
-  // Optional numeric: recencyDecayLambda
-  if (c.recencyDecayLambda !== undefined) {
-    if (
-      typeof c.recencyDecayLambda !== "number" ||
-      c.recencyDecayLambda < 0 ||
-      !Number.isFinite(c.recencyDecayLambda)
-    ) {
-      return {
-        ok: false,
-        error: validationError("recencyDecayLambda must be a non-negative finite number"),
-      };
-    }
+  // Optional function: estimateTokens
+  if (c.estimateTokens !== undefined && typeof c.estimateTokens !== "function") {
+    return {
+      ok: false,
+      error: validationError("estimateTokens must be a function"),
+    };
   }
 
   // Optional function: scorer
@@ -186,7 +242,13 @@ export function validateAceConfig(config: unknown): Result<AceConfig, KoiError> 
   }
 
   // Optional function: callbacks
-  const callbackFields = ["onRecord", "onCurate", "onInject", "onBufferEvict"] as const;
+  const callbackFields = [
+    "onRecord",
+    "onCurate",
+    "onInject",
+    "onBufferEvict",
+    "onLlmPipelineError",
+  ] as const;
   for (const field of callbackFields) {
     if (c[field] !== undefined && typeof c[field] !== "function") {
       return {
