@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { ProcessState, RegistryEntry, RegistryEvent } from "@koi/core";
 import { agentId } from "@koi/core";
 import { runAgentRegistryContractTests } from "@koi/test-utils";
-import type { NexusRegistryConfig } from "./config.js";
+import type { FetchFn, NexusRegistryConfig } from "./config.js";
 import type { NexusAgent } from "./nexus-client.js";
 import { createNexusRegistry } from "./nexus-registry.js";
 import { encodeKoiStatus } from "./state-mapping.js";
@@ -23,12 +23,12 @@ import { encodeKoiStatus } from "./state-mapping.js";
  * Tracks agents with state and generation for CAS.
  */
 function createMockNexusServer(): {
-  readonly fetch: typeof globalThis.fetch;
+  readonly fetch: FetchFn;
   readonly agents: Map<string, NexusAgent>;
 } {
   const agents = new Map<string, NexusAgent>();
 
-  const fetch: typeof globalThis.fetch = async (_input, init) => {
+  const fetch: FetchFn = async (_input, init) => {
     const body = JSON.parse(init?.body as string) as {
       readonly method: string;
       readonly params: Readonly<Record<string, unknown>>;
@@ -59,9 +59,11 @@ function createMockNexusServer(): {
           agent_id: agentIdStr,
           name: (params.name as string) ?? agentIdStr,
           state: "UNKNOWN",
-          zone_id: params.zone_id as string | undefined,
-          metadata: params.metadata as Readonly<Record<string, unknown>> | undefined,
           generation: 0,
+          ...(params.zone_id !== undefined ? { zone_id: params.zone_id as string } : {}),
+          ...(params.metadata !== undefined
+            ? { metadata: params.metadata as Readonly<Record<string, unknown>> }
+            : {}),
         };
         agents.set(agentIdStr, agent);
         return success(agent);
@@ -139,7 +141,7 @@ function createMockNexusServer(): {
 }
 
 function createTestConfig(
-  fetchFn: typeof globalThis.fetch,
+  fetchFn: FetchFn,
   overrides?: Partial<NexusRegistryConfig>,
 ): NexusRegistryConfig {
   return {
@@ -235,7 +237,7 @@ describe("createNexusRegistry — impl-specific", () => {
   test("network timeout during register throws", async () => {
     // The factory's loadProjection also calls fetch, so we need a fetch
     // that succeeds for list_agents (startup) but fails for register_agent.
-    const slowFetch: typeof globalThis.fetch = async (_input, init) => {
+    const slowFetch: FetchFn = async (_input, init) => {
       const body = JSON.parse(init?.body as string) as {
         readonly method: string;
         readonly id: string;
@@ -512,8 +514,8 @@ describe("optional fields and error paths", () => {
 
     const found = await reg.lookup(agentId("with-both"));
     expect(found).toBeDefined();
-    expect(found?.parentId).toBe("parent-1");
-    expect(found?.spawner).toBe("spawner-1");
+    expect(found?.parentId).toBe(agentId("parent-1"));
+    expect(found?.spawner).toBe(agentId("spawner-1"));
 
     await reg[Symbol.asyncDispose]();
   });
@@ -544,7 +546,7 @@ describe("optional fields and error paths", () => {
 
     const found = await reg.lookup(agentId("with-spawner"));
     expect(found).toBeDefined();
-    expect(found?.spawner).toBe("spawner-1");
+    expect(found?.spawner).toBe(agentId("spawner-1"));
     expect(found?.parentId).toBeUndefined();
 
     await reg[Symbol.asyncDispose]();
@@ -565,7 +567,7 @@ describe("optional fields and error paths", () => {
   });
 
   test("loadProjection failure throws startup error", async () => {
-    const failFetch: typeof globalThis.fetch = async () =>
+    const failFetch: FetchFn = async () =>
       new Response(
         JSON.stringify({
           jsonrpc: "2.0",

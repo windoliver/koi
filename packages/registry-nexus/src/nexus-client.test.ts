@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { NexusRegistryConfig } from "./config.js";
+import type { FetchFn, NexusRegistryConfig } from "./config.js";
 import {
   nexusDeleteAgent,
   nexusGetAgent,
@@ -18,7 +18,7 @@ import {
 // ---------------------------------------------------------------------------
 
 function createConfig(
-  fetchFn: typeof globalThis.fetch,
+  fetchFn: FetchFn,
   overrides?: Partial<NexusRegistryConfig>,
 ): NexusRegistryConfig {
   return {
@@ -30,7 +30,7 @@ function createConfig(
   };
 }
 
-function mockJsonRpcSuccess(result: unknown): typeof globalThis.fetch {
+function mockJsonRpcSuccess(result: unknown): FetchFn {
   return async () =>
     new Response(JSON.stringify({ jsonrpc: "2.0", result, id: "test" }), {
       status: 200,
@@ -38,7 +38,7 @@ function mockJsonRpcSuccess(result: unknown): typeof globalThis.fetch {
     });
 }
 
-function mockJsonRpcError(code: number, message: string): typeof globalThis.fetch {
+function mockJsonRpcError(code: number, message: string): FetchFn {
   return async () =>
     new Response(
       JSON.stringify({
@@ -53,7 +53,7 @@ function mockJsonRpcError(code: number, message: string): typeof globalThis.fetc
     );
 }
 
-function mockHttpError(status: number, statusText: string): typeof globalThis.fetch {
+function mockHttpError(status: number, statusText: string): FetchFn {
   return async () => new Response(null, { status, statusText });
 }
 
@@ -66,7 +66,7 @@ describe("nexusRpc", () => {
     // let: captured in mock
     let capturedBody: unknown;
 
-    const fetchFn: typeof globalThis.fetch = async (_input, init) => {
+    const fetchFn: FetchFn = async (_input, init) => {
       capturedBody = JSON.parse(init?.body as string);
       return new Response(JSON.stringify({ jsonrpc: "2.0", result: "ok", id: "test" }), {
         status: 200,
@@ -90,7 +90,7 @@ describe("nexusRpc", () => {
     let capturedUrl: string | undefined;
     let capturedHeaders: Record<string, string> | undefined;
 
-    const fetchFn: typeof globalThis.fetch = async (input, init) => {
+    const fetchFn: FetchFn = async (input, init) => {
       capturedUrl = input as string;
       const headers = init?.headers as Record<string, string>;
       capturedHeaders = headers;
@@ -185,7 +185,7 @@ describe("nexusRpc", () => {
   });
 
   test("returns TIMEOUT on abort", async () => {
-    const fetchFn: typeof globalThis.fetch = async (_input, init) => {
+    const fetchFn: FetchFn = async (_input, init) => {
       // Wait longer than timeout
       await new Promise((_resolve, reject) => {
         init?.signal?.addEventListener("abort", () =>
@@ -205,7 +205,7 @@ describe("nexusRpc", () => {
   });
 
   test("returns EXTERNAL on network error", async () => {
-    const fetchFn: typeof globalThis.fetch = async () => {
+    const fetchFn: FetchFn = async () => {
       throw new Error("ECONNREFUSED");
     };
 
@@ -229,7 +229,7 @@ describe("nexusRegisterAgent", () => {
     // let: captured in mock
     let capturedBody: Record<string, unknown> | undefined;
 
-    const fetchFn: typeof globalThis.fetch = async (_input, init) => {
+    const fetchFn: FetchFn = async (_input, init) => {
       capturedBody = JSON.parse(init?.body as string) as Record<string, unknown>;
       return new Response(
         JSON.stringify({ jsonrpc: "2.0", result: { agent_id: "a1", state: "UNKNOWN" }, id: "1" }),
@@ -256,7 +256,7 @@ describe("nexusDeleteAgent", () => {
     // let: captured in mock
     let capturedBody: Record<string, unknown> | undefined;
 
-    const fetchFn: typeof globalThis.fetch = async (_input, init) => {
+    const fetchFn: FetchFn = async (_input, init) => {
       capturedBody = JSON.parse(init?.body as string) as Record<string, unknown>;
       return new Response(JSON.stringify({ jsonrpc: "2.0", result: true, id: "1" }), {
         status: 200,
@@ -276,7 +276,7 @@ describe("nexusTransition", () => {
     // let: captured in mock
     let capturedBody: Record<string, unknown> | undefined;
 
-    const fetchFn: typeof globalThis.fetch = async (_input, init) => {
+    const fetchFn: FetchFn = async (_input, init) => {
       capturedBody = JSON.parse(init?.body as string) as Record<string, unknown>;
       return new Response(
         JSON.stringify({
@@ -304,7 +304,7 @@ describe("nexusListAgents", () => {
     // let: captured in mock
     let capturedBody: Record<string, unknown> | undefined;
 
-    const fetchFn: typeof globalThis.fetch = async (_input, init) => {
+    const fetchFn: FetchFn = async (_input, init) => {
       capturedBody = JSON.parse(init?.body as string) as Record<string, unknown>;
       return new Response(JSON.stringify({ jsonrpc: "2.0", result: [], id: "1" }), {
         status: 200,
@@ -322,7 +322,7 @@ describe("nexusListAgents", () => {
     // let: captured in mock
     let capturedBody: Record<string, unknown> | undefined;
 
-    const fetchFn: typeof globalThis.fetch = async (_input, init) => {
+    const fetchFn: FetchFn = async (_input, init) => {
       capturedBody = JSON.parse(init?.body as string) as Record<string, unknown>;
       return new Response(JSON.stringify({ jsonrpc: "2.0", result: [], id: "1" }), {
         status: 200,

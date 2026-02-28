@@ -8,6 +8,9 @@ import type { KoiError, Result } from "@koi/core";
 // Config
 // ---------------------------------------------------------------------------
 
+/** Fetch-compatible function type for injectable HTTP clients. */
+export type FetchFn = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
 /** Configuration for the Nexus-backed AgentRegistry. */
 export interface NexusRegistryConfig {
   /** Nexus server base URL (e.g. "https://nexus.example.com"). */
@@ -25,7 +28,7 @@ export interface NexusRegistryConfig {
   /** Maximum number of entries in the local projection cache. Default: 10_000. */
   readonly maxEntries?: number | undefined;
   /** Injectable fetch function for testing. Defaults to globalThis.fetch. */
-  readonly fetch?: typeof globalThis.fetch | undefined;
+  readonly fetch?: FetchFn | undefined;
 }
 
 // ---------------------------------------------------------------------------

@@ -32,7 +32,7 @@ import { agentId, toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createNexusRegistryProvider } from "../component-provider.js";
-import type { NexusRegistryConfig } from "../config.js";
+import type { FetchFn, NexusRegistryConfig } from "../config.js";
 import type { NexusAgent } from "../nexus-client.js";
 import { createNexusRegistry } from "../nexus-registry.js";
 
@@ -53,12 +53,12 @@ const E2E_MODEL = "anthropic:claude-haiku-4-5-20251001";
 // ---------------------------------------------------------------------------
 
 function createMockNexusServer(): {
-  readonly fetch: typeof globalThis.fetch;
+  readonly fetch: FetchFn;
   readonly agents: Map<string, NexusAgent>;
 } {
   const agents = new Map<string, NexusAgent>();
 
-  const fetch: typeof globalThis.fetch = async (_input, init) => {
+  const fetch: FetchFn = async (_input, init) => {
     const body = JSON.parse(init?.body as string) as {
       readonly method: string;
       readonly params: Readonly<Record<string, unknown>>;
@@ -89,9 +89,11 @@ function createMockNexusServer(): {
           agent_id: agentIdStr,
           name: (params.name as string) ?? agentIdStr,
           state: "UNKNOWN",
-          zone_id: params.zone_id as string | undefined,
-          metadata: params.metadata as Readonly<Record<string, unknown>> | undefined,
           generation: 0,
+          ...(params.zone_id !== undefined ? { zone_id: params.zone_id as string } : {}),
+          ...(params.metadata !== undefined
+            ? { metadata: params.metadata as Readonly<Record<string, unknown>> }
+            : {}),
         };
         agents.set(agentIdStr, agent);
         return success(agent);
@@ -169,7 +171,7 @@ function createMockNexusServer(): {
 }
 
 function createTestConfig(
-  fetchFn: typeof globalThis.fetch,
+  fetchFn: FetchFn,
   overrides?: Partial<NexusRegistryConfig>,
 ): NexusRegistryConfig {
   return {

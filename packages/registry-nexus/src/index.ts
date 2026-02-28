@@ -7,7 +7,7 @@
  */
 
 export { createNexusRegistryProvider } from "./component-provider.js";
-export type { NexusRegistryConfig } from "./config.js";
+export type { FetchFn, NexusRegistryConfig } from "./config.js";
 export { DEFAULT_NEXUS_REGISTRY_CONFIG, validateNexusRegistryConfig } from "./config.js";
 export { discoverBySkill } from "./discovery.js";
 export type { NexusAgent } from "./nexus-client.js";

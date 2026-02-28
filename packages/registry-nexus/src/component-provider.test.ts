@@ -4,9 +4,9 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Agent, AgentManifest, ProcessId, ProcessState } from "@koi/core";
-import { agentId } from "@koi/core";
+import { agentId, isAttachResult } from "@koi/core";
 import { createNexusRegistryProvider } from "./component-provider.js";
-import type { NexusRegistryConfig } from "./config.js";
+import type { FetchFn, NexusRegistryConfig } from "./config.js";
 import type { NexusAgent } from "./nexus-client.js";
 
 // ---------------------------------------------------------------------------
@@ -23,7 +23,8 @@ function createMockAgent(id: string, state: ProcessState = "created"): Agent {
 
   const manifest: AgentManifest = {
     name: `test-${id}`,
-    model: { provider: "test", id: "test-model" },
+    version: "0.0.1",
+    model: { name: "test-model" },
     channels: [],
   };
 
@@ -45,7 +46,7 @@ function createMockConfig(): {
 } {
   const agents = new Map<string, NexusAgent>();
 
-  const fetch: typeof globalThis.fetch = async (_input, init) => {
+  const fetch: FetchFn = async (_input, init) => {
     const body = JSON.parse(init?.body as string) as {
       readonly method: string;
       readonly params: Readonly<Record<string, unknown>>;
@@ -73,7 +74,9 @@ function createMockConfig(): {
           agent_id: agentIdStr,
           state: "UNKNOWN",
           generation: 0,
-          metadata: params.metadata as Readonly<Record<string, unknown>> | undefined,
+          ...(params.metadata !== undefined
+            ? { metadata: params.metadata as Readonly<Record<string, unknown>> }
+            : {}),
         };
         agents.set(agentIdStr, agent);
         return success(agent);
@@ -151,8 +154,12 @@ describe("createNexusRegistryProvider", () => {
     const agent = createMockAgent("test-1");
 
     const result = await provider.attach(agent);
-    expect(result.components.size).toBe(0);
-    expect(result.skipped).toHaveLength(0);
+    if (isAttachResult(result)) {
+      expect(result.components.size).toBe(0);
+      expect(result.skipped).toHaveLength(0);
+    } else {
+      expect(result.size).toBe(0);
+    }
   });
 
   test("detach removes agent from Nexus", async () => {
