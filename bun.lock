@@ -1011,6 +1011,17 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-tool-audit": {
+      "name": "@koi/middleware-tool-audit",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-tool-selector": {
       "name": "@koi/middleware-tool-selector",
       "version": "0.0.0",
@@ -1590,6 +1601,7 @@
         "@koi/middleware-sandbox": "workspace:*",
         "@koi/middleware-sanitize": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
+        "@koi/middleware-tool-audit": "workspace:*",
         "@koi/middleware-tool-selector": "workspace:*",
         "@koi/middleware-turn-ack": "workspace:*",
         "@koi/model-router": "workspace:*",
@@ -2122,6 +2134,8 @@
     "@koi/middleware-sanitize": ["@koi/middleware-sanitize@workspace:packages/middleware-sanitize"],
 
     "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/middleware-semantic-retry"],
+
+    "@koi/middleware-tool-audit": ["@koi/middleware-tool-audit@workspace:packages/middleware-tool-audit"],
 
     "@koi/middleware-tool-selector": ["@koi/middleware-tool-selector@workspace:packages/middleware-tool-selector"],
 
