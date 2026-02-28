@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/memory-fs API surface . has stable type surface 1`] = `
-"import { MemoryComponent } from '@koi/core';
+"import { MemoryComponent, TrustTier, ComponentProvider, Tool } from '@koi/core';
 
 interface FsSearchRetriever {
     readonly retrieve: (query: string, limit: number) => Promise<readonly FsSearchHit[]>;
@@ -45,6 +45,73 @@ interface TierDistribution {
 
 declare function createFsMemory(config: FsMemoryConfig): Promise<FsMemory>;
 
-export { type FsIndexDoc, type FsMemory, type FsMemoryConfig, type FsSearchHit, type FsSearchIndexer, type FsSearchRetriever, type TierDistribution, createFsMemory };
+/**
+ * Constants for memory provider tools.
+ */
+
+/** All supported memory operations. */
+declare const MEMORY_OPERATIONS: readonly ["store", "recall", "search"];
+type MemoryOperation = (typeof MEMORY_OPERATIONS)[number];
+
+/**
+ * Memory ComponentProvider — attaches memory Tool + Skill components to an agent.
+ *
+ * Wraps an FsMemory instance into tools for store/recall/search, plus a skill
+ * with behavioral instructions. Unlike scheduler-provider, no per-agent wrapping
+ * is needed — each FsMemory is already agent-scoped (one baseDir per agent).
+ */
+
+interface MemoryProviderConfig {
+    readonly memory: FsMemory;
+    /** On-disk base directory. Included in skill content so the agent knows where memory lives. */
+    readonly baseDir?: string;
+    /** Tool name prefix. Default: "memory". */
+    readonly prefix?: string;
+    /** Trust tier for all tools. Default: "verified". */
+    readonly trustTier?: TrustTier;
+    /** Subset of operations to expose. Default: all 3. */
+    readonly operations?: readonly MemoryOperation[];
+    /** Max results for recall tool. Default: 10. */
+    readonly recallLimit?: number;
+    /** Max results for search tool. Default: 20. */
+    readonly searchLimit?: number;
+    /** Override skill content. Default: auto-generated with baseDir. */
+    readonly skillContent?: string;
+}
+declare function createMemoryProvider(config: MemoryProviderConfig): ComponentProvider;
+
+/**
+ * Behavioral instructions for the memory skill.
+ *
+ * Injected into agents via SkillComponent so the LLM knows
+ * when and how to use its memory tools.
+ *
+ * \`generateMemorySkillContent(baseDir)\` produces a dynamic version that
+ * includes the on-disk storage path. The static \`MEMORY_SKILL_CONTENT\`
+ * constant is kept for backward compatibility (no path info).
+ */
+declare function generateMemorySkillContent(baseDir: string): string;
+/** Static fallback — no baseDir info. Use generateMemorySkillContent(baseDir) when possible. */
+declare const MEMORY_SKILL_CONTENT: string;
+
+/**
+ * Tool factory for \`memory_recall\` — search memories by semantic query.
+ */
+
+declare function createMemoryRecallTool(component: MemoryComponent, prefix: string, trustTier: TrustTier, recallLimit?: number): Tool;
+
+/**
+ * Tool factory for \`memory_search\` — browse memories by entity.
+ */
+
+declare function createMemorySearchTool(memory: FsMemory, prefix: string, trustTier: TrustTier, searchLimit?: number): Tool;
+
+/**
+ * Tool factory for \`memory_store\` — persist an atomic fact to long-term memory.
+ */
+
+declare function createMemoryStoreTool(component: MemoryComponent, prefix: string, trustTier: TrustTier): Tool;
+
+export { type FsIndexDoc, type FsMemory, type FsMemoryConfig, type FsSearchHit, type FsSearchIndexer, type FsSearchRetriever, MEMORY_OPERATIONS, MEMORY_SKILL_CONTENT, type MemoryOperation, type MemoryProviderConfig, type TierDistribution, createFsMemory, createMemoryProvider, createMemoryRecallTool, createMemorySearchTool, createMemoryStoreTool, generateMemorySkillContent };
 "
 `;

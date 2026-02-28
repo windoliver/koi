@@ -49,19 +49,28 @@ Zero external dependencies. Zero L1 or peer L2 imports. File I/O uses Node.js `f
 ```
 packages/memory-fs/
 ├── src/
-│   ├── index.ts          ─ Public exports (createFsMemory + types)
-│   ├── types.ts          ─ MemoryFact (internal), FsMemory, config, DI contracts
-│   ├── fs-memory.ts      ─ createFsMemory() factory (~330 LOC)
-│   ├── fact-store.ts     ─ File I/O: read/write/append, write queue, cache
-│   ├── dedup.ts          ─ Jaccard similarity + CJK bigram fallback
-│   ├── decay.ts          ─ Exponential decay scoring + Hot/Warm/Cold tiering
-│   ├── slug.ts           ─ Entity name sanitization (path traversal guard)
-│   ├── summary.ts        ─ Rebuild summary.md from active facts
-│   ├── session-log.ts    ─ Append-only daily log
+│   ├── index.ts              ─ Public exports (backend + provider + types)
+│   ├── types.ts              ─ MemoryFact (internal), FsMemory, config, DI contracts
+│   ├── fs-memory.ts          ─ createFsMemory() factory (~330 LOC)
+│   ├── fact-store.ts         ─ File I/O: read/write/append, write queue, cache
+│   ├── dedup.ts              ─ Jaccard similarity + CJK bigram fallback
+│   ├── decay.ts              ─ Exponential decay scoring + Hot/Warm/Cold tiering
+│   ├── slug.ts               ─ Entity name sanitization (path traversal guard)
+│   ├── summary.ts            ─ Rebuild summary.md from active facts
+│   ├── session-log.ts        ─ Append-only daily log
+│   ├── provider/             ─ Agent-facing layer (tools + skill)
+│   │   ├── memory-component-provider.ts  ─ ComponentProvider factory
+│   │   ├── skill.ts          ─ Behavioral instructions for the LLM
+│   │   ├── constants.ts      ─ Defaults, operation types
+│   │   ├── parse-args.ts     ─ Input validation (ParseResult pattern)
+│   │   └── tools/
+│   │       ├── store.ts      ─ memory_store tool factory
+│   │       ├── recall.ts     ─ memory_recall tool factory
+│   │       └── search.ts     ─ memory_search tool factory
 │   └── __tests__/
-│       ├── e2e.test.ts   ─ Full createKoi integration tests
+│       ├── e2e.test.ts       ─ Full createKoi + createPiAdapter integration tests
 │       └── api-surface.test.ts
-└── dist/                  ─ ESM-only build output
+└── dist/                      ─ ESM-only build output
 ```
 
 ---
@@ -70,26 +79,46 @@ packages/memory-fs/
 
 ### Wiring into createKoi
 
-The memory backend plugs into the L1 runtime via a `ComponentProvider` that attaches three things to the agent entity:
+The memory backend plugs into the L1 runtime via `createMemoryProvider`, a `ComponentProvider` that attaches five things to the agent entity:
 
-```
+```typescript
+const baseDir = "~/.koi/memory";
+const fsMemory = await createFsMemory({ baseDir });
+
 createKoi({
   manifest: { name: "my-agent", ... },
-  adapter:  createLoopAdapter({ modelCall }),
+  adapter:  createPiAdapter({ model: "anthropic:claude-haiku-4-5-20251001", ... }),
   providers: [
-    createMemoryProvider(fsMemory)       ◄── attaches memory
+    createMemoryProvider({ memory: fsMemory, baseDir })  ◄── attaches memory
   ],
 })
        │
        │  assembles agent entity with:
        │
-       ├── MEMORY token ──────── fsMemory.component  (MemoryComponent)
-       ├── tool:memory_store ─── Tool { execute → .store() }
-       └── tool:memory_recall ── Tool { execute → .recall() }
+       ├── MEMORY token ──────────── fsMemory.component  (MemoryComponent)
+       ├── tool:memory_store ──────  Tool { execute → .store() }
+       ├── tool:memory_recall ─────  Tool { execute → .recall() }
+       ├── tool:memory_search ─────  Tool { execute → .listEntities() / .recall() }
+       └── skill:memory ───────────  SkillComponent with behavioral instructions
 
 The ReAct loop sees the tools. LLM decides when to call them.
 No middleware. No auto-storing. Agent judgment only.
 ```
+
+### Skill: Teaching the Agent When to Remember
+
+The skill component injects behavioral instructions into the agent's system prompt (via `@koi/context`). It tells the LLM:
+
+- **Where** memory lives on disk (the `baseDir` path and directory structure)
+- **What** to store: preferences, relationships, decisions, milestones, corrections
+- **What NOT** to store: greetings, temp queries, duplicates, raw transcripts
+- **How** to store: one atomic fact per call, with category and related_entities
+- **How** to recall: at conversation start, when user references past work, with tier filters
+- **How decay works**: hot/warm/cold tiers, access count protection, warming on recall
+
+When `baseDir` is provided to `createMemoryProvider`, the skill content includes the actual storage path so the agent knows where its memories live. Without it, a placeholder is used.
+
+The skill is generated by `generateMemorySkillContent(baseDir)` and can be fully overridden via `skillContent` in the config.
 
 ### Agent Decides What to Remember
 
@@ -134,32 +163,51 @@ memory_store({ content, category, entities })
 
 ### Recall Flow
 
-When the agent calls `memory_recall`:
+When the agent calls `memory_recall`, there are two code paths:
 
 ```
-memory_recall({ query, limit })
+memory_recall({ query, limit, tier })
   │
-  ▼
-1. Scan all entities, load facts from cache (parallel I/O)
+  ├── WITH retriever (DI injected, e.g. @koi/search):
+  │     │
+  │     ▼
+  │   1. retriever.retrieve(query, limit * 2)  ─── semantic/BM25/hybrid search
+  │     │
+  │     ▼
+  │   2. Match scored hits back to fact records
+  │     │
+  │     ▼
+  │   3. Filter: status === "active" only
   │
-  ▼
-2. Filter: status === "active" only (superseded facts hidden)
+  ├── WITHOUT retriever (fallback — recency only):
+  │     │
+  │     ▼
+  │   1. Scan all entities, load all facts from cache
+  │     │
+  │     ▼
+  │   2. Filter: status === "active" only
+  │     │
+  │     ▼
+  │   3. Sort by timestamp DESC (newest first)
+  │     │
+  │     ▼                ⚠️ query string is IGNORED in this path
   │
-  ▼
-3. BM25-style text matching (or custom retriever if provided)
-  │
-  ▼
-4. Compute decay score + classify tier for each result
-  │
-  ▼
-5. Apply tier filter + limit
-  │
-  ▼
-6. Update lastAccessed + accessCount (batch write)
-  │
-  ▼
-7. Return MemoryResult[] with { content, tier, decayScore, lastAccessed }
+  └── Both paths then:
+        │
+        ▼
+      4. Compute decay score + classify tier for each result
+        │
+        ▼
+      5. Apply tier filter + limit
+        │
+        ▼
+      6. Update lastAccessed + accessCount (batch write, warms cold facts)
+        │
+        ▼
+      7. Return MemoryResult[] with { content, tier, decayScore, lastAccessed }
 ```
+
+**Important**: Without a search retriever, recall is recency-based — it returns the newest active facts regardless of query relevance. For production use, inject a `FsSearchRetriever` backed by `@koi/search` (BM25 + vector + hybrid).
 
 ---
 
@@ -264,16 +312,45 @@ const results = await mem.component.recall("dark mode", {
 // → [{ content, tier, decayScore, lastAccessed, metadata }]
 ```
 
+### `createMemoryProvider(config): ComponentProvider`
+
+The agent-facing layer. Attaches tools + skill + MEMORY token to the agent entity.
+
+```typescript
+import { createFsMemory, createMemoryProvider } from "@koi/memory-fs";
+
+const baseDir = "/path/to/memory";
+const mem = await createFsMemory({ baseDir });
+const provider = createMemoryProvider({
+  memory: mem,
+  baseDir,                              // included in skill content
+  prefix: "memory",                     // tool name prefix (default: "memory")
+  trustTier: "verified",                // trust tier for all tools (default: "verified")
+  operations: ["store", "recall", "search"],  // subset of tools (default: all 3)
+  recallLimit: 10,                      // max results for recall (default: 10)
+  searchLimit: 20,                      // max results for search (default: 20)
+  skillContent: "custom instructions",  // override skill content (optional)
+});
+```
+
+### Tools
+
+| Tool | Input | What It Does |
+|------|-------|-------------|
+| `memory_store` | `{ content, category?, related_entities? }` | Store an atomic fact. Auto-dedup + contradiction detection. |
+| `memory_recall` | `{ query, limit?, tier? }` | Search memories by query. Returns `{ results, count }`. |
+| `memory_search` | `{ entity?, limit? }` | Browse entity facts or list all known entities. |
+
 ### Custom Search (DI)
 
-By default, recall uses BM25-style text matching. For semantic search, inject a retriever/indexer:
+By default, recall is **recency-based** (newest facts first, query ignored). For semantic search, inject a retriever backed by `@koi/search` or any custom backend:
 
 ```typescript
 const mem = await createFsMemory({
   baseDir: "/path/to/memory",
   retriever: {
     retrieve: async (query, limit) => {
-      // Your vector search here
+      // @koi/search: BM25, vector (sqlite-vec), or hybrid (RRF fusion)
       return [{ id: "...", score: 0.95, content: "..." }];
     },
   },
@@ -284,7 +361,7 @@ const mem = await createFsMemory({
 });
 ```
 
-The DI contracts (`FsSearchRetriever`, `FsSearchIndexer`) are local function types — no `@koi/search` import, no L2-to-L2 dependency.
+The DI contracts (`FsSearchRetriever`, `FsSearchIndexer`) are local function types — no `@koi/search` import, no L2-to-L2 dependency. They can be adapted from `@koi/search`'s `Retriever` / `Indexer` interfaces at the wiring layer.
 
 ---
 
@@ -302,7 +379,7 @@ The DI contracts (`FsSearchRetriever`, `FsSearchIndexer`) are local function typ
 
 ## Testing
 
-92 tests total across 9 test files:
+126+ tests total across 13 test files:
 
 | Test File | Count | What It Covers |
 |-----------|-------|----------------|
@@ -313,16 +390,20 @@ The DI contracts (`FsSearchRetriever`, `FsSearchIndexer`) are local function typ
 | `session-log.test.ts` | 5 | Daily log append |
 | `summary.test.ts` | 7 | Summary generation with tier filtering |
 | `fs-memory.test.ts` | 18 | Full integration: store → recall → dedup → decay |
+| `provider/tools/store.test.ts` | 7 | Store tool: validation, dedup, errors |
+| `provider/tools/recall.test.ts` | 9 | Recall tool: limits, tiers, errors |
+| `provider/tools/search.test.ts` | 7 | Search tool: entity list, entity lookup, errors |
+| `provider/memory-component-provider.test.ts` | 11 | Provider wiring: tokens, prefix, ops subset, detach |
 | `api-surface.test.ts` | 2 | DTS snapshot stability |
-| `e2e.test.ts` | 10 | createKoi + createLoopAdapter + tool wiring |
-
-Coverage: **99.51% functions, 98.13% lines**.
+| `e2e.test.ts` | 18 | Full createKoi + createPiAdapter + real LLM calls |
 
 E2E tests are gated on `E2E_TESTS=1` + `ANTHROPIC_API_KEY`:
 
 ```bash
 E2E_TESTS=1 bun test src/__tests__/e2e.test.ts
 ```
+
+E2E covers: tool wiring, custom prefix, operations subset, tool execution (all 3 tools), store→recall round-trip, dedup, contradiction, tier distribution, summary rebuild, cross-session persistence, and 5 LLM integration tests with real API calls through `createPiAdapter`.
 
 ---
 
@@ -336,7 +417,7 @@ E2E_TESTS=1 bun test src/__tests__/e2e.test.ts
 | Decay | Exponential + freq protect | Linear decay | None |
 | Tiering | Hot/Warm/Cold | None | None |
 | Concurrency | Per-entity write queue | File locks | N/A |
-| Search | BM25 default, DI for vector | TF-IDF | Recency |
+| Search | Recency default, DI for BM25/vector/hybrid via @koi/search | TF-IDF | Recency |
 | Contradiction | Auto-supersede | Manual | None |
 | Summary | Markdown generation | None | None |
 | Agent decides | Tool-based (agent calls) | Auto-store | Auto-store |

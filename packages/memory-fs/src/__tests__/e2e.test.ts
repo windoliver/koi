@@ -1,16 +1,16 @@
 /**
  * End-to-end tests for @koi/memory-fs wired through the full createKoi +
- * createLoopAdapter runtime assembly.
+ * createPiAdapter runtime assembly using the new createMemoryProvider.
  *
  * Architecture: the agent decides what to remember via memory_store /
- * memory_recall tools (NOT auto-storing middleware). Tools are attached
- * via ComponentProvider + toolToken, the same pattern as @koi/code-mode.
+ * memory_recall / memory_search tools (NOT auto-storing middleware). Tools
+ * and skill are attached via createMemoryProvider ComponentProvider.
  *
  * Test structure:
- *   - Tool wiring tests: verify memory tools are correctly attached to the
- *     agent entity and execute against FsMemory (no LLM calls needed)
- *   - LLM integration tests: verify the full createKoi pipeline runs with
- *     memory tools registered and FsMemory persists across sessions
+ *   - Tool wiring: verify all 3 tools + skill + MEMORY token attached
+ *   - Tool execution: verify each tool executes against FsMemory
+ *   - Backend behaviors: dedup, contradiction, tiers, persistence
+ *   - LLM integration: full createKoi + createPiAdapter with real model calls
  *
  * Gated on ANTHROPIC_API_KEY + E2E_TESTS=1 — tests are skipped when either
  * is missing. Run:
@@ -21,21 +21,13 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-  Agent,
-  ComponentProvider,
-  EngineEvent,
-  EngineOutput,
-  JsonObject,
-  ModelRequest,
-  Tool,
-} from "@koi/core";
-import { MEMORY, toolToken } from "@koi/core";
+import type { EngineEvent, EngineOutput, MemoryResult, Tool } from "@koi/core";
+import { MEMORY, skillToken, toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
-import { createLoopAdapter } from "@koi/engine-loop";
-import { createAnthropicAdapter } from "@koi/model-router";
-import { createFsMemory } from "../../src/fs-memory.js";
-import type { FsMemory } from "../../src/types.js";
+import { createPiAdapter } from "@koi/engine-pi";
+import { createFsMemory } from "../fs-memory.js";
+import { createMemoryProvider } from "../provider/memory-component-provider.js";
+import type { FsMemory } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Environment gate
@@ -47,94 +39,6 @@ const E2E_OPTED_IN = process.env.E2E_TESTS === "1";
 const describeE2E = HAS_KEY && E2E_OPTED_IN ? describe : describe.skip;
 
 const TIMEOUT_MS = 120_000;
-
-// ---------------------------------------------------------------------------
-// Tool factories: memory_store + memory_recall backed by FsMemory
-// ---------------------------------------------------------------------------
-
-function createMemoryStoreTool(fsMemory: FsMemory): Tool {
-  return {
-    descriptor: {
-      name: "memory_store",
-      description:
-        "Store a fact in long-term memory. Use this when the user shares important information worth remembering.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          content: { type: "string", description: "The fact to remember." },
-          category: {
-            type: "string",
-            description: "Category: preference, context, milestone, decision.",
-          },
-          entities: {
-            type: "array",
-            items: { type: "string" },
-            description: "Related entity names.",
-          },
-        },
-        required: ["content"],
-      },
-    },
-    trustTier: "verified",
-    async execute(args: JsonObject): Promise<unknown> {
-      const content = args.content as string;
-      const category = (args.category as string | undefined) ?? "context";
-      const entities = (args.entities as readonly string[] | undefined) ?? [];
-      await fsMemory.component.store(content, {
-        category,
-        ...(entities.length > 0 ? { relatedEntities: [...entities] } : {}),
-      });
-      return { stored: true, content };
-    },
-  };
-}
-
-function createMemoryRecallTool(fsMemory: FsMemory): Tool {
-  return {
-    descriptor: {
-      name: "memory_recall",
-      description: "Recall facts from long-term memory by search query.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: { type: "string", description: "Search query." },
-          limit: { type: "number", description: "Max results. Default: 5." },
-        },
-        required: ["query"],
-      },
-    },
-    trustTier: "verified",
-    async execute(args: JsonObject): Promise<unknown> {
-      const query = args.query as string;
-      const limit = (args.limit as number | undefined) ?? 5;
-      const results = await fsMemory.component.recall(query, { limit });
-      return {
-        count: results.length,
-        memories: results.map((r) => ({
-          content: r.content,
-          tier: r.tier,
-          decayScore: r.decayScore,
-        })),
-      };
-    },
-  };
-}
-
-/** ComponentProvider that attaches MEMORY token + memory_store / memory_recall tools. */
-function createMemoryProvider(fsMemory: FsMemory): ComponentProvider {
-  return {
-    name: "fs-memory",
-    async attach(_agent: Agent): Promise<ReadonlyMap<string, unknown>> {
-      const storeTool = createMemoryStoreTool(fsMemory);
-      const recallTool = createMemoryRecallTool(fsMemory);
-      return new Map<string, unknown>([
-        [MEMORY as string, fsMemory.component],
-        [toolToken("memory_store") as string, storeTool],
-        [toolToken("memory_recall") as string, recallTool],
-      ]);
-    },
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -163,18 +67,34 @@ function extractTextFromEvents(events: readonly EngineEvent[]): string {
     .join("");
 }
 
+function findToolCallEvents(
+  events: readonly EngineEvent[],
+  toolName: string,
+): readonly (EngineEvent & { readonly kind: "tool_call_start" })[] {
+  return events.filter(
+    (e): e is EngineEvent & { readonly kind: "tool_call_start" } =>
+      e.kind === "tool_call_start" && e.toolName === toolName,
+  );
+}
+
 // ---------------------------------------------------------------------------
-// Tests: Tool wiring through createKoi assembly
+// Tests: Provider wiring through createKoi assembly
 // ---------------------------------------------------------------------------
 
-describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
+describeE2E("e2e: memory-fs provider through createKoi", () => {
   // let — needed for mutable test directory and memory refs
   let testDir: string;
   let fsMemory: FsMemory;
 
-  const anthropicAdapter = createAnthropicAdapter({ apiKey: ANTHROPIC_KEY });
-  const modelCall = (request: ModelRequest) =>
-    anthropicAdapter.complete({ ...request, model: "claude-haiku-4-5-20251001" });
+  const PI_MODEL = "anthropic:claude-haiku-4-5-20251001";
+
+  function createAdapter(): ReturnType<typeof createPiAdapter> {
+    return createPiAdapter({
+      model: PI_MODEL,
+      getApiKey: () => ANTHROPIC_KEY,
+      thinkingLevel: "off",
+    });
+  }
 
   beforeEach(async () => {
     testDir = join(
@@ -190,11 +110,15 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
     rmSync(testDir, { recursive: true, force: true });
   });
 
+  // -----------------------------------------------------------------------
+  // Component wiring
+  // -----------------------------------------------------------------------
+
   test(
-    "MEMORY token + tools are attached to the assembled agent entity",
+    "createMemoryProvider attaches MEMORY token + 3 tools + skill to agent",
     async () => {
-      const provider = createMemoryProvider(fsMemory);
-      const adapter = createLoopAdapter({ modelCall, maxTurns: 1 });
+      const provider = createMemoryProvider({ memory: fsMemory });
+      const adapter = createAdapter();
 
       const runtime = await createKoi({
         manifest: {
@@ -212,13 +136,28 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
       expect(typeof memoryComponent?.recall).toBe("function");
       expect(typeof memoryComponent?.store).toBe("function");
 
-      // Tools are attached
+      // All 3 tools are attached
       const storeTool = runtime.agent.component<Tool>(toolToken("memory_store"));
       const recallTool = runtime.agent.component<Tool>(toolToken("memory_recall"));
+      const searchTool = runtime.agent.component<Tool>(toolToken("memory_search"));
       expect(storeTool).toBeDefined();
       expect(recallTool).toBeDefined();
+      expect(searchTool).toBeDefined();
       expect(storeTool?.descriptor.name).toBe("memory_store");
       expect(recallTool?.descriptor.name).toBe("memory_recall");
+      expect(searchTool?.descriptor.name).toBe("memory_search");
+
+      // Skill component is attached (skillToken narrows to SkillMetadata)
+      const skill = runtime.agent.component(skillToken("memory"));
+      expect(skill).toBeDefined();
+      expect(skill?.name).toBe("memory");
+      // Access content via the broader map (SkillComponent extends SkillMetadata)
+      const skillFull = runtime.agent.components().get(skillToken("memory") as string) as
+        | { readonly content: string }
+        | undefined;
+      expect(skillFull?.content).toContain("memory_store");
+      expect(skillFull?.content).toContain("memory_recall");
+      expect(skillFull?.content).toContain("memory_search");
 
       await runtime.dispose();
     },
@@ -226,10 +165,68 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
   );
 
   test(
-    "memory_store tool persists facts to disk via FsMemory",
+    "custom prefix changes tool names",
     async () => {
-      const provider = createMemoryProvider(fsMemory);
-      const adapter = createLoopAdapter({ modelCall, maxTurns: 1 });
+      const provider = createMemoryProvider({ memory: fsMemory, prefix: "mem" });
+      const adapter = createAdapter();
+
+      const runtime = await createKoi({
+        manifest: {
+          name: "e2e-prefix-agent",
+          version: "0.0.0",
+          model: { name: "claude-haiku-4-5-20251001" },
+        },
+        adapter,
+        providers: [provider],
+      });
+
+      expect(runtime.agent.component<Tool>(toolToken("mem_store"))).toBeDefined();
+      expect(runtime.agent.component<Tool>(toolToken("mem_recall"))).toBeDefined();
+      expect(runtime.agent.component<Tool>(toolToken("mem_search"))).toBeDefined();
+      expect(runtime.agent.component<Tool>(toolToken("memory_store"))).toBeUndefined();
+
+      await runtime.dispose();
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "operations subset limits attached tools",
+    async () => {
+      const provider = createMemoryProvider({
+        memory: fsMemory,
+        operations: ["store", "recall"],
+      });
+      const adapter = createAdapter();
+
+      const runtime = await createKoi({
+        manifest: {
+          name: "e2e-ops-agent",
+          version: "0.0.0",
+          model: { name: "claude-haiku-4-5-20251001" },
+        },
+        adapter,
+        providers: [provider],
+      });
+
+      expect(runtime.agent.component<Tool>(toolToken("memory_store"))).toBeDefined();
+      expect(runtime.agent.component<Tool>(toolToken("memory_recall"))).toBeDefined();
+      expect(runtime.agent.component<Tool>(toolToken("memory_search"))).toBeUndefined();
+
+      await runtime.dispose();
+    },
+    TIMEOUT_MS,
+  );
+
+  // -----------------------------------------------------------------------
+  // Tool execution: memory_store
+  // -----------------------------------------------------------------------
+
+  test(
+    "memory_store persists facts to disk via FsMemory",
+    async () => {
+      const provider = createMemoryProvider({ memory: fsMemory });
+      const adapter = createAdapter();
 
       const runtime = await createKoi({
         manifest: {
@@ -241,20 +238,16 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
         providers: [provider],
       });
 
-      // Execute the tool directly (as the ReAct loop would)
       const storeTool = runtime.agent.component<Tool>(toolToken("memory_store"));
       expect(storeTool).toBeDefined();
 
       const result = await storeTool?.execute({
         content: "The user's favorite language is Rust",
         category: "preference",
-        entities: ["user"],
+        related_entities: ["user"],
       });
 
-      expect(result).toEqual({
-        stored: true,
-        content: "The user's favorite language is Rust",
-      });
+      expect(result).toEqual({ stored: true });
 
       // Verify persisted in FsMemory
       const recalled = await fsMemory.component.recall("Rust");
@@ -270,8 +263,12 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
     TIMEOUT_MS,
   );
 
+  // -----------------------------------------------------------------------
+  // Tool execution: memory_recall
+  // -----------------------------------------------------------------------
+
   test(
-    "memory_recall tool retrieves pre-stored facts with tier info",
+    "memory_recall retrieves pre-stored facts with tier info",
     async () => {
       // Pre-seed facts
       await fsMemory.component.store("Alice prefers cats", {
@@ -283,8 +280,8 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
         category: "preference",
       });
 
-      const provider = createMemoryProvider(fsMemory);
-      const adapter = createLoopAdapter({ modelCall, maxTurns: 1 });
+      const provider = createMemoryProvider({ memory: fsMemory });
+      const adapter = createAdapter();
 
       const runtime = await createKoi({
         manifest: {
@@ -301,18 +298,13 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
 
       const result = (await recallTool?.execute({ query: "Alice prefers cats" })) as {
         readonly count: number;
-        readonly memories: readonly {
-          readonly content: string;
-          readonly tier: string;
-          readonly decayScore: number;
-        }[];
+        readonly results: readonly MemoryResult[];
       };
 
       expect(result.count).toBeGreaterThan(0);
-      // BM25-only mode: check that our fact is somewhere in the results
-      const catFact = result.memories.find((m) => m.content.includes("cats"));
+      const catFact = result.results.find((m) => m.content.includes("cats"));
       expect(catFact).toBeDefined();
-      expect(catFact?.tier).toBe("hot"); // Fresh fact
+      expect(catFact?.tier).toBe("hot");
       expect(catFact?.decayScore).toBeGreaterThan(0.9);
 
       await runtime.dispose();
@@ -320,11 +312,91 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
     TIMEOUT_MS,
   );
 
+  // -----------------------------------------------------------------------
+  // Tool execution: memory_search
+  // -----------------------------------------------------------------------
+
+  test(
+    "memory_search lists entities when no entity param",
+    async () => {
+      await fsMemory.component.store("Alice likes TypeScript", {
+        relatedEntities: ["alice"],
+      });
+      await fsMemory.component.store("Bob uses Rust", {
+        relatedEntities: ["bob"],
+      });
+
+      const provider = createMemoryProvider({ memory: fsMemory });
+      const adapter = createAdapter();
+
+      const runtime = await createKoi({
+        manifest: {
+          name: "e2e-search-list-agent",
+          version: "0.0.0",
+          model: { name: "claude-haiku-4-5-20251001" },
+        },
+        adapter,
+        providers: [provider],
+      });
+
+      const searchTool = runtime.agent.component<Tool>(toolToken("memory_search"));
+      expect(searchTool).toBeDefined();
+
+      const result = (await searchTool?.execute({})) as {
+        readonly entities: readonly string[];
+      };
+
+      expect(result.entities).toContain("alice");
+      expect(result.entities).toContain("bob");
+
+      await runtime.dispose();
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "memory_search returns facts for a specific entity",
+    async () => {
+      await fsMemory.component.store("Alice likes TypeScript", {
+        relatedEntities: ["alice"],
+      });
+
+      const provider = createMemoryProvider({ memory: fsMemory });
+      const adapter = createAdapter();
+
+      const runtime = await createKoi({
+        manifest: {
+          name: "e2e-search-entity-agent",
+          version: "0.0.0",
+          model: { name: "claude-haiku-4-5-20251001" },
+        },
+        adapter,
+        providers: [provider],
+      });
+
+      const searchTool = runtime.agent.component<Tool>(toolToken("memory_search"));
+      const result = (await searchTool?.execute({ entity: "alice" })) as {
+        readonly count: number;
+        readonly results: readonly MemoryResult[];
+      };
+
+      expect(result.count).toBeGreaterThan(0);
+      expect(result.results[0]?.content).toContain("TypeScript");
+
+      await runtime.dispose();
+    },
+    TIMEOUT_MS,
+  );
+
+  // -----------------------------------------------------------------------
+  // Store → recall round-trip
+  // -----------------------------------------------------------------------
+
   test(
     "store → recall round-trip through tools within assembled agent",
     async () => {
-      const provider = createMemoryProvider(fsMemory);
-      const adapter = createLoopAdapter({ modelCall, maxTurns: 1 });
+      const provider = createMemoryProvider({ memory: fsMemory });
+      const adapter = createAdapter();
 
       const runtime = await createKoi({
         manifest: {
@@ -343,28 +415,32 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
       await storeTool?.execute({
         content: "Project deadline is March 15, 2026",
         category: "milestone",
-        entities: ["project-alpha"],
+        related_entities: ["project-alpha"],
       });
 
       // Recall via tool
       const result = (await recallTool?.execute({ query: "deadline" })) as {
         readonly count: number;
-        readonly memories: readonly { readonly content: string }[];
+        readonly results: readonly MemoryResult[];
       };
 
       expect(result.count).toBe(1);
-      expect(result.memories[0]?.content).toContain("March 15");
+      expect(result.results[0]?.content).toContain("March 15");
 
       await runtime.dispose();
     },
     TIMEOUT_MS,
   );
 
+  // -----------------------------------------------------------------------
+  // Backend behaviors through tools
+  // -----------------------------------------------------------------------
+
   test(
     "dedup prevents duplicate storage through tools",
     async () => {
-      const provider = createMemoryProvider(fsMemory);
-      const adapter = createLoopAdapter({ modelCall, maxTurns: 1 });
+      const provider = createMemoryProvider({ memory: fsMemory });
+      const adapter = createAdapter();
 
       const runtime = await createKoi({
         manifest: {
@@ -378,16 +454,15 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
 
       const storeTool = runtime.agent.component<Tool>(toolToken("memory_store"));
 
-      // Store the same fact twice
       await storeTool?.execute({
         content: "The API endpoint is /v2/users",
         category: "context",
-        entities: ["api"],
+        related_entities: ["api"],
       });
       await storeTool?.execute({
         content: "The API endpoint is /v2/users",
         category: "context",
-        entities: ["api"],
+        related_entities: ["api"],
       });
 
       const results = await fsMemory.component.recall("API endpoint");
@@ -401,8 +476,8 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
   test(
     "contradiction supersedes old fact through tools",
     async () => {
-      const provider = createMemoryProvider(fsMemory);
-      const adapter = createLoopAdapter({ modelCall, maxTurns: 1 });
+      const provider = createMemoryProvider({ memory: fsMemory });
+      const adapter = createAdapter();
 
       const runtime = await createKoi({
         manifest: {
@@ -419,12 +494,12 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
       await storeTool?.execute({
         content: "Alice prefers dogs",
         category: "preference",
-        entities: ["alice"],
+        related_entities: ["alice"],
       });
       await storeTool?.execute({
         content: "Alice now prefers cats",
         category: "preference",
-        entities: ["alice"],
+        related_entities: ["alice"],
       });
 
       const results = await fsMemory.component.recall("preference");
@@ -439,8 +514,8 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
   test(
     "tier distribution reflects tool-stored facts",
     async () => {
-      const provider = createMemoryProvider(fsMemory);
-      const adapter = createLoopAdapter({ modelCall, maxTurns: 1 });
+      const provider = createMemoryProvider({ memory: fsMemory });
+      const adapter = createAdapter();
 
       const runtime = await createKoi({
         manifest: {
@@ -457,17 +532,17 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
       await storeTool?.execute({
         content: "Alice prefers TypeScript",
         category: "preference",
-        entities: ["alice"],
+        related_entities: ["alice"],
       });
       await storeTool?.execute({
         content: "Bob likes Rust",
         category: "preference",
-        entities: ["bob"],
+        related_entities: ["bob"],
       });
       await storeTool?.execute({
         content: "The project uses Bun",
         category: "context",
-        entities: ["project"],
+        related_entities: ["project"],
       });
 
       const dist = await fsMemory.getTierDistribution();
@@ -487,8 +562,8 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
   test(
     "rebuildSummaries generates summary.md after tool-based storage",
     async () => {
-      const provider = createMemoryProvider(fsMemory);
-      const adapter = createLoopAdapter({ modelCall, maxTurns: 1 });
+      const provider = createMemoryProvider({ memory: fsMemory });
+      const adapter = createAdapter();
 
       const runtime = await createKoi({
         manifest: {
@@ -505,12 +580,12 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
       await storeTool?.execute({
         content: "Project Neptune is a secret initiative",
         category: "context",
-        entities: ["project-neptune"],
+        related_entities: ["project-neptune"],
       });
       await storeTool?.execute({
         content: "Neptune launch date is Q3 2026",
         category: "milestone",
-        entities: ["project-neptune"],
+        related_entities: ["project-neptune"],
       });
 
       await fsMemory.rebuildSummaries();
@@ -526,11 +601,15 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
     TIMEOUT_MS,
   );
 
+  // -----------------------------------------------------------------------
+  // Cross-session persistence
+  // -----------------------------------------------------------------------
+
   test(
     "facts persist across close → reopen → new createKoi assembly",
     async () => {
-      const provider1 = createMemoryProvider(fsMemory);
-      const adapter1 = createLoopAdapter({ modelCall, maxTurns: 1 });
+      const provider1 = createMemoryProvider({ memory: fsMemory });
+      const adapter1 = createAdapter();
 
       const runtime1 = await createKoi({
         manifest: {
@@ -548,7 +627,7 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
       await storeTool?.execute({
         content: `Build number is ${marker}`,
         category: "context",
-        entities: ["build"],
+        related_entities: ["build"],
       });
 
       await runtime1.dispose();
@@ -556,8 +635,8 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
 
       // Reopen from disk (simulates process restart)
       const reopened = await createFsMemory({ baseDir: testDir });
-      const provider2 = createMemoryProvider(reopened);
-      const adapter2 = createLoopAdapter({ modelCall, maxTurns: 1 });
+      const provider2 = createMemoryProvider({ memory: reopened });
+      const adapter2 = createAdapter();
 
       const runtime2 = await createKoi({
         manifest: {
@@ -573,16 +652,19 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
       const recallTool = runtime2.agent.component<Tool>(toolToken("memory_recall"));
       const result = (await recallTool?.execute({ query: marker })) as {
         readonly count: number;
-        readonly memories: readonly {
-          readonly content: string;
-          readonly tier: string;
-          readonly decayScore: number;
-        }[];
+        readonly results: readonly MemoryResult[];
       };
 
       expect(result.count).toBeGreaterThan(0);
-      expect(result.memories[0]?.content).toContain(marker);
-      expect(result.memories[0]?.tier).toBe("hot");
+      expect(result.results[0]?.content).toContain(marker);
+      expect(result.results[0]?.tier).toBe("hot");
+
+      // Also verify memory_search in session 2
+      const searchTool = runtime2.agent.component<Tool>(toolToken("memory_search"));
+      const searchResult = (await searchTool?.execute({})) as {
+        readonly entities: readonly string[];
+      };
+      expect(searchResult.entities).toContain("build");
 
       await runtime2.dispose();
       await reopened.close();
@@ -593,32 +675,31 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
     TIMEOUT_MS,
   );
 
+  // -----------------------------------------------------------------------
+  // LLM integration: full pipeline with real model calls
+  // -----------------------------------------------------------------------
+
   test(
-    "LLM runs through createKoi with memory tools registered",
+    "LLM single-turn response with memory tools registered",
     async () => {
-      const provider = createMemoryProvider(fsMemory);
-      const adapter = createLoopAdapter({ modelCall, maxTurns: 3 });
+      const provider = createMemoryProvider({ memory: fsMemory });
+      const adapter = createAdapter();
 
       const runtime = await createKoi({
         manifest: {
-          name: "e2e-llm-agent",
+          name: "e2e-llm-basic-agent",
           version: "0.0.0",
           model: { name: "claude-haiku-4-5-20251001" },
         },
         adapter,
         providers: [provider],
-      });
-
-      // Pre-seed a fact so memory is non-empty
-      await fsMemory.component.store("The user's name is Alice", {
-        relatedEntities: ["user"],
-        category: "context",
+        limits: { maxTurns: 3, maxDurationMs: 60_000 },
       });
 
       const events = await collectEvents(
         runtime.run({
           kind: "text",
-          text: "Say hello. Reply briefly.",
+          text: "Say hello. Reply with one short sentence only.",
         }),
       );
 
@@ -629,9 +710,212 @@ describeE2E("e2e: memory-fs tool wiring through createKoi", () => {
       const text = extractTextFromEvents(events);
       expect(text.length).toBeGreaterThan(0);
 
-      // Verify agent had memory tools registered (even if LLM didn't call them)
-      const storeTool = runtime.agent.component<Tool>(toolToken("memory_store"));
-      expect(storeTool).toBeDefined();
+      // Verify agent had all memory tools registered
+      expect(runtime.agent.component<Tool>(toolToken("memory_store"))).toBeDefined();
+      expect(runtime.agent.component<Tool>(toolToken("memory_recall"))).toBeDefined();
+      expect(runtime.agent.component<Tool>(toolToken("memory_search"))).toBeDefined();
+
+      await runtime.dispose();
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "LLM stores a fact via memory_store when instructed",
+    async () => {
+      const provider = createMemoryProvider({ memory: fsMemory });
+      const adapter = createAdapter();
+
+      const runtime = await createKoi({
+        manifest: {
+          name: "e2e-llm-store-agent",
+          version: "0.0.0",
+          model: { name: "claude-haiku-4-5-20251001" },
+        },
+        adapter,
+        providers: [provider],
+        loopDetection: false,
+        limits: { maxTurns: 5, maxDurationMs: 60_000 },
+      });
+
+      const events = await collectEvents(
+        runtime.run({
+          kind: "text",
+          text: 'Use the memory_store tool to store this fact: "The project codename is Phoenix". Use category "context" and related_entities ["project"]. Then confirm you stored it.',
+        }),
+      );
+
+      const output = findDoneOutput(events);
+      expect(output).toBeDefined();
+      expect(output?.stopReason).toBe("completed");
+
+      // Verify the LLM actually called memory_store
+      const storeCalls = findToolCallEvents(events, "memory_store");
+      expect(storeCalls.length).toBeGreaterThanOrEqual(1);
+
+      // Verify fact was persisted to disk
+      const recalled = await fsMemory.component.recall("Phoenix");
+      expect(recalled.length).toBeGreaterThan(0);
+      expect(recalled[0]?.content).toContain("Phoenix");
+
+      await runtime.dispose();
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "LLM recalls pre-stored facts via memory_recall when asked",
+    async () => {
+      // Pre-seed a fact
+      await fsMemory.component.store("The secret password is swordfish42", {
+        category: "context",
+        relatedEntities: ["security"],
+      });
+
+      const provider = createMemoryProvider({ memory: fsMemory });
+      const adapter = createAdapter();
+
+      const runtime = await createKoi({
+        manifest: {
+          name: "e2e-llm-recall-agent",
+          version: "0.0.0",
+          model: { name: "claude-haiku-4-5-20251001" },
+        },
+        adapter,
+        providers: [provider],
+        loopDetection: false,
+        limits: { maxTurns: 5, maxDurationMs: 60_000 },
+      });
+
+      const events = await collectEvents(
+        runtime.run({
+          kind: "text",
+          text: 'Use the memory_recall tool with query "password" to search your memory, then tell me what you found.',
+        }),
+      );
+
+      const output = findDoneOutput(events);
+      expect(output).toBeDefined();
+      expect(output?.stopReason).toBe("completed");
+
+      // Verify the LLM called memory_recall
+      const recallCalls = findToolCallEvents(events, "memory_recall");
+      expect(recallCalls.length).toBeGreaterThanOrEqual(1);
+
+      // The model should mention the password in its response
+      const text = extractTextFromEvents(events);
+      expect(text.toLowerCase()).toContain("swordfish42");
+
+      await runtime.dispose();
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "LLM uses memory_search to list entities",
+    async () => {
+      // Pre-seed facts for multiple entities
+      await fsMemory.component.store("Alice is the CTO", {
+        relatedEntities: ["alice"],
+        category: "relationship",
+      });
+      await fsMemory.component.store("Bob is the lead engineer", {
+        relatedEntities: ["bob"],
+        category: "relationship",
+      });
+
+      const provider = createMemoryProvider({ memory: fsMemory });
+      const adapter = createAdapter();
+
+      const runtime = await createKoi({
+        manifest: {
+          name: "e2e-llm-search-agent",
+          version: "0.0.0",
+          model: { name: "claude-haiku-4-5-20251001" },
+        },
+        adapter,
+        providers: [provider],
+        loopDetection: false,
+        limits: { maxTurns: 5, maxDurationMs: 60_000 },
+      });
+
+      const events = await collectEvents(
+        runtime.run({
+          kind: "text",
+          text: "Use the memory_search tool (with no arguments) to list all entities you know about, then tell me who they are.",
+        }),
+      );
+
+      const output = findDoneOutput(events);
+      expect(output).toBeDefined();
+      expect(output?.stopReason).toBe("completed");
+
+      // Verify the LLM called memory_search
+      const searchCalls = findToolCallEvents(events, "memory_search");
+      expect(searchCalls.length).toBeGreaterThanOrEqual(1);
+
+      // The model should mention both entities
+      const text = extractTextFromEvents(events).toLowerCase();
+      expect(text).toContain("alice");
+      expect(text).toContain("bob");
+
+      await runtime.dispose();
+    },
+    TIMEOUT_MS,
+  );
+
+  test(
+    "full workflow: store → search → recall across tool calls",
+    async () => {
+      const provider = createMemoryProvider({ memory: fsMemory });
+      const adapter = createAdapter();
+
+      const runtime = await createKoi({
+        manifest: {
+          name: "e2e-llm-workflow-agent",
+          version: "0.0.0",
+          model: { name: "claude-haiku-4-5-20251001" },
+        },
+        adapter,
+        providers: [provider],
+        loopDetection: false,
+        limits: { maxTurns: 10, maxDurationMs: 90_000 },
+      });
+
+      const events = await collectEvents(
+        runtime.run({
+          kind: "text",
+          text: [
+            "Do these steps in order:",
+            '1. Use memory_store to store: "The team standup is at 9am" with category "context" and related_entities ["team"]',
+            '2. Use memory_store to store: "Sprint ends on Friday" with category "milestone" and related_entities ["team"]',
+            "3. Use memory_search with no arguments to list all entities",
+            '4. Use memory_recall with query "standup" to find the standup time',
+            "5. Tell me what you found in step 4",
+          ].join("\n"),
+        }),
+      );
+
+      const output = findDoneOutput(events);
+      expect(output).toBeDefined();
+      expect(output?.stopReason).toBe("completed");
+
+      // Verify all tools were called
+      const storeCalls = findToolCallEvents(events, "memory_store");
+      const searchCalls = findToolCallEvents(events, "memory_search");
+      const recallCalls = findToolCallEvents(events, "memory_recall");
+
+      expect(storeCalls.length).toBeGreaterThanOrEqual(2);
+      expect(searchCalls.length).toBeGreaterThanOrEqual(1);
+      expect(recallCalls.length).toBeGreaterThanOrEqual(1);
+
+      // Verify facts actually persisted
+      const dist = await fsMemory.getTierDistribution();
+      expect(dist.total).toBe(2);
+
+      // Verify the model mentioned the standup
+      const text = extractTextFromEvents(events).toLowerCase();
+      expect(text).toContain("9am");
 
       await runtime.dispose();
     },
