@@ -8,10 +8,12 @@ import { createDoctorContext } from "../context.js";
 import type { DoctorContext, DoctorFinding, DoctorRule } from "../types.js";
 import { goalHijackRules } from "./goal-hijack.js";
 
-const [missingSanitize, missingGuardrails, noSystemPromptDefense] = goalHijackRules;
+const [missingSanitize, missingGuardrails, noSystemPromptDefense, missingIntentCapsule] =
+  goalHijackRules;
 if (missingSanitize === undefined) throw new Error("missing rule: missingSanitize");
 if (missingGuardrails === undefined) throw new Error("missing rule: missingGuardrails");
 if (noSystemPromptDefense === undefined) throw new Error("missing rule: noSystemPromptDefense");
+if (missingIntentCapsule === undefined) throw new Error("missing rule: missingIntentCapsule");
 
 async function check(rule: DoctorRule, ctx: DoctorContext): Promise<readonly DoctorFinding[]> {
   return Promise.resolve(rule.check(ctx));
@@ -175,5 +177,64 @@ describe("goal-hijack:no-system-prompt-defense", () => {
     expect(noSystemPromptDefense?.category).toBe("GOAL_INTEGRITY");
     expect(noSystemPromptDefense?.defaultSeverity).toBe("MEDIUM");
     expect(noSystemPromptDefense?.owasp).toEqual(["ASI01"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// goal-hijack:missing-intent-capsule
+// ---------------------------------------------------------------------------
+
+describe("goal-hijack:missing-intent-capsule", () => {
+  test("returns MEDIUM finding when intent-capsule middleware is absent", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+      middleware: [{ name: "sanitize" }, { name: "guardrails" }],
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(missingIntentCapsule, ctx);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      rule: "goal-hijack:missing-intent-capsule",
+      severity: "MEDIUM",
+      category: "GOAL_INTEGRITY",
+      owasp: ["ASI01"],
+      path: "middleware",
+    });
+  });
+
+  test("returns empty when intent-capsule middleware is present", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+      middleware: [{ name: "intent-capsule" }],
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(missingIntentCapsule, ctx);
+
+    expect(findings).toHaveLength(0);
+  });
+
+  test("returns finding when middleware is undefined", async () => {
+    const manifest: AgentManifest = {
+      name: "test-agent",
+      version: "1.0.0",
+      model: { name: "claude-3.5-sonnet" },
+    };
+    const ctx = createDoctorContext(manifest);
+    const findings = await check(missingIntentCapsule, ctx);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.rule).toBe("goal-hijack:missing-intent-capsule");
+  });
+
+  test("rule metadata is correct", () => {
+    expect(missingIntentCapsule?.name).toBe("goal-hijack:missing-intent-capsule");
+    expect(missingIntentCapsule?.category).toBe("GOAL_INTEGRITY");
+    expect(missingIntentCapsule?.defaultSeverity).toBe("MEDIUM");
+    expect(missingIntentCapsule?.owasp).toEqual(["ASI01"]);
   });
 });

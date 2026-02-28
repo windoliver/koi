@@ -56,6 +56,10 @@
       "types": "./dist/errors.d.ts",
       "import": "./dist/errors.js"
     },
+    "./intent-capsule": {
+      "types": "./dist/intent-capsule.d.ts",
+      "import": "./dist/intent-capsule.js"
+    },
     "./message": {
       "types": "./dist/message.d.ts",
       "import": "./dist/message.js"

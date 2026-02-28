@@ -447,6 +447,16 @@ export type {
 } from "./health.js";
 // health — runtime values
 export { DEFAULT_HEALTH_MONITOR_CONFIG } from "./health.js";
+// intent capsule — cryptographic mandate binding for ASI01 defense (L0 types + contract)
+export type {
+  CapsuleId,
+  CapsulePayloadVersion,
+  CapsuleVerifier,
+  CapsuleVerifyResult,
+  CapsuleViolationReason,
+  IntentCapsule,
+} from "./intent-capsule.js";
+export { capsuleId, isIntentCapsule } from "./intent-capsule.js";
 // kernel extension — pluggable L1 guard/lifecycle/assembly slots
 export type {
   GuardContext,

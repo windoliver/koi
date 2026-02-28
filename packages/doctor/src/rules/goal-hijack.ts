@@ -57,6 +57,23 @@ function checkNoSystemPromptDefense(ctx: DoctorContext): readonly DoctorFinding[
   ];
 }
 
+function checkMissingIntentCapsuleMiddleware(ctx: DoctorContext): readonly DoctorFinding[] {
+  const names = ctx.middlewareNames();
+  if (names.has("intent-capsule")) return [];
+  return [
+    {
+      rule: "goal-hijack:missing-intent-capsule",
+      severity: "MEDIUM",
+      category: "GOAL_INTEGRITY",
+      message:
+        "No 'intent-capsule' middleware configured — agent mandate is not cryptographically bound",
+      fix: "Add { name: 'intent-capsule' } to manifest.middleware for ASI01 defense-in-depth",
+      owasp: ["ASI01"],
+      path: "middleware",
+    },
+  ];
+}
+
 export const goalHijackRules: readonly DoctorRule[] = [
   {
     name: "goal-hijack:missing-sanitize-middleware",
@@ -78,5 +95,12 @@ export const goalHijackRules: readonly DoctorRule[] = [
     defaultSeverity: "MEDIUM",
     owasp: ["ASI01"],
     check: checkNoSystemPromptDefense,
+  },
+  {
+    name: "goal-hijack:missing-intent-capsule",
+    category: "GOAL_INTEGRITY",
+    defaultSeverity: "MEDIUM",
+    owasp: ["ASI01"],
+    check: checkMissingIntentCapsuleMiddleware,
   },
 ];
