@@ -1,0 +1,65 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-memory API surface . has stable type surface 1`] = `
+"import { Result, KoiError } from '@koi/core/errors';
+import { JsonObject } from '@koi/core/common';
+import { KoiMiddleware } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
+import { KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
+
+/**
+ * Memory store interfaces and default implementations.
+ */
+
+interface MemoryEntry {
+    readonly content: string;
+    readonly score?: number;
+    readonly timestamp: number;
+    readonly metadata?: JsonObject;
+}
+interface MemoryStore {
+    readonly recall: (query: string, maxTokens: number) => Promise<readonly MemoryEntry[]>;
+    readonly store: (sessionId: string, content: string, metadata?: JsonObject) => Promise<void>;
+}
+/**
+ * In-memory store with recency-based recall and token budget.
+ */
+declare function createInMemoryStore(): MemoryStore;
+
+/**
+ * Memory middleware configuration and validation.
+ */
+
+interface MemoryMiddlewareConfig {
+    readonly store: MemoryStore;
+    readonly maxRecallTokens?: number;
+    readonly recallStrategy?: "recent" | "relevant" | "hybrid";
+    readonly storeResponses?: boolean;
+    /** Called when storing a response fails. If not provided, store errors are silently ignored. */
+    readonly onStoreError?: (error: unknown) => void;
+}
+declare function validateMemoryConfig(config: unknown): Result<MemoryMiddlewareConfig, KoiError>;
+
+/**
+ * BrickDescriptor for @koi/middleware-memory.
+ *
+ * Enables manifest auto-resolution: validates memory config,
+ * then creates the memory middleware with an in-memory store by default.
+ */
+
+/**
+ * Descriptor for memory middleware.
+ * Uses an in-memory store by default.
+ * Exported for registration with createRegistry().
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware>;
+
+/**
+ * Memory middleware factory — persistent memory injection.
+ */
+
+declare function createMemoryMiddleware(config: MemoryMiddlewareConfig): KoiMiddleware$1;
+
+export { type MemoryEntry, type MemoryMiddlewareConfig, type MemoryStore, createInMemoryStore, createMemoryMiddleware, descriptor, validateMemoryConfig };
+"
+`;
