@@ -28,7 +28,14 @@ export type {
 } from "@koi/core";
 export type { FileSystemOperation } from "./constants.js";
 // constants
-export { CLAUDE_SDK_FILE_TOOLS, DEFAULT_PREFIX, OPERATIONS } from "./constants.js";
+export {
+  CLAUDE_SDK_FILE_TOOLS,
+  DEFAULT_PREFIX,
+  FS_SKILL,
+  FS_SKILL_CONTENT,
+  FS_SKILL_NAME,
+  OPERATIONS,
+} from "./constants.js";
 
 // descriptor
 export { descriptor } from "./descriptor.js";

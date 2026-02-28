@@ -8,9 +8,15 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { AttachResult } from "@koi/core";
-import { BROWSER, isAttachResult, toolToken } from "@koi/core";
-import { createBrowserProvider, createMockAgent, createMockDriver, OPERATIONS } from "../index.js";
+import type { AttachResult, SkillComponent } from "@koi/core";
+import { BROWSER, isAttachResult, skillToken, toolToken } from "@koi/core";
+import {
+  BROWSER_SKILL_NAME,
+  createBrowserProvider,
+  createMockAgent,
+  createMockDriver,
+  OPERATIONS,
+} from "../index.js";
 
 function extractMap(
   result: AttachResult | ReadonlyMap<string, unknown>,
@@ -84,5 +90,17 @@ describe("createBrowserProvider (integration)", () => {
     await provider.attach(agent);
     await provider.detach?.(agent);
     expect(disposed).toBe(true);
+  });
+
+  test("attaches browser skill component with name and content", async () => {
+    const driver = createMockDriver();
+    const provider = createBrowserProvider({ backend: driver });
+    const agent = createMockAgent();
+    const components = extractMap(await provider.attach(agent));
+
+    expect(components.has(skillToken(BROWSER_SKILL_NAME) as string)).toBe(true);
+    const skill = components.get(skillToken(BROWSER_SKILL_NAME) as string) as SkillComponent;
+    expect(skill.name).toBe(BROWSER_SKILL_NAME);
+    expect(skill.content).toContain("browser_snapshot");
   });
 });

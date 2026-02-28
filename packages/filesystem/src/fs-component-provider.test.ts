@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { AttachResult, FileSystemBackend, Tool } from "@koi/core";
-import { FILESYSTEM, isAttachResult, toolToken } from "@koi/core";
+import type { AttachResult, FileSystemBackend, SkillComponent, Tool } from "@koi/core";
+import { FILESYSTEM, isAttachResult, skillToken, toolToken } from "@koi/core";
 
 function extractMap(
   result: AttachResult | ReadonlyMap<string, unknown>,
@@ -8,6 +8,7 @@ function extractMap(
   return isAttachResult(result) ? result.components : result;
 }
 
+import { FS_SKILL_NAME } from "./constants.js";
 import { createFileSystemProvider } from "./fs-component-provider.js";
 import { createMockAgent, createMockBackend } from "./test-helpers.js";
 
@@ -27,7 +28,7 @@ describe("createFileSystemProvider", () => {
     const provider = createFileSystemProvider({ backend });
     const components = extractMap(await provider.attach(createMockAgent()));
 
-    expect(components.size).toBe(6); // 5 tools + FILESYSTEM token
+    expect(components.size).toBe(7); // 5 tools + FILESYSTEM token + 1 skill
     expect(components.has(toolToken("fs_read") as string)).toBe(true);
     expect(components.has(toolToken("fs_write") as string)).toBe(true);
     expect(components.has(toolToken("fs_edit") as string)).toBe(true);
@@ -79,8 +80,8 @@ describe("createFileSystemProvider", () => {
     });
     const components = extractMap(await provider.attach(createMockAgent()));
 
-    // 2 tools + FILESYSTEM token
-    expect(components.size).toBe(3);
+    // 2 tools + FILESYSTEM token + 1 skill (skill always attaches regardless of operations)
+    expect(components.size).toBe(4);
     expect(components.has(toolToken("fs_read") as string)).toBe(true);
     expect(components.has(toolToken("fs_list") as string)).toBe(true);
     expect(components.has(toolToken("fs_write") as string)).toBe(false);
@@ -169,5 +170,51 @@ describe("tool descriptors", () => {
       expect(schema.type).toBe("object");
       expect(schema.required).toBeDefined();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SkillComponent
+// ---------------------------------------------------------------------------
+
+describe("SkillComponent", () => {
+  test("attaches filesystem skill component", async () => {
+    const backend = createMockBackend("local");
+    const provider = createFileSystemProvider({ backend });
+    const components = extractMap(await provider.attach(createMockAgent()));
+
+    expect(components.has(skillToken(FS_SKILL_NAME) as string)).toBe(true);
+  });
+
+  test("skill has name, description, and non-empty content", async () => {
+    const backend = createMockBackend("local");
+    const provider = createFileSystemProvider({ backend });
+    const components = extractMap(await provider.attach(createMockAgent()));
+
+    const skill = components.get(skillToken(FS_SKILL_NAME) as string) as SkillComponent;
+    expect(skill.name).toBe(FS_SKILL_NAME);
+    expect(skill.description.length).toBeGreaterThan(0);
+    expect(skill.content.length).toBeGreaterThan(0);
+  });
+
+  test("skill content covers edit vs write and search vs list guidance", async () => {
+    const backend = createMockBackend("local");
+    const provider = createFileSystemProvider({ backend });
+    const components = extractMap(await provider.attach(createMockAgent()));
+
+    const skill = components.get(skillToken(FS_SKILL_NAME) as string) as SkillComponent;
+    expect(skill.content).toContain("fs_edit");
+    expect(skill.content).toContain("fs_write");
+    expect(skill.content).toContain("fs_search");
+    expect(skill.content).toContain("fs_list");
+    expect(skill.content).toContain("fs_read");
+  });
+
+  test("skill attaches even when operations are filtered", async () => {
+    const backend = createMockBackend("local");
+    const provider = createFileSystemProvider({ backend, operations: ["read"] });
+    const components = extractMap(await provider.attach(createMockAgent()));
+
+    expect(components.has(skillToken(FS_SKILL_NAME) as string)).toBe(true);
   });
 });

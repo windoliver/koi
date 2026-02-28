@@ -1707,6 +1707,7 @@
       "name": "@koi/e2e-contracts",
       "version": "0.0.0",
       "devDependencies": {
+        "@koi/browser-playwright": "workspace:*",
         "@koi/canvas": "workspace:*",
         "@koi/channel-canvas-fallback": "workspace:*",
         "@koi/core": "workspace:*",
@@ -1715,6 +1716,7 @@
         "@koi/engine-external": "workspace:*",
         "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
+        "@koi/filesystem": "workspace:*",
         "@koi/forge": "workspace:*",
         "@koi/gateway": "workspace:*",
         "@koi/git-utils": "workspace:*",
@@ -1743,6 +1745,7 @@
         "@koi/sandbox-executor": "workspace:*",
         "@koi/soul": "workspace:*",
         "@koi/test-utils": "workspace:*",
+        "@koi/tool-browser": "workspace:*",
         "@koi/worktree-merge": "workspace:*",
       },
     },

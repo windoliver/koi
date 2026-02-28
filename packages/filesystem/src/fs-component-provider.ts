@@ -7,11 +7,11 @@
  */
 
 import type { ComponentProvider, FileSystemBackend, Tool, TrustTier } from "@koi/core";
-import { createServiceProvider, FILESYSTEM } from "@koi/core";
+import { createServiceProvider, FILESYSTEM, skillToken } from "@koi/core";
 import type { FileSystemScope } from "@koi/scope";
 import { createScopedFileSystem } from "@koi/scope";
 import type { FileSystemOperation } from "./constants.js";
-import { DEFAULT_PREFIX, OPERATIONS } from "./constants.js";
+import { DEFAULT_PREFIX, FS_SKILL, FS_SKILL_NAME, OPERATIONS } from "./constants.js";
 import { createFsEditTool } from "./tools/edit.js";
 import { createFsListTool } from "./tools/list.js";
 import { createFsReadTool } from "./tools/read.js";
@@ -59,6 +59,7 @@ export function createFileSystemProvider(config: FileSystemProviderConfig): Comp
     factories: TOOL_FACTORIES,
     trustTier,
     prefix,
+    customTools: () => [[skillToken(FS_SKILL_NAME) as string, FS_SKILL]],
     detach: async (b) => {
       if (b.dispose) {
         await b.dispose();
