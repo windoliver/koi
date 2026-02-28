@@ -36,7 +36,7 @@ import type {
   ResolveApprovalHandler,
   ResolvedManifest,
 } from "@koi/resolve";
-import { createRegistry, resolveManifest } from "@koi/resolve";
+import { createRegistry, discoverDescriptors, resolveManifest } from "@koi/resolve";
 import { descriptor as soulDescriptor } from "@koi/soul";
 
 // ---------------------------------------------------------------------------
@@ -141,6 +141,25 @@ const ALL_DESCRIPTORS: readonly BrickDescriptor<unknown>[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Dynamic descriptor discovery
+// ---------------------------------------------------------------------------
+
+/**
+ * Detects the monorepo `packages/` directory relative to this module.
+ * Both `src/` and `dist/` live two levels under `packages/cli/`.
+ */
+function detectPackagesDir(): string {
+  return pathResolve(import.meta.dir, "..", "..");
+}
+
+/**
+ * Builds a unique key for deduplication: `"kind:name"`.
+ */
+function descriptorKey(d: BrickDescriptor<unknown>): string {
+  return `${d.kind}:${d.name}`;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -152,6 +171,8 @@ export interface ResolveAgentOptions {
   readonly manifest: LoadedManifest;
   /** Optional approval handler for HITL permissions. */
   readonly approvalHandler?: ResolveApprovalHandler | undefined;
+  /** Override packages directory for discovery (default: auto-detected). */
+  readonly packagesDir?: string | undefined;
 }
 
 /**
@@ -163,8 +184,24 @@ export interface ResolveAgentOptions {
 export async function resolveAgent(
   options: ResolveAgentOptions,
 ): Promise<Result<ResolvedManifest, KoiError>> {
+  // Discover additional descriptors from packages directory
+  const packagesDir = options.packagesDir ?? detectPackagesDir();
+  const discoveryResult = await discoverDescriptors(packagesDir);
+
+  // Merge: static descriptors take precedence over discovered ones
+  const staticKeys = new Set(ALL_DESCRIPTORS.map(descriptorKey));
+  const discovered = discoveryResult.ok
+    ? discoveryResult.value.filter((d) => !staticKeys.has(descriptorKey(d)))
+    : [];
+
+  if (!discoveryResult.ok) {
+    process.stderr.write(`warn: descriptor discovery failed: ${discoveryResult.error.message}\n`);
+  }
+
+  const allDescriptors: readonly BrickDescriptor<unknown>[] = [...ALL_DESCRIPTORS, ...discovered];
+
   // Create registry
-  const registryResult = createRegistry(ALL_DESCRIPTORS);
+  const registryResult = createRegistry(allDescriptors);
   if (!registryResult.ok) {
     return registryResult;
   }

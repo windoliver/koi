@@ -13,7 +13,7 @@
 
 import { createCliChannel } from "@koi/channel-cli";
 import { createContextExtension } from "@koi/context";
-import type { ContentBlock, EngineEvent, EngineInput } from "@koi/core";
+import type { ChannelAdapter, ContentBlock, EngineEvent, EngineInput } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { loadManifest } from "@koi/manifest";
@@ -129,9 +129,11 @@ export async function runStart(flags: StartFlags): Promise<void> {
     extensions,
   });
 
-  // 6. Set up CLI channel
-  const channel = createCliChannel();
-  await channel.connect();
+  // 6b. Set up channels — use resolved channels or fall back to CLI channel
+  const channels: readonly ChannelAdapter[] = resolved.value.channels ?? [createCliChannel()];
+  for (const ch of channels) {
+    await ch.connect();
+  }
 
   // 7. Set up AbortController for graceful shutdown
   const controller = new AbortController();
@@ -161,35 +163,38 @@ export async function runStart(flags: StartFlags): Promise<void> {
   process.stderr.write(`Agent "${manifest.name}" ready. Type a message or Ctrl+C to stop.\n\n`);
 
   // 9. REPL loop: channel messages -> engine -> stdout
-  // Concurrent run protection: queue messages while engine is processing
-  let processing = false;
-  const unsubscribe = channel.onMessage(async (inbound) => {
-    const text = extractTextFromBlocks(inbound.content);
+  // Concurrent run protection: single flag guards against overlapping engine runs.
+  // With multiple channels this is a best-effort guard, not a strict mutex.
+  let processing = false; // let: mutated as concurrency flag across message handlers
+  const unsubscribers = channels.map((ch) =>
+    ch.onMessage(async (inbound) => {
+      const text = extractTextFromBlocks(inbound.content);
 
-    if (text.trim() === "") return;
+      if (text.trim() === "") return;
 
-    if (processing) {
-      process.stderr.write("(busy — please wait for the current response)\n");
-      return;
-    }
-
-    processing = true;
-    const input: EngineInput = { kind: "text", text };
-
-    try {
-      for await (const event of runtime.run(input)) {
-        if (controller.signal.aborted) break;
-        renderEvent(event, flags.verbose);
+      if (processing) {
+        process.stderr.write("(busy — please wait for the current response)\n");
+        return;
       }
-    } catch (error: unknown) {
-      if (!controller.signal.aborted) {
-        const message = error instanceof Error ? error.message : String(error);
-        process.stderr.write(`Error: ${message}\n`);
+
+      processing = true;
+      const input: EngineInput = { kind: "text", text };
+
+      try {
+        for await (const event of runtime.run(input)) {
+          if (controller.signal.aborted) break;
+          renderEvent(event, flags.verbose);
+        }
+      } catch (error: unknown) {
+        if (!controller.signal.aborted) {
+          const message = error instanceof Error ? error.message : String(error);
+          process.stderr.write(`Error: ${message}\n`);
+        }
+      } finally {
+        processing = false;
       }
-    } finally {
-      processing = false;
-    }
-  });
+    }),
+  );
 
   // 10. Wait for abort signal
   await new Promise<void>((resolve) => {
@@ -199,8 +204,12 @@ export async function runStart(flags: StartFlags): Promise<void> {
   // 11. Cleanup
   process.removeListener("SIGINT", shutdown);
   process.removeListener("SIGTERM", shutdown);
-  unsubscribe();
-  await channel.disconnect();
+  for (const unsub of unsubscribers) {
+    unsub();
+  }
+  for (const ch of channels) {
+    await ch.disconnect();
+  }
   await runtime.dispose();
 
   process.stderr.write("Goodbye.\n");
