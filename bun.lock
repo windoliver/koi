@@ -124,6 +124,18 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/catalog": {
+      "name": "@koi/catalog",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/channel-base": {
       "name": "@koi/channel-base",
       "version": "0.0.0",
@@ -1950,6 +1962,8 @@
     "@koi/canvas": ["@koi/canvas@workspace:packages/canvas"],
 
     "@koi/capability-verifier": ["@koi/capability-verifier@workspace:packages/capability-verifier"],
+
+    "@koi/catalog": ["@koi/catalog@workspace:packages/catalog"],
 
     "@koi/channel-base": ["@koi/channel-base@workspace:packages/channel-base"],
 
