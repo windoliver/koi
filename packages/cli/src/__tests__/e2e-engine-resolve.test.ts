@@ -608,7 +608,7 @@ describeWithKey("resolve pipeline integration (requires API key)", () => {
 // SECTION 4: External engine through full createKoi runtime (real processes)
 // ===========================================================================
 
-describe("e2e: external engine → createKoi → runtime.run() (real processes)", () => {
+describeWithKey("e2e: external engine → createKoi → runtime.run() (real processes)", () => {
   test("echo command through full resolve → createKoi → runtime.run() pipeline", async () => {
     // 1. Create koi.yaml with external engine
     const dir = makeTempDir();
