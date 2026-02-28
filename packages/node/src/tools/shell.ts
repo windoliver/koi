@@ -83,6 +83,35 @@ function createSafeEnv(): Record<string, string> {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Read stdout/stderr from a completed process, truncating oversized output. */
+async function readOutput(proc: {
+  readonly stdout: ReadableStream<Uint8Array>;
+  readonly stderr: ReadableStream<Uint8Array>;
+  readonly exitCode: number | null;
+}): Promise<{
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly exitCode: number | null;
+  readonly truncated: boolean;
+}> {
+  let stdout = await new Response(proc.stdout).text();
+  let stderr = await new Response(proc.stderr).text();
+
+  const truncated = stdout.length > MAX_OUTPUT_BYTES || stderr.length > MAX_OUTPUT_BYTES;
+  if (stdout.length > MAX_OUTPUT_BYTES) {
+    stdout = `${stdout.slice(0, MAX_OUTPUT_BYTES)}... [truncated]`;
+  }
+  if (stderr.length > MAX_OUTPUT_BYTES) {
+    stderr = `${stderr.slice(0, MAX_OUTPUT_BYTES)}... [truncated]`;
+  }
+
+  return { stdout, stderr, exitCode: proc.exitCode, truncated };
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -118,58 +147,58 @@ export function createShellTool(): Tool {
           env: createSafeEnv(),
         });
 
-        // Kill process on signal abort (cooperative cancellation)
-        const onAbort = (): void => {
-          proc.kill();
-        };
-        signal?.addEventListener("abort", onAbort, { once: true });
-
-        // Race between process completion and timeout
-        // let justified: cleared in finally block
-        let timeoutId: ReturnType<typeof setTimeout> | undefined;
-        const timeoutPromise = new Promise<"timeout">((resolve) => {
-          timeoutId = setTimeout(() => resolve("timeout"), timeoutMs);
-        });
-
-        try {
-          const result = await Promise.race([proc.exited, timeoutPromise]);
-          if (timeoutId !== undefined) clearTimeout(timeoutId);
-
-          // Check if signal aborted while waiting
-          if (signal?.aborted) {
+        if (signal !== undefined) {
+          // Signal-based path: external signal handles cancellation, no internal timeout.
+          // This is the preferred path when the caller provides a signal (e.g., from
+          // executeWithSignal's AbortSignal.timeout).
+          const onAbort = (): void => {
             proc.kill();
-            return { error: "Command cancelled", cancelled: true };
-          }
-
-          if (result === "timeout") {
-            proc.kill();
-            return { error: `Command timed out after ${timeoutMs}ms`, timedOut: true };
-          }
-
-          let stdout = await new Response(proc.stdout).text();
-          let stderr = await new Response(proc.stderr).text();
-
-          // Truncate oversized output
-          const truncated = stdout.length > MAX_OUTPUT_BYTES || stderr.length > MAX_OUTPUT_BYTES;
-          if (stdout.length > MAX_OUTPUT_BYTES) {
-            stdout = `${stdout.slice(0, MAX_OUTPUT_BYTES)}... [truncated]`;
-          }
-          if (stderr.length > MAX_OUTPUT_BYTES) {
-            stderr = `${stderr.slice(0, MAX_OUTPUT_BYTES)}... [truncated]`;
-          }
-
-          return {
-            stdout,
-            stderr,
-            exitCode: result,
-            truncated,
           };
-        } finally {
-          if (timeoutId !== undefined) clearTimeout(timeoutId);
-          signal?.removeEventListener("abort", onAbort);
+          signal.addEventListener("abort", onAbort, { once: true });
+
+          try {
+            await proc.exited;
+
+            // Check if signal aborted while waiting. There is a negligible TOCTOU
+            // window where the process may have completed normally at the same instant
+            // the signal fired — worst case is reporting a completed command as
+            // "cancelled," which is acceptable for signal-based cancellation semantics.
+            if (signal.aborted) {
+              proc.kill();
+              return { error: "Command cancelled", cancelled: true };
+            }
+
+            return readOutput(proc);
+          } finally {
+            signal.removeEventListener("abort", onAbort);
+          }
+        } else {
+          // Legacy path: internal setTimeout for standalone usage (no signal provided).
+          // Provides backward compatibility for callers that don't pass a signal.
+
+          // let justified: cleared in finally block
+          let timeoutId: ReturnType<typeof setTimeout> | undefined;
+          const timeoutPromise = new Promise<"timeout">((resolve) => {
+            timeoutId = setTimeout(() => resolve("timeout"), timeoutMs);
+          });
+
+          try {
+            const result = await Promise.race([proc.exited, timeoutPromise]);
+            if (timeoutId !== undefined) clearTimeout(timeoutId);
+
+            if (result === "timeout") {
+              proc.kill();
+              return { error: `Command timed out after ${timeoutMs}ms`, timedOut: true };
+            }
+
+            return readOutput(proc);
+          } finally {
+            if (timeoutId !== undefined) clearTimeout(timeoutId);
+          }
         }
-      } catch {
-        return { error: "Command execution failed" };
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : "unknown error";
+        return { error: `Command execution failed: ${msg}` };
       }
     },
   };

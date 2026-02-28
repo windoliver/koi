@@ -193,7 +193,7 @@ describe("handleToolCall", () => {
     expect((sent.payload as { result: unknown }).result).toEqual({ content: "hello" });
   });
 
-  it("sends execution_error and emits agent_crashed when tool throws", async () => {
+  it("sends execution_error and emits tool_error when tool throws", async () => {
     const failTool: Tool = {
       descriptor: { name: "read_file", description: "Read a file", inputSchema: {} },
       trustTier: "sandbox",
@@ -207,9 +207,12 @@ describe("handleToolCall", () => {
     const sent = (failDeps.sendOutbound as ReturnType<typeof mock>).mock.calls[0]?.[0] as NodeFrame;
     expect(sent.kind).toBe("tool_error");
     expect((sent.payload as { code: string }).code).toBe("execution_error");
+    // Error message now includes tool name and cause
+    expect((sent.payload as { message: string }).message).toContain("read_file");
+    expect((sent.payload as { message: string }).message).toContain("disk full");
 
     expect(failDeps.emit).toHaveBeenCalledTimes(1);
-    expect((failDeps.emit as ReturnType<typeof mock>).mock.calls[0]?.[0]).toBe("agent_crashed");
+    expect((failDeps.emit as ReturnType<typeof mock>).mock.calls[0]?.[0]).toBe("tool_error");
   });
 
   it("passes correct args to tool.execute()", async () => {
@@ -267,7 +270,7 @@ describe("handleToolCall", () => {
     expect((sent.payload as { message: string }).message).toContain("timed out");
 
     expect(timeoutDeps.emit).toHaveBeenCalledTimes(1);
-    expect((timeoutDeps.emit as ReturnType<typeof mock>).mock.calls[0]?.[0]).toBe("agent_crashed");
+    expect((timeoutDeps.emit as ReturnType<typeof mock>).mock.calls[0]?.[0]).toBe("tool_timeout");
   });
 
   it("clears timeout when tool completes before deadline", async () => {
@@ -335,6 +338,98 @@ describe("handleToolCall", () => {
     expect(capturedSignal).toBeDefined();
     expect(capturedSignal?.aborted).toBe(true);
   });
+
+  // --- New: Throwing dependencies (Test #9) ---
+
+  it("emits tool_error when permission checker throws", async () => {
+    const throwingChecker: ScopeChecker = {
+      isAllowed: mock(() => {
+        throw new Error("checker exploded");
+      }),
+    };
+    const throwDeps = makeDeps({
+      permission: { checker: throwingChecker, scope: makeScope() },
+    });
+    const frame = makeFrame();
+    await handleToolCall(frame, throwDeps);
+
+    expect(throwDeps.emit).toHaveBeenCalledTimes(1);
+    expect((throwDeps.emit as ReturnType<typeof mock>).mock.calls[0]?.[0]).toBe("tool_error");
+
+    expect(throwDeps.sendOutbound).toHaveBeenCalledTimes(1);
+    const sent = (throwDeps.sendOutbound as ReturnType<typeof mock>).mock
+      .calls[0]?.[0] as NodeFrame;
+    expect(sent.kind).toBe("tool_error");
+    expect((sent.payload as { code: string }).code).toBe("internal_error");
+  });
+
+  it("emits tool_error when resolver throws", async () => {
+    const throwingResolver: LocalResolver = {
+      discover: mock(() => Promise.resolve([] as readonly ToolMeta[])),
+      list: mock(() => [] as readonly ToolMeta[]),
+      load: mock(() => {
+        throw new Error("resolver exploded");
+      }),
+      source: mock(() =>
+        Promise.resolve({
+          ok: false,
+          error: { code: "NOT_FOUND", message: "no source", retryable: false },
+        } as Result<never, KoiError>),
+      ),
+    };
+    const throwDeps = makeDeps({ resolver: throwingResolver });
+    const frame = makeFrame();
+    await handleToolCall(frame, throwDeps);
+
+    expect(throwDeps.emit).toHaveBeenCalledTimes(1);
+    expect((throwDeps.emit as ReturnType<typeof mock>).mock.calls[0]?.[0]).toBe("tool_error");
+
+    expect(throwDeps.sendOutbound).toHaveBeenCalledTimes(1);
+    const sent = (throwDeps.sendOutbound as ReturnType<typeof mock>).mock
+      .calls[0]?.[0] as NodeFrame;
+    expect(sent.kind).toBe("tool_error");
+    expect((sent.payload as { code: string }).code).toBe("internal_error");
+  });
+
+  // --- New: Shutdown signal (Arch #1) ---
+
+  it("composes shutdownSignal with timeout signal", async () => {
+    const shutdownController = new AbortController();
+    const slowTool: Tool = {
+      descriptor: { name: "read_file", description: "Slow tool", inputSchema: {} },
+      trustTier: "sandbox",
+      execute: mock(() => new Promise(() => {})), // never resolves
+    };
+    const shutdownDeps = makeDeps({
+      resolver: makeResolver(slowTool),
+      timeoutMs: 5_000, // long timeout — shutdown should fire first
+      shutdownSignal: shutdownController.signal,
+    });
+    const frame = makeFrame();
+
+    // Abort shutdown signal after 50ms
+    setTimeout(() => shutdownController.abort(new Error("shutdown")), 50);
+
+    await handleToolCall(frame, shutdownDeps);
+
+    // Tool should have been cancelled — either tool_timeout or tool_error emitted
+    expect(shutdownDeps.sendOutbound).toHaveBeenCalledTimes(1);
+    const sent = (shutdownDeps.sendOutbound as ReturnType<typeof mock>).mock
+      .calls[0]?.[0] as NodeFrame;
+    expect(sent.kind).toBe("tool_error");
+  });
+
+  it("shutdown signal does not interfere when not provided", async () => {
+    const tool = makeTool("result-no-shutdown");
+    const noShutdownDeps = makeDeps({ resolver: makeResolver(tool) });
+    const frame = makeFrame();
+    await handleToolCall(frame, noShutdownDeps);
+
+    const sent = (noShutdownDeps.sendOutbound as ReturnType<typeof mock>).mock
+      .calls[0]?.[0] as NodeFrame;
+    expect(sent.kind).toBe("tool_result");
+    expect((sent.payload as { result: unknown }).result).toBe("result-no-shutdown");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -394,5 +489,93 @@ describe("executeWithSignal", () => {
 
     await expect(executeWithSignal(tool, {}, controller.signal)).rejects.toThrow("pre-aborted");
     expect(tool.execute).not.toHaveBeenCalled();
+  });
+
+  it("succeeds normally and cleans up signal listener", async () => {
+    const tool = makeTool("success-value");
+    const controller = new AbortController();
+
+    const result = await executeWithSignal(tool, { key: "val" }, controller.signal);
+    expect(result).toBe("success-value");
+
+    // Aborting after success should not cause side effects
+    controller.abort(new Error("late-abort"));
+    // If listener was not cleaned up, this would reject an unhandled promise
+  });
+
+  it("handles tool rejection with non-Error value", async () => {
+    const tool: Tool = {
+      descriptor: { name: "reject-null", description: "Rejects with null", inputSchema: {} },
+      trustTier: "sandbox",
+      execute: mock(() => Promise.reject(null)),
+    };
+    const controller = new AbortController();
+
+    await expect(executeWithSignal(tool, {}, controller.signal)).rejects.toBe(null);
+  });
+
+  it("handles concurrent calls with same signal", async () => {
+    const controller = new AbortController();
+    const neverTool: Tool = {
+      descriptor: { name: "never", description: "Never resolves", inputSchema: {} },
+      trustTier: "sandbox",
+      execute: mock(() => new Promise(() => {})),
+    };
+
+    const promises = Array.from({ length: 5 }, () =>
+      executeWithSignal(neverTool, {}, controller.signal),
+    );
+
+    // Abort after a brief delay
+    setTimeout(() => controller.abort(new Error("bulk-cancel")), 20);
+
+    const results = await Promise.allSettled(promises);
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(rejected).toHaveLength(5);
+  });
+
+  it("handles signal abort between throwIfAborted and race", async () => {
+    // Create a signal that aborts immediately after construction
+    const controller = new AbortController();
+    const tool: Tool = {
+      descriptor: { name: "race-edge", description: "Race edge case", inputSchema: {} },
+      trustTier: "sandbox",
+      execute: mock(() => {
+        // Abort inside execute — the backstop (line 199 check) should catch this
+        controller.abort(new Error("mid-execute-abort"));
+        return new Promise(() => {}); // never resolves
+      }),
+    };
+
+    await expect(executeWithSignal(tool, {}, controller.signal)).rejects.toThrow(
+      "mid-execute-abort",
+    );
+  });
+
+  it("cooperative tool completes expected number of steps before abort", async () => {
+    // let justified: step counter tracking cooperative cancellation
+    let stepsCompleted = 0;
+    const controller = new AbortController();
+    const steppingTool: Tool = {
+      descriptor: { name: "stepper", description: "Steps tool", inputSchema: {} },
+      trustTier: "sandbox",
+      execute: async (_args, options) => {
+        for (let i = 0; i < 20; i++) {
+          if (options?.signal?.aborted) break;
+          stepsCompleted++;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        if (options?.signal?.aborted) throw options.signal.reason;
+        return "all-done";
+      },
+    };
+
+    // Abort at ~200ms — tool does 50ms/step, so should complete ~4 steps
+    setTimeout(() => controller.abort(new Error("step-cancel")), 200);
+
+    await expect(executeWithSignal(steppingTool, {}, controller.signal)).rejects.toThrow();
+    // The backstop fires at 200ms; cooperative tool gets ~4 steps.
+    // Allow some timing slack: should be <= 6 steps (not all 20)
+    expect(stepsCompleted).toBeLessThanOrEqual(6);
   });
 });

@@ -426,6 +426,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                       {
                         modelCall: (request: ModelRequest) =>
                           activeModelChain(getTurnContext(), prepareRequest(request)),
+                        // Run-level signal is the authority at this layer. Middleware downstream
+                        // (e.g., sandbox) can compose additional signals via AbortSignal.any().
+                        // If request already carries a signal, the run signal takes precedence —
+                        // this is intentional: the run signal represents the caller's cancellation
+                        // intent, which must not be overridden by internal signal sources.
                         toolCall: (request: ToolRequest) => {
                           const ctx = getTurnContext();
                           const effectiveRequest =

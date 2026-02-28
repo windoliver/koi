@@ -25,6 +25,10 @@ const FALLBACK_TIMEOUT_MS = 30_000;
 
 const TRUNCATION_MARKER = "...[truncated]";
 
+/** Module-scoped encoder/decoder — avoid allocation per wrapToolCall invocation. */
+const encoder = new TextEncoder();
+const decoder = new TextDecoder("utf-8", { fatal: false });
+
 export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMiddleware {
   const {
     profileFor,
@@ -78,17 +82,17 @@ export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMid
       const totalTimeoutMs = effectiveTimeoutMs + timeoutGraceMs;
 
       // 4. Execute with signal-based timeout + backstop race
-      const controller = new AbortController();
-      // let justified: cleared in finally block
-      let timeoutId: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
-        controller.abort(new Error(`middleware-sandbox-timeout:${request.toolId}`));
-      }, totalTimeoutMs);
+      const timeoutSignal = AbortSignal.timeout(totalTimeoutMs);
 
-      // Compose sandbox signal with upstream request.signal (if present)
+      // Compose sandbox timeout signal with upstream request.signal (if present)
       const effectiveSignal =
         request.signal !== undefined
-          ? AbortSignal.any([request.signal, controller.signal])
-          : controller.signal;
+          ? AbortSignal.any([request.signal, timeoutSignal])
+          : timeoutSignal;
+
+      // Fast-path: throw immediately if composed signal is already aborted
+      // (matches the three-layer defense pattern in executeWithSignal)
+      effectiveSignal.throwIfAborted();
 
       // Thread composed signal to downstream middleware/tool
       const signalledRequest: ToolRequest = { ...request, signal: effectiveSignal };
@@ -100,12 +104,12 @@ export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMid
 
       try {
         const backstopPromise = new Promise<never>((_resolve, reject) => {
-          if (controller.signal.aborted) {
-            reject(controller.signal.reason);
+          if (timeoutSignal.aborted) {
+            reject(timeoutSignal.reason);
             return;
           }
-          onAbort = () => reject(controller.signal.reason);
-          controller.signal.addEventListener("abort", onAbort, { once: true });
+          onAbort = () => reject(timeoutSignal.reason);
+          timeoutSignal.addEventListener("abort", onAbort, { once: true });
         });
 
         const response = await Promise.race([next(signalledRequest), backstopPromise]);
@@ -113,7 +117,6 @@ export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMid
         const durationMs = Math.round(performance.now() - start);
 
         // 5. Output truncation (byte-accurate)
-        const encoder = new TextEncoder();
         const encoded = encoder.encode(JSON.stringify(response.output));
         const bytes = encoded.byteLength;
         const truncated = bytes > outputLimitBytes;
@@ -121,7 +124,6 @@ export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMid
         onSandboxMetrics?.(request.toolId, tier, durationMs, bytes, truncated);
 
         if (truncated) {
-          const decoder = new TextDecoder("utf-8", { fatal: false });
           const truncatedJson =
             decoder.decode(encoded.slice(0, outputLimitBytes)) + TRUNCATION_MARKER;
           return {
@@ -138,7 +140,13 @@ export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMid
       } catch (error: unknown) {
         const durationMs = Math.round(performance.now() - start);
 
-        if (controller.signal.aborted) {
+        // Discriminate our timeout from other errors. We check timeoutSignal
+        // specifically (not effectiveSignal) to distinguish sandbox timeout from
+        // upstream cancellation. There is a negligible TOCTOU window where the
+        // signal could abort between the throw and this check, but the worst case
+        // is mis-classifying an upstream abort as a timeout — acceptable for
+        // observability purposes.
+        if (timeoutSignal.aborted) {
           const message = `Tool "${request.toolId}" exceeded sandbox timeout (${String(totalTimeoutMs)}ms)`;
           onSandboxError?.(request.toolId, tier, "TIMEOUT", message);
           throw KoiRuntimeError.from("TIMEOUT", message, {
@@ -155,12 +163,8 @@ export function createSandboxMiddleware(config: SandboxMiddlewareConfig): KoiMid
         // Not our timeout — re-throw unchanged
         throw error;
       } finally {
-        if (timeoutId !== undefined) {
-          clearTimeout(timeoutId);
-          timeoutId = undefined;
-        }
         if (onAbort !== undefined) {
-          controller.signal.removeEventListener("abort", onAbort);
+          timeoutSignal.removeEventListener("abort", onAbort);
         }
       }
     },

@@ -417,6 +417,7 @@
         "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
         "@koi/filesystem": "workspace:*",
+        "@koi/middleware-sandbox": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/scheduler": "workspace:*",
         "@koi/scheduler-provider": "workspace:*",

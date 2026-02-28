@@ -22,6 +22,7 @@
     "@koi/model-router": "workspace:*",
     "@koi/scheduler": "workspace:*",
     "@koi/scheduler-provider": "workspace:*",
+    "@koi/middleware-sandbox": "workspace:*",
     "@koi/scope": "workspace:*",
     "@koi/webhook-provider": "workspace:*"
   },
