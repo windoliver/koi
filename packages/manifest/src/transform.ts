@@ -12,6 +12,7 @@ import type {
   ModelConfig,
   OutboundWebhookConfig,
   PermissionConfig,
+  SkillConfig,
   ToolConfig,
   WebhookEventKind,
 } from "@koi/core";
@@ -211,6 +212,15 @@ export function transformToLoadedManifest(raw: RawManifest): LoadedManifest {
     (c): ChannelConfig => normalizeChannelConfig(c),
   );
 
+  // Transform skills
+  const skills: readonly SkillConfig[] | undefined = raw.skills?.map(
+    (s): SkillConfig => ({
+      name: s.name,
+      path: s.path,
+      ...(s.options !== undefined ? { options: toJsonObject(s.options) } : {}),
+    }),
+  );
+
   // Build base manifest with required fields
   const base = { name: raw.name, version: raw.version, model };
 
@@ -221,6 +231,7 @@ export function transformToLoadedManifest(raw: RawManifest): LoadedManifest {
     ...(tools !== undefined ? { tools } : {}),
     ...(channels !== undefined ? { channels } : {}),
     ...(middleware !== undefined ? { middleware } : {}),
+    ...(skills !== undefined ? { skills } : {}),
     ...(raw.permissions !== undefined
       ? { permissions: normalizePermissions(raw.permissions) }
       : {}),

@@ -91,6 +91,44 @@ describe("loadManifestFromString", () => {
       expect(result.value.manifest.metadata).toEqual({});
     }
   });
+
+  test("loads skills from YAML", () => {
+    const yaml = [
+      'name: "test"',
+      'version: "1.0.0"',
+      'model: "x"',
+      "skills:",
+      '  - name: "code-review"',
+      '    path: "./skills/code-review"',
+      '  - name: "deploy"',
+      '    path: "./skills/deploy"',
+      "    options:",
+      "      env: production",
+    ].join("\n");
+    const result = loadManifestFromString(yaml);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.manifest.skills).toHaveLength(2);
+      expect(result.value.manifest.skills?.[0]).toEqual({
+        name: "code-review",
+        path: "./skills/code-review",
+      });
+      expect(result.value.manifest.skills?.[1]).toEqual({
+        name: "deploy",
+        path: "./skills/deploy",
+        options: { env: "production" },
+      });
+    }
+  });
+
+  test("skills field does not trigger unknown field warning", () => {
+    const yaml = 'name: "test"\nversion: "1.0.0"\nmodel: "x"\nskills: []';
+    const result = loadManifestFromString(yaml);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.warnings).toHaveLength(0);
+    }
+  });
 });
 
 describe("loadManifest (file-based)", () => {

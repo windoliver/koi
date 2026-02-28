@@ -72,6 +72,13 @@ interface RawSoulUserConfig {
   readonly maxTokens?: number | undefined;
 }
 
+/** Skill config item in the manifest. */
+interface RawSkillConfig {
+  readonly name: string;
+  readonly path: string;
+  readonly options?: Readonly<Record<string, unknown>> | undefined;
+}
+
 /** The raw parsed YAML structure before transformation. */
 export interface RawManifest {
   readonly name: string;
@@ -84,6 +91,7 @@ export interface RawManifest {
     | undefined;
   readonly channels?: readonly Record<string, unknown>[] | undefined;
   readonly middleware?: readonly Record<string, unknown>[] | undefined;
+  readonly skills?: readonly RawSkillConfig[] | undefined;
   readonly permissions?: RawPermissions | undefined;
   readonly metadata?: Readonly<Record<string, unknown>> | undefined;
   readonly engine?: string | NamedConfig | undefined;
@@ -116,6 +124,15 @@ const namedConfigSchema = z.union([
   }),
   jsonObjectSchema,
 ]);
+
+// ── Skill config schema ──
+
+/** Skill config item: name + path + optional options. */
+const skillConfigSchema = z.object({
+  name: z.string(),
+  path: z.string(),
+  options: jsonObjectSchema.optional(),
+});
 
 // ── Channel identity schema ──
 
@@ -316,6 +333,7 @@ export const rawManifestSchema: z.ZodType<RawManifest> = z
     tools: toolsSchema.optional(),
     channels: z.array(rawChannelSchema).optional(),
     middleware: z.array(namedConfigSchema).optional(),
+    skills: z.array(skillConfigSchema).optional(),
     permissions: permissionsSchema.optional(),
     metadata: jsonObjectSchema.optional(),
     // Extension fields — typed schemas instead of z.unknown()
