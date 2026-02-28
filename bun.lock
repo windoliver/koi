@@ -451,6 +451,18 @@
         "@koi/webhook-provider": "workspace:*",
       },
     },
+    "packages/engine-acp": {
+      "name": "@koi/engine-acp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/engine-claude": {
       "name": "@koi/engine-claude",
       "version": "0.0.0",
@@ -1108,19 +1120,6 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/ralph": {
-      "name": "@koi/ralph",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
     "packages/redaction": {
       "name": "@koi/redaction",
       "version": "0.0.0",
@@ -1540,6 +1539,19 @@
         "zod": "4.3.6",
       },
       "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/verified-loop": {
+      "name": "@koi/verified-loop",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -2056,6 +2068,8 @@
 
     "@koi/engine": ["@koi/engine@workspace:packages/engine"],
 
+    "@koi/engine-acp": ["@koi/engine-acp@workspace:packages/engine-acp"],
+
     "@koi/engine-claude": ["@koi/engine-claude@workspace:packages/engine-claude"],
 
     "@koi/engine-external": ["@koi/engine-external@workspace:packages/engine-external"],
@@ -2166,8 +2180,6 @@
 
     "@koi/parallel-minions": ["@koi/parallel-minions@workspace:packages/parallel-minions"],
 
-    "@koi/ralph": ["@koi/ralph@workspace:packages/ralph"],
-
     "@koi/redaction": ["@koi/redaction@workspace:packages/redaction"],
 
     "@koi/registry-event-sourced": ["@koi/registry-event-sourced@workspace:packages/registry-event-sourced"],
@@ -2245,6 +2257,8 @@
     "@koi/tracing": ["@koi/tracing@workspace:packages/tracing"],
 
     "@koi/validation": ["@koi/validation@workspace:packages/validation"],
+
+    "@koi/verified-loop": ["@koi/verified-loop@workspace:packages/verified-loop"],
 
     "@koi/webhook-delivery": ["@koi/webhook-delivery@workspace:packages/webhook-delivery"],
 

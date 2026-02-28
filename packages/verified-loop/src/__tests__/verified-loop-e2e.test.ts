@@ -1,7 +1,7 @@
 /**
- * End-to-end test for @koi/ralph with real LLM calls.
+ * End-to-end test for @koi/verified-loop with real LLM calls.
  *
- * Validates the full Ralph Loop through createKoi (L1) + createPiAdapter:
+ * Validates the full VerifiedLoop through createKoi (L1) + createPiAdapter:
  *   - PRD items are iterated with real LLM generations
  *   - External verification gates objectively verify output
  *   - Learnings accumulate across iterations
@@ -12,7 +12,7 @@
  * Gated on ANTHROPIC_API_KEY + E2E_TESTS=1 to avoid accidental API spend.
  *
  * Run:
- *   E2E_TESTS=1 bun test src/__tests__/ralph-e2e.test.ts
+ *   E2E_TESTS=1 bun test src/__tests__/verified-loop-e2e.test.ts
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -24,8 +24,8 @@ import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import {
   createFileGate,
-  createRalphLoop,
   createTestGate,
+  createVerifiedLoop,
   readLearnings,
   readPRD,
 } from "../index.js";
@@ -44,7 +44,7 @@ const E2E_MODEL = "anthropic:claude-haiku-4-5-20251001";
 const TIMEOUT_MS = 180_000;
 
 const E2E_MANIFEST: AgentManifest = {
-  name: "ralph-e2e-agent",
+  name: "verified-loop-e2e-agent",
   version: "1.0.0",
   model: { name: "claude-haiku" },
 };
@@ -58,7 +58,7 @@ let prdPath: string;
 let learningsPath: string;
 
 beforeEach(async () => {
-  tmpDir = await mkdtemp(join(tmpdir(), "ralph-e2e-"));
+  tmpDir = await mkdtemp(join(tmpdir(), "verified-loop-e2e-"));
   prdPath = join(tmpDir, "prd.json");
   learningsPath = join(tmpDir, "learnings.json");
 });
@@ -219,7 +219,7 @@ function createFileWriterRunner(outputDir: string): RunIterationFn {
 // Tests
 // ---------------------------------------------------------------------------
 
-describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAdapter", () => {
+describeE2E("e2e: VerifiedLoop with real Anthropic API via createKoi + createPiAdapter", () => {
   test(
     "completes a single PRD item with LLM + file gate",
     async () => {
@@ -237,7 +237,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
       };
       await Bun.write(prdPath, JSON.stringify(prd, null, 2));
 
-      const loop = createRalphLoop({
+      const loop = createVerifiedLoop({
         runIteration: createFileWriterRunner(outputDir),
         prdPath,
         learningsPath,
@@ -253,7 +253,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
         verify: createFileGate(join(outputDir, "greeting.txt"), /hello/i),
         onIteration: (record) => {
           console.log(
-            `  [ralph-e2e] iteration=${record.iteration} item=${record.itemId} ` +
+            `  [verified-loop-e2e] iteration=${record.iteration} item=${record.itemId} ` +
               `passed=${String(record.gateResult.passed)} ` +
               `duration=${Math.round(record.durationMs)}ms` +
               (record.error ? ` error=${record.error}` : ""),
@@ -264,7 +264,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
       const result = await loop.run();
 
       console.log(
-        `  [ralph-e2e] total: ${result.iterations} iterations, ` +
+        `  [verified-loop-e2e] total: ${result.iterations} iterations, ` +
           `${result.completed.length} completed, ` +
           `${result.remaining.length} remaining, ` +
           `${Math.round(result.durationMs)}ms`,
@@ -325,7 +325,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
       };
       await Bun.write(prdPath, JSON.stringify(prd, null, 2));
 
-      const loop = createRalphLoop({
+      const loop = createVerifiedLoop({
         runIteration: createFileWriterRunner(outputDir),
         prdPath,
         learningsPath,
@@ -369,7 +369,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
         },
         onIteration: (record) => {
           console.log(
-            `  [ralph-e2e-multi] iteration=${record.iteration} item=${record.itemId} ` +
+            `  [verified-loop-e2e-multi] iteration=${record.iteration} item=${record.itemId} ` +
               `passed=${String(record.gateResult.passed)} ` +
               `duration=${Math.round(record.durationMs)}ms`,
           );
@@ -379,7 +379,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
       const result = await loop.run();
 
       console.log(
-        `  [ralph-e2e-multi] total: ${result.iterations} iterations, ` +
+        `  [verified-loop-e2e-multi] total: ${result.iterations} iterations, ` +
           `completed=[${result.completed.join(",")}], ` +
           `remaining=[${result.remaining.join(",")}]`,
       );
@@ -419,7 +419,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
         readonly passed: boolean;
       }> = [];
 
-      const loop = createRalphLoop({
+      const loop = createVerifiedLoop({
         runIteration: createFileWriterRunner(outputDir),
         prdPath,
         learningsPath,
@@ -461,7 +461,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
       };
       await Bun.write(prdPath, JSON.stringify(prd, null, 2));
 
-      const loop = createRalphLoop({
+      const loop = createVerifiedLoop({
         runIteration: createFileWriterRunner(outputDir),
         prdPath,
         learningsPath,
@@ -507,7 +507,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
       let sessionEnds = 0;
 
       const observerMw: KoiMiddleware = {
-        name: "ralph-e2e-observer",
+        name: "verified-loop-e2e-observer",
         describeCapabilities: () => undefined,
         async onSessionStart() {
           sessionStarts++;
@@ -517,7 +517,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
         },
       };
 
-      const loop = createRalphLoop({
+      const loop = createVerifiedLoop({
         runIteration: createKoiRunner([observerMw]),
         prdPath,
         learningsPath,
@@ -559,7 +559,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
       };
       await Bun.write(prdPath, JSON.stringify(prd, null, 2));
 
-      const loop = createRalphLoop({
+      const loop = createVerifiedLoop({
         runIteration: createFileWriterRunner(outputDir),
         prdPath,
         learningsPath,
@@ -571,7 +571,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
         verify: createTestGate(["sh", testScript], { cwd: tmpDir }),
         onIteration: (record) => {
           console.log(
-            `  [ralph-e2e-gate] iteration=${record.iteration} ` +
+            `  [verified-loop-e2e-gate] iteration=${record.iteration} ` +
               `passed=${String(record.gateResult.passed)} ` +
               `details=${record.gateResult.details?.slice(0, 80) ?? "none"}`,
           );
@@ -603,7 +603,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
       // Use let — justified: mutable counter for gate calls
       let gateCalls = 0;
 
-      const loop = createRalphLoop({
+      const loop = createVerifiedLoop({
         runIteration: createFileWriterRunner(outputDir),
         prdPath,
         learningsPath,
@@ -625,7 +625,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
         },
         onIteration: (record) => {
           console.log(
-            `  [ralph-e2e-gate-timeout] iteration=${record.iteration} ` +
+            `  [verified-loop-e2e-gate-timeout] iteration=${record.iteration} ` +
               `item=${record.itemId} passed=${String(record.gateResult.passed)} ` +
               `details=${record.gateResult.details?.slice(0, 60) ?? "none"}`,
           );
@@ -635,7 +635,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
       const result = await loop.run();
 
       console.log(
-        `  [ralph-e2e-gate-timeout] total: ${result.iterations} iters, ` +
+        `  [verified-loop-e2e-gate-timeout] total: ${result.iterations} iters, ` +
           `completed=[${result.completed.join(",")}], ` +
           `skipped=[${result.skipped.join(",")}]`,
       );
@@ -683,7 +683,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
       };
       await Bun.write(prdPath, JSON.stringify(prd, null, 2));
 
-      const loop = createRalphLoop({
+      const loop = createVerifiedLoop({
         runIteration: createFileWriterRunner(outputDir),
         prdPath,
         learningsPath,
@@ -711,7 +711,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
         },
         onIteration: (record) => {
           console.log(
-            `  [ralph-e2e-skip] iteration=${record.iteration} item=${record.itemId} ` +
+            `  [verified-loop-e2e-skip] iteration=${record.iteration} item=${record.itemId} ` +
               `passed=${String(record.gateResult.passed)}`,
           );
         },
@@ -720,7 +720,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
       const result = await loop.run();
 
       console.log(
-        `  [ralph-e2e-skip] total: ${result.iterations} iters, ` +
+        `  [verified-loop-e2e-skip] total: ${result.iterations} iters, ` +
           `completed=[${result.completed.join(",")}], ` +
           `skipped=[${result.skipped.join(",")}], ` +
           `remaining=[${result.remaining.join(",")}]`,
@@ -760,7 +760,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
       // Capture the full GateContext from each gate invocation
       const capturedContexts: GateContext[] = [];
 
-      const loop = createRalphLoop({
+      const loop = createVerifiedLoop({
         runIteration: createFileWriterRunner(outputDir),
         prdPath,
         learningsPath,
@@ -787,7 +787,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
         },
         onIteration: (record) => {
           console.log(
-            `  [ralph-e2e-ctx] iteration=${record.iteration} item=${record.itemId} ` +
+            `  [verified-loop-e2e-ctx] iteration=${record.iteration} item=${record.itemId} ` +
               `passed=${String(record.gateResult.passed)}`,
           );
         },
@@ -856,7 +856,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
 
       const itemOrder: string[] = [];
 
-      const loop = createRalphLoop({
+      const loop = createVerifiedLoop({
         runIteration: createFileWriterRunner(outputDir),
         prdPath,
         learningsPath,
@@ -882,7 +882,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
         },
         onIteration: (record) => {
           console.log(
-            `  [ralph-e2e-priority] iteration=${record.iteration} item=${record.itemId} ` +
+            `  [verified-loop-e2e-priority] iteration=${record.iteration} item=${record.itemId} ` +
               `passed=${String(record.gateResult.passed)}`,
           );
         },
@@ -891,7 +891,7 @@ describeE2E("e2e: Ralph Loop with real Anthropic API via createKoi + createPiAda
       const result = await loop.run();
 
       console.log(
-        `  [ralph-e2e-priority] item order: [${itemOrder.join(", ")}], ` +
+        `  [verified-loop-e2e-priority] item order: [${itemOrder.join(", ")}], ` +
           `completed=[${result.completed.join(",")}]`,
       );
 

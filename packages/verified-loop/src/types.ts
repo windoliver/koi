@@ -1,7 +1,7 @@
 /**
- * @koi/ralph — Type definitions for the Ralph Loop orchestrator.
+ * @koi/verified-loop — Type definitions for the VerifiedLoop orchestrator.
  *
- * Ralph shifts control from LLM self-assessment to external objective
+ * VerifiedLoop shifts control from LLM self-assessment to external objective
  * verification (tests pass, files match, custom checks). Each iteration
  * gets a clean context window; the filesystem is long-term memory.
  */
@@ -22,7 +22,7 @@ export type VerificationFn = (ctx: GateContext) => Promise<VerificationResult>;
 // Configuration
 // ---------------------------------------------------------------------------
 
-export interface RalphConfig {
+export interface VerifiedLoopConfig {
   /** Injected iteration runner (consumer wires createKoi + adapter). */
   readonly runIteration: RunIterationFn;
   /** Path to PRD JSON file. */
@@ -137,7 +137,7 @@ export interface IterationRecord {
   readonly error?: string | undefined;
 }
 
-export interface RalphResult {
+export interface VerifiedLoopResult {
   readonly iterations: number;
   readonly completed: readonly string[];
   readonly remaining: readonly string[];
@@ -152,8 +152,8 @@ export interface RalphResult {
 // Public API
 // ---------------------------------------------------------------------------
 
-export interface RalphLoop {
-  readonly run: () => Promise<RalphResult>;
+export interface VerifiedLoop {
+  readonly run: () => Promise<VerifiedLoopResult>;
   readonly stop: () => void;
 }
 

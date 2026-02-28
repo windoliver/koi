@@ -1,5 +1,5 @@
 {
-  "name": "@koi/ralph",
+  "name": "@koi/engine-acp",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,17 +11,17 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/errors": "workspace:*"
+    "@koi/resolve": "workspace:*",
+    "zod": "4.3.6"
   },
   "devDependencies": {
-    "@koi/engine": "workspace:*",
-    "@koi/engine-pi": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
-    "test": "bun test"
+    "test": "bun test",
+    "test:api": "bun test src/__tests__/api-surface.test.ts"
   }
 }

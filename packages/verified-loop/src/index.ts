@@ -1,5 +1,5 @@
 /**
- * @koi/ralph — Ralph Loop orchestrator.
+ * @koi/verified-loop — VerifiedLoop orchestrator.
  *
  * Shifts control from LLM self-assessment to external objective
  * verification. Each iteration gets a clean context window;
@@ -9,7 +9,6 @@
 export { createCompositeGate, createFileGate, createTestGate } from "./gates.js";
 export { appendLearning, readLearnings } from "./learnings.js";
 export { markDone, markSkipped, nextItem, readPRD } from "./prd-store.js";
-export { createRalphLoop } from "./ralph-loop.js";
 export type {
   EngineEvent,
   EngineInput,
@@ -21,11 +20,12 @@ export type {
   LearningsFile,
   PRDFile,
   PRDItem,
-  RalphConfig,
-  RalphLoop,
-  RalphResult,
   Result,
   RunIterationFn,
   VerificationFn,
   VerificationResult,
+  VerifiedLoop,
+  VerifiedLoopConfig,
+  VerifiedLoopResult,
 } from "./types.js";
+export { createVerifiedLoop } from "./verified-loop.js";
