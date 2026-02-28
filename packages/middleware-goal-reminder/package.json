@@ -1,5 +1,5 @@
 {
-  "name": "@koi/file-resolution",
+  "name": "@koi/middleware-goal-reminder",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,12 +9,20 @@
       "import": "./dist/index.js"
     }
   },
+  "dependencies": {
+    "@koi/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@koi/engine": "workspace:*",
+    "@koi/engine-loop": "workspace:*",
+    "@koi/model-router": "workspace:*",
+    "@koi/test-utils": "workspace:*"
+  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "bun test",
     "test:api": "bun test src/__tests__/api-surface.test.ts"
-  },
-  "dependencies": {}
+  }
 }
