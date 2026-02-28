@@ -361,8 +361,19 @@ export type {
   FileWriteResult,
 } from "./filesystem-backend.js";
 // forge types
-export type { BrickKind, BrickLifecycle, ForgeScope } from "./forge-types.js";
-export { ALL_BRICK_KINDS, MIN_TRUST_BY_KIND, VALID_LIFECYCLE_TRANSITIONS } from "./forge-types.js";
+export type {
+  BrickKind,
+  BrickLifecycle,
+  DemotionCriteria,
+  ForgeScope,
+  TrustTransitionCaller,
+} from "./forge-types.js";
+export {
+  ALL_BRICK_KINDS,
+  DEFAULT_DEMOTION_CRITERIA,
+  MIN_TRUST_BY_KIND,
+  VALID_LIFECYCLE_TRANSITIONS,
+} from "./forge-types.js";
 // governance — types
 export type {
   GovernanceCheck,

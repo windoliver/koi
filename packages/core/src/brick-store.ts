@@ -95,6 +95,10 @@ export interface BrickArtifactBase {
   readonly lastVerifiedAt?: number;
   /** Runtime fitness metrics for discovery ranking. Undefined = never used. */
   readonly fitness?: BrickFitnessMetrics | undefined;
+  /** Epoch ms of last trust tier promotion. Undefined = never promoted. */
+  readonly lastPromotedAt?: number | undefined;
+  /** Epoch ms of last trust tier demotion. Undefined = never demoted. */
+  readonly lastDemotedAt?: number | undefined;
 }
 
 export interface ToolArtifact extends BrickArtifactBase {
@@ -159,6 +163,10 @@ export interface BrickUpdate {
   readonly lastVerifiedAt?: number;
   /** Updated fitness metrics (replaces entire fitness object). */
   readonly fitness?: BrickFitnessMetrics | undefined;
+  /** Epoch ms of last trust tier promotion. */
+  readonly lastPromotedAt?: number | undefined;
+  /** Epoch ms of last trust tier demotion. */
+  readonly lastDemotedAt?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +209,7 @@ export interface ForgeStore {
 // ---------------------------------------------------------------------------
 
 /** Describes what changed in the store. */
-export type StoreChangeKind = "saved" | "updated" | "removed" | "promoted";
+export type StoreChangeKind = "saved" | "updated" | "removed" | "promoted" | "demoted";
 
 /** Notification payload for store mutations. */
 export interface StoreChangeEvent {
@@ -209,6 +217,10 @@ export interface StoreChangeEvent {
   readonly brickId: BrickId;
   /** The scope after the change (if applicable). */
   readonly scope?: ForgeScope;
+  /** Trust tier change details (for "promoted" and "demoted" kinds). */
+  readonly trustChange?: { readonly from: TrustTier; readonly to: TrustTier };
+  /** Human-readable reason for the change (e.g., demotion cause). */
+  readonly reason?: string;
 }
 
 /**
