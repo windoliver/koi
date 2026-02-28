@@ -122,7 +122,7 @@ declare function computeBackoff(attempt: number, config: RetryConfig, retryAfter
  * @param config - Retry configuration
  * @param clock - Injectable clock for deterministic delay testing
  */
-declare function withRetry<T>(fn: () => Promise<T>, config?: RetryConfig, clock?: () => number): Promise<T>;
+declare function withRetry<T>(fn: () => Promise<T>, config?: RetryConfig, _clock?: () => number): Promise<T>;
 declare function sleep(ms: number): Promise<void>;
 
 /**
