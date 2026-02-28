@@ -8,6 +8,7 @@
  * - Uses exit codes from @koi/shutdown (78 for config, 1 for runtime)
  */
 
+import { createContextExtension } from "@koi/context";
 import { createHealthServer } from "@koi/deploy";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
@@ -53,11 +54,15 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   // 5. ASSEMBLE: Use resolved engine or fall back to loop adapter
   const adapter = resolved.value.engine ?? createLoopAdapter({ modelCall: resolved.value.model });
 
-  // 6. WIRE: Create the Koi runtime with resolved middleware
+  // 6. WIRE: Create the Koi runtime with resolved middleware + context extension
+  const contextExt = createContextExtension(manifest.context);
+  const extensions = contextExt !== undefined ? [contextExt] : [];
+
   const runtime = await createKoi({
     manifest,
     adapter,
     middleware: resolved.value.middleware,
+    extensions,
   });
 
   // 6. Start health server
