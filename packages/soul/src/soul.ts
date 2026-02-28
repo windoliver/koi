@@ -195,9 +195,15 @@ export async function createSoulMiddleware(options: CreateSoulOptions): Promise<
     describeCapabilities: (_ctx: TurnContext): CapabilityFragment => ({
       label: "soul",
       description:
-        selfModify && state.metaInstructionText.length > 0
-          ? "Persona active — self-modification enabled"
-          : "Persona active",
+        `Persona system prompt injected` +
+        (state.personaMap.size > 0
+          ? `, ${String(state.personaMap.size)} per-channel persona(s)`
+          : "") +
+        (refreshUser ? ", user context refreshed per call" : "") +
+        (selfModify && state.metaInstructionText.length > 0 ? ", self-modification enabled" : "") +
+        (state.watchedPaths.size > 0
+          ? `, auto-reload on fs_write to ${String(state.watchedPaths.size)} tracked file(s)`
+          : ""),
     }),
 
     reload,

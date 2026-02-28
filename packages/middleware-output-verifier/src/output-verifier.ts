@@ -420,11 +420,18 @@ export function createOutputVerifierMiddleware(config: VerifierConfig): Verifier
 
   function buildCapabilityFragment(): CapabilityFragment {
     const { totalChecks, vetoed } = stats;
-    const threshold = config.judge?.vetoThreshold ?? DEFAULT_VETO_THRESHOLD;
-    const desc = hasJudge
-      ? `score ≥${threshold} required. ${vetoed}/${totalChecks} vetoed this session.`
-      : `deterministic checks active. ${vetoed}/${totalChecks} blocked this session.`;
-    return { label: "output-gate", description: `Output gate: ${desc}` };
+    const maxRevisions = config.judge?.maxRevisions ?? DEFAULT_MAX_REVISIONS;
+    const stages: string[] = [];
+    if (hasDeterministic) stages.push("deterministic checks");
+    if (hasJudge) {
+      const threshold = config.judge?.vetoThreshold ?? DEFAULT_VETO_THRESHOLD;
+      stages.push(`judge (score ≥${String(threshold)})`);
+    }
+    const revisionNote = maxRevisions > 0 ? `, up to ${String(maxRevisions)} revision(s)` : "";
+    return {
+      label: "output-gate",
+      description: `Output gate: ${stages.join(" + ")}${revisionNote}. ${String(vetoed)}/${String(totalChecks)} vetoed this session.`,
+    };
   }
 
   // ---------------------------------------------------------------------------

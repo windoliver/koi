@@ -29,7 +29,9 @@ export function createTurnAckMiddleware(config?: TurnAckConfig): KoiMiddleware {
 
   const capabilityFragment: CapabilityFragment = {
     label: "turn-ack",
-    description: "Turn acknowledgment active",
+    description:
+      `Turn status: processing after ${String(debounceMs)}ms debounce, idle on completion` +
+      (toolStatus ? ", per-tool status updates" : ""),
   };
 
   return {

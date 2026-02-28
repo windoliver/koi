@@ -244,10 +244,26 @@ export function createAgentMonitorMiddleware(config: AgentMonitorConfig): KoiMid
 
   return {
     name: "agent-monitor",
-    describeCapabilities: () => ({
-      label: "monitor",
-      description: "Agent monitoring and metrics collection active",
-    }),
+    describeCapabilities: () => {
+      const detectorNames = [
+        "tool rate",
+        "consecutive repeat",
+        "destructive rate",
+        "delegation depth",
+        "tool diversity",
+        "ping-pong",
+        "denied calls",
+        "error spike",
+        "latency anomaly",
+        "token spike",
+        "session duration",
+        "goal drift",
+      ] as const;
+      return {
+        label: "monitor",
+        description: `Adversarial behavior detection: ${String(detectorNames.length)} detectors (${detectorNames.join(", ")})`,
+      };
+    },
     priority: 350,
 
     async onSessionStart(ctx: SessionContext): Promise<void> {

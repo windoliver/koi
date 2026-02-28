@@ -101,10 +101,21 @@ export function createPlanMiddleware(config?: PlanConfig): KoiMiddleware {
   return {
     name: "plan",
     priority,
-    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => ({
-      label: "planning",
-      description: `Planning mode: ${currentPlan.length > 0 ? "enabled" : "disabled"}`,
-    }),
+    describeCapabilities: (_ctx: TurnContext): CapabilityFragment => {
+      if (currentPlan.length === 0) {
+        return {
+          label: "planning",
+          description: "Planning: write_plan tool injected, no active plan",
+        };
+      }
+      const pending = currentPlan.filter((i) => i.status === "pending").length;
+      const inProgress = currentPlan.filter((i) => i.status === "in_progress").length;
+      const completed = currentPlan.filter((i) => i.status === "completed").length;
+      return {
+        label: "planning",
+        description: `Plan active: ${String(currentPlan.length)} items (${String(pending)} pending, ${String(inProgress)} in progress, ${String(completed)} completed)`,
+      };
+    },
 
     async onBeforeTurn(_ctx: TurnContext): Promise<void> {
       writePlanCallsThisTurn = 0;

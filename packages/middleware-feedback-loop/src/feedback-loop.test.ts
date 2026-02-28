@@ -45,12 +45,12 @@ describe("createFeedbackLoopMiddleware", () => {
       expect(mw.describeCapabilities).toBeDefined();
     });
 
-    test("returns label 'feedback' and description containing 'feedback'", () => {
+    test("returns label 'feedback' and description with validation details", () => {
       const mw = createFeedbackLoopMiddleware({});
       const ctx = createMockTurnContext();
       const result = mw.describeCapabilities?.(ctx);
       expect(result?.label).toBe("feedback");
-      expect(result?.description).toContain("feedback");
+      expect(result?.description).toContain("validation");
     });
   });
 });

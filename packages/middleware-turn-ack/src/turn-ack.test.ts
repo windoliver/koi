@@ -254,7 +254,9 @@ describe("createTurnAckMiddleware", () => {
       const ctx = createMockTurnContext();
       const result = mw.describeCapabilities?.(ctx);
       expect(result?.label).toBe("turn-ack");
-      expect(result?.description).toBe("Turn acknowledgment active");
+      expect(result?.description).toBe(
+        "Turn status: processing after 100ms debounce, idle on completion, per-tool status updates",
+      );
     });
   });
 });

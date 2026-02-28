@@ -396,7 +396,7 @@ describe("createSanitizeMiddleware", () => {
       const mw = createSanitizeMiddleware(makeConfig());
       const result = mw.describeCapabilities?.(ctx);
       expect(result?.label).toBe("sanitize");
-      expect(result?.description).toContain("sanitization");
+      expect(result?.description).toContain("Sanitization");
     });
   });
 });

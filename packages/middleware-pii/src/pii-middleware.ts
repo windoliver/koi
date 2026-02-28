@@ -57,9 +57,13 @@ export function createPIIMiddleware(config: PIIConfig): KoiMiddleware {
       ? () => new Bun.CryptoHasher("sha256", hashSecret)
       : undefined;
 
+  const scopes: string[] = [];
+  if (scanInput) scopes.push("input");
+  if (scanOutput) scopes.push("output");
+  if (scanToolResults) scopes.push("tool results");
   const capabilityFragment: CapabilityFragment = {
     label: "pii",
-    description: "PII detection and redaction active",
+    description: `PII ${strategy} on ${scopes.join(", ")} (${String(detectors.length)} detectors)`,
   };
 
   return {

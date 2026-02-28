@@ -64,7 +64,9 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
     priority: 200,
     describeCapabilities: (_ctx: TurnContext): CapabilityFragment => ({
       label: "budget",
-      description: `Token budget: $${lastKnownRemaining.toFixed(4)} of $${budget.toFixed(4)} remaining`,
+      description:
+        `Token budget: $${lastKnownRemaining.toFixed(4)} of $${budget.toFixed(4)} remaining` +
+        (hardKill ? " (hard kill on exhaustion)" : " (soft warning on exhaustion)"),
     }),
 
     async wrapModelCall(
