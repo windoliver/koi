@@ -151,7 +151,8 @@ declare function resolveChannels(raw: unknown, registry: ResolveRegistry, contex
  * Resolves the engine section of a manifest.
  *
  * If no engine is declared, returns undefined (CLI defaults to loop adapter).
- * Otherwise, resolves the engine by kind via the registry.
+ * Otherwise, resolves the engine by name via the registry.
+ * Accepts both string shorthand ("external") and object form ({ name: "external", options: {...} }).
  */
 
 /**

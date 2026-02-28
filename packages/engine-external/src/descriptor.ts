@@ -56,7 +56,15 @@ export const descriptor: BrickDescriptor<EngineAdapter> = {
 
     const config: ExternalAdapterConfig = {
       command,
+      ...(Array.isArray(options.args) ? { args: options.args as readonly string[] } : {}),
+      ...(typeof options.cwd === "string" ? { cwd: options.cwd } : {}),
+      ...(options.mode === "single-shot" || options.mode === "long-lived"
+        ? { mode: options.mode }
+        : {}),
       ...(typeof options.timeoutMs === "number" ? { timeoutMs: options.timeoutMs } : {}),
+      ...(typeof options.noOutputTimeoutMs === "number"
+        ? { noOutputTimeoutMs: options.noOutputTimeoutMs }
+        : {}),
       ...(typeof options.maxOutputBytes === "number"
         ? { maxOutputBytes: options.maxOutputBytes }
         : {}),

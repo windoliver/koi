@@ -119,12 +119,14 @@ export async function resolveManifest(
     failures.push({
       section: "engine",
       name:
-        typeof manifest.engine === "object" &&
-        manifest.engine !== null &&
-        "kind" in manifest.engine &&
-        typeof manifest.engine.kind === "string"
-          ? manifest.engine.kind
-          : "engine",
+        typeof manifest.engine === "string"
+          ? manifest.engine
+          : typeof manifest.engine === "object" &&
+              manifest.engine !== null &&
+              "name" in manifest.engine &&
+              typeof manifest.engine.name === "string"
+            ? manifest.engine.name
+            : "engine",
       error: engineResult.error,
     });
   }

@@ -7,6 +7,7 @@
 
 import { dirname, resolve as pathResolve } from "node:path";
 import type { KoiError, ModelHandler, Result } from "@koi/core";
+import { descriptor as externalEngineDescriptor } from "@koi/engine-external";
 import type { LoadedManifest } from "@koi/manifest";
 import { descriptor as aceDescriptor } from "@koi/middleware-ace";
 import { descriptor as auditDescriptor } from "@koi/middleware-audit";
@@ -137,6 +138,8 @@ const ALL_DESCRIPTORS: readonly BrickDescriptor<unknown>[] = [
   turnAckDescriptor,
   // Model provider descriptors
   ...modelProviderDescriptors,
+  // Engine descriptors
+  externalEngineDescriptor,
 ];
 
 // ---------------------------------------------------------------------------
