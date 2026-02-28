@@ -17,71 +17,81 @@ function makeActivity(overrides: Partial<TeamsActivity> = {}): TeamsActivity {
 }
 
 describe("createNormalizer", () => {
-  test("returns InboundMessage for text message activity", () => {
-    const result = normalize(makeActivity());
+  test("returns InboundMessage for text message activity", async () => {
+    const result = await normalize(makeActivity());
     expect(result).not.toBeNull();
     expect(result?.content).toEqual([{ kind: "text", text: "hello teams" }]);
     expect(result?.senderId).toBe("user-1");
     expect(result?.threadId).toBe("conv-1");
   });
 
-  test("returns null for bot's own messages", () => {
-    const result = normalize(makeActivity({ from: { id: APP_ID, name: "Bot" } }));
+  test("returns null for bot's own messages", async () => {
+    const result = await normalize(makeActivity({ from: { id: APP_ID, name: "Bot" } }));
     expect(result).toBeNull();
   });
 
-  test("returns null for non-message activities", () => {
-    const result = normalize(makeActivity({ type: "conversationUpdate" }));
+  test("returns null for non-message activities", async () => {
+    const result = await normalize(makeActivity({ type: "conversationUpdate" }));
     expect(result).toBeNull();
   });
 
-  test("strips @mention tags from text", () => {
-    const result = normalize(makeActivity({ text: "<at>Bot</at> hello there" }));
+  test("strips @mention tags from text", async () => {
+    const result = await normalize(makeActivity({ text: "<at>Bot</at> hello there" }));
     expect(result?.content).toEqual([{ kind: "text", text: "hello there" }]);
   });
 
-  test("returns null when text is empty after stripping mentions", () => {
-    const result = normalize(makeActivity({ text: "<at>Bot</at>" }));
+  test("returns null when text is empty after stripping mentions", async () => {
+    const result = await normalize(makeActivity({ text: "<at>Bot</at>" }));
     expect(result).toBeNull();
   });
 
-  test("returns null for activity with no text and no attachments", () => {
-    const result = normalize(makeActivity({ text: undefined }));
+  test("returns null for activity with no text and no attachments", async () => {
+    const activity: TeamsActivity = {
+      type: "message",
+      id: "activity-1",
+      from: { id: "user-1", name: "Test User" },
+      conversation: { id: "conv-1" },
+    };
+    const result = await normalize(activity);
     expect(result).toBeNull();
   });
 
-  test("handles image attachments", () => {
-    const result = normalize(
-      makeActivity({
-        text: undefined,
-        attachments: [
-          {
-            contentType: "image/png",
-            contentUrl: "https://teams.example.com/image.png",
-            name: "screenshot.png",
-          },
-        ],
-      }),
-    );
+  test("handles image attachments", async () => {
+    const activity: TeamsActivity = {
+      type: "message",
+      id: "activity-1",
+      from: { id: "user-1", name: "Test User" },
+      conversation: { id: "conv-1" },
+      attachments: [
+        {
+          contentType: "image/png",
+          contentUrl: "https://teams.example.com/image.png",
+          name: "screenshot.png",
+        },
+      ],
+    };
+    const result = await normalize(activity);
     expect(result?.content[0]).toMatchObject({
       kind: "image",
       url: "https://teams.example.com/image.png",
     });
   });
 
-  test("handles file attachments", () => {
-    const result = normalize(
-      makeActivity({
-        text: undefined,
-        attachments: [
-          {
-            contentType: "application/pdf",
-            contentUrl: "https://teams.example.com/doc.pdf",
-            name: "doc.pdf",
-          },
-        ],
-      }),
-    );
+  test("handles file attachments", async () => {
+    const activity: TeamsActivity = {
+      type: "message",
+      id: "activity-1",
+      from: { id: "user-1", name: "Test User" },
+      conversation: { id: "conv-1" },
+      attachments: [
+        {
+          contentType: "application/pdf",
+          contentUrl: "https://teams.example.com/doc.pdf",
+          name: "doc.pdf",
+        },
+      ],
+    };
+    const result = await normalize(activity);
     expect(result?.content[0]).toMatchObject({
       kind: "file",
       url: "https://teams.example.com/doc.pdf",
@@ -89,8 +99,8 @@ describe("createNormalizer", () => {
     });
   });
 
-  test("combines text and attachments", () => {
-    const result = normalize(
+  test("combines text and attachments", async () => {
+    const result = await normalize(
       makeActivity({
         text: "check this out",
         attachments: [
@@ -106,8 +116,8 @@ describe("createNormalizer", () => {
     expect(result?.content[1]).toMatchObject({ kind: "image" });
   });
 
-  test("uses activity timestamp when available", () => {
-    const result = normalize(makeActivity({ timestamp: "2024-01-01T00:00:00Z" }));
+  test("uses activity timestamp when available", async () => {
+    const result = await normalize(makeActivity({ timestamp: "2024-01-01T00:00:00Z" }));
     expect(result?.timestamp).toBe(new Date("2024-01-01T00:00:00Z").getTime());
   });
 });

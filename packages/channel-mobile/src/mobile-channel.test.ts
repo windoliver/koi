@@ -58,7 +58,7 @@ describe("createMobileChannel", () => {
     });
 
     test("defaults to empty tools array when not configured", () => {
-      const adapter = makeAdapter({ tools: undefined });
+      const adapter = createMobileChannel({ port: nextPort() });
       expect(adapter.tools).toEqual([]);
     });
   });

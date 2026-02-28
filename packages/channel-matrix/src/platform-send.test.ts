@@ -102,7 +102,8 @@ describe("createPlatformSend", () => {
   test("silently skips when threadId is missing", async () => {
     const sender = makeSender();
     const send = createPlatformSend(sender);
-    await send(makeMessage({ threadId: undefined }));
+    const msg: OutboundMessage = { content: [{ kind: "text", text: "hello" }] };
+    await send(msg);
     expect(sender.sendText).not.toHaveBeenCalled();
     expect(sender.sendMessage).not.toHaveBeenCalled();
   });

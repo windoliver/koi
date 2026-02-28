@@ -20,32 +20,34 @@ function makeEvent(overrides: Partial<MatrixRoomEvent> = {}): MatrixRoomEvent {
 }
 
 describe("createNormalizer", () => {
-  test("returns InboundMessage for m.text message", () => {
-    const result = normalize(makeEvent());
+  test("returns InboundMessage for m.text message", async () => {
+    const result = await normalize(makeEvent());
     expect(result).not.toBeNull();
     expect(result?.content).toEqual([{ kind: "text", text: "hello" }]);
     expect(result?.senderId).toBe("@user:matrix.org");
     expect(result?.threadId).toBe("!room1:matrix.org");
   });
 
-  test("returns null for bot's own messages", () => {
-    const result = normalize(makeEvent({ sender: BOT_USER_ID }));
+  test("returns null for bot's own messages", async () => {
+    const result = await normalize(makeEvent({ sender: BOT_USER_ID }));
     expect(result).toBeNull();
   });
 
-  test("returns null for non-message events", () => {
-    const result = normalize(makeEvent({ type: "m.room.member" }));
+  test("returns null for non-message events", async () => {
+    const result = await normalize(makeEvent({ type: "m.room.member" }));
     expect(result).toBeNull();
   });
 
-  test("handles m.notice as text", () => {
-    const result = normalize(makeEvent({ content: { msgtype: "m.notice", body: "notice text" } }));
+  test("handles m.notice as text", async () => {
+    const result = await normalize(
+      makeEvent({ content: { msgtype: "m.notice", body: "notice text" } }),
+    );
     expect(result).not.toBeNull();
     expect(result?.content).toEqual([{ kind: "text", text: "notice text" }]);
   });
 
-  test("handles m.image with url", () => {
-    const result = normalize(
+  test("handles m.image with url", async () => {
+    const result = await normalize(
       makeEvent({
         content: {
           msgtype: "m.image",
@@ -61,13 +63,13 @@ describe("createNormalizer", () => {
     });
   });
 
-  test("returns null for m.image without url", () => {
-    const result = normalize(makeEvent({ content: { msgtype: "m.image", body: "no url" } }));
+  test("returns null for m.image without url", async () => {
+    const result = await normalize(makeEvent({ content: { msgtype: "m.image", body: "no url" } }));
     expect(result).toBeNull();
   });
 
-  test("handles m.file with url and mimetype", () => {
-    const result = normalize(
+  test("handles m.file with url and mimetype", async () => {
+    const result = await normalize(
       makeEvent({
         content: {
           msgtype: "m.file",
@@ -85,23 +87,23 @@ describe("createNormalizer", () => {
     });
   });
 
-  test("returns null for m.file without url", () => {
-    const result = normalize(makeEvent({ content: { msgtype: "m.file", body: "no url" } }));
+  test("returns null for m.file without url", async () => {
+    const result = await normalize(makeEvent({ content: { msgtype: "m.file", body: "no url" } }));
     expect(result).toBeNull();
   });
 
-  test("returns null for empty text body", () => {
-    const result = normalize(makeEvent({ content: { msgtype: "m.text", body: "" } }));
+  test("returns null for empty text body", async () => {
+    const result = await normalize(makeEvent({ content: { msgtype: "m.text", body: "" } }));
     expect(result).toBeNull();
   });
 
-  test("returns null for unsupported msgtype", () => {
-    const result = normalize(makeEvent({ content: { msgtype: "m.video", body: "video" } }));
+  test("returns null for unsupported msgtype", async () => {
+    const result = await normalize(makeEvent({ content: { msgtype: "m.video", body: "video" } }));
     expect(result).toBeNull();
   });
 
-  test("defaults file mimetype to application/octet-stream", () => {
-    const result = normalize(
+  test("defaults file mimetype to application/octet-stream", async () => {
+    const result = await normalize(
       makeEvent({
         content: {
           msgtype: "m.file",

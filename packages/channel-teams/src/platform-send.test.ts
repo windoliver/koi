@@ -1,13 +1,13 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { OutboundMessage } from "@koi/core";
-import type { TurnContextStore } from "./platform-send.js";
+import type { TeamsTurnContext, TurnContextStore } from "./platform-send.js";
 import { createPlatformSend } from "./platform-send.js";
 
 function makeStore(): TurnContextStore & {
   readonly sendActivity: ReturnType<typeof mock>;
 } {
-  const sendActivity = mock(async () => ({}));
-  const contexts = new Map<string, { readonly sendActivity: typeof sendActivity }>();
+  const sendActivity = mock(async (_activity: unknown) => ({}));
+  const contexts = new Map<string, TeamsTurnContext>();
   contexts.set("conv-1", { sendActivity });
 
   return {
@@ -131,7 +131,8 @@ describe("createPlatformSend", () => {
   test("silently skips when threadId is missing", async () => {
     const store = makeStore();
     const send = createPlatformSend(store);
-    await send(makeMessage({ threadId: undefined }));
+    const msg: OutboundMessage = { content: [{ kind: "text", text: "hello" }] };
+    await send(msg);
     expect(store.sendActivity).not.toHaveBeenCalled();
   });
 

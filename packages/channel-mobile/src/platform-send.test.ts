@@ -11,7 +11,7 @@ function makeMessage(overrides: Partial<OutboundMessage> = {}): OutboundMessage 
 
 describe("createPlatformSend", () => {
   test("sends JSON frame to targeted client via threadId", async () => {
-    const sendFn = mock(() => {});
+    const sendFn = mock((_data: string) => {});
     const clients = new Map([["42", { send: sendFn }]]);
     const send = createPlatformSend(() => clients);
 
@@ -24,8 +24,8 @@ describe("createPlatformSend", () => {
   });
 
   test("broadcasts to all clients when no threadId", async () => {
-    const send1 = mock(() => {});
-    const send2 = mock(() => {});
+    const send1 = mock((_data: string) => {});
+    const send2 = mock((_data: string) => {});
     const clients = new Map([
       ["a", { send: send1 }],
       ["b", { send: send2 }],
@@ -47,7 +47,7 @@ describe("createPlatformSend", () => {
   });
 
   test("strips mobile: prefix from threadId for client lookup", async () => {
-    const sendFn = mock(() => {});
+    const sendFn = mock((_data: string) => {});
     const clients = new Map([["7", { send: sendFn }]]);
     const send = createPlatformSend(() => clients);
 
@@ -56,7 +56,7 @@ describe("createPlatformSend", () => {
   });
 
   test("chunks oversized text blocks into multiple content entries", async () => {
-    const sendFn = mock(() => {});
+    const sendFn = mock((_data: string) => {});
     const clients = new Map([["42", { send: sendFn }]]);
     const send = createPlatformSend(() => clients);
     const longText = "a".repeat(10000);
@@ -76,7 +76,7 @@ describe("createPlatformSend", () => {
   });
 
   test("uses raw threadId when no mobile: prefix", async () => {
-    const sendFn = mock(() => {});
+    const sendFn = mock((_data: string) => {});
     const clients = new Map([["raw-id", { send: sendFn }]]);
     const send = createPlatformSend(() => clients);
 

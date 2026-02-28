@@ -85,8 +85,9 @@ function testManifest(): AgentManifest {
 /** Find an available port for the WebSocket server. */
 async function findPort(): Promise<number> {
   const server = Bun.serve({ port: 0, fetch: () => new Response() });
-  const port = server.port;
+  const { port } = server;
   server.stop(true);
+  if (port === undefined) throw new Error("Failed to allocate port");
   return port;
 }
 
