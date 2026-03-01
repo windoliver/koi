@@ -28,6 +28,47 @@ interface Violation {
   readonly message: string;
 }
 
+// --- L0 runtime code allowlist ---
+
+/**
+ * Files in @koi/core (L0) permitted to have function bodies.
+ * Each entry is a relative path from packages/core/src/.
+ *
+ * All functions in these files are either branded type constructors,
+ * pure type guards, validation helpers, error factories, or
+ * pure data constructors — side-effect-free operations permitted
+ * per the architecture doc's L0 exceptions.
+ *
+ * Adding a new file here requires PR review to confirm it meets L0 criteria.
+ */
+export const L0_RUNTIME_ALLOWLIST: ReadonlySet<string> = new Set([
+  "ecs.ts",
+  "error-factories.ts",
+  "validation-utils.ts",
+  "capability-registry.ts",
+  "capability.ts",
+  "handoff.ts",
+  "harness.ts",
+  "engine.ts",
+  "intent-capsule.ts",
+  "lifecycle.ts",
+  "task-board.ts",
+  "scheduler.ts",
+  "version-types.ts",
+  "mailbox.ts",
+  "proposal.ts",
+  "snapshot-chain.ts",
+  "skill-registry.ts",
+  "agent-state-event.ts",
+  "bundle-types.ts",
+  "brick-snapshot.ts",
+  "delegation.ts",
+  "governance.ts",
+  "create-service-provider.ts",
+  "create-single-tool-provider.ts",
+  "zone.ts",
+]);
+
 // --- Predicates (exported for testing) ---
 
 /**
@@ -113,6 +154,76 @@ export async function scanFilesForViolations(
         const relPath = file.startsWith(dir) ? `src${file.slice(dir.length)}` : file;
         violations.push({ pkg: pkgName, message: makeMessage(specifier, relPath) });
       }
+    }
+  }
+
+  return violations;
+}
+
+// --- L0 anti-leak scan ---
+
+const CLASS_RE = /^\s*(export\s+)?(abstract\s+)?class\s+/;
+const FUNCTION_RE = /^\s*(export\s+)?(async\s+)?function\s+/;
+const EXPORTED_ARROW_RE = /^\s*export\s+const\s+\w+\s*=\s*(async\s*)?\(/;
+
+/**
+ * Returns true if a trimmed, non-comment line declares a class.
+ */
+export function isClassDeclaration(line: string): boolean {
+  return CLASS_RE.test(line);
+}
+
+/**
+ * Returns true if a trimmed, non-comment line declares a function body
+ * (`function`, `export function`, or `export const x = (`).
+ */
+export function isFunctionBody(line: string): boolean {
+  return FUNCTION_RE.test(line) || EXPORTED_ARROW_RE.test(line);
+}
+
+/**
+ * Scans @koi/core source for class declarations and unlisted function bodies.
+ *
+ * Rules:
+ *   - Class declarations are always forbidden in L0 (no exceptions)
+ *   - Function bodies are forbidden unless the file is in L0_RUNTIME_ALLOWLIST
+ */
+export async function scanL0ForRuntimeCode(dir: string): Promise<readonly Violation[]> {
+  const violations: Violation[] = [];
+  const glob = new Bun.Glob("**/*.ts");
+
+  for await (const file of glob.scan({ cwd: dir, absolute: true })) {
+    if (isTestFile(file)) continue;
+
+    const source = await Bun.file(file).text();
+    const lines = source.split("\n");
+    const relPath = file.startsWith(dir) ? file.slice(dir.length + 1) : file;
+
+    let hasClass = false;
+    let hasFunctionBody = false;
+
+    for (const line of lines) {
+      if (hasClass && hasFunctionBody) break;
+      const trimmed = line.trimStart();
+      // Skip comment lines
+      if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) continue;
+
+      if (!hasClass && isClassDeclaration(trimmed)) hasClass = true;
+      if (!hasFunctionBody && isFunctionBody(trimmed)) hasFunctionBody = true;
+    }
+
+    if (hasClass) {
+      violations.push({
+        pkg: "@koi/core",
+        message: `L0 must not contain class declarations: ${relPath}`,
+      });
+    }
+
+    if (hasFunctionBody && !L0_RUNTIME_ALLOWLIST.has(relPath)) {
+      violations.push({
+        pkg: "@koi/core",
+        message: `L0 file has function bodies but is not in L0_RUNTIME_ALLOWLIST: ${relPath}`,
+      });
     }
   }
 
@@ -247,6 +358,13 @@ async function main(): Promise<void> {
       (_specifier, relPath) => `L2 source imports from L1 (@koi/engine) at ${relPath}`,
     );
     violations.push(...l2Violations);
+  }
+
+  // ── 4. L0 anti-leak: no classes, no unlisted function bodies ───────────────
+
+  if (await Bun.file(`${PACKAGES_DIR}core/package.json`).exists()) {
+    const l0RuntimeViolations = await scanL0ForRuntimeCode(coreSrcDir);
+    violations.push(...l0RuntimeViolations);
   }
 
   // ── Report ─────────────────────────────────────────────────────────────────
