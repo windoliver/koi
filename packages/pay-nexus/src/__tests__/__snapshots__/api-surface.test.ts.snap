@@ -1,0 +1,76 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/pay-nexus API surface . has stable type surface 1`] = `
+"import { PayLedger } from '@koi/core/pay-ledger';
+import { Result, KoiError } from '@koi/core/errors';
+import { BrickDescriptor } from '@koi/resolve';
+
+/**
+ * NexusPayLedger configuration and validation.
+ */
+
+interface NexusPayLedgerConfig {
+    /** Nexus server base URL (e.g., "https://pay.nexus.example.com"). */
+    readonly baseUrl: string;
+    /** Nexus API key for authentication. */
+    readonly apiKey: string;
+    /** Request timeout in milliseconds. Default: 10_000. */
+    readonly timeout?: number | undefined;
+    /** Injectable fetch for testing. Default: globalThis.fetch. */
+    readonly fetch?: typeof globalThis.fetch | undefined;
+}
+declare function validatePayLedgerConfig(config: unknown): Result<NexusPayLedgerConfig, KoiError>;
+
+/**
+ * PayLedger → BudgetTracker adapter.
+ *
+ * Bridges the PayLedger contract (Nexus credit ledger) to the
+ * BudgetTracker interface used by @koi/middleware-pay.
+ *
+ * Smart adapter: uses meter() for recording and getBalance() for queries,
+ * keeping HTTP calls to 1 per operation.
+ */
+
+interface BudgetTracker {
+    readonly record: (sessionId: string, entry: {
+        readonly costUsd: number;
+    }) => Promise<void>;
+    readonly totalSpend: (sessionId: string) => Promise<number>;
+    readonly remaining: (sessionId: string, budget: number) => Promise<number>;
+}
+/**
+ * Adapt a PayLedger to the BudgetTracker interface.
+ *
+ * Note: sessionId is accepted for BudgetTracker compatibility but not
+ * sent to Nexus (the agent is identified by API key).
+ */
+declare function mapPayLedgerToBudgetTracker(ledger: PayLedger, budget: number): BudgetTracker;
+/**
+ * Convenience factory: creates a NexusPayLedger and wraps it as a BudgetTracker.
+ */
+declare function createNexusBudgetTracker(config: NexusPayLedgerConfig & {
+    readonly budget: number;
+}): BudgetTracker;
+
+/**
+ * BrickDescriptor for @koi/pay-nexus.
+ *
+ * Enables manifest auto-resolution: validates Nexus pay config,
+ * then creates the PayLedger backed by the Nexus pay API.
+ */
+
+declare const payNexusDescriptor: BrickDescriptor<PayLedger>;
+
+/**
+ * NexusPayLedger — Nexus-backed PayLedger implementation.
+ *
+ * Thin HTTP client that talks to the Nexus pay API (v2).
+ * Follows the nexus-store.ts pattern: injectable fetch, AbortSignal timeout,
+ * mapHttpError for consistent error codes.
+ */
+
+declare function createNexusPayLedger(config: NexusPayLedgerConfig): PayLedger;
+
+export { type NexusPayLedgerConfig, createNexusBudgetTracker, createNexusPayLedger, mapPayLedgerToBudgetTracker, payNexusDescriptor, validatePayLedgerConfig };
+"
+`;
