@@ -272,6 +272,7 @@ export {
   middlewareToken,
   NAME_SERVICE,
   REGISTRY,
+  REPUTATION,
   runId,
   SCHEDULER,
   sessionId,

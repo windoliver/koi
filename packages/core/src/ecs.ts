@@ -22,6 +22,7 @@ import type { GovernanceBackend } from "./governance-backend.js";
 import type { HandoffComponent } from "./handoff.js";
 import type { MailboxComponent } from "./mailbox.js";
 import type { NameServiceReader } from "./name-service.js";
+import type { ReputationBackend } from "./reputation-backend.js";
 import type { SchedulerComponent } from "./scheduler.js";
 import type { SkillRegistryReader } from "./skill-registry.js";
 import type { VersionIndexReader } from "./version-index.js";
@@ -495,6 +496,7 @@ export const WEBHOOK: SubsystemToken<WebhookComponent> = token<WebhookComponent>
 export const EXTERNAL_AGENTS: SubsystemToken<readonly ExternalAgentDescriptor[]> =
   token<readonly ExternalAgentDescriptor[]>("external-agents");
 export const REGISTRY: SubsystemToken<RegistryComponent> = token<RegistryComponent>("registry");
+export const REPUTATION: SubsystemToken<ReputationBackend> = token<ReputationBackend>("reputation");
 export const MAILBOX: SubsystemToken<MailboxComponent> = token<MailboxComponent>("mailbox");
 export const NAME_SERVICE: SubsystemToken<NameServiceReader> =
   token<NameServiceReader>("name-service");
