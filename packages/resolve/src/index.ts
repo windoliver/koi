@@ -21,6 +21,7 @@ export { resolveMiddleware } from "./resolve-middleware.js";
 export { parseModelName, resolveModel } from "./resolve-model.js";
 export { resolveOne } from "./resolve-one.js";
 export { resolvePermissions } from "./resolve-permissions.js";
+export { resolveSearch } from "./resolve-search.js";
 export { resolveSoul } from "./resolve-soul.js";
 // types
 export type {

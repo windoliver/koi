@@ -12,6 +12,7 @@ import { resolveEngine } from "./resolve-engine.js";
 import { resolveMiddleware } from "./resolve-middleware.js";
 import { resolveModel } from "./resolve-model.js";
 import { resolvePermissions } from "./resolve-permissions.js";
+import { resolveSearch } from "./resolve-search.js";
 import { resolveSoul } from "./resolve-soul.js";
 import type {
   ResolutionContext,
@@ -36,6 +37,7 @@ interface ManifestInput {
   readonly user?: unknown;
   readonly channels?: unknown;
   readonly engine?: unknown;
+  readonly search?: unknown;
 }
 
 /**
@@ -63,6 +65,7 @@ export async function resolveManifest(
     modelResult,
     channelsResult,
     engineResult,
+    searchResult,
   ] = await Promise.all([
     resolveMiddleware(manifest.middleware ?? [], registry, context),
     resolveSoul({ soul: manifest.soul, user: manifest.user }, registry, context),
@@ -70,6 +73,7 @@ export async function resolveManifest(
     resolveModel(manifest.model, registry, context),
     resolveChannels(manifest.channels, registry, context),
     resolveEngine(manifest.engine, registry, context),
+    resolveSearch(manifest.search, registry, context),
   ]);
 
   // Collect failures
@@ -131,6 +135,22 @@ export async function resolveManifest(
     });
   }
 
+  if (!searchResult.ok) {
+    failures.push({
+      section: "search",
+      name:
+        typeof manifest.search === "string"
+          ? manifest.search
+          : typeof manifest.search === "object" &&
+              manifest.search !== null &&
+              "name" in manifest.search &&
+              typeof manifest.search.name === "string"
+            ? manifest.search.name
+            : "search",
+      error: searchResult.error,
+    });
+  }
+
   if (failures.length > 0) {
     return { ok: false, error: aggregateErrors(failures) };
   }
@@ -142,7 +162,8 @@ export async function resolveManifest(
     !permissionsResult.ok ||
     !modelResult.ok ||
     !channelsResult.ok ||
-    !engineResult.ok
+    !engineResult.ok ||
+    !searchResult.ok
   ) {
     // Unreachable — failures.length > 0 would have returned above.
     // This guard exists solely to narrow the discriminated union for TypeScript.
@@ -172,6 +193,7 @@ export async function resolveManifest(
     model: modelResult.value,
     ...(channelsResult.value !== undefined ? { channels: channelsResult.value } : {}),
     ...(engineResult.value !== undefined ? { engine: engineResult.value } : {}),
+    ...(searchResult.value !== undefined ? { search: searchResult.value } : {}),
   };
 
   return { ok: true, value: resolved };

@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { KoiMiddleware, ModelHandler } from "@koi/core";
+import type { SearchProvider } from "@koi/search-provider";
 import { createRegistry } from "./registry.js";
 import { resolveManifest } from "./resolve-manifest.js";
 import type { BrickDescriptor, ResolutionContext } from "./types.js";
@@ -75,6 +76,21 @@ function makeModelDescriptor(): BrickDescriptor<ModelHandler> {
         usage: { inputTokens: 1, outputTokens: 1 },
       });
     },
+  };
+}
+
+function makeSearchDescriptor(): BrickDescriptor<SearchProvider> {
+  return {
+    kind: "search",
+    name: "@koi/search-brave",
+    aliases: ["brave"],
+    optionsValidator: (input: unknown) => ({ ok: true, value: input }),
+    factory: (): SearchProvider => ({
+      name: "brave",
+      async search() {
+        return { ok: true, value: [] };
+      },
+    }),
   };
 }
 
@@ -193,6 +209,41 @@ describe("resolveManifest", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("Expected ok");
     expect(result.value.middleware).toEqual([]);
+  });
+
+  test("resolves manifest with search provider", async () => {
+    const regResult = createRegistry([makeModelDescriptor(), makeSearchDescriptor()]);
+    if (!regResult.ok) throw new Error("Registry failed");
+
+    const result = await resolveManifest(
+      {
+        model: { name: "mock:test-model" },
+        search: { name: "brave" },
+      },
+      regResult.value,
+      makeFullContext(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected ok");
+    expect(result.value.search).toBeDefined();
+    expect(result.value.search?.name).toBe("brave");
+    expect(typeof result.value.search?.search).toBe("function");
+  });
+
+  test("omits search from result when not in manifest", async () => {
+    const regResult = createRegistry([makeModelDescriptor()]);
+    if (!regResult.ok) throw new Error("Registry failed");
+
+    const result = await resolveManifest(
+      { model: { name: "mock:test-model" } },
+      regResult.value,
+      makeFullContext(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected ok");
+    expect(result.value.search).toBeUndefined();
   });
 
   test("returns error when model resolution fails", async () => {

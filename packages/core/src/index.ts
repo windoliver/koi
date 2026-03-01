@@ -29,6 +29,7 @@ export type {
   MiddlewareConfig,
   ModelConfig,
   PermissionConfig,
+  SearchConfig,
   SkillConfig,
   ToolConfig,
 } from "./assembly.js";

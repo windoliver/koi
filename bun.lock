@@ -1451,6 +1451,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/search-provider": "workspace:*",
         "@koi/validation": "workspace:*",
       },
     },
@@ -1593,6 +1594,15 @@
     },
     "packages/search-brave": {
       "name": "@koi/search-brave",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "@koi/search-provider": "workspace:*",
+      },
+    },
+    "packages/search-provider": {
+      "name": "@koi/search-provider",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
@@ -1835,6 +1845,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/search-provider": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
@@ -2631,6 +2642,8 @@
     "@koi/search": ["@koi/search@workspace:packages/search"],
 
     "@koi/search-brave": ["@koi/search-brave@workspace:packages/search-brave"],
+
+    "@koi/search-provider": ["@koi/search-provider@workspace:packages/search-provider"],
 
     "@koi/security-analyzer": ["@koi/security-analyzer@workspace:packages/security-analyzer"],
 
