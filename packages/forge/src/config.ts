@@ -193,7 +193,7 @@ const DEFAULT_FORMAT: FormatConfig = {
 } as const;
 
 const DEFAULT_MUTATION_PRESSURE: MutationPressureConfig = {
-  enabled: false,
+  enabled: true,
   frozenThreshold: 0.9,
   stableThreshold: 0.5,
   experimentalThreshold: 0.2,
