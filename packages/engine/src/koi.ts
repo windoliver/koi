@@ -241,6 +241,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       | ((ctx: TurnContext, req: ModelRequest) => AsyncIterable<ModelChunk>)
       | undefined;
 
+    // let justified: mutable ref for identity-based dynamic middleware skip
+    let previousDynamicMw: readonly KoiMiddleware[] | undefined;
+
     // let justified: cached terminals created once at session start, reused across turns
     let cachedTerminals:
       | {
@@ -482,6 +485,27 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           if (shouldRefresh && forge !== undefined && cachedTerminals !== undefined) {
             forgeStateDirty = false;
             await refreshForgeState(cachedTerminals);
+          }
+        }
+
+        // Dynamic middleware refresh (e.g., debug-attach hot-wiring)
+        if (options.dynamicMiddleware !== undefined && cachedTerminals !== undefined) {
+          const dynamicMw = options.dynamicMiddleware();
+          if (dynamicMw !== previousDynamicMw) {
+            previousDynamicMw = dynamicMw;
+            const allMw = sortByPriority([
+              ...allMiddleware,
+              ...(previousForgedMw ?? []),
+              ...(dynamicMw ?? []),
+            ]);
+            activeToolChain = composeToolChain(allMw, cachedTerminals.toolHandler);
+            activeModelChain = composeModelChain(allMw, cachedTerminals.modelHandler);
+            if (cachedTerminals.modelStreamHandler !== undefined) {
+              activeStreamChain = composeModelStreamChain(
+                allMw,
+                cachedTerminals.modelStreamHandler,
+              );
+            }
           }
         }
 

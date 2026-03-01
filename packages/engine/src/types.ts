@@ -334,6 +334,12 @@ export interface CreateKoiOptions {
   readonly approvalHandler?: ApprovalHandler;
   /** Optional live forge runtime — enables forged tools/middleware without agent re-assembly. */
   readonly forge?: ForgeRuntime;
+  /**
+   * Optional callback returning dynamic middleware (e.g., debug middleware).
+   * Queried at turn boundaries. When the returned reference changes (identity check),
+   * middleware chains are re-composed to include the dynamic middleware.
+   */
+  readonly dynamicMiddleware?: (() => readonly KoiMiddleware[] | undefined) | undefined;
   /** Optional shared process accounter for cross-agent spawn accounting. */
   readonly processAccounter?: ProcessAccounter;
   /** Optional status handler for turn lifecycle notifications. L1 threads this into TurnContext. */
