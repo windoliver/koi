@@ -64,7 +64,7 @@ export interface ContextArenaConfig {
   readonly contextWindowSize?: number | undefined;
   /** Override the default token estimator. Shared across all middleware. */
   readonly tokenEstimator?: TokenEstimator | undefined;
-  /** Memory component for squash fact extraction. */
+  /** Memory component for fact extraction (squash + compactor). Overrides memoryFs for extraction when both are provided; memoryFs tools still attach. */
   readonly memory?: MemoryComponent | undefined;
   /** Snapshot archive store. Default: in-memory store. */
   readonly archiver?: SnapshotChainStore<readonly InboundMessage[]> | undefined;
