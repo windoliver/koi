@@ -27,11 +27,19 @@ import type { ContextArenaBundle, ContextArenaConfig } from "./types.js";
 export async function createContextArena(config: ContextArenaConfig): Promise<ContextArenaBundle> {
   const resolved = resolveContextArenaConfig(config);
 
+  // --- Opt-in: filesystem memory (created early so squash + compactor can share it) ---
+  const fsMemory =
+    config.memoryFs !== undefined ? await createFsMemory(config.memoryFs.config) : undefined;
+
+  // Single effective memory for fact extraction — explicit config.memory overrides fsMemory.
+  // When both are provided, fsMemory provider (tools) still attaches for recall/search.
+  const effectiveMemory = config.memory ?? fsMemory?.component;
+
   // --- Always-on: squash provider + middleware ---
   const squashBundle = createSquashProvider(
     {
       archiver: resolved.archiver,
-      memory: config.memory,
+      memory: effectiveMemory,
       tokenEstimator: resolved.tokenEstimator,
       preserveRecent: resolved.squashPreserveRecent,
       maxPendingSquashes: resolved.squashMaxPendingSquashes,
@@ -51,6 +59,7 @@ export async function createContextArena(config: ContextArenaConfig): Promise<Co
     preserveRecent: resolved.compactorPreserveRecent,
     maxSummaryTokens: resolved.compactorMaxSummaryTokens,
     tokenEstimator: resolved.tokenEstimator,
+    memory: effectiveMemory,
   });
 
   // --- Always-on: context-editing middleware ---
@@ -63,11 +72,9 @@ export async function createContextArena(config: ContextArenaConfig): Promise<Co
   // --- Middleware in priority order ---
   const middleware = [squashBundle.middleware, compactorMiddleware, contextEditingMiddleware];
 
-  // --- Opt-in: filesystem memory ---
+  // --- Opt-in: filesystem memory provider (reuses pre-created fsMemory) ---
   const memoryProvider =
-    config.memoryFs !== undefined
-      ? createMemoryProvider({ memory: await createFsMemory(config.memoryFs.config) })
-      : undefined;
+    fsMemory !== undefined ? createMemoryProvider({ memory: fsMemory }) : undefined;
 
   // --- Providers (immutable) ---
   const providers = [

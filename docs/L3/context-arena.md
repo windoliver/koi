@@ -185,6 +185,39 @@ Cascade behavior: squash (220) fires first → reduces context → compactor (22
 
 Key invariant: **editing trigger < compactor trigger** — editing clears stale tool results (cheap, no LLM call) before compaction fires (expensive LLM summarization).
 
+### Memory Wiring
+
+When `memoryFs` is enabled, facts extracted during squash and compaction are persisted to the filesystem memory store. The arena creates a single `FsMemory` instance and shares it across all consumers:
+
+```
+  createContextArena(config)
+         │
+         ▼
+  ┌──────────────────────────────────┐
+  │ 1. Create FsMemory (if memoryFs)│
+  │    fsMemory = createFsMemory()   │
+  └──────────────┬───────────────────┘
+                 │
+  ┌──────────────┴──────────────────┐
+  │ 2. Compute effectiveMemory      │
+  │    config.memory ?? fsMemory?.component │
+  └──────────────┬──────────────────┘
+                 │
+    ┌────────────┼────────────┐
+    ▼            ▼            ▼
+  squash      compactor    memoryProvider
+  (memory:    (memory:     (memory:
+   effective)  effective)   fsMemory)
+    │            │            │
+    │            │            └──► recall/search/store tools
+    │            └──────────────► fact extraction during compaction
+    └───────────────────────────► fact extraction during squash
+```
+
+**Override precedence:** `config.memory` takes priority over `fsMemory.component` for fact extraction. When both are provided, the explicit `memory` is used for squash + compactor, while `memoryFs` tools (recall, search, store) still attach to the agent.
+
+**Single instance guarantee:** `createFsMemory()` is called exactly once. The same `FsMemory` instance is shared between the memory provider (which exposes tools) and the squash/compactor middleware (which extract facts). No duplicate file handles or inconsistent state.
+
 ---
 
 ## Presets
@@ -252,7 +285,7 @@ Main factory. Async because optional `FsMemory` initialization requires I/O.
 | `preset` | `ContextArenaPreset` | `"balanced"` | Budget profile |
 | `contextWindowSize` | `number` | `200_000` | Context window in tokens |
 | `tokenEstimator` | `TokenEstimator` | `HEURISTIC_ESTIMATOR` | Shared token estimator |
-| `memory` | `MemoryComponent` | `undefined` | Squash fact extraction target |
+| `memory` | `MemoryComponent` | `undefined` | Fact extraction target (squash + compactor). Overrides `memoryFs` for extraction when both provided |
 | `archiver` | `SnapshotChainStore` | In-memory store | Snapshot archive |
 | `pruningPolicy` | `PruningPolicy` | `undefined` | Archive pruning |
 | `compactor` | `CompactorOverrides` | — | Override compactor settings |
@@ -424,6 +457,13 @@ arena-factory.test.ts — 8 tests
   ● createHydrator returns ContextHydratorMiddleware
   ● Shared token estimator across all middleware
   ● Resolved config accessible on bundle
+
+arena-factory-memory.test.ts — 5 tests (mock-based)
+  ● config.memory flows to squash and compactor
+  ● fsMemory.component flows to squash and compactor when only memoryFs provided
+  ● config.memory overrides fsMemory.component for fact extraction
+  ● squash and compactor receive undefined when no memory configured
+  ● createFsMemory called exactly once when memoryFs provided
 
 registry-adapter.test.ts — 3 tests
   ● Entries map contains "context-arena" key
