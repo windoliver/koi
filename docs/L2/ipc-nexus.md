@@ -1,6 +1,6 @@
 # @koi/ipc-nexus — Agent-to-Agent Messaging via Nexus IPC
 
-Agent-to-agent messaging through a central REST mailbox. Any Koi agent can send messages to any other agent — the LLM decides when to communicate using `ipc_send` and `ipc_list` tools.
+Agent-to-agent messaging through a central REST mailbox. Any Koi agent can send messages to any other agent — the LLM decides when to communicate using `ipc_send`, `ipc_list`, and `ipc_discover` tools.
 
 ## Why
 
@@ -136,22 +136,23 @@ L0  @koi/core          MailboxComponent + MAILBOX token + AgentMessage types
 L2  @koi/ipc-nexus     NexusClient + MailboxAdapter + ComponentProvider + tools
 ```
 
-The mailbox is an **ECS component** attached to agents via a `ComponentProvider`. The provider also registers `ipc_send` and `ipc_list` as agent-facing tools — the LLM calls them autonomously.
+The mailbox is an **ECS component** attached to agents via a `ComponentProvider`. The provider registers `ipc_send` and `ipc_list` as agent-facing tools — the LLM calls them autonomously. When an `AgentRegistry` is provided, `ipc_discover` is also attached, enabling agents to find each other without hardcoded IDs.
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                     createKoi()                          │
-│   providers: [createIpcNexusProvider({ agentId, ... })]  │
-└────────────────────────┬─────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│                     createKoi()                               │
+│   providers: [createIpcNexusProvider({ agentId, registry })]  │
+└────────────────────────┬──────────────────────────────────────┘
                          │ attach()
                          ▼
-                  ┌──────────────┐
-                  │   Agent      │
-                  │              │
-                  │  MAILBOX     │◄── MailboxComponent (send/onMessage/list)
-                  │  tool:ipc_send  │◄── LLM-callable tool
-                  │  tool:ipc_list  │◄── LLM-callable tool
-                  └──────┬───────┘
+                  ┌─────────────────────┐
+                  │   Agent             │
+                  │                     │
+                  │  MAILBOX            │◄── MailboxComponent (send/onMessage/list)
+                  │  tool:ipc_send      │◄── LLM-callable tool
+                  │  tool:ipc_list      │◄── LLM-callable tool
+                  │  tool:ipc_discover  │◄── LLM-callable tool (when registry provided)
+                  └──────┬──────────────┘
                          │ HTTP
                          ▼
                   ┌──────────────┐
@@ -167,11 +168,14 @@ import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { createIpcNexusProvider } from "@koi/ipc-nexus";
 import { agentId } from "@koi/core";
+import type { AgentRegistry } from "@koi/core";
 
 // 1. Create provider — attaches MAILBOX + tools
+//    Pass registry to also enable ipc_discover
 const provider = createIpcNexusProvider({
   agentId: agentId("my-agent"),
   nexusBaseUrl: "http://localhost:2026",
+  registry,  // optional — enables ipc_discover tool
 });
 
 // 2. Wire into runtime
@@ -354,6 +358,7 @@ const provider = createIpcNexusProvider({
   pageLimit: 50,                       // messages per page
   timeoutMs: 10_000,                   // HTTP timeout
   operations: ["send", "list"],        // which tools to register (default: both)
+  registry,                            // optional — enables ipc_discover tool
 });
 ```
 
@@ -369,6 +374,7 @@ const provider = createIpcNexusProvider({
 | `pageLimit` | `50` | Messages fetched per poll cycle |
 | `timeoutMs` | `10000` | HTTP request timeout |
 | `operations` | `["send", "list"]` | Which tools to expose |
+| `registry` | `undefined` | `AgentRegistry` instance — enables `ipc_discover` tool |
 
 ## Nexus REST API
 
@@ -457,6 +463,32 @@ Lists messages in the agent's inbox with optional filtering.
 | `from` | string | no | Filter by sender |
 | `limit` | number | no | Maximum messages to return |
 
+### `ipc_discover`
+
+Lists live agents available for messaging. Only attached when `registry` is provided in the provider config. Enables agents to discover each other dynamically instead of relying on hardcoded agent IDs.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `agentType` | string | no | Filter by agent type: `"copilot"` or `"worker"` |
+| `phase` | string | no | Filter by process state: `"created"`, `"running"`, `"waiting"`, `"suspended"`, or `"terminated"`. Defaults to `"running"` |
+
+Returns `{ agents: [{ agentId, agentType, phase, registeredAt }] }`.
+
+```
+  Agent: "Who can I send a code review to?"
+         │
+         ▼  ipc_discover({ agentType: "worker" })
+  ┌──────────────┐
+  │ AgentRegistry│  list({ phase: "running", agentType: "worker" })
+  │              │  → [{ agentId: "reviewer-1", ... }]
+  └──────────────┘
+         │
+         ▼
+  Agent: "Found reviewer-1. Sending review request."
+         │
+         ▼  ipc_send({ to: "reviewer-1", kind: "request", ... })
+```
+
 ## L0 Types (in @koi/core)
 
 ```typescript
@@ -500,6 +532,7 @@ const MAILBOX: SubsystemToken<MailboxComponent>;
 |--------|------|---------|
 | `createNexusMailbox` | Factory | Creates a `MailboxComponent` backed by Nexus REST |
 | `createIpcNexusProvider` | Factory | Creates a `ComponentProvider` (MAILBOX + tools) |
+| `createDiscoverTool` | Factory | Creates `ipc_discover` tool (advanced usage) |
 | `createSendTool` | Factory | Creates `ipc_send` tool (advanced usage) |
 | `createListTool` | Factory | Creates `ipc_list` tool (advanced usage) |
 | `NexusMailboxConfig` | Interface | Config for `createNexusMailbox` |
@@ -511,6 +544,7 @@ const MAILBOX: SubsystemToken<MailboxComponent>;
 ## Related
 
 - Issue #192 — Original implementation issue
+- Issue #608 — `ipc_discover` tool for agent discovery
 - Issue #193 — `@koi/registry-nexus` (agent discovery)
 - Issue #397 — `@koi/events-nexus` (event sourcing)
 - `@koi/core` `mailbox.ts` — L0 types

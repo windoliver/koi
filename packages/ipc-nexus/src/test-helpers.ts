@@ -1,16 +1,19 @@
 /**
- * Test helpers for @koi/ipc-nexus — mock MailboxComponent for downstream consumers.
+ * Test helpers for @koi/ipc-nexus — mock MailboxComponent and AgentRegistry
+ * for downstream consumers.
  */
 
 import type {
   AgentMessage,
   AgentMessageInput,
+  AgentRegistry,
   KoiError,
   MailboxComponent,
   MessageFilter,
+  RegistryEntry,
   Result,
 } from "@koi/core";
-import { agentId, messageId } from "@koi/core";
+import { agentId, matchesFilter, messageId } from "@koi/core";
 
 export { createMockAgent } from "@koi/test-utils";
 
@@ -76,5 +79,76 @@ export function createMockMailboxComponent(options?: {
         })
         .slice(0, filter.limit ?? messages.length);
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Mock AgentRegistry
+// ---------------------------------------------------------------------------
+
+const DEFAULT_REGISTRY_ENTRIES: readonly RegistryEntry[] = [
+  {
+    agentId: agentId("copilot-1"),
+    status: {
+      phase: "running",
+      generation: 1,
+      conditions: [],
+      lastTransitionAt: 1_700_000_000_000,
+    },
+    agentType: "copilot",
+    metadata: {},
+    registeredAt: 1_700_000_000_000,
+  },
+  {
+    agentId: agentId("worker-1"),
+    status: {
+      phase: "running",
+      generation: 1,
+      conditions: [],
+      lastTransitionAt: 1_700_000_001_000,
+    },
+    agentType: "worker",
+    metadata: {},
+    registeredAt: 1_700_000_001_000,
+  },
+  {
+    agentId: agentId("worker-2"),
+    status: {
+      phase: "suspended",
+      generation: 2,
+      conditions: [],
+      lastTransitionAt: 1_700_000_002_000,
+    },
+    agentType: "worker",
+    metadata: {},
+    registeredAt: 1_700_000_002_000,
+  },
+];
+
+/** Create a mock AgentRegistry backed by an in-memory array. */
+export function createMockRegistry(options?: {
+  readonly entries?: readonly RegistryEntry[];
+}): AgentRegistry {
+  const entries = options?.entries ?? DEFAULT_REGISTRY_ENTRIES;
+
+  return {
+    register: async (entry) => entry,
+    deregister: async () => true,
+    lookup: async (id) => entries.find((e) => e.agentId === id),
+    list: async (filter) => {
+      if (filter === undefined) return entries;
+      return entries.filter((e) => matchesFilter(e, filter));
+    },
+    transition: async (_id, _target, _gen, _reason) => ({
+      ok: false,
+      error: {
+        code: "NOT_FOUND",
+        message: "mock: transition not implemented",
+        retryable: false,
+        context: {},
+      },
+    }),
+    watch: () => () => {},
+    [Symbol.asyncDispose]: async () => {},
   };
 }

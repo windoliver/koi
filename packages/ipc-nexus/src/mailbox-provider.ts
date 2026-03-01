@@ -5,11 +5,18 @@
  * send/list as agent-facing tools via createServiceProvider.
  */
 
-import type { AgentId, ComponentProvider, MailboxComponent, TrustTier } from "@koi/core";
-import { createServiceProvider, MAILBOX } from "@koi/core";
+import type {
+  AgentId,
+  AgentRegistry,
+  ComponentProvider,
+  MailboxComponent,
+  TrustTier,
+} from "@koi/core";
+import { createServiceProvider, MAILBOX, toolToken } from "@koi/core";
 import type { IpcOperation } from "./constants.js";
 import { DEFAULT_PREFIX, OPERATIONS } from "./constants.js";
 import { createNexusMailbox } from "./mailbox-adapter.js";
+import { createDiscoverTool } from "./tools/discover.js";
 import { createListTool } from "./tools/list.js";
 import { createSendTool } from "./tools/send.js";
 
@@ -28,6 +35,7 @@ export interface IpcNexusProviderConfig {
   readonly pageLimit?: number | undefined;
   readonly timeoutMs?: number | undefined;
   readonly operations?: readonly IpcOperation[] | undefined;
+  readonly registry?: AgentRegistry | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,6 +73,7 @@ export function createIpcNexusProvider(config: IpcNexusProviderConfig): Componen
     pageLimit,
     timeoutMs,
     operations = OPERATIONS,
+    registry,
   } = config;
 
   const mailbox = createNexusMailbox({
@@ -85,6 +94,14 @@ export function createIpcNexusProvider(config: IpcNexusProviderConfig): Componen
     factories: TOOL_FACTORIES,
     trustTier,
     prefix,
+    ...(registry !== undefined
+      ? {
+          customTools: (_backend, _agent) => {
+            const tool = createDiscoverTool(registry, prefix, trustTier);
+            return [[toolToken(tool.descriptor.name) as string, tool]];
+          },
+        }
+      : {}),
     detach: async () => {
       mailbox[Symbol.dispose]();
     },

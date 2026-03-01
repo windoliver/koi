@@ -29,6 +29,7 @@ export { createNexusMailbox } from "./mailbox-adapter.js";
 // provider
 export type { IpcNexusProviderConfig } from "./mailbox-provider.js";
 export { createIpcNexusProvider } from "./mailbox-provider.js";
-export { createListTool } from "./tools/list.js";
 // tool factories — for advanced usage (custom tool composition)
+export { createDiscoverTool } from "./tools/discover.js";
+export { createListTool } from "./tools/list.js";
 export { createSendTool } from "./tools/send.js";

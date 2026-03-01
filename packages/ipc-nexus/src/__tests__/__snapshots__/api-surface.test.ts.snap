@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/ipc-nexus API surface . has stable type surface 1`] = `
-"import { AgentId, MailboxComponent, TrustTier, ComponentProvider, Tool } from '@koi/core';
+"import { AgentId, MailboxComponent, TrustTier, AgentRegistry, ComponentProvider, Tool } from '@koi/core';
 export { AgentMessage, AgentMessageInput, MailboxComponent, MessageFilter, MessageId, MessageKind } from '@koi/core';
 
 /** Default tool name prefix. */
@@ -51,9 +51,16 @@ interface IpcNexusProviderConfig {
     readonly pageLimit?: number | undefined;
     readonly timeoutMs?: number | undefined;
     readonly operations?: readonly IpcOperation[] | undefined;
+    readonly registry?: AgentRegistry | undefined;
 }
 /** Create a ComponentProvider that attaches a MailboxComponent + IPC tools. */
 declare function createIpcNexusProvider(config: IpcNexusProviderConfig): ComponentProvider;
+
+/**
+ * Tool factory for ipc_discover — list live agents available for messaging.
+ */
+
+declare function createDiscoverTool(registry: AgentRegistry, prefix: string, trustTier: TrustTier): Tool;
 
 /**
  * Tool factory for ipc_list — list messages in the agent's inbox.
@@ -67,6 +74,6 @@ declare function createListTool(component: MailboxComponent, prefix: string, tru
 
 declare function createSendTool(component: MailboxComponent, prefix: string, trustTier: TrustTier): Tool;
 
-export { DEFAULT_PREFIX, type IpcNexusProviderConfig, type IpcOperation, type NexusMailboxConfig, OPERATIONS, createIpcNexusProvider, createListTool, createNexusMailbox, createSendTool };
+export { DEFAULT_PREFIX, type IpcNexusProviderConfig, type IpcOperation, type NexusMailboxConfig, OPERATIONS, createDiscoverTool, createIpcNexusProvider, createListTool, createNexusMailbox, createSendTool };
 "
 `;
