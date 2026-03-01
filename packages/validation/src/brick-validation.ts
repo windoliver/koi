@@ -76,6 +76,8 @@ function validateKindFields(data: Record<string, unknown>, source: string): Resu
       if (typeof data.implementation !== "string")
         return fail("tool missing 'implementation'", source);
       if (!isRecord(data.inputSchema)) return fail("tool missing 'inputSchema' object", source);
+      if (data.outputSchema !== undefined && !isRecord(data.outputSchema))
+        return fail("tool 'outputSchema' must be an object if present", source);
       break;
     case "skill":
       if (typeof data.content !== "string") return fail("skill missing 'content'", source);

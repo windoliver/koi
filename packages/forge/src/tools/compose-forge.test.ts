@@ -6,7 +6,7 @@ import type {
   SandboxExecutor,
   TieredSandboxExecutor,
 } from "@koi/core";
-import { MAX_PIPELINE_STEPS } from "@koi/core";
+import { brickId, MAX_PIPELINE_STEPS } from "@koi/core";
 import { createTestSkillArtifact, createTestToolArtifact } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "../config.js";
 import type { ForgeError } from "../errors.js";
@@ -224,6 +224,66 @@ describe("compose_forge", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("Pipeline validation failed");
+    }
+  });
+
+  test("uses explicit outputSchema from tool when present", async () => {
+    const outputSchema = { type: "object", properties: { result: { type: "string" } } };
+    const toolA = createTestToolArtifact({
+      id: brickId("sha256:aaa"),
+      name: "tool-with-output-schema",
+      inputSchema: { type: "object" },
+      outputSchema,
+    });
+    const toolB = createTestToolArtifact({
+      id: brickId("sha256:bbb"),
+      name: "tool-b",
+      inputSchema: { type: "object" },
+    });
+
+    const saveMock = mock(async () => ({ ok: true as const, value: undefined }));
+    const store = createMockStore({
+      load: mock(async (id: unknown) => {
+        const idStr = String(id);
+        if (idStr === toolA.id) return { ok: true as const, value: toolA };
+        if (idStr === toolB.id) return { ok: true as const, value: toolB };
+        return {
+          ok: false as const,
+          error: { code: "NOT_FOUND" as const, message: "nf", retryable: false },
+        };
+      }),
+      exists: mock(async () => ({ ok: true as const, value: false })),
+      save: saveMock,
+    });
+
+    const deps = createDeps({ store });
+    const tool = createComposeForge(deps);
+    const result = (await tool.execute({
+      name: "pipeline-with-output-schema",
+      description: "Tests outputSchema propagation",
+      brickIds: [toolA.id, toolB.id],
+    })) as Result<ForgeResult, ForgeError>;
+
+    expect(result.ok).toBe(true);
+
+    // Verify the saved composite artifact uses the explicit outputSchema for step A
+    const savedArg = saveMock.mock.calls[0]?.[0] as BrickArtifact | undefined;
+    expect(savedArg).toBeDefined();
+    if (savedArg !== undefined && savedArg.kind === "composite") {
+      // First step's output port should use the declared outputSchema
+      const firstStep = savedArg.steps[0];
+      expect(firstStep).toBeDefined();
+      if (firstStep !== undefined) {
+        expect(firstStep.outputPort.schema).toEqual(outputSchema);
+      }
+      // Last step (no outputSchema) should fall back to default
+      const lastStep = savedArg.steps[1];
+      expect(lastStep).toBeDefined();
+      if (lastStep !== undefined) {
+        expect(lastStep.outputPort.schema).toEqual({ type: "object" });
+      }
+      // exposedOutput comes from the last step — should be the default
+      expect(savedArg.exposedOutput.schema).toEqual({ type: "object" });
     }
   });
 

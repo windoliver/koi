@@ -161,6 +161,7 @@ export interface ToolArtifact extends BrickArtifactBase {
   readonly kind: "tool";
   readonly implementation: string;
   readonly inputSchema: Readonly<Record<string, unknown>>;
+  readonly outputSchema?: Readonly<Record<string, unknown>> | undefined;
   readonly testCases?: readonly TestCase[];
   readonly counterexamples?: readonly CounterExample[];
 }

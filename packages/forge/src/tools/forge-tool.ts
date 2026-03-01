@@ -57,6 +57,10 @@ const FORGE_TOOL_CONFIG: ForgeToolConfig = {
         },
       },
       configSchema: { type: "object", description: "JSON Schema for brick config parameters" },
+      outputSchema: {
+        type: "object",
+        description: "JSON Schema describing the tool's output shape",
+      },
     },
     required: ["name", "description", "inputSchema", "implementation"],
   },
@@ -113,6 +117,7 @@ async function forgeToolHandler(
           },
         }
       : {}),
+    ...(parsed.value.outputSchema !== undefined ? { outputSchema: parsed.value.outputSchema } : {}),
     ...(parsed.value.configSchema !== undefined ? { configSchema: parsed.value.configSchema } : {}),
     ...(parsed.value.classification !== undefined
       ? { classification: parsed.value.classification }
@@ -128,6 +133,7 @@ async function forgeToolHandler(
     kind: "tool" as const,
     implementation: forgeInput.implementation,
     inputSchema: forgeInput.inputSchema,
+    ...(forgeInput.outputSchema !== undefined ? { outputSchema: forgeInput.outputSchema } : {}),
     ...(forgeInput.testCases !== undefined ? { testCases: forgeInput.testCases } : {}),
     ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
     ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),

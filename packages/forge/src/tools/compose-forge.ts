@@ -285,7 +285,10 @@ function extractPorts(brick: BrickArtifact): {
     case "tool":
       return {
         inputPort: { name: "input", schema: brick.inputSchema },
-        outputPort: { name: "output", schema: { type: "object" } },
+        outputPort: {
+          name: "output",
+          schema: brick.outputSchema ?? { type: "object" },
+        },
       };
     case "skill":
       return {

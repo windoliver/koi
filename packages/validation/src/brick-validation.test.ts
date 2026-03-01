@@ -171,6 +171,28 @@ describe("validateBrickArtifact", () => {
     expect(result.ok).toBe(false);
   });
 
+  test("accepts tool with outputSchema", () => {
+    const result = validateBrickArtifact(
+      {
+        ...validTool(),
+        outputSchema: { type: "object", properties: { result: { type: "string" } } },
+      },
+      "test-source",
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects tool with non-object outputSchema", () => {
+    const result = validateBrickArtifact(
+      { ...validTool(), outputSchema: "not-an-object" },
+      "test-source",
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("outputSchema");
+    }
+  });
+
   test("accepts artifact with valid files", () => {
     const result = validateBrickArtifact(
       { ...validTool(), files: { "lib/helper.ts": "export const x = 1;" } },

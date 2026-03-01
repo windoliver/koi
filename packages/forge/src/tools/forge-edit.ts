@@ -240,6 +240,7 @@ function buildForgeInputFromArtifact(brick: BrickArtifact): ForgeInput | undefin
         kind: "tool",
         ...base,
         inputSchema: brick.inputSchema,
+        ...(brick.outputSchema !== undefined ? { outputSchema: brick.outputSchema } : {}),
         implementation: brick.implementation,
         ...(brick.testCases !== undefined ? { testCases: brick.testCases } : {}),
       };

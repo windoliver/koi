@@ -103,6 +103,7 @@ export interface ForgeInputBase {
 export interface ForgeToolInput extends ForgeInputBase {
   readonly kind: "tool";
   readonly inputSchema: Readonly<Record<string, unknown>>;
+  readonly outputSchema?: Readonly<Record<string, unknown>> | undefined;
   readonly implementation: string;
   readonly testCases?: readonly TestCase[];
   readonly configSchema?: Readonly<Record<string, unknown>>;

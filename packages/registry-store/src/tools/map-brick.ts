@@ -31,6 +31,9 @@ function mapKindFields(brick: BrickArtifact): JsonObject {
       return {
         implementation: brick.implementation,
         inputSchema: brick.inputSchema as unknown as JsonObject,
+        ...(brick.outputSchema !== undefined
+          ? { outputSchema: brick.outputSchema as unknown as JsonObject }
+          : {}),
         ...(brick.testCases !== undefined
           ? { testCases: brick.testCases as unknown as JsonObject }
           : {}),
