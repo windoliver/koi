@@ -8,11 +8,13 @@ import type {
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  SessionContext,
   ToolHandler,
+  ToolHealthSnapshot,
   ToolRequest,
   ToolResponse,
   TurnContext,
-} from "@koi/core/middleware";
+} from "@koi/core";
 import { extractMessage, KoiRuntimeError } from "@koi/errors";
 import type { FeedbackLoopConfig } from "./config.js";
 import { runGates } from "./gate.js";
@@ -22,8 +24,16 @@ import { createToolHealthTracker, type ToolHealthTracker } from "./tool-health.j
 import type { ForgeToolErrorFeedback } from "./types.js";
 import { runValidators } from "./validators.js";
 
+/** Handle returned by the feedback-loop factory — bundles middleware + health read API. */
+export interface FeedbackLoopHandle {
+  readonly middleware: KoiMiddleware;
+  readonly getHealthSnapshot: (toolId: string) => ToolHealthSnapshot | undefined;
+  readonly getAllHealthSnapshots: () => readonly ToolHealthSnapshot[];
+  readonly isQuarantined: (toolId: string) => boolean;
+}
+
 /** Creates a feedback-loop middleware with validation, retry, and gate hooks. */
-export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMiddleware {
+export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): FeedbackLoopHandle {
   const validators = config.validators ?? [];
   const gates = config.gates ?? [];
   const toolValidators = config.toolValidators ?? [];
@@ -38,7 +48,7 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
   const healthClock = config.forgeHealth?.clock ?? Date.now;
   const resolveBrickId = config.forgeHealth?.resolveBrickId;
 
-  return {
+  const middleware: KoiMiddleware = {
     name: "feedback-loop",
     priority: 450,
     describeCapabilities: (_ctx: TurnContext): CapabilityFragment => ({
@@ -155,9 +165,11 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
           healthTracker.recordFailure(toolId, latencyMs, extractMessage(e));
           const quarantined = await healthTracker.checkAndQuarantine(toolId);
           if (!quarantined) {
-            // Not quarantined — check if demotion is warranted
-            await healthTracker.checkAndDemote(toolId).catch(() => {});
+            await healthTracker.checkAndDemote(toolId).catch((demotionErr: unknown) => {
+              config.forgeHealth?.onDemotionError?.(toolId, demotionErr);
+            });
           }
+          maybeFlush(healthTracker, toolId, config.forgeHealth?.onFlushError);
         }
         throw e;
       }
@@ -176,8 +188,11 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
             );
             const quarantined = await healthTracker.checkAndQuarantine(toolId);
             if (!quarantined) {
-              await healthTracker.checkAndDemote(toolId).catch(() => {});
+              await healthTracker.checkAndDemote(toolId).catch((demotionErr: unknown) => {
+                config.forgeHealth?.onDemotionError?.(toolId, demotionErr);
+              });
             }
+            maybeFlush(healthTracker, toolId, config.forgeHealth?.onFlushError);
           }
           config.onGateFail?.(outputResult.failedGate, outputResult.errors);
           throw KoiRuntimeError.from(
@@ -201,9 +216,43 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
       if (isForgedTool && healthTracker !== undefined) {
         const latencyMs = healthClock() - start;
         healthTracker.recordSuccess(toolId, latencyMs);
+        maybeFlush(healthTracker, toolId, config.forgeHealth?.onFlushError);
       }
 
       return response;
     },
   };
+
+  // Attach session lifecycle hook when health tracking is active
+  const fullMiddleware: KoiMiddleware =
+    healthTracker !== undefined
+      ? {
+          ...middleware,
+          async onSessionEnd(_ctx: SessionContext): Promise<void> {
+            await healthTracker.dispose();
+          },
+        }
+      : middleware;
+
+  return {
+    middleware: fullMiddleware,
+    getHealthSnapshot: (toolId: string): ToolHealthSnapshot | undefined =>
+      healthTracker?.getSnapshot(toolId),
+    getAllHealthSnapshots: (): readonly ToolHealthSnapshot[] =>
+      healthTracker?.getAllSnapshots() ?? [],
+    isQuarantined: (toolId: string): boolean => healthTracker?.isQuarantined(toolId) ?? false,
+  };
+}
+
+/** Fire-and-forget flush check — errors routed to onFlushError callback. */
+function maybeFlush(
+  tracker: ToolHealthTracker,
+  toolId: string,
+  onFlushError: ((toolId: string, error: unknown) => void) | undefined,
+): void {
+  if (tracker.shouldFlushTool(toolId)) {
+    tracker.flushTool(toolId).catch((e: unknown) => {
+      onFlushError?.(toolId, e);
+    });
+  }
 }

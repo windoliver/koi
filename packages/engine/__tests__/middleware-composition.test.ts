@@ -13,7 +13,7 @@ import { createAuditMiddleware, createInMemoryAuditSink } from "@koi/middleware-
 import { createInMemoryStore, createMemoryMiddleware } from "@koi/middleware-memory";
 import {
   createDefaultCostCalculator,
-  createInMemoryPayLedger,
+  createInMemoryBudgetTracker,
   createPayMiddleware,
 } from "@koi/middleware-pay";
 import {
@@ -90,7 +90,7 @@ describe("Middleware composition -- execution order", () => {
   test("priorities sort correctly: permissions(100) < pay(200) < audit(300) < memory(400)", () => {
     const perm = createStubPermissionsMiddleware({ allow: ["*"], deny: [] });
     const pay = createPayMiddleware({
-      ledger: createInMemoryPayLedger(100),
+      tracker: createInMemoryBudgetTracker(),
       calculator: createDefaultCostCalculator(),
       budget: 100,
     });
@@ -169,10 +169,10 @@ describe("Middleware composition -- execution order", () => {
 
 describe("Middleware composition -- error propagation", () => {
   test("permission denied prevents pay from recording cost", async () => {
-    const ledger = createInMemoryPayLedger(100);
+    const tracker = createInMemoryBudgetTracker();
     const perm = createStubPermissionsMiddleware({ allow: [], deny: ["blocked-tool"] });
     const pay = createPayMiddleware({
-      ledger,
+      tracker,
       calculator: createDefaultCostCalculator(),
       budget: 100,
     });
@@ -190,9 +190,9 @@ describe("Middleware composition -- error propagation", () => {
       expect(err.code).toBe("PERMISSION");
     }
 
-    // Pay should not have recorded anything — balance unchanged
-    const balance = await ledger.getBalance();
-    expect(parseFloat(balance.available)).toBe(100);
+    // Pay should not have recorded anything — spend is zero
+    const spent = await tracker.totalSpend(ctx.session.sessionId);
+    expect(spent).toBe(0);
     expect(spy.calls).toHaveLength(0);
   });
 
@@ -218,11 +218,17 @@ describe("Middleware composition -- error propagation", () => {
   });
 
   test("budget exceeded prevents tool execution", async () => {
-    const ledger = createInMemoryPayLedger(100);
+    const tracker = createInMemoryBudgetTracker();
     // Exhaust the budget
-    await ledger.meter("100", "model_call");
+    await tracker.record("session-test-1", {
+      inputTokens: 0,
+      outputTokens: 0,
+      model: "test",
+      costUsd: 100,
+      timestamp: Date.now(),
+    });
     const pay = createPayMiddleware({
-      ledger,
+      tracker,
       calculator: createDefaultCostCalculator(),
       budget: 100,
     });

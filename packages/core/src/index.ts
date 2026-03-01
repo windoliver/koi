@@ -183,6 +183,16 @@ export type {
 export type { CompactionResult, ContextCompactor, TokenEstimator } from "./context.js";
 // correlation
 export type { CorrelationIds } from "./correlation.js";
+// cost tracker — per-session, per-tool, per-model cost transparency
+export type {
+  BudgetTracker,
+  CostBreakdown,
+  CostCalculator,
+  CostEntry,
+  ModelCostBreakdown,
+  ToolCostBreakdown,
+  UsageInfo,
+} from "./cost-tracker.js";
 // ecs — generic ComponentProvider factories (pure functions on L0 types)
 export type { ServiceProviderConfig } from "./create-service-provider.js";
 export { createServiceProvider } from "./create-service-provider.js";
@@ -372,6 +382,9 @@ export type {
   FileWriteOptions,
   FileWriteResult,
 } from "./filesystem-backend.js";
+// forge demand — demand-triggered forging signals and budget
+export type { ForgeBudget, ForgeDemandSignal, ForgeTrigger } from "./forge-demand.js";
+export { DEFAULT_FORGE_BUDGET } from "./forge-demand.js";
 // forge types
 export type {
   BrickKind,
@@ -751,6 +764,13 @@ export type {
 } from "./task-board.js";
 // task-board — runtime values (branded constructor + defaults)
 export { DEFAULT_TASK_BOARD_CONFIG, taskItemId } from "./task-board.js";
+// tool health — promoted L0 types for cross-package health data consumption
+export type {
+  ToolFailureRecord,
+  ToolHealthMetrics,
+  ToolHealthSnapshot,
+  ToolHealthState,
+} from "./tool-health-types.js";
 // validation utilities — runtime type guards and validators
 export { isProcessState, validateNonEmpty } from "./validation-utils.js";
 // version index — version label → BrickId resolution contract

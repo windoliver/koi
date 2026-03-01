@@ -1,7 +1,19 @@
 /**
- * Cost calculation and in-memory PayLedger for dev/testing.
+ * Budget tracking interfaces and default implementations.
+ *
+ * Canonical type definitions live in @koi/core/cost-tracker (L0).
+ * This module re-exports them for backward compatibility and provides
+ * concrete implementations.
  */
 
+import type {
+  BudgetTracker,
+  CostBreakdown,
+  CostCalculator,
+  CostEntry,
+  ModelCostBreakdown,
+  ToolCostBreakdown,
+} from "@koi/core/cost-tracker";
 import type {
   PayBalance,
   PayCanAffordResult,
@@ -9,9 +21,59 @@ import type {
   PayMeterResult,
 } from "@koi/core/pay-ledger";
 
-export interface CostCalculator {
-  readonly calculate: (model: string, inputTokens: number, outputTokens: number) => number;
+// Re-export L0 types for backward compatibility
+export type { BudgetTracker, CostCalculator, CostEntry } from "@koi/core/cost-tracker";
+
+/** Mutable per-model aggregate (internal bookkeeping, never leaked). */
+interface MutableModelAgg {
+  totalCostUsd: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  callCount: number;
 }
+
+/** Mutable per-tool aggregate (internal bookkeeping, never leaked). */
+interface MutableToolAgg {
+  totalCostUsd: number;
+  callCount: number;
+}
+
+/** Mutable per-session aggregate (internal bookkeeping, never leaked). */
+interface SessionAgg {
+  totalCostUsd: number;
+  readonly byModel: Map<string, MutableModelAgg>;
+  readonly byTool: Map<string, MutableToolAgg>;
+}
+
+function getOrCreateSession(sessions: Map<string, SessionAgg>, sessionId: string): SessionAgg {
+  const existing = sessions.get(sessionId);
+  if (existing !== undefined) return existing;
+  const fresh: SessionAgg = { totalCostUsd: 0, byModel: new Map(), byTool: new Map() };
+  sessions.set(sessionId, fresh);
+  return fresh;
+}
+
+function freezeBreakdown(agg: SessionAgg): CostBreakdown {
+  const byModel: readonly ModelCostBreakdown[] = [...agg.byModel.entries()].map(
+    ([model, m]): ModelCostBreakdown => ({
+      model,
+      totalCostUsd: m.totalCostUsd,
+      totalInputTokens: m.totalInputTokens,
+      totalOutputTokens: m.totalOutputTokens,
+      callCount: m.callCount,
+    }),
+  );
+  const byTool: readonly ToolCostBreakdown[] = [...agg.byTool.entries()].map(
+    ([toolName, t]): ToolCostBreakdown => ({
+      toolName,
+      totalCostUsd: t.totalCostUsd,
+      callCount: t.callCount,
+    }),
+  );
+  return { totalCostUsd: agg.totalCostUsd, byModel, byTool };
+}
+
+const EMPTY_BREAKDOWN: CostBreakdown = { totalCostUsd: 0, byModel: [], byTool: [] };
 
 /**
  * In-memory PayLedger backed by a running spend total.
@@ -69,7 +131,77 @@ export function createInMemoryPayLedger(initialBudget: number): PayLedger {
 }
 
 /**
+ * In-memory budget tracker with O(1) pre-aggregated breakdown queries.
+ *
+ * Aggregates are maintained incrementally on each `record()` call,
+ * making `totalSpend()`, `remaining()`, and `breakdown()` all O(1).
+ */
+export function createInMemoryBudgetTracker(): BudgetTracker {
+  const sessions = new Map<string, SessionAgg>();
+
+  return {
+    async record(sessionId: string, entry: CostEntry): Promise<void> {
+      const agg = getOrCreateSession(sessions, sessionId);
+
+      // Update running total
+      agg.totalCostUsd += entry.costUsd;
+
+      // Update per-model aggregate
+      const existingModel = agg.byModel.get(entry.model);
+      if (existingModel !== undefined) {
+        existingModel.totalCostUsd += entry.costUsd;
+        existingModel.totalInputTokens += entry.inputTokens;
+        existingModel.totalOutputTokens += entry.outputTokens;
+        existingModel.callCount += 1;
+      } else {
+        agg.byModel.set(entry.model, {
+          totalCostUsd: entry.costUsd,
+          totalInputTokens: entry.inputTokens,
+          totalOutputTokens: entry.outputTokens,
+          callCount: 1,
+        });
+      }
+
+      // Update per-tool aggregate (only when toolName is set)
+      if (entry.toolName !== undefined) {
+        const existingTool = agg.byTool.get(entry.toolName);
+        if (existingTool !== undefined) {
+          existingTool.totalCostUsd += entry.costUsd;
+          existingTool.callCount += 1;
+        } else {
+          agg.byTool.set(entry.toolName, {
+            totalCostUsd: entry.costUsd,
+            callCount: 1,
+          });
+        }
+      }
+    },
+
+    async totalSpend(sessionId: string): Promise<number> {
+      return sessions.get(sessionId)?.totalCostUsd ?? 0;
+    },
+
+    async remaining(sessionId: string, budget: number): Promise<number> {
+      const spent = sessions.get(sessionId)?.totalCostUsd ?? 0;
+      return Math.max(0, budget - spent);
+    },
+
+    async breakdown(sessionId: string): Promise<CostBreakdown> {
+      const agg = sessions.get(sessionId);
+      if (agg === undefined) return EMPTY_BREAKDOWN;
+      return freezeBreakdown(agg);
+    },
+  };
+}
+
+/**
  * Default cost calculator with simple per-token pricing.
+ *
+ * Default rates are rough estimates for illustrative/testing purposes only:
+ * - Input: $3 per million tokens ($0.000003/token)
+ * - Output: $15 per million tokens ($0.000015/token)
+ *
+ * Production deployments should supply real rates via the `rates` parameter.
  */
 export function createDefaultCostCalculator(
   rates?: Partial<Record<string, { readonly input: number; readonly output: number }>>,

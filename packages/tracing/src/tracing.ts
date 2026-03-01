@@ -30,6 +30,7 @@ import {
   GEN_AI_USAGE_INPUT_TOKENS,
   GEN_AI_USAGE_OUTPUT_TOKENS,
   KOI_AGENT_ID,
+  KOI_COST_USD,
   KOI_REQUEST_CONTENT,
   KOI_RESPONSE_CONTENT,
   KOI_SESSION_ID,
@@ -63,6 +64,7 @@ export function createTracingMiddleware(config: TracingConfig = {}): KoiMiddlewa
   const captureContent = config.captureContent ?? false;
   const contentFilter = config.contentFilter;
   const onError = config.onError;
+  const costEnricher = config.costEnricher;
 
   const sessionSpans = createSpanContextStore();
   const turnSpans = createSpanContextStore();
@@ -195,6 +197,18 @@ export function createTracingMiddleware(config: TracingConfig = {}): KoiMiddlewa
           if (response.usage !== undefined) {
             span.setAttribute(GEN_AI_USAGE_INPUT_TOKENS, response.usage.inputTokens);
             span.setAttribute(GEN_AI_USAGE_OUTPUT_TOKENS, response.usage.outputTokens);
+            if (costEnricher !== undefined) {
+              try {
+                const costUsd = costEnricher(
+                  response.model,
+                  response.usage.inputTokens,
+                  response.usage.outputTokens,
+                );
+                span.setAttribute(KOI_COST_USD, costUsd);
+              } catch (enrichErr: unknown) {
+                onError?.(enrichErr);
+              }
+            }
           }
           recordContent(span, request, response);
         }
@@ -251,6 +265,18 @@ export function createTracingMiddleware(config: TracingConfig = {}): KoiMiddlewa
           if (lastResponse.usage !== undefined) {
             span.setAttribute(GEN_AI_USAGE_INPUT_TOKENS, lastResponse.usage.inputTokens);
             span.setAttribute(GEN_AI_USAGE_OUTPUT_TOKENS, lastResponse.usage.outputTokens);
+            if (costEnricher !== undefined) {
+              try {
+                const costUsd = costEnricher(
+                  lastResponse.model,
+                  lastResponse.usage.inputTokens,
+                  lastResponse.usage.outputTokens,
+                );
+                span.setAttribute(KOI_COST_USD, costUsd);
+              } catch (enrichErr: unknown) {
+                onError?.(enrichErr);
+              }
+            }
           }
           recordContent(span, request, lastResponse);
         }

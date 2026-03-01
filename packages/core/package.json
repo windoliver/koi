@@ -147,6 +147,10 @@
     "./zone": {
       "types": "./dist/zone.d.ts",
       "import": "./dist/zone.js"
+    },
+    "./cost-tracker": {
+      "types": "./dist/cost-tracker.d.ts",
+      "import": "./dist/cost-tracker.js"
     }
   },
   "scripts": {

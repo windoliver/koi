@@ -8,11 +8,14 @@
 
 export type { FeedbackLoopConfig, ForgeHealthConfig } from "./config.js";
 export { validateFeedbackLoopConfig } from "./config.js";
+export type { FeedbackLoopHandle } from "./feedback-loop.js";
 export { createFeedbackLoopMiddleware } from "./feedback-loop.js";
+export type { FlushDeltas } from "./fitness-flush.js";
+export { computeMergedFitness, shouldFlush } from "./fitness-flush.js";
 export type { ForgeRepairConfig } from "./forge-repair.js";
 export { createForgeRepairStrategy } from "./forge-repair.js";
 export { defaultRepairStrategy, formatErrors } from "./repair.js";
-export type { ToolHealthTracker } from "./tool-health.js";
+export type { ToolFlushState, ToolHealthTracker } from "./tool-health.js";
 export { createToolHealthTracker } from "./tool-health.js";
 export type {
   ForgeToolErrorFeedback,

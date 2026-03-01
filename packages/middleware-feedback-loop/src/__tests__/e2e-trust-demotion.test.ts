@@ -254,7 +254,7 @@ describeE2E("e2e: bidirectional trust demotion through full Koi stack", () => {
         },
       };
 
-      const feedbackMiddleware = createFeedbackLoopMiddleware({ forgeHealth });
+      const { middleware: feedbackMiddleware } = createFeedbackLoopMiddleware({ forgeHealth });
 
       const adapter = createPiAdapter({
         model: E2E_MODEL,
@@ -315,7 +315,7 @@ describeE2E("e2e: bidirectional trust demotion through full Koi stack", () => {
         quarantineThreshold: 0.5,
       };
 
-      const feedbackMiddleware = createFeedbackLoopMiddleware({ forgeHealth });
+      const { middleware: feedbackMiddleware } = createFeedbackLoopMiddleware({ forgeHealth });
 
       const adapter = createPiAdapter({
         model: E2E_MODEL,
@@ -561,7 +561,7 @@ describeE2E("e2e: bidirectional trust demotion through full Koi stack", () => {
       // Tool that fails on every call
       const { tool: failingTool } = createFlakyForgedTool(0); // Fails immediately
 
-      const feedbackMiddleware = createFeedbackLoopMiddleware({ forgeHealth });
+      const { middleware: feedbackMiddleware } = createFeedbackLoopMiddleware({ forgeHealth });
 
       const adapter = createPiAdapter({
         model: E2E_MODEL,
@@ -673,7 +673,7 @@ describeE2E("e2e: bidirectional trust demotion through full Koi stack", () => {
 
       const { tool: goodForgedTool } = createFlakyForgedTool(100); // Won't fail
 
-      const feedbackMiddleware = createFeedbackLoopMiddleware({ forgeHealth });
+      const { middleware: feedbackMiddleware } = createFeedbackLoopMiddleware({ forgeHealth });
 
       // Track which tools the middleware sees
       const toolCallsObserved: string[] = [];
@@ -759,7 +759,7 @@ Use the appropriate tool for each operation. ALWAYS use tools, never compute you
 
       // Now create the middleware with the same tracker state
       // We need a fresh middleware that shares the quarantine state
-      const feedbackMiddleware = createFeedbackLoopMiddleware({ forgeHealth });
+      const { middleware: feedbackMiddleware } = createFeedbackLoopMiddleware({ forgeHealth });
 
       // Pre-seed quarantine state: fail 2 times through the middleware
       const failingTool = createFlakyForgedTool(0).tool;

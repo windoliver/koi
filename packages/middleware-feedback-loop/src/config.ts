@@ -39,6 +39,14 @@ export interface ForgeHealthConfig {
   readonly onDemotion?: (event: TrustDemotionEvent) => void | Promise<void>;
   /** Injectable clock for testing. Default: Date.now. */
   readonly clock?: () => number;
+  /** Number of invocations before flushing fitness data to ForgeStore. Default: 10. */
+  readonly flushThreshold?: number;
+  /** Error rate delta that triggers an early flush (0-1). Default: 0.05. */
+  readonly errorRateDeltaThreshold?: number;
+  /** Callback fired when a fitness flush fails. */
+  readonly onFlushError?: (toolId: string, error: unknown) => void;
+  /** Callback fired when a demotion check fails (replaces empty catch). */
+  readonly onDemotionError?: (toolId: string, error: unknown) => void;
 }
 
 /** Configuration for the feedback-loop middleware. */
@@ -209,6 +217,32 @@ export function validateFeedbackLoopConfig(config: unknown): Result<FeedbackLoop
         return {
           ok: false,
           error: validationError("forgeHealth.maxRecentFailures must be a non-negative integer"),
+        };
+      }
+    }
+    if (fh.flushThreshold !== undefined) {
+      if (
+        typeof fh.flushThreshold !== "number" ||
+        fh.flushThreshold < 1 ||
+        !Number.isInteger(fh.flushThreshold)
+      ) {
+        return {
+          ok: false,
+          error: validationError("forgeHealth.flushThreshold must be a positive integer"),
+        };
+      }
+    }
+    if (fh.errorRateDeltaThreshold !== undefined) {
+      if (
+        typeof fh.errorRateDeltaThreshold !== "number" ||
+        fh.errorRateDeltaThreshold < 0 ||
+        fh.errorRateDeltaThreshold > 1
+      ) {
+        return {
+          ok: false,
+          error: validationError(
+            "forgeHealth.errorRateDeltaThreshold must be a number between 0 and 1",
+          ),
         };
       }
     }

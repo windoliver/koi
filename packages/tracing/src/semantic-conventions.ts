@@ -24,3 +24,4 @@ export const KOI_TOOL_ID = "koi.tool.id" as const;
 export const KOI_MIDDLEWARE_NAME = "koi.middleware.name" as const;
 export const KOI_REQUEST_CONTENT = "koi.request.content" as const;
 export const KOI_RESPONSE_CONTENT = "koi.response.content" as const;
+export const KOI_COST_USD = "koi.cost.usd" as const;

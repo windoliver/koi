@@ -19,7 +19,7 @@ const baseToolRequest: ToolRequest = {
 describe("wrapToolCall integration", () => {
   test("happy path: tool input and output pass", async () => {
     const spy = createSpyToolHandler({ output: { result: "ok" } });
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       toolValidators: [createMockValidator("tv1")],
       toolGates: [createMockValidator("tg1")],
     });
@@ -32,7 +32,7 @@ describe("wrapToolCall integration", () => {
 
   test("bad tool input rejected before execution (next never called)", async () => {
     const spy = createSpyToolHandler();
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       toolValidators: [
         createFailingValidator([{ validator: "input-check", message: "bad input" }], "input-check"),
       ],
@@ -54,7 +54,7 @@ describe("wrapToolCall integration", () => {
 
   test("tool output gate fails -> throws after execution", async () => {
     const spy = createSpyToolHandler({ output: { data: "sensitive" } });
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       toolGates: [
         createFailingValidator([{ validator: "pii-gate", message: "PII detected" }], "pii-gate"),
       ],
@@ -76,7 +76,7 @@ describe("wrapToolCall integration", () => {
   test("onGateFail callback fires on tool gate failure", async () => {
     const gateFails: Array<{ name: string }> = [];
     const spy = createSpyToolHandler();
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       toolGates: [createFailingValidator([{ validator: "gate", message: "nope" }], "gate")],
       onGateFail: (name) => gateFails.push({ name }),
     });
@@ -92,7 +92,7 @@ describe("wrapToolCall integration", () => {
 
   test("no tool validators or gates -> pass-through", async () => {
     const spy = createSpyToolHandler({ output: "raw" });
-    const mw = createFeedbackLoopMiddleware({});
+    const { middleware: mw } = createFeedbackLoopMiddleware({});
 
     const result = await mw.wrapToolCall?.(ctx, baseToolRequest, spy.handler);
     expect(result).toBeDefined();
@@ -102,7 +102,7 @@ describe("wrapToolCall integration", () => {
 
   test("tool input passes, then output gate passes", async () => {
     const spy = createSpyToolHandler({ output: "clean" });
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       toolValidators: [createMockValidator("input-ok")],
       toolGates: [createMockValidator("output-ok")],
     });

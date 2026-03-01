@@ -9,6 +9,7 @@ import { JsonObject } from './common.js';
 export { ChannelAdapter, ChannelCapabilities, ChannelStatus, ChannelStatusKind, MessageHandler } from './channel.js';
 export { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, FeatureFlags, ForgeConfigSection, KoiConfig, LimitsConfig, LogLevel, LoopDetectionConfigSection, ModelRouterConfigSection, ModelTargetConfigEntry, SpawnConfig, TelemetryConfig } from './config.js';
 export { CompactionResult, ContextCompactor, TokenEstimator } from './context.js';
+export { BudgetTracker, CostBreakdown, CostCalculator, CostEntry, ModelCostBreakdown, ToolCostBreakdown, UsageInfo } from './cost-HASH.js';
 export { ElicitationOption, ElicitationQuestion, ElicitationResult } from './elicitation.js';
 export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, EventEnvelope, EventInput, ReadOptions, ReadResult, SubscribeOptions, SubscriptionHandle } from './event-HASH.js';
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
@@ -755,6 +756,60 @@ declare function permission(message: string): KoiError;
  * @param hint - Optional actionable hint for the caller (e.g., "call browser_snapshot").
  */
 declare function staleRef(refId: string, hint?: string): KoiError;
+
+/**
+ * Forge demand types — demand-triggered forging signal system.
+ *
+ * Defines the signal and budget types for pull-based forge triggering.
+ * Middleware detects capability gaps and emits ForgeDemandSignal when
+ * environmental pressure demands new tool creation.
+ */
+
+/** Discriminated union of demand trigger kinds. */
+type ForgeTrigger = {
+    readonly kind: "repeated_failure";
+    readonly toolName: string;
+    readonly count: number;
+} | {
+    readonly kind: "no_matching_tool";
+    readonly query: string;
+    readonly attempts: number;
+} | {
+    readonly kind: "capability_gap";
+    readonly requiredCapability: string;
+} | {
+    readonly kind: "performance_degradation";
+    readonly toolName: string;
+    readonly metric: string;
+};
+/** Signal emitted by the demand detector middleware when a forge need is detected. */
+interface ForgeDemandSignal {
+    readonly id: string;
+    readonly kind: "forge_demand";
+    readonly trigger: ForgeTrigger;
+    /** Confidence score (0-1) that forging is warranted. */
+    readonly confidence: number;
+    readonly suggestedBrickKind: BrickKind;
+    readonly context: {
+        readonly failureCount: number;
+        readonly failedToolCalls: readonly string[];
+        readonly taskDescription?: string | undefined;
+    };
+    readonly emittedAt: number;
+}
+/** Demand-aware budget configuration for forge triggering. */
+interface ForgeBudget {
+    /** Hard cap on forges per session (safety limit). */
+    readonly maxForgesPerSession: number;
+    /** Total forge compute time budget in milliseconds. */
+    readonly computeTimeBudgetMs: number;
+    /** Minimum confidence to auto-suggest forge (0-1). */
+    readonly demandThreshold: number;
+    /** Minimum time between forge suggestions for the same trigger key (ms). */
+    readonly cooldownMs: number;
+}
+/** Sensible defaults for forge budget. */
+declare const DEFAULT_FORGE_BUDGET: ForgeBudget;
 
 /**
  * TaskBoard contract — persistent task coordination for multi-agent swarms.
@@ -1563,6 +1618,42 @@ interface EventCursor {
 }
 
 /**
+ * Tool health types — promoted to L0 for cross-package consumption.
+ *
+ * These types were originally defined in @koi/middleware-feedback-loop.
+ * Promoted to L0 so L2 packages (e.g., @koi/forge-demand) can consume
+ * health data without L2→L2 imports.
+ */
+/** Aggregated health metrics for a single tool. */
+interface ToolHealthMetrics {
+    /** Success rate (0-1). */
+    readonly successRate: number;
+    /** Error rate (0-1). */
+    readonly errorRate: number;
+    /** Total invocations in the tracking window. */
+    readonly usageCount: number;
+    /** Average latency in milliseconds. */
+    readonly avgLatencyMs: number;
+}
+/** Health state of a forged tool. */
+type ToolHealthState = "healthy" | "degraded" | "quarantined";
+/** Point-in-time snapshot of a tool's health. */
+interface ToolHealthSnapshot {
+    readonly brickId: string;
+    readonly toolId: string;
+    readonly metrics: ToolHealthMetrics;
+    readonly state: ToolHealthState;
+    readonly recentFailures: readonly ToolFailureRecord[];
+    readonly lastUpdatedAt: number;
+}
+/** Record of a single tool failure. */
+interface ToolFailureRecord {
+    readonly timestamp: number;
+    readonly error: string;
+    readonly latencyMs: number;
+}
+
+/**
  * Validation utilities — pure functions for L0 type safety.
  *
  * isProcessState: runtime type guard matching the ProcessState union.
@@ -1580,7 +1671,7 @@ declare function isProcessState(value: string): value is ProcessState;
  */
 declare function validateNonEmpty(value: string, name: string): Result<void, KoiError>;
 
-export { ALL_CATALOG_SOURCES, ALL_CHANGE_TARGETS, type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentGroupId, AgentId, AgentManifest, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickKind, BrickRef, type BundleId, type CapabilityDenyReason, type CapabilityId, CapabilityProof, type CapabilityRegistry, type CapabilityScope, type CapabilityToken, type CapabilityVerifier, type CapabilityVerifyResult, type CapacityReport, type CatalogEntry, type CatalogPage, type CatalogQuery, type CatalogReader, type CatalogSource, type CatalogSourceError, type ChainCompactor, type ChainId, type ChangeKind, type ChangeTarget, type CompensatingOp, ComponentProvider, type ContextSummary, DEFAULT_CATALOG_SEARCH_LIMIT, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_TASK_BOARD_CONFIG, DelegationDenyReason, type DiagnosticItem, type DiagnosticProvider, type DiagnosticRange, type DiagnosticSeverity, EXTENSION_PRIORITY, EngineState, type EventCursor, type FileOpKind, type FileOpRecord, type ForkRef, type GateRequirement, type GuardContext, type HarnessId, type HarnessMetrics, type HarnessPhase, type HarnessSnapshot, type HarnessSnapshotStore, type HarnessStatus, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, type KeyArtifact, KoiError, KoiMiddleware, type NodeCapability, type NodeId, PROPOSAL_GATE_REQUIREMENTS, type PendingFrame, PermissionConfig, ProcessState, type Proposal, type ProposalEvent, type ProposalGate, type ProposalId, type ProposalInput, type ProposalResult, type ProposalStatus, type ProposalUnsubscribe, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, Result, type ReviewDecision, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type ServiceProviderConfig, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SingleToolProviderConfig, SkillComponent, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, SubsystemToken, type TaskBoard, type TaskBoardConfig, type TaskBoardEvent, type TaskBoardSnapshot, type TaskItem, type TaskItemId, type TaskItemInput, type TaskItemPatch, type TaskItemStatus, type TaskResult, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TransitionContext, TransitionReason, TrustTier, type TurnTrace, type ValidationDiagnostic, type ValidationResult, type VerifierCache, type VerifyContext, bundleId, capabilityId, chainId, conflict, createServiceProvider, createSingleToolProvider, evolveRegistryEntry, external, harnessId, internal, isAgentStateEvent, isCapabilityToken, isProcessState, isToolCallPayload, nodeId, notFound, permission, proposalId, rateLimit, staleRef, taskItemId, timeout, validateNonEmpty, validation };
+export { ALL_CATALOG_SOURCES, ALL_CHANGE_TARGETS, type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentGroupId, AgentId, AgentManifest, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickKind, BrickRef, type BundleId, type CapabilityDenyReason, type CapabilityId, CapabilityProof, type CapabilityRegistry, type CapabilityScope, type CapabilityToken, type CapabilityVerifier, type CapabilityVerifyResult, type CapacityReport, type CatalogEntry, type CatalogPage, type CatalogQuery, type CatalogReader, type CatalogSource, type CatalogSourceError, type ChainCompactor, type ChainId, type ChangeKind, type ChangeTarget, type CompensatingOp, ComponentProvider, type ContextSummary, DEFAULT_CATALOG_SEARCH_LIMIT, DEFAULT_FORGE_BUDGET, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_TASK_BOARD_CONFIG, DelegationDenyReason, type DiagnosticItem, type DiagnosticProvider, type DiagnosticRange, type DiagnosticSeverity, EXTENSION_PRIORITY, EngineState, type EventCursor, type FileOpKind, type FileOpRecord, type ForgeBudget, type ForgeDemandSignal, type ForgeTrigger, type ForkRef, type GateRequirement, type GuardContext, type HarnessId, type HarnessMetrics, type HarnessPhase, type HarnessSnapshot, type HarnessSnapshotStore, type HarnessStatus, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, type KeyArtifact, KoiError, KoiMiddleware, type NodeCapability, type NodeId, PROPOSAL_GATE_REQUIREMENTS, type PendingFrame, PermissionConfig, ProcessState, type Proposal, type ProposalEvent, type ProposalGate, type ProposalId, type ProposalInput, type ProposalResult, type ProposalStatus, type ProposalUnsubscribe, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, Result, type ReviewDecision, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type ServiceProviderConfig, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SingleToolProviderConfig, SkillComponent, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, SubsystemToken, type TaskBoard, type TaskBoardConfig, type TaskBoardEvent, type TaskBoardSnapshot, type TaskItem, type TaskItemId, type TaskItemInput, type TaskItemPatch, type TaskItemStatus, type TaskResult, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolFailureRecord, type ToolHealthMetrics, type ToolHealthSnapshot, type ToolHealthState, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TransitionContext, TransitionReason, TrustTier, type TurnTrace, type ValidationDiagnostic, type ValidationResult, type VerifierCache, type VerifyContext, bundleId, capabilityId, chainId, conflict, createServiceProvider, createSingleToolProvider, evolveRegistryEntry, external, harnessId, internal, isAgentStateEvent, isCapabilityToken, isProcessState, isToolCallPayload, nodeId, notFound, permission, proposalId, rateLimit, staleRef, taskItemId, timeout, validateNonEmpty, validation };
 "
 `;
 
@@ -2798,6 +2889,8 @@ interface ActionEntry {
         readonly inputTokens: number;
         readonly outputTokens: number;
     } | undefined;
+    /** Estimated cost in USD for this action, when available. */
+    readonly costUsd?: number | undefined;
 }
 /** An issue (error, warning, informational) encountered during a run. */
 interface IssueEntry {
@@ -3106,5 +3199,74 @@ interface ZoneRegistry extends AsyncDisposable {
 }
 
 export { type ZoneDescriptor, type ZoneEvent, type ZoneFilter, type ZoneId, type ZoneRegistry, type ZoneStatus, zoneId };
+"
+`;
+
+exports[`@koi/core API surface ./cost-tracker has stable type surface 1`] = `
+"/**
+ * Cost tracking contracts — per-session, per-tool, per-model cost transparency.
+ *
+ * Pure types only. No runtime code, no imports from other packages.
+ * Defines the canonical cost tracking interfaces shared across L0, L1, and L2.
+ */
+/** A single cost event recorded during a model call. */
+interface CostEntry {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly model: string;
+    readonly costUsd: number;
+    readonly timestamp: number;
+    /** Optional tool attribution — set when the model call was on behalf of a tool. */
+    readonly toolName?: string | undefined;
+}
+/** Aggregated cost for a single model within a session. */
+interface ModelCostBreakdown {
+    readonly model: string;
+    readonly totalCostUsd: number;
+    readonly totalInputTokens: number;
+    readonly totalOutputTokens: number;
+    readonly callCount: number;
+}
+/** Aggregated cost for a single tool within a session. */
+interface ToolCostBreakdown {
+    readonly toolName: string;
+    readonly totalCostUsd: number;
+    readonly callCount: number;
+}
+/** Full cost breakdown for a session — total + per-model + per-tool. */
+interface CostBreakdown {
+    readonly totalCostUsd: number;
+    readonly byModel: readonly ModelCostBreakdown[];
+    readonly byTool: readonly ToolCostBreakdown[];
+}
+/**
+ * Calculates the USD cost of a model call from token counts.
+ *
+ * Implementations may use static rate tables or dynamic pricing APIs.
+ */
+interface CostCalculator {
+    readonly calculate: (model: string, inputTokens: number, outputTokens: number) => number;
+}
+/**
+ * Session-scoped budget tracker with breakdown queries.
+ *
+ * All methods return \`T | Promise<T>\` so implementations can be
+ * sync (in-memory) or async (network/database) without interface changes.
+ */
+interface BudgetTracker {
+    readonly record: (sessionId: string, entry: CostEntry) => void | Promise<void>;
+    readonly totalSpend: (sessionId: string) => number | Promise<number>;
+    readonly remaining: (sessionId: string, budget: number) => number | Promise<number>;
+    readonly breakdown: (sessionId: string) => CostBreakdown | Promise<CostBreakdown>;
+}
+/** Enriched usage information passed to onUsage callbacks. */
+interface UsageInfo {
+    readonly entry: CostEntry;
+    readonly totalSpent: number;
+    readonly remaining: number;
+    readonly breakdown: CostBreakdown;
+}
+
+export type { BudgetTracker, CostBreakdown, CostCalculator, CostEntry, ModelCostBreakdown, ToolCostBreakdown, UsageInfo };
 "
 `;

@@ -20,7 +20,7 @@ const baseRequest: ModelRequest = {
 describe("edge cases", () => {
   test("empty validators -> pass-through with zero overhead", async () => {
     const spy = createSpyModelHandler({ content: "fast", model: "m" });
-    const mw = createFeedbackLoopMiddleware({ validators: [] });
+    const { middleware: mw } = createFeedbackLoopMiddleware({ validators: [] });
 
     const result = await mw.wrapModelCall?.(ctx, baseRequest, spy.handler);
     expect(result).toBeDefined();
@@ -30,7 +30,7 @@ describe("edge cases", () => {
 
   test("empty gates -> no gate check", async () => {
     const spy = createSpyModelHandler({ content: "ok", model: "m" });
-    const mw = createFeedbackLoopMiddleware({ gates: [] });
+    const { middleware: mw } = createFeedbackLoopMiddleware({ gates: [] });
 
     const result = await mw.wrapModelCall?.(ctx, baseRequest, spy.handler);
     expect(result).toBeDefined();
@@ -39,7 +39,7 @@ describe("edge cases", () => {
 
   test("async validator awaited correctly", async () => {
     const spy = createSpyModelHandler({ content: "ok", model: "m" });
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       validators: [createAsyncValidator(10, { valid: true }, "slow-v")],
     });
 
@@ -49,7 +49,7 @@ describe("edge cases", () => {
   });
 
   test("validator that throws -> wrapped as non-retryable, immediate throw", async () => {
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       validators: [createThrowingValidator(new Error("validator crash"), "crasher")],
       retry: { validation: { maxAttempts: 5 } },
     });
@@ -70,7 +70,7 @@ describe("edge cases", () => {
   });
 
   test("mixed results: some validators pass, some fail -> all errors collected", async () => {
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       validators: [
         createMockValidator("pass-1"),
         createFailingValidator([{ validator: "fail-1", message: "err1" }], "fail-1"),
@@ -105,7 +105,7 @@ describe("edge cases", () => {
       return { content: "bad", model: "m" };
     };
 
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       validators: [
         {
           name: "fatal-check",
@@ -136,7 +136,7 @@ describe("edge cases", () => {
       return { content: "recovered", model: "m" };
     };
 
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       validators: [createMockValidator("v1")],
       retry: { transport: { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 0 } },
     });
@@ -149,7 +149,7 @@ describe("edge cases", () => {
 
   test("gate throws -> wrapped as KoiRuntimeError", async () => {
     const spy = createSpyModelHandler({ content: "ok", model: "m" });
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       gates: [createThrowingValidator(new Error("gate crash"), "crash-gate")],
     });
 
@@ -172,7 +172,7 @@ describe("edge cases", () => {
       model: "m",
     });
 
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       validators: [
         {
           name: "validator",

@@ -20,7 +20,7 @@ This middleware is the feedback loop between model output → validation → err
 
 ## Architecture
 
-`@koi/middleware-feedback-loop` is an **L2 feature package** — depends only on L0 (`@koi/core`) and L0u (`@koi/errors`).
+`@koi/middleware-feedback-loop` is an **L2 feature package** — depends only on L0 (`@koi/core`) and L0u (`@koi/errors`, `@koi/validation`).
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -34,19 +34,22 @@ This middleware is the feedback loop between model output → validation → err
 │  gate.ts              ← quality gate evaluation          │
 │  validators.ts        ← validator orchestration          │
 │  tool-health.ts       ← health tracker + demotion engine │
+│  fitness-flush.ts     ← fitness persistence bridge       │
 │  forge-repair.ts      ← forge-specific repair strategy   │
 │  index.ts             ← public API surface               │
 │                                                          │
 ├──────────────────────────────────────────────────────────┤
 │  Dependencies                                            │
 │                                                          │
-│  @koi/core    (L0)   KoiMiddleware, ModelRequest,        │
-│                       ModelResponse, ToolRequest,         │
-│                       ToolResponse, TurnContext,          │
-│                       ForgeStore, SnapshotStore,          │
-│                       DemotionCriteria, TrustTier         │
-│  @koi/errors  (L0u)  KoiRuntimeError, extractMessage     │
-│  zod          (ext)  Config validation schemas            │
+│  @koi/core       (L0)   KoiMiddleware, ModelRequest,     │
+│                          ModelResponse, ToolRequest,      │
+│                          ToolResponse, TurnContext,       │
+│                          ForgeStore, SnapshotStore,       │
+│                          DemotionCriteria, TrustTier,     │
+│                          BrickFitnessMetrics              │
+│  @koi/errors     (L0u)  KoiRuntimeError, extractMessage  │
+│  @koi/validation (L0u)  LatencySampler, mergeSamplers    │
+│  zod             (ext)  Config validation schemas         │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -210,6 +213,53 @@ Ring buffer (size = max(quarantine window, demotion window)):
   └─────────────────────────────────────────────────────────
 ```
 
+### Fitness Persistence Bridge (Issue #251)
+
+Runtime health data (success/failure counts, latency) is tracked in-memory by the `ToolHealthTracker`. Without persistence, all health data is lost on process restart, and the scoring infrastructure (`computeBrickFitness`, `sortBricks`, `evaluateTrustDecay`) operates on empty `BrickFitnessMetrics`.
+
+The fitness persistence bridge closes this loop by flushing cumulative session data to `ForgeStore` via threshold-based triggers.
+
+```
+  Tool Invocation
+       │
+       ▼
+┌────────────────────┐
+│ recordSuccess() /  │    ① Increment cumulative counters
+│ recordFailure()    │    ② Push latency to reservoir buffer
+│                    │    ③ Set dirty = true
+└────────┬───────────┘
+         │
+         ▼
+┌────────────────────┐
+│ shouldFlushTool()  │    Threshold check:
+│                    │    • invocations ≥ K (default 10), OR
+│                    │    • |errorRate - lastFlushedRate| > δ (default 5%)
+└────────┬───────────┘
+         │ YES
+         ▼
+┌────────────────────┐
+│ flushTool()        │    ① Capture deltas (success, failure, latency)
+│                    │    ② Load existing BrickFitnessMetrics from ForgeStore
+│                    │    ③ Merge: computeMergedFitness(deltas, existing)
+│                    │    ④ Update ForgeStore with merged fitness + usageCount
+│                    │    ⑤ Reset flush state (invocations, dirty, lastFlushed*)
+└────────────────────┘
+         │
+         ▼
+  ForgeStore now has real fitness data
+  → computeBrickFitness, sortBricks, evaluateTrustDecay work correctly
+```
+
+**Cumulative counters vs. ring buffer**: The ring buffer tracks recent invocations for quarantine/demotion decisions. The cumulative counters track total successes/failures within the session for fitness persistence. Both are updated on every `record()` call.
+
+**Reservoir sampling**: The latency buffer has a cap (default 200). When full, new samples replace existing ones with decreasing probability (`1/totalCount`), maintaining a statistically representative sample without unbounded memory growth.
+
+**Concurrent flush guard**: Each tool has a `flushing` boolean. If a flush is already in-flight, `shouldFlushTool()` returns false. This prevents duplicate writes without requiring locks.
+
+**Graceful NOT_FOUND handling**: If the brick was deleted between recording and flushing, the flush clears the dirty flag and calls `onFlushError` instead of retrying indefinitely.
+
+**Session drain**: When the middleware's `onSessionEnd` fires, `dispose()` flushes all remaining dirty tools, ensuring no data is lost at shutdown.
+
 ### Demotion vs. Quarantine
 
 These are **two independent axes**. Demotion lowers privileges; quarantine kills the tool.
@@ -290,6 +340,10 @@ Returns a `ToolHealthTracker` for direct use outside the middleware.
 | `demotionCriteria` | `Partial<DemotionCriteria>` | `DEFAULT_DEMOTION_CRITERIA` | Demotion thresholds |
 | `onDemotion` | `(event) => void` | — | Callback when trust tier is demoted |
 | `clock` | `() => number` | `Date.now` | Injectable clock for testing |
+| `flushThreshold` | `number` | `10` | Flush after this many invocations per tool |
+| `errorRateDeltaThreshold` | `number` | `0.05` | Flush when error rate changes by more than this |
+| `onFlushError` | `(toolId, error) => void` | — | Callback on flush failure |
+| `onDemotionError` | `(toolId, error) => void` | — | Callback on demotion check failure |
 
 ### `ToolHealthTracker` Interface
 
@@ -302,7 +356,36 @@ interface ToolHealthTracker {
   readonly checkAndQuarantine: (toolId: string) => Promise<boolean>;
   readonly checkAndDemote: (toolId: string) => Promise<boolean>;
   readonly getAllSnapshots: () => readonly ToolHealthSnapshot[];
+  readonly shouldFlushTool: (toolId: string) => boolean;
+  readonly flushTool: (toolId: string) => Promise<void>;
+  readonly flush: () => Promise<void>;
+  readonly dispose: () => Promise<void>;
 }
+```
+
+### Pure Function: `shouldFlush()`
+
+Determines whether a tool's fitness data should be flushed to ForgeStore.
+
+```typescript
+function shouldFlush(
+  state: ToolFlushState,
+  flushThreshold: number,
+  errorRateDeltaThreshold: number,
+): boolean
+// Returns true when dirty && !flushing && (invocations >= threshold OR |errorRateDelta| > threshold)
+```
+
+### Pure Function: `computeMergedFitness()`
+
+Merges session deltas with existing persisted fitness metrics.
+
+```typescript
+function computeMergedFitness(
+  deltas: FlushDeltas,
+  existing: BrickFitnessMetrics | undefined,
+): BrickFitnessMetrics
+// Adds deltas to existing counts, merges latency samplers, takes max(lastUsedAt)
 ```
 
 ### Pure Function: `computeHealthAction()`
@@ -484,6 +567,31 @@ const demoted = await tracker.checkAndDemote("my-tool");
 expect(demoted).toBe(true);
 ```
 
+### 6. Fitness persistence with flush callbacks
+
+```typescript
+const mw = createFeedbackLoopMiddleware({
+  forgeHealth: {
+    resolveBrickId: (toolId) => forgeRegistry.resolve(toolId),
+    forgeStore,
+    snapshotStore,
+    // Flush after every 20 invocations per tool
+    flushThreshold: 20,
+    // Or when error rate changes by more than 10%
+    errorRateDeltaThreshold: 0.1,
+    onFlushError: (toolId, error) => {
+      logger.warn("Fitness flush failed", { toolId, error });
+    },
+    onDemotionError: (toolId, error) => {
+      logger.warn("Demotion check failed", { toolId, error });
+    },
+  },
+});
+
+// Middleware automatically flushes fitness data to ForgeStore on threshold.
+// On session end (onSessionEnd), dispose() drains all remaining dirty tools.
+```
+
 ---
 
 ## Performance
@@ -504,29 +612,32 @@ toolValidators.length === 0 && toolGates.length === 0 && !isForgedTool → next(
 resolveBrickId(toolId)     O(1) — single lookup
 isQuarantined(toolId)      O(1) — Map.get + boolean check
 next(request)              O(tool execution time)
-recordSuccess(toolId)      O(1) — ring buffer write at cursor
+recordSuccess(toolId)      O(1) — ring buffer write at cursor + cumulative counter increment
+shouldFlushTool(toolId)    O(1) — compare counters + error rate delta
 computeHealthAction()      O(window) — scan ring buffer entries
 ```
 
-**O(window)** per call — with default window=20, this is effectively O(1).
+**O(window)** per call — with default window=20, this is effectively O(1). The fitness flush check (`shouldFlushTool`) adds one comparison on every call but only triggers I/O every K invocations (default 10).
 
 ### Memory
 
 Per tracked tool:
 
 - Ring buffer: `max(quarantine window, demotion window)` entries = 20 × 16 bytes = 320 bytes
+- Latency buffer: up to 200 entries × 8 bytes = 1.6 KB (reservoir sampled)
+- Cumulative counters + flush state: 10 fields = 80 bytes
 - Recent failures: up to `maxRecentFailures` records = 5 × ~200 bytes = 1 KB
 - Cached trust tier + timestamps: 3 fields = 24 bytes
 
-Total per tool: ~1.4 KB. For 100 forged tools: ~140 KB.
+Total per tool: ~3 KB. For 100 forged tools: ~300 KB.
 
-### Demotion Store Operations
+### Store Operations
 
-Store I/O (async) only happens when demotion or quarantine triggers — not on every call:
+Store I/O (async) only happens on threshold triggers — not on every call:
 
-- `forgeStore.load()` — once per tool (cached thereafter)
-- `forgeStore.update()` — only on demotion/quarantine
-- `snapshotStore.record()` — only on demotion/quarantine
+- **Demotion/quarantine**: `forgeStore.load()` + `forgeStore.update()` + `snapshotStore.record()`
+- **Fitness flush**: `forgeStore.load()` + `forgeStore.update()` — every K invocations (default 10) or on error rate shift > 5%. Fire-and-forget (does not block the tool call response).
+- **Session drain**: `dispose()` flushes all dirty tools once at session end via `onSessionEnd`
 
 ---
 
@@ -536,15 +647,17 @@ Store I/O (async) only happens when demotion or quarantine triggers — not on e
   L0  @koi/core ──────────────────── types only, zero runtime
        │
   L0u @koi/errors ─────────────────── KoiRuntimeError, extractMessage
+  L0u @koi/validation ─────────────── LatencySampler, mergeSamplers, recordLatency
        │
   L2  @koi/middleware-feedback-loop ── THIS PACKAGE
 ```
 
 Checklist:
 
-- [x] Imports only from `@koi/core` (L0) and `@koi/errors` (L0u)
+- [x] Imports only from `@koi/core` (L0) and L0u (`@koi/errors`, `@koi/validation`)
 - [x] Zero imports from `@koi/engine` (L1) or peer L2 packages
 - [x] All interface properties are `readonly`
 - [x] No vendor types (LangGraph, OpenAI, etc.)
 - [x] `ForgeStore` and `SnapshotStore` are L0 interfaces — implementations are injected
 - [x] Dev-only dependencies: `@koi/engine`, `@koi/engine-pi`, `@koi/forge`, `@koi/test-utils` (E2E tests only)
+- [x] Exported `ToolFlushState` is fully `readonly` — mutable version is internal only

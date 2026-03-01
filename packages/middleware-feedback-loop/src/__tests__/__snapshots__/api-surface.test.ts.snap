@@ -1,9 +1,10 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/middleware-feedback-loop API surface . has stable type surface 1`] = `
-"import { ForgeStore, SnapshotStore, DemotionCriteria } from '@koi/core';
+"import { ToolFailureRecord, ForgeStore, SnapshotStore, DemotionCriteria, KoiMiddleware, ToolHealthSnapshot, BrickFitnessMetrics } from '@koi/core';
+export { ToolFailureRecord, ToolHealthMetrics, ToolHealthSnapshot, ToolHealthState } from '@koi/core';
 import { Result, KoiError } from '@koi/core/errors';
-import { TurnContext, ModelRequest, ModelResponse, KoiMiddleware } from '@koi/core/middleware';
+import { TurnContext, ModelRequest, ModelResponse } from '@koi/core/middleware';
 
 /**
  * Core types for the feedback-loop middleware.
@@ -33,34 +34,7 @@ interface Validator {
 interface RepairStrategy {
     readonly buildRetryRequest: (original: ModelRequest, response: ModelResponse, errors: readonly ValidationError[], attempt: number) => ModelRequest | Promise<ModelRequest>;
 }
-/** Aggregated health metrics for a single tool. */
-interface ToolHealthMetrics {
-    /** Success rate (0-1). */
-    readonly successRate: number;
-    /** Error rate (0-1). */
-    readonly errorRate: number;
-    /** Total invocations in the tracking window. */
-    readonly usageCount: number;
-    /** Average latency in milliseconds. */
-    readonly avgLatencyMs: number;
-}
-/** Health state of a forged tool. */
-type ToolHealthState = "healthy" | "degraded" | "quarantined";
-/** Point-in-time snapshot of a tool's health. */
-interface ToolHealthSnapshot {
-    readonly brickId: string;
-    readonly toolId: string;
-    readonly metrics: ToolHealthMetrics;
-    readonly state: ToolHealthState;
-    readonly recentFailures: readonly ToolFailureRecord[];
-    readonly lastUpdatedAt: number;
-}
-/** Record of a single tool failure. */
-interface ToolFailureRecord {
-    readonly timestamp: number;
-    readonly error: string;
-    readonly latencyMs: number;
-}
+
 /** Enriched error feedback returned to the agent when a tool is quarantined or degraded. */
 interface ForgeToolErrorFeedback {
     readonly error: string;
@@ -124,6 +98,14 @@ interface ForgeHealthConfig {
     readonly onDemotion?: (event: TrustDemotionEvent) => void | Promise<void>;
     /** Injectable clock for testing. Default: Date.now. */
     readonly clock?: () => number;
+    /** Number of invocations before flushing fitness data to ForgeStore. Default: 10. */
+    readonly flushThreshold?: number;
+    /** Error rate delta that triggers an early flush (0-1). Default: 0.05. */
+    readonly errorRateDeltaThreshold?: number;
+    /** Callback fired when a fitness flush fails. */
+    readonly onFlushError?: (toolId: string, error: unknown) => void;
+    /** Callback fired when a demotion check fails (replaces empty catch). */
+    readonly onDemotionError?: (toolId: string, error: unknown) => void;
 }
 /** Configuration for the feedback-loop middleware. */
 interface FeedbackLoopConfig {
@@ -153,8 +135,15 @@ declare function validateFeedbackLoopConfig(config: unknown): Result<FeedbackLoo
  * Middleware factory — creates the feedback-loop middleware instance.
  */
 
+/** Handle returned by the feedback-loop factory — bundles middleware + health read API. */
+interface FeedbackLoopHandle {
+    readonly middleware: KoiMiddleware;
+    readonly getHealthSnapshot: (toolId: string) => ToolHealthSnapshot | undefined;
+    readonly getAllHealthSnapshots: () => readonly ToolHealthSnapshot[];
+    readonly isQuarantined: (toolId: string) => boolean;
+}
 /** Creates a feedback-loop middleware with validation, retry, and gate hooks. */
-declare function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMiddleware;
+declare function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): FeedbackLoopHandle;
 
 /**
  * Tool health tracker — ring buffer + quarantine/demotion state machine.
@@ -173,9 +162,61 @@ interface ToolHealthTracker {
     readonly checkAndQuarantine: (toolId: string) => Promise<boolean>;
     readonly checkAndDemote: (toolId: string) => Promise<boolean>;
     readonly getAllSnapshots: () => readonly ToolHealthSnapshot[];
+    /** Returns true if the tool's fitness data should be flushed to ForgeStore. */
+    readonly shouldFlushTool: (toolId: string) => boolean;
+    /** Flushes a single tool's fitness data to ForgeStore. */
+    readonly flushTool: (toolId: string) => Promise<void>;
+    /** Flushes all dirty tools' fitness data to ForgeStore. */
+    readonly flush: () => Promise<void>;
+    /** Final drain: flushes all dirty tools, then clears internal state. */
+    readonly dispose: () => Promise<void>;
+}
+/** Per-tool flush state for fitness persistence (read-only snapshot). */
+interface ToolFlushState {
+    readonly totalSuccesses: number;
+    readonly totalFailures: number;
+    readonly latencyBuffer: readonly number[];
+    readonly latencyTotalCount: number;
+    readonly dirty: boolean;
+    readonly flushing: boolean;
+    readonly invocationsSinceFlush: number;
+    readonly lastFlushedSuccesses: number;
+    readonly lastFlushedFailures: number;
+    readonly lastFlushedErrorRate: number;
 }
 /** Creates a ToolHealthTracker with ring buffer, quarantine, and demotion support. */
 declare function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTracker;
+
+/**
+ * Fitness flush — pure functions for persisting runtime health data to ForgeStore.
+ *
+ * Threshold-based flush: every K invocations OR error rate delta > threshold.
+ * Merges cumulative session deltas with existing BrickFitnessMetrics.
+ */
+
+/** Deltas captured at flush time for merging with persisted fitness. */
+interface FlushDeltas {
+    readonly successDelta: number;
+    readonly failureDelta: number;
+    readonly latencyBuffer: readonly number[];
+    readonly lastUsedAt: number;
+}
+/**
+ * Determines whether a tool's fitness data should be flushed.
+ *
+ * Returns true when:
+ * - dirty is true AND flushing is false, AND
+ * - invocationsSinceFlush >= flushThreshold, OR
+ * - |currentErrorRate - lastFlushedErrorRate| > errorRateDeltaThreshold
+ */
+declare function shouldFlush(state: ToolFlushState, flushThreshold: number, errorRateDeltaThreshold: number): boolean;
+/**
+ * Merges session deltas with existing persisted fitness metrics.
+ *
+ * Constructs a LatencySampler from the raw buffer, then merges with existing.
+ * Sets usageCount = successCount + errorCount for consistency.
+ */
+declare function computeMergedFitness(deltas: FlushDeltas, existing: BrickFitnessMetrics | undefined): BrickFitnessMetrics;
 
 /**
  * Forge-specific repair strategy — enriches retry context with tool source,
@@ -206,6 +247,6 @@ declare function formatErrors(errors: readonly ValidationError[]): string;
 /** Default repair: appends assistant response + error summary as messages (~200 tokens). */
 declare const defaultRepairStrategy: RepairStrategy;
 
-export { type FeedbackLoopConfig, type ForgeHealthConfig, type ForgeRepairConfig, type ForgeToolErrorFeedback, type RepairStrategy, type RetryConfig, type ToolFailureRecord, type ToolHealthMetrics, type ToolHealthSnapshot, type ToolHealthState, type ToolHealthTracker, type ValidationError, type ValidationResult, type Validator, createFeedbackLoopMiddleware, createForgeRepairStrategy, createToolHealthTracker, defaultRepairStrategy, formatErrors, validateFeedbackLoopConfig };
+export { type FeedbackLoopConfig, type FeedbackLoopHandle, type FlushDeltas, type ForgeHealthConfig, type ForgeRepairConfig, type ForgeToolErrorFeedback, type RepairStrategy, type RetryConfig, type ToolFlushState, type ToolHealthTracker, type ValidationError, type ValidationResult, type Validator, computeMergedFitness, createFeedbackLoopMiddleware, createForgeRepairStrategy, createToolHealthTracker, defaultRepairStrategy, formatErrors, shouldFlush, validateFeedbackLoopConfig };
 "
 `;

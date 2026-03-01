@@ -40,6 +40,7 @@ export default defineConfig({
     "src/security-analyzer.ts",
     "src/pay-ledger.ts",
     "src/zone.ts",
+    "src/cost-tracker.ts",
   ],
   format: ["esm"],
   dts: {

@@ -85,6 +85,10 @@ function createMockHealthTracker(snapshot?: Record<string, unknown>): ToolHealth
     checkAndQuarantine: mock(() => Promise.resolve(false)),
     checkAndDemote: mock(() => Promise.resolve(false)),
     getAllSnapshots: mock(() => []),
+    shouldFlushTool: mock(() => false),
+    flushTool: mock(() => Promise.resolve()),
+    flush: mock(() => Promise.resolve()),
+    dispose: mock(() => Promise.resolve()),
   };
 }
 

@@ -19,6 +19,8 @@ export interface TracingConfig {
   readonly attributes?: Readonly<Record<string, string>>;
   /** Called when tracing itself errors. Tracing errors never propagate to the application. */
   readonly onError?: (error: unknown) => void;
+  /** Optional cost enricher — calculates USD cost for a model call and attaches it to the span. */
+  readonly costEnricher?: (model: string, inputTokens: number, outputTokens: number) => number;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

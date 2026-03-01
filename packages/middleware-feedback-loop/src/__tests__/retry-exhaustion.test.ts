@@ -12,7 +12,7 @@ const baseRequest: ModelRequest = {
 
 describe("retry exhaustion", () => {
   test("validation fails N times -> error includes attempt count and all errors", async () => {
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       validators: [
         {
           name: "strict",
@@ -47,7 +47,7 @@ describe("retry exhaustion", () => {
   });
 
   test("transport error with backoff -> re-throws last error", async () => {
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       validators: [{ name: "v1", validate: () => ({ valid: true as const }) }],
       retry: { transport: { maxAttempts: 2, baseDelayMs: 0, maxDelayMs: 0 } },
     });
@@ -70,7 +70,7 @@ describe("retry exhaustion", () => {
   });
 
   test("mixed: transport then validation errors tracked separately", async () => {
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       validators: [
         {
           name: "v1",
@@ -102,7 +102,7 @@ describe("retry exhaustion", () => {
   });
 
   test("single attempt config (maxAttempts: 1) fails immediately", async () => {
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       validators: [
         {
           name: "v1",

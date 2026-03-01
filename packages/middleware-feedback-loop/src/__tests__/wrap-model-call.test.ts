@@ -19,7 +19,7 @@ const baseRequest: ModelRequest = {
 describe("wrapModelCall integration", () => {
   test("happy path: all validators pass, response returned unchanged", async () => {
     const spy = createSpyModelHandler({ content: "good output", model: "m" });
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       validators: [createMockValidator("v1"), createMockValidator("v2")],
     });
 
@@ -37,7 +37,7 @@ describe("wrapModelCall integration", () => {
       return { content: callCount === 1 ? "bad" : "good", model: "m" };
     };
 
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       validators: [
         {
           name: "check",
@@ -61,7 +61,7 @@ describe("wrapModelCall integration", () => {
 
   test("validators pass but gate fails -> throws", async () => {
     const spy = createSpyModelHandler({ content: "valid but bad quality", model: "m" });
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       validators: [createMockValidator("v1")],
       gates: [createFailingValidator([{ validator: "quality", message: "too low" }], "quality")],
     });
@@ -88,7 +88,7 @@ describe("wrapModelCall integration", () => {
       return { content: callCount === 1 ? "bad" : "good", model: "m" };
     };
 
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       validators: [
         {
           name: "check",
@@ -119,7 +119,7 @@ describe("wrapModelCall integration", () => {
       return { content: callCount === 1 ? "bad" : "good", model: "m" };
     };
 
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       validators: [
         {
           name: "v1",
@@ -142,7 +142,7 @@ describe("wrapModelCall integration", () => {
     const gateFails: Array<{ name: string; errors: readonly ValidationError[] }> = [];
     const spy = createSpyModelHandler({ content: "ok", model: "m" });
 
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       gates: [createFailingValidator([{ validator: "g1", message: "bad" }], "g1")],
       onGateFail: (name, errors) => gateFails.push({ name, errors }),
     });
@@ -158,7 +158,7 @@ describe("wrapModelCall integration", () => {
 
   test("no validators and no gates -> zero overhead pass-through", async () => {
     const spy = createSpyModelHandler({ content: "pass", model: "m" });
-    const mw = createFeedbackLoopMiddleware({});
+    const { middleware: mw } = createFeedbackLoopMiddleware({});
 
     const result = await mw.wrapModelCall?.(ctx, baseRequest, spy.handler);
     expect(result).toBeDefined();
@@ -168,7 +168,7 @@ describe("wrapModelCall integration", () => {
 
   test("gates only (no validators) -> response passes through to gate", async () => {
     const spy = createSpyModelHandler({ content: "fine", model: "m" });
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       gates: [createMockValidator("g1")],
     });
 

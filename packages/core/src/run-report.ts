@@ -23,6 +23,8 @@ export interface ActionEntry {
         readonly outputTokens: number;
       }
     | undefined;
+  /** Estimated cost in USD for this action, when available. */
+  readonly costUsd?: number | undefined;
 }
 
 /** An issue (error, warning, informational) encountered during a run. */
