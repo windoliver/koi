@@ -7,6 +7,7 @@
 import type {
   ChannelConfig,
   ChannelIdentity,
+  DegeneracyConfig,
   JsonObject,
   MiddlewareConfig,
   ModelConfig,
@@ -266,6 +267,9 @@ export function transformToLoadedManifest(raw: RawManifest): LoadedManifest {
     // Extension fields (engine, schedule, webhooks, forge, context, deploy)
     ...extractExtensions(raw as unknown as Readonly<Record<string, unknown>>),
     ...(raw.deploy !== undefined ? { deploy: raw.deploy as DeployConfig } : {}),
+    ...(raw.degeneracy !== undefined
+      ? { degeneracy: raw.degeneracy as Readonly<Record<string, DegeneracyConfig>> }
+      : {}),
   };
 
   return manifest;

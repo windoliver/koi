@@ -41,6 +41,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/test-utils",
   "@koi/token-estimator",
   "@koi/validation",
+  "@koi/variant-selection",
 ]);
 
 export const L1_PACKAGES: ReadonlySet<string> = new Set(["@koi/engine"]);

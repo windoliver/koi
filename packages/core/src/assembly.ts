@@ -3,6 +3,7 @@
  */
 
 import type { JsonObject } from "./common.js";
+import type { DegeneracyConfig } from "./degeneracy.js";
 import type { DelegationConfig } from "./delegation.js";
 import type { SupervisionConfig } from "./supervision.js";
 import type { OutboundWebhookConfig } from "./webhook.js";
@@ -110,4 +111,9 @@ export interface AgentManifest {
   readonly objectives?: readonly string[];
   /** Search provider configuration — resolved to a SearchProvider at assembly time. */
   readonly search?: SearchConfig | undefined;
+  /**
+   * Per-capability degeneracy configuration — maps capability name to config.
+   * Capabilities are identified by `capability:<name>` tags on brick artifacts.
+   */
+  readonly degeneracy?: Readonly<Record<string, DegeneracyConfig>> | undefined;
 }
