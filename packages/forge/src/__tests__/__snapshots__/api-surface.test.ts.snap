@@ -599,35 +599,6 @@ declare const FORGE_GOVERNANCE: SubsystemToken<GovernanceVariableContributor>;
 declare function createForgeGovernanceContributor(config: ForgeConfig, readDepth: () => number, readForgeCount: () => number): GovernanceVariableContributor;
 
 /**
- * Forge session counter — engine-owned mutable counter that prevents
- * child agents from resetting forgesThisSession to bypass budget limits.
- *
- * Provides:
- * - readForgeCount / incrementForgeCount — closures for the governance contributor
- * - provider — ComponentProvider that attaches the FORGE_GOVERNANCE contributor
- *
- * When spawning a child agent, pass the parent's current count as \`initialCount\`
- * to prevent the child from starting at 0.
- */
-
-interface ForgeSessionCounterInstance {
-    /** Current forge count (live). */
-    readonly readForgeCount: () => number;
-    /** Increment the counter by \`delta\` (typically 1). */
-    readonly incrementForgeCount: (delta: number) => void;
-    /** ComponentProvider that attaches the FORGE_GOVERNANCE contributor. */
-    readonly provider: ComponentProvider;
-}
-interface ForgeSessionCounterOptions {
-    readonly config: ForgeConfig;
-    /** Depth reader — typically () => context.depth. */
-    readonly readDepth: () => number;
-    /** Starting count. Pass the parent's current count to prevent reset-to-0 bypass. */
-    readonly initialCount?: number;
-}
-declare function createForgeSessionCounter(options: ForgeSessionCounterOptions): ForgeSessionCounterInstance;
-
-/**
  * Forge → Registry sync — publishes promoted bricks to a BrickRegistryWriter.
  *
  * Subscribes to ForgeStore.watch() for "promoted" events and fires
@@ -702,6 +673,35 @@ interface ForgeRuntimeInstance {
  * - Provides onChange pass-through from the underlying store
  */
 declare function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRuntimeInstance;
+
+/**
+ * Forge session counter — engine-owned mutable counter that prevents
+ * child agents from resetting forgesThisSession to bypass budget limits.
+ *
+ * Provides:
+ * - readForgeCount / incrementForgeCount — closures for the governance contributor
+ * - provider — ComponentProvider that attaches the FORGE_GOVERNANCE contributor
+ *
+ * When spawning a child agent, pass the parent's current count as \`initialCount\`
+ * to prevent the child from starting at 0.
+ */
+
+interface ForgeSessionCounterInstance {
+    /** Current forge count (live). */
+    readonly readForgeCount: () => number;
+    /** Increment the counter by \`delta\` (typically 1). */
+    readonly incrementForgeCount: (delta: number) => void;
+    /** ComponentProvider that attaches the FORGE_GOVERNANCE contributor. */
+    readonly provider: ComponentProvider;
+}
+interface ForgeSessionCounterOptions {
+    readonly config: ForgeConfig;
+    /** Depth reader — typically () => context.depth. */
+    readonly readDepth: () => number;
+    /** Starting count. Pass the parent's current count to prevent reset-to-0 bypass. */
+    readonly initialCount?: number;
+}
+declare function createForgeSessionCounter(options: ForgeSessionCounterOptions): ForgeSessionCounterInstance;
 
 /**
  * Forge usage tracking middleware — records brick usage after successful tool calls.
