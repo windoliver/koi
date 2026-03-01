@@ -17,6 +17,7 @@ import type {
   Tool,
   ToolDescriptor,
 } from "@koi/core";
+import { computeBrickFitness } from "@koi/validation";
 
 import type { CatalogSourceAdapter } from "./types.js";
 
@@ -63,7 +64,10 @@ function filterEntries(
 // Forge adapter
 // ---------------------------------------------------------------------------
 
-function mapBrickToEntry(brick: BrickArtifact): CatalogEntry {
+function mapBrickToEntry(brick: BrickArtifact, nowMs: number): CatalogEntry {
+  const fitness = brick.fitness;
+  const hasFitnessData = fitness !== undefined && fitness.successCount + fitness.errorCount > 0;
+
   return {
     name: prefixName("forged", brick.name),
     kind: brick.kind,
@@ -72,17 +76,19 @@ function mapBrickToEntry(brick: BrickArtifact): CatalogEntry {
     ...(brick.trustTier !== undefined ? { trustTier: brick.trustTier } : {}),
     ...(brick.tags.length > 0 ? { tags: brick.tags } : {}),
     ...(brick.version !== undefined ? { version: brick.version } : {}),
+    ...(hasFitnessData ? { fitnessScore: computeBrickFitness(fitness, nowMs) } : {}),
   };
 }
 
 export function createForgeAdapter(store: BrickRegistryReader): CatalogSourceAdapter {
   const search = async (query: CatalogQuery): Promise<readonly CatalogEntry[]> => {
+    const nowMs = Date.now();
     const page = await store.search({
       ...(query.kind !== undefined ? { kind: query.kind } : {}),
       ...(query.text !== undefined ? { text: query.text } : {}),
       ...(query.tags !== undefined ? { tags: [...query.tags] } : {}),
     });
-    return page.items.map(mapBrickToEntry);
+    return page.items.map((brick) => mapBrickToEntry(brick, nowMs));
   };
 
   const storeOnChange = store.onChange;

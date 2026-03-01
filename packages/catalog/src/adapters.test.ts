@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { CatalogEntry, Resolver, Tool, ToolDescriptor } from "@koi/core";
+import type { BrickFitnessMetrics, CatalogEntry, Resolver, Tool, ToolDescriptor } from "@koi/core";
 import { skillId } from "@koi/core";
 import {
   createInMemoryBrickRegistry,
@@ -36,6 +36,66 @@ describe("createForgeAdapter", () => {
     expect(results[0]?.kind).toBe("tool");
     expect(results[0]?.source).toBe("forged");
     expect(results[0]?.description).toBe("A tool");
+  });
+
+  test("populates fitnessScore for brick with fitness data", async () => {
+    const registry = createInMemoryBrickRegistry();
+    const fitness: BrickFitnessMetrics = {
+      successCount: 10,
+      errorCount: 0,
+      latency: { samples: [100], count: 1, cap: 100 },
+      lastUsedAt: Date.now(),
+    };
+    const tool = createTestToolArtifact({
+      name: "fit-tool",
+      description: "A fit tool",
+      fitness,
+    });
+    registry.register(tool);
+
+    const adapter = createForgeAdapter(registry);
+    const results = await adapter.search({});
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.fitnessScore).toBeDefined();
+    expect(results[0]?.fitnessScore).toBeGreaterThan(0);
+  });
+
+  test("omits fitnessScore when brick has no fitness data", async () => {
+    const registry = createInMemoryBrickRegistry();
+    const tool = createTestToolArtifact({ name: "no-fitness", description: "No fitness" });
+    registry.register(tool);
+
+    const adapter = createForgeAdapter(registry);
+    const results = await adapter.search({});
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.fitnessScore).toBeUndefined();
+  });
+
+  test("fitnessScore is in [0, 1] range", async () => {
+    const registry = createInMemoryBrickRegistry();
+    const fitness: BrickFitnessMetrics = {
+      successCount: 50,
+      errorCount: 50,
+      latency: { samples: [200, 300, 500], count: 3, cap: 100 },
+      lastUsedAt: Date.now(),
+    };
+    const tool = createTestToolArtifact({
+      name: "bounded-tool",
+      description: "Bounded fitness",
+      fitness,
+    });
+    registry.register(tool);
+
+    const adapter = createForgeAdapter(registry);
+    const results = await adapter.search({});
+
+    expect(results).toHaveLength(1);
+    const score = results[0]?.fitnessScore;
+    expect(score).toBeDefined();
+    expect(score).toBeGreaterThanOrEqual(0);
+    expect(score).toBeLessThanOrEqual(1);
   });
 });
 

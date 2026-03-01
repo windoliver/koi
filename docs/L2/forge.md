@@ -1465,6 +1465,184 @@ with a real LLM.
 
 ---
 
+## Trust decay at discovery time (Issue #251)
+
+Fitness scores are recorded by `forge-usage-middleware` and ranked by `search_forge` — but
+previously, a brick promoted to `"promoted"` trust tier could stay there forever, even after
+its fitness score collapsed. Trust decay closes this loop: bricks with terrible runtime
+performance are automatically demoted at discovery time.
+
+### How it works
+
+`createForgeResolver()` evaluates `evaluateTrustDecay()` on every brick it returns:
+
+```
+  resolver.discover()
+      │
+      ├── store.search({})
+      ├── filterByAgentScope(results, agentId)
+      │
+      ├── for each visible brick:
+      │     │
+      │     ├── evaluateTrustDecay(brick, nowMs)
+      │     │     ├── brick.fitness undefined? → skip (no evidence)
+      │     │     ├── totalCalls === 0? → skip (no evidence)
+      │     │     ├── computeBrickFitness(brick.fitness, nowMs)
+      │     │     │
+      │     │     ├── promoted + score < 0.3 → demote to "verified"
+      │     │     ├── verified + score < 0.1 → demote to "sandbox"
+      │     │     └── sandbox → floor, never demote further
+      │     │
+      │     └── if demotion needed:
+      │           void store.update(id, { trustTier, lastDemotedAt })
+      │                 .then(() => onDecayDemotion(id, from, to))
+      │                 .catch(onError)              ← fire-and-forget
+      │
+      └── return visible bricks (unchanged, demotion is async)
+```
+
+The same check runs on `resolver.load(id)` for single-brick lookups.
+
+### Design decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| **Where** | `discover()` + `load()` | Lazy eval at the point where bricks become visible |
+| **Blocking?** | Fire-and-forget | Discovery latency is not gated on store writes |
+| **Cap** | 5 async demotions per `discover()` | Prevents thundering herd on large stores |
+| **Sandbox floor** | Never demote below sandbox | Sandbox is the minimum trust tier |
+| **No data = no action** | Skip undefined fitness | Absence of evidence ≠ evidence of failure |
+| **Error handling** | `onDecayDemotion` + `onError` callbacks | Caller controls observability |
+
+### Configuration
+
+Decay thresholds are configurable via `DecayThresholds` (from `@koi/validation`):
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `promotedDemotionThreshold` | `0.3` | Fitness below this demotes promoted → verified |
+| `verifiedDemotionThreshold` | `0.1` | Fitness below this demotes verified → sandbox |
+
+### Extended context
+
+```typescript
+const resolver = createForgeResolver(store, {
+  agentId: "agent-1",
+  onDecayDemotion: (brickId, from, to) => {
+    logger.info(`Brick ${brickId} demoted: ${from} → ${to}`);
+  },
+  onError: (error) => {
+    logger.warn("Decay demotion failed", { error });
+  },
+});
+```
+
+---
+
+## Forge → Registry sync
+
+When a brick is promoted (e.g., `agent → global` scope), it should become discoverable through
+the `BrickRegistryBackend` — not just the `ForgeStore`. `createForgeRegistrySync()` bridges
+this gap by listening for `"promoted"` store change events and auto-publishing to a registry.
+
+### How it works
+
+```
+  ForgeStore.watch()
+      │
+      ├── event.kind === "promoted"?
+      │     ├── no → ignore
+      │     └── yes:
+      │           ├── store.load(event.brickId)
+      │           ├── registry.register(brick)
+      │           ├── onPublished(brickId, name)     ← success callback
+      │           └── catch → onError(brickId, err)  ← fire-and-forget
+      │
+      └── returns unsubscribe function
+```
+
+### Usage
+
+```typescript
+const unsubscribe = createForgeRegistrySync({
+  forgeStore: store,
+  registry: brickRegistry,
+  onPublished: (id, name) => {
+    logger.info(`Published ${name} (${id}) to registry`);
+  },
+  onError: (id, error) => {
+    logger.warn(`Failed to publish ${id}`, { error });
+  },
+});
+
+// Later, to stop syncing:
+unsubscribe();
+```
+
+### Design decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| **Trigger** | `StoreChangeEvent` with `kind: "promoted"` | Only promotion events matter |
+| **Blocking?** | Fire-and-forget | Promotion response time is not gated on registry writes |
+| **Opt-in** | Caller creates the sync explicitly | Not all deployments need a registry |
+| **Cleanup** | Returns `() => void` unsubscribe | Standard teardown pattern |
+| **Requires watch** | Throws if `store.watch` undefined | Explicit contract requirement |
+
+---
+
+## Catalog fitness ranking
+
+The `CatalogEntry` interface in `@koi/core` now includes an optional `fitnessScore` field,
+allowing agents to rank and filter discovery results by runtime performance across all
+catalog sources.
+
+### The field
+
+```typescript
+interface CatalogEntry {
+  // ... existing fields ...
+  /** Composite fitness score in [0, 1]. Undefined if brick has no usage data. */
+  readonly fitnessScore?: number;
+}
+```
+
+### How it's computed
+
+The forge adapter in `@koi/catalog` computes fitness at search time:
+
+```
+  createForgeAdapter(store).search(query)
+      │
+      ├── nowMs = Date.now()      ← captured once per search call
+      ├── store.search(query)
+      │
+      └── for each brick:
+            mapBrickToEntry(brick, nowMs)
+              │
+              ├── brick.fitness defined + totalCalls > 0?
+              │     └── fitnessScore = computeBrickFitness(fitness, nowMs)
+              │
+              └── no fitness data → fitnessScore omitted (undefined)
+```
+
+### Why `Date.now()` once per call
+
+All bricks in a single search result are scored against the same timestamp. This ensures
+consistent relative ranking — brick A always compares to brick B at the same "now". The
+cost of `Date.now()` is ~2ns; the consistency benefit is worth it.
+
+### Source availability
+
+| Source | `fitnessScore` | Reason |
+|--------|---------------|--------|
+| `forged` | Yes (when brick has usage data) | Forge bricks track `BrickFitnessMetrics` |
+| `bundled` | No | Static entries, no runtime metrics |
+| `mcp` | No | External tools, no forge metrics |
+| `skill-registry` | No | Skills don't have forge fitness data |
+
+---
+
 ## Related
 
 - [Koi Architecture](../architecture/Koi.md) — system overview and layer rules
@@ -1474,3 +1652,4 @@ with a real LLM.
 - [#72](https://github.com/windoliver/koi/issues/72) — OS-level sandbox isolation (Seatbelt/bubblewrap/gVisor)
 - [#394](https://github.com/windoliver/koi/issues/394) — cross-device workspace sync via Nexus
 - [#151](https://github.com/windoliver/koi/issues/151) — fitness-scored brick discovery (runtime natural selection)
+- [#251](https://github.com/windoliver/koi/issues/251) — fitness signals in ForgeStore (natural selection for bricks)

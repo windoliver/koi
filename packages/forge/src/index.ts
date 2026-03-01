@@ -105,6 +105,8 @@ export {
   createForgeGovernanceContributor,
   FORGE_GOVERNANCE,
 } from "./forge-governance-contributor.js";
+export type { ForgeRegistrySyncConfig } from "./forge-registry-sync.js";
+export { createForgeRegistrySync } from "./forge-registry-sync.js";
 export type { ForgeResolverContext } from "./forge-resolver.js";
 export { createForgeResolver } from "./forge-resolver.js";
 export type { CreateForgeRuntimeOptions, ForgeRuntimeInstance } from "./forge-runtime.js";

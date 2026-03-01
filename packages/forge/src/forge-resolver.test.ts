@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { BrickFitnessMetrics, TrustTier } from "@koi/core";
 import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createForgeResolver, extractSource } from "./forge-resolver.js";
@@ -228,6 +229,192 @@ describe("createForgeResolver", () => {
     expect(result).toBeDefined();
     if (result === undefined) return;
     expect(result.ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Trust decay in discover / load
+// ---------------------------------------------------------------------------
+
+/** Creates a fitness metrics object with a given success rate. */
+function createFitness(
+  successCount: number,
+  errorCount: number,
+  lastUsedAt?: number,
+): BrickFitnessMetrics {
+  return {
+    successCount,
+    errorCount,
+    latency: { samples: [100], count: 1, cap: 100 },
+    lastUsedAt: lastUsedAt ?? Date.now(),
+  };
+}
+
+describe("trust decay in discover", () => {
+  test("demotes brick with low fitness score", async () => {
+    const store = createInMemoryForgeStore();
+    // 0% success rate → score 0 → below promoted demotion threshold (0.3)
+    await store.save(
+      createBrick({
+        id: brickId("b1"),
+        trustTier: "promoted",
+        fitness: createFitness(0, 100),
+      }),
+    );
+
+    const demotions: Array<{ brickId: string; from: TrustTier; to: TrustTier }> = [];
+    const resolver = createForgeResolver(store, {
+      agentId: "agent-1",
+      onDecayDemotion: (id, from, to) => {
+        demotions.push({ brickId: id, from, to });
+      },
+    });
+
+    await resolver.discover();
+    // Fire-and-forget — wait a tick for the async update to complete
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(demotions).toHaveLength(1);
+    expect(demotions[0]?.brickId).toBe(brickId("b1"));
+    expect(demotions[0]?.from).toBe("promoted");
+    expect(demotions[0]?.to).toBe("verified");
+  });
+
+  test("does not demote brick with high fitness", async () => {
+    const store = createInMemoryForgeStore();
+    // 100% success rate, recently used → high score
+    await store.save(
+      createBrick({
+        id: brickId("b1"),
+        trustTier: "promoted",
+        fitness: createFitness(100, 0),
+      }),
+    );
+
+    const demotions: string[] = [];
+    const resolver = createForgeResolver(store, {
+      agentId: "agent-1",
+      onDecayDemotion: (id) => {
+        demotions.push(id);
+      },
+    });
+
+    await resolver.discover();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(demotions).toHaveLength(0);
+  });
+
+  test("does not demote brick with no fitness data", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      createBrick({
+        id: brickId("b1"),
+        trustTier: "promoted",
+        // no fitness field → undefined → no demotion
+      }),
+    );
+
+    const demotions: string[] = [];
+    const resolver = createForgeResolver(store, {
+      agentId: "agent-1",
+      onDecayDemotion: (id) => {
+        demotions.push(id);
+      },
+    });
+
+    await resolver.discover();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(demotions).toHaveLength(0);
+  });
+
+  test("fires onDecayDemotion callback with correct from/to tiers", async () => {
+    const store = createInMemoryForgeStore();
+    // verified brick with 0% success → below verified demotion threshold (0.1) → sandbox
+    await store.save(
+      createBrick({
+        id: brickId("b1"),
+        trustTier: "verified",
+        fitness: createFitness(0, 50),
+      }),
+    );
+
+    const demotions: Array<{ from: TrustTier; to: TrustTier }> = [];
+    const resolver = createForgeResolver(store, {
+      agentId: "agent-1",
+      onDecayDemotion: (_id, from, to) => {
+        demotions.push({ from, to });
+      },
+    });
+
+    await resolver.discover();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(demotions).toHaveLength(1);
+    expect(demotions[0]?.from).toBe("verified");
+    expect(demotions[0]?.to).toBe("sandbox");
+  });
+
+  test("handles store.update failure via onError", async () => {
+    const inner = createInMemoryForgeStore();
+    await inner.save(
+      createBrick({
+        id: brickId("b1"),
+        trustTier: "promoted",
+        fitness: createFitness(0, 100),
+      }),
+    );
+
+    // Wrap store with a failing update method
+    const store = {
+      ...inner,
+      update: async () => {
+        throw new Error("store update failed");
+      },
+    };
+
+    const errors: unknown[] = [];
+    const resolver = createForgeResolver(store, {
+      agentId: "agent-1",
+      onError: (e) => {
+        errors.push(e);
+      },
+    });
+
+    await resolver.discover();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(Error);
+    if (errors[0] instanceof Error) {
+      expect(errors[0].message).toBe("store update failed");
+    }
+  });
+
+  test("never demotes sandbox bricks (floor)", async () => {
+    const store = createInMemoryForgeStore();
+    // Sandbox brick with terrible fitness — should NOT be demoted further
+    await store.save(
+      createBrick({
+        id: brickId("b1"),
+        trustTier: "sandbox",
+        fitness: createFitness(0, 100),
+      }),
+    );
+
+    const demotions: string[] = [];
+    const resolver = createForgeResolver(store, {
+      agentId: "agent-1",
+      onDecayDemotion: (id) => {
+        demotions.push(id);
+      },
+    });
+
+    await resolver.discover();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(demotions).toHaveLength(0);
   });
 });
 

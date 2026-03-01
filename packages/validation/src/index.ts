@@ -10,7 +10,10 @@ export { applyBrickUpdate } from "./apply-brick-update.js";
 export { validateBrickArtifact } from "./brick-validation.js";
 export {
   computeBrickFitness,
+  DEFAULT_DECAY_THRESHOLDS,
   DEFAULT_FITNESS_SCORING_CONFIG,
+  type DecayThresholds,
+  evaluateTrustDecay,
   type FitnessScoringConfig,
 } from "./fitness-scoring.js";
 export {
