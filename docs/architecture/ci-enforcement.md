@@ -25,12 +25,14 @@ scripts/check-layers.ts    ← enforcement (package.json deps + source-file impo
 scripts/check-layers.test.ts
 ```
 
-**`scripts/check-layers.ts`** runs two kinds of checks:
+**`scripts/check-layers.ts`** runs four kinds of checks:
 
-| Check | What it validates |
-|-------|------------------|
-| `package.json` dep check | Each package's declared deps obey the layer rules below |
-| Source-file import scan | L0 source never imports an external module; L2 source never imports from L1 |
+| # | Check | What it validates |
+|---|-------|------------------|
+| 1 | `package.json` dep check | Each package's declared deps obey the layer rules below |
+| 2 | L0 source import scan | `@koi/core` source never imports an external module |
+| 3 | L2 source import scan | L2 non-test source never imports from L1 (`@koi/engine`) |
+| 4 | L0 anti-leak audit | `@koi/core` has zero class declarations and no unlisted function bodies |
 
 #### Layer dependency rules (package.json)
 
@@ -51,6 +53,34 @@ scripts/check-layers.test.ts
 
 The scanner uses **`Bun.Transpiler` AST** (not regex) so commented-out imports are never
 flagged. A regex supplement captures `import type` statements that the transpiler elides.
+
+#### L0 anti-leak audit (class & function body enforcement)
+
+`@koi/core` is an interfaces-only kernel. The anti-leak audit enforces two rules on every
+non-test `.ts` file in `packages/core/src/`:
+
+| Rule | Policy | Exceptions |
+|------|--------|------------|
+| **No class declarations** | `class`, `export class`, `abstract class` — all forbidden | None |
+| **No function bodies** | `function`, `export function`, `export const x = (` — all forbidden | Files listed in `L0_RUNTIME_ALLOWLIST` |
+
+**`L0_RUNTIME_ALLOWLIST`** is a `ReadonlySet<string>` of 24 files that legitimately contain
+function bodies. Every function in these files falls into one of the architecture doc's L0
+exceptions:
+
+- Branded type constructors (identity casts like `agentId()`, `sessionId()`)
+- Pure type guards (`isProcessState()`, `isAgentStateEvent()`)
+- Validation helpers (`validateNonEmpty()`)
+- Error factories (`notFound()`, `timeout()`, etc.)
+- Pure mapping functions (`mapStopReasonToOutcome()`)
+- ComponentProvider factories (`createServiceProvider()`, `createSingleToolProvider()`)
+
+**Adding a new file to the allowlist** requires a PR review to confirm all functions meet
+L0 criteria (pure, side-effect-free, operating only on L0 types).
+
+**Detection**: Line-level regex on trimmed, non-comment lines. Comment lines (`//`, `*`,
+`/*`) are skipped. The scan short-circuits once both flags (class found, function found)
+are set for a given file.
 
 ### Running the check
 

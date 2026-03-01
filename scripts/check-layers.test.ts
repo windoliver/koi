@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { extractImportSpecifiers, isL0Violation, isL2Violation } from "./check-layers.js";
+import {
+  extractImportSpecifiers,
+  isClassDeclaration,
+  isFunctionBody,
+  isL0Violation,
+  isL2Violation,
+  L0_RUNTIME_ALLOWLIST,
+} from "./check-layers.js";
 
 // ---------------------------------------------------------------------------
 // isL0Violation — L0 source import predicate
@@ -125,5 +132,97 @@ describe("extractImportSpecifiers", () => {
   test("extracts @koi/engine specifier (L2 violation regression)", () => {
     const source = `import { createEngine } from "@koi/engine";`;
     expect(extractImportSpecifiers(source)).toContain("@koi/engine");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isClassDeclaration — L0 class detection
+// ---------------------------------------------------------------------------
+
+describe("isClassDeclaration", () => {
+  test("detects export class", () => {
+    expect(isClassDeclaration("export class Foo {")).toBe(true);
+  });
+
+  test("detects non-exported class", () => {
+    expect(isClassDeclaration("class Bar {")).toBe(true);
+  });
+
+  test("ignores interface declarations", () => {
+    expect(isClassDeclaration("export interface Baz {")).toBe(false);
+  });
+
+  test("ignores type alias", () => {
+    expect(isClassDeclaration("export type Qux = string;")).toBe(false);
+  });
+
+  test("detects abstract class", () => {
+    expect(isClassDeclaration("abstract class Baz {")).toBe(true);
+  });
+
+  test("detects export abstract class", () => {
+    expect(isClassDeclaration("export abstract class Qux {")).toBe(true);
+  });
+
+  test("ignores class reference in string", () => {
+    expect(isClassDeclaration('const x = "class Foo";')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isFunctionBody — L0 exported function detection
+// ---------------------------------------------------------------------------
+
+describe("isFunctionBody", () => {
+  test("detects export function", () => {
+    expect(isFunctionBody("export function foo(): void {")).toBe(true);
+  });
+
+  test("detects export async function", () => {
+    expect(isFunctionBody("export async function bar(): Promise<void> {")).toBe(true);
+  });
+
+  test("detects exported arrow function", () => {
+    expect(isFunctionBody("export const baz = (x: number): number => x;")).toBe(true);
+  });
+
+  test("detects exported async arrow function", () => {
+    expect(isFunctionBody("export const qux = async (x: string): Promise<string> => x;")).toBe(
+      true,
+    );
+  });
+
+  test("ignores type declarations", () => {
+    expect(isFunctionBody("export type Fn = () => void;")).toBe(false);
+  });
+
+  test("ignores interface method signatures", () => {
+    expect(isFunctionBody("  send(msg: Message): void;")).toBe(false);
+  });
+
+  test("detects non-exported function", () => {
+    expect(isFunctionBody("function helper(): void {")).toBe(true);
+  });
+
+  test("detects non-exported async function", () => {
+    expect(isFunctionBody("async function compute(): Promise<void> {")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L0_RUNTIME_ALLOWLIST — sanity checks
+// ---------------------------------------------------------------------------
+
+describe("L0_RUNTIME_ALLOWLIST", () => {
+  test("contains known allowlisted files", () => {
+    expect(L0_RUNTIME_ALLOWLIST.has("ecs.ts")).toBe(true);
+    expect(L0_RUNTIME_ALLOWLIST.has("error-factories.ts")).toBe(true);
+    expect(L0_RUNTIME_ALLOWLIST.has("validation-utils.ts")).toBe(true);
+  });
+
+  test("does not contain type-only files", () => {
+    expect(L0_RUNTIME_ALLOWLIST.has("middleware.ts")).toBe(false);
+    expect(L0_RUNTIME_ALLOWLIST.has("channel.ts")).toBe(false);
+    expect(L0_RUNTIME_ALLOWLIST.has("message.ts")).toBe(false);
   });
 });
