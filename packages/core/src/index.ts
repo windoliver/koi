@@ -71,6 +71,7 @@ export type {
   BrickFitnessMetrics,
   BrickRequires,
   BrickUpdate,
+  CounterExample,
   ForgeQuery,
   ForgeStore,
   ImplementationArtifact,

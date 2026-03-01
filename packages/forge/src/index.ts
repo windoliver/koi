@@ -18,6 +18,7 @@ export type {
   BrickRequires,
   BrickUpdate,
   ContentMarker,
+  CounterExample,
   DataClassification,
   ForgeAttestationSignature,
   ForgeBuildDefinition,
@@ -125,6 +126,9 @@ export { createForgeUsageMiddleware } from "./forge-usage-middleware.js";
 // runtime values — SKILL.md generation
 export type { SkillMdInput } from "./generate-skill-md.js";
 export { generateSkillMd } from "./generate-skill-md.js";
+// runtime values — test case auto-generation
+export type { GenerateTestCasesConfig } from "./generate-test-cases.js";
+export { generateTestCases } from "./generate-test-cases.js";
 export type { GovernanceResult } from "./governance.js";
 // runtime values — governance
 export { checkGovernance, checkScopePromotion } from "./governance.js";
@@ -205,6 +209,7 @@ export type {
   SandboxErrorCode,
   SandboxExecutor,
   SandboxResult,
+  SelfTestStageReport,
   StageReport,
   TieredSandboxExecutor,
   TierResolution,
