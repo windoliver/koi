@@ -1,9 +1,10 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/middleware-feedback-loop API surface . has stable type surface 1`] = `
-"import { ForgeStore, SnapshotStore, DemotionCriteria, BrickFitnessMetrics } from '@koi/core';
+"import { ToolFailureRecord, ForgeStore, SnapshotStore, DemotionCriteria, KoiMiddleware, ToolHealthSnapshot, BrickFitnessMetrics } from '@koi/core';
+export { ToolFailureRecord, ToolHealthMetrics, ToolHealthSnapshot, ToolHealthState } from '@koi/core';
 import { Result, KoiError } from '@koi/core/errors';
-import { TurnContext, ModelRequest, ModelResponse, KoiMiddleware } from '@koi/core/middleware';
+import { TurnContext, ModelRequest, ModelResponse } from '@koi/core/middleware';
 
 /**
  * Core types for the feedback-loop middleware.
@@ -33,34 +34,7 @@ interface Validator {
 interface RepairStrategy {
     readonly buildRetryRequest: (original: ModelRequest, response: ModelResponse, errors: readonly ValidationError[], attempt: number) => ModelRequest | Promise<ModelRequest>;
 }
-/** Aggregated health metrics for a single tool. */
-interface ToolHealthMetrics {
-    /** Success rate (0-1). */
-    readonly successRate: number;
-    /** Error rate (0-1). */
-    readonly errorRate: number;
-    /** Total invocations in the tracking window. */
-    readonly usageCount: number;
-    /** Average latency in milliseconds. */
-    readonly avgLatencyMs: number;
-}
-/** Health state of a forged tool. */
-type ToolHealthState = "healthy" | "degraded" | "quarantined";
-/** Point-in-time snapshot of a tool's health. */
-interface ToolHealthSnapshot {
-    readonly brickId: string;
-    readonly toolId: string;
-    readonly metrics: ToolHealthMetrics;
-    readonly state: ToolHealthState;
-    readonly recentFailures: readonly ToolFailureRecord[];
-    readonly lastUpdatedAt: number;
-}
-/** Record of a single tool failure. */
-interface ToolFailureRecord {
-    readonly timestamp: number;
-    readonly error: string;
-    readonly latencyMs: number;
-}
+
 /** Enriched error feedback returned to the agent when a tool is quarantined or degraded. */
 interface ForgeToolErrorFeedback {
     readonly error: string;
@@ -161,8 +135,15 @@ declare function validateFeedbackLoopConfig(config: unknown): Result<FeedbackLoo
  * Middleware factory — creates the feedback-loop middleware instance.
  */
 
+/** Handle returned by the feedback-loop factory — bundles middleware + health read API. */
+interface FeedbackLoopHandle {
+    readonly middleware: KoiMiddleware;
+    readonly getHealthSnapshot: (toolId: string) => ToolHealthSnapshot | undefined;
+    readonly getAllHealthSnapshots: () => readonly ToolHealthSnapshot[];
+    readonly isQuarantined: (toolId: string) => boolean;
+}
 /** Creates a feedback-loop middleware with validation, retry, and gate hooks. */
-declare function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMiddleware;
+declare function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): FeedbackLoopHandle;
 
 /**
  * Tool health tracker — ring buffer + quarantine/demotion state machine.
@@ -266,6 +247,6 @@ declare function formatErrors(errors: readonly ValidationError[]): string;
 /** Default repair: appends assistant response + error summary as messages (~200 tokens). */
 declare const defaultRepairStrategy: RepairStrategy;
 
-export { type FeedbackLoopConfig, type FlushDeltas, type ForgeHealthConfig, type ForgeRepairConfig, type ForgeToolErrorFeedback, type RepairStrategy, type RetryConfig, type ToolFailureRecord, type ToolFlushState, type ToolHealthMetrics, type ToolHealthSnapshot, type ToolHealthState, type ToolHealthTracker, type ValidationError, type ValidationResult, type Validator, computeMergedFitness, createFeedbackLoopMiddleware, createForgeRepairStrategy, createToolHealthTracker, defaultRepairStrategy, formatErrors, shouldFlush, validateFeedbackLoopConfig };
+export { type FeedbackLoopConfig, type FeedbackLoopHandle, type FlushDeltas, type ForgeHealthConfig, type ForgeRepairConfig, type ForgeToolErrorFeedback, type RepairStrategy, type RetryConfig, type ToolFlushState, type ToolHealthTracker, type ValidationError, type ValidationResult, type Validator, computeMergedFitness, createFeedbackLoopMiddleware, createForgeRepairStrategy, createToolHealthTracker, defaultRepairStrategy, formatErrors, shouldFlush, validateFeedbackLoopConfig };
 "
 `;

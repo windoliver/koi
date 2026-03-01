@@ -215,7 +215,7 @@ async function runTest(): Promise<void> {
   ]);
 
   // --- 4. Setup: engine ---
-  const feedbackLoop = createFeedbackLoopMiddleware({ forgeHealth });
+  const { middleware: feedbackLoop } = createFeedbackLoopMiddleware({ forgeHealth });
   const loopAdapter = createLoopAdapter({ modelCall: modelScript, maxTurns: 20 });
 
   const runtime = await createKoi({
