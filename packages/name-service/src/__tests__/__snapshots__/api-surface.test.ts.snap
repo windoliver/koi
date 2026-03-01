@@ -1,0 +1,77 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/name-service API surface . has stable type surface 1`] = `
+"import { NameServiceBackend, ComponentProvider, AnsConfig, Result, KoiError, AgentRegistry, NameServiceWriter, ForgeScope } from '@koi/core';
+
+/**
+ * ECS ComponentProvider for the Agent Name Service.
+ *
+ * Exposes a reader-only view of the NameServiceBackend as the
+ * NAME_SERVICE component on each agent. Agents can resolve names
+ * but cannot register or unregister.
+ */
+
+/**
+ * Create a ComponentProvider that attaches a read-only NameServiceReader
+ * as the NAME_SERVICE component on every agent.
+ *
+ * @param backend - The full name service backend (read + write).
+ */
+declare function createNameServiceProvider(backend: NameServiceBackend): ComponentProvider;
+
+/**
+ * In-memory ANS backend.
+ *
+ * Factory function that returns a full NameServiceBackend with registration,
+ * resolution, search, suggestions, TTL expiry, and event dispatch.
+ */
+
+/**
+ * Create an in-memory ANS backend.
+ *
+ * @param partialConfig - Optional partial configuration (merged with defaults).
+ */
+declare function createInMemoryNameService(partialConfig?: Partial<AnsConfig>): NameServiceBackend;
+
+/**
+ * Name validation for ANS records.
+ *
+ * Names must start with a lowercase letter, followed by lowercase
+ * alphanumeric characters and hyphens. No colons (reserved for
+ * composite key separator).
+ */
+
+/** Validate an ANS name. Returns the validated name on success, VALIDATION error on failure. */
+declare function validateName(name: string): Result<string, KoiError>;
+
+/**
+ * AgentRegistry → ANS sync bridge.
+ *
+ * Listens to registry watch events and mirrors agent registrations/
+ * deregistrations into the name service. Agent names are extracted
+ * from \`entry.metadata.name\` (set during engine registration).
+ */
+
+/** Configuration for registry sync. */
+interface RegistrySyncConfig {
+    /** Default scope for auto-registered agent names. Defaults to "agent". */
+    readonly defaultScope?: ForgeScope;
+    /** Who to attribute auto-registrations to. Defaults to "registry-sync". */
+    readonly registeredBy?: string;
+}
+/**
+ * Create a sync bridge that mirrors AgentRegistry events into the name service.
+ *
+ * On "registered" events: registers the agent name in ANS.
+ * On "deregistered" events: unregisters the agent name from ANS.
+ *
+ * @param registry - The AgentRegistry to watch.
+ * @param nameService - The NameServiceWriter to register/unregister names in.
+ * @param config - Optional configuration.
+ * @returns An unsubscribe function that stops the sync.
+ */
+declare function createRegistrySync(registry: AgentRegistry, nameService: NameServiceWriter, config?: RegistrySyncConfig): () => void;
+
+export { createInMemoryNameService, createNameServiceProvider, createRegistrySync, validateName };
+"
+`;

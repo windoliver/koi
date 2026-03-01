@@ -1353,6 +1353,17 @@
         "zod": "4.3.6",
       },
     },
+    "packages/name-service": {
+      "name": "@koi/name-service",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/nexus-client": {
       "name": "@koi/nexus-client",
       "version": "0.0.0",
@@ -2630,6 +2641,8 @@
     "@koi/middleware-turn-ack": ["@koi/middleware-turn-ack@workspace:packages/middleware-turn-ack"],
 
     "@koi/model-router": ["@koi/model-router@workspace:packages/model-router"],
+
+    "@koi/name-service": ["@koi/name-service@workspace:packages/name-service"],
 
     "@koi/nexus-client": ["@koi/nexus-client@workspace:packages/nexus-client"],
 
