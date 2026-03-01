@@ -448,7 +448,7 @@ config-resolution.test.ts — 9 tests
   ● Throws on Infinity contextWindowSize
   ● Feature flags (hydrator, memoryFs) derived correctly
 
-arena-factory.test.ts — 8 tests
+arena-factory.test.ts — 12 tests
   ● Bundle always has 3 middleware
   ● Bundle always has 1 provider (squash)
   ● Middleware in correct priority order (220 < 225 < 250)
@@ -457,13 +457,10 @@ arena-factory.test.ts — 8 tests
   ● createHydrator returns ContextHydratorMiddleware
   ● Shared token estimator across all middleware
   ● Resolved config accessible on bundle
-
-arena-factory-memory.test.ts — 5 tests (mock-based)
-  ● config.memory flows to squash and compactor
-  ● fsMemory.component flows to squash and compactor when only memoryFs provided
-  ● config.memory overrides fsMemory.component for fact extraction
-  ● squash and compactor receive undefined when no memory configured
-  ● createFsMemory called exactly once when memoryFs provided
+  ● memoryFs adds memory provider to bundle (2 providers)
+  ● No memoryFs means only squash provider (1 provider)
+  ● config.memory alongside memoryFs still produces 2 providers
+  ● memoryFs does not affect middleware count
 
 registry-adapter.test.ts — 3 tests
   ● Entries map contains "context-arena" key

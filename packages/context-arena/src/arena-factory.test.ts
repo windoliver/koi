@@ -1,6 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, mock, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import type { SessionId } from "@koi/core/ecs";
+import type { MemoryComponent, SessionId } from "@koi/core/ecs";
 import type { InboundMessage } from "@koi/core/message";
 import type { ModelHandler } from "@koi/core/middleware";
 import { createContextArena } from "./arena-factory.js";
@@ -97,5 +100,74 @@ describe("createContextArena", () => {
     expect(hydrator).toBeDefined();
     expect(hydrator?.priority).toBe(300);
     expect(typeof hydrator?.getHydrationResult).toBe("function");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Memory wiring — integration tests (no mock.module, real L2 factories)
+// ---------------------------------------------------------------------------
+
+describe("createContextArena memory wiring", () => {
+  const tmpDirs: string[] = [];
+
+  afterAll(async () => {
+    await Promise.all(tmpDirs.map((d) => rm(d, { recursive: true, force: true })));
+  });
+
+  async function makeTmpDir(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "koi-arena-test-"));
+    tmpDirs.push(dir);
+    return dir;
+  }
+
+  test("memoryFs adds memory provider to bundle", async () => {
+    const dir = await makeTmpDir();
+    const bundle = await createContextArena(
+      baseConfig({
+        memoryFs: { config: { baseDir: dir } },
+      }),
+    );
+
+    // Without memoryFs: 1 provider (squash). With memoryFs: 2 providers.
+    expect(bundle.providers).toHaveLength(2);
+  });
+
+  test("no memoryFs means only squash provider", async () => {
+    const bundle = await createContextArena(baseConfig());
+    expect(bundle.providers).toHaveLength(1);
+  });
+
+  test("config.memory alongside memoryFs still produces 2 providers", async () => {
+    const dir = await makeTmpDir();
+    const explicitMemory = {
+      store: mock(() => Promise.resolve({ ok: true, value: undefined })),
+      recall: mock(() => Promise.resolve({ ok: true, value: { facts: [], summary: undefined } })),
+      search: mock(() => Promise.resolve({ ok: true, value: [] })),
+    } as unknown as MemoryComponent;
+
+    const bundle = await createContextArena(
+      baseConfig({
+        memory: explicitMemory,
+        memoryFs: { config: { baseDir: dir } },
+      }),
+    );
+
+    // memoryFs provider still attaches even when config.memory overrides for extraction
+    expect(bundle.providers).toHaveLength(2);
+    // All 3 middleware still present
+    expect(bundle.middleware).toHaveLength(3);
+  });
+
+  test("memoryFs does not affect middleware count", async () => {
+    const dir = await makeTmpDir();
+    const bundle = await createContextArena(
+      baseConfig({
+        memoryFs: { config: { baseDir: dir } },
+      }),
+    );
+
+    expect(bundle.middleware).toHaveLength(3);
+    const priorities = bundle.middleware.map((mw) => mw.priority);
+    expect(priorities).toEqual([220, 225, 250]);
   });
 });
