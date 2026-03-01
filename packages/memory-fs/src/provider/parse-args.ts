@@ -66,6 +66,18 @@ export function parseOptionalStringArray(
   return { ok: true, value: value as readonly string[] };
 }
 
+export function parseOptionalBoolean(
+  args: JsonObject,
+  key: string,
+): ParseResult<boolean | undefined> {
+  const value = args[key];
+  if (value === undefined) return { ok: true, value: undefined };
+  if (typeof value !== "boolean") {
+    return { ok: false, err: { error: `${key} must be a boolean`, code: "VALIDATION" } };
+  }
+  return { ok: true, value };
+}
+
 export function parseOptionalEnum<T extends string>(
   args: JsonObject,
   key: string,

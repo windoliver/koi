@@ -32,6 +32,11 @@ export function createMemoryStoreTool(
             items: { type: "string" },
             description: "People, projects, or concepts this fact relates to",
           },
+          causal_parents: {
+            type: "array",
+            items: { type: "string" },
+            description: "IDs of existing memory facts that causally precede this one",
+          },
         },
         required: ["content"],
       } satisfies JsonObject,
@@ -47,10 +52,16 @@ export function createMemoryStoreTool(
       const entitiesResult = parseOptionalStringArray(args, "related_entities");
       if (!entitiesResult.ok) return entitiesResult.err;
 
+      const causalParentsResult = parseOptionalStringArray(args, "causal_parents");
+      if (!causalParentsResult.ok) return causalParentsResult.err;
+
       try {
         await component.store(contentResult.value, {
           ...(categoryResult.value !== undefined && { category: categoryResult.value }),
           ...(entitiesResult.value !== undefined && { relatedEntities: entitiesResult.value }),
+          ...(causalParentsResult.value !== undefined && {
+            causalParents: causalParentsResult.value,
+          }),
         });
         return { stored: true };
       } catch (e: unknown) {

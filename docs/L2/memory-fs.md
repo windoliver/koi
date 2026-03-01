@@ -69,7 +69,8 @@ packages/memory-fs/
 │   │       ├── recall.ts     ─ memory_recall tool factory
 │   │       └── search.ts     ─ memory_search tool factory
 │   └── __tests__/
-│       ├── e2e.test.ts       ─ Full createKoi + createPiAdapter integration tests
+│       ├── e2e.test.ts                ─ Full createKoi + createPiAdapter integration tests
+│       ├── e2e-causal-memory.test.ts  ─ Causal graph E2E with real LLM calls
 │       └── api-surface.test.ts
 └── dist/                      ─ ESM-only build output
 ```
@@ -439,8 +440,8 @@ const provider = createMemoryProvider({
 
 | Tool | Input | What It Does |
 |------|-------|-------------|
-| `memory_store` | `{ content, category?, related_entities? }` | Store an atomic fact. Auto-dedup + contradiction detection. |
-| `memory_recall` | `{ query, limit?, tier? }` | Search memories by query. Returns `{ results, count }`. |
+| `memory_store` | `{ content, category?, related_entities?, causal_parents? }` | Store an atomic fact. Auto-dedup + contradiction detection. `causal_parents` links to existing fact IDs. |
+| `memory_recall` | `{ query, limit?, tier?, graph_expand?, max_hops? }` | Search memories by query. `graph_expand: true` walks causal edges. Returns `{ results, count }`. |
 | `memory_search` | `{ entity?, limit? }` | Browse entity facts or list all known entities. |
 
 ### Custom Search (DI)
@@ -481,7 +482,7 @@ The DI contracts (`FsSearchRetriever`, `FsSearchIndexer`) are local function typ
 
 ## Testing
 
-161+ tests total across 14 test files:
+170+ tests total across 15 test files:
 
 | Test File | Count | What It Covers |
 |-----------|-------|----------------|
@@ -493,12 +494,13 @@ The DI contracts (`FsSearchRetriever`, `FsSearchIndexer`) are local function typ
 | `summary.test.ts` | 7 | Summary generation with tier filtering |
 | `graph-walk.test.ts` | 9 | BFS expansion, cycle detection, score decay, dedup |
 | `fs-memory.test.ts` | 33 | Full integration: store → recall → dedup → decay → causal → graph expansion |
-| `provider/tools/store.test.ts` | 7 | Store tool: validation, dedup, errors |
-| `provider/tools/recall.test.ts` | 9 | Recall tool: limits, tiers, errors |
+| `provider/tools/store.test.ts` | 10 | Store tool: validation, causal_parents, dedup, errors |
+| `provider/tools/recall.test.ts` | 12 | Recall tool: limits, tiers, graph_expand, max_hops, errors |
 | `provider/tools/search.test.ts` | 7 | Search tool: entity list, entity lookup, errors |
 | `provider/memory-component-provider.test.ts` | 11 | Provider wiring: tokens, prefix, ops subset, detach |
 | `api-surface.test.ts` | 2 | DTS snapshot stability |
 | `e2e.test.ts` | 18 | Full createKoi + createPiAdapter + real LLM calls |
+| `e2e-causal-memory.test.ts` | 3 | Causal graph E2E: store with parents, recall with expansion, full workflow |
 
 E2E tests are gated on `E2E_TESTS=1` + `ANTHROPIC_API_KEY`:
 
@@ -506,7 +508,7 @@ E2E tests are gated on `E2E_TESTS=1` + `ANTHROPIC_API_KEY`:
 E2E_TESTS=1 bun test src/__tests__/e2e.test.ts
 ```
 
-E2E covers: tool wiring, custom prefix, operations subset, tool execution (all 3 tools), store→recall round-trip, dedup, contradiction, tier distribution, summary rebuild, cross-session persistence, and 5 LLM integration tests with real API calls through `createPiAdapter`.
+E2E covers: tool wiring, custom prefix, operations subset, tool execution (all 3 tools), store→recall round-trip, dedup, contradiction, tier distribution, summary rebuild, cross-session persistence, 5 LLM integration tests with real API calls through `createPiAdapter`, and 3 causal memory E2E tests (store with `causal_parents`, recall with `graph_expand`, full causal workflow).
 
 ---
 
