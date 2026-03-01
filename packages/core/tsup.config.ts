@@ -38,6 +38,7 @@ export default defineConfig({
     "src/webhook.ts",
     "src/intent-capsule.ts",
     "src/security-analyzer.ts",
+    "src/pay-ledger.ts",
   ],
   format: ["esm"],
   dts: {

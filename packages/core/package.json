@@ -139,6 +139,10 @@
     "./security-analyzer": {
       "types": "./dist/security-analyzer.d.ts",
       "import": "./dist/security-analyzer.js"
+    },
+    "./pay-ledger": {
+      "types": "./dist/pay-ledger.d.ts",
+      "import": "./dist/pay-ledger.js"
     }
   },
   "scripts": {

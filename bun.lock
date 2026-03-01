@@ -1353,6 +1353,17 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/pay-nexus": {
+      "name": "@koi/pay-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/permissions-nexus": {
       "name": "@koi/permissions-nexus",
       "version": "0.0.0",
@@ -2562,6 +2573,8 @@
     "@koi/orchestrator": ["@koi/orchestrator@workspace:packages/orchestrator"],
 
     "@koi/parallel-minions": ["@koi/parallel-minions@workspace:packages/parallel-minions"],
+
+    "@koi/pay-nexus": ["@koi/pay-nexus@workspace:packages/pay-nexus"],
 
     "@koi/permissions-nexus": ["@koi/permissions-nexus@workspace:packages/permissions-nexus"],
 

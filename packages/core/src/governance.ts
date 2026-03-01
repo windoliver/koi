@@ -77,6 +77,7 @@ export type GovernanceEvent =
       readonly count: number;
       readonly inputTokens?: number | undefined;
       readonly outputTokens?: number | undefined;
+      readonly costUsd?: number | undefined;
     }
   | { readonly kind: "tool_error"; readonly toolName: string }
   | { readonly kind: "tool_success"; readonly toolName: string };
