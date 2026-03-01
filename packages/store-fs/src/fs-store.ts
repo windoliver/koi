@@ -23,7 +23,7 @@ import type {
   StoreChangeEvent,
 } from "@koi/core";
 import { notFound } from "@koi/core";
-import { applyBrickUpdate, validateBrickArtifact } from "@koi/validation";
+import { applyBrickUpdate, sortBricks, validateBrickArtifact } from "@koi/validation";
 import { mapFsError, mapParseError } from "./errors.js";
 import { brickPath, shardDir, tmpPath } from "./paths.js";
 import { matchesBrickQuery } from "./query.js";
@@ -314,14 +314,11 @@ export async function createFsForgeStore(
   };
 
   const search = async (query: ForgeQuery): Promise<Result<readonly BrickArtifact[], KoiError>> => {
-    // Filter metadata index in memory
+    // Filter metadata index in memory (no limit here — apply after sort)
     const matchingIds: BrickId[] = [];
     for (const [id, meta] of index) {
       if (matchesBrickQuery(meta, query)) {
         matchingIds.push(id);
-        if (query.limit !== undefined && matchingIds.length >= query.limit) {
-          break;
-        }
       }
     }
 
@@ -331,7 +328,7 @@ export async function createFsForgeStore(
     );
 
     // Collect successful loads; self-heal index for corrupted entries
-    const bricks = loadResults
+    const loaded = loadResults
       .filter(({ id, result }) => {
         if (!result.ok) {
           index.delete(id);
@@ -341,7 +338,9 @@ export async function createFsForgeStore(
       })
       .map(({ result }) => (result as { ok: true; value: BrickArtifact }).value);
 
-    return { ok: true, value: bricks };
+    // Sort + minFitnessScore filter, then apply limit
+    const sorted = sortBricks(loaded, query, { nowMs: Date.now() });
+    return { ok: true, value: query.limit !== undefined ? sorted.slice(0, query.limit) : sorted };
   };
 
   const remove = async (id: BrickId): Promise<Result<void, KoiError>> => {

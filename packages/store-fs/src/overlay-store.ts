@@ -20,7 +20,7 @@ import type {
   StoreChangeEvent,
 } from "@koi/core";
 import { notFound, permission, validation } from "@koi/core";
-import { applyBrickUpdate } from "@koi/validation";
+import { applyBrickUpdate, sortBricks } from "@koi/validation";
 import type { FsForgeStoreExtended } from "./fs-store.js";
 import { createFsForgeStore } from "./fs-store.js";
 import type { TierDescriptor, TierName } from "./tier.js";
@@ -218,25 +218,25 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
         return unique;
       });
 
-    // Apply limit after deduplication
-    const limited = query.limit !== undefined ? winners.slice(0, query.limit) : winners;
-
-    // Phase 2: load only the winning bricks from disk
+    // Phase 2: load all winning bricks from disk (limit applied after sort)
     const loadResults = await Promise.all(
-      limited.map(async ({ entry, meta }) => {
+      winners.map(async ({ entry, meta }) => {
         const result = await entry.store.loadFromDisk(meta.id);
         return { id: meta.id, result };
       }),
     );
 
     // Collect successful loads; skip corrupted entries
-    const bricks: BrickArtifact[] = [];
+    const loaded: BrickArtifact[] = [];
     for (const { result } of loadResults) {
       if (result.ok) {
-        bricks.push(result.value);
+        loaded.push(result.value);
       }
     }
-    return { ok: true, value: bricks };
+
+    // Sort + minFitnessScore filter, then apply limit
+    const ranked = sortBricks(loaded, query, { nowMs: Date.now() });
+    return { ok: true, value: query.limit !== undefined ? ranked.slice(0, query.limit) : ranked };
   };
 
   /**

@@ -15,7 +15,7 @@ import type {
   StoreChangeEvent,
 } from "@koi/core";
 import { notFound } from "@koi/core";
-import { applyBrickUpdate, matchesBrickQuery } from "@koi/validation";
+import { applyBrickUpdate, matchesBrickQuery, sortBricks } from "@koi/validation";
 
 // Error helpers use shared factories from @koi/core.
 function notFoundError(id: BrickId): KoiError {
@@ -64,16 +64,15 @@ export function createInMemoryForgeStore(): ForgeStore {
   };
 
   const search = async (query: ForgeQuery): Promise<Result<readonly BrickArtifact[], KoiError>> => {
-    const results: BrickArtifact[] = [];
+    const filtered: BrickArtifact[] = [];
     for (const brick of bricks.values()) {
       if (matchesBrickQuery(brick, query)) {
-        results.push(brick);
-        if (query.limit !== undefined && results.length >= query.limit) {
-          break;
-        }
+        filtered.push(brick);
       }
     }
-    return { ok: true, value: results };
+    const sorted = sortBricks(filtered, query, { nowMs: Date.now() });
+    const limited = query.limit !== undefined ? sorted.slice(0, query.limit) : sorted;
+    return { ok: true, value: limited };
   };
 
   const remove = async (id: BrickId): Promise<Result<void, KoiError>> => {
