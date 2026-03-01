@@ -11,6 +11,7 @@ import { JsonObject } from './common.js';
 export { ChannelAdapter, ChannelCapabilities, ChannelStatus, ChannelStatusKind, MessageHandler } from './channel.js';
 export { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, FeatureFlags, ForgeConfigSection, KoiConfig, LimitsConfig, LogLevel, LoopDetectionConfigSection, ModelRouterConfigSection, ModelTargetConfigEntry, SpawnConfig, TelemetryConfig } from './config.js';
 export { CompactionResult, ContextCompactor, TokenEstimator } from './context.js';
+export { BudgetTracker, CostBreakdown, CostCalculator, CostEntry, ModelCostBreakdown, ToolCostBreakdown, UsageInfo } from './cost-HASH.js';
 export { ElicitationOption, ElicitationQuestion, ElicitationResult } from './elicitation.js';
 export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, EventEnvelope, EventInput, ReadOptions, ReadResult, SubscribeOptions, SubscriptionHandle } from './event-HASH.js';
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
@@ -2961,6 +2962,8 @@ interface ActionEntry {
         readonly inputTokens: number;
         readonly outputTokens: number;
     } | undefined;
+    /** Estimated cost in USD for this action, when available. */
+    readonly costUsd?: number | undefined;
 }
 /** An issue (error, warning, informational) encountered during a run. */
 interface IssueEntry {
@@ -3269,5 +3272,74 @@ interface ZoneRegistry extends AsyncDisposable {
 }
 
 export { type ZoneDescriptor, type ZoneEvent, type ZoneFilter, type ZoneId, type ZoneRegistry, type ZoneStatus, zoneId };
+"
+`;
+
+exports[`@koi/core API surface ./cost-tracker has stable type surface 1`] = `
+"/**
+ * Cost tracking contracts — per-session, per-tool, per-model cost transparency.
+ *
+ * Pure types only. No runtime code, no imports from other packages.
+ * Defines the canonical cost tracking interfaces shared across L0, L1, and L2.
+ */
+/** A single cost event recorded during a model call. */
+interface CostEntry {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly model: string;
+    readonly costUsd: number;
+    readonly timestamp: number;
+    /** Optional tool attribution — set when the model call was on behalf of a tool. */
+    readonly toolName?: string | undefined;
+}
+/** Aggregated cost for a single model within a session. */
+interface ModelCostBreakdown {
+    readonly model: string;
+    readonly totalCostUsd: number;
+    readonly totalInputTokens: number;
+    readonly totalOutputTokens: number;
+    readonly callCount: number;
+}
+/** Aggregated cost for a single tool within a session. */
+interface ToolCostBreakdown {
+    readonly toolName: string;
+    readonly totalCostUsd: number;
+    readonly callCount: number;
+}
+/** Full cost breakdown for a session — total + per-model + per-tool. */
+interface CostBreakdown {
+    readonly totalCostUsd: number;
+    readonly byModel: readonly ModelCostBreakdown[];
+    readonly byTool: readonly ToolCostBreakdown[];
+}
+/**
+ * Calculates the USD cost of a model call from token counts.
+ *
+ * Implementations may use static rate tables or dynamic pricing APIs.
+ */
+interface CostCalculator {
+    readonly calculate: (model: string, inputTokens: number, outputTokens: number) => number;
+}
+/**
+ * Session-scoped budget tracker with breakdown queries.
+ *
+ * All methods return \`T | Promise<T>\` so implementations can be
+ * sync (in-memory) or async (network/database) without interface changes.
+ */
+interface BudgetTracker {
+    readonly record: (sessionId: string, entry: CostEntry) => void | Promise<void>;
+    readonly totalSpend: (sessionId: string) => number | Promise<number>;
+    readonly remaining: (sessionId: string, budget: number) => number | Promise<number>;
+    readonly breakdown: (sessionId: string) => CostBreakdown | Promise<CostBreakdown>;
+}
+/** Enriched usage information passed to onUsage callbacks. */
+interface UsageInfo {
+    readonly entry: CostEntry;
+    readonly totalSpent: number;
+    readonly remaining: number;
+    readonly breakdown: CostBreakdown;
+}
+
+export type { BudgetTracker, CostBreakdown, CostCalculator, CostEntry, ModelCostBreakdown, ToolCostBreakdown, UsageInfo };
 "
 `;

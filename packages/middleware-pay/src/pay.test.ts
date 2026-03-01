@@ -12,7 +12,7 @@ import {
   createSpyToolHandler,
 } from "@koi/test-utils";
 import { createPayMiddleware } from "./pay.js";
-import { createDefaultCostCalculator, createInMemoryPayLedger } from "./tracker.js";
+import { createDefaultCostCalculator, createInMemoryBudgetTracker } from "./tracker.js";
 
 describe("createPayMiddleware", () => {
   const ctx = createMockTurnContext();
@@ -26,7 +26,7 @@ describe("createPayMiddleware", () => {
     },
   ): ReturnType<typeof createPayMiddleware> {
     return createPayMiddleware({
-      ledger: createInMemoryPayLedger(budget),
+      tracker: createInMemoryBudgetTracker(),
       calculator: createDefaultCostCalculator(),
       budget,
       ...options,
@@ -44,9 +44,9 @@ describe("createPayMiddleware", () => {
   });
 
   test("model call records cost", async () => {
-    const ledger = createInMemoryPayLedger(10);
+    const tracker = createInMemoryBudgetTracker();
     const mw = createPayMiddleware({
-      ledger,
+      tracker,
       calculator: createDefaultCostCalculator(),
       budget: 10,
     });
@@ -56,8 +56,8 @@ describe("createPayMiddleware", () => {
       usage: { inputTokens: 100, outputTokens: 50 },
     });
     await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
-    const balance = await ledger.getBalance();
-    expect(parseFloat(balance.available)).toBeLessThan(10);
+    const spent = await tracker.totalSpend(ctx.session.sessionId);
+    expect(spent).toBeGreaterThan(0);
   });
 
   test("model call returns response from next()", async () => {
@@ -76,11 +76,18 @@ describe("createPayMiddleware", () => {
   });
 
   test("budget exceeded throws RATE_LIMIT", async () => {
-    const ledger = createInMemoryPayLedger(10);
+    const tracker = createInMemoryBudgetTracker();
+    const sid = ctx.session.sessionId;
     // Exhaust the budget
-    await ledger.meter("10", "model_call");
+    await tracker.record(sid, {
+      inputTokens: 0,
+      outputTokens: 0,
+      model: "test",
+      costUsd: 10,
+      timestamp: Date.now(),
+    });
     const mw = createPayMiddleware({
-      ledger,
+      tracker,
       calculator: createDefaultCostCalculator(),
       budget: 10,
     });
@@ -96,10 +103,17 @@ describe("createPayMiddleware", () => {
   });
 
   test("next() NOT called when budget exceeded", async () => {
-    const ledger = createInMemoryPayLedger(10);
-    await ledger.meter("10", "model_call");
+    const tracker = createInMemoryBudgetTracker();
+    const sid = ctx.session.sessionId;
+    await tracker.record(sid, {
+      inputTokens: 0,
+      outputTokens: 0,
+      model: "test",
+      costUsd: 10,
+      timestamp: Date.now(),
+    });
     const mw = createPayMiddleware({
-      ledger,
+      tracker,
       calculator: createDefaultCostCalculator(),
       budget: 10,
     });
@@ -113,10 +127,17 @@ describe("createPayMiddleware", () => {
   });
 
   test("hardKill=false allows over-budget calls", async () => {
-    const ledger = createInMemoryPayLedger(10);
-    await ledger.meter("10", "model_call");
+    const tracker = createInMemoryBudgetTracker();
+    const sid = ctx.session.sessionId;
+    await tracker.record(sid, {
+      inputTokens: 0,
+      outputTokens: 0,
+      model: "test",
+      costUsd: 10,
+      timestamp: Date.now(),
+    });
     const mw = createPayMiddleware({
-      ledger,
+      tracker,
       calculator: createDefaultCostCalculator(),
       budget: 10,
       hardKill: false,
@@ -129,7 +150,7 @@ describe("createPayMiddleware", () => {
 
   test("zero-budget blocks immediately", async () => {
     const mw = createPayMiddleware({
-      ledger: createInMemoryPayLedger(0),
+      tracker: createInMemoryBudgetTracker(),
       calculator: createDefaultCostCalculator(),
       budget: 0,
     });
@@ -146,7 +167,7 @@ describe("createPayMiddleware", () => {
   test("threshold alerts fire at correct percentage", async () => {
     const alerts: Array<{ readonly pct: number; readonly rem: number }> = [];
     const mw = createPayMiddleware({
-      ledger: createInMemoryPayLedger(1.0),
+      tracker: createInMemoryBudgetTracker(),
       calculator: createDefaultCostCalculator({
         "test-model": { input: 0.01, output: 0.01 },
       }),
@@ -168,10 +189,17 @@ describe("createPayMiddleware", () => {
   });
 
   test("tool call pre-checks budget", async () => {
-    const ledger = createInMemoryPayLedger(10);
-    await ledger.meter("10", "model_call");
+    const tracker = createInMemoryBudgetTracker();
+    const sid = ctx.session.sessionId;
+    await tracker.record(sid, {
+      inputTokens: 0,
+      outputTokens: 0,
+      model: "test",
+      costUsd: 10,
+      timestamp: Date.now(),
+    });
     const mw = createPayMiddleware({
-      ledger,
+      tracker,
       calculator: createDefaultCostCalculator(),
       budget: 10,
     });
@@ -197,7 +225,7 @@ describe("createPayMiddleware", () => {
   test("onUsage fires with cost entry after model call", async () => {
     const usages: Array<{ readonly totalSpent: number; readonly remaining: number }> = [];
     const mw = createPayMiddleware({
-      ledger: createInMemoryPayLedger(10),
+      tracker: createInMemoryBudgetTracker(),
       calculator: createDefaultCostCalculator({
         "test-model": { input: 0.01, output: 0.01 },
       }),
@@ -220,7 +248,7 @@ describe("createPayMiddleware", () => {
   test("onUsage not fired when response has no usage", async () => {
     let called = false;
     const mw = createPayMiddleware({
-      ledger: createInMemoryPayLedger(10),
+      tracker: createInMemoryBudgetTracker(),
       calculator: createDefaultCostCalculator(),
       budget: 10,
       onUsage: () => {
@@ -236,9 +264,9 @@ describe("createPayMiddleware", () => {
   });
 
   test("response without usage does not record cost", async () => {
-    const ledger = createInMemoryPayLedger(10);
+    const tracker = createInMemoryBudgetTracker();
     const mw = createPayMiddleware({
-      ledger,
+      tracker,
       calculator: createDefaultCostCalculator(),
       budget: 10,
     });
@@ -247,8 +275,8 @@ describe("createPayMiddleware", () => {
       model: "test",
     });
     await mw.wrapModelCall?.(ctx, { messages: [] }, noUsageHandler);
-    const balance = await ledger.getBalance();
-    expect(parseFloat(balance.available)).toBe(10);
+    const spent = await tracker.totalSpend(ctx.session.sessionId);
+    expect(spent).toBe(0);
   });
 
   describe("wrapModelStream", () => {
@@ -283,9 +311,9 @@ describe("createPayMiddleware", () => {
     });
 
     test("records cost from done chunk usage", async () => {
-      const ledger = createInMemoryPayLedger(10);
+      const tracker = createInMemoryBudgetTracker();
       const mw = createPayMiddleware({
-        ledger,
+        tracker,
         calculator: createDefaultCostCalculator({
           "test-model": { input: 0.01, output: 0.02 },
         }),
@@ -303,16 +331,23 @@ describe("createPayMiddleware", () => {
       ]);
 
       await drainStream(streamOf(mw)(ctx, { messages: [] }, handler));
-      const balance = await ledger.getBalance();
+      const spent = await tracker.totalSpend(ctx.session.sessionId);
       // 100 * 0.01 + 50 * 0.02 = 1.00 + 1.00 = 2.00
-      expect(10 - parseFloat(balance.available)).toBeCloseTo(2.0);
+      expect(spent).toBeCloseTo(2.0);
     });
 
     test("budget exhausted blocks stream before LLM call", async () => {
-      const ledger = createInMemoryPayLedger(1);
-      await ledger.meter("100", "model_call");
+      const tracker = createInMemoryBudgetTracker();
+      const sid = ctx.session.sessionId;
+      await tracker.record(sid, {
+        inputTokens: 0,
+        outputTokens: 0,
+        model: "test",
+        costUsd: 100,
+        timestamp: Date.now(),
+      });
       const mw = createPayMiddleware({
-        ledger,
+        tracker,
         calculator: createDefaultCostCalculator(),
         budget: 1, // already exceeded
       });
@@ -326,7 +361,7 @@ describe("createPayMiddleware", () => {
 
     test("zero-budget blocks stream immediately", async () => {
       const mw = createPayMiddleware({
-        ledger: createInMemoryPayLedger(0),
+        tracker: createInMemoryBudgetTracker(),
         calculator: createDefaultCostCalculator(),
         budget: 0,
       });
@@ -339,10 +374,17 @@ describe("createPayMiddleware", () => {
     });
 
     test("hardKill=false allows over-budget stream", async () => {
-      const ledger = createInMemoryPayLedger(1);
-      await ledger.meter("100", "model_call");
+      const tracker = createInMemoryBudgetTracker();
+      const sid = ctx.session.sessionId;
+      await tracker.record(sid, {
+        inputTokens: 0,
+        outputTokens: 0,
+        model: "test",
+        costUsd: 100,
+        timestamp: Date.now(),
+      });
       const mw = createPayMiddleware({
-        ledger,
+        tracker,
         calculator: createDefaultCostCalculator(),
         budget: 1,
         hardKill: false,
@@ -357,9 +399,9 @@ describe("createPayMiddleware", () => {
     });
 
     test("done chunk without usage does not record cost", async () => {
-      const ledger = createInMemoryPayLedger(10);
+      const tracker = createInMemoryBudgetTracker();
       const mw = createPayMiddleware({
-        ledger,
+        tracker,
         calculator: createDefaultCostCalculator(),
         budget: 10,
       });
@@ -368,14 +410,14 @@ describe("createPayMiddleware", () => {
       ]);
 
       await drainStream(streamOf(mw)(ctx, { messages: [] }, handler));
-      const balance = await ledger.getBalance();
-      expect(parseFloat(balance.available)).toBe(10);
+      const spent = await tracker.totalSpend(ctx.session.sessionId);
+      expect(spent).toBe(0);
     });
 
     test("threshold alert fires after stream completes", async () => {
       const alerts: number[] = [];
       const mw = createPayMiddleware({
-        ledger: createInMemoryPayLedger(1),
+        tracker: createInMemoryBudgetTracker(),
         calculator: createDefaultCostCalculator({
           "test-model": { input: 0.001, output: 0.001 },
         }),
