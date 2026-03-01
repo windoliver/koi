@@ -91,7 +91,7 @@ export function createForgeResolver(
   const { agentId } = context;
 
   const discover = async (): Promise<readonly BrickArtifact[]> => {
-    const result = await store.search({});
+    const result = await store.search({ orderBy: "trailStrength" });
     if (!result.ok) {
       throw new Error(`ForgeResolver: store search failed: ${result.error.message}`, {
         cause: result.error,
