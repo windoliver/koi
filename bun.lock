@@ -443,6 +443,16 @@
         "@koi/model-router": "workspace:*",
       },
     },
+    "packages/collusion-detector": {
+      "name": "@koi/collusion-detector",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/competitive-broadcast": {
       "name": "@koi/competitive-broadcast",
       "version": "0.0.0",
@@ -879,6 +889,18 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/governance-memory": {
+      "name": "@koi/governance-memory",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+      "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -2541,6 +2563,8 @@
 
     "@koi/code-mode": ["@koi/code-mode@workspace:packages/code-mode"],
 
+    "@koi/collusion-detector": ["@koi/collusion-detector@workspace:packages/collusion-detector"],
+
     "@koi/competitive-broadcast": ["@koi/competitive-broadcast@workspace:packages/competitive-broadcast"],
 
     "@koi/config": ["@koi/config@workspace:packages/config"],
@@ -2614,6 +2638,8 @@
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/git-utils"],
 
     "@koi/governance": ["@koi/governance@workspace:packages/governance"],
+
+    "@koi/governance-memory": ["@koi/governance-memory@workspace:packages/governance-memory"],
 
     "@koi/handoff": ["@koi/handoff@workspace:packages/handoff"],
 

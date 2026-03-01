@@ -1,0 +1,200 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/governance-memory API surface . has stable type surface 1`] = `
+"import { PolicyRequestKind, PolicyRequest, ViolationSeverity, PolicyEvaluator, GovernanceVerdict, GovernanceBackend } from '@koi/core/governance-backend';
+import { Result, KoiError } from '@koi/core/errors';
+
+/**
+ * Types for the in-memory governance backend.
+ *
+ * Defines configuration, rules, evaluation context, and adaptive thresholds
+ * for Cedar-inspired constraint DAG evaluation.
+ */
+
+/**
+ * Minimal anomaly signal shape expected by the governance evaluator.
+ * Compatible with @koi/agent-monitor AnomalySignal without importing it.
+ */
+interface AnomalySignalLike {
+    readonly kind: string;
+    readonly sessionId: string;
+}
+/** Configuration for an adaptive threshold that tightens on violations and relaxes on clean evals. */
+interface AdaptiveThresholdConfig {
+    /** Base threshold value. */
+    readonly baseValue: number;
+    /** Multiplier applied on violation (< 1.0 tightens). Default: 0.9. */
+    readonly decayRate: number;
+    /** Multiplier applied on clean eval (> 1.0 relaxes). Default: 1.02. */
+    readonly recoveryRate: number;
+    /** Minimum allowed value. */
+    readonly floor: number;
+    /** Maximum allowed value. */
+    readonly ceiling: number;
+}
+/** Enriched context available to rule condition functions during evaluation. */
+interface EvaluationContext {
+    /** Count of recent anomalies for the requesting agent's session. */
+    readonly anomalyCount: number;
+    /** Recent anomaly signals from the agent monitor bridge. */
+    readonly recentAnomalies: readonly AnomalySignalLike[];
+    /** Current adaptive threshold values keyed by rule ID. */
+    readonly adaptiveThresholds: ReadonlyMap<string, number>;
+}
+/** A single policy rule with optional DAG dependencies and scope filtering. */
+interface GovernanceRule {
+    /** Unique rule identifier. */
+    readonly id: string;
+    /** Whether this rule permits or forbids matching requests. */
+    readonly effect: "permit" | "forbid";
+    /** Evaluation priority — lower numbers evaluated first. */
+    readonly priority: number;
+    /** Optional scope filter — rule only applies to these request kinds. */
+    readonly scope?: readonly PolicyRequestKind[] | undefined;
+    /** DAG edges — IDs of rules that must pass before this rule is evaluated. */
+    readonly dependsOn?: readonly string[] | undefined;
+    /** Condition function — returns true if the rule matches the request. */
+    readonly condition: (request: PolicyRequest, context: EvaluationContext) => boolean;
+    /** Human-readable violation message. */
+    readonly message: string;
+    /** Violation severity. Defaults to "critical" for forbid, "info" for permit. */
+    readonly severity?: ViolationSeverity | undefined;
+}
+/** Configuration for creating an in-memory governance backend. */
+interface GovernanceMemoryConfig {
+    /** Initial rule set for the constraint DAG. */
+    readonly rules?: readonly GovernanceRule[] | undefined;
+    /** Ring buffer capacity for compliance records. Default: 10_000. */
+    readonly complianceCapacity?: number | undefined;
+    /** Per-agent ring buffer capacity for violations. Default: 1_000. */
+    readonly violationCapacity?: number | undefined;
+    /** Bridge callback to fetch recent anomalies from agent monitor. Fail-open on error. */
+    readonly getRecentAnomalies?: ((sessionId: string) => readonly AnomalySignalLike[]) | undefined;
+    /** Anomaly kinds that trigger severity elevation. */
+    readonly elevateOnAnomalyKinds?: readonly string[] | undefined;
+    /** Policy fingerprint for compliance records. */
+    readonly policyFingerprint?: string | undefined;
+    /** Adaptive threshold configs keyed by rule ID. */
+    readonly adaptiveThresholds?: ReadonlyMap<string, AdaptiveThresholdConfig> | undefined;
+}
+
+/**
+ * Adaptive thresholds — tighten on violations, relax on clean evaluations.
+ *
+ * Pure functions only. All operations return new objects (immutable).
+ */
+
+/** Runtime state for a single adaptive threshold. */
+interface AdaptiveThreshold {
+    readonly currentValue: number;
+    readonly baseValue: number;
+    readonly decayRate: number;
+    readonly recoveryRate: number;
+    readonly floor: number;
+    readonly ceiling: number;
+}
+/** Create an adaptive threshold from configuration. Initial value = baseValue. */
+declare function createAdaptiveThreshold(config: AdaptiveThresholdConfig): AdaptiveThreshold;
+/**
+ * Adjust threshold based on whether a violation occurred.
+ *
+ * - violated=true: tighten (multiply by decayRate, clamp to floor)
+ * - violated=false: relax (multiply by recoveryRate, clamp to ceiling)
+ *
+ * Returns a new AdaptiveThreshold — the original is not mutated.
+ */
+declare function adjustThreshold(threshold: AdaptiveThreshold, violated: boolean): AdaptiveThreshold;
+
+/**
+ * Configuration validation for GovernanceMemoryConfig.
+ *
+ * Uses manual typeof + Result pattern consistent with existing codebase.
+ */
+
+/**
+ * Validate a governance memory configuration.
+ *
+ * Checks:
+ * - config is a non-null object
+ * - rules (if present) is an array of objects with required fields
+ * - capacity values (if present) are positive integers
+ * - getRecentAnomalies (if present) is a function
+ * - elevateOnAnomalyKinds (if present) is an array of strings
+ * - policyFingerprint (if present) is a string
+ */
+declare function validateGovernanceMemoryConfig(config: unknown): Result<GovernanceMemoryConfig, KoiError>;
+
+/**
+ * Constraint DAG — topologically sorted rule graph with cycle detection.
+ *
+ * Uses Kahn's algorithm for topological sort. Rules are sorted by
+ * dependency order first, then by priority within the same dependency level.
+ */
+
+/** A validated, topologically-sorted constraint DAG. */
+interface ConstraintDag {
+    /** Rules in topological evaluation order. Frozen. */
+    readonly sortedRules: readonly GovernanceRule[];
+    /** Dependency lookup: ruleId → IDs of rules it depends on. */
+    readonly dependencyMap: ReadonlyMap<string, readonly string[]>;
+}
+/**
+ * Build a constraint DAG from governance rules.
+ *
+ * Validates:
+ * - No duplicate rule IDs
+ * - All dependsOn references point to existing rules
+ * - No cycles (Kahn's algorithm)
+ *
+ * @throws Error with cause KoiError on validation failure
+ */
+declare function createConstraintDag(rules: readonly GovernanceRule[]): ConstraintDag;
+
+/**
+ * In-memory policy evaluator — constraint DAG + anomaly bridge + adaptive thresholds.
+ *
+ * Evaluation flow:
+ * 1. Filter rules by scope (skip non-matching request kinds)
+ * 2. Fetch anomaly context (fail-open: catch errors, return empty)
+ * 3. Build EvaluationContext with anomalies + adaptive thresholds
+ * 4. Iterate topologically-sorted rules:
+ *    - Skip if dependencies not satisfied
+ *    - Evaluate condition against request + context
+ *    - First forbid match → short-circuit deny
+ *    - Permit match → mark allowed, continue checking forbids
+ * 5. No permit matched → default-deny
+ * 6. Update adaptive thresholds on result
+ */
+
+/** Extended PolicyEvaluator with synchronous evaluate and adaptive threshold access. */
+interface MemoryEvaluator extends PolicyEvaluator {
+    /** Synchronous policy evaluation (narrows the base contract's return type). */
+    readonly evaluate: (request: PolicyRequest) => GovernanceVerdict;
+    /** Read-only snapshot of current adaptive threshold values. */
+    readonly getThresholds: () => ReadonlyMap<string, number>;
+}
+/** Create an in-memory policy evaluator from configuration. */
+declare function createMemoryEvaluator(config: GovernanceMemoryConfig): MemoryEvaluator;
+
+/**
+ * Factory for the in-memory GovernanceBackend.
+ *
+ * Wires evaluator + store + constraint checker into a composite GovernanceBackend.
+ */
+
+/**
+ * Create an in-memory governance backend.
+ *
+ * The backend provides:
+ * - Policy evaluation via a Cedar-inspired constraint DAG
+ * - Constraint checking (delegates to DAG evaluation)
+ * - Compliance recording (ring buffer)
+ * - Violation storage and querying (per-agent ring buffers)
+ * - Anomaly bridge integration (fail-open callback)
+ * - Adaptive thresholds (tighten on violations, relax on clean evals)
+ */
+declare function createGovernanceMemoryBackend(config?: GovernanceMemoryConfig): GovernanceBackend;
+
+export { type AdaptiveThreshold, type AdaptiveThresholdConfig, type AnomalySignalLike, type ConstraintDag, type EvaluationContext, type GovernanceMemoryConfig, type GovernanceRule, type MemoryEvaluator, adjustThreshold, createAdaptiveThreshold, createConstraintDag, createGovernanceMemoryBackend, createMemoryEvaluator, validateGovernanceMemoryConfig };
+"
+`;

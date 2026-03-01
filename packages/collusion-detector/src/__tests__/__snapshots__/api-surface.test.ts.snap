@@ -1,0 +1,177 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/collusion-detector API surface . has stable type surface 1`] = `
+"import { AgentId } from '@koi/core/ecs';
+import { Result, KoiError } from '@koi/core/errors';
+import { ViolationSeverity } from '@koi/core/governance-backend';
+
+/**
+ * Types for cross-agent collusion detection.
+ *
+ * Uses the Institutional AI pattern: 4 deterministic signal detectors
+ * monitor agent populations for coordinated behavior anomalies.
+ */
+
+/** A single observation of an agent's behavior in one round. */
+interface AgentObservation {
+    /** The observed agent. */
+    readonly agentId: AgentId;
+    /** Round number (monotonically increasing). */
+    readonly round: number;
+    /** Unix timestamp (ms) when the observation was recorded. */
+    readonly timestamp: number;
+    /** Tool usage distribution: toolId → call count. */
+    readonly toolCallCounts: ReadonlyMap<string, number>;
+    /** Resource access distribution: resourceId → access count. */
+    readonly resourceAccessCounts: ReadonlyMap<string, number>;
+    /** Delta in trust scores given to peers: agentId → score change. */
+    readonly trustScoreChanges: ReadonlyMap<string, number>;
+}
+/** Kind of collusion signal detected. */
+type CollusionSignalKind = "sync_move" | "variance_collapse" | "concentration" | "specialization";
+/** A detected collusion signal with evidence and severity. */
+interface CollusionSignal {
+    /** The type of collusion pattern detected. */
+    readonly kind: CollusionSignalKind;
+    /** How severe this signal is. */
+    readonly severity: ViolationSeverity;
+    /** Evidence map: agentId → metric value. */
+    readonly evidence: ReadonlyMap<string, number>;
+    /** The round in which the signal was detected. */
+    readonly round: number;
+    /** Unix timestamp (ms) of detection. */
+    readonly timestamp: number;
+    /** Human-readable description. */
+    readonly message: string;
+}
+/** Configurable thresholds for each collusion detection signal. */
+interface CollusionThresholds {
+    /** Minimum agents to detect synchronous move. Default: 3. */
+    readonly syncMoveMinAgents: number;
+    /** Percentage change threshold for sync move detection. Default: 0.2 (20%). */
+    readonly syncMoveChangePct: number;
+    /** Maximum coefficient of variation for variance collapse. Default: 0.1. */
+    readonly varianceCollapseMaxCv: number;
+    /** Minimum consecutive rounds below CV threshold. Default: 5. */
+    readonly varianceCollapseMinRounds: number;
+    /** Herfindahl-Hirschman Index threshold for concentration. Default: 0.25. */
+    readonly concentrationHhiThreshold: number;
+    /** Minimum CV indicating high specialization (market division). Default: 2.0. */
+    readonly specializationCvMin: number;
+}
+/** Configuration for the collusion detector. */
+interface CollusionDetectorConfig {
+    /** Per-signal threshold overrides. */
+    readonly thresholds?: Partial<CollusionThresholds> | undefined;
+    /** Sliding window size in rounds. Default: 50. */
+    readonly windowSize?: number | undefined;
+}
+
+/**
+ * Configuration validation and defaults for the collusion detector.
+ */
+
+/** Default thresholds for collusion detection signals. */
+declare const DEFAULT_COLLUSION_THRESHOLDS: Readonly<CollusionThresholds>;
+/** Resolve collusion thresholds from optional partial overrides. */
+declare function resolveThresholds(overrides?: Partial<CollusionThresholds> | undefined): CollusionThresholds;
+/** Resolve window size from optional config value. */
+declare function resolveWindowSize(windowSize?: number | undefined): number;
+/**
+ * Validate a collusion detector configuration.
+ *
+ * Checks:
+ * - config is a non-null object
+ * - threshold values (if present) are positive finite numbers
+ * - windowSize (if present) is a positive integer
+ */
+declare function validateCollusionDetectorConfig(config: unknown): Result<CollusionDetectorConfig, KoiError>;
+
+/**
+ * Pure collusion detection functions — 4 deterministic signal detectors.
+ *
+ * No side effects. All state passed as arguments. Each detector returns
+ * a CollusionSignal or null.
+ *
+ * Detectors:
+ * 1. Synchronous Move — agents shifting tool usage in the same direction
+ * 2. Variance Collapse — cross-agent behavior becoming suspiciously uniform
+ * 3. Concentration — resource access dominated by few agents (high HHI)
+ * 4. Specialization — agents dividing the market (each agent uses different tools)
+ */
+
+/** Compute mean of values. Returns 0 for empty arrays. */
+declare function computeMean(values: readonly number[]): number;
+/** Compute standard deviation given pre-computed mean. Returns 0 for empty/single-element arrays. */
+declare function computeStddev(values: readonly number[], mean: number): number;
+/** Compute coefficient of variation (stddev / mean). Returns 0 when mean is 0. */
+declare function computeCV(values: readonly number[]): number;
+/**
+ * Compute Herfindahl-Hirschman Index (HHI).
+ * Sum of squared market shares where shares are fractions summing to 1.
+ * - 0 = perfect competition
+ * - 1 = monopoly
+ *
+ * Input: raw counts (not shares). Normalizes internally.
+ * Returns 0 for empty arrays. Returns 1 for single-element arrays.
+ */
+declare function computeHHI(counts: readonly number[]): number;
+/**
+ * Detect synchronous tool usage shifts across agents.
+ *
+ * Compares the latest round to the previous round. If >= K agents
+ * shift their total tool call count by >= X% in the same direction, flag.
+ *
+ * Requires at least 2 rounds of observations.
+ */
+declare function detectSyncMove(observations: readonly AgentObservation[], thresholds: CollusionThresholds): CollusionSignal | null;
+/**
+ * Detect cross-agent variance collapse in tool usage.
+ *
+ * Computes the coefficient of variation (CV) of total tool calls across agents
+ * for recent rounds. If CV stays below threshold for N consecutive rounds, flag.
+ */
+declare function detectVarianceCollapse(observations: readonly AgentObservation[], thresholds: CollusionThresholds): CollusionSignal | null;
+/**
+ * Detect resource access concentration via Herfindahl-Hirschman Index.
+ *
+ * Computes HHI of resource access counts across agents in the latest round.
+ * HHI > threshold indicates market concentration (few agents dominating).
+ */
+declare function detectConcentration(observations: readonly AgentObservation[], thresholds: CollusionThresholds): CollusionSignal | null;
+/**
+ * Detect market division via per-agent tool specialization.
+ *
+ * Computes each agent's CV across their tool usage distribution.
+ * High CV = agent is specialized in few tools. If the mean per-agent CV
+ * exceeds the threshold, flag potential market division.
+ */
+declare function detectSpecialization(observations: readonly AgentObservation[], thresholds: CollusionThresholds): CollusionSignal | null;
+/** Run all 4 collusion detectors and return non-null signals. */
+declare function detectAll(observations: readonly AgentObservation[], thresholds: CollusionThresholds): readonly CollusionSignal[];
+
+/**
+ * Sliding observation window — bounded storage for agent observations.
+ *
+ * Evicts observations from old rounds when the window fills.
+ */
+
+/** A sliding window of agent observations bounded by round count. */
+interface ObservationWindow {
+    /** Record a new observation. Evicts old rounds if window is full. */
+    readonly record: (observation: AgentObservation) => void;
+    /** Return all observations in the window. */
+    readonly observations: () => readonly AgentObservation[];
+    /** Return observations for a specific round. */
+    readonly observationsForRound: (round: number) => readonly AgentObservation[];
+    /** Return the latest round number, or -1 if empty. */
+    readonly latestRound: () => number;
+    /** Clear all observations. */
+    readonly clear: () => void;
+}
+/** Create a sliding observation window bounded by max round count. */
+declare function createObservationWindow(maxRounds: number): ObservationWindow;
+
+export { type AgentObservation, type CollusionDetectorConfig, type CollusionSignal, type CollusionSignalKind, type CollusionThresholds, DEFAULT_COLLUSION_THRESHOLDS, type ObservationWindow, computeCV, computeHHI, computeMean, computeStddev, createObservationWindow, detectAll, detectConcentration, detectSpecialization, detectSyncMove, detectVarianceCollapse, resolveThresholds, resolveWindowSize, validateCollusionDetectorConfig };
+"
+`;
