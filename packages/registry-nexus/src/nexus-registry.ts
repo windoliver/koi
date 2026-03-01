@@ -25,7 +25,7 @@ import type {
   Result,
   TransitionReason,
 } from "@koi/core";
-import { agentId, matchesFilter, VALID_TRANSITIONS } from "@koi/core";
+import { agentGroupId, agentId, matchesFilter, VALID_TRANSITIONS } from "@koi/core";
 import type { NexusRegistryConfig } from "./config.js";
 import { DEFAULT_NEXUS_REGISTRY_CONFIG } from "./config.js";
 import type { NexusAgent } from "./nexus-client.js";
@@ -99,17 +99,15 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     // Conditionally add optional fields (exactOptionalPropertyTypes compliance)
     const parentId = typeof metadata.parentId === "string" ? agentId(metadata.parentId) : undefined;
     const spawner = typeof metadata.spawner === "string" ? agentId(metadata.spawner) : undefined;
+    const groupIdValue =
+      typeof metadata.groupId === "string" ? agentGroupId(metadata.groupId) : undefined;
 
-    if (parentId !== undefined && spawner !== undefined) {
-      return { ...base, parentId, spawner };
-    }
-    if (parentId !== undefined) {
-      return { ...base, parentId };
-    }
-    if (spawner !== undefined) {
-      return { ...base, spawner };
-    }
-    return base;
+    return {
+      ...base,
+      ...(parentId !== undefined ? { parentId } : {}),
+      ...(spawner !== undefined ? { spawner } : {}),
+      ...(groupIdValue !== undefined ? { groupId: groupIdValue } : {}),
+    };
   }
 
   /** Load all agents from Nexus into the local projection. */
@@ -212,6 +210,9 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     }
     if (entry.spawner !== undefined) {
       mergedMetadata.spawner = entry.spawner;
+    }
+    if (entry.groupId !== undefined) {
+      mergedMetadata.groupId = entry.groupId;
     }
 
     const registerResult = await nexusRegisterAgent(config, {

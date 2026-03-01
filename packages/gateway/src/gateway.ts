@@ -5,6 +5,7 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
+import { notFound } from "@koi/core";
 import { swallowError } from "@koi/errors";
 import type { GatewayAuthenticator, HandshakeOptions } from "./auth.js";
 import { handleHandshake, startHeartbeatSweep } from "./auth.js";
@@ -81,6 +82,33 @@ export interface Gateway {
   readonly channelBindings: () => ReadonlyMap<string, string>;
   /** Send a NodeFrame to a connected compute node. */
   readonly sendToNode: (nodeId: string, frame: NodeFrame) => Result<number, KoiError>;
+  /**
+   * Send a POSIX-style signal to a specific agent on whichever node hosts it.
+   * Requires the agent's nodeId to be known (populated from agent:status frames).
+   */
+  readonly signalAgent: (
+    agentId: string,
+    signal: string,
+    gracePeriodMs?: number,
+  ) => Result<number, KoiError>;
+  /**
+   * Fan-out a signal to all active agents in a process group.
+   * Finds every node hosting at least one group member and sends agent:signal_group.
+   */
+  readonly signalGroup: (
+    groupId: string,
+    signal: string,
+    options?: { readonly deadlineMs?: number },
+  ) => Result<readonly string[], KoiError>;
+  /**
+   * Wait for a specific agent to reach "terminated" state.
+   * Resolves with the exit code from the terminal agent:status frame.
+   * Rejects if timeoutMs is exceeded (default: 60 000 ms).
+   */
+  readonly waitForAgent: (
+    agentId: string,
+    timeoutMs?: number,
+  ) => Promise<{ readonly agentId: string; readonly exitCode: number }>;
   /** Returns the canvas server port, or undefined if canvas is not configured. */
   readonly canvasPort: () => number | undefined;
   /** Access the surface store for external use. Undefined if canvas is not configured. */
@@ -774,6 +802,93 @@ export function createGateway(configOverrides: Partial<GatewayConfig>, deps: Gat
 
     sendToNode(nodeId: string, frame: NodeFrame): Result<number, KoiError> {
       return nodeHandler.sendToNode(nodeId, frame, connMap);
+    },
+
+    signalAgent(agentId: string, signal: string, gracePeriodMs?: number): Result<number, KoiError> {
+      const nodeId = nodeHandler.lookupAgentNode(agentId);
+      if (nodeId === undefined) {
+        return { ok: false, error: notFound(agentId, `No node hosting agent: ${agentId}`) };
+      }
+      return nodeHandler.sendToNode(
+        nodeId,
+        {
+          nodeId,
+          agentId,
+          correlationId: `sig-${agentId}-${String(Date.now())}`,
+          kind: "agent:signal",
+          payload: {
+            signal,
+            ...(gracePeriodMs !== undefined ? { gracePeriodMs } : {}),
+          },
+        },
+        connMap,
+      );
+    },
+
+    signalGroup(
+      groupId: string,
+      signal: string,
+      options?: { readonly deadlineMs?: number },
+    ): Result<readonly string[], KoiError> {
+      const agentIds = nodeHandler.lookupAgentsByGroup(groupId);
+      if (agentIds.length === 0) {
+        return { ok: true, value: [] };
+      }
+
+      // Find unique nodes hosting agents in this group
+      const nodeIds = new Set<string>();
+      for (const agentId of agentIds) {
+        const nodeId = nodeHandler.lookupAgentNode(agentId);
+        if (nodeId !== undefined) nodeIds.add(nodeId);
+      }
+
+      for (const nodeId of nodeIds) {
+        nodeHandler.sendToNode(
+          nodeId,
+          {
+            nodeId,
+            agentId: "",
+            correlationId: `siggrp-${groupId}-${String(Date.now())}`,
+            kind: "agent:signal_group",
+            payload: {
+              groupId,
+              signal,
+              ...(options?.deadlineMs !== undefined ? { deadlineMs: options.deadlineMs } : {}),
+            },
+          },
+          connMap,
+        );
+      }
+
+      return { ok: true, value: agentIds };
+    },
+
+    waitForAgent(
+      agentId: string,
+      timeoutMs = 60_000,
+    ): Promise<{ readonly agentId: string; readonly exitCode: number }> {
+      return new Promise((resolve, reject) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let unsub: (() => void) | undefined;
+
+        const cleanup = (): void => {
+          if (timer !== undefined) clearTimeout(timer);
+          unsub?.();
+        };
+
+        unsub = nodeHandler.onAgentStatus((entry) => {
+          if (entry.agentId !== agentId) return;
+          if (entry.state === "terminated") {
+            cleanup();
+            resolve({ agentId, exitCode: entry.exitCode ?? 1 });
+          }
+        });
+
+        timer = setTimeout(() => {
+          unsub?.();
+          reject(new Error(`waitForAgent timeout after ${String(timeoutMs)}ms: ${agentId}`));
+        }, timeoutMs);
+      });
     },
 
     canvasPort(): number | undefined {

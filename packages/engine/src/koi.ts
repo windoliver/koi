@@ -11,6 +11,7 @@
  */
 
 import type {
+  AgentGroupId,
   ApprovalHandler,
   ChannelStatus,
   ComposedCallHandlers,
@@ -58,6 +59,7 @@ function generatePid(
   manifest: { readonly name: string; readonly lifecycle?: "copilot" | "worker" | undefined },
   options?: {
     readonly parent?: ProcessId;
+    readonly groupId?: AgentGroupId;
   },
 ): ProcessId {
   // Manifest lifecycle is the primary source of truth.
@@ -69,6 +71,7 @@ function generatePid(
     type: agentType,
     depth: options?.parent !== undefined ? options.parent.depth + 1 : 0,
     ...(options?.parent !== undefined ? { parent: options.parent.id } : {}),
+    ...(options?.groupId !== undefined ? { groupId: options.groupId } : {}),
   };
 }
 
@@ -116,6 +119,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // --- 1. Assemble the agent entity (with governance provider) ---
   const pid = generatePid(manifest, {
     ...(options.parentPid !== undefined ? { parent: options.parentPid } : {}),
+    ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
   });
   const governanceProvider = createGovernanceProvider(options.governance);
   const allProviders = [governanceProvider, ...providers];
@@ -446,6 +450,29 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
       // --- Main event loop ---
       while (true) {
+        // Turn-boundary suspension: if the agent is suspended, park here
+        // until the registry signals a resume (reactive Promise, zero polling).
+        if (options.registry !== undefined) {
+          const registryEntry = await options.registry.lookup(pid.id);
+          if (registryEntry?.status.phase === "suspended") {
+            await new Promise<void>((resolve) => {
+              // let justified: mutable ref to unsubscribe the suspension watcher
+              let unsub: (() => void) | undefined;
+              unsub = options.registry?.watch((watchEvent) => {
+                if (
+                  watchEvent.kind === "transitioned" &&
+                  watchEvent.agentId === pid.id &&
+                  watchEvent.to === "running"
+                ) {
+                  unsub?.();
+                  unsub = undefined;
+                  resolve();
+                }
+              });
+            });
+          }
+        }
+
         // Deferred forge refresh: runs AFTER consumer processed turn_end,
         // so tools/middleware injected between turns take effect next turn
         if (pendingForgeRefresh) {

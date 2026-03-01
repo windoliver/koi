@@ -74,6 +74,8 @@ export { createLocalResolver } from "./tools/local-resolver.js";
 export { createShellTool } from "./tools/shell.js";
 export type {
   AdvertisedTool,
+  AgentSignalGroupPayload,
+  AgentSignalPayload,
   AgentStatusPayload,
   AuthAckPayload,
   AuthChallengePayload,

@@ -14,6 +14,7 @@
 import type {
   AgentId,
   ChannelAdapter,
+  ChildCompletionResult,
   ChildHandle,
   ChildLifecycleEvent,
   ComponentProvider,
@@ -40,6 +41,9 @@ function createNoopChildHandle(childId: AgentId, name: string): ChildHandle {
     },
     signal: () => {},
     terminate: () => {},
+    waitForCompletion: (): Promise<ChildCompletionResult> => {
+      return Promise.resolve({ childId, exitCode: 0 });
+    },
   };
 }
 
@@ -159,6 +163,7 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
       parentId: options.parentAgent.pid.id,
       spawner: options.parentAgent.pid.id,
       priority: childPriority,
+      ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
     });
   }
 
@@ -166,7 +171,13 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   let handle: ChildHandle;
   if (options.registry !== undefined) {
     const reg = options.registry;
-    handle = createChildHandle(childPid.id, options.manifest.name, reg, abortController);
+    handle = createChildHandle(
+      childPid.id,
+      options.manifest.name,
+      reg,
+      abortController,
+      options.gracePeriodMs,
+    );
 
     // 7. Parent termination → child cascade is handled by CascadingTermination
     //    (centralized, supervision-aware). No per-child watcher needed here.

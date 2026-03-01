@@ -197,6 +197,8 @@ export function parseNodeConfig(raw: unknown): Result<NodeConfig, KoiError> {
 export type NodeFrameKind =
   | "agent:dispatch"
   | "agent:message"
+  | "agent:signal"
+  | "agent:signal_group"
   | "agent:status"
   | "agent:terminate"
   | "node:auth"
@@ -278,6 +280,21 @@ export interface AgentStatusPayload {
   readonly state: string;
   readonly turnCount: number;
   readonly lastActivityMs: number;
+  /** Present when state is "terminated" — numeric exit code from exitCodeForTransitionReason(). */
+  readonly exitCode?: number | undefined;
+}
+
+/** Gateway → Node: signal a single agent. agentId is carried in the NodeFrame envelope. */
+export interface AgentSignalPayload {
+  readonly signal: string;
+  readonly gracePeriodMs?: number | undefined;
+}
+
+/** Gateway → Node: signal all agents belonging to a group. */
+export interface AgentSignalGroupPayload {
+  readonly groupId: string;
+  readonly signal: string;
+  readonly deadlineMs?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +318,8 @@ export type NodeEventType =
   | "auth_success"
   | "auth_failed"
   | "agent_dispatched"
+  | "agent_suspended"
+  | "agent_resumed"
   | "agent_terminated"
   | "agent_crashed"
   | "agent_recovered"
