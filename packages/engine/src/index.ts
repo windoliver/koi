@@ -32,6 +32,11 @@ export {
   runSessionHooks,
   runTurnHooks,
 } from "./compose.js";
+// concurrency guard
+export type { ConcurrencyGuardConfig } from "./concurrency-guard.js";
+export { createConcurrencyGuard, DEFAULT_CONCURRENCY_GUARD_CONFIG } from "./concurrency-guard.js";
+export type { ConcurrencySemaphore } from "./concurrency-semaphore.js";
+export { createConcurrencySemaphore } from "./concurrency-semaphore.js";
 // dispose
 export { disposeAll } from "./dispose.js";
 // eviction policies
