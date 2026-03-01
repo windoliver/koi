@@ -204,7 +204,13 @@ export type DelegationEvent =
       readonly delegateeId: AgentId;
       readonly failureCount: number;
     }
-  | { readonly kind: "delegation:circuit_closed"; readonly delegateeId: AgentId };
+  | { readonly kind: "delegation:circuit_closed"; readonly delegateeId: AgentId }
+  | {
+      readonly kind: "delegation:exhausted";
+      readonly delegateeIds: readonly AgentId[];
+      readonly issuerId: AgentId;
+      readonly detectedAt: number;
+    };
 
 // ---------------------------------------------------------------------------
 // Circuit breaker configuration

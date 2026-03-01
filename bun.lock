@@ -1022,6 +1022,16 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-delegation-escalation": {
+      "name": "@koi/middleware-delegation-escalation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-event-trace": {
       "name": "@koi/middleware-event-trace",
       "version": "0.0.0",
@@ -1358,7 +1368,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
         "@koi/nexus-client": "workspace:*",
       },
       "devDependencies": {
@@ -2502,6 +2511,8 @@
     "@koi/middleware-compactor": ["@koi/middleware-compactor@workspace:packages/middleware-compactor"],
 
     "@koi/middleware-context-editing": ["@koi/middleware-context-editing@workspace:packages/middleware-context-editing"],
+
+    "@koi/middleware-delegation-escalation": ["@koi/middleware-delegation-escalation@workspace:packages/middleware-delegation-escalation"],
 
     "@koi/middleware-event-trace": ["@koi/middleware-event-trace@workspace:packages/middleware-event-trace"],
 
