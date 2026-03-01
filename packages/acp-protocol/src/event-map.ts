@@ -219,6 +219,7 @@ export function mapEngineEventToAcp(event: EngineEvent): SessionUpdatePayload | 
     case "turn_start":
     case "turn_end":
     case "done":
+    case "discovery:miss":
       // No ACP equivalent — handled at protocol level
       return undefined;
 

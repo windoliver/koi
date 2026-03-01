@@ -67,6 +67,7 @@ export type {
   AgentArtifact,
   BrickArtifact,
   BrickArtifactBase,
+  BrickDriftContext,
   BrickFitnessMetrics,
   BrickRequires,
   BrickUpdate,
