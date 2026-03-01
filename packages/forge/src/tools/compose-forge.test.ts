@@ -267,7 +267,7 @@ describe("compose_forge", () => {
     expect(result.ok).toBe(true);
 
     // Verify the saved composite artifact uses the explicit outputSchema for step A
-    const savedArg = saveMock.mock.calls[0]?.[0] as BrickArtifact | undefined;
+    const savedArg = (saveMock.mock.calls as unknown as BrickArtifact[][])[0]?.[0];
     expect(savedArg).toBeDefined();
     if (savedArg !== undefined && savedArg.kind === "composite") {
       // First step's output port should use the declared outputSchema
@@ -349,7 +349,7 @@ describe("compose_forge", () => {
     expect(saveMock).toHaveBeenCalledTimes(1);
 
     // Verify the saved artifact is a CompositeArtifact
-    const savedArg = saveMock.mock.calls[0]?.[0] as BrickArtifact | undefined;
+    const savedArg = (saveMock.mock.calls as unknown as BrickArtifact[][])[0]?.[0];
     expect(savedArg).toBeDefined();
     if (savedArg !== undefined) {
       expect(savedArg.kind).toBe("composite");
