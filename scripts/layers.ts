@@ -31,6 +31,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/resolve",
   "@koi/sandbox-cloud-base",
   "@koi/scope",
+  "@koi/search-provider",
   "@koi/shutdown",
   "@koi/skill-scanner",
   "@koi/snapshot-chain-store",

@@ -96,6 +96,7 @@ import type {
   SchedulerComponent,
   // delegation
   ScopeChecker,
+  SearchConfig,
   // middleware
   SessionContext,
   SkillComponent,
@@ -194,6 +195,7 @@ type _TypeGuard =
   | AssertDefined<ChannelConfig>
   | AssertDefined<MiddlewareConfig>
   | AssertDefined<PermissionConfig>
+  | AssertDefined<SearchConfig>
   | AssertDefined<AgentManifest>
   | AssertDefined<EngineStopReason>
   | AssertDefined<EngineMetrics>

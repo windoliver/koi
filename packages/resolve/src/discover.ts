@@ -12,7 +12,7 @@ import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "./types.js";
 
 /** Package directory name patterns that may export descriptors. */
-const DISCOVERABLE_PREFIXES: readonly string[] = ["middleware-", "channel-", "engine-"];
+const DISCOVERABLE_PREFIXES: readonly string[] = ["middleware-", "channel-", "engine-", "search-"];
 
 /** Packages to skip during discovery. */
 const SKIP_LIST = new Set([

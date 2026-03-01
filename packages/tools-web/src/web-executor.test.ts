@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
+import type { SearchProvider } from "@koi/search-provider";
 import { createWebExecutor } from "./web-executor.js";
 
 // ---------------------------------------------------------------------------
@@ -295,5 +296,103 @@ describe("createWebExecutor.search", () => {
     await executor.search("query");
     await executor.search("query");
     expect(callCount).toBe(1);
+  });
+
+  test("returns VALIDATION when no searchProvider or searchFn", async () => {
+    const executor = createWebExecutor({});
+    const result = await executor.search("test");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("searchProvider");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// search — SearchProvider interface
+// ---------------------------------------------------------------------------
+
+describe("createWebExecutor.search with SearchProvider", () => {
+  test("delegates to searchProvider.search", async () => {
+    const searchResults = [{ title: "Result", url: "https://example.com", snippet: "A result" }];
+    const searchProvider: SearchProvider = {
+      name: "mock",
+      search: mock(async () => ({
+        ok: true as const,
+        value: searchResults,
+      })),
+    };
+
+    const executor = createWebExecutor({ searchProvider });
+    const result = await executor.search("test");
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toHaveLength(1);
+      expect(result.value[0]?.title).toBe("Result");
+    }
+  });
+
+  test("searchProvider takes precedence over searchFn", async () => {
+    let providerCalled = false;
+    let fnCalled = false;
+
+    const searchProvider: SearchProvider = {
+      name: "mock",
+      search: async () => {
+        providerCalled = true;
+        return { ok: true as const, value: [] };
+      },
+    };
+    const searchFn = async () => {
+      fnCalled = true;
+      return {
+        ok: true as const,
+        value: [] as { readonly title: string; readonly url: string; readonly snippet: string }[],
+      };
+    };
+
+    const executor = createWebExecutor({ searchProvider, searchFn });
+    await executor.search("test");
+
+    expect(providerCalled).toBe(true);
+    expect(fnCalled).toBe(false);
+  });
+
+  test("normalizes cache key: same query with different case hits cache", async () => {
+    let callCount = 0;
+    const searchProvider: SearchProvider = {
+      name: "mock",
+      search: async () => {
+        callCount++;
+        return { ok: true as const, value: [{ title: "R", url: "https://r.com", snippet: "s" }] };
+      },
+    };
+
+    const executor = createWebExecutor({ searchProvider, cacheTtlMs: 60_000 });
+
+    await executor.search("Hello World");
+    await executor.search("hello world");
+    await executor.search("  HELLO WORLD  ");
+    expect(callCount).toBe(1);
+  });
+
+  test("wraps searchProvider exceptions as error", async () => {
+    const searchProvider: SearchProvider = {
+      name: "failing",
+      search: async () => {
+        throw new Error("Provider crashed");
+      },
+    };
+
+    const executor = createWebExecutor({ searchProvider });
+    const result = await executor.search("test");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("Provider crashed");
+    }
   });
 });

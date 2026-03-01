@@ -1,13 +1,14 @@
 /**
  * Brave Search API adapter — returns structured search results.
  *
- * Produces a search function compatible with @koi/tools-web's WebExecutorConfig.searchFn.
- * Depends only on @koi/core (L0) — no L2 peer imports.
+ * Implements the SearchProvider contract from @koi/search-provider.
+ * Depends on @koi/core (L0) and @koi/search-provider (L0u) — no L2 peer imports.
  *
  * Brave Search API docs: https://brave.com/search/api/
  */
 
 import type { KoiError, Result } from "@koi/core";
+import type { SearchProvider, WebSearchOptions, WebSearchResult } from "@koi/search-provider";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,23 +29,26 @@ export interface BraveSearchConfig {
   readonly freshness?: string | undefined;
 }
 
-/** Shape matching @koi/tools-web WebSearchResult (no import needed). */
-export interface BraveSearchResult {
-  readonly title: string;
-  readonly url: string;
-  readonly snippet: string;
-}
+/**
+ * @deprecated Use `WebSearchResult` from `@koi/search-provider` instead.
+ * Kept for backward compatibility.
+ */
+export type BraveSearchResult = WebSearchResult;
 
-export interface BraveSearchOptions {
-  readonly maxResults?: number | undefined;
-  readonly signal?: AbortSignal | undefined;
-}
+/**
+ * @deprecated Use `WebSearchOptions` from `@koi/search-provider` instead.
+ * Kept for backward compatibility.
+ */
+export type BraveSearchOptions = WebSearchOptions;
 
-/** Search function signature compatible with WebExecutorConfig.searchFn. */
+/**
+ * @deprecated Use `SearchProvider` from `@koi/search-provider` instead.
+ * Kept for backward compatibility.
+ */
 export type BraveSearchFn = (
   query: string,
-  options?: BraveSearchOptions,
-) => Promise<Result<readonly BraveSearchResult[], KoiError>>;
+  options?: WebSearchOptions,
+) => Promise<Result<readonly WebSearchResult[], KoiError>>;
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -72,130 +76,153 @@ interface BraveApiResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Retry-After parsing
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a Retry-After header value into milliseconds.
+ * Returns undefined if the value is not a valid non-negative integer.
+ */
+function parseRetryAfter(header: string): number | undefined {
+  const seconds = Number.parseInt(header, 10);
+  if (Number.isNaN(seconds) || seconds < 0) {
+    return undefined;
+  }
+  return seconds * 1000;
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
 /**
- * Create a Brave Search function compatible with @koi/tools-web.
+ * Create a Brave Search provider implementing the SearchProvider contract.
  *
  * Usage:
  * ```ts
  * import { createBraveSearch } from "@koi/search-brave";
- * import { createWebExecutor } from "@koi/tools-web";
  *
- * const searchFn = createBraveSearch({ apiKey: process.env.BRAVE_API_KEY! });
- * const executor = createWebExecutor({ searchFn });
+ * const provider = createBraveSearch({ apiKey: process.env.BRAVE_API_KEY! });
+ * const result = await provider.search("koi agent engine");
  * ```
  */
-export function createBraveSearch(config: BraveSearchConfig): BraveSearchFn {
+export function createBraveSearch(config: BraveSearchConfig): SearchProvider {
   const fetchFn = config.fetchFn ?? globalThis.fetch;
   const baseUrl = config.baseUrl ?? DEFAULT_BRAVE_BASE_URL;
   const timeoutMs = config.timeoutMs ?? DEFAULT_BRAVE_TIMEOUT_MS;
 
-  return async (
-    query: string,
-    options?: BraveSearchOptions,
-  ): Promise<Result<readonly BraveSearchResult[], KoiError>> => {
-    const maxResults = Math.min(
-      Math.max(1, options?.maxResults ?? DEFAULT_MAX_RESULTS),
-      MAX_RESULTS_CAP,
-    );
+  return {
+    name: "brave",
+    search: async (
+      query: string,
+      options?: WebSearchOptions,
+    ): Promise<Result<readonly WebSearchResult[], KoiError>> => {
+      const maxResults = Math.min(
+        Math.max(1, options?.maxResults ?? DEFAULT_MAX_RESULTS),
+        MAX_RESULTS_CAP,
+      );
 
-    const params = new URLSearchParams({
-      q: query,
-      count: String(maxResults),
-    });
+      const params = new URLSearchParams({
+        q: query,
+        count: String(maxResults),
+      });
 
-    if (config.country !== undefined) {
-      params.set("country", config.country);
-    }
-    if (config.freshness !== undefined) {
-      params.set("freshness", config.freshness);
-    }
+      if (config.country !== undefined) {
+        params.set("country", config.country);
+      }
+      if (config.freshness !== undefined) {
+        params.set("freshness", config.freshness);
+      }
 
-    const url = `${baseUrl}/web/search?${params.toString()}`;
+      const url = `${baseUrl}/web/search?${params.toString()}`;
 
-    try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-      if (options?.signal) {
-        if (options.signal.aborted) {
-          clearTimeout(timer);
+      try {
+        if (options?.signal) {
+          if (options.signal.aborted) {
+            clearTimeout(timer);
+            return {
+              ok: false,
+              error: { code: "TIMEOUT", message: "Search aborted", retryable: false },
+            };
+          }
+          options.signal.addEventListener("abort", () => controller.abort(), { once: true });
+        }
+
+        const response = await fetchFn(url, {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+            "Accept-Encoding": "gzip",
+            "X-Subscription-Token": config.apiKey,
+          },
+          signal: controller.signal,
+        });
+
+        clearTimeout(timer);
+
+        if (response.status === 429) {
+          const retryAfterHeader = response.headers.get("retry-after");
+          const retryAfterMs =
+            retryAfterHeader !== null ? parseRetryAfter(retryAfterHeader) : undefined;
           return {
             ok: false,
-            error: { code: "TIMEOUT", message: "Search aborted", retryable: false },
+            error: {
+              code: "RATE_LIMIT",
+              message: "Brave Search API rate limit exceeded",
+              retryable: true,
+              context: { retryAfterMs },
+            },
           };
         }
-        options.signal.addEventListener("abort", () => controller.abort(), { once: true });
-      }
 
-      const response = await fetchFn(url, {
-        method: "GET",
-        headers: {
-          Accept: "application/json",
-          "Accept-Encoding": "gzip",
-          "X-Subscription-Token": config.apiKey,
-        },
-        signal: controller.signal,
-      });
+        if (response.status === 401 || response.status === 403) {
+          return {
+            ok: false,
+            error: {
+              code: "PERMISSION",
+              message: `Brave Search API auth failed (${response.status})`,
+              retryable: false,
+            },
+          };
+        }
 
-      clearTimeout(timer);
+        if (!response.ok) {
+          return {
+            ok: false,
+            error: {
+              code: "EXTERNAL",
+              message: `Brave Search API error: ${response.status} ${response.statusText}`,
+              retryable: response.status >= 500,
+            },
+          };
+        }
 
-      if (response.status === 429) {
+        const data = (await response.json()) as BraveApiResponse;
+        const results: readonly WebSearchResult[] = (data.web?.results ?? [])
+          .slice(0, maxResults)
+          .map((r) => ({
+            title: r.title ?? "",
+            url: r.url ?? "",
+            snippet: r.description ?? "",
+          }));
+
+        return { ok: true, value: results };
+      } catch (e: unknown) {
+        clearTimeout(timer);
+        const message = e instanceof Error ? e.message : String(e);
+        const isTimeout = message.includes("abort") || message.includes("timeout");
         return {
           ok: false,
           error: {
-            code: "RATE_LIMIT",
-            message: "Brave Search API rate limit exceeded",
+            code: isTimeout ? "TIMEOUT" : "EXTERNAL",
+            message: `Brave Search failed: ${message}`,
             retryable: true,
           },
         };
       }
-
-      if (response.status === 401 || response.status === 403) {
-        return {
-          ok: false,
-          error: {
-            code: "PERMISSION",
-            message: `Brave Search API auth failed (${response.status})`,
-            retryable: false,
-          },
-        };
-      }
-
-      if (!response.ok) {
-        return {
-          ok: false,
-          error: {
-            code: "EXTERNAL",
-            message: `Brave Search API error: ${response.status} ${response.statusText}`,
-            retryable: response.status >= 500,
-          },
-        };
-      }
-
-      const data = (await response.json()) as BraveApiResponse;
-      const results: readonly BraveSearchResult[] = (data.web?.results ?? [])
-        .slice(0, maxResults)
-        .map((r) => ({
-          title: r.title ?? "",
-          url: r.url ?? "",
-          snippet: r.description ?? "",
-        }));
-
-      return { ok: true, value: results };
-    } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : String(e);
-      const isTimeout = message.includes("abort") || message.includes("timeout");
-      return {
-        ok: false,
-        error: {
-          code: isTimeout ? "TIMEOUT" : "EXTERNAL",
-          message: `Brave Search failed: ${message}`,
-          retryable: true,
-        },
-      };
-    }
+    },
   };
 }

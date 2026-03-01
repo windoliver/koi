@@ -1,5 +1,5 @@
 {
-  "name": "@koi/search-brave",
+  "name": "@koi/search-provider",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,15 +9,14 @@
       "import": "./dist/index.js"
     }
   },
+  "dependencies": {
+    "@koi/core": "workspace:*"
+  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
-    "test": "bun test"
-  },
-  "dependencies": {
-    "@koi/core": "workspace:*",
-    "@koi/resolve": "workspace:*",
-    "@koi/search-provider": "workspace:*"
+    "test": "bun test",
+    "test:api": "bun test src/__tests__/api-surface.test.ts"
   }
 }

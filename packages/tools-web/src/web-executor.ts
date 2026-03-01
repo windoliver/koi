@@ -6,6 +6,7 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
+import type { SearchProvider, WebSearchOptions, WebSearchResult } from "@koi/search-provider";
 import { isBlockedUrl } from "./url-policy.js";
 
 // ---------------------------------------------------------------------------
@@ -31,19 +32,10 @@ export interface WebFetchResult {
 }
 
 // ---------------------------------------------------------------------------
-// Search
+// Search — canonical types re-exported from @koi/search-provider
 // ---------------------------------------------------------------------------
 
-export interface WebSearchOptions {
-  readonly maxResults?: number | undefined;
-  readonly signal?: AbortSignal | undefined;
-}
-
-export interface WebSearchResult {
-  readonly title: string;
-  readonly url: string;
-  readonly snippet: string;
-}
+export type { WebSearchOptions, WebSearchResult } from "@koi/search-provider";
 
 // ---------------------------------------------------------------------------
 // Executor interface
@@ -67,13 +59,19 @@ export interface WebExecutor {
 export interface WebExecutorConfig {
   /** Custom fetch function (default: globalThis.fetch). */
   readonly fetchFn?: typeof globalThis.fetch | undefined;
-  /** Custom search backend. Required for web_search to work. */
+  /**
+   * @deprecated Use `searchProvider` instead. Kept for backward compatibility.
+   * Custom search backend function. If both `searchProvider` and `searchFn` are set,
+   * `searchProvider` takes precedence.
+   */
   readonly searchFn?:
     | ((
         query: string,
         options?: WebSearchOptions,
       ) => Promise<Result<readonly WebSearchResult[], KoiError>>)
     | undefined;
+  /** Pluggable search provider (preferred over searchFn). */
+  readonly searchProvider?: SearchProvider | undefined;
   /** Max response body size in characters (default: 50_000). */
   readonly maxBodyChars?: number | undefined;
   /** Default timeout in ms (default: 15_000). */
@@ -177,10 +175,10 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
 
       const timeout = Math.min(options?.timeoutMs ?? defaultTimeout, MAX_TIMEOUT_MS);
 
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeout);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeout);
 
+      try {
         // Forward external signal
         if (options?.signal) {
           if (options.signal.aborted) {
@@ -240,6 +238,7 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
 
         return { ok: true, value: result };
       } catch (e: unknown) {
+        clearTimeout(timer);
         const message = e instanceof Error ? e.message : String(e);
         const isTimeout = message.includes("abort") || message.includes("timeout");
         return {
@@ -257,39 +256,82 @@ export function createWebExecutor(config: WebExecutorConfig = {}): WebExecutor {
       query: string,
       options?: WebSearchOptions,
     ): Promise<Result<readonly WebSearchResult[], KoiError>> => {
-      if (config.searchFn === undefined) {
+      // Resolve search backend: searchProvider takes precedence over deprecated searchFn
+      if (config.searchProvider === undefined && config.searchFn === undefined) {
         return {
           ok: false,
           error: {
             code: "VALIDATION",
-            message: "No search backend configured. Provide a searchFn in WebExecutorConfig.",
+            message:
+              "No search backend configured. Provide a searchProvider or searchFn in WebExecutorConfig.",
             retryable: false,
           },
         };
       }
 
-      // Check cache
-      const cacheKey = `search:${query}:${options?.maxResults ?? ""}`;
+      // Normalize cache key: trim + lowercase query for case-insensitive dedup
+      const normalizedQuery = query.trim().toLowerCase();
+      const cacheKey = `search:${normalizedQuery}:${options?.maxResults ?? ""}`;
       if (searchCache !== undefined) {
         const cached = searchCache.get(cacheKey);
         if (cached !== undefined) return { ok: true, value: cached };
       }
 
+      // Enforce timeout: wrap search call with AbortController
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), defaultTimeout);
+
       try {
-        const result = await config.searchFn(query, options);
+        // Combine caller's signal with our timeout signal
+        if (options?.signal) {
+          if (options.signal.aborted) {
+            clearTimeout(timer);
+            return {
+              ok: false,
+              error: { code: "TIMEOUT", message: "Search aborted", retryable: false },
+            };
+          }
+          options.signal.addEventListener("abort", () => controller.abort(), { once: true });
+        }
+
+        const searchOptions: WebSearchOptions = {
+          ...options,
+          signal: controller.signal,
+        };
+
+        // Call provider directly to preserve `this` context for class-based implementations
+        const result =
+          config.searchProvider !== undefined
+            ? await config.searchProvider.search(query, searchOptions)
+            : config.searchFn !== undefined
+              ? await config.searchFn(query, searchOptions)
+              : undefined;
+
+        // Unreachable — both undefined is handled above. Guard for TypeScript narrowing.
+        if (result === undefined) {
+          return {
+            ok: false,
+            error: { code: "VALIDATION", message: "No search backend", retryable: false },
+          };
+        }
+
+        clearTimeout(timer);
+
         // Cache successful results
         if (result.ok && searchCache !== undefined) {
           searchCache.set(cacheKey, result.value);
         }
         return result;
       } catch (e: unknown) {
+        clearTimeout(timer);
         const message = e instanceof Error ? e.message : String(e);
+        const isTimeout = message.includes("abort") || message.includes("timeout");
         return {
           ok: false,
           error: {
-            code: "EXTERNAL",
+            code: isTimeout ? "TIMEOUT" : "EXTERNAL",
             message: `Search failed for "${query}": ${message}`,
-            retryable: true,
+            retryable: !isTimeout,
           },
         };
       }

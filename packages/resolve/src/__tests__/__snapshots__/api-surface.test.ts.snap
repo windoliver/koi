@@ -2,6 +2,7 @@
 
 exports[`@koi/resolve API surface . has stable type surface 1`] = `
 "import { BrickKind, CompanionSkillDefinition, Result, KoiError, JsonObject, AgentManifest, KoiMiddleware, ModelHandler, ChannelAdapter, EngineAdapter, MiddlewareConfig, ModelConfig, PermissionConfig } from '@koi/core';
+import { SearchProvider } from '@koi/search-provider';
 
 /**
  * Core types for the manifest resolution layer.
@@ -11,7 +12,7 @@ exports[`@koi/resolve API surface . has stable type surface 1`] = `
  */
 
 /** Kinds supported by the resolution layer. Extends L0 BrickKind. */
-type ResolveKind = BrickKind | "model" | "engine" | "context" | "forge" | "schedule" | "webhook";
+type ResolveKind = BrickKind | "model" | "engine" | "context" | "forge" | "schedule" | "search" | "webhook";
 /**
  * Validates raw YAML options into a typed config.
  * Compatible with Zod (wrap safeParse in Result) or manual validators.
@@ -81,6 +82,8 @@ interface ResolvedManifest {
     readonly channels?: readonly ChannelAdapter[] | undefined;
     /** Resolved engine adapter (undefined → CLI defaults to loop adapter). */
     readonly engine?: EngineAdapter | undefined;
+    /** Resolved search provider (undefined → no web search capability). */
+    readonly search?: SearchProvider | undefined;
 }
 /** A single resolution failure within a section. */
 interface ResolutionFailure {
@@ -196,6 +199,7 @@ interface ManifestInput {
     readonly user?: unknown;
     readonly channels?: unknown;
     readonly engine?: unknown;
+    readonly search?: unknown;
 }
 /**
  * Resolves a full manifest into runtime instances.
@@ -288,6 +292,22 @@ declare function resolveOne<T>(kind: ResolveKind, config: {
 declare function resolvePermissions(permissions: PermissionConfig | undefined, registry: ResolveRegistry, context: ResolutionContext): Promise<Result<KoiMiddleware | undefined, KoiError>>;
 
 /**
+ * Resolves the search section of a manifest.
+ *
+ * Supports both string shorthand (\`search: "brave"\`) and object form
+ * (\`search: { name: "brave", options: { country: "US" } }\`).
+ * If no search is declared, returns undefined (no web search capability).
+ */
+
+/**
+ * Resolves a search provider from a manifest.
+ *
+ * Returns undefined if no search is declared.
+ * Accepts \`unknown\` because the manifest schema may not fully type this section.
+ */
+declare function resolveSearch(config: unknown, registry: ResolveRegistry, context: ResolutionContext): Promise<Result<SearchProvider | undefined, KoiError>>;
+
+/**
  * Soul/user section resolver.
  *
  * Resolves soul/user manifest sections into a KoiMiddleware via the
@@ -309,6 +329,6 @@ interface SoulManifestSlice {
  */
 declare function resolveSoul(manifest: SoulManifestSlice, registry: ResolveRegistry, context: ResolutionContext): Promise<Result<KoiMiddleware | undefined, KoiError>>;
 
-export { type BrickDescriptor, type BrickFactory, type OptionsValidator, type ResolutionContext, type ResolutionFailure, type ResolveApprovalHandler, type ResolveKind, type ResolveRegistry, type ResolvedManifest, aggregateErrors, createRegistry, discoverDescriptors, formatResolutionError, parseModelName, resolveChannels, resolveEngine, resolveManifest, resolveMiddleware, resolveModel, resolveOne, resolvePermissions, resolveSoul };
+export { type BrickDescriptor, type BrickFactory, type OptionsValidator, type ResolutionContext, type ResolutionFailure, type ResolveApprovalHandler, type ResolveKind, type ResolveRegistry, type ResolvedManifest, aggregateErrors, createRegistry, discoverDescriptors, formatResolutionError, parseModelName, resolveChannels, resolveEngine, resolveManifest, resolveMiddleware, resolveModel, resolveOne, resolvePermissions, resolveSearch, resolveSoul };
 "
 `;
