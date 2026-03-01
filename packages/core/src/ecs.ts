@@ -24,6 +24,7 @@ import type { MailboxComponent } from "./mailbox.js";
 import type { NameServiceReader } from "./name-service.js";
 import type { ReputationBackend } from "./reputation-backend.js";
 import type { SchedulerComponent } from "./scheduler.js";
+import type { ScratchpadComponent } from "./scratchpad.js";
 import type { SkillRegistryReader } from "./skill-registry.js";
 import type { VersionIndexReader } from "./version-index.js";
 import type { WebhookComponent } from "./webhook.js";
@@ -540,6 +541,8 @@ export const EXTERNAL_AGENTS: SubsystemToken<readonly ExternalAgentDescriptor[]>
 export const REGISTRY: SubsystemToken<RegistryComponent> = token<RegistryComponent>("registry");
 export const REPUTATION: SubsystemToken<ReputationBackend> = token<ReputationBackend>("reputation");
 export const MAILBOX: SubsystemToken<MailboxComponent> = token<MailboxComponent>("mailbox");
+export const SCRATCHPAD: SubsystemToken<ScratchpadComponent> =
+  token<ScratchpadComponent>("scratchpad");
 export const NAME_SERVICE: SubsystemToken<NameServiceReader> =
   token<NameServiceReader>("name-service");
 export const ZONE_REGISTRY: SubsystemToken<ZoneRegistry> = token<ZoneRegistry>("zone-registry");

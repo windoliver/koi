@@ -71,6 +71,8 @@ export const L0_RUNTIME_ALLOWLIST: ReadonlySet<string> = new Set([
   "create-service-provider.ts",
   "create-single-tool-provider.ts",
   "zone.ts",
+  "debug.ts",
+  "scratchpad.ts",
 ]);
 
 // --- Predicates (exported for testing) ---

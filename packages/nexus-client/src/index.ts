@@ -6,6 +6,8 @@
 
 export { mapHttpError, mapRpcError } from "./errors.js";
 export { createNexusClient } from "./nexus-client.js";
+export type { NexusRestClient, NexusRestClientConfig } from "./rest-client.js";
+export { createNexusRestClient, mapRestFetchError, mapRestHttpError } from "./rest-client.js";
 export type {
   JsonRpcErrorResponse,
   JsonRpcRequest,

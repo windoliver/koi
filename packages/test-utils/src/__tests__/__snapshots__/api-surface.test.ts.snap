@@ -406,6 +406,7 @@ declare function createFactory<T extends object>(defaults: T): (overrides?: Part
  * In-memory fake Nexus JSON-RPC server for testing.
  *
  * Implements the Nexus filesystem methods (read, write, exists, delete, glob)
+ * and scratchpad RPC methods (scratchpad.write, scratchpad.read, etc.)
  * with glob matching that supports single-segment wildcard patterns.
  *
  * Extracted from @koi/events-nexus for reuse across store and event backends.
