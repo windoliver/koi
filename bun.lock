@@ -1282,6 +1282,17 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-tool-recovery": {
+      "name": "@koi/middleware-tool-recovery",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-tool-selector": {
       "name": "@koi/middleware-tool-selector",
       "version": "0.0.0",
@@ -2560,6 +2571,8 @@
     "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/middleware-semantic-retry"],
 
     "@koi/middleware-tool-audit": ["@koi/middleware-tool-audit@workspace:packages/middleware-tool-audit"],
+
+    "@koi/middleware-tool-recovery": ["@koi/middleware-tool-recovery@workspace:packages/middleware-tool-recovery"],
 
     "@koi/middleware-tool-selector": ["@koi/middleware-tool-selector@workspace:packages/middleware-tool-selector"],
 
