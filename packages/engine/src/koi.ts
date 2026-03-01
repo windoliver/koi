@@ -46,6 +46,7 @@ import {
   runSessionHooks,
   runTurnHooks,
 } from "./compose.js";
+import { createDedupedToolsAccessor } from "./deduped-tools-accessor.js";
 import { composeExtensions, createDefaultGuardExtension } from "./extension-composer.js";
 import { createGovernanceExtension } from "./governance-extension.js";
 import { createGovernanceProvider } from "./governance-provider.js";
@@ -197,436 +198,387 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // let justified: mutable flag for concurrent run() guard
   let running = false;
 
-  // --- 6. Build runtime ---
+  // --- 6. Async generator: produces EngineEvents for a single run() invocation ---
+  async function* streamEvents(input: EngineInput): AsyncGenerator<EngineEvent> {
+    const sessionStartedAt = Date.now();
+    // let justified: mutable turn counter incremented on turn_end
+    let currentTurnIndex = 0;
+    let sessionStarted = false;
+
+    // AbortSignal: compose caller signal with internal controller
+    const abortController = new AbortController();
+    const runSignal =
+      input.signal !== undefined
+        ? AbortSignal.any([input.signal, abortController.signal])
+        : abortController.signal;
+
+    // Abort listener: immediate agent transition for external observers.
+    // The generator's finally block handles resource cleanup.
+    const onAbort = (): void => {
+      if (agent.state === "running") {
+        agent.transition({ kind: "complete", stopReason: "interrupted" });
+      }
+    };
+    runSignal.addEventListener("abort", onAbort, { once: true });
+
+    // let justified: mutable forged descriptor cache, refreshed at turn boundaries
+    let forgedDescriptorsCache: readonly ToolDescriptor[] = [];
+    // let justified: mutable flag to defer forge refresh until next turn
+    let pendingForgeRefresh = false;
+    // let justified: dirty flag — true when onChange fired since last turn-boundary refresh
+    let forgeStateDirty = false;
+    // let justified: mutable ref for forge onChange unsubscribe
+    let unsubForgeChange: (() => void) | undefined;
+
+    // let justified: mutable middleware chain refs, updated at turn boundaries
+    let activeToolChain: (ctx: TurnContext, req: ToolRequest) => Promise<ToolResponse>;
+    let activeModelChain: (ctx: TurnContext, req: ModelRequest) => Promise<ModelResponse>;
+    let activeStreamChain:
+      | ((ctx: TurnContext, req: ModelRequest) => AsyncIterable<ModelChunk>)
+      | undefined;
+
+    // let justified: cached terminals created once at session start, reused across turns
+    let cachedTerminals:
+      | {
+          readonly modelHandler: ModelHandler;
+          readonly toolHandler: ToolHandler;
+          readonly modelStreamHandler?: ModelStreamHandler;
+        }
+      | undefined;
+
+    // let justified: previous forge middleware ref for identity-based skip
+    let previousForgedMw: readonly KoiMiddleware[] | undefined;
+
+    // let justified: tools accessor for cooperating adapters (set once at session start)
+    let toolsAccessor: ReturnType<typeof createDedupedToolsAccessor> | undefined;
+
+    // Structured IDs encode trust boundary: agent ownership is parseable from the ID itself.
+    // Format: "agent:{agentId}:{uuid}" for session, plain UUID for run.
+    const sid: SessionId = sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
+    const rid: RunId = runId(crypto.randomUUID());
+    const sessionCtx: SessionContext = {
+      agentId: pid.id,
+      sessionId: sid,
+      runId: rid,
+      ...(options.userId !== undefined ? { userId: options.userId } : {}),
+      ...(options.channelId !== undefined ? { channelId: options.channelId } : {}),
+      metadata: {},
+    };
+
+    /** Unsubscribe from forge onChange and clear the ref. */
+    function cleanupForgeSubscription(): void {
+      if (unsubForgeChange !== undefined) {
+        unsubForgeChange();
+        unsubForgeChange = undefined;
+      }
+    }
+
+    /** Refresh forged descriptors and re-compose middleware if forge runtime is provided. */
+    async function refreshForgeState(terminals: {
+      readonly modelHandler: ModelHandler;
+      readonly toolHandler: ToolHandler;
+      readonly modelStreamHandler?: ModelStreamHandler;
+    }): Promise<void> {
+      if (forge === undefined) return;
+
+      // Refresh forged tool descriptors
+      forgedDescriptorsCache = await forge.toolDescriptors();
+      toolsAccessor?.updateForged(forgedDescriptorsCache);
+
+      // Re-compose middleware chains only when forged middleware actually changed
+      if (forge.middleware !== undefined) {
+        const forgedMw = await forge.middleware();
+        if (forgedMw !== previousForgedMw) {
+          previousForgedMw = forgedMw;
+          const allMw: readonly KoiMiddleware[] = [...allMiddleware, ...forgedMw];
+          activeToolChain = composeToolChain(allMw, terminals.toolHandler);
+          activeModelChain = composeModelChain(allMw, terminals.modelHandler);
+          if (terminals.modelStreamHandler !== undefined) {
+            activeStreamChain = composeModelStreamChain(allMw, terminals.modelStreamHandler);
+          }
+        }
+      }
+    }
+
+    let adapterIterator: AsyncIterator<EngineEvent> | undefined;
+
+    try {
+      // --- Session initialization ---
+      agent.transition({ kind: "start" });
+      await runSessionHooks(allMiddleware, "onSessionStart", sessionCtx);
+      sessionStarted = true;
+
+      // Wire terminals → middleware → callHandlers if adapter is cooperating
+      // let justified: effectiveInput may be replaced with callHandlers-augmented input
+      let effectiveInput: EngineInput = { ...input, signal: runSignal };
+      if (adapter.terminals) {
+        const inputMessages = input.kind === "messages" ? input.messages : [];
+        // Cache turn context per turn index to avoid repeated allocations
+        // let justified: mutable cache invalidated on turn index change
+        let cachedTurnCtx: TurnContext | undefined;
+        let cachedTurnIndex = -1;
+        const getTurnContext = (): TurnContext => {
+          if (cachedTurnIndex === currentTurnIndex && cachedTurnCtx) {
+            return cachedTurnCtx;
+          }
+          cachedTurnIndex = currentTurnIndex;
+          cachedTurnCtx = createTurnContext({
+            session: sessionCtx,
+            turnIndex: currentTurnIndex,
+            messages: inputMessages,
+            signal: runSignal,
+            approvalHandler: options.approvalHandler,
+            sendStatus: options.sendStatus,
+          });
+          return cachedTurnCtx;
+        };
+        const rawModelTerminal = adapter.terminals.modelCall;
+        const baseToolTerminal = adapter.terminals.toolCall ?? defaultToolTerminal;
+        // Wrap tool terminal with execution context so tools can
+        // read session identity via getExecutionContext().
+        const rawToolTerminal: ToolHandler = (request) => {
+          const execCtx = { session: sessionCtx, turnIndex: currentTurnIndex };
+          return runWithExecutionContext(execCtx, () => baseToolTerminal(request));
+        };
+        const rawModelStreamTerminal = adapter.terminals.modelStream;
+
+        // Create lifecycle-aware terminal handlers (cached for reuse across turns)
+        cachedTerminals = createTerminalHandlers(
+          agent,
+          rawModelTerminal,
+          rawToolTerminal,
+          rawModelStreamTerminal,
+        );
+
+        // Initial chain composition
+        activeToolChain = composeToolChain(allMiddleware, cachedTerminals.toolHandler);
+        activeModelChain = composeModelChain(allMiddleware, cachedTerminals.modelHandler);
+        if (cachedTerminals.modelStreamHandler !== undefined) {
+          activeStreamChain = composeModelStreamChain(
+            allMiddleware,
+            cachedTerminals.modelStreamHandler,
+          );
+        }
+
+        // Entity tool descriptors (static, from assembly)
+        const entityTools = agent.query<Tool>("tool:");
+        const entityDescriptors: readonly ToolDescriptor[] = [...entityTools.values()].map(
+          (t) => t.descriptor,
+        );
+
+        // Create deduped tools accessor (replaces manual Object.defineProperties getter)
+        toolsAccessor = createDedupedToolsAccessor(entityDescriptors);
+
+        // Initial forge state (descriptors + forged middleware)
+        await refreshForgeState(cachedTerminals);
+
+        // Subscribe to forge push notifications for mid-session tool visibility
+        if (forge?.watch !== undefined) {
+          unsubForgeChange = forge.watch((_event) => {
+            // Eagerly refresh descriptor cache (fire-and-forget)
+            void forge
+              .toolDescriptors()
+              .then((d) => {
+                forgedDescriptorsCache = d;
+                toolsAccessor?.updateForged(d);
+              })
+              .catch((_err: unknown) => {
+                // Stale cache is graceful degradation — descriptor
+                // refresh failure is non-fatal; next turn boundary
+                // will retry via refreshForgeState.
+              });
+            // Set dirty flag for turn-boundary middleware recomposition
+            forgeStateDirty = true;
+          });
+        }
+
+        // Build callHandlers with dynamic tools getter and chain refs
+        // Capture stream chain presence — the mutable ref is read inside the closure
+        const hasStreamChain = activeStreamChain !== undefined;
+
+        // Capture toolsAccessor in a const for the getter closure
+        const accessor = toolsAccessor;
+
+        // Inject tool descriptors + capability descriptions into ModelRequest
+        const prepareRequest = (request: ModelRequest): ModelRequest => {
+          // Inject tool descriptors if not already present
+          const withTools: ModelRequest =
+            request.tools !== undefined ? request : { ...request, tools: callHandlers.tools };
+          return injectCapabilities(allMiddleware, getTurnContext(), withTools);
+        };
+
+        const streamChainProxy = (request: ModelRequest) =>
+          activeStreamChain?.(getTurnContext(), prepareRequest(request));
+
+        const callHandlers: ComposedCallHandlers = Object.defineProperties(
+          {
+            modelCall: (request: ModelRequest) =>
+              activeModelChain(getTurnContext(), prepareRequest(request)),
+            // Run-level signal is the authority at this layer. Middleware downstream
+            // (e.g., sandbox) can compose additional signals via AbortSignal.any().
+            // If request already carries a signal, the run signal takes precedence —
+            // this is intentional: the run signal represents the caller's cancellation
+            // intent, which must not be overridden by internal signal sources.
+            toolCall: (request: ToolRequest) => {
+              const ctx = getTurnContext();
+              const effectiveRequest =
+                ctx.signal !== undefined ? { ...request, signal: ctx.signal } : request;
+              return activeToolChain(ctx, effectiveRequest);
+            },
+            tools: entityDescriptors, // placeholder, overridden by getter below
+            ...(hasStreamChain ? { modelStream: streamChainProxy } : {}),
+          },
+          {
+            tools: {
+              get(): readonly ToolDescriptor[] {
+                return accessor.get();
+              },
+              enumerable: true,
+              configurable: false,
+            },
+          },
+        ) as ComposedCallHandlers;
+
+        effectiveInput = { ...input, callHandlers, signal: runSignal };
+      }
+
+      adapterIterator = adapter.stream(effectiveInput)[Symbol.asyncIterator]();
+
+      // --- Main event loop ---
+      while (true) {
+        // Deferred forge refresh: runs AFTER consumer processed turn_end,
+        // so tools/middleware injected between turns take effect next turn
+        if (pendingForgeRefresh) {
+          pendingForgeRefresh = false;
+          // Skip refresh if watch is active and nothing changed since last notification
+          const shouldRefresh = forge?.watch === undefined || forgeStateDirty;
+          if (shouldRefresh && forge !== undefined && cachedTerminals !== undefined) {
+            forgeStateDirty = false;
+            await refreshForgeState(cachedTerminals);
+          }
+        }
+
+        // Emit turn_start event with onBeforeTurn hooks
+        const turnCtx = createTurnContext({
+          session: sessionCtx,
+          turnIndex: currentTurnIndex,
+          messages: input.kind === "messages" ? input.messages : [],
+          signal: runSignal,
+          approvalHandler: options.approvalHandler,
+          sendStatus: options.sendStatus,
+        });
+        await runTurnHooks(allMiddleware, "onBeforeTurn", turnCtx);
+        yield { kind: "turn_start", turnIndex: currentTurnIndex } as EngineEvent;
+
+        // Process adapter events for this turn
+        while (true) {
+          const result = await adapterIterator.next();
+
+          if (result.done) {
+            // Adapter stream exhausted
+            agent.transition({ kind: "complete", stopReason: "completed" });
+            return;
+          }
+
+          const event = result.value;
+
+          if (event.kind === "turn_end") {
+            currentTurnIndex = event.turnIndex + 1;
+            pendingForgeRefresh = true;
+            const turnEndCtx = createTurnContext({
+              session: sessionCtx,
+              turnIndex: event.turnIndex,
+              messages: [],
+              signal: runSignal,
+              approvalHandler: options.approvalHandler,
+              sendStatus: options.sendStatus,
+            });
+            await runTurnHooks(allMiddleware, "onAfterTurn", turnEndCtx);
+            yield event;
+            break; // → next turn in outer loop
+          }
+
+          if (event.kind === "done") {
+            pendingForgeRefresh = false;
+            agent.transition({
+              kind: "complete",
+              stopReason: event.output.stopReason,
+              metrics: event.output.metrics,
+            });
+            yield event;
+            return;
+          }
+
+          yield event;
+        }
+      }
+    } catch (error: unknown) {
+      // Guard error → convert to a done event
+      if (error instanceof KoiRuntimeError) {
+        const stopReason = error.code === "TIMEOUT" ? "max_turns" : "error";
+        agent.transition({ kind: "complete", stopReason });
+        const doneEvent: EngineEvent = {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason,
+            metrics: {
+              totalTokens: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              turns: 0,
+              durationMs: Date.now() - sessionStartedAt,
+            },
+          },
+        };
+        yield doneEvent;
+        return;
+      }
+
+      // Unexpected error → transition and re-throw
+      agent.transition({ kind: "error", error });
+      throw error;
+    } finally {
+      running = false;
+      cleanupForgeSubscription();
+      runSignal.removeEventListener("abort", onAbort);
+
+      // Clean up adapter iterator (important on early return / break)
+      if (adapterIterator?.return !== undefined) {
+        try {
+          await adapterIterator.return();
+        } catch (_cleanupError: unknown) {
+          // Adapter cleanup failure is non-fatal
+        }
+      }
+
+      // Transition agent if not already terminated (e.g., consumer break / return)
+      if (agent.state === "running") {
+        agent.transition({ kind: "complete", stopReason: "interrupted" });
+      }
+
+      // Session end hooks (if session was started)
+      if (sessionStarted) {
+        try {
+          await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
+        } catch (sessionEndError: unknown) {
+          console.warn("[koi] onSessionEnd failed during cleanup", { cause: sessionEndError });
+        }
+      }
+    }
+  }
+
+  // --- 7. Build runtime ---
   const runtime: KoiRuntime = {
     agent,
     conflicts,
 
     run(input: EngineInput): AsyncIterable<EngineEvent> {
-      // Guard concurrent run() calls
       if (running) {
         throw KoiRuntimeError.from("VALIDATION", "Agent is already running");
       }
       running = true;
-
-      return {
-        [Symbol.asyncIterator](): AsyncIterator<EngineEvent> {
-          // let justified: mutable iterator state scoped to this run() invocation
-          let iterator: AsyncIterator<EngineEvent> | undefined;
-          let sessionStarted = false;
-          let done = false;
-          let currentTurnIndex = 0;
-          const sessionStartedAt = Date.now();
-
-          // AbortSignal: compose caller signal with internal controller
-          const abortController = new AbortController();
-          const runSignal =
-            input.signal !== undefined
-              ? AbortSignal.any([input.signal, abortController.signal])
-              : abortController.signal;
-
-          // Abort listener: mark done when signal fires.
-          // Discriminates reason via signal.reason (typed AbortReason).
-          const onAbort = (): void => {
-            if (!done) {
-              done = true;
-              running = false;
-              cleanupForgeSubscription();
-              agent.transition({ kind: "complete", stopReason: "interrupted" });
-            }
-          };
-          runSignal.addEventListener("abort", onAbort, { once: true });
-
-          // let justified: mutable forged descriptor cache, refreshed at turn boundaries
-          let forgedDescriptorsCache: readonly ToolDescriptor[] = [];
-          // let justified: mutable memo for deduped tools getter — avoids O(n) alloc per access
-          let dedupedToolsMemo: readonly ToolDescriptor[] = [];
-          let dedupedForgeRef: readonly ToolDescriptor[] = forgedDescriptorsCache;
-
-          // let justified: mutable flag to defer forge refresh until next iteration,
-          // giving the consumer a chance to inject tools/middleware between turns
-          let pendingForgeRefresh = false;
-
-          // let justified: dirty flag — true when onChange fired since last turn-boundary refresh
-          let forgeStateDirty = false;
-
-          // let justified: mutable ref for forge onChange unsubscribe
-          let unsubForgeChange: (() => void) | undefined;
-
-          // let justified: mutable flag — true when a turn_start event should be emitted
-          let shouldEmitTurnStart = true;
-
-          // let justified: mutable middleware chain refs, updated at turn boundaries
-          let activeToolChain: (ctx: TurnContext, req: ToolRequest) => Promise<ToolResponse>;
-          let activeModelChain: (ctx: TurnContext, req: ModelRequest) => Promise<ModelResponse>;
-          let activeStreamChain:
-            | ((ctx: TurnContext, req: ModelRequest) => AsyncIterable<ModelChunk>)
-            | undefined;
-
-          // let justified: cached terminals created once at session start, reused across turns
-          let cachedTerminals:
-            | {
-                readonly modelHandler: ModelHandler;
-                readonly toolHandler: ToolHandler;
-                readonly modelStreamHandler?: ModelStreamHandler;
-              }
-            | undefined;
-
-          // let justified: previous forge middleware ref for identity-based skip
-          let previousForgedMw: readonly KoiMiddleware[] | undefined;
-
-          // Structured IDs encode trust boundary: agent ownership is parseable from the ID itself.
-          // Format: "agent:{agentId}:{uuid}" for session, plain UUID for run.
-          const sid: SessionId = sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
-          const rid: RunId = runId(crypto.randomUUID());
-          const sessionCtx: SessionContext = {
-            agentId: pid.id,
-            sessionId: sid,
-            runId: rid,
-            ...(options.userId !== undefined ? { userId: options.userId } : {}),
-            ...(options.channelId !== undefined ? { channelId: options.channelId } : {}),
-            metadata: {},
-          };
-
-          /** Unsubscribe from forge onChange and clear the ref. */
-          function cleanupForgeSubscription(): void {
-            if (unsubForgeChange !== undefined) {
-              unsubForgeChange();
-              unsubForgeChange = undefined;
-            }
-          }
-
-          /** Refresh forged descriptors and re-compose middleware if forge runtime is provided. */
-          async function refreshForgeState(terminals: {
-            readonly modelHandler: ModelHandler;
-            readonly toolHandler: ToolHandler;
-            readonly modelStreamHandler?: ModelStreamHandler;
-          }): Promise<void> {
-            if (forge === undefined) return;
-
-            // Refresh forged tool descriptors
-            forgedDescriptorsCache = await forge.toolDescriptors();
-
-            // Re-compose middleware chains only when forged middleware actually changed
-            if (forge.middleware !== undefined) {
-              const forgedMw = await forge.middleware();
-              if (forgedMw !== previousForgedMw) {
-                previousForgedMw = forgedMw;
-                const allMw: readonly KoiMiddleware[] = [...allMiddleware, ...forgedMw];
-                activeToolChain = composeToolChain(allMw, terminals.toolHandler);
-                activeModelChain = composeModelChain(allMw, terminals.modelHandler);
-                if (terminals.modelStreamHandler !== undefined) {
-                  activeStreamChain = composeModelStreamChain(allMw, terminals.modelStreamHandler);
-                }
-              }
-            }
-          }
-
-          return {
-            async next(): Promise<IteratorResult<EngineEvent>> {
-              if (done) return { done: true, value: undefined };
-
-              try {
-                // Start session on first call
-                if (!sessionStarted) {
-                  sessionStarted = true;
-                  agent.transition({ kind: "start" });
-                  await runSessionHooks(allMiddleware, "onSessionStart", sessionCtx);
-
-                  // Wire terminals → middleware → callHandlers if adapter is cooperating
-                  // let justified: effectiveInput may be replaced with callHandlers-augmented input
-                  let effectiveInput: EngineInput = { ...input, signal: runSignal };
-                  if (adapter.terminals) {
-                    const inputMessages = input.kind === "messages" ? input.messages : [];
-                    // Cache turn context per turn index to avoid repeated allocations
-                    // let justified: mutable cache invalidated on turn index change
-                    let cachedTurnCtx: TurnContext | undefined;
-                    let cachedTurnIndex = -1;
-                    const getTurnContext = (): TurnContext => {
-                      if (cachedTurnIndex === currentTurnIndex && cachedTurnCtx) {
-                        return cachedTurnCtx;
-                      }
-                      cachedTurnIndex = currentTurnIndex;
-                      cachedTurnCtx = createTurnContext({
-                        session: sessionCtx,
-                        turnIndex: currentTurnIndex,
-                        messages: inputMessages,
-                        signal: runSignal,
-                        approvalHandler: options.approvalHandler,
-                        sendStatus: options.sendStatus,
-                      });
-                      return cachedTurnCtx;
-                    };
-                    const rawModelTerminal = adapter.terminals.modelCall;
-                    const baseToolTerminal = adapter.terminals.toolCall ?? defaultToolTerminal;
-                    // Wrap tool terminal with execution context so tools can
-                    // read session identity via getExecutionContext().
-                    const rawToolTerminal: ToolHandler = (request) => {
-                      const execCtx = { session: sessionCtx, turnIndex: currentTurnIndex };
-                      return runWithExecutionContext(execCtx, () => baseToolTerminal(request));
-                    };
-                    const rawModelStreamTerminal = adapter.terminals.modelStream;
-
-                    // Create lifecycle-aware terminal handlers (cached for reuse across turns)
-                    cachedTerminals = createTerminalHandlers(
-                      agent,
-                      rawModelTerminal,
-                      rawToolTerminal,
-                      rawModelStreamTerminal,
-                    );
-
-                    // Initial chain composition
-                    activeToolChain = composeToolChain(allMiddleware, cachedTerminals.toolHandler);
-                    activeModelChain = composeModelChain(
-                      allMiddleware,
-                      cachedTerminals.modelHandler,
-                    );
-                    if (cachedTerminals.modelStreamHandler !== undefined) {
-                      activeStreamChain = composeModelStreamChain(
-                        allMiddleware,
-                        cachedTerminals.modelStreamHandler,
-                      );
-                    }
-
-                    // Initial forge state (descriptors + forged middleware)
-                    await refreshForgeState(cachedTerminals);
-
-                    // Subscribe to forge push notifications for mid-session tool visibility
-                    if (forge?.watch !== undefined) {
-                      unsubForgeChange = forge.watch((_event) => {
-                        // Eagerly refresh descriptor cache (fire-and-forget)
-                        void forge
-                          .toolDescriptors()
-                          .then((d) => {
-                            forgedDescriptorsCache = d;
-                          })
-                          .catch((_err: unknown) => {
-                            // Stale cache is graceful degradation — descriptor
-                            // refresh failure is non-fatal; next turn boundary
-                            // will retry via refreshForgeState.
-                          });
-                        // Set dirty flag for turn-boundary middleware recomposition
-                        forgeStateDirty = true;
-                      });
-                    }
-
-                    // Extract entity tool descriptors (static, from assembly)
-                    const entityTools = agent.query<Tool>("tool:");
-                    const entityDescriptors: readonly ToolDescriptor[] = [
-                      ...entityTools.values(),
-                    ].map((t) => t.descriptor);
-
-                    // Build callHandlers with dynamic tools getter and chain refs
-                    // Capture stream chain presence — the mutable ref is read inside the closure
-                    const hasStreamChain = activeStreamChain !== undefined;
-
-                    // Inject tool descriptors + capability descriptions into ModelRequest
-                    const prepareRequest = (request: ModelRequest): ModelRequest => {
-                      // Inject tool descriptors if not already present
-                      const withTools: ModelRequest =
-                        request.tools !== undefined
-                          ? request
-                          : { ...request, tools: callHandlers.tools };
-                      return injectCapabilities(allMiddleware, getTurnContext(), withTools);
-                    };
-
-                    const streamChainProxy = (request: ModelRequest) =>
-                      activeStreamChain?.(getTurnContext(), prepareRequest(request));
-
-                    const callHandlers: ComposedCallHandlers = Object.defineProperties(
-                      {
-                        modelCall: (request: ModelRequest) =>
-                          activeModelChain(getTurnContext(), prepareRequest(request)),
-                        // Run-level signal is the authority at this layer. Middleware downstream
-                        // (e.g., sandbox) can compose additional signals via AbortSignal.any().
-                        // If request already carries a signal, the run signal takes precedence —
-                        // this is intentional: the run signal represents the caller's cancellation
-                        // intent, which must not be overridden by internal signal sources.
-                        toolCall: (request: ToolRequest) => {
-                          const ctx = getTurnContext();
-                          const effectiveRequest =
-                            ctx.signal !== undefined ? { ...request, signal: ctx.signal } : request;
-                          return activeToolChain(ctx, effectiveRequest);
-                        },
-                        tools: entityDescriptors, // placeholder, overridden by getter below
-                        ...(hasStreamChain ? { modelStream: streamChainProxy } : {}),
-                      },
-                      {
-                        tools: {
-                          get(): readonly ToolDescriptor[] {
-                            if (forgedDescriptorsCache.length === 0) {
-                              return entityDescriptors;
-                            }
-                            // Memoized: recompute only when forgedDescriptorsCache ref changes
-                            if (dedupedForgeRef !== forgedDescriptorsCache) {
-                              dedupedForgeRef = forgedDescriptorsCache;
-                              const forgedNames = new Set(
-                                forgedDescriptorsCache.map((d) => d.name),
-                              );
-                              dedupedToolsMemo = [
-                                ...forgedDescriptorsCache,
-                                ...entityDescriptors.filter((d) => !forgedNames.has(d.name)),
-                              ];
-                            }
-                            return dedupedToolsMemo;
-                          },
-                          enumerable: true,
-                          configurable: false,
-                        },
-                      },
-                    ) as ComposedCallHandlers;
-
-                    effectiveInput = { ...input, callHandlers, signal: runSignal };
-                  }
-
-                  iterator = adapter.stream(effectiveInput)[Symbol.asyncIterator]();
-                }
-
-                // Deferred forge refresh: runs AFTER consumer processed turn_end,
-                // so tools/middleware injected between turns take effect next turn
-                if (pendingForgeRefresh) {
-                  pendingForgeRefresh = false;
-                  // Skip refresh if watch is active and nothing changed since last notification
-                  const shouldRefresh = forge?.watch === undefined || forgeStateDirty;
-                  if (shouldRefresh && forge !== undefined && cachedTerminals !== undefined) {
-                    forgeStateDirty = false;
-                    await refreshForgeState(cachedTerminals);
-                  }
-                }
-
-                // Emit turn_start event with onBeforeTurn hooks
-                if (shouldEmitTurnStart) {
-                  shouldEmitTurnStart = false;
-                  const turnCtx = createTurnContext({
-                    session: sessionCtx,
-                    turnIndex: currentTurnIndex,
-                    messages: input.kind === "messages" ? input.messages : [],
-                    signal: runSignal,
-                    approvalHandler: options.approvalHandler,
-                    sendStatus: options.sendStatus,
-                  });
-                  await runTurnHooks(allMiddleware, "onBeforeTurn", turnCtx);
-                  return {
-                    done: false,
-                    value: { kind: "turn_start", turnIndex: currentTurnIndex },
-                  };
-                }
-
-                if (!iterator) {
-                  done = true;
-                  running = false;
-                  cleanupForgeSubscription();
-                  return { done: true, value: undefined };
-                }
-
-                const result = await iterator.next();
-
-                if (result.done) {
-                  done = true;
-                  running = false;
-                  cleanupForgeSubscription();
-                  runSignal.removeEventListener("abort", onAbort);
-                  agent.transition({ kind: "complete", stopReason: "completed" });
-                  await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
-                  return { done: true, value: undefined };
-                }
-
-                const event = result.value;
-
-                // Process turn_end events
-                if (event.kind === "turn_end") {
-                  currentTurnIndex = event.turnIndex + 1;
-                  shouldEmitTurnStart = true;
-                  const turnCtx = createTurnContext({
-                    session: sessionCtx,
-                    turnIndex: event.turnIndex,
-                    messages: [],
-                    signal: runSignal,
-                    approvalHandler: options.approvalHandler,
-                    sendStatus: options.sendStatus,
-                  });
-
-                  // Defer forge refresh to the start of the next next() call,
-                  // so the consumer can inject tools/middleware after this turn_end
-                  pendingForgeRefresh = true;
-
-                  await runTurnHooks(allMiddleware, "onAfterTurn", turnCtx);
-                }
-
-                // Process done events
-                if (event.kind === "done") {
-                  done = true;
-                  pendingForgeRefresh = false;
-                  running = false;
-                  cleanupForgeSubscription();
-                  runSignal.removeEventListener("abort", onAbort);
-                  agent.transition({
-                    kind: "complete",
-                    stopReason: event.output.stopReason,
-                    metrics: event.output.metrics,
-                  });
-                  await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
-                }
-
-                return { done: false, value: event };
-              } catch (error: unknown) {
-                done = true;
-                running = false;
-                cleanupForgeSubscription();
-                runSignal.removeEventListener("abort", onAbort);
-
-                // If it's a guard error, convert to a done event
-                if (error instanceof KoiRuntimeError) {
-                  const stopReason = error.code === "TIMEOUT" ? "max_turns" : "error";
-                  agent.transition({ kind: "complete", stopReason });
-                  try {
-                    await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
-                  } catch {
-                    // Don't mask guard error → done event conversion
-                  }
-                  const doneEvent: EngineEvent = {
-                    kind: "done",
-                    output: {
-                      content: [],
-                      stopReason,
-                      metrics: {
-                        totalTokens: 0,
-                        inputTokens: 0,
-                        outputTokens: 0,
-                        turns: 0,
-                        durationMs: Date.now() - sessionStartedAt,
-                      },
-                    },
-                  };
-                  return { done: false, value: doneEvent };
-                }
-
-                // Re-throw unexpected errors
-                agent.transition({ kind: "error", error });
-                try {
-                  await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
-                } catch {
-                  // Don't mask original error — onSessionEnd failure must not override thrown error
-                }
-                throw error;
-              }
-            },
-
-            async return(): Promise<IteratorResult<EngineEvent>> {
-              done = true;
-              running = false;
-              cleanupForgeSubscription();
-              runSignal.removeEventListener("abort", onAbort);
-              if (iterator?.return) {
-                await iterator.return();
-              }
-              agent.transition({ kind: "complete", stopReason: "interrupted" });
-              await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
-              return { done: true, value: undefined };
-            },
-          };
-        },
-      };
+      return { [Symbol.asyncIterator]: () => streamEvents(input) };
     },
 
     dispose: async (): Promise<void> => {

@@ -58,8 +58,6 @@ interface SupervisorState {
   readonly tracker: RestartIntensityTracker;
   /** Maps child spec name → current AgentId (updated on restart). */
   readonly childMap: Map<string, AgentId>;
-  /** Whether this supervisor has been initialized (child map populated). */
-  initialized: boolean; // let-equivalent: set once on first reconcile
 }
 
 // ---------------------------------------------------------------------------
@@ -83,6 +81,9 @@ export function createSupervisionReconciler(deps: {
    */
   const supervisedChildIds = new Set<string>();
 
+  /** Tracks which supervisors have had their child maps populated. */
+  const initializedSupervisors = new Set<string>();
+
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
@@ -98,7 +99,6 @@ export function createSupervisionReconciler(deps: {
         clock,
       }),
       childMap: new Map(),
-      initialized: false,
     };
     supervisorStates.set(agentId, state);
     return state;
@@ -123,8 +123,8 @@ export function createSupervisionReconciler(deps: {
     config: SupervisionConfig,
     state: SupervisorState,
   ): void {
-    if (state.initialized) return;
-    state.initialized = true;
+    if (initializedSupervisors.has(agentId)) return;
+    initializedSupervisors.add(agentId);
 
     const children = deps.processTree.childrenOf(agentId);
     const unmatchedChildren: AgentId[] = [];
@@ -374,6 +374,7 @@ export function createSupervisionReconciler(deps: {
         }
       }
       supervisorStates.delete(agentId);
+      initializedSupervisors.delete(agentId);
       return { kind: "converged" };
     }
 
@@ -434,6 +435,7 @@ export function createSupervisionReconciler(deps: {
     async [Symbol.asyncDispose](): Promise<void> {
       supervisorStates.clear();
       supervisedChildIds.clear();
+      initializedSupervisors.clear();
     },
   };
 }

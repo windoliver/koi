@@ -2994,3 +2994,170 @@ describe("describeCapabilities runtime warning", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// createKoi — error path coverage
+// ---------------------------------------------------------------------------
+
+describe("createKoi error paths", () => {
+  test("onSessionStart hook throws → agent transitions to error, error propagates", async () => {
+    const onSessionStart = mock(() => {
+      throw new Error("session start failure");
+    });
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "fail-start", describeCapabilities: () => undefined, onSessionStart }],
+      loopDetection: false,
+    });
+
+    await expect(collectEvents(runtime.run({ kind: "text", text: "test" }))).rejects.toThrow(
+      "session start failure",
+    );
+    expect(runtime.agent.state).toBe("terminated");
+  });
+
+  test("onBeforeTurn hook throws → error recovery produces done event", async () => {
+    const { KoiRuntimeError } = await import("@koi/errors");
+    const onBeforeTurn = mock(() => {
+      throw KoiRuntimeError.from("TIMEOUT", "max turns exceeded");
+    });
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "fail-turn", describeCapabilities: () => undefined, onBeforeTurn }],
+      loopDetection: false,
+    });
+
+    const events = await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    const doneEvt = events.find((e) => e.kind === "done");
+    expect(doneEvt).toBeDefined();
+    if (doneEvt?.kind === "done") {
+      expect(doneEvt.output.stopReason).toBe("max_turns");
+    }
+    expect(runtime.agent.state).toBe("terminated");
+  });
+
+  test("refreshForgeState throws at turn boundary → error propagates", async () => {
+    // let justified: counter to allow first call to succeed
+    let callCount = 0;
+    const forge: import("./types.js").ForgeRuntime = {
+      resolveTool: async () => undefined,
+      toolDescriptors: async () => {
+        callCount++;
+        if (callCount > 1) {
+          throw new Error("forge descriptor failure");
+        }
+        return [];
+      },
+    };
+
+    const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
+    const adapter: EngineAdapter = {
+      engineId: "forge-fail-adapter",
+      terminals: { modelCall: modelTerminal },
+      stream: (_input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          // Turn 0: emit turn_end to trigger turn boundary refresh
+          yield { kind: "turn_end" as const, turnIndex: 0 };
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      forge,
+      loopDetection: false,
+    });
+
+    await expect(collectEvents(runtime.run({ kind: "text", text: "test" }))).rejects.toThrow(
+      "forge descriptor failure",
+    );
+    expect(runtime.agent.state).toBe("terminated");
+  });
+
+  test("abort during session initialization → clean shutdown", async () => {
+    const abortController = new AbortController();
+    const onSessionStart = mock(async () => {
+      // Abort during the session start hook
+      abortController.abort();
+    });
+    const onSessionEnd = mock(() => Promise.resolve());
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [
+        {
+          name: "abort-during-start",
+          describeCapabilities: () => undefined,
+          onSessionStart,
+          onSessionEnd,
+        },
+      ],
+      loopDetection: false,
+    });
+
+    const _events = await collectEvents(
+      runtime.run({ kind: "text", text: "test", signal: abortController.signal }),
+    );
+    // Should produce no adapter events (aborted before adapter started)
+    // May produce turn_start or nothing depending on timing
+    expect(runtime.agent.state).toBe("terminated");
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
+  });
+
+  test("concurrent abort + return() → single cleanup", async () => {
+    const abortController = new AbortController();
+    const onSessionEnd = mock(() => Promise.resolve());
+
+    // Adapter that yields infinite events
+    const adapter: EngineAdapter = {
+      engineId: "infinite-adapter",
+      stream: () => ({
+        async *[Symbol.asyncIterator]() {
+          let i = 0;
+          while (true) {
+            yield { kind: "text_delta" as const, delta: `chunk${i++}` };
+          }
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [
+        {
+          name: "cleanup-tracker",
+          describeCapabilities: () => undefined,
+          onSessionEnd,
+        },
+      ],
+      loopDetection: false,
+    });
+
+    const iter = runtime
+      .run({
+        kind: "text",
+        text: "test",
+        signal: abortController.signal,
+      })
+      [Symbol.asyncIterator]();
+
+    // Consume first event (turn_start)
+    await iter.next();
+    // Consume one adapter event
+    await iter.next();
+
+    // Abort and return simultaneously
+    abortController.abort();
+    await iter.return?.();
+
+    expect(runtime.agent.state).toBe("terminated");
+    // onSessionEnd should be called exactly once despite concurrent cleanup paths
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
+  });
+});

@@ -89,6 +89,7 @@ L3  Meta-packages    Convenience bundles (e.g., @koi/starter = L0 + L1 + selecte
 
 **When creating meta-packages (L3):**
 - Only re-export from L0 + L1 + selected L2 — no new logic
+- L3 packages (canonical list in `scripts/layers.ts`): `@koi/autonomous`, `@koi/cli`, `@koi/context-arena`, `@koi/governance`, `@koi/starter`
 
 ### Core Contracts (L0)
 
