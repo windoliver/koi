@@ -59,6 +59,8 @@ export { createGovernanceExtension } from "./governance-extension.js";
 export { createGovernanceProvider } from "./governance-provider.js";
 export type { AgentLookup } from "./governance-reconciler.js";
 export { createGovernanceReconciler } from "./governance-reconciler.js";
+// group operations
+export { listByGroup, signalGroup } from "./group-operations.js";
 // guards
 export type { CreateSpawnGuardOptions } from "./guards.js";
 export {

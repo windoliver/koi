@@ -39,6 +39,44 @@ export type SubsystemToken<T> = string & {
   readonly [__brand]: T;
 };
 
+declare const __groupBrand: unique symbol;
+
+/**
+ * Branded string type for agent group identifiers.
+ * Groups are runtime constructs — assigned at spawn time, not in the manifest.
+ */
+export type AgentGroupId = string & { readonly [__groupBrand]: "AgentGroupId" };
+
+/** Create a branded AgentGroupId from a plain string. */
+export function agentGroupId(id: string): AgentGroupId {
+  return id as AgentGroupId;
+}
+
+// ---------------------------------------------------------------------------
+// Signal vocabulary
+// ---------------------------------------------------------------------------
+
+/**
+ * Typed signal vocabulary for agent lifecycle control.
+ * Mirrors POSIX process signals — STOP/CONT for suspension, TERM for graceful
+ * shutdown, USR1/USR2 for application-defined semantics.
+ */
+export const AGENT_SIGNALS = {
+  /** Pause agent at next turn boundary → transitions to "suspended". */
+  STOP: "stop",
+  /** Resume a suspended agent → transitions to "running". */
+  CONT: "cont",
+  /** Graceful shutdown — aborts current work then terminates. */
+  TERM: "term",
+  /** Application-defined signal 1 (fires notify only, no state change). */
+  USR1: "usr1",
+  /** Application-defined signal 2 (fires notify only, no state change). */
+  USR2: "usr2",
+} as const;
+
+/** Union of the well-known signal strings. */
+export type AgentSignal = (typeof AGENT_SIGNALS)[keyof typeof AGENT_SIGNALS];
+
 declare const __agentBrand: unique symbol;
 
 /**
@@ -134,6 +172,8 @@ export interface ProcessId {
   readonly parent?: AgentId;
   /** External user/system identity that owns this agent process. */
   readonly ownerId?: string | undefined;
+  /** Process group this agent belongs to. Assigned at spawn time, not in the manifest. */
+  readonly groupId?: AgentGroupId | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -457,10 +497,10 @@ export interface ProcessAccounter {
 /** Lifecycle event for a child agent. */
 export type ChildLifecycleEvent =
   | { readonly kind: "started"; readonly childId: AgentId }
-  | { readonly kind: "completed"; readonly childId: AgentId }
+  | { readonly kind: "completed"; readonly childId: AgentId; readonly exitCode: number }
   | { readonly kind: "error"; readonly childId: AgentId; readonly cause?: unknown }
   | { readonly kind: "signaled"; readonly childId: AgentId; readonly signal: string }
-  | { readonly kind: "terminated"; readonly childId: AgentId };
+  | { readonly kind: "terminated"; readonly childId: AgentId; readonly exitCode: number };
 
 /** Handle for monitoring and controlling a child agent's lifecycle. */
 export interface ChildHandle {
@@ -471,6 +511,8 @@ export interface ChildHandle {
   readonly signal: (kind: string) => void | Promise<void>;
   /** Terminate the child agent. No-op if already terminated. Retries once on CAS conflict. */
   readonly terminate: (reason?: string) => void | Promise<void>;
+  /** Wait for the child to reach "terminated" phase and return its exit code. */
+  readonly waitForCompletion: () => Promise<import("./lifecycle.js").ChildCompletionResult>;
 }
 
 // ---------------------------------------------------------------------------

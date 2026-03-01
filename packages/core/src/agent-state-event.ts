@@ -10,7 +10,7 @@
  * side-effect-free data constructor operating only on L0 types.
  */
 
-import type { AgentId, ProcessState } from "./ecs.js";
+import type { AgentGroupId, AgentId, ProcessState } from "./ecs.js";
 import type { AgentCondition, AgentStatus, RegistryEntry, TransitionReason } from "./lifecycle.js";
 
 // ---------------------------------------------------------------------------
@@ -32,6 +32,8 @@ export interface AgentRegisteredEvent {
   readonly parentId?: AgentId | undefined;
   /** Immutable provenance — the agent that spawned this one. */
   readonly spawner?: AgentId | undefined;
+  /** Process group this agent belongs to. */
+  readonly groupId?: AgentGroupId | undefined;
   readonly metadata: Readonly<Record<string, unknown>>;
   readonly registeredAt: number;
 }
@@ -131,6 +133,7 @@ export function evolveRegistryEntry(
         ...base,
         ...(event.parentId !== undefined ? { parentId: event.parentId } : {}),
         ...(event.spawner !== undefined ? { spawner: event.spawner } : {}),
+        ...(event.groupId !== undefined ? { groupId: event.groupId } : {}),
       };
     }
 
