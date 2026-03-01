@@ -123,6 +123,13 @@ import type {
   WebhookComponent,
   WebhookEndpointHealth,
   WebhookSummary,
+  // zone
+  ZoneDescriptor,
+  ZoneEvent,
+  ZoneFilter,
+  ZoneId,
+  ZoneRegistry,
+  ZoneStatus,
 } from "../index.js";
 import {
   ALL_BRICK_KINDS,
@@ -149,6 +156,8 @@ import {
   toolToken,
   VALID_TRANSITIONS,
   WEBHOOK,
+  ZONE_REGISTRY,
+  zoneId,
 } from "../index.js";
 
 // Prevent type imports from being optimized away
@@ -267,7 +276,14 @@ type _TypeGuard =
   | AssertDefined<ReputationLevel>
   | AssertDefined<ReputationQuery>
   | AssertDefined<ReputationQueryResult>
-  | AssertDefined<ReputationScore>;
+  | AssertDefined<ReputationScore>
+  // zone
+  | AssertDefined<ZoneId>
+  | AssertDefined<ZoneDescriptor>
+  | AssertDefined<ZoneEvent>
+  | AssertDefined<ZoneFilter>
+  | AssertDefined<ZoneRegistry>
+  | AssertDefined<ZoneStatus>;
 
 describe("export inventory", () => {
   test("all runtime values are defined", () => {
@@ -295,6 +311,8 @@ describe("export inventory", () => {
     expect(WEBHOOK).toBeDefined();
     expect(DEFAULT_REPUTATION_QUERY_LIMIT).toBeDefined();
     expect(REPUTATION_LEVEL_ORDER).toBeDefined();
+    expect(ZONE_REGISTRY).toBeDefined();
+    expect(zoneId).toBeDefined();
   });
 
   test("runtime values are functions, strings, or objects", () => {
@@ -318,5 +336,7 @@ describe("export inventory", () => {
     expect(typeof WEBHOOK).toBe("string");
     expect(typeof DEFAULT_REPUTATION_QUERY_LIMIT).toBe("number");
     expect(typeof REPUTATION_LEVEL_ORDER).toBe("object");
+    expect(typeof ZONE_REGISTRY).toBe("string");
+    expect(typeof zoneId).toBe("function");
   });
 });

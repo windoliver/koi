@@ -11,6 +11,7 @@
 
 import type { AgentId, ProcessState } from "./ecs.js";
 import type { KoiError, Result } from "./errors.js";
+import type { ZoneId } from "./zone.js";
 
 // ---------------------------------------------------------------------------
 // Agent conditions (Kubernetes-inspired sub-state)
@@ -109,6 +110,8 @@ export interface RegistryEntry {
   readonly parentId?: AgentId;
   /** Immutable provenance — the agent that spawned this one. Set once at registration, never updated. */
   readonly spawner?: AgentId;
+  /** Zone this agent belongs to. Undefined for unzoned agents. */
+  readonly zoneId?: ZoneId | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +142,8 @@ export interface RegistryFilter {
   readonly condition?: AgentCondition;
   /** Filter by parent agent ID. */
   readonly parentId?: AgentId;
+  /** Filter by zone ID. */
+  readonly zoneId?: ZoneId | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +166,7 @@ export function matchesFilter(entry: RegistryEntry, filter: RegistryFilter): boo
     return false;
   }
   if (filter.parentId !== undefined && entry.parentId !== filter.parentId) return false;
+  if (filter.zoneId !== undefined && entry.zoneId !== filter.zoneId) return false;
   return true;
 }
 

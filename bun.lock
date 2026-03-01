@@ -781,6 +781,17 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/federation": {
+      "name": "@koi/federation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/file-resolution": {
       "name": "@koi/file-resolution",
       "version": "0.0.0",
@@ -2547,6 +2558,8 @@
     "@koi/exec-approvals": ["@koi/exec-approvals@workspace:packages/exec-approvals"],
 
     "@koi/execution-context": ["@koi/execution-context@workspace:packages/execution-context"],
+
+    "@koi/federation": ["@koi/federation@workspace:packages/federation"],
 
     "@koi/file-resolution": ["@koi/file-resolution@workspace:packages/file-resolution"],
 
