@@ -1673,6 +1673,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/execution-context": "workspace:*",
       },
     },
     "packages/search": {

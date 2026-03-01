@@ -12,6 +12,9 @@
  * Depends on @koi/core only.
  */
 
+export type { AuditedCredentialsConfig } from "./audited-credentials.js";
+// audited credentials
+export { createAuditedCredentials } from "./audited-credentials.js";
 // enforced backends — pluggable policy enforcement on top of scoped backends
 export {
   createEnforcedBrowser,

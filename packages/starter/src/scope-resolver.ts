@@ -4,10 +4,12 @@
  * For each subsystem declared in the manifest scope, wraps the matching raw backend
  * with scope + optional enforcement, then creates a ComponentProvider for agent assembly.
  *
- * Composition: raw backend → scoped wrapper (local checks) → enforced wrapper (pluggable policy)
+ * Composition: raw backend → enforced (pluggable policy) → scoped (local checks) → audited (optional)
  */
 
 import type {
+  Agent,
+  AuditSink,
   BrowserDriver,
   ComponentProvider,
   CredentialComponent,
@@ -15,6 +17,7 @@ import type {
   MemoryComponent,
   ScopeEnforcer,
 } from "@koi/core";
+import { COMPONENT_PRIORITY, CREDENTIALS } from "@koi/core";
 import { createFileSystemProvider } from "@koi/filesystem";
 import type {
   ManifestBrowserScope,
@@ -23,11 +26,12 @@ import type {
 } from "@koi/manifest";
 import type { BrowserScope, FileSystemScope, NavigationSecurityConfig } from "@koi/scope";
 import {
+  createAuditedCredentials,
   createEnforcedBrowser,
   createEnforcedCredentials,
   createEnforcedFileSystem,
   createEnforcedMemory,
-  createScopedCredentialsProvider,
+  createScopedCredentials,
   createScopedMemoryProvider,
 } from "@koi/scope";
 import { createBrowserProvider } from "@koi/tool-browser";
@@ -42,6 +46,7 @@ export interface ScopeBackends {
   readonly browser?: BrowserDriver;
   readonly credentials?: CredentialComponent;
   readonly memory?: MemoryComponent;
+  readonly auditSink?: AuditSink;
 }
 
 // ---------------------------------------------------------------------------
@@ -111,12 +116,25 @@ export function resolveManifestScope(
 
   const credentialsProvider =
     scopeConfig.credentials !== undefined && backends.credentials !== undefined
-      ? createScopedCredentialsProvider(
-          enforcer !== undefined
-            ? createEnforcedCredentials(backends.credentials, enforcer)
-            : backends.credentials,
-          { keyPattern: scopeConfig.credentials.keyPattern },
-        )
+      ? (() => {
+          const enforced =
+            enforcer !== undefined
+              ? createEnforcedCredentials(backends.credentials, enforcer)
+              : backends.credentials;
+          const scoped = createScopedCredentials(enforced, {
+            keyPattern: scopeConfig.credentials.keyPattern,
+          });
+          const final =
+            backends.auditSink !== undefined
+              ? createAuditedCredentials(scoped, { sink: backends.auditSink })
+              : scoped;
+          return {
+            name: `scoped-credentials:${scopeConfig.credentials.keyPattern}`,
+            priority: COMPONENT_PRIORITY.AGENT_FORGED,
+            attach: async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> =>
+              new Map<string, unknown>([[CREDENTIALS as string, final]]),
+          } satisfies ComponentProvider;
+        })()
       : undefined;
 
   const memoryProvider =
