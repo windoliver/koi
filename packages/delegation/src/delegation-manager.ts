@@ -65,6 +65,7 @@ export interface DelegationManager {
   readonly recordFailure: (delegateeId: AgentId) => void;
   readonly canDelegate: (delegateeId: AgentId) => boolean;
   readonly circuitState: (delegateeId: AgentId) => CircuitState;
+  readonly isExhausted: (delegateeIds: readonly AgentId[]) => boolean;
 
   // Cleanup
   readonly dispose: () => void;
@@ -302,6 +303,11 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
     return circuitBreaker.getState(delegateeId);
   }
 
+  function isExhausted(delegateeIds: readonly AgentId[]): boolean {
+    if (delegateeIds.length === 0) return false;
+    return delegateeIds.every((id) => circuitBreaker.getState(id) === "open");
+  }
+
   // ---------------------------------------------------------------------------
   // Cleanup
   // ---------------------------------------------------------------------------
@@ -324,6 +330,7 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
     recordFailure,
     canDelegate,
     circuitState,
+    isExhausted,
     dispose,
   };
 }

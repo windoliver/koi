@@ -36,6 +36,7 @@
     { "path": "packages/mcp" },
     { "path": "packages/memory-fs" },
     { "path": "packages/middleware-audit" },
+    { "path": "packages/middleware-delegation-escalation" },
     { "path": "packages/middleware-event-trace" },
     { "path": "packages/middleware-feedback-loop" },
     { "path": "packages/middleware-fs-rollback" },
