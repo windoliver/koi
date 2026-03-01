@@ -1,47 +1,20 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/middleware-pay API surface . has stable type surface 1`] = `
-"import { Result, KoiError } from '@koi/core/errors';
-import { PayLedger } from '@koi/core/pay-ledger';
+"import { BudgetTracker, CostCalculator, UsageInfo } from '@koi/core/cost-tracker';
+export { BudgetTracker, CostBreakdown, CostCalculator, ModelCostBreakdown, ToolCostBreakdown, UsageInfo } from '@koi/core/cost-tracker';
+import { Result, KoiError } from '@koi/core/errors';
 import { KoiMiddleware } from '@koi/core';
 import { BrickDescriptor } from '@koi/resolve';
 import { KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
-
-/**
- * Cost calculation and in-memory PayLedger for dev/testing.
- */
-
-interface CostCalculator {
-    readonly calculate: (model: string, inputTokens: number, outputTokens: number) => number;
-}
-/**
- * In-memory PayLedger backed by a running spend total.
- * Implements only \`meter()\`, \`getBalance()\`, and \`canAfford()\`.
- * Unused methods (\`transfer\`, \`reserve\`, \`commit\`, \`release\`) throw.
- */
-declare function createInMemoryPayLedger(initialBudget: number): PayLedger;
-/**
- * Default cost calculator with simple per-token pricing.
- */
-declare function createDefaultCostCalculator(rates?: Partial<Record<string, {
-    readonly input: number;
-    readonly output: number;
-}>>): CostCalculator;
+import { PayLedger } from '@koi/core/pay-ledger';
 
 /**
  * Pay middleware configuration and validation.
  */
 
-interface UsageInfo {
-    readonly model: string;
-    readonly costUsd: number;
-    readonly inputTokens: number;
-    readonly outputTokens: number;
-    readonly totalSpent: number;
-    readonly remaining: number;
-}
 interface PayMiddlewareConfig {
-    readonly ledger: PayLedger;
+    readonly tracker: BudgetTracker;
     readonly calculator: CostCalculator;
     readonly budget: number;
     readonly alertThresholds?: readonly number[];
@@ -55,13 +28,13 @@ declare function validatePayConfig(config: unknown): Result<PayMiddlewareConfig,
  * BrickDescriptor for @koi/middleware-pay.
  *
  * Enables manifest auto-resolution: validates pay config,
- * then creates the pay middleware with in-memory pay ledger
+ * then creates the pay middleware with in-memory budget tracker
  * and default cost calculator.
  */
 
 /**
  * Descriptor for pay middleware.
- * Uses in-memory pay ledger and default cost calculator.
+ * Uses in-memory budget tracker and default cost calculator.
  * Exported for registration with createRegistry().
  */
 declare const descriptor: BrickDescriptor<KoiMiddleware>;
@@ -72,6 +45,41 @@ declare const descriptor: BrickDescriptor<KoiMiddleware>;
 
 declare function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware$1;
 
-export { type CostCalculator, type PayMiddlewareConfig, type UsageInfo, createDefaultCostCalculator, createInMemoryPayLedger, createPayMiddleware, descriptor, validatePayConfig };
+/**
+ * Budget tracking interfaces and default implementations.
+ *
+ * Canonical type definitions live in @koi/core/cost-tracker (L0).
+ * This module re-exports them for backward compatibility and provides
+ * concrete implementations.
+ */
+
+/**
+ * In-memory PayLedger backed by a running spend total.
+ * Implements only \`meter()\`, \`getBalance()\`, and \`canAfford()\`.
+ * Unused methods (\`transfer\`, \`reserve\`, \`commit\`, \`release\`) throw.
+ */
+declare function createInMemoryPayLedger(initialBudget: number): PayLedger;
+/**
+ * In-memory budget tracker with O(1) pre-aggregated breakdown queries.
+ *
+ * Aggregates are maintained incrementally on each \`record()\` call,
+ * making \`totalSpend()\`, \`remaining()\`, and \`breakdown()\` all O(1).
+ */
+declare function createInMemoryBudgetTracker(): BudgetTracker;
+/**
+ * Default cost calculator with simple per-token pricing.
+ *
+ * Default rates are rough estimates for illustrative/testing purposes only:
+ * - Input: $3 per million tokens ($0.000003/token)
+ * - Output: $15 per million tokens ($0.000015/token)
+ *
+ * Production deployments should supply real rates via the \`rates\` parameter.
+ */
+declare function createDefaultCostCalculator(rates?: Partial<Record<string, {
+    readonly input: number;
+    readonly output: number;
+}>>): CostCalculator;
+
+export { type PayMiddlewareConfig, createDefaultCostCalculator, createInMemoryBudgetTracker, createInMemoryPayLedger, createPayMiddleware, descriptor, validatePayConfig };
 "
 `;
