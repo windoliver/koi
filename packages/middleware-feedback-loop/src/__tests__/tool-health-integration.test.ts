@@ -47,6 +47,8 @@ function createForgeHealthConfig(overrides?: Partial<ForgeHealthConfig>): ForgeH
     windowSize: 4,
     quarantineThreshold: 0.5,
     maxRecentFailures: 5,
+    flushThreshold: 1000, // High threshold to avoid flush interference in existing tests
+    errorRateDeltaThreshold: 1, // Disable error rate delta flush
     clock: () => 1000,
     ...overrides,
   };
