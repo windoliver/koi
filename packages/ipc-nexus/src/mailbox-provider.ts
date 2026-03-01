@@ -13,7 +13,7 @@ import type {
   TrustTier,
 } from "@koi/core";
 import { createServiceProvider, MAILBOX, toolToken } from "@koi/core";
-import type { IpcOperation } from "./constants.js";
+import type { DeliveryMode, IpcOperation } from "./constants.js";
 import { DEFAULT_PREFIX, OPERATIONS } from "./constants.js";
 import { createNexusMailbox } from "./mailbox-adapter.js";
 import { createDiscoverTool } from "./tools/discover.js";
@@ -30,6 +30,8 @@ export interface IpcNexusProviderConfig {
   readonly authToken?: string | undefined;
   readonly trustTier?: TrustTier | undefined;
   readonly prefix?: string | undefined;
+  readonly delivery?: DeliveryMode | undefined;
+  readonly seenCapacity?: number | undefined;
   readonly pollMinMs?: number | undefined;
   readonly pollMaxMs?: number | undefined;
   readonly pageLimit?: number | undefined;
@@ -68,6 +70,8 @@ export function createIpcNexusProvider(config: IpcNexusProviderConfig): Componen
     authToken,
     trustTier = "verified",
     prefix = DEFAULT_PREFIX,
+    delivery,
+    seenCapacity,
     pollMinMs,
     pollMaxMs,
     pageLimit,
@@ -80,6 +84,8 @@ export function createIpcNexusProvider(config: IpcNexusProviderConfig): Componen
     agentId,
     baseUrl: nexusBaseUrl,
     authToken,
+    delivery,
+    seenCapacity,
     pollMinMs,
     pollMaxMs,
     pageLimit,

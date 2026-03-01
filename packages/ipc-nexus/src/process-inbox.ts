@@ -12,6 +12,12 @@ import type { NexusClient } from "./nexus-client.js";
 /** Handler signature for incoming messages. */
 export type MessageHandler = (message: AgentMessage) => void | Promise<void>;
 
+/** Structural type for deduplication — accepts both Set<string> and SeenBuffer. */
+export interface SeenSet {
+  readonly has: (id: string) => boolean;
+  readonly add: (id: string) => void;
+}
+
 /**
  * Fetch one page of inbox messages, dispatch unseen ones to all handlers.
  *
@@ -21,7 +27,7 @@ export async function processPendingMessages(
   client: NexusClient,
   agentId: string,
   handlers: ReadonlySet<MessageHandler>,
-  seen: Set<string>,
+  seen: SeenSet,
   limit: number,
 ): Promise<number> {
   const result = await client.listInbox(agentId, limit);

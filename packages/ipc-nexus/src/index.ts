@@ -19,16 +19,16 @@ export type {
 } from "@koi/core";
 
 // domain-specific types
-export type { IpcOperation } from "./constants.js";
-
+export type { DeliveryMode, IpcOperation } from "./constants.js";
 // constants
-export { DEFAULT_PREFIX, OPERATIONS } from "./constants.js";
+export { DEFAULT_DELIVERY_MODE, DEFAULT_PREFIX, OPERATIONS } from "./constants.js";
 // adapter
 export type { NexusMailboxConfig } from "./mailbox-adapter.js";
 export { createNexusMailbox } from "./mailbox-adapter.js";
 // provider
 export type { IpcNexusProviderConfig } from "./mailbox-provider.js";
 export { createIpcNexusProvider } from "./mailbox-provider.js";
+export type { SseEvent } from "./sse-stream.js";
 // tool factories — for advanced usage (custom tool composition)
 export { createDiscoverTool } from "./tools/discover.js";
 export { createListTool } from "./tools/list.js";
