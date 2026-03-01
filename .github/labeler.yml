@@ -1,6 +1,11 @@
 # PR auto-labeler — assigns layer labels based on changed files.
 # Used by .github/workflows/label-layers.yml (actions/labeler@v5).
 # See docs/architecture/Koi.md for layer definitions.
+#
+# ⚠️  AUTO-GENERATED — do not edit by hand.
+# Source of truth: scripts/layers.ts (L0U_PACKAGES, L3_PACKAGES)
+# To regenerate: bun scripts/generate-layer-docs.ts
+# To verify in CI: bun scripts/check-doc-sync.ts
 
 "layer:L0":
   - changed-files:
@@ -10,14 +15,79 @@
   - changed-files:
     - any-glob-to-any-file: "packages/engine/**"
 
+"layer:L0u":
+  - changed-files:
+    - any-glob-to-any-file:
+      - "packages/acp-protocol/**"
+      - "packages/channel-base/**"
+      - "packages/crypto-utils/**"
+      - "packages/dashboard-types/**"
+      - "packages/edit-match/**"
+      - "packages/errors/**"
+      - "packages/event-delivery/**"
+      - "packages/execution-context/**"
+      - "packages/file-resolution/**"
+      - "packages/git-utils/**"
+      - "packages/harness-scheduler/**"
+      - "packages/hash/**"
+      - "packages/manifest/**"
+      - "packages/nexus-client/**"
+      - "packages/resolve/**"
+      - "packages/sandbox-cloud-base/**"
+      - "packages/scope/**"
+      - "packages/search-provider/**"
+      - "packages/shutdown/**"
+      - "packages/skill-scanner/**"
+      - "packages/snapshot-chain-store/**"
+      - "packages/sqlite-utils/**"
+      - "packages/test-utils/**"
+      - "packages/token-estimator/**"
+      - "packages/validation/**"
+
 "layer:L3":
   - changed-files:
     - any-glob-to-any-file:
+      - "packages/autonomous/**"
       - "packages/cli/**"
+      - "packages/context-arena/**"
+      - "packages/governance/**"
       - "packages/starter/**"
 
-# L2 is the catch-all: any package that is not L0, L1, or L3.
-# This label appears when only L2 packages are changed.
+# L2 is the catch-all: any package change that is not L0, L1, L0u, or L3.
+# The negation patterns prevent L0/L1/L0u/L3 package changes from also triggering L2.
 "layer:L2":
   - changed-files:
-    - any-glob-to-any-file: "packages/**"
+    - any-glob-to-any-file:
+      - "packages/**"
+      - "!packages/acp-protocol/**"
+      - "!packages/autonomous/**"
+      - "!packages/channel-base/**"
+      - "!packages/cli/**"
+      - "!packages/context-arena/**"
+      - "!packages/core/**"
+      - "!packages/crypto-utils/**"
+      - "!packages/dashboard-types/**"
+      - "!packages/edit-match/**"
+      - "!packages/engine/**"
+      - "!packages/errors/**"
+      - "!packages/event-delivery/**"
+      - "!packages/execution-context/**"
+      - "!packages/file-resolution/**"
+      - "!packages/git-utils/**"
+      - "!packages/governance/**"
+      - "!packages/harness-scheduler/**"
+      - "!packages/hash/**"
+      - "!packages/manifest/**"
+      - "!packages/nexus-client/**"
+      - "!packages/resolve/**"
+      - "!packages/sandbox-cloud-base/**"
+      - "!packages/scope/**"
+      - "!packages/search-provider/**"
+      - "!packages/shutdown/**"
+      - "!packages/skill-scanner/**"
+      - "!packages/snapshot-chain-store/**"
+      - "!packages/sqlite-utils/**"
+      - "!packages/starter/**"
+      - "!packages/test-utils/**"
+      - "!packages/token-estimator/**"
+      - "!packages/validation/**"

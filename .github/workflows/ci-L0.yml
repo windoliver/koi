@@ -1,19 +1,35 @@
-name: CI
+name: CI (L0 — full suite)
+# Triggered when the interfaces-only kernel or governance scripts change.
+# L0 changes have the highest blast radius — all 150+ packages depend on @koi/core.
+# Runs the full monorepo build + test suite (no --filter scoping).
+# Requires CODEOWNERS approval (see .github/CODEOWNERS).
 on:
   push:
     branches: [main]
+    paths:
+      - "packages/core/**"
+      - "scripts/layers.ts"
+      - "scripts/check-layers.ts"
+      - "scripts/check-doc-sync.ts"
+      - "scripts/generate-layer-docs.ts"
   pull_request:
     branches: [main]
+    paths:
+      - "packages/core/**"
+      - "scripts/layers.ts"
+      - "scripts/check-layers.ts"
+      - "scripts/check-doc-sync.ts"
+      - "scripts/generate-layer-docs.ts"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  ci:
-    name: Build, Lint, Typecheck & Test
+  ci-l0-full:
+    name: L0 — Full monorepo suite
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -43,11 +59,11 @@ jobs:
       - name: Check doc sync
         run: bun run check:doc-sync
 
-      - name: Build
+      - name: Build (full — no filter)
         run: bun run build
 
-      - name: Typecheck
+      - name: Typecheck (full — no filter)
         run: bun run typecheck
 
-      - name: Test
+      - name: Test (full — no filter)
         run: bun run test
