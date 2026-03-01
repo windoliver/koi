@@ -11,6 +11,8 @@
 
 import type {
   CapabilityFragment,
+  ForgeBudget,
+  ForgeDemandSignal,
   ForgeProvenance,
   ForgeScope,
   ForgeStore,
@@ -19,7 +21,7 @@ import type {
   TrustTier,
   TurnContext,
 } from "@koi/core";
-import { brickId } from "@koi/core";
+import { brickId, DEFAULT_FORGE_BUDGET } from "@koi/core";
 import type { CrystallizedToolDescriptor } from "./forge-handler.js";
 import { createCrystallizeForgeHandler } from "./forge-handler.js";
 import type { CrystallizationCandidate, CrystallizeHandle } from "./types.js";
@@ -38,6 +40,15 @@ export interface AutoForgeVerifierResult {
 export interface AutoForgeVerifier {
   readonly name: string;
   readonly verify: (descriptor: CrystallizedToolDescriptor) => Promise<AutoForgeVerifierResult>;
+}
+
+/**
+ * Demand handle interface (L0-compatible, defined locally to avoid L2 import).
+ * Matches ForgeDemandHandle from @koi/forge-demand.
+ */
+export interface AutoForgeDemandHandle {
+  readonly getSignals: () => readonly ForgeDemandSignal[];
+  readonly dismiss: (signalId: string) => void;
 }
 
 /** Configuration for the auto-forge middleware. */
@@ -64,6 +75,12 @@ export interface AutoForgeConfig {
   readonly onError?: (error: unknown) => void;
   /** Clock function for timestamps. Default: Date.now. */
   readonly clock?: () => number;
+  /** Optional demand handle — enables demand-triggered forging. */
+  readonly demandHandle?: AutoForgeDemandHandle | undefined;
+  /** Demand budget — overrides when demandHandle is provided. */
+  readonly demandBudget?: ForgeBudget | undefined;
+  /** Called when a demand signal triggers a forge. */
+  readonly onDemandForged?: ((signal: ForgeDemandSignal, brick: ToolArtifact) => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,8 +196,10 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
 
   const forgeHandler = createCrystallizeForgeHandler(forgeHandlerConfig);
 
-  // justified: mutable counter encapsulated within factory closure
+  // justified: mutable counters encapsulated within factory closure
   let lastForgedCount = 0;
+  let demandForgedCount = 0;
+  const demandBudget = config.demandBudget ?? DEFAULT_FORGE_BUDGET;
 
   /**
    * Process candidates asynchronously — fire-and-forget from the middleware hook.
@@ -219,31 +238,143 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
     lastForgedCount = forgeHandler.getForgedCount();
   }
 
+  /**
+   * Process a demand signal — forge a pioneer brick.
+   * Tags as demand-forged/pioneer, starts at sandbox trust.
+   */
+  async function processDemandForge(signal: ForgeDemandSignal): Promise<void> {
+    const now = clock();
+    const id = brickId(`demand:${signal.trigger.kind}:${String(now)}`);
+    const triggerDesc =
+      signal.trigger.kind === "repeated_failure"
+        ? signal.trigger.toolName
+        : signal.trigger.kind === "capability_gap"
+          ? signal.trigger.requiredCapability
+          : signal.trigger.kind === "no_matching_tool"
+            ? signal.trigger.query
+            : signal.trigger.toolName;
+
+    const provenance: ForgeProvenance = {
+      source: {
+        origin: "forged",
+        forgedBy: "auto-forge-middleware/demand",
+        sessionId: `demand:${signal.id}`,
+      },
+      buildDefinition: {
+        buildType: "koi.demand/pioneer/v1",
+        externalParameters: {
+          triggerKind: signal.trigger.kind,
+          confidence: signal.confidence,
+          failureCount: signal.context.failureCount,
+        },
+      },
+      builder: { id: "koi.demand/auto-forge/v1" },
+      metadata: {
+        invocationId: `demand-forge:${String(now)}`,
+        startedAt: now,
+        finishedAt: now,
+        sessionId: `demand:${signal.id}`,
+        agentId: "auto-forge-middleware",
+        depth: 0,
+      },
+      verification: {
+        passed: true,
+        finalTrustTier: "sandbox",
+        totalDurationMs: 0,
+        stageResults: [],
+      },
+      classification: "public",
+      contentMarkers: [],
+      contentHash: `demand:${signal.id}:${String(now)}`,
+    };
+
+    const brick: ToolArtifact = {
+      id,
+      kind: "tool",
+      name: `pioneer-${triggerDesc}`,
+      description: `Pioneer tool forged from demand signal: ${signal.trigger.kind}`,
+      scope: config.scope,
+      trustTier: "sandbox",
+      lifecycle: "active",
+      provenance,
+      version: "0.1.0",
+      tags: ["demand-forged", "pioneer"],
+      usageCount: 0,
+      implementation: `// Pioneer stub — demand-triggered for: ${signal.trigger.kind}`,
+      inputSchema: {},
+    };
+
+    const saveResult = await config.forgeStore.save(brick);
+    if (!saveResult.ok) {
+      onError(new Error(`Failed to save demand-forged brick: ${saveResult.error.message}`));
+      return;
+    }
+
+    demandForgedCount++;
+    config.onDemandForged?.(signal, brick);
+  }
+
   return {
     name: "auto-forge",
     priority: 960, // After crystallize middleware (950)
 
     async onAfterTurn(_ctx: TurnContext): Promise<void> {
-      // Read current candidates from the crystallize handle
+      // --- Existing: process crystallization candidates ---
       const candidates = config.crystallizeHandle.getCandidates();
-      if (candidates.length === 0) return;
+      if (candidates.length > 0) {
+        // Fire-and-forget: run forge pipeline asynchronously
+        // justified: fire-and-forget pattern — errors handled via onError callback
+        void Promise.resolve().then(async () => {
+          try {
+            await processForge(candidates);
+          } catch (err: unknown) {
+            onError(err);
+          }
+        });
+      }
 
-      // Fire-and-forget: run forge pipeline asynchronously
-      // justified: fire-and-forget pattern — errors handled via onError callback
-      void Promise.resolve().then(async () => {
-        try {
-          await processForge(candidates);
-        } catch (err: unknown) {
-          onError(err);
+      // --- New: process demand signals ---
+      if (config.demandHandle !== undefined) {
+        const signals = config.demandHandle.getSignals();
+        for (const signal of signals) {
+          // Check hard cap
+          if (demandForgedCount >= demandBudget.maxForgesPerSession) break;
+          // Check confidence threshold
+          if (signal.confidence < demandBudget.demandThreshold) continue;
+
+          // Fire-and-forget: demand forge runs asynchronously
+          // justified: fire-and-forget pattern — errors handled via onError callback
+          void Promise.resolve().then(async () => {
+            try {
+              await processDemandForge(signal);
+            } catch (err: unknown) {
+              onError(err);
+            }
+          });
+
+          // Dismiss the signal after triggering forge (success or failure)
+          config.demandHandle?.dismiss(signal.id);
         }
-      });
+      }
     },
 
     describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {
-      if (lastForgedCount === 0) return undefined;
+      const totalForged = lastForgedCount + demandForgedCount;
+      if (totalForged === 0) return undefined;
+      const parts: string[] = [];
+      if (lastForgedCount > 0) {
+        parts.push(
+          `${String(lastForgedCount)} tool${lastForgedCount === 1 ? "" : "s"} auto-forged from crystallized patterns`,
+        );
+      }
+      if (demandForgedCount > 0) {
+        parts.push(
+          `${String(demandForgedCount)} pioneer tool${demandForgedCount === 1 ? "" : "s"} demand-forged`,
+        );
+      }
       return {
         label: "auto-forge",
-        description: `${String(lastForgedCount)} tool${lastForgedCount === 1 ? "" : "s"} auto-forged from crystallized patterns`,
+        description: parts.join("; "),
       };
     },
   };

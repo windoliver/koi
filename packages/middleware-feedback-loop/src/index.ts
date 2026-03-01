@@ -8,6 +8,7 @@
 
 export type { FeedbackLoopConfig, ForgeHealthConfig } from "./config.js";
 export { validateFeedbackLoopConfig } from "./config.js";
+export type { FeedbackLoopHandle } from "./feedback-loop.js";
 export { createFeedbackLoopMiddleware } from "./feedback-loop.js";
 export type { FlushDeltas } from "./fitness-flush.js";
 export { computeMergedFitness, shouldFlush } from "./fitness-flush.js";

@@ -842,6 +842,19 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/forge-demand": {
+      "name": "@koi/forge-demand",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/forge-optimizer": {
       "name": "@koi/forge-optimizer",
       "version": "0.0.0",
@@ -2633,6 +2646,8 @@
     "@koi/filesystem": ["@koi/filesystem@workspace:packages/filesystem"],
 
     "@koi/forge": ["@koi/forge@workspace:packages/forge"],
+
+    "@koi/forge-demand": ["@koi/forge-demand@workspace:packages/forge-demand"],
 
     "@koi/forge-optimizer": ["@koi/forge-optimizer@workspace:packages/forge-optimizer"],
 

@@ -81,7 +81,7 @@ describe("tool health integration", () => {
     });
 
     const spy = createSpyToolHandler({ output: { result: "ok" } });
-    const mw = createFeedbackLoopMiddleware({ forgeHealth });
+    const { middleware: mw } = createFeedbackLoopMiddleware({ forgeHealth });
 
     const result = await mw.wrapToolCall?.(ctx, forgedToolRequest, spy.handler);
     expect(result?.output).toEqual({ result: "ok" });
@@ -95,7 +95,7 @@ describe("tool health integration", () => {
     const failingHandler = async () => {
       throw new Error("tool crashed");
     };
-    const mw = createFeedbackLoopMiddleware({ forgeHealth });
+    const { middleware: mw } = createFeedbackLoopMiddleware({ forgeHealth });
 
     try {
       await mw.wrapToolCall?.(ctx, forgedToolRequest, failingHandler);
@@ -124,7 +124,7 @@ describe("tool health integration", () => {
     const failingHandler = async () => {
       throw new Error("tool error");
     };
-    const mw = createFeedbackLoopMiddleware({ forgeHealth });
+    const { middleware: mw } = createFeedbackLoopMiddleware({ forgeHealth });
 
     // Fail twice to trigger quarantine (100% error rate with window=2)
     for (let i = 0; i < 2; i++) {
@@ -149,7 +149,7 @@ describe("tool health integration", () => {
   test("non-forged tool passes through without health tracking", async () => {
     const forgeHealth = createForgeHealthConfig();
     const spy = createSpyToolHandler({ output: "raw" });
-    const mw = createFeedbackLoopMiddleware({ forgeHealth });
+    const { middleware: mw } = createFeedbackLoopMiddleware({ forgeHealth });
 
     const result = await mw.wrapToolCall?.(ctx, nonForgedToolRequest, spy.handler);
     expect(result?.output).toBe("raw");
@@ -167,7 +167,7 @@ describe("tool health integration", () => {
     const failingHandler = async () => {
       throw new Error("crash");
     };
-    const mw = createFeedbackLoopMiddleware({ forgeHealth });
+    const { middleware: mw } = createFeedbackLoopMiddleware({ forgeHealth });
 
     for (let i = 0; i < 2; i++) {
       try {
@@ -194,7 +194,7 @@ describe("tool health integration", () => {
     });
 
     const spy = createSpyToolHandler({ output: { data: "bad" } });
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       forgeHealth,
       toolGates: [
         createFailingValidator(
@@ -235,7 +235,7 @@ describe("tool health integration", () => {
     const failingHandler = async () => {
       throw new Error("err");
     };
-    const mw = createFeedbackLoopMiddleware({ forgeHealth });
+    const { middleware: mw } = createFeedbackLoopMiddleware({ forgeHealth });
 
     for (let i = 0; i < 2; i++) {
       try {
@@ -252,7 +252,7 @@ describe("tool health integration", () => {
   test("mixed forged and non-forged tools in same middleware", async () => {
     const forgeHealth = createForgeHealthConfig();
     const spy = createSpyToolHandler({ output: "ok" });
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       forgeHealth,
       toolGates: [createMockValidator("gate")],
     });
@@ -270,7 +270,7 @@ describe("tool health integration", () => {
 
   test("health tracking disabled when forgeHealth not configured", async () => {
     const spy = createSpyToolHandler({ output: "ok" });
-    const mw = createFeedbackLoopMiddleware({});
+    const { middleware: mw } = createFeedbackLoopMiddleware({});
 
     const result = await mw.wrapToolCall?.(ctx, forgedToolRequest, spy.handler);
     expect(result?.output).toBe("ok");
@@ -280,7 +280,7 @@ describe("tool health integration", () => {
   test("existing tool validators still work with health tracking enabled", async () => {
     const forgeHealth = createForgeHealthConfig();
     const spy = createSpyToolHandler();
-    const mw = createFeedbackLoopMiddleware({
+    const { middleware: mw } = createFeedbackLoopMiddleware({
       forgeHealth,
       toolValidators: [
         createFailingValidator([{ validator: "input-check", message: "bad input" }], "input-check"),

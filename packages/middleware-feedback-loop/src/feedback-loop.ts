@@ -10,10 +10,11 @@ import type {
   ModelResponse,
   SessionContext,
   ToolHandler,
+  ToolHealthSnapshot,
   ToolRequest,
   ToolResponse,
   TurnContext,
-} from "@koi/core/middleware";
+} from "@koi/core";
 import { extractMessage, KoiRuntimeError } from "@koi/errors";
 import type { FeedbackLoopConfig } from "./config.js";
 import { runGates } from "./gate.js";
@@ -23,8 +24,16 @@ import { createToolHealthTracker, type ToolHealthTracker } from "./tool-health.j
 import type { ForgeToolErrorFeedback } from "./types.js";
 import { runValidators } from "./validators.js";
 
+/** Handle returned by the feedback-loop factory — bundles middleware + health read API. */
+export interface FeedbackLoopHandle {
+  readonly middleware: KoiMiddleware;
+  readonly getHealthSnapshot: (toolId: string) => ToolHealthSnapshot | undefined;
+  readonly getAllHealthSnapshots: () => readonly ToolHealthSnapshot[];
+  readonly isQuarantined: (toolId: string) => boolean;
+}
+
 /** Creates a feedback-loop middleware with validation, retry, and gate hooks. */
-export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMiddleware {
+export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): FeedbackLoopHandle {
   const validators = config.validators ?? [];
   const gates = config.gates ?? [];
   const toolValidators = config.toolValidators ?? [];
@@ -214,17 +223,24 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
     },
   };
 
-  // Only attach session lifecycle hook when health tracking is active
-  if (healthTracker === undefined) {
-    return middleware;
-  }
+  // Attach session lifecycle hook when health tracking is active
+  const fullMiddleware: KoiMiddleware =
+    healthTracker !== undefined
+      ? {
+          ...middleware,
+          async onSessionEnd(_ctx: SessionContext): Promise<void> {
+            await healthTracker.dispose();
+          },
+        }
+      : middleware;
 
-  const tracker = healthTracker;
   return {
-    ...middleware,
-    async onSessionEnd(_ctx: SessionContext): Promise<void> {
-      await tracker.dispose();
-    },
+    middleware: fullMiddleware,
+    getHealthSnapshot: (toolId: string): ToolHealthSnapshot | undefined =>
+      healthTracker?.getSnapshot(toolId),
+    getAllHealthSnapshots: (): readonly ToolHealthSnapshot[] =>
+      healthTracker?.getAllSnapshots() ?? [],
+    isQuarantined: (toolId: string): boolean => healthTracker?.isQuarantined(toolId) ?? false,
   };
 }
 

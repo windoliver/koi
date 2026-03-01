@@ -113,7 +113,7 @@ describe("fitness persistence pipeline", () => {
     };
 
     const spy = createSpyToolHandler({ output: { result: "ok" } });
-    const mw = createFeedbackLoopMiddleware({ forgeHealth });
+    const { middleware: mw } = createFeedbackLoopMiddleware({ forgeHealth });
 
     // Simulate 5 successful calls to forged-alpha (triggers flush at threshold=5)
     for (let i = 0; i < 5; i++) {
@@ -160,7 +160,7 @@ describe("fitness persistence pipeline", () => {
       throw new Error("tool error");
     };
 
-    const mw = createFeedbackLoopMiddleware({ forgeHealth });
+    const { middleware: mw } = createFeedbackLoopMiddleware({ forgeHealth });
     const req = toolRequest("forged-tool");
 
     // 3 successes + 2 failures = 5 invocations → triggers flush
@@ -212,7 +212,7 @@ describe("fitness persistence pipeline", () => {
     };
 
     const spy = createSpyToolHandler({ output: "ok" });
-    const mw = createFeedbackLoopMiddleware({ forgeHealth });
+    const { middleware: mw } = createFeedbackLoopMiddleware({ forgeHealth });
 
     // Record a few invocations (below flush threshold)
     await mw.wrapToolCall?.(ctx, toolRequest("forged-a"), spy.handler);
@@ -250,7 +250,7 @@ describe("fitness persistence pipeline", () => {
     };
 
     const spy = createSpyToolHandler({ output: "ok" });
-    const mw = createFeedbackLoopMiddleware({ forgeHealth });
+    const { middleware: mw } = createFeedbackLoopMiddleware({ forgeHealth });
 
     // 3 calls triggers flush, but brick doesn't exist
     for (let i = 0; i < 3; i++) {
@@ -287,7 +287,7 @@ describe("fitness persistence pipeline", () => {
       clock: () => time,
     };
 
-    const mw = createFeedbackLoopMiddleware({ forgeHealth });
+    const { middleware: mw } = createFeedbackLoopMiddleware({ forgeHealth });
     const req = toolRequest("forged-tool");
     const failHandler = async () => {
       throw new Error("error");
@@ -348,7 +348,7 @@ describe("fitness persistence pipeline", () => {
     const failHandler = async () => {
       throw new Error("tool error");
     };
-    const mw = createFeedbackLoopMiddleware({ forgeHealth });
+    const { middleware: mw } = createFeedbackLoopMiddleware({ forgeHealth });
 
     // Record enough failures to trigger demotion check
     for (let i = 0; i < 3; i++) {

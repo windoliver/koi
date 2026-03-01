@@ -38,40 +38,17 @@ export interface RepairStrategy {
 }
 
 // ---------------------------------------------------------------------------
-// Tool health tracking types (forge runtime health)
+// Tool health tracking types — re-exported from L0 (@koi/core)
 // ---------------------------------------------------------------------------
 
-/** Aggregated health metrics for a single tool. */
-export interface ToolHealthMetrics {
-  /** Success rate (0-1). */
-  readonly successRate: number;
-  /** Error rate (0-1). */
-  readonly errorRate: number;
-  /** Total invocations in the tracking window. */
-  readonly usageCount: number;
-  /** Average latency in milliseconds. */
-  readonly avgLatencyMs: number;
-}
+import type {
+  ToolFailureRecord,
+  ToolHealthMetrics,
+  ToolHealthSnapshot,
+  ToolHealthState,
+} from "@koi/core";
 
-/** Health state of a forged tool. */
-export type ToolHealthState = "healthy" | "degraded" | "quarantined";
-
-/** Point-in-time snapshot of a tool's health. */
-export interface ToolHealthSnapshot {
-  readonly brickId: string;
-  readonly toolId: string;
-  readonly metrics: ToolHealthMetrics;
-  readonly state: ToolHealthState;
-  readonly recentFailures: readonly ToolFailureRecord[];
-  readonly lastUpdatedAt: number;
-}
-
-/** Record of a single tool failure. */
-export interface ToolFailureRecord {
-  readonly timestamp: number;
-  readonly error: string;
-  readonly latencyMs: number;
-}
+export type { ToolFailureRecord, ToolHealthMetrics, ToolHealthSnapshot, ToolHealthState };
 
 /** Enriched error feedback returned to the agent when a tool is quarantined or degraded. */
 export interface ForgeToolErrorFeedback {
