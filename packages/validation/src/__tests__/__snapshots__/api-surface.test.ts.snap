@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/validation API surface . has stable type surface 1`] = `
-"import { BrickArtifactBase, BrickUpdate, Result, BrickArtifact, KoiError, BrickFitnessMetrics, TrustTier, LatencySampler, ForgeQuery } from '@koi/core';
+"import { BrickArtifactBase, BrickUpdate, Result, BrickArtifact, KoiError, BrickFitnessMetrics, TrustTier, LatencySampler, ForgeQuery, TrailConfig, StoreChangeNotifier } from '@koi/core';
 import { z } from 'zod';
 
 /**
@@ -168,6 +168,7 @@ declare function severityAtOrAbove(severity: Severity, threshold: Severity): boo
 interface SortBricksOptions {
     readonly nowMs: number;
     readonly fitnessConfig?: Partial<FitnessScoringConfig>;
+    readonly trailConfig?: Partial<TrailConfig>;
 }
 /**
  * Sorts and optionally filters bricks based on ForgeQuery ordering options.
@@ -179,6 +180,52 @@ interface SortBricksOptions {
  * - Returns a new array — never mutates the input.
  */
 declare function sortBricks<T extends BrickArtifactBase>(bricks: readonly T[], query: ForgeQuery, options: SortBricksOptions): readonly T[];
+
+/**
+ * In-memory store change notifier — pub/sub for store mutation observation.
+ *
+ * Extracted to @koi/validation (L0u) so all L2 store implementations can
+ * reuse the same notification pattern without cross-L2 imports.
+ */
+
+/**
+ * Creates an in-memory \`StoreChangeNotifier\` backed by a simple listener map.
+ *
+ * - \`notify()\` snapshots the listener array and calls each synchronously.
+ * - \`subscribe()\` returns an unsubscribe function.
+ * - Throws if subscriber count reaches \`MAX_SUBSCRIBERS\` (likely a leak).
+ */
+declare function createMemoryStoreChangeNotifier(): StoreChangeNotifier;
+
+/**
+ * Trail strength — pure functions for stigmergic trail decay and reinforcement.
+ *
+ * Implements MMAS (Max-Min Ant System) bounded exponential decay:
+ * - Decay: max(tauMin, stored × e^(-λ × elapsed)) where λ = ln(2) / halfLife
+ * - Reinforcement: min(tauMax, current + reinforcement)
+ *
+ * All functions are pure — no side effects, no I/O.
+ */
+
+/**
+ * Computes the effective trail strength after exponential decay over elapsed time.
+ *
+ * Formula: max(tauMin, storedStrength × e^(-λ × elapsedMs))
+ * where λ = ln(2) / (halfLifeDays × MS_PER_DAY)
+ *
+ * Guards against NaN/Infinity by clamping to [tauMin, tauMax].
+ */
+declare function computeEffectiveTrailStrength(storedStrength: number, elapsedMs: number, config?: Partial<TrailConfig>): number;
+/**
+ * Computes the new trail strength after additive reinforcement.
+ *
+ * Formula: min(tauMax, currentStrength + reinforcement)
+ */
+declare function computeTrailReinforcement(currentStrength: number, config?: Partial<TrailConfig>): number;
+/**
+ * Returns true when the effective trail strength has decayed to or below tauMin.
+ */
+declare function isTrailEvaporated(storedStrength: number, elapsedMs: number, config?: Partial<TrailConfig>): boolean;
 
 /**
  * Shared Zod → KoiError validation utilities.
@@ -203,6 +250,6 @@ declare function zodToKoiError(zodError: z.core.$ZodError, prefix?: string): Koi
  */
 declare function validateWith<T>(schema: z.ZodType<T>, raw: unknown, prefix?: string): Result<T, KoiError>;
 
-export { DEFAULT_DECAY_THRESHOLDS, DEFAULT_FITNESS_SCORING_CONFIG, type DecayThresholds, type FitnessScoringConfig, SEVERITY_ORDER, type Severity, type SortBricksOptions, applyBrickUpdate, computeBrickFitness, computePercentile, createLatencySampler, evaluateTrustDecay, levenshteinDistance, matchesBrickQuery, mergeSamplers, recordLatency, severityAtOrAbove, sortBricks, validateBrickArtifact, validateWith, zodToKoiError };
+export { DEFAULT_DECAY_THRESHOLDS, DEFAULT_FITNESS_SCORING_CONFIG, type DecayThresholds, type FitnessScoringConfig, SEVERITY_ORDER, type Severity, type SortBricksOptions, applyBrickUpdate, computeBrickFitness, computeEffectiveTrailStrength, computePercentile, computeTrailReinforcement, createLatencySampler, createMemoryStoreChangeNotifier, evaluateTrustDecay, isTrailEvaporated, levenshteinDistance, matchesBrickQuery, mergeSamplers, recordLatency, severityAtOrAbove, sortBricks, validateBrickArtifact, validateWith, zodToKoiError };
 "
 `;

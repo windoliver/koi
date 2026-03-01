@@ -217,4 +217,156 @@ describe("sortBricks", () => {
     expect(score1).toHaveLength(1);
     expect(score2).toHaveLength(1);
   });
+
+  // ---------------------------------------------------------------------------
+  // orderBy: "trailStrength"
+  // ---------------------------------------------------------------------------
+
+  test("orderBy trailStrength sorts by effective trail strength descending", () => {
+    const bricks = [
+      createBrick("weak", { trailStrength: 0.1, fitness: createFitness() }),
+      createBrick("strong", { trailStrength: 0.9, fitness: createFitness() }),
+      createBrick("mid", { trailStrength: 0.5, fitness: createFitness() }),
+    ];
+    const query: ForgeQuery = { orderBy: "trailStrength" };
+    const result = sortBricks(bricks, query, { nowMs: NOW });
+    expect(result[0]?.name).toBe("strong");
+    expect(result[1]?.name).toBe("mid");
+    expect(result[2]?.name).toBe("weak");
+  });
+
+  test("trailStrength uses DEFAULT_TRAIL_STRENGTH when undefined", () => {
+    const bricks = [
+      createBrick("explicit", { trailStrength: 0.3, fitness: createFitness() }),
+      createBrick("default", { fitness: createFitness() }), // trailStrength undefined → 0.5
+    ];
+    const query: ForgeQuery = { orderBy: "trailStrength" };
+    const result = sortBricks(bricks, query, { nowMs: NOW });
+    // default (0.5) > explicit (0.3)
+    expect(result[0]?.name).toBe("default");
+    expect(result[1]?.name).toBe("explicit");
+  });
+
+  test("trailStrength decays based on elapsed time from lastUsedAt", () => {
+    // Two bricks with same stored trail strength but different recency
+    const bricks = [
+      createBrick("stale", {
+        trailStrength: 0.8,
+        fitness: createFitness({ lastUsedAt: NOW - 30 * MS_PER_DAY }),
+      }),
+      createBrick("fresh", {
+        trailStrength: 0.8,
+        fitness: createFitness({ lastUsedAt: NOW }),
+      }),
+    ];
+    const query: ForgeQuery = { orderBy: "trailStrength" };
+    const result = sortBricks(bricks, query, { nowMs: NOW });
+    // Fresh brick has higher effective trail strength (no decay)
+    expect(result[0]?.name).toBe("fresh");
+    expect(result[1]?.name).toBe("stale");
+  });
+
+  test("trailStrength tiebreak sorts alphabetically by name", () => {
+    const bricks = [
+      createBrick("charlie", { trailStrength: 0.5, fitness: createFitness() }),
+      createBrick("alpha", { trailStrength: 0.5, fitness: createFitness() }),
+      createBrick("bravo", { trailStrength: 0.5, fitness: createFitness() }),
+    ];
+    const query: ForgeQuery = { orderBy: "trailStrength" };
+    const result = sortBricks(bricks, query, { nowMs: NOW });
+    expect(result[0]?.name).toBe("alpha");
+    expect(result[1]?.name).toBe("bravo");
+    expect(result[2]?.name).toBe("charlie");
+  });
+
+  // ---------------------------------------------------------------------------
+  // minTrailStrength filtering
+  // ---------------------------------------------------------------------------
+
+  test("minTrailStrength filters out bricks below threshold", () => {
+    const bricks = [
+      createBrick("strong", { trailStrength: 0.8, fitness: createFitness() }),
+      createBrick("weak", { trailStrength: 0.1, fitness: createFitness() }),
+    ];
+    const query: ForgeQuery = { minTrailStrength: 0.5 };
+    const result = sortBricks(bricks, query, { nowMs: NOW });
+    expect(result).toHaveLength(1);
+    expect(result[0]?.name).toBe("strong");
+  });
+
+  test("minTrailStrength of 0 keeps all bricks", () => {
+    const bricks = [
+      createBrick("a", { trailStrength: 0.1, fitness: createFitness() }),
+      createBrick("b", { trailStrength: 0.9, fitness: createFitness() }),
+    ];
+    const query: ForgeQuery = { minTrailStrength: 0 };
+    const result = sortBricks(bricks, query, { nowMs: NOW });
+    expect(result).toHaveLength(2);
+  });
+
+  test("minTrailStrength accounts for decay when filtering", () => {
+    // Brick has high stored trail but is very stale → effective is low
+    const bricks = [
+      createBrick("stale-high", {
+        trailStrength: 0.8,
+        fitness: createFitness({ lastUsedAt: NOW - 60 * MS_PER_DAY }),
+      }),
+      createBrick("fresh-low", {
+        trailStrength: 0.3,
+        fitness: createFitness({ lastUsedAt: NOW }),
+      }),
+    ];
+    const query: ForgeQuery = { minTrailStrength: 0.2 };
+    const result = sortBricks(bricks, query, { nowMs: NOW });
+    // fresh-low (0.3, no decay) stays; stale-high should decay below 0.2 after 60 days
+    expect(result.some((b) => b.name === "fresh-low")).toBe(true);
+  });
+
+  test("combined minFitnessScore and minTrailStrength filtering", () => {
+    const bricks = [
+      createBrick("both-good", {
+        trailStrength: 0.8,
+        fitness: createFitness({ successCount: 50, errorCount: 0 }),
+        usageCount: 50,
+      }),
+      createBrick("good-fitness-bad-trail", {
+        trailStrength: 0.05,
+        fitness: createFitness({ successCount: 50, errorCount: 0 }),
+        usageCount: 50,
+      }),
+      createBrick("bad-fitness-good-trail", {
+        trailStrength: 0.8,
+        usageCount: 0,
+      }),
+    ];
+    const query: ForgeQuery = { minFitnessScore: 0.01, minTrailStrength: 0.1 };
+    const result = sortBricks(bricks, query, { nowMs: NOW });
+    // Only "both-good" passes both filters
+    expect(result).toHaveLength(1);
+    expect(result[0]?.name).toBe("both-good");
+  });
+
+  test("trailConfig option is passed through for decay computation", () => {
+    // With very short half-life, stale brick decays more aggressively
+    const bricks = [
+      createBrick("stale", {
+        trailStrength: 0.9,
+        fitness: createFitness({ lastUsedAt: NOW - 2 * MS_PER_DAY }),
+      }),
+      createBrick("fresh", {
+        trailStrength: 0.5,
+        fitness: createFitness({ lastUsedAt: NOW }),
+      }),
+    ];
+    const query: ForgeQuery = { orderBy: "trailStrength" };
+    // With very short half-life (0.5 days), the stale brick decays significantly
+    const result = sortBricks(bricks, query, {
+      nowMs: NOW,
+      trailConfig: { halfLifeDays: 0.5 },
+    });
+    // After 2 days with 0.5 day half-life → 4 half-lives → 0.9 * (1/16) ≈ 0.056
+    // Fresh is 0.5, so fresh should rank higher
+    expect(result[0]?.name).toBe("fresh");
+    expect(result[1]?.name).toBe("stale");
+  });
 });

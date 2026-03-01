@@ -2,7 +2,8 @@
  * Forge configuration — Zod schema, validation, factory with defaults.
  */
 
-import type { KoiError, Result, TrustTier } from "@koi/core";
+import type { KoiError, Result, TrailConfig, TrustTier } from "@koi/core";
+import { DEFAULT_TRAIL_CONFIG } from "@koi/core";
 import { validateWith } from "@koi/validation";
 import { z } from "zod";
 import type { ReverificationConfig } from "./reverification.js";
@@ -73,6 +74,8 @@ export interface ForgeConfig {
   readonly dependencies: DependencyConfig;
   readonly format: FormatConfig;
   readonly reverification?: ReverificationConfig;
+  /** Trail strength config for stigmergic coordination. */
+  readonly trail?: TrailConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +227,9 @@ export function createDefaultForgeConfig(overrides?: Partial<ForgeConfig>): Forg
         : DEFAULT_DEPENDENCY,
     format:
       overrides.format !== undefined ? { ...DEFAULT_FORMAT, ...overrides.format } : DEFAULT_FORMAT,
+    ...(overrides.trail !== undefined
+      ? { trail: { ...DEFAULT_TRAIL_CONFIG, ...overrides.trail } }
+      : {}),
   };
 }
 

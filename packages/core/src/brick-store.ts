@@ -69,6 +69,36 @@ export const DEFAULT_BRICK_FITNESS: BrickFitnessMetrics = Object.freeze({
 });
 
 // ---------------------------------------------------------------------------
+// Trail strength — stigmergic coordination config + defaults
+// ---------------------------------------------------------------------------
+
+/** Default trail strength for newly forged bricks. */
+export const DEFAULT_TRAIL_STRENGTH = 0.5 as const;
+
+/** MMAS-bounded evaporation/reinforcement config for trail strength decay. */
+export interface TrailConfig {
+  /** Evaporation rate ρ ∈ (0, 1). Default: 0.05. */
+  readonly evaporationRate: number;
+  /** Additive reinforcement per usage. Default: 0.1. */
+  readonly reinforcement: number;
+  /** MMAS floor — trail strength never decays below this. Default: 0.01. */
+  readonly tauMin: number;
+  /** MMAS cap — trail strength never exceeds this. Default: 0.95. */
+  readonly tauMax: number;
+  /** Half-life for exponential decay (days). Default: 7. */
+  readonly halfLifeDays: number;
+}
+
+/** Frozen default trail config — MMAS bounds [0.01, 0.95]. */
+export const DEFAULT_TRAIL_CONFIG: TrailConfig = Object.freeze({
+  evaporationRate: 0.05,
+  reinforcement: 0.1,
+  tauMin: 0.01,
+  tauMax: 0.95,
+  halfLifeDays: 7,
+});
+
+// ---------------------------------------------------------------------------
 // Brick artifact — discriminated union on `kind`
 // ---------------------------------------------------------------------------
 
@@ -99,6 +129,8 @@ export interface BrickArtifactBase {
   readonly lastPromotedAt?: number | undefined;
   /** Epoch ms of last trust tier demotion. Undefined = never demoted. */
   readonly lastDemotedAt?: number | undefined;
+  /** Stigmergic trail strength — decaying signal of collective agent interest. */
+  readonly trailStrength?: number | undefined;
 }
 
 export interface ToolArtifact extends BrickArtifactBase {
@@ -144,9 +176,11 @@ export interface ForgeQuery {
   readonly text?: string;
   readonly limit?: number;
   /** Sort order for results. Default: "fitness". */
-  readonly orderBy?: "fitness" | "recency" | "usage";
+  readonly orderBy?: "fitness" | "recency" | "usage" | "trailStrength";
   /** Minimum fitness score threshold (0–1). Bricks scoring below are excluded. */
   readonly minFitnessScore?: number;
+  /** Minimum trail strength threshold (0–1). Bricks below are excluded. */
+  readonly minTrailStrength?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +201,15 @@ export interface BrickUpdate {
   readonly lastPromotedAt?: number | undefined;
   /** Epoch ms of last trust tier demotion. */
   readonly lastDemotedAt?: number | undefined;
+  /** Updated trail strength. */
+  readonly trailStrength?: number | undefined;
 }
+
+/** Compile-time check: every key of BrickUpdate must exist on BrickArtifactBase. */
+type _AssertUpdateSubset =
+  Exclude<keyof BrickUpdate, keyof BrickArtifactBase> extends never ? true : never;
+const _checkSubset: _AssertUpdateSubset = true;
+void _checkSubset; // suppress unused-variable lint
 
 // ---------------------------------------------------------------------------
 // ForgeStore — repository interface for brick persistence

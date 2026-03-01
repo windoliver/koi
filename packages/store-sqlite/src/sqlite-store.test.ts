@@ -103,13 +103,13 @@ describe("SQLite-specific", () => {
     }
   });
 
-  test("schema migration sets user_version = 2 and creates tables", () => {
+  test("schema migration sets user_version = 3 and creates tables", () => {
     const db = new Database(":memory:");
     db.run("PRAGMA foreign_keys = ON");
     createSqliteForgeStore({ db });
 
     const row = db.query<{ user_version: number }, []>("PRAGMA user_version").get();
-    expect(row?.user_version).toBe(2);
+    expect(row?.user_version).toBe(3);
 
     // Verify tables exist by querying sqlite_master
     const tables = db
