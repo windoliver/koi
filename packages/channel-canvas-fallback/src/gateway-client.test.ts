@@ -4,7 +4,7 @@
  * Uses Bun.serve() as a mock Gateway server.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { createGatewayClient } from "./gateway-client.js";
 
 // ---------------------------------------------------------------------------
@@ -188,5 +188,28 @@ describe("timeout", () => {
       expect(result.error.code).toBe("TIMEOUT");
       expect(result.error.retryable).toBe(true);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Injectable fetch
+// ---------------------------------------------------------------------------
+
+describe("injectable fetch", () => {
+  test("uses injected fetch instead of globalThis.fetch", async () => {
+    const injectedFetch = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 201 })),
+    );
+
+    const client = createGatewayClient({
+      canvasBaseUrl: "http://test:3000/canvas",
+      fetch: injectedFetch as unknown as typeof globalThis.fetch,
+    });
+    const result = await client.createSurface("s1", "{}");
+
+    expect(result.ok).toBe(true);
+    expect(injectedFetch).toHaveBeenCalledTimes(1);
+    const [url] = injectedFetch.mock.calls[0] as unknown as [string];
+    expect(url).toBe("http://test:3000/canvas/s1");
   });
 });

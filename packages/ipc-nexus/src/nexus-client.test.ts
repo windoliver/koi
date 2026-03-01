@@ -223,4 +223,29 @@ describe("createNexusClient", () => {
       expect(opts.method).toBe("POST");
     });
   });
+
+  describe("injectable fetch", () => {
+    test("uses injected fetch instead of globalThis.fetch", async () => {
+      const injectedFetch = mock(() =>
+        Promise.resolve(new Response(JSON.stringify({ id: "injected" }), { status: 200 })),
+      );
+
+      const client = createNexusClient({
+        baseUrl: BASE_URL,
+        fetch: injectedFetch as unknown as typeof fetch,
+      });
+      const result = await client.sendMessage({
+        from: "a",
+        to: "b",
+        kind: "task",
+        type: "t",
+        payload: {},
+      });
+
+      expect(result.ok).toBe(true);
+      // Injected fetch was called, not globalThis.fetch
+      expect(injectedFetch).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledTimes(0);
+    });
+  });
 });

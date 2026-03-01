@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import {
   fetchWithTimeout,
   handleAbortError,
@@ -302,6 +302,23 @@ describe("fetchWithTimeout", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  test("uses injected fetch instead of globalThis.fetch", async () => {
+    const injectedFetch = mock(() => Promise.resolve(new Response("injected", { status: 200 })));
+
+    const result = await fetchWithTimeout({
+      url: "https://example.com/api",
+      method: "GET",
+      headers: {},
+      timeoutMs: 5000,
+      fetch: injectedFetch as unknown as typeof globalThis.fetch,
+    });
+    result.clearTimer();
+
+    expect(injectedFetch).toHaveBeenCalledTimes(1);
+    const text = await result.response.text();
+    expect(text).toBe("injected");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -329,5 +346,22 @@ describe("streamFetch", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  test("uses injected fetch instead of globalThis.fetch", async () => {
+    const injectedFetch = mock(() => Promise.resolve(new Response("streamed", { status: 200 })));
+
+    const result = await streamFetch({
+      url: "https://example.com/stream",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+      timeoutMs: 5000,
+      fetch: injectedFetch as unknown as typeof globalThis.fetch,
+    });
+    result.clearTimer();
+
+    expect(injectedFetch).toHaveBeenCalledTimes(1);
+    const text = await result.response.text();
+    expect(text).toBe("streamed");
   });
 });

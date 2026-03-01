@@ -18,6 +18,8 @@ export interface GatewayClientConfig {
   readonly authToken?: string;
   /** Request timeout in milliseconds. Default: 10_000. */
   readonly timeoutMs?: number;
+  /** Optional injectable fetch for tracing / testing. */
+  readonly fetch?: typeof globalThis.fetch;
 }
 
 /** Result of a successful create/update operation. */
@@ -106,6 +108,7 @@ export function createGatewayClient(config: GatewayClientConfig): GatewayClient 
     ? config.canvasBaseUrl.slice(0, -1)
     : config.canvasBaseUrl;
   const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const fetchFn = config.fetch ?? globalThis.fetch;
 
   async function request(
     method: string,
@@ -114,7 +117,7 @@ export function createGatewayClient(config: GatewayClientConfig): GatewayClient 
     context: string,
   ): Promise<Result<{ readonly status: number; readonly text: string }, KoiError>> {
     try {
-      const response = await fetch(`${baseUrl}/${surfaceId}`, {
+      const response = await fetchFn(`${baseUrl}/${surfaceId}`, {
         method,
         headers: makeHeaders(config.authToken),
         body: body !== undefined ? JSON.stringify(body) : undefined,

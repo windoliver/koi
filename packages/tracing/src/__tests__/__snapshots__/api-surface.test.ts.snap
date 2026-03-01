@@ -26,6 +26,21 @@ interface TracingConfig {
 declare function validateTracingConfig(config: unknown): Result<TracingConfig, KoiError>;
 
 /**
+ * Traced fetch wrapper — injects W3C traceparent/tracestate headers
+ * from the active OTel context into outgoing HTTP requests.
+ *
+ * Zero-cost noop when no propagator is registered (the global
+ * \`propagation\` returns a noop propagator by default).
+ */
+/** Fetch function signature compatible with both Bun and standard fetch. */
+type FetchFn = (input: Request | string | URL, init?: RequestInit) => Promise<Response>;
+/**
+ * Creates a fetch function that injects trace context headers
+ * into every outgoing request.
+ */
+declare function createTracedFetch(baseFetch?: FetchFn): FetchFn;
+
+/**
  * Tracing middleware factory — bridges Koi middleware hooks to OpenTelemetry spans.
  *
  * Creates a span hierarchy: Session → Turn → Model Call / Model Stream / Tool Call.
@@ -35,6 +50,6 @@ declare function validateTracingConfig(config: unknown): Result<TracingConfig, K
 
 declare function createTracingMiddleware(config?: TracingConfig): KoiMiddleware;
 
-export { type TracingConfig, createTracingMiddleware, validateTracingConfig };
+export { type TracingConfig, createTracedFetch, createTracingMiddleware, validateTracingConfig };
 "
 `;

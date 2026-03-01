@@ -185,8 +185,9 @@ export function createTracingMiddleware(config: TracingConfig = {}): KoiMiddlewa
         return next(request);
       }
 
+      const spanCtx = trace.setSpan(context.active(), span);
       try {
-        const response = await next(request);
+        const response = await context.with(spanCtx, () => next(request));
         if (span.isRecording()) {
           if (response.model !== undefined) {
             span.setAttribute(GEN_AI_RESPONSE_MODEL, response.model);
@@ -231,10 +232,12 @@ export function createTracingMiddleware(config: TracingConfig = {}): KoiMiddlewa
         return;
       }
 
+      const spanCtx = trace.setSpan(context.active(), span);
       try {
         // let: accumulates the final response from the stream's done chunk
         let lastResponse: ModelResponse | undefined;
-        for await (const chunk of next(request)) {
+        const stream = context.with(spanCtx, () => next(request));
+        for await (const chunk of stream) {
           if (chunk.kind === "done") {
             lastResponse = chunk.response;
           }
@@ -279,8 +282,9 @@ export function createTracingMiddleware(config: TracingConfig = {}): KoiMiddlewa
         return next(request);
       }
 
+      const spanCtx = trace.setSpan(context.active(), span);
       try {
-        const response = await next(request);
+        const response = await context.with(spanCtx, () => next(request));
         recordContent(span, request, response);
         return response;
       } catch (e: unknown) {

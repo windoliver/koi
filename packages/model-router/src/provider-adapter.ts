@@ -12,6 +12,7 @@ export interface ProviderAdapterConfig {
   readonly baseUrl?: string | undefined;
   readonly timeoutMs?: number | undefined;
   readonly headers?: Readonly<Record<string, string>> | undefined;
+  readonly fetch?: typeof globalThis.fetch | undefined;
 }
 
 export type StreamChunk =

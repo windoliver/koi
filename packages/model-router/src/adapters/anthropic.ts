@@ -128,6 +128,7 @@ export function createAnthropicAdapter(config: ProviderAdapterConfig): ProviderA
           body: JSON.stringify(body),
           timeoutMs,
           signal: request.signal,
+          fetch: config.fetch,
         });
         clearTimer = result.clearTimer;
 
@@ -190,6 +191,7 @@ export function createAnthropicAdapter(config: ProviderAdapterConfig): ProviderA
           body: JSON.stringify(body),
           timeoutMs,
           signal: request.signal,
+          fetch: config.fetch,
         });
         clearTimer = result.clearTimer;
 
