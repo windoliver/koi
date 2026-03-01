@@ -22,15 +22,10 @@ import type { KoiError, Result } from "./errors.js";
 // Branded types
 // ---------------------------------------------------------------------------
 
-declare const __agentGroupBrand: unique symbol;
+// AgentGroupId type and constructor are in ecs.ts (canonical location)
+import type { AgentGroupId } from "./ecs.js";
 
-/** Branded string type for agent group identifiers. */
-export type AgentGroupId = string & { readonly [__agentGroupBrand]: "AgentGroupId" };
-
-/** Create a branded AgentGroupId from a plain string. */
-export function agentGroupId(raw: string): AgentGroupId {
-  return raw as AgentGroupId;
-}
+export type { AgentGroupId } from "./ecs.js";
 
 declare const __scratchpadPathBrand: unique symbol;
 

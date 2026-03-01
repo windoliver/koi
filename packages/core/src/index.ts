@@ -709,7 +709,6 @@ export type {
 } from "./scope-enforcement.js";
 // scratchpad — group-scoped versioned file store (shared memory)
 export type {
-  AgentGroupId,
   ScratchpadChangeEvent,
   ScratchpadComponent,
   ScratchpadEntry,
@@ -720,7 +719,7 @@ export type {
   ScratchpadWriteInput,
   ScratchpadWriteResult,
 } from "./scratchpad.js";
-export { agentGroupId, SCRATCHPAD_DEFAULTS, scratchpadPath } from "./scratchpad.js";
+export { SCRATCHPAD_DEFAULTS, scratchpadPath } from "./scratchpad.js";
 // security analyzer — dynamic risk classification contract
 export type {
   RiskAnalysis,
