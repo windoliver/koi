@@ -18,9 +18,14 @@ import type {
   Result,
   StoreChangeEvent,
 } from "@koi/core";
-import { internal, notFound } from "@koi/core";
-import { mapSqliteError, openDb, wrapSqlite } from "@koi/sqlite-utils";
-import { validateBrickArtifact } from "@koi/validation";
+import { notFound } from "@koi/core";
+import { openDb, wrapSqlite } from "@koi/sqlite-utils";
+import {
+  applyBrickUpdate,
+  matchesBrickQuery,
+  sortBricks,
+  validateBrickArtifact,
+} from "@koi/validation";
 import { applyMigrations } from "./schema.js";
 
 // ---------------------------------------------------------------------------
@@ -67,12 +72,51 @@ function isPathConfig(config: SqliteForgeStoreConfig): config is SqliteForgeStor
   return "dbPath" in config;
 }
 
+/** Build SQL WHERE clauses for indexed columns that can be filtered in SQL. */
+function buildSearchSql(query: ForgeQuery): {
+  readonly sql: string;
+  readonly params: readonly (string | number)[];
+} {
+  const conditions: string[] = [];
+  const params: (string | number)[] = [];
+
+  if (query.kind !== undefined) {
+    conditions.push("b.kind = ?");
+    params.push(query.kind);
+  }
+  if (query.scope !== undefined) {
+    conditions.push("b.scope = ?");
+    params.push(query.scope);
+  }
+  if (query.trustTier !== undefined) {
+    conditions.push("b.trust_tier = ?");
+    params.push(query.trustTier);
+  }
+  if (query.lifecycle !== undefined) {
+    conditions.push("b.lifecycle = ?");
+    params.push(query.lifecycle);
+  }
+  if (query.createdBy !== undefined) {
+    conditions.push("b.created_by = ?");
+    params.push(query.createdBy);
+  }
+  if (query.text !== undefined) {
+    conditions.push("(b.name LIKE ? COLLATE NOCASE OR b.description LIKE ? COLLATE NOCASE)");
+    const pattern = `%${query.text}%`;
+    params.push(pattern, pattern);
+  }
+
+  const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
+  return { sql: `SELECT b.data FROM bricks b${where}`, params };
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
 export interface SqliteForgeStore extends ForgeStore {
   readonly close: () => void;
+  readonly dispose: () => void;
 }
 
 /**
@@ -179,89 +223,40 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
   };
 
   const load = async (id: BrickId): Promise<Result<BrickArtifact, KoiError>> => {
-    const row = loadDataStmt.get(id);
-    if (row === null) {
+    const rowResult = wrapSqlite(() => loadDataStmt.get(id), `load(${id})`);
+    if (!rowResult.ok) return rowResult;
+    if (rowResult.value === null) {
       return { ok: false, error: notFound(id, `Brick not found: ${id}`) };
     }
-    try {
-      const parsed: unknown = JSON.parse(row.data);
-      return validateBrickArtifact(parsed, `sqlite:${id}`);
-    } catch (e: unknown) {
-      return { ok: false, error: internal(`Failed to parse brick ${id}`, e) };
-    }
+    const parsed: unknown = JSON.parse(rowResult.value.data);
+    return validateBrickArtifact(parsed, `sqlite:${id}`);
   };
 
   const search = async (query: ForgeQuery): Promise<Result<readonly BrickArtifact[], KoiError>> => {
-    const conditions: string[] = [];
-    const params: (string | number)[] = [];
+    return wrapSqlite(() => {
+      const { sql, params } = buildSearchSql(query);
+      const rows = db.query<BrickRow, (string | number)[]>(sql).all(...params);
 
-    if (query.kind !== undefined) {
-      conditions.push("b.kind = ?");
-      params.push(query.kind);
-    }
-    if (query.scope !== undefined) {
-      conditions.push("b.scope = ?");
-      params.push(query.scope);
-    }
-    if (query.trustTier !== undefined) {
-      conditions.push("b.trust_tier = ?");
-      params.push(query.trustTier);
-    }
-    if (query.lifecycle !== undefined) {
-      conditions.push("b.lifecycle = ?");
-      params.push(query.lifecycle);
-    }
-    if (query.createdBy !== undefined) {
-      conditions.push("b.created_by = ?");
-      params.push(query.createdBy);
-    }
-    if (query.text !== undefined) {
-      conditions.push("(b.name LIKE ? COLLATE NOCASE OR b.description LIKE ? COLLATE NOCASE)");
-      const pattern = `%${query.text}%`;
-      params.push(pattern, pattern);
-    }
-    if (query.tags !== undefined && query.tags.length > 0) {
-      // AND-subset: brick must have ALL requested tags
-      conditions.push(
-        `(SELECT COUNT(DISTINCT t.tag) FROM brick_tags t WHERE t.brick_id = b.id AND t.tag IN (${query.tags.map(() => "?").join(", ")})) = ?`,
-      );
-      for (const tag of query.tags) {
-        params.push(tag);
-      }
-      params.push(query.tags.length);
-    }
-
-    let sql = "SELECT b.data FROM bricks b";
-    if (conditions.length > 0) {
-      sql += ` WHERE ${conditions.join(" AND ")}`;
-    }
-    if (query.limit !== undefined) {
-      sql += " LIMIT ?";
-      params.push(query.limit);
-    }
-
-    try {
-      const stmt = db.prepare<BrickRow, (string | number)[]>(sql);
-      const rows = stmt.all(...params);
-      stmt.finalize();
-
-      const results: BrickArtifact[] = [];
+      // Parse + validate, then post-filter for fields not indexed in SQL
+      const validated: BrickArtifact[] = [];
       for (const row of rows) {
         const parsed: unknown = JSON.parse(row.data);
-        const validated = validateBrickArtifact(parsed, "sqlite:search");
-        if (validated.ok) {
-          results.push(validated.value);
+        const result = validateBrickArtifact(parsed, "sqlite:search");
+        if (result.ok) {
+          validated.push(result.value);
         }
       }
-      return { ok: true, value: results };
-    } catch (e: unknown) {
-      return { ok: false, error: mapSqliteError(e, "search") };
-    }
+      const filtered = validated.filter((brick) => matchesBrickQuery(brick, query));
+      const sorted = sortBricks(filtered, query, { nowMs: Date.now() });
+
+      return query.limit !== undefined ? sorted.slice(0, query.limit) : sorted;
+    }, "search");
   };
 
   const remove = async (id: BrickId): Promise<Result<void, KoiError>> => {
-    const row = existsStmt.get(id);
-    if (row === null) {
+    const existsResult = wrapSqlite(() => existsStmt.get(id), `remove:exists(${id})`);
+    if (!existsResult.ok) return existsResult;
+    if (existsResult.value === null) {
       return { ok: false, error: notFound(id, `Brick not found: ${id}`) };
     }
     const result = wrapSqlite(() => {
@@ -283,24 +278,18 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
       if (!validated.ok) {
         return { ok: false, error: validated.error };
       }
-      const existing = validated.value;
 
-      const lifecycle = updates.lifecycle ?? existing.lifecycle;
-      const trustTier = updates.trustTier ?? existing.trustTier;
-      const scope = updates.scope ?? existing.scope;
-      const usageCount = updates.usageCount ?? existing.usageCount;
-
-      const updated = {
-        ...existing,
-        ...(updates.lifecycle !== undefined ? { lifecycle: updates.lifecycle } : {}),
-        ...(updates.trustTier !== undefined ? { trustTier: updates.trustTier } : {}),
-        ...(updates.scope !== undefined ? { scope: updates.scope } : {}),
-        ...(updates.usageCount !== undefined ? { usageCount: updates.usageCount } : {}),
-        ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
-      };
+      const updated = applyBrickUpdate(validated.value, updates);
       const dataJson = JSON.stringify(updated);
 
-      updateStmt.run(lifecycle, trustTier, scope, usageCount, dataJson, id);
+      updateStmt.run(
+        updated.lifecycle,
+        updated.trustTier,
+        updated.scope,
+        updated.usageCount,
+        dataJson,
+        id,
+      );
 
       // Sync brick_tags when tags are updated
       if (updates.tags !== undefined) {
@@ -315,18 +304,18 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
   );
 
   const update = async (id: BrickId, updates: BrickUpdate): Promise<Result<void, KoiError>> => {
-    try {
-      const result = updateBrick(id, updates);
-      if (result.ok) notifyListeners({ kind: "updated", brickId: id });
-      return result;
-    } catch (e: unknown) {
-      return { ok: false, error: mapSqliteError(e, `update(${id})`) };
+    const result = wrapSqlite(() => updateBrick(id, updates), `update(${id})`);
+    // wrapSqlite returns the Result from the transaction; unwrap to notify
+    if (result.ok) {
+      const inner = result.value;
+      if (inner.ok) notifyListeners({ kind: "updated", brickId: id });
+      return inner;
     }
+    return result;
   };
 
   const exists = async (id: BrickId): Promise<Result<boolean, KoiError>> => {
-    const row = existsStmt.get(id);
-    return { ok: true, value: row !== null };
+    return wrapSqlite(() => existsStmt.get(id) !== null, `exists(${id})`);
   };
 
   const close = (): void => {
@@ -341,5 +330,5 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
     }
   };
 
-  return { save, load, search, remove, update, exists, close, watch };
+  return { save, load, search, remove, update, exists, close, dispose: close, watch };
 }
