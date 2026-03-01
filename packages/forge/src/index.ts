@@ -111,6 +111,12 @@ export type { ForgeResolverContext } from "./forge-resolver.js";
 export { createForgeResolver } from "./forge-resolver.js";
 export type { CreateForgeRuntimeOptions, ForgeRuntimeInstance } from "./forge-runtime.js";
 export { createForgeRuntime } from "./forge-runtime.js";
+// runtime values — forge session counter
+export type {
+  ForgeSessionCounterInstance,
+  ForgeSessionCounterOptions,
+} from "./forge-session-counter.js";
+export { createForgeSessionCounter } from "./forge-session-counter.js";
 // runtime values — usage tracking middleware
 export type { ForgeUsageMiddlewareConfig } from "./forge-usage-middleware.js";
 export { createForgeUsageMiddleware } from "./forge-usage-middleware.js";
