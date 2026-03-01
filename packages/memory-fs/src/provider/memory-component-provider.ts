@@ -91,6 +91,7 @@ export function createMemoryProvider(config: MemoryProviderConfig): ComponentPro
     },
 
     detach: async (_agent: Agent): Promise<void> => {
+      await memory.rebuildSummaries();
       await memory.close();
     },
   };

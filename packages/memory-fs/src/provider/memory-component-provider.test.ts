@@ -102,13 +102,14 @@ describe("createMemoryProvider — attach", () => {
 });
 
 describe("createMemoryProvider — detach", () => {
-  test("detach calls memory.close()", async () => {
+  test("detach rebuilds summaries then closes", async () => {
     const memory = createMockFsMemory();
     const provider = createMemoryProvider({ memory });
     await provider.detach?.(createMockAgent());
 
-    expect(memory.calls).toHaveLength(1);
-    expect(memory.calls[0]?.method).toBe("close");
+    expect(memory.calls).toHaveLength(2);
+    expect(memory.calls[0]?.method).toBe("rebuildSummaries");
+    expect(memory.calls[1]?.method).toBe("close");
   });
 });
 
