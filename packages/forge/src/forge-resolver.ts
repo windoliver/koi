@@ -10,8 +10,10 @@ import type {
   Resolver,
   Result,
   SourceBundle,
+  TrustTier,
 } from "@koi/core";
 import { brickId } from "@koi/core";
+import { evaluateTrustDecay } from "@koi/validation";
 import { filterByAgentScope, isVisibleToAgent } from "./scope-filter.js";
 
 // ---------------------------------------------------------------------------
@@ -36,8 +38,15 @@ export function extractSource(brick: BrickArtifact): SourceBundle {
 // Public API
 // ---------------------------------------------------------------------------
 
+/** Maximum number of async demotion updates per discover() call. */
+const MAX_DECAY_DEMOTIONS_PER_DISCOVER = 5;
+
 export interface ForgeResolverContext {
   readonly agentId: string;
+  /** Called when a brick is demoted due to fitness decay. */
+  readonly onDecayDemotion?: (brickId: string, from: TrustTier, to: TrustTier) => void;
+  /** Called when a decay-related store update or callback throws. */
+  readonly onError?: (error: unknown) => void;
 }
 
 /**
@@ -49,6 +58,27 @@ function notFoundError(id: string): Result<never, KoiError> {
     ok: false,
     error: { code: "NOT_FOUND", message: `Brick not found: ${id}`, retryable: false },
   };
+}
+
+/**
+ * Fires an async store.update() to demote a brick, capped by the demotion counter.
+ * Errors are routed to `onError`, never thrown.
+ */
+function fireDemotion(
+  store: ForgeStore,
+  brick: BrickArtifact,
+  targetTier: TrustTier,
+  nowMs: number,
+  context: ForgeResolverContext,
+): void {
+  void store
+    .update(brick.id, { trustTier: targetTier, lastDemotedAt: nowMs })
+    .then(() => {
+      context.onDecayDemotion?.(brick.id, brick.trustTier, targetTier);
+    })
+    .catch((e: unknown) => {
+      context.onError?.(e);
+    });
 }
 
 export function createForgeResolver(
@@ -67,13 +97,35 @@ export function createForgeResolver(
         cause: result.error,
       });
     }
-    return filterByAgentScope(result.value, agentId);
+    const visible = filterByAgentScope(result.value, agentId);
+
+    // Lazy trust decay — evaluate fitness on each visible brick
+    const nowMs = Date.now();
+    let demotionCount = 0; // let: incremented per demotion in loop
+    for (const brick of visible) {
+      if (demotionCount >= MAX_DECAY_DEMOTIONS_PER_DISCOVER) break;
+      const targetTier = evaluateTrustDecay(brick, nowMs);
+      if (targetTier !== undefined) {
+        demotionCount++;
+        fireDemotion(store, brick, targetTier, nowMs, context);
+      }
+    }
+
+    return visible;
   };
 
   const load = async (id: string): Promise<Result<BrickArtifact, KoiError>> => {
     const result = await store.load(brickId(id));
     if (!result.ok) return result;
     if (!isVisibleToAgent(result.value, agentId)) return notFoundError(id);
+
+    // Lazy trust decay on load
+    const nowMs = Date.now();
+    const targetTier = evaluateTrustDecay(result.value, nowMs);
+    if (targetTier !== undefined) {
+      fireDemotion(store, result.value, targetTier, nowMs, context);
+    }
+
     return result;
   };
 

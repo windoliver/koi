@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/validation API surface . has stable type surface 1`] = `
-"import { BrickArtifactBase, BrickUpdate, Result, BrickArtifact, KoiError, BrickFitnessMetrics, LatencySampler, ForgeQuery } from '@koi/core';
+"import { BrickArtifactBase, BrickUpdate, Result, BrickArtifact, KoiError, BrickFitnessMetrics, TrustTier, LatencySampler, ForgeQuery } from '@koi/core';
 import { z } from 'zod';
 
 /**
@@ -69,6 +69,23 @@ declare const DEFAULT_FITNESS_SCORING_CONFIG: FitnessScoringConfig;
  * @param config - Optional partial config (merged with defaults).
  */
 declare function computeBrickFitness(metrics: BrickFitnessMetrics, nowMs: number, config?: Partial<FitnessScoringConfig>): number;
+/** Thresholds for fitness-based trust decay. */
+interface DecayThresholds {
+    /** Fitness score below which a promoted brick should be demoted to verified. Default: 0.3. */
+    readonly promotedDemotionThreshold: number;
+    /** Fitness score below which a verified brick should be demoted to sandbox. Default: 0.1. */
+    readonly verifiedDemotionThreshold: number;
+}
+declare const DEFAULT_DECAY_THRESHOLDS: DecayThresholds;
+/**
+ * Evaluates whether a brick's fitness has decayed enough to warrant trust demotion.
+ *
+ * Returns the target tier if demotion is needed, \`undefined\` if no change.
+ * This is a pure scoring function — callers are responsible for executing the demotion.
+ *
+ * Does NOT demote bricks with zero usage (no evidence = no demotion).
+ */
+declare function evaluateTrustDecay(brick: BrickArtifactBase, nowMs: number, config?: Partial<FitnessScoringConfig>, thresholds?: Partial<DecayThresholds>): TrustTier | undefined;
 
 /**
  * Bounded sorted-sample buffer for percentile estimation.
@@ -186,6 +203,6 @@ declare function zodToKoiError(zodError: z.core.$ZodError, prefix?: string): Koi
  */
 declare function validateWith<T>(schema: z.ZodType<T>, raw: unknown, prefix?: string): Result<T, KoiError>;
 
-export { DEFAULT_FITNESS_SCORING_CONFIG, type FitnessScoringConfig, SEVERITY_ORDER, type Severity, type SortBricksOptions, applyBrickUpdate, computeBrickFitness, computePercentile, createLatencySampler, levenshteinDistance, matchesBrickQuery, mergeSamplers, recordLatency, severityAtOrAbove, sortBricks, validateBrickArtifact, validateWith, zodToKoiError };
+export { DEFAULT_DECAY_THRESHOLDS, DEFAULT_FITNESS_SCORING_CONFIG, type DecayThresholds, type FitnessScoringConfig, SEVERITY_ORDER, type Severity, type SortBricksOptions, applyBrickUpdate, computeBrickFitness, computePercentile, createLatencySampler, evaluateTrustDecay, levenshteinDistance, matchesBrickQuery, mergeSamplers, recordLatency, severityAtOrAbove, sortBricks, validateBrickArtifact, validateWith, zodToKoiError };
 "
 `;

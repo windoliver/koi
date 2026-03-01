@@ -170,6 +170,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",

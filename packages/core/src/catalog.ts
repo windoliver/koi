@@ -38,6 +38,8 @@ export interface CatalogEntry {
   readonly trustTier?: "sandbox" | "verified" | "promoted";
   readonly version?: string;
   readonly tags?: readonly string[];
+  /** Composite fitness score in [0, 1]. Undefined if brick has no usage data. */
+  readonly fitnessScore?: number;
 }
 
 // ---------------------------------------------------------------------------
