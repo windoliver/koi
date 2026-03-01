@@ -1357,6 +1357,19 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-preference": {
+      "name": "@koi/middleware-preference",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-report": {
       "name": "@koi/middleware-report",
       "version": "0.0.0",
@@ -2816,6 +2829,8 @@
     "@koi/middleware-pii": ["@koi/middleware-pii@workspace:packages/middleware-pii"],
 
     "@koi/middleware-planning": ["@koi/middleware-planning@workspace:packages/middleware-planning"],
+
+    "@koi/middleware-preference": ["@koi/middleware-preference@workspace:packages/middleware-preference"],
 
     "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/middleware-report"],
 
