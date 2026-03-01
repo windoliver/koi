@@ -23,6 +23,7 @@ function entry(overrides?: Partial<RegistryEntry>): RegistryEntry {
     agentType: "worker",
     metadata: {},
     registeredAt: Date.now(),
+    priority: 10,
     ...overrides,
   };
 }

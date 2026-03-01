@@ -150,6 +150,7 @@ registry.register({
   agentType: "copilot",
   metadata: {},
   registeredAt: Date.now(),
+  priority: 10,
 });
 registry.transition(parentRuntime.agent.pid.id, "running", 0, {
   kind: "assembly_complete",
@@ -429,6 +430,7 @@ registry2.register({
   agentType: "copilot",
   metadata: {},
   registeredAt: Date.now(),
+  priority: 10,
 });
 registry2.transition(parent2.agent.pid.id, "running", 0, { kind: "assembly_complete" });
 
@@ -503,6 +505,7 @@ registry3.register({
   agentType: "copilot",
   metadata: {},
   registeredAt: Date.now(),
+  priority: 10,
 });
 registry3.transition(parent3.agent.pid.id, "running", 0, { kind: "assembly_complete" });
 

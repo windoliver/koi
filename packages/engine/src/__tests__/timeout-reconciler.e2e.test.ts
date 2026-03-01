@@ -101,6 +101,7 @@ function entry(
       lastTransitionAt: registeredAt,
     },
     agentType: "worker",
+    priority: 10,
     metadata: {},
     registeredAt,
   };

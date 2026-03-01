@@ -39,3 +39,24 @@ export interface ChannelAdapter {
   readonly onMessage: (handler: MessageHandler) => () => void;
   readonly sendStatus?: (status: ChannelStatus) => Promise<void>;
 }
+
+// ---------------------------------------------------------------------------
+// Spawn channel inheritance policy
+// ---------------------------------------------------------------------------
+
+export type ChannelInheritMode = "all" | "none" | "output-only";
+
+/** Policy controlling how a spawned child inherits the parent's channel. */
+export interface SpawnChannelPolicy {
+  readonly mode: ChannelInheritMode;
+  /** How child attribution is injected. Default: "metadata". */
+  readonly attribution?: "metadata" | "prefix" | "none" | undefined;
+  /** Whether child sendStatus() delegates to parent. Default: false. */
+  readonly propagateStatus?: boolean | undefined;
+}
+
+export const DEFAULT_SPAWN_CHANNEL_POLICY: SpawnChannelPolicy = Object.freeze({
+  mode: "output-only",
+  attribution: "metadata",
+  propagateStatus: false,
+} as const);

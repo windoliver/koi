@@ -51,6 +51,7 @@ describe("Lifecycle: register → heartbeat → deregister", () => {
       agentId: id,
       status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
       agentType: "worker",
+      priority: 10,
       metadata: { purpose: "integration-test" },
       registeredAt: Date.now(),
     });
@@ -111,6 +112,7 @@ describe("Lifecycle: heartbeat stops → suspect → dead", () => {
       agentId: id,
       status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
       agentType: "worker",
+      priority: 10,
       metadata: {},
       registeredAt: Date.now(),
     });
@@ -138,6 +140,7 @@ describe("Lifecycle: heartbeat stops → suspect → dead", () => {
       agentId: id,
       status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
       agentType: "worker",
+      priority: 10,
       metadata: {},
       registeredAt: Date.now(),
     });
@@ -170,6 +173,7 @@ describe("Lifecycle: stale detection → eviction", () => {
         agentId: agentId(id),
         status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: now },
         agentType: "worker",
+        priority: 10,
         metadata: {},
         registeredAt: now,
       });
@@ -231,6 +235,7 @@ describe("Lifecycle: stale detection → eviction", () => {
         agentId: agentId(a.id),
         status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: now },
         agentType: "worker",
+        priority: 10,
         metadata: {},
         registeredAt: now,
       });
@@ -271,6 +276,7 @@ describe("Lifecycle: CAS contention", () => {
       agentId: id,
       status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
       agentType: "worker",
+      priority: 10,
       metadata: {},
       registeredAt: Date.now(),
     });
@@ -308,6 +314,7 @@ describe("Lifecycle: graceful disposal", () => {
       agentId: id,
       status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
       agentType: "worker",
+      priority: 10,
       metadata: {},
       registeredAt: Date.now(),
     });

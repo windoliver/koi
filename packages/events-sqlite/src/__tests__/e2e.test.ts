@@ -98,6 +98,7 @@ function makeEntry(id: string): RegistryEntry {
     agentType: "copilot",
     metadata: {},
     registeredAt: Date.now(),
+    priority: 10,
   };
 }
 

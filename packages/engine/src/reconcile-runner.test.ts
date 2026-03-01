@@ -32,6 +32,7 @@ function entry(
       lastTransitionAt: Date.now(),
     },
     agentType: "worker",
+    priority: 10,
     metadata: {},
     registeredAt: Date.now(),
   };

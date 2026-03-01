@@ -20,6 +20,7 @@ import type {
   KoiMiddleware,
   ProcessAccounter,
   ProcessId,
+  SpawnChannelPolicy,
   SpawnLedger,
   StoreChangeEvent,
   Tool,
@@ -359,6 +360,27 @@ export interface KoiRuntime {
 }
 
 // ---------------------------------------------------------------------------
+// Spawn inheritance config
+// ---------------------------------------------------------------------------
+
+/** Unified inheritance configuration for spawned child agents. */
+export interface SpawnInheritanceConfig {
+  /** Tool scope filtering for inherited tools. */
+  readonly tools?: {
+    readonly scopeChecker?: (toolName: string) => ForgeScope | undefined;
+  };
+  /** Channel inheritance policy. */
+  readonly channels?: SpawnChannelPolicy;
+  /** Environment variable inheritance with overrides. */
+  readonly env?: {
+    /** Key-value overrides. Set value to undefined to narrow (remove) a parent key. */
+    readonly overrides?: Readonly<Record<string, string | undefined>>;
+  };
+  /** Priority for the child agent (0-39, default 10). */
+  readonly priority?: number;
+}
+
+// ---------------------------------------------------------------------------
 // Spawn child types
 // ---------------------------------------------------------------------------
 
@@ -387,8 +409,13 @@ export interface SpawnChildOptions {
   readonly providers?: readonly ComponentProvider[];
   /** Optional forge runtime for the child. */
   readonly forge?: ForgeRuntime;
-  /** Optional scope checker for filtering inherited tools. */
+  /**
+   * Optional scope checker for filtering inherited tools.
+   * @deprecated Use `inheritance.tools.scopeChecker` instead.
+   */
   readonly scopeChecker?: (toolName: string) => ForgeScope | undefined;
+  /** Unified inheritance configuration for tools, channels, env, and priority. */
+  readonly inheritance?: SpawnInheritanceConfig;
   /** Iteration limits for the child. */
   readonly limits?: Partial<IterationLimits>;
   /** Loop detection config for the child. Set to false to disable. */

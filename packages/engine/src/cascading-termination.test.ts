@@ -30,6 +30,7 @@ function entry(
     agentType,
     metadata: {},
     registeredAt: Date.now(),
+    priority: 10,
     ...(parentId !== undefined ? { parentId: agentId(parentId) } : {}),
   };
 }

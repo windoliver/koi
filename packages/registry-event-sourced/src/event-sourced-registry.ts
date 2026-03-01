@@ -17,6 +17,7 @@ import type {
   AgentStateEvent,
   EventBackend,
   KoiError,
+  PatchableRegistryFields,
   ProcessState,
   RegistryEntry,
   RegistryEvent,
@@ -395,6 +396,58 @@ export async function createEventSourcedRegistry(
       : { ok: false, error: notFound(id, `Agent ${id} removed during transition`) };
   }
 
+  async function patch(
+    id: AgentId,
+    fields: PatchableRegistryFields,
+  ): Promise<Result<RegistryEntry, KoiError>> {
+    const current = projection.get(id);
+    if (current === undefined) {
+      return {
+        ok: false,
+        error: notFound(id, `Agent ${id} not found in registry`),
+      };
+    }
+
+    const event: AgentStateEvent = {
+      kind: "agent_patched",
+      agentId: id,
+      fields,
+      patchedAt: Date.now(),
+    };
+
+    const streamId = agentStreamId(id);
+    const currentSeq = sequenceMap.get(id) ?? 0;
+
+    const appendResult = await backend.append(streamId, {
+      type: event.kind,
+      data: event,
+      expectedSequence: currentSeq,
+    });
+
+    if (!appendResult.ok) {
+      if (appendResult.error.code === "CONFLICT") {
+        return {
+          ok: false,
+          error: conflict(id, `Concurrent modification on agent ${id} — stream sequence mismatch`),
+        };
+      }
+      return { ok: false, error: appendResult.error };
+    }
+
+    // Update projection
+    const updated = evolveRegistryEntry(current, event);
+    if (updated !== undefined) {
+      projection.set(id, updated);
+      sequenceMap.set(id, appendResult.value.sequence);
+    }
+
+    notify({ kind: "patched", agentId: id, fields, entry: updated ?? current });
+
+    return updated !== undefined
+      ? { ok: true, value: updated }
+      : { ok: false, error: notFound(id, `Agent ${id} removed during patch`) };
+  }
+
   function watch(listener: (event: RegistryEvent) => void): () => void {
     listeners = new Set([...listeners, listener]);
     return () => {
@@ -421,6 +474,7 @@ export async function createEventSourcedRegistry(
     lookup,
     list,
     transition,
+    patch,
     watch,
     rebuild,
     [Symbol.asyncDispose]: dispose,

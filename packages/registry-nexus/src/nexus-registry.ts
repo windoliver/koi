@@ -17,6 +17,7 @@ import type {
   AgentRegistry,
   AgentStatus,
   KoiError,
+  PatchableRegistryFields,
   ProcessState,
   RegistryEntry,
   RegistryEvent,
@@ -92,6 +93,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       agentType: (metadata.agentType as "copilot" | "worker") ?? "worker",
       metadata,
       registeredAt: (metadata.registeredAt as number) ?? Date.now(),
+      priority: (metadata.priority as number) ?? 10,
     };
 
     // Conditionally add optional fields (exactOptionalPropertyTypes compliance)
@@ -202,6 +204,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
       ...koiMetadata,
       agentType: entry.agentType,
       registeredAt: entry.registeredAt,
+      priority: entry.priority,
     };
 
     if (entry.parentId !== undefined) {
@@ -393,6 +396,67 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     return { ok: true, value: updated };
   }
 
+  async function patch(
+    id: AgentId,
+    fields: PatchableRegistryFields,
+  ): Promise<Result<RegistryEntry, KoiError>> {
+    const current = projection.get(id);
+    if (current === undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "NOT_FOUND",
+          message: `Agent ${id} not found in registry`,
+          retryable: false,
+        },
+      };
+    }
+
+    // Build updated entry (copy-on-write, only non-undefined fields)
+    const updated: RegistryEntry = {
+      ...current,
+      ...(fields.priority !== undefined ? { priority: fields.priority } : {}),
+      ...(fields.metadata !== undefined ? { metadata: fields.metadata } : {}),
+      ...(fields.zoneId !== undefined ? { zoneId: fields.zoneId } : {}),
+    };
+
+    // Persist patched fields to Nexus metadata
+    const nexusMeta: Record<string, unknown> = { ...current.metadata };
+    if (fields.priority !== undefined) {
+      nexusMeta.priority = fields.priority;
+    }
+    if (fields.metadata !== undefined) {
+      Object.assign(nexusMeta, fields.metadata);
+    }
+
+    const updateResult = await nexusUpdateMetadata(config, id, nexusMeta);
+    if (!updateResult.ok) {
+      if (updateResult.error.code === "CONFLICT") {
+        return {
+          ok: false,
+          error: {
+            code: "CONFLICT",
+            message: `Concurrent modification on agent ${id} in Nexus`,
+            retryable: true,
+          },
+        };
+      }
+      return { ok: false, error: updateResult.error };
+    }
+
+    // Update Nexus gen after metadata update
+    if (updateResult.value.generation !== undefined) {
+      nexusGens.set(id, updateResult.value.generation);
+    }
+
+    // Update local projection
+    projection.set(id, updated);
+
+    notify({ kind: "patched", agentId: id, fields, entry: updated });
+
+    return { ok: true, value: updated };
+  }
+
   function watch(listener: (event: RegistryEvent) => void): () => void {
     listeners = new Set([...listeners, listener]);
     return () => {
@@ -429,6 +493,7 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     lookup,
     list,
     transition,
+    patch,
     watch,
     [Symbol.asyncDispose]: dispose,
   };

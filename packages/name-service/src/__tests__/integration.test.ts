@@ -33,6 +33,9 @@ function createMockRegistry(): {
     transition: () => {
       throw new Error("not implemented");
     },
+    patch: () => {
+      throw new Error("not implemented");
+    },
     [Symbol.asyncDispose]: async () => {},
   } as unknown as AgentRegistry;
 
@@ -70,6 +73,7 @@ describe("ANS integration", () => {
         agentType: "worker",
         metadata: { name: "code-reviewer" },
         registeredAt: Date.now(),
+        priority: 10,
       },
     });
 

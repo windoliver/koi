@@ -456,6 +456,7 @@ describe("optional fields and error paths", () => {
       agentType: "worker",
       metadata: {},
       registeredAt: Date.now(),
+      priority: 10,
       parentId: agentId("parent-1"),
     };
     await reg.register(entry);
@@ -477,6 +478,7 @@ describe("optional fields and error paths", () => {
       agentType: "worker",
       metadata: {},
       registeredAt: Date.now(),
+      priority: 10,
       spawner: agentId("spawner-1"),
     };
     await reg.register(entry);
@@ -644,5 +646,6 @@ function makeEntry(id: string, phase: ProcessState = "created", generation = 0):
     agentType: "worker",
     metadata: {},
     registeredAt: Date.now(),
+    priority: 10,
   };
 }

@@ -96,6 +96,7 @@ function _makeEntry(
     agentId: agentId(id),
     status: { phase, generation, conditions: [], lastTransitionAt: Date.now() },
     agentType: "worker",
+    priority: 10,
     metadata: {},
     registeredAt: Date.now(),
     ...(parentId !== undefined ? { parentId: agentId(parentId) } : {}),
@@ -254,6 +255,7 @@ describeE2E("supervision e2e: real LLM through createKoi", () => {
         agentId: parentRuntime.agent.pid.id,
         status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
         agentType: "copilot",
+        priority: 10,
         metadata: {},
         registeredAt: Date.now(),
       });
@@ -361,6 +363,7 @@ describeE2E("supervision e2e: full lifecycle through createKoi + createLoopAdapt
         agentId: supervisorRuntime.agent.pid.id,
         status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
         agentType: "copilot",
+        priority: 10,
         metadata: {},
         registeredAt: Date.now(),
       });
@@ -482,6 +485,7 @@ describeE2E("supervision e2e: full lifecycle through createKoi + createLoopAdapt
         agentId: supervisorRuntime.agent.pid.id,
         status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
         agentType: "copilot",
+        priority: 10,
         metadata: {},
         registeredAt: Date.now(),
       });
@@ -612,6 +616,7 @@ describeE2E("supervision e2e: full lifecycle through createKoi + createLoopAdapt
         agentId: supervisorRuntime.agent.pid.id,
         status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
         agentType: "copilot",
+        priority: 10,
         metadata: {},
         registeredAt: Date.now(),
       });
@@ -721,6 +726,7 @@ describeE2E("supervision e2e: full lifecycle through createKoi + createLoopAdapt
         agentId: supervisorRuntime.agent.pid.id,
         status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
         agentType: "copilot",
+        priority: 10,
         metadata: {},
         registeredAt: Date.now(),
       });
@@ -829,6 +835,7 @@ describeE2E("supervision e2e: full lifecycle through createKoi + createLoopAdapt
         agentId: supervisorRuntime.agent.pid.id,
         status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
         agentType: "copilot",
+        priority: 10,
         metadata: {},
         registeredAt: Date.now(),
       });

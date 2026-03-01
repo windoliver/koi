@@ -21,6 +21,7 @@ function entry(id: string, phase: ProcessState = "created", generation = 0): Reg
     agentType: "worker",
     metadata: {},
     registeredAt: Date.now(),
+    priority: 10,
   };
 }
 

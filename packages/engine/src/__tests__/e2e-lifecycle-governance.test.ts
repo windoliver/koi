@@ -250,6 +250,7 @@ describeE2E("e2e: lifecycle governance with real LLM", () => {
         agentType: "copilot",
         metadata: {},
         registeredAt: Date.now(),
+        priority: 10,
       });
       registry.transition(parentRuntime.agent.pid.id, "running", 0, {
         kind: "assembly_complete",
@@ -376,6 +377,7 @@ describeE2E("e2e: lifecycle governance with real LLM", () => {
         agentType: "copilot",
         metadata: {},
         registeredAt: Date.now(),
+        priority: 10,
       });
       registry.transition(parentRuntime.agent.pid.id, "running", 0, {
         kind: "assembly_complete",
@@ -482,6 +484,7 @@ describeE2E("e2e: lifecycle governance with real LLM", () => {
         agentType: "copilot",
         metadata: {},
         registeredAt: Date.now(),
+        priority: 10,
       });
       registry.transition(parentRuntime.agent.pid.id, "running", 0, {
         kind: "assembly_complete",
@@ -548,6 +551,7 @@ describeE2E("e2e: lifecycle governance with real LLM", () => {
         agentType: "copilot",
         metadata: {},
         registeredAt: Date.now(),
+        priority: 10,
       });
       registry.transition(parentRuntime.agent.pid.id, "running", 0, {
         kind: "assembly_complete",
@@ -615,6 +619,7 @@ describeE2E("e2e: lifecycle governance with real LLM", () => {
         agentType: "copilot",
         metadata: {},
         registeredAt: Date.now(),
+        priority: 10,
       });
       registry.transition(gpRuntime.agent.pid.id, "running", 0, {
         kind: "assembly_complete",
@@ -693,6 +698,7 @@ describeE2E("e2e: lifecycle governance with real LLM", () => {
         agentType: "copilot",
         metadata: {},
         registeredAt: Date.now(),
+        priority: 10,
       });
       registry.transition(parentRuntime.agent.pid.id, "running", 0, {
         kind: "assembly_complete",
@@ -748,6 +754,7 @@ describeE2E("e2e: lifecycle governance with real LLM", () => {
         agentType: "copilot",
         metadata: {},
         registeredAt: Date.now(),
+        priority: 10,
       });
       registry.transition(parentRuntime.agent.pid.id, "running", 0, {
         kind: "assembly_complete",
@@ -850,6 +857,7 @@ describeE2E("e2e: lifecycle governance with real LLM", () => {
         agentType: "copilot",
         metadata: {},
         registeredAt: Date.now(),
+        priority: 10,
       });
       registry.transition(parentRuntime.agent.pid.id, "running", 0, {
         kind: "assembly_complete",
@@ -927,6 +935,7 @@ describeE2E("e2e: lifecycle governance with real LLM", () => {
         agentType: "copilot",
         metadata: {},
         registeredAt: Date.now(),
+        priority: 10,
       });
       registry.transition(parentRuntime.agent.pid.id, "running", 0, {
         kind: "assembly_complete",
