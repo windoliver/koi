@@ -1,7 +1,7 @@
 /**
  * Search provider contract — the formal interface for web search backends.
  *
- * Lives in L0u so both @koi/tools-web (consumer) and search provider
+ * Lives in L0u so both @koi/tools-web (consumer) and provider
  * implementations (@koi/search-brave, etc.) share a single contract
  * with compile-time enforcement.
  */
