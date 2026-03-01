@@ -1,15 +1,21 @@
 /**
- * Search provider contract — the formal interface for web search backends.
+ * Search provider contracts — types shared by search backends.
  *
- * Lives in L0u so both @koi/tools-web (consumer) and search provider
- * implementations (@koi/search-brave, etc.) share a single contract
- * with compile-time enforcement.
+ * ## Web search types
+ * `SearchProvider`, `WebSearchResult`, `WebSearchOptions` — contract for
+ * web search backends (Brave, Tavily, etc.).
+ *
+ * ## Index search types
+ * `SearchQuery`, `SearchResult`, `SearchPage`, `SearchFilter`, `IndexDocument`,
+ * `SearchScore` — contract for index search backends (SQLite, Nexus, etc.).
+ *
+ * Lives in L0u so both consumers and implementations share compile-time contracts.
  */
 
 import type { KoiError, Result } from "@koi/core";
 
 // ---------------------------------------------------------------------------
-// Search result — the canonical normalized shape
+// Web search — provider interface for web search backends
 // ---------------------------------------------------------------------------
 
 /** A single web search result, normalized across all providers. */
@@ -19,19 +25,11 @@ export interface WebSearchResult {
   readonly snippet: string;
 }
 
-// ---------------------------------------------------------------------------
-// Search options — provider-agnostic
-// ---------------------------------------------------------------------------
-
 /** Options passed to a search provider's search() method. */
 export interface WebSearchOptions {
   readonly maxResults?: number | undefined;
   readonly signal?: AbortSignal | undefined;
 }
-
-// ---------------------------------------------------------------------------
-// SearchProvider — the formal contract
-// ---------------------------------------------------------------------------
 
 /**
  * A pluggable web search backend.
@@ -48,4 +46,63 @@ export interface SearchProvider {
     query: string,
     options?: WebSearchOptions,
   ) => Promise<Result<readonly WebSearchResult[], KoiError>>;
+}
+
+// ---------------------------------------------------------------------------
+// Index search — value types for indexing and retrieval backends
+// ---------------------------------------------------------------------------
+
+/** Score normalized to [0, 1] */
+export type SearchScore = number;
+
+/** What the caller wants */
+export interface SearchQuery {
+  readonly text: string;
+  readonly filter?: SearchFilter;
+  readonly limit: number;
+  readonly offset?: number;
+  readonly cursor?: string;
+  readonly minScore?: SearchScore;
+}
+
+/** Single search result */
+export interface SearchResult<T = unknown> {
+  readonly id: string;
+  readonly score: SearchScore;
+  readonly content: string;
+  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly source: string;
+  readonly data?: T;
+}
+
+/** Paginated response */
+export interface SearchPage<T = unknown> {
+  readonly results: readonly SearchResult<T>[];
+  readonly total?: number;
+  readonly cursor?: string;
+  readonly hasMore: boolean;
+}
+
+/** Composable filter tree (discriminated union) */
+export type SearchFilter =
+  | { readonly kind: "eq"; readonly field: string; readonly value: unknown }
+  | { readonly kind: "ne"; readonly field: string; readonly value: unknown }
+  | { readonly kind: "gt"; readonly field: string; readonly value: number }
+  | { readonly kind: "lt"; readonly field: string; readonly value: number }
+  | {
+      readonly kind: "in";
+      readonly field: string;
+      readonly values: readonly unknown[];
+    }
+  | { readonly kind: "and"; readonly filters: readonly SearchFilter[] }
+  | { readonly kind: "or"; readonly filters: readonly SearchFilter[] }
+  | { readonly kind: "not"; readonly filter: SearchFilter };
+
+/** Document for indexing */
+export interface IndexDocument<T = unknown> {
+  readonly id: string;
+  readonly content: string;
+  readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly embedding?: readonly number[];
+  readonly data?: T;
 }

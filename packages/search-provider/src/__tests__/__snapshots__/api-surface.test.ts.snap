@@ -4,11 +4,17 @@ exports[`@koi/search-provider API surface . has stable type surface 1`] = `
 "import { Result, KoiError } from '@koi/core';
 
 /**
- * Search provider contract — the formal interface for web search backends.
+ * Search provider contracts — types shared by search backends.
  *
- * Lives in L0u so both @koi/tools-web (consumer) and search provider
- * implementations (@koi/search-brave, etc.) share a single contract
- * with compile-time enforcement.
+ * ## Web search types
+ * \`SearchProvider\`, \`WebSearchResult\`, \`WebSearchOptions\` — contract for
+ * web search backends (Brave, Tavily, etc.).
+ *
+ * ## Index search types
+ * \`SearchQuery\`, \`SearchResult\`, \`SearchPage\`, \`SearchFilter\`, \`IndexDocument\`,
+ * \`SearchScore\` — contract for index search backends (SQLite, Nexus, etc.).
+ *
+ * Lives in L0u so both consumers and implementations share compile-time contracts.
  */
 
 /** A single web search result, normalized across all providers. */
@@ -35,7 +41,95 @@ interface SearchProvider {
     /** Execute a web search query. */
     readonly search: (query: string, options?: WebSearchOptions) => Promise<Result<readonly WebSearchResult[], KoiError>>;
 }
+/** Score normalized to [0, 1] */
+type SearchScore = number;
+/** What the caller wants */
+interface SearchQuery {
+    readonly text: string;
+    readonly filter?: SearchFilter;
+    readonly limit: number;
+    readonly offset?: number;
+    readonly cursor?: string;
+    readonly minScore?: SearchScore;
+}
+/** Single search result */
+interface SearchResult<T = unknown> {
+    readonly id: string;
+    readonly score: SearchScore;
+    readonly content: string;
+    readonly metadata: Readonly<Record<string, unknown>>;
+    readonly source: string;
+    readonly data?: T;
+}
+/** Paginated response */
+interface SearchPage<T = unknown> {
+    readonly results: readonly SearchResult<T>[];
+    readonly total?: number;
+    readonly cursor?: string;
+    readonly hasMore: boolean;
+}
+/** Composable filter tree (discriminated union) */
+type SearchFilter = {
+    readonly kind: "eq";
+    readonly field: string;
+    readonly value: unknown;
+} | {
+    readonly kind: "ne";
+    readonly field: string;
+    readonly value: unknown;
+} | {
+    readonly kind: "gt";
+    readonly field: string;
+    readonly value: number;
+} | {
+    readonly kind: "lt";
+    readonly field: string;
+    readonly value: number;
+} | {
+    readonly kind: "in";
+    readonly field: string;
+    readonly values: readonly unknown[];
+} | {
+    readonly kind: "and";
+    readonly filters: readonly SearchFilter[];
+} | {
+    readonly kind: "or";
+    readonly filters: readonly SearchFilter[];
+} | {
+    readonly kind: "not";
+    readonly filter: SearchFilter;
+};
+/** Document for indexing */
+interface IndexDocument<T = unknown> {
+    readonly id: string;
+    readonly content: string;
+    readonly metadata?: Readonly<Record<string, unknown>>;
+    readonly embedding?: readonly number[];
+    readonly data?: T;
+}
 
-export type { SearchProvider, WebSearchOptions, WebSearchResult };
+/**
+ * @koi/search-provider — Search contracts (L0u)
+ *
+ * Interfaces only — no runtime code.
+ */
+
+/** Contract 1: Retriever (read path) */
+interface Retriever<T = unknown> {
+    readonly retrieve: (query: SearchQuery) => Promise<Result<SearchPage<T>, KoiError>>;
+}
+/** Contract 2: Embedder (embedding generation) */
+interface Embedder {
+    readonly embed: (text: string) => Promise<readonly number[]>;
+    readonly embedMany: (texts: readonly string[]) => Promise<readonly (readonly number[])[]>;
+    readonly dimensions: number;
+}
+/** Contract 3: Indexer (write path) */
+interface Indexer<T = unknown> {
+    readonly index: (documents: readonly IndexDocument<T>[]) => Promise<Result<void, KoiError>>;
+    readonly remove: (ids: readonly string[]) => Promise<Result<void, KoiError>>;
+}
+
+export type { Embedder, IndexDocument, Indexer, Retriever, SearchFilter, SearchPage, SearchProvider, SearchQuery, SearchResult, SearchScore, WebSearchOptions, WebSearchResult };
 "
 `;

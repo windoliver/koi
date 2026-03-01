@@ -65,6 +65,7 @@ describe("E2E: createSearch full pipeline", () => {
 
   test("index → BM25 search returns keyword matches", async () => {
     const search = createSearch({ embedder: createMockEmbedder() });
+    if (!search.bm25) throw new Error("bm25 retriever expected for local backend");
 
     // Index all documents
     const indexResult = await search.indexer.index(documents);
@@ -86,6 +87,7 @@ describe("E2E: createSearch full pipeline", () => {
 
   test("index → vector search returns semantically similar results", async () => {
     const search = createSearch({ embedder: createMockEmbedder() });
+    if (!search.vector) throw new Error("vector retriever expected for local backend");
     await search.indexer.index(documents);
 
     // Vector search
@@ -121,6 +123,7 @@ describe("E2E: createSearch full pipeline", () => {
 
   test("index → remove → search no longer returns removed docs", async () => {
     const search = createSearch({ embedder: createMockEmbedder() });
+    if (!search.bm25) throw new Error("bm25 retriever expected for local backend");
     await search.indexer.index(documents);
 
     // Verify doc1 is found
@@ -133,7 +136,7 @@ describe("E2E: createSearch full pipeline", () => {
     const removeResult = await search.indexer.remove(["doc1"]);
     expect(removeResult.ok).toBe(true);
 
-    // Verify doc1 is no longer found
+    // Verify doc1 is no longer found (bm25 already narrowed above)
     const after = await search.bm25.retrieve({ text: "TypeScript", limit: 5 });
     expect(after.ok).toBe(true);
     if (!after.ok) return;
@@ -144,6 +147,7 @@ describe("E2E: createSearch full pipeline", () => {
 
   test("filter narrows results by metadata", async () => {
     const search = createSearch({ embedder: createMockEmbedder() });
+    if (!search.bm25) throw new Error("bm25 retriever expected for local backend");
     await search.indexer.index(documents);
 
     // Search with filter: only "pangram" topic
@@ -164,6 +168,7 @@ describe("E2E: createSearch full pipeline", () => {
 
   test("pagination works across retrievers", async () => {
     const search = createSearch({ embedder: createMockEmbedder() });
+    if (!search.bm25) throw new Error("bm25 retriever expected for local backend");
     await search.indexer.index(documents);
 
     // Page 1
@@ -204,6 +209,7 @@ describe("E2E: createSearch full pipeline", () => {
 
   test("empty search returns empty results", async () => {
     const search = createSearch({ embedder: createMockEmbedder() });
+    if (!search.bm25) throw new Error("bm25 retriever expected for local backend");
     await search.indexer.index(documents);
 
     const result = await search.bm25.retrieve({ text: "   ", limit: 5 });
@@ -216,6 +222,7 @@ describe("E2E: createSearch full pipeline", () => {
 
   test("search with no indexed documents returns empty", async () => {
     const search = createSearch({ embedder: createMockEmbedder() });
+    if (!search.bm25) throw new Error("bm25 retriever expected for local backend");
 
     const result = await search.bm25.retrieve({ text: "hello", limit: 5 });
     expect(result.ok).toBe(true);

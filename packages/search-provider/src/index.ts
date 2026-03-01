@@ -1,11 +1,19 @@
 /**
- * @koi/search-provider — Pluggable web search provider contract (L0u)
+ * @koi/search-provider — Pluggable search provider contracts (L0u)
  *
- * Defines the SearchProvider interface that all web search backends implement.
- * Both @koi/tools-web (consumer) and provider packages (@koi/search-brave, etc.)
- * import from this package to share a single compile-time enforced contract.
- *
- * Zero runtime logic — types only.
+ * Pure types and interfaces for both web search and index search backends.
+ * No runtime code, no dependencies beyond @koi/core.
  */
 
-export type { SearchProvider, WebSearchOptions, WebSearchResult } from "./types.js";
+export type { Embedder, Indexer, Retriever } from "./contracts.js";
+export type {
+  IndexDocument,
+  SearchFilter,
+  SearchPage,
+  SearchProvider,
+  SearchQuery,
+  SearchResult,
+  SearchScore,
+  WebSearchOptions,
+  WebSearchResult,
+} from "./types.js";
