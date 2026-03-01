@@ -4,10 +4,43 @@ exports[`@koi/search-provider API surface . has stable type surface 1`] = `
 "import { Result, KoiError } from '@koi/core';
 
 /**
- * @koi/search-provider — Search value types (L0u)
+ * Search provider contracts — types shared by search backends.
  *
- * All types are readonly, no runtime code.
+ * ## Web search types
+ * \`SearchProvider\`, \`WebSearchResult\`, \`WebSearchOptions\` — contract for
+ * web search backends (Brave, Tavily, etc.).
+ *
+ * ## Index search types
+ * \`SearchQuery\`, \`SearchResult\`, \`SearchPage\`, \`SearchFilter\`, \`IndexDocument\`,
+ * \`SearchScore\` — contract for index search backends (SQLite, Nexus, etc.).
+ *
+ * Lives in L0u so both consumers and implementations share compile-time contracts.
  */
+
+/** A single web search result, normalized across all providers. */
+interface WebSearchResult {
+    readonly title: string;
+    readonly url: string;
+    readonly snippet: string;
+}
+/** Options passed to a search provider's search() method. */
+interface WebSearchOptions {
+    readonly maxResults?: number | undefined;
+    readonly signal?: AbortSignal | undefined;
+}
+/**
+ * A pluggable web search backend.
+ *
+ * Implementations return normalized \`WebSearchResult[]\` wrapped in \`Result\`.
+ * Agent manifests declare \`search: { name: "brave" }\` and the resolve layer
+ * instantiates the matching provider via its \`BrickDescriptor\`.
+ */
+interface SearchProvider {
+    /** Provider name (e.g., "brave", "tavily", "searxng"). */
+    readonly name: string;
+    /** Execute a web search query. */
+    readonly search: (query: string, options?: WebSearchOptions) => Promise<Result<readonly WebSearchResult[], KoiError>>;
+}
 /** Score normalized to [0, 1] */
 type SearchScore = number;
 /** What the caller wants */
@@ -97,6 +130,6 @@ interface Indexer<T = unknown> {
     readonly remove: (ids: readonly string[]) => Promise<Result<void, KoiError>>;
 }
 
-export type { Embedder, IndexDocument, Indexer, Retriever, SearchFilter, SearchPage, SearchQuery, SearchResult, SearchScore };
+export type { Embedder, IndexDocument, Indexer, Retriever, SearchFilter, SearchPage, SearchProvider, SearchQuery, SearchResult, SearchScore, WebSearchOptions, WebSearchResult };
 "
 `;
