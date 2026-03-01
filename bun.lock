@@ -1358,7 +1358,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
         "@koi/nexus-client": "workspace:*",
       },
       "devDependencies": {
@@ -1573,6 +1572,13 @@
     },
     "packages/search-brave": {
       "name": "@koi/search-brave",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/security-analyzer": {
+      "name": "@koi/security-analyzer",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
@@ -2600,6 +2606,8 @@
     "@koi/search": ["@koi/search@workspace:packages/search"],
 
     "@koi/search-brave": ["@koi/search-brave@workspace:packages/search-brave"],
+
+    "@koi/security-analyzer": ["@koi/security-analyzer@workspace:packages/security-analyzer"],
 
     "@koi/self-test": ["@koi/self-test@workspace:packages/self-test"],
 

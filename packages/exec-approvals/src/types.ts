@@ -3,6 +3,7 @@
  */
 
 import type { JsonObject } from "@koi/core/common";
+import type { RiskAnalysis } from "@koi/core/security-analyzer";
 
 /**
  * The 5 decisions a user can make when prompted for approval.
@@ -39,10 +40,19 @@ export interface ExecRulesStore {
 
 /**
  * The request passed to onAsk when an ask rule fires.
+ *
+ * TODO: ExecApprovalRequest and @koi/core ApprovalRequest serve similar purposes.
+ * Consolidation tracked in issue #75 follow-up.
  */
 export interface ExecApprovalRequest {
   readonly toolId: string;
   readonly input: JsonObject;
   /** Which ask pattern triggered this request. */
   readonly matchedPattern: string;
+  /**
+   * Risk analysis result from SecurityAnalyzer, if one is configured.
+   * Populated by withRiskAnalysis HOF in @koi/security-analyzer.
+   * Absent when no securityAnalyzer is configured in ExecApprovalsConfig.
+   */
+  readonly riskAnalysis?: RiskAnalysis;
 }

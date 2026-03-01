@@ -2,6 +2,7 @@
  * Progressive command allowlisting middleware factory.
  */
 
+import type { JsonObject } from "@koi/core/common";
 import type {
   KoiMiddleware,
   SessionContext,
@@ -10,6 +11,8 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core/middleware";
+import type { RiskAnalysis, SecurityAnalyzer } from "@koi/core/security-analyzer";
+import { RISK_ANALYSIS_UNKNOWN } from "@koi/core/security-analyzer";
 import { KoiRuntimeError } from "@koi/errors";
 import { DEFAULT_APPROVAL_TIMEOUT_MS, type ExecApprovalsConfig } from "./config.js";
 import {
@@ -19,7 +22,14 @@ import {
   normalizePattern,
 } from "./pattern.js";
 import { createInMemoryRulesStore } from "./store.js";
-import type { ExecRulesStore, PersistedRules } from "./types.js";
+import type {
+  ExecApprovalRequest,
+  ExecRulesStore,
+  PersistedRules,
+  ProgressiveDecision,
+} from "./types.js";
+
+const DEFAULT_ANALYZER_TIMEOUT_MS = 2_000;
 
 /**
  * Per-session mutable state: accumulated allow/deny patterns beyond the base config.
@@ -40,6 +50,8 @@ export function createExecApprovalsMiddleware(rawConfig: ExecApprovalsConfig): K
     onSaveError,
     onLoadError,
     extractCommand = defaultExtractCommand,
+    securityAnalyzer,
+    analyzerTimeoutMs = DEFAULT_ANALYZER_TIMEOUT_MS,
   } = rawConfig;
 
   // Resolve store — default to in-memory
@@ -139,11 +151,35 @@ export function createExecApprovalsMiddleware(rawConfig: ExecApprovalsConfig): K
       // 5. Base ask
       const matchedPattern = findFirstAskMatch(baseAsk, toolId, input, extractCommand);
       if (matchedPattern !== undefined) {
-        const decision = await askWithTimeout(
-          onAsk,
-          { toolId, input, matchedPattern },
-          approvalTimeoutMs,
-        );
+        // Run risk analysis if a SecurityAnalyzer is configured (fail-open).
+        // Analyzer fires only on the ask-tier — zero overhead for allow/deny paths.
+        let riskAnalysis: RiskAnalysis | undefined;
+        if (securityAnalyzer !== undefined) {
+          const analyzerCtx: JsonObject = { sessionId: ctx.session.sessionId };
+          riskAnalysis = await runAnalyzer(
+            securityAnalyzer,
+            toolId,
+            input,
+            analyzerCtx,
+            analyzerTimeoutMs,
+          );
+        }
+
+        // Auto-deny critical risk without prompting the user
+        if (riskAnalysis?.riskLevel === "critical") {
+          throw KoiRuntimeError.from(
+            "PERMISSION",
+            `Tool "${toolId}" auto-denied: critical risk — ${riskAnalysis.rationale}`,
+            { context: { toolId, riskLevel: "critical" } },
+          );
+        }
+
+        const askRequest: ExecApprovalRequest =
+          riskAnalysis !== undefined
+            ? { toolId, input, matchedPattern, riskAnalysis }
+            : { toolId, input, matchedPattern };
+
+        const decision = await askWithTimeout(onAsk, askRequest, approvalTimeoutMs);
 
         switch (decision.kind) {
           case "allow_once": {
@@ -217,7 +253,31 @@ export function createExecApprovalsMiddleware(rawConfig: ExecApprovalsConfig): K
 // Helpers
 // ---------------------------------------------------------------------------
 
-import type { ExecApprovalRequest, ProgressiveDecision } from "./types.js";
+/**
+ * Run the SecurityAnalyzer with a timeout. Fail-open: any error or timeout
+ * returns RISK_ANALYSIS_UNKNOWN so the ask flow continues normally.
+ */
+async function runAnalyzer(
+  analyzer: SecurityAnalyzer,
+  toolId: string,
+  input: JsonObject,
+  context: JsonObject,
+  timeoutMs: number,
+): Promise<RiskAnalysis> {
+  try {
+    return await Promise.race([
+      Promise.resolve(analyzer.analyze(toolId, input, context)),
+      new Promise<RiskAnalysis>((resolve) => {
+        const timer = setTimeout(() => resolve(RISK_ANALYSIS_UNKNOWN), timeoutMs);
+        if (typeof timer === "object" && "unref" in timer) {
+          (timer as { unref(): void }).unref();
+        }
+      }),
+    ]);
+  } catch {
+    return RISK_ANALYSIS_UNKNOWN;
+  }
+}
 
 async function askWithTimeout(
   onAsk: (req: ExecApprovalRequest) => Promise<ProgressiveDecision>,
