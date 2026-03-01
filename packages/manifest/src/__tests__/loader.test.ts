@@ -213,6 +213,15 @@ describe("loadManifest (file-based)", () => {
     }
   });
 
+  test("returns validation error for invalid-template.yaml (template syntax in model)", async () => {
+    const result = await loadManifest(resolve(FIXTURES, "invalid-template.yaml"));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("template");
+    }
+  });
+
   test("loads complex-middleware.yaml with mixed formats", async () => {
     const result = await loadManifest(resolve(FIXTURES, "complex-middleware.yaml"));
     expect(result.ok).toBe(true);

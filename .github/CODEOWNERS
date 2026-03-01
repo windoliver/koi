@@ -1,0 +1,14 @@
+# CODEOWNERS — reviewer requirements by layer
+#
+# Layer 0 (@koi/core) is the interfaces-only kernel and the highest-impact layer.
+# Changes here affect ALL packages. Require at least 2 reviews.
+#
+# GitHub branch protection must be configured to:
+#   - Require 2 approving reviews for PRs touching packages/core/
+#   - Require review from code owners (Settings > Branches > Require review from Code Owners)
+#
+# See docs/architecture/Koi.md for layer definitions.
+# Canonical L0u list: scripts/layers.ts → L0U_PACKAGES
+
+# Layer 0 kernel — 2 reviewers enforced via branch protection
+packages/core/ @taofeng

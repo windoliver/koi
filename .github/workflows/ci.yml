@@ -37,6 +37,9 @@ jobs:
       - name: Lint (Biome)
         run: bun run check
 
+      - name: Check layer boundaries
+        run: bun run check:layers
+
       - name: Build
         run: bun run build
 

@@ -1,0 +1,21 @@
+name: Label PR by layer
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  label:
+    name: Assign layer labels
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      # Pinned to commit SHA (not tag) per GHA supply-chain security best practice.
+      # SHA corresponds to actions/labeler@v5.0.0.
+      # To update: check https://github.com/actions/labeler/releases for the new tag SHA.
+      - uses: actions/labeler@8558fd74291d67161a8a78ce36a881fa63b766a9
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          configuration-path: .github/labeler.yml

@@ -3,58 +3,136 @@
  * Layer dependency enforcement — validates the 4-layer architecture.
  *
  * Rules:
- *   L0  (@koi/core):       zero @koi/* dependencies
- *   L0u (utility packages): depend on @koi/core only
+ *   L0  (@koi/core):       zero @koi/* dependencies; zero external source imports
+ *   L0u (utility packages): depend on @koi/core + peer L0u only
  *   L1  (@koi/engine):      depends on L0 + L0u only
  *   L2  (feature packages): runtime deps on L0 + L0u only;
  *                            devDependencies may include L1 + L2 (for tests)
  *   L3  (meta-packages):    may depend on any layer
  *
+ * Source scan: L0 source files must not import external modules.
  * Source scan: L2 non-test source files must not import from L1.
  *
  * Usage: bun scripts/check-layers.ts
  */
 
 import { readdir } from "node:fs/promises";
+import { L0_PACKAGES, L0U_PACKAGES, L1_PACKAGES, L3_PACKAGES } from "./layers.js";
 
 const PACKAGES_DIR = new URL("../packages/", import.meta.url).pathname;
 
-// --- Layer classification ---
-
-const L0_PACKAGES = new Set(["@koi/core"]);
-/** L0-utility packages — pure helpers with no business logic, depend on L0 only. */
-const L0U_PACKAGES = new Set([
-  "@koi/channel-base",
-  "@koi/errors",
-  "@koi/execution-context",
-  "@koi/file-resolution",
-  "@koi/git-utils",
-  "@koi/hash",
-  "@koi/manifest",
-  "@koi/resolve",
-  "@koi/sandbox-cloud-base",
-  "@koi/scope",
-  "@koi/shutdown",
-  "@koi/skill-scanner",
-  "@koi/snapshot-chain-store",
-  "@koi/sqlite-utils",
-  "@koi/test-utils",
-  "@koi/validation",
-]);
-const L1_PACKAGES = new Set(["@koi/engine"]);
-/** Meta-packages that bundle L0 + L1 + L2 — no new logic, only re-exports / orchestration. */
-const L3_PACKAGES = new Set(["@koi/cli", "@koi/starter"]);
-
-// --- Main ---
+// --- Violation type ---
 
 interface Violation {
   readonly pkg: string;
   readonly message: string;
 }
 
+// --- Predicates (exported for testing) ---
+
+/**
+ * Returns true if the import specifier is a violation in an L0 source file.
+ * L0 may only use relative imports — any external module specifier is forbidden.
+ */
+export function isL0Violation(specifier: string): boolean {
+  return !specifier.startsWith("./") && !specifier.startsWith("../");
+}
+
+/**
+ * Returns true if the import specifier is a violation in an L2 source file.
+ * L2 non-test source must not import from L1 (@koi/engine).
+ */
+export function isL2Violation(specifier: string): boolean {
+  return specifier === "@koi/engine" || specifier.startsWith("@koi/engine/");
+}
+
+// --- Shared scanner ---
+
+/**
+ * Extracts all import specifiers from TypeScript source using Bun.Transpiler AST.
+ * Handles static imports, dynamic imports, export-from, and type-only imports.
+ * Comments are ignored (AST-based, not regex).
+ *
+ * Note: Bun.Transpiler omits type-only imports (erased at build time), so a regex pass
+ * supplements the scan to catch `import type { X } from "pkg"` lines.
+ */
+export function extractImportSpecifiers(source: string): readonly string[] {
+  const transpiler = new Bun.Transpiler({ loader: "ts" });
+  const { imports } = transpiler.scan(source);
+  const specifiers = new Set(imports.map((imp) => imp.path));
+
+  // Supplement: capture type-only imports omitted by Bun.Transpiler.
+  // Skips lines that begin with // or * (block comment body).
+  const lines = source.split("\n");
+  const typeImportRe = /\bimport\s+type\b.*?\bfrom\s+['"]([^'"]+)['"]/;
+  for (const line of lines) {
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) continue;
+    const match = typeImportRe.exec(line);
+    if (match?.[1] !== undefined) specifiers.add(match[1]);
+  }
+
+  return [...specifiers];
+}
+
+function isTestFile(filePath: string): boolean {
+  return (
+    filePath.includes("__tests__/") ||
+    filePath.endsWith(".test.ts") ||
+    filePath.endsWith(".e2e.test.ts") ||
+    filePath.endsWith(".spec.ts")
+  );
+}
+
+/**
+ * Scans all non-test TypeScript files in `dir` for import violations.
+ * Uses Bun.Transpiler AST — comment lines and type-only imports are handled correctly.
+ *
+ * @param dir - Absolute path to the source directory to scan
+ * @param pkgName - Package name for violation messages
+ * @param isViolation - Predicate: returns true if the import specifier is forbidden
+ * @param makeMessage - Formats the violation message given the specifier and relative file path
+ */
+export async function scanFilesForViolations(
+  dir: string,
+  pkgName: string,
+  isViolation: (specifier: string) => boolean,
+  makeMessage: (specifier: string, relPath: string) => string,
+): Promise<readonly Violation[]> {
+  const violations: Violation[] = [];
+  const glob = new Bun.Glob("**/*.ts");
+
+  for await (const file of glob.scan({ cwd: dir, absolute: true })) {
+    if (isTestFile(file)) continue;
+
+    const source = await Bun.file(file).text();
+    const specifiers = extractImportSpecifiers(source);
+
+    for (const specifier of specifiers) {
+      if (isViolation(specifier)) {
+        const relPath = file.startsWith(dir) ? `src${file.slice(dir.length)}` : file;
+        violations.push({ pkg: pkgName, message: makeMessage(specifier, relPath) });
+      }
+    }
+  }
+
+  return violations;
+}
+
+// --- Package.json dep helpers ---
+
+function getKoiDeps(deps: Record<string, string> | undefined): readonly string[] {
+  if (!deps) return [];
+  return Object.keys(deps).filter((name) => name.startsWith("@koi/"));
+}
+
+// --- Main ---
+
 async function main(): Promise<void> {
   const violations: Violation[] = [];
   const dirs = await readdir(PACKAGES_DIR, { withFileTypes: true });
+
+  // ── 1. package.json dependency checks ──────────────────────────────────────
 
   for (const dir of dirs) {
     if (!dir.isDirectory()) continue;
@@ -126,7 +204,22 @@ async function main(): Promise<void> {
     }
   }
 
-  // --- Source file scan: check for @koi/engine imports in L2 packages ---
+  // ── 2. L0 source scan: @koi/core must not import any external module ───────
+
+  const coreSrcDir = `${PACKAGES_DIR}core/src`;
+  if (await Bun.file(`${PACKAGES_DIR}core/package.json`).exists()) {
+    const l0Violations = await scanFilesForViolations(
+      coreSrcDir,
+      "@koi/core",
+      isL0Violation,
+      (specifier, relPath) =>
+        `L0 source must not import external modules: '${specifier}' at ${relPath}`,
+    );
+    violations.push(...l0Violations);
+  }
+
+  // ── 3. L2 source scan: non-test files must not import from L1 ─────────────
+
   for (const dir of dirs) {
     if (!dir.isDirectory()) continue;
 
@@ -135,7 +228,7 @@ async function main(): Promise<void> {
     if (!(await file.exists())) continue;
 
     const pkg = (await file.json()) as { name: string };
-    // Skip L0, L0u, L1, and L3 — only L2 source is constrained
+    // Only L2 source is constrained — skip L0, L0u, L1, and L3
     if (
       L0_PACKAGES.has(pkg.name) ||
       L0U_PACKAGES.has(pkg.name) ||
@@ -147,9 +240,16 @@ async function main(): Promise<void> {
     const srcDir = `${PACKAGES_DIR}${dir.name}/src`;
     if (!(await Bun.file(`${srcDir}/../package.json`).exists())) continue;
 
-    const importViolations = await scanImports(srcDir, pkg.name);
-    violations.push(...importViolations);
+    const l2Violations = await scanFilesForViolations(
+      srcDir,
+      pkg.name,
+      isL2Violation,
+      (_specifier, relPath) => `L2 source imports from L1 (@koi/engine) at ${relPath}`,
+    );
+    violations.push(...l2Violations);
   }
+
+  // ── Report ─────────────────────────────────────────────────────────────────
 
   if (violations.length === 0) {
     console.log("✅ Layer check passed — all packages respect layer boundaries.");
@@ -164,61 +264,6 @@ async function main(): Promise<void> {
   process.exit(1);
 }
 
-// --- Helpers ---
-
-function getKoiDeps(deps: Record<string, string> | undefined): readonly string[] {
-  if (!deps) return [];
-  return Object.keys(deps).filter((name) => name.startsWith("@koi/"));
+if (import.meta.main) {
+  await main();
 }
-
-function isTestFile(filePath: string): boolean {
-  return (
-    filePath.includes("__tests__/") ||
-    filePath.endsWith(".test.ts") ||
-    filePath.endsWith(".e2e.test.ts") ||
-    filePath.endsWith(".spec.ts")
-  );
-}
-
-async function scanImports(dir: string, pkgName: string): Promise<readonly Violation[]> {
-  const violations: Violation[] = [];
-  const glob = new Bun.Glob("**/*.ts");
-
-  for await (const file of glob.scan({ cwd: dir, absolute: true })) {
-    // Skip test files — L2 tests are allowed to import L1 for integration/E2E
-    if (isTestFile(file)) continue;
-
-    const content = await Bun.file(file).text();
-    const lines = content.split("\n");
-
-    // Regex for static imports: import ... from "@koi/engine"
-    const staticImportRe = /(?:^|\s)(?:import\s+.*\s+from\s+|from\s+)['"]@koi\/engine/;
-    // Regex for dynamic imports: import("@koi/engine")
-    const dynamicImportRe = /import\s*\(\s*['"]@koi\/engine/;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (line === undefined) continue;
-
-      // Fast path: skip lines that don't mention @koi/engine at all
-      if (!line.includes("@koi/engine")) continue;
-
-      // Skip full-line comments
-      const trimmed = line.trimStart();
-      if (/^(?:\/\/|\/\*|\*)/.test(trimmed)) continue;
-
-      // Check for static or dynamic imports from @koi/engine
-      if (staticImportRe.test(line) || dynamicImportRe.test(line)) {
-        const relativePath = file.replace(dir, "src");
-        violations.push({
-          pkg: pkgName,
-          message: `L2 source imports from L1 (@koi/engine) at ${relativePath}:${i + 1}`,
-        });
-      }
-    }
-  }
-
-  return violations;
-}
-
-await main();
