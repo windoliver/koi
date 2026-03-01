@@ -103,6 +103,8 @@ index.ts                         ← public re-exports (60+ symbols)
 ├── slsa-serializer.ts           ← Koi provenance → SLSA v1.0 + in-toto Statement
 │
 ├── governance.ts                ← depth-aware tool filtering, session limits
+├── forge-governance-contributor.ts ← GovernanceVariableContributor for forge budget/depth
+├── forge-session-counter.ts     ← engine-owned session counter (prevents budget bypass)
 ├── requires-check.ts            ← BrickRequires validation (bins, env, tools)
 │
 ├── memory-store.ts              ← in-memory ForgeStore implementation
@@ -618,6 +620,66 @@ Scope promotion requires governance approval:
                    + human approval if requireHumanApproval = true
 ```
 
+### Session counter (Issue #266)
+
+`ForgeContext.forgesThisSession` is caller-provided. A forged child agent at depth=1 can
+pass `forgesThisSession: 0`, resetting the counter and bypassing `maxForgesPerSession`.
+
+`createForgeSessionCounter()` fixes this by owning the mutable counter inside the engine:
+
+```
+  Engine creates counter          Child agent forges a brick
+  at session start                     │
+        │                              ▼
+        ▼                   ┌──────────────────────┐
+  ┌──────────────┐          │  createForgeTool()   │
+  │  counter = 0 │          │                      │
+  └──────┬───────┘          │  1. checkGovernance() │ ◄── reads live counter
+         │                  │     via controller    │     (not ForgeContext)
+         │                  │                      │
+         │                  │  2. handler()         │
+         │                  │                      │
+         │  onForgeConsumed │  3. onForgeConsumed() │ ──── counter++
+         │  ◄───────────────│                      │
+         │                  └──────────────────────┘
+         ▼
+  ┌──────────────┐
+  │  counter = 1 │   ← engine-owned, child cannot reset
+  └──────────────┘
+```
+
+**Usage:**
+
+```typescript
+import { createForgeSessionCounter, createForgeToolTool } from "@koi/forge";
+
+// Engine creates the counter (pass parent's count as floor for child agents)
+const sessionCounter = createForgeSessionCounter({
+  config: forgeConfig,
+  readDepth: () => context.depth,
+  initialCount: parentForgeCount, // prevents reset-to-0 bypass
+});
+
+// Wire into ForgeDeps
+const deps = {
+  store,
+  executor,
+  verifiers: [],
+  config: forgeConfig,
+  context,
+  controller: governanceController,              // uses live counter path
+  onForgeConsumed: (n) => sessionCounter.incrementForgeCount(n),
+};
+
+// Attach the governance contributor to the agent's component map
+// so GovernanceExtension discovers it via prefix query
+const components = await sessionCounter.provider.attach(agent);
+```
+
+The counter is synchronous (O(1) reads/writes), closure-based, and has zero I/O overhead.
+The `provider` attaches a `FORGE_GOVERNANCE` contributor that exposes `forge_depth` and
+`forge_budget` as `GovernanceVariable` entries for the unified governance controller.
+
 ---
 
 ## Fitness-scored discovery (Issue #151)
@@ -1097,8 +1159,12 @@ mapProvenanceToSlsa(provenance: ForgeProvenance): SlsaProvenanceV1
 mapProvenanceToStatement(provenance: ForgeProvenance, brickId: BrickId): InTotoStatementV1<SlsaProvenanceV1WithExtensions>
 
 // Governance
-checkGovernance(context: ForgeContext, config: ForgeConfig, toolName?: string): Result<void, ForgeError>
+checkGovernance(context: ForgeContext, config: ForgeConfig, toolName?: string, controller?: GovernanceController): Result<void, ForgeError>
 checkScopePromotion(/* ... */): GovernanceResult
+
+// Session counter
+createForgeSessionCounter(options: ForgeSessionCounterOptions): ForgeSessionCounterInstance
+// → { readForgeCount, incrementForgeCount, provider }
 ```
 
 ---

@@ -57,7 +57,8 @@ export type ForgeError =
         | "SCOPE_VIOLATION"
         | "TRUST_DEMOTION_NOT_ALLOWED"
         | "LIFECYCLE_INVALID_TRANSITION"
-        | "DEPTH_TOOL_RESTRICTED";
+        | "DEPTH_TOOL_RESTRICTED"
+        | "MUTATION_PRESSURE_FROZEN";
       readonly message: string;
     }
   | {

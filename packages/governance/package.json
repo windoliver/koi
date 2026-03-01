@@ -11,15 +11,18 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/middleware-audit": "workspace:*",
-    "@koi/middleware-permissions": "workspace:*",
-    "@koi/middleware-pay": "workspace:*",
-    "@koi/middleware-pii": "workspace:*",
-    "@koi/middleware-sanitize": "workspace:*",
-    "@koi/middleware-guardrails": "workspace:*",
     "@koi/delegation": "workspace:*",
     "@koi/exec-approvals": "workspace:*",
-    "@koi/middleware-governance-backend": "workspace:*"
+    "@koi/filesystem": "workspace:*",
+    "@koi/middleware-audit": "workspace:*",
+    "@koi/middleware-governance-backend": "workspace:*",
+    "@koi/middleware-guardrails": "workspace:*",
+    "@koi/middleware-pay": "workspace:*",
+    "@koi/middleware-permissions": "workspace:*",
+    "@koi/middleware-pii": "workspace:*",
+    "@koi/middleware-sanitize": "workspace:*",
+    "@koi/scope": "workspace:*",
+    "@koi/tool-browser": "workspace:*"
   },
   "devDependencies": {
     "@koi/engine": "workspace:*",
