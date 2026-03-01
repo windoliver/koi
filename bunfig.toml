@@ -16,8 +16,10 @@ coverageReporter = ["text", "lcov"]
 coverageDir = "coverage"
 coverageThreshold = { lines = 0.8, functions = 0.8, statements = 0.8 }
 
-# Exclude dist and node_modules from coverage
-coveragePathIgnorePatterns = ["dist/**", "**/dist/**", "node_modules/**", "**/node_modules/**", "*.config.ts"]
+# Exclude dist and node_modules from coverage.
+# CLI entry-point scripts (scripts/check-layers.ts) are excluded because their main()
+# functions are tested end-to-end by `bun run check:layers`, not unit tests.
+coveragePathIgnorePatterns = ["dist/**", "**/dist/**", "node_modules/**", "**/node_modules/**", "*.config.ts", "scripts/check-layers.ts"]
 
 [run]
 # Use bun shell for scripts (faster than system shell)

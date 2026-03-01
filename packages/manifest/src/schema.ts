@@ -107,6 +107,25 @@ export interface RawManifest {
   readonly [key: string]: unknown;
 }
 
+// ── Template-syntax guard ──
+
+/**
+ * Pattern that matches Jinja-style (`{{...}}`) and Django-style (`{%...%}`) template expressions.
+ * Single-brace format strings like `{region}` are intentionally allowed.
+ */
+const TEMPLATE_EXPR_RE = /\{\{|\{%/;
+
+/**
+ * Wraps a Zod string schema to reject template expressions ({{...}} or {%...%}).
+ * Use on manifest fields that must be static values — no runtime interpolation.
+ */
+function noTemplateExpressions(schema: z.ZodString): z.ZodEffects<z.ZodString, string, string> {
+  return schema.refine(
+    (val) => !TEMPLATE_EXPR_RE.test(val),
+    "Manifest does not support template expressions ({{...}} or {%...%}). Use static values only.",
+  );
+}
+
 // ── Shared base schemas ──
 
 const jsonObjectSchema = z.record(z.string(), z.unknown());
@@ -117,7 +136,7 @@ const jsonObjectSchema = z.record(z.string(), z.unknown());
  */
 const namedConfigSchema = z.union([
   z.object({
-    name: z.string(),
+    name: noTemplateExpressions(z.string()),
     options: jsonObjectSchema.optional(),
     version: z.string().optional(),
     publisher: z.string().optional(),
@@ -129,7 +148,7 @@ const namedConfigSchema = z.union([
 
 /** Skill config item: name + path + optional options. */
 const skillConfigSchema = z.object({
-  name: z.string(),
+  name: noTemplateExpressions(z.string()),
   path: z.string(),
   options: jsonObjectSchema.optional(),
 });
@@ -152,7 +171,7 @@ const channelIdentitySchema = z
  */
 const rawChannelSchema = z.union([
   z.object({
-    name: z.string(),
+    name: noTemplateExpressions(z.string()),
     options: jsonObjectSchema.optional(),
     identity: channelIdentitySchema,
     version: z.string().optional(),
@@ -165,9 +184,9 @@ const rawChannelSchema = z.union([
 
 /** Model can be a string shorthand or a full config object. */
 const modelSchema = z.union([
-  z.string(),
+  noTemplateExpressions(z.string()),
   z.object({
-    name: z.string(),
+    name: noTemplateExpressions(z.string()),
     options: jsonObjectSchema.optional(),
   }),
 ]);
@@ -326,7 +345,7 @@ interface RawScope {
  */
 export const rawManifestSchema: z.ZodType<RawManifest> = z
   .object({
-    name: z.string(),
+    name: noTemplateExpressions(z.string()),
     version: z.string(),
     description: z.string().optional(),
     model: modelSchema,

@@ -624,6 +624,49 @@ describe("rawManifestSchema — skills", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Template expression rejection
+// ---------------------------------------------------------------------------
+
+describe("rawManifestSchema — template expression rejection", () => {
+  test("accepts static model string", () => {
+    expect(parse({ model: "anthropic:claude-sonnet-4-6" }).success).toBe(true);
+  });
+
+  test("accepts model with single-brace format string (allowed)", () => {
+    // {region} is a format-string placeholder, not a Jinja/Django template expression
+    expect(parse({ model: "custom-model-{region}" }).success).toBe(true);
+  });
+
+  test("rejects model with Jinja-style template {{...}}", () => {
+    expect(parse({ model: "{{model}}" }).success).toBe(false);
+  });
+
+  test("rejects model with Django-style template {%...%}", () => {
+    expect(parse({ model: "{% if condition %}sonnet{% endif %}" }).success).toBe(false);
+  });
+
+  test("rejects model with embedded Jinja expression", () => {
+    expect(parse({ model: "model-{{env.MODEL}}" }).success).toBe(false);
+  });
+
+  test("rejects agent name with Jinja-style template", () => {
+    expect(parse({ name: "{{agent_name}}" }).success).toBe(false);
+  });
+
+  test("rejects agent name with Django-style template", () => {
+    expect(parse({ name: "{% block name %}my-agent{% endblock %}" }).success).toBe(false);
+  });
+
+  test("accepts static agent name", () => {
+    expect(parse({ name: "my-production-agent" }).success).toBe(true);
+  });
+
+  test("rejects model object name with template expression", () => {
+    expect(parse({ model: { name: "{{env.MODEL_NAME}}" } }).success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // zodToKoiError
 // ---------------------------------------------------------------------------
 

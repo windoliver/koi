@@ -1,0 +1,23 @@
+# PR auto-labeler — assigns layer labels based on changed files.
+# Used by .github/workflows/label-layers.yml (actions/labeler@v5).
+# See docs/architecture/Koi.md for layer definitions.
+
+"layer:L0":
+  - changed-files:
+    - any-glob-to-any-file: "packages/core/**"
+
+"layer:L1":
+  - changed-files:
+    - any-glob-to-any-file: "packages/engine/**"
+
+"layer:L3":
+  - changed-files:
+    - any-glob-to-any-file:
+      - "packages/cli/**"
+      - "packages/starter/**"
+
+# L2 is the catch-all: any package that is not L0, L1, or L3.
+# This label appears when only L2 packages are changed.
+"layer:L2":
+  - changed-files:
+    - any-glob-to-any-file: "packages/**"

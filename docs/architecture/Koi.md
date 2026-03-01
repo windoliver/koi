@@ -167,9 +167,11 @@ Infrastructure backends      L3      Pluggable (Nexus, SQLite, custom)
 │  Middleware chain composition → EngineAdapter dispatch        │
 ├─────────────────────────────────────────────────────────────┤
 │  Layer 0u: UTILITIES (pure functions, zero business logic)    │
-│  @koi/errors   @koi/validation   @koi/manifest               │
-│  @koi/hash     @koi/test-utils   @koi/skill-scanner          │
-│  Depend on L0 only. Importable by L1 and L2.                 │
+│  23 packages: errors, validation, manifest, hash,            │
+│  token-estimator, event-delivery, crypto-utils, edit-match,  │
+│  nexus-client, dashboard-types, harness-scheduler, + more.   │
+│  See scripts/layers.ts → L0U_PACKAGES for full list.         │
+│  Depend on L0 + peer L0u only. Importable by L1 and L2.      │
 ├─────────────────────────────────────────────────────────────┤
 │  Layer 0: KERNEL (@koi/core — types only)                    │
 │  6 core contracts + extended contracts + ECS layer            │
@@ -194,7 +196,17 @@ Infrastructure backends      L3      Pluggable (Nexus, SQLite, custom)
 
 Engine *adapters* (Claude, Pi, Loop, custom) are swappable L2 packages. The engine *runtime* (guards, governance) is not — it IS the kernel runtime.
 
-**L0-utility packages**: `@koi/errors`, `@koi/validation`, `@koi/manifest`, `@koi/hash`, `@koi/test-utils`, `@koi/skill-scanner`. These contain pure utility functions with zero business logic. They depend on `@koi/core` only and are importable by both L1 and L2 packages. They do NOT define core contracts — they provide shared implementations of common operations (error creation, schema validation, hashing).
+**L0-utility packages** (23 total — canonical list lives in `scripts/layers.ts` → `L0U_PACKAGES`):
+`@koi/channel-base`, `@koi/crypto-utils`, `@koi/dashboard-types`, `@koi/edit-match`,
+`@koi/errors`, `@koi/event-delivery`, `@koi/execution-context`, `@koi/file-resolution`,
+`@koi/git-utils`, `@koi/harness-scheduler`, `@koi/hash`, `@koi/manifest`, `@koi/nexus-client`,
+`@koi/resolve`, `@koi/sandbox-cloud-base`, `@koi/scope`, `@koi/shutdown`, `@koi/skill-scanner`,
+`@koi/snapshot-chain-store`, `@koi/sqlite-utils`, `@koi/test-utils`, `@koi/token-estimator`,
+`@koi/validation`.
+These contain pure utility functions with zero business logic. They depend on `@koi/core` + peer
+L0u packages only, and are importable by both L1 and L2 packages. They do NOT define core
+contracts — they provide shared implementations of common operations (error creation, schema
+validation, hashing, token estimation, event delivery, etc.).
 
 ---
 
