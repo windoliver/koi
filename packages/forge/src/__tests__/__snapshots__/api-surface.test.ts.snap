@@ -872,21 +872,24 @@ declare function enrichSandboxError(error: SandboxError, implementation: string,
  * Scope-based visibility filtering for forge bricks.
  *
  * Pure functions used by search_forge and ForgeResolver to enforce
- * agent-scoped brick visibility. Zone scope is deferred (Phase 2).
+ * agent-scoped brick visibility.
  */
 
 /**
  * Returns true if the given brick is visible to the specified agent.
- * - \`global\` and \`zone\` scoped bricks are visible to all agents.
+ * - \`global\` scoped bricks are visible to all agents.
+ * - \`zone\` scoped bricks are visible to all agents when zoneId is undefined
+ *   (backward compat). When zoneId is provided, the brick must have a
+ *   matching \`zone:<zoneId>\` tag.
  * - \`agent\` scoped bricks are only visible to their creator.
  *
  * Fail-closed: unknown scope values deny access.
  */
-declare function isVisibleToAgent(brick: BrickArtifact, agentId: string): boolean;
+declare function isVisibleToAgent(brick: BrickArtifact, agentId: string, zoneId?: string | undefined): boolean;
 /**
  * Filters an array of bricks to only those visible to the specified agent.
  */
-declare function filterByAgentScope(bricks: readonly BrickArtifact[], agentId: string): readonly BrickArtifact[];
+declare function filterByAgentScope(bricks: readonly BrickArtifact[], agentId: string, zoneId?: string | undefined): readonly BrickArtifact[];
 
 /**
  * SLSA v1.0 serializer — maps Koi-native ForgeProvenance to SLSA predicate.
