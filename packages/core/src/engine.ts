@@ -66,6 +66,8 @@ export interface EngineMetrics {
   readonly outputTokens: number;
   readonly turns: number;
   readonly durationMs: number;
+  /** Estimated total cost in USD for the engine run, when available. */
+  readonly costUsd?: number | undefined;
 }
 
 export interface EngineOutput {

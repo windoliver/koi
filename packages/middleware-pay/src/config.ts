@@ -2,22 +2,15 @@
  * Pay middleware configuration and validation.
  */
 
+import type { BudgetTracker, CostCalculator, UsageInfo } from "@koi/core/cost-tracker";
 import type { KoiError, Result } from "@koi/core/errors";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
-import type { PayLedger } from "@koi/core/pay-ledger";
-import type { CostCalculator } from "./tracker.js";
 
-export interface UsageInfo {
-  readonly model: string;
-  readonly costUsd: number;
-  readonly inputTokens: number;
-  readonly outputTokens: number;
-  readonly totalSpent: number;
-  readonly remaining: number;
-}
+// Re-export L0 UsageInfo for backward compatibility
+export type { UsageInfo } from "@koi/core/cost-tracker";
 
 export interface PayMiddlewareConfig {
-  readonly ledger: PayLedger;
+  readonly tracker: BudgetTracker;
   readonly calculator: CostCalculator;
   readonly budget: number;
   readonly alertThresholds?: readonly number[];
@@ -40,12 +33,12 @@ export function validatePayConfig(config: unknown): Result<PayMiddlewareConfig, 
 
   const c = config as Record<string, unknown>;
 
-  if (!c.ledger || typeof c.ledger !== "object") {
+  if (!c.tracker || typeof c.tracker !== "object") {
     return {
       ok: false,
       error: {
         code: "VALIDATION",
-        message: "Config requires a 'ledger' with meter/getBalance methods",
+        message: "Config requires a 'tracker' with record/totalSpend/remaining methods",
         retryable: RETRYABLE_DEFAULTS.VALIDATION,
       },
     };
