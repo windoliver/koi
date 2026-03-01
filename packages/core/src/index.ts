@@ -281,6 +281,7 @@ export {
   turnId,
   WEBHOOK,
   WORKSPACE,
+  ZONE_REGISTRY,
 } from "./ecs.js";
 // elicitation — structured user questioning contract
 export type {
@@ -771,3 +772,14 @@ export type {
   WebhookPayload,
   WebhookSummary,
 } from "./webhook.js";
+// zone — multi-zone agent coordination types
+export type {
+  ZoneDescriptor,
+  ZoneEvent,
+  ZoneFilter,
+  ZoneId,
+  ZoneRegistry,
+  ZoneStatus,
+} from "./zone.js";
+// zone — runtime values (branded constructor)
+export { zoneId } from "./zone.js";

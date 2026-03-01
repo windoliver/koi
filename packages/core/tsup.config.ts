@@ -39,6 +39,7 @@ export default defineConfig({
     "src/intent-capsule.ts",
     "src/security-analyzer.ts",
     "src/pay-ledger.ts",
+    "src/zone.ts",
   ],
   format: ["esm"],
   dts: {

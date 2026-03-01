@@ -35,7 +35,7 @@ describe("isVisibleToAgent", () => {
     expect(isVisibleToAgent(brick, "agent-1")).toBe(true);
   });
 
-  test("returns true for zone-scoped bricks (Phase 2 passthrough)", () => {
+  test("returns true for zone-scoped bricks when no zoneId provided (backward compat)", () => {
     const brick = createBrick({
       scope: "zone",
       provenance: {
@@ -44,6 +44,30 @@ describe("isVisibleToAgent", () => {
       },
     });
     expect(isVisibleToAgent(brick, "agent-1")).toBe(true);
+  });
+
+  test("returns true for zone-scoped brick with matching zone tag", () => {
+    const brick = createBrick({
+      scope: "zone",
+      tags: ["zone:us-east-1"],
+      provenance: {
+        ...DEFAULT_PROVENANCE,
+        metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "other-agent" },
+      },
+    });
+    expect(isVisibleToAgent(brick, "agent-1", "us-east-1")).toBe(true);
+  });
+
+  test("returns false for zone-scoped brick with mismatching zone tag", () => {
+    const brick = createBrick({
+      scope: "zone",
+      tags: ["zone:us-west-2"],
+      provenance: {
+        ...DEFAULT_PROVENANCE,
+        metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "other-agent" },
+      },
+    });
+    expect(isVisibleToAgent(brick, "agent-1", "us-east-1")).toBe(false);
   });
 
   test("returns true for agent-scoped brick matching creator", () => {
@@ -112,5 +136,39 @@ describe("filterByAgentScope", () => {
 
   test("returns empty array for empty input", () => {
     expect(filterByAgentScope([], "agent-1")).toHaveLength(0);
+  });
+
+  test("filters zone-scoped bricks by zoneId", () => {
+    const bricks = [
+      createBrick({
+        id: brickId("b1"),
+        scope: "zone",
+        tags: ["zone:us-east-1"],
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "other" },
+        },
+      }),
+      createBrick({
+        id: brickId("b2"),
+        scope: "zone",
+        tags: ["zone:us-west-2"],
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "other" },
+        },
+      }),
+      createBrick({
+        id: brickId("b3"),
+        scope: "global",
+        provenance: {
+          ...DEFAULT_PROVENANCE,
+          metadata: { ...DEFAULT_PROVENANCE.metadata, agentId: "other" },
+        },
+      }),
+    ];
+    const filtered = filterByAgentScope(bricks, "agent-1", "us-east-1");
+    expect(filtered).toHaveLength(2);
+    expect(filtered.map((b) => b.id)).toEqual([brickId("b1"), brickId("b3")]);
   });
 });

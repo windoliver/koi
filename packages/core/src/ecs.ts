@@ -26,6 +26,7 @@ import type { SchedulerComponent } from "./scheduler.js";
 import type { SkillRegistryReader } from "./skill-registry.js";
 import type { VersionIndexReader } from "./version-index.js";
 import type { WebhookComponent } from "./webhook.js";
+import type { ZoneRegistry } from "./zone.js";
 
 // ---------------------------------------------------------------------------
 // Branded types
@@ -497,3 +498,4 @@ export const REGISTRY: SubsystemToken<RegistryComponent> = token<RegistryCompone
 export const MAILBOX: SubsystemToken<MailboxComponent> = token<MailboxComponent>("mailbox");
 export const NAME_SERVICE: SubsystemToken<NameServiceReader> =
   token<NameServiceReader>("name-service");
+export const ZONE_REGISTRY: SubsystemToken<ZoneRegistry> = token<ZoneRegistry>("zone-registry");
