@@ -192,7 +192,7 @@ type ForgeError = {
     readonly message: string;
 } | {
     readonly stage: "governance";
-    readonly code: "FORGE_DISABLED" | "MAX_DEPTH" | "MAX_SESSION_FORGES" | "SCOPE_VIOLATION" | "TRUST_DEMOTION_NOT_ALLOWED" | "LIFECYCLE_INVALID_TRANSITION" | "DEPTH_TOOL_RESTRICTED";
+    readonly code: "FORGE_DISABLED" | "MAX_DEPTH" | "MAX_SESSION_FORGES" | "SCOPE_VIOLATION" | "TRUST_DEMOTION_NOT_ALLOWED" | "LIFECYCLE_INVALID_TRANSITION" | "DEPTH_TOOL_RESTRICTED" | "MUTATION_PRESSURE_FROZEN";
     readonly message: string;
 } | {
     readonly stage: "format";
@@ -333,6 +333,16 @@ interface FormatConfig {
     readonly args: readonly string[];
     readonly timeoutMs: number;
 }
+interface MutationPressureConfig {
+    /** Whether mutation pressure checks are enabled. Default: false (opt-in). */
+    readonly enabled: boolean;
+    /** Fitness above this threshold → frozen (block forge). Default: 0.9. */
+    readonly frozenThreshold: number;
+    /** Fitness above this threshold → stable (normal). Default: 0.5. */
+    readonly stableThreshold: number;
+    /** Fitness above this threshold → experimental. Default: 0.2. Below → aggressive. */
+    readonly experimentalThreshold: number;
+}
 interface ForgeConfig {
     readonly enabled: boolean;
     readonly maxForgeDepth: number;
@@ -345,6 +355,7 @@ interface ForgeConfig {
     readonly dependencies: DependencyConfig;
     readonly format: FormatConfig;
     readonly reverification?: ReverificationConfig;
+    readonly mutationPressure?: MutationPressureConfig;
 }
 declare function createDefaultForgeConfig(overrides?: Partial<ForgeConfig>): ForgeConfig;
 /**

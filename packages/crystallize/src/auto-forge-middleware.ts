@@ -81,6 +81,12 @@ export interface AutoForgeConfig {
   readonly demandBudget?: ForgeBudget | undefined;
   /** Called when a demand signal triggers a forge. */
   readonly onDemandForged?: ((signal: ForgeDemandSignal, brick: ToolArtifact) => void) | undefined;
+  /**
+   * Optional pre-save gate. When provided, called before each brick is saved.
+   * Return true to allow, false to skip. Enables mutation pressure checks
+   * without L2→L2 imports (L3 wiring injects the check).
+   */
+  readonly beforeSave?: (brick: ToolArtifact) => Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +230,13 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
 
         // Save to store — StoreChangeEvent triggers hot-attach in L1
         const brick = mapDescriptorToBrick(descriptor, now);
+
+        // Pre-save gate (e.g., mutation pressure check injected by L3)
+        if (config.beforeSave !== undefined) {
+          const allowed = await config.beforeSave(brick);
+          if (!allowed) continue;
+        }
+
         const saveResult = await config.forgeStore.save(brick);
         if (!saveResult.ok) {
           onError(
@@ -303,6 +316,12 @@ export function createAutoForgeMiddleware(config: AutoForgeConfig): KoiMiddlewar
       implementation: `// Pioneer stub — demand-triggered for: ${signal.trigger.kind}`,
       inputSchema: {},
     };
+
+    // Pre-save gate (e.g., mutation pressure check injected by L3)
+    if (config.beforeSave !== undefined) {
+      const allowed = await config.beforeSave(brick);
+      if (!allowed) return;
+    }
 
     const saveResult = await config.forgeStore.save(brick);
     if (!saveResult.ok) {

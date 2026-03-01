@@ -46,6 +46,30 @@ export const DEFAULT_DEMOTION_CRITERIA: DemotionCriteria = Object.freeze({
   demotionCooldownMs: 1_800_000,
 });
 
+// ---------------------------------------------------------------------------
+// Mutation pressure — fitness-based forge protection zones
+// ---------------------------------------------------------------------------
+
+/** Mutation pressure zone derived from brick fitness score. */
+export type MutationPressure = "frozen" | "stable" | "experimental" | "aggressive";
+
+/** Threshold policy for mapping fitness scores to mutation pressure zones. */
+export interface MutationPressurePolicy {
+  /** Fitness above this threshold → frozen (block forge). Default: 0.9. */
+  readonly frozenThreshold: number;
+  /** Fitness above this threshold → stable (normal). Default: 0.5. */
+  readonly stableThreshold: number;
+  /** Fitness above this threshold → experimental. Default: 0.2. Below → aggressive. */
+  readonly experimentalThreshold: number;
+}
+
+/** Default thresholds for mutation pressure zone classification. */
+export const DEFAULT_MUTATION_PRESSURE_POLICY: MutationPressurePolicy = Object.freeze({
+  frozenThreshold: 0.9,
+  stableThreshold: 0.5,
+  experimentalThreshold: 0.2,
+});
+
 /** Lifecycle state of a forged brick artifact. */
 export type BrickLifecycle =
   | "draft"

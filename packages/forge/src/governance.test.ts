@@ -197,6 +197,28 @@ describe("checkGovernance", () => {
   });
 });
 
+describe("checkGovernance — mutation pressure", () => {
+  test("skips mutation pressure when config is absent", async () => {
+    const config = createDefaultForgeConfig();
+    // No mutationPressure field → should pass normally
+    const result = await checkGovernance(DEFAULT_CONTEXT, config);
+    expect(result.ok).toBe(true);
+  });
+
+  test("skips mutation pressure when disabled", async () => {
+    const config = createDefaultForgeConfig({
+      mutationPressure: {
+        enabled: false,
+        frozenThreshold: 0.9,
+        stableThreshold: 0.5,
+        experimentalThreshold: 0.2,
+      },
+    });
+    const result = await checkGovernance(DEFAULT_CONTEXT, config);
+    expect(result.ok).toBe(true);
+  });
+});
+
 describe("checkScopePromotion", () => {
   test("allows same-scope (no promotion needed)", () => {
     const config = createDefaultForgeConfig();
