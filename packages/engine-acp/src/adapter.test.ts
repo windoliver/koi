@@ -14,14 +14,13 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RpcMessage } from "./json-rpc-parser.js";
+import type { AcpTransport, RpcMessage } from "@koi/acp-protocol";
 import {
   buildErrorResponse,
   buildRequest,
   buildResponse,
   createLineParser,
-} from "./json-rpc-parser.js";
-import type { AcpTransport } from "./transport.js";
+} from "@koi/acp-protocol";
 
 // ---------------------------------------------------------------------------
 // Mock transport

@@ -1,5 +1,5 @@
 {
-  "name": "@koi/engine-acp",
+  "name": "@koi/acp-protocol",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,9 +10,8 @@
     }
   },
   "dependencies": {
-    "@koi/acp-protocol": "workspace:*",
     "@koi/core": "workspace:*",
-    "@koi/resolve": "workspace:*"
+    "zod": "4.3.6"
   },
   "devDependencies": {
     "@koi/test-utils": "workspace:*"

@@ -95,13 +95,13 @@ export function createLineParser(): LineParser {
     } catch {
       // Parse error — no id available, so we emit a custom error marker
       // (transport layer will log; can't send error response without an id)
-      console.warn(`[engine-acp] JSON parse error on line: ${trimmed.slice(0, 100)}`);
+      console.warn(`[acp-protocol] JSON parse error on line: ${trimmed.slice(0, 100)}`);
       return undefined;
     }
 
     const msg = parseAnyRpcMessage(parsed);
     if (msg === undefined) {
-      console.warn("[engine-acp] Invalid JSON-RPC message shape: failed to parse");
+      console.warn("[acp-protocol] Invalid JSON-RPC message shape: failed to parse");
       return undefined;
     }
 
@@ -142,7 +142,7 @@ export function createLineParser(): LineParser {
       }
     }
 
-    console.warn("[engine-acp] Unroutable JSON-RPC message:", trimmed.slice(0, 100));
+    console.warn("[acp-protocol] Unroutable JSON-RPC message:", trimmed.slice(0, 100));
     return undefined;
   }
 

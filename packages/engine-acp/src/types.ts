@@ -4,8 +4,8 @@
  * These are implementation details, not part of the public API.
  */
 
+import type { AgentCapabilities, ClientCapabilities } from "@koi/acp-protocol";
 import type { ApprovalHandler, EngineAdapter } from "@koi/core";
-import type { AgentCapabilities, ClientCapabilities } from "./acp-schema.js";
 
 // ---------------------------------------------------------------------------
 // Adapter config

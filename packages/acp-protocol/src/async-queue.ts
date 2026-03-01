@@ -53,7 +53,7 @@ export function createAsyncQueue<T>(label?: string): AsyncQueue<T> {
       if (pending === HIGH_WATERMARK) {
         const tag = label !== undefined ? ` (${label})` : "";
         console.warn(
-          `[engine-acp] AsyncQueue${tag}: ${pending} items pending — ` +
+          `[acp-protocol] AsyncQueue${tag}: ${pending} items pending — ` +
             "consumer may be too slow or the queue is unbounded.",
         );
       }

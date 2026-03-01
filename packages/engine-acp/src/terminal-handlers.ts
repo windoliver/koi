@@ -11,7 +11,7 @@ import type {
   TerminalOutputResult,
   TerminalSessionParams,
   TerminalWaitForExitResult,
-} from "./acp-schema.js";
+} from "@koi/acp-protocol";
 
 // ---------------------------------------------------------------------------
 // Terminal registry

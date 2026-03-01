@@ -1,0 +1,178 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/acp API surface . has stable type surface 1`] = `
+"import * as _koi_core from '@koi/core';
+import { ChannelAdapter, ApprovalHandler, MessageHandler, InboundMessage, EngineEvent } from '@koi/core';
+import { AgentCapabilities, RpcId, AcpTransport } from '@koi/acp-protocol';
+import { BrickDescriptor } from '@koi/resolve';
+
+interface AcpServerConfig {
+    /** Agent info reported in the initialize response. */
+    readonly agentInfo?: {
+        readonly name?: string | undefined;
+        readonly title?: string | undefined;
+        readonly version?: string | undefined;
+    } | undefined;
+    /** Agent capabilities reported in the initialize response. */
+    readonly agentCapabilities?: AgentCapabilities | undefined;
+    /** Per-request timeout defaults (ms). */
+    readonly timeouts?: {
+        readonly fsMs?: number | undefined;
+        readonly terminalMs?: number | undefined;
+        readonly permissionMs?: number | undefined;
+    } | undefined;
+    /** Maximum number of buffered outbound events before pausing. Default: 100. */
+    readonly backpressureLimit?: number | undefined;
+}
+declare const DEFAULT_TIMEOUTS: {
+    readonly fsMs: 30000;
+    readonly terminalMs: 300000;
+    readonly permissionMs: 60000;
+};
+declare const DEFAULT_BACKPRESSURE_LIMIT: 100;
+declare const ACP_PROTOCOL_VERSION: 1;
+/**
+ * ACP server channel adapter — a ChannelAdapter that also exposes
+ * an approval handler for wiring into agent assembly.
+ */
+interface AcpChannelAdapter extends ChannelAdapter {
+    /** Approval handler that bridges IDE permission dialogs to Koi's approval flow. */
+    readonly getApprovalHandler: () => _koi_core.ApprovalHandler;
+}
+
+/**
+ * ACP server ChannelAdapter — main factory.
+ *
+ * \`createAcpChannel()\` implements the Koi \`ChannelAdapter\` contract for the
+ * server side of ACP. An IDE spawns \`koi serve --manifest koi.yaml\` and
+ * communicates via JSON-RPC 2.0 over stdin/stdout.
+ *
+ * Protocol flow:
+ *   IDE → initialize → agent capabilities
+ *   IDE → session/new → sessionId
+ *   IDE → session/prompt → events (session/update notifications) → result
+ *   IDE → session/cancel → abort active prompt
+ *   stdin EOF → disconnect → cleanup
+ */
+
+declare function createAcpChannel(config?: AcpServerConfig): AcpChannelAdapter;
+
+/**
+ * Outbound request tracker for the ACP server.
+ *
+ * Manages the lifecycle of JSON-RPC requests sent from Koi to the IDE
+ * (e.g., session/request_permission). Each request gets a unique ID,
+ * a per-type timeout, and a promise that resolves when the IDE responds.
+ */
+
+interface RequestTracker {
+    /** Send a JSON-RPC request and wait for the response with per-type timeout. */
+    readonly sendRequest: (method: string, params: unknown, timeoutMs: number) => Promise<unknown>;
+    /** Resolve a pending request by its RPC ID (called by the receive loop). */
+    readonly resolveResponse: (id: RpcId, result: unknown) => void;
+    /** Reject a pending request with an error (called by the receive loop). */
+    readonly rejectResponse: (id: RpcId, error: {
+        readonly code: number;
+        readonly message: string;
+    }) => void;
+    /** Reject all pending requests (used during shutdown). */
+    readonly rejectAll: (reason: string) => void;
+    /** Number of currently pending requests. */
+    readonly pending: () => number;
+}
+declare function createRequestTracker(transport: AcpTransport): RequestTracker;
+
+/**
+ * Reverse approval bridge: Koi ApprovalHandler → ACP session/request_permission.
+ *
+ * When Koi middleware requires tool approval, this bridge sends a
+ * session/request_permission request to the IDE and waits for a response.
+ * Fail-closed: on timeout or error, returns deny.
+ */
+
+/**
+ * Create an ApprovalHandler that delegates to the IDE via ACP.
+ *
+ * The handler sends \`session/request_permission\` to the IDE and interprets
+ * the response as an ApprovalDecision.
+ */
+declare function createApprovalHandler(tracker: RequestTracker, getSessionId: () => string | undefined, permissionTimeoutMs?: number): ApprovalHandler;
+
+/**
+ * BrickDescriptor for @koi/acp.
+ *
+ * Enables manifest-based auto-resolution for the ACP server channel.
+ * No required options — the channel operates from the current process.
+ */
+
+/**
+ * Descriptor for the ACP server channel.
+ * Registered under the name "@koi/acp" with alias "acp-server".
+ */
+declare const descriptor: BrickDescriptor<ChannelAdapter>;
+
+/**
+ * ACP protocol request handler for the server side.
+ *
+ * Handles inbound JSON-RPC requests from the IDE:
+ * - \`initialize\` → validate protocol version, return agent capabilities
+ * - \`session/new\` → create session context, return sessionId
+ * - \`session/prompt\` → convert to Koi input, run agent, stream events
+ * - \`session/cancel\` → abort active session via AbortController
+ */
+
+interface SessionContext {
+    readonly sessionId: string;
+    readonly cwd: string;
+}
+interface ProtocolState {
+    /** Whether initialize has been completed. */
+    readonly initialized: boolean;
+    /** Current session context (set after session/new). */
+    readonly session: SessionContext | undefined;
+    /** Whether a session/prompt is currently active. */
+    readonly prompting: boolean;
+}
+interface ProtocolHandler {
+    /** Handle an inbound initialize request. */
+    readonly handleInitialize: (id: RpcId, params: unknown) => void;
+    /** Handle an inbound session/new request. */
+    readonly handleSessionNew: (id: RpcId, params: unknown) => void;
+    /**
+     * Handle an inbound session/prompt request.
+     * Returns a promise that resolves when the prompt completes.
+     */
+    readonly handleSessionPrompt: (id: RpcId, params: unknown) => Promise<void>;
+    /** Handle an inbound session/cancel request. */
+    readonly handleSessionCancel: (id: RpcId) => void;
+    /** Get the current protocol state. */
+    readonly getState: () => ProtocolState;
+    /** Set the message handler (called when a session/prompt arrives). */
+    readonly setMessageHandler: (handler: MessageHandler) => void;
+    /** Set the engine event streamer (called to stream events during a prompt). */
+    readonly setEventStreamer: (streamer: (input: {
+        readonly messages: readonly InboundMessage[];
+        readonly signal: AbortSignal;
+    }) => AsyncIterable<EngineEvent>) => void;
+}
+declare function createProtocolHandler(transport: AcpTransport, config: AcpServerConfig): ProtocolHandler;
+
+/**
+ * Server-side AcpTransport backed by the current process's stdin/stdout.
+ *
+ * Used when Koi is spawned by an IDE (e.g., \`koi serve --manifest koi.yaml\`).
+ * Reads JSON-RPC lines from stdin, writes JSON-RPC lines to stdout.
+ */
+
+/**
+ * Create an AcpTransport backed by the current process's stdin/stdout.
+ *
+ * - Reads from \`process.stdin\` as a ReadableStream
+ * - Writes to \`process.stdout\` with backpressure awareness
+ * - Close stops reading and writing
+ */
+declare function createProcessTransport(): AcpTransport;
+
+export { ACP_PROTOCOL_VERSION, type AcpChannelAdapter, type AcpServerConfig, DEFAULT_BACKPRESSURE_LIMIT, DEFAULT_TIMEOUTS, type ProtocolHandler, type ProtocolState, type RequestTracker, createAcpChannel, createApprovalHandler, createProcessTransport, createProtocolHandler, createRequestTracker, descriptor };
+"
+`;
