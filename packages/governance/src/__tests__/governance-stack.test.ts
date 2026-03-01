@@ -2,17 +2,22 @@
  * Unit and integration tests for createGovernanceStack().
  *
  * Unit tests (black-box by name):
- *   - Empty config → 0 middlewares
+ *   - Empty config → open preset permissions middleware
  *   - Single middleware present and named correctly
  *   - All 9 configured → 9 middlewares in correct priority order
+ *   - All 8 configured (no pay) → 8 middlewares
  *   - exec-approvals priority overridden to 110
  *   - delegation priority overridden to 120
+ *   - Preset: standard → permissions + pii + sanitize
+ *   - Preset: strict → permissions + pii + sanitize + guardrails
+ *   - Return value includes providers and config metadata
+ *   - Pay deprecation warning + still functional
  *
  * Integration test:
  *   - createGovernanceStack({ audit }) → pass to createKoi + cooperating adapter
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type {
   AgentManifest,
   EngineAdapter,
@@ -78,33 +83,71 @@ const BASE_MANIFEST: AgentManifest = {
   model: { name: "test-model" },
 };
 
+function makePayTracker(): {
+  readonly record: () => Promise<undefined>;
+  readonly totalSpend: () => Promise<number>;
+  readonly remaining: () => Promise<number>;
+  readonly breakdown: () => Promise<{
+    readonly totalCostUsd: number;
+    readonly byModel: readonly [];
+    readonly byTool: readonly [];
+  }>;
+} {
+  return {
+    record: async () => undefined,
+    totalSpend: async () => 0,
+    remaining: async () => 1000,
+    breakdown: async () => ({ totalCostUsd: 0, byModel: [], byTool: [] }),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests — createGovernanceStack composability
 // ---------------------------------------------------------------------------
 
 describe("createGovernanceStack", () => {
-  // ── Empty config ────────────────────────────────────────────────────────
+  // Capture console.warn for pay deprecation tests
+  const originalWarn = console.warn;
+  let warnSpy: ReturnType<typeof mock>;
 
-  test("empty config returns 0 middlewares", () => {
-    const { middlewares } = createGovernanceStack({});
-    expect(middlewares).toHaveLength(0);
+  beforeEach(() => {
+    warnSpy = mock(() => undefined);
+    console.warn = warnSpy;
   });
 
-  // ── Single middleware presence by name ──────────────────────────────────
+  afterEach(() => {
+    console.warn = originalWarn;
+  });
 
-  test("audit only → 1 middleware named 'audit'", () => {
+  // ── Empty config (open preset) ────────────────────────────────────────
+
+  test("empty config resolves open preset → permissions middleware", () => {
+    const { middlewares } = createGovernanceStack({});
+    // Open preset creates permissions middleware from permissionRules: { allow: ["*"] }
+    expect(middlewares).toHaveLength(1);
+    expect(middlewares[0]?.name).toBe("permissions");
+  });
+
+  // ── Single middleware + open preset ──────────────────────────────────
+
+  test("audit only → permissions + audit middleware", () => {
     const sink = createInMemoryAuditSink();
     const { middlewares } = createGovernanceStack({ audit: { sink } });
-    expect(middlewares).toHaveLength(1);
-    expect(middlewares[0]?.name).toBe("audit");
+    // Open preset adds permissions, user adds audit
+    expect(middlewares).toHaveLength(2);
+    const names = middlewares.map((mw) => mw.name);
+    expect(names).toContain("permissions");
+    expect(names).toContain("audit");
   });
 
-  test("governanceBackend only → 1 middleware named 'koi:governance-backend'", () => {
+  test("governanceBackend only → permissions + governance-backend", () => {
     const { middlewares } = createGovernanceStack({
       governanceBackend: { backend: makeAllowGovernanceBackend() },
     });
-    expect(middlewares).toHaveLength(1);
-    expect(middlewares[0]?.name).toBe("koi:governance-backend");
+    expect(middlewares).toHaveLength(2);
+    const names = middlewares.map((mw) => mw.name);
+    expect(names).toContain("permissions");
+    expect(names).toContain("koi:governance-backend");
   });
 
   // ── Full 9-middleware stack ──────────────────────────────────────────────
@@ -131,27 +174,46 @@ describe("createGovernanceStack", () => {
       },
       governanceBackend: { backend: makeAllowGovernanceBackend() },
       pay: {
-        tracker: {
-          record: async () => undefined,
-          totalSpend: async () => 0,
-          remaining: async () => 1000,
-          breakdown: async () => ({ totalCostUsd: 0, byModel: [], byTool: [] }),
-        },
+        tracker: makePayTracker(),
         calculator: { calculate: () => 0 },
         budget: 1000,
       },
       audit: { sink },
-      pii: {
-        strategy: "redact",
-      },
-      sanitize: {
-        rules: [],
-      },
-      guardrails: {
-        rules: [],
-      },
+      pii: { strategy: "redact" },
+      sanitize: { rules: [] },
+      guardrails: { rules: [] },
     });
     expect(middlewares).toHaveLength(9);
+  });
+
+  test("all 8 configured without pay → 8 middlewares", () => {
+    const sink = createInMemoryAuditSink();
+    const { middlewares } = createGovernanceStack({
+      permissions: {
+        backend: {
+          check: () => ({ effect: "allow" as const }),
+        },
+      },
+      execApprovals: {
+        rules: { allow: ["*"], deny: [], ask: [] },
+        onAsk: async () => ({ kind: "allow_once" as const }),
+      },
+      delegation: {
+        secret: "test-secret",
+        registry: {
+          isRevoked: async () => false,
+          revoke: async () => undefined,
+        },
+        grantStore: new Map(),
+      },
+      governanceBackend: { backend: makeAllowGovernanceBackend() },
+      audit: { sink },
+      pii: { strategy: "redact" },
+      sanitize: { rules: [] },
+      guardrails: { rules: [] },
+    });
+    expect(middlewares).toHaveLength(8);
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
   test("all 9 ordered by priority ascending", () => {
@@ -176,12 +238,7 @@ describe("createGovernanceStack", () => {
       },
       governanceBackend: { backend: makeAllowGovernanceBackend() },
       pay: {
-        tracker: {
-          record: async () => undefined,
-          totalSpend: async () => 0,
-          remaining: async () => 1000,
-          breakdown: async () => ({ totalCostUsd: 0, byModel: [], byTool: [] }),
-        },
+        tracker: makePayTracker(),
         calculator: { calculate: () => 0 },
         budget: 1000,
       },
@@ -213,9 +270,9 @@ describe("createGovernanceStack", () => {
         onAsk: async () => ({ kind: "deny_once" as const, reason: "test" }),
       },
     });
-    expect(middlewares).toHaveLength(1);
-    expect(middlewares[0]?.name).toBe("exec-approvals");
-    expect(middlewares[0]?.priority).toBe(110);
+    const ea = middlewares.find((mw) => mw.name === "exec-approvals");
+    expect(ea).toBeDefined();
+    expect(ea?.priority).toBe(110);
   });
 
   test("delegation priority is overridden to 120", () => {
@@ -229,17 +286,102 @@ describe("createGovernanceStack", () => {
         grantStore: new Map(),
       },
     });
-    expect(middlewares).toHaveLength(1);
-    expect(middlewares[0]?.name).toBe("koi:delegation");
-    expect(middlewares[0]?.priority).toBe(120);
+    const del = middlewares.find((mw) => mw.name === "koi:delegation");
+    expect(del).toBeDefined();
+    expect(del?.priority).toBe(120);
   });
 
-  // ── Return value is immutable-shaped ────────────────────────────────────
+  // ── Return value shape ────────────────────────────────────────────────
 
-  test("returns object with 'middlewares' property", () => {
+  test("returns GovernanceBundle with middlewares, providers, and config", () => {
     const result = createGovernanceStack({});
     expect(result).toHaveProperty("middlewares");
+    expect(result).toHaveProperty("providers");
+    expect(result).toHaveProperty("config");
     expect(Array.isArray(result.middlewares)).toBe(true);
+    expect(Array.isArray(result.providers)).toBe(true);
+  });
+
+  test("config metadata reflects open preset", () => {
+    const { config } = createGovernanceStack({});
+    expect(config.preset).toBe("open");
+    expect(config.middlewareCount).toBe(1); // permissions from open
+    expect(config.providerCount).toBe(0);
+    expect(config.payDeprecated).toBe(false);
+    expect(config.scopeEnabled).toBe(false);
+  });
+
+  test("providers is empty when no backends provided", () => {
+    const { providers } = createGovernanceStack({ preset: "strict" });
+    expect(providers).toHaveLength(0);
+  });
+
+  // ── Preset tests ──────────────────────────────────────────────────────
+
+  test("preset: standard → permissions + pii + sanitize", () => {
+    const { middlewares, config } = createGovernanceStack({ preset: "standard" });
+    const names = middlewares.map((mw) => mw.name);
+    expect(names).toContain("permissions");
+    expect(names).toContain("pii");
+    expect(names).toContain("sanitize");
+    expect(config.preset).toBe("standard");
+    expect(config.scopeEnabled).toBe(true); // standard has scope config
+  });
+
+  test("preset: strict → permissions + pii + sanitize + guardrails", () => {
+    const { middlewares, config } = createGovernanceStack({ preset: "strict" });
+    const names = middlewares.map((mw) => mw.name);
+    expect(names).toContain("permissions");
+    expect(names).toContain("pii");
+    expect(names).toContain("sanitize");
+    expect(names).toContain("guardrails");
+    expect(config.preset).toBe("strict");
+    expect(config.scopeEnabled).toBe(true);
+  });
+
+  test("preset ordering invariant: open count ≤ standard count ≤ strict count", () => {
+    const openCount = createGovernanceStack({ preset: "open" }).middlewares.length;
+    const stdCount = createGovernanceStack({ preset: "standard" }).middlewares.length;
+    const strictCount = createGovernanceStack({ preset: "strict" }).middlewares.length;
+    expect(stdCount).toBeGreaterThanOrEqual(openCount);
+    expect(strictCount).toBeGreaterThanOrEqual(stdCount);
+  });
+
+  // ── Pay deprecation ─────────────────────────────────────────────────
+
+  test("pay deprecated but still functional → 9 middlewares + console.warn", () => {
+    const sink = createInMemoryAuditSink();
+    const { middlewares, config } = createGovernanceStack({
+      permissions: {
+        backend: { check: () => ({ effect: "allow" as const }) },
+      },
+      execApprovals: {
+        rules: { allow: ["*"], deny: [], ask: [] },
+        onAsk: async () => ({ kind: "allow_once" as const }),
+      },
+      delegation: {
+        secret: "test-secret",
+        registry: {
+          isRevoked: async () => false,
+          revoke: async () => undefined,
+        },
+        grantStore: new Map(),
+      },
+      governanceBackend: { backend: makeAllowGovernanceBackend() },
+      pay: {
+        tracker: makePayTracker(),
+        calculator: { calculate: () => 0 },
+        budget: 1000,
+      },
+      audit: { sink },
+      pii: { strategy: "redact" },
+      sanitize: { rules: [] },
+      guardrails: { rules: [] },
+    });
+    expect(middlewares).toHaveLength(9);
+    expect(config.payDeprecated).toBe(true);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0]?.[0]).toContain("deprecated");
   });
 });
 
