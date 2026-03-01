@@ -1,8 +1,8 @@
 /**
- * ACP session/update notification → Koi EngineEvent mapping.
+ * Bidirectional ACP ↔ Koi event mapping.
  *
- * Maps each ACP update kind to the appropriate Koi EngineEvent
- * discriminated union variant.
+ * - `mapSessionUpdate()`: ACP session/update → Koi EngineEvent (client side)
+ * - `mapEngineEventToAcp()`: Koi EngineEvent → ACP session/update (server side)
  */
 
 import type { EngineEvent } from "@koi/core";
@@ -10,7 +10,7 @@ import { toolCallId } from "@koi/core";
 import type { SessionUpdatePayload, TextContent } from "./acp-schema.js";
 
 // ---------------------------------------------------------------------------
-// Map ACP session/update payload to Koi EngineEvents
+// ACP → Koi (used by engine-acp client)
 // ---------------------------------------------------------------------------
 
 /**
@@ -122,10 +122,110 @@ export function mapSessionUpdate(update: SessionUpdatePayload): readonly EngineE
       // Exhaustive check for unknown future update kinds
       const _exhaustive: never = update;
       console.warn(
-        "[engine-acp] Unknown session/update kind:",
+        "[acp-protocol] Unknown session/update kind:",
         (_exhaustive as { sessionUpdate: string }).sessionUpdate,
       );
       return [];
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Koi → ACP (used by acp server)
+// ---------------------------------------------------------------------------
+
+/**
+ * Map a Koi EngineEvent to an ACP SessionUpdatePayload for session/update
+ * notifications sent to the IDE.
+ *
+ * Returns `undefined` for events that have no ACP equivalent
+ * (turn_start, turn_end, done) — the caller should skip those.
+ *
+ * - `text_delta` → `agent_message_chunk`
+ * - `tool_call_start` → `tool_call` (status: "pending")
+ * - `tool_call_delta` → `tool_call_update` (status: "in_progress")
+ * - `tool_call_end` → `tool_call_update` (status: "completed" or "failed")
+ * - `custom` with `acp:*` type → pass through as appropriate update kind
+ * - `turn_start`, `turn_end`, `done` → undefined (no ACP equivalent)
+ */
+export function mapEngineEventToAcp(event: EngineEvent): SessionUpdatePayload | undefined {
+  switch (event.kind) {
+    case "text_delta":
+      return {
+        sessionUpdate: "agent_message_chunk",
+        content: [{ type: "text", text: event.delta }],
+      };
+
+    case "tool_call_start":
+      return {
+        sessionUpdate: "tool_call",
+        toolCallId: String(event.callId),
+        title: event.toolName,
+        kind: "other",
+        status: "pending",
+        ...(event.args !== undefined
+          ? { rawInput: event.args as Readonly<Record<string, unknown>> }
+          : {}),
+      };
+
+    case "tool_call_delta":
+      return {
+        sessionUpdate: "tool_call_update",
+        toolCallId: String(event.callId),
+        status: "in_progress",
+        content: [{ type: "text", text: event.delta }],
+      };
+
+    case "tool_call_end": {
+      const resultText =
+        typeof event.result === "string" ? event.result : JSON.stringify(event.result);
+      return {
+        sessionUpdate: "tool_call_update",
+        toolCallId: String(event.callId),
+        status: "completed",
+        content: [{ type: "text", text: resultText }],
+      };
+    }
+
+    case "custom": {
+      // Pass through acp:thought as agent_thought_chunk
+      if (event.type === "acp:thought") {
+        const data = event.data as { readonly text: string };
+        return {
+          sessionUpdate: "agent_thought_chunk",
+          content: { type: "text", text: data.text },
+        };
+      }
+      // Pass through acp:plan as plan
+      if (event.type === "acp:plan") {
+        const data = event.data as { readonly text: string };
+        return {
+          sessionUpdate: "plan",
+          content: [{ type: "text", text: data.text }],
+        };
+      }
+      // Pass through acp:mode_change as current_mode_update
+      if (event.type === "acp:mode_change") {
+        const data = event.data as { readonly mode: string };
+        return {
+          sessionUpdate: "current_mode_update",
+          mode: data.mode,
+        };
+      }
+      // Non-ACP custom events → skip
+      return undefined;
+    }
+
+    case "turn_start":
+    case "turn_end":
+    case "done":
+      // No ACP equivalent — handled at protocol level
+      return undefined;
+
+    default: {
+      const _exhaustive: never = event;
+      void _exhaustive;
+      return undefined;
     }
   }
 }

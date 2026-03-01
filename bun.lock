@@ -15,6 +15,30 @@
         "typescript": "^5.9.3",
       },
     },
+    "packages/acp": {
+      "name": "@koi/acp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/acp-protocol": "workspace:*",
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/acp-protocol": {
+      "name": "@koi/acp-protocol",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/agent-discovery": {
       "name": "@koi/agent-discovery",
       "version": "0.0.0",
@@ -610,9 +634,9 @@
       "name": "@koi/engine-acp",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/acp-protocol": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/resolve": "workspace:*",
-        "zod": "4.3.6",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -2346,6 +2370,10 @@
     "@keyv/bigmap": ["@keyv/bigmap@1.3.1", "", { "dependencies": { "hashery": "^1.4.0", "hookified": "^1.15.0" }, "peerDependencies": { "keyv": "^5.6.0" } }, "sha512-WbzE9sdmQtKy8vrNPa9BRnwZh5UF4s1KTmSK0KUVLo3eff5BlQNNWDnFOouNpKfPKDnms9xynJjsMYjMaT/aFQ=="],
 
     "@keyv/serialize": ["@keyv/serialize@1.1.1", "", {}, "sha512-dXn3FZhPv0US+7dtJsIi2R+c7qWYiReoEh5zUntWCf4oSpMNib8FDhSoed6m3QyZdx5hK7iLFkYk3rNxwt8vTA=="],
+
+    "@koi/acp": ["@koi/acp@workspace:packages/acp"],
+
+    "@koi/acp-protocol": ["@koi/acp-protocol@workspace:packages/acp-protocol"],
 
     "@koi/agent-discovery": ["@koi/agent-discovery@workspace:packages/agent-discovery"],
 

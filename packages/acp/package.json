@@ -1,5 +1,5 @@
 {
-  "name": "@koi/engine-acp",
+  "name": "@koi/acp",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@koi/acp-protocol": "workspace:*",
+    "@koi/channel-base": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/resolve": "workspace:*"
   },

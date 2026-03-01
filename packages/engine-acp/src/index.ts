@@ -10,12 +10,14 @@
  * request_permission callbacks.
  */
 
-export type { AgentCapabilities, ClientCapabilities } from "./acp-schema.js";
+// Re-export shared protocol types for backward compatibility
+export type { AcpTransport, AgentCapabilities, ClientCapabilities } from "@koi/acp-protocol";
+export { mapSessionUpdate } from "@koi/acp-protocol";
+
 export { createAcpAdapter } from "./adapter.js";
 export type { ApprovalBridgeResult } from "./approval-bridge.js";
 export { resolvePermission } from "./approval-bridge.js";
 export { descriptor } from "./descriptor.js";
-export { mapSessionUpdate } from "./event-map.js";
-export type { AcpProcess, AcpTransport } from "./transport.js";
+export type { AcpProcess } from "./transport.js";
 export { createStdioTransport } from "./transport.js";
 export type { AcpAdapterConfig, AcpEngineAdapter } from "./types.js";

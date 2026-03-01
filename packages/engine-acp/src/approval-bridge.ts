@@ -7,8 +7,8 @@
  * Fail-closed: if the handler throws, the permission is cancelled.
  */
 
+import type { PermissionOption, SessionRequestPermissionParams } from "@koi/acp-protocol";
 import type { ApprovalDecision, ApprovalHandler } from "@koi/core";
-import type { PermissionOption, SessionRequestPermissionParams } from "./acp-schema.js";
 
 // ---------------------------------------------------------------------------
 // Permission resolution

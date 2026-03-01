@@ -1,51 +1,32 @@
 /**
- * AcpTransport implementation — thin abstraction over the ACP process I/O.
+ * Server-side AcpTransport backed by the current process's stdin/stdout.
  *
- * The AcpTransport interface is imported from @koi/acp-protocol.
- * This module provides the stdio implementation backed by a spawned process.
+ * Used when Koi is spawned by an IDE (e.g., `koi serve --manifest koi.yaml`).
+ * Reads JSON-RPC lines from stdin, writes JSON-RPC lines to stdout.
  */
 
 import type { AcpTransport, RpcMessage } from "@koi/acp-protocol";
 import { createLineParser } from "@koi/acp-protocol";
 
-// ---------------------------------------------------------------------------
-// Managed process abstraction (mirrors engine-external's ManagedProcess)
-// ---------------------------------------------------------------------------
-
-export interface AcpProcess {
-  readonly pid: number;
-  readonly stdin: {
-    write(data: string | Uint8Array): number | Promise<number>;
-    end(): void;
-  };
-  readonly stdout: ReadableStream<Uint8Array>;
-  readonly stderr: ReadableStream<Uint8Array>;
-  readonly exited: Promise<number>;
-  readonly kill: (signal?: number) => void;
-}
-
-// ---------------------------------------------------------------------------
-// Stdio transport factory
-// ---------------------------------------------------------------------------
-
-const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
 
 /**
- * Create an AcpTransport backed by a spawned process's stdin/stdout.
+ * Create an AcpTransport backed by the current process's stdin/stdout.
  *
- * Messages are framed as newline-delimited JSON lines.
- * The caller owns the process lifecycle — close() only stops writing.
+ * - Reads from `process.stdin` as a ReadableStream
+ * - Writes to `process.stdout` with backpressure awareness
+ * - Close stops reading and writing
  */
-export function createStdioTransport(proc: AcpProcess): AcpTransport {
-  // let: lifecycle flag — toggled by close()
+export function createProcessTransport(): AcpTransport {
+  // let: lifecycle flag
   let closed = false;
 
   function send(messageJson: string): void {
     if (closed) return;
     const line = `${messageJson}\n`;
-    // Bun.spawn stdin.write is synchronous in practice; ignore promise
-    void proc.stdin.write(TEXT_ENCODER.encode(line));
+    // process.stdout.write returns boolean indicating if buffer is full.
+    // We don't block here — the caller (acp-channel) handles backpressure.
+    process.stdout.write(line);
   }
 
   function close(): void {
@@ -57,15 +38,14 @@ export function createStdioTransport(proc: AcpProcess): AcpTransport {
 
     return {
       [Symbol.asyncIterator](): AsyncIterator<RpcMessage> {
-        // let: pending items buffer
         const buffer: RpcMessage[] = [];
-        // let: pending consumer resolver (one at a time)
+        // let: pending consumer resolver
         let resolver: ((result: IteratorResult<RpcMessage, undefined>) => void) | undefined;
         // let: done flag
         let done = false;
 
-        // Start reading stdout in the background
-        const reader = proc.stdout.getReader();
+        const stdin = Bun.stdin.stream();
+        const reader = stdin.getReader();
 
         async function read(): Promise<void> {
           try {
@@ -96,7 +76,7 @@ export function createStdioTransport(proc: AcpProcess): AcpTransport {
               }
             }
           } catch {
-            // stdout read error (process crashed) — treat as end of stream
+            // stdin read error — treat as end of stream
           } finally {
             reader.releaseLock();
             done = true;

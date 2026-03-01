@@ -8,30 +8,27 @@
  * - Pending outbound requests tracked by ID for async response matching
  */
 
-import type { EngineEvent, EngineInput, EngineMetrics, EngineOutput } from "@koi/core";
-import type { AgentCapabilities } from "./acp-schema.js";
+import type { AgentCapabilities, RpcInboundRequest, RpcMessage } from "@koi/acp-protocol";
 import {
+  buildErrorResponse,
+  buildRequest,
+  buildResponse,
+  createAsyncQueue,
+  mapSessionUpdate,
   parseInitializeResult,
   parseSessionNewResult,
   parseSessionPromptResult,
   parseSessionUpdateParams,
+  RPC_ERROR_CODES,
   safeParseFsReadTextFileParams,
   safeParseFsWriteTextFileParams,
   safeParseSessionRequestPermissionParams,
   safeParseTerminalCreateParams,
   safeParseTerminalSessionParams,
-} from "./acp-schema.js";
+} from "@koi/acp-protocol";
+import type { EngineEvent, EngineInput, EngineMetrics, EngineOutput } from "@koi/core";
 import { resolvePermission } from "./approval-bridge.js";
-import { createAsyncQueue } from "./async-queue.js";
-import { mapSessionUpdate } from "./event-map.js";
 import { handleReadTextFile, handleWriteTextFile } from "./fs-handlers.js";
-import type { RpcInboundRequest, RpcMessage } from "./json-rpc-parser.js";
-import {
-  buildErrorResponse,
-  buildRequest,
-  buildResponse,
-  RPC_ERROR_CODES,
-} from "./json-rpc-parser.js";
 import { createTerminalRegistry } from "./terminal-handlers.js";
 import type { AcpProcess } from "./transport.js";
 import { createStdioTransport } from "./transport.js";

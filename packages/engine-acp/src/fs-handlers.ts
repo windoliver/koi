@@ -9,7 +9,7 @@ import type {
   FsReadTextFileParams,
   FsReadTextFileResult,
   FsWriteTextFileParams,
-} from "./acp-schema.js";
+} from "@koi/acp-protocol";
 
 // ---------------------------------------------------------------------------
 // fs/read_text_file

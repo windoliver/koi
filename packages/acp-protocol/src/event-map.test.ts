@@ -1,10 +1,16 @@
 /**
- * Tests for ACP session/update → Koi EngineEvent mapping.
+ * Tests for bidirectional ACP ↔ Koi event mapping.
  */
 
 import { describe, expect, test } from "bun:test";
+import type { EngineEvent } from "@koi/core";
+import { toolCallId } from "@koi/core";
 import type { SessionUpdatePayload } from "./acp-schema.js";
-import { mapSessionUpdate } from "./event-map.js";
+import { mapEngineEventToAcp, mapSessionUpdate } from "./event-map.js";
+
+// ---------------------------------------------------------------------------
+// ACP → Koi (mapSessionUpdate) — existing tests
+// ---------------------------------------------------------------------------
 
 describe("mapSessionUpdate — agent_message_chunk", () => {
   test("maps text block to text_delta event", () => {
@@ -178,5 +184,164 @@ describe("mapSessionUpdate — current_mode_update", () => {
       expect(events[0].type).toBe("acp:mode_change");
       expect((events[0].data as { mode: string }).mode).toBe("auto");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Koi → ACP (mapEngineEventToAcp) — new reverse mapper tests
+// ---------------------------------------------------------------------------
+
+describe("mapEngineEventToAcp — text_delta", () => {
+  test("maps to agent_message_chunk", () => {
+    const event: EngineEvent = { kind: "text_delta", delta: "Hello" };
+    const result = mapEngineEventToAcp(event);
+    expect(result).toBeDefined();
+    expect(result?.sessionUpdate).toBe("agent_message_chunk");
+    if (result?.sessionUpdate === "agent_message_chunk") {
+      expect(result.content).toEqual([{ type: "text", text: "Hello" }]);
+    }
+  });
+});
+
+describe("mapEngineEventToAcp — tool_call_start", () => {
+  test("maps to tool_call with pending status", () => {
+    const event: EngineEvent = {
+      kind: "tool_call_start",
+      toolName: "Read file",
+      callId: toolCallId("tc_1"),
+    };
+    const result = mapEngineEventToAcp(event);
+    expect(result).toBeDefined();
+    expect(result?.sessionUpdate).toBe("tool_call");
+    if (result?.sessionUpdate === "tool_call") {
+      expect(result.toolCallId).toBe("tc_1");
+      expect(result.title).toBe("Read file");
+      expect(result.status).toBe("pending");
+    }
+  });
+
+  test("includes rawInput when args present", () => {
+    const event: EngineEvent = {
+      kind: "tool_call_start",
+      toolName: "Write file",
+      callId: toolCallId("tc_2"),
+      args: { path: "/foo.ts" },
+    };
+    const result = mapEngineEventToAcp(event);
+    if (result?.sessionUpdate === "tool_call") {
+      expect(result.rawInput).toEqual({ path: "/foo.ts" });
+    }
+  });
+});
+
+describe("mapEngineEventToAcp — tool_call_delta", () => {
+  test("maps to tool_call_update with in_progress status", () => {
+    const event: EngineEvent = {
+      kind: "tool_call_delta",
+      callId: toolCallId("tc_1"),
+      delta: "partial output",
+    };
+    const result = mapEngineEventToAcp(event);
+    expect(result?.sessionUpdate).toBe("tool_call_update");
+    if (result?.sessionUpdate === "tool_call_update") {
+      expect(result.status).toBe("in_progress");
+      expect(result.content).toEqual([{ type: "text", text: "partial output" }]);
+    }
+  });
+});
+
+describe("mapEngineEventToAcp — tool_call_end", () => {
+  test("maps to tool_call_update with completed status", () => {
+    const event: EngineEvent = {
+      kind: "tool_call_end",
+      callId: toolCallId("tc_1"),
+      result: "Done",
+    };
+    const result = mapEngineEventToAcp(event);
+    expect(result?.sessionUpdate).toBe("tool_call_update");
+    if (result?.sessionUpdate === "tool_call_update") {
+      expect(result.status).toBe("completed");
+      expect(result.content).toEqual([{ type: "text", text: "Done" }]);
+    }
+  });
+
+  test("serializes non-string result to JSON", () => {
+    const event: EngineEvent = {
+      kind: "tool_call_end",
+      callId: toolCallId("tc_1"),
+      result: { output: 42 },
+    };
+    const result = mapEngineEventToAcp(event);
+    if (result?.sessionUpdate === "tool_call_update") {
+      expect(result.content).toEqual([{ type: "text", text: '{"output":42}' }]);
+    }
+  });
+});
+
+describe("mapEngineEventToAcp — custom events", () => {
+  test("maps acp:thought to agent_thought_chunk", () => {
+    const event: EngineEvent = {
+      kind: "custom",
+      type: "acp:thought",
+      data: { text: "thinking..." },
+    };
+    const result = mapEngineEventToAcp(event);
+    expect(result?.sessionUpdate).toBe("agent_thought_chunk");
+  });
+
+  test("maps acp:plan to plan", () => {
+    const event: EngineEvent = {
+      kind: "custom",
+      type: "acp:plan",
+      data: { text: "Step 1" },
+    };
+    const result = mapEngineEventToAcp(event);
+    expect(result?.sessionUpdate).toBe("plan");
+  });
+
+  test("maps acp:mode_change to current_mode_update", () => {
+    const event: EngineEvent = {
+      kind: "custom",
+      type: "acp:mode_change",
+      data: { mode: "auto" },
+    };
+    const result = mapEngineEventToAcp(event);
+    expect(result?.sessionUpdate).toBe("current_mode_update");
+    if (result?.sessionUpdate === "current_mode_update") {
+      expect(result.mode).toBe("auto");
+    }
+  });
+
+  test("returns undefined for non-ACP custom events", () => {
+    const event: EngineEvent = {
+      kind: "custom",
+      type: "ui:widget",
+      data: { x: 1 },
+    };
+    expect(mapEngineEventToAcp(event)).toBeUndefined();
+  });
+});
+
+describe("mapEngineEventToAcp — skipped events", () => {
+  test("returns undefined for turn_start", () => {
+    const event: EngineEvent = { kind: "turn_start", turnIndex: 0 };
+    expect(mapEngineEventToAcp(event)).toBeUndefined();
+  });
+
+  test("returns undefined for turn_end", () => {
+    const event: EngineEvent = { kind: "turn_end", turnIndex: 0 };
+    expect(mapEngineEventToAcp(event)).toBeUndefined();
+  });
+
+  test("returns undefined for done", () => {
+    const event: EngineEvent = {
+      kind: "done",
+      output: {
+        content: [],
+        stopReason: "completed",
+        metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 1, durationMs: 100 },
+      },
+    };
+    expect(mapEngineEventToAcp(event)).toBeUndefined();
   });
 });

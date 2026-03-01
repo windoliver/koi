@@ -3,8 +3,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type { SessionRequestPermissionParams } from "@koi/acp-protocol";
 import type { ApprovalHandler } from "@koi/core";
-import type { SessionRequestPermissionParams } from "./acp-schema.js";
 import { resolvePermission } from "./approval-bridge.js";
 
 const BASE_PARAMS: SessionRequestPermissionParams = {

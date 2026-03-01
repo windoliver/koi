@@ -1,0 +1,438 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/acp-protocol API surface . has stable type surface 1`] = `
+"import { ContentBlock as ContentBlock$1, EngineEvent } from '@koi/core';
+
+/**
+ * Zod schemas for ACP (Agent Client Protocol) wire types.
+ *
+ * All Zod schema consts are module-private (compatible with isolatedDeclarations).
+ * All exported TypeScript types are declared explicitly — never via z.infer<typeof Schema>.
+ * Only TypeScript types and parse functions are exported.
+ *
+ * This isolates all ACP spec definitions in one place — when the protocol
+ * changes, only this file needs updating.
+ *
+ * Based on ACP v0.10.x (JSON-RPC 2.0 over stdin/stdout).
+ */
+type RpcId = string | number | null;
+interface RpcErrorObject {
+    readonly code: number;
+    readonly message: string;
+    readonly data?: unknown;
+}
+/**
+ * Loose type for any incoming JSON-RPC message. Used to discriminate
+ * between request, notification, success response, and error response.
+ */
+interface AnyRpcMessage {
+    readonly jsonrpc: "2.0";
+    readonly id?: string | number | null | undefined;
+    readonly method?: string | undefined;
+    readonly params?: unknown;
+    readonly result?: unknown;
+    readonly error?: RpcErrorObject | undefined;
+}
+/** Parse any incoming ACP message. Returns undefined if invalid. */
+declare function parseAnyRpcMessage(value: unknown): AnyRpcMessage | undefined;
+interface TextContent {
+    readonly type: "text";
+    readonly text: string;
+    readonly mimeType?: "text/plain" | "text/markdown" | undefined;
+}
+interface ImageContent {
+    readonly type: "image";
+    readonly mimeType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+    readonly data: string;
+}
+interface ResourceLinkContent {
+    readonly type: "resourceLink";
+    readonly uri: string;
+    readonly mimeType: string;
+}
+interface EmbeddedResourceContent {
+    readonly type: "resource";
+    readonly uri: string;
+    readonly mimeType: string;
+    readonly text?: string | undefined;
+    readonly blob?: string | undefined;
+}
+type ContentBlock = TextContent | ImageContent | ResourceLinkContent | EmbeddedResourceContent;
+type ToolCallKind = "read" | "edit" | "delete" | "move" | "search" | "execute" | "think" | "fetch" | "other";
+type ToolCallStatus = "pending" | "in_progress" | "completed" | "failed";
+interface ToolCallLocation {
+    readonly path: string;
+    readonly lineStart?: number | undefined;
+    readonly lineEnd?: number | undefined;
+}
+interface ToolCall {
+    readonly toolCallId: string;
+    readonly title: string;
+    readonly kind: ToolCallKind;
+    readonly status: ToolCallStatus;
+    readonly content?: readonly ContentBlock[] | undefined;
+    readonly locations?: readonly ToolCallLocation[] | undefined;
+    readonly rawInput?: Readonly<Record<string, unknown>> | undefined;
+    readonly rawOutput?: Readonly<Record<string, unknown>> | undefined;
+}
+interface ClientCapabilities {
+    readonly fs?: {
+        readonly readTextFile?: boolean | undefined;
+        readonly writeTextFile?: boolean | undefined;
+    } | undefined;
+    readonly terminal?: boolean | undefined;
+}
+interface AgentCapabilities {
+    readonly loadSession?: boolean | undefined;
+    readonly promptCapabilities?: {
+        readonly image?: boolean | undefined;
+        readonly audio?: boolean | undefined;
+        readonly embeddedContext?: boolean | undefined;
+    } | undefined;
+    readonly mcp?: {
+        readonly http?: boolean | undefined;
+        readonly sse?: boolean | undefined;
+    } | undefined;
+}
+interface InitializeParams {
+    readonly protocolVersion: number;
+    readonly clientInfo?: {
+        readonly name?: string | undefined;
+        readonly title?: string | undefined;
+        readonly version?: string | undefined;
+    } | undefined;
+    readonly clientCapabilities?: ClientCapabilities | undefined;
+}
+interface InitializeResult {
+    readonly protocolVersion: number;
+    readonly agentInfo?: {
+        readonly name?: string | undefined;
+        readonly title?: string | undefined;
+        readonly version?: string | undefined;
+    } | undefined;
+    readonly agentCapabilities?: AgentCapabilities | undefined;
+}
+/** Parse an initialize result. Returns undefined if invalid. */
+declare function parseInitializeResult(value: unknown): InitializeResult | undefined;
+interface McpServerConfig {
+    readonly name: string;
+    readonly command: string;
+    readonly args?: readonly string[] | undefined;
+    readonly env?: readonly {
+        readonly name: string;
+        readonly value: string;
+    }[] | undefined;
+}
+interface SessionNewParams {
+    readonly cwd: string;
+    readonly mcpServers?: readonly McpServerConfig[] | undefined;
+}
+interface SessionNewResult {
+    readonly sessionId: string;
+}
+/** Parse a session/new result. Returns undefined if invalid. */
+declare function parseSessionNewResult(value: unknown): SessionNewResult | undefined;
+interface SessionPromptParams {
+    readonly sessionId: string;
+    readonly prompt: readonly ContentBlock[];
+}
+interface SessionPromptResult {
+    readonly stopReason: "end_turn" | "tool_call" | "error" | "cancelled" | "max_iterations";
+    readonly usage?: {
+        readonly inputTokens?: number | undefined;
+        readonly outputTokens?: number | undefined;
+    } | undefined;
+}
+/** Parse a session/prompt result. Returns undefined if invalid. */
+declare function parseSessionPromptResult(value: unknown): SessionPromptResult | undefined;
+interface AgentMessageChunkUpdate {
+    readonly sessionUpdate: "agent_message_chunk";
+    readonly content: readonly ContentBlock[];
+}
+interface AgentThoughtChunkUpdate {
+    readonly sessionUpdate: "agent_thought_chunk";
+    readonly content: {
+        readonly type: "text";
+        readonly text: string;
+    };
+}
+interface ToolCallUpdate {
+    readonly sessionUpdate: "tool_call";
+    readonly toolCallId: string;
+    readonly title: string;
+    readonly kind: ToolCallKind;
+    readonly status: ToolCallStatus;
+    readonly content?: readonly ContentBlock[] | undefined;
+    readonly locations?: readonly ToolCallLocation[] | undefined;
+    readonly rawInput?: Readonly<Record<string, unknown>> | undefined;
+    readonly rawOutput?: Readonly<Record<string, unknown>> | undefined;
+}
+interface ToolCallUpdateNotif {
+    readonly sessionUpdate: "tool_call_update";
+    readonly toolCallId: string;
+    readonly status?: ToolCallStatus | undefined;
+    readonly content?: readonly ContentBlock[] | undefined;
+}
+interface PlanUpdate {
+    readonly sessionUpdate: "plan";
+    readonly content: readonly ContentBlock[];
+}
+interface CurrentModeUpdate {
+    readonly sessionUpdate: "current_mode_update";
+    readonly mode: string;
+}
+type SessionUpdatePayload = AgentMessageChunkUpdate | AgentThoughtChunkUpdate | ToolCallUpdate | ToolCallUpdateNotif | PlanUpdate | CurrentModeUpdate;
+interface SessionUpdateParams {
+    readonly sessionId: string;
+    readonly update: SessionUpdatePayload;
+}
+/** Parse a session/update notification params. Returns undefined if invalid. */
+declare function parseSessionUpdateParams(value: unknown): SessionUpdateParams | undefined;
+interface PermissionOption {
+    readonly optionId: string;
+    readonly name: string;
+    readonly kind: "allow_once" | "allow_always" | "reject_once" | "reject_always";
+}
+interface SessionRequestPermissionParams {
+    readonly sessionId: string;
+    readonly toolCall: ToolCall;
+    readonly options?: readonly PermissionOption[] | undefined;
+}
+type PermissionOutcome = {
+    readonly outcome: "selected";
+    readonly optionId: string;
+} | {
+    readonly outcome: "cancelled";
+};
+/** Parse session/request_permission params. Returns undefined if invalid. */
+declare function parseSessionRequestPermissionParams(value: unknown): SessionRequestPermissionParams | undefined;
+interface FsReadTextFileParams {
+    readonly sessionId: string;
+    readonly path: string;
+    readonly line?: number | undefined;
+    readonly limit?: number | undefined;
+}
+interface FsReadTextFileResult {
+    readonly content: string;
+}
+interface FsWriteTextFileParams {
+    readonly sessionId: string;
+    readonly path: string;
+    readonly content: string;
+}
+/** Parse fs/read_text_file params. Returns undefined if invalid. */
+declare function parseFsReadTextFileParams(value: unknown): FsReadTextFileParams | undefined;
+/** Parse fs/write_text_file params. Returns undefined if invalid. */
+declare function parseFsWriteTextFileParams(value: unknown): FsWriteTextFileParams | undefined;
+interface TerminalCreateParams {
+    readonly sessionId: string;
+    readonly command: string;
+    readonly args?: readonly string[] | undefined;
+    readonly env?: readonly {
+        readonly name: string;
+        readonly value: string;
+    }[] | undefined;
+    readonly cwd?: string | undefined;
+    readonly outputByteLimit?: number | undefined;
+}
+interface TerminalCreateResult {
+    readonly terminalId: string;
+}
+interface TerminalSessionParams {
+    readonly sessionId: string;
+    readonly terminalId: string;
+}
+interface TerminalOutputResult {
+    readonly output: string;
+    readonly truncated: boolean;
+    readonly exitStatus?: {
+        readonly exitCode: number;
+        readonly signal: string | null;
+    } | undefined;
+}
+interface TerminalWaitForExitResult {
+    readonly exitCode: number;
+    readonly signal: string | null;
+}
+/** Parse terminal/create params. Returns undefined if invalid. */
+declare function parseTerminalCreateParams(value: unknown): TerminalCreateParams | undefined;
+/** Parse terminal session (output/kill/release/wait_for_exit) params. */
+declare function parseTerminalSessionParams(value: unknown): TerminalSessionParams | undefined;
+interface ParseResult<T> {
+    readonly success: true;
+    readonly data: T;
+}
+interface ParseError {
+    readonly success: false;
+    readonly error: string;
+}
+type SafeParseResult<T> = ParseResult<T> | ParseError;
+declare const safeParseFsReadTextFileParams: (value: unknown) => SafeParseResult<FsReadTextFileParams>;
+declare const safeParseFsWriteTextFileParams: (value: unknown) => SafeParseResult<FsWriteTextFileParams>;
+declare const safeParseTerminalCreateParams: (value: unknown) => SafeParseResult<TerminalCreateParams>;
+declare const safeParseTerminalSessionParams: (value: unknown) => SafeParseResult<TerminalSessionParams>;
+declare const safeParseSessionRequestPermissionParams: (value: unknown) => SafeParseResult<SessionRequestPermissionParams>;
+
+/**
+ * JSON-RPC 2.0 line-buffer parser and message router for ACP.
+ *
+ * Adapts engine-external's line-parser pattern (decision 13A) for the
+ * bidirectional JSON-RPC protocol ACP uses over stdin/stdout.
+ *
+ * Inbound message types (Agent → Koi):
+ * - Notification: has \`method\`, no \`id\` → pushed to notification queue
+ * - Request: has \`method\` and \`id\` → pushed to inbound request queue
+ * - Response: has \`id\`, no \`method\` → resolves a pending outbound request
+ */
+
+declare const RPC_ERROR_CODES: {
+    readonly PARSE_ERROR: -32700;
+    readonly INVALID_REQUEST: -32600;
+    readonly METHOD_NOT_FOUND: -32601;
+    readonly INVALID_PARAMS: -32602;
+    readonly INTERNAL_ERROR: -32603;
+};
+type RpcErrorCode = (typeof RPC_ERROR_CODES)[keyof typeof RPC_ERROR_CODES];
+/** A notification from the agent (no \`id\`, has \`method\`). */
+interface RpcNotification {
+    readonly kind: "notification";
+    readonly method: string;
+    readonly params: unknown;
+}
+/** A request from the agent to Koi (has both \`method\` and \`id\`). */
+interface RpcInboundRequest {
+    readonly kind: "inbound_request";
+    readonly id: RpcId;
+    readonly method: string;
+    readonly params: unknown;
+}
+/** A successful response to one of Koi's outbound requests. */
+interface RpcSuccessResponse {
+    readonly kind: "success_response";
+    readonly id: RpcId;
+    readonly result: unknown;
+}
+/** An error response to one of Koi's outbound requests. */
+interface RpcErrorResponse {
+    readonly kind: "error_response";
+    readonly id: RpcId;
+    readonly error: {
+        readonly code: number;
+        readonly message: string;
+        readonly data?: unknown;
+    };
+}
+type RpcMessage = RpcNotification | RpcInboundRequest | RpcSuccessResponse | RpcErrorResponse;
+/**
+ * Parses a stream of string chunks into complete JSON-RPC messages.
+ * Buffers partial lines across chunk boundaries.
+ */
+interface LineParser {
+    /** Feed a chunk of text; returns zero or more parsed messages. */
+    readonly feed: (chunk: string) => readonly RpcMessage[];
+    /** Flush any remaining partial line (e.g., on stream close). */
+    readonly flush: () => readonly RpcMessage[];
+}
+declare function createLineParser(): LineParser;
+/** Build a JSON-RPC request object and return its ID. */
+declare function buildRequest(method: string, params: unknown): {
+    readonly id: number;
+    readonly message: string;
+};
+/** Build a JSON-RPC success response string for an inbound request. */
+declare function buildResponse(id: RpcId, result: unknown): string;
+/** Build a JSON-RPC error response string for an inbound request. */
+declare function buildErrorResponse(id: RpcId, code: number, message: string, data?: unknown): string;
+
+/**
+ * Push-to-pull bridge: converts push-based producers into an async iterable.
+ *
+ * Copied from @koi/engine-external with a high-watermark warning added
+ * (decision 16A: unbounded queue + warn at 500 items).
+ */
+interface AsyncQueue<T> extends AsyncIterable<T> {
+    readonly push: (value: T) => void;
+    readonly end: () => void;
+}
+declare function createAsyncQueue<T>(label?: string): AsyncQueue<T>;
+
+/**
+ * AcpTransport — shared transport interface for ACP communication.
+ *
+ * Extracted from @koi/engine-acp so both the client (engine-acp) and
+ * server (acp) sides share the same transport abstraction.
+ */
+
+interface AcpTransport {
+    /** Send a raw JSON-RPC message string (must be a single line, no newline). */
+    readonly send: (messageJson: string) => void;
+    /** Async iterable of parsed inbound messages from the peer. */
+    readonly receive: () => AsyncIterable<RpcMessage>;
+    /** Close the transport. Subsequent send() calls are no-ops. */
+    readonly close: () => void;
+}
+
+/**
+ * Bidirectional content block mapping between Koi and ACP.
+ *
+ * Koi uses \`kind\` discriminator; ACP uses \`type\` discriminator.
+ * Some mappings are lossy (e.g., ButtonBlock has no ACP equivalent).
+ */
+
+/**
+ * Map Koi ContentBlocks to ACP ContentBlocks.
+ *
+ * Lossy for:
+ * - \`ButtonBlock\` → skipped (no ACP equivalent)
+ * - \`CustomBlock\` → skipped (no standard ACP representation)
+ * - \`ImageBlock\` → \`TextContent\` placeholder (Koi uses URL, ACP uses base64)
+ */
+declare function mapKoiContentToAcp(blocks: readonly ContentBlock$1[]): readonly ContentBlock[];
+/**
+ * Map ACP ContentBlocks to Koi ContentBlocks.
+ *
+ * - \`TextContent\` → \`TextBlock\`
+ * - \`ImageContent\` → \`ImageBlock\` (data: URI)
+ * - \`ResourceLinkContent\` → \`FileBlock\`
+ * - \`EmbeddedResourceContent\` → \`CustomBlock\` wrapper
+ */
+declare function mapAcpContentToKoi(blocks: readonly ContentBlock[]): readonly ContentBlock$1[];
+
+/**
+ * Bidirectional ACP ↔ Koi event mapping.
+ *
+ * - \`mapSessionUpdate()\`: ACP session/update → Koi EngineEvent (client side)
+ * - \`mapEngineEventToAcp()\`: Koi EngineEvent → ACP session/update (server side)
+ */
+
+/**
+ * Map an ACP session/update payload to zero or more Koi EngineEvents.
+ *
+ * - \`agent_message_chunk\` → \`text_delta\` for each text content block
+ * - \`agent_thought_chunk\` → \`custom(thought)\` event
+ * - \`tool_call\` → \`tool_call_start\`
+ * - \`tool_call_update\` with status \`completed\`/\`failed\` → \`tool_call_end\`
+ * - \`tool_call_update\` with other status → \`tool_call_delta\`
+ * - \`plan\` → \`custom(plan)\` event
+ * - \`current_mode_update\` → \`custom(mode_change)\` event
+ */
+declare function mapSessionUpdate(update: SessionUpdatePayload): readonly EngineEvent[];
+/**
+ * Map a Koi EngineEvent to an ACP SessionUpdatePayload for session/update
+ * notifications sent to the IDE.
+ *
+ * Returns \`undefined\` for events that have no ACP equivalent
+ * (turn_start, turn_end, done) — the caller should skip those.
+ *
+ * - \`text_delta\` → \`agent_message_chunk\`
+ * - \`tool_call_start\` → \`tool_call\` (status: "pending")
+ * - \`tool_call_delta\` → \`tool_call_update\` (status: "in_progress")
+ * - \`tool_call_end\` → \`tool_call_update\` (status: "completed" or "failed")
+ * - \`custom\` with \`acp:*\` type → pass through as appropriate update kind
+ * - \`turn_start\`, \`turn_end\`, \`done\` → undefined (no ACP equivalent)
+ */
+declare function mapEngineEventToAcp(event: EngineEvent): SessionUpdatePayload | undefined;
+
+export { type AcpTransport, type AgentCapabilities, type AnyRpcMessage, type AsyncQueue, type ClientCapabilities, type ContentBlock, type FsReadTextFileParams, type FsReadTextFileResult, type FsWriteTextFileParams, type ImageContent, type InitializeParams, type InitializeResult, type LineParser, type ParseError, type ParseResult, type PermissionOption, type PermissionOutcome, RPC_ERROR_CODES, type RpcErrorCode, type RpcErrorObject, type RpcErrorResponse, type RpcId, type RpcInboundRequest, type RpcMessage, type RpcNotification, type RpcSuccessResponse, type SafeParseResult, type SessionNewParams, type SessionNewResult, type SessionPromptParams, type SessionPromptResult, type SessionRequestPermissionParams, type SessionUpdateParams, type SessionUpdatePayload, type TerminalCreateParams, type TerminalCreateResult, type TerminalOutputResult, type TerminalSessionParams, type TerminalWaitForExitResult, type TextContent, type ToolCall, type ToolCallKind, type ToolCallStatus, buildErrorResponse, buildRequest, buildResponse, createAsyncQueue, createLineParser, mapAcpContentToKoi, mapEngineEventToAcp, mapKoiContentToAcp, mapSessionUpdate, parseAnyRpcMessage, parseFsReadTextFileParams, parseFsWriteTextFileParams, parseInitializeResult, parseSessionNewResult, parseSessionPromptResult, parseSessionRequestPermissionParams, parseSessionUpdateParams, parseTerminalCreateParams, parseTerminalSessionParams, safeParseFsReadTextFileParams, safeParseFsWriteTextFileParams, safeParseSessionRequestPermissionParams, safeParseTerminalCreateParams, safeParseTerminalSessionParams };
+"
+`;
