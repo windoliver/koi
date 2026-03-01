@@ -63,6 +63,38 @@ describe("createMemoryRecallTool", () => {
     expect(opts.tierFilter).toBeUndefined();
   });
 
+  test("passes graph_expand and max_hops to component.recall()", async () => {
+    const component = createMockMemoryComponent();
+    const tool = createMemoryRecallTool(component, "memory", "verified");
+    await tool.execute({ query: "test", graph_expand: true, max_hops: 3 });
+
+    const opts = component.calls[0]?.args?.[1] as MemoryRecallOptions;
+    expect(opts.graphExpand).toBe(true);
+    expect(opts.maxHops).toBe(3);
+  });
+
+  test("omits graphExpand and maxHops when not provided", async () => {
+    const component = createMockMemoryComponent();
+    const tool = createMemoryRecallTool(component, "memory", "verified");
+    await tool.execute({ query: "test" });
+
+    const opts = component.calls[0]?.args?.[1] as MemoryRecallOptions;
+    expect(opts.graphExpand).toBeUndefined();
+    expect(opts.maxHops).toBeUndefined();
+  });
+
+  test("returns validation error when graph_expand is not boolean", async () => {
+    const component = createMockMemoryComponent();
+    const tool = createMemoryRecallTool(component, "memory", "verified");
+    const result = (await tool.execute({
+      query: "test",
+      graph_expand: "yes",
+    })) as { readonly error: string; readonly code: string };
+
+    expect(result.code).toBe("VALIDATION");
+    expect(result.error).toContain("graph_expand");
+  });
+
   test("returns validation error when query missing", async () => {
     const component = createMockMemoryComponent();
     const tool = createMemoryRecallTool(component, "memory", "verified");

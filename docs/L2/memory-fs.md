@@ -51,8 +51,9 @@ packages/memory-fs/
 ├── src/
 │   ├── index.ts              ─ Public exports (backend + provider + types)
 │   ├── types.ts              ─ MemoryFact (internal), FsMemory, config, DI contracts
-│   ├── fs-memory.ts          ─ createFsMemory() factory (~330 LOC)
+│   ├── fs-memory.ts          ─ createFsMemory() factory (~400 LOC)
 │   ├── fact-store.ts         ─ File I/O: read/write/append, write queue, cache
+│   ├── graph-walk.ts         ─ BFS causal graph expansion with score decay
 │   ├── dedup.ts              ─ Jaccard similarity + CJK bigram fallback
 │   ├── decay.ts              ─ Exponential decay scoring + Hot/Warm/Cold tiering
 │   ├── slug.ts               ─ Entity name sanitization (path traversal guard)
@@ -68,7 +69,8 @@ packages/memory-fs/
 │   │       ├── recall.ts     ─ memory_recall tool factory
 │   │       └── search.ts     ─ memory_search tool factory
 │   └── __tests__/
-│       ├── e2e.test.ts       ─ Full createKoi + createPiAdapter integration tests
+│       ├── e2e.test.ts                ─ Full createKoi + createPiAdapter integration tests
+│       ├── e2e-causal-memory.test.ts  ─ Causal graph E2E with real LLM calls
 │       └── api-surface.test.ts
 └── dist/                      ─ ESM-only build output
 ```
@@ -137,7 +139,7 @@ Only 2 out of 5 exchanges stored — agent used judgment.
 When the agent calls `memory_store`:
 
 ```
-memory_store({ content, category, entities })
+memory_store({ content, category, entities, causalParents? })
   │
   ▼
 1. Resolve entity: slugify(entities[0] ?? namespace ?? "_default")
@@ -158,7 +160,11 @@ memory_store({ content, category, entities })
 6. Append fact via write queue (temp-file + rename for atomicity)
   │
   ▼
-7. Mark entity as dirty (for summary rebuild)
+7. Bidirectional causal edges: if causalParents provided,
+   update each parent's causalChildren to include new fact ID
+  │
+  ▼
+8. Mark entity as dirty (for summary rebuild)
 ```
 
 ### Recall Flow
@@ -195,19 +201,107 @@ memory_recall({ query, limit, tier })
   └── Both paths then:
         │
         ▼
-      4. Compute decay score + classify tier for each result
+      4. Apply tier filter (hot/warm/cold)
         │
         ▼
-      5. Apply tier filter + limit
+      5. Graph expansion (if graphExpand: true):
+         BFS along causalParents + causalChildren edges
+         within the same entity, up to maxHops (default: 2).
+         Score decays exponentially per hop: score × (0.8 ^ hops)
         │
         ▼
-      6. Update lastAccessed + accessCount (batch write, warms cold facts)
+      6. Dedup by fact ID (higher score wins), sort by score, apply limit
         │
         ▼
-      7. Return MemoryResult[] with { content, tier, decayScore, lastAccessed }
+      7. Update lastAccessed + accessCount (batch write, warms cold facts)
+        │
+        ▼
+      8. Return MemoryResult[] with { content, tier, decayScore,
+         lastAccessed, causalParents, causalChildren }
 ```
 
 **Important**: Without a search retriever, recall is recency-based — it returns the newest active facts regardless of query relevance. For production use, inject a `FsSearchRetriever` backed by `@koi/search` (BM25 + vector + hybrid).
+
+---
+
+## Causal Memory Graph
+
+Facts can be linked with causal edges (`causalParents` / `causalChildren`) to form a directed graph. This enables graph-aware retrieval that recovers causally related facts even when they share no vocabulary with the query.
+
+### Why Causal Edges
+
+AMA-Bench (Feb 2026) showed that flat similarity retrieval loses -43.2% accuracy because causally related facts often use completely different vocabulary:
+
+```
+Bug report: "login page times out"
+Root cause:  "DB connection pool exhausted"     ← different words
+Fix:         "increased pool_size to 20"        ← different words
+Result:      "latency dropped to <200ms"        ← different words
+
+Similarity search for "login timeout" finds only the bug report.
+Causal graph walk finds the entire chain.
+```
+
+### Storing Causal Edges
+
+Pass `causalParents` when storing a fact that was derived from existing facts:
+
+```typescript
+// Step 1: Store the root fact
+await mem.component.store("DB pool exhausted", {
+  relatedEntities: ["infra"],
+  category: "root-cause",
+});
+// Get its ID from recall
+const root = await mem.component.recall("DB pool");
+const rootId = root[0]?.metadata?.id;
+
+// Step 2: Store a derived fact with causal link
+await mem.component.store("increased pool_size to 20", {
+  relatedEntities: ["infra"],
+  category: "fix",
+  causalParents: [rootId],   // ← links to root cause
+});
+```
+
+Edges are **bidirectional**: storing a child also updates the parent's `causalChildren`. Both directions are traversed during graph expansion.
+
+### Graph-Aware Recall
+
+Pass `graphExpand: true` to walk causal edges during recall:
+
+```typescript
+const results = await mem.component.recall("pool exhausted", {
+  graphExpand: true,    // enable BFS along causal edges
+  maxHops: 2,           // max traversal depth (default: 2)
+  limit: 10,
+});
+```
+
+```
+Query: "pool exhausted"
+  │
+  ▼  hop 0  (direct hit)
+┌──────────────────────────────────┐
+│ "DB pool exhausted"   score: 1.0 │
+└──────────────────────────────────┘
+  │  causalChildren
+  ▼  hop 1  (score × 0.8)
+┌──────────────────────────────────┐
+│ "increased pool_size"  score: 0.8│
+└──────────────────────────────────┘
+  │  causalChildren
+  ▼  hop 2  (score × 0.8²)
+┌──────────────────────────────────┐
+│ "latency <200ms"       score: 0.64│
+└──────────────────────────────────┘
+```
+
+### Scope & Limitations (v1)
+
+- Edges are **same-entity only**. Cross-entity parent references are stored on the child but the parent's `causalChildren` is only updated if both live in the same entity.
+- Adjacency map is rebuilt **per-recall** (no persistent cache). Acceptable for entity-scoped fact sets; may need caching if fact counts grow large.
+- Cycle-safe: BFS uses a visited set, so circular edges (A→B→A) terminate correctly.
 
 ---
 
@@ -304,12 +398,21 @@ await mem.component.store("User prefers dark mode", {
   category: "preference",
 });
 
+// Store with causal link
+await mem.component.store("enabled dark mode in settings", {
+  relatedEntities: ["user"],
+  category: "action",
+  causalParents: ["<parent-fact-id>"],
+});
+
 // Recall facts
 const results = await mem.component.recall("dark mode", {
   limit: 5,
-  tierFilter: "hot",  // optional: "hot" | "warm" | "cold"
+  tierFilter: "hot",       // optional: "hot" | "warm" | "cold"
+  graphExpand: true,        // optional: walk causal edges
+  maxHops: 2,               // optional: BFS depth (default: 2)
 });
-// → [{ content, tier, decayScore, lastAccessed, metadata }]
+// → [{ content, tier, decayScore, lastAccessed, causalParents, causalChildren, metadata }]
 ```
 
 ### `createMemoryProvider(config): ComponentProvider`
@@ -337,8 +440,8 @@ const provider = createMemoryProvider({
 
 | Tool | Input | What It Does |
 |------|-------|-------------|
-| `memory_store` | `{ content, category?, related_entities? }` | Store an atomic fact. Auto-dedup + contradiction detection. |
-| `memory_recall` | `{ query, limit?, tier? }` | Search memories by query. Returns `{ results, count }`. |
+| `memory_store` | `{ content, category?, related_entities?, causal_parents? }` | Store an atomic fact. Auto-dedup + contradiction detection. `causal_parents` links to existing fact IDs. |
+| `memory_recall` | `{ query, limit?, tier?, graph_expand?, max_hops? }` | Search memories by query. `graph_expand: true` walks causal edges. Returns `{ results, count }`. |
 | `memory_search` | `{ entity?, limit? }` | Browse entity facts or list all known entities. |
 
 ### Custom Search (DI)
@@ -379,23 +482,25 @@ The DI contracts (`FsSearchRetriever`, `FsSearchIndexer`) are local function typ
 
 ## Testing
 
-126+ tests total across 13 test files:
+170+ tests total across 15 test files:
 
 | Test File | Count | What It Covers |
 |-----------|-------|----------------|
 | `slug.test.ts` | 13 | Path traversal, unicode, edge cases |
 | `dedup.test.ts` | 14 | Jaccard similarity, CJK bigrams |
 | `decay.test.ts` | 11 | Decay scoring, tier classification |
-| `fact-store.test.ts` | 12 | Concurrent writes, corruption recovery |
+| `fact-store.test.ts` | 15 | Concurrent writes, corruption recovery, causal backward compat |
 | `session-log.test.ts` | 5 | Daily log append |
 | `summary.test.ts` | 7 | Summary generation with tier filtering |
-| `fs-memory.test.ts` | 18 | Full integration: store → recall → dedup → decay |
-| `provider/tools/store.test.ts` | 7 | Store tool: validation, dedup, errors |
-| `provider/tools/recall.test.ts` | 9 | Recall tool: limits, tiers, errors |
+| `graph-walk.test.ts` | 9 | BFS expansion, cycle detection, score decay, dedup |
+| `fs-memory.test.ts` | 33 | Full integration: store → recall → dedup → decay → causal → graph expansion |
+| `provider/tools/store.test.ts` | 10 | Store tool: validation, causal_parents, dedup, errors |
+| `provider/tools/recall.test.ts` | 12 | Recall tool: limits, tiers, graph_expand, max_hops, errors |
 | `provider/tools/search.test.ts` | 7 | Search tool: entity list, entity lookup, errors |
 | `provider/memory-component-provider.test.ts` | 11 | Provider wiring: tokens, prefix, ops subset, detach |
 | `api-surface.test.ts` | 2 | DTS snapshot stability |
 | `e2e.test.ts` | 18 | Full createKoi + createPiAdapter + real LLM calls |
+| `e2e-causal-memory.test.ts` | 3 | Causal graph E2E: store with parents, recall with expansion, full workflow |
 
 E2E tests are gated on `E2E_TESTS=1` + `ANTHROPIC_API_KEY`:
 
@@ -403,7 +508,7 @@ E2E tests are gated on `E2E_TESTS=1` + `ANTHROPIC_API_KEY`:
 E2E_TESTS=1 bun test src/__tests__/e2e.test.ts
 ```
 
-E2E covers: tool wiring, custom prefix, operations subset, tool execution (all 3 tools), store→recall round-trip, dedup, contradiction, tier distribution, summary rebuild, cross-session persistence, and 5 LLM integration tests with real API calls through `createPiAdapter`.
+E2E covers: tool wiring, custom prefix, operations subset, tool execution (all 3 tools), store→recall round-trip, dedup, contradiction, tier distribution, summary rebuild, cross-session persistence, 5 LLM integration tests with real API calls through `createPiAdapter`, and 3 causal memory E2E tests (store with `causal_parents`, recall with `graph_expand`, full causal workflow).
 
 ---
 

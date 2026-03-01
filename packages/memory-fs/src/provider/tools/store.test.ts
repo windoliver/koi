@@ -88,6 +88,41 @@ describe("createMemoryStoreTool", () => {
     expect(result.error).toContain("disk full");
   });
 
+  test("passes causal_parents through to component.store()", async () => {
+    const component = createMockMemoryComponent();
+    const tool = createMemoryStoreTool(component, "memory", "verified");
+    const result = (await tool.execute({
+      content: "Applied the fix",
+      causal_parents: ["parent-id-1", "parent-id-2"],
+    })) as { readonly stored: boolean };
+
+    expect(result.stored).toBe(true);
+    expect(component.calls).toHaveLength(1);
+    const opts = component.calls[0]?.args?.[1] as MemoryStoreOptions;
+    expect(opts.causalParents).toEqual(["parent-id-1", "parent-id-2"]);
+  });
+
+  test("omits causalParents when causal_parents not provided", async () => {
+    const component = createMockMemoryComponent();
+    const tool = createMemoryStoreTool(component, "memory", "verified");
+    await tool.execute({ content: "Simple fact" });
+
+    const opts = component.calls[0]?.args?.[1] as MemoryStoreOptions;
+    expect(opts.causalParents).toBeUndefined();
+  });
+
+  test("returns validation error when causal_parents is not array of strings", async () => {
+    const component = createMockMemoryComponent();
+    const tool = createMemoryStoreTool(component, "memory", "verified");
+    const result = (await tool.execute({
+      content: "fact",
+      causal_parents: "not-an-array",
+    })) as { readonly error: string; readonly code: string };
+
+    expect(result.code).toBe("VALIDATION");
+    expect(result.error).toContain("causal_parents");
+  });
+
   test("descriptor has correct name with prefix", () => {
     const component = createMockMemoryComponent();
     const tool = createMemoryStoreTool(component, "mem", "sandbox");

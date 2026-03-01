@@ -7,10 +7,12 @@ import type { MemoryRecallOptions, MemoryResult, MemoryStoreOptions } from "@koi
 import { classifyTier, computeDecayScore } from "./decay.js";
 import { jaccard } from "./dedup.js";
 import { createFactStore } from "./fact-store.js";
+import { DEFAULT_GRAPH_DECAY_FACTOR, expandCausalGraph } from "./graph-walk.js";
 import { appendSessionLog } from "./session-log.js";
 import { slugifyEntity } from "./slug.js";
 import { rebuildSummary } from "./summary.js";
 import type {
+  FactStore,
   FsIndexDoc,
   FsMemory,
   FsMemoryConfig,
@@ -86,6 +88,8 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
       tier,
       decayScore: decay,
       lastAccessed: fact.lastAccessed,
+      causalParents: fact.causalParents,
+      causalChildren: fact.causalChildren,
     };
   }
 
@@ -115,6 +119,11 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
     const now = new Date();
     const category = options?.category ?? "context";
 
+    const causalParents =
+      options?.causalParents !== undefined && options.causalParents.length > 0
+        ? options.causalParents
+        : undefined;
+
     const newFact: MemoryFact = {
       id: generateId(),
       fact: content,
@@ -125,6 +134,7 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
       relatedEntities: options?.relatedEntities ? [...options.relatedEntities] : [],
       lastAccessed: now.toISOString(),
       accessCount: 0,
+      ...(causalParents !== undefined ? { causalParents } : {}),
     };
 
     // Read existing active facts for dedup
@@ -162,6 +172,24 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
 
     await factStore.appendFact(entity, newFact);
 
+    // Bidirectional causal edge: update each parent's causalChildren to include newFact.id
+    if (causalParents !== undefined && causalParents.length > 0) {
+      const entityFacts = await factStore.readFacts(entity);
+      const parentIds = new Set(causalParents);
+      await Promise.all(
+        entityFacts
+          .filter((f) => parentIds.has(f.id))
+          .map((parent) => {
+            const existingChildren = parent.causalChildren ?? [];
+            // Only add if not already present
+            if (existingChildren.includes(newFact.id)) return Promise.resolve();
+            return factStore.updateFact(entity, parent.id, {
+              causalChildren: [...existingChildren, newFact.id],
+            });
+          }),
+      );
+    }
+
     // Defer index update (flushed on recall)
     if (indexer !== undefined) {
       deferredIndexDocs = [
@@ -180,113 +208,158 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
     dirtyEntities = new Set([...dirtyEntities, entity]);
   };
 
+  type ScoredCandidate = {
+    readonly fact: MemoryFact;
+    readonly entity: string;
+    readonly score: number;
+  };
+
+  /** Apply tier filter and keep only active candidates. */
+  function applyTierFilter(
+    candidates: readonly ScoredCandidate[],
+    tierFilter: MemoryRecallOptions["tierFilter"],
+  ): readonly ScoredCandidate[] {
+    const filtered: ScoredCandidate[] = [];
+    for (const c of candidates) {
+      if (c.fact.status !== "active") continue;
+      const result = mapFactToResult(c.fact, c.score);
+      if (tierFilter !== undefined && tierFilter !== "all" && result.tier !== tierFilter) {
+        continue;
+      }
+      filtered.push(c);
+    }
+    return filtered;
+  }
+
+  /** Expand candidates along causal edges, dedup by fact ID (higher score wins). */
+  async function applyGraphExpansion(
+    filtered: readonly ScoredCandidate[],
+    maxHops: number,
+    facts: FactStore,
+  ): Promise<readonly ScoredCandidate[]> {
+    // Group candidates by entity for entity-scoped expansion
+    const byEntity = new Map<
+      string,
+      Array<{ readonly fact: MemoryFact; readonly score: number }>
+    >();
+    for (const c of filtered) {
+      const existing = byEntity.get(c.entity);
+      if (existing !== undefined) {
+        existing.push({ fact: c.fact, score: c.score });
+      } else {
+        byEntity.set(c.entity, [{ fact: c.fact, score: c.score }]);
+      }
+    }
+
+    const all: ScoredCandidate[] = [];
+    for (const [entity, seeds] of byEntity) {
+      const entityFacts = await facts.readFacts(entity);
+      const graphResults = expandCausalGraph(seeds, entityFacts, {
+        maxHops,
+        decayFactor: DEFAULT_GRAPH_DECAY_FACTOR,
+      });
+      for (const gr of graphResults) {
+        if (gr.fact.status === "active") {
+          all.push({ fact: gr.fact, entity, score: gr.score });
+        }
+      }
+    }
+
+    // Dedup by fact ID — keep higher score
+    const deduped = new Map<string, ScoredCandidate>();
+    for (const item of all) {
+      const existing = deduped.get(item.fact.id);
+      if (existing === undefined || item.score > existing.score) {
+        deduped.set(item.fact.id, item);
+      }
+    }
+    return [...deduped.values()];
+  }
+
+  /** Shared post-processing: tier filter, graph expansion, access-stat updates, limit. */
+  async function processRecallCandidates(
+    candidates: readonly ScoredCandidate[],
+    options: MemoryRecallOptions | undefined,
+    facts: FactStore,
+  ): Promise<readonly MemoryResult[]> {
+    const limit = options?.limit ?? 10;
+    const filtered = applyTierFilter(candidates, options?.tierFilter);
+
+    const expanded =
+      options?.graphExpand === true && filtered.length > 0
+        ? await applyGraphExpansion(filtered, options.maxHops ?? 2, facts)
+        : filtered;
+
+    // Sort by score descending, apply limit
+    const sorted = [...expanded].sort((a, b) => b.score - a.score).slice(0, limit);
+
+    // Map to results and batch update access stats
+    const nowIso = new Date().toISOString();
+    const results = sorted.map((c) => mapFactToResult(c.fact, c.score));
+    await Promise.all(
+      sorted.map((c) =>
+        facts.updateFact(c.entity, c.fact.id, {
+          lastAccessed: nowIso,
+          accessCount: c.fact.accessCount + 1,
+        }),
+      ),
+    );
+
+    return results;
+  }
+
   const recall = async (
     query: string,
     options?: MemoryRecallOptions,
   ): Promise<readonly MemoryResult[]> => {
     await flushDeferredIndex();
 
-    const limit = options?.limit ?? 10;
-    const tierFilter = options?.tierFilter;
-
     if (retriever !== undefined) {
+      const limit = options?.limit ?? 10;
       const hits = await retriever.retrieve(query, limit * 2);
       const allFacts = await loadAllFacts();
 
-      // Collect results and batch access updates by entity
-      const results: MemoryResult[] = [];
-      const accessUpdates: Array<{
+      const candidates: Array<{
+        readonly fact: MemoryFact;
         readonly entity: string;
-        readonly id: string;
-        readonly accessCount: number;
+        readonly score: number;
       }> = [];
-
       for (const hit of hits) {
         const fact = allFacts.get(hit.id);
-        if (fact === undefined || fact.status !== "active") continue;
-
-        const result = mapFactToResult(fact, hit.score);
-        if (tierFilter !== undefined && tierFilter !== "all" && result.tier !== tierFilter) {
-          continue;
-        }
-
-        results.push(result);
-        accessUpdates.push({
+        if (fact === undefined) continue;
+        candidates.push({
+          fact,
           entity: resolveEntity({ relatedEntities: fact.relatedEntities }),
-          id: fact.id,
-          accessCount: fact.accessCount + 1,
+          score: hit.score,
         });
       }
 
-      // Batch update access stats
-      const nowIso = new Date().toISOString();
-      await Promise.all(
-        accessUpdates.map((u) =>
-          factStore.updateFact(u.entity, u.id, {
-            lastAccessed: nowIso,
-            accessCount: u.accessCount,
-          }),
-        ),
-      );
-
-      return results.slice(0, limit);
+      return processRecallCandidates(candidates, options, factStore);
     }
 
-    // Fallback: scan all cached facts, sort by recency, filter by tier
+    // Fallback: scan all cached facts, sort by recency
     const allEntities = await factStore.listEntities();
     const entityFactArrays = await Promise.all(
       allEntities.map(async (ent) => ({ ent, facts: await factStore.readFacts(ent) })),
     );
 
-    const scored: Array<{ readonly fact: MemoryFact; readonly entity: string }> = [];
+    const candidates: Array<{
+      readonly fact: MemoryFact;
+      readonly entity: string;
+      readonly score: number;
+    }> = [];
     for (const { ent, facts } of entityFactArrays) {
       for (const f of facts) {
-        if (f.status === "active") {
-          scored.push({ fact: f, entity: ent });
-        }
+        candidates.push({ fact: f, entity: ent, score: 1.0 });
       }
     }
 
-    // Sort by recency
-    const sorted = [...scored].sort(
+    // Sort by recency (recency is the primary signal when no retriever)
+    candidates.sort(
       (a, b) => new Date(b.fact.timestamp).getTime() - new Date(a.fact.timestamp).getTime(),
     );
 
-    const results: MemoryResult[] = [];
-    const accessUpdates: Array<{
-      readonly entity: string;
-      readonly id: string;
-      readonly accessCount: number;
-    }> = [];
-
-    for (const { fact, entity } of sorted) {
-      const result = mapFactToResult(fact, 1.0);
-      if (tierFilter !== undefined && tierFilter !== "all" && result.tier !== tierFilter) {
-        continue;
-      }
-
-      results.push(result);
-      accessUpdates.push({
-        entity,
-        id: fact.id,
-        accessCount: fact.accessCount + 1,
-      });
-
-      if (results.length >= limit) break;
-    }
-
-    // Batch update access stats
-    const nowIso = new Date().toISOString();
-    await Promise.all(
-      accessUpdates.map((u) =>
-        factStore.updateFact(u.entity, u.id, {
-          lastAccessed: nowIso,
-          accessCount: u.accessCount,
-        }),
-      ),
-    );
-
-    return results;
+    return processRecallCandidates(candidates, options, factStore);
   };
 
   const rebuildSummaries = async (): Promise<void> => {

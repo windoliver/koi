@@ -321,6 +321,10 @@ export interface MemoryResult {
   readonly decayScore?: number | undefined;
   /** ISO-8601 timestamp of last access — used by decay engine. */
   readonly lastAccessed?: string | undefined;
+  /** IDs of facts that causally precede this memory (causal parents). */
+  readonly causalParents?: readonly string[] | undefined;
+  /** IDs of facts that were causally derived from this memory (causal children). */
+  readonly causalChildren?: readonly string[] | undefined;
 }
 
 /** Options for MemoryComponent.store() — namespace isolation and tagging. */
@@ -333,6 +337,8 @@ export interface MemoryStoreOptions {
   readonly relatedEntities?: readonly string[] | undefined;
   /** When true and a near-duplicate exists, increment its accessCount instead of skipping. */
   readonly reinforce?: boolean | undefined;
+  /** IDs of existing facts that causally precede this new memory. */
+  readonly causalParents?: readonly string[] | undefined;
 }
 
 /** Options for MemoryComponent.recall() — namespace isolation. */
@@ -342,6 +348,10 @@ export interface MemoryRecallOptions {
   readonly tierFilter?: MemoryTier | "all" | undefined;
   /** Maximum number of results to return. Backend-specific default if omitted. */
   readonly limit?: number | undefined;
+  /** When true, expand results along causal edges (parents + children). */
+  readonly graphExpand?: boolean | undefined;
+  /** Maximum BFS hops for graph expansion. Backend-specific default if omitted. */
+  readonly maxHops?: number | undefined;
 }
 
 export interface MemoryComponent {

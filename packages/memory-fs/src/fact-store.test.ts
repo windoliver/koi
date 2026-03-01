@@ -164,4 +164,65 @@ describe("createFactStore", () => {
     expect(facts).toEqual([]);
     await store.close();
   });
+
+  describe("causal fields backward compat", () => {
+    test("old items.json without causal fields loads fine", async () => {
+      const entityDir = join(testDir, "entities", "legacy");
+      mkdirSync(entityDir, { recursive: true });
+      const legacyFact = {
+        id: "old-1",
+        fact: "legacy fact",
+        category: "context",
+        timestamp: "2025-01-01T00:00:00Z",
+        status: "active",
+        supersededBy: null,
+        relatedEntities: [],
+        lastAccessed: "2025-01-01T00:00:00Z",
+        accessCount: 3,
+      };
+      writeFileSync(join(entityDir, "items.json"), JSON.stringify([legacyFact]), "utf-8");
+
+      const store = createFactStore(testDir);
+      const facts = await store.readFacts("legacy");
+      expect(facts).toHaveLength(1);
+      expect(facts[0]?.id).toBe("old-1");
+      expect(facts[0]?.causalParents).toBeUndefined();
+      expect(facts[0]?.causalChildren).toBeUndefined();
+      await store.close();
+    });
+
+    test("isMemoryFact accepts facts with causal fields", async () => {
+      const store = createFactStore(testDir);
+      const factWithCausal = makeFact({
+        id: "causal-1",
+        causalParents: ["parent-1"],
+        causalChildren: ["child-1"],
+      });
+      await store.appendFact("causal", factWithCausal);
+      const facts = await store.readFacts("causal");
+      expect(facts).toHaveLength(1);
+      expect(facts[0]?.causalParents).toEqual(["parent-1"]);
+      expect(facts[0]?.causalChildren).toEqual(["child-1"]);
+      await store.close();
+    });
+
+    test("causal fields survive write+read cycle", async () => {
+      const store = createFactStore(testDir);
+      const fact = makeFact({
+        id: "persist-1",
+        causalParents: ["p1", "p2"],
+        causalChildren: ["c1"],
+      });
+      await store.appendFact("persist", fact);
+      await store.close();
+
+      // Re-open from disk
+      const store2 = createFactStore(testDir);
+      const facts = await store2.readFacts("persist");
+      expect(facts).toHaveLength(1);
+      expect(facts[0]?.causalParents).toEqual(["p1", "p2"]);
+      expect(facts[0]?.causalChildren).toEqual(["c1"]);
+      await store2.close();
+    });
+  });
 });
