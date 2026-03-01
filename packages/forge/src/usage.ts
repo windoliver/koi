@@ -11,8 +11,8 @@ import type {
   Result,
   TrustTier,
 } from "@koi/core";
-import { DEFAULT_BRICK_FITNESS, brickId as toBrickId } from "@koi/core";
-import { recordLatency } from "@koi/validation";
+import { DEFAULT_BRICK_FITNESS, DEFAULT_TRAIL_STRENGTH, brickId as toBrickId } from "@koi/core";
+import { computeTrailReinforcement, recordLatency } from "@koi/validation";
 import type { AutoPromotionConfig, ForgeConfig } from "./config.js";
 import type { ForgeError } from "./errors.js";
 import { storeError } from "./errors.js";
@@ -145,10 +145,18 @@ export async function recordBrickUsage(
 
   const promotedTier = computeAutoPromotion(brick.trustTier, newUsageCount, config.autoPromotion);
 
+  // Trail strength reinforcement (stigmergic coordination)
+  const trailConfig = config.trail;
+  const newTrailStrength =
+    trailConfig !== undefined
+      ? computeTrailReinforcement(brick.trailStrength ?? DEFAULT_TRAIL_STRENGTH, trailConfig)
+      : undefined;
+
   const updateResult = await store.update(toBrickId(brickId), {
     usageCount: newUsageCount,
     ...(promotedTier !== undefined ? { trustTier: promotedTier } : {}),
     ...(updatedFitness !== undefined ? { fitness: updatedFitness } : {}),
+    ...(newTrailStrength !== undefined ? { trailStrength: newTrailStrength } : {}),
   });
 
   if (!updateResult.ok) {

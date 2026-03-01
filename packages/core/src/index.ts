@@ -82,8 +82,13 @@ export type {
   StoreChangeNotifier,
   TestCase,
   ToolArtifact,
+  TrailConfig,
 } from "./brick-store.js";
-export { DEFAULT_BRICK_FITNESS } from "./brick-store.js";
+export {
+  DEFAULT_BRICK_FITNESS,
+  DEFAULT_TRAIL_CONFIG,
+  DEFAULT_TRAIL_STRENGTH,
+} from "./brick-store.js";
 // browser driver — cross-engine abstraction for browser automation
 export type {
   BrowserActionOptions,
