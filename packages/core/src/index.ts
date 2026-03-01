@@ -269,6 +269,7 @@ export {
   MAILBOX,
   MEMORY,
   middlewareToken,
+  NAME_SERVICE,
   REGISTRY,
   runId,
   SCHEDULER,
@@ -522,6 +523,22 @@ export type {
 } from "./middleware.js";
 // model provider
 export type { ModelCapabilities, ModelProvider, ModelTarget } from "./model-provider.js";
+// name service — DNS-like name resolution for agents and bricks
+export type {
+  AnsConfig,
+  NameBinding,
+  NameChangeEvent,
+  NameChangeKind,
+  NameQuery,
+  NameRecord,
+  NameRegistration,
+  NameResolution,
+  NameServiceBackend,
+  NameServiceReader,
+  NameServiceWriter,
+  NameSuggestion,
+} from "./name-service.js";
+export { ANS_SCOPE_PRIORITY, DEFAULT_ANS_CONFIG } from "./name-service.js";
 // permission backend — pluggable authorization contract
 export type {
   PermissionBackend,
