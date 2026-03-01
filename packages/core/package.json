@@ -135,6 +135,10 @@
     "./mailbox": {
       "types": "./dist/mailbox.d.ts",
       "import": "./dist/mailbox.js"
+    },
+    "./security-analyzer": {
+      "types": "./dist/security-analyzer.d.ts",
+      "import": "./dist/security-analyzer.js"
     }
   },
   "scripts": {

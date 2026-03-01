@@ -25,6 +25,7 @@ export { ActionEntry, IssueEntry, ReportStore, ReportSummary, RunCost, RunDurati
 export { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance } from './sandbox-HASH.js';
 export { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult, TierResolution, TieredSandboxExecutor } from './sandbox-HASH.js';
 export { FilesystemPolicy, NetworkPolicy, ResourceLimits, SandboxProfile } from './sandbox-HASH.js';
+export { RISK_ANALYSIS_UNKNOWN, RISK_LEVEL_ORDER, RiskAnalysis, RiskFinding, RiskLevel, SecurityAnalyzer } from './security-HASH.js';
 export { OutboundWebhookConfig, WebhookComponent, WebhookDeliveryStatus, WebhookEndpointHealth, WebhookEventKind, WebhookPayload, WebhookSummary } from './webhook.js';
 
 /**
@@ -3193,5 +3194,75 @@ import './webhook.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+"
+`;
+
+exports[`@koi/core API surface ./security-analyzer has stable type surface 1`] = `
+"import { JsonObject } from './common.js';
+
+/**
+ * SecurityAnalyzer — dynamic risk classification contract (Layer 0).
+ *
+ * Evaluates a tool call and assigns a RiskLevel. Plugs into @koi/exec-approvals
+ * and @koi/middleware-permissions via the withRiskAnalysis HOF in
+ * @koi/security-analyzer.
+ *
+ * Zero dependencies — types only.
+ */
+
+/**
+ * Ordered risk levels from least to most severe.
+ * "unknown" means the analyzer errored or was unavailable (fail-open).
+ */
+type RiskLevel = "low" | "medium" | "high" | "critical" | "unknown";
+/**
+ * Canonical ordering of RiskLevel from least to most severe.
+ * Use maxRiskLevel() from @koi/security-analyzer to compare levels.
+ */
+declare const RISK_LEVEL_ORDER: readonly RiskLevel[];
+/**
+ * A single matched pattern and its associated risk classification.
+ */
+interface RiskFinding {
+    /** The raw pattern string that matched, e.g. "rm -rf". */
+    readonly pattern: string;
+    /** Human-readable explanation of why this is risky. */
+    readonly description: string;
+    /** Risk level assigned to this specific finding. */
+    readonly riskLevel: RiskLevel;
+}
+/**
+ * Aggregated result from a SecurityAnalyzer.analyze() call.
+ */
+interface RiskAnalysis {
+    /** Maximum risk level across all findings. */
+    readonly riskLevel: RiskLevel;
+    /** All individual findings that contributed to riskLevel. */
+    readonly findings: readonly RiskFinding[];
+    /** Human-readable summary for display in approval prompts. */
+    readonly rationale: string;
+}
+/**
+ * Sentinel value used when an analyzer errors or times out (fail-open).
+ * onAsk still runs when this value is returned.
+ */
+declare const RISK_ANALYSIS_UNKNOWN: RiskAnalysis;
+/**
+ * Pluggable risk classification contract.
+ *
+ * Implementations may be synchronous (rules-based) or asynchronous (LLM-based,
+ * remote API, etc.). Return type is \`RiskAnalysis | Promise<RiskAnalysis>\` per
+ * Koi I/O-bound interface convention — callers must always await.
+ *
+ * Analyzer errors must NOT propagate to callers; use the withRiskAnalysis HOF
+ * from @koi/security-analyzer which enforces fail-open semantics.
+ */
+interface SecurityAnalyzer {
+    readonly analyze: (toolId: string, input: JsonObject, 
+    /** Optional session/turn metadata (sessionId, agentId, turnIndex, etc.) */
+    context?: JsonObject) => RiskAnalysis | Promise<RiskAnalysis>;
+}
+
+export { RISK_ANALYSIS_UNKNOWN, RISK_LEVEL_ORDER, type RiskAnalysis, type RiskFinding, type RiskLevel, type SecurityAnalyzer };
 "
 `;

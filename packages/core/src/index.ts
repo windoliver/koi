@@ -640,6 +640,14 @@ export type {
   ScopeEnforcer,
   ScopeSubsystem,
 } from "./scope-enforcement.js";
+// security analyzer — dynamic risk classification contract
+export type {
+  RiskAnalysis,
+  RiskFinding,
+  RiskLevel,
+  SecurityAnalyzer,
+} from "./security-analyzer.js";
+export { RISK_ANALYSIS_UNKNOWN, RISK_LEVEL_ORDER } from "./security-analyzer.js";
 // session — persistence contract for crash recovery
 export type {
   PendingFrame,

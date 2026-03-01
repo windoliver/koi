@@ -37,6 +37,7 @@ export default defineConfig({
     "src/mailbox.ts",
     "src/webhook.ts",
     "src/intent-capsule.ts",
+    "src/security-analyzer.ts",
   ],
   format: ["esm"],
   dts: {

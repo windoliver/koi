@@ -3,6 +3,7 @@
 exports[`@koi/exec-approvals API surface . has stable type surface 1`] = `
 "import { JsonObject } from '@koi/core/common';
 import { Result, KoiError } from '@koi/core/errors';
+import { RiskAnalysis, SecurityAnalyzer } from '@koi/core/security-analyzer';
 import { KoiMiddleware } from '@koi/core/middleware';
 
 /**
@@ -51,12 +52,21 @@ interface ExecRulesStore {
 }
 /**
  * The request passed to onAsk when an ask rule fires.
+ *
+ * TODO: ExecApprovalRequest and @koi/core ApprovalRequest serve similar purposes.
+ * Consolidation tracked in issue #75 follow-up.
  */
 interface ExecApprovalRequest {
     readonly toolId: string;
     readonly input: JsonObject;
     /** Which ask pattern triggered this request. */
     readonly matchedPattern: string;
+    /**
+     * Risk analysis result from SecurityAnalyzer, if one is configured.
+     * Populated by withRiskAnalysis HOF in @koi/security-analyzer.
+     * Absent when no securityAnalyzer is configured in ExecApprovalsConfig.
+     */
+    readonly riskAnalysis?: RiskAnalysis;
 }
 
 /**
@@ -85,6 +95,20 @@ interface ExecApprovalsConfig {
      * Defaults to defaultExtractCommand.
      */
     readonly extractCommand?: (input: JsonObject) => string;
+    /**
+     * Optional SecurityAnalyzer to classify risk before calling onAsk.
+     * When configured, ask-tier tool calls are passed through withRiskAnalysis:
+     *  - critical risk → auto-deny (onAsk not called)
+     *  - other risk levels → onAsk called with riskAnalysis field populated
+     * No-op for allow-tier and deny-tier calls.
+     */
+    readonly securityAnalyzer?: SecurityAnalyzer;
+    /**
+     * Timeout for the SecurityAnalyzer in milliseconds.
+     * Defaults to DEFAULT_ANALYZER_TIMEOUT_MS (2000ms) from @koi/security-analyzer.
+     * Distinct from approvalTimeoutMs (which governs onAsk).
+     */
+    readonly analyzerTimeoutMs?: number;
 }
 declare function validateExecApprovalsConfig(config: unknown): Result<ExecApprovalsConfig, KoiError>;
 

@@ -1,6 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { KoiError } from "@koi/core/errors";
 import type { ToolRequest } from "@koi/core/middleware";
+import type { RiskAnalysis, SecurityAnalyzer } from "@koi/core/security-analyzer";
 import {
   createMockSessionContext,
   createMockTurnContext,
@@ -565,5 +566,170 @@ describe("compound pattern integration", () => {
     } catch (e) {
       expect((e as KoiError).code).toBe("PERMISSION");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SecurityAnalyzer integration
+// ---------------------------------------------------------------------------
+
+describe("SecurityAnalyzer integration", () => {
+  function makeAnalyzer(result: RiskAnalysis): SecurityAnalyzer {
+    return {
+      analyze: mock(async () => result),
+    };
+  }
+
+  test("allow-tier tool: analyze() NOT called (zero overhead)", async () => {
+    const { session, ctx } = makeSession();
+    const analyzer = makeAnalyzer({ riskLevel: "high", findings: [], rationale: "test" });
+    const mw = createExecApprovalsMiddleware({
+      rules: { allow: ["bash"], deny: [], ask: [] },
+      onAsk: makeOnAsk({ kind: "allow_once" }),
+      securityAnalyzer: analyzer,
+    });
+    await mw.onSessionStart?.(session);
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), createSpyToolHandler().handler);
+    expect(analyzer.analyze).not.toHaveBeenCalled();
+  });
+
+  test("deny-tier tool: analyze() NOT called", async () => {
+    const { session, ctx } = makeSession();
+    const analyzer = makeAnalyzer({ riskLevel: "low", findings: [], rationale: "ok" });
+    const mw = createExecApprovalsMiddleware({
+      rules: { allow: [], deny: ["bash"], ask: [] },
+      onAsk: makeOnAsk({ kind: "allow_once" }),
+      securityAnalyzer: analyzer,
+    });
+    await mw.onSessionStart?.(session);
+    try {
+      await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), createSpyToolHandler().handler);
+    } catch {
+      // expected
+    }
+    expect(analyzer.analyze).not.toHaveBeenCalled();
+  });
+
+  test("ask-tier tool: analyze() called once, riskAnalysis populated in request", async () => {
+    const { session, ctx } = makeSession();
+    const highRisk: RiskAnalysis = {
+      riskLevel: "high",
+      findings: [{ pattern: "sudo", description: "sudo matched", riskLevel: "high" }],
+      rationale: "1 pattern(s) matched",
+    };
+    const analyzer = makeAnalyzer(highRisk);
+    const capturedRequests: ExecApprovalRequest[] = [];
+    const onAsk = async (req: ExecApprovalRequest): Promise<ProgressiveDecision> => {
+      capturedRequests.push(req);
+      return { kind: "allow_once" };
+    };
+    const mw = createExecApprovalsMiddleware({
+      rules: { allow: [], deny: [], ask: ["bash"] },
+      onAsk,
+      securityAnalyzer: analyzer,
+    });
+    await mw.onSessionStart?.(session);
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), createSpyToolHandler().handler);
+
+    expect(analyzer.analyze).toHaveBeenCalledTimes(1);
+    expect(capturedRequests).toHaveLength(1);
+    expect(capturedRequests[0]?.riskAnalysis?.riskLevel).toBe("high");
+  });
+
+  test("critical risk on ask-tier: deny_once returned, onAsk never called", async () => {
+    const { session, ctx } = makeSession();
+    const criticalRisk: RiskAnalysis = {
+      riskLevel: "critical",
+      findings: [],
+      rationale: "critical pattern matched",
+    };
+    const analyzer = makeAnalyzer(criticalRisk);
+    const onAsk = mock(makeOnAsk({ kind: "allow_once" }));
+    const mw = createExecApprovalsMiddleware({
+      rules: { allow: [], deny: [], ask: ["bash"] },
+      onAsk,
+      securityAnalyzer: analyzer,
+    });
+    await mw.onSessionStart?.(session);
+    const spy = createSpyToolHandler();
+    try {
+      await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), spy.handler);
+      expect.unreachable("should have thrown");
+    } catch (e) {
+      const err = e as KoiError;
+      expect(err.code).toBe("PERMISSION");
+      expect(err.message).toContain("critical risk");
+    }
+    expect(onAsk).not.toHaveBeenCalled();
+    expect(spy.calls).toHaveLength(0);
+  });
+
+  test("analyzer timeout: riskAnalysis is unknown, onAsk still called", async () => {
+    const { session, ctx } = makeSession();
+    const slowAnalyzer: SecurityAnalyzer = {
+      analyze: async () =>
+        new Promise<RiskAnalysis>((resolve) =>
+          setTimeout(() => resolve({ riskLevel: "high", findings: [], rationale: "slow" }), 500),
+        ),
+    };
+    const capturedRequests: ExecApprovalRequest[] = [];
+    const onAsk = async (req: ExecApprovalRequest): Promise<ProgressiveDecision> => {
+      capturedRequests.push(req);
+      return { kind: "allow_once" };
+    };
+    const mw = createExecApprovalsMiddleware({
+      rules: { allow: [], deny: [], ask: ["bash"] },
+      onAsk,
+      securityAnalyzer: slowAnalyzer,
+      analyzerTimeoutMs: 50, // times out before 500ms
+    });
+    await mw.onSessionStart?.(session);
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), createSpyToolHandler().handler);
+
+    expect(capturedRequests).toHaveLength(1);
+    expect(capturedRequests[0]?.riskAnalysis?.riskLevel).toBe("unknown");
+  });
+
+  test("analyzer throws: fail-open, onAsk still called with unknown risk", async () => {
+    const { session, ctx } = makeSession();
+    const throwingAnalyzer: SecurityAnalyzer = {
+      analyze: async () => {
+        throw new Error("analyzer crashed");
+      },
+    };
+    const capturedRequests: ExecApprovalRequest[] = [];
+    const onAsk = async (req: ExecApprovalRequest): Promise<ProgressiveDecision> => {
+      capturedRequests.push(req);
+      return { kind: "allow_once" };
+    };
+    const mw = createExecApprovalsMiddleware({
+      rules: { allow: [], deny: [], ask: ["bash"] },
+      onAsk,
+      securityAnalyzer: throwingAnalyzer,
+    });
+    await mw.onSessionStart?.(session);
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), createSpyToolHandler().handler);
+
+    expect(capturedRequests).toHaveLength(1);
+    expect(capturedRequests[0]?.riskAnalysis?.riskLevel).toBe("unknown");
+  });
+
+  test("no securityAnalyzer configured: riskAnalysis absent from request", async () => {
+    const { session, ctx } = makeSession();
+    const capturedRequests: ExecApprovalRequest[] = [];
+    const onAsk = async (req: ExecApprovalRequest): Promise<ProgressiveDecision> => {
+      capturedRequests.push(req);
+      return { kind: "allow_once" };
+    };
+    const mw = createExecApprovalsMiddleware({
+      rules: { allow: [], deny: [], ask: ["bash"] },
+      onAsk,
+      // no securityAnalyzer
+    });
+    await mw.onSessionStart?.(session);
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), createSpyToolHandler().handler);
+
+    expect(capturedRequests).toHaveLength(1);
+    expect(capturedRequests[0]?.riskAnalysis).toBeUndefined();
   });
 });

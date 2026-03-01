@@ -5,6 +5,7 @@
 import type { JsonObject } from "@koi/core/common";
 import type { KoiError, Result } from "@koi/core/errors";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
+import type { SecurityAnalyzer } from "@koi/core/security-analyzer";
 import type { ExecApprovalRequest, ExecRulesStore, ProgressiveDecision } from "./types.js";
 
 export const DEFAULT_APPROVAL_TIMEOUT_MS = 30_000;
@@ -30,6 +31,20 @@ export interface ExecApprovalsConfig {
    * Defaults to defaultExtractCommand.
    */
   readonly extractCommand?: (input: JsonObject) => string;
+  /**
+   * Optional SecurityAnalyzer to classify risk before calling onAsk.
+   * When configured, ask-tier tool calls are passed through withRiskAnalysis:
+   *  - critical risk → auto-deny (onAsk not called)
+   *  - other risk levels → onAsk called with riskAnalysis field populated
+   * No-op for allow-tier and deny-tier calls.
+   */
+  readonly securityAnalyzer?: SecurityAnalyzer;
+  /**
+   * Timeout for the SecurityAnalyzer in milliseconds.
+   * Defaults to DEFAULT_ANALYZER_TIMEOUT_MS (2000ms) from @koi/security-analyzer.
+   * Distinct from approvalTimeoutMs (which governs onAsk).
+   */
+  readonly analyzerTimeoutMs?: number;
 }
 
 export function validateExecApprovalsConfig(
