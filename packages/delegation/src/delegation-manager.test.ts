@@ -49,6 +49,9 @@ function createMockAgentRegistry(): AgentRegistry & {
     transition: () => {
       throw new Error("not implemented");
     },
+    patch: () => {
+      throw new Error("not implemented");
+    },
     watch: (listener) => {
       listeners.push(listener);
       return () => {
