@@ -27,6 +27,7 @@ export { resolveSoul } from "./resolve-soul.js";
 export type {
   BrickDescriptor,
   BrickFactory,
+  MiddlewareResolutionResult,
   OptionsValidator,
   ResolutionContext,
   ResolutionFailure,

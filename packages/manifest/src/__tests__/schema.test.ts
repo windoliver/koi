@@ -624,6 +624,34 @@ describe("rawManifestSchema — skills", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Middleware required flag
+// ---------------------------------------------------------------------------
+
+describe("rawManifestSchema — middleware required flag", () => {
+  test("accepts middleware with required: false in explicit form", () => {
+    const result = parse({
+      middleware: [{ name: "@koi/middleware-audit", required: false }],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const data = result.data as { middleware?: readonly Record<string, unknown>[] };
+      expect(data.middleware?.[0]?.required).toBe(false);
+    }
+  });
+
+  test("accepts middleware without required field (optional, defaults absent)", () => {
+    const result = parse({
+      middleware: [{ name: "@koi/middleware-permissions" }],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const data = result.data as { middleware?: readonly Record<string, unknown>[] };
+      expect(data.middleware?.[0]?.required).toBeUndefined();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Template expression rejection
 // ---------------------------------------------------------------------------
 

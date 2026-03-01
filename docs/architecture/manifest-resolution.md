@@ -20,7 +20,7 @@ Koi agents are defined declaratively in YAML manifests. Manifest resolution is t
                                     │
                                     ▼
                             ResolvedManifest
-                            { model, middleware[], channels?, engine? }
+                            { model, middleware[], warnings[], channels?, engine? }
 ```
 
 ## The Pipeline
@@ -229,11 +229,22 @@ The soul descriptor creates a middleware with `wrapModelCall` that injects perso
 
 ### Middleware Resolution
 
-Explicit middleware entries are resolved in order, then merged with soul + permissions:
+Explicit middleware entries are resolved in order, then merged with soul + permissions.
+
+Each middleware entry supports a `required` flag that controls failure behavior:
+
+- `required: true` (default) — resolution failure aborts agent startup
+- `required: false` — resolution failure produces a warning, middleware is skipped
+
+This enables graceful degradation for edge/local deployments where non-critical
+middleware (telemetry, audit) may be unavailable.
 
 ```
   middleware:
+    - name: "@koi/middleware-permissions"
+      # required: true (default — omitted)
     - name: "@koi/middleware-audit"
+      required: false          ← skip if audit backend is unavailable
       options: { level: "verbose" }
     - name: "@koi/middleware-call-limits"
       options: { maxModelCalls: 50 }
@@ -244,13 +255,21 @@ Explicit middleware entries are resolved in order, then merged with soul + permi
        ├── resolve each entry via resolveOne()
        │   (registry lookup → validate → factory)
        │
-       └── KoiMiddleware[]
+       ├── 3-bucket partitioning:
+       │   ├── resolved[]           — successfully resolved middleware
+       │   ├── requiredFailures[]   — failures where required !== false
+       │   └── optionalWarnings[]   — warning strings where required === false
+       │
+       ├── requiredFailures.length > 0 → { ok: false, error }
+       └── otherwise → MiddlewareResolutionResult { middleware[], warnings[] }
 
   Final merge:
     [explicit...] + [soul?] + [permissions?]
        │
        ▼
   sort by priority (lower number = outer layer = runs first)
+
+  ResolvedManifest includes warnings[] for caller logging
 ```
 
 ### Channel and Engine Resolution
@@ -287,6 +306,27 @@ Resolution failures are aggregated — all sections run even if some fail, provi
        ▼
   formatResolutionError(error) → human-readable stderr output
 ```
+
+### Graceful Degradation
+
+Middleware entries with `required: false` degrade gracefully — they are skipped with a warning instead of aborting startup. This is resolution-time only (no runtime hook changes).
+
+```
+  middleware:
+    - name: "@koi/middleware-audit"
+      required: false                ← optional: skip on failure
+
+  If audit backend is unavailable:
+    ├── middleware is omitted from the chain
+    ├── warning: 'Optional middleware "@koi/middleware-audit" skipped: ...'
+    └── agent starts successfully with remaining middleware
+
+  ResolvedManifest.warnings contains all skipped-middleware messages.
+  The CLI or caller is responsible for logging these warnings.
+```
+
+The `required` flag defaults to `true` for backward compatibility — existing manifests
+without the flag behave identically to before (all-or-nothing resolution).
 
 ## Example Manifests
 
@@ -332,6 +372,23 @@ engine:
 
 Resolves to: `{ model: ModelHandler, middleware: [], engine: PiEngineAdapter }`.
 
+### Edge deployment with graceful degradation
+
+```yaml
+name: edge-agent
+version: "1.0"
+model: anthropic:claude-haiku-4-5-20251001
+middleware:
+  - name: "@koi/middleware-permissions"
+    # required: true (default) — agent won't start without permissions
+  - name: "@koi/middleware-audit"
+    required: false  # skip if audit backend is unavailable
+  - name: "@koi/middleware-pii"
+    required: false  # skip if PII detection service is offline
+```
+
+Resolves to: `{ model: ModelHandler, middleware: [permissions], warnings: ["...audit...", "...pii..."] }` when audit and PII backends are unreachable. Agent starts with permissions middleware only.
+
 ## Package Map
 
 ```
@@ -341,7 +398,8 @@ Resolves to: `{ model: ModelHandler, middleware: [], engine: PiEngineAdapter }`.
 
   @koi/resolve (L0u)
   ├── types: BrickDescriptor, ResolveRegistry,     (types.ts)
-  │          ResolutionContext, ResolvedManifest
+  │          ResolutionContext, ResolvedManifest,
+  │          MiddlewareResolutionResult
   ├── createRegistry()                             (registry.ts)
   ├── resolveManifest()                            (resolve-manifest.ts)
   ├── resolveMiddleware()                          (resolve-middleware.ts)

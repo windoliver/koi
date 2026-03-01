@@ -112,6 +112,20 @@ export function normalizeConfigItem(raw: Readonly<Record<string, unknown>>): Nor
 }
 
 /**
+ * Normalizes a middleware config item, preserving the `required` flag if present.
+ * Extends `normalizeConfigItem` with required passthrough.
+ */
+export function normalizeMiddlewareConfig(
+  raw: Readonly<Record<string, unknown>>,
+): MiddlewareConfig {
+  const base = normalizeConfigItem(raw);
+  if (typeof raw.required === "boolean") {
+    return { ...base, required: raw.required };
+  }
+  return base;
+}
+
+/**
  * Normalizes a channel config item, preserving the `identity` block if present.
  * Extends `normalizeConfigItem` with identity passthrough.
  */
@@ -202,9 +216,9 @@ export function transformToLoadedManifest(raw: RawManifest): LoadedManifest {
     }
   }
 
-  // Transform middleware
+  // Transform middleware — preserves `required` flag when present
   const middleware: readonly MiddlewareConfig[] | undefined = raw.middleware?.map(
-    (m): MiddlewareConfig => normalizeConfigItem(m),
+    (m): MiddlewareConfig => normalizeMiddlewareConfig(m),
   );
 
   // Transform channels — preserve identity block if present

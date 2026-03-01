@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   normalizeChannelConfig,
   normalizeConfigItem,
+  normalizeMiddlewareConfig,
   normalizeModelConfig,
   transformToLoadedManifest,
 } from "../transform.js";
@@ -54,6 +55,38 @@ describe("normalizeConfigItem", () => {
     const result = normalizeConfigItem(input);
     expect("version" in result).toBe(false);
     expect("publisher" in result).toBe(false);
+  });
+});
+
+describe("normalizeMiddlewareConfig", () => {
+  test("passes through required: false", () => {
+    const input = { name: "@koi/middleware-audit", required: false };
+    const result = normalizeMiddlewareConfig(input);
+    expect(result.name).toBe("@koi/middleware-audit");
+    expect(result.required).toBe(false);
+  });
+
+  test("omits required when absent", () => {
+    const input = { name: "@koi/middleware-permissions" };
+    const result = normalizeMiddlewareConfig(input);
+    expect(result.name).toBe("@koi/middleware-permissions");
+    expect("required" in result).toBe(false);
+  });
+
+  test("preserves options alongside required", () => {
+    const input = { name: "@koi/middleware-audit", options: { level: "verbose" }, required: false };
+    const result = normalizeMiddlewareConfig(input);
+    expect(result.name).toBe("@koi/middleware-audit");
+    expect(result.options).toEqual({ level: "verbose" });
+    expect(result.required).toBe(false);
+  });
+
+  test("handles key-value shorthand (no required support)", () => {
+    const input = { "@koi/middleware-memory": { scope: "agent" } };
+    const result = normalizeMiddlewareConfig(input);
+    expect(result.name).toBe("@koi/middleware-memory");
+    expect(result.options).toEqual({ scope: "agent" });
+    expect("required" in result).toBe(false);
   });
 });
 
@@ -288,6 +321,28 @@ describe("transformToLoadedManifest", () => {
     const result = transformToLoadedManifest(raw);
     expect(result.middleware?.[0]?.version).toBe("3.0.0");
     expect(result.middleware?.[0]?.publisher).toBe("koi-team");
+  });
+
+  test("passes through required: false on middleware", () => {
+    const raw = {
+      name: "my-agent",
+      version: "1.0.0",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+      middleware: [{ name: "@koi/middleware-audit", required: false }],
+    };
+    const result = transformToLoadedManifest(raw);
+    expect(result.middleware?.[0]?.required).toBe(false);
+  });
+
+  test("omits required on middleware when absent in raw", () => {
+    const raw = {
+      name: "my-agent",
+      version: "1.0.0",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+      middleware: [{ name: "@koi/middleware-permissions" }],
+    };
+    const result = transformToLoadedManifest(raw);
+    expect("required" in (result.middleware?.[0] ?? {})).toBe(false);
   });
 
   test("passes through version and publisher on channels", () => {

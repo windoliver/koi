@@ -49,7 +49,7 @@ function makeFailingDescriptor(name: string): BrickDescriptor<KoiMiddleware> {
 // ---------------------------------------------------------------------------
 
 describe("resolveMiddleware", () => {
-  test("returns empty array for empty configs", async () => {
+  test("returns empty middleware and warnings for empty configs", async () => {
     const regResult = createRegistry([]);
     if (!regResult.ok) throw new Error("Registry failed");
 
@@ -57,7 +57,8 @@ describe("resolveMiddleware", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("Expected ok");
-    expect(result.value).toEqual([]);
+    expect(result.value.middleware).toEqual([]);
+    expect(result.value.warnings).toEqual([]);
   });
 
   test("resolves multiple middleware sorted by priority", async () => {
@@ -76,10 +77,11 @@ describe("resolveMiddleware", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("Expected ok");
-    expect(result.value).toHaveLength(3);
-    expect(result.value[0]?.name).toBe("mw-low");
-    expect(result.value[1]?.name).toBe("mw-mid");
-    expect(result.value[2]?.name).toBe("mw-high");
+    expect(result.value.middleware).toHaveLength(3);
+    expect(result.value.middleware[0]?.name).toBe("mw-low");
+    expect(result.value.middleware[1]?.name).toBe("mw-mid");
+    expect(result.value.middleware[2]?.name).toBe("mw-high");
+    expect(result.value.warnings).toEqual([]);
   });
 
   test("returns VALIDATION error for duplicate names", async () => {
@@ -98,7 +100,7 @@ describe("resolveMiddleware", () => {
     expect(result.error.message).toContain("Duplicate middleware name");
   });
 
-  test("aggregates errors when some middleware fail", async () => {
+  test("aggregates errors when some required middleware fail", async () => {
     const regResult = createRegistry([
       makeMwDescriptor("mw-good", 500),
       makeFailingDescriptor("mw-bad"),
@@ -117,7 +119,7 @@ describe("resolveMiddleware", () => {
     expect(result.error.message).toContain("mw-bad");
   });
 
-  test("aggregates errors when all middleware fail", async () => {
+  test("aggregates errors when all required middleware fail", async () => {
     const regResult = createRegistry([
       makeFailingDescriptor("mw-a"),
       makeFailingDescriptor("mw-b"),
@@ -137,7 +139,7 @@ describe("resolveMiddleware", () => {
     expect(result.error.message).toContain("mw-b");
   });
 
-  test("returns NOT_FOUND for unregistered middleware", async () => {
+  test("returns NOT_FOUND for unregistered required middleware", async () => {
     const regResult = createRegistry([]);
     if (!regResult.ok) throw new Error("Registry failed");
 
@@ -146,5 +148,126 @@ describe("resolveMiddleware", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("Expected error");
     expect(result.error.message).toContain("not found");
+  });
+
+  // ---------------------------------------------------------------------------
+  // Graceful degradation (required flag)
+  // ---------------------------------------------------------------------------
+
+  test("skips all optional middleware with warnings when all fail", async () => {
+    const regResult = createRegistry([
+      makeFailingDescriptor("mw-opt-a"),
+      makeFailingDescriptor("mw-opt-b"),
+    ]);
+    if (!regResult.ok) throw new Error("Registry failed");
+
+    const result = await resolveMiddleware(
+      [
+        { name: "mw-opt-a", required: false },
+        { name: "mw-opt-b", required: false },
+      ],
+      regResult.value,
+      MOCK_CONTEXT,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected ok");
+    expect(result.value.middleware).toEqual([]);
+    expect(result.value.warnings).toHaveLength(2);
+    expect(result.value.warnings[0]).toContain("mw-opt-a");
+    expect(result.value.warnings[1]).toContain("mw-opt-b");
+  });
+
+  test("returns required middleware and warnings when only optional fails", async () => {
+    const regResult = createRegistry([
+      makeMwDescriptor("mw-required", 100),
+      makeFailingDescriptor("mw-optional"),
+    ]);
+    if (!regResult.ok) throw new Error("Registry failed");
+
+    const result = await resolveMiddleware(
+      [{ name: "mw-required" }, { name: "mw-optional", required: false }],
+      regResult.value,
+      MOCK_CONTEXT,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected ok");
+    expect(result.value.middleware).toHaveLength(1);
+    expect(result.value.middleware[0]?.name).toBe("mw-required");
+    expect(result.value.warnings).toHaveLength(1);
+    expect(result.value.warnings[0]).toContain("mw-optional");
+  });
+
+  test("fails when required middleware fails alongside optional failure", async () => {
+    const regResult = createRegistry([
+      makeFailingDescriptor("mw-required"),
+      makeFailingDescriptor("mw-optional"),
+    ]);
+    if (!regResult.ok) throw new Error("Registry failed");
+
+    const result = await resolveMiddleware(
+      [{ name: "mw-required" }, { name: "mw-optional", required: false }],
+      regResult.value,
+      MOCK_CONTEXT,
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected error");
+    expect(result.error.message).toContain("mw-required");
+  });
+
+  test("returns all middleware with empty warnings when optional succeeds", async () => {
+    const regResult = createRegistry([
+      makeMwDescriptor("mw-opt-a", 200),
+      makeMwDescriptor("mw-opt-b", 400),
+    ]);
+    if (!regResult.ok) throw new Error("Registry failed");
+
+    const result = await resolveMiddleware(
+      [
+        { name: "mw-opt-a", required: false },
+        { name: "mw-opt-b", required: false },
+      ],
+      regResult.value,
+      MOCK_CONTEXT,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected ok");
+    expect(result.value.middleware).toHaveLength(2);
+    expect(result.value.warnings).toEqual([]);
+  });
+
+  test("treats missing required field as required (backward compat)", async () => {
+    const regResult = createRegistry([makeFailingDescriptor("mw-default")]);
+    if (!regResult.ok) throw new Error("Registry failed");
+
+    const result = await resolveMiddleware([{ name: "mw-default" }], regResult.value, MOCK_CONTEXT);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected error");
+    expect(result.error.message).toContain("mw-default");
+  });
+
+  test("returns both required and optional middleware when all succeed", async () => {
+    const regResult = createRegistry([
+      makeMwDescriptor("mw-req", 100),
+      makeMwDescriptor("mw-opt", 200),
+    ]);
+    if (!regResult.ok) throw new Error("Registry failed");
+
+    const result = await resolveMiddleware(
+      [{ name: "mw-req" }, { name: "mw-opt", required: false }],
+      regResult.value,
+      MOCK_CONTEXT,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected ok");
+    expect(result.value.middleware).toHaveLength(2);
+    expect(result.value.middleware[0]?.name).toBe("mw-req");
+    expect(result.value.middleware[1]?.name).toBe("mw-opt");
+    expect(result.value.warnings).toEqual([]);
   });
 });

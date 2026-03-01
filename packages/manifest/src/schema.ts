@@ -165,6 +165,22 @@ const channelIdentitySchema = z
   .optional();
 
 /**
+ * Middleware config item — same as namedConfigSchema but also supports `required` flag.
+ * Accepts either `{ name: string, options?: object, required?: boolean }` or a
+ * key-value map `{ "@koi/pkg": { ... } }` (required not supported in shorthand form).
+ */
+const middlewareConfigSchema = z.union([
+  z.object({
+    name: noTemplateExpressions(z.string()),
+    options: jsonObjectSchema.optional(),
+    version: z.string().optional(),
+    publisher: z.string().optional(),
+    required: z.boolean().optional(),
+  }),
+  jsonObjectSchema,
+]);
+
+/**
  * Channel config item — same as namedConfigSchema but also supports `identity` block.
  * Accepts either `{ name: string, options?: object, identity?: ChannelIdentity }` or a
  * key-value map `{ "@koi/pkg": { ... } }` (identity not supported in shorthand form).
@@ -351,7 +367,7 @@ export const rawManifestSchema: z.ZodType<RawManifest> = z
     model: modelSchema,
     tools: toolsSchema.optional(),
     channels: z.array(rawChannelSchema).optional(),
-    middleware: z.array(namedConfigSchema).optional(),
+    middleware: z.array(middlewareConfigSchema).optional(),
     skills: z.array(skillConfigSchema).optional(),
     permissions: permissionsSchema.optional(),
     metadata: jsonObjectSchema.optional(),
