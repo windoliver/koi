@@ -1,8 +1,8 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/pay-nexus API surface . has stable type surface 1`] = `
-"import { PayLedger } from '@koi/core/pay-ledger';
-import { Result, KoiError } from '@koi/core/errors';
+"import { Result, KoiError } from '@koi/core/errors';
+import { PayLedger } from '@koi/core/pay-ledger';
 import { BrickDescriptor } from '@koi/resolve';
 
 /**
@@ -20,37 +20,6 @@ interface NexusPayLedgerConfig {
     readonly fetch?: typeof globalThis.fetch | undefined;
 }
 declare function validatePayLedgerConfig(config: unknown): Result<NexusPayLedgerConfig, KoiError>;
-
-/**
- * PayLedger → BudgetTracker adapter.
- *
- * Bridges the PayLedger contract (Nexus credit ledger) to the
- * BudgetTracker interface used by @koi/middleware-pay.
- *
- * Smart adapter: uses meter() for recording and getBalance() for queries,
- * keeping HTTP calls to 1 per operation.
- */
-
-interface BudgetTracker {
-    readonly record: (sessionId: string, entry: {
-        readonly costUsd: number;
-    }) => Promise<void>;
-    readonly totalSpend: (sessionId: string) => Promise<number>;
-    readonly remaining: (sessionId: string, budget: number) => Promise<number>;
-}
-/**
- * Adapt a PayLedger to the BudgetTracker interface.
- *
- * Note: sessionId is accepted for BudgetTracker compatibility but not
- * sent to Nexus (the agent is identified by API key).
- */
-declare function mapPayLedgerToBudgetTracker(ledger: PayLedger, budget: number): BudgetTracker;
-/**
- * Convenience factory: creates a NexusPayLedger and wraps it as a BudgetTracker.
- */
-declare function createNexusBudgetTracker(config: NexusPayLedgerConfig & {
-    readonly budget: number;
-}): BudgetTracker;
 
 /**
  * BrickDescriptor for @koi/pay-nexus.
@@ -71,6 +40,6 @@ declare const payNexusDescriptor: BrickDescriptor<PayLedger>;
 
 declare function createNexusPayLedger(config: NexusPayLedgerConfig): PayLedger;
 
-export { type NexusPayLedgerConfig, createNexusBudgetTracker, createNexusPayLedger, mapPayLedgerToBudgetTracker, payNexusDescriptor, validatePayLedgerConfig };
+export { type NexusPayLedgerConfig, createNexusPayLedger, payNexusDescriptor, validatePayLedgerConfig };
 "
 `;
