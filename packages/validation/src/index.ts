@@ -23,6 +23,7 @@ export {
   recordLatency,
 } from "./latency-sampler.js";
 export { levenshteinDistance } from "./levenshtein.js";
+export { computeMutationPressure } from "./mutation-pressure.js";
 export { matchesBrickQuery } from "./query-match.js";
 export { SEVERITY_ORDER, type Severity, severityAtOrAbove } from "./severity.js";
 export { type SortBricksOptions, sortBricks } from "./sort-bricks.js";

@@ -23,6 +23,7 @@ import type { ForgeConfig } from "../config.js";
 import type { ForgeError } from "../errors.js";
 import { staticError, typeError } from "../errors.js";
 import { checkGovernance } from "../governance.js";
+import { checkMutationPressure } from "../mutation-pressure-check.js";
 import type {
   ForgeContext,
   ForgeInput,
@@ -343,6 +344,24 @@ export async function runForgePipeline(
   buildArtifact: ArtifactBuilder,
 ): Promise<Result<ForgeResult, ForgeError>> {
   const startedAt = Date.now();
+
+  // Mutation pressure gate — block forge when capability space is frozen
+  if (
+    deps.config.mutationPressure?.enabled &&
+    forgeInput.tags !== undefined &&
+    forgeInput.tags.length > 0
+  ) {
+    const pressureResult = await checkMutationPressure(
+      forgeInput.tags,
+      deps.store,
+      deps.config.mutationPressure,
+      startedAt,
+    );
+    if (!pressureResult.ok) {
+      return pressureResult;
+    }
+  }
+
   const { executor: sandboxExecutor } = deps.executor.forTier("sandbox");
   const verifyResult = await verify(
     forgeInput,
