@@ -27,6 +27,15 @@ function braveResponse(
 // ---------------------------------------------------------------------------
 
 describe("createBraveSearch", () => {
+  test("returns a SearchProvider with name 'brave'", () => {
+    const provider = createBraveSearch({
+      apiKey: "test-key",
+      fetchFn: mockFetch(() => braveResponse([])),
+    });
+    expect(provider.name).toBe("brave");
+    expect(typeof provider.search).toBe("function");
+  });
+
   test("returns search results from API", async () => {
     const fetchFn = mockFetch(() =>
       braveResponse([
@@ -35,8 +44,8 @@ describe("createBraveSearch", () => {
       ]),
     );
 
-    const search = createBraveSearch({ apiKey: "test-key", fetchFn });
-    const result = await search("test query");
+    const provider = createBraveSearch({ apiKey: "test-key", fetchFn });
+    const result = await provider.search("test query");
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -55,8 +64,8 @@ describe("createBraveSearch", () => {
       },
     ) as unknown as typeof globalThis.fetch;
 
-    const search = createBraveSearch({ apiKey: "my-secret-key", fetchFn });
-    await search("test");
+    const provider = createBraveSearch({ apiKey: "my-secret-key", fetchFn });
+    await provider.search("test");
 
     expect(capturedHeaders?.["X-Subscription-Token"]).toBe("my-secret-key");
   });
@@ -68,8 +77,8 @@ describe("createBraveSearch", () => {
       return braveResponse([]);
     });
 
-    const search = createBraveSearch({ apiKey: "key", fetchFn });
-    await search("hello world", { maxResults: 3 });
+    const provider = createBraveSearch({ apiKey: "key", fetchFn });
+    await provider.search("hello world", { maxResults: 3 });
 
     expect(capturedUrl).toContain("q=hello+world");
     expect(capturedUrl).toContain("count=3");
@@ -82,8 +91,8 @@ describe("createBraveSearch", () => {
       return braveResponse([]);
     });
 
-    const search = createBraveSearch({ apiKey: "key", fetchFn, country: "US", freshness: "pw" });
-    await search("query");
+    const provider = createBraveSearch({ apiKey: "key", fetchFn, country: "US", freshness: "pw" });
+    await provider.search("query");
 
     expect(capturedUrl).toContain("country=US");
     expect(capturedUrl).toContain("freshness=pw");
@@ -92,8 +101,8 @@ describe("createBraveSearch", () => {
   test("returns RATE_LIMIT error for 429", async () => {
     const fetchFn = mockFetch(() => new Response("", { status: 429 }));
 
-    const search = createBraveSearch({ apiKey: "key", fetchFn });
-    const result = await search("test");
+    const provider = createBraveSearch({ apiKey: "key", fetchFn });
+    const result = await provider.search("test");
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -105,8 +114,8 @@ describe("createBraveSearch", () => {
   test("returns PERMISSION error for 401", async () => {
     const fetchFn = mockFetch(() => new Response("", { status: 401 }));
 
-    const search = createBraveSearch({ apiKey: "bad-key", fetchFn });
-    const result = await search("test");
+    const provider = createBraveSearch({ apiKey: "bad-key", fetchFn });
+    const result = await provider.search("test");
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -118,8 +127,8 @@ describe("createBraveSearch", () => {
   test("returns EXTERNAL error for 500", async () => {
     const fetchFn = mockFetch(() => new Response("", { status: 500 }));
 
-    const search = createBraveSearch({ apiKey: "key", fetchFn });
-    const result = await search("test");
+    const provider = createBraveSearch({ apiKey: "key", fetchFn });
+    const result = await provider.search("test");
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -133,8 +142,8 @@ describe("createBraveSearch", () => {
       throw new Error("Network error");
     });
 
-    const search = createBraveSearch({ apiKey: "key", fetchFn });
-    const result = await search("test");
+    const provider = createBraveSearch({ apiKey: "key", fetchFn });
+    const result = await provider.search("test");
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -148,8 +157,8 @@ describe("createBraveSearch", () => {
       throw new Error("The operation was aborted");
     });
 
-    const search = createBraveSearch({ apiKey: "key", fetchFn });
-    const result = await search("test");
+    const provider = createBraveSearch({ apiKey: "key", fetchFn });
+    const result = await provider.search("test");
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -159,12 +168,12 @@ describe("createBraveSearch", () => {
 
   test("returns TIMEOUT when signal is pre-aborted", async () => {
     const fetchFn = mockFetch(() => braveResponse([]));
-    const search = createBraveSearch({ apiKey: "key", fetchFn });
+    const provider = createBraveSearch({ apiKey: "key", fetchFn });
 
     const controller = new AbortController();
     controller.abort();
 
-    const result = await search("test", { signal: controller.signal });
+    const result = await provider.search("test", { signal: controller.signal });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("TIMEOUT");
@@ -178,16 +187,16 @@ describe("createBraveSearch", () => {
       return braveResponse([]);
     });
 
-    const search = createBraveSearch({ apiKey: "key", fetchFn });
-    await search("test", { maxResults: 100 });
+    const provider = createBraveSearch({ apiKey: "key", fetchFn });
+    await provider.search("test", { maxResults: 100 });
     expect(capturedUrl).toContain("count=20"); // capped at 20
   });
 
   test("handles empty web results gracefully", async () => {
     const fetchFn = mockFetch(() => Response.json({}));
 
-    const search = createBraveSearch({ apiKey: "key", fetchFn });
-    const result = await search("empty");
+    const provider = createBraveSearch({ apiKey: "key", fetchFn });
+    const result = await provider.search("empty");
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -198,8 +207,8 @@ describe("createBraveSearch", () => {
   test("handles missing fields in results", async () => {
     const fetchFn = mockFetch(() => Response.json({ web: { results: [{}] } }));
 
-    const search = createBraveSearch({ apiKey: "key", fetchFn });
-    const result = await search("test");
+    const provider = createBraveSearch({ apiKey: "key", fetchFn });
+    const result = await provider.search("test");
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -207,6 +216,67 @@ describe("createBraveSearch", () => {
       expect(result.value[0]?.title).toBe("");
       expect(result.value[0]?.url).toBe("");
       expect(result.value[0]?.snippet).toBe("");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Retry-After parsing
+// ---------------------------------------------------------------------------
+
+describe("Retry-After header parsing", () => {
+  test("parses numeric Retry-After: 30 into retryAfterMs 30000", async () => {
+    const fetchFn = mockFetch(
+      () => new Response("", { status: 429, headers: { "retry-after": "30" } }),
+    );
+
+    const provider = createBraveSearch({ apiKey: "key", fetchFn });
+    const result = await provider.search("test");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("RATE_LIMIT");
+      expect(result.error.context?.retryAfterMs).toBe(30_000);
+    }
+  });
+
+  test("parses Retry-After: 0 into retryAfterMs 0", async () => {
+    const fetchFn = mockFetch(
+      () => new Response("", { status: 429, headers: { "retry-after": "0" } }),
+    );
+
+    const provider = createBraveSearch({ apiKey: "key", fetchFn });
+    const result = await provider.search("test");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.context?.retryAfterMs).toBe(0);
+    }
+  });
+
+  test("returns undefined retryAfterMs when no Retry-After header", async () => {
+    const fetchFn = mockFetch(() => new Response("", { status: 429 }));
+
+    const provider = createBraveSearch({ apiKey: "key", fetchFn });
+    const result = await provider.search("test");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.context?.retryAfterMs).toBeUndefined();
+    }
+  });
+
+  test("returns undefined retryAfterMs for non-numeric Retry-After", async () => {
+    const fetchFn = mockFetch(
+      () => new Response("", { status: 429, headers: { "retry-after": "abc" } }),
+    );
+
+    const provider = createBraveSearch({ apiKey: "key", fetchFn });
+    const result = await provider.search("test");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.context?.retryAfterMs).toBeUndefined();
     }
   });
 });

@@ -1,6 +1,6 @@
 # @koi/search-brave — Brave Search API Adapter
 
-Produces a `searchFn` compatible with `@koi/tools-web`'s `WebExecutorConfig`. One factory call wraps the Brave Search API behind a typed interface returning `Result<BraveSearchResult[], KoiError>`.
+Implements the `SearchProvider` contract from `@koi/search-provider`. One factory call wraps the Brave Search API behind a typed interface returning `Result<readonly WebSearchResult[], KoiError>`. Includes a `BrickDescriptor` for manifest auto-discovery.
 
 ---
 
@@ -21,16 +21,23 @@ WITHOUT search-brave:
   → { code: "VALIDATION", error: "No search backend configured" }
 
 
-WITH search-brave:
-══════════════════
-  const searchFn = createBraveSearch({ apiKey: BRAVE_KEY });
-  const executor = createWebExecutor({ searchFn });
+WITH search-brave (programmatic):
+══════════════════════════════════
+  const provider = createBraveSearch({ apiKey: BRAVE_KEY });
+  const executor = createWebExecutor({ searchProvider: provider });
 
   web_search("Bun release notes")
   → [
       { title: "Bun 1.3 Release", url: "https://bun.sh/...", snippet: "..." },
       { title: "Bun Blog",        url: "https://bun.sh/...", snippet: "..." },
     ]
+
+
+WITH search-brave (manifest):
+═════════════════════════════
+  # koi.yaml
+  search: brave
+  # BRAVE_API_KEY in environment → auto-resolved via BrickDescriptor
 ```
 
 ---
@@ -39,19 +46,22 @@ WITH search-brave:
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  @koi/search-brave  (L2)                                 │
-│                                                          │
-│  brave-search.ts     ← factory + API adapter (~170 LOC)  │
-│  brave-search.test.ts                                    │
-│  index.ts            ← public API surface                │
-│                                                          │
-├──────────────────────────────────────────────────────────┤
-│  External deps: NONE (uses platform fetch API)           │
-│                                                          │
-├──────────────────────────────────────────────────────────┤
-│  Internal deps                                           │
-│  ● @koi/core (L0) — KoiError, Result                    │
-└──────────────────────────────────────────────────────────┘
+│  @koi/search-brave  (L2)                                  │
+│                                                           │
+│  brave-search.ts     ← factory + API adapter (~230 LOC)   │
+│  descriptor.ts       ← BrickDescriptor for auto-discovery │
+│  brave-search.test.ts                                     │
+│  index.ts            ← public API surface                 │
+│                                                           │
+├───────────────────────────────────────────────────────────┤
+│  External deps: NONE (uses platform fetch API)            │
+│                                                           │
+├───────────────────────────────────────────────────────────┤
+│  Internal deps                                            │
+│  ● @koi/core (L0) — KoiError, Result, RETRYABLE_DEFAULTS │
+│  ● @koi/search-provider (L0u) — SearchProvider contract   │
+│  ● @koi/resolve (L0u) — BrickDescriptor type              │
+└───────────────────────────────────────────────────────────┘
 ```
 
 ### How It Plugs In
@@ -60,34 +70,57 @@ WITH search-brave:
 @koi/search-brave          @koi/tools-web             Koi Runtime
 ┌─────────────────┐   ┌──────────────────────┐   ┌────────────────┐
 │ createBraveSearch│──▶│ createWebExecutor({  │──▶│ createKoi({    │
-│ ({ apiKey })     │   │   searchFn: ▲        │   │   providers:   │
+│ ({ apiKey })     │   │   searchProvider: ▲  │   │   providers:   │
 │                  │   │ })                   │   │   [provider]   │
-│ returns searchFn │   │                      │   │ })             │
-└─────────────────┘   │ createWebProvider({  │   └────────────────┘
-                       │   executor           │
-  No import between    │ })                   │   Agent now has
-  these two packages!  └──────────────────────┘   web_search tool
+│ returns          │   │                      │   │ })             │
+│ SearchProvider   │   │ createWebProvider({  │   └────────────────┘
+└─────────────────┘   │   executor           │
+                       │ })                   │   Agent now has
+  No import between    └──────────────────────┘   web_search tool
+  these two packages!
+
+  OR via manifest:
+  ┌─────────────┐   ┌────────────────┐   ┌─────────────────┐
+  │ koi.yaml    │──▶│ resolveSearch  │──▶│ BrickDescriptor  │
+  │ search:     │   │ ("brave")      │   │ kind: "search"   │
+  │   brave     │   │                │   │ aliases: [brave]  │
+  └─────────────┘   └────────────────┘   └─────────────────┘
 ```
 
 ---
 
 ## Usage
 
-### Basic
+### Manifest (recommended)
+
+```yaml
+# koi.yaml
+search: brave
+# Set BRAVE_API_KEY in environment
+
+# With options
+search:
+  name: brave
+  options:
+    country: US
+    freshness: pw
+```
+
+### Programmatic
 
 ```typescript
 import { createBraveSearch } from "@koi/search-brave";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 
-const searchFn = createBraveSearch({ apiKey: process.env.BRAVE_API_KEY! });
-const executor = createWebExecutor({ searchFn });
+const searchProvider = createBraveSearch({ apiKey: process.env.BRAVE_API_KEY! });
+const executor = createWebExecutor({ searchProvider });
 const provider = createWebProvider({ executor });
 ```
 
 ### With Country and Freshness
 
 ```typescript
-const searchFn = createBraveSearch({
+const searchProvider = createBraveSearch({
   apiKey: process.env.BRAVE_API_KEY!,
   country: "US",         // localized results
   freshness: "pw",       // past week only
@@ -104,7 +137,7 @@ const mockFetch = mock(async () => Response.json({
   web: { results: [{ title: "Test", url: "https://test.com", description: "Mock" }] },
 })) as unknown as typeof globalThis.fetch;
 
-const searchFn = createBraveSearch({ apiKey: "test-key", fetchFn: mockFetch });
+const searchProvider = createBraveSearch({ apiKey: "test-key", fetchFn: mockFetch });
 ```
 
 ---
@@ -115,7 +148,7 @@ const searchFn = createBraveSearch({ apiKey: "test-key", fetchFn: mockFetch });
 
 | Function | Params | Returns |
 |----------|--------|---------|
-| `createBraveSearch(config)` | `BraveSearchConfig` | `BraveSearchFn` |
+| `createBraveSearch(config)` | `BraveSearchConfig` | `SearchProvider` |
 
 ### BraveSearchConfig
 
@@ -128,38 +161,46 @@ const searchFn = createBraveSearch({ apiKey: "test-key", fetchFn: mockFetch });
 | `country` | `string` | `undefined` | Country code (e.g., `"US"`, `"GB"`) |
 | `freshness` | `string` | `undefined` | `"pd"` / `"pw"` / `"pm"` |
 
-### BraveSearchFn
+### SearchProvider (returned)
 
 ```typescript
-type BraveSearchFn = (
-  query: string,
-  options?: { maxResults?: number; signal?: AbortSignal },
-) => Promise<Result<readonly BraveSearchResult[], KoiError>>;
+interface SearchProvider {
+  readonly name: string;  // "brave"
+  readonly search: (
+    query: string,
+    options?: WebSearchOptions,
+  ) => Promise<Result<readonly WebSearchResult[], KoiError>>;
+}
 ```
 
-### BraveSearchResult
+### BrickDescriptor
 
 ```typescript
-interface BraveSearchResult {
-  readonly title: string;
-  readonly url: string;
-  readonly snippet: string;
-}
+export const descriptor: BrickDescriptor<SearchProvider> = {
+  kind: "search",
+  name: "@koi/search-brave",
+  aliases: ["brave"],
+  description: "Brave Search API web search provider",
+  tags: ["search", "web", "brave"],
+  // ...
+};
 ```
 
 ### Error Mapping
 
 ```
-╔══════════════╦══════════════════════════╦═══════════╗
-║ HTTP Status  ║ KoiError Code            ║ Retryable ║
-╠══════════════╬══════════════════════════╬═══════════╣
-║ 429          ║ RATE_LIMIT               ║ Yes       ║
-║ 401, 403     ║ PERMISSION               ║ No        ║
-║ 5xx          ║ EXTERNAL                 ║ Yes       ║
-║ Network fail ║ EXTERNAL                 ║ Yes       ║
-║ Abort/timeout║ TIMEOUT                  ║ Yes       ║
-╚══════════════╩══════════════════════════╩═══════════╝
+╔══════════════╦══════════════════════════╦═══════════╦══════════════════════╗
+║ HTTP Status  ║ KoiError Code            ║ Retryable ║ Extra Context        ║
+╠══════════════╬══════════════════════════╬═══════════╬══════════════════════╣
+║ 429          ║ RATE_LIMIT               ║ Yes       ║ retryAfterMs parsed  ║
+║ 401, 403     ║ PERMISSION               ║ No        ║                      ║
+║ 5xx          ║ EXTERNAL                 ║ Yes       ║                      ║
+║ Network fail ║ EXTERNAL                 ║ Yes       ║                      ║
+║ Abort/timeout║ TIMEOUT                  ║ Yes       ║                      ║
+╚══════════════╩══════════════════════════╩═══════════╩══════════════════════╝
 ```
+
+On 429 responses, the `Retry-After` header is parsed into `error.context.retryAfterMs` (milliseconds).
 
 ### Constants
 
@@ -173,7 +214,8 @@ interface BraveSearchResult {
 ## Testing
 
 ```
-brave-search.test.ts — 13 tests
+brave-search.test.ts — 17 tests
+  ● Returns SearchProvider with name and search method
   ● Returns search results from API
   ● Sends API key in X-Subscription-Token header
   ● Passes query and count in URL params
@@ -187,6 +229,10 @@ brave-search.test.ts — 13 tests
   ● Clamps maxResults to valid range (1-20)
   ● Handles empty web results gracefully
   ● Handles missing fields in results
+  ● Retry-After: numeric → retryAfterMs in context
+  ● Retry-After: 0 → retryAfterMs is 0
+  ● Retry-After: invalid → retryAfterMs undefined
+  ● Retry-After: absent → retryAfterMs undefined
 ```
 
 ```bash
@@ -200,10 +246,13 @@ bun --cwd packages/search-brave test
 | Decision | Rationale |
 |----------|-----------|
 | Separate L2 package | `@koi/tools-web` never imports this — avoids L2→L2 dependency |
+| Implements `SearchProvider` | Compile-time contract enforcement via `@koi/search-provider` |
+| `BrickDescriptor` for auto-discovery | Enables manifest `search: brave` resolution |
 | Injectable `fetchFn` | Same pattern as `WebExecutor`. Enables mock-based testing without network |
 | `maxResults` clamped to 1-20 | Brave API limit is 20. Prevents invalid requests |
-| `description` mapped to `snippet` | Brave calls it `description`; Koi's `WebSearchResult` uses `snippet`. Mapping happens here |
-| Error codes match Koi conventions | 429 → RATE_LIMIT, 401 → PERMISSION, 5xx → EXTERNAL. Same codes the LLM already knows |
+| `description` mapped to `snippet` | Brave calls it `description`; `WebSearchResult` uses `snippet`. Mapping happens here |
+| `Retry-After` parsing | 429 responses include `retryAfterMs` in error context for smart retry |
+| Error codes match Koi conventions | 429 → RATE_LIMIT, 401 → PERMISSION, 5xx → EXTERNAL |
 | AbortController for timeout | Platform-native cancellation. Caller's signal is forwarded |
 | No caching in this package | Caching belongs in `WebExecutor` (centralized). This adapter is stateless |
 
@@ -213,11 +262,16 @@ bun --cwd packages/search-brave test
 
 ```
 L0  @koi/core ────────────────────────────────────────┐
-    KoiError, Result                                   │
-                                                       │
-                                                       ▼
+    KoiError, Result, RETRYABLE_DEFAULTS               │
+                                                        │
+L0u @koi/search-provider ─────────────────────────────┤
+    SearchProvider, WebSearchResult, WebSearchOptions   │
+                                                        │
+L0u @koi/resolve ──────────────────────────────────────┤
+    BrickDescriptor (type-only import)                  │
+                                                        ▼
 L2  @koi/search-brave ◄──────────────────────────────┘
-    imports from L0 only
+    imports from L0 and L0u only
     ✗ never imports @koi/engine (L1)
     ✗ never imports peer L2 (@koi/tools-web)
     ✗ zero external npm dependencies

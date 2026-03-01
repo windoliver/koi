@@ -81,7 +81,7 @@ L3  Meta-packages    Convenience bundles (e.g., @koi/starter = L0 + L1 + selecte
 
 **When creating or editing feature packages (L2):**
 - Import from `@koi/core` (L0) and L0-utility packages (L0u) only — never from `@koi/engine` or other L2 packages
-- L0u packages: `@koi/channel-base`, `@koi/errors`, `@koi/execution-context`, `@koi/file-resolution`, `@koi/git-utils`, `@koi/hash`, `@koi/manifest`, `@koi/resolve`, `@koi/sandbox-cloud-base`, `@koi/scope`, `@koi/shutdown`, `@koi/skill-scanner`, `@koi/snapshot-chain-store`, `@koi/sqlite-utils`, `@koi/test-utils`, `@koi/validation`
+- L0u packages: `@koi/channel-base`, `@koi/errors`, `@koi/execution-context`, `@koi/file-resolution`, `@koi/git-utils`, `@koi/hash`, `@koi/manifest`, `@koi/resolve`, `@koi/sandbox-cloud-base`, `@koi/scope`, `@koi/search-provider`, `@koi/shutdown`, `@koi/skill-scanner`, `@koi/snapshot-chain-store`, `@koi/sqlite-utils`, `@koi/test-utils`, `@koi/validation`
 - L0u packages may import from `@koi/core` and from peer L0u packages
 - Each L2 package is independent and swappable
 - Examples: channel adapters, middleware implementations, engine adapters, MCP bridge

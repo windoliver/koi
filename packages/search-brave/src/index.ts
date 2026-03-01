@@ -1,16 +1,16 @@
 /**
  * @koi/search-brave — Brave Search API adapter (Layer 2)
  *
- * Produces a search function compatible with @koi/tools-web's WebExecutorConfig.searchFn.
- * Depends on @koi/core only — never on L1 or peer L2 packages.
+ * Implements the SearchProvider contract from @koi/search-provider.
+ * Exports a BrickDescriptor for manifest auto-resolution.
+ * Depends on @koi/core, @koi/search-provider, @koi/resolve — never on L1 or peer L2 packages.
  *
  * Usage:
  * ```ts
  * import { createBraveSearch } from "@koi/search-brave";
- * import { createWebExecutor } from "@koi/tools-web";
  *
- * const searchFn = createBraveSearch({ apiKey: process.env.BRAVE_API_KEY! });
- * const executor = createWebExecutor({ searchFn, cacheTtlMs: 300_000 });
+ * const provider = createBraveSearch({ apiKey: process.env.BRAVE_API_KEY! });
+ * const result = await provider.search("koi agent engine");
  * ```
  */
 
@@ -25,3 +25,4 @@ export {
   DEFAULT_BRAVE_BASE_URL,
   DEFAULT_BRAVE_TIMEOUT_MS,
 } from "./brave-search.js";
+export { descriptor } from "./descriptor.js";

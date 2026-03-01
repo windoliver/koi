@@ -17,6 +17,7 @@ import type {
   ModelHandler,
   Result,
 } from "@koi/core";
+import type { SearchProvider } from "@koi/search-provider";
 
 // ---------------------------------------------------------------------------
 // Resolve kind — extends BrickKind with resolution-specific kinds
@@ -30,6 +31,7 @@ export type ResolveKind =
   | "context"
   | "forge"
   | "schedule"
+  | "search"
   | "webhook";
 
 // ---------------------------------------------------------------------------
@@ -127,6 +129,8 @@ export interface ResolvedManifest {
   readonly channels?: readonly ChannelAdapter[] | undefined;
   /** Resolved engine adapter (undefined → CLI defaults to loop adapter). */
   readonly engine?: EngineAdapter | undefined;
+  /** Resolved search provider (undefined → no web search capability). */
+  readonly search?: SearchProvider | undefined;
 }
 
 /** A single resolution failure within a section. */

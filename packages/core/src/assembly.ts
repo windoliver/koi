@@ -52,6 +52,11 @@ export interface MiddlewareConfig {
   readonly publisher?: string;
 }
 
+export interface SearchConfig {
+  readonly name: string;
+  readonly options?: JsonObject | undefined;
+}
+
 export interface PermissionConfig {
   readonly allow?: readonly string[];
   readonly deny?: readonly string[];
@@ -101,4 +106,6 @@ export interface AgentManifest {
   readonly metadata?: JsonObject;
   /** Declared task objectives — used by goal drift detection and attention management middleware. */
   readonly objectives?: readonly string[];
+  /** Search provider configuration — resolved to a SearchProvider at assembly time. */
+  readonly search?: SearchConfig | undefined;
 }

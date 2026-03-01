@@ -593,8 +593,8 @@ describeSearch("e2e: web_search with Brave Search through full L1 runtime", () =
         },
       };
 
-      const searchFn = createBraveSearch({ apiKey: BRAVE_KEY });
-      const executor = createWebExecutor({ searchFn });
+      const searchProvider = createBraveSearch({ apiKey: BRAVE_KEY });
+      const executor = createWebExecutor({ searchProvider });
       const provider = createWebProvider({ executor });
 
       const adapter = createPiAdapter({
@@ -663,8 +663,8 @@ describeSearch("e2e: web_search with Brave Search through full L1 runtime", () =
         },
       };
 
-      const searchFn = createBraveSearch({ apiKey: BRAVE_KEY });
-      const executor = createWebExecutor({ searchFn });
+      const searchProvider = createBraveSearch({ apiKey: BRAVE_KEY });
+      const executor = createWebExecutor({ searchProvider });
       const provider = createWebProvider({ executor });
 
       const adapter = createPiAdapter({
