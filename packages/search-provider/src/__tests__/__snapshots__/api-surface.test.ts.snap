@@ -4,38 +4,99 @@ exports[`@koi/search-provider API surface . has stable type surface 1`] = `
 "import { Result, KoiError } from '@koi/core';
 
 /**
- * Search provider contract — the formal interface for web search backends.
+ * @koi/search-provider — Search value types (L0u)
  *
- * Lives in L0u so both @koi/tools-web (consumer) and search provider
- * implementations (@koi/search-brave, etc.) share a single contract
- * with compile-time enforcement.
+ * All types are readonly, no runtime code.
  */
+/** Score normalized to [0, 1] */
+type SearchScore = number;
+/** What the caller wants */
+interface SearchQuery {
+    readonly text: string;
+    readonly filter?: SearchFilter;
+    readonly limit: number;
+    readonly offset?: number;
+    readonly cursor?: string;
+    readonly minScore?: SearchScore;
+}
+/** Single search result */
+interface SearchResult<T = unknown> {
+    readonly id: string;
+    readonly score: SearchScore;
+    readonly content: string;
+    readonly metadata: Readonly<Record<string, unknown>>;
+    readonly source: string;
+    readonly data?: T;
+}
+/** Paginated response */
+interface SearchPage<T = unknown> {
+    readonly results: readonly SearchResult<T>[];
+    readonly total?: number;
+    readonly cursor?: string;
+    readonly hasMore: boolean;
+}
+/** Composable filter tree (discriminated union) */
+type SearchFilter = {
+    readonly kind: "eq";
+    readonly field: string;
+    readonly value: unknown;
+} | {
+    readonly kind: "ne";
+    readonly field: string;
+    readonly value: unknown;
+} | {
+    readonly kind: "gt";
+    readonly field: string;
+    readonly value: number;
+} | {
+    readonly kind: "lt";
+    readonly field: string;
+    readonly value: number;
+} | {
+    readonly kind: "in";
+    readonly field: string;
+    readonly values: readonly unknown[];
+} | {
+    readonly kind: "and";
+    readonly filters: readonly SearchFilter[];
+} | {
+    readonly kind: "or";
+    readonly filters: readonly SearchFilter[];
+} | {
+    readonly kind: "not";
+    readonly filter: SearchFilter;
+};
+/** Document for indexing */
+interface IndexDocument<T = unknown> {
+    readonly id: string;
+    readonly content: string;
+    readonly metadata?: Readonly<Record<string, unknown>>;
+    readonly embedding?: readonly number[];
+    readonly data?: T;
+}
 
-/** A single web search result, normalized across all providers. */
-interface WebSearchResult {
-    readonly title: string;
-    readonly url: string;
-    readonly snippet: string;
-}
-/** Options passed to a search provider's search() method. */
-interface WebSearchOptions {
-    readonly maxResults?: number | undefined;
-    readonly signal?: AbortSignal | undefined;
-}
 /**
- * A pluggable web search backend.
+ * @koi/search-provider — Search contracts (L0u)
  *
- * Implementations return normalized \`WebSearchResult[]\` wrapped in \`Result\`.
- * Agent manifests declare \`search: { name: "brave" }\` and the resolve layer
- * instantiates the matching provider via its \`BrickDescriptor\`.
+ * Interfaces only — no runtime code.
  */
-interface SearchProvider {
-    /** Provider name (e.g., "brave", "tavily", "searxng"). */
-    readonly name: string;
-    /** Execute a web search query. */
-    readonly search: (query: string, options?: WebSearchOptions) => Promise<Result<readonly WebSearchResult[], KoiError>>;
+
+/** Contract 1: Retriever (read path) */
+interface Retriever<T = unknown> {
+    readonly retrieve: (query: SearchQuery) => Promise<Result<SearchPage<T>, KoiError>>;
+}
+/** Contract 2: Embedder (embedding generation) */
+interface Embedder {
+    readonly embed: (text: string) => Promise<readonly number[]>;
+    readonly embedMany: (texts: readonly string[]) => Promise<readonly (readonly number[])[]>;
+    readonly dimensions: number;
+}
+/** Contract 3: Indexer (write path) */
+interface Indexer<T = unknown> {
+    readonly index: (documents: readonly IndexDocument<T>[]) => Promise<Result<void, KoiError>>;
+    readonly remove: (ids: readonly string[]) => Promise<Result<void, KoiError>>;
 }
 
-export type { SearchProvider, WebSearchOptions, WebSearchResult };
+export type { Embedder, IndexDocument, Indexer, Retriever, SearchFilter, SearchPage, SearchQuery, SearchResult, SearchScore };
 "
 `;
