@@ -11,7 +11,7 @@ import { createAuditMiddleware, createInMemoryAuditSink } from "@koi/middleware-
 import { createInMemoryStore, createMemoryMiddleware } from "@koi/middleware-memory";
 import {
   createDefaultCostCalculator,
-  createInMemoryPayLedger,
+  createInMemoryBudgetTracker,
   createPayMiddleware,
 } from "@koi/middleware-pay";
 import {
@@ -83,17 +83,17 @@ describe("Full pipeline scenario", () => {
   function createFullStack(): {
     readonly middlewares: readonly KoiMiddleware[];
     readonly sink: ReturnType<typeof createInMemoryAuditSink>;
-    readonly ledger: ReturnType<typeof createInMemoryPayLedger>;
+    readonly tracker: ReturnType<typeof createInMemoryBudgetTracker>;
     readonly store: ReturnType<typeof createInMemoryStore>;
   } {
     const sink = createInMemoryAuditSink();
-    const ledger = createInMemoryPayLedger(100);
+    const tracker = createInMemoryBudgetTracker();
     const memStore = createInMemoryStore();
 
     const perm = createStubPermissionsMiddleware({ allow: ["*"], deny: ["blocked"] });
 
     const pay = createPayMiddleware({
-      ledger,
+      tracker,
       calculator: createDefaultCostCalculator(),
       budget: 100,
     });
@@ -105,7 +105,7 @@ describe("Full pipeline scenario", () => {
     return {
       middlewares: [perm, pay, audit, memory],
       sink,
-      ledger,
+      tracker,
       store: memStore,
     };
   }
@@ -271,9 +271,9 @@ describe("Full pipeline scenario", () => {
   });
 
   test("budget exhaustion mid-session blocks further model calls", async () => {
-    const ledger = createInMemoryPayLedger(0.01);
+    const tracker = createInMemoryBudgetTracker();
     const pay = createPayMiddleware({
-      ledger,
+      tracker,
       calculator: createDefaultCostCalculator({
         expensive: { input: 1, output: 1 }, // $1 per token
       }),
