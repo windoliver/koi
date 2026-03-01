@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { SandboxExecutor, TieredSandboxExecutor } from "@koi/core";
+import type { GovernanceController, SandboxExecutor, TieredSandboxExecutor } from "@koi/core";
 import { brickId } from "@koi/core";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
@@ -212,5 +212,189 @@ describe("buildBaseFields", () => {
       deps,
     );
     expect(base.tags).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Controller + onForgeConsumed integration
+// ---------------------------------------------------------------------------
+
+function createMockController(overrides?: {
+  readonly checks?: Readonly<
+    Record<
+      string,
+      | { readonly ok: true }
+      | {
+          readonly ok: false;
+          readonly variable: string;
+          readonly reason: string;
+          readonly retryable: boolean;
+        }
+    >
+  >;
+}): GovernanceController {
+  const checks = overrides?.checks ?? {};
+  return {
+    check: (variable: string) => checks[variable] ?? { ok: true as const },
+    checkAll: () => ({ ok: true as const }),
+    record: () => undefined,
+    snapshot: () => ({ timestamp: Date.now(), readings: [], healthy: true, violations: [] }),
+    variables: () => new Map(),
+    reading: () => undefined,
+  };
+}
+
+describe("createForgeTool — controller passthrough", () => {
+  test("passes controller to checkGovernance when provided", async () => {
+    const controller = createMockController({
+      checks: {
+        forge_budget: {
+          ok: false,
+          variable: "forge_budget",
+          reason: "budget exhausted",
+          retryable: true,
+        },
+      },
+    });
+    const deps = createDeps({ controller });
+    const tool = createForgeTool(
+      {
+        name: "forge_tool",
+        description: "Test",
+        inputSchema: { type: "object" },
+        handler: async () => ({ ok: true, value: { forgesConsumed: 1 } }),
+      },
+      deps,
+    );
+    const result = (await tool.execute({})) as {
+      readonly ok: false;
+      readonly error: { readonly stage: string; readonly code: string };
+    };
+    // Controller rejects → governance error
+    expect(result.ok).toBe(false);
+    expect(result.error.stage).toBe("governance");
+    expect(result.error.code).toBe("MAX_SESSION_FORGES");
+  });
+
+  test("passes controller and governance succeeds when controller allows", async () => {
+    const controller = createMockController();
+    let handlerCalled = false;
+    const deps = createDeps({ controller });
+    const tool = createForgeTool(
+      {
+        name: "test_tool",
+        description: "Test",
+        inputSchema: { type: "object" },
+        handler: async () => {
+          handlerCalled = true;
+          return { ok: true, value: "done" };
+        },
+      },
+      deps,
+    );
+    await tool.execute({});
+    expect(handlerCalled).toBe(true);
+  });
+});
+
+describe("createForgeTool — onForgeConsumed callback", () => {
+  test("calls onForgeConsumed(1) after successful new forge", async () => {
+    let consumedArg: number | undefined;
+    const deps = createDeps({
+      onForgeConsumed: (n) => {
+        consumedArg = n;
+      },
+    });
+    const tool = createForgeTool(
+      {
+        name: "test_tool",
+        description: "Test",
+        inputSchema: { type: "object" },
+        handler: async () => ({ ok: true, value: { forgesConsumed: 1 } }),
+      },
+      deps,
+    );
+    await tool.execute({});
+    expect(consumedArg).toBe(1);
+  });
+
+  test("does NOT call onForgeConsumed on dedup (forgesConsumed: 0)", async () => {
+    let called = false;
+    const deps = createDeps({
+      onForgeConsumed: () => {
+        called = true;
+      },
+    });
+    const tool = createForgeTool(
+      {
+        name: "test_tool",
+        description: "Test",
+        inputSchema: { type: "object" },
+        handler: async () => ({ ok: true, value: { forgesConsumed: 0 } }),
+      },
+      deps,
+    );
+    await tool.execute({});
+    expect(called).toBe(false);
+  });
+
+  test("does NOT call onForgeConsumed on governance failure", async () => {
+    let called = false;
+    const deps = createDeps({
+      config: createDefaultForgeConfig({ enabled: false }),
+      onForgeConsumed: () => {
+        called = true;
+      },
+    });
+    const tool = createForgeTool(
+      {
+        name: "test_tool",
+        description: "Test",
+        inputSchema: { type: "object" },
+        handler: async () => ({ ok: true, value: { forgesConsumed: 1 } }),
+      },
+      deps,
+    );
+    await tool.execute({});
+    expect(called).toBe(false);
+  });
+
+  test("does NOT call onForgeConsumed on handler error", async () => {
+    let called = false;
+    const deps = createDeps({
+      onForgeConsumed: () => {
+        called = true;
+      },
+    });
+    const tool = createForgeTool(
+      {
+        name: "test_tool",
+        description: "Test",
+        inputSchema: { type: "object" },
+        handler: async () => ({
+          ok: false,
+          error: { stage: "sandbox" as const, code: "CRASH" as const, message: "boom" },
+        }),
+      },
+      deps,
+    );
+    await tool.execute({});
+    expect(called).toBe(false);
+  });
+
+  test("does NOT call onForgeConsumed when callback is not provided", async () => {
+    // Just verify no error when onForgeConsumed is undefined
+    const deps = createDeps();
+    const tool = createForgeTool(
+      {
+        name: "test_tool",
+        description: "Test",
+        inputSchema: { type: "object" },
+        handler: async () => ({ ok: true, value: { forgesConsumed: 1 } }),
+      },
+      deps,
+    );
+    // Should not throw
+    await tool.execute({});
   });
 });
