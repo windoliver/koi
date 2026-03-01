@@ -15,6 +15,7 @@
   },
   "devDependencies": {
     "@koi/test-utils": "workspace:*",
+    "@opentelemetry/core": "^2.5.0",
     "@opentelemetry/sdk-trace-base": "^2.5.0",
     "@opentelemetry/sdk-trace-node": "^2.5.0"
   },

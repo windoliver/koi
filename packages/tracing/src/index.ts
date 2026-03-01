@@ -8,4 +8,5 @@
 
 export type { TracingConfig } from "./config.js";
 export { validateTracingConfig } from "./config.js";
+export { createTracedFetch } from "./traced-fetch.js";
 export { createTracingMiddleware } from "./tracing.js";

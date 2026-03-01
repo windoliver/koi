@@ -18,6 +18,7 @@ export interface FetchWithTimeoutOptions {
   readonly body?: string | undefined;
   readonly timeoutMs: number;
   readonly signal?: AbortSignal | undefined;
+  readonly fetch?: typeof globalThis.fetch | undefined;
 }
 
 export interface FetchWithTimeoutResult {
@@ -35,6 +36,7 @@ export interface FetchWithTimeoutResult {
 export async function fetchWithTimeout(
   options: FetchWithTimeoutOptions,
 ): Promise<FetchWithTimeoutResult> {
+  const fetchFn = options.fetch ?? globalThis.fetch;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs);
 
@@ -43,7 +45,7 @@ export async function fetchWithTimeout(
       ? AbortSignal.any([options.signal, controller.signal])
       : controller.signal;
 
-  const response = await fetch(options.url, {
+  const response = await fetchFn(options.url, {
     method: options.method,
     headers: { ...options.headers },
     ...(options.body !== undefined ? { body: options.body } : {}),
@@ -66,6 +68,7 @@ export interface StreamFetchOptions {
   readonly body: string;
   readonly timeoutMs: number;
   readonly signal?: AbortSignal | undefined;
+  readonly fetch?: typeof globalThis.fetch | undefined;
 }
 
 export interface StreamFetchResult {
@@ -81,6 +84,7 @@ export interface StreamFetchResult {
  * called, so long-running healthy streams are not killed.
  */
 export async function streamFetch(options: StreamFetchOptions): Promise<StreamFetchResult> {
+  const fetchFn = options.fetch ?? globalThis.fetch;
   const controller = new AbortController();
   // let: idle timer, encapsulated — resets on each SSE chunk
   let timer = setTimeout(() => controller.abort(), options.timeoutMs);
@@ -95,7 +99,7 @@ export async function streamFetch(options: StreamFetchOptions): Promise<StreamFe
       ? AbortSignal.any([options.signal, controller.signal])
       : controller.signal;
 
-  const response = await fetch(options.url, {
+  const response = await fetchFn(options.url, {
     method: "POST",
     headers: { ...options.headers },
     body: options.body,

@@ -17,6 +17,7 @@ interface ProviderAdapterConfig {
     readonly baseUrl?: string | undefined;
     readonly timeoutMs?: number | undefined;
     readonly headers?: Readonly<Record<string, string>> | undefined;
+    readonly fetch?: typeof globalThis.fetch | undefined;
 }
 type StreamChunk = {
     readonly kind: "text_delta";
@@ -137,6 +138,7 @@ interface FetchWithTimeoutOptions {
     readonly body?: string | undefined;
     readonly timeoutMs: number;
     readonly signal?: AbortSignal | undefined;
+    readonly fetch?: typeof globalThis.fetch | undefined;
 }
 interface FetchWithTimeoutResult {
     readonly response: Response;
@@ -202,6 +204,7 @@ interface OpenAICompatibleConfig {
     readonly headers?: Readonly<Record<string, string>> | undefined;
     readonly providerName: string;
     readonly defaultModel?: string | undefined;
+    readonly fetch?: typeof globalThis.fetch | undefined;
 }
 /**
  * Creates a ProviderAdapter using the OpenAI-compatible chat completions API.

@@ -17,6 +17,8 @@ interface GatewayClientConfig {
     readonly authToken?: string;
     /** Request timeout in milliseconds. Default: 10_000. */
     readonly timeoutMs?: number;
+    /** Optional injectable fetch for tracing / testing. */
+    readonly fetch?: typeof globalThis.fetch;
 }
 /** Result of a successful create/update operation. */
 interface SurfaceResult {

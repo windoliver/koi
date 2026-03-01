@@ -1,14 +1,17 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { runId, sessionId } from "@koi/core";
+import type { ToolRequest } from "@koi/core/middleware";
 import {
   createMockModelHandler,
   createMockSessionContext,
   createMockToolHandler,
   createMockTurnContext,
 } from "@koi/test-utils";
-import type { Tracer } from "@opentelemetry/api";
+import { context as otelContext, propagation, type Tracer } from "@opentelemetry/api";
+import { W3CTraceContextPropagator } from "@opentelemetry/core";
 import { InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
+import { createTracedFetch } from "../traced-fetch.js";
 import { createTracingMiddleware } from "../tracing.js";
 
 /** Asserts that an optional middleware hook is defined. */
@@ -245,5 +248,94 @@ describe("tracing integration", () => {
     const indices = turnSpans.map((ts) => ts.attributes["koi.turn.index"]);
     expect(indices).toContain(0);
     expect(indices).toContain(1);
+  });
+});
+
+/**
+ * Context propagation tests need provider.register() so that the
+ * AsyncLocalStorage-based context manager is active. This is a separate
+ * describe block to isolate the global registration side effects.
+ */
+describe("tracing context propagation", () => {
+  let exporter: InMemorySpanExporter;
+  let provider: NodeTracerProvider;
+
+  beforeEach(() => {
+    exporter = new InMemorySpanExporter();
+    provider = new NodeTracerProvider({
+      spanProcessors: [new SimpleSpanProcessor(exporter)],
+    });
+    // register() activates context manager + propagator (W3C by default)
+    provider.register({
+      propagator: new W3CTraceContextPropagator(),
+    });
+  });
+
+  afterEach(async () => {
+    exporter.reset();
+    await provider.shutdown();
+    // Reset global state so other tests aren't affected
+    propagation.disable();
+    otelContext.disable();
+  });
+
+  test("context.with() propagates trace context into tool call handler", async () => {
+    const tracer = provider.getTracer("@koi/propagation-test");
+    const middleware = createTracingMiddleware({ tracer });
+    const onSessionStart = assertDefined(middleware.onSessionStart, "onSessionStart");
+    const onSessionEnd = assertDefined(middleware.onSessionEnd, "onSessionEnd");
+    const onBeforeTurn = assertDefined(middleware.onBeforeTurn, "onBeforeTurn");
+    const onAfterTurn = assertDefined(middleware.onAfterTurn, "onAfterTurn");
+    const wrapToolCall = assertDefined(middleware.wrapToolCall, "wrapToolCall");
+
+    const sessionCtx = createMockSessionContext({ sessionId: sessionId("ctx-prop") });
+    const turnCtx = createMockTurnContext({
+      turnIndex: 0,
+      session: {
+        sessionId: sessionId("ctx-prop"),
+        runId: runId("run-ctx-prop"),
+        agentId: "agent-test-1",
+        metadata: {},
+      },
+    });
+
+    await onSessionStart(sessionCtx);
+    await onBeforeTurn(turnCtx);
+
+    // Use a tool handler that calls createTracedFetch with a spy
+    let capturedHeaders: Record<string, string> | undefined;
+    const spyFetch = mock((_input: Request | string | URL, init?: RequestInit) => {
+      capturedHeaders = init?.headers as Record<string, string>;
+      return Promise.resolve(new Response("ok"));
+    });
+
+    const toolHandler = async (_req: ToolRequest) => {
+      const tracedFetch = createTracedFetch(spyFetch);
+      await tracedFetch("https://example.com/api", {
+        headers: { "Content-Type": "application/json" },
+      });
+      return { output: { result: "ok" } };
+    };
+
+    await wrapToolCall(turnCtx, { toolId: "http-tool", input: {} }, toolHandler);
+
+    await onAfterTurn(turnCtx);
+    await onSessionEnd(sessionCtx);
+
+    // Verify traceparent was injected
+    expect(capturedHeaders).toBeDefined();
+    expect(capturedHeaders?.traceparent).toBeDefined();
+    expect(capturedHeaders?.traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
+
+    // Verify the traceparent's trace-id matches the tool span's trace-id
+    const toolSpan = exporter.getFinishedSpans().find((s) => s.name === "koi.tool_call");
+    expect(toolSpan).toBeDefined();
+    if (toolSpan && capturedHeaders?.traceparent) {
+      const traceId = capturedHeaders.traceparent.split("-")[1];
+      expect(traceId).toBe(toolSpan.spanContext().traceId);
+    }
+
+    // Verify existing headers were preserved
+    expect(capturedHeaders?.["Content-Type"]).toBe("application/json");
   });
 });

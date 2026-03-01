@@ -53,6 +53,7 @@ export interface NexusClientConfig {
   readonly baseUrl?: string | undefined;
   readonly timeoutMs?: number | undefined;
   readonly authToken?: string | undefined;
+  readonly fetch?: typeof globalThis.fetch | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +137,7 @@ export function createNexusClient(config?: NexusClientConfig): NexusClient {
   const baseUrl = config?.baseUrl ?? DEFAULT_NEXUS_BASE_URL;
   const timeoutMs = config?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const authToken = config?.authToken;
+  const fetchFn = config?.fetch ?? globalThis.fetch;
 
   function headers(): Record<string, string> {
     const h: Record<string, string> = { "Content-Type": "application/json" };
@@ -157,7 +159,7 @@ export function createNexusClient(config?: NexusClientConfig): NexusClient {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-      const resp = await fetch(url, {
+      const resp = await fetchFn(url, {
         method,
         headers: headers(),
         body: body !== undefined ? JSON.stringify(body) : undefined,

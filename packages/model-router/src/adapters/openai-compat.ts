@@ -28,6 +28,7 @@ export interface OpenAICompatibleConfig {
   readonly headers?: Readonly<Record<string, string>> | undefined;
   readonly providerName: string;
   readonly defaultModel?: string | undefined;
+  readonly fetch?: typeof globalThis.fetch | undefined;
 }
 
 /**
@@ -68,6 +69,7 @@ export function createOpenAICompatibleAdapter(
           body: JSON.stringify(body),
           timeoutMs,
           signal: request.signal,
+          fetch: config.fetch,
         });
         clearTimer = result.clearTimer;
 
@@ -117,6 +119,7 @@ export function createOpenAICompatibleAdapter(
           body: JSON.stringify(body),
           timeoutMs,
           signal: request.signal,
+          fetch: config.fetch,
         });
         clearTimer = result.clearTimer;
 
