@@ -16,12 +16,12 @@ import type {
   ForgeStore,
   KoiError,
   Result,
-  StoreChangeEvent,
 } from "@koi/core";
 import { notFound } from "@koi/core";
 import { openDb, wrapSqlite } from "@koi/sqlite-utils";
 import {
   applyBrickUpdate,
+  createMemoryStoreChangeNotifier,
   matchesBrickQuery,
   sortBricks,
   validateBrickArtifact,
@@ -136,11 +136,25 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
 
   const insertBrickStmt = db.query<
     void,
-    [string, string, string, string, string, string, number, string, number, string, string, string]
+    [
+      string,
+      string,
+      string,
+      string,
+      string,
+      string,
+      number,
+      string,
+      number,
+      string,
+      string,
+      string,
+      number | null,
+    ]
   >(
     `INSERT OR REPLACE INTO bricks
-       (id, kind, name, scope, trust_tier, lifecycle, usage_count, created_by, created_at, version, description, data)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, kind, name, scope, trust_tier, lifecycle, usage_count, created_by, created_at, version, description, data, trail_strength)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
 
   /** Extract created_by and created_at from provenance for indexed columns. */
@@ -166,30 +180,16 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
     "INSERT INTO brick_tags (brick_id, tag) VALUES (?, ?)",
   );
 
-  const updateStmt = db.query<void, [string, string, string, number, string, string]>(
-    `UPDATE bricks SET lifecycle = ?, trust_tier = ?, scope = ?, usage_count = ?, data = ?
+  const updateStmt = db.query<
+    void,
+    [string, string, string, number, number | null, string, string]
+  >(
+    `UPDATE bricks SET lifecycle = ?, trust_tier = ?, scope = ?, usage_count = ?, trail_strength = ?, data = ?
      WHERE id = ?`,
   );
 
-  // --- watch notification ---------------------------------------------------
-  const changeListeners = new Set<(event: StoreChangeEvent) => void>();
-
-  const notifyListeners = (event: StoreChangeEvent): void => {
-    for (const listener of changeListeners) {
-      try {
-        listener(event);
-      } catch (_err: unknown) {
-        // Listener errors must not break the mutation return path or skip other listeners.
-      }
-    }
-  };
-
-  const watch = (listener: (event: StoreChangeEvent) => void): (() => void) => {
-    changeListeners.add(listener);
-    return () => {
-      changeListeners.delete(listener);
-    };
-  };
+  // --- watch notification (delegated to shared notifier) -------------------
+  const notifier = createMemoryStoreChangeNotifier();
 
   // -- ForgeStore methods ---------------------------------------------------
 
@@ -208,6 +208,7 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
       brick.version,
       brick.description,
       dataJson,
+      brick.trailStrength ?? null,
     );
     deleteTagsStmt.run(brick.id);
     for (const tag of brick.tags) {
@@ -218,7 +219,7 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
   const save = async (brick: BrickArtifact): Promise<Result<void, KoiError>> => {
     const dataJson = JSON.stringify(brick);
     const result = wrapSqlite(() => saveBrickAndTags(brick, dataJson), `save(${brick.id})`);
-    if (result.ok) notifyListeners({ kind: "saved", brickId: brick.id });
+    if (result.ok) notifier.notify({ kind: "saved", brickId: brick.id });
     return result;
   };
 
@@ -262,7 +263,7 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
     const result = wrapSqlite(() => {
       deleteStmt.run(id);
     }, `remove(${id})`);
-    if (result.ok) notifyListeners({ kind: "removed", brickId: id });
+    if (result.ok) notifier.notify({ kind: "removed", brickId: id });
     return result;
   };
 
@@ -287,6 +288,7 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
         updated.trustTier,
         updated.scope,
         updated.usageCount,
+        updated.trailStrength ?? null,
         dataJson,
         id,
       );
@@ -308,7 +310,7 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
     // wrapSqlite returns the Result from the transaction; unwrap to notify
     if (result.ok) {
       const inner = result.value;
-      if (inner.ok) notifyListeners({ kind: "updated", brickId: id });
+      if (inner.ok) notifier.notify({ kind: "updated", brickId: id });
       return inner;
     }
     return result;
@@ -319,7 +321,6 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
   };
 
   const close = (): void => {
-    changeListeners.clear();
     try {
       db.run("PRAGMA optimize");
     } catch {
@@ -330,5 +331,15 @@ export function createSqliteForgeStore(config: SqliteForgeStoreConfig): SqliteFo
     }
   };
 
-  return { save, load, search, remove, update, exists, close, dispose: close, watch };
+  return {
+    save,
+    load,
+    search,
+    remove,
+    update,
+    exists,
+    close,
+    dispose: close,
+    watch: notifier.subscribe,
+  };
 }

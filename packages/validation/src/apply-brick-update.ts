@@ -28,5 +28,6 @@ export function applyBrickUpdate<T extends BrickArtifactBase>(
     ...(updates.fitness !== undefined ? { fitness: updates.fitness } : {}),
     ...(updates.lastPromotedAt !== undefined ? { lastPromotedAt: updates.lastPromotedAt } : {}),
     ...(updates.lastDemotedAt !== undefined ? { lastDemotedAt: updates.lastDemotedAt } : {}),
+    ...(updates.trailStrength !== undefined ? { trailStrength: updates.trailStrength } : {}),
   };
 }
