@@ -10,6 +10,7 @@ import type { KoiError, Result } from "@koi/core/errors";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import { z } from "zod";
 import type {
+  DiscoveryMissRecord,
   RepairStrategy,
   RetryConfig,
   TrustDemotionEvent,
@@ -69,6 +70,10 @@ export interface FeedbackLoopConfig {
   readonly onGateFail?: (gateName: string, errors: readonly ValidationError[]) => void;
   /** Forge tool runtime health tracking configuration. */
   readonly forgeHealth?: ForgeHealthConfig;
+  /** Called when discovery miss count exceeds threshold. */
+  readonly onDiscoveryMiss?: (record: DiscoveryMissRecord) => void;
+  /** Number of misses before emitting a suggestion. Default: 3. */
+  readonly missThreshold?: number;
 }
 
 // ---------------------------------------------------------------------------

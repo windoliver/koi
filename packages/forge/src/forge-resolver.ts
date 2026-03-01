@@ -5,6 +5,7 @@
 
 import type {
   BrickArtifact,
+  BrickDriftContext,
   ForgeStore,
   KoiError,
   Resolver,
@@ -14,6 +15,7 @@ import type {
 } from "@koi/core";
 import { brickId } from "@koi/core";
 import { evaluateTrustDecay } from "@koi/validation";
+import type { DriftChecker } from "./drift-checker.js";
 import { filterByAgentScope, isVisibleToAgent } from "./scope-filter.js";
 
 // ---------------------------------------------------------------------------
@@ -47,6 +49,10 @@ export interface ForgeResolverContext {
   readonly onDecayDemotion?: (brickId: string, from: TrustTier, to: TrustTier) => void;
   /** Called when a decay-related store update or callback throws. */
   readonly onError?: (error: unknown) => void;
+  /** Called when discover() returns zero visible bricks. */
+  readonly onDiscoveryMiss?: () => void;
+  /** Injected drift checker for source-file staleness detection on load(). */
+  readonly driftChecker?: DriftChecker;
 }
 
 /**
@@ -81,6 +87,44 @@ function fireDemotion(
     });
 }
 
+/** Drift score threshold above which a brick is demoted. */
+const DRIFT_DEMOTION_THRESHOLD = 0.5;
+
+/**
+ * Fire-and-forget drift check — updates brick drift context and optionally demotes.
+ * Errors are routed to `onError`, never thrown.
+ */
+function checkDriftAsync(
+  store: ForgeStore,
+  brick: BrickArtifact,
+  context: ForgeResolverContext,
+): void {
+  const driftContext = brick.driftContext;
+  if (driftContext === undefined || context.driftChecker === undefined) return;
+
+  void context.driftChecker
+    .checkDrift(driftContext)
+    .then(async (driftResult) => {
+      if (driftResult === undefined) return;
+
+      const updatedDriftContext: BrickDriftContext = {
+        sourceFiles: driftContext.sourceFiles,
+        lastCheckedCommit: driftResult.currentCommit,
+        driftScore: driftResult.driftScore,
+      };
+
+      await store.update(brick.id, { driftContext: updatedDriftContext });
+
+      // Demote if drift score exceeds threshold — drop to lowest tier
+      if (driftResult.driftScore >= DRIFT_DEMOTION_THRESHOLD && brick.trustTier !== "sandbox") {
+        fireDemotion(store, brick, "sandbox", Date.now(), context);
+      }
+    })
+    .catch((e: unknown) => {
+      context.onError?.(e);
+    });
+}
+
 export function createForgeResolver(
   store: ForgeStore,
   context: ForgeResolverContext,
@@ -98,6 +142,12 @@ export function createForgeResolver(
       });
     }
     const visible = filterByAgentScope(result.value, agentId);
+
+    // Emit discovery miss when no bricks are visible
+    if (visible.length === 0) {
+      context.onDiscoveryMiss?.();
+      return visible;
+    }
 
     // Lazy trust decay — evaluate fitness on each visible brick
     const nowMs = Date.now();
@@ -124,6 +174,15 @@ export function createForgeResolver(
     const targetTier = evaluateTrustDecay(result.value, nowMs);
     if (targetTier !== undefined) {
       fireDemotion(store, result.value, targetTier, nowMs, context);
+    }
+
+    // Lazy drift detection on load (fire-and-forget).
+    // Concurrent load() calls for the same brick may trigger parallel drift
+    // checks. This is benign — the DriftChecker cache deduplicates git calls,
+    // and store.update() is idempotent for the same commit hash.
+    const brick = result.value;
+    if (brick.driftContext?.sourceFiles !== undefined && context.driftChecker !== undefined) {
+      checkDriftAsync(store, brick, context);
     }
 
     return result;

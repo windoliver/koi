@@ -5,5 +5,6 @@
  * resolving worktree paths.
  */
 
+export { changedFilesSince, getHeadCommit } from "./changed-files.js";
 export { resolveWorktreeBasePath } from "./paths.js";
 export { parseGitError, runGit } from "./run-git.js";

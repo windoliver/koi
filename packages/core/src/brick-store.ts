@@ -60,6 +60,20 @@ export interface BrickFitnessMetrics {
   readonly lastUsedAt: number;
 }
 
+// ---------------------------------------------------------------------------
+// Drift context — source-file mapping for staleness detection
+// ---------------------------------------------------------------------------
+
+/** Tracks which codebase files a brick describes, enabling drift detection. */
+export interface BrickDriftContext {
+  /** Glob patterns of codebase files this brick describes. */
+  readonly sourceFiles: readonly string[];
+  /** Git commit hash when drift was last checked. Undefined = never checked. */
+  readonly lastCheckedCommit?: string;
+  /** Drift score (0–1). 0 = no drift, 1 = all source files changed. */
+  readonly driftScore?: number;
+}
+
 /** Zero-usage default — immutable singleton for newly forged bricks. */
 export const DEFAULT_BRICK_FITNESS: BrickFitnessMetrics = Object.freeze({
   successCount: 0,
@@ -99,6 +113,8 @@ export interface BrickArtifactBase {
   readonly lastPromotedAt?: number | undefined;
   /** Epoch ms of last trust tier demotion. Undefined = never demoted. */
   readonly lastDemotedAt?: number | undefined;
+  /** Source-file mapping for drift detection. Undefined = no source tracking. */
+  readonly driftContext?: BrickDriftContext | undefined;
 }
 
 export interface ToolArtifact extends BrickArtifactBase {
@@ -167,6 +183,8 @@ export interface BrickUpdate {
   readonly lastPromotedAt?: number | undefined;
   /** Epoch ms of last trust tier demotion. */
   readonly lastDemotedAt?: number | undefined;
+  /** Updated drift context (replaces entire drift context object). */
+  readonly driftContext?: BrickDriftContext | undefined;
 }
 
 // ---------------------------------------------------------------------------

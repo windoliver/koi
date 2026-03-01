@@ -67,7 +67,8 @@ export type TrustDemotionReason =
   | "error_rate"
   | "dependency_failure"
   | "manual"
-  | "re_verification_failed";
+  | "re_verification_failed"
+  | "source_drift";
 
 /** Event emitted when a tool's trust tier is demoted. */
 export interface TrustDemotionEvent {
@@ -80,6 +81,16 @@ export interface TrustDemotionEvent {
     readonly sampleSize: number;
     readonly periodMs: number;
   };
+}
+
+// ---------------------------------------------------------------------------
+// Discovery miss tracking
+// ---------------------------------------------------------------------------
+
+/** Record of a resolver discovery returning zero results. */
+export interface DiscoveryMissRecord {
+  readonly timestamp: number;
+  readonly resolverSource: string;
 }
 
 /** Category-aware retry budget configuration. */

@@ -78,6 +78,8 @@ export { createDefaultForgeConfig, validateForgeConfig } from "./config.js";
 // runtime values — dependency management
 export { auditDependencies, auditTransitiveDependencies } from "./dependency-audit.js";
 export { descriptor } from "./descriptor.js";
+export type { DriftChecker, DriftCheckerConfig, DriftCheckResult } from "./drift-checker.js";
+export { createDriftChecker } from "./drift-checker.js";
 export type { ForgeError, TestFailure } from "./errors.js";
 // runtime values — errors
 export {

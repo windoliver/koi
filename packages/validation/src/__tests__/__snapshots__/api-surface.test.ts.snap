@@ -20,6 +20,22 @@ import { z } from 'zod';
 declare function applyBrickUpdate<T extends BrickArtifactBase>(existing: T, updates: BrickUpdate): T;
 
 /**
+ * Drift scoring — measures how much a brick's source files have changed.
+ *
+ * Pure function: takes glob patterns and a list of changed files, returns
+ * a 0–1 score representing the proportion of source patterns with changes.
+ */
+/**
+ * Compute the drift score for a brick's source file patterns.
+ *
+ * @param sourcePatterns - Glob patterns of codebase files the brick describes.
+ * @param changedFiles - Files that have changed since the brick was last checked.
+ * @returns 0–1 score: proportion of source patterns that have matching changes.
+ *   Returns 0 if either input is empty.
+ */
+declare function computeDrift(sourcePatterns: readonly string[], changedFiles: readonly string[]): number;
+
+/**
  * Lightweight type guard for BrickArtifact loaded from storage.
  *
  * Validates discriminant fields and kind-specific properties
@@ -223,6 +239,6 @@ declare function zodToKoiError(zodError: z.core.$ZodError, prefix?: string): Koi
  */
 declare function validateWith<T>(schema: z.ZodType<T>, raw: unknown, prefix?: string): Result<T, KoiError>;
 
-export { DEFAULT_DECAY_THRESHOLDS, DEFAULT_FITNESS_SCORING_CONFIG, type DecayThresholds, type FitnessScoringConfig, SEVERITY_ORDER, type Severity, type SortBricksOptions, applyBrickUpdate, computeBrickFitness, computeMutationPressure, computePercentile, createLatencySampler, evaluateTrustDecay, levenshteinDistance, matchesBrickQuery, mergeSamplers, recordLatency, severityAtOrAbove, sortBricks, validateBrickArtifact, validateWith, zodToKoiError };
+export { DEFAULT_DECAY_THRESHOLDS, DEFAULT_FITNESS_SCORING_CONFIG, type DecayThresholds, type FitnessScoringConfig, SEVERITY_ORDER, type Severity, type SortBricksOptions, applyBrickUpdate, computeBrickFitness, computeDrift, computeMutationPressure, computePercentile, createLatencySampler, evaluateTrustDecay, levenshteinDistance, matchesBrickQuery, mergeSamplers, recordLatency, severityAtOrAbove, sortBricks, validateBrickArtifact, validateWith, zodToKoiError };
 "
 `;
