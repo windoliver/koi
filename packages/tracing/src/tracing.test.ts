@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { runId, sessionId } from "@koi/core";
-import type { KoiMiddleware, ModelChunk, ModelRequest, ModelResponse } from "@koi/core/middleware";
+import type {
+  KoiMiddleware,
+  ModelChunk,
+  ModelHandler,
+  ModelRequest,
+  ModelResponse,
+} from "@koi/core/middleware";
 import {
   createMockModelHandler,
   createMockSessionContext,
@@ -453,7 +459,7 @@ describe("createTracingMiddleware", () => {
       });
       const sessionCtx = createMockSessionContext();
       const turnCtx = createMockTurnContext();
-      const next = createMockModelHandler({ model: "gpt-4", usage: undefined }); // no usage
+      const next: ModelHandler = async () => ({ content: "ok", model: "gpt-4" }); // no usage
       const h = hooks(mw);
 
       await h.onSessionStart(sessionCtx);
