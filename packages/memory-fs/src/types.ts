@@ -14,6 +14,8 @@ export interface MemoryFact {
   readonly relatedEntities: readonly string[];
   readonly lastAccessed: string;
   readonly accessCount: number;
+  readonly causalParents?: readonly string[] | undefined;
+  readonly causalChildren?: readonly string[] | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -79,7 +81,10 @@ export interface TierDistribution {
 // ---------------------------------------------------------------------------
 
 export type FactUpdates = Partial<
-  Pick<MemoryFact, "lastAccessed" | "accessCount" | "status" | "supersededBy">
+  Pick<
+    MemoryFact,
+    "lastAccessed" | "accessCount" | "status" | "supersededBy" | "causalParents" | "causalChildren"
+  >
 >;
 
 export interface FactStore {

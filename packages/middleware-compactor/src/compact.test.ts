@@ -1,4 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import type {
+  MemoryComponent,
+  MemoryRecallOptions,
+  MemoryResult,
+  MemoryStoreOptions,
+} from "@koi/core";
 import type { InboundMessage } from "@koi/core/message";
 import type { ModelHandler, ModelResponse } from "@koi/core/middleware";
 import { createLlmCompactor } from "./compact.js";
@@ -512,6 +518,109 @@ describe("createLlmCompactor", () => {
     // No valid split points — should noop
     expect(result.strategy).toBe("noop");
     expect(result.messages).toBe(msgs);
+  });
+
+  describe("default fact-extracting archiver", () => {
+    function createMockMemory(): MemoryComponent & {
+      readonly stored: Array<{ readonly content: string; readonly options?: MemoryStoreOptions }>;
+    } {
+      const stored: Array<{ readonly content: string; readonly options?: MemoryStoreOptions }> = [];
+      return {
+        stored,
+        async store(content: string, options?: MemoryStoreOptions): Promise<void> {
+          stored.push({ content, ...(options !== undefined ? { options } : {}) });
+        },
+        async recall(
+          _query: string,
+          _options?: MemoryRecallOptions,
+        ): Promise<readonly MemoryResult[]> {
+          return [];
+        },
+      };
+    }
+
+    test("memory set + no archiver → compaction calls fact-extracting archiver", async () => {
+      const memory = createMockMemory();
+      const compactor = createLlmCompactor({
+        summarizer: createMockSummarizer("Summary"),
+        contextWindowSize: 1000,
+        trigger: { messageCount: 2 },
+        preserveRecent: 1,
+        maxSummaryTokens: 100,
+        memory: memory,
+      });
+
+      // Use messages that match heuristic patterns (decision pattern)
+      const msgs = [
+        userMsg("We decided to use TypeScript for this project"),
+        userMsg("We chose Bun as the runtime"),
+        userMsg("recent"),
+      ];
+      const result = await compactor.compact(msgs, 1000);
+
+      expect(result.strategy).toBe("llm-summary");
+      // The fact-extracting archiver should have stored extracted facts
+      expect(memory.stored.length).toBeGreaterThan(0);
+    });
+
+    test("memory set + explicit archiver → explicit archiver wins", async () => {
+      const memory = createMockMemory();
+      // let — tracks whether custom archiver was called
+      let customCalled = false;
+      const customArchiver = {
+        async archive(): Promise<void> {
+          customCalled = true;
+        },
+      };
+
+      const compactor = createLlmCompactor({
+        summarizer: createMockSummarizer("Summary"),
+        contextWindowSize: 1000,
+        trigger: { messageCount: 2 },
+        preserveRecent: 1,
+        maxSummaryTokens: 100,
+        memory: memory,
+        archiver: customArchiver,
+      });
+
+      const msgs = [userMsg("a"), userMsg("b"), userMsg("c")];
+      await compactor.compact(msgs, 1000);
+
+      expect(customCalled).toBe(true);
+      // Memory-based archiver should NOT have been used
+      expect(memory.stored).toHaveLength(0);
+    });
+
+    test("no memory + no archiver → no archiver (backward compat)", async () => {
+      const compactor = createLlmCompactor({
+        summarizer: createMockSummarizer("Summary"),
+        contextWindowSize: 1000,
+        trigger: { messageCount: 2 },
+        preserveRecent: 1,
+        maxSummaryTokens: 100,
+      });
+
+      const msgs = [userMsg("a"), userMsg("b"), userMsg("c")];
+      const result = await compactor.compact(msgs, 1000);
+      expect(result.strategy).toBe("llm-summary");
+      // No archiver — nothing crashes
+    });
+
+    test("memory set but compaction not triggered → archiver never called", async () => {
+      const memory = createMockMemory();
+      const compactor = createLlmCompactor({
+        summarizer: createMockSummarizer("Summary"),
+        contextWindowSize: 200_000,
+        trigger: { tokenFraction: 0.75 },
+        memory: memory,
+      });
+
+      const msgs = [userMsg("hello"), assistantMsg("hi")];
+      const result = await compactor.compact(msgs, 200_000);
+
+      expect(result.strategy).toBe("noop");
+      expect(memory.stored).toHaveLength(0);
+    });
   });
 
   test("forceCompact bypasses trigger checks", async () => {

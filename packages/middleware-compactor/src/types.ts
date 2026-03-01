@@ -2,6 +2,7 @@
  * Configuration types for the middleware-compactor package.
  */
 
+import type { MemoryComponent } from "@koi/core";
 import type { CompactionResult, TokenEstimator } from "@koi/core/context";
 import type { InboundMessage } from "@koi/core/message";
 import type { ModelHandler } from "@koi/core/middleware";
@@ -68,6 +69,8 @@ export interface CompactorConfig {
   readonly tokenEstimator?: TokenEstimator;
   /** Override the default summary prompt builder. */
   readonly promptBuilder?: (messages: readonly InboundMessage[], maxTokens: number) => string;
+  /** Memory component — auto-creates a fact-extracting archiver when set and `archiver` is omitted. */
+  readonly memory?: MemoryComponent | undefined;
   /** Archive original messages before summarization. */
   readonly archiver?: CompactionArchiver;
   /** Persistent store for compaction results across sessions. */

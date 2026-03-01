@@ -329,6 +329,223 @@ describe("createFsMemory", () => {
     });
   });
 
+  describe("causal edge storage", () => {
+    test("store with causalParents persists parents on fact", async () => {
+      // First store a parent fact
+      await mem.component.store("parent fact", {
+        relatedEntities: ["alice"],
+        category: "context",
+      });
+      const parentResults = await mem.component.recall("parent");
+      const parentId = (parentResults[0]?.metadata as Record<string, unknown>)?.id as string;
+      expect(parentId).toBeDefined();
+
+      // Store child with causal parent
+      await mem.component.store("child fact caused by parent", {
+        relatedEntities: ["alice"],
+        category: "derived",
+        causalParents: [parentId],
+      });
+
+      const childResults = await mem.component.recall("child");
+      expect(childResults.length).toBeGreaterThan(0);
+      const child = childResults.find((r) => r.content === "child fact caused by parent");
+      expect(child?.causalParents).toEqual([parentId]);
+    });
+
+    test("bidirectional write updates parent causalChildren", async () => {
+      await mem.component.store("original insight", {
+        relatedEntities: ["bob"],
+        category: "insight",
+      });
+      const parentResults = await mem.component.recall("insight");
+      const parentId = (parentResults[0]?.metadata as Record<string, unknown>)?.id as string;
+
+      await mem.component.store("derived conclusion from insight", {
+        relatedEntities: ["bob"],
+        category: "conclusion",
+        causalParents: [parentId],
+      });
+
+      // Recall parent again — its causalChildren should be updated
+      const updatedParent = await mem.component.recall("insight");
+      const parent = updatedParent.find((r) => r.content === "original insight");
+      expect(parent?.causalChildren).toBeDefined();
+      expect(parent?.causalChildren?.length).toBeGreaterThan(0);
+    });
+
+    test("store with non-existent parent ID is graceful", async () => {
+      // Should not crash — just store the fact without establishing edges
+      await mem.component.store("orphan child fact", {
+        relatedEntities: ["carol"],
+        category: "context",
+        causalParents: ["nonexistent-id-123"],
+      });
+
+      const results = await mem.component.recall("orphan");
+      expect(results.length).toBeGreaterThan(0);
+      expect(results[0]?.content).toBe("orphan child fact");
+      expect(results[0]?.causalParents).toEqual(["nonexistent-id-123"]);
+    });
+
+    test("recall surfaces causalParents and causalChildren in MemoryResult", async () => {
+      await mem.component.store("step one", {
+        relatedEntities: ["dave"],
+        category: "step-1",
+      });
+      const step1 = await mem.component.recall("step one");
+      const step1Id = (step1[0]?.metadata as Record<string, unknown>)?.id as string;
+
+      await mem.component.store("step two follows step one", {
+        relatedEntities: ["dave"],
+        category: "step-2",
+        causalParents: [step1Id],
+      });
+
+      const allResults = await mem.component.recall("step", { limit: 10 });
+      const child = allResults.find((r) => r.content === "step two follows step one");
+      expect(child?.causalParents).toEqual([step1Id]);
+
+      const parent = allResults.find((r) => r.content === "step one");
+      expect(parent?.causalChildren).toBeDefined();
+      expect(parent?.causalChildren?.length).toBeGreaterThan(0);
+    });
+
+    test("store without causal parents has undefined causal fields", async () => {
+      await mem.component.store("plain fact no parents", {
+        relatedEntities: ["eve"],
+        category: "context",
+      });
+
+      const results = await mem.component.recall("plain fact");
+      expect(results.length).toBeGreaterThan(0);
+      expect(results[0]?.causalParents).toBeUndefined();
+      expect(results[0]?.causalChildren).toBeUndefined();
+    });
+  });
+
+  describe("graph expansion", () => {
+    test("graphExpand false returns identical behavior", async () => {
+      await mem.component.store("baseline fact", {
+        relatedEntities: ["gx"],
+        category: "a",
+      });
+
+      const withoutExpand = await mem.component.recall("baseline", { graphExpand: false });
+      expect(withoutExpand.length).toBeGreaterThan(0);
+      expect(withoutExpand[0]?.content).toBe("baseline fact");
+    });
+
+    test("graphExpand true returns graph-expanded results", async () => {
+      // Create a causal chain: root → derived
+      await mem.component.store("root insight", {
+        relatedEntities: ["gx2"],
+        category: "root",
+      });
+      const rootResults = await mem.component.recall("root insight", { limit: 1 });
+      const rootId = (rootResults[0]?.metadata as Record<string, unknown>)?.id as string;
+
+      await mem.component.store("derived conclusion from root", {
+        relatedEntities: ["gx2"],
+        category: "derived",
+        causalParents: [rootId],
+      });
+
+      // Recall with graph expansion from the derived fact
+      const expanded = await mem.component.recall("derived conclusion", {
+        graphExpand: true,
+        maxHops: 2,
+        limit: 10,
+      });
+
+      // Should find both the derived fact AND the root (via causal edge)
+      const contents = expanded.map((r) => r.content);
+      expect(contents).toContain("derived conclusion from root");
+      expect(contents).toContain("root insight");
+    });
+
+    test("dedup: fact found by recency AND graph appears once", async () => {
+      await mem.component.store("shared fact", {
+        relatedEntities: ["gx3"],
+        category: "shared",
+      });
+      const shared = await mem.component.recall("shared", { limit: 1 });
+      const sharedId = (shared[0]?.metadata as Record<string, unknown>)?.id as string;
+
+      await mem.component.store("linked fact", {
+        relatedEntities: ["gx3"],
+        category: "linked",
+        causalParents: [sharedId],
+      });
+
+      const results = await mem.component.recall("shared", {
+        graphExpand: true,
+        limit: 10,
+      });
+
+      // Each fact should appear only once despite being reachable through both recency and graph
+      const ids = results.map((r) => (r.metadata as Record<string, unknown>)?.id);
+      const uniqueIds = new Set(ids);
+      expect(uniqueIds.size).toBe(ids.length);
+    });
+
+    test("graph-expanded results have decayed scores via graph-walk unit test", async () => {
+      // Score decay is verified in graph-walk.test.ts with precise arithmetic.
+      // Here we verify that graph expansion surfaces related facts that share causal edges.
+      await mem.component.store("cause fact", {
+        relatedEntities: ["gx4"],
+        category: "cause",
+      });
+      const cause = await mem.component.recall("cause fact", { limit: 1 });
+      const causeId = (cause[0]?.metadata as Record<string, unknown>)?.id as string;
+
+      await mem.component.store("effect fact from cause", {
+        relatedEntities: ["gx4"],
+        category: "effect",
+        causalParents: [causeId],
+      });
+
+      const results = await mem.component.recall("cause", {
+        graphExpand: true,
+        limit: 10,
+      });
+
+      // Both cause and effect should be found
+      const contents = results.map((r) => r.content);
+      expect(contents).toContain("cause fact");
+      expect(contents).toContain("effect fact from cause");
+    });
+
+    test("limit still applies after expansion", async () => {
+      // Create a chain of 5 facts
+      await mem.component.store("chain start", {
+        relatedEntities: ["gx5"],
+        category: "c0",
+      });
+      const start = await mem.component.recall("chain start", { limit: 1 });
+      // let — needed for sequential chain building
+      let prevId = (start[0]?.metadata as Record<string, unknown>)?.id as string;
+
+      for (const i of [1, 2, 3]) {
+        await mem.component.store(`chain step ${i}`, {
+          relatedEntities: ["gx5"],
+          category: `c${i}`,
+          causalParents: [prevId],
+        });
+        const step = await mem.component.recall(`chain step ${i}`, { limit: 1 });
+        prevId = (step[0]?.metadata as Record<string, unknown>)?.id as string;
+      }
+
+      const results = await mem.component.recall("chain", {
+        graphExpand: true,
+        maxHops: 5,
+        limit: 2,
+      });
+
+      expect(results).toHaveLength(2);
+    });
+  });
+
   test("works with custom retriever", async () => {
     const customDir = join(testDir, "custom");
     mkdirSync(customDir, { recursive: true });
