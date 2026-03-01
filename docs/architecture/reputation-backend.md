@@ -41,9 +41,10 @@ L0  @koi/core
         REPUTATION_LEVEL_ORDER     ← frozen ordered array
         DEFAULT_REPUTATION_QUERY_LIMIT  ← 100
 
-L2  @koi/reputation-memory (future)
+L2  @koi/reputation
     └── implements ReputationBackend
     └── in-memory ring buffer, sync, dev/test
+    └── see docs/L2/reputation.md
 
 L2  @koi/reputation-nexus (future)
     └── implements ReputationBackend
@@ -332,10 +333,10 @@ Key implementation rules:
 @koi/core (L0)
 └── ReputationBackend ← this contract
 
-@koi/reputation-memory (L2, planned)
+@koi/reputation (L2, implemented)
 └── in-memory ring buffer
-└── FIFO eviction (configurable cap)
-└── simple weighted average scoring
+└── FIFO eviction (configurable cap, default 1000/agent)
+└── weighted average scoring (configurable weights)
 └── sync — zero async overhead
 └── use for: dev, test, single-node
 

@@ -1504,6 +1504,16 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/reputation": {
+      "name": "@koi/reputation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/resolve": {
       "name": "@koi/resolve",
       "version": "0.0.0",
@@ -2701,6 +2711,8 @@
     "@koi/registry-nexus": ["@koi/registry-nexus@workspace:packages/registry-nexus"],
 
     "@koi/registry-store": ["@koi/registry-store@workspace:packages/registry-store"],
+
+    "@koi/reputation": ["@koi/reputation@workspace:packages/reputation"],
 
     "@koi/resolve": ["@koi/resolve@workspace:packages/resolve"],
 
