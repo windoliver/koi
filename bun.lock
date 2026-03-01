@@ -1980,6 +1980,15 @@
         "@koi/git-utils": "workspace:*",
       },
     },
+    "recipes/codex-mcp": {
+      "name": "@koi/recipe-codex-mcp",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/manifest": "workspace:*",
+        "@koi/mcp": "workspace:*",
+      },
+    },
     "tests/e2e": {
       "name": "@koi/e2e-contracts",
       "version": "0.0.0",
@@ -2655,6 +2664,8 @@
     "@koi/pay-nexus": ["@koi/pay-nexus@workspace:packages/pay-nexus"],
 
     "@koi/permissions-nexus": ["@koi/permissions-nexus@workspace:packages/permissions-nexus"],
+
+    "@koi/recipe-codex-mcp": ["@koi/recipe-codex-mcp@workspace:recipes/codex-mcp"],
 
     "@koi/redaction": ["@koi/redaction@workspace:packages/redaction"],
 
