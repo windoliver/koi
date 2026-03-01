@@ -183,6 +183,16 @@ export type {
 export type { CompactionResult, ContextCompactor, TokenEstimator } from "./context.js";
 // correlation
 export type { CorrelationIds } from "./correlation.js";
+// cost tracker — per-session, per-tool, per-model cost transparency
+export type {
+  BudgetTracker,
+  CostBreakdown,
+  CostCalculator,
+  CostEntry,
+  ModelCostBreakdown,
+  ToolCostBreakdown,
+  UsageInfo,
+} from "./cost-tracker.js";
 // ecs — generic ComponentProvider factories (pure functions on L0 types)
 export type { ServiceProviderConfig } from "./create-service-provider.js";
 export { createServiceProvider } from "./create-service-provider.js";

@@ -11,7 +11,7 @@ import { createAuditMiddleware, createInMemoryAuditSink } from "@koi/middleware-
 import { createInMemoryStore, createMemoryMiddleware } from "@koi/middleware-memory";
 import {
   createDefaultCostCalculator,
-  createInMemoryPayLedger,
+  createInMemoryBudgetTracker,
   createPayMiddleware,
 } from "@koi/middleware-pay";
 import {
@@ -83,17 +83,17 @@ describe("Full pipeline scenario", () => {
   function createFullStack(): {
     readonly middlewares: readonly KoiMiddleware[];
     readonly sink: ReturnType<typeof createInMemoryAuditSink>;
-    readonly ledger: ReturnType<typeof createInMemoryPayLedger>;
+    readonly tracker: ReturnType<typeof createInMemoryBudgetTracker>;
     readonly store: ReturnType<typeof createInMemoryStore>;
   } {
     const sink = createInMemoryAuditSink();
-    const ledger = createInMemoryPayLedger(100);
+    const tracker = createInMemoryBudgetTracker();
     const memStore = createInMemoryStore();
 
     const perm = createStubPermissionsMiddleware({ allow: ["*"], deny: ["blocked"] });
 
     const pay = createPayMiddleware({
-      ledger,
+      tracker,
       calculator: createDefaultCostCalculator(),
       budget: 100,
     });
@@ -105,13 +105,13 @@ describe("Full pipeline scenario", () => {
     return {
       middlewares: [perm, pay, audit, memory],
       sink,
-      ledger,
+      tracker,
       store: memStore,
     };
   }
 
   test("full model call pipeline -- all middleware participate", async () => {
-    const { middlewares, sink, ledger } = createFullStack();
+    const { middlewares, sink, tracker } = createFullStack();
     const ctx = createMockTurnContext();
     const spy = createSpyModelHandler({
       content: "result",
@@ -126,9 +126,9 @@ describe("Full pipeline scenario", () => {
     expect(response.content).toBe("result");
     expect(spy.calls).toHaveLength(1);
 
-    // Pay should have recorded cost — available balance decreased
-    const balance = await ledger.getBalance();
-    expect(parseFloat(balance.available)).toBeLessThan(100);
+    // Pay should have recorded cost — total spend increased
+    const spent = await tracker.totalSpend(ctx.session.sessionId);
+    expect(spent).toBeGreaterThan(0);
 
     // Audit should have logged
     await new Promise((r) => setTimeout(r, 20));
@@ -150,7 +150,7 @@ describe("Full pipeline scenario", () => {
   });
 
   test("blocked tool denied by permissions, never reaches inner layers", async () => {
-    const { middlewares, ledger } = createFullStack();
+    const { middlewares, tracker } = createFullStack();
     const ctx = createMockTurnContext();
     const spy = createSpyToolHandler();
 
@@ -164,9 +164,9 @@ describe("Full pipeline scenario", () => {
     }
     // Tool never executed
     expect(spy.calls).toHaveLength(0);
-    // Pay never recorded — balance unchanged
-    const balance = await ledger.getBalance();
-    expect(parseFloat(balance.available)).toBe(100);
+    // Pay never recorded — spend is zero
+    const spent = await tracker.totalSpend(ctx.session.sessionId);
+    expect(spent).toBe(0);
   });
 
   test("session lifecycle -- start and end fire session hooks", async () => {
@@ -271,9 +271,9 @@ describe("Full pipeline scenario", () => {
   });
 
   test("budget exhaustion mid-session blocks further model calls", async () => {
-    const ledger = createInMemoryPayLedger(0.01);
+    const tracker = createInMemoryBudgetTracker();
     const pay = createPayMiddleware({
-      ledger,
+      tracker,
       calculator: createDefaultCostCalculator({
         expensive: { input: 1, output: 1 }, // $1 per token
       }),

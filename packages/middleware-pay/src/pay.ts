@@ -2,6 +2,7 @@
  * Pay middleware factory — token budget enforcement.
  */
 
+import type { CostEntry } from "@koi/core/cost-tracker";
 import type {
   CapabilityFragment,
   KoiMiddleware,
@@ -20,26 +21,9 @@ import type { PayMiddlewareConfig } from "./config.js";
 
 const DEFAULT_ALERT_THRESHOLDS: readonly number[] = [0.8, 0.95];
 
-/** Cost amount precision for PayLedger string amounts. */
-const COST_PRECISION = 10;
-
-/**
- * Parse a PayLedger string amount, failing closed on invalid data.
- * Returns a finite number; throws on NaN/Infinity to prevent silent bypass.
- */
-function parseAmount(raw: string): number {
-  const n = parseFloat(raw);
-  if (!Number.isFinite(n)) {
-    throw KoiRuntimeError.from("INTERNAL", `Invalid balance amount: "${raw}"`, {
-      context: { rawValue: raw },
-    });
-  }
-  return n;
-}
-
 export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware {
   const {
-    ledger,
+    tracker,
     calculator,
     budget,
     alertThresholds = DEFAULT_ALERT_THRESHOLDS,
@@ -48,53 +32,90 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
     hardKill = true,
   } = config;
 
-  // Cached remaining budget for describeCapabilities (updated after each model call)
-  // let justified: mutable state updated by recordCost to reflect latest budget snapshot
-  let lastKnownRemaining: number = budget;
+  // Per-session cached remaining budget for describeCapabilities
+  const lastKnownRemaining = new Map<string, number>();
 
-  // Track which thresholds have already been fired to avoid repeats
-  const firedThresholds = new Set<number>();
+  // Per-session threshold tracking to avoid firing the same alert twice
+  const firedThresholds = new Map<string, Set<number>>();
+
   // Sort once at factory level, not on every call
   const sortedThresholds = [...alertThresholds].sort((a, b) => a - b);
 
-  function checkAndFireAlerts(pctUsed: number, remainingBudget: number): void {
+  function getSessionThresholds(sessionId: string): Set<number> {
+    const existing = firedThresholds.get(sessionId);
+    if (existing !== undefined) return existing;
+    const fresh = new Set<number>();
+    firedThresholds.set(sessionId, fresh);
+    return fresh;
+  }
+
+  function checkAndFireAlerts(sessionId: string, pctUsed: number, remainingBudget: number): void {
     if (!onAlert) return;
+    const fired = getSessionThresholds(sessionId);
     for (const threshold of sortedThresholds) {
-      if (pctUsed >= threshold && !firedThresholds.has(threshold)) {
-        firedThresholds.add(threshold);
+      if (pctUsed >= threshold && !fired.has(threshold)) {
+        fired.add(threshold);
         onAlert(pctUsed, remainingBudget);
       }
     }
   }
 
-  async function checkBudget(): Promise<void> {
-    const balance = await ledger.getBalance();
-    const remaining = parseAmount(balance.available);
-    if (hardKill && remaining <= 0) {
+  async function checkBudget(sessionId: string): Promise<void> {
+    const remainingBudget = await tracker.remaining(sessionId, budget);
+    if (hardKill && remainingBudget <= 0) {
       throw KoiRuntimeError.from("RATE_LIMIT", `Budget exhausted. Limit: $${budget.toFixed(4)}`, {
         context: { budget, remaining: 0 },
       });
     }
   }
 
+  /**
+   * DRY cost recording helper — shared by wrapModelCall and wrapModelStream.
+   * Calculates cost, records entry, updates remaining, fires alerts and onUsage.
+   */
   async function recordCost(
+    sessionId: string,
     model: string,
-    costUsd: number,
     inputTokens: number,
     outputTokens: number,
+    toolName?: string | undefined,
   ): Promise<void> {
-    await ledger.meter(costUsd.toFixed(COST_PRECISION), "model_call");
-    const balance = await ledger.getBalance();
-    const remaining = parseAmount(balance.available);
-    const totalSpent = budget - remaining;
-    lastKnownRemaining = remaining;
+    const costUsd = calculator.calculate(model, inputTokens, outputTokens);
+    const costEntry: CostEntry = {
+      inputTokens,
+      outputTokens,
+      model,
+      costUsd,
+      timestamp: Date.now(),
+      ...(toolName !== undefined ? { toolName } : {}),
+    };
+    await tracker.record(sessionId, costEntry);
 
+    // Parallel fetch — both reads depend on record being complete, not on each other
+    const [totalSpent, remainingBudget] = await Promise.all([
+      tracker.totalSpend(sessionId),
+      tracker.remaining(sessionId, budget),
+    ]);
+    lastKnownRemaining.set(sessionId, remainingBudget);
     const pctUsed = budget > 0 ? totalSpent / budget : 1;
-    checkAndFireAlerts(pctUsed, remaining);
+    checkAndFireAlerts(sessionId, pctUsed, remainingBudget);
 
     if (onUsage) {
-      onUsage({ model, costUsd, inputTokens, outputTokens, totalSpent, remaining });
+      const breakdown = await tracker.breakdown(sessionId);
+      onUsage({ entry: costEntry, totalSpent, remaining: remainingBudget, breakdown });
     }
+  }
+
+  // Resolve the most recently cached remaining for any session (for describeCapabilities)
+  function getLastKnownRemaining(): number {
+    if (lastKnownRemaining.size === 0) return budget;
+    // Return the minimum across sessions as a conservative display
+    // let: accumulates minimum across map iteration
+    let min = budget;
+    for (const v of lastKnownRemaining.values()) {
+      if (v < min) min = v;
+    }
+    return min;
   }
 
   return {
@@ -103,28 +124,36 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
     describeCapabilities: (_ctx: TurnContext): CapabilityFragment => ({
       label: "budget",
       description:
-        `Token budget: $${lastKnownRemaining.toFixed(4)} of $${budget.toFixed(4)} remaining` +
+        `Token budget: $${getLastKnownRemaining().toFixed(4)} of $${budget.toFixed(4)} remaining` +
         (hardKill ? " (hard kill on exhaustion)" : " (soft warning on exhaustion)"),
     }),
 
+    async onSessionEnd(ctx): Promise<void> {
+      const sessionId = ctx.sessionId;
+      lastKnownRemaining.delete(sessionId);
+      firedThresholds.delete(sessionId);
+    },
+
+    async onBeforeTurn(ctx: TurnContext): Promise<void> {
+      const sessionId = ctx.session.sessionId;
+      const remainingBudget = await tracker.remaining(sessionId, budget);
+      lastKnownRemaining.set(sessionId, remainingBudget);
+    },
+
     async wrapModelCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      await checkBudget();
+      const sessionId = ctx.session.sessionId;
+      await checkBudget(sessionId);
 
       const response = await next(request);
 
       if (response.usage) {
-        const costUsd = calculator.calculate(
-          response.model,
-          response.usage.inputTokens,
-          response.usage.outputTokens,
-        );
         await recordCost(
+          sessionId,
           response.model,
-          costUsd,
           response.usage.inputTokens,
           response.usage.outputTokens,
         );
@@ -134,30 +163,32 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
     },
 
     async *wrapModelStream(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      await checkBudget();
+      const sessionId = ctx.session.sessionId;
+      await checkBudget(sessionId);
 
       for await (const chunk of next(request)) {
         yield chunk;
 
+        // Record cost from the done chunk, which carries the full ModelResponse + usage.
         if (chunk.kind === "done" && chunk.response.usage) {
           const { model } = chunk.response;
           const { inputTokens, outputTokens } = chunk.response.usage;
-          const costUsd = calculator.calculate(model, inputTokens, outputTokens);
-          await recordCost(model, costUsd, inputTokens, outputTokens);
+          await recordCost(sessionId, model, inputTokens, outputTokens);
         }
       }
     },
 
     async wrapToolCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
-      await checkBudget();
+      const sessionId = ctx.session.sessionId;
+      await checkBudget(sessionId);
       return next(request);
     },
   };

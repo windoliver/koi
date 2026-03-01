@@ -33,7 +33,7 @@ import type { GovernanceBackend, GovernanceVerdict } from "@koi/core/governance-
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createInMemoryAuditSink } from "@koi/middleware-audit";
-import { createDefaultCostCalculator, createInMemoryPayLedger } from "@koi/middleware-pay";
+import { createDefaultCostCalculator, createInMemoryBudgetTracker } from "@koi/middleware-pay";
 import { createGovernanceStack } from "./src/index.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -526,7 +526,7 @@ async function test8_payWithinBudget(): Promise<void> {
 
   const { middlewares } = createGovernanceStack({
     pay: {
-      ledger: createInMemoryPayLedger(10.0),
+      tracker: createInMemoryBudgetTracker(),
       calculator,
       budget: 10.0, // generous $10 budget
     },
@@ -570,7 +570,7 @@ async function test9_payBudgetExhausted(): Promise<void> {
 
   const { middlewares } = createGovernanceStack({
     pay: {
-      ledger: createInMemoryPayLedger(0),
+      tracker: createInMemoryBudgetTracker(),
       calculator,
       budget: 0, // zero budget — wrapModelStream throws before calling next()
     },
@@ -731,7 +731,7 @@ async function test13_fullStack(): Promise<void> {
     },
     governanceBackend: { backend: makeAllowBackend() },
     pay: {
-      ledger: createInMemoryPayLedger(10.0),
+      tracker: createInMemoryBudgetTracker(),
       calculator,
       budget: 10.0,
     },
@@ -802,7 +802,7 @@ function test14_priorityOrder(): void {
     },
     governanceBackend: { backend: makeAllowBackend() },
     pay: {
-      ledger: createInMemoryPayLedger(10),
+      tracker: createInMemoryBudgetTracker(),
       calculator: createDefaultCostCalculator(),
       budget: 10,
     },

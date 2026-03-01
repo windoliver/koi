@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { runId, sessionId } from "@koi/core";
-import type { KoiMiddleware, ModelChunk, ModelRequest, ModelResponse } from "@koi/core/middleware";
+import type {
+  KoiMiddleware,
+  ModelChunk,
+  ModelHandler,
+  ModelRequest,
+  ModelResponse,
+} from "@koi/core/middleware";
 import {
   createMockModelHandler,
   createMockSessionContext,
@@ -17,6 +23,7 @@ import {
   GEN_AI_USAGE_INPUT_TOKENS,
   GEN_AI_USAGE_OUTPUT_TOKENS,
   KOI_AGENT_ID,
+  KOI_COST_USD,
   KOI_REQUEST_CONTENT,
   KOI_RESPONSE_CONTENT,
   KOI_SESSION_ID,
@@ -397,5 +404,245 @@ describe("createTracingMiddleware", () => {
     const response = await h.wrapModelCall(turnCtx, { messages: [] }, next);
     expect(response.content).toBe("still works");
     expect(errors.length).toBeGreaterThan(0);
+  });
+
+  describe("cost enrichment", () => {
+    test("wrapModelCall sets koi.cost.usd when costEnricher provided", async () => {
+      const mw = createTracingMiddleware({
+        tracer,
+        costEnricher: (_model, input, output) => input * 0.001 + output * 0.002,
+      });
+      const sessionCtx = createMockSessionContext();
+      const turnCtx = createMockTurnContext();
+      const next = createMockModelHandler({
+        model: "gpt-4",
+        usage: { inputTokens: 100, outputTokens: 50 },
+      });
+      const h = hooks(mw);
+
+      await h.onSessionStart(sessionCtx);
+      await h.onBeforeTurn(turnCtx);
+      await h.wrapModelCall(turnCtx, { messages: [] }, next);
+      await h.onAfterTurn(turnCtx);
+      await h.onSessionEnd(sessionCtx);
+
+      const modelSpan = exporter.getFinishedSpans().find((s) => s.name === "gen_ai.chat");
+      expect(modelSpan).toBeDefined();
+      // 100 * 0.001 + 50 * 0.002 = 0.1 + 0.1 = 0.2
+      expect(modelSpan?.attributes[KOI_COST_USD]).toBeCloseTo(0.2);
+    });
+
+    test("wrapModelCall omits koi.cost.usd when costEnricher absent", async () => {
+      const sessionCtx = createMockSessionContext();
+      const turnCtx = createMockTurnContext();
+      const next = createMockModelHandler({
+        model: "gpt-4",
+        usage: { inputTokens: 100, outputTokens: 50 },
+      });
+      const h = hooks(middleware);
+
+      await h.onSessionStart(sessionCtx);
+      await h.onBeforeTurn(turnCtx);
+      await h.wrapModelCall(turnCtx, { messages: [] }, next);
+      await h.onAfterTurn(turnCtx);
+      await h.onSessionEnd(sessionCtx);
+
+      const modelSpan = exporter.getFinishedSpans().find((s) => s.name === "gen_ai.chat");
+      expect(modelSpan).toBeDefined();
+      expect(modelSpan?.attributes[KOI_COST_USD]).toBeUndefined();
+    });
+
+    test("wrapModelCall omits koi.cost.usd when no usage in response", async () => {
+      const mw = createTracingMiddleware({
+        tracer,
+        costEnricher: () => 0.5,
+      });
+      const sessionCtx = createMockSessionContext();
+      const turnCtx = createMockTurnContext();
+      const next: ModelHandler = async () => ({ content: "ok", model: "gpt-4" }); // no usage
+      const h = hooks(mw);
+
+      await h.onSessionStart(sessionCtx);
+      await h.onBeforeTurn(turnCtx);
+      await h.wrapModelCall(turnCtx, { messages: [] }, next);
+      await h.onAfterTurn(turnCtx);
+      await h.onSessionEnd(sessionCtx);
+
+      const modelSpan = exporter.getFinishedSpans().find((s) => s.name === "gen_ai.chat");
+      expect(modelSpan).toBeDefined();
+      expect(modelSpan?.attributes[KOI_COST_USD]).toBeUndefined();
+    });
+
+    test("wrapModelCall catches costEnricher error without breaking", async () => {
+      const errors: unknown[] = [];
+      const mw = createTracingMiddleware({
+        tracer,
+        costEnricher: () => {
+          throw new Error("enricher broke");
+        },
+        onError: (e) => errors.push(e),
+      });
+      const sessionCtx = createMockSessionContext();
+      const turnCtx = createMockTurnContext();
+      const next = createMockModelHandler({
+        model: "gpt-4",
+        usage: { inputTokens: 100, outputTokens: 50 },
+      });
+      const h = hooks(mw);
+
+      await h.onSessionStart(sessionCtx);
+      await h.onBeforeTurn(turnCtx);
+      const response = await h.wrapModelCall(turnCtx, { messages: [] }, next);
+      await h.onAfterTurn(turnCtx);
+      await h.onSessionEnd(sessionCtx);
+
+      expect(response.content).toBe("mock response");
+      expect(errors.length).toBeGreaterThan(0);
+      const modelSpan = exporter.getFinishedSpans().find((s) => s.name === "gen_ai.chat");
+      expect(modelSpan?.attributes[KOI_COST_USD]).toBeUndefined();
+    });
+
+    test("wrapModelStream sets koi.cost.usd on done chunk", async () => {
+      const mw = createTracingMiddleware({
+        tracer,
+        costEnricher: (_model, input, output) => input * 0.001 + output * 0.002,
+      });
+      const sessionCtx = createMockSessionContext();
+      const turnCtx = createMockTurnContext();
+      const h = hooks(mw);
+
+      const mockChunks: readonly ModelChunk[] = [
+        { kind: "text_delta", delta: "hi" },
+        {
+          kind: "done",
+          response: {
+            content: "hi",
+            model: "gpt-4",
+            usage: { inputTokens: 100, outputTokens: 50 },
+          },
+        },
+      ];
+      const streamNext = async function* (_request: ModelRequest): AsyncIterable<ModelChunk> {
+        for (const chunk of mockChunks) {
+          yield chunk;
+        }
+      };
+
+      await h.onSessionStart(sessionCtx);
+      await h.onBeforeTurn(turnCtx);
+      for await (const _ of h.wrapModelStream(turnCtx, { messages: [] }, streamNext)) {
+        /* drain */
+      }
+      await h.onAfterTurn(turnCtx);
+      await h.onSessionEnd(sessionCtx);
+
+      const streamSpan = exporter.getFinishedSpans().find((s) => s.name === "gen_ai.stream");
+      expect(streamSpan).toBeDefined();
+      expect(streamSpan?.attributes[KOI_COST_USD]).toBeCloseTo(0.2);
+    });
+
+    test("wrapModelStream omits koi.cost.usd when costEnricher absent", async () => {
+      const sessionCtx = createMockSessionContext();
+      const turnCtx = createMockTurnContext();
+      const h = hooks(middleware);
+
+      const mockChunks: readonly ModelChunk[] = [
+        {
+          kind: "done",
+          response: {
+            content: "hi",
+            model: "gpt-4",
+            usage: { inputTokens: 10, outputTokens: 5 },
+          },
+        },
+      ];
+      const streamNext = async function* (_request: ModelRequest): AsyncIterable<ModelChunk> {
+        for (const chunk of mockChunks) {
+          yield chunk;
+        }
+      };
+
+      await h.onSessionStart(sessionCtx);
+      await h.onBeforeTurn(turnCtx);
+      for await (const _ of h.wrapModelStream(turnCtx, { messages: [] }, streamNext)) {
+        /* drain */
+      }
+      await h.onAfterTurn(turnCtx);
+      await h.onSessionEnd(sessionCtx);
+
+      const streamSpan = exporter.getFinishedSpans().find((s) => s.name === "gen_ai.stream");
+      expect(streamSpan).toBeDefined();
+      expect(streamSpan?.attributes[KOI_COST_USD]).toBeUndefined();
+    });
+
+    test("wrapModelStream omits koi.cost.usd when no usage in done", async () => {
+      const mw = createTracingMiddleware({
+        tracer,
+        costEnricher: () => 0.5,
+      });
+      const sessionCtx = createMockSessionContext();
+      const turnCtx = createMockTurnContext();
+      const h = hooks(mw);
+
+      const streamNext = async function* (_request: ModelRequest): AsyncIterable<ModelChunk> {
+        yield { kind: "done", response: { content: "hi", model: "gpt-4" } };
+      };
+
+      await h.onSessionStart(sessionCtx);
+      await h.onBeforeTurn(turnCtx);
+      for await (const _ of h.wrapModelStream(turnCtx, { messages: [] }, streamNext)) {
+        /* drain */
+      }
+      await h.onAfterTurn(turnCtx);
+      await h.onSessionEnd(sessionCtx);
+
+      const streamSpan = exporter.getFinishedSpans().find((s) => s.name === "gen_ai.stream");
+      expect(streamSpan).toBeDefined();
+      expect(streamSpan?.attributes[KOI_COST_USD]).toBeUndefined();
+    });
+
+    test("wrapModelStream catches costEnricher error without breaking", async () => {
+      const errors: unknown[] = [];
+      const mw = createTracingMiddleware({
+        tracer,
+        costEnricher: () => {
+          throw new Error("stream enricher broke");
+        },
+        onError: (e) => errors.push(e),
+      });
+      const sessionCtx = createMockSessionContext();
+      const turnCtx = createMockTurnContext();
+      const h = hooks(mw);
+
+      const mockChunks: readonly ModelChunk[] = [
+        {
+          kind: "done",
+          response: {
+            content: "hi",
+            model: "gpt-4",
+            usage: { inputTokens: 100, outputTokens: 50 },
+          },
+        },
+      ];
+      const streamNext = async function* (_request: ModelRequest): AsyncIterable<ModelChunk> {
+        for (const chunk of mockChunks) {
+          yield chunk;
+        }
+      };
+
+      await h.onSessionStart(sessionCtx);
+      await h.onBeforeTurn(turnCtx);
+      const chunks: ModelChunk[] = [];
+      for await (const chunk of h.wrapModelStream(turnCtx, { messages: [] }, streamNext)) {
+        chunks.push(chunk);
+      }
+      await h.onAfterTurn(turnCtx);
+      await h.onSessionEnd(sessionCtx);
+
+      expect(chunks).toHaveLength(1);
+      expect(errors.length).toBeGreaterThan(0);
+      const streamSpan = exporter.getFinishedSpans().find((s) => s.name === "gen_ai.stream");
+      expect(streamSpan?.attributes[KOI_COST_USD]).toBeUndefined();
+    });
   });
 });

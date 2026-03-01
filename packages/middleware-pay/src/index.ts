@@ -6,12 +6,19 @@
  * Depends on @koi/core only.
  */
 
+// Re-export L0 breakdown types for convenience
+export type {
+  CostBreakdown,
+  ModelCostBreakdown,
+  ToolCostBreakdown,
+} from "@koi/core/cost-tracker";
 export type { PayMiddlewareConfig, UsageInfo } from "./config.js";
 export { validatePayConfig } from "./config.js";
 export { descriptor } from "./descriptor.js";
 export { createPayMiddleware } from "./pay.js";
-export type { CostCalculator } from "./tracker.js";
+export type { BudgetTracker, CostCalculator } from "./tracker.js";
 export {
   createDefaultCostCalculator,
+  createInMemoryBudgetTracker,
   createInMemoryPayLedger,
 } from "./tracker.js";

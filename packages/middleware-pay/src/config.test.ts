@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { validatePayConfig } from "./config.js";
-import { createDefaultCostCalculator, createInMemoryPayLedger } from "./tracker.js";
+import { createDefaultCostCalculator, createInMemoryBudgetTracker } from "./tracker.js";
 
 describe("validatePayConfig", () => {
-  const ledger = createInMemoryPayLedger(10);
+  const tracker = createInMemoryBudgetTracker();
   const calculator = createDefaultCostCalculator();
 
   test("accepts valid config", () => {
-    const result = validatePayConfig({ ledger, calculator, budget: 10 });
+    const result = validatePayConfig({ tracker, calculator, budget: 10 });
     expect(result.ok).toBe(true);
   });
 
@@ -22,52 +22,57 @@ describe("validatePayConfig", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("rejects config without ledger", () => {
+  test("rejects config without tracker", () => {
     const result = validatePayConfig({ calculator, budget: 10 });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.message).toContain("ledger");
+    if (!result.ok) expect(result.error.message).toContain("tracker");
   });
 
   test("rejects config without calculator", () => {
-    const result = validatePayConfig({ ledger, budget: 10 });
+    const result = validatePayConfig({ tracker, budget: 10 });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.message).toContain("calculator");
   });
 
   test("rejects config without budget", () => {
-    const result = validatePayConfig({ ledger, calculator });
+    const result = validatePayConfig({ tracker, calculator });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.message).toContain("budget");
   });
 
   test("rejects negative budget", () => {
-    const result = validatePayConfig({ ledger, calculator, budget: -1 });
+    const result = validatePayConfig({ tracker, calculator, budget: -1 });
     expect(result.ok).toBe(false);
   });
 
   test("accepts zero budget", () => {
-    const result = validatePayConfig({ ledger, calculator, budget: 0 });
+    const result = validatePayConfig({ tracker, calculator, budget: 0 });
     expect(result.ok).toBe(true);
   });
 
   test("rejects non-array alertThresholds", () => {
-    const result = validatePayConfig({ ledger, calculator, budget: 10, alertThresholds: "bad" });
+    const result = validatePayConfig({ tracker, calculator, budget: 10, alertThresholds: "bad" });
     expect(result.ok).toBe(false);
   });
 
   test("rejects threshold above 1", () => {
-    const result = validatePayConfig({ ledger, calculator, budget: 10, alertThresholds: [1.5] });
+    const result = validatePayConfig({ tracker, calculator, budget: 10, alertThresholds: [1.5] });
     expect(result.ok).toBe(false);
   });
 
   test("rejects threshold below 0", () => {
-    const result = validatePayConfig({ ledger, calculator, budget: 10, alertThresholds: [-0.1] });
+    const result = validatePayConfig({
+      tracker,
+      calculator,
+      budget: 10,
+      alertThresholds: [-0.1],
+    });
     expect(result.ok).toBe(false);
   });
 
   test("accepts valid thresholds", () => {
     const result = validatePayConfig({
-      ledger,
+      tracker,
       calculator,
       budget: 10,
       alertThresholds: [0.5, 0.8, 0.95],
