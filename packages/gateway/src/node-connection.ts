@@ -8,10 +8,11 @@
 import type { KoiError, Result } from "@koi/core";
 import { notFound } from "@koi/core";
 import { swallowError } from "@koi/errors";
-import type { HandshakePayload, NodeFrame } from "./node-handler.js";
+import type { AgentStatusEntry, HandshakePayload, NodeFrame } from "./node-handler.js";
 import {
   encodeNodeFrame,
   parseNodeFrame,
+  validateAgentStatusBatch,
   validateCapabilitiesPayload,
   validateCapacityPayload,
   validateHandshakePayload,
@@ -47,6 +48,14 @@ export interface NodeConnectionHandler {
   ) => () => void;
   /** Clear all node state (for gateway stop). */
   readonly clear: () => void;
+  /** Look up which nodeId currently hosts a given agentId. */
+  readonly lookupAgentNode: (agentId: string) => string | undefined;
+  /** Look up all agentIds belonging to a process group. */
+  readonly lookupAgentsByGroup: (groupId: string) => readonly string[];
+  /** Subscribe to agent status updates (called for every agent:status batch). */
+  readonly onAgentStatus: (
+    handler: (entry: AgentStatusEntry, nodeId: string) => void,
+  ) => () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +75,44 @@ export function createNodeConnectionHandler(
     string,
     { readonly nodeId: string; readonly handshake: HandshakePayload }
   >();
+
+  // Agent index: agentId → nodeId (updated from agent:status frames)
+  const agentNodeIndex = new Map<string, string>();
+  // Group index: groupId → Set<agentId> (updated from agent:status frames with groupId)
+  const groupAgentIndex = new Map<string, Set<string>>();
+  // Agent status subscribers
+  const agentStatusListeners = new Set<(entry: AgentStatusEntry, nodeId: string) => void>();
+
+  function updateAgentIndex(entry: AgentStatusEntry, nodeId: string): void {
+    if (entry.state === "terminated") {
+      // Remove from indices on termination
+      const prevNode = agentNodeIndex.get(entry.agentId);
+      if (prevNode !== undefined) {
+        agentNodeIndex.delete(entry.agentId);
+      }
+      if (entry.groupId !== undefined) {
+        const group = groupAgentIndex.get(entry.groupId);
+        if (group !== undefined) {
+          group.delete(entry.agentId);
+          if (group.size === 0) groupAgentIndex.delete(entry.groupId);
+        }
+      }
+    } else {
+      agentNodeIndex.set(entry.agentId, nodeId);
+      if (entry.groupId !== undefined) {
+        let group = groupAgentIndex.get(entry.groupId);
+        if (group === undefined) {
+          group = new Set();
+          groupAgentIndex.set(entry.groupId, group);
+        }
+        group.add(entry.agentId);
+      }
+    }
+    // Notify subscribers
+    for (const handler of agentStatusListeners) {
+      handler(entry, nodeId);
+    }
+  }
 
   function handleFirstMessage(conn: TransportConnection, data: string): void {
     const parseResult = parseNodeFrame(data);
@@ -237,6 +284,17 @@ export function createNodeConnectionHandler(
         return;
       }
 
+      case "agent:status": {
+        const nodeId = nodeConnMap.get(conn.id);
+        if (nodeId === undefined) return;
+        const batch = validateAgentStatusBatch(frame.payload);
+        if (batch === undefined) return;
+        for (const entry of batch.agents) {
+          updateAgentIndex(entry, nodeId);
+        }
+        return;
+      }
+
       case "tool_call":
       case "tool_result":
       case "tool_error": {
@@ -245,7 +303,6 @@ export function createNodeConnectionHandler(
       }
 
       default:
-        // agent:* — future dispatch, currently no-op
         return;
     }
   }
@@ -326,6 +383,25 @@ export function createNodeConnectionHandler(
       nodeConnMap.clear();
       connByNode.clear();
       pendingNodeHandshakes.clear();
+      agentNodeIndex.clear();
+      groupAgentIndex.clear();
+      agentStatusListeners.clear();
+    },
+
+    lookupAgentNode(agentId: string): string | undefined {
+      return agentNodeIndex.get(agentId);
+    },
+
+    lookupAgentsByGroup(groupId: string): readonly string[] {
+      const group = groupAgentIndex.get(groupId);
+      return group !== undefined ? [...group] : [];
+    },
+
+    onAgentStatus(handler: (entry: AgentStatusEntry, nodeId: string) => void): () => void {
+      agentStatusListeners.add(handler);
+      return () => {
+        agentStatusListeners.delete(handler);
+      };
     },
   };
 }

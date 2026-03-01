@@ -7,6 +7,7 @@
 
 import type {
   Agent,
+  AgentGroupId,
   AgentId,
   AgentManifest,
   ComponentProvider,
@@ -25,8 +26,8 @@ import type { CapacityReport, NodeEventListener, ResourcesConfig } from "../type
 // ---------------------------------------------------------------------------
 
 /** Mutable agent record managed by the host.
- *  state/turnCount/lastActivityMs are intentionally mutable — this is a
- *  closure-private record, never exposed. Mutated by dispatch/terminate. */
+ *  state/turnCount/lastActivityMs/exitCode are intentionally mutable — this is a
+ *  closure-private record, never exposed. Mutated by dispatch/signal/terminate. */
 interface ManagedAgent {
   readonly pid: ProcessId;
   readonly manifest: AgentManifest;
@@ -34,6 +35,8 @@ interface ManagedAgent {
   state: ProcessState;
   turnCount: number;
   lastActivityMs: number;
+  /** Numeric exit code set on termination. Undefined while running. */
+  exitCode: number | undefined;
   readonly components: Map<string, unknown>;
 }
 
@@ -45,8 +48,11 @@ export interface AgentHost {
     engine: EngineAdapter,
     providers: readonly ComponentProvider[],
   ) => Promise<Result<Agent, KoiError>>;
-  /** Terminate an agent by ID. */
-  readonly terminate: (agentId: AgentId | string) => Result<void, KoiError>;
+  /**
+   * Terminate an agent by ID with an optional numeric exit code.
+   * Default exit code: 1 (generic error / external termination).
+   */
+  readonly terminate: (agentId: AgentId | string, exitCode?: number) => Result<void, KoiError>;
   /** Get an agent by ID. */
   readonly get: (agentId: AgentId | string) => Agent | undefined;
   /** List all hosted agents. */
@@ -61,6 +67,28 @@ export interface AgentHost {
   readonly onEvent: (listener: NodeEventListener) => () => void;
   /** Terminate all agents (used during shutdown). */
   readonly terminateAll: () => void;
+  /**
+   * Send a POSIX-style signal to a single agent.
+   * stop → suspended at next turn boundary  (idempotent)
+   * cont → running from suspended             (idempotent)
+   * term → abort + gracePeriodMs + terminate  (exit code 130)
+   * usr1/usr2 → emit event only, no state change
+   */
+  readonly signal: (
+    agentId: AgentId | string,
+    signal: string,
+    gracePeriodMs?: number,
+  ) => Promise<Result<void, KoiError>>;
+  /**
+   * Broadcast a signal to all agents belonging to a process group.
+   * Uses Promise.allSettled() — one failure does not block others.
+   * Rejects with "signalGroup timeout" if deadlineMs is exceeded.
+   */
+  readonly signalGroup: (
+    groupId: AgentGroupId | string,
+    signal: string,
+    options?: { readonly deadlineMs?: number },
+  ) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +150,65 @@ export function createAgentHost(config: ResourcesConfig): AgentHost {
     }
   }
 
+  async function signalOne(
+    agentId: string,
+    sig: string,
+    gracePeriodMs: number,
+  ): Promise<Result<void, KoiError>> {
+    const managed = agents.get(agentId);
+    if (managed === undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "NOT_FOUND",
+          message: `Agent not found: ${agentId}`,
+          retryable: RETRYABLE_DEFAULTS.NOT_FOUND,
+          context: { agentId },
+        },
+      };
+    }
+
+    switch (sig) {
+      case "stop": {
+        if (managed.state === "suspended") break; // idempotent
+        managed.state = "suspended";
+        managed.lastActivityMs = Date.now();
+        emit("agent_suspended", { agentId });
+        break;
+      }
+      case "cont": {
+        if (managed.state !== "suspended") break; // idempotent
+        managed.state = "running";
+        managed.lastActivityMs = Date.now();
+        emit("agent_resumed", { agentId });
+        break;
+      }
+      case "term": {
+        // Abort engine adapter, wait grace period, then force-terminate
+        void managed.engine.dispose?.().catch(() => {});
+        await new Promise<void>((resolve) => setTimeout(resolve, gracePeriodMs));
+        // Re-check: may have been cleaned up already during grace period
+        if (agents.has(agentId)) {
+          managed.state = "terminated";
+          managed.exitCode = 130; // POSIX convention: 128 + signal index
+          agents.delete(agentId);
+          emit("agent_terminated", { agentId, exitCode: 130 });
+        }
+        break;
+      }
+      case "usr1":
+      case "usr2": {
+        // Application-defined: emit event only, no state change
+        emit("agent_dispatched", { agentId, signal: sig });
+        break;
+      }
+      default:
+        break;
+    }
+
+    return { ok: true, value: undefined };
+  }
+
   return {
     async dispatch(pid, manifest, engine, providers) {
       if (agents.size >= config.maxAgents) {
@@ -155,6 +242,7 @@ export function createAgentHost(config: ResourcesConfig): AgentHost {
         state: "created",
         turnCount: 0,
         lastActivityMs: Date.now(),
+        exitCode: undefined,
         components: new Map(),
       };
 
@@ -175,7 +263,7 @@ export function createAgentHost(config: ResourcesConfig): AgentHost {
       return { ok: true, value: toAgentSnapshot(managed) };
     },
 
-    terminate(agentId) {
+    terminate(agentId, exitCode = 1) {
       const managed = agents.get(agentId);
       if (managed === undefined) {
         return {
@@ -190,6 +278,7 @@ export function createAgentHost(config: ResourcesConfig): AgentHost {
       }
 
       managed.state = "terminated";
+      managed.exitCode = exitCode;
       agents.delete(agentId);
 
       // Dispose engine adapter if supported
@@ -197,8 +286,34 @@ export function createAgentHost(config: ResourcesConfig): AgentHost {
         // Best-effort cleanup — engine disposal is not critical
       });
 
-      emit("agent_terminated", { agentId });
+      emit("agent_terminated", { agentId, exitCode });
       return { ok: true, value: undefined };
+    },
+
+    signal(agentId, sig, gracePeriodMs = 5_000) {
+      return signalOne(agentId, sig, gracePeriodMs);
+    },
+
+    async signalGroup(groupId, sig, options) {
+      const deadlineMs = options?.deadlineMs ?? 5_000;
+      const matching: string[] = [];
+
+      for (const [id, managed] of agents) {
+        if (managed.pid.groupId === groupId && managed.state !== "terminated") {
+          matching.push(id);
+        }
+      }
+
+      if (matching.length === 0) return;
+
+      const ops = matching.map((id) => signalOne(id, sig, 5_000));
+
+      await Promise.race([
+        Promise.allSettled(ops),
+        new Promise<void>((_resolve, reject) =>
+          setTimeout(() => reject(new Error("signalGroup timeout")), deadlineMs),
+        ),
+      ]);
     },
 
     get(agentId) {
