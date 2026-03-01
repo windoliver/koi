@@ -274,6 +274,79 @@ declare const safeParseTerminalSessionParams: (value: unknown) => SafeParseResul
 declare const safeParseSessionRequestPermissionParams: (value: unknown) => SafeParseResult<SessionRequestPermissionParams>;
 
 /**
+ * Push-to-pull bridge: converts push-based producers into an async iterable.
+ *
+ * Copied from @koi/engine-external with a high-watermark warning added
+ * (decision 16A: unbounded queue + warn at 500 items).
+ */
+interface AsyncQueue<T> extends AsyncIterable<T> {
+    readonly push: (value: T) => void;
+    readonly end: () => void;
+}
+declare function createAsyncQueue<T>(label?: string): AsyncQueue<T>;
+
+/**
+ * Bidirectional content block mapping between Koi and ACP.
+ *
+ * Koi uses \`kind\` discriminator; ACP uses \`type\` discriminator.
+ * Some mappings are lossy (e.g., ButtonBlock has no ACP equivalent).
+ */
+
+/**
+ * Map Koi ContentBlocks to ACP ContentBlocks.
+ *
+ * Lossy for:
+ * - \`ButtonBlock\` → skipped (no ACP equivalent)
+ * - \`CustomBlock\` → skipped (no standard ACP representation)
+ * - \`ImageBlock\` → \`TextContent\` placeholder (Koi uses URL, ACP uses base64)
+ */
+declare function mapKoiContentToAcp(blocks: readonly ContentBlock$1[]): readonly ContentBlock[];
+/**
+ * Map ACP ContentBlocks to Koi ContentBlocks.
+ *
+ * - \`TextContent\` → \`TextBlock\`
+ * - \`ImageContent\` → \`ImageBlock\` (data: URI)
+ * - \`ResourceLinkContent\` → \`FileBlock\`
+ * - \`EmbeddedResourceContent\` → \`CustomBlock\` wrapper
+ */
+declare function mapAcpContentToKoi(blocks: readonly ContentBlock[]): readonly ContentBlock$1[];
+
+/**
+ * Bidirectional ACP ↔ Koi event mapping.
+ *
+ * - \`mapSessionUpdate()\`: ACP session/update → Koi EngineEvent (client side)
+ * - \`mapEngineEventToAcp()\`: Koi EngineEvent → ACP session/update (server side)
+ */
+
+/**
+ * Map an ACP session/update payload to zero or more Koi EngineEvents.
+ *
+ * - \`agent_message_chunk\` → \`text_delta\` for each text content block
+ * - \`agent_thought_chunk\` → \`custom(thought)\` event
+ * - \`tool_call\` → \`tool_call_start\`
+ * - \`tool_call_update\` with status \`completed\`/\`failed\` → \`tool_call_end\`
+ * - \`tool_call_update\` with other status → \`tool_call_delta\`
+ * - \`plan\` → \`custom(plan)\` event
+ * - \`current_mode_update\` → \`custom(mode_change)\` event
+ */
+declare function mapSessionUpdate(update: SessionUpdatePayload): readonly EngineEvent[];
+/**
+ * Map a Koi EngineEvent to an ACP SessionUpdatePayload for session/update
+ * notifications sent to the IDE.
+ *
+ * Returns \`undefined\` for events that have no ACP equivalent
+ * (turn_start, turn_end, done) — the caller should skip those.
+ *
+ * - \`text_delta\` → \`agent_message_chunk\`
+ * - \`tool_call_start\` → \`tool_call\` (status: "pending")
+ * - \`tool_call_delta\` → \`tool_call_update\` (status: "in_progress")
+ * - \`tool_call_end\` → \`tool_call_update\` (status: "completed" or "failed")
+ * - \`custom\` with \`acp:*\` type → pass through as appropriate update kind
+ * - \`turn_start\`, \`turn_end\`, \`done\` → undefined (no ACP equivalent)
+ */
+declare function mapEngineEventToAcp(event: EngineEvent): SessionUpdatePayload | undefined;
+
+/**
  * JSON-RPC 2.0 line-buffer parser and message router for ACP.
  *
  * Adapts engine-external's line-parser pattern (decision 13A) for the
@@ -345,18 +418,6 @@ declare function buildResponse(id: RpcId, result: unknown): string;
 declare function buildErrorResponse(id: RpcId, code: number, message: string, data?: unknown): string;
 
 /**
- * Push-to-pull bridge: converts push-based producers into an async iterable.
- *
- * Copied from @koi/engine-external with a high-watermark warning added
- * (decision 16A: unbounded queue + warn at 500 items).
- */
-interface AsyncQueue<T> extends AsyncIterable<T> {
-    readonly push: (value: T) => void;
-    readonly end: () => void;
-}
-declare function createAsyncQueue<T>(label?: string): AsyncQueue<T>;
-
-/**
  * AcpTransport — shared transport interface for ACP communication.
  *
  * Extracted from @koi/engine-acp so both the client (engine-acp) and
@@ -371,67 +432,6 @@ interface AcpTransport {
     /** Close the transport. Subsequent send() calls are no-ops. */
     readonly close: () => void;
 }
-
-/**
- * Bidirectional content block mapping between Koi and ACP.
- *
- * Koi uses \`kind\` discriminator; ACP uses \`type\` discriminator.
- * Some mappings are lossy (e.g., ButtonBlock has no ACP equivalent).
- */
-
-/**
- * Map Koi ContentBlocks to ACP ContentBlocks.
- *
- * Lossy for:
- * - \`ButtonBlock\` → skipped (no ACP equivalent)
- * - \`CustomBlock\` → skipped (no standard ACP representation)
- * - \`ImageBlock\` → \`TextContent\` placeholder (Koi uses URL, ACP uses base64)
- */
-declare function mapKoiContentToAcp(blocks: readonly ContentBlock$1[]): readonly ContentBlock[];
-/**
- * Map ACP ContentBlocks to Koi ContentBlocks.
- *
- * - \`TextContent\` → \`TextBlock\`
- * - \`ImageContent\` → \`ImageBlock\` (data: URI)
- * - \`ResourceLinkContent\` → \`FileBlock\`
- * - \`EmbeddedResourceContent\` → \`CustomBlock\` wrapper
- */
-declare function mapAcpContentToKoi(blocks: readonly ContentBlock[]): readonly ContentBlock$1[];
-
-/**
- * Bidirectional ACP ↔ Koi event mapping.
- *
- * - \`mapSessionUpdate()\`: ACP session/update → Koi EngineEvent (client side)
- * - \`mapEngineEventToAcp()\`: Koi EngineEvent → ACP session/update (server side)
- */
-
-/**
- * Map an ACP session/update payload to zero or more Koi EngineEvents.
- *
- * - \`agent_message_chunk\` → \`text_delta\` for each text content block
- * - \`agent_thought_chunk\` → \`custom(thought)\` event
- * - \`tool_call\` → \`tool_call_start\`
- * - \`tool_call_update\` with status \`completed\`/\`failed\` → \`tool_call_end\`
- * - \`tool_call_update\` with other status → \`tool_call_delta\`
- * - \`plan\` → \`custom(plan)\` event
- * - \`current_mode_update\` → \`custom(mode_change)\` event
- */
-declare function mapSessionUpdate(update: SessionUpdatePayload): readonly EngineEvent[];
-/**
- * Map a Koi EngineEvent to an ACP SessionUpdatePayload for session/update
- * notifications sent to the IDE.
- *
- * Returns \`undefined\` for events that have no ACP equivalent
- * (turn_start, turn_end, done) — the caller should skip those.
- *
- * - \`text_delta\` → \`agent_message_chunk\`
- * - \`tool_call_start\` → \`tool_call\` (status: "pending")
- * - \`tool_call_delta\` → \`tool_call_update\` (status: "in_progress")
- * - \`tool_call_end\` → \`tool_call_update\` (status: "completed" or "failed")
- * - \`custom\` with \`acp:*\` type → pass through as appropriate update kind
- * - \`turn_start\`, \`turn_end\`, \`done\` → undefined (no ACP equivalent)
- */
-declare function mapEngineEventToAcp(event: EngineEvent): SessionUpdatePayload | undefined;
 
 export { type AcpTransport, type AgentCapabilities, type AnyRpcMessage, type AsyncQueue, type ClientCapabilities, type ContentBlock, type FsReadTextFileParams, type FsReadTextFileResult, type FsWriteTextFileParams, type ImageContent, type InitializeParams, type InitializeResult, type LineParser, type ParseError, type ParseResult, type PermissionOption, type PermissionOutcome, RPC_ERROR_CODES, type RpcErrorCode, type RpcErrorObject, type RpcErrorResponse, type RpcId, type RpcInboundRequest, type RpcMessage, type RpcNotification, type RpcSuccessResponse, type SafeParseResult, type SessionNewParams, type SessionNewResult, type SessionPromptParams, type SessionPromptResult, type SessionRequestPermissionParams, type SessionUpdateParams, type SessionUpdatePayload, type TerminalCreateParams, type TerminalCreateResult, type TerminalOutputResult, type TerminalSessionParams, type TerminalWaitForExitResult, type TextContent, type ToolCall, type ToolCallKind, type ToolCallStatus, buildErrorResponse, buildRequest, buildResponse, createAsyncQueue, createLineParser, mapAcpContentToKoi, mapEngineEventToAcp, mapKoiContentToAcp, mapSessionUpdate, parseAnyRpcMessage, parseFsReadTextFileParams, parseFsWriteTextFileParams, parseInitializeResult, parseSessionNewResult, parseSessionPromptResult, parseSessionRequestPermissionParams, parseSessionUpdateParams, parseTerminalCreateParams, parseTerminalSessionParams, safeParseFsReadTextFileParams, safeParseFsWriteTextFileParams, safeParseSessionRequestPermissionParams, safeParseTerminalCreateParams, safeParseTerminalSessionParams };
 "
