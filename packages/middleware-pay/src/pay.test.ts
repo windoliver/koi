@@ -513,7 +513,8 @@ describe("createPayMiddleware", () => {
       });
 
       // Session A: spend > 50%
-      const ctxA = createMockTurnContext({ session: { sessionId: sessionId("session-A") } });
+      const sessionA = createMockSessionContext({ sessionId: sessionId("session-A") });
+      const ctxA = createMockTurnContext({ session: sessionA });
       const spy = createSpyModelHandler({
         content: "hi",
         model: "test-model",
@@ -523,7 +524,8 @@ describe("createPayMiddleware", () => {
       expect(alerts).toHaveLength(1);
 
       // Session B: spend > 50% — should also fire (separate session)
-      const ctxB = createMockTurnContext({ session: { sessionId: sessionId("session-B") } });
+      const sessionB = createMockSessionContext({ sessionId: sessionId("session-B") });
+      const ctxB = createMockTurnContext({ session: sessionB });
       await mw.wrapModelCall?.(ctxB, { messages: [] }, spy.handler);
       expect(alerts).toHaveLength(2);
     });
