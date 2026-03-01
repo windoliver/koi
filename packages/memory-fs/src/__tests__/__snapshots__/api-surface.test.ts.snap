@@ -28,6 +28,9 @@ interface FsMemoryConfig {
     readonly freqProtectThreshold?: number | undefined;
     readonly decayHalfLifeDays?: number | undefined;
     readonly maxSummaryFacts?: number | undefined;
+    readonly entityHopDecay?: number | undefined;
+    readonly maxEntityHops?: number | undefined;
+    readonly perEntityCap?: number | undefined;
 }
 interface FsMemory {
     readonly component: MemoryComponent;
