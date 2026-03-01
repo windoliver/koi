@@ -119,7 +119,7 @@ const TEMPLATE_EXPR_RE = /\{\{|\{%/;
  * Wraps a Zod string schema to reject template expressions ({{...}} or {%...%}).
  * Use on manifest fields that must be static values — no runtime interpolation.
  */
-function noTemplateExpressions(schema: z.ZodString): z.ZodEffects<z.ZodString, string, string> {
+function noTemplateExpressions(schema: z.ZodString) {
   return schema.refine(
     (val) => !TEMPLATE_EXPR_RE.test(val),
     "Manifest does not support template expressions ({{...}} or {%...%}). Use static values only.",
