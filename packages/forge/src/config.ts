@@ -223,6 +223,7 @@ const DEFAULT_CONFIG: ForgeConfig = {
   autoPromotion: DEFAULT_AUTO_PROMOTION,
   dependencies: DEFAULT_DEPENDENCY,
   format: DEFAULT_FORMAT,
+  trail: DEFAULT_TRAIL_CONFIG,
 } as const;
 
 // ---------------------------------------------------------------------------

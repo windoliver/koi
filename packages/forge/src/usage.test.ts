@@ -441,7 +441,10 @@ describe("recordBrickUsage — trail strength", () => {
     const store = createInMemoryForgeStore();
     await store.save(createToolBrick({ id: brickId("brick_notrail"), trailStrength: 0.5 }));
 
-    const config = createDefaultForgeConfig(); // no trail config
+    // Explicitly omit trail config to test backward-compatible path
+    const base = createDefaultForgeConfig();
+    const { trail: _, ...rest } = base;
+    const config = rest as typeof base;
     const result = await recordBrickUsage(store, "brick_notrail", config);
     expect(result.ok).toBe(true);
 
