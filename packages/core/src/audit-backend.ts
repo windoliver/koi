@@ -12,7 +12,7 @@ export interface AuditEntry {
   readonly sessionId: string;
   readonly agentId: string;
   readonly turnIndex: number;
-  readonly kind: "model_call" | "tool_call" | "session_start" | "session_end";
+  readonly kind: "model_call" | "tool_call" | "session_start" | "session_end" | "secret_access";
   readonly request?: unknown;
   readonly response?: unknown;
   readonly error?: unknown;

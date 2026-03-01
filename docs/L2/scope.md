@@ -214,6 +214,14 @@ Without this package, you'd need to:
 │  │ Scope()             │  │                     │                    │
 │  └─────────────────────┘  └─────────────────────┘                    │
 │                                                                       │
+│  Audited wrappers (credential access audit trail)                    │
+│  ┌─────────────────────────────────────────────────────┐             │
+│  │ audited-credentials.ts                              │             │
+│  │                                                     │             │
+│  │ createAuditedCredentials(component, config)         │             │
+│  │ AuditedCredentialsConfig { sink, onError? }         │             │
+│  └─────────────────────────────────────────────────────┘             │
+│                                                                       │
 │  Enforced wrappers (pluggable policy on top of scoped)                │
 │  ┌─────────────────────────────────────────────────────┐             │
 │  │ enforced-backends.ts                                │             │
@@ -238,9 +246,11 @@ Without this package, you'd need to:
 │                                                                       │
 ├───────────────────────────────────────────────────────────────────────┤
 │  Dependencies                                                         │
-│  @koi/core (L0)   FileSystemBackend, BrowserDriver, CredentialComp., │
-│                    MemoryComponent, ScopeEnforcer, Result, KoiError   │
-│  node:path (std)   resolve(), sep (filesystem scope only)             │
+│  @koi/core (L0)              FileSystemBackend, BrowserDriver,        │
+│                               CredentialComp., MemoryComponent,       │
+│                               ScopeEnforcer, AuditSink, AuditEntry    │
+│  @koi/execution-context (L0u) getExecutionContext()                   │
+│  node:path (std)              resolve(), sep (filesystem scope only)  │
 └───────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -375,6 +385,82 @@ Scope: { namespace: "research" }
     → client-side filter: only results where metadata.namespace === "research"
 ```
 
+### Audited Credentials
+
+Emits a structured `AuditEntry` on every credential access — for SOC2/HIPAA compliance. Never logs the secret value, only the key name and whether access was granted.
+
+```
+  Agent calls credentials.get("API_KEY")
+       │
+       ▼
+  ┌──────────────────────────────────────────────────┐
+  │  Audited Wrapper                                  │
+  │  createAuditedCredentials(component, { sink })    │
+  │                                                   │
+  │  1. Read execution context (agent, session, turn) │
+  │  2. Delegate to inner component                   │
+  │  3. Measure duration                              │
+  │  4. Emit AuditEntry (fire-and-forget):            │
+  │     {                                             │
+  │       kind: "secret_access",                      │
+  │       agentId: "research-agent",                  │
+  │       sessionId: "sess-123",                      │
+  │       turnIndex: 7,                               │
+  │       metadata: {                                 │
+  │         credentialKey: "API_KEY",   ← key name    │
+  │         granted: true              ← NOT value    │
+  │       },                                          │
+  │       durationMs: 2                               │
+  │     }                                             │
+  │                                                   │
+  │  Sink errors swallowed — never blocks access.     │
+  └──────────────────────┬───────────────────────────┘
+                         │
+                         ▼
+  ┌──────────────────────────────────────────────────┐
+  │  Inner CredentialComponent                        │
+  │  (scoped, enforced, or raw)                       │
+  └──────────────────────────────────────────────────┘
+```
+
+Full composition chain when wired via `@koi/starter`:
+
+```
+  raw backend → enforced (policy) → scoped (glob filter) → audited (audit trail)
+```
+
+```typescript
+import { createAuditedCredentials } from "@koi/scope";
+
+const audited = createAuditedCredentials(scopedCredentials, {
+  sink: myAuditSink,
+  onError: (error, entry) => {
+    console.error("Audit sink failed for key:", entry.metadata?.credentialKey, error);
+  },
+});
+
+// Every .get() now emits an audit entry
+const key = await audited.get("API_KEY");
+```
+
+When `auditSink` is provided in `ScopeBackends`, the `@koi/starter` auto-wiring composes the audit wrapper automatically:
+
+```typescript
+const runtime = await createConfiguredKoi({
+  manifest: loadedManifest,
+  backends: {
+    credentials: envCredentials,
+    auditSink: myAuditSink,  // ← enables credential access audit trail
+  },
+});
+```
+
+**Security guarantees:**
+- Secret values never appear in audit entries (tested: `JSON.stringify(entry)` checked against value)
+- Sink failures never block credential access (fire-and-forget via `void promise.catch()`)
+- Graceful fallback without execution context: `agentId: "unknown"`, `turnIndex: -1`
+- `onError` callback failures are swallowed to preserve the fire-and-forget guarantee
+
 ---
 
 ## Enforced Backends
@@ -498,11 +584,13 @@ Per tool call (hot path):
 
 ### Zero-Overhead Bypass
 
-When no enforcer is provided, the composition skips the enforcement layer entirely — no empty function calls, no Promise wrapping:
+When no enforcer or audit sink is provided, the composition skips those layers entirely — no empty function calls, no Promise wrapping:
 
 ```
-With enforcer:    raw → enforced(policy check) → scoped(boundary) → result
-Without enforcer: raw → scoped(boundary) → result
+Full chain:       raw → enforced(policy) → scoped(boundary) → audited(audit trail) → result
+No enforcer:      raw → scoped(boundary) → audited(audit trail) → result
+No audit sink:    raw → enforced(policy) → scoped(boundary) → result
+Minimal:          raw → scoped(boundary) → result
 ```
 
 ---
@@ -615,10 +703,10 @@ L0  @koi/core ──────────────────────
     MemoryComponent, Result, KoiError — interface contracts         │
                                                                     │
 L0u @koi/scope ◄────────────────────────────────────────────────────┘
-    imports from L0 only (+ node:path standard library)
+    imports from L0 + peer L0u only (+ node:path standard library)
     ✗ never imports @koi/engine (L1)
     ✗ never imports peer L2 packages
-    ✓ @koi/core is the sole workspace dependency
+    ✓ @koi/core + @koi/execution-context are the only workspace deps
 
 L3  @koi/starter
     resolveManifestScope() — auto-wiring that combines:

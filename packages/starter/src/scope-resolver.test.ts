@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type {
+  AuditEntry,
+  AuditSink,
   BrowserDriver,
   CredentialComponent,
   FileSystemBackend,
@@ -9,7 +11,9 @@ import type {
   MemoryStoreOptions,
   ScopeEnforcer,
 } from "@koi/core";
+import { CREDENTIALS, isAttachResult } from "@koi/core";
 import type { ManifestScopeConfig } from "@koi/manifest";
+import { createMockAgent } from "@koi/test-utils";
 import { resolveManifestScope } from "./scope-resolver.js";
 
 // ---------------------------------------------------------------------------
@@ -218,5 +222,93 @@ describe("resolveManifestScope", () => {
       browser: createMockBrowserDriver(),
     });
     expect(providers).toHaveLength(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Audit integration
+  // ---------------------------------------------------------------------------
+
+  test("credential .get() emits audit entry when auditSink provided", async () => {
+    const entries: AuditEntry[] = [];
+    const auditSink: AuditSink = {
+      log: async (entry: AuditEntry): Promise<void> => {
+        entries.push(entry);
+      },
+    };
+    const scopeConfig: ManifestScopeConfig = {
+      credentials: { keyPattern: "*" },
+    };
+    const providers = resolveManifestScope(scopeConfig, {
+      credentials: createMockCredentials(),
+      auditSink,
+    });
+
+    expect(providers).toHaveLength(1);
+    const agent = createMockAgent();
+    const provider = providers[0];
+    expect(provider).toBeDefined();
+    const raw = await provider?.attach(agent);
+    expect(raw).toBeDefined();
+    const components = raw !== undefined && isAttachResult(raw) ? raw.components : raw;
+    const creds = components?.get(CREDENTIALS as string) as CredentialComponent;
+
+    await creds.get("ANY_KEY");
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.kind).toBe("secret_access");
+    expect(entries[0]?.metadata).toMatchObject({ credentialKey: "ANY_KEY", granted: true });
+  });
+
+  test("scope filtering + audit: denied key logs granted: false", async () => {
+    const entries: AuditEntry[] = [];
+    const auditSink: AuditSink = {
+      log: async (entry: AuditEntry): Promise<void> => {
+        entries.push(entry);
+      },
+    };
+    const scopeConfig: ManifestScopeConfig = {
+      credentials: { keyPattern: "API_*" },
+    };
+    const providers = resolveManifestScope(scopeConfig, {
+      credentials: createMockCredentials(),
+      auditSink,
+    });
+
+    const agent = createMockAgent();
+    const provider = providers[0];
+    expect(provider).toBeDefined();
+    const raw = await provider?.attach(agent);
+    expect(raw).toBeDefined();
+    const components = raw !== undefined && isAttachResult(raw) ? raw.components : raw;
+    const creds = components?.get(CREDENTIALS as string) as CredentialComponent;
+
+    const result = await creds.get("DB_PASS");
+
+    expect(result).toBeUndefined();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.metadata).toMatchObject({ credentialKey: "DB_PASS", granted: false });
+  });
+
+  test("no audit wrapper when auditSink is undefined", async () => {
+    const scopeConfig: ManifestScopeConfig = {
+      credentials: { keyPattern: "*" },
+    };
+    const providers = resolveManifestScope(scopeConfig, {
+      credentials: createMockCredentials(),
+      // auditSink intentionally omitted
+    });
+
+    expect(providers).toHaveLength(1);
+    const agent = createMockAgent();
+    const provider = providers[0];
+    expect(provider).toBeDefined();
+    const raw = await provider?.attach(agent);
+    expect(raw).toBeDefined();
+    const components = raw !== undefined && isAttachResult(raw) ? raw.components : raw;
+    const creds = components?.get(CREDENTIALS as string) as CredentialComponent;
+
+    // Should still work — just no audit trail
+    const result = await creds.get("ANY_KEY");
+    expect(result).toBe("secret");
   });
 });
