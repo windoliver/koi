@@ -1,9 +1,9 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/collusion-detector API surface . has stable type surface 1`] = `
-"import { AgentId } from '@koi/core/ecs';
+"import { Result, KoiError } from '@koi/core/errors';
+import { AgentId } from '@koi/core/ecs';
 import { ViolationSeverity } from '@koi/core/governance-backend';
-import { Result, KoiError } from '@koi/core/errors';
 
 /**
  * Types for cross-agent collusion detection.
@@ -66,6 +66,26 @@ interface CollusionDetectorConfig {
     /** Sliding window size in rounds. Default: 50. */
     readonly windowSize?: number | undefined;
 }
+
+/**
+ * Configuration validation and defaults for the collusion detector.
+ */
+
+/** Default thresholds for collusion detection signals. */
+declare const DEFAULT_COLLUSION_THRESHOLDS: Readonly<CollusionThresholds>;
+/** Resolve collusion thresholds from optional partial overrides. */
+declare function resolveThresholds(overrides?: Partial<CollusionThresholds> | undefined): CollusionThresholds;
+/** Resolve window size from optional config value. */
+declare function resolveWindowSize(windowSize?: number | undefined): number;
+/**
+ * Validate a collusion detector configuration.
+ *
+ * Checks:
+ * - config is a non-null object
+ * - threshold values (if present) are positive finite numbers
+ * - windowSize (if present) is a positive integer
+ */
+declare function validateCollusionDetectorConfig(config: unknown): Result<CollusionDetectorConfig, KoiError>;
 
 /**
  * Pure collusion detection functions — 4 deterministic signal detectors.
@@ -151,26 +171,6 @@ interface ObservationWindow {
 }
 /** Create a sliding observation window bounded by max round count. */
 declare function createObservationWindow(maxRounds: number): ObservationWindow;
-
-/**
- * Configuration validation and defaults for the collusion detector.
- */
-
-/** Default thresholds for collusion detection signals. */
-declare const DEFAULT_COLLUSION_THRESHOLDS: Readonly<CollusionThresholds>;
-/** Resolve collusion thresholds from optional partial overrides. */
-declare function resolveThresholds(overrides?: Partial<CollusionThresholds> | undefined): CollusionThresholds;
-/** Resolve window size from optional config value. */
-declare function resolveWindowSize(windowSize?: number | undefined): number;
-/**
- * Validate a collusion detector configuration.
- *
- * Checks:
- * - config is a non-null object
- * - threshold values (if present) are positive finite numbers
- * - windowSize (if present) is a positive integer
- */
-declare function validateCollusionDetectorConfig(config: unknown): Result<CollusionDetectorConfig, KoiError>;
 
 export { type AgentObservation, type CollusionDetectorConfig, type CollusionSignal, type CollusionSignalKind, type CollusionThresholds, DEFAULT_COLLUSION_THRESHOLDS, type ObservationWindow, computeCV, computeHHI, computeMean, computeStddev, createObservationWindow, detectAll, detectConcentration, detectSpecialization, detectSyncMove, detectVarianceCollapse, resolveThresholds, resolveWindowSize, validateCollusionDetectorConfig };
 "
