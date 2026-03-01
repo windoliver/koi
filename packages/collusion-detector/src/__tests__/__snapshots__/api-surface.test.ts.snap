@@ -1,8 +1,8 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/collusion-detector API surface . has stable type surface 1`] = `
-"import { Result, KoiError } from '@koi/core/errors';
-import { AgentId } from '@koi/core/ecs';
+"import { AgentId } from '@koi/core/ecs';
+import { Result, KoiError } from '@koi/core/errors';
 import { ViolationSeverity } from '@koi/core/governance-backend';
 
 /**

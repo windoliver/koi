@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/governance-memory API surface . has stable type surface 1`] = `
-"import { PolicyRequestKind, PolicyRequest, ViolationSeverity, GovernanceBackend, PolicyEvaluator, GovernanceVerdict } from '@koi/core/governance-backend';
+"import { PolicyRequestKind, PolicyRequest, ViolationSeverity, PolicyEvaluator, GovernanceVerdict, GovernanceBackend } from '@koi/core/governance-backend';
 import { Result, KoiError } from '@koi/core/errors';
 
 /**
@@ -79,23 +79,31 @@ interface GovernanceMemoryConfig {
 }
 
 /**
- * Factory for the in-memory GovernanceBackend.
+ * Adaptive thresholds — tighten on violations, relax on clean evaluations.
  *
- * Wires evaluator + store + constraint checker into a composite GovernanceBackend.
+ * Pure functions only. All operations return new objects (immutable).
  */
 
+/** Runtime state for a single adaptive threshold. */
+interface AdaptiveThreshold {
+    readonly currentValue: number;
+    readonly baseValue: number;
+    readonly decayRate: number;
+    readonly recoveryRate: number;
+    readonly floor: number;
+    readonly ceiling: number;
+}
+/** Create an adaptive threshold from configuration. Initial value = baseValue. */
+declare function createAdaptiveThreshold(config: AdaptiveThresholdConfig): AdaptiveThreshold;
 /**
- * Create an in-memory governance backend.
+ * Adjust threshold based on whether a violation occurred.
  *
- * The backend provides:
- * - Policy evaluation via a Cedar-inspired constraint DAG
- * - Constraint checking (delegates to DAG evaluation)
- * - Compliance recording (ring buffer)
- * - Violation storage and querying (per-agent ring buffers)
- * - Anomaly bridge integration (fail-open callback)
- * - Adaptive thresholds (tighten on violations, relax on clean evals)
+ * - violated=true: tighten (multiply by decayRate, clamp to floor)
+ * - violated=false: relax (multiply by recoveryRate, clamp to ceiling)
+ *
+ * Returns a new AdaptiveThreshold — the original is not mutated.
  */
-declare function createGovernanceMemoryBackend(config?: GovernanceMemoryConfig): GovernanceBackend;
+declare function adjustThreshold(threshold: AdaptiveThreshold, violated: boolean): AdaptiveThreshold;
 
 /**
  * Configuration validation for GovernanceMemoryConfig.
@@ -169,31 +177,23 @@ interface MemoryEvaluator extends PolicyEvaluator {
 declare function createMemoryEvaluator(config: GovernanceMemoryConfig): MemoryEvaluator;
 
 /**
- * Adaptive thresholds — tighten on violations, relax on clean evaluations.
+ * Factory for the in-memory GovernanceBackend.
  *
- * Pure functions only. All operations return new objects (immutable).
+ * Wires evaluator + store + constraint checker into a composite GovernanceBackend.
  */
 
-/** Runtime state for a single adaptive threshold. */
-interface AdaptiveThreshold {
-    readonly currentValue: number;
-    readonly baseValue: number;
-    readonly decayRate: number;
-    readonly recoveryRate: number;
-    readonly floor: number;
-    readonly ceiling: number;
-}
-/** Create an adaptive threshold from configuration. Initial value = baseValue. */
-declare function createAdaptiveThreshold(config: AdaptiveThresholdConfig): AdaptiveThreshold;
 /**
- * Adjust threshold based on whether a violation occurred.
+ * Create an in-memory governance backend.
  *
- * - violated=true: tighten (multiply by decayRate, clamp to floor)
- * - violated=false: relax (multiply by recoveryRate, clamp to ceiling)
- *
- * Returns a new AdaptiveThreshold — the original is not mutated.
+ * The backend provides:
+ * - Policy evaluation via a Cedar-inspired constraint DAG
+ * - Constraint checking (delegates to DAG evaluation)
+ * - Compliance recording (ring buffer)
+ * - Violation storage and querying (per-agent ring buffers)
+ * - Anomaly bridge integration (fail-open callback)
+ * - Adaptive thresholds (tighten on violations, relax on clean evals)
  */
-declare function adjustThreshold(threshold: AdaptiveThreshold, violated: boolean): AdaptiveThreshold;
+declare function createGovernanceMemoryBackend(config?: GovernanceMemoryConfig): GovernanceBackend;
 
 export { type AdaptiveThreshold, type AdaptiveThresholdConfig, type AnomalySignalLike, type ConstraintDag, type EvaluationContext, type GovernanceMemoryConfig, type GovernanceRule, type MemoryEvaluator, adjustThreshold, createAdaptiveThreshold, createConstraintDag, createGovernanceMemoryBackend, createMemoryEvaluator, validateGovernanceMemoryConfig };
 "
