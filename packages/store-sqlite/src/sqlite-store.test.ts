@@ -187,6 +187,86 @@ describe("SQLite-specific", () => {
     writer.close();
   });
 
+  test("persistence: save → update → close → reopen → load preserves update", async () => {
+    const dir = await makeTempDir();
+    const dbPath = join(dir, "forge.db");
+
+    const store1 = createSqliteForgeStore({ dbPath });
+    const brick = createToolBrick({ id: brickId("brick_upd"), usageCount: 0 });
+    await store1.save(brick);
+    await store1.update(brickId("brick_upd"), { usageCount: 42, lifecycle: "deprecated" });
+    store1.close();
+
+    const store2 = createSqliteForgeStore({ dbPath });
+    const result = await store2.load(brickId("brick_upd"));
+    store2.close();
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.usageCount).toBe(42);
+      expect(result.value.lifecycle).toBe("deprecated");
+    }
+  });
+
+  test("persistence: save → remove → close → reopen → search returns empty", async () => {
+    const dir = await makeTempDir();
+    const dbPath = join(dir, "forge.db");
+
+    const store1 = createSqliteForgeStore({ dbPath });
+    await store1.save(createToolBrick({ id: brickId("brick_rm") }));
+    await store1.remove(brickId("brick_rm"));
+    store1.close();
+
+    const store2 = createSqliteForgeStore({ dbPath });
+    const result = await store2.search({});
+    store2.close();
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.length).toBe(0);
+    }
+  });
+
+  test("persistence: save multiple → close → reopen → search returns all", async () => {
+    const dir = await makeTempDir();
+    const dbPath = join(dir, "forge.db");
+
+    const store1 = createSqliteForgeStore({ dbPath });
+    await store1.save(createToolBrick({ id: brickId("brick_m1") }));
+    await store1.save(createToolBrick({ id: brickId("brick_m2") }));
+    await store1.save(createToolBrick({ id: brickId("brick_m3") }));
+    store1.close();
+
+    const store2 = createSqliteForgeStore({ dbPath });
+    const result = await store2.search({});
+    store2.close();
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.length).toBe(3);
+    }
+  });
+
+  test("persistence: save with tags → close → reopen → search by tags works", async () => {
+    const dir = await makeTempDir();
+    const dbPath = join(dir, "forge.db");
+
+    const store1 = createSqliteForgeStore({ dbPath });
+    await store1.save(createToolBrick({ id: brickId("brick_t1"), tags: ["math", "calc"] }));
+    await store1.save(createToolBrick({ id: brickId("brick_t2"), tags: ["text"] }));
+    store1.close();
+
+    const store2 = createSqliteForgeStore({ dbPath });
+    const result = await store2.search({ tags: ["math"] });
+    store2.close();
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.length).toBe(1);
+      expect(result.value[0]?.id).toBe(brickId("brick_t1"));
+    }
+  });
+
   test("search with text filter (case-insensitive)", async () => {
     const db = new Database(":memory:");
     db.run("PRAGMA foreign_keys = ON");

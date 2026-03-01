@@ -52,6 +52,7 @@ export type {
 } from "./event-sourced-registry-contract.js";
 export { runEventSourcedRegistryContractTests } from "./event-sourced-registry-contract.js";
 export { createFactory } from "./factory.js";
+export { createFakeNexusFetch } from "./fake-nexus-fetch.js";
 export type {
   MockGovernanceBackendOverrides,
   MockGovernanceControllerOverrides,

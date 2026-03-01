@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { ForgeStore, StoreChangeEvent } from "@koi/core";
+import type { BrickFitnessMetrics, ForgeStore, StoreChangeEvent } from "@koi/core";
 import { brickId } from "@koi/core";
 import { createTestSkillArtifact, createTestToolArtifact } from "./brick-artifacts.js";
 
@@ -218,6 +218,58 @@ export function runForgeStoreContractTests(
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value.name).toBe("updated");
+      }
+    });
+    test("search respects orderBy: usage", async () => {
+      const store = await createStore();
+      await store.save(createBrick({ id: brickId("b_u1"), usageCount: 3 }));
+      await store.save(createBrick({ id: brickId("b_u2"), usageCount: 10 }));
+      await store.save(createBrick({ id: brickId("b_u3"), usageCount: 1 }));
+
+      const result = await store.search({ orderBy: "usage" });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.length).toBe(3);
+        expect(result.value[0]?.id).toBe(brickId("b_u2"));
+        expect(result.value[1]?.id).toBe(brickId("b_u1"));
+        expect(result.value[2]?.id).toBe(brickId("b_u3"));
+      }
+    });
+
+    test("search filters by minFitnessScore", async () => {
+      const store = await createStore();
+      const highFitness: BrickFitnessMetrics = {
+        successCount: 90,
+        errorCount: 10,
+        latency: { samples: [], count: 0, cap: 200 },
+        lastUsedAt: Date.now(),
+      };
+      const lowFitness: BrickFitnessMetrics = {
+        successCount: 1,
+        errorCount: 99,
+        latency: { samples: [], count: 0, cap: 200 },
+        lastUsedAt: Date.now() - 86_400_000 * 365,
+      };
+
+      await store.save(createBrick({ id: brickId("b_high"), fitness: highFitness }));
+      await store.save(createBrick({ id: brickId("b_low"), fitness: lowFitness }));
+      await store.save(createBrick({ id: brickId("b_none") })); // no fitness → score 0
+
+      const result = await store.search({ minFitnessScore: 0.3 });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.length).toBe(1);
+        expect(result.value[0]?.id).toBe(brickId("b_high"));
+      }
+    });
+
+    test("dispose does not throw", async () => {
+      const store = await createStore();
+      const disposeFn = store.dispose;
+      if (disposeFn !== undefined) {
+        expect(() => {
+          disposeFn();
+        }).not.toThrow();
       }
     });
   });

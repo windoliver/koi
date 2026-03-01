@@ -1764,6 +1764,18 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/store-nexus": {
+      "name": "@koi/store-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/store-sqlite": {
       "name": "@koi/store-sqlite",
       "version": "0.0.0",
@@ -2683,6 +2695,8 @@
     "@koi/starter": ["@koi/starter@workspace:packages/starter"],
 
     "@koi/store-fs": ["@koi/store-fs@workspace:packages/store-fs"],
+
+    "@koi/store-nexus": ["@koi/store-nexus@workspace:packages/store-nexus"],
 
     "@koi/store-sqlite": ["@koi/store-sqlite@workspace:packages/store-sqlite"],
 
