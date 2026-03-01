@@ -3265,7 +3265,7 @@ interface SecurityAnalyzer {
 
 export { RISK_ANALYSIS_UNKNOWN, RISK_LEVEL_ORDER, type RiskAnalysis, type RiskFinding, type RiskLevel, type SecurityAnalyzer };
 "
-\`;
+`;
 
 exports[`@koi/core API surface ./pay-ledger has stable type surface 1`] = `
 "/**
