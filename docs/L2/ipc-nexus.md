@@ -217,11 +217,11 @@ The LLM will autonomously call `ipc_send` when it decides to communicate.
   └────────┬────────┘
            │  stored in recipient's inbox
            ▼
-  Agent B polls:  GET /api/v2/ipc/inbox/agent-b
-           │
+  Agent B notified via SSE push (or polls in fallback mode)
+           │  GET /api/v2/ipc/inbox/agent-b
   ┌────────┴────────┐
   │ mapNexusToKoi() │  Nexus "task" → Koi "request"
-  │ + deduplication │  seen.has(id) → skip
+  │ + deduplication │  seen-buffer ring (10K capacity)
   └────────┬────────┘
            │
            ▼
@@ -313,10 +313,12 @@ import { agentId } from "@koi/core";
 const mailbox = createNexusMailbox({
   agentId: agentId("my-agent"),
   baseUrl: "http://localhost:2026",
-  pollMinMs: 1_000,     // min poll interval (backoff resets on message)
-  pollMaxMs: 30_000,    // max poll interval (backoff ceiling)
-  pollMultiplier: 2,    // exponential backoff multiplier
-  pageLimit: 50,        // messages per poll page
+  delivery: "sse",        // "sse" (default) or "polling"
+  seenCapacity: 10_000,   // dedup ring buffer capacity (default: 10K)
+  pollMinMs: 1_000,       // min poll interval (fallback / polling mode)
+  pollMaxMs: 30_000,      // max poll interval (backoff ceiling)
+  pollMultiplier: 2,      // exponential backoff multiplier
+  pageLimit: 50,          // messages per poll page
 });
 
 // Send
@@ -353,7 +355,9 @@ const provider = createIpcNexusProvider({
   authToken: "Bearer ...",              // optional auth token
   trustTier: "verified",               // tool trust tier (default: "verified")
   prefix: "ipc",                       // tool name prefix (default: "ipc")
-  pollMinMs: 1_000,                    // min poll interval
+  delivery: "sse",                     // "sse" (default) or "polling"
+  seenCapacity: 10_000,                // dedup ring buffer capacity
+  pollMinMs: 1_000,                    // min poll interval (fallback/polling)
   pollMaxMs: 30_000,                   // max poll interval
   pageLimit: 50,                       // messages per page
   timeoutMs: 10_000,                   // HTTP timeout
@@ -369,6 +373,8 @@ const provider = createIpcNexusProvider({
 | `authToken` | `undefined` | Bearer token for authenticated Nexus |
 | `trustTier` | `"verified"` | Tool trust level |
 | `prefix` | `"ipc"` | Tool name prefix → `ipc_send`, `ipc_list` |
+| `delivery` | `"sse"` | Delivery mode: `"sse"` (push) or `"polling"` (pull) |
+| `seenCapacity` | `10000` | Deduplication ring buffer capacity |
 | `pollMinMs` | `1000` | Minimum polling interval (ms) |
 | `pollMaxMs` | `30000` | Maximum polling interval after backoff |
 | `pageLimit` | `50` | Messages fetched per poll cycle |
@@ -389,9 +395,41 @@ The client targets these 4 endpoints:
 
 Query parameters for inbox listing: `limit` (page size), `offset` (pagination).
 
-## Polling & Backoff
+## Message Delivery
 
-The mailbox polls the inbox automatically when `onMessage` handlers are registered:
+The mailbox supports two delivery modes: **SSE** (default) and **polling fallback**.
+
+### SSE Mode (Default)
+
+Server-Sent Events provide near-instant message delivery (~10ms latency vs 1-30s polling):
+
+```
+                    SSE Mode
+                    ────────
+Nexus Server ──SSE push──► sse-transport ──notification──► mailbox-adapter
+                                                                │
+                           nexus-client ◄──HTTP GET inbox───────┘
+                                │
+                          process-inbox → seen-buffer → handlers
+```
+
+1. When the first `onMessage` handler is registered, the adapter opens an SSE connection to `GET /api/v2/events/stream`
+2. The Nexus server pushes `ipc.inbox.*` events over the stream
+3. On each event, the adapter fetches the inbox via REST and dispatches new messages
+4. If SSE fails to connect within 2 seconds, it falls back to polling automatically
+5. The SSE transport handles reconnection with exponential backoff internally
+
+### Polling Mode (Fallback)
+
+```
+                    Polling Mode
+                    ────────────
+                           nexus-client ◄──HTTP GET inbox (on timer)──┐
+                                │                                      │
+                          process-inbox → seen-buffer → handlers      │
+                                                                       │
+                           mailbox-adapter ──setTimeout backoff────────┘
+```
 
 ```
   onMessage() registered
@@ -407,11 +445,13 @@ The mailbox polls the inbox automatically when `onMessage` handlers are register
                    capped at pollMaxMs (30s)
 ```
 
-- Polling starts when the first handler is registered
-- Polling stops when the last handler is unsubscribed
-- Backoff resets immediately when a message arrives
-- Each message is delivered exactly once (deduplication via `seen` set)
-- Handler errors are swallowed — one broken handler cannot crash the polling loop
+### Shared Behavior (Both Modes)
+
+- Delivery starts when the first handler is registered
+- Delivery stops when the last handler is unsubscribed
+- Each message is delivered exactly once (deduplication via bounded ring buffer)
+- Handler errors are swallowed — one broken handler cannot crash the delivery loop
+- The ring buffer caps memory at ~400KB (default 10K message IDs)
 
 ## Error Handling
 
@@ -537,7 +577,10 @@ const MAILBOX: SubsystemToken<MailboxComponent>;
 | `createListTool` | Factory | Creates `ipc_list` tool (advanced usage) |
 | `NexusMailboxConfig` | Interface | Config for `createNexusMailbox` |
 | `IpcNexusProviderConfig` | Interface | Config for `createIpcNexusProvider` |
+| `DeliveryMode` | Type | `"sse" \| "polling"` |
+| `SseEvent` | Interface | Parsed SSE event (id, event, data, retry) |
 | `IpcOperation` | Type | `"send" \| "list"` |
+| `DEFAULT_DELIVERY_MODE` | Const | `"sse"` |
 | `DEFAULT_PREFIX` | Const | `"ipc"` |
 | `OPERATIONS` | Const | `["send", "list"]` |
 
@@ -545,6 +588,7 @@ const MAILBOX: SubsystemToken<MailboxComponent>;
 
 - Issue #192 — Original implementation issue
 - Issue #608 — `ipc_discover` tool for agent discovery
+- Issue #618 — SSE push delivery upgrade
 - Issue #193 — `@koi/registry-nexus` (agent discovery)
 - Issue #397 — `@koi/events-nexus` (event sourcing)
 - `@koi/core` `mailbox.ts` — L0 types

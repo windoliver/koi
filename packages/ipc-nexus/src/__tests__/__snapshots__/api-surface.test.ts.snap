@@ -4,6 +4,10 @@ exports[`@koi/ipc-nexus API surface . has stable type surface 1`] = `
 "import { AgentId, MailboxComponent, TrustTier, AgentRegistry, ComponentProvider, Tool } from '@koi/core';
 export { AgentMessage, AgentMessageInput, MailboxComponent, MessageFilter, MessageId, MessageKind } from '@koi/core';
 
+/** Message delivery transport mode. */
+type DeliveryMode = "sse" | "polling";
+/** Default delivery mode — SSE with polling fallback. */
+declare const DEFAULT_DELIVERY_MODE: DeliveryMode;
 /** Default tool name prefix. */
 declare const DEFAULT_PREFIX: "ipc";
 /** All IPC operation names. */
@@ -14,21 +18,27 @@ type IpcOperation = (typeof OPERATIONS)[number];
  * MailboxComponent implementation backed by Nexus IPC REST API.
  *
  * - send: maps to Nexus, returns Result<AgentMessage, KoiError>
- * - onMessage: registers handler, starts/stops polling automatically
+ * - onMessage: registers handler, starts delivery automatically
  * - list: fetches inbox with optional filter
  *
- * Polling uses exponential backoff (1s→30s), resets on message received.
+ * Supports two delivery modes:
+ * - "sse" (default): SSE push notifications trigger inbox fetch. Falls back to polling on failure.
+ * - "polling": exponential backoff (1s→30s), resets on message received.
  */
 
 interface NexusMailboxConfig {
     readonly agentId: AgentId;
     readonly baseUrl?: string | undefined;
     readonly authToken?: string | undefined;
+    readonly delivery?: DeliveryMode | undefined;
+    readonly seenCapacity?: number | undefined;
     readonly pollMinMs?: number | undefined;
     readonly pollMaxMs?: number | undefined;
     readonly pollMultiplier?: number | undefined;
     readonly pageLimit?: number | undefined;
     readonly timeoutMs?: number | undefined;
+    /** Called when SSE delivery falls back to polling. */
+    readonly onDeliveryFallback?: ((from: DeliveryMode, to: DeliveryMode) => void) | undefined;
 }
 /** Create a MailboxComponent backed by Nexus IPC. Implements Disposable for cleanup. */
 declare function createNexusMailbox(config: NexusMailboxConfig): MailboxComponent & Disposable;
@@ -46,6 +56,8 @@ interface IpcNexusProviderConfig {
     readonly authToken?: string | undefined;
     readonly trustTier?: TrustTier | undefined;
     readonly prefix?: string | undefined;
+    readonly delivery?: DeliveryMode | undefined;
+    readonly seenCapacity?: number | undefined;
     readonly pollMinMs?: number | undefined;
     readonly pollMaxMs?: number | undefined;
     readonly pageLimit?: number | undefined;
@@ -55,6 +67,27 @@ interface IpcNexusProviderConfig {
 }
 /** Create a ComponentProvider that attaches a MailboxComponent + IPC tools. */
 declare function createIpcNexusProvider(config: IpcNexusProviderConfig): ComponentProvider;
+
+/**
+ * Pure SSE parser — async generator that yields parsed events
+ * from a ReadableStream<Uint8Array>.
+ *
+ * Handles:
+ * - Chunk boundaries (SSE fields split across chunks)
+ * - Comment lines (\`:keepalive\`, etc.) — ignored
+ * - Multi-line \`data:\` concatenation per SSE spec
+ * - \`retry:\` field parsing
+ * - Event boundary on double-newline
+ *
+ * Zero dependencies — operates on Web Streams API.
+ */
+/** A parsed SSE event. */
+interface SseEvent {
+    readonly id?: string | undefined;
+    readonly event?: string | undefined;
+    readonly data: string;
+    readonly retry?: number | undefined;
+}
 
 /**
  * Tool factory for ipc_discover — list live agents available for messaging.
@@ -74,6 +107,6 @@ declare function createListTool(component: MailboxComponent, prefix: string, tru
 
 declare function createSendTool(component: MailboxComponent, prefix: string, trustTier: TrustTier): Tool;
 
-export { DEFAULT_PREFIX, type IpcNexusProviderConfig, type IpcOperation, type NexusMailboxConfig, OPERATIONS, createDiscoverTool, createIpcNexusProvider, createListTool, createNexusMailbox, createSendTool };
+export { DEFAULT_DELIVERY_MODE, DEFAULT_PREFIX, type DeliveryMode, type IpcNexusProviderConfig, type IpcOperation, type NexusMailboxConfig, OPERATIONS, type SseEvent, createDiscoverTool, createIpcNexusProvider, createListTool, createNexusMailbox, createSendTool };
 "
 `;
