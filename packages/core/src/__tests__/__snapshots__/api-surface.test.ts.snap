@@ -1,16 +1,17 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/core API surface . has stable type surface 1`] = `
-"import { A as AgentId, E as EngineState, P as ProcessState, B as BrickRef, a as AgentGroupId, T as TransitionReason, b as AgentCondition, c as AgentStatus, R as RegistryEntry, d as Tool, S as SkillComponent, e as AgentDescriptor, I as ImplementationArtifact, f as BrickArtifact, D as DelegationDenyReason, g as PermissionConfig, h as SessionId, C as CapabilityProof, i as BrickKind, j as SubsystemToken, k as TrustTier, l as Agent, m as ComponentProvider, n as AgentManifest, K as KoiMiddleware, o as AgentRegistry, p as ToolCallId } from './assembly-HASH.js';
-export { q as AGENT_SIGNALS, r as ALL_BRICK_KINDS, s as ANS_SCOPE_PRIORITY, t as AbortReason, u as AdvisoryLock, v as AgentArtifact, w as AgentMessage, x as AgentMessageInput, y as AgentSignal, z as AnsConfig, F as ApprovalDecision, G as ApprovalHandler, H as ApprovalRequest, J as ArtifactRef, L as AttachResult, M as BROWSER, N as BrickArtifactBase, O as BrickFitnessMetrics, Q as BrickId, U as BrickLifecycle, V as BrickPage, W as BrickRegistryBackend, X as BrickRegistryChangeEvent, Y as BrickRegistryChangeKind, Z as BrickRegistryReader, _ as BrickRegistryWriter, $ as BrickRequires, a0 as BrickSearchQuery, a1 as BrickSnapshot, a2 as BrickSource, a3 as BrickUpdate, a4 as BrowserActionOptions, a5 as BrowserConsoleEntry, a6 as BrowserConsoleLevel, a7 as BrowserConsoleOptions, a8 as BrowserConsoleResult, a9 as BrowserDriver, aa as BrowserEvaluateOptions, ab as BrowserEvaluateResult, ac as BrowserFormField, ad as BrowserNavigateOptions, ae as BrowserNavigateResult, af as BrowserRefInfo, ag as BrowserScreenshotOptions, ah as BrowserScreenshotResult, ai as BrowserScrollOptions, aj as BrowserSnapshotOptions, ak as BrowserSnapshotResult, al as BrowserTabCloseOptions, am as BrowserTabFocusOptions, an as BrowserTabInfo, ao as BrowserTabNewOptions, ap as BrowserTraceOptions, aq as BrowserTraceResult, ar as BrowserTypeOptions, as as BrowserUploadFile, at as BrowserUploadOptions, au as BrowserWaitOptions, av as BrowserWaitUntil, aw as COMPONENT_PRIORITY, ax as CREDENTIALS, ay as CapabilityConfig, az as CapabilityFragment, aA as ChannelConfig, aB as ChannelIdentity, aC as ChildCompletionResult, aD as ChildHandle, aE as ChildLifecycleEvent, aF as ChildSpec, aG as CircuitBreakerConfig, aH as CompanionSkillDefinition, aI as ComplianceRecord, aJ as ComplianceRecorder, aK as ComponentEvent, aL as ComponentEventKind, aM as ComposedCallHandlers, aN as ConstraintChecker, aO as ConstraintQuery, aP as ContentMarker, aQ as ContextPressureTrend, aR as CorrelationIds, aS as CredentialComponent, aT as CronSchedule, aU as DEFAULT_ANS_CONFIG, aV as DEFAULT_BRICK_FITNESS, aW as DEFAULT_BRICK_SEARCH_LIMIT, aX as DEFAULT_CIRCUIT_BREAKER_CONFIG, aY as DEFAULT_DEMOTION_CRITERIA, aZ as DEFAULT_MUTATION_PRESSURE_POLICY, a_ as DEFAULT_REPUTATION_QUERY_LIMIT, a$ as DEFAULT_SCHEDULER_CONFIG, b0 as DEFAULT_SKILL_SEARCH_LIMIT, b1 as DEFAULT_SUPERVISION_CONFIG, b2 as DEFAULT_VIOLATION_QUERY_LIMIT, b3 as DELEGATION, b4 as DataClassification, b5 as DecisionRecord, b6 as DelegationComponent, b7 as DelegationConfig, b8 as DelegationEvent, b9 as DelegationGrant, ba as DelegationId, bb as DelegationManagerConfig, bc as DelegationScope, bd as DelegationVerifyResult, be as DemotionCriteria, bf as EVENTS, bg as EXTERNAL_AGENTS, bh as EngineAdapter, bi as EngineEvent, bj as EngineInput, bk as EngineInputBase, bl as EngineMetrics, bm as EngineOutput, bn as EngineStopReason, bo as EventComponent, bp as ExternalAgentDescriptor, bq as ExternalAgentSource, br as ExternalAgentTransport, bs as FILESYSTEM, bt as FeedbackKind, bu as ForgeAttestationSignature, bv as ForgeBuildDefinition, bw as ForgeBuilder, bx as ForgeProvenance, by as ForgeQuery, bz as ForgeResourceRef, bA as ForgeRunMetadata, bB as ForgeScope, bC as ForgeStageDigest, bD as ForgeStore, bE as ForgeVerificationSummary, bF as GOVERNANCE, bG as GOVERNANCE_ALLOW, bH as GOVERNANCE_BACKEND, bI as GOVERNANCE_VARIABLES, bJ as GovernanceBackend, bK as GovernanceCheck, bL as GovernanceController, bM as GovernanceEvent, bN as GovernanceSnapshot, bO as GovernanceVariable, bP as GovernanceVariableContributor, bQ as GovernanceVerdict, bR as HANDOFF, bS as HandoffAcceptError, bT as HandoffAcceptResult, bU as HandoffComponent, bV as HandoffEnvelope, bW as HandoffEvent, bX as HandoffId, bY as HandoffStatus, bZ as InTotoStatementV1, b_ as InTotoSubject, b$ as LatencySampler, c0 as LockHandle, c1 as LockMode, c2 as LockRequest, c3 as MAILBOX, c4 as MEMORY, c5 as MIN_TRUST_BY_KIND, c6 as MailboxComponent, c7 as MemoryComponent, c8 as MemoryRecallOptions, c9 as MemoryResult, ca as MemoryStoreOptions, cb as MemoryTier, cc as MessageFilter, cd as MessageId, ce as MessageKind, cf as MiddlewareBundle, cg as MiddlewareConfig, ch as ModelChunk, ci as ModelConfig, cj as ModelHandler, ck as ModelRequest, cl as ModelResponse, cm as ModelStreamHandler, cn as MutationPressure, co as MutationPressurePolicy, cp as NAME_SERVICE, cq as NameBinding, cr as NameChangeEvent, cs as NameChangeKind, ct as NameQuery, cu as NameRecord, cv as NameRegistration, cw as NameResolution, cx as NameServiceBackend, cy as NameServiceReader, cz as NameServiceWriter, cA as NameSuggestion, cB as PolicyEvaluator, cC as PolicyRequest, cD as PolicyRequestKind, cE as ProcessAccounter, cF as ProcessId, cG as PublisherId, cH as REGISTRY, cI as REPUTATION, cJ as REPUTATION_LEVEL_ORDER, cK as RegistryComponent, cL as RegistryEvent, cM as RegistryFilter, cN as ReputationBackend, cO as ReputationFeedback, cP as ReputationLevel, cQ as ReputationQuery, cR as ReputationQueryResult, cS as ReputationScore, cT as RestartType, cU as RevocationRegistry, cV as RunId, cW as SCHEDULER, cX as SCRATCHPAD, cY as SCRATCHPAD_DEFAULTS, cZ as ScheduleId, c_ as ScheduleStore, c$ as ScheduledTask, d0 as SchedulerComponent, d1 as SchedulerConfig, d2 as SchedulerEvent, d3 as SchedulerStats, d4 as ScopeChecker, d5 as ScratchpadChangeEvent, d6 as ScratchpadComponent, d7 as ScratchpadEntry, d8 as ScratchpadEntrySummary, d9 as ScratchpadFilter, da as ScratchpadGeneration, db as ScratchpadPath, dc as ScratchpadWriteInput, dd as ScratchpadWriteResult, de as SearchConfig, df as SensorReading, dg as SessionContext, dh as ShadowWarning, di as SigningBackend, dj as SkillArtifact, dk as SkillConfig, dl as SkillId, dm as SkillMetadata, dn as SkillPage, dp as SkillPublishRequest, dq as SkillRegistryBackend, dr as SkillRegistryChangeEvent, ds as SkillRegistryChangeKind, dt as SkillRegistryEntry, du as SkillRegistryReader, dv as SkillRegistryWriter, dw as SkillSearchQuery, dx as SkillVersion, dy as SkippedComponent, dz as SnapshotEvent, dA as SnapshotId, dB as SnapshotQuery, dC as SnapshotStore, dD as SpawnLedger, dE as StoreChangeEvent, dF as StoreChangeKind, dG as StoreChangeNotifier, dH as SupervisionConfig, dI as SupervisionStrategy, dJ as TaskFilter, dK as TaskHistoryFilter, dL as TaskId, dM as TaskOptions, dN as TaskRunRecord, dO as TaskScheduler, dP as TaskStatus, dQ as TaskStore, dR as TerminationOutcome, dS as TestCase, dT as ToolArtifact, dU as ToolConfig, dV as ToolDescriptor, dW as ToolExecuteOptions, dX as ToolHandler, dY as ToolRequest, dZ as ToolResponse, d_ as TrustTransitionCaller, d$ as TurnContext, e0 as TurnId, e1 as VALID_LIFECYCLE_TRANSITIONS, e2 as VALID_TRANSITIONS, e3 as VIOLATION_SEVERITY_ORDER, e4 as VersionChangeEvent, e5 as VersionChangeKind, e6 as VersionEntry, e7 as VersionIndexBackend, e8 as VersionIndexReader, e9 as VersionIndexWriter, ea as VersionedBrickRef, eb as Violation, ec as ViolationFilter, ed as ViolationPage, ee as ViolationSeverity, ef as ViolationStore, eg as WEBHOOK, eh as WORKSPACE, ei as WorkspaceComponent, ej as ZONE_REGISTRY, ek as agentGroupId, el as agentId, em as agentToken, en as brickId, eo as channelToken, ep as delegationId, eq as exitCodeForTransitionReason, er as governanceContributorToken, es as handoffId, et as isAttachResult, eu as mapStopReasonToOutcome, ev as matchesFilter, ew as messageId, ex as middlewareToken, ey as publisherId, ez as runId, eA as scheduleId, eB as scratchpadPath, eC as sessionId, eD as skillId, eE as skillToken, eF as snapshotId, eG as taskId, eH as token, eI as toolCallId, eJ as toolToken, eK as turnId } from './assembly-HASH.js';
+"import { A as AgentId, E as EngineState, P as ProcessState, B as BrickRef, T as Tool, S as SkillComponent, a as AgentDescriptor, I as ImplementationArtifact, b as BrickArtifact, D as DelegationDenyReason, c as PermissionConfig, d as SessionId, C as CapabilityProof, e as BrickKind, f as SubsystemToken, g as TrustTier, h as Agent, i as ComponentProvider, j as AgentManifest, K as KoiMiddleware, k as ToolCallId } from './assembly-HASH.js';
+export { l as ALL_BRICK_KINDS, m as ANS_SCOPE_PRIORITY, n as AbortReason, o as AdvisoryLock, p as AgentArtifact, q as AgentMessage, r as AgentMessageInput, s as AnsConfig, t as ApprovalDecision, u as ApprovalHandler, v as ApprovalRequest, w as ArtifactRef, x as AttachResult, y as BROWSER, z as BrickArtifactBase, F as BrickFitnessMetrics, G as BrickId, H as BrickLifecycle, J as BrickPage, L as BrickRegistryBackend, M as BrickRegistryChangeEvent, N as BrickRegistryChangeKind, O as BrickRegistryReader, Q as BrickRegistryWriter, R as BrickRequires, U as BrickSearchQuery, V as BrickSnapshot, W as BrickSource, X as BrickUpdate, Y as BrowserActionOptions, Z as BrowserConsoleEntry, _ as BrowserConsoleLevel, $ as BrowserConsoleOptions, a0 as BrowserConsoleResult, a1 as BrowserDriver, a2 as BrowserEvaluateOptions, a3 as BrowserEvaluateResult, a4 as BrowserFormField, a5 as BrowserNavigateOptions, a6 as BrowserNavigateResult, a7 as BrowserRefInfo, a8 as BrowserScreenshotOptions, a9 as BrowserScreenshotResult, aa as BrowserScrollOptions, ab as BrowserSnapshotOptions, ac as BrowserSnapshotResult, ad as BrowserTabCloseOptions, ae as BrowserTabFocusOptions, af as BrowserTabInfo, ag as BrowserTabNewOptions, ah as BrowserTraceOptions, ai as BrowserTraceResult, aj as BrowserTypeOptions, ak as BrowserUploadFile, al as BrowserUploadOptions, am as BrowserWaitOptions, an as BrowserWaitUntil, ao as COMPONENT_PRIORITY, ap as CREDENTIALS, aq as CapabilityConfig, ar as CapabilityFragment, as as ChannelConfig, at as ChannelIdentity, au as ChildHandle, av as ChildLifecycleEvent, aw as ChildSpec, ax as CircuitBreakerConfig, ay as CompanionSkillDefinition, az as ComplianceRecord, aA as ComplianceRecorder, aB as ComponentEvent, aC as ComponentEventKind, aD as ComposedCallHandlers, aE as ConstraintChecker, aF as ConstraintQuery, aG as ContentMarker, aH as ContextPressureTrend, aI as CorrelationIds, aJ as CredentialComponent, aK as CronSchedule, aL as DEFAULT_ANS_CONFIG, aM as DEFAULT_BRICK_FITNESS, aN as DEFAULT_BRICK_SEARCH_LIMIT, aO as DEFAULT_CIRCUIT_BREAKER_CONFIG, aP as DEFAULT_DEMOTION_CRITERIA, aQ as DEFAULT_REPUTATION_QUERY_LIMIT, aR as DEFAULT_SCHEDULER_CONFIG, aS as DEFAULT_SKILL_SEARCH_LIMIT, aT as DEFAULT_SUPERVISION_CONFIG, aU as DEFAULT_TRAIL_CONFIG, aV as DEFAULT_TRAIL_STRENGTH, aW as DEFAULT_VIOLATION_QUERY_LIMIT, aX as DELEGATION, aY as DataClassification, aZ as DecisionRecord, a_ as DelegationComponent, a$ as DelegationConfig, b0 as DelegationEvent, b1 as DelegationGrant, b2 as DelegationId, b3 as DelegationManagerConfig, b4 as DelegationScope, b5 as DelegationVerifyResult, b6 as DemotionCriteria, b7 as EVENTS, b8 as EXTERNAL_AGENTS, b9 as EngineAdapter, ba as EngineEvent, bb as EngineInput, bc as EngineInputBase, bd as EngineMetrics, be as EngineOutput, bf as EngineStopReason, bg as EventComponent, bh as ExternalAgentDescriptor, bi as ExternalAgentSource, bj as ExternalAgentTransport, bk as FILESYSTEM, bl as FeedbackKind, bm as ForgeAttestationSignature, bn as ForgeBuildDefinition, bo as ForgeBuilder, bp as ForgeProvenance, bq as ForgeQuery, br as ForgeResourceRef, bs as ForgeRunMetadata, bt as ForgeScope, bu as ForgeStageDigest, bv as ForgeStore, bw as ForgeVerificationSummary, bx as GOVERNANCE, by as GOVERNANCE_ALLOW, bz as GOVERNANCE_BACKEND, bA as GOVERNANCE_VARIABLES, bB as GovernanceBackend, bC as GovernanceCheck, bD as GovernanceController, bE as GovernanceEvent, bF as GovernanceSnapshot, bG as GovernanceVariable, bH as GovernanceVariableContributor, bI as GovernanceVerdict, bJ as HANDOFF, bK as HandoffAcceptError, bL as HandoffAcceptResult, bM as HandoffComponent, bN as HandoffEnvelope, bO as HandoffEvent, bP as HandoffId, bQ as HandoffStatus, bR as InTotoStatementV1, bS as InTotoSubject, bT as LatencySampler, bU as LockHandle, bV as LockMode, bW as LockRequest, bX as MAILBOX, bY as MEMORY, bZ as MIN_TRUST_BY_KIND, b_ as MailboxComponent, b$ as MemoryComponent, c0 as MemoryRecallOptions, c1 as MemoryResult, c2 as MemoryStoreOptions, c3 as MemoryTier, c4 as MessageFilter, c5 as MessageId, c6 as MessageKind, c7 as MiddlewareBundle, c8 as MiddlewareConfig, c9 as ModelChunk, ca as ModelConfig, cb as ModelHandler, cc as ModelRequest, cd as ModelResponse, ce as ModelStreamHandler, cf as NAME_SERVICE, cg as NameBinding, ch as NameChangeEvent, ci as NameChangeKind, cj as NameQuery, ck as NameRecord, cl as NameRegistration, cm as NameResolution, cn as NameServiceBackend, co as NameServiceReader, cp as NameServiceWriter, cq as NameSuggestion, cr as PolicyEvaluator, cs as PolicyRequest, ct as PolicyRequestKind, cu as ProcessAccounter, cv as ProcessId, cw as PublisherId, cx as REGISTRY, cy as REPUTATION, cz as REPUTATION_LEVEL_ORDER, cA as RegistryComponent, cB as ReputationBackend, cC as ReputationFeedback, cD as ReputationLevel, cE as ReputationQuery, cF as ReputationQueryResult, cG as ReputationScore, cH as RestartType, cI as RevocationRegistry, cJ as RunId, cK as SCHEDULER, cL as ScheduleId, cM as ScheduleStore, cN as ScheduledTask, cO as SchedulerComponent, cP as SchedulerConfig, cQ as SchedulerEvent, cR as SchedulerStats, cS as ScopeChecker, cT as SearchConfig, cU as SensorReading, cV as SessionContext, cW as ShadowWarning, cX as SigningBackend, cY as SkillArtifact, cZ as SkillConfig, c_ as SkillId, c$ as SkillMetadata, d0 as SkillPage, d1 as SkillPublishRequest, d2 as SkillRegistryBackend, d3 as SkillRegistryChangeEvent, d4 as SkillRegistryChangeKind, d5 as SkillRegistryEntry, d6 as SkillRegistryReader, d7 as SkillRegistryWriter, d8 as SkillSearchQuery, d9 as SkillVersion, da as SkippedComponent, db as SnapshotEvent, dc as SnapshotId, dd as SnapshotQuery, de as SnapshotStore, df as SpawnLedger, dg as StoreChangeEvent, dh as StoreChangeKind, di as StoreChangeNotifier, dj as SupervisionConfig, dk as SupervisionStrategy, dl as TaskFilter, dm as TaskHistoryFilter, dn as TaskId, dp as TaskOptions, dq as TaskRunRecord, dr as TaskScheduler, ds as TaskStatus, dt as TaskStore, du as TerminationOutcome, dv as TestCase, dw as ToolArtifact, dx as ToolConfig, dy as ToolDescriptor, dz as ToolExecuteOptions, dA as ToolHandler, dB as ToolRequest, dC as ToolResponse, dD as TrailConfig, dE as TrustTransitionCaller, dF as TurnContext, dG as TurnId, dH as VALID_LIFECYCLE_TRANSITIONS, dI as VIOLATION_SEVERITY_ORDER, dJ as VersionChangeEvent, dK as VersionChangeKind, dL as VersionEntry, dM as VersionIndexBackend, dN as VersionIndexReader, dO as VersionIndexWriter, dP as VersionedBrickRef, dQ as Violation, dR as ViolationFilter, dS as ViolationPage, dT as ViolationSeverity, dU as ViolationStore, dV as WEBHOOK, dW as WORKSPACE, dX as WorkspaceComponent, dY as ZONE_REGISTRY, dZ as agentId, d_ as agentToken, d$ as brickId, e0 as channelToken, e1 as delegationId, e2 as governanceContributorToken, e3 as handoffId, e4 as isAttachResult, e5 as mapStopReasonToOutcome, e6 as messageId, e7 as middlewareToken, e8 as publisherId, e9 as runId, ea as scheduleId, eb as sessionId, ec as skillId, ed as skillToken, ee as snapshotId, ef as taskId, eg as token, eh as toolCallId, ei as toolToken, ej as turnId } from './assembly-HASH.js';
 import { Result, KoiError } from './errors.js';
 export { BackendErrorMapper, KoiErrorCode, RETRYABLE_DEFAULTS } from './errors.js';
+import { TransitionReason, AgentCondition, AgentStatus, RegistryEntry, AgentRegistry } from './lifecycle.js';
+export { RegistryEvent, RegistryFilter, VALID_TRANSITIONS, matchesFilter } from './lifecycle.js';
 import { JsonObject } from './common.js';
 export { ChannelAdapter, ChannelCapabilities, ChannelStatus, ChannelStatusKind, MessageHandler } from './channel.js';
 export { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, FeatureFlags, ForgeConfigSection, KoiConfig, LimitsConfig, LogLevel, LoopDetectionConfigSection, ModelRouterConfigSection, ModelTargetConfigEntry, SpawnConfig, TelemetryConfig } from './config.js';
 export { CompactionResult, ContextCompactor, TokenEstimator } from './context.js';
 export { BudgetTracker, CostBreakdown, CostCalculator, CostEntry, ModelCostBreakdown, ToolCostBreakdown, UsageInfo } from './cost-HASH.js';
-export { Breakpoint, BreakpointId, BreakpointOptions, BreakpointPredicate, ComponentMetadata, ComponentSnapshot, DEFAULT_DEBUG_BUFFER_SIZE, DEFAULT_INSPECT_LIMIT, DebugEvent, DebugObserver, DebugSession, DebugSessionId, DebugSnapshot, DebugState, InspectComponentOptions, StepOptions, breakpointId, debugSessionId } from './debug.js';
 export { ElicitationOption, ElicitationQuestion, ElicitationResult } from './elicitation.js';
 export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, EventEnvelope, EventInput, ReadOptions, ReadResult, SubscribeOptions, SubscriptionHandle } from './event-HASH.js';
 export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
@@ -198,8 +199,6 @@ interface AgentRegisteredEvent {
     readonly parentId?: AgentId | undefined;
     /** Immutable provenance — the agent that spawned this one. */
     readonly spawner?: AgentId | undefined;
-    /** Process group this agent belongs to. */
-    readonly groupId?: AgentGroupId | undefined;
     readonly metadata: Readonly<Record<string, unknown>>;
     readonly registeredAt: number;
 }
@@ -1672,7 +1671,7 @@ declare function isProcessState(value: string): value is ProcessState;
  */
 declare function validateNonEmpty(value: string, name: string): Result<void, KoiError>;
 
-export { ALL_CATALOG_SOURCES, ALL_CHANGE_TARGETS, type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentGroupId, AgentId, AgentManifest, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickKind, BrickRef, type BundleId, type CapabilityDenyReason, type CapabilityId, CapabilityProof, type CapabilityRegistry, type CapabilityScope, type CapabilityToken, type CapabilityVerifier, type CapabilityVerifyResult, type CapacityReport, type CatalogEntry, type CatalogPage, type CatalogQuery, type CatalogReader, type CatalogSource, type CatalogSourceError, type ChainCompactor, type ChainId, type ChangeKind, type ChangeTarget, type CompensatingOp, ComponentProvider, type ContextSummary, DEFAULT_CATALOG_SEARCH_LIMIT, DEFAULT_FORGE_BUDGET, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_TASK_BOARD_CONFIG, DelegationDenyReason, type DiagnosticItem, type DiagnosticProvider, type DiagnosticRange, type DiagnosticSeverity, EXTENSION_PRIORITY, EngineState, type EventCursor, type FileOpKind, type FileOpRecord, type ForgeBudget, type ForgeDemandSignal, type ForgeTrigger, type ForkRef, type GateRequirement, type GuardContext, type HarnessId, type HarnessMetrics, type HarnessPhase, type HarnessSnapshot, type HarnessSnapshotStore, type HarnessStatus, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, type KeyArtifact, KoiError, KoiMiddleware, type NodeCapability, type NodeId, PROPOSAL_GATE_REQUIREMENTS, type PendingFrame, PermissionConfig, ProcessState, type Proposal, type ProposalEvent, type ProposalGate, type ProposalId, type ProposalInput, type ProposalResult, type ProposalStatus, type ProposalUnsubscribe, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, Result, type ReviewDecision, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type ServiceProviderConfig, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SingleToolProviderConfig, SkillComponent, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, SubsystemToken, type TaskBoard, type TaskBoardConfig, type TaskBoardEvent, type TaskBoardSnapshot, type TaskItem, type TaskItemId, type TaskItemInput, type TaskItemPatch, type TaskItemStatus, type TaskResult, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolFailureRecord, type ToolHealthMetrics, type ToolHealthSnapshot, type ToolHealthState, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TransitionContext, TransitionReason, TrustTier, type TurnTrace, type ValidationDiagnostic, type ValidationResult, type VerifierCache, type VerifyContext, bundleId, capabilityId, chainId, conflict, createServiceProvider, createSingleToolProvider, evolveRegistryEntry, external, harnessId, internal, isAgentStateEvent, isCapabilityToken, isProcessState, isToolCallPayload, nodeId, notFound, permission, proposalId, rateLimit, staleRef, taskItemId, timeout, validateNonEmpty, validation };
+export { ALL_CATALOG_SOURCES, ALL_CHANGE_TARGETS, type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentId, AgentManifest, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickKind, BrickRef, type BundleId, type CapabilityDenyReason, type CapabilityId, CapabilityProof, type CapabilityRegistry, type CapabilityScope, type CapabilityToken, type CapabilityVerifier, type CapabilityVerifyResult, type CapacityReport, type CatalogEntry, type CatalogPage, type CatalogQuery, type CatalogReader, type CatalogSource, type CatalogSourceError, type ChainCompactor, type ChainId, type ChangeKind, type ChangeTarget, type CompensatingOp, ComponentProvider, type ContextSummary, DEFAULT_CATALOG_SEARCH_LIMIT, DEFAULT_FORGE_BUDGET, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_TASK_BOARD_CONFIG, DelegationDenyReason, type DiagnosticItem, type DiagnosticProvider, type DiagnosticRange, type DiagnosticSeverity, EXTENSION_PRIORITY, EngineState, type EventCursor, type FileOpKind, type FileOpRecord, type ForgeBudget, type ForgeDemandSignal, type ForgeTrigger, type ForkRef, type GateRequirement, type GuardContext, type HarnessId, type HarnessMetrics, type HarnessPhase, type HarnessSnapshot, type HarnessSnapshotStore, type HarnessStatus, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, type KeyArtifact, KoiError, KoiMiddleware, type NodeCapability, type NodeId, PROPOSAL_GATE_REQUIREMENTS, type PendingFrame, PermissionConfig, ProcessState, type Proposal, type ProposalEvent, type ProposalGate, type ProposalId, type ProposalInput, type ProposalResult, type ProposalStatus, type ProposalUnsubscribe, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, Result, type ReviewDecision, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type ServiceProviderConfig, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SingleToolProviderConfig, SkillComponent, type SkippedRecoveryEntry, type SnapshotChainStore, type SnapshotNode, SubsystemToken, type TaskBoard, type TaskBoardConfig, type TaskBoardEvent, type TaskBoardSnapshot, type TaskItem, type TaskItemId, type TaskItemInput, type TaskItemPatch, type TaskItemStatus, type TaskResult, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolFailureRecord, type ToolHealthMetrics, type ToolHealthSnapshot, type ToolHealthState, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TransitionContext, TransitionReason, TrustTier, type TurnTrace, type ValidationDiagnostic, type ValidationResult, type VerifierCache, type VerifyContext, bundleId, capabilityId, chainId, conflict, createServiceProvider, createSingleToolProvider, evolveRegistryEntry, external, harnessId, internal, isAgentStateEvent, isCapabilityToken, isProcessState, isToolCallPayload, nodeId, notFound, permission, proposalId, rateLimit, staleRef, taskItemId, timeout, validateNonEmpty, validation };
 "
 `;
 
@@ -1770,13 +1769,13 @@ export type { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, Feat
 
 exports[`@koi/core API surface ./assembly has stable type surface 1`] = `
 "import './common.js';
-export { n as AgentManifest, ay as CapabilityConfig, aA as ChannelConfig, aB as ChannelIdentity, cg as MiddlewareConfig, ci as ModelConfig, g as PermissionConfig, de as SearchConfig, dk as SkillConfig, dU as ToolConfig } from './assembly-HASH.js';
+export { j as AgentManifest, aq as CapabilityConfig, as as ChannelConfig, at as ChannelIdentity, c8 as MiddlewareConfig, ca as ModelConfig, c as PermissionConfig, cT as SearchConfig, cZ as SkillConfig, dx as ToolConfig } from './assembly-HASH.js';
 import './webhook.js';
 import './errors.js';
-import './zone.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+import './zone.js';
 "
 `;
 
@@ -1880,19 +1879,19 @@ export type { CompactionResult, ContextCompactor, TokenEstimator };
 `;
 
 exports[`@koi/core API surface ./delegation has stable type surface 1`] = `
-"export { C as CapabilityProof, aG as CircuitBreakerConfig, aX as DEFAULT_CIRCUIT_BREAKER_CONFIG, b6 as DelegationComponent, b7 as DelegationConfig, D as DelegationDenyReason, b8 as DelegationEvent, b9 as DelegationGrant, ba as DelegationId, bb as DelegationManagerConfig, bc as DelegationScope, bd as DelegationVerifyResult, cU as RevocationRegistry, d4 as ScopeChecker, ep as delegationId } from './assembly-HASH.js';
+"export { C as CapabilityProof, ax as CircuitBreakerConfig, aO as DEFAULT_CIRCUIT_BREAKER_CONFIG, a_ as DelegationComponent, a$ as DelegationConfig, D as DelegationDenyReason, b0 as DelegationEvent, b1 as DelegationGrant, b2 as DelegationId, b3 as DelegationManagerConfig, b4 as DelegationScope, b5 as DelegationVerifyResult, cI as RevocationRegistry, cS as ScopeChecker, e1 as delegationId } from './assembly-HASH.js';
 import './common.js';
 import './webhook.js';
 import './errors.js';
-import './zone.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+import './zone.js';
 "
 `;
 
 exports[`@koi/core API surface ./ecs has stable type surface 1`] = `
-"export { q as AGENT_SIGNALS, l as Agent, e as AgentDescriptor, a as AgentGroupId, A as AgentId, y as AgentSignal, L as AttachResult, M as BROWSER, aw as COMPONENT_PRIORITY, ax as CREDENTIALS, aD as ChildHandle, aE as ChildLifecycleEvent, aH as CompanionSkillDefinition, aK as ComponentEvent, aL as ComponentEventKind, m as ComponentProvider, aS as CredentialComponent, b3 as DELEGATION, bf as EVENTS, bg as EXTERNAL_AGENTS, bo as EventComponent, bs as FILESYSTEM, bF as GOVERNANCE, bH as GOVERNANCE_BACKEND, bR as HANDOFF, c3 as MAILBOX, c4 as MEMORY, c7 as MemoryComponent, c8 as MemoryRecallOptions, c9 as MemoryResult, ca as MemoryStoreOptions, cb as MemoryTier, cp as NAME_SERVICE, cE as ProcessAccounter, cF as ProcessId, P as ProcessState, cH as REGISTRY, cI as REPUTATION, cK as RegistryComponent, cV as RunId, cW as SCHEDULER, cX as SCRATCHPAD, h as SessionId, S as SkillComponent, dm as SkillMetadata, dy as SkippedComponent, dD as SpawnLedger, j as SubsystemToken, d as Tool, p as ToolCallId, dV as ToolDescriptor, dW as ToolExecuteOptions, k as TrustTier, e0 as TurnId, eg as WEBHOOK, eh as WORKSPACE, ei as WorkspaceComponent, ej as ZONE_REGISTRY, ek as agentGroupId, el as agentId, em as agentToken, eo as channelToken, et as isAttachResult, ex as middlewareToken, ez as runId, eC as sessionId, eE as skillToken, eH as token, eI as toolCallId, eJ as toolToken, eK as turnId } from './assembly-HASH.js';
+"export { h as Agent, a as AgentDescriptor, A as AgentId, x as AttachResult, y as BROWSER, ao as COMPONENT_PRIORITY, ap as CREDENTIALS, au as ChildHandle, av as ChildLifecycleEvent, ay as CompanionSkillDefinition, aB as ComponentEvent, aC as ComponentEventKind, i as ComponentProvider, aJ as CredentialComponent, aX as DELEGATION, b7 as EVENTS, b8 as EXTERNAL_AGENTS, bg as EventComponent, bk as FILESYSTEM, bx as GOVERNANCE, bz as GOVERNANCE_BACKEND, bJ as HANDOFF, bX as MAILBOX, bY as MEMORY, b$ as MemoryComponent, c0 as MemoryRecallOptions, c1 as MemoryResult, c2 as MemoryStoreOptions, c3 as MemoryTier, cf as NAME_SERVICE, cu as ProcessAccounter, cv as ProcessId, P as ProcessState, cx as REGISTRY, cy as REPUTATION, cA as RegistryComponent, cJ as RunId, cK as SCHEDULER, d as SessionId, S as SkillComponent, c$ as SkillMetadata, da as SkippedComponent, df as SpawnLedger, f as SubsystemToken, T as Tool, k as ToolCallId, dy as ToolDescriptor, dz as ToolExecuteOptions, g as TrustTier, dG as TurnId, dV as WEBHOOK, dW as WORKSPACE, dX as WorkspaceComponent, dY as ZONE_REGISTRY, dZ as agentId, d_ as agentToken, e0 as channelToken, e4 as isAttachResult, e7 as middlewareToken, e9 as runId, eb as sessionId, ed as skillToken, eg as token, eh as toolCallId, ei as toolToken, ej as turnId } from './assembly-HASH.js';
 import './channel.js';
 import './common.js';
 import './filesystem-HASH.js';
@@ -1905,25 +1904,25 @@ import './message.js';
 
 exports[`@koi/core API surface ./handoff has stable type surface 1`] = `
 "import './common.js';
-export { J as ArtifactRef, b5 as DecisionRecord, bS as HandoffAcceptError, bT as HandoffAcceptResult, bU as HandoffComponent, bV as HandoffEnvelope, bW as HandoffEvent, bX as HandoffId, bY as HandoffStatus, es as handoffId } from './assembly-HASH.js';
+export { w as ArtifactRef, aZ as DecisionRecord, bK as HandoffAcceptError, bL as HandoffAcceptResult, bM as HandoffComponent, bN as HandoffEnvelope, bO as HandoffEvent, bP as HandoffId, bQ as HandoffStatus, e3 as handoffId } from './assembly-HASH.js';
 import './webhook.js';
 import './errors.js';
-import './zone.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+import './zone.js';
 "
 `;
 
 exports[`@koi/core API surface ./engine has stable type surface 1`] = `
 "import './common.js';
-export { t as AbortReason, aM as ComposedCallHandlers, bh as EngineAdapter, bi as EngineEvent, bj as EngineInput, bk as EngineInputBase, bl as EngineMetrics, bm as EngineOutput, E as EngineState, bn as EngineStopReason, dR as TerminationOutcome, eu as mapStopReasonToOutcome } from './assembly-HASH.js';
+export { n as AbortReason, aD as ComposedCallHandlers, b9 as EngineAdapter, ba as EngineEvent, bb as EngineInput, bc as EngineInputBase, bd as EngineMetrics, be as EngineOutput, E as EngineState, bf as EngineStopReason, du as TerminationOutcome, e5 as mapStopReasonToOutcome } from './assembly-HASH.js';
 import './message.js';
 import './webhook.js';
 import './errors.js';
-import './zone.js';
 import './channel.js';
 import './filesystem-HASH.js';
+import './zone.js';
 "
 `;
 
@@ -2079,13 +2078,13 @@ export type { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfi
 
 exports[`@koi/core API surface ./governance-backend has stable type surface 1`] = `
 "import './common.js';
-export { aI as ComplianceRecord, aJ as ComplianceRecorder, aN as ConstraintChecker, aO as ConstraintQuery, b2 as DEFAULT_VIOLATION_QUERY_LIMIT, bG as GOVERNANCE_ALLOW, bJ as GovernanceBackend, bQ as GovernanceVerdict, cB as PolicyEvaluator, cC as PolicyRequest, cD as PolicyRequestKind, e3 as VIOLATION_SEVERITY_ORDER, eb as Violation, ec as ViolationFilter, ed as ViolationPage, ee as ViolationSeverity, ef as ViolationStore } from './assembly-HASH.js';
+export { az as ComplianceRecord, aA as ComplianceRecorder, aE as ConstraintChecker, aF as ConstraintQuery, aW as DEFAULT_VIOLATION_QUERY_LIMIT, by as GOVERNANCE_ALLOW, bB as GovernanceBackend, bI as GovernanceVerdict, cr as PolicyEvaluator, cs as PolicyRequest, ct as PolicyRequestKind, dI as VIOLATION_SEVERITY_ORDER, dQ as Violation, dR as ViolationFilter, dS as ViolationPage, dT as ViolationSeverity, dU as ViolationStore } from './assembly-HASH.js';
 import './webhook.js';
 import './errors.js';
-import './zone.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+import './zone.js';
 "
 `;
 
@@ -2162,14 +2161,14 @@ export { type BackendErrorMapper, type KoiError, type KoiErrorCode, RETRYABLE_DE
 `;
 
 exports[`@koi/core API surface ./intent-capsule has stable type surface 1`] = `
-"import { A as AgentId, h as SessionId } from './assembly-HASH.js';
+"import { A as AgentId, d as SessionId } from './assembly-HASH.js';
 import './common.js';
 import './webhook.js';
 import './errors.js';
-import './zone.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+import './zone.js';
 
 /**
  * Intent Capsule types — cryptographic mandate binding for ASI01 defense.
@@ -2334,12 +2333,12 @@ export type { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, Inb
 exports[`@koi/core API surface ./middleware has stable type surface 1`] = `
 "import './channel.js';
 import './common.js';
-export { F as ApprovalDecision, G as ApprovalHandler, H as ApprovalRequest, az as CapabilityFragment, K as KoiMiddleware, cf as MiddlewareBundle, ch as ModelChunk, cj as ModelHandler, ck as ModelRequest, cl as ModelResponse, cm as ModelStreamHandler, dg as SessionContext, dX as ToolHandler, dY as ToolRequest, dZ as ToolResponse, d$ as TurnContext } from './assembly-HASH.js';
+export { t as ApprovalDecision, u as ApprovalHandler, v as ApprovalRequest, ar as CapabilityFragment, K as KoiMiddleware, c7 as MiddlewareBundle, c9 as ModelChunk, cb as ModelHandler, cc as ModelRequest, cd as ModelResponse, ce as ModelStreamHandler, cV as SessionContext, dA as ToolHandler, dB as ToolRequest, dC as ToolResponse, dF as TurnContext } from './assembly-HASH.js';
 import './message.js';
 import './webhook.js';
 import './errors.js';
-import './zone.js';
 import './filesystem-HASH.js';
+import './zone.js';
 "
 `;
 
@@ -2348,10 +2347,10 @@ exports[`@koi/core API surface ./eviction has stable type surface 1`] = `
 import './common.js';
 import './webhook.js';
 import './errors.js';
-import './zone.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+import './zone.js';
 
 /**
  * Eviction policy contract — candidate selection for agent eviction.
@@ -2402,10 +2401,10 @@ exports[`@koi/core API surface ./health has stable type surface 1`] = `
 import './common.js';
 import './webhook.js';
 import './errors.js';
-import './zone.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+import './zone.js';
 
 /**
  * Health monitoring contract — heartbeat recording, staleness detection.
@@ -2470,14 +2469,177 @@ export { DEFAULT_HEALTH_MONITOR_CONFIG, type HealthMonitor, type HealthMonitorCo
 `;
 
 exports[`@koi/core API surface ./lifecycle has stable type surface 1`] = `
-"export { b as AgentCondition, o as AgentRegistry, c as AgentStatus, aC as ChildCompletionResult, R as RegistryEntry, cL as RegistryEvent, cM as RegistryFilter, T as TransitionReason, e2 as VALID_TRANSITIONS, eq as exitCodeForTransitionReason, ev as matchesFilter } from './assembly-HASH.js';
-import './errors.js';
-import './zone.js';
+"import { A as AgentId, P as ProcessState } from './assembly-HASH.js';
+import { Result, KoiError } from './errors.js';
+import { ZoneId } from './zone.js';
 import './common.js';
 import './webhook.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+
+/**
+ * Agent lifecycle contract — registration, state transitions, and monitoring.
+ *
+ * The 7th core contract alongside Middleware, Message, Channel, Resolver,
+ * Assembly, and Engine. Defines the pluggable AgentRegistry interface for
+ * agent lifecycle management.
+ *
+ * Exception: VALID_TRANSITIONS is a pure readonly data constant derived from
+ * L0 type definitions, codifying architecture-doc invariants with zero logic.
+ */
+
+/**
+ * Fine-grained conditions layered beneath ProcessState.
+ * Multiple conditions can be active simultaneously.
+ */
+type AgentCondition = "Initialized" | "Ready" | "Healthy" | "Draining";
+/**
+ * Discriminated union describing why a state transition occurred.
+ * Used for audit trails and debugging.
+ */
+type TransitionReason = {
+    readonly kind: "assembly_complete";
+} | {
+    readonly kind: "awaiting_response";
+} | {
+    readonly kind: "response_received";
+} | {
+    readonly kind: "hitl_pause";
+} | {
+    readonly kind: "budget_exceeded";
+} | {
+    readonly kind: "governance_block";
+} | {
+    readonly kind: "human_approval";
+} | {
+    readonly kind: "budget_replenished";
+} | {
+    readonly kind: "completed";
+} | {
+    readonly kind: "error";
+    readonly cause?: unknown;
+} | {
+    readonly kind: "iteration_limit";
+} | {
+    readonly kind: "timeout";
+} | {
+    readonly kind: "evicted";
+} | {
+    readonly kind: "stale";
+} | {
+    readonly kind: "restarted";
+    readonly attempt: number;
+    readonly strategy: string;
+} | {
+    readonly kind: "escalated";
+    readonly cause: string;
+};
+/**
+ * Allowed state transitions per Koi architecture doc.
+ * L1 engine runtime uses this to validate transitions.
+ * L2 packages can import this to check transitions without importing L1.
+ *
+ * Transitions:
+ *   created → running, terminated
+ *   running → waiting, suspended, terminated
+ *   waiting → running, suspended, terminated
+ *   suspended → running, terminated
+ *   terminated → (none)
+ */
+declare const VALID_TRANSITIONS: Readonly<Record<ProcessState, readonly ProcessState[]>>;
+/**
+ * Rich agent status combining phase, generation counter (CAS),
+ * sub-conditions, and transition metadata.
+ */
+interface AgentStatus {
+    readonly phase: ProcessState;
+    /** CAS generation counter. Increments on each state transition. */
+    readonly generation: number;
+    /** Active conditions — multiple can be true simultaneously. */
+    readonly conditions: readonly AgentCondition[];
+    /** Why the last transition occurred. */
+    readonly reason?: TransitionReason;
+    /** Unix timestamp ms of the last state transition. */
+    readonly lastTransitionAt: number;
+}
+/** A registered agent in the lifecycle registry. */
+interface RegistryEntry {
+    readonly agentId: AgentId;
+    readonly status: AgentStatus;
+    readonly agentType: "copilot" | "worker";
+    readonly metadata: Readonly<Record<string, unknown>>;
+    /** Unix timestamp ms when the agent was registered. */
+    readonly registeredAt: number;
+    /** Parent agent ID (undefined for root agents). */
+    readonly parentId?: AgentId;
+    /** Immutable provenance — the agent that spawned this one. Set once at registration, never updated. */
+    readonly spawner?: AgentId;
+    /** Zone this agent belongs to. Undefined for unzoned agents. */
+    readonly zoneId?: ZoneId | undefined;
+}
+/** Events emitted by the registry on state changes. */
+type RegistryEvent = {
+    readonly kind: "registered";
+    readonly entry: RegistryEntry;
+} | {
+    readonly kind: "deregistered";
+    readonly agentId: AgentId;
+} | {
+    readonly kind: "transitioned";
+    readonly agentId: AgentId;
+    readonly from: ProcessState;
+    readonly to: ProcessState;
+    readonly generation: number;
+    readonly reason: TransitionReason;
+};
+/** Filter criteria for listing registered agents. */
+interface RegistryFilter {
+    readonly phase?: ProcessState;
+    readonly agentType?: "copilot" | "worker";
+    readonly condition?: AgentCondition;
+    /** Filter by parent agent ID. */
+    readonly parentId?: AgentId;
+    /** Filter by zone ID. */
+    readonly zoneId?: ZoneId | undefined;
+}
+/**
+ * Check whether a RegistryEntry matches a RegistryFilter.
+ *
+ * Pure function — no side effects, no I/O. Shared across all AgentRegistry
+ * implementations to avoid duplicating filter logic.
+ *
+ * Exception: Pure function operating only on L0 types, permitted in L0
+ * per architecture doc.
+ */
+declare function matchesFilter(entry: RegistryEntry, filter: RegistryFilter): boolean;
+/**
+ * Pluggable agent lifecycle registry. Manages registration, state transitions
+ * (with CAS via generation counter), and change notification.
+ *
+ * All methods return \`T | Promise<T>\` — in-memory implementations are sync,
+ * network-backed implementations (e.g., Nexus) are async.
+ */
+interface AgentRegistry extends AsyncDisposable {
+    /** Register a new agent. Returns the stored entry. */
+    readonly register: (entry: RegistryEntry) => RegistryEntry | Promise<RegistryEntry>;
+    /** Remove an agent from the registry. Returns true if found. */
+    readonly deregister: (agentId: AgentId) => boolean | Promise<boolean>;
+    /** Look up an agent by ID. Returns undefined if not found. */
+    readonly lookup: (agentId: AgentId) => RegistryEntry | undefined | Promise<RegistryEntry | undefined>;
+    /** List agents matching an optional filter. */
+    readonly list: (filter?: RegistryFilter) => readonly RegistryEntry[] | Promise<readonly RegistryEntry[]>;
+    /**
+     * CAS state transition. Only succeeds if the current generation matches
+     * \`expectedGeneration\`. Returns the updated entry on success, or a
+     * CONFLICT/VALIDATION error on failure.
+     */
+    readonly transition: (agentId: AgentId, targetPhase: ProcessState, expectedGeneration: number, reason: TransitionReason) => Result<RegistryEntry, KoiError> | Promise<Result<RegistryEntry, KoiError>>;
+    /** Subscribe to registry change events. Returns unsubscribe function. */
+    readonly watch: (listener: (event: RegistryEvent) => void) => () => void;
+}
+
+export { type AgentCondition, type AgentRegistry, type AgentStatus, type RegistryEntry, type RegistryEvent, type RegistryFilter, type TransitionReason, VALID_TRANSITIONS, matchesFilter };
 "
 `;
 
@@ -2559,25 +2721,25 @@ export type { Resolver, SourceBundle, SourceLanguage };
 
 exports[`@koi/core API surface ./brick-snapshot has stable type surface 1`] = `
 "import './errors.js';
-export { Q as BrickId, B as BrickRef, a1 as BrickSnapshot, a2 as BrickSource, dz as SnapshotEvent, dA as SnapshotId, dB as SnapshotQuery, dC as SnapshotStore, en as brickId, eF as snapshotId } from './assembly-HASH.js';
+export { G as BrickId, B as BrickRef, V as BrickSnapshot, W as BrickSource, db as SnapshotEvent, dc as SnapshotId, dd as SnapshotQuery, de as SnapshotStore, d$ as brickId, ee as snapshotId } from './assembly-HASH.js';
 import './common.js';
 import './webhook.js';
-import './zone.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+import './zone.js';
 "
 `;
 
 exports[`@koi/core API surface ./brick-store has stable type surface 1`] = `
-"export { u as AdvisoryLock, v as AgentArtifact, f as BrickArtifact, N as BrickArtifactBase, O as BrickFitnessMetrics, $ as BrickRequires, a3 as BrickUpdate, aV as DEFAULT_BRICK_FITNESS, by as ForgeQuery, bD as ForgeStore, I as ImplementationArtifact, b$ as LatencySampler, c0 as LockHandle, c1 as LockMode, c2 as LockRequest, dj as SkillArtifact, dE as StoreChangeEvent, dF as StoreChangeKind, dG as StoreChangeNotifier, dS as TestCase, dT as ToolArtifact } from './assembly-HASH.js';
+"export { o as AdvisoryLock, p as AgentArtifact, b as BrickArtifact, z as BrickArtifactBase, F as BrickFitnessMetrics, R as BrickRequires, X as BrickUpdate, aM as DEFAULT_BRICK_FITNESS, aU as DEFAULT_TRAIL_CONFIG, aV as DEFAULT_TRAIL_STRENGTH, bq as ForgeQuery, bv as ForgeStore, I as ImplementationArtifact, bT as LatencySampler, bU as LockHandle, bV as LockMode, bW as LockRequest, cY as SkillArtifact, dg as StoreChangeEvent, dh as StoreChangeKind, di as StoreChangeNotifier, dv as TestCase, dw as ToolArtifact, dD as TrailConfig } from './assembly-HASH.js';
 import './errors.js';
 import './common.js';
 import './webhook.js';
-import './zone.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+import './zone.js';
 "
 `;
 
@@ -2587,10 +2749,10 @@ import './assembly-HASH.js';
 import './common.js';
 import './webhook.js';
 import './errors.js';
-import './zone.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+import './zone.js';
 
 /**
  * Sandbox adapter contract — pluggable sandbox backends for isolated execution.
@@ -2655,14 +2817,14 @@ export type { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxI
 `;
 
 exports[`@koi/core API surface ./sandbox-executor has stable type surface 1`] = `
-"import { k as TrustTier } from './assembly-HASH.js';
+"import { g as TrustTier } from './assembly-HASH.js';
 import './common.js';
 import './webhook.js';
 import './errors.js';
-import './zone.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+import './zone.js';
 
 /**
  * Sandbox executor contract — injected dependency for code execution in isolation.
@@ -2738,14 +2900,14 @@ export type { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor,
 `;
 
 exports[`@koi/core API surface ./sandbox-profile has stable type surface 1`] = `
-"import { k as TrustTier } from './assembly-HASH.js';
+"import { g as TrustTier } from './assembly-HASH.js';
 import './common.js';
 import './webhook.js';
 import './errors.js';
-import './zone.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+import './zone.js';
 
 /**
  * Sandbox profile contract — platform-agnostic isolation policy.
@@ -2791,14 +2953,14 @@ export type { FilesystemPolicy, NetworkPolicy, ResourceLimits, SandboxProfile };
 `;
 
 exports[`@koi/core API surface ./skill-registry has stable type surface 1`] = `
-"export { b0 as DEFAULT_SKILL_SEARCH_LIMIT, dl as SkillId, dn as SkillPage, dp as SkillPublishRequest, dq as SkillRegistryBackend, dr as SkillRegistryChangeEvent, ds as SkillRegistryChangeKind, dt as SkillRegistryEntry, du as SkillRegistryReader, dv as SkillRegistryWriter, dw as SkillSearchQuery, dx as SkillVersion, eD as skillId } from './assembly-HASH.js';
+"export { aS as DEFAULT_SKILL_SEARCH_LIMIT, c_ as SkillId, d0 as SkillPage, d1 as SkillPublishRequest, d2 as SkillRegistryBackend, d3 as SkillRegistryChangeEvent, d4 as SkillRegistryChangeKind, d5 as SkillRegistryEntry, d6 as SkillRegistryReader, d7 as SkillRegistryWriter, d8 as SkillSearchQuery, d9 as SkillVersion, ec as skillId } from './assembly-HASH.js';
 import './errors.js';
 import './common.js';
 import './webhook.js';
-import './zone.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+import './zone.js';
 "
 `;
 
@@ -2838,38 +3000,38 @@ export type { PermissionBackend, PermissionDecision, PermissionQuery };
 `;
 
 exports[`@koi/core API surface ./version-index has stable type surface 1`] = `
-"export { e7 as VersionIndexBackend, e8 as VersionIndexReader, e9 as VersionIndexWriter } from './assembly-HASH.js';
+"export { dM as VersionIndexBackend, dN as VersionIndexReader, dO as VersionIndexWriter } from './assembly-HASH.js';
 import './errors.js';
 import './common.js';
 import './webhook.js';
-import './zone.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+import './zone.js';
 "
 `;
 
 exports[`@koi/core API surface ./version-types has stable type surface 1`] = `
-"export { cG as PublisherId, dh as ShadowWarning, e4 as VersionChangeEvent, e5 as VersionChangeKind, e6 as VersionEntry, ea as VersionedBrickRef, ey as publisherId } from './assembly-HASH.js';
+"export { cw as PublisherId, cW as ShadowWarning, dJ as VersionChangeEvent, dK as VersionChangeKind, dL as VersionEntry, dP as VersionedBrickRef, e8 as publisherId } from './assembly-HASH.js';
 import './common.js';
 import './webhook.js';
 import './errors.js';
-import './zone.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+import './zone.js';
 "
 `;
 
 exports[`@koi/core API surface ./run-report has stable type surface 1`] = `
 "import { JsonObject } from './common.js';
-import { A as AgentId, h as SessionId, cV as RunId, J as ArtifactRef } from './assembly-HASH.js';
+import { A as AgentId, d as SessionId, cJ as RunId, w as ArtifactRef } from './assembly-HASH.js';
 import './webhook.js';
 import './errors.js';
-import './zone.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+import './zone.js';
 
 /**
  * Run report types — structured summary of an autonomous agent run.
@@ -2988,13 +3150,13 @@ export type { ElicitationOption, ElicitationQuestion, ElicitationResult };
 
 exports[`@koi/core API surface ./mailbox has stable type surface 1`] = `
 "import './common.js';
-export { w as AgentMessage, x as AgentMessageInput, c6 as MailboxComponent, cc as MessageFilter, cd as MessageId, ce as MessageKind, ew as messageId } from './assembly-HASH.js';
+export { q as AgentMessage, r as AgentMessageInput, b_ as MailboxComponent, c4 as MessageFilter, c5 as MessageId, c6 as MessageKind, e6 as messageId } from './assembly-HASH.js';
 import './errors.js';
 import './webhook.js';
-import './zone.js';
 import './channel.js';
 import './message.js';
 import './filesystem-HASH.js';
+import './zone.js';
 "
 `;
 

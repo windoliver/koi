@@ -23,7 +23,12 @@ import type {
   StoreChangeEvent,
 } from "@koi/core";
 import { notFound } from "@koi/core";
-import { applyBrickUpdate, sortBricks, validateBrickArtifact } from "@koi/validation";
+import {
+  applyBrickUpdate,
+  createMemoryStoreChangeNotifier,
+  sortBricks,
+  validateBrickArtifact,
+} from "@koi/validation";
 import { mapFsError, mapParseError } from "./errors.js";
 import { brickPath, shardDir, tmpPath } from "./paths.js";
 import { matchesBrickQuery } from "./query.js";
@@ -67,6 +72,11 @@ function extractMetadata(brick: BrickArtifact): BrickArtifactBase {
     usageCount: brick.usageCount,
     // Include requires (small, useful for resolver filtering) but NOT files (large, on-demand only)
     ...(brick.requires !== undefined ? { requires: brick.requires } : {}),
+    ...(brick.fitness !== undefined ? { fitness: brick.fitness } : {}),
+    ...(brick.trailStrength !== undefined ? { trailStrength: brick.trailStrength } : {}),
+    ...(brick.lastVerifiedAt !== undefined ? { lastVerifiedAt: brick.lastVerifiedAt } : {}),
+    ...(brick.lastPromotedAt !== undefined ? { lastPromotedAt: brick.lastPromotedAt } : {}),
+    ...(brick.lastDemotedAt !== undefined ? { lastDemotedAt: brick.lastDemotedAt } : {}),
   };
 }
 
@@ -114,7 +124,9 @@ function computeIndexDiff(
       prevMeta.lifecycle !== meta.lifecycle ||
       prevMeta.trustTier !== meta.trustTier ||
       prevMeta.scope !== meta.scope ||
-      prevMeta.usageCount !== meta.usageCount
+      prevMeta.usageCount !== meta.usageCount ||
+      prevMeta.trailStrength !== meta.trailStrength ||
+      prevMeta.fitness?.lastUsedAt !== meta.fitness?.lastUsedAt
     ) {
       events.push({ kind: "updated", brickId: id });
     }
@@ -214,25 +226,8 @@ export async function createFsForgeStore(
   // Build metadata index from existing files
   const index = await scanAndBuildIndex(baseDir, cleanOrphanedTmp);
 
-  // --- watch notification ---------------------------------------------------
-  const changeListeners = new Set<(event: StoreChangeEvent) => void>();
-
-  const notifyListeners = (event: StoreChangeEvent): void => {
-    for (const listener of changeListeners) {
-      try {
-        listener(event);
-      } catch (_err: unknown) {
-        // Listener errors must not break the mutation return path or skip other listeners.
-      }
-    }
-  };
-
-  const watch = (listener: (event: StoreChangeEvent) => void): (() => void) => {
-    changeListeners.add(listener);
-    return () => {
-      changeListeners.delete(listener);
-    };
-  };
+  // --- watch notification (delegated to shared notifier) -------------------
+  const notifier = createMemoryStoreChangeNotifier();
 
   // --- Filesystem watcher (opt-in) ------------------------------------------
   // let justified: mutable watcher handle for cleanup
@@ -264,7 +259,7 @@ export async function createFsForgeStore(
           index.set(k, v);
         }
         for (const event of events) {
-          notifyListeners(event);
+          notifier.notify(event);
         }
       }
     } catch (_err: unknown) {
@@ -283,7 +278,6 @@ export async function createFsForgeStore(
       clearTimeout(watcherTimer);
       watcherTimer = undefined;
     }
-    changeListeners.clear();
   };
 
   // -- ForgeStore methods ---------------------------------------------------
@@ -298,7 +292,7 @@ export async function createFsForgeStore(
       const json = JSON.stringify(brick, null, 2);
       await atomicWrite(final, temp, json);
       index.set(brick.id, extractMetadata(brick));
-      notifyListeners({ kind: "saved", brickId: brick.id });
+      notifier.notify({ kind: "saved", brickId: brick.id });
       return { ok: true, value: undefined };
     } catch (err: unknown) {
       return { ok: false, error: mapFsError(err, final) };
@@ -351,7 +345,7 @@ export async function createFsForgeStore(
     try {
       await rm(filePath);
       index.delete(id);
-      notifyListeners({ kind: "removed", brickId: id });
+      notifier.notify({ kind: "removed", brickId: id });
       return { ok: true, value: undefined };
     } catch (err: unknown) {
       return { ok: false, error: mapFsError(err, filePath) };
@@ -378,7 +372,7 @@ export async function createFsForgeStore(
       const json = JSON.stringify(updated, null, 2);
       await atomicWrite(filePath, temp, json);
       index.set(id, extractMetadata(updated));
-      notifyListeners({ kind: "updated", brickId: id });
+      notifier.notify({ kind: "updated", brickId: id });
       return { ok: true, value: undefined };
     } catch (err: unknown) {
       return { ok: false, error: mapFsError(err, filePath) };
@@ -417,7 +411,7 @@ export async function createFsForgeStore(
     remove,
     update,
     exists,
-    watch,
+    watch: notifier.subscribe,
     searchIndex,
     loadFromDisk,
     dispose,
