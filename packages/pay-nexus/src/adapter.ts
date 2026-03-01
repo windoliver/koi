@@ -8,7 +8,7 @@
  * keeping HTTP calls to 1 per operation.
  */
 
-import type { BudgetTracker, CostBreakdown } from "@koi/core/cost-tracker";
+import type { BudgetTracker, CostBreakdown, CostEntry } from "@koi/core/cost-tracker";
 import type { PayLedger } from "@koi/core/pay-ledger";
 import type { NexusPayLedgerConfig } from "./config.js";
 import { createNexusPayLedger } from "./ledger.js";
@@ -25,7 +25,7 @@ import { createNexusPayLedger } from "./ledger.js";
  */
 export function mapPayLedgerToBudgetTracker(ledger: PayLedger, budget: number): BudgetTracker {
   return {
-    async record(_sessionId: string, entry: { readonly costUsd: number }): Promise<void> {
+    async record(_sessionId: string, entry: CostEntry): Promise<void> {
       await ledger.meter(entry.costUsd.toString(), "model_call");
     },
 

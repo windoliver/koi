@@ -53,7 +53,13 @@ describe("mapPayLedgerToBudgetTracker", () => {
     });
     const tracker = mapPayLedgerToBudgetTracker(ledger, 100);
 
-    await tracker.record("session-1", { costUsd: 0.05 });
+    await tracker.record("session-1", {
+      inputTokens: 100,
+      outputTokens: 50,
+      model: "test-model",
+      costUsd: 0.05,
+      timestamp: Date.now(),
+    });
     expect(capturedAmount).toBe("0.05");
     expect(capturedEventType).toBe("model_call");
   });
