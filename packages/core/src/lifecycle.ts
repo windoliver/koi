@@ -9,7 +9,7 @@
  * L0 type definitions, codifying architecture-doc invariants with zero logic.
  */
 
-import type { AgentId, ProcessState } from "./ecs.js";
+import type { AgentGroupId, AgentId, ProcessState } from "./ecs.js";
 import type { KoiError, Result } from "./errors.js";
 import type { ZoneId } from "./zone.js";
 
@@ -47,7 +47,11 @@ export type TransitionReason =
   | { readonly kind: "evicted" }
   | { readonly kind: "stale" }
   | { readonly kind: "restarted"; readonly attempt: number; readonly strategy: string }
-  | { readonly kind: "escalated"; readonly cause: string };
+  | { readonly kind: "escalated"; readonly cause: string }
+  /** Agent received a STOP signal → transitioning to "suspended". */
+  | { readonly kind: "signal_stop" }
+  /** Agent received a CONT signal → transitioning from "suspended" to "running". */
+  | { readonly kind: "signal_cont" };
 
 // ---------------------------------------------------------------------------
 // Valid state transitions (architecture-doc invariants)
@@ -112,6 +116,8 @@ export interface RegistryEntry {
   readonly spawner?: AgentId;
   /** Zone this agent belongs to. Undefined for unzoned agents. */
   readonly zoneId?: ZoneId | undefined;
+  /** Process group this agent belongs to. Assigned at spawn time. */
+  readonly groupId?: AgentGroupId | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +150,8 @@ export interface RegistryFilter {
   readonly parentId?: AgentId;
   /** Filter by zone ID. */
   readonly zoneId?: ZoneId | undefined;
+  /** Filter by process group ID. */
+  readonly groupId?: AgentGroupId | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +175,60 @@ export function matchesFilter(entry: RegistryEntry, filter: RegistryFilter): boo
   }
   if (filter.parentId !== undefined && entry.parentId !== filter.parentId) return false;
   if (filter.zoneId !== undefined && entry.zoneId !== filter.zoneId) return false;
+  if (filter.groupId !== undefined && entry.groupId !== filter.groupId) return false;
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Child completion result
+// ---------------------------------------------------------------------------
+
+/** Result of waiting for a child agent to complete. */
+export interface ChildCompletionResult {
+  readonly childId: AgentId;
+  readonly exitCode: number;
+  readonly reason?: TransitionReason;
+}
+
+// ---------------------------------------------------------------------------
+// Exit code mapping
+// ---------------------------------------------------------------------------
+
+/**
+ * Map a TransitionReason to a numeric exit code.
+ *
+ * Convention:
+ *   0 = success (completed, signal_stop/cont — resumed agent that eventually exited ok)
+ *   1 = generic error
+ *   2 = resource/limit exceeded
+ *   3 = timeout
+ *   4 = eviction/staleness
+ *   126 = escalated (capability error, analagous to "command not executable")
+ *   130 = terminated by signal (128 + 2, SIGINT convention)
+ *
+ * Exception: pure function operating only on L0 types, permitted in L0.
+ */
+export function exitCodeForTransitionReason(reason: TransitionReason): number {
+  switch (reason.kind) {
+    case "completed":
+    case "signal_stop":
+    case "signal_cont":
+      return 0;
+    case "error":
+      return 1;
+    case "budget_exceeded":
+    case "iteration_limit":
+      return 2;
+    case "timeout":
+      return 3;
+    case "evicted":
+    case "stale":
+      return 4;
+    case "escalated":
+      return 126;
+    default:
+      return 1;
+  }
 }
 
 // ---------------------------------------------------------------------------

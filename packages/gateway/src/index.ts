@@ -46,8 +46,15 @@ export type { Gateway, GatewayDeps, SessionEvent } from "./gateway.js";
 export { createGateway } from "./gateway.js";
 // http helpers
 export { jsonResponse, matchPath, parseJsonBody } from "./http-helpers.js";
+// node connection
+export type { NodeConnectionHandler } from "./node-connection.js";
+export { createNodeConnectionHandler } from "./node-connection.js";
 // node handler
 export type {
+  AgentSignalGroupPayload,
+  AgentSignalPayload,
+  AgentStatusBatchPayload,
+  AgentStatusEntry,
   CapabilitiesPayload,
   HandshakePayload,
   NodeFrame,
@@ -57,6 +64,7 @@ export {
   encodeNodeFrame,
   parseNodeFrame,
   peekFrameKind,
+  validateAgentStatusBatch,
   validateCapabilitiesPayload,
   validateCapacityPayload,
   validateHandshakePayload,

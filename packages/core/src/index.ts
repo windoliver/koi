@@ -227,7 +227,9 @@ export type {
 export type {
   Agent,
   AgentDescriptor,
+  AgentGroupId,
   AgentId,
+  AgentSignal,
   AttachResult,
   ChildHandle,
   ChildLifecycleEvent,
@@ -263,6 +265,8 @@ export type {
 } from "./ecs.js";
 // ecs — runtime values (token factories + well-known constants)
 export {
+  AGENT_SIGNALS,
+  agentGroupId,
   agentId,
   agentToken,
   BROWSER,
@@ -493,13 +497,14 @@ export type {
   AgentCondition,
   AgentRegistry,
   AgentStatus,
+  ChildCompletionResult,
   RegistryEntry,
   RegistryEvent,
   RegistryFilter,
   TransitionReason,
 } from "./lifecycle.js";
 // lifecycle — runtime values
-export { matchesFilter, VALID_TRANSITIONS } from "./lifecycle.js";
+export { exitCodeForTransitionReason, matchesFilter, VALID_TRANSITIONS } from "./lifecycle.js";
 // mailbox — agent-to-agent messaging types
 export type {
   AgentMessage,

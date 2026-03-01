@@ -11,7 +11,7 @@
  * 7. Wire ledger release + runtime disposal to child termination event
  */
 
-import type { AgentId, ChildHandle, ChildLifecycleEvent } from "@koi/core";
+import type { AgentId, ChildCompletionResult, ChildHandle, ChildLifecycleEvent } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
 import { createChildHandle } from "./child-handle.js";
 import { createInheritedComponentProvider } from "./inherited-component-provider.js";
@@ -31,6 +31,9 @@ function createNoopChildHandle(childId: AgentId, name: string): ChildHandle {
     },
     signal: () => {},
     terminate: () => {},
+    waitForCompletion: (): Promise<ChildCompletionResult> => {
+      return Promise.resolve({ childId, exitCode: 0 });
+    },
   };
 }
 
@@ -106,6 +109,7 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
       registeredAt: Date.now(),
       parentId: options.parentAgent.pid.id,
       spawner: options.parentAgent.pid.id,
+      ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
     });
   }
 
@@ -113,7 +117,13 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   let handle: ChildHandle;
   if (options.registry !== undefined) {
     const reg = options.registry;
-    handle = createChildHandle(childPid.id, options.manifest.name, reg, abortController);
+    handle = createChildHandle(
+      childPid.id,
+      options.manifest.name,
+      reg,
+      abortController,
+      options.gracePeriodMs,
+    );
 
     // 7. Parent termination → child cascade is handled by CascadingTermination
     //    (centralized, supervision-aware). No per-child watcher needed here.

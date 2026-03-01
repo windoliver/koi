@@ -41,6 +41,9 @@ import type { LocalResolver } from "./tools/local-resolver.js";
 import { createLocalResolver } from "./tools/local-resolver.js";
 import type {
   AdvertisedTool,
+  AgentSignalGroupPayload,
+  AgentSignalPayload,
+  AgentStatusPayload,
   CapacityReport,
   NodeConfig,
   NodeEvent,
@@ -481,6 +484,30 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
       }
     });
 
+    // Send a one-shot terminal status frame immediately when an agent terminates,
+    // so the gateway can resolve waitForAgent() without waiting for the next cycle.
+    const unsubTerminal = host.onEvent((event) => {
+      if (event.type === "agent_terminated") {
+        const data = event.data as { agentId: string; exitCode: number } | undefined;
+        if (data?.agentId !== undefined) {
+          const payload: AgentStatusPayload = {
+            agentId: data.agentId,
+            state: "terminated",
+            turnCount: 0,
+            lastActivityMs: Date.now(),
+            exitCode: data.exitCode,
+          };
+          sendFrame({
+            nodeId,
+            agentId: data.agentId,
+            correlationId: generateCorrelationId(nodeId),
+            kind: "agent:status",
+            payload: { agents: [payload] },
+          });
+        }
+      }
+    });
+
     // Wire inbound frame handler — full mode handles agent frames + tool_call
     transport.onFrame((frame) => {
       if (frame.correlationId.length > 0 && dedup.isDuplicate(frame.correlationId)) {
@@ -501,6 +528,33 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
         case "agent:message": {
           if (isAgentMessagePayload(frame.payload) && frame.agentId.length > 0) {
             inbox.push(frame.agentId, frame.payload);
+          }
+          break;
+        }
+        case "agent:signal": {
+          if (frame.agentId.length > 0) {
+            const p = frame.payload as Partial<AgentSignalPayload>;
+            const sig = typeof p.signal === "string" ? p.signal : undefined;
+            if (sig !== undefined) {
+              void host
+                .signal(frame.agentId, sig, p.gracePeriodMs)
+                .catch((e: unknown) => emit("agent_crashed", { agentId: frame.agentId, error: e }));
+            }
+          }
+          break;
+        }
+        case "agent:signal_group": {
+          const p = frame.payload as Partial<AgentSignalGroupPayload>;
+          const groupId = typeof p.groupId === "string" ? p.groupId : undefined;
+          const sig = typeof p.signal === "string" ? p.signal : undefined;
+          if (groupId !== undefined && sig !== undefined) {
+            void host
+              .signalGroup(
+                groupId,
+                sig,
+                p.deadlineMs !== undefined ? { deadlineMs: p.deadlineMs } : undefined,
+              )
+              .catch((e: unknown) => emit("agent_crashed", { groupId, signal: sig, error: e }));
           }
           break;
         }
@@ -661,6 +715,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
               unsubTransport();
               unsubHost();
               unsubReconnect();
+              unsubTerminal();
               engines.clear();
               await discovery.unpublish();
               await transport.close();
@@ -687,6 +742,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
           unsubTransport();
           unsubHost();
           unsubReconnect();
+          unsubTerminal();
           host.terminateAll();
           engines.clear();
           await discovery.unpublish();

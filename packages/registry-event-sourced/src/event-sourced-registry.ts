@@ -224,6 +224,7 @@ export async function createEventSourcedRegistry(
       parentId: entry.parentId,
       metadata: entry.metadata,
       registeredAt: entry.registeredAt,
+      ...(entry.groupId !== undefined ? { groupId: entry.groupId } : {}),
     };
 
     // Append with expectedSequence: 0 — stream must be empty (new agent)

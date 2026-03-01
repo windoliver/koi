@@ -22,6 +22,8 @@ const NODE_FRAME_KINDS = new Set([
   "node:error",
   "agent:dispatch",
   "agent:message",
+  "agent:signal",
+  "agent:signal_group",
   "agent:status",
   "agent:terminate",
   "tool_call",
@@ -39,6 +41,8 @@ export type NodeFrameKind =
   | "node:error"
   | "agent:dispatch"
   | "agent:message"
+  | "agent:signal"
+  | "agent:signal_group"
   | "agent:status"
   | "agent:terminate"
   | "tool_call"
@@ -278,6 +282,62 @@ export function validateCapacityPayload(payload: unknown): Result<CapacityReport
     };
   }
   return { ok: true, value: payload };
+}
+
+// ---------------------------------------------------------------------------
+// Signal payload types (gateway → node)
+// ---------------------------------------------------------------------------
+
+/** Gateway → Node: signal a single agent. agentId is in the NodeFrame envelope. */
+export interface AgentSignalPayload {
+  readonly signal: string;
+  readonly gracePeriodMs?: number | undefined;
+}
+
+/** Gateway → Node: signal all agents in a group. */
+export interface AgentSignalGroupPayload {
+  readonly groupId: string;
+  readonly signal: string;
+  readonly deadlineMs?: number | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// AgentStatus payload (node → gateway)
+// ---------------------------------------------------------------------------
+
+export interface AgentStatusEntry {
+  readonly agentId: string;
+  readonly state: string;
+  readonly turnCount: number;
+  readonly lastActivityMs: number;
+  readonly exitCode?: number | undefined;
+  /** groupId is carried via ProcessId — nodes include it in status for gateway indexing. */
+  readonly groupId?: string | undefined;
+}
+
+export interface AgentStatusBatchPayload {
+  readonly agents: readonly AgentStatusEntry[];
+}
+
+export function validateAgentStatusBatch(payload: unknown): AgentStatusBatchPayload | undefined {
+  if (typeof payload !== "object" || payload === null) return undefined;
+  const obj = payload as Record<string, unknown>;
+  if (!Array.isArray(obj.agents)) return undefined;
+  const agents: AgentStatusEntry[] = [];
+  for (const item of obj.agents) {
+    if (typeof item !== "object" || item === null) return undefined;
+    const a = item as Record<string, unknown>;
+    if (typeof a.agentId !== "string" || typeof a.state !== "string") return undefined;
+    agents.push({
+      agentId: a.agentId,
+      state: a.state,
+      turnCount: typeof a.turnCount === "number" ? a.turnCount : 0,
+      lastActivityMs: typeof a.lastActivityMs === "number" ? a.lastActivityMs : 0,
+      ...(typeof a.exitCode === "number" ? { exitCode: a.exitCode } : {}),
+      ...(typeof a.groupId === "string" ? { groupId: a.groupId } : {}),
+    });
+  }
+  return { agents };
 }
 
 // ---------------------------------------------------------------------------

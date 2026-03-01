@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/node API surface . has stable type surface 1`] = `
-"import { AdvertisedTool, SessionPersistence, CapacityReport, SessionCheckpoint, PendingFrame, RecoveryPlan, SessionRecord, Result, KoiError, ProcessId, AgentManifest, EngineAdapter, ComponentProvider, Agent, AgentId, Tool, SourceBundle, ScopeChecker, DelegationScope } from '@koi/core';
+"import { AdvertisedTool, SessionPersistence, CapacityReport, SessionCheckpoint, PendingFrame, RecoveryPlan, SessionRecord, Result, KoiError, ProcessId, AgentManifest, EngineAdapter, ComponentProvider, Agent, AgentId, AgentGroupId, Tool, SourceBundle, ScopeChecker, DelegationScope } from '@koi/core';
 export { AdvertisedTool, CapacityReport, ToolCallPayload, ToolErrorPayload, ToolResultPayload, isToolCallPayload } from '@koi/core';
 import { JsonObject } from '@koi/core/common';
 import { ContentBlock } from '@koi/core/message';
@@ -72,7 +72,7 @@ interface NodeConfig {
 /** Parse and validate raw config into a typed NodeConfig. */
 declare function parseNodeConfig(raw: unknown): Result<NodeConfig, KoiError>;
 /** Discriminated union of all frame kinds flowing over the Node <-> Gateway WS. */
-type NodeFrameKind = "agent:dispatch" | "agent:message" | "agent:status" | "agent:terminate" | "node:auth" | "node:auth_challenge" | "node:auth_response" | "node:auth_ack" | "node:handshake" | "node:heartbeat" | "node:capacity" | "node:capabilities" | "node:error" | "tool_call" | "tool_result" | "tool_error";
+type NodeFrameKind = "agent:dispatch" | "agent:message" | "agent:signal" | "agent:signal_group" | "agent:status" | "agent:terminate" | "node:auth" | "node:auth_challenge" | "node:auth_response" | "node:auth_ack" | "node:handshake" | "node:heartbeat" | "node:capacity" | "node:capabilities" | "node:error" | "tool_call" | "tool_result" | "tool_error";
 /** Wire frame sent over the multiplexed WebSocket. */
 interface NodeFrame {
     readonly nodeId: string;
@@ -116,9 +116,22 @@ interface AgentStatusPayload {
     readonly state: string;
     readonly turnCount: number;
     readonly lastActivityMs: number;
+    /** Present when state is "terminated" — numeric exit code from exitCodeForTransitionReason(). */
+    readonly exitCode?: number | undefined;
+}
+/** Gateway → Node: signal a single agent. agentId is carried in the NodeFrame envelope. */
+interface AgentSignalPayload {
+    readonly signal: string;
+    readonly gracePeriodMs?: number | undefined;
+}
+/** Gateway → Node: signal all agents belonging to a group. */
+interface AgentSignalGroupPayload {
+    readonly groupId: string;
+    readonly signal: string;
+    readonly deadlineMs?: number | undefined;
 }
 type NodeState = "starting" | "connected" | "reconnecting" | "stopping" | "stopped";
-type NodeEventType = "connected" | "disconnected" | "reconnecting" | "reconnected" | "reconnect_exhausted" | "heartbeat_timeout" | "auth_started" | "auth_success" | "auth_failed" | "agent_dispatched" | "agent_terminated" | "agent_crashed" | "agent_recovered" | "tool_timeout" | "tool_error" | "memory_warning" | "memory_eviction" | "shutdown_started" | "shutdown_complete" | "pending_frame_sent" | "pending_frame_expired" | "pending_frame_dead_letter";
+type NodeEventType = "connected" | "disconnected" | "reconnecting" | "reconnected" | "reconnect_exhausted" | "heartbeat_timeout" | "auth_started" | "auth_success" | "auth_failed" | "agent_dispatched" | "agent_suspended" | "agent_resumed" | "agent_terminated" | "agent_crashed" | "agent_recovered" | "tool_timeout" | "tool_error" | "memory_warning" | "memory_eviction" | "shutdown_started" | "shutdown_complete" | "pending_frame_sent" | "pending_frame_expired" | "pending_frame_dead_letter";
 interface NodeEvent {
     readonly type: NodeEventType;
     readonly timestamp: number;
@@ -153,8 +166,11 @@ type NodeSessionStore = Pick<SessionPersistence, "saveSession" | "removeSession"
 interface AgentHost {
     /** Dispatch (create) a new agent on this node. */
     readonly dispatch: (pid: ProcessId, manifest: AgentManifest, engine: EngineAdapter, providers: readonly ComponentProvider[]) => Promise<Result<Agent, KoiError>>;
-    /** Terminate an agent by ID. */
-    readonly terminate: (agentId: AgentId | string) => Result<void, KoiError>;
+    /**
+     * Terminate an agent by ID with an optional numeric exit code.
+     * Default exit code: 1 (generic error / external termination).
+     */
+    readonly terminate: (agentId: AgentId | string, exitCode?: number) => Result<void, KoiError>;
     /** Get an agent by ID. */
     readonly get: (agentId: AgentId | string) => Agent | undefined;
     /** List all hosted agents. */
@@ -169,6 +185,22 @@ interface AgentHost {
     readonly onEvent: (listener: NodeEventListener) => () => void;
     /** Terminate all agents (used during shutdown). */
     readonly terminateAll: () => void;
+    /**
+     * Send a POSIX-style signal to a single agent.
+     * stop → suspended at next turn boundary  (idempotent)
+     * cont → running from suspended             (idempotent)
+     * term → abort + gracePeriodMs + terminate  (exit code 130)
+     * usr1/usr2 → emit event only, no state change
+     */
+    readonly signal: (agentId: AgentId | string, signal: string, gracePeriodMs?: number) => Promise<Result<void, KoiError>>;
+    /**
+     * Broadcast a signal to all agents belonging to a process group.
+     * Uses Promise.allSettled() — one failure does not block others.
+     * Rejects with "signalGroup timeout" if deadlineMs is exceeded.
+     */
+    readonly signalGroup: (groupId: AgentGroupId | string, signal: string, options?: {
+        readonly deadlineMs?: number;
+    }) => Promise<void>;
 }
 declare function createAgentHost(config: ResourcesConfig): AgentHost;
 
@@ -723,6 +755,6 @@ declare function createFilesystemTool(allowedPaths?: readonly string[]): Tool;
 
 declare function createShellTool(): Tool;
 
-export { type AgentHost, type AgentInbox, type AgentMessagePayload, type AgentStatusPayload, type AuthAckPayload, type AuthChallengePayload, type AuthConfig, type AuthHandshake, type AuthHandshakeConfig, type AuthPayload, type AuthResponsePayload, type CapabilitiesPayload, type CheckpointManager, type CheckpointManagerDeps, type CheckpointingEngineConfig, DEFAULT_DELIVERY_CONFIG, DEFAULT_TOOL_CALL_TIMEOUT_MS, type DeliveryManager, type DeliveryManagerConfig, type DeliveryManagerDeps, type DiscoveryConfig, type DiscoveryService, type FrameCounterState, type FrameCounters, type FrameDeduplicator, type FullKoiNode, type GatewayConnectionConfig, type HandshakePayload, type HeartbeatCallbacks, type HeartbeatConfig, type HeartbeatMonitor, type KoiNode, type LocalResolver, MAX_INBOX_DEPTH, type MemoryMetrics, type MemoryMonitor, type NodeCheckpoint, type NodeConfig, type NodeDeps, type NodeEvent, type NodeEventListener, type NodeEventType, type NodeFrame, type NodeFrameKind, type NodeMode, type NodePendingFrame, type NodeRecoveryPlan, type NodeSessionRecord, type NodeSessionStore, type NodeState, type QueuedAgentMessage, type ReconnectState, type RecoveryResult, type ResourcesConfig, type ServiceInfo, type StatusReporter, type ThinKoiNode, type ToolCallHandlerDeps, type ToolMeta, type ToolResolverConfig, type Transport, type TransportState, type WriteQueue, type WriteQueueConfig, computeReconnectDelay, createAgentHost, createAgentInbox, createAuthHandshake, createAuthPayload, createCheckpointManager, createCheckpointingEngine, createDeliveryManager, createDiscoveryService, createFilesystemTool, createFrameCounters, createFrameDeduplicator, createHeartbeatMonitor, createLocalResolver, createMemoryMonitor, createNode, createReconnectState, createShellTool, createStatusReporter, createTransport, createWriteQueue, decodeFrame, encodeFrame, generateCorrelationId, handleToolCall, isAgentMessagePayload, isCleanClose, nextAttempt, parseNodeConfig, resetReconnectState, signChallenge };
+export { type AgentHost, type AgentInbox, type AgentMessagePayload, type AgentSignalGroupPayload, type AgentSignalPayload, type AgentStatusPayload, type AuthAckPayload, type AuthChallengePayload, type AuthConfig, type AuthHandshake, type AuthHandshakeConfig, type AuthPayload, type AuthResponsePayload, type CapabilitiesPayload, type CheckpointManager, type CheckpointManagerDeps, type CheckpointingEngineConfig, DEFAULT_DELIVERY_CONFIG, DEFAULT_TOOL_CALL_TIMEOUT_MS, type DeliveryManager, type DeliveryManagerConfig, type DeliveryManagerDeps, type DiscoveryConfig, type DiscoveryService, type FrameCounterState, type FrameCounters, type FrameDeduplicator, type FullKoiNode, type GatewayConnectionConfig, type HandshakePayload, type HeartbeatCallbacks, type HeartbeatConfig, type HeartbeatMonitor, type KoiNode, type LocalResolver, MAX_INBOX_DEPTH, type MemoryMetrics, type MemoryMonitor, type NodeCheckpoint, type NodeConfig, type NodeDeps, type NodeEvent, type NodeEventListener, type NodeEventType, type NodeFrame, type NodeFrameKind, type NodeMode, type NodePendingFrame, type NodeRecoveryPlan, type NodeSessionRecord, type NodeSessionStore, type NodeState, type QueuedAgentMessage, type ReconnectState, type RecoveryResult, type ResourcesConfig, type ServiceInfo, type StatusReporter, type ThinKoiNode, type ToolCallHandlerDeps, type ToolMeta, type ToolResolverConfig, type Transport, type TransportState, type WriteQueue, type WriteQueueConfig, computeReconnectDelay, createAgentHost, createAgentInbox, createAuthHandshake, createAuthPayload, createCheckpointManager, createCheckpointingEngine, createDeliveryManager, createDiscoveryService, createFilesystemTool, createFrameCounters, createFrameDeduplicator, createHeartbeatMonitor, createLocalResolver, createMemoryMonitor, createNode, createReconnectState, createShellTool, createStatusReporter, createTransport, createWriteQueue, decodeFrame, encodeFrame, generateCorrelationId, handleToolCall, isAgentMessagePayload, isCleanClose, nextAttempt, parseNodeConfig, resetReconnectState, signChallenge };
 "
 `;

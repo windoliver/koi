@@ -11,7 +11,7 @@ export { AdvertisedTool, CapacityReport } from '@koi/core';
  * Nodes use a different wire format (NodeFrame) than clients (GatewayFrame).
  */
 
-type NodeFrameKind = "node:handshake" | "node:capabilities" | "node:registered" | "node:heartbeat" | "node:capacity" | "node:tools_updated" | "node:error" | "agent:dispatch" | "agent:message" | "agent:status" | "agent:terminate" | "tool_call" | "tool_result" | "tool_error";
+type NodeFrameKind = "node:handshake" | "node:capabilities" | "node:registered" | "node:heartbeat" | "node:capacity" | "node:tools_updated" | "node:error" | "agent:dispatch" | "agent:message" | "agent:signal" | "agent:signal_group" | "agent:status" | "agent:terminate" | "tool_call" | "tool_result" | "tool_error";
 interface NodeFrame {
     readonly nodeId: string;
     readonly agentId: string;
@@ -34,6 +34,30 @@ declare function parseNodeFrame(data: string): Result<NodeFrame, KoiError>;
 declare function validateHandshakePayload(payload: unknown): Result<HandshakePayload, KoiError>;
 declare function validateCapabilitiesPayload(payload: unknown): Result<CapabilitiesPayload, KoiError>;
 declare function validateCapacityPayload(payload: unknown): Result<CapacityReport, KoiError>;
+/** Gateway → Node: signal a single agent. agentId is in the NodeFrame envelope. */
+interface AgentSignalPayload {
+    readonly signal: string;
+    readonly gracePeriodMs?: number | undefined;
+}
+/** Gateway → Node: signal all agents in a group. */
+interface AgentSignalGroupPayload {
+    readonly groupId: string;
+    readonly signal: string;
+    readonly deadlineMs?: number | undefined;
+}
+interface AgentStatusEntry {
+    readonly agentId: string;
+    readonly state: string;
+    readonly turnCount: number;
+    readonly lastActivityMs: number;
+    readonly exitCode?: number | undefined;
+    /** groupId is carried via ProcessId — nodes include it in status for gateway indexing. */
+    readonly groupId?: string | undefined;
+}
+interface AgentStatusBatchPayload {
+    readonly agents: readonly AgentStatusEntry[];
+}
+declare function validateAgentStatusBatch(payload: unknown): AgentStatusBatchPayload | undefined;
 declare function encodeNodeFrame(frame: NodeFrame): string;
 
 /**
@@ -621,6 +645,27 @@ interface Gateway {
     readonly channelBindings: () => ReadonlyMap<string, string>;
     /** Send a NodeFrame to a connected compute node. */
     readonly sendToNode: (nodeId: string, frame: NodeFrame) => Result<number, KoiError>;
+    /**
+     * Send a POSIX-style signal to a specific agent on whichever node hosts it.
+     * Requires the agent's nodeId to be known (populated from agent:status frames).
+     */
+    readonly signalAgent: (agentId: string, signal: string, gracePeriodMs?: number) => Result<number, KoiError>;
+    /**
+     * Fan-out a signal to all active agents in a process group.
+     * Finds every node hosting at least one group member and sends agent:signal_group.
+     */
+    readonly signalGroup: (groupId: string, signal: string, options?: {
+        readonly deadlineMs?: number;
+    }) => Result<readonly string[], KoiError>;
+    /**
+     * Wait for a specific agent to reach "terminated" state.
+     * Resolves with the exit code from the terminal agent:status frame.
+     * Rejects if timeoutMs is exceeded (default: 60 000 ms).
+     */
+    readonly waitForAgent: (agentId: string, timeoutMs?: number) => Promise<{
+        readonly agentId: string;
+        readonly exitCode: number;
+    }>;
     /** Returns the canvas server port, or undefined if canvas is not configured. */
     readonly canvasPort: () => number | undefined;
     /** Access the surface store for external use. Undefined if canvas is not configured. */
@@ -674,6 +719,37 @@ type PathMatchResult = PathMatch | PathNoMatch;
  * Returns the path segments after the prefix.
  */
 declare function matchPath(pathname: string, prefix: string): PathMatchResult;
+
+/**
+ * Node connection handler — manages compute-node lifecycle within the gateway.
+ *
+ * Handles: handshake → capabilities → registration ack, heartbeat, capacity updates,
+ * stale node sweep, reconnect eviction, deregistration on disconnect, and sending frames to nodes.
+ */
+
+interface NodeConnectionHandler {
+    /** Handle the first message identified as a node:handshake. */
+    readonly handleFirstMessage: (conn: TransportConnection, data: string) => void;
+    /** Handle subsequent messages from a node connection. */
+    readonly handleMessage: (conn: TransportConnection, data: string) => void;
+    /** Clean up node state for a disconnecting connection. Returns true if it was a node. */
+    readonly cleanupNode: (connId: string) => boolean;
+    /** Check if a connection belongs to a node. */
+    readonly isNodeConnection: (connId: string) => boolean;
+    /** Send a NodeFrame to a connected node. */
+    readonly sendToNode: (nodeId: string, frame: NodeFrame, connMap: ReadonlyMap<string, TransportConnection>) => Result<number, KoiError>;
+    /** Start periodic sweep for stale nodes. Returns stop function. */
+    readonly startNodeSweep: (heartbeatThresholdMs: number, sweepIntervalMs: number, onStale: (nodeId: string, connId: string) => void) => () => void;
+    /** Clear all node state (for gateway stop). */
+    readonly clear: () => void;
+    /** Look up which nodeId currently hosts a given agentId. */
+    readonly lookupAgentNode: (agentId: string) => string | undefined;
+    /** Look up all agentIds belonging to a process group. */
+    readonly lookupAgentsByGroup: (groupId: string) => readonly string[];
+    /** Subscribe to agent status updates (called for every agent:status batch). */
+    readonly onAgentStatus: (handler: (entry: AgentStatusEntry, nodeId: string) => void) => () => void;
+}
+declare function createNodeConnectionHandler(registry: NodeRegistry, emitNodeEvent: (event: NodeRegistryEvent) => void, onEvict: (connId: string) => void, onToolFrame?: ((frame: NodeFrame) => void) | undefined, onToolsUpdated?: ((nodeId: string) => void) | undefined): NodeConnectionHandler;
 
 /**
  * Wire protocol: parse and encode GatewayFrame.
@@ -792,6 +868,6 @@ interface SequenceTracker {
 }
 declare function createSequenceTracker(windowSize: number): SequenceTracker;
 
-export { type AcceptResult, type AuthResult, type BackpressureMonitor, type BackpressureState, type BunTransport, type CanvasAuthResult, type CanvasAuthenticator, type CanvasRouteConfig, type CanvasServer, type CanvasSseConfig, type CanvasSseManager, type CapabilitiesPayload, type ChannelBinding, type CompiledAffinity, type ConnectClient, type ConnectFrame, DEFAULT_GATEWAY_CONFIG, DEFAULT_TOOL_ROUTING_CONFIG, type FrameIdGenerator, type Gateway, type GatewayAuthenticator, type GatewayCapabilities, type GatewayConfig, type GatewayDeps, type GatewayFrame, type GatewayFrameKind, type GatewayScheduler, type HandshakeAckPayload, type HandshakeOptions, type HandshakePayload, type HandshakeResult, type HandshakeSnapshot, type NodeFrame, type NodeFrameKind, type NodeRegistry, type NodeRegistryEvent, type RegisteredNode, type ResolvedRoute, type ResumeRequest, type RouteBinding, type RouteResult, type RoutingConfig, type RoutingContext, type SchedulerDef, type SchedulerDispatcher, type ScopingMode, type SequenceTracker, type Session, type SessionEvent, type SessionStore, type SseEvent, type SseSubscriber, type SurfaceEntry, type SurfaceStore, type SurfaceStoreConfig, type SweepError, TOOL_ROUTING_ERROR_CODES, type ToolAffinity, type ToolRouter, type ToolRouterDeps, type ToolRoutingConfig, type ToolRoutingErrorCode, type Transport, type TransportConnection, type TransportHandler, type TransportSendResult, type WebhookAuthResult, type WebhookAuthenticator, type WebhookConfig, type WebhookDispatcher, type WebhookServer, compileAffinities, computeContentHash, computeDispatchKey, createAckFrame, createBackpressureMonitor, createBunTransport, createCanvasServer, createCanvasSseManager, createErrorFrame, createFrameIdGenerator, createGateway, createInMemoryNodeRegistry, createInMemorySessionStore, createInMemorySurfaceStore, createScheduler, createSequenceTracker, createToolRouter, createWebhookServer, encodeFrame, encodeNodeFrame, formatSseEvent, handleHandshake, jsonResponse, matchAffinity, matchPath, negotiateProtocol, parseConnectFrame, parseFrame, parseJsonBody, parseNodeFrame, peekFrameKind, resolveBinding, resolveRoute, resolveTargetNode, startHeartbeatSweep, validateBindingPattern, validateCapabilitiesPayload, validateCapacityPayload, validateHandshakePayload };
+export { type AcceptResult, type AgentSignalGroupPayload, type AgentSignalPayload, type AgentStatusBatchPayload, type AgentStatusEntry, type AuthResult, type BackpressureMonitor, type BackpressureState, type BunTransport, type CanvasAuthResult, type CanvasAuthenticator, type CanvasRouteConfig, type CanvasServer, type CanvasSseConfig, type CanvasSseManager, type CapabilitiesPayload, type ChannelBinding, type CompiledAffinity, type ConnectClient, type ConnectFrame, DEFAULT_GATEWAY_CONFIG, DEFAULT_TOOL_ROUTING_CONFIG, type FrameIdGenerator, type Gateway, type GatewayAuthenticator, type GatewayCapabilities, type GatewayConfig, type GatewayDeps, type GatewayFrame, type GatewayFrameKind, type GatewayScheduler, type HandshakeAckPayload, type HandshakeOptions, type HandshakePayload, type HandshakeResult, type HandshakeSnapshot, type NodeConnectionHandler, type NodeFrame, type NodeFrameKind, type NodeRegistry, type NodeRegistryEvent, type RegisteredNode, type ResolvedRoute, type ResumeRequest, type RouteBinding, type RouteResult, type RoutingConfig, type RoutingContext, type SchedulerDef, type SchedulerDispatcher, type ScopingMode, type SequenceTracker, type Session, type SessionEvent, type SessionStore, type SseEvent, type SseSubscriber, type SurfaceEntry, type SurfaceStore, type SurfaceStoreConfig, type SweepError, TOOL_ROUTING_ERROR_CODES, type ToolAffinity, type ToolRouter, type ToolRouterDeps, type ToolRoutingConfig, type ToolRoutingErrorCode, type Transport, type TransportConnection, type TransportHandler, type TransportSendResult, type WebhookAuthResult, type WebhookAuthenticator, type WebhookConfig, type WebhookDispatcher, type WebhookServer, compileAffinities, computeContentHash, computeDispatchKey, createAckFrame, createBackpressureMonitor, createBunTransport, createCanvasServer, createCanvasSseManager, createErrorFrame, createFrameIdGenerator, createGateway, createInMemoryNodeRegistry, createInMemorySessionStore, createInMemorySurfaceStore, createNodeConnectionHandler, createScheduler, createSequenceTracker, createToolRouter, createWebhookServer, encodeFrame, encodeNodeFrame, formatSseEvent, handleHandshake, jsonResponse, matchAffinity, matchPath, negotiateProtocol, parseConnectFrame, parseFrame, parseJsonBody, parseNodeFrame, peekFrameKind, resolveBinding, resolveRoute, resolveTargetNode, startHeartbeatSweep, validateAgentStatusBatch, validateBindingPattern, validateCapabilitiesPayload, validateCapacityPayload, validateHandshakePayload };
 "
 `;

@@ -4,6 +4,7 @@
 
 import type {
   Agent,
+  AgentGroupId,
   AgentManifest,
   AgentRegistry,
   ApprovalHandler,
@@ -345,6 +346,8 @@ export interface CreateKoiOptions {
   readonly userId?: string;
   /** Channel adapter package name (e.g. "@koi/channel-telegram"). Injected into SessionContext. */
   readonly channelId?: string;
+  /** Process group to assign this agent to. Recorded in the registry entry and ProcessId. */
+  readonly groupId?: AgentGroupId | undefined;
 }
 
 export interface KoiRuntime {
@@ -395,6 +398,14 @@ export interface SpawnChildOptions {
   readonly loopDetection?: Partial<LoopDetectionConfig> | false;
   /** Kernel extensions for the child. */
   readonly extensions?: readonly KernelExtension[];
+  /** Process group to assign this child to. Recorded in the registry entry. */
+  readonly groupId?: AgentGroupId | undefined;
+  /**
+   * Grace period in milliseconds for TERM signal.
+   * After aborting the abort controller, wait this long before forcing termination.
+   * Defaults to 5000ms.
+   */
+  readonly gracePeriodMs?: number | undefined;
 }
 
 /**
