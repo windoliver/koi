@@ -12,4 +12,6 @@ export interface BrickComponentMap {
   readonly agent: AgentDescriptor;
   readonly middleware: ImplementationArtifact;
   readonly channel: ImplementationArtifact;
+  /** Composite resolves to the output kind's component type. */
+  readonly composite: Tool | SkillComponent | AgentDescriptor | ImplementationArtifact;
 }

@@ -43,7 +43,9 @@ export function meetsMinTrust(actual: TrustTier, required: TrustTier): boolean {
 
 /** Returns true if the brick's trust tier meets the minimum for its kind. */
 export function meetsKindTrust(brick: BrickArtifact): boolean {
-  const minTrust = MIN_TRUST_BY_KIND[brick.kind];
+  // Composite bricks use outputKind for trust evaluation
+  const effectiveKind = brick.kind === "composite" ? brick.outputKind : brick.kind;
+  const minTrust = MIN_TRUST_BY_KIND[effectiveKind];
   return meetsMinTrust(brick.trustTier, minTrust);
 }
 
@@ -84,6 +86,9 @@ export function mapBrickToComponent<K extends BrickKind>(
     case "middleware":
     case "channel":
       return artifact as BrickComponentMap[K];
+    case "composite":
+      // Composite bricks resolve via their last step — caller handles resolution
+      return undefined;
     default:
       return undefined;
   }

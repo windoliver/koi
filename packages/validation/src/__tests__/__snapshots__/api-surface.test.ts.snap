@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/validation API surface . has stable type surface 1`] = `
-"import { BrickArtifactBase, BrickUpdate, Result, BrickArtifact, KoiError, BrickFitnessMetrics, TrustTier, LatencySampler, MutationPressurePolicy, MutationPressure, ForgeQuery, TrailConfig, StoreChangeNotifier } from '@koi/core';
+"import { BrickArtifactBase, BrickUpdate, Result, BrickArtifact, KoiError, PipelineStep, BrickFitnessMetrics, TrustTier, LatencySampler, ForgeQuery } from '@koi/core';
 import { z } from 'zod';
 
 /**
@@ -36,21 +36,44 @@ declare function applyBrickUpdate<T extends BrickArtifactBase>(existing: T, upda
 declare function validateBrickArtifact(data: unknown, source: string): Result<BrickArtifact, KoiError>;
 
 /**
- * Drift scoring — measures how much a brick's source files have changed.
+ * Pipeline composition validation — structural schema compatibility
+ * and pipeline step sequence validation.
  *
- * Pure function: takes glob patterns (from BrickDriftContext.sourceFiles)
- * and a list of changed files, returns a 0–1 score representing the
- * proportion of source patterns with changes.
+ * Used by compose_forge to validate that consecutive steps in a pipeline
+ * have compatible I/O schemas before producing a CompositeArtifact.
  */
+
+/** Result of a structural schema compatibility check. */
+interface SchemaCompatibility {
+    readonly compatible: boolean;
+    readonly errors: readonly string[];
+}
 /**
- * Compute the drift score for a brick's source file patterns.
+ * Check structural compatibility between a producer's output schema
+ * and a consumer's input schema using JSON Schema subset rules.
  *
- * @param sourcePatterns - Glob patterns of codebase files the brick describes.
- * @param changedFiles - Files that have changed since the brick was last checked.
- * @returns 0–1 score: proportion of source patterns that have matching changes.
- *   Returns 0 if either input is empty.
+ * Rules:
+ * - \`type\` must match (if both specify it)
+ * - Consumer's \`required\` fields must all exist in producer's \`properties\`
+ * - Nested \`properties\` types are compared recursively up to \`maxDepth\`
+ * - Extra properties in the producer are allowed (open-world assumption)
  */
-declare function computeDrift(sourcePatterns: readonly string[], changedFiles: readonly string[]): number;
+declare function checkSchemaCompatibility(producer: Readonly<Record<string, unknown>>, consumer: Readonly<Record<string, unknown>>, maxDepth?: number): SchemaCompatibility;
+/** Result of pipeline validation. */
+interface PipelineValidation {
+    readonly valid: boolean;
+    readonly errors: readonly string[];
+}
+/**
+ * Validate a pipeline of steps for structural correctness.
+ *
+ * Checks:
+ * - At least 2 steps
+ * - At most MAX_PIPELINE_STEPS steps
+ * - Consecutive steps have compatible schemas (output[i] → input[i+1])
+ * - Reports all errors (not just the first)
+ */
+declare function validatePipeline(steps: readonly PipelineStep[]): PipelineValidation;
 
 /**
  * Fitness scoring — multiplicative composite score for brick discovery ranking.
@@ -154,26 +177,6 @@ declare function mergeSamplers(a: LatencySampler, b: LatencySampler): LatencySam
 declare function levenshteinDistance(a: string, b: string, maxDistance?: number): number;
 
 /**
- * Mutation pressure scoring — maps fitness scores to pressure zones.
- *
- * Pure function, no I/O. Used by forge governance to determine whether
- * a capability space is protected by high-fitness incumbents.
- */
-
-/**
- * Maps a fitness score to a mutation pressure zone.
- *
- * - \`> frozenThreshold\` → "frozen" (block forge in overlapping capability space)
- * - \`>= stableThreshold\` → "stable" (normal)
- * - \`>= experimentalThreshold\` → "experimental" (increased experimentation)
- * - \`< experimentalThreshold\` → "aggressive" (amplified replacement search)
- *
- * @param fitnessScore - Composite fitness score in [0, 1].
- * @param policy - Optional partial policy overrides (merged with defaults).
- */
-declare function computeMutationPressure(fitnessScore: number, policy?: Partial<MutationPressurePolicy>): MutationPressure;
-
-/**
  * Pure query-matching logic for ForgeStore.search().
  *
  * Operates on BrickArtifactBase (metadata) — all filter dimensions
@@ -205,7 +208,6 @@ declare function severityAtOrAbove(severity: Severity, threshold: Severity): boo
 interface SortBricksOptions {
     readonly nowMs: number;
     readonly fitnessConfig?: Partial<FitnessScoringConfig>;
-    readonly trailConfig?: Partial<TrailConfig>;
 }
 /**
  * Sorts and optionally filters bricks based on ForgeQuery ordering options.
@@ -217,52 +219,6 @@ interface SortBricksOptions {
  * - Returns a new array — never mutates the input.
  */
 declare function sortBricks<T extends BrickArtifactBase>(bricks: readonly T[], query: ForgeQuery, options: SortBricksOptions): readonly T[];
-
-/**
- * In-memory store change notifier — pub/sub for store mutation observation.
- *
- * Extracted to @koi/validation (L0u) so all L2 store implementations can
- * reuse the same notification pattern without cross-L2 imports.
- */
-
-/**
- * Creates an in-memory \`StoreChangeNotifier\` backed by a simple listener map.
- *
- * - \`notify()\` snapshots the listener array and calls each synchronously.
- * - \`subscribe()\` returns an unsubscribe function.
- * - Throws if subscriber count reaches \`MAX_SUBSCRIBERS\` (likely a leak).
- */
-declare function createMemoryStoreChangeNotifier(): StoreChangeNotifier;
-
-/**
- * Trail strength — pure functions for stigmergic trail decay and reinforcement.
- *
- * Implements MMAS (Max-Min Ant System) bounded exponential decay:
- * - Decay: max(tauMin, stored × e^(-λ × elapsed)) where λ = ln(2) / halfLife
- * - Reinforcement: min(tauMax, current + reinforcement)
- *
- * All functions are pure — no side effects, no I/O.
- */
-
-/**
- * Computes the effective trail strength after exponential decay over elapsed time.
- *
- * Formula: max(tauMin, storedStrength × e^(-λ × elapsedMs))
- * where λ = ln(2) / (halfLifeDays × MS_PER_DAY)
- *
- * Guards against NaN/Infinity by clamping to [tauMin, tauMax].
- */
-declare function computeEffectiveTrailStrength(storedStrength: number, elapsedMs: number, config?: Partial<TrailConfig>): number;
-/**
- * Computes the new trail strength after additive reinforcement.
- *
- * Formula: min(tauMax, currentStrength + reinforcement)
- */
-declare function computeTrailReinforcement(currentStrength: number, config?: Partial<TrailConfig>): number;
-/**
- * Returns true when the effective trail strength has decayed to or below tauMin.
- */
-declare function isTrailEvaporated(storedStrength: number, elapsedMs: number, config?: Partial<TrailConfig>): boolean;
 
 /**
  * Shared Zod → KoiError validation utilities.
@@ -287,6 +243,6 @@ declare function zodToKoiError(zodError: z.core.$ZodError, prefix?: string): Koi
  */
 declare function validateWith<T>(schema: z.ZodType<T>, raw: unknown, prefix?: string): Result<T, KoiError>;
 
-export { DEFAULT_DECAY_THRESHOLDS, DEFAULT_FITNESS_SCORING_CONFIG, type DecayThresholds, type FitnessScoringConfig, SEVERITY_ORDER, type Severity, type SortBricksOptions, applyBrickUpdate, computeBrickFitness, computeDrift, computeEffectiveTrailStrength, computeMutationPressure, computePercentile, computeTrailReinforcement, createLatencySampler, createMemoryStoreChangeNotifier, evaluateTrustDecay, isTrailEvaporated, levenshteinDistance, matchesBrickQuery, mergeSamplers, recordLatency, severityAtOrAbove, sortBricks, validateBrickArtifact, validateWith, zodToKoiError };
+export { DEFAULT_DECAY_THRESHOLDS, DEFAULT_FITNESS_SCORING_CONFIG, type DecayThresholds, type FitnessScoringConfig, type PipelineValidation, SEVERITY_ORDER, type SchemaCompatibility, type Severity, type SortBricksOptions, applyBrickUpdate, checkSchemaCompatibility, computeBrickFitness, computePercentile, createLatencySampler, evaluateTrustDecay, levenshteinDistance, matchesBrickQuery, mergeSamplers, recordLatency, severityAtOrAbove, sortBricks, validateBrickArtifact, validatePipeline, validateWith, zodToKoiError };
 "
 `;

@@ -15,6 +15,7 @@ interface HasKindAndContent {
   readonly implementation?: string;
   readonly content?: string;
   readonly manifestYaml?: string;
+  readonly steps?: readonly { readonly brickId: string }[];
 }
 
 /**
@@ -33,5 +34,10 @@ export function extractBrickContent(brick: HasKindAndContent): {
       return { kind: brick.kind, content: brick.content ?? "" };
     case "agent":
       return { kind: brick.kind, content: brick.manifestYaml ?? "" };
+    case "composite":
+      return {
+        kind: brick.kind,
+        content: brick.steps?.map((s) => s.brickId).join(",") ?? "",
+      };
   }
 }

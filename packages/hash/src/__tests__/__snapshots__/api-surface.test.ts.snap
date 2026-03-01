@@ -28,6 +28,14 @@ declare function computeBrickId(kind: string, content: string, files?: Readonly<
  */
 declare function computeCompositeBrickId(childIds: readonly BrickId[], files?: Readonly<Record<string, string>>): BrickId;
 /**
+ * Compute a content-addressed BrickId for a pipeline (order-preserving).
+ *
+ * Unlike \`computeCompositeBrickId\` which sorts children (order-independent),
+ * pipeline identity preserves step order: A→B differs from B→A.
+ * Format: \`sha256:<64-char-hex>\`.
+ */
+declare function computePipelineBrickId(stepIds: readonly BrickId[], outputKind: string, files?: Readonly<Record<string, string>>): BrickId;
+/**
  * Type guard — validates that a string has the \`sha256:<64-hex-chars>\` format.
  */
 declare function isBrickId(value: string): value is BrickId;
@@ -76,6 +84,6 @@ declare function createHmacSigner(secretKey: Uint8Array): SigningBackend;
 /** Generate a ULID — 26-char, time-sortable, crypto-random unique ID. */
 declare function generateUlid(): string;
 
-export { computeBrickId, computeCompositeBrickId, computeContentHash, createHmacSigner, fnv1a, generateUlid, isBrickId };
+export { computeBrickId, computeCompositeBrickId, computeContentHash, computePipelineBrickId, createHmacSigner, fnv1a, generateUlid, isBrickId };
 "
 `;

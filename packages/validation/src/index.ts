@@ -10,6 +10,12 @@ export { applyBrickUpdate } from "./apply-brick-update.js";
 export { validateBrickArtifact } from "./brick-validation.js";
 export { computeDrift } from "./drift-scoring.js";
 export {
+  checkSchemaCompatibility,
+  type PipelineValidation,
+  type SchemaCompatibility,
+  validatePipeline,
+} from "./composition-validation.js";
+export {
   computeBrickFitness,
   DEFAULT_DECAY_THRESHOLDS,
   DEFAULT_FITNESS_SCORING_CONFIG,

@@ -51,8 +51,8 @@ export async function verifySandbox(
   config: VerificationConfig,
   executionContext?: ExecutionContext,
 ): Promise<Result<StageReport, ForgeError>> {
-  // Skills and agents skip sandbox execution
-  if (input.kind === "skill" || input.kind === "agent") {
+  // Skills, agents, and composites skip sandbox execution
+  if (input.kind === "skill" || input.kind === "agent" || input.kind === "composite") {
     return {
       ok: true,
       value: {

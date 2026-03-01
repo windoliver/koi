@@ -88,6 +88,7 @@ function withUpdatedImplementation(
     case "skill":
       return { ...brick, content: newContent };
     case "agent":
+    case "composite":
       return undefined;
   }
 }
@@ -263,6 +264,7 @@ function buildForgeInputFromArtifact(brick: BrickArtifact): ForgeInput | undefin
         ...(brick.testCases !== undefined ? { testCases: brick.testCases } : {}),
       };
     case "agent":
+    case "composite":
       return undefined;
   }
 }
@@ -285,6 +287,8 @@ function withNewIdentity(
     case "channel":
       return { ...brick, id: newId, provenance, version, lastVerifiedAt: now };
     case "agent":
+      return { ...brick, id: newId, provenance, version, lastVerifiedAt: now };
+    case "composite":
       return { ...brick, id: newId, provenance, version, lastVerifiedAt: now };
   }
 }

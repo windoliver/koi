@@ -47,6 +47,13 @@ function mapKindFields(brick: BrickArtifact): JsonObject {
           ? { testCases: brick.testCases as unknown as JsonObject }
           : {}),
       };
+    case "composite":
+      return {
+        steps: brick.steps as unknown as JsonObject,
+        exposedInput: brick.exposedInput as unknown as JsonObject,
+        exposedOutput: brick.exposedOutput as unknown as JsonObject,
+        outputKind: brick.outputKind,
+      };
   }
 }
 

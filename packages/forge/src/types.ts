@@ -144,12 +144,18 @@ export interface ForgeChannelInput extends ForgeInputBase {
   readonly configSchema?: Readonly<Record<string, unknown>>;
 }
 
+export interface ForgeCompositeInput extends ForgeInputBase {
+  readonly kind: "composite";
+  readonly brickIds: readonly string[];
+}
+
 export type ForgeInput =
   | ForgeToolInput
   | ForgeSkillInput
   | ForgeAgentInput
   | ForgeMiddlewareInput
-  | ForgeChannelInput;
+  | ForgeChannelInput
+  | ForgeCompositeInput;
 
 // ---------------------------------------------------------------------------
 // Pluggable verifier (Stage 3)
@@ -193,6 +199,7 @@ export type {
   AgentArtifact,
   BrickArtifact,
   BrickArtifactBase,
+  CompositeArtifact,
   ImplementationArtifact,
   SkillArtifact,
   ToolArtifact,

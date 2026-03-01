@@ -108,7 +108,11 @@ interface ForgeChannelInput extends ForgeInputBase {
     readonly testCases?: readonly TestCase[];
     readonly configSchema?: Readonly<Record<string, unknown>>;
 }
-type ForgeInput = ForgeToolInput | ForgeSkillInput | ForgeAgentInput | ForgeMiddlewareInput | ForgeChannelInput;
+interface ForgeCompositeInput extends ForgeInputBase {
+    readonly kind: "composite";
+    readonly brickIds: readonly string[];
+}
+type ForgeInput = ForgeToolInput | ForgeSkillInput | ForgeAgentInput | ForgeMiddlewareInput | ForgeChannelInput | ForgeCompositeInput;
 interface VerifierResult {
     readonly passed: boolean;
     readonly message?: string;
@@ -456,6 +460,9 @@ interface HasKindAndContent {
     readonly implementation?: string;
     readonly content?: string;
     readonly manifestYaml?: string;
+    readonly steps?: readonly {
+        readonly brickId: string;
+    }[];
 }
 /**
  * Extract the primary content string from a brick artifact for hashing.
@@ -1117,13 +1124,13 @@ interface ForgeToolConfig {
 declare function createForgeTool(toolConfig: ForgeToolConfig, deps: ForgeDeps): Tool;
 
 /**
- * compose_forge — Composes multiple bricks of the same kind into a single composite.
+ * compose_forge — Composes multiple bricks into a linear pipeline (A→B→C).
  *
- * Loads all referenced bricks from the store, validates they are the same kind,
- * merges their content, and runs the result through the standard forge pipeline
- * (verify → content-addressed ID → save).
+ * Loads all referenced bricks from the store, extracts typed I/O ports,
+ * validates consecutive schema compatibility, and produces a CompositeArtifact
+ * with a content-addressed pipeline ID (order-preserving).
  *
- * v1: same-kind only (tool+tool or skill+skill). Mixed kinds are rejected.
+ * v2: Pipeline semantics. Mixed kinds allowed. Order matters.
  */
 
 declare function createComposeForge(deps: ForgeDeps): Tool;

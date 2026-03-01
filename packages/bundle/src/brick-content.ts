@@ -18,5 +18,7 @@ export function extractBrickContent(brick: BrickArtifact): string {
       return brick.content;
     case "agent":
       return brick.manifestYaml;
+    case "composite":
+      return brick.steps.map((s) => s.brickId).join(",");
   }
 }

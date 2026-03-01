@@ -1,26 +1,31 @@
 /**
- * compose_forge — Composes multiple bricks of the same kind into a single composite.
+ * compose_forge — Composes multiple bricks into a linear pipeline (A→B→C).
  *
- * Loads all referenced bricks from the store, validates they are the same kind,
- * merges their content, and runs the result through the standard forge pipeline
- * (verify → content-addressed ID → save).
+ * Loads all referenced bricks from the store, extracts typed I/O ports,
+ * validates consecutive schema compatibility, and produces a CompositeArtifact
+ * with a content-addressed pipeline ID (order-preserving).
  *
- * v1: same-kind only (tool+tool or skill+skill). Mixed kinds are rejected.
+ * v2: Pipeline semantics. Mixed kinds allowed. Order matters.
  */
 
-import type { BrickArtifact, Result, Tool } from "@koi/core";
-import { brickId } from "@koi/core";
+import type {
+  BrickArtifact,
+  BrickKind,
+  BrickPort,
+  CompositeArtifact,
+  PipelineStep,
+  Result,
+  Tool,
+} from "@koi/core";
+import { brickId, MAX_PIPELINE_STEPS } from "@koi/core";
+import { computePipelineBrickId } from "@koi/hash";
+import { validatePipeline } from "@koi/validation";
+import { createForgeProvenance } from "../attestation.js";
 import type { ForgeError } from "../errors.js";
 import { staticError, storeError } from "../errors.js";
-import { generateSkillMd } from "../generate-skill-md.js";
-import type { ForgeResult, ForgeSkillInput, ForgeToolInput } from "../types.js";
+import type { ForgeResult } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
-import {
-  buildBaseFields,
-  createForgeTool,
-  parseCompositeInput,
-  runForgePipeline,
-} from "./shared.js";
+import { buildBaseFields, createForgeTool, parseCompositeInput } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Tool config
@@ -29,7 +34,7 @@ import {
 const COMPOSE_FORGE_CONFIG: ForgeToolConfig = {
   name: "compose_forge",
   description:
-    "Composes multiple bricks of the same kind into a single composite brick. Merges implementations (tools) or content (skills), runs verification, and saves with a content-addressed ID.",
+    "Composes multiple bricks into a linear pipeline (A→B→C). Validates schema compatibility between consecutive steps, produces a CompositeArtifact with content-addressed pipeline identity.",
   inputSchema: {
     type: "object",
     properties: {
@@ -38,7 +43,7 @@ const COMPOSE_FORGE_CONFIG: ForgeToolConfig = {
       brickIds: {
         type: "array",
         items: { type: "string" },
-        description: "IDs of bricks to compose (must all be the same kind)",
+        description: "IDs of bricks to compose as an ordered pipeline",
       },
       tags: { type: "array", items: { type: "string" } },
       files: { type: "object", description: "Additional companion files: relative path → content" },
@@ -61,10 +66,22 @@ async function composeForgeHandler(
     return parsed;
   }
 
+  const { name, description, tags, files: inputFiles } = parsed.value;
+
   if (parsed.value.brickIds.length < 2) {
     return {
       ok: false,
       error: staticError("INVALID_SCHEMA", "compose_forge requires at least 2 brickIds"),
+    };
+  }
+
+  if (parsed.value.brickIds.length > MAX_PIPELINE_STEPS) {
+    return {
+      ok: false,
+      error: staticError(
+        "INVALID_SCHEMA",
+        `compose_forge pipeline exceeds maximum of ${MAX_PIPELINE_STEPS} steps`,
+      ),
     };
   }
 
@@ -89,193 +106,209 @@ async function composeForgeHandler(
     bricks.push(result.value);
   }
 
-  // Validate all same kind
-  const firstBrick = bricks[0];
-  if (firstBrick === undefined) {
+  // Build pipeline steps with extracted ports
+  const steps: PipelineStep[] = [];
+  for (const brick of bricks) {
+    const { inputPort, outputPort } = extractPorts(brick);
+    // justified: mutable local array being constructed, not shared state
+    steps.push({
+      brickId: brick.id,
+      inputPort,
+      outputPort,
+    });
+  }
+
+  // Validate pipeline schema compatibility
+  const pipelineResult = validatePipeline(steps);
+  if (!pipelineResult.valid) {
+    return {
+      ok: false,
+      error: staticError(
+        "INVALID_SCHEMA",
+        `Pipeline validation failed: ${pipelineResult.errors.join("; ")}`,
+      ),
+    };
+  }
+
+  // Determine output kind from last brick
+  const lastBrick = bricks[bricks.length - 1];
+  if (lastBrick === undefined) {
     return {
       ok: false,
       error: staticError("INVALID_SCHEMA", "No bricks loaded"),
     };
   }
+  const outputKind: BrickKind =
+    lastBrick.kind === "composite" ? lastBrick.outputKind : lastBrick.kind;
 
-  const kind = firstBrick.kind;
-  const mixedKind = bricks.find((b) => b.kind !== kind);
-  if (mixedKind !== undefined) {
+  // Exposed ports come from first and last steps
+  const firstStep = steps[0];
+  const lastStep = steps[steps.length - 1];
+  if (firstStep === undefined || lastStep === undefined) {
     return {
       ok: false,
-      error: staticError(
-        "INVALID_TYPE",
-        `All bricks must be the same kind. Expected "${kind}" but found "${mixedKind.kind}". Mixed-kind composition is not supported in v1.`,
-      ),
+      error: staticError("INVALID_SCHEMA", "Pipeline steps are empty"),
     };
   }
 
-  // Merge based on kind and run through forge pipeline
-  if (kind === "tool") {
-    const merged = mergeTools(bricks, parsed.value);
-    if (!merged.ok) return merged;
+  // Compute content-addressed pipeline ID (order-preserving)
+  const stepIds = bricks.map((b) => b.id);
+  const id = computePipelineBrickId(stepIds, outputKind, inputFiles);
 
-    return runForgePipeline(merged.value, deps, (report) => ({
-      ...buildBaseFields(brickId("placeholder"), merged.value, report, deps),
-      kind: "tool" as const,
-      implementation: merged.value.implementation,
-      inputSchema: merged.value.inputSchema,
-      ...(merged.value.testCases !== undefined ? { testCases: merged.value.testCases } : {}),
-      ...(merged.value.files !== undefined ? { files: merged.value.files } : {}),
-    }));
+  // Dedup check
+  const existsResult = await deps.store.exists(id);
+  if (existsResult.ok && existsResult.value) {
+    const forgeResult: ForgeResult = {
+      id,
+      kind: "composite",
+      name,
+      descriptor: { name, description, inputSchema: {} },
+      trustTier: deps.config.defaultTrustTier ?? "sandbox",
+      scope: deps.config.defaultScope,
+      lifecycle: "active",
+      verificationReport: {
+        stages: [],
+        finalTrustTier: deps.config.defaultTrustTier ?? "sandbox",
+        totalDurationMs: 0,
+        passed: true,
+      },
+      metadata: {
+        forgedAt: Date.now(),
+        forgedBy: deps.context.agentId,
+        sessionId: deps.context.sessionId,
+        depth: deps.context.depth,
+      },
+      forgesConsumed: 0,
+    };
+    return { ok: true, value: forgeResult };
   }
 
-  if (kind === "skill") {
-    const merged = mergeSkills(bricks, parsed.value);
-    if (!merged.ok) return merged;
+  const startedAt = Date.now();
 
-    const generatedContent = generateSkillMd({
-      name: parsed.value.name,
-      description: parsed.value.description,
-      ...(parsed.value.tags !== undefined ? { tags: parsed.value.tags } : {}),
-      agentId: deps.context.agentId,
-      version: "0.0.1",
-      body: merged.value.body,
-    });
+  // Build the composite artifact
+  const baseFields = buildBaseFields(
+    id,
+    { name, description, ...(tags !== undefined ? { tags } : {}) },
+    {
+      stages: [],
+      finalTrustTier: deps.config.defaultTrustTier ?? "sandbox",
+      totalDurationMs: 0,
+      passed: true,
+    },
+    deps,
+  );
 
-    return runForgePipeline(merged.value, deps, (report) => ({
-      ...buildBaseFields(brickId("placeholder"), merged.value, report, deps),
-      kind: "skill" as const,
-      content: generatedContent,
-      ...(merged.value.files !== undefined ? { files: merged.value.files } : {}),
-    }));
-  }
+  const provenance = createForgeProvenance({
+    input: { kind: "composite", name, description, brickIds: parsed.value.brickIds },
+    context: deps.context,
+    report: {
+      stages: [],
+      finalTrustTier: deps.config.defaultTrustTier ?? "sandbox",
+      totalDurationMs: 0,
+      passed: true,
+    },
+    config: deps.config,
+    contentHash: id,
+    invocationId: id,
+    startedAt,
+    finishedAt: Date.now(),
+  });
 
-  return {
-    ok: false,
-    error: staticError(
-      "INVALID_TYPE",
-      `compose_forge does not support "${kind}" bricks in v1. Only "tool" and "skill" are supported.`,
-    ),
+  const artifact: CompositeArtifact = {
+    ...baseFields,
+    kind: "composite",
+    provenance,
+    steps,
+    exposedInput: firstStep.inputPort,
+    exposedOutput: lastStep.outputPort,
+    outputKind,
+    ...(inputFiles !== undefined ? { files: inputFiles } : {}),
   };
+
+  const saveResult = await deps.store.save(artifact);
+  if (!saveResult.ok) {
+    return {
+      ok: false,
+      error: {
+        stage: "store",
+        code: "SAVE_FAILED",
+        message: `Failed to save composite artifact: ${saveResult.error.message}`,
+      },
+    };
+  }
+
+  // Fire-and-forget notification for cross-agent cache invalidation
+  if (deps.notifier !== undefined) {
+    void Promise.resolve(
+      deps.notifier.notify({ kind: "saved", brickId: id, scope: deps.config.defaultScope }),
+    ).catch(() => {});
+  }
+
+  const forgeResult: ForgeResult = {
+    id,
+    kind: "composite",
+    name,
+    descriptor: { name, description, inputSchema: {} },
+    trustTier: baseFields.trustTier,
+    scope: baseFields.scope,
+    lifecycle: "active",
+    verificationReport: {
+      stages: [],
+      finalTrustTier: baseFields.trustTier,
+      totalDurationMs: Date.now() - startedAt,
+      passed: true,
+    },
+    metadata: {
+      forgedAt: startedAt,
+      forgedBy: deps.context.agentId,
+      sessionId: deps.context.sessionId,
+      depth: deps.context.depth,
+    },
+    forgesConsumed: 1,
+  };
+
+  return { ok: true, value: forgeResult };
 }
 
 // ---------------------------------------------------------------------------
-// Kind-specific merge logic
+// Port extraction helper
 // ---------------------------------------------------------------------------
 
-interface CompositeFields {
-  readonly name: string;
-  readonly description: string;
-  readonly tags?: readonly string[] | undefined;
-  readonly files?: Readonly<Record<string, string>> | undefined;
-}
-
-function mergeTools(
-  bricks: readonly BrickArtifact[],
-  fields: CompositeFields,
-): Result<ForgeToolInput, ForgeError> {
-  const implementations: string[] = [];
-  const mergedProperties: Record<string, unknown> = {};
-  const mergedRequired: string[] = [];
-  const mergedTestCases: Array<{
-    readonly name: string;
-    readonly input: unknown;
-    readonly expectedOutput?: unknown;
-    readonly shouldThrow?: boolean;
-  }> = [];
-  let mergedFiles: Record<string, string> = {};
-
-  for (const brick of bricks) {
-    if (brick.kind !== "tool") continue;
-
-    implementations.push(`// --- ${brick.name} ---\n${brick.implementation}`);
-
-    // Merge inputSchema properties (union)
-    const schema = brick.inputSchema;
-    if (typeof schema === "object" && schema !== null) {
-      const props = (schema as Record<string, unknown>).properties;
-      if (typeof props === "object" && props !== null) {
-        Object.assign(mergedProperties, props);
-      }
-      const req = (schema as Record<string, unknown>).required;
-      if (Array.isArray(req)) {
-        for (const r of req) {
-          if (typeof r === "string" && !mergedRequired.includes(r)) {
-            mergedRequired.push(r);
-          }
-        }
-      }
-    }
-
-    // Merge test cases with name-spacing
-    if (brick.testCases !== undefined) {
-      for (const tc of brick.testCases) {
-        mergedTestCases.push({
-          name: `[${brick.name}] ${tc.name}`,
-          input: tc.input,
-          ...(tc.expectedOutput !== undefined ? { expectedOutput: tc.expectedOutput } : {}),
-          ...(tc.shouldThrow !== undefined ? { shouldThrow: tc.shouldThrow } : {}),
-        });
-      }
-    }
-
-    // Merge companion files
-    if (brick.files !== undefined) {
-      mergedFiles = { ...mergedFiles, ...brick.files };
-    }
+/**
+ * Extract typed I/O ports from a brick based on its kind.
+ */
+function extractPorts(brick: BrickArtifact): {
+  readonly inputPort: BrickPort;
+  readonly outputPort: BrickPort;
+} {
+  switch (brick.kind) {
+    case "tool":
+      return {
+        inputPort: { name: "input", schema: brick.inputSchema },
+        outputPort: { name: "output", schema: { type: "object" } },
+      };
+    case "skill":
+      return {
+        inputPort: { name: "input", schema: { type: "string" } },
+        outputPort: { name: "output", schema: { type: "string" } },
+      };
+    case "agent":
+      return {
+        inputPort: { name: "input", schema: { type: "object" } },
+        outputPort: { name: "output", schema: { type: "object" } },
+      };
+    case "middleware":
+    case "channel":
+      return {
+        inputPort: { name: "input", schema: { type: "object" } },
+        outputPort: { name: "output", schema: { type: "object" } },
+      };
+    case "composite":
+      return {
+        inputPort: brick.exposedInput,
+        outputPort: brick.exposedOutput,
+      };
   }
-
-  // Overlay caller-provided files
-  if (fields.files !== undefined) {
-    mergedFiles = { ...mergedFiles, ...fields.files };
-  }
-
-  const inputSchema: Record<string, unknown> = {
-    type: "object",
-    properties: mergedProperties,
-    ...(mergedRequired.length > 0 ? { required: mergedRequired } : {}),
-  };
-
-  const forgeInput: ForgeToolInput = {
-    kind: "tool",
-    name: fields.name,
-    description: fields.description,
-    inputSchema,
-    implementation: implementations.join("\n\n"),
-    ...(mergedTestCases.length > 0 ? { testCases: mergedTestCases } : {}),
-    ...(fields.tags !== undefined ? { tags: fields.tags } : {}),
-    ...(Object.keys(mergedFiles).length > 0 ? { files: mergedFiles } : {}),
-  };
-
-  return { ok: true, value: forgeInput };
-}
-
-function mergeSkills(
-  bricks: readonly BrickArtifact[],
-  fields: CompositeFields,
-): Result<ForgeSkillInput, ForgeError> {
-  const sections: string[] = [];
-  let mergedFiles: Record<string, string> = {};
-
-  for (const brick of bricks) {
-    if (brick.kind !== "skill") continue;
-    sections.push(`## ${brick.name}\n\n${brick.content}`);
-
-    if (brick.files !== undefined) {
-      mergedFiles = { ...mergedFiles, ...brick.files };
-    }
-  }
-
-  if (fields.files !== undefined) {
-    mergedFiles = { ...mergedFiles, ...fields.files };
-  }
-
-  const forgeInput: ForgeSkillInput = {
-    kind: "skill",
-    name: fields.name,
-    description: fields.description,
-    body: sections.join("\n\n---\n\n"),
-    ...(fields.tags !== undefined ? { tags: fields.tags } : {}),
-    ...(Object.keys(mergedFiles).length > 0 ? { files: mergedFiles } : {}),
-  };
-
-  return { ok: true, value: forgeInput };
 }
 
 // ---------------------------------------------------------------------------
