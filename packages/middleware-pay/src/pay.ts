@@ -20,9 +20,26 @@ import type { PayMiddlewareConfig } from "./config.js";
 
 const DEFAULT_ALERT_THRESHOLDS: readonly number[] = [0.8, 0.95];
 
+/** Cost amount precision for PayLedger string amounts. */
+const COST_PRECISION = 10;
+
+/**
+ * Parse a PayLedger string amount, failing closed on invalid data.
+ * Returns a finite number; throws on NaN/Infinity to prevent silent bypass.
+ */
+function parseAmount(raw: string): number {
+  const n = parseFloat(raw);
+  if (!Number.isFinite(n)) {
+    throw KoiRuntimeError.from("INTERNAL", `Invalid balance amount: "${raw}"`, {
+      context: { rawValue: raw },
+    });
+  }
+  return n;
+}
+
 export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware {
   const {
-    tracker,
+    ledger,
     calculator,
     budget,
     alertThresholds = DEFAULT_ALERT_THRESHOLDS,
@@ -32,7 +49,7 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
   } = config;
 
   // Cached remaining budget for describeCapabilities (updated after each model call)
-  // let justified: mutable state updated by wrapModelCall to reflect latest budget snapshot
+  // let justified: mutable state updated by recordCost to reflect latest budget snapshot
   let lastKnownRemaining: number = budget;
 
   // Track which thresholds have already been fired to avoid repeats
@@ -50,12 +67,33 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
     }
   }
 
-  async function checkBudget(sessionId: string): Promise<void> {
-    const remainingBudget = await tracker.remaining(sessionId, budget);
-    if (hardKill && remainingBudget <= 0) {
+  async function checkBudget(): Promise<void> {
+    const balance = await ledger.getBalance();
+    const remaining = parseAmount(balance.available);
+    if (hardKill && remaining <= 0) {
       throw KoiRuntimeError.from("RATE_LIMIT", `Budget exhausted. Limit: $${budget.toFixed(4)}`, {
         context: { budget, remaining: 0 },
       });
+    }
+  }
+
+  async function recordCost(
+    model: string,
+    costUsd: number,
+    inputTokens: number,
+    outputTokens: number,
+  ): Promise<void> {
+    await ledger.meter(costUsd.toFixed(COST_PRECISION), "model_call");
+    const balance = await ledger.getBalance();
+    const remaining = parseAmount(balance.available);
+    const totalSpent = budget - remaining;
+    lastKnownRemaining = remaining;
+
+    const pctUsed = budget > 0 ? totalSpent / budget : 1;
+    checkAndFireAlerts(pctUsed, remaining);
+
+    if (onUsage) {
+      onUsage({ model, costUsd, inputTokens, outputTokens, totalSpent, remaining });
     }
   }
 
@@ -70,96 +108,56 @@ export function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware 
     }),
 
     async wrapModelCall(
-      ctx: TurnContext,
+      _ctx: TurnContext,
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      const sessionId = ctx.session.sessionId;
-      await checkBudget(sessionId);
+      await checkBudget();
 
       const response = await next(request);
 
-      // Record cost if usage is available
       if (response.usage) {
-        const model = response.model;
         const costUsd = calculator.calculate(
-          model,
+          response.model,
           response.usage.inputTokens,
           response.usage.outputTokens,
         );
-        const costEntry = {
-          inputTokens: response.usage.inputTokens,
-          outputTokens: response.usage.outputTokens,
-          model,
+        await recordCost(
+          response.model,
           costUsd,
-          timestamp: Date.now(),
-        };
-        await tracker.record(sessionId, costEntry);
-
-        // Parallel fetch — both reads depend on record being complete, not on each other
-        const [totalSpent, remainingBudget] = await Promise.all([
-          tracker.totalSpend(sessionId),
-          tracker.remaining(sessionId, budget),
-        ]);
-        lastKnownRemaining = remainingBudget;
-        const pctUsed = budget > 0 ? totalSpent / budget : 1;
-        checkAndFireAlerts(pctUsed, remainingBudget);
-
-        if (onUsage) {
-          onUsage({ entry: costEntry, totalSpent, remaining: remainingBudget });
-        }
+          response.usage.inputTokens,
+          response.usage.outputTokens,
+        );
       }
 
       return response;
     },
 
     async *wrapModelStream(
-      ctx: TurnContext,
+      _ctx: TurnContext,
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      const sessionId = ctx.session.sessionId;
-      await checkBudget(sessionId);
+      await checkBudget();
 
       for await (const chunk of next(request)) {
         yield chunk;
 
-        // Record cost from the done chunk, which carries the full ModelResponse + usage.
         if (chunk.kind === "done" && chunk.response.usage) {
           const { model } = chunk.response;
           const { inputTokens, outputTokens } = chunk.response.usage;
           const costUsd = calculator.calculate(model, inputTokens, outputTokens);
-          const costEntry = {
-            inputTokens,
-            outputTokens,
-            model,
-            costUsd,
-            timestamp: Date.now(),
-          };
-          await tracker.record(sessionId, costEntry);
-
-          const [totalSpent, remainingBudget] = await Promise.all([
-            tracker.totalSpend(sessionId),
-            tracker.remaining(sessionId, budget),
-          ]);
-          lastKnownRemaining = remainingBudget;
-          const pctUsed = budget > 0 ? totalSpent / budget : 1;
-          checkAndFireAlerts(pctUsed, remainingBudget);
-
-          if (onUsage) {
-            onUsage({ entry: costEntry, totalSpent, remaining: remainingBudget });
-          }
+          await recordCost(model, costUsd, inputTokens, outputTokens);
         }
       }
     },
 
     async wrapToolCall(
-      ctx: TurnContext,
+      _ctx: TurnContext,
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
-      const sessionId = ctx.session.sessionId;
-      await checkBudget(sessionId);
+      await checkBudget();
       return next(request);
     },
   };

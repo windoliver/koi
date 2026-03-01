@@ -2,11 +2,10 @@
  * @koi/pay-nexus — Nexus-backed credit ledger (Layer 2)
  *
  * Persistent PayLedger implementation that talks to the Nexus pay API
- * (TigerBeetle + PostgreSQL). Includes a BudgetTracker adapter for
- * drop-in compatibility with @koi/middleware-pay.
+ * (TigerBeetle + PostgreSQL). Pass the resulting PayLedger directly
+ * to @koi/middleware-pay's `ledger` config field.
  */
 
-export { createNexusBudgetTracker, mapPayLedgerToBudgetTracker } from "./adapter.js";
 export type { NexusPayLedgerConfig } from "./config.js";
 export { validatePayLedgerConfig } from "./config.js";
 export { payNexusDescriptor } from "./descriptor.js";

@@ -1,57 +1,88 @@
 import { describe, expect, test } from "bun:test";
-import type { CostEntry } from "./tracker.js";
-import { createDefaultCostCalculator, createInMemoryBudgetTracker } from "./tracker.js";
+import { createDefaultCostCalculator, createInMemoryPayLedger } from "./tracker.js";
 
-describe("InMemoryBudgetTracker", () => {
-  const makeCostEntry = (costUsd: number, model = "test-model"): CostEntry => ({
-    inputTokens: 100,
-    outputTokens: 50,
-    model,
-    costUsd,
-    timestamp: Date.now(),
+describe("createInMemoryPayLedger", () => {
+  test("meter and getBalance round-trip", async () => {
+    const ledger = createInMemoryPayLedger(10);
+    await ledger.meter("0.5", "model_call");
+    const balance = await ledger.getBalance();
+    expect(parseFloat(balance.available)).toBeCloseTo(9.5);
+    expect(balance.total).toBe("10");
   });
 
-  test("record and totalSpend round-trip", async () => {
-    const tracker = createInMemoryBudgetTracker();
-    await tracker.record("s1", makeCostEntry(0.5));
-    const total = await tracker.totalSpend("s1");
-    expect(total).toBe(0.5);
+  test("fresh ledger has full budget available", async () => {
+    const ledger = createInMemoryPayLedger(10);
+    const balance = await ledger.getBalance();
+    expect(parseFloat(balance.available)).toBe(10);
+    expect(balance.reserved).toBe("0");
   });
 
-  test("empty session has zero spend", async () => {
-    const tracker = createInMemoryBudgetTracker();
-    const total = await tracker.totalSpend("s1");
-    expect(total).toBe(0);
+  test("available never goes below zero", async () => {
+    const ledger = createInMemoryPayLedger(10);
+    await ledger.meter("15", "model_call");
+    const balance = await ledger.getBalance();
+    expect(parseFloat(balance.available)).toBe(0);
   });
 
-  test("remaining calculation", async () => {
-    const tracker = createInMemoryBudgetTracker();
-    await tracker.record("s1", makeCostEntry(3));
-    const rem = await tracker.remaining("s1", 10);
-    expect(rem).toBe(7);
+  test("multiple meter calls accumulate", async () => {
+    const ledger = createInMemoryPayLedger(10);
+    await ledger.meter("1", "model_call");
+    await ledger.meter("2", "model_call");
+    await ledger.meter("3", "model_call");
+    const balance = await ledger.getBalance();
+    expect(parseFloat(balance.available)).toBeCloseTo(4);
   });
 
-  test("remaining never goes below zero", async () => {
-    const tracker = createInMemoryBudgetTracker();
-    await tracker.record("s1", makeCostEntry(15));
-    const rem = await tracker.remaining("s1", 10);
-    expect(rem).toBe(0);
+  test("meter returns success", async () => {
+    const ledger = createInMemoryPayLedger(10);
+    const result = await ledger.meter("1", "model_call");
+    expect(result.success).toBe(true);
   });
 
-  test("multiple sessions are isolated", async () => {
-    const tracker = createInMemoryBudgetTracker();
-    await tracker.record("s1", makeCostEntry(5));
-    await tracker.record("s2", makeCostEntry(3));
-    expect(await tracker.totalSpend("s1")).toBe(5);
-    expect(await tracker.totalSpend("s2")).toBe(3);
+  test("canAfford returns true when within budget", async () => {
+    const ledger = createInMemoryPayLedger(10);
+    const result = await ledger.canAfford("5");
+    expect(result.canAfford).toBe(true);
+    expect(result.amount).toBe("5");
   });
 
-  test("multiple records accumulate", async () => {
-    const tracker = createInMemoryBudgetTracker();
-    await tracker.record("s1", makeCostEntry(1));
-    await tracker.record("s1", makeCostEntry(2));
-    await tracker.record("s1", makeCostEntry(3));
-    expect(await tracker.totalSpend("s1")).toBe(6);
+  test("canAfford returns false when over budget", async () => {
+    const ledger = createInMemoryPayLedger(10);
+    await ledger.meter("8", "model_call");
+    const result = await ledger.canAfford("5");
+    expect(result.canAfford).toBe(false);
+  });
+
+  test("transfer throws not implemented", () => {
+    const ledger = createInMemoryPayLedger(10);
+    expect(() => ledger.transfer("agent-b", "5")).toThrow("transfer not implemented");
+  });
+
+  test("reserve throws not implemented", () => {
+    const ledger = createInMemoryPayLedger(10);
+    expect(() => ledger.reserve("5")).toThrow("reserve not implemented");
+  });
+
+  test("commit throws not implemented", () => {
+    const ledger = createInMemoryPayLedger(10);
+    expect(() => ledger.commit("rsv-1")).toThrow("commit not implemented");
+  });
+
+  test("release throws not implemented", () => {
+    const ledger = createInMemoryPayLedger(10);
+    expect(() => ledger.release("rsv-1")).toThrow("release not implemented");
+  });
+
+  test("rejects negative initialBudget", () => {
+    expect(() => createInMemoryPayLedger(-1)).toThrow("non-negative finite number");
+  });
+
+  test("rejects NaN initialBudget", () => {
+    expect(() => createInMemoryPayLedger(NaN)).toThrow("non-negative finite number");
+  });
+
+  test("rejects Infinity initialBudget", () => {
+    expect(() => createInMemoryPayLedger(Infinity)).toThrow("non-negative finite number");
   });
 });
 

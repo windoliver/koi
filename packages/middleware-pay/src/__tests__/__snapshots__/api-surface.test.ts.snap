@@ -2,32 +2,24 @@
 
 exports[`@koi/middleware-pay API surface . has stable type surface 1`] = `
 "import { Result, KoiError } from '@koi/core/errors';
+import { PayLedger } from '@koi/core/pay-ledger';
 import { KoiMiddleware } from '@koi/core';
 import { BrickDescriptor } from '@koi/resolve';
 import { KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
 
 /**
- * Budget tracking interfaces and default implementations.
+ * Cost calculation and in-memory PayLedger for dev/testing.
  */
-interface CostEntry {
-    readonly inputTokens: number;
-    readonly outputTokens: number;
-    readonly model: string;
-    readonly costUsd: number;
-    readonly timestamp: number;
-}
+
 interface CostCalculator {
     readonly calculate: (model: string, inputTokens: number, outputTokens: number) => number;
 }
-interface BudgetTracker {
-    readonly record: (sessionId: string, entry: CostEntry) => Promise<void>;
-    readonly totalSpend: (sessionId: string) => Promise<number>;
-    readonly remaining: (sessionId: string, budget: number) => Promise<number>;
-}
 /**
- * In-memory budget tracker. Map-backed, sums costs per session.
+ * In-memory PayLedger backed by a running spend total.
+ * Implements only \`meter()\`, \`getBalance()\`, and \`canAfford()\`.
+ * Unused methods (\`transfer\`, \`reserve\`, \`commit\`, \`release\`) throw.
  */
-declare function createInMemoryBudgetTracker(): BudgetTracker;
+declare function createInMemoryPayLedger(initialBudget: number): PayLedger;
 /**
  * Default cost calculator with simple per-token pricing.
  */
@@ -41,12 +33,15 @@ declare function createDefaultCostCalculator(rates?: Partial<Record<string, {
  */
 
 interface UsageInfo {
-    readonly entry: CostEntry;
+    readonly model: string;
+    readonly costUsd: number;
+    readonly inputTokens: number;
+    readonly outputTokens: number;
     readonly totalSpent: number;
     readonly remaining: number;
 }
 interface PayMiddlewareConfig {
-    readonly tracker: BudgetTracker;
+    readonly ledger: PayLedger;
     readonly calculator: CostCalculator;
     readonly budget: number;
     readonly alertThresholds?: readonly number[];
@@ -60,13 +55,13 @@ declare function validatePayConfig(config: unknown): Result<PayMiddlewareConfig,
  * BrickDescriptor for @koi/middleware-pay.
  *
  * Enables manifest auto-resolution: validates pay config,
- * then creates the pay middleware with in-memory budget tracker
+ * then creates the pay middleware with in-memory pay ledger
  * and default cost calculator.
  */
 
 /**
  * Descriptor for pay middleware.
- * Uses in-memory budget tracker and default cost calculator.
+ * Uses in-memory pay ledger and default cost calculator.
  * Exported for registration with createRegistry().
  */
 declare const descriptor: BrickDescriptor<KoiMiddleware>;
@@ -77,6 +72,6 @@ declare const descriptor: BrickDescriptor<KoiMiddleware>;
 
 declare function createPayMiddleware(config: PayMiddlewareConfig): KoiMiddleware$1;
 
-export { type BudgetTracker, type CostCalculator, type CostEntry, type PayMiddlewareConfig, type UsageInfo, createDefaultCostCalculator, createInMemoryBudgetTracker, createPayMiddleware, descriptor, validatePayConfig };
+export { type CostCalculator, type PayMiddlewareConfig, type UsageInfo, createDefaultCostCalculator, createInMemoryPayLedger, createPayMiddleware, descriptor, validatePayConfig };
 "
 `;

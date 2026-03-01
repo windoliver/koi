@@ -33,7 +33,7 @@ import type { GovernanceBackend, GovernanceVerdict } from "@koi/core/governance-
 import { createKoi } from "@koi/engine";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createInMemoryAuditSink } from "@koi/middleware-audit";
-import { createDefaultCostCalculator, createInMemoryBudgetTracker } from "@koi/middleware-pay";
+import { createDefaultCostCalculator, createInMemoryPayLedger } from "@koi/middleware-pay";
 import { createGovernanceStack } from "./src/index.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -522,12 +522,11 @@ async function test7_permissionsDeny(): Promise<void> {
 async function test8_payWithinBudget(): Promise<void> {
   section("8. pay middleware — run completes within budget, cost recorded");
 
-  const tracker = createInMemoryBudgetTracker();
   const calculator = createDefaultCostCalculator();
 
   const { middlewares } = createGovernanceStack({
     pay: {
-      tracker,
+      ledger: createInMemoryPayLedger(10.0),
       calculator,
       budget: 10.0, // generous $10 budget
     },
@@ -567,12 +566,11 @@ async function test9_payBudgetExhausted(): Promise<void> {
   // pi-agent completes silently → stopReason = "completed" with 0 tokens.
   // Primary guarantee: LLM was NOT called (tokens === 0).
 
-  const tracker = createInMemoryBudgetTracker();
   const calculator = createDefaultCostCalculator();
 
   const { middlewares } = createGovernanceStack({
     pay: {
-      tracker,
+      ledger: createInMemoryPayLedger(0),
       calculator,
       budget: 0, // zero budget — wrapModelStream throws before calling next()
     },
@@ -713,7 +711,6 @@ async function test13_fullStack(): Promise<void> {
 
   let toolExecuted = false;
   const sink = createInMemoryAuditSink();
-  const tracker = createInMemoryBudgetTracker();
   const calculator = createDefaultCostCalculator();
 
   const { middlewares } = createGovernanceStack({
@@ -734,7 +731,7 @@ async function test13_fullStack(): Promise<void> {
     },
     governanceBackend: { backend: makeAllowBackend() },
     pay: {
-      tracker,
+      ledger: createInMemoryPayLedger(10.0),
       calculator,
       budget: 10.0,
     },
@@ -805,7 +802,7 @@ function test14_priorityOrder(): void {
     },
     governanceBackend: { backend: makeAllowBackend() },
     pay: {
-      tracker: createInMemoryBudgetTracker(),
+      ledger: createInMemoryPayLedger(10),
       calculator: createDefaultCostCalculator(),
       budget: 10,
     },

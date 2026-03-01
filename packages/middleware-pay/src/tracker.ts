@@ -1,45 +1,69 @@
 /**
- * Budget tracking interfaces and default implementations.
+ * Cost calculation and in-memory PayLedger for dev/testing.
  */
 
-export interface CostEntry {
-  readonly inputTokens: number;
-  readonly outputTokens: number;
-  readonly model: string;
-  readonly costUsd: number;
-  readonly timestamp: number;
-}
+import type {
+  PayBalance,
+  PayCanAffordResult,
+  PayLedger,
+  PayMeterResult,
+} from "@koi/core/pay-ledger";
 
 export interface CostCalculator {
   readonly calculate: (model: string, inputTokens: number, outputTokens: number) => number;
 }
 
-export interface BudgetTracker {
-  readonly record: (sessionId: string, entry: CostEntry) => Promise<void>;
-  readonly totalSpend: (sessionId: string) => Promise<number>;
-  readonly remaining: (sessionId: string, budget: number) => Promise<number>;
-}
-
 /**
- * In-memory budget tracker. Map-backed, sums costs per session.
+ * In-memory PayLedger backed by a running spend total.
+ * Implements only `meter()`, `getBalance()`, and `canAfford()`.
+ * Unused methods (`transfer`, `reserve`, `commit`, `release`) throw.
  */
-export function createInMemoryBudgetTracker(): BudgetTracker {
-  const entries = new Map<string, readonly CostEntry[]>();
+export function createInMemoryPayLedger(initialBudget: number): PayLedger {
+  if (!Number.isFinite(initialBudget) || initialBudget < 0) {
+    throw new Error(
+      `createInMemoryPayLedger: initialBudget must be a non-negative finite number, got ${String(initialBudget)}`,
+    );
+  }
+
+  // let justified: mutable spend counter incremented by meter()
+  let totalSpend = 0;
 
   return {
-    async record(sessionId: string, entry: CostEntry): Promise<void> {
-      const existing = entries.get(sessionId) ?? [];
-      entries.set(sessionId, [...existing, entry]);
+    meter(amount: string, _eventType?: string): PayMeterResult {
+      totalSpend += parseFloat(amount);
+      return { success: true };
     },
 
-    async totalSpend(sessionId: string): Promise<number> {
-      const existing = entries.get(sessionId) ?? [];
-      return existing.reduce((sum, e) => sum + e.costUsd, 0);
+    getBalance(): PayBalance {
+      const available = Math.max(0, initialBudget - totalSpend);
+      return {
+        available: available.toString(),
+        reserved: "0",
+        total: initialBudget.toString(),
+      };
     },
 
-    async remaining(sessionId: string, budget: number): Promise<number> {
-      const spent = await this.totalSpend(sessionId);
-      return Math.max(0, budget - spent);
+    canAfford(amount: string): PayCanAffordResult {
+      return {
+        canAfford: totalSpend + parseFloat(amount) <= initialBudget,
+        amount,
+      };
+    },
+
+    transfer(): never {
+      throw new Error("createInMemoryPayLedger: transfer not implemented");
+    },
+
+    reserve(): never {
+      throw new Error("createInMemoryPayLedger: reserve not implemented");
+    },
+
+    commit(): never {
+      throw new Error("createInMemoryPayLedger: commit not implemented");
+    },
+
+    release(): never {
+      throw new Error("createInMemoryPayLedger: release not implemented");
     },
   };
 }

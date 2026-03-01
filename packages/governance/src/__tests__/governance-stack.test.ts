@@ -131,10 +131,22 @@ describe("createGovernanceStack", () => {
       },
       governanceBackend: { backend: makeAllowGovernanceBackend() },
       pay: {
-        tracker: {
-          record: async () => undefined,
-          totalSpend: async () => 0,
-          remaining: async () => 1000,
+        ledger: {
+          meter: () => ({ success: true }),
+          getBalance: () => ({ available: "1000", reserved: "0", total: "1000" }),
+          canAfford: (amount: string) => ({ canAfford: true, amount }),
+          transfer: () => {
+            throw new Error("not implemented");
+          },
+          reserve: () => {
+            throw new Error("not implemented");
+          },
+          commit: () => {
+            throw new Error("not implemented");
+          },
+          release: () => {
+            throw new Error("not implemented");
+          },
         },
         calculator: { calculate: () => 0 },
         budget: 1000,
@@ -175,10 +187,22 @@ describe("createGovernanceStack", () => {
       },
       governanceBackend: { backend: makeAllowGovernanceBackend() },
       pay: {
-        tracker: {
-          record: async () => undefined,
-          totalSpend: async () => 0,
-          remaining: async () => 1000,
+        ledger: {
+          meter: () => ({ success: true }),
+          getBalance: () => ({ available: "1000", reserved: "0", total: "1000" }),
+          canAfford: (amount: string) => ({ canAfford: true, amount }),
+          transfer: () => {
+            throw new Error("not implemented");
+          },
+          reserve: () => {
+            throw new Error("not implemented");
+          },
+          commit: () => {
+            throw new Error("not implemented");
+          },
+          release: () => {
+            throw new Error("not implemented");
+          },
         },
         calculator: { calculate: () => 0 },
         budget: 1000,

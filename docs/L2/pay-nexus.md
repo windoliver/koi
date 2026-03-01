@@ -1,15 +1,15 @@
 # @koi/pay-nexus — Nexus-Backed Credit Ledger
 
-Persistent `PayLedger` implementation that talks to the Nexus pay API (TigerBeetle + PostgreSQL). Replaces the in-memory `BudgetTracker` from `@koi/middleware-pay` with a real credit system: balances survive restarts, costs aggregate across sessions, and agents can transfer credits.
+Persistent `PayLedger` implementation that talks to the Nexus pay API (TigerBeetle + PostgreSQL). Replaces the in-memory `createInMemoryPayLedger` from `@koi/middleware-pay` with a real credit system: balances survive restarts, costs aggregate across sessions, and agents can transfer credits.
 
 ---
 
 ## Why It Exists
 
-`@koi/middleware-pay` enforces per-session token budgets with an in-memory `BudgetTracker`. This works for single sessions but breaks down at scale:
+`@koi/middleware-pay` enforces per-session token budgets with an in-memory `PayLedger`. This works for single sessions but breaks down at scale:
 
 ```
-                  In-Memory Tracker         Nexus PayLedger
+                  In-Memory Ledger          Nexus PayLedger
                   ─────────────────         ───────────────
 Storage:          JS Map (RAM)              TigerBeetle + PostgreSQL
 Durability:       None                      Full (double-entry ledger)
@@ -43,11 +43,9 @@ index.ts                    ← public re-exports
 │
 ├── config.ts               ← NexusPayLedgerConfig + validatePayLedgerConfig()
 ├── ledger.ts               ← createNexusPayLedger() — HTTP client + PayLedger impl
-├── adapter.ts              ← mapPayLedgerToBudgetTracker() — bridge to middleware-pay
 ├── descriptor.ts           ← BrickDescriptor for manifest auto-resolution
 ├── config.test.ts          ← config validation tests (10 cases)
 ├── ledger.test.ts          ← HTTP client tests (22 cases)
-├── adapter.test.ts         ← adapter tests (6 cases)
 └── __tests__/
     └── api-surface.test.ts ← .d.ts snapshot stability
 ```
@@ -59,9 +57,9 @@ index.ts                    ← public re-exports
  ┌─────────────┐           ┌──────────────────┐        ┌──────────────┐
  │ model call   │──tokens──▶│ PayMiddleware    │        │ PayLedger    │
  │ tool call    │           │                  │        │              │
- │ model call   │           │ BudgetTracker ◄──┼────────┤  meter()     │
- └─────────────┘           │  .record()       │adapter │  getBalance()│
-                            │  .remaining()    │        │  reserve()   │
+ │ model call   │           │ PayLedger ◄──────┼────────┤  meter()     │
+ └─────────────┘           │  .meter()        │direct  │  getBalance()│
+                            │  .getBalance()   │        │  reserve()   │
                             └──────────────────┘        │  transfer()  │
                                                         └──────┬───────┘
                                                                │ HTTPS
@@ -82,10 +80,10 @@ index.ts                    ← public re-exports
 ### Meter Usage (record a cost)
 
 ```
-middleware-pay               adapter                    Nexus Pay API
+middleware-pay               PayLedger (Nexus)           Nexus Pay API
   │                            │                            │
-  │  record(sessionId,        │                            │
-  │    { costUsd: 0.05 })    │                            │
+  │  ledger.meter(             │                            │
+  │    "0.05", "model_call")  │                            │
   │ ──────────────────────────>│                            │
   │                            │  POST /api/v2/pay/meter   │
   │                            │  { amount: "0.05",        │
@@ -94,17 +92,16 @@ middleware-pay               adapter                    Nexus Pay API
   │                            │                            │
   │                            │  { success: true }        │
   │                            │ <──────────────────────────│
-  │  Promise<void>             │                            │
+  │  PayMeterResult            │                            │
   │ <──────────────────────────│                            │
 ```
 
 ### Check Remaining Budget
 
 ```
-middleware-pay               adapter                    Nexus Pay API
+middleware-pay               PayLedger (Nexus)           Nexus Pay API
   │                            │                            │
-  │  remaining(sessionId,     │                            │
-  │    budget)                │                            │
+  │  ledger.getBalance()      │                            │
   │ ──────────────────────────>│                            │
   │                            │  GET /api/v2/pay/balance  │
   │                            │ ──────────────────────────>│
@@ -114,7 +111,7 @@ middleware-pay               adapter                    Nexus Pay API
   │                            │    total: "80.00" }       │
   │                            │ <──────────────────────────│
   │                            │                            │
-  │  75.00                     │  parseFloat(available)    │
+  │  PayBalance                │                            │
   │ <──────────────────────────│                            │
 ```
 
@@ -166,20 +163,6 @@ import { createNexusPayLedger } from "@koi/pay-nexus";
 | `timeout` | `number` | `10_000` | Request timeout in milliseconds |
 | `fetch` | `typeof fetch` | `globalThis.fetch` | Injectable fetch for testing |
 
-#### `createNexusBudgetTracker(config)`
-
-Convenience factory: creates a `PayLedger` and wraps it as a `BudgetTracker` for drop-in use with `@koi/middleware-pay`.
-
-```typescript
-import { createNexusBudgetTracker } from "@koi/pay-nexus";
-```
-
-Takes the same config as `createNexusPayLedger` plus a `budget: number` field.
-
-#### `mapPayLedgerToBudgetTracker(ledger, budget)`
-
-Adapter function: wraps any `PayLedger` as a `BudgetTracker`.
-
 ### PayLedger Methods
 
 | Method | Signature | API Endpoint |
@@ -208,24 +191,23 @@ Adapter function: wraps any `PayLedger` as a `BudgetTracker`.
 
 ## Examples
 
-### 1. Drop-in replacement for in-memory tracker
+### 1. Drop-in replacement for in-memory ledger
 
 ```typescript
 // Before: costs vanish on restart
-import { createInMemoryBudgetTracker } from "@koi/middleware-pay";
-const tracker = createInMemoryBudgetTracker();
+import { createInMemoryPayLedger } from "@koi/middleware-pay";
+const ledger = createInMemoryPayLedger(50.0);
 
 // After: costs persist in Nexus
-import { createNexusBudgetTracker } from "@koi/pay-nexus";
-const tracker = createNexusBudgetTracker({
+import { createNexusPayLedger } from "@koi/pay-nexus";
+const ledger = createNexusPayLedger({
   baseUrl: process.env.NEXUS_PAY_URL!,
   apiKey: process.env.NEXUS_PAY_KEY!,
-  budget: 50.0,
 });
 
 // Same interface — middleware-pay doesn't know the difference
 const middleware = createPayMiddleware({
-  tracker,
+  ledger,
   calculator: createDefaultCostCalculator(),
   budget: 50.0,
 });
@@ -285,20 +267,20 @@ middleware:
 
 ## Backend Pluggability
 
-The `BudgetTracker` interface is the swap point. Change one line to switch backends:
+The `PayLedger` interface (L0) is the swap point. Change one line to switch backends:
 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  @koi/middleware-pay                                       │
-│  Uses BudgetTracker — identical regardless of backend     │
+│  Uses PayLedger — identical regardless of backend          │
 └───────────────────────────────┬──────────────────────────┘
                                 │
              ┌──────────────────┼──────────────────┐
              ▼                  ▼                  ▼
    ┌──────────────────┐ ┌──────────────┐ ┌──────────────────┐
-   │ In-Memory Tracker │ │  (future)    │ │  pay-nexus       │
+   │ In-Memory Ledger  │ │  (future)    │ │  pay-nexus       │
    │ Dev/testing only  │ │  SQLite      │ │  Production      │
-   │ createInMemory..()│ │  tracker     │ │  createNexus..() │
+   │ createInMemory..()│ │  ledger      │ │  createNexus..() │
    └──────────────────┘ └──────────────┘ └──────────────────┘
 ```
 
@@ -306,7 +288,7 @@ The `BudgetTracker` interface is the swap point. Change one line to switch backe
 
 ## Testing
 
-### Unit tests (40 tests)
+### Unit tests (34 tests)
 
 ```bash
 bun test packages/pay-nexus/src/
@@ -316,7 +298,6 @@ bun test packages/pay-nexus/src/
 |------|-------|---------|
 | `config.test.ts` | 10 | Valid/invalid config, timeout, fetch validation |
 | `ledger.test.ts` | 22 | All 7 API methods, HTTP error mapping, network/parse failures |
-| `adapter.test.ts` | 6 | record→meter, balance derivation, edge cases |
 | `api-surface.test.ts` | 2 | .d.ts snapshot stability |
 
 All mock-fetch based — no network calls in CI.

@@ -10,8 +10,8 @@ export type { PayMiddlewareConfig, UsageInfo } from "./config.js";
 export { validatePayConfig } from "./config.js";
 export { descriptor } from "./descriptor.js";
 export { createPayMiddleware } from "./pay.js";
-export type { BudgetTracker, CostCalculator, CostEntry } from "./tracker.js";
+export type { CostCalculator } from "./tracker.js";
 export {
   createDefaultCostCalculator,
-  createInMemoryBudgetTracker,
+  createInMemoryPayLedger,
 } from "./tracker.js";
