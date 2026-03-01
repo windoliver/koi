@@ -383,6 +383,8 @@ export interface MemoryStoreOptions {
   readonly reinforce?: boolean | undefined;
   /** IDs of existing facts that causally precede this new memory. */
   readonly causalParents?: readonly string[] | undefined;
+  /** IDs of existing facts to explicitly supersede when storing this fact. */
+  readonly supersedes?: readonly string[] | undefined;
 }
 
 /** Options for MemoryComponent.recall() — namespace isolation. */
