@@ -55,6 +55,9 @@ export interface FsMemoryConfig {
   readonly freqProtectThreshold?: number | undefined;
   readonly decayHalfLifeDays?: number | undefined;
   readonly maxSummaryFacts?: number | undefined;
+  readonly entityHopDecay?: number | undefined; // default 0.5
+  readonly maxEntityHops?: number | undefined; // default 1
+  readonly perEntityCap?: number | undefined; // default 10
 }
 
 // ---------------------------------------------------------------------------
@@ -93,4 +96,14 @@ export interface FactStore {
   readonly updateFact: (entity: string, id: string, updates: FactUpdates) => Promise<void>;
   readonly listEntities: () => Promise<readonly string[]>;
   readonly close: () => Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Internal scored candidate (shared by recall pipeline and cross-entity)
+// ---------------------------------------------------------------------------
+
+export interface ScoredCandidate {
+  readonly fact: MemoryFact;
+  readonly entity: string;
+  readonly score: number;
 }

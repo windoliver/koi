@@ -4,8 +4,10 @@
  * Composes: fact-store, dedup, decay, summary, session-log, optional DI search.
  */
 import type { MemoryRecallOptions, MemoryResult, MemoryStoreOptions } from "@koi/core";
+import { DEFAULT_CROSS_ENTITY_CONFIG, expandCrossEntity } from "./cross-entity.js";
 import { classifyTier, computeDecayScore } from "./decay.js";
 import { jaccard } from "./dedup.js";
+import { createEntityIndex } from "./entity-index.js";
 import { createFactStore } from "./fact-store.js";
 import { DEFAULT_GRAPH_DECAY_FACTOR, expandCausalGraph } from "./graph-walk.js";
 import { appendSessionLog } from "./session-log.js";
@@ -17,6 +19,7 @@ import type {
   FsMemory,
   FsMemoryConfig,
   MemoryFact,
+  ScoredCandidate,
   TierDistribution,
 } from "./types.js";
 
@@ -34,6 +37,9 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
     freqProtectThreshold = DEFAULT_FREQ_PROTECT,
     decayHalfLifeDays = DEFAULT_HALF_LIFE_DAYS,
     maxSummaryFacts = DEFAULT_MAX_SUMMARY_FACTS,
+    entityHopDecay = DEFAULT_CROSS_ENTITY_CONFIG.entityHopDecay,
+    maxEntityHops = DEFAULT_CROSS_ENTITY_CONFIG.maxEntityHops,
+    perEntityCap = DEFAULT_CROSS_ENTITY_CONFIG.perEntityCap,
   } = config;
 
   if (baseDir.length === 0) {
@@ -51,6 +57,7 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
   }
 
   const factStore = createFactStore(baseDir);
+  const entityIndex = createEntityIndex();
   // let — mutable set tracking entities modified since last summary rebuild
   let dirtyEntities = new Set<string>();
   // let — deferred index docs accumulate between store() and recall()
@@ -172,6 +179,9 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
 
     await factStore.appendFact(entity, newFact);
 
+    // Incremental update: index cross-entity references for this fact
+    entityIndex.addFact(newFact, entity);
+
     // Bidirectional causal edge: update each parent's causalChildren to include newFact.id
     if (causalParents !== undefined && causalParents.length > 0) {
       const entityFacts = await factStore.readFacts(entity);
@@ -206,12 +216,6 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
     await appendSessionLog(baseDir, content, now);
 
     dirtyEntities = new Set([...dirtyEntities, entity]);
-  };
-
-  type ScoredCandidate = {
-    readonly fact: MemoryFact;
-    readonly entity: string;
-    readonly score: number;
   };
 
   /** Apply tier filter and keep only active candidates. */
@@ -276,6 +280,22 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
     return [...deduped.values()];
   }
 
+  /** Expand candidates across entity boundaries via relatedEntities links. */
+  async function applyCrossEntityExpansion(
+    candidates: readonly ScoredCandidate[],
+    facts: FactStore,
+  ): Promise<readonly ScoredCandidate[]> {
+    // Lazy init: build index from cached facts on first recall
+    if (!entityIndex.isBuilt()) {
+      await entityIndex.build(facts);
+    }
+    return expandCrossEntity(candidates, entityIndex, facts, {
+      entityHopDecay,
+      maxEntityHops,
+      perEntityCap,
+    });
+  }
+
   /** Shared post-processing: tier filter, graph expansion, access-stat updates, limit. */
   async function processRecallCandidates(
     candidates: readonly ScoredCandidate[],
@@ -290,8 +310,14 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
         ? await applyGraphExpansion(filtered, options.maxHops ?? 2, facts)
         : filtered;
 
+    // Phase 2: cross-entity expansion (also gated on graphExpand)
+    const crossExpanded =
+      options?.graphExpand === true && expanded.length > 0
+        ? await applyCrossEntityExpansion(expanded, facts)
+        : expanded;
+
     // Sort by score descending, apply limit
-    const sorted = [...expanded].sort((a, b) => b.score - a.score).slice(0, limit);
+    const sorted = [...crossExpanded].sort((a, b) => b.score - a.score).slice(0, limit);
 
     // Map to results and batch update access stats
     const nowIso = new Date().toISOString();

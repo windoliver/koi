@@ -54,6 +54,8 @@ packages/memory-fs/
 │   ├── fs-memory.ts          ─ createFsMemory() factory (~400 LOC)
 │   ├── fact-store.ts         ─ File I/O: read/write/append, write queue, cache
 │   ├── graph-walk.ts         ─ BFS causal graph expansion with score decay
+│   ├── entity-index.ts       ─ In-memory reverse index for cross-entity lookup
+│   ├── cross-entity.ts       ─ Cross-entity BFS expansion with entity-hop decay
 │   ├── dedup.ts              ─ Jaccard similarity + CJK bigram fallback
 │   ├── decay.ts              ─ Exponential decay scoring + Hot/Warm/Cold tiering
 │   ├── slug.ts               ─ Entity name sanitization (path traversal guard)
@@ -204,19 +206,26 @@ memory_recall({ query, limit, tier })
       4. Apply tier filter (hot/warm/cold)
         │
         ▼
-      5. Graph expansion (if graphExpand: true):
+      5. Causal graph expansion (if graphExpand: true):
          BFS along causalParents + causalChildren edges
          within the same entity, up to maxHops (default: 2).
          Score decays exponentially per hop: score × (0.8 ^ hops)
         │
         ▼
-      6. Dedup by fact ID (higher score wins), sort by score, apply limit
+      6. Cross-entity expansion (if graphExpand: true):
+         BFS across entity boundaries via relatedEntities links.
+         Uses in-memory reverse index for O(1) lookup.
+         Score decays per entity hop: score × (entityHopDecay ^ hop)
+         Bounded by maxEntityHops (default: 1) and perEntityCap (default: 10)
         │
         ▼
-      7. Update lastAccessed + accessCount (batch write, warms cold facts)
+      7. Dedup by fact ID (higher score wins), sort by score, apply limit
         │
         ▼
-      8. Return MemoryResult[] with { content, tier, decayScore,
+      8. Update lastAccessed + accessCount (batch write, warms cold facts)
+        │
+        ▼
+      9. Return MemoryResult[] with { content, tier, decayScore,
          lastAccessed, causalParents, causalChildren }
 ```
 
@@ -297,11 +306,105 @@ Query: "pool exhausted"
 └──────────────────────────────────┘
 ```
 
-### Scope & Limitations (v1)
+### Scope & Limitations
 
-- Edges are **same-entity only**. Cross-entity parent references are stored on the child but the parent's `causalChildren` is only updated if both live in the same entity.
-- Adjacency map is rebuilt **per-recall** (no persistent cache). Acceptable for entity-scoped fact sets; may need caching if fact counts grow large.
+- Causal edges (`causalParents`/`causalChildren`) are **same-entity only**. Cross-entity parent references are stored on the child but the parent's `causalChildren` is only updated if both live in the same entity.
+- The causal adjacency map is rebuilt **per-recall** (no persistent cache). Acceptable for entity-scoped fact sets; may need caching if fact counts grow large.
 - Cycle-safe: BFS uses a visited set, so circular edges (A→B→A) terminate correctly.
+
+---
+
+## Cross-Entity Graph Traversal
+
+Facts are stored under a single entity folder (the first entry in `relatedEntities`), but may reference multiple entities. Cross-entity traversal discovers these connections automatically during recall.
+
+### The Problem
+
+```
+store("Alice works on Project Alpha", { relatedEntities: ["alice", "project-alpha"] })
+
+  → stored under entities/alice/items.json  (alice is relatedEntities[0])
+  → entities/project-alpha/ has NO knowledge of this fact
+```
+
+Without cross-entity traversal, querying "Project Alpha" only returns facts stored directly under `project-alpha/`. The fact about Alice working on the project is invisible.
+
+### How It Works
+
+When `graphExpand: true` is enabled, recall runs a **two-phase expansion**:
+
+```
+Phase 1 — Causal BFS (existing, within single entity):
+  Walk causalParents + causalChildren edges
+  Score: original × (0.8 ^ hops)
+
+Phase 2 — Cross-entity BFS (new, across entity boundaries):
+  Walk relatedEntities links via reverse index
+  Score: original × (entityHopDecay ^ entityHops)
+```
+
+The cross-entity phase uses an **in-memory reverse index** that maps each entity name to facts stored in *other* entities that reference it:
+
+```
+Reverse Index (built lazily on first recall):
+
+  "project-alpha" → [
+    { factId: "abc", sourceEntity: "alice" },      ← "Alice works on Project Alpha"
+    { factId: "def", sourceEntity: "bob" },         ← "Bob reviews Project Alpha PRs"
+  ]
+
+  "team-x" → [
+    { factId: "ghi", sourceEntity: "alice" },       ← "Alice joined Team X"
+  ]
+```
+
+### Configuration
+
+Three new fields in `FsMemoryConfig` control cross-entity behavior:
+
+| Field | Default | Purpose |
+|-------|---------|---------|
+| `entityHopDecay` | 0.5 | Score multiplier per entity hop (steeper than causal 0.8) |
+| `maxEntityHops` | 1 | Max depth of entity-hop traversal |
+| `perEntityCap` | 10 | Max results per source entity (prevents flooding) |
+
+### Example
+
+```typescript
+// Store facts across entities
+await mem.component.store("Alice works on Project Alpha", {
+  relatedEntities: ["alice", "project-alpha"],
+  category: "context",
+});
+await mem.component.store("Project Alpha uses Rust", {
+  relatedEntities: ["project-alpha"],
+  category: "tech",
+});
+
+// Query Project Alpha — finds both facts
+const results = await mem.component.recall("anything", {
+  graphExpand: true,
+  limit: 20,
+});
+// → "Project Alpha uses Rust"           score: 1.0  (direct match)
+// → "Alice works on Project Alpha"      score: 0.5  (cross-entity, 1 hop)
+```
+
+### Cycle & Flood Protection
+
+| Mechanism | Protection |
+|-----------|-----------|
+| Visited-entity set | Prevents A→B→A infinite loops |
+| `maxEntityHops` (default 1) | Bounds traversal depth |
+| `perEntityCap` (default 10) | Limits results per source entity |
+| `entityHopDecay` (default 0.5) | Cross-entity results rank below direct matches |
+| Status filter | Only `active` facts are returned (superseded facts excluded) |
+
+### Performance
+
+- **Zero additional I/O**: The reverse index is built lazily from the in-memory fact cache on first recall. Subsequent recalls reuse the index.
+- **Incremental updates**: Every `store()` call updates the index immediately — no rebuild needed.
+- **O(1) lookup**: Index is a `Map<entity, Array<{factId, sourceEntity}>>` with `Set`-based dedup.
 
 ---
 
@@ -372,6 +475,9 @@ const mem = await createFsMemory({
   freqProtectThreshold: 10,       // access count for warm protection (default: 10)
   decayHalfLifeDays: 30,          // half-life in days (default: 30)
   maxSummaryFacts: 10,            // max facts in summary.md (default: 10)
+  entityHopDecay: 0.5,            // cross-entity score decay per hop (default: 0.5)
+  maxEntityHops: 1,               // max cross-entity traversal depth (default: 1)
+  perEntityCap: 10,               // max cross-entity results per source entity (default: 10)
   retriever: customRetriever,     // optional: semantic search (DI)
   indexer: customIndexer,         // optional: search indexing (DI)
 });
@@ -482,7 +588,7 @@ The DI contracts (`FsSearchRetriever`, `FsSearchIndexer`) are local function typ
 
 ## Testing
 
-170+ tests total across 15 test files:
+200+ tests total across 17 test files:
 
 | Test File | Count | What It Covers |
 |-----------|-------|----------------|
@@ -493,6 +599,8 @@ The DI contracts (`FsSearchRetriever`, `FsSearchIndexer`) are local function typ
 | `session-log.test.ts` | 5 | Daily log append |
 | `summary.test.ts` | 7 | Summary generation with tier filtering |
 | `graph-walk.test.ts` | 9 | BFS expansion, cycle detection, score decay, dedup |
+| `entity-index.test.ts` | 11 | Reverse index: build, add, lookup, dedup, self-ref guard |
+| `cross-entity.test.ts` | 17 | Cross-entity: decay, cap, cycles, hops, integration |
 | `fs-memory.test.ts` | 33 | Full integration: store → recall → dedup → decay → causal → graph expansion |
 | `provider/tools/store.test.ts` | 10 | Store tool: validation, causal_parents, dedup, errors |
 | `provider/tools/recall.test.ts` | 12 | Recall tool: limits, tiers, graph_expand, max_hops, errors |
