@@ -4,7 +4,14 @@
 
 import type { ChannelStatus } from "./channel.js";
 import type { JsonObject } from "./common.js";
-import type { RunId, SessionId, ToolCallId, ToolDescriptor, TurnId } from "./ecs.js";
+import type {
+  ComponentProvider,
+  RunId,
+  SessionId,
+  ToolCallId,
+  ToolDescriptor,
+  TurnId,
+} from "./ecs.js";
 import type { InboundMessage } from "./message.js";
 
 export interface SessionContext {
@@ -141,4 +148,16 @@ export interface KoiMiddleware {
   ) => Promise<ToolResponse>;
   /** Self-description injected into model calls. Required. Return undefined to skip injection. */
   readonly describeCapabilities: (ctx: TurnContext) => CapabilityFragment | undefined;
+}
+
+/**
+ * A convenience bundle combining a middleware with its associated ComponentProviders.
+ *
+ * Middleware and tool registration are separate concerns — this type packages them
+ * together for cohesive features (e.g., compactor middleware + compact_context tool)
+ * while letting the caller register each part through the appropriate channel.
+ */
+export interface MiddlewareBundle {
+  readonly middleware: KoiMiddleware;
+  readonly providers: readonly ComponentProvider[];
 }

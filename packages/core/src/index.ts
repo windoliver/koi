@@ -380,6 +380,7 @@ export {
 } from "./forge-types.js";
 // governance — types
 export type {
+  ContextPressureTrend,
   GovernanceCheck,
   GovernanceController,
   GovernanceEvent,
@@ -507,6 +508,7 @@ export type {
   ApprovalRequest,
   CapabilityFragment,
   KoiMiddleware,
+  MiddlewareBundle,
   ModelChunk,
   ModelHandler,
   ModelRequest,

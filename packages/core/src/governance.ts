@@ -53,6 +53,16 @@ export interface SensorReading {
 }
 
 // ---------------------------------------------------------------------------
+// ContextPressureTrend — pressure growth over recent turns
+// ---------------------------------------------------------------------------
+
+export interface ContextPressureTrend {
+  readonly growthPerTurn: number;
+  readonly estimatedTurnsToCompaction: number;
+  readonly sampleCount: number;
+}
+
+// ---------------------------------------------------------------------------
 // GovernanceSnapshot — all variables at a point in time
 // ---------------------------------------------------------------------------
 
@@ -117,6 +127,7 @@ export const GOVERNANCE_VARIABLES: {
   readonly FORGE_BUDGET: "forge_budget";
   readonly ERROR_RATE: "error_rate";
   readonly COST_USD: "cost_usd";
+  readonly CONTEXT_OCCUPANCY: "context_occupancy";
 } = {
   SPAWN_DEPTH: "spawn_depth",
   SPAWN_COUNT: "spawn_count",
@@ -127,6 +138,7 @@ export const GOVERNANCE_VARIABLES: {
   FORGE_BUDGET: "forge_budget",
   ERROR_RATE: "error_rate",
   COST_USD: "cost_usd",
+  CONTEXT_OCCUPANCY: "context_occupancy",
 } as const satisfies Record<string, string>;
 
 // ---------------------------------------------------------------------------
