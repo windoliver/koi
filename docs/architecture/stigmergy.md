@@ -1,6 +1,6 @@
 # Stigmergic Coordination — Trail Strength & Evaporation
 
-Agents in Koi coordinate indirectly by modifying the shared ForgeStore environment. **Trail strength** measures collective interest in a brick through decaying pheromone-like signals, enabling ant-colony–style coordination where no agent needs to know about any other agent.
+Agents in Koi coordinate indirectly by modifying the shared ForgeStore environment. **Trail strength** measures collective interest in a brick through decaying pheromone-like signals, enabling ant-colony-style coordination where no agent needs to know about any other agent.
 
 ---
 
