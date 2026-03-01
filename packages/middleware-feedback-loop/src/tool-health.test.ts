@@ -683,3 +683,289 @@ describe("trust demotion", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fitness flush — cumulative counters + flush/dispose
+// ---------------------------------------------------------------------------
+
+describe("fitness flush", () => {
+  test("cumulative counters increment through record calls", () => {
+    const tracker = createToolHealthTracker(
+      createTestConfig({ flushThreshold: 10, errorRateDeltaThreshold: 1 }),
+    );
+    tracker.recordSuccess("forged-tool-1", 50);
+    tracker.recordSuccess("forged-tool-1", 60);
+    tracker.recordFailure("forged-tool-1", 70, "err");
+
+    // shouldFlushTool returns false with threshold=10 and errorRateDelta=1 after 3 calls
+    expect(tracker.shouldFlushTool("forged-tool-1")).toBe(false);
+  });
+
+  test("shouldFlushTool returns true after reaching flush threshold", () => {
+    const tracker = createToolHealthTracker(
+      createTestConfig({ flushThreshold: 3, quarantineThreshold: 0.9 }),
+    );
+    tracker.recordSuccess("forged-tool-1", 10);
+    tracker.recordSuccess("forged-tool-1", 10);
+    expect(tracker.shouldFlushTool("forged-tool-1")).toBe(false);
+
+    tracker.recordSuccess("forged-tool-1", 10);
+    expect(tracker.shouldFlushTool("forged-tool-1")).toBe(true);
+  });
+
+  test("shouldFlushTool returns false for unknown tool", () => {
+    const tracker = createToolHealthTracker(createTestConfig());
+    expect(tracker.shouldFlushTool("unknown")).toBe(false);
+  });
+
+  test("flushTool writes fitness to ForgeStore", async () => {
+    const forgeStore = createMockForgeStore();
+    // Load returns a brick with default fitness
+    forgeStore.load = mock(() =>
+      Promise.resolve({
+        ok: true as const,
+        value: {
+          trustTier: "promoted",
+          lastPromotedAt: 0,
+          lastDemotedAt: 0,
+          fitness: {
+            successCount: 0,
+            errorCount: 0,
+            latency: { samples: [], count: 0, cap: 200 },
+            lastUsedAt: 0,
+          },
+        } as never,
+      }),
+    );
+
+    const tracker = createToolHealthTracker(
+      createTestConfig({
+        forgeStore,
+        flushThreshold: 3,
+        quarantineThreshold: 0.9,
+      }),
+    );
+
+    tracker.recordSuccess("forged-tool-1", 50);
+    tracker.recordSuccess("forged-tool-1", 60);
+    tracker.recordSuccess("forged-tool-1", 70);
+
+    await tracker.flushTool("forged-tool-1");
+
+    // Verify forgeStore.update was called with fitness
+    expect(forgeStore.update).toHaveBeenCalledTimes(1);
+    const updateArgs = forgeStore.update.mock.calls[0] as unknown[];
+    const updates = updateArgs[1] as Record<string, unknown>;
+    expect(updates.fitness).toBeDefined();
+    const fitness = updates.fitness as Record<string, unknown>;
+    expect(fitness.successCount).toBe(3);
+    expect(fitness.errorCount).toBe(0);
+    expect(updates.usageCount).toBe(3);
+  });
+
+  test("flushTool clears dirty flag on success", async () => {
+    const forgeStore = createMockForgeStore();
+    forgeStore.load = mock(() =>
+      Promise.resolve({
+        ok: true as const,
+        value: {
+          trustTier: "promoted",
+          lastPromotedAt: 0,
+          lastDemotedAt: 0,
+          fitness: {
+            successCount: 0,
+            errorCount: 0,
+            latency: { samples: [], count: 0, cap: 200 },
+            lastUsedAt: 0,
+          },
+        } as never,
+      }),
+    );
+
+    const tracker = createToolHealthTracker(
+      createTestConfig({
+        forgeStore,
+        flushThreshold: 2,
+        quarantineThreshold: 0.9,
+      }),
+    );
+
+    tracker.recordSuccess("forged-tool-1", 50);
+    tracker.recordSuccess("forged-tool-1", 60);
+    expect(tracker.shouldFlushTool("forged-tool-1")).toBe(true);
+
+    await tracker.flushTool("forged-tool-1");
+    expect(tracker.shouldFlushTool("forged-tool-1")).toBe(false);
+  });
+
+  test("flushTool skips non-forged tools", async () => {
+    const forgeStore = createMockForgeStore();
+    const tracker = createToolHealthTracker(createTestConfig({ forgeStore, flushThreshold: 1 }));
+
+    // "regular-tool" doesn't resolve to a brick ID
+    tracker.recordSuccess("regular-tool", 50);
+    await tracker.flushTool("regular-tool");
+
+    // No store calls since resolveBrickId returns undefined
+    expect(forgeStore.load).not.toHaveBeenCalled();
+  });
+
+  test("flushTool handles NOT_FOUND gracefully", async () => {
+    const forgeStore = createMockForgeStore();
+    forgeStore.load = mock(
+      () =>
+        Promise.resolve({
+          ok: false as const,
+          error: { code: "NOT_FOUND" as const, message: "deleted", retryable: false },
+        }) as never,
+    );
+    const onFlushError = mock(() => {});
+
+    const tracker = createToolHealthTracker(
+      createTestConfig({
+        forgeStore,
+        flushThreshold: 2,
+        quarantineThreshold: 0.9,
+        onFlushError,
+      }),
+    );
+
+    tracker.recordSuccess("forged-tool-1", 50);
+    tracker.recordSuccess("forged-tool-1", 60);
+
+    await tracker.flushTool("forged-tool-1");
+
+    // onFlushError called with the NOT_FOUND error
+    expect(onFlushError).toHaveBeenCalledTimes(1);
+    // dirty should be cleared (brick no longer exists)
+    expect(tracker.shouldFlushTool("forged-tool-1")).toBe(false);
+  });
+
+  test("flushTool handles update errors and keeps dirty", async () => {
+    const forgeStore = createMockForgeStore();
+    forgeStore.load = mock(() =>
+      Promise.resolve({
+        ok: true as const,
+        value: {
+          trustTier: "promoted",
+          fitness: {
+            successCount: 0,
+            errorCount: 0,
+            latency: { samples: [], count: 0, cap: 200 },
+            lastUsedAt: 0,
+          },
+        } as never,
+      }),
+    );
+    forgeStore.update = mock(
+      () =>
+        Promise.resolve({
+          ok: false as const,
+          error: { code: "INTERNAL" as const, message: "db error", retryable: true },
+        }) as never,
+    );
+    const onFlushError = mock(() => {});
+
+    const tracker = createToolHealthTracker(
+      createTestConfig({
+        forgeStore,
+        flushThreshold: 2,
+        quarantineThreshold: 0.9,
+        onFlushError,
+      }),
+    );
+
+    tracker.recordSuccess("forged-tool-1", 50);
+    tracker.recordSuccess("forged-tool-1", 60);
+
+    await tracker.flushTool("forged-tool-1");
+
+    expect(onFlushError).toHaveBeenCalledTimes(1);
+    // dirty should remain true so retry is possible
+    expect(tracker.shouldFlushTool("forged-tool-1")).toBe(true);
+  });
+
+  test("concurrent flush is skipped (flushing flag)", async () => {
+    const forgeStore = createMockForgeStore();
+    // let: delay load to simulate slow store
+    let resolveLoad: (() => void) | undefined;
+    forgeStore.load = mock(
+      () =>
+        new Promise((resolve) => {
+          resolveLoad = () =>
+            resolve({
+              ok: true as const,
+              value: {
+                trustTier: "promoted",
+                fitness: {
+                  successCount: 0,
+                  errorCount: 0,
+                  latency: { samples: [], count: 0, cap: 200 },
+                  lastUsedAt: 0,
+                },
+              } as never,
+            });
+        }),
+    );
+
+    const tracker = createToolHealthTracker(
+      createTestConfig({
+        forgeStore,
+        flushThreshold: 2,
+        quarantineThreshold: 0.9,
+      }),
+    );
+
+    tracker.recordSuccess("forged-tool-1", 50);
+    tracker.recordSuccess("forged-tool-1", 60);
+
+    // Start first flush (will be pending)
+    const flush1 = tracker.flushTool("forged-tool-1");
+
+    // Second flush should skip because flushing flag is set
+    await tracker.flushTool("forged-tool-1");
+
+    // Resolve the first flush
+    resolveLoad?.();
+    await flush1;
+
+    // Only one load call — second flush was skipped
+    expect(forgeStore.load).toHaveBeenCalledTimes(1);
+  });
+
+  test("dispose flushes all dirty tools and clears state", async () => {
+    const forgeStore = createMockForgeStore();
+    forgeStore.load = mock(() =>
+      Promise.resolve({
+        ok: true as const,
+        value: {
+          trustTier: "promoted",
+          fitness: {
+            successCount: 0,
+            errorCount: 0,
+            latency: { samples: [], count: 0, cap: 200 },
+            lastUsedAt: 0,
+          },
+        } as never,
+      }),
+    );
+
+    const tracker = createToolHealthTracker(
+      createTestConfig({
+        forgeStore,
+        flushThreshold: 100, // won't auto-flush
+        quarantineThreshold: 0.9,
+      }),
+    );
+
+    tracker.recordSuccess("forged-tool-1", 50);
+    tracker.recordSuccess("forged-tool-2", 60);
+
+    await tracker.dispose();
+
+    // Both tools flushed
+    expect(forgeStore.update).toHaveBeenCalledTimes(2);
+    // State cleared — no snapshots remain
+    expect(tracker.getAllSnapshots()).toHaveLength(0);
+  });
+});

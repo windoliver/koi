@@ -8,6 +8,7 @@ import type {
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  SessionContext,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -38,7 +39,7 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
   const healthClock = config.forgeHealth?.clock ?? Date.now;
   const resolveBrickId = config.forgeHealth?.resolveBrickId;
 
-  return {
+  const middleware: KoiMiddleware = {
     name: "feedback-loop",
     priority: 450,
     describeCapabilities: (_ctx: TurnContext): CapabilityFragment => ({
@@ -155,9 +156,11 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
           healthTracker.recordFailure(toolId, latencyMs, extractMessage(e));
           const quarantined = await healthTracker.checkAndQuarantine(toolId);
           if (!quarantined) {
-            // Not quarantined — check if demotion is warranted
-            await healthTracker.checkAndDemote(toolId).catch(() => {});
+            await healthTracker.checkAndDemote(toolId).catch((demotionErr: unknown) => {
+              config.forgeHealth?.onDemotionError?.(toolId, demotionErr);
+            });
           }
+          maybeFlush(healthTracker, toolId, config.forgeHealth?.onFlushError);
         }
         throw e;
       }
@@ -176,8 +179,11 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
             );
             const quarantined = await healthTracker.checkAndQuarantine(toolId);
             if (!quarantined) {
-              await healthTracker.checkAndDemote(toolId).catch(() => {});
+              await healthTracker.checkAndDemote(toolId).catch((demotionErr: unknown) => {
+                config.forgeHealth?.onDemotionError?.(toolId, demotionErr);
+              });
             }
+            maybeFlush(healthTracker, toolId, config.forgeHealth?.onFlushError);
           }
           config.onGateFail?.(outputResult.failedGate, outputResult.errors);
           throw KoiRuntimeError.from(
@@ -201,9 +207,36 @@ export function createFeedbackLoopMiddleware(config: FeedbackLoopConfig): KoiMid
       if (isForgedTool && healthTracker !== undefined) {
         const latencyMs = healthClock() - start;
         healthTracker.recordSuccess(toolId, latencyMs);
+        maybeFlush(healthTracker, toolId, config.forgeHealth?.onFlushError);
       }
 
       return response;
     },
   };
+
+  // Only attach session lifecycle hook when health tracking is active
+  if (healthTracker === undefined) {
+    return middleware;
+  }
+
+  const tracker = healthTracker;
+  return {
+    ...middleware,
+    async onSessionEnd(_ctx: SessionContext): Promise<void> {
+      await tracker.dispose();
+    },
+  };
+}
+
+/** Fire-and-forget flush check — errors routed to onFlushError callback. */
+function maybeFlush(
+  tracker: ToolHealthTracker,
+  toolId: string,
+  onFlushError: ((toolId: string, error: unknown) => void) | undefined,
+): void {
+  if (tracker.shouldFlushTool(toolId)) {
+    tracker.flushTool(toolId).catch((e: unknown) => {
+      onFlushError?.(toolId, e);
+    });
+  }
 }

@@ -9,6 +9,7 @@
 import type { BrickSnapshot, DemotionCriteria, TrustTier } from "@koi/core";
 import { brickId, DEFAULT_DEMOTION_CRITERIA, snapshotId } from "@koi/core";
 import type { ForgeHealthConfig } from "./config.js";
+import { computeMergedFitness, shouldFlush } from "./fitness-flush.js";
 import type {
   ToolFailureRecord,
   ToolHealthMetrics,
@@ -20,6 +21,8 @@ import type {
 const DEFAULT_QUARANTINE_THRESHOLD = 0.5;
 const DEFAULT_WINDOW_SIZE = 10;
 const DEFAULT_MAX_RECENT_FAILURES = 5;
+const DEFAULT_FLUSH_THRESHOLD = 10;
+const DEFAULT_ERROR_RATE_DELTA_THRESHOLD = 0.05;
 
 /** ToolHealthTracker interface — per-tool success/failure/latency tracking with quarantine and demotion. */
 export interface ToolHealthTracker {
@@ -30,6 +33,14 @@ export interface ToolHealthTracker {
   readonly checkAndQuarantine: (toolId: string) => Promise<boolean>;
   readonly checkAndDemote: (toolId: string) => Promise<boolean>;
   readonly getAllSnapshots: () => readonly ToolHealthSnapshot[];
+  /** Returns true if the tool's fitness data should be flushed to ForgeStore. */
+  readonly shouldFlushTool: (toolId: string) => boolean;
+  /** Flushes a single tool's fitness data to ForgeStore. */
+  readonly flushTool: (toolId: string) => Promise<void>;
+  /** Flushes all dirty tools' fitness data to ForgeStore. */
+  readonly flush: () => Promise<void>;
+  /** Final drain: flushes all dirty tools, then clears internal state. */
+  readonly dispose: () => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -39,6 +50,34 @@ export interface ToolHealthTracker {
 interface RingEntry {
   readonly success: boolean;
   readonly latencyMs: number;
+}
+
+/** Per-tool flush state for fitness persistence (read-only snapshot). */
+export interface ToolFlushState {
+  readonly totalSuccesses: number;
+  readonly totalFailures: number;
+  readonly latencyBuffer: readonly number[];
+  readonly latencyTotalCount: number;
+  readonly dirty: boolean;
+  readonly flushing: boolean;
+  readonly invocationsSinceFlush: number;
+  readonly lastFlushedSuccesses: number;
+  readonly lastFlushedFailures: number;
+  readonly lastFlushedErrorRate: number;
+}
+
+/** Internal mutable flush state — encapsulated within the tracker. */
+interface MutableFlushState {
+  totalSuccesses: number;
+  totalFailures: number;
+  readonly latencyBuffer: number[];
+  latencyTotalCount: number;
+  dirty: boolean;
+  flushing: boolean;
+  invocationsSinceFlush: number;
+  lastFlushedSuccesses: number;
+  lastFlushedFailures: number;
+  lastFlushedErrorRate: number;
 }
 
 interface ToolState {
@@ -60,6 +99,8 @@ interface ToolState {
   lastPromotedAt: number;
   /** let: cached lastDemotedAt from store. */
   lastDemotedAt: number;
+  /** Flush state for fitness persistence bridge. */
+  readonly flushState: MutableFlushState;
 }
 
 function createToolState(ringSize: number): ToolState {
@@ -73,6 +114,18 @@ function createToolState(ringSize: number): ToolState {
     trustTier: undefined,
     lastPromotedAt: 0,
     lastDemotedAt: 0,
+    flushState: {
+      totalSuccesses: 0,
+      totalFailures: 0,
+      latencyBuffer: [],
+      latencyTotalCount: 0,
+      dirty: false,
+      flushing: false,
+      invocationsSinceFlush: 0,
+      lastFlushedSuccesses: 0,
+      lastFlushedFailures: 0,
+      lastFlushedErrorRate: 0,
+    },
   };
 }
 
@@ -201,6 +254,9 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
   const quarantineWindowSize = config.windowSize ?? DEFAULT_WINDOW_SIZE;
   const maxRecent = config.maxRecentFailures ?? DEFAULT_MAX_RECENT_FAILURES;
   const clock = config.clock ?? Date.now;
+  const flushThreshold = config.flushThreshold ?? DEFAULT_FLUSH_THRESHOLD;
+  const errorRateDeltaThreshold =
+    config.errorRateDeltaThreshold ?? DEFAULT_ERROR_RATE_DELTA_THRESHOLD;
   const demotionCriteria: DemotionCriteria = {
     ...DEFAULT_DEMOTION_CRITERIA,
     ...config.demotionCriteria,
@@ -220,6 +276,9 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     return ts;
   }
 
+  /** Max latency buffer size before reservoir sampling kicks in. */
+  const LATENCY_BUFFER_CAP = 200;
+
   function record(toolId: string, success: boolean, latencyMs: number): void {
     const ts = getOrCreate(toolId);
     if (ts.state === "quarantined") return;
@@ -228,6 +287,28 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
     ts.ringIndex++;
     if (ts.filledSlots < ringSize) ts.filledSlots++;
     ts.lastUpdatedAt = clock();
+
+    // Cumulative tracking for fitness flush
+    const fs = ts.flushState;
+    if (success) {
+      fs.totalSuccesses++;
+    } else {
+      fs.totalFailures++;
+    }
+    fs.invocationsSinceFlush++;
+    fs.dirty = true;
+
+    // Latency buffer with reservoir sampling at cap
+    fs.latencyTotalCount++;
+    if (fs.latencyBuffer.length < LATENCY_BUFFER_CAP) {
+      fs.latencyBuffer.push(latencyMs);
+    } else {
+      // Reservoir sampling: replace with probability cap/totalCount
+      const replaceIndex = Math.floor(Math.random() * fs.latencyTotalCount);
+      if (replaceIndex < LATENCY_BUFFER_CAP) {
+        fs.latencyBuffer[replaceIndex] = latencyMs;
+      }
+    }
   }
 
   function getQuarantineMetrics(ts: ToolState): ToolHealthMetrics {
@@ -293,6 +374,101 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       ts.lastPromotedAt = loadResult.value.lastPromotedAt ?? 0;
       ts.lastDemotedAt = loadResult.value.lastDemotedAt ?? 0;
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Fitness flush — closure-based implementations (no `this` dependency)
+  // ---------------------------------------------------------------------------
+
+  function shouldFlushToolImpl(toolId: string): boolean {
+    const ts = tools.get(toolId);
+    if (ts === undefined) return false;
+    return shouldFlush(ts.flushState, flushThreshold, errorRateDeltaThreshold);
+  }
+
+  async function flushToolImpl(toolId: string): Promise<void> {
+    const ts = tools.get(toolId);
+    if (ts === undefined) return;
+    const fs = ts.flushState;
+    if (!fs.dirty || fs.flushing) return;
+
+    // Only flush forged tools
+    const resolvedBrickId = config.resolveBrickId(toolId);
+    if (resolvedBrickId === undefined) return;
+
+    fs.flushing = true;
+
+    // Capture deltas before async work
+    const successDelta = fs.totalSuccesses - fs.lastFlushedSuccesses;
+    const failureDelta = fs.totalFailures - fs.lastFlushedFailures;
+    const latencyBufferCopy = [...fs.latencyBuffer];
+    const lastUsedAt = ts.lastUpdatedAt;
+
+    try {
+      const loadResult = await config.forgeStore.load(brickId(resolvedBrickId));
+      if (!loadResult.ok) {
+        if (loadResult.error.code === "NOT_FOUND") {
+          // Brick was deleted — clear dirty, report warning
+          fs.dirty = false;
+          fs.flushing = false;
+          config.onFlushError?.(toolId, loadResult.error);
+          return;
+        }
+        throw new Error(`Failed to load brick ${resolvedBrickId}: ${loadResult.error.message}`, {
+          cause: loadResult.error,
+        });
+      }
+
+      const existing = loadResult.value.fitness;
+      const merged = computeMergedFitness(
+        { successDelta, failureDelta, latencyBuffer: latencyBufferCopy, lastUsedAt },
+        existing,
+      );
+
+      const updateResult = await config.forgeStore.update(brickId(resolvedBrickId), {
+        fitness: merged,
+        usageCount: merged.successCount + merged.errorCount,
+      });
+      if (!updateResult.ok) {
+        throw new Error(
+          `Failed to update fitness for brick ${resolvedBrickId}: ${updateResult.error.message}`,
+          { cause: updateResult.error },
+        );
+      }
+
+      // Success — update flush bookkeeping
+      fs.lastFlushedSuccesses = fs.totalSuccesses;
+      fs.lastFlushedFailures = fs.totalFailures;
+      const totalInvocations = fs.totalSuccesses + fs.totalFailures;
+      fs.lastFlushedErrorRate = totalInvocations > 0 ? fs.totalFailures / totalInvocations : 0;
+      fs.invocationsSinceFlush = 0;
+      // Clear buffer in-place (reference is readonly, contents are mutable)
+      fs.latencyBuffer.length = 0;
+      fs.latencyTotalCount = 0;
+      fs.dirty = false;
+    } catch (e: unknown) {
+      // Restore dirty so next check can retry (deltas still in cumulative counters)
+      fs.dirty = true;
+      config.onFlushError?.(toolId, e);
+    } finally {
+      fs.flushing = false;
+    }
+  }
+
+  /** Flushes all dirty tools. Errors are reported via onFlushError; never rejects. */
+  async function flushAllImpl(): Promise<void> {
+    const promises: Promise<void>[] = [];
+    for (const [toolId, ts] of tools) {
+      if (ts.flushState.dirty && !ts.flushState.flushing) {
+        promises.push(flushToolImpl(toolId));
+      }
+    }
+    await Promise.allSettled(promises);
+  }
+
+  async function disposeImpl(): Promise<void> {
+    await flushAllImpl();
+    tools.clear();
   }
 
   return {
@@ -488,5 +664,10 @@ export function createToolHealthTracker(config: ForgeHealthConfig): ToolHealthTr
       }
       return snapshots;
     },
+
+    shouldFlushTool: shouldFlushToolImpl,
+    flushTool: flushToolImpl,
+    flush: flushAllImpl,
+    dispose: disposeImpl,
   };
 }
