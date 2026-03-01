@@ -4,6 +4,8 @@
  * This is the single source of truth for which packages belong to which layer.
  * Both check-layers.ts and detect-layer.ts import from here.
  *
+ * Keep in sync with CLAUDE.md L0u/L3 lists (CLAUDE.md references this file as canonical source).
+ *
  * See docs/architecture/Koi.md for layer definitions.
  */
 
