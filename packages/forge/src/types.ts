@@ -39,7 +39,7 @@ export interface ForgeResult {
   readonly lifecycle: BrickLifecycle;
   readonly verificationReport: VerificationReport;
   readonly metadata: ForgeResultMetadata;
-  /** Number of forge operations consumed (caller must increment forgesThisSession by this amount). */
+  /** Number of forge operations consumed. When onForgeConsumed is provided in ForgeDeps, incrementing is automatic; otherwise the caller must increment forgesThisSession by this amount. */
   readonly forgesConsumed: number;
 }
 

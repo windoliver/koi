@@ -7,6 +7,7 @@ import type {
   BrickArtifactBase,
   BrickId,
   ForgeStore,
+  GovernanceController,
   JsonObject,
   Result,
   SigningBackend,
@@ -22,6 +23,7 @@ import type { ForgeConfig } from "../config.js";
 import type { ForgeError } from "../errors.js";
 import { staticError, typeError } from "../errors.js";
 import { checkGovernance } from "../governance.js";
+import { checkMutationPressure } from "../mutation-pressure-check.js";
 import type {
   ForgeContext,
   ForgeInput,
@@ -49,6 +51,10 @@ export interface ForgeDeps {
   readonly notifier?: StoreChangeNotifier;
   /** Optional signing backend for attestation. When provided, forged bricks get cryptographic signatures. */
   readonly signer?: SigningBackend;
+  /** Optional governance controller for live-counter budget checks (bypasses static ForgeContext.forgesThisSession). */
+  readonly controller?: GovernanceController;
+  /** Called after a successful forge with the number of forges consumed. When provided, incrementing the session counter is automatic. */
+  readonly onForgeConsumed?: (consumed: number) => void | Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -338,6 +344,24 @@ export async function runForgePipeline(
   buildArtifact: ArtifactBuilder,
 ): Promise<Result<ForgeResult, ForgeError>> {
   const startedAt = Date.now();
+
+  // Mutation pressure gate — block forge when capability space is frozen
+  if (
+    deps.config.mutationPressure?.enabled &&
+    forgeInput.tags !== undefined &&
+    forgeInput.tags.length > 0
+  ) {
+    const pressureResult = await checkMutationPressure(
+      forgeInput.tags,
+      deps.store,
+      deps.config.mutationPressure,
+      startedAt,
+    );
+    if (!pressureResult.ok) {
+      return pressureResult;
+    }
+  }
+
   const { executor: sandboxExecutor } = deps.executor.forTier("sandbox");
   const verifyResult = await verify(
     forgeInput,
@@ -480,13 +504,26 @@ export function createForgeTool(toolConfig: ForgeToolConfig, deps: ForgeDeps): T
 
   const execute = async (input: JsonObject): Promise<unknown> => {
     // Governance pre-check (includes depth-aware tool filtering)
-    const govResult = await checkGovernance(deps.context, deps.config, toolConfig.name);
+    const govResult = await checkGovernance(
+      deps.context,
+      deps.config,
+      toolConfig.name,
+      deps.controller,
+    );
     if (!govResult.ok) {
       return { ok: false, error: govResult.error };
     }
 
     // Delegate to handler
-    return toolConfig.handler(input, deps);
+    const result = await toolConfig.handler(input, deps);
+
+    // Increment engine-owned counter when a new brick was forged.
+    // Treat counter update failure as non-fatal — the brick is already saved.
+    if (deps.onForgeConsumed !== undefined && isForgeConsumed(result)) {
+      await Promise.resolve(deps.onForgeConsumed(result.value.forgesConsumed)).catch(() => {});
+    }
+
+    return result;
   };
 
   return {
@@ -494,4 +531,25 @@ export function createForgeTool(toolConfig: ForgeToolConfig, deps: ForgeDeps): T
     trustTier: "promoted", // Primordial tools are first-party
     execute,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Type guard for forge result with consumed count
+// ---------------------------------------------------------------------------
+
+/**
+ * Narrows unknown handler result to a successful forge with forgesConsumed > 0.
+ * Dedup (already-stored brick) returns forgesConsumed: 0 and is intentionally excluded.
+ */
+function isForgeConsumed(
+  result: unknown,
+): result is { readonly ok: true; readonly value: { readonly forgesConsumed: number } } {
+  if (result === null || typeof result !== "object") return false;
+  if (!("ok" in result) || result.ok !== true) return false;
+  if (!("value" in result) || result.value === null || typeof result.value !== "object")
+    return false;
+  const v: object = result.value;
+  if (!("forgesConsumed" in v)) return false;
+  const fc = (v as { readonly forgesConsumed: unknown }).forgesConsumed;
+  return typeof fc === "number" && fc > 0;
 }

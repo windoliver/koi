@@ -13,13 +13,125 @@ import { GuardrailsConfig } from '@koi/middleware-guardrails';
 export { GuardrailsConfig } from '@koi/middleware-guardrails';
 import { PayMiddlewareConfig } from '@koi/middleware-pay';
 export { PayMiddlewareConfig } from '@koi/middleware-pay';
-import { PermissionsMiddlewareConfig } from '@koi/middleware-permissions';
-export { PermissionsMiddlewareConfig } from '@koi/middleware-permissions';
+import { PermissionRules, PermissionsMiddlewareConfig } from '@koi/middleware-permissions';
+export { PatternBackendConfig, PermissionRules, PermissionsMiddlewareConfig } from '@koi/middleware-permissions';
 import { PIIConfig } from '@koi/middleware-pii';
 export { PIIConfig } from '@koi/middleware-pii';
 import { SanitizeMiddlewareConfig } from '@koi/middleware-sanitize';
 export { SanitizeMiddlewareConfig } from '@koi/middleware-sanitize';
-import { KoiMiddleware } from '@koi/core/middleware';
+import { FileSystemBackend, CredentialComponent, MemoryComponent, AuditSink, ScopeEnforcer, KoiMiddleware, ComponentProvider } from '@koi/core';
+import { BrowserDriver } from '@koi/tool-browser';
+
+/**
+ * Types for the governance compliance bundle.
+ *
+ * Defines the full GovernanceStackConfig (preset + scope + middleware fields),
+ * deployment presets, scope configuration, and the GovernanceBundle return shape.
+ */
+
+/** Deployment preset levels for governance stacks. */
+type GovernancePreset = "open" | "standard" | "strict";
+/** Scope configuration for governed capabilities. */
+interface GovernanceScopeConfig {
+    readonly filesystem?: {
+        readonly root: string;
+        readonly mode?: "rw" | "ro" | undefined;
+    } | undefined;
+    readonly browser?: {
+        readonly allowedProtocols?: readonly string[] | undefined;
+        readonly allowedDomains?: readonly string[] | undefined;
+        readonly blockPrivateAddresses?: boolean | undefined;
+        readonly trustTier?: "sandbox" | "verified" | "promoted" | undefined;
+    } | undefined;
+    readonly credentials?: {
+        readonly keyPattern: string;
+    } | undefined;
+    readonly memory?: {
+        readonly namespace: string;
+    } | undefined;
+}
+/** Backend implementations for scope wiring. */
+interface GovernanceScopeBackends {
+    readonly filesystem?: FileSystemBackend | undefined;
+    readonly browser?: BrowserDriver | undefined;
+    readonly credentials?: CredentialComponent | undefined;
+    readonly memory?: MemoryComponent | undefined;
+    readonly auditSink?: AuditSink | undefined;
+}
+/**
+ * Configuration for the governance compliance stack.
+ *
+ * All fields are optional. Include only the middleware you need.
+ * When \`preset\` is specified, its defaults are merged under user overrides.
+ */
+interface GovernanceStackConfig {
+    /** Deployment preset. Defaults to "open". */
+    readonly preset?: GovernancePreset | undefined;
+    /** Scope enforcement configuration. */
+    readonly scope?: GovernanceScopeConfig | undefined;
+    /** Backend implementations for scope wiring. */
+    readonly backends?: GovernanceScopeBackends | undefined;
+    /** Pluggable scope enforcer (ReBAC, ABAC, etc.). */
+    readonly enforcer?: ScopeEnforcer | undefined;
+    /**
+     * Pattern-based permission rules shorthand. Mutually exclusive with \`permissions\`.
+     * Creates a pattern permission backend automatically.
+     */
+    readonly permissionRules?: PermissionRules | undefined;
+    /** Coarse-grained tool allow/deny/ask rules. Priority 100. */
+    readonly permissions?: PermissionsMiddlewareConfig | undefined;
+    /** Progressive command allowlisting. Priority 110 (overridden from default). */
+    readonly execApprovals?: ExecApprovalsConfig | undefined;
+    /** Delegation grant verification. Priority 120 (overridden from default). */
+    readonly delegation?: DelegationMiddlewareConfig | undefined;
+    /** Pluggable policy evaluation gate. Priority 150. */
+    readonly governanceBackend?: GovernanceBackendMiddlewareConfig | undefined;
+    /** @deprecated Use @koi/middleware-pay directly. Will be removed next major. */
+    readonly pay?: PayMiddlewareConfig | undefined;
+    /** Compliance audit logging. Priority 300. */
+    readonly audit?: AuditMiddlewareConfig | undefined;
+    /** PII detection and redaction. Priority 340. */
+    readonly pii?: PIIConfig | undefined;
+    /** Content sanitization. Priority 350. */
+    readonly sanitize?: SanitizeMiddlewareConfig | undefined;
+    /** Output schema validation. Priority 375. */
+    readonly guardrails?: GuardrailsConfig | undefined;
+}
+/**
+ * Partial config without meta-fields, used for preset definitions.
+ * Presets cannot specify preset, backends, enforcer, or pay.
+ */
+type GovernancePresetSpec = Partial<Omit<GovernanceStackConfig, "preset" | "backends" | "enforcer" | "pay">>;
+/** Metadata about the resolved governance stack for inspection. */
+interface ResolvedGovernanceMeta {
+    readonly preset: GovernancePreset;
+    readonly middlewareCount: number;
+    readonly providerCount: number;
+    readonly payDeprecated: boolean;
+    readonly scopeEnabled: boolean;
+}
+/** Return value of createGovernanceStack(). */
+interface GovernanceBundle {
+    readonly middlewares: readonly KoiMiddleware[];
+    readonly providers: readonly ComponentProvider[];
+    readonly config: ResolvedGovernanceMeta;
+}
+
+/**
+ * Config resolution: 3-layer merge (defaults -> preset -> user overrides).
+ *
+ * Validates mutual exclusion constraints and emits deprecation warnings.
+ */
+
+/**
+ * Resolve governance config by merging preset defaults under user overrides.
+ *
+ * Validation rules:
+ * - \`permissions\` and \`permissionRules\` are mutually exclusive (throws)
+ * - \`execApprovals\` requires an \`onAsk\` handler (throws)
+ * - \`pay\` emits a console.warn deprecation notice
+ */
+declare function resolveGovernanceConfig(config: GovernanceStackConfig): GovernanceStackConfig;
 
 /**
  * createGovernanceStack — enterprise compliance middleware assembly.
@@ -40,47 +152,33 @@ import { KoiMiddleware } from '@koi/core/middleware';
  */
 
 /**
- * Configuration for the governance compliance stack.
- * All fields are optional — include only the middleware you need.
- */
-interface GovernanceStackConfig {
-    /** Coarse-grained tool allow/deny/ask rules. Priority 100. */
-    readonly permissions?: PermissionsMiddlewareConfig;
-    /** Progressive command allowlisting. Priority 110 (overridden from default). */
-    readonly execApprovals?: ExecApprovalsConfig;
-    /** Delegation grant verification. Priority 120 (overridden from default). */
-    readonly delegation?: DelegationMiddlewareConfig;
-    /** Pluggable policy evaluation gate. Priority 150. */
-    readonly governanceBackend?: GovernanceBackendMiddlewareConfig;
-    /** Token budget enforcement. Priority 200. */
-    readonly pay?: PayMiddlewareConfig;
-    /** Compliance audit logging. Priority 300. */
-    readonly audit?: AuditMiddlewareConfig;
-    /** PII detection and redaction. Priority 340. */
-    readonly pii?: PIIConfig;
-    /** Content sanitization. Priority 350. */
-    readonly sanitize?: SanitizeMiddlewareConfig;
-    /** Output schema validation. Priority 375. */
-    readonly guardrails?: GuardrailsConfig;
-}
-/**
  * Assemble a governance compliance middleware stack.
  *
- * Returns an object with \`middlewares\` — pass it directly to createKoi():
+ * Returns a \`GovernanceBundle\` with \`middlewares\`, \`providers\`, and \`config\` metadata.
+ * Pass \`middlewares\` and \`providers\` directly to createKoi():
  *
  * \`\`\`typescript
- * const { middlewares } = createGovernanceStack({ audit: { sink: myAuditSink } });
- * const runtime = await createKoi({ ..., middleware: middlewares });
+ * const { middlewares, providers } = createGovernanceStack({ preset: "standard" });
+ * const runtime = await createKoi({ ..., middleware: middlewares, providers });
  * \`\`\`
  *
+ * Config resolution: defaults -> preset -> user overrides.
  * Middleware are ordered by priority. Priority overrides are applied for
  * exec-approvals (110) and delegation (120) so they slot correctly between
  * permissions (100) and governance-backend (150).
  */
-declare function createGovernanceStack(config: GovernanceStackConfig): {
-    readonly middlewares: readonly KoiMiddleware[];
-};
+declare function createGovernanceStack(config: GovernanceStackConfig): GovernanceBundle;
 
-export { type GovernanceStackConfig, createGovernanceStack };
+/**
+ * Governance deployment presets: open, standard, strict.
+ *
+ * Each preset provides sensible defaults for permission rules,
+ * middleware, and scope configuration. User overrides always win.
+ */
+
+/** Frozen registry of governance preset specs, keyed by preset name. */
+declare const GOVERNANCE_PRESET_SPECS: Readonly<Record<GovernancePreset, GovernancePresetSpec>>;
+
+export { GOVERNANCE_PRESET_SPECS, type GovernanceBundle, type GovernancePreset, type GovernancePresetSpec, type GovernanceScopeBackends, type GovernanceScopeConfig, type GovernanceStackConfig, type ResolvedGovernanceMeta, createGovernanceStack, resolveGovernanceConfig };
 "
 `;

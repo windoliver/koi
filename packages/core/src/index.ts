@@ -393,11 +393,14 @@ export type {
   BrickLifecycle,
   DemotionCriteria,
   ForgeScope,
+  MutationPressure,
+  MutationPressurePolicy,
   TrustTransitionCaller,
 } from "./forge-types.js";
 export {
   ALL_BRICK_KINDS,
   DEFAULT_DEMOTION_CRITERIA,
+  DEFAULT_MUTATION_PRESSURE_POLICY,
   MIN_TRUST_BY_KIND,
   VALID_LIFECYCLE_TRANSITIONS,
 } from "./forge-types.js";

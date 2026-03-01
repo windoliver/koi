@@ -61,6 +61,17 @@ export interface FormatConfig {
   readonly timeoutMs: number;
 }
 
+export interface MutationPressureConfig {
+  /** Whether mutation pressure checks are enabled. Default: false (opt-in). */
+  readonly enabled: boolean;
+  /** Fitness above this threshold → frozen (block forge). Default: 0.9. */
+  readonly frozenThreshold: number;
+  /** Fitness above this threshold → stable (normal). Default: 0.5. */
+  readonly stableThreshold: number;
+  /** Fitness above this threshold → experimental. Default: 0.2. Below → aggressive. */
+  readonly experimentalThreshold: number;
+}
+
 export interface ForgeConfig {
   readonly enabled: boolean;
   readonly maxForgeDepth: number;
@@ -73,6 +84,7 @@ export interface ForgeConfig {
   readonly dependencies: DependencyConfig;
   readonly format: FormatConfig;
   readonly reverification?: ReverificationConfig;
+  readonly mutationPressure?: MutationPressureConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +139,13 @@ const formatSchema = z.object({
   timeoutMs: z.number().int().positive().optional(),
 });
 
+const mutationPressureSchema = z.object({
+  enabled: z.boolean().optional(),
+  frozenThreshold: z.number().min(0).max(1).optional(),
+  stableThreshold: z.number().min(0).max(1).optional(),
+  experimentalThreshold: z.number().min(0).max(1).optional(),
+});
+
 const forgeConfigInputSchema = z.object({
   enabled: z.boolean().optional(),
   maxForgeDepth: z.number().int().min(0).optional(),
@@ -138,6 +157,7 @@ const forgeConfigInputSchema = z.object({
   autoPromotion: autoPromotionSchema.optional(),
   dependencies: dependencySchema.optional(),
   format: formatSchema.optional(),
+  mutationPressure: mutationPressureSchema.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -170,6 +190,13 @@ const DEFAULT_FORMAT: FormatConfig = {
   command: "biome",
   args: ["format", "--write"],
   timeoutMs: 5_000,
+} as const;
+
+const DEFAULT_MUTATION_PRESSURE: MutationPressureConfig = {
+  enabled: true,
+  frozenThreshold: 0.9,
+  stableThreshold: 0.5,
+  experimentalThreshold: 0.2,
 } as const;
 
 const DEFAULT_DEPENDENCY: DependencyConfig = {
@@ -224,6 +251,11 @@ export function createDefaultForgeConfig(overrides?: Partial<ForgeConfig>): Forg
         : DEFAULT_DEPENDENCY,
     format:
       overrides.format !== undefined ? { ...DEFAULT_FORMAT, ...overrides.format } : DEFAULT_FORMAT,
+    ...(overrides.mutationPressure !== undefined
+      ? {
+          mutationPressure: { ...DEFAULT_MUTATION_PRESSURE, ...overrides.mutationPressure },
+        }
+      : {}),
   };
 }
 
@@ -319,6 +351,20 @@ export function validateForgeConfig(raw: unknown): Result<ForgeConfig, KoiError>
             timeoutMs: p.format.timeoutMs ?? DEFAULT_FORMAT.timeoutMs,
           }
         : DEFAULT_FORMAT,
+    ...(p.mutationPressure !== undefined
+      ? {
+          mutationPressure: {
+            enabled: p.mutationPressure.enabled ?? DEFAULT_MUTATION_PRESSURE.enabled,
+            frozenThreshold:
+              p.mutationPressure.frozenThreshold ?? DEFAULT_MUTATION_PRESSURE.frozenThreshold,
+            stableThreshold:
+              p.mutationPressure.stableThreshold ?? DEFAULT_MUTATION_PRESSURE.stableThreshold,
+            experimentalThreshold:
+              p.mutationPressure.experimentalThreshold ??
+              DEFAULT_MUTATION_PRESSURE.experimentalThreshold,
+          },
+        }
+      : {}),
   };
   return { ok: true, value: config };
 }
