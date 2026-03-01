@@ -164,6 +164,19 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
       }
     }
 
+    // Explicit supersession: mark referenced facts as superseded
+    if (options?.supersedes !== undefined && options.supersedes.length > 0) {
+      const supersedIds = new Set(options.supersedes);
+      for (const old of existing) {
+        if (old.status === "active" && supersedIds.has(old.id)) {
+          await factStore.updateFact(entity, old.id, {
+            status: "superseded",
+            supersededBy: newFact.id,
+          });
+        }
+      }
+    }
+
     // Contradiction: supersede same-category facts with same relatedEntities (order-insensitive)
     const entities = newFact.relatedEntities;
     if (entities.length > 0) {
