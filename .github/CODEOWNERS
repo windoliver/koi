@@ -12,3 +12,11 @@
 
 # Layer 0 kernel — 2 reviewers enforced via branch protection
 packages/core/ @taofeng
+
+# Layer governance — canonical source of truth for layer membership and CI enforcement.
+# Changes here have the same blast radius as L0 changes.
+scripts/layers.ts @taofeng
+scripts/check-layers.ts @taofeng
+scripts/check-doc-sync.ts @taofeng
+scripts/generate-layer-docs.ts @taofeng
+.github/workflows/ @taofeng

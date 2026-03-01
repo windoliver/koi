@@ -147,3 +147,141 @@
 - Every PR must pass `bun run build && bun test` before merge
 - PR size target: < 300 lines logic changes (split PRs are infrastructure, exempt from this)
 - Layer violations caught by import-lint CI check — verify after each PR
+
+---
+
+# Issues #273, #288, #77, #100, #102 — CI Governance Improvements
+
+## Decisions Log
+
+| # | Area | Issue | Decision | Choice |
+|---|------|-------|----------|--------|
+| 1 | Arch | #273 | L0u whitelist single source of truth | **1A**: Generate docs from `layers.ts` (generator + CI doc-sync check) |
+| 2 | Arch | #288 | Pace-layered CI enforcement | **2A**: Split `ci-L0.yml`, `ci-L1.yml`, `ci-L2.yml` + paths filters + CODEOWNERS |
+| 3 | Arch | #288 | L0u PR labeling | **3B**: Generator also writes `labeler.yml` L0u entries |
+| 4 | Arch | #102 | L0 interfaces-only enforcement | **4A**: Add L0 structure scan to `check-layers.ts` |
+| 5 | Code | #77 | L0u source file scan | **5A**: Add `isL0uViolation` predicate + source scan |
+| 6 | Code | — | Multiline type import gap | **6A**: Fix regex + add regression test |
+| 7 | Code | — | `layer:L2` double-labeling | **7B**: Generator handles labeler.yml L0u globs precisely |
+| 8 | Code | — | Immutability: `Array.push` in `main()` | **8A**: Spread accumulation instead of push |
+| 9 | Test | — | TDD discipline | **9A**: Strict TDD — tests first, then implementation |
+| 10 | Test | — | `scanFilesForViolations` integration test | **10A**: Temp-dir integration test |
+| 11 | Test | — | `isTestFile` tests | **11A**: Export + 8 unit tests |
+| 12 | Test | — | Generator tests | **12B**: CI doc-sync check IS the test |
+| 13 | Perf | — | `Bun.Transpiler` singleton | **13A**: Hoist to module-level `const TRANSPILER` |
+| 14 | Perf | — | Parallel source scans | **14B**: `Promise.all` on scan calls, keep two loops |
+| 15 | Perf | #288 | L2 CI build+test scope | **15A**: `turbo run --filter='...[origin/main]'` in ci-L2.yml |
+| 16 | Perf | — | check-layers on doc-only PRs | **16B**: Always run, it's fast |
+
+---
+
+## PR A: Fix and harden `check-layers.ts` (Issues #273, #77, #102)
+
+### Phase A1: Tests first (per decision 9A)
+- [ ] Export `isTestFile` from `check-layers.ts`
+- [ ] Add `isTestFile` unit tests: 4 true cases + 4 false cases (decision 11A)
+- [ ] Add `isL0uViolation` unit tests (decision 5A):
+  - `@koi/engine` → true
+  - L2 package (`@koi/gateway`) → true
+  - `@koi/core` → false
+  - `@koi/errors` (L0u peer) → false
+  - relative `./utils.js` → false
+- [ ] Add multiline type import regression test to `extractImportSpecifiers` tests (decision 6A):
+  - `import type {\n  Foo,\n  Bar\n} from "@koi/engine"` → catches `@koi/engine`
+- [ ] Add L0 structure scan unit tests (decision 4A):
+  - `export interface Foo { readonly x: string }` → no violation
+  - `export type Bar = string` → no violation
+  - `export function foo() {}` → violation
+  - `export class Baz {}` → violation
+  - Exception: `export function isKoiError` (type guard) → no violation (permitted exception list)
+- [ ] Add temp-dir integration test for `scanFilesForViolations` (decision 10A):
+  - Create temp dir, write fake `.ts` with violation, assert function returns it
+  - Create temp dir with `.test.ts` violation, assert it's skipped
+
+### Phase A2: Implementation
+- [ ] Hoist `new Bun.Transpiler({ loader: "ts" })` to `const TRANSPILER = ...` at module scope (decision 13A)
+- [ ] Fix `extractImportSpecifiers` regex to handle multiline type imports (decision 6A)
+- [ ] Export `isTestFile` (decision 11A)
+- [ ] Add `isL0uViolation(specifier)` predicate (decision 5A):
+  - True if `specifier` is `@koi/engine` or starts with `@koi/engine/`
+  - True if `specifier` starts with `@koi/` and is not L0 or L0u
+- [ ] Add L0u source scan in `main()` — call `scanFilesForViolations` for each L0u package src dir (decision 5A)
+- [ ] Add L0 structure scan in `main()` — scan `@koi/core/src` for function/class declarations (decision 4A)
+- [ ] Fix `Array.push()` mutation in `main()`: replace with `const violations = [...a, ...b, ...c]` spread (decision 8A)
+- [ ] Parallelize L0u + L2 source scans with `Promise.all` (decision 14B)
+
+### Phase A3: Verify
+- [ ] `bun test packages/scripts/` (or wherever check-layers.test.ts lives) — all pass
+- [ ] `bun scripts/check-layers.ts` — passes on current codebase (no false positives)
+
+---
+
+## PR B: Generator — `layers.ts` → docs + `labeler.yml` (Issues #273, #288)
+
+### Phase B1: Tests first (per decision 9A)
+- [ ] No unit tests for generator (decision 12B — CI doc-sync check IS the test)
+
+### Phase B2: Implementation
+- [ ] Write `scripts/generate-layer-docs.ts`:
+  - Reads `L0U_PACKAGES` from `layers.ts`
+  - Outputs markdown table of L0u packages for insertion into `docs/architecture/Koi.md`
+  - Outputs `labeler.yml` L0u glob entries (strips `@koi/` prefix, maps to `packages/<name>/**`) (decision 3B)
+  - Also outputs L3 entries using `L3_PACKAGES`
+- [ ] Write `scripts/check-doc-sync.ts`:
+  - Runs the generator in memory, compares output vs current file contents
+  - Exits with code 1 + diff if stale (decision 12B = this IS the test)
+- [ ] Update `docs/architecture/Koi.md`: add `@koi/acp-protocol` to L0u section (the one missing package)
+- [ ] Regenerate `labeler.yml` from generator:
+  - Add explicit `layer:L0u` label section with 24 package globs
+  - Tighten `layer:L2` catch-all to exclude L0/L1/L0u/L3 paths (decision 7B)
+- [ ] Update CLAUDE.md: expand L0u list from 16 to 24 (one-time sync)
+- [ ] Add `check:doc-sync` script to root `package.json`
+
+### Phase B3: Verify
+- [ ] `bun scripts/check-doc-sync.ts` — exits 0 on freshly generated docs
+- [ ] `bun scripts/check-doc-sync.ts` after manually mutating Koi.md — exits 1 (enforcement works)
+
+---
+
+## PR C: Pace-layered CI workflows (Issue #288)
+
+### Phase C1: CODEOWNERS
+- [ ] Create `CODEOWNERS` file at repo root:
+  - `packages/core/` → (assign 2 owners for 2-reviewer gate on L0)
+  - `packages/engine/` → (assign 1+ owners)
+  - `scripts/layers.ts` → (same L0-level owners — source of truth)
+
+### Phase C2: Split CI workflows
+- [ ] Extract reusable setup into `.github/workflows/setup.yml` (checkout + bun + cache steps):
+  - `actions/checkout@v4`
+  - `oven-sh/setup-bun@v2`
+  - Bun dep cache
+  - Turborepo cache
+  - `bun install --frozen-lockfile`
+- [ ] Create `.github/workflows/ci-L0.yml`:
+  - Triggers: `paths: [packages/core/**, scripts/layers.ts, scripts/check-layers.ts]`
+  - Jobs: lint, check:layers, **check:doc-sync** (new), full build, full typecheck, full test
+  - Requires 2 reviewers (enforced via CODEOWNERS, not workflow)
+- [ ] Create `.github/workflows/ci-L1.yml`:
+  - Triggers: `paths: [packages/engine/**]`
+  - Jobs: lint, check:layers, build (turbo filter L0+L1), typecheck (turbo filter), test (turbo filter)
+- [ ] Create `.github/workflows/ci-L2.yml`:
+  - Triggers: `paths: [packages/**, !packages/core/**, !packages/engine/**]`
+  - Jobs: lint, check:layers, affected build+test: `turbo run build test --filter='...[origin/main]'` (decision 15A)
+  - Requires `git fetch origin main --depth=0` before Turborepo filter step
+- [ ] Update `.github/workflows/ci.yml`:
+  - Keep as catch-all for non-package changes (CI config, docs, scripts outside layers)
+  - Or repurpose as the L0-level full-suite workflow
+
+### Phase C3: Verify
+- [ ] Open a test PR touching only `packages/core/` — confirm `ci-L0.yml` triggers, others don't
+- [ ] Open a test PR touching only `packages/<L2-package>/` — confirm `ci-L2.yml` triggers, uses `--filter`
+- [ ] Verify `check:doc-sync` step fails if layers.ts and docs are out of sync
+
+---
+
+## Review Notes (CI Governance)
+- Every implementation step follows TDD: tests written before code (decision 9A)
+- No changes to `layers.ts` content — it is the source of truth, only docs/labeler change to match it
+- PR order: A → B → C (each PR unblocks the next)
+- PR A is self-contained; PR B depends on PR A passing; PR C depends on PR B labeler output

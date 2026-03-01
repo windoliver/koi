@@ -1,11 +1,18 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   extractImportSpecifiers,
   isClassDeclaration,
   isFunctionBody,
+  isL0ClassViolation,
+  isL0uViolation,
   isL0Violation,
   isL2Violation,
+  isTestFile,
   L0_RUNTIME_ALLOWLIST,
+  scanFilesForViolations,
 } from "./check-layers.js";
 
 // ---------------------------------------------------------------------------
@@ -77,6 +84,108 @@ describe("isL2Violation", () => {
 });
 
 // ---------------------------------------------------------------------------
+// isTestFile — test file classifier
+// ---------------------------------------------------------------------------
+
+describe("isTestFile", () => {
+  test("__tests__/ directory path is a test file", () => {
+    expect(isTestFile("/packages/foo/src/__tests__/setup.ts")).toBe(true);
+  });
+
+  test(".test.ts suffix is a test file", () => {
+    expect(isTestFile("/packages/foo/src/foo.test.ts")).toBe(true);
+  });
+
+  test(".e2e.test.ts suffix is a test file", () => {
+    expect(isTestFile("/packages/foo/src/foo.e2e.test.ts")).toBe(true);
+  });
+
+  test(".spec.ts suffix is a test file", () => {
+    expect(isTestFile("/packages/foo/src/foo.spec.ts")).toBe(true);
+  });
+
+  test("plain .ts source file is not a test file", () => {
+    expect(isTestFile("/packages/foo/src/foo.ts")).toBe(false);
+  });
+
+  test("file with 'test' in the name but wrong suffix is not a test file", () => {
+    expect(isTestFile("/packages/foo/src/my-test.ts")).toBe(false);
+  });
+
+  test("file with 'test' as prefix is not a test file", () => {
+    expect(isTestFile("/packages/foo/src/testable.ts")).toBe(false);
+  });
+
+  test(".spec.js is not a test file (wrong extension)", () => {
+    expect(isTestFile("/packages/foo/src/setup.spec.js")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isL0uViolation — L0u source import predicate
+// ---------------------------------------------------------------------------
+
+describe("isL0uViolation", () => {
+  test("@koi/engine is a violation (L1 import forbidden in L0u)", () => {
+    expect(isL0uViolation("@koi/engine")).toBe(true);
+  });
+
+  test("@koi/engine/subpath is a violation", () => {
+    expect(isL0uViolation("@koi/engine/runtime")).toBe(true);
+  });
+
+  test("@koi/gateway is a violation (L2 import forbidden in L0u)", () => {
+    expect(isL0uViolation("@koi/gateway")).toBe(true);
+  });
+
+  test("@koi/core is not a violation (L0 import allowed in L0u)", () => {
+    expect(isL0uViolation("@koi/core")).toBe(false);
+  });
+
+  test("@koi/errors is not a violation (peer L0u import allowed)", () => {
+    expect(isL0uViolation("@koi/errors")).toBe(false);
+  });
+
+  test("relative import ./utils.js is not a violation", () => {
+    expect(isL0uViolation("./utils.js")).toBe(false);
+  });
+
+  test("external package zod is not a violation", () => {
+    expect(isL0uViolation("zod")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isL0ClassViolation — L0 class declaration check
+// ---------------------------------------------------------------------------
+
+describe("isL0ClassViolation", () => {
+  test("exported class declaration is a violation", () => {
+    expect(isL0ClassViolation("export class Foo {")).toBe(true);
+  });
+
+  test("exported abstract class is a violation", () => {
+    expect(isL0ClassViolation("export abstract class Foo extends Bar {")).toBe(true);
+  });
+
+  test("unexported class declaration is a violation", () => {
+    expect(isL0ClassViolation("class InternalFoo {")).toBe(true);
+  });
+
+  test("interface declaration is not a violation", () => {
+    expect(isL0ClassViolation("export interface Foo {")).toBe(false);
+  });
+
+  test("type alias is not a violation", () => {
+    expect(isL0ClassViolation("export type Bar = string;")).toBe(false);
+  });
+
+  test("identifier containing 'class' substring is not a violation", () => {
+    expect(isL0ClassViolation("export const classifyItems = () => {};")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // extractImportSpecifiers — Bun.Transpiler AST-based scanner
 // ---------------------------------------------------------------------------
 
@@ -132,6 +241,63 @@ describe("extractImportSpecifiers", () => {
   test("extracts @koi/engine specifier (L2 violation regression)", () => {
     const source = `import { createEngine } from "@koi/engine";`;
     expect(extractImportSpecifiers(source)).toContain("@koi/engine");
+  });
+
+  // Regression: multiline type imports must not be missed
+  test("extracts specifier from multiline type import", () => {
+    const source = `import type {\n  Foo,\n  Bar\n} from "@koi/engine";`;
+    expect(extractImportSpecifiers(source)).toContain("@koi/engine");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scanFilesForViolations — integration tests using temp directories
+// ---------------------------------------------------------------------------
+
+describe("scanFilesForViolations — integration", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(join(tmpdir(), "koi-check-layers-"));
+    await mkdir(join(tmpDir, "src"), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  test("detects violation in non-test source file", async () => {
+    await writeFile(join(tmpDir, "src", "foo.ts"), 'import { Engine } from "@koi/engine";\n');
+    const violations = await scanFilesForViolations(
+      join(tmpDir, "src"),
+      "@koi/test-pkg",
+      isL2Violation,
+      (_specifier, relPath) => `forbidden import at ${relPath}`,
+    );
+    expect(violations).toHaveLength(1);
+    expect(violations[0]?.message).toContain("forbidden import");
+  });
+
+  test("skips .test.ts files — violations inside are ignored", async () => {
+    await writeFile(join(tmpDir, "src", "foo.test.ts"), 'import { Engine } from "@koi/engine";\n');
+    const violations = await scanFilesForViolations(
+      join(tmpDir, "src"),
+      "@koi/test-pkg",
+      isL2Violation,
+      (_specifier, relPath) => `forbidden import at ${relPath}`,
+    );
+    expect(violations).toHaveLength(0);
+  });
+
+  test("returns empty array for clean source file", async () => {
+    await writeFile(join(tmpDir, "src", "bar.ts"), "export const x = 42;\n");
+    const violations = await scanFilesForViolations(
+      join(tmpDir, "src"),
+      "@koi/test-pkg",
+      isL2Violation,
+      (_specifier, relPath) => `forbidden import at ${relPath}`,
+    );
+    expect(violations).toHaveLength(0);
   });
 });
 

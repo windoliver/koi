@@ -1,0 +1,63 @@
+name: CI (packages — affected)
+# Triggered when any package changes. Runs build + test only for the changed
+# package(s) and their transitive dependents using Turborepo's --filter flag.
+#
+# For most L2 feature package PRs (isolated packages with few dependents),
+# this is 10-50x faster than running the full monorepo suite.
+#
+# L0 changes also trigger this workflow, but turbo --filter will resolve to the
+# full dependency graph (all packages depend on @koi/core), effectively running
+# the full suite. The ci-L0.yml workflow provides an explicit additional gate.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci-affected:
+    name: Build & test affected packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history required for Turborepo git range detection.
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+
+      - name: Turborepo cache
+        uses: rharkor/caching-for-turbo@v2.3.11
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Check layer boundaries
+        run: bun run check:layers
+
+      - name: Fetch base branch for Turborepo filter
+        run: git fetch origin main --depth=1
+
+      - name: Build & test affected packages
+        # `...[origin/main]` selects changed packages + all packages that depend on them.
+        # For an isolated L2 package, this is typically 1-5 packages.
+        # For L0/L1 changes, this resolves to the full dependency graph.
+        run: turbo run build test --filter='...[origin/main]'

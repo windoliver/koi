@@ -18,6 +18,8 @@
     "format": "biome format --write .",
     "check": "biome check .",
     "check:layers": "bun scripts/check-layers.ts",
+    "check:doc-sync": "bun scripts/check-doc-sync.ts",
+    "generate:layer-docs": "bun scripts/generate-layer-docs.ts",
     "postinstall": "lefthook install"
   },
   "devDependencies": {
