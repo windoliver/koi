@@ -1,0 +1,30 @@
+name: "codex-mcp-assistant"
+version: "1.0.0"
+description: "Koi agent with OpenAI Codex as MCP tool server — governed by permissions, budget, and audit"
+
+model:
+  name: "anthropic:claude-sonnet-4-5-20250929"
+
+tools:
+  mcp:
+    - name: codex
+      options:
+        command: "codex mcp-server"
+        transport: stdio
+        env:
+          CODEX_SANDBOX: "true"
+
+middleware:
+  - name: "@koi/middleware-permissions"
+  - name: "@koi/middleware-pay"
+    options:
+      dailyBudget: 500
+  - name: "@koi/middleware-audit"
+
+permissions:
+  allow:
+    - "mcp/codex/codex_generate"
+  deny:
+    - "mcp/codex/*:production/**"
+  ask:
+    - "mcp/codex/codex_edit"

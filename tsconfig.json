@@ -71,6 +71,7 @@
     { "path": "packages/store-sqlite" },
     { "path": "packages/test-utils" },
     { "path": "packages/tools-web" },
-    { "path": "packages/validation" }
+    { "path": "packages/validation" },
+    { "path": "recipes/codex-mcp" }
   ]
 }

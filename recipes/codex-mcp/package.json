@@ -1,0 +1,14 @@
+{
+  "name": "@koi/recipe-codex-mcp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/manifest": "workspace:*",
+    "@koi/mcp": "workspace:*"
+  }
+}
