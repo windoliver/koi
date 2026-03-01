@@ -60,4 +60,4 @@ jobs:
         # `...[origin/main]` selects changed packages + all packages that depend on them.
         # For an isolated L2 package, this is typically 1-5 packages.
         # For L0/L1 changes, this resolves to the full dependency graph.
-        run: turbo run build test --filter='...[origin/main]'
+        run: bunx turbo run build test --filter='...[origin/main]'
