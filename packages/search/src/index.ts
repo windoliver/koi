@@ -35,17 +35,36 @@ export interface KoiSearchConfig {
   readonly cache?: Pick<EmbedderCacheConfig, "maxSize">;
   /** Query expansion config for BM25 stop-word filtering */
   readonly queryExpansion?: QueryExpansionConfig;
+  /** Plug in a remote backend (e.g. Nexus). Skips all local SQLite/BM25/vector setup. */
+  readonly backend?: {
+    readonly indexer: Indexer;
+    readonly retriever: Retriever;
+  };
 }
 
 export interface KoiSearch {
   readonly retriever: Retriever;
-  readonly bm25: Retriever;
-  readonly vector: Retriever;
+  readonly bm25: Retriever | undefined;
+  readonly vector: Retriever | undefined;
   readonly indexer: Indexer;
   readonly close: () => void;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-empty-function -- noop for remote backends
+const noop = (): void => {};
+
 export function createSearch(config: KoiSearchConfig): KoiSearch {
+  // Remote backend — skip all local setup
+  if (config.backend) {
+    return {
+      retriever: config.backend.retriever,
+      bm25: undefined,
+      vector: undefined,
+      indexer: config.backend.indexer,
+      close: noop,
+    };
+  }
+
   const dbPath = config.dbPath ?? ":memory:";
   const fusionStrategy: FusionStrategy = config.fusion ?? { kind: "rrf", k: 60 };
 

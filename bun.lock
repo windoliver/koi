@@ -1504,22 +1504,11 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/reputation": {
-      "name": "@koi/reputation",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
     "packages/resolve": {
       "name": "@koi/resolve",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/search-provider": "workspace:*",
         "@koi/validation": "workspace:*",
       },
     },
@@ -1658,6 +1647,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/search-provider": "workspace:*",
       },
     },
     "packages/search-brave": {
@@ -1665,7 +1655,13 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
+      },
+    },
+    "packages/search-nexus": {
+      "name": "@koi/search-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
         "@koi/search-provider": "workspace:*",
       },
     },
@@ -1925,7 +1921,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/search-provider": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
@@ -2712,8 +2707,6 @@
 
     "@koi/registry-store": ["@koi/registry-store@workspace:packages/registry-store"],
 
-    "@koi/reputation": ["@koi/reputation@workspace:packages/reputation"],
-
     "@koi/resolve": ["@koi/resolve@workspace:packages/resolve"],
 
     "@koi/sandbox": ["@koi/sandbox@workspace:packages/sandbox"],
@@ -2745,6 +2738,8 @@
     "@koi/search": ["@koi/search@workspace:packages/search"],
 
     "@koi/search-brave": ["@koi/search-brave@workspace:packages/search-brave"],
+
+    "@koi/search-nexus": ["@koi/search-nexus@workspace:packages/search-nexus"],
 
     "@koi/search-provider": ["@koi/search-provider@workspace:packages/search-provider"],
 

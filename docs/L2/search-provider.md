@@ -1,35 +1,27 @@
-# @koi/search-provider — Search Provider Contract
+# @koi/search-provider — Search Provider Contracts
 
-Defines the `SearchProvider` interface — the formal contract that all web search backends implement. Types-only L0u package with zero runtime logic.
+Pure type definitions for pluggable search backends. Contains two contract families:
+
+1. **Web search** — `SearchProvider`, `WebSearchResult`, `WebSearchOptions` for web search backends (Brave, Tavily, etc.)
+2. **Index search** — `Indexer`, `Retriever`, `Embedder` for document index backends (SQLite, Nexus, etc.)
 
 ---
 
 ## Why It Exists
 
-Before `@koi/search-provider`, search was wired via a bare function type (`searchFn`) in `WebExecutorConfig`. Adding a second provider meant duplicating types and hoping signatures stayed aligned. There was no manifest integration, no auto-discovery, and no compile-time contract enforcement.
+Multiple L2 packages need to share search contracts without depending on each other:
 
-This package extracts the contract into a shared L0u layer so:
-- **Providers** (`@koi/search-brave`, future Tavily/SearXNG/Serper) implement a checked interface
-- **Consumers** (`@koi/tools-web`) depend on the contract, not specific providers
-- **Manifest resolution** can auto-discover providers via `BrickDescriptor<SearchProvider>`
+- `@koi/tools-web` consumes `SearchProvider` but shouldn't import `@koi/search-brave`
+- `@koi/search` defines `Indexer`/`Retriever` but `@koi/search-nexus` can't import from a peer L2
 
----
-
-## What This Enables
+Extracting all contracts into a single L0u package lets any number of L2 adapters implement the same interfaces without circular dependencies.
 
 ```
-WITHOUT search-provider:
-═══════════════════════
-  tools-web defines inline types
-  search-brave duck-types against them
-  Adding a new provider = copy-paste types and hope
-
-WITH search-provider:
-═════════════════════
-  search-provider defines: SearchProvider, WebSearchResult, WebSearchOptions
-  search-brave implements SearchProvider (compile-time checked)
-  tools-web accepts SearchProvider (contract-based injection)
-  Manifest: search: "brave"  →  auto-resolved via BrickDescriptor
+@koi/search-provider (L0u) ── owns all search contracts
+    │                    │                    │
+    ▼                    ▼                    ▼
+@koi/search (L2)   @koi/search-nexus (L2)  @koi/search-brave (L2)
+ SQLite backend      Nexus REST adapter      Brave web search
 ```
 
 ---
@@ -37,46 +29,31 @@ WITH search-provider:
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────┐
-│  @koi/search-provider  (L0u)                           │
-│                                                        │
-│  types.ts     ← SearchProvider, WebSearchResult,       │
-│                  WebSearchOptions (~35 LOC)             │
-│  index.ts     ← public API surface (re-exports)        │
-│                                                        │
-├────────────────────────────────────────────────────────┤
-│  External deps: NONE                                   │
-│  Internal deps: @koi/core (L0) — KoiError, Result      │
-│  Runtime logic: NONE (types-only)                       │
-└────────────────────────────────────────────────────────┘
-```
-
-### How It Plugs In
-
-```
-@koi/search-provider (L0u)     @koi/search-brave (L2)     @koi/tools-web (L2)
-┌────────────────────────┐    ┌──────────────────────┐   ┌───────────────────────┐
-│ SearchProvider          │◄───│ implements           │   │ accepts               │
-│ WebSearchResult         │    │ SearchProvider       │   │ SearchProvider in      │
-│ WebSearchOptions        │    │                      │   │ WebExecutorConfig      │
-│                         │    │ + BrickDescriptor    │   │                        │
-│ (contract only)         │    │   for auto-discovery │   │ (no vendor knowledge)  │
-└────────────────────────┘    └──────────────────────┘   └───────────────────────┘
-                                       │
-                                       ▼
-                              @koi/resolve (L0u)
-                              resolveSearch() maps
-                              manifest "search: brave"
-                              → SearchProvider instance
+┌──────────────────────────────────────────────────────────┐
+│  @koi/search-provider  (L0u)                             │
+│                                                          │
+│  contracts.ts  ← Indexer, Retriever, Embedder interfaces │
+│  types.ts      ← Web search: SearchProvider,             │
+│                  WebSearchResult, WebSearchOptions        │
+│                  Index search: SearchQuery, SearchResult, │
+│                  SearchPage, SearchFilter, IndexDocument  │
+│  index.ts      ← public re-exports                       │
+│                                                          │
+├──────────────────────────────────────────────────────────┤
+│  External deps: NONE                                     │
+│  Internal deps: @koi/core (L0) — KoiError, Result        │
+│  Runtime code:  NONE (pure type definitions)              │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## API Reference
 
-### SearchProvider
+### Web Search Contracts
 
 ```typescript
+/** A pluggable web search backend */
 interface SearchProvider {
   readonly name: string;
   readonly search: (
@@ -84,105 +61,64 @@ interface SearchProvider {
     options?: WebSearchOptions,
   ) => Promise<Result<readonly WebSearchResult[], KoiError>>;
 }
-```
 
-### WebSearchResult
-
-```typescript
 interface WebSearchResult {
   readonly title: string;
   readonly url: string;
   readonly snippet: string;
 }
-```
 
-### WebSearchOptions
-
-```typescript
 interface WebSearchOptions {
   readonly maxResults?: number | undefined;
   readonly signal?: AbortSignal | undefined;
 }
 ```
 
----
-
-## Manifest Integration
-
-Agents declare their search backend in `koi.yaml`:
-
-```yaml
-# String shorthand
-search: brave
-
-# Object form with options
-search:
-  name: brave
-  options:
-    country: US
-    freshness: pw
-```
-
-Resolution flow:
-1. `resolveManifest()` sees `search:` key
-2. Calls `resolveSearch()` which uses `resolveOne<SearchProvider>("search", ...)`
-3. Registry finds `@koi/search-brave`'s descriptor (registered with `kind: "search"`, `aliases: ["brave"]`)
-4. Descriptor's factory creates a `SearchProvider` instance
-5. `ResolvedManifest.search` is wired into `createWebExecutor({ searchProvider })`
-
----
-
-## Implementing a New Provider
+### Index Search Contracts
 
 ```typescript
-import type { KoiError, Result } from "@koi/core";
-import type { BrickDescriptor } from "@koi/resolve";
-import type { SearchProvider, WebSearchOptions, WebSearchResult } from "@koi/search-provider";
-
-function createMySearch(config: { apiKey: string }): SearchProvider {
-  return {
-    name: "my-search",
-    search: async (query, options?) => {
-      // Call your search API here
-      const results: readonly WebSearchResult[] = [
-        { title: "Result", url: "https://example.com", snippet: "A result" },
-      ];
-      return { ok: true, value: results };
-    },
-  };
+/** Read path — query a search index */
+interface Retriever<T = unknown> {
+  readonly retrieve: (query: SearchQuery) => Promise<Result<SearchPage<T>, KoiError>>;
 }
 
-export const descriptor: BrickDescriptor<SearchProvider> = {
-  kind: "search",
-  name: "@koi/search-my-provider",
-  aliases: ["my-search"],
-  description: "My custom search provider",
-  tags: ["search", "web"],
-  optionsValidator: (input) => ({ ok: true, value: input ?? {} }),
-  factory(options, context) {
-    const apiKey = context.env.MY_SEARCH_API_KEY;
-    if (!apiKey) throw new Error("MY_SEARCH_API_KEY required");
-    return createMySearch({ apiKey });
-  },
-};
+/** Write path — add/remove documents from an index */
+interface Indexer<T = unknown> {
+  readonly index: (documents: readonly IndexDocument<T>[]) => Promise<Result<void, KoiError>>;
+  readonly remove: (ids: readonly string[]) => Promise<Result<void, KoiError>>;
+}
+
+/** Embedding generation */
+interface Embedder {
+  readonly embed: (text: string) => Promise<readonly number[]>;
+  readonly embedMany: (texts: readonly string[]) => Promise<readonly (readonly number[])[]>;
+  readonly dimensions: number;
+}
 ```
 
----
+### Index Search Value Types
 
-## Testing
+| Type | Purpose |
+|------|---------|
+| `SearchQuery` | What the caller wants — text, filters, limit, offset, cursor |
+| `SearchResult<T>` | Single hit — id, score, content, metadata, source |
+| `SearchPage<T>` | Paginated response — results, total, cursor, hasMore |
+| `SearchFilter` | Composable filter tree (eq, ne, gt, lt, in, and, or, not) |
+| `IndexDocument<T>` | Document for indexing — id, content, metadata, embedding |
+| `SearchScore` | Score normalized to [0, 1] |
 
-```
-types.test.ts — 3 tests
-  ● WebSearchResult properties are readonly
-  ● WebSearchOptions properties are readonly
-  ● SearchProvider properties are readonly
+### SearchFilter (Discriminated Union)
 
-__tests__/api-surface.test.ts — 1 test
-  ● .d.ts output matches snapshot
-```
-
-```bash
-bun --cwd packages/search-provider test
+```typescript
+type SearchFilter =
+  | { kind: "eq"; field: string; value: unknown }
+  | { kind: "ne"; field: string; value: unknown }
+  | { kind: "gt"; field: string; value: number }
+  | { kind: "lt"; field: string; value: number }
+  | { kind: "in"; field: string; values: readonly unknown[] }
+  | { kind: "and"; filters: readonly SearchFilter[] }
+  | { kind: "or";  filters: readonly SearchFilter[] }
+  | { kind: "not"; filter: SearchFilter };
 ```
 
 ---
@@ -191,28 +127,28 @@ bun --cwd packages/search-provider test
 
 | Decision | Rationale |
 |----------|-----------|
-| L0u (not L0) | Contains `import type` from `@koi/core`. L0 must have zero imports |
-| Types-only | Zero runtime logic keeps the package side-effect free and tree-shakeable |
-| `readonly` everywhere | Immutability contract enforced at compile time |
-| Single provider (not array) | Agents use one search backend. Multi-provider composition is a decorator concern |
-| `Result<T, KoiError>` return | Expected failures returned as values. Never throws |
-| `signal?: AbortSignal` in options | Enables cooperative cancellation and timeout enforcement |
+| L0u, not L0 | Imports `KoiError`/`Result` from `@koi/core` — pure types but with an L0 dependency |
+| Zero runtime code | Only `type`, `interface`, and `export type` — no function bodies, no bundle size |
+| Two contract families in one package | Both serve "search provider" role; splitting further would over-fragment |
+| Re-exports in `@koi/search` | Existing imports (`from "../contracts.js"`) keep working unchanged |
+| Generic `<T>` on Retriever/Indexer | Backends can carry custom data alongside standard fields |
+| `SearchFilter` as discriminated union | Composable, serializable, and exhaustively checkable via `kind` |
 
 ---
 
 ## Layer Compliance
 
 ```
-L0  @koi/core ───────────────────────────────────────┐
-    KoiError, Result                                  │
-                                                      │
-                                                      ▼
-L0u @koi/search-provider ◄─────────────────────────┘
-    import type from L0 only
-    ✗ never imports @koi/engine (L1)
-    ✗ never imports any L2 package
-    ✗ zero external npm dependencies
-    ✗ zero runtime logic
+L0  @koi/core ────────────────────────────────────┐
+    KoiError, Result                               │
+                                                   │
+                                                   ▼
+L0u @koi/search-provider ◄───────────────────────┘
+    imports from L0 only
+    ✗ no function bodies or classes
+    ✗ no external npm dependencies
+    ✗ no import from L1 or L2
     ✓ All interface properties readonly
-    ✓ Types-only package
+    ✓ All array parameters readonly T[]
+    ✓ Registered in scripts/layers.ts L0U_PACKAGES
 ```
