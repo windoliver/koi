@@ -9,23 +9,29 @@ import type { KoiError, KoiMiddleware, MiddlewareConfig, Result } from "@koi/cor
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import { aggregateErrors } from "./errors.js";
 import { resolveOne } from "./resolve-one.js";
-import type { ResolutionContext, ResolutionFailure, ResolveRegistry } from "./types.js";
+import type {
+  MiddlewareResolutionResult,
+  ResolutionContext,
+  ResolutionFailure,
+  ResolveRegistry,
+} from "./types.js";
 
 /**
  * Resolves all middleware entries from the manifest.
  *
  * - Checks for duplicate names
  * - Resolves all in parallel via Promise.allSettled
- * - Aggregates all failures
+ * - Optional middleware (required === false) degrade gracefully with warnings
+ * - Required middleware failures abort resolution
  * - Returns sorted by priority (lower = outer onion layer = runs first)
  */
 export async function resolveMiddleware(
   configs: readonly MiddlewareConfig[],
   registry: ResolveRegistry,
   context: ResolutionContext,
-): Promise<Result<readonly KoiMiddleware[], KoiError>> {
+): Promise<Result<MiddlewareResolutionResult, KoiError>> {
   if (configs.length === 0) {
-    return { ok: true, value: [] };
+    return { ok: true, value: { middleware: [], warnings: [] } };
   }
 
   // Check for duplicate names
@@ -47,40 +53,65 @@ export async function resolveMiddleware(
     configs.map((config) => resolveOne<KoiMiddleware>("middleware", config, registry, context)),
   );
 
-  // Partition results into successes and failures (immutable)
-  const { middleware, failures } = results.reduce<{
+  // Partition results into 3 buckets (immutable)
+  const { middleware, requiredFailures, optionalWarnings } = results.reduce<{
     readonly middleware: readonly KoiMiddleware[];
-    readonly failures: readonly ResolutionFailure[];
+    readonly requiredFailures: readonly ResolutionFailure[];
+    readonly optionalWarnings: readonly string[];
   }>(
     (acc, result, i) => {
       const config = configs[i];
       if (config === undefined) return acc;
 
+      const isOptional = config.required === false;
+
       if (result.status === "rejected") {
+        const message =
+          result.reason instanceof Error ? result.reason.message : String(result.reason);
+        if (isOptional) {
+          return {
+            middleware: acc.middleware,
+            requiredFailures: acc.requiredFailures,
+            optionalWarnings: [
+              ...acc.optionalWarnings,
+              `Optional middleware "${config.name}" skipped: ${message}`,
+            ],
+          };
+        }
         return {
           middleware: acc.middleware,
-          failures: [
-            ...acc.failures,
+          requiredFailures: [
+            ...acc.requiredFailures,
             {
               section: "middleware" as const,
               index: i,
               name: config.name,
               error: {
                 code: "INTERNAL" as const,
-                message:
-                  result.reason instanceof Error ? result.reason.message : String(result.reason),
+                message,
                 retryable: RETRYABLE_DEFAULTS.INTERNAL,
                 cause: result.reason,
               },
             },
           ],
+          optionalWarnings: acc.optionalWarnings,
         };
       }
       if (!result.value.ok) {
+        if (isOptional) {
+          return {
+            middleware: acc.middleware,
+            requiredFailures: acc.requiredFailures,
+            optionalWarnings: [
+              ...acc.optionalWarnings,
+              `Optional middleware "${config.name}" skipped: ${result.value.error.message}`,
+            ],
+          };
+        }
         return {
           middleware: acc.middleware,
-          failures: [
-            ...acc.failures,
+          requiredFailures: [
+            ...acc.requiredFailures,
             {
               section: "middleware" as const,
               index: i,
@@ -88,18 +119,20 @@ export async function resolveMiddleware(
               error: result.value.error,
             },
           ],
+          optionalWarnings: acc.optionalWarnings,
         };
       }
       return {
         middleware: [...acc.middleware, result.value.value],
-        failures: acc.failures,
+        requiredFailures: acc.requiredFailures,
+        optionalWarnings: acc.optionalWarnings,
       };
     },
-    { middleware: [], failures: [] },
+    { middleware: [], requiredFailures: [], optionalWarnings: [] },
   );
 
-  if (failures.length > 0) {
-    return { ok: false, error: aggregateErrors(failures) };
+  if (requiredFailures.length > 0) {
+    return { ok: false, error: aggregateErrors(requiredFailures) };
   }
 
   // Sort by priority (default 500, lower = runs first)
@@ -108,5 +141,5 @@ export async function resolveMiddleware(
     (a, b) => (a.priority ?? DEFAULT_PRIORITY) - (b.priority ?? DEFAULT_PRIORITY),
   );
 
-  return { ok: true, value: sorted };
+  return { ok: true, value: { middleware: sorted, warnings: optionalWarnings } };
 }

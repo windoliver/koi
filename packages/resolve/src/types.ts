@@ -119,6 +119,12 @@ export interface ResolveRegistry {
 // Resolution results
 // ---------------------------------------------------------------------------
 
+/** Result of resolving the middleware section — includes warnings for skipped optional middleware. */
+export interface MiddlewareResolutionResult {
+  readonly middleware: readonly KoiMiddleware[];
+  readonly warnings: readonly string[];
+}
+
 /** What resolveManifest() returns on success. */
 export interface ResolvedManifest {
   /** Merged and priority-sorted middleware (explicit + soul + permissions). */
@@ -131,6 +137,8 @@ export interface ResolvedManifest {
   readonly engine?: EngineAdapter | undefined;
   /** Resolved search provider (undefined → no web search capability). */
   readonly search?: SearchProvider | undefined;
+  /** Warnings from optional middleware that failed to resolve. */
+  readonly warnings: readonly string[];
 }
 
 /** A single resolution failure within a section. */

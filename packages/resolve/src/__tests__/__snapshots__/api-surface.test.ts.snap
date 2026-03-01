@@ -72,6 +72,11 @@ interface ResolveRegistry {
     /** List all descriptors of a given kind. */
     readonly list: (kind: ResolveKind) => readonly BrickDescriptor<unknown>[];
 }
+/** Result of resolving the middleware section — includes warnings for skipped optional middleware. */
+interface MiddlewareResolutionResult {
+    readonly middleware: readonly KoiMiddleware[];
+    readonly warnings: readonly string[];
+}
 /** What resolveManifest() returns on success. */
 interface ResolvedManifest {
     /** Merged and priority-sorted middleware (explicit + soul + permissions). */
@@ -84,6 +89,8 @@ interface ResolvedManifest {
     readonly engine?: EngineAdapter | undefined;
     /** Resolved search provider (undefined → no web search capability). */
     readonly search?: SearchProvider | undefined;
+    /** Warnings from optional middleware that failed to resolve. */
+    readonly warnings: readonly string[];
 }
 /** A single resolution failure within a section. */
 interface ResolutionFailure {
@@ -185,6 +192,7 @@ interface ManifestInput {
     readonly middleware?: readonly {
         readonly name: string;
         readonly options?: Record<string, unknown>;
+        readonly required?: boolean | undefined;
     }[];
     readonly model: {
         readonly name: string;
@@ -227,10 +235,11 @@ declare function resolveManifest(manifest: ManifestInput, registry: ResolveRegis
  *
  * - Checks for duplicate names
  * - Resolves all in parallel via Promise.allSettled
- * - Aggregates all failures
+ * - Optional middleware (required === false) degrade gracefully with warnings
+ * - Required middleware failures abort resolution
  * - Returns sorted by priority (lower = outer onion layer = runs first)
  */
-declare function resolveMiddleware(configs: readonly MiddlewareConfig[], registry: ResolveRegistry, context: ResolutionContext): Promise<Result<readonly KoiMiddleware[], KoiError>>;
+declare function resolveMiddleware(configs: readonly MiddlewareConfig[], registry: ResolveRegistry, context: ResolutionContext): Promise<Result<MiddlewareResolutionResult, KoiError>>;
 
 /**
  * Model section resolver.
@@ -329,6 +338,6 @@ interface SoulManifestSlice {
  */
 declare function resolveSoul(manifest: SoulManifestSlice, registry: ResolveRegistry, context: ResolutionContext): Promise<Result<KoiMiddleware | undefined, KoiError>>;
 
-export { type BrickDescriptor, type BrickFactory, type OptionsValidator, type ResolutionContext, type ResolutionFailure, type ResolveApprovalHandler, type ResolveKind, type ResolveRegistry, type ResolvedManifest, aggregateErrors, createRegistry, discoverDescriptors, formatResolutionError, parseModelName, resolveChannels, resolveEngine, resolveManifest, resolveMiddleware, resolveModel, resolveOne, resolvePermissions, resolveSearch, resolveSoul };
+export { type BrickDescriptor, type BrickFactory, type MiddlewareResolutionResult, type OptionsValidator, type ResolutionContext, type ResolutionFailure, type ResolveApprovalHandler, type ResolveKind, type ResolveRegistry, type ResolvedManifest, aggregateErrors, createRegistry, discoverDescriptors, formatResolutionError, parseModelName, resolveChannels, resolveEngine, resolveManifest, resolveMiddleware, resolveModel, resolveOne, resolvePermissions, resolveSearch, resolveSoul };
 "
 `;

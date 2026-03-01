@@ -50,6 +50,8 @@ export interface MiddlewareConfig {
   readonly options?: JsonObject;
   readonly version?: string;
   readonly publisher?: string;
+  /** When false, resolution failure produces a warning instead of aborting. Defaults to true. */
+  readonly required?: boolean | undefined;
 }
 
 export interface SearchConfig {

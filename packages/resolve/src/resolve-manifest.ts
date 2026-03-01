@@ -26,6 +26,7 @@ interface ManifestInput {
   readonly middleware?: readonly {
     readonly name: string;
     readonly options?: Record<string, unknown>;
+    readonly required?: boolean | undefined;
   }[];
   readonly model: { readonly name: string; readonly options?: Record<string, unknown> };
   readonly permissions?: {
@@ -170,16 +171,17 @@ export async function resolveManifest(
     return { ok: false, error: aggregateErrors(failures) };
   }
 
+  // Extract middleware and warnings from resolution result
+  const explicitMiddleware = middlewareResult.value.middleware;
+  const middlewareWarnings = middlewareResult.value.warnings;
+
   // Merge middleware: explicit + soul + permissions (immutable)
   const optionalMiddleware: readonly KoiMiddleware[] = [
     soulResult.value,
     permissionsResult.value,
   ].filter((mw): mw is KoiMiddleware => mw !== undefined);
 
-  const allMiddleware: readonly KoiMiddleware[] = [
-    ...middlewareResult.value,
-    ...optionalMiddleware,
-  ];
+  const allMiddleware: readonly KoiMiddleware[] = [...explicitMiddleware, ...optionalMiddleware];
 
   // Sort by priority (lower = outer onion layer = runs first)
   const DEFAULT_PRIORITY = 500;
@@ -191,6 +193,7 @@ export async function resolveManifest(
   const resolved: ResolvedManifest = {
     middleware: sorted,
     model: modelResult.value,
+    warnings: middlewareWarnings,
     ...(channelsResult.value !== undefined ? { channels: channelsResult.value } : {}),
     ...(engineResult.value !== undefined ? { engine: engineResult.value } : {}),
     ...(searchResult.value !== undefined ? { search: searchResult.value } : {}),
