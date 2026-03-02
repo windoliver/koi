@@ -24,12 +24,12 @@ function baseConfig(overrides?: Partial<ContextArenaConfig>): ContextArenaConfig
 }
 
 describe("createContextArena", () => {
-  test("bundle always has 3 middleware (squash, compactor, context-editing)", async () => {
+  test("bundle has 3 middleware without memory (squash, compactor, context-editing)", async () => {
     const bundle = await createContextArena(baseConfig());
     expect(bundle.middleware).toHaveLength(3);
   });
 
-  test("middleware are in priority order (220, 225, 250)", async () => {
+  test("middleware are in priority order (220, 225, 250) without memory", async () => {
     const bundle = await createContextArena(baseConfig());
     const priorities = bundle.middleware.map((mw) => mw.priority);
     expect(priorities).toEqual([220, 225, 250]);
@@ -119,7 +119,7 @@ describe("createContextArena personalization", () => {
     expect(bundle.middleware).toHaveLength(3);
   });
 
-  test("personalization adds 4th middleware when enabled with memory", async () => {
+  test("personalization added when enabled with memory", async () => {
     const memory = {
       recall: mock(() => Promise.resolve([])),
       store: mock(() => Promise.resolve()),
@@ -127,8 +127,11 @@ describe("createContextArena personalization", () => {
     const bundle = await createContextArena(
       baseConfig({ memory, personalization: { enabled: true } }),
     );
-    expect(bundle.middleware).toHaveLength(4);
-    expect(bundle.middleware[3]?.name).toBe("personalization");
+    // 5 middleware: squash + compactor + context-editing + personalization + preference (memory → default-on)
+    expect(bundle.middleware).toHaveLength(5);
+    const names = bundle.middleware.map((mw) => mw.name);
+    expect(names).toContain("personalization");
+    expect(names).toContain("preference-drift");
   });
 
   test("personalization middleware uses resolved config values", async () => {
@@ -203,11 +206,11 @@ describe("createContextArena memory wiring", () => {
 
     // memoryFs provider still attaches even when config.memory overrides for extraction
     expect(bundle.providers).toHaveLength(2);
-    // All 3 middleware still present
-    expect(bundle.middleware).toHaveLength(3);
+    // 4 middleware: squash + compactor + context-editing + preference (memory available)
+    expect(bundle.middleware).toHaveLength(4);
   });
 
-  test("memoryFs does not affect middleware count", async () => {
+  test("memoryFs adds preference middleware to bundle", async () => {
     const dir = await makeTmpDir();
     const bundle = await createContextArena(
       baseConfig({
@@ -215,9 +218,38 @@ describe("createContextArena memory wiring", () => {
       }),
     );
 
-    expect(bundle.middleware).toHaveLength(3);
+    // 4 middleware: squash + compactor + context-editing + preference (memory available)
+    expect(bundle.middleware).toHaveLength(4);
     const priorities = bundle.middleware.map((mw) => mw.priority);
-    expect(priorities).toEqual([220, 225, 250]);
+    expect(priorities).toEqual([220, 225, 250, 410]);
+  });
+
+  test("preference: false disables preference middleware even with memory", async () => {
+    const dir = await makeTmpDir();
+    const bundle = await createContextArena(
+      baseConfig({
+        memoryFs: { config: { baseDir: dir } },
+        preference: false,
+      }),
+    );
+
+    expect(bundle.middleware).toHaveLength(3);
+    const names = bundle.middleware.map((mw) => mw.name);
+    expect(names).not.toContain("preference-drift");
+  });
+
+  test("preference middleware wired with classify callback", async () => {
+    const dir = await makeTmpDir();
+    const bundle = await createContextArena(
+      baseConfig({
+        memoryFs: { config: { baseDir: dir } },
+        preference: { classify: async (_prompt: string) => "NO" },
+      }),
+    );
+
+    expect(bundle.middleware).toHaveLength(4);
+    const prefMw = bundle.middleware.find((mw) => mw.name === "preference-drift");
+    expect(prefMw).toBeDefined();
   });
 });
 

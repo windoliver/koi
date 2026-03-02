@@ -12,6 +12,7 @@ import { createFsMemory, createMemoryProvider } from "@koi/memory-fs";
 import { createCompactorMiddleware } from "@koi/middleware-compactor";
 import { createContextEditingMiddleware } from "@koi/middleware-context-editing";
 import { createPersonalizationMiddleware } from "@koi/middleware-personalization";
+import { createPreferenceMiddleware } from "@koi/middleware-preference";
 import { createSquashProvider } from "@koi/tool-squash";
 import { resolveContextArenaConfig } from "./config-resolution.js";
 import type { ContextArenaBundle, ContextArenaConfig } from "./types.js";
@@ -19,7 +20,7 @@ import type { ContextArenaBundle, ContextArenaConfig } from "./types.js";
 /**
  * Creates a fully wired context arena bundle with coordinated budget allocation.
  *
- * Middleware ordering in the returned array: squash (220) → compactor (225) → context-editing (250) → personalization (420, opt-in).
+ * Middleware ordering in the returned array: squash (220) → compactor (225) → context-editing (250) → personalization (420, opt-in) → preference (410, default-on with memory).
  * Priority is owned by L2 packages — arena just returns them in priority order.
  *
  * @param config - User-facing configuration with required summarizer, sessionId, and getMessages
@@ -86,12 +87,24 @@ export async function createContextArena(config: ContextArenaConfig): Promise<Co
         })
       : undefined;
 
+  // --- Default-on: preference drift detection (requires memory) ---
+  const preferenceMiddleware =
+    resolved.preferenceEnabled && effectiveMemory !== undefined
+      ? createPreferenceMiddleware({
+          memory: effectiveMemory,
+          ...(config.preference !== false && config.preference?.classify !== undefined
+            ? { classify: config.preference.classify }
+            : {}),
+        })
+      : undefined;
+
   // --- Middleware in priority order ---
   const middleware = [
     squashBundle.middleware,
     compactorMiddleware,
     contextEditingMiddleware,
     ...(personalizationMiddleware !== undefined ? [personalizationMiddleware] : []),
+    ...(preferenceMiddleware !== undefined ? [preferenceMiddleware] : []),
   ];
 
   // --- Opt-in: filesystem memory provider (reuses pre-created fsMemory) ---

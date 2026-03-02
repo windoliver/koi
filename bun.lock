@@ -513,6 +513,7 @@
         "@koi/middleware-compactor": "workspace:*",
         "@koi/middleware-context-editing": "workspace:*",
         "@koi/middleware-personalization": "workspace:*",
+        "@koi/middleware-preference": "workspace:*",
         "@koi/snapshot-chain-store": "workspace:*",
         "@koi/token-estimator": "workspace:*",
         "@koi/tool-squash": "workspace:*",
@@ -1355,6 +1356,13 @@
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware-preference": {
+      "name": "@koi/middleware-preference",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
       },
     },
     "packages/middleware-report": {
@@ -2816,6 +2824,8 @@
     "@koi/middleware-pii": ["@koi/middleware-pii@workspace:packages/middleware-pii"],
 
     "@koi/middleware-planning": ["@koi/middleware-planning@workspace:packages/middleware-planning"],
+
+    "@koi/middleware-preference": ["@koi/middleware-preference@workspace:packages/middleware-preference"],
 
     "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/middleware-report"],
 

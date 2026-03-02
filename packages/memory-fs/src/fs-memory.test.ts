@@ -546,6 +546,115 @@ describe("createFsMemory", () => {
     });
   });
 
+  describe("explicit supersession via supersedes", () => {
+    test("single fact supersession via supersedes", async () => {
+      await mem.component.store("Alice prefers dark mode", {
+        relatedEntities: ["alice"],
+        category: "preference",
+      });
+      const initial = await mem.component.recall("dark mode");
+      const oldId = (initial[0]?.metadata as Record<string, unknown>)?.id as string;
+      expect(oldId).toBeDefined();
+
+      await mem.component.store("Alice prefers light mode", {
+        relatedEntities: ["alice"],
+        category: "preference",
+        supersedes: [oldId],
+      });
+
+      // recall only returns active facts — superseded ones are excluded
+      const results = await mem.component.recall("mode", { limit: 10 });
+      expect(results).toHaveLength(1);
+      expect(results[0]?.content).toBe("Alice prefers light mode");
+    });
+
+    test("multi-supersession via supersedes with multiple IDs", async () => {
+      await mem.component.store("Alice likes tabs", {
+        relatedEntities: ["alice"],
+        category: "editor-pref",
+      });
+      await mem.component.store("Alice likes vim keybindings", {
+        relatedEntities: ["alice"],
+        category: "editor-tool",
+      });
+
+      // Recall all to find IDs by content
+      const all = await mem.component.recall("Alice", { limit: 10 });
+      const tabsFact = all.find((r) => r.content === "Alice likes tabs");
+      const vimFact = all.find((r) => r.content === "Alice likes vim keybindings");
+      const tabsId = (tabsFact?.metadata as Record<string, unknown>)?.id as string;
+      const vimId = (vimFact?.metadata as Record<string, unknown>)?.id as string;
+      expect(tabsId).toBeDefined();
+      expect(vimId).toBeDefined();
+
+      await mem.component.store("Alice uses VS Code with spaces", {
+        relatedEntities: ["alice"],
+        category: "editor-pref",
+        supersedes: [tabsId, vimId],
+      });
+
+      // recall only returns active facts — superseded tabs and vim excluded
+      const after = await mem.component.recall("Alice", { limit: 10 });
+      const contents = after.map((r) => r.content);
+      expect(contents).toContain("Alice uses VS Code with spaces");
+      expect(contents).not.toContain("Alice likes tabs");
+      expect(contents).not.toContain("Alice likes vim keybindings");
+    });
+
+    test("missing supersedes ID is a no-op, no error", async () => {
+      await mem.component.store("fact that stays", {
+        relatedEntities: ["bob"],
+        category: "context",
+      });
+
+      // Supersede a non-existent ID — should not throw
+      await mem.component.store("new fact", {
+        relatedEntities: ["bob"],
+        category: "context-2",
+        supersedes: ["nonexistent-id-xyz"],
+      });
+
+      const results = await mem.component.recall("fact", { limit: 10 });
+      expect(results.length).toBeGreaterThanOrEqual(2);
+    });
+
+    test("empty supersedes array behaves same as no field", async () => {
+      await mem.component.store("original fact", {
+        relatedEntities: ["carol"],
+        category: "note",
+      });
+
+      await mem.component.store("another fact", {
+        relatedEntities: ["carol"],
+        category: "note-2",
+        supersedes: [],
+      });
+
+      // recall only returns active facts — both should still be active
+      const results = await mem.component.recall("fact", { limit: 10 });
+      expect(results).toHaveLength(2);
+    });
+
+    test("automatic supersession still works alongside explicit", async () => {
+      // Auto-supersession uses relatedEntities matching within same category
+      await mem.component.store("Alice prefers coffee", {
+        relatedEntities: ["alice"],
+        category: "drink",
+      });
+
+      // Store with same entity + category — auto-supersession kicks in
+      await mem.component.store("Alice prefers tea", {
+        relatedEntities: ["alice"],
+        category: "drink",
+      });
+
+      // recall only returns active — old coffee fact is auto-superseded
+      const results = await mem.component.recall("prefers", { limit: 10 });
+      expect(results).toHaveLength(1);
+      expect(results[0]?.content).toBe("Alice prefers tea");
+    });
+  });
+
   test("works with custom retriever", async () => {
     const customDir = join(testDir, "custom");
     mkdirSync(customDir, { recursive: true });
