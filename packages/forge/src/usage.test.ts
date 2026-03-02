@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ForgeStore, KoiError, Result } from "@koi/core";
-import { brickId } from "@koi/core";
+import { brickId, DEFAULT_TRAIL_CONFIG, DEFAULT_TRAIL_STRENGTH } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "./config.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
@@ -375,6 +375,154 @@ describe("recordBrickUsage with UsageSignal", () => {
     if (loaded.ok) {
       // No fitness field set (was undefined before, stays undefined)
       expect(loaded.value.fitness).toBeUndefined();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Trail strength integration with recordBrickUsage
+// ---------------------------------------------------------------------------
+
+describe("recordBrickUsage — trail strength", () => {
+  test("updates trail strength when trail config is present", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(
+      createToolBrick({ id: brickId("brick_trail"), trailStrength: DEFAULT_TRAIL_STRENGTH }),
+    );
+
+    const config = createDefaultForgeConfig({ trail: DEFAULT_TRAIL_CONFIG });
+    const result = await recordBrickUsage(store, "brick_trail", config);
+    expect(result.ok).toBe(true);
+
+    const loaded = await store.load(brickId("brick_trail"));
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) {
+      // Trail strength increased from 0.5 by reinforcement (0.1) → 0.6
+      expect(loaded.value.trailStrength).toBeCloseTo(0.6, 5);
+    }
+  });
+
+  test("trail reinforcement respects tauMax cap", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: brickId("brick_max"), trailStrength: 0.9 }));
+
+    const config = createDefaultForgeConfig({ trail: DEFAULT_TRAIL_CONFIG });
+    const result = await recordBrickUsage(store, "brick_max", config);
+    expect(result.ok).toBe(true);
+
+    const loaded = await store.load(brickId("brick_max"));
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) {
+      // 0.9 + 0.1 = 1.0 → capped at tauMax (0.95)
+      expect(loaded.value.trailStrength).toBe(DEFAULT_TRAIL_CONFIG.tauMax);
+    }
+  });
+
+  test("trail strength from undefined defaults to DEFAULT_TRAIL_STRENGTH + reinforcement", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: brickId("brick_undef") }));
+
+    const config = createDefaultForgeConfig({ trail: DEFAULT_TRAIL_CONFIG });
+    const result = await recordBrickUsage(store, "brick_undef", config);
+    expect(result.ok).toBe(true);
+
+    const loaded = await store.load(brickId("brick_undef"));
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) {
+      // DEFAULT_TRAIL_STRENGTH (0.5) + reinforcement (0.1) = 0.6
+      expect(loaded.value.trailStrength).toBeCloseTo(
+        DEFAULT_TRAIL_STRENGTH + DEFAULT_TRAIL_CONFIG.reinforcement,
+        5,
+      );
+    }
+  });
+
+  test("no trail config → no trail update (backward-compatible)", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: brickId("brick_notrail"), trailStrength: 0.5 }));
+
+    // Explicitly omit trail config to test backward-compatible path
+    const base = createDefaultForgeConfig();
+    const { trail: _, ...rest } = base;
+    const config = rest as typeof base;
+    const result = await recordBrickUsage(store, "brick_notrail", config);
+    expect(result.ok).toBe(true);
+
+    const loaded = await store.load(brickId("brick_notrail"));
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) {
+      // Trail strength unchanged
+      expect(loaded.value.trailStrength).toBe(0.5);
+    }
+  });
+
+  test("trail reinforcement with fitness signal", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: brickId("brick_signal"), trailStrength: 0.3 }));
+
+    const config = createDefaultForgeConfig({ trail: DEFAULT_TRAIL_CONFIG });
+    const signal: UsageSignal = { success: true, latencyMs: 50, timestamp: Date.now() };
+    const result = await recordBrickUsage(store, "brick_signal", config, signal);
+    expect(result.ok).toBe(true);
+
+    const loaded = await store.load(brickId("brick_signal"));
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) {
+      // Both fitness and trail strength updated
+      expect(loaded.value.fitness).toBeDefined();
+      expect(loaded.value.trailStrength).toBeCloseTo(0.4, 5); // 0.3 + 0.1
+    }
+  });
+
+  test("repeated usage drives trail strength toward tauMax", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: brickId("brick_repeat"), trailStrength: 0.1 }));
+
+    const config = createDefaultForgeConfig({ trail: DEFAULT_TRAIL_CONFIG });
+
+    for (let i = 0; i < 20; i++) {
+      await recordBrickUsage(store, "brick_repeat", config);
+    }
+
+    const loaded = await store.load(brickId("brick_repeat"));
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) {
+      // After many reinforcements, should cap at tauMax
+      expect(loaded.value.trailStrength).toBe(DEFAULT_TRAIL_CONFIG.tauMax);
+    }
+  });
+
+  test("custom trail config with higher reinforcement", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: brickId("brick_custom"), trailStrength: 0.3 }));
+
+    const config = createDefaultForgeConfig({
+      trail: { ...DEFAULT_TRAIL_CONFIG, reinforcement: 0.3 },
+    });
+    const result = await recordBrickUsage(store, "brick_custom", config);
+    expect(result.ok).toBe(true);
+
+    const loaded = await store.load(brickId("brick_custom"));
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) {
+      expect(loaded.value.trailStrength).toBeCloseTo(0.6, 5); // 0.3 + 0.3
+    }
+  });
+
+  test("trail strength never drops below tauMin via reinforcement", async () => {
+    const store = createInMemoryForgeStore();
+    await store.save(createToolBrick({ id: brickId("brick_floor"), trailStrength: 0 }));
+
+    const config = createDefaultForgeConfig({ trail: DEFAULT_TRAIL_CONFIG });
+    const result = await recordBrickUsage(store, "brick_floor", config);
+    expect(result.ok).toBe(true);
+
+    const loaded = await store.load(brickId("brick_floor"));
+    expect(loaded.ok).toBe(true);
+    if (loaded.ok) {
+      // 0 + 0.1 = 0.1, which is ≥ tauMin (0.01)
+      expect(loaded.value.trailStrength).toBeCloseTo(0.1, 5);
+      expect(loaded.value.trailStrength).toBeGreaterThanOrEqual(DEFAULT_TRAIL_CONFIG.tauMin);
     }
   });
 });

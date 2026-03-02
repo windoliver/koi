@@ -83,8 +83,13 @@ export type {
   StoreChangeNotifier,
   TestCase,
   ToolArtifact,
+  TrailConfig,
 } from "./brick-store.js";
-export { DEFAULT_BRICK_FITNESS } from "./brick-store.js";
+export {
+  DEFAULT_BRICK_FITNESS,
+  DEFAULT_TRAIL_CONFIG,
+  DEFAULT_TRAIL_STRENGTH,
+} from "./brick-store.js";
 // browser driver — cross-engine abstraction for browser automation
 export type {
   BrowserActionOptions,
@@ -202,6 +207,29 @@ export type { ServiceProviderConfig } from "./create-service-provider.js";
 export { createServiceProvider } from "./create-service-provider.js";
 export type { SingleToolProviderConfig } from "./create-single-tool-provider.js";
 export { createSingleToolProvider } from "./create-single-tool-provider.js";
+// debug — runtime debugging with breakpoints, step/pause, inspection
+export type {
+  Breakpoint,
+  BreakpointId,
+  BreakpointOptions,
+  BreakpointPredicate,
+  ComponentMetadata,
+  ComponentSnapshot,
+  DebugEvent,
+  DebugObserver,
+  DebugSession,
+  DebugSessionId,
+  DebugSnapshot,
+  DebugState,
+  InspectComponentOptions,
+  StepOptions,
+} from "./debug.js";
+export {
+  breakpointId,
+  DEFAULT_DEBUG_BUFFER_SIZE,
+  DEFAULT_INSPECT_LIMIT,
+  debugSessionId,
+} from "./debug.js";
 // delegation — types
 export type {
   CapabilityProof,
@@ -295,6 +323,7 @@ export {
   REPUTATION,
   runId,
   SCHEDULER,
+  SCRATCHPAD,
   sessionId,
   skillToken,
   token,
@@ -692,6 +721,19 @@ export type {
   ScopeEnforcer,
   ScopeSubsystem,
 } from "./scope-enforcement.js";
+// scratchpad — group-scoped versioned file store (shared memory)
+export type {
+  ScratchpadChangeEvent,
+  ScratchpadComponent,
+  ScratchpadEntry,
+  ScratchpadEntrySummary,
+  ScratchpadFilter,
+  ScratchpadGeneration,
+  ScratchpadPath,
+  ScratchpadWriteInput,
+  ScratchpadWriteResult,
+} from "./scratchpad.js";
+export { SCRATCHPAD_DEFAULTS, scratchpadPath } from "./scratchpad.js";
 // security analyzer — dynamic risk classification contract
 export type {
   RiskAnalysis,

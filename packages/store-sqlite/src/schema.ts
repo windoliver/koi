@@ -7,7 +7,7 @@
 
 import type { Database } from "bun:sqlite";
 
-const LATEST_VERSION = 2;
+const LATEST_VERSION = 3;
 
 const V1_UP = `
 CREATE TABLE IF NOT EXISTS bricks (
@@ -38,6 +38,9 @@ CREATE INDEX IF NOT EXISTS idx_brick_tags_tag ON brick_tags(tag);
 /** V2: Drop content_hash column — id is now a BrickId (content-addressed). */
 const V2_UP = `ALTER TABLE bricks DROP COLUMN content_hash;`;
 
+/** V3: Add trail_strength column for stigmergic coordination. */
+const V3_UP = `ALTER TABLE bricks ADD COLUMN trail_strength REAL;`;
+
 interface UserVersionRow {
   readonly user_version: number;
 }
@@ -56,6 +59,10 @@ export function applyMigrations(db: Database): void {
     // V2: drop content_hash — only needed when upgrading from V1 (column existed)
     if (currentVersion >= 1 && currentVersion < 2) {
       db.exec(V2_UP);
+    }
+    // V3: add trail_strength column
+    if (currentVersion < 3) {
+      db.exec(V3_UP);
     }
     db.exec(`PRAGMA user_version = ${LATEST_VERSION}`);
   })();

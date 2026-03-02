@@ -582,6 +582,16 @@
         "vite": "6.3.5",
       },
     },
+    "packages/debug": {
+      "name": "@koi/debug",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/delegation": {
       "name": "@koi/delegation",
       "version": "0.0.0",
@@ -1703,6 +1713,17 @@
         "@koi/execution-context": "workspace:*",
       },
     },
+    "packages/scratchpad-nexus": {
+      "name": "@koi/scratchpad-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/search": {
       "name": "@koi/search",
       "version": "0.0.0",
@@ -2616,6 +2637,8 @@
 
     "@koi/dashboard-ui": ["@koi/dashboard-ui@workspace:packages/dashboard-ui"],
 
+    "@koi/debug": ["@koi/debug@workspace:packages/debug"],
+
     "@koi/delegation": ["@koi/delegation@workspace:packages/delegation"],
 
     "@koi/deploy": ["@koi/deploy@workspace:packages/deploy"],
@@ -2809,6 +2832,8 @@
     "@koi/scheduler-provider": ["@koi/scheduler-provider@workspace:packages/scheduler-provider"],
 
     "@koi/scope": ["@koi/scope@workspace:packages/scope"],
+
+    "@koi/scratchpad-nexus": ["@koi/scratchpad-nexus@workspace:packages/scratchpad-nexus"],
 
     "@koi/search": ["@koi/search@workspace:packages/search"],
 

@@ -12,10 +12,14 @@ import type {
   ForgeStore,
   KoiError,
   Result,
-  StoreChangeEvent,
 } from "@koi/core";
 import { notFound } from "@koi/core";
-import { applyBrickUpdate, matchesBrickQuery, sortBricks } from "@koi/validation";
+import {
+  applyBrickUpdate,
+  createMemoryStoreChangeNotifier,
+  matchesBrickQuery,
+  sortBricks,
+} from "@koi/validation";
 
 // Error helpers use shared factories from @koi/core.
 function notFoundError(id: BrickId): KoiError {
@@ -28,30 +32,11 @@ function notFoundError(id: BrickId): KoiError {
 
 export function createInMemoryForgeStore(): ForgeStore {
   const bricks = new Map<BrickId, BrickArtifact>();
-
-  // --- watch notification ---
-  const changeListeners = new Set<(event: StoreChangeEvent) => void>();
-
-  const notifyListeners = (event: StoreChangeEvent): void => {
-    for (const listener of changeListeners) {
-      try {
-        listener(event);
-      } catch (_err: unknown) {
-        // Listener errors must not break the mutation return path or skip other listeners.
-      }
-    }
-  };
-
-  const watch = (listener: (event: StoreChangeEvent) => void): (() => void) => {
-    changeListeners.add(listener);
-    return () => {
-      changeListeners.delete(listener);
-    };
-  };
+  const notifier = createMemoryStoreChangeNotifier();
 
   const save = async (brick: BrickArtifact): Promise<Result<void, KoiError>> => {
     bricks.set(brick.id, brick);
-    notifyListeners({ kind: "saved", brickId: brick.id });
+    notifier.notify({ kind: "saved", brickId: brick.id });
     return { ok: true, value: undefined };
   };
 
@@ -80,7 +65,7 @@ export function createInMemoryForgeStore(): ForgeStore {
       return { ok: false, error: notFoundError(id) };
     }
     bricks.delete(id);
-    notifyListeners({ kind: "removed", brickId: id });
+    notifier.notify({ kind: "removed", brickId: id });
     return { ok: true, value: undefined };
   };
 
@@ -90,7 +75,7 @@ export function createInMemoryForgeStore(): ForgeStore {
       return { ok: false, error: notFoundError(id) };
     }
     bricks.set(id, applyBrickUpdate(existing, updates));
-    notifyListeners({ kind: "updated", brickId: id });
+    notifier.notify({ kind: "updated", brickId: id });
     return { ok: true, value: undefined };
   };
 
@@ -109,9 +94,18 @@ export function createInMemoryForgeStore(): ForgeStore {
     }
     const merged = applyBrickUpdate(existing, { ...updates, scope: targetScope });
     bricks.set(id, merged);
-    notifyListeners({ kind: "promoted", brickId: id, scope: targetScope });
+    notifier.notify({ kind: "promoted", brickId: id, scope: targetScope });
     return { ok: true, value: undefined };
   };
 
-  return { save, load, search, remove, update, exists, promoteAndUpdate, watch };
+  return {
+    save,
+    load,
+    search,
+    remove,
+    update,
+    exists,
+    promoteAndUpdate,
+    watch: notifier.subscribe,
+  };
 }

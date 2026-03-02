@@ -27,4 +27,10 @@ export { computeMutationPressure } from "./mutation-pressure.js";
 export { matchesBrickQuery } from "./query-match.js";
 export { SEVERITY_ORDER, type Severity, severityAtOrAbove } from "./severity.js";
 export { type SortBricksOptions, sortBricks } from "./sort-bricks.js";
+export { createMemoryStoreChangeNotifier } from "./store-notifier.js";
+export {
+  computeEffectiveTrailStrength,
+  computeTrailReinforcement,
+  isTrailEvaporated,
+} from "./trail-strength.js";
 export { validateWith, zodToKoiError } from "./validation.js";
