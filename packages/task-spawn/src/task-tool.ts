@@ -5,6 +5,7 @@
 import type { JsonObject } from "@koi/core/common";
 import type { Tool } from "@koi/core/ecs";
 import { extractOutput } from "./output.js";
+import type { TaskableAgentSummary } from "./types.js";
 import {
   type AgentResolver,
   createMapAgentResolver,
@@ -13,6 +14,9 @@ import {
   TASK_TOOL_DESCRIPTOR,
   type TaskSpawnConfig,
 } from "./types.js";
+
+/** Default TTL for descriptor cache in ms (30 seconds). */
+export const DEFAULT_DESCRIPTOR_TTL_MS = 30_000;
 
 /**
  * Resolves the effective AgentResolver from config.
@@ -25,6 +29,7 @@ function resolveAgentResolver(config: TaskSpawnConfig): AgentResolver {
   if (config.agents !== undefined) {
     return createMapAgentResolver(config.agents);
   }
+  // Defensive — unreachable if validateTaskSpawnConfig() was called
   throw new Error("TaskSpawnConfig requires either 'agents' or 'agentResolver'");
 }
 
@@ -41,16 +46,32 @@ function resolveAgentResolver(config: TaskSpawnConfig): AgentResolver {
  */
 export async function createTaskTool(config: TaskSpawnConfig): Promise<Tool> {
   const maxDurationMs = config.maxDurationMs ?? DEFAULT_MAX_DURATION_MS;
+  const ttlMs = DEFAULT_DESCRIPTOR_TTL_MS;
   const resolver = resolveAgentResolver(config);
-  const summaries = await Promise.resolve(resolver.list());
-  const descriptor =
-    summaries.length > 0 ? createTaskToolDescriptor(summaries) : TASK_TOOL_DESCRIPTOR;
+
+  // let: mutable cache — refreshed when TTL expires
+  let cachedSummaries: readonly TaskableAgentSummary[] = await Promise.resolve(resolver.list());
+  let cachedDescriptor =
+    cachedSummaries.length > 0 ? createTaskToolDescriptor(cachedSummaries) : TASK_TOOL_DESCRIPTOR;
+  let refreshedAt = Date.now();
+
+  async function refreshDescriptorIfStale(): Promise<void> {
+    if (Date.now() - refreshedAt < ttlMs) return;
+    cachedSummaries = await Promise.resolve(resolver.list());
+    cachedDescriptor =
+      cachedSummaries.length > 0 ? createTaskToolDescriptor(cachedSummaries) : TASK_TOOL_DESCRIPTOR;
+    refreshedAt = Date.now();
+  }
 
   return {
-    descriptor,
+    get descriptor() {
+      return cachedDescriptor;
+    },
     trustTier: "verified",
 
     async execute(args: JsonObject): Promise<unknown> {
+      await refreshDescriptorIfStale();
+
       const description = args.description;
       if (typeof description !== "string" || description.length === 0) {
         return "Error: 'description' is required and must be a non-empty string";
@@ -67,7 +88,7 @@ export async function createTaskTool(config: TaskSpawnConfig): Promise<Tool> {
 
       const agent = await Promise.resolve(resolver.resolve(agentType));
       if (agent === undefined) {
-        const available = summaries.map((s) => s.key).join(", ");
+        const available = cachedSummaries.map((s) => s.key).join(", ");
         return `Error: unknown agent type '${agentType}'. Available: ${available}`;
       }
 
@@ -77,12 +98,12 @@ export async function createTaskTool(config: TaskSpawnConfig): Promise<Tool> {
       }, maxDurationMs);
 
       try {
-        // Copilot path: if a live agent of this type exists, message it instead of spawning
+        // Copilot path: if a live idle agent of this type exists, message it instead of spawning
         if (config.message !== undefined && resolver.findLive !== undefined) {
-          const liveId = await Promise.resolve(resolver.findLive(agentType));
-          if (liveId !== undefined) {
+          const handle = await Promise.resolve(resolver.findLive(agentType));
+          if (handle !== undefined && handle.state === "idle") {
             const result = await config.message({
-              agentId: liveId,
+              agentId: handle.agentId,
               description,
               signal: controller.signal,
             });

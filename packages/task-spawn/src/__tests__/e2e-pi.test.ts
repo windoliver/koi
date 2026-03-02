@@ -288,7 +288,7 @@ describeE2E("Pi adapter: Copilot routing through full L1 runtime", () => {
           ];
         },
         findLive(agentType) {
-          if (agentType === "assistant") return liveAgentId;
+          if (agentType === "assistant") return { agentId: liveAgentId, state: "idle" as const };
           return undefined;
         },
       };

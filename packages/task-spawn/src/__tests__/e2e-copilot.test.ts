@@ -79,7 +79,7 @@ describeE2E("Change 3: Copilot routing through full L1 runtime", () => {
           ];
         },
         findLive(agentType) {
-          if (agentType === "assistant") return liveAgentId;
+          if (agentType === "assistant") return { agentId: liveAgentId, state: "idle" as const };
           return undefined;
         },
       };
@@ -245,7 +245,7 @@ describeE2E("Change 3: Copilot routing through full L1 runtime", () => {
           ];
         },
         findLive() {
-          return agentId("live-agent-123");
+          return { agentId: agentId("live-agent-123"), state: "idle" as const };
         },
       };
 
