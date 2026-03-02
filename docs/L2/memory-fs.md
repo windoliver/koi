@@ -58,6 +58,7 @@ packages/memory-fs/
 │   ├── cross-entity.ts       ─ Cross-entity BFS expansion with entity-hop decay
 │   ├── dedup.ts              ─ Jaccard similarity + CJK bigram fallback
 │   ├── decay.ts              ─ Exponential decay scoring + Hot/Warm/Cold tiering
+│   ├── salience.ts           ─ Composite salience scoring (similarity × access × decay)
 │   ├── slug.ts               ─ Entity name sanitization (path traversal guard)
 │   ├── summary.ts            ─ Rebuild summary.md from active facts
 │   ├── session-log.ts        ─ Append-only daily log
@@ -219,13 +220,19 @@ memory_recall({ query, limit, tier })
          Bounded by maxEntityHops (default: 1) and perEntityCap (default: 10)
         │
         ▼
-      7. Dedup by fact ID (higher score wins), sort by score, apply limit
+      7. Composite salience scoring (enabled by default):
+         Normalize raw scores to [0.1, 1.0] (min-max with floor)
+         salience = similarity × log(accessCount + 2) × decayScore
+         Frequently-reinforced facts rank higher than raw BM25 alone
         │
         ▼
-      8. Update lastAccessed + accessCount (batch write, warms cold facts)
+      8. Sort by salience desc, apply limit
         │
         ▼
-      9. Return MemoryResult[] with { content, tier, decayScore,
+      9. Update lastAccessed + accessCount (batch write, warms cold facts)
+        │
+        ▼
+     10. Return MemoryResult[] with { content, tier, decayScore,
          lastAccessed, causalParents, causalChildren }
 ```
 
@@ -564,6 +571,82 @@ This works in both the retriever path and the fallback (recency) path. The names
 
 ---
 
+## Composite Salience Scoring
+
+Raw retriever scores (BM25/FTS) rank results by keyword overlap alone. A frequently-reinforced, recently-accessed fact with moderate keyword overlap loses to a barely-relevant fact that happens to match keywords better. Salience scoring fixes this by combining three signals into one ranking:
+
+```
+salience = similarity × log(accessCount + 2) × decayScore
+```
+
+| Signal | Source | Effect |
+|--------|--------|--------|
+| **similarity** | Retriever score, normalized to [0.1, 1.0] | Keyword/semantic relevance |
+| **log(accessCount + 2)** | Reinforcement count from store/recall | Frequently-used facts rank higher |
+| **decayScore** | Exponential decay from `lastAccessed` | Stale facts fade |
+
+### Why `log(accessCount + 2)`?
+
+- `+2` (not `+1`): `log(1) = 0` would zero out new facts. `log(2) ≈ 0.693` is a safe floor.
+- `log` (not linear): Diminishing returns — going from 0→5 accesses matters more than 95→100. Prevents runaway dominance by high-access facts.
+- 10 accesses gives `log(12) ≈ 2.5` — a ~3.6× boost over zero. Meaningful but not overwhelming.
+
+### Why a Similarity Floor?
+
+Min-max normalization maps the lowest-scored candidate to 0. Since salience is multiplicative, zero similarity silences access-count and decay entirely. A floor of 0.1 ensures the weakest retriever hit still carries its reinforcement and freshness signals:
+
+```
+Without floor: [10.0, 2.0] → [1.0, 0.0]  ← lowest fact always scores 0
+With floor:    [10.0, 2.0] → [1.0, 0.1]  ← lowest fact preserves other signals
+```
+
+### Example
+
+```
+Two facts about TypeScript:
+
+Fact A: "Alice prefers TypeScript"
+  BM25: 3.2, accessCount: 8, age: 2 days
+  → similarity: 0.1 (lowest BM25), log(10) ≈ 2.30, decay ≈ 0.95
+  → salience: 0.1 × 2.30 × 0.95 ≈ 0.22
+
+Fact B: "Team switched to TypeScript for the frontend"
+  BM25: 8.7, accessCount: 0, age: 14 days
+  → similarity: 1.0 (highest BM25), log(2) ≈ 0.69, decay ≈ 0.73
+  → salience: 1.0 × 0.69 × 0.73 ≈ 0.50
+
+Without salience: Fact B wins (raw BM25 8.7 > 3.2)
+With salience:    Fact B still wins but the gap is smaller.
+                  A few more accesses on Fact A would flip the ranking.
+```
+
+### Configuration
+
+Salience is enabled by default. Opt out per-instance:
+
+```typescript
+const mem = await createFsMemory({
+  baseDir: "/path/to/memory",
+  salienceEnabled: false,  // raw score passthrough (pre-salience behavior)
+});
+```
+
+### Performance
+
+Pure math — one O(n) pass for min/max, one `Math.log` + two multiplies per candidate. For 20 candidates (the default 2× over-fetch), this adds ~microseconds — negligible vs retriever I/O.
+
+### Interaction with Other Features
+
+| Feature | Interaction |
+|---------|-------------|
+| **Hot-memory middleware** | Consumes salience-ranked results — gets better injection ordering for free |
+| **Tier filtering** | Applied before salience — salience only ranks within the filtered set |
+| **Graph expansion** | Applied before salience — expanded candidates' hop-decayed scores are the similarity input |
+| **Reinforcement** | `store(content, { reinforce: true })` increments accessCount, boosting future salience |
+| **Fallback (no retriever)** | All candidates score 1.0 → normalized to 1.0 (uniform) → salience = `log(accessCount + 2) × decay` |
+
+---
+
 ## Disk Layout
 
 ```
@@ -737,13 +820,14 @@ The DI contracts (`FsSearchRetriever`, `FsSearchIndexer`) are local function typ
 | `slug.test.ts` | 13 | Path traversal, unicode, edge cases |
 | `dedup.test.ts` | 14 | Jaccard similarity, CJK bigrams |
 | `decay.test.ts` | 11 | Decay scoring, tier classification |
+| `salience.test.ts` | 18 | Normalization (floor, uniform, empty), salience formula, batch scoring |
 | `fact-store.test.ts` | 15 | Concurrent writes, corruption recovery, causal backward compat |
 | `session-log.test.ts` | 5 | Daily log append |
 | `summary.test.ts` | 7 | Summary generation with tier filtering |
 | `graph-walk.test.ts` | 9 | BFS expansion, cycle detection, score decay, dedup |
 | `entity-index.test.ts` | 11 | Reverse index: build, add, lookup, dedup, self-ref guard |
 | `cross-entity.test.ts` | 17 | Cross-entity: decay, cap, cycles, hops, integration |
-| `fs-memory.test.ts` | 33 | Full integration: store → recall → dedup → decay → causal → graph expansion |
+| `fs-memory.test.ts` | 38 | Full integration: store → recall → dedup → decay → causal → graph expansion → salience |
 | `provider/tools/store.test.ts` | 10 | Store tool: validation, causal_parents, dedup, errors |
 | `provider/tools/recall.test.ts` | 12 | Recall tool: limits, tiers, graph_expand, max_hops, errors |
 | `provider/tools/search.test.ts` | 7 | Search tool: entity list, entity lookup, errors |

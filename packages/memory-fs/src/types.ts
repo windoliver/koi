@@ -74,6 +74,8 @@ export interface FsMemoryConfig {
   readonly mergeHandler?: MergeHandler | undefined;
   /** Jaccard threshold below dedupThreshold to trigger merge. Default 0.4. */
   readonly mergeThreshold?: number | undefined;
+  /** Enable composite salience scoring for recall ranking. Default true. */
+  readonly salienceEnabled?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
