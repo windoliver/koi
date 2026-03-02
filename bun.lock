@@ -1116,6 +1116,19 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-degenerate": {
+      "name": "@koi/middleware-degenerate",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "@koi/variant-selection": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-delegation-escalation": {
       "name": "@koi/middleware-delegation-escalation",
       "version": "0.0.0",
@@ -2038,6 +2051,18 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/variant-selection": {
+      "name": "@koi/variant-selection",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/verified-loop": {
       "name": "@koi/verified-loop",
       "version": "0.0.0",
@@ -2727,6 +2752,8 @@
 
     "@koi/middleware-context-editing": ["@koi/middleware-context-editing@workspace:packages/middleware-context-editing"],
 
+    "@koi/middleware-degenerate": ["@koi/middleware-degenerate@workspace:packages/middleware-degenerate"],
+
     "@koi/middleware-delegation-escalation": ["@koi/middleware-delegation-escalation@workspace:packages/middleware-delegation-escalation"],
 
     "@koi/middleware-event-trace": ["@koi/middleware-event-trace@workspace:packages/middleware-event-trace"],
@@ -2890,6 +2917,8 @@
     "@koi/tracing": ["@koi/tracing@workspace:packages/tracing"],
 
     "@koi/validation": ["@koi/validation@workspace:packages/validation"],
+
+    "@koi/variant-selection": ["@koi/variant-selection@workspace:packages/variant-selection"],
 
     "@koi/verified-loop": ["@koi/verified-loop@workspace:packages/verified-loop"],
 

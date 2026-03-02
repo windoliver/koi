@@ -79,6 +79,14 @@ interface RawSkillConfig {
   readonly options?: Readonly<Record<string, unknown>> | undefined;
 }
 
+/** Per-capability degeneracy config in raw manifest. */
+interface RawDegeneracyConfig {
+  readonly selectionStrategy: "fitness" | "round-robin" | "context-match" | "random";
+  readonly minVariants: number;
+  readonly maxVariants: number;
+  readonly failoverEnabled: boolean;
+}
+
 /** The raw parsed YAML structure before transformation. */
 export interface RawManifest {
   readonly name: string;
@@ -104,6 +112,7 @@ export interface RawManifest {
   readonly user?: string | RawSoulUserConfig | undefined;
   readonly deploy?: RawDeploy | undefined;
   readonly scope?: RawScope | undefined;
+  readonly degeneracy?: Readonly<Record<string, RawDegeneracyConfig>> | undefined;
   readonly [key: string]: unknown;
 }
 
@@ -308,6 +317,25 @@ const deploySchema = z.object({
   system: z.boolean().default(false),
 });
 
+// ── Degeneracy schema ──
+
+/** Per-capability degeneracy config: selection strategy + variant bounds. */
+const degeneracyConfigSchema = z
+  .object({
+    selectionStrategy: z
+      .enum(["fitness", "round-robin", "context-match", "random"])
+      .default("fitness"),
+    minVariants: z.number().int().min(1).default(1),
+    maxVariants: z.number().int().min(1).default(3),
+    failoverEnabled: z.boolean().default(true),
+  })
+  .refine((d) => d.minVariants <= d.maxVariants, {
+    message: "minVariants must be <= maxVariants",
+  });
+
+/** Record of capability name → degeneracy config. */
+const degeneracySchema = z.record(z.string(), degeneracyConfigSchema);
+
 // ── Scope schema ──
 
 /** Declarative scope boundaries for agent subsystems. */
@@ -382,6 +410,7 @@ export const rawManifestSchema: z.ZodType<RawManifest> = z
     user: soulUserSchema.optional(),
     deploy: deploySchema.optional(),
     scope: scopeSchema.optional(),
+    degeneracy: degeneracySchema.optional(),
   })
   .passthrough();
 

@@ -230,6 +230,9 @@ export {
   DEFAULT_INSPECT_LIMIT,
   debugSessionId,
 } from "./debug.js";
+// degeneracy — variant selection types for degenerate tool implementations
+export type { DegeneracyConfig, SelectionStrategy, VariantAttempt } from "./degeneracy.js";
+export { DEFAULT_DEGENERACY_CONFIG } from "./degeneracy.js";
 // delegation — types
 export type {
   CapabilityProof,

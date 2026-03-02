@@ -196,8 +196,8 @@ Infrastructure backends      L3      Pluggable (Nexus, SQLite, custom)
 
 Engine *adapters* (Claude, Pi, Loop, custom) are swappable L2 packages. The engine *runtime* (guards, governance) is not — it IS the kernel runtime.
 
-**L0-utility packages** (25 total — canonical list lives in `scripts/layers.ts` → `L0U_PACKAGES`):
-`@koi/acp-protocol`, `@koi/channel-base`, `@koi/crypto-utils`, `@koi/dashboard-types`, `@koi/edit-match`, `@koi/errors`, `@koi/event-delivery`, `@koi/execution-context`, `@koi/file-resolution`, `@koi/git-utils`, `@koi/harness-scheduler`, `@koi/hash`, `@koi/manifest`, `@koi/nexus-client`, `@koi/resolve`, `@koi/sandbox-cloud-base`, `@koi/scope`, `@koi/search-provider`, `@koi/shutdown`, `@koi/skill-scanner`, `@koi/snapshot-chain-store`, `@koi/sqlite-utils`, `@koi/test-utils`, `@koi/token-estimator`, `@koi/validation`.
+**L0-utility packages** (26 total — canonical list lives in `scripts/layers.ts` → `L0U_PACKAGES`):
+`@koi/acp-protocol`, `@koi/channel-base`, `@koi/crypto-utils`, `@koi/dashboard-types`, `@koi/edit-match`, `@koi/errors`, `@koi/event-delivery`, `@koi/execution-context`, `@koi/file-resolution`, `@koi/git-utils`, `@koi/harness-scheduler`, `@koi/hash`, `@koi/manifest`, `@koi/nexus-client`, `@koi/resolve`, `@koi/sandbox-cloud-base`, `@koi/scope`, `@koi/search-provider`, `@koi/shutdown`, `@koi/skill-scanner`, `@koi/snapshot-chain-store`, `@koi/sqlite-utils`, `@koi/test-utils`, `@koi/token-estimator`, `@koi/validation`, `@koi/variant-selection`.
 These contain pure utility functions with zero business logic. They depend on `@koi/core` + peer
 L0u packages only, and are importable by both L1 and L2 packages. They do NOT define core
 contracts — they provide shared implementations of common operations (error creation, schema
