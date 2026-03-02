@@ -108,6 +108,12 @@ export interface ContextArenaConfig {
          * Create with factories from `@koi/search` or `@koi/search-nexus`.
          */
         readonly indexer?: FsSearchIndexer | undefined;
+        /** Enable per-user memory isolation via LRU cache. Reads userId from agent.pid.ownerId. */
+        readonly userScoped?: boolean | undefined;
+        /** Max cached per-user FsMemory instances when userScoped is true. Default: 100. */
+        readonly maxCachedUsers?: number | undefined;
+        /** Disable auto-wired LLM merge handler. Default: false (merge enabled when memoryFs is present). */
+        readonly disableMerge?: boolean | undefined;
       }
     | undefined;
 

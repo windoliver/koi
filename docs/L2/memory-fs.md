@@ -422,23 +422,152 @@ score = e^(-λ × ageDays)        λ = ln(2) / halfLifeDays (default: 30)
   accessCount ≥ 10  ──▶  🟡 WARM  (frequency-protected, stays warm)
 ```
 
-### Deduplication
+### Deduplication & Merge
+
+The store pipeline uses three similarity zones:
 
 ```
-store("User is vegan")       → stored ✅
-store("User is vegan")       → rejected (Jaccard ≥ 0.7) ❌
-store("User is vegetarian")  → stored (different enough) ✅
-                               "User is vegan" → superseded (contradiction)
+Jaccard similarity:
+  [dedupThreshold, 1.0]      → SKIP (or reinforce if requested)
+  [mergeThreshold, dedup)     → MERGE (if mergeHandler provided)
+  [0, mergeThreshold)         → NEW FACT (fall through to supersede check)
+
+Defaults: dedupThreshold = 0.7, mergeThreshold = 0.4
+```
+
+```
+store("User is vegan")           → stored ✅
+store("User is vegan")           → rejected (Jaccard ≥ 0.7) ❌
+store("User is vegan and GF")    → MERGE zone (Jaccard ~0.5) → mergeHandler called
+                                    → "User is vegan and gluten-free" ✅ (enriched)
+store("User is vegetarian")      → stored (different enough) ✅
+                                    "User is vegan" → superseded (contradiction)
 ```
 
 Jaccard similarity uses word tokens for Latin scripts and character bigrams for CJK (Chinese/Japanese/Korean).
+
+### LLM-Based Merge Handler
+
+When a new fact is related but not identical (similarity in the merge zone), a `MergeHandler` callback enriches the existing fact instead of creating a duplicate:
+
+```typescript
+const mem = await createFsMemory({
+  baseDir: "/path/to/memory",
+  mergeHandler: async (existing, incoming) => {
+    // Call any LLM to combine the two facts
+    const response = await myModel.complete(
+      `Merge these facts:\n1: ${existing}\n2: ${incoming}`,
+    );
+    return response.text; // or undefined to fall through to supersede
+  },
+  mergeThreshold: 0.4, // default: 0.4
+});
+```
+
+The handler is DI — `@koi/memory-fs` stays LLM-agnostic. The `@koi/context-arena` (L3) auto-wires one using the summarizer model.
+
+Merge behavior:
+- Handler returns `string` → old fact superseded, merged text stored with combined causal parents
+- Handler returns `undefined` or `""` → falls through to supersede check
+- Handler throws → error logged, falls through (original fact not lost)
+
+---
+
+## Per-User Memory Isolation
+
+Multi-user agents (e.g., Telegram bots) need per-user memory boundaries. Without isolation, Alice's preferences leak into Bob's recall.
+
+### The Problem
+
+```
+Shared memory (before):
+  Alice: "I like cats"    ──▶  baseDir/entities/preference/items.json
+  Bob:   "I like dogs"    ──▶  baseDir/entities/preference/items.json  ← same file!
+  Bob:   recall "cats"    ──▶  finds Alice's fact ❌
+```
+
+### The Solution: User-Scoped Memory
+
+`createUserScopedMemory` manages an LRU cache of per-user `FsMemory` instances, each with its own on-disk directory:
+
+```typescript
+import { createUserScopedMemoryProvider } from "@koi/memory-fs";
+
+const provider = createUserScopedMemoryProvider({
+  baseDir: "/data/bot-memory",
+  userScoped: true,
+  maxCachedUsers: 100, // LRU cache size (default: 100)
+});
+```
+
+```
+Per-user memory (after):
+  Alice: "I like cats"    ──▶  baseDir/users/alice/entities/preference/items.json
+  Bob:   "I like dogs"    ──▶  baseDir/users/bob/entities/preference/items.json
+  Bob:   recall "cats"    ──▶  empty ✅ (physically separate FactStore)
+```
+
+### How It Works
+
+1. `createUserScopedMemoryProvider` is a `ComponentProvider` that reads `agent.pid.ownerId`
+2. L1 sets `pid.ownerId` from `SessionContext.userId` at spawn time
+3. Channel adapter (Telegram, Slack, etc.) sets `userId` in the session context
+4. Each userId gets a dedicated `FsMemory` at `baseDir/users/<slugified-userId>/`
+5. When no userId is present, falls back to shared memory at `baseDir/` (backward compat)
+
+### LRU Cache
+
+The cache holds `maxCachedUsers` (default: 100) `FsMemory` instances in memory. When the limit is exceeded, the least-recently-used instance is evicted — its summaries are rebuilt and data is flushed to disk. Re-accessing an evicted user creates a fresh `FsMemory` from the persisted data.
+
+### Security
+
+- All userIds are sanitized via `slugifyEntity()` (lowercase, alphanumeric + dash, max 64 chars)
+- Path traversal attempts like `../admin` or `/etc/passwd` are stripped
+- Unicode userIds (`用户42`) are slugified safely
+- Empty userIds fall back to `_default`
+
+### Context-Arena Integration (Zero Config)
+
+When using `@koi/context-arena` (L3), per-user isolation and merge are wired automatically:
+
+```typescript
+const bundle = await createContextArena({
+  summarizer: myModel,
+  sessionId,
+  getMessages: () => messages,
+  memoryFs: {
+    config: { baseDir: "/data/memory" },
+    userScoped: true, // ← per-user isolation
+    // merge auto-wired using summarizer (disable with disableMerge: true)
+  },
+});
+```
+
+---
+
+## Namespace Filtering
+
+Recall now respects the `namespace` option. When `options.namespace` is provided, only facts stored under that namespace are returned:
+
+```typescript
+await mem.component.store("project-x fact", { namespace: "project-x" });
+await mem.component.store("project-y fact", { namespace: "project-y" });
+
+await mem.component.recall("fact", { namespace: "project-x" });
+// → only "project-x fact" (project-y filtered out)
+
+await mem.component.recall("fact");
+// → both facts (no filter, backward compat)
+```
+
+This works in both the retriever path and the fallback (recency) path. The namespace is slugified and matched against entity names.
 
 ---
 
 ## Disk Layout
 
 ```
-baseDir/
+baseDir/                                 (single-user / shared mode)
 ├── entities/
 │   ├── alice/
 │   │   ├── items.json ──── [{id, fact, category, status, ...}, ...]
@@ -452,6 +581,19 @@ baseDir/
 └── sessions/
     ├── 2026-02-26.md ──── - [14:30] User is vegan
     └── 2026-02-27.md ──── - [09:15] User moved to Tokyo
+
+baseDir/                                 (user-scoped mode)
+├── users/
+│   ├── alice/                           ← per-user FsMemory root
+│   │   ├── entities/
+│   │   │   └── preference/items.json
+│   │   └── sessions/
+│   └── bob/                             ← per-user FsMemory root
+│       ├── entities/
+│       │   └── preference/items.json
+│       └── sessions/
+├── entities/                            ← shared fallback (no userId)
+└── sessions/
 ```
 
 - `items.json`: array of `MemoryFact` objects (internal type, not exported)

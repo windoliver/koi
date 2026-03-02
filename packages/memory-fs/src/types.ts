@@ -44,6 +44,18 @@ export interface FsIndexDoc {
 }
 
 // ---------------------------------------------------------------------------
+// Merge handler DI contract
+// ---------------------------------------------------------------------------
+
+/**
+ * Callback that merges two related facts into a single enriched fact.
+ *
+ * Called when an incoming fact has Jaccard similarity in `[mergeThreshold, dedupThreshold)`.
+ * Return the merged text string, or `undefined` to fall through to supersede logic.
+ */
+export type MergeHandler = (existing: string, incoming: string) => Promise<string | undefined>;
+
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
@@ -58,6 +70,10 @@ export interface FsMemoryConfig {
   readonly entityHopDecay?: number | undefined; // default 0.5
   readonly maxEntityHops?: number | undefined; // default 1
   readonly perEntityCap?: number | undefined; // default 10
+  /** Handler for merging related (but not duplicate) facts. Memory-fs stays LLM-agnostic. */
+  readonly mergeHandler?: MergeHandler | undefined;
+  /** Jaccard threshold below dedupThreshold to trigger merge. Default 0.4. */
+  readonly mergeThreshold?: number | undefined;
 }
 
 // ---------------------------------------------------------------------------
