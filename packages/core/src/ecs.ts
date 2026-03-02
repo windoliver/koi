@@ -546,3 +546,16 @@ export const SCRATCHPAD: SubsystemToken<ScratchpadComponent> =
 export const NAME_SERVICE: SubsystemToken<NameServiceReader> =
   token<NameServiceReader>("name-service");
 export const ZONE_REGISTRY: SubsystemToken<ZoneRegistry> = token<ZoneRegistry>("zone-registry");
+
+// ---------------------------------------------------------------------------
+// Agent environment (inheritable key-value env down the spawn tree)
+// ---------------------------------------------------------------------------
+
+/** Inheritable key-value environment passed down the spawn tree. */
+export interface AgentEnv {
+  readonly values: Readonly<Record<string, string>>;
+  /** Reference to parent env — provenance tracking only, not used for lookups. */
+  readonly parentEnv?: AgentEnv | undefined;
+}
+
+export const ENV: SubsystemToken<AgentEnv> = token<AgentEnv>("env");

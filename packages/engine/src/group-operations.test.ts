@@ -29,6 +29,7 @@ function entry(
     agentType: "worker",
     metadata: {},
     registeredAt: Date.now(),
+    priority: 10,
     ...(groupId !== undefined ? { groupId } : {}),
   };
 }

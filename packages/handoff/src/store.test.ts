@@ -166,6 +166,9 @@ describe("HandoffStore", () => {
       transition: () => {
         throw new Error("not used");
       },
+      patch: () => {
+        throw new Error("not used");
+      },
       [Symbol.asyncDispose]: async () => {},
     };
 

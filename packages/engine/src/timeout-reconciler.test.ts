@@ -25,6 +25,7 @@ function entry(
     agentType: "worker",
     metadata: {},
     registeredAt,
+    priority: 10,
   };
 }
 

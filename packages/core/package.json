@@ -151,6 +151,10 @@
     "./cost-tracker": {
       "types": "./dist/cost-tracker.d.ts",
       "import": "./dist/cost-tracker.js"
+    },
+    "./procfs": {
+      "types": "./dist/procfs.d.ts",
+      "import": "./dist/procfs.js"
     }
   },
   "scripts": {

@@ -34,6 +34,9 @@ function createMockRegistry(): {
     transition: () => {
       throw new Error("not implemented");
     },
+    patch: () => {
+      throw new Error("not implemented");
+    },
     [Symbol.asyncDispose]: async () => {},
   } as unknown as AgentRegistry;
 
@@ -70,6 +73,7 @@ describe("createRegistrySync", () => {
         agentType: "worker",
         metadata: { name: "reviewer" },
         registeredAt: Date.now(),
+        priority: 10,
       },
     });
 
@@ -91,6 +95,7 @@ describe("createRegistrySync", () => {
         agentType: "worker",
         metadata: {},
         registeredAt: Date.now(),
+        priority: 10,
       },
     });
 
@@ -109,6 +114,7 @@ describe("createRegistrySync", () => {
         agentType: "worker",
         metadata: { name: "reviewer" },
         registeredAt: Date.now(),
+        priority: 10,
       },
     });
 
@@ -135,6 +141,7 @@ describe("createRegistrySync", () => {
         agentType: "worker",
         metadata: { name: "alpha" },
         registeredAt: Date.now(),
+        priority: 10,
       },
     });
 
@@ -146,6 +153,7 @@ describe("createRegistrySync", () => {
         agentType: "worker",
         metadata: { name: "beta" },
         registeredAt: Date.now(),
+        priority: 10,
       },
     });
 
@@ -169,6 +177,7 @@ describe("createRegistrySync", () => {
         agentType: "worker",
         metadata: { name: "reviewer" },
         registeredAt: Date.now(),
+        priority: 10,
       },
     });
 
@@ -185,6 +194,7 @@ describe("createRegistrySync", () => {
         agentType: "worker",
         metadata: { name: "planner" },
         registeredAt: Date.now(),
+        priority: 10,
       },
     });
 
@@ -202,6 +212,7 @@ describe("createRegistrySync", () => {
         agentType: "worker",
         metadata: { name: "reviewer" },
         registeredAt: Date.now(),
+        priority: 10,
       },
     });
 

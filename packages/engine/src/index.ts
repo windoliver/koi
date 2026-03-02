@@ -11,6 +11,9 @@ export { KoiRuntimeError } from "@koi/errors";
 // agent entity
 export type { AssemblyConflict, AssemblyResult } from "./agent-entity.js";
 export { AgentEntity } from "./agent-entity.js";
+// agent env provider
+export type { AgentEnvProviderConfig } from "./agent-env-provider.js";
+export { createAgentEnvProvider, mergeEnv } from "./agent-env-provider.js";
 export { computeBackoff } from "./backoff.js";
 // swarm
 export type { CascadingTermination } from "./cascading-termination.js";
@@ -73,6 +76,8 @@ export {
 export type { InMemoryHealthMonitor } from "./health-monitor.js";
 export { createHealthMonitor } from "./health-monitor.js";
 export { createHealthReconciler } from "./health-reconciler.js";
+// inherited channel proxy
+export { createInheritedChannel } from "./inherited-channel.js";
 // inherited component provider
 export type { InheritedComponentProviderConfig } from "./inherited-component-provider.js";
 export { createInheritedComponentProvider } from "./inherited-component-provider.js";
@@ -124,6 +129,7 @@ export type {
   LoopDetectionKind,
   LoopWarningInfo,
   SpawnChildOptions,
+  SpawnInheritanceConfig,
   SpawnPolicy,
   SpawnResult,
   SpawnWarningInfo,

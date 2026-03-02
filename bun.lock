@@ -68,6 +68,16 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/agent-procfs": {
+      "name": "@koi/agent-procfs",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/agui": {
       "name": "@koi/agui",
       "version": "0.0.0",
@@ -2577,6 +2587,8 @@
     "@koi/agent-discovery": ["@koi/agent-discovery@workspace:packages/agent-discovery"],
 
     "@koi/agent-monitor": ["@koi/agent-monitor@workspace:packages/agent-monitor"],
+
+    "@koi/agent-procfs": ["@koi/agent-procfs@workspace:packages/agent-procfs"],
 
     "@koi/agui": ["@koi/agui@workspace:packages/agui"],
 

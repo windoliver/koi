@@ -31,6 +31,7 @@ function entry(
       lastTransitionAt: Date.now(),
     },
     agentType: "worker",
+    priority: 10,
     metadata: {},
     registeredAt: Date.now(),
   };
@@ -98,6 +99,7 @@ describe("createHealthReconciler", () => {
         lastTransitionAt: Date.now() - 8_000, // past suspect threshold (5s)
       },
       agentType: "worker",
+      priority: 10,
       metadata: {},
       registeredAt: Date.now(),
     };
@@ -119,6 +121,7 @@ describe("createHealthReconciler", () => {
         lastTransitionAt: Date.now() - 20_000, // past dead threshold (15s)
       },
       agentType: "worker",
+      priority: 10,
       metadata: {},
       registeredAt: Date.now(),
     };
@@ -145,6 +148,7 @@ describe("createHealthReconciler", () => {
         lastTransitionAt: Date.now() - 20_000, // past dead threshold
       },
       agentType: "worker",
+      priority: 10,
       metadata: {},
       registeredAt: Date.now(),
     };
@@ -197,6 +201,7 @@ describe("createHealthReconciler", () => {
         lastTransitionAt: Date.now() - 20_000,
       },
       agentType: "worker",
+      priority: 10,
       metadata: {},
       registeredAt: Date.now(),
     };

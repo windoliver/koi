@@ -11,14 +11,24 @@
  */
 
 import type { AgentGroupId, AgentId, ProcessState } from "./ecs.js";
-import type { AgentCondition, AgentStatus, RegistryEntry, TransitionReason } from "./lifecycle.js";
+import type {
+  AgentCondition,
+  AgentStatus,
+  PatchableRegistryFields,
+  RegistryEntry,
+  TransitionReason,
+} from "./lifecycle.js";
 
 // ---------------------------------------------------------------------------
 // Event kind union
 // ---------------------------------------------------------------------------
 
 /** String union of all AgentStateEvent kind values. */
-export type AgentStateEventKind = "agent_registered" | "agent_transitioned" | "agent_deregistered";
+export type AgentStateEventKind =
+  | "agent_registered"
+  | "agent_transitioned"
+  | "agent_deregistered"
+  | "agent_patched";
 
 // ---------------------------------------------------------------------------
 // AgentStateEvent — discriminated union
@@ -57,11 +67,20 @@ export interface AgentDeregisteredEvent {
   readonly deregisteredAt: number;
 }
 
+/** Mutable fields on a registered agent were patched. */
+export interface AgentPatchedEvent {
+  readonly kind: "agent_patched";
+  readonly agentId: AgentId;
+  readonly fields: PatchableRegistryFields;
+  readonly patchedAt: number;
+}
+
 /** Persisted domain events for agent lifecycle state changes. */
 export type AgentStateEvent =
   | AgentRegisteredEvent
   | AgentTransitionedEvent
-  | AgentDeregisteredEvent;
+  | AgentDeregisteredEvent
+  | AgentPatchedEvent;
 
 // ---------------------------------------------------------------------------
 // Initial status constant
@@ -88,6 +107,7 @@ const VALID_KINDS: ReadonlySet<string> = new Set<AgentStateEventKind>([
   "agent_registered",
   "agent_transitioned",
   "agent_deregistered",
+  "agent_patched",
 ]);
 
 /**
@@ -124,6 +144,7 @@ export function evolveRegistryEntry(
         agentType: event.agentType,
         metadata: event.metadata,
         registeredAt: event.registeredAt,
+        priority: 10,
         status: {
           ...INITIAL_AGENT_STATUS,
           lastTransitionAt: event.registeredAt,
@@ -148,6 +169,16 @@ export function evolveRegistryEntry(
           reason: event.reason,
           lastTransitionAt: event.transitionedAt,
         },
+      };
+    }
+
+    case "agent_patched": {
+      if (state === undefined) return undefined;
+      return {
+        ...state,
+        ...(event.fields.priority !== undefined ? { priority: event.fields.priority } : {}),
+        ...(event.fields.zoneId !== undefined ? { zoneId: event.fields.zoneId } : {}),
+        ...(event.fields.metadata !== undefined ? { metadata: event.fields.metadata } : {}),
       };
     }
 

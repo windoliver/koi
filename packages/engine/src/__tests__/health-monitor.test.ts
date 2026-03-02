@@ -14,6 +14,7 @@ function registerAgent(registry: InMemoryRegistry, id: string): void {
     agentId: agentId(id),
     status: { phase: "running", generation: 1, conditions: [], lastTransitionAt: Date.now() },
     agentType: "worker",
+    priority: 10,
     metadata: {},
     registeredAt: Date.now(),
   });
@@ -106,6 +107,7 @@ describe("HealthMonitor", () => {
         lastTransitionAt: Date.now() - 10_000, // 10s ago
       },
       agentType: "worker",
+      priority: 10,
       metadata: {},
       registeredAt: Date.now() - 10_000,
     });

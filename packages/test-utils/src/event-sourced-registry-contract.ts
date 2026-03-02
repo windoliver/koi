@@ -69,6 +69,7 @@ function entry(id: string, phase: ProcessState = "created", generation = 0): Reg
     agentType: "worker",
     metadata: {},
     registeredAt: Date.now(),
+    priority: 10,
   };
 }
 
@@ -483,6 +484,7 @@ export function runEventSourcedRegistryContractTests(
           agentType: "worker",
           metadata: { env: "test" },
           registeredAt: 1706140800000,
+          priority: 10,
           status: {
             phase: "created",
             generation: 0,
@@ -510,6 +512,7 @@ export function runEventSourcedRegistryContractTests(
           parentId: agentId("golden-parent"),
           metadata: {},
           registeredAt: 1706140800000,
+          priority: 10,
           status: {
             phase: "created",
             generation: 0,
@@ -547,6 +550,7 @@ export function runEventSourcedRegistryContractTests(
           agentType: "worker",
           metadata: {},
           registeredAt: 1706140800000,
+          priority: 10,
           status: {
             phase: "running",
             generation: 1,

@@ -10,6 +10,7 @@ export type { AgentSnapshot, AgentSnapshotStore } from "./agent-snapshot.js";
 // agent state events — event-sourced registry domain events + fold function
 export type {
   AgentDeregisteredEvent,
+  AgentPatchedEvent,
   AgentRegisteredEvent,
   AgentStateEvent,
   AgentStateEventKind,
@@ -161,10 +162,13 @@ export { ALL_CATALOG_SOURCES, DEFAULT_CATALOG_SEARCH_LIMIT } from "./catalog.js"
 export type {
   ChannelAdapter,
   ChannelCapabilities,
+  ChannelInheritMode,
   ChannelStatus,
   ChannelStatusKind,
   MessageHandler,
+  SpawnChannelPolicy,
 } from "./channel.js";
+export { DEFAULT_SPAWN_CHANNEL_POLICY } from "./channel.js";
 // common
 export type { JsonObject } from "./common.js";
 // config
@@ -258,6 +262,7 @@ export type {
 export type {
   Agent,
   AgentDescriptor,
+  AgentEnv,
   AgentGroupId,
   AgentId,
   AgentSignal,
@@ -305,6 +310,7 @@ export {
   CREDENTIALS,
   channelToken,
   DELEGATION,
+  ENV,
   EVENTS,
   EXTERNAL_AGENTS,
   FILESYSTEM,
@@ -530,6 +536,7 @@ export type {
   AgentRegistry,
   AgentStatus,
   ChildCompletionResult,
+  PatchableRegistryFields,
   RegistryEntry,
   RegistryEvent,
   RegistryFilter,
@@ -601,6 +608,8 @@ export type {
   PermissionDecision,
   PermissionQuery,
 } from "./permission-backend.js";
+// procfs — virtual filesystem for agent introspection
+export type { ProcEntry, ProcFs, WritableProcEntry } from "./procfs.js";
 // proposal — unified change governance contract
 export type {
   ChangeKind,

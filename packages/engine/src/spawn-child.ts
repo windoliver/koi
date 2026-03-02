@@ -11,9 +11,19 @@
  * 7. Wire ledger release + runtime disposal to child termination event
  */
 
-import type { AgentId, ChildCompletionResult, ChildHandle, ChildLifecycleEvent } from "@koi/core";
+import type {
+  AgentId,
+  ChannelAdapter,
+  ChildCompletionResult,
+  ChildHandle,
+  ChildLifecycleEvent,
+  ComponentProvider,
+} from "@koi/core";
+import { channelToken, DEFAULT_SPAWN_CHANNEL_POLICY, ENV } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
+import { createAgentEnvProvider } from "./agent-env-provider.js";
 import { createChildHandle } from "./child-handle.js";
+import { createInheritedChannel } from "./inherited-channel.js";
 import { createInheritedComponentProvider } from "./inherited-component-provider.js";
 import { createKoi } from "./koi.js";
 import type { KoiRuntime, SpawnChildOptions, SpawnResult } from "./types.js";
@@ -57,16 +67,59 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     });
   }
 
-  // 2. Build inherited component provider (scope-filtered)
+  // 2. Resolve inheritance config (backward compat: scopeChecker → inheritance.tools)
+  const inheritance = options.inheritance ?? {};
+  const scopeChecker = inheritance.tools?.scopeChecker ?? options.scopeChecker;
+
+  // 3. Build inherited component provider (scope-filtered)
   const inheritedProvider = createInheritedComponentProvider({
     parent: options.parentAgent,
-    ...(options.scopeChecker !== undefined ? { scopeChecker: options.scopeChecker } : {}),
+    ...(scopeChecker !== undefined ? { scopeChecker } : {}),
   });
 
-  // 3. Create AbortController for child signal/terminate support
+  // 4. Build additional providers from inheritance config
+  const inheritanceProviders: ComponentProvider[] = [];
+
+  // 4a. Env inheritance
+  const parentHasEnv = options.parentAgent.has(ENV);
+  if (parentHasEnv) {
+    const envOverrides = inheritance.env?.overrides;
+    inheritanceProviders.push(
+      createAgentEnvProvider({
+        parent: options.parentAgent,
+        ...(envOverrides !== undefined ? { overrides: envOverrides } : {}),
+      }),
+    );
+  }
+
+  // 4b. Channel inheritance
+  const channelPolicy = inheritance.channels ?? DEFAULT_SPAWN_CHANNEL_POLICY;
+  if (channelPolicy.mode !== "none") {
+    const parentChannels = options.parentAgent.query("channel:");
+    for (const [tokenKey, channel] of parentChannels) {
+      const tokenStr = tokenKey as string;
+      const channelName = tokenStr.slice("channel:".length);
+      const proxy = createInheritedChannel(
+        channel as ChannelAdapter,
+        options.parentAgent.pid,
+        channelPolicy,
+      );
+      // Wrap as a simple component provider
+      const channelProvider: ComponentProvider = {
+        name: `inherited-channel:${channelName}`,
+        attach: async () => new Map([[channelToken(channelName) as string, proxy]]),
+      };
+      inheritanceProviders.push(channelProvider);
+    }
+  }
+
+  // 5. Create AbortController for child signal/terminate support
   const abortController = new AbortController();
 
-  // 4. Delegate to createKoi with child-specific options
+  // 6. Resolve priority
+  const childPriority = inheritance.priority ?? 10;
+
+  // 7. Delegate to createKoi with child-specific options
   //    Manifest lifecycle drives agentType — no explicit agentType override needed.
   let childRuntime: KoiRuntime;
   try {
@@ -74,7 +127,7 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
       manifest: options.manifest,
       adapter: options.adapter,
       parentPid: options.parentAgent.pid,
-      providers: [inheritedProvider, ...(options.providers ?? [])],
+      providers: [inheritedProvider, ...inheritanceProviders, ...(options.providers ?? [])],
       spawnLedger: options.spawnLedger,
       spawn: options.spawnPolicy,
       ...(options.middleware !== undefined ? { middleware: options.middleware } : {}),
@@ -109,6 +162,7 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
       registeredAt: Date.now(),
       parentId: options.parentAgent.pid.id,
       spawner: options.parentAgent.pid.id,
+      priority: childPriority,
       ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
     });
   }

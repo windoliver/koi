@@ -9,6 +9,7 @@ import type {
   AgentId,
   AgentRegistry,
   KoiError,
+  PatchableRegistryFields,
   ProcessState,
   RegistryEntry,
   RegistryEvent,
@@ -30,7 +31,7 @@ import { applyTransition } from "./transitions.js";
  */
 export type InMemoryRegistry = Omit<
   AgentRegistry,
-  "register" | "deregister" | "lookup" | "list" | "transition"
+  "register" | "deregister" | "lookup" | "list" | "transition" | "patch"
 > & {
   readonly register: (entry: RegistryEntry) => RegistryEntry;
   readonly deregister: (agentId: AgentId) => boolean;
@@ -41,6 +42,10 @@ export type InMemoryRegistry = Omit<
     targetPhase: ProcessState,
     expectedGeneration: number,
     reason: TransitionReason,
+  ) => Result<RegistryEntry, KoiError>;
+  readonly patch: (
+    agentId: AgentId,
+    fields: PatchableRegistryFields,
   ) => Result<RegistryEntry, KoiError>;
   /** Manually trigger flush of any buffered heartbeats. */
   readonly flush: () => void;
@@ -129,6 +134,33 @@ export function createInMemoryRegistry(): InMemoryRegistry {
     return { ok: true, value: updated };
   }
 
+  function patch(id: AgentId, fields: PatchableRegistryFields): Result<RegistryEntry, KoiError> {
+    const current = store.get(id);
+    if (current === undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "NOT_FOUND",
+          message: `Agent ${id} not found in registry`,
+          retryable: false,
+        },
+      };
+    }
+
+    // Apply only non-undefined fields (copy-on-write)
+    const updated: RegistryEntry = {
+      ...current,
+      ...(fields.priority !== undefined ? { priority: fields.priority } : {}),
+      ...(fields.zoneId !== undefined ? { zoneId: fields.zoneId } : {}),
+      ...(fields.metadata !== undefined ? { metadata: fields.metadata } : {}),
+    };
+    store.set(id, updated);
+
+    notify({ kind: "patched", agentId: id, fields, entry: updated });
+
+    return { ok: true, value: updated };
+  }
+
   function watch(listener: (event: RegistryEvent) => void): () => void {
     listeners = new Set([...listeners, listener]);
     return () => {
@@ -147,6 +179,7 @@ export function createInMemoryRegistry(): InMemoryRegistry {
     lookup,
     list,
     transition,
+    patch,
     watch,
     flush: () => {},
     [Symbol.asyncDispose]: dispose,

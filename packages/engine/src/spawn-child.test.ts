@@ -447,6 +447,7 @@ describe("spawnChildAgent cleanup on termination", () => {
       agentId: parent.pid.id,
       status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
       agentType: "copilot",
+      priority: 10,
       metadata: {},
       registeredAt: Date.now(),
     });
@@ -501,6 +502,7 @@ describe("spawnChildAgent cascading termination (via CascadingTermination)", () 
       agentId: parent.pid.id,
       status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
       agentType: "copilot",
+      priority: 10,
       metadata: {},
       registeredAt: Date.now(),
     });
@@ -534,6 +536,7 @@ describe("spawnChildAgent cascading termination (via CascadingTermination)", () 
       agentId: parent.pid.id,
       status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
       agentType: "copilot",
+      priority: 10,
       metadata: {},
       registeredAt: Date.now(),
     });
@@ -563,6 +566,7 @@ describe("spawnChildAgent cascading termination (via CascadingTermination)", () 
       agentId: parent.pid.id,
       status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
       agentType: "copilot",
+      priority: 10,
       metadata: {},
       registeredAt: Date.now(),
     });

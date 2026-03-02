@@ -359,6 +359,7 @@ describeE2E("e2e: createKoi + createPiAdapter + NexusRegistry full stack", () =>
         agentType: "worker",
         metadata: { skills: ["math", "lookup"] },
         registeredAt: Date.now(),
+        priority: 10,
       };
       await registry.register(peerEntry);
 
@@ -619,6 +620,7 @@ describeE2E("e2e: createKoi + createPiAdapter + NexusRegistry full stack", () =>
         agentType: "worker",
         metadata: {},
         registeredAt: Date.now(),
+        priority: 10,
       };
       await registry.register(entry);
 

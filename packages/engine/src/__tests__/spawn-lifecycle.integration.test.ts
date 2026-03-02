@@ -302,6 +302,7 @@ describe("spawn lifecycle integration", () => {
       agentId: parent.pid.id,
       status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
       agentType: "copilot",
+      priority: 10,
       metadata: {},
       registeredAt: Date.now(),
     });
@@ -362,6 +363,7 @@ describe("spawn lifecycle integration", () => {
       agentId: parent.pid.id,
       status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
       agentType: "copilot",
+      priority: 10,
       metadata: {},
       registeredAt: Date.now(),
     });
@@ -409,6 +411,7 @@ describe("spawn lifecycle integration", () => {
       agentId: parent.pid.id,
       status: { phase: "created", generation: 0, conditions: [], lastTransitionAt: Date.now() },
       agentType: "copilot",
+      priority: 10,
       metadata: {},
       registeredAt: Date.now(),
     });

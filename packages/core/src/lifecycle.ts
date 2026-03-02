@@ -118,6 +118,19 @@ export interface RegistryEntry {
   readonly zoneId?: ZoneId | undefined;
   /** Process group this agent belongs to. Assigned at spawn time. */
   readonly groupId?: AgentGroupId | undefined;
+  /** Runtime priority. 0 = highest, default 10, range [0, 39]. */
+  readonly priority: number;
+}
+
+// ---------------------------------------------------------------------------
+// Patchable fields (for generic registry patch())
+// ---------------------------------------------------------------------------
+
+/** Fields that can be updated via AgentRegistry.patch(). */
+export interface PatchableRegistryFields {
+  readonly priority?: number | undefined;
+  readonly zoneId?: ZoneId | undefined;
+  readonly metadata?: Readonly<Record<string, unknown>> | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +148,12 @@ export type RegistryEvent =
       readonly to: ProcessState;
       readonly generation: number;
       readonly reason: TransitionReason;
+    }
+  | {
+      readonly kind: "patched";
+      readonly agentId: AgentId;
+      readonly fields: PatchableRegistryFields;
+      readonly entry: RegistryEntry;
     };
 
 // ---------------------------------------------------------------------------
@@ -269,6 +288,16 @@ export interface AgentRegistry extends AsyncDisposable {
     targetPhase: ProcessState,
     expectedGeneration: number,
     reason: TransitionReason,
+  ) => Result<RegistryEntry, KoiError> | Promise<Result<RegistryEntry, KoiError>>;
+
+  /**
+   * Generic patch — update mutable fields on a registered agent.
+   * Only non-undefined fields are applied (copy-on-write).
+   * Returns the updated entry on success, or NOT_FOUND/VALIDATION error.
+   */
+  readonly patch: (
+    agentId: AgentId,
+    fields: PatchableRegistryFields,
   ) => Result<RegistryEntry, KoiError> | Promise<Result<RegistryEntry, KoiError>>;
 
   /** Subscribe to registry change events. Returns unsubscribe function. */

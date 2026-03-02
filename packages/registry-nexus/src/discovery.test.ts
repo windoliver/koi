@@ -23,6 +23,10 @@ function createStubRegistry(entries: readonly RegistryEntry[]): AgentRegistry {
       ok: false,
       error: { code: "NOT_FOUND", message: "stub", retryable: false },
     }),
+    patch: () => ({
+      ok: false,
+      error: { code: "NOT_FOUND", message: "stub", retryable: false },
+    }),
     watch: () => () => {},
     [Symbol.asyncDispose]: async () => {},
   };
@@ -35,6 +39,7 @@ function entry(id: string, skills?: readonly string[]): RegistryEntry {
     agentType: "worker",
     metadata: skills !== undefined ? { skills: [...skills] } : {},
     registeredAt: Date.now(),
+    priority: 10,
   };
 }
 

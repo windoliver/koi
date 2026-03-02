@@ -197,5 +197,6 @@ function makeEntry(id: string): RegistryEntry {
     agentType: "worker",
     metadata: {},
     registeredAt: Date.now(),
+    priority: 10,
   };
 }

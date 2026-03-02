@@ -29,6 +29,7 @@ function entry(id: string, phase: ProcessState = "created", generation = 0): Reg
     agentType: "worker",
     metadata: {},
     registeredAt: Date.now(),
+    priority: 10,
   };
 }
 
@@ -261,6 +262,64 @@ export function runAgentRegistryContractTests(
 
         await registry.register(entry("a2"));
         expect(events).toHaveLength(1); // no new event
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // Patch
+    // -----------------------------------------------------------------------
+
+    describe("patch", () => {
+      test("patch updates priority on existing agent", async () => {
+        await registry.register(entry("a1"));
+        const result = await registry.patch(agentId("a1"), { priority: 5 });
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+          expect(result.value.priority).toBe(5);
+        }
+      });
+
+      test("patch returns NOT_FOUND for unknown agent", async () => {
+        const result = await registry.patch(agentId("ghost"), { priority: 5 });
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.error.code).toBe("NOT_FOUND");
+        }
+      });
+
+      test("patch updates only specified fields", async () => {
+        await registry.register({ ...entry("a1"), metadata: { foo: "bar" } });
+        const result = await registry.patch(agentId("a1"), { priority: 3 });
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+          expect(result.value.priority).toBe(3);
+          expect(result.value.metadata).toEqual({ foo: "bar" });
+        }
+      });
+
+      test("patch emits patched event", async () => {
+        await registry.register(entry("a1"));
+
+        const events: RegistryEvent[] = [];
+        registry.watch((event) => events.push(event));
+
+        await registry.patch(agentId("a1"), { priority: 2 });
+
+        const patchEvent = events.find((ev) => ev.kind === "patched");
+        expect(patchEvent).toBeDefined();
+        if (patchEvent !== undefined && patchEvent.kind === "patched") {
+          expect(patchEvent.agentId).toBe(agentId("a1"));
+          expect(patchEvent.fields).toEqual({ priority: 2 });
+        }
+      });
+
+      test("patch with empty fields is a no-op returning current entry", async () => {
+        await registry.register({ ...entry("a1"), metadata: { key: "val" } });
+        const result = await registry.patch(agentId("a1"), {});
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+          expect(result.value.priority).toBe(10);
+        }
       });
     });
 

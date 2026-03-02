@@ -98,6 +98,7 @@ const DEFAULT_REGISTRY_ENTRIES: readonly RegistryEntry[] = [
     agentType: "copilot",
     metadata: {},
     registeredAt: 1_700_000_000_000,
+    priority: 10,
   },
   {
     agentId: agentId("worker-1"),
@@ -110,6 +111,7 @@ const DEFAULT_REGISTRY_ENTRIES: readonly RegistryEntry[] = [
     agentType: "worker",
     metadata: {},
     registeredAt: 1_700_000_001_000,
+    priority: 10,
   },
   {
     agentId: agentId("worker-2"),
@@ -122,6 +124,7 @@ const DEFAULT_REGISTRY_ENTRIES: readonly RegistryEntry[] = [
     agentType: "worker",
     metadata: {},
     registeredAt: 1_700_000_002_000,
+    priority: 10,
   },
 ];
 
@@ -144,6 +147,15 @@ export function createMockRegistry(options?: {
       error: {
         code: "NOT_FOUND",
         message: "mock: transition not implemented",
+        retryable: false,
+        context: {},
+      },
+    }),
+    patch: async () => ({
+      ok: false,
+      error: {
+        code: "NOT_FOUND",
+        message: "mock: patch not implemented",
         retryable: false,
         context: {},
       },

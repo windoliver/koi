@@ -27,6 +27,7 @@ function entry(
     agentType: "worker",
     metadata: {},
     registeredAt: Date.now(),
+    priority: 10,
     ...(parentId !== undefined ? { parentId: agentId(parentId) } : {}),
     ...(spawner !== undefined ? { spawner: agentId(spawner) } : {}),
   };

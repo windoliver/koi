@@ -45,6 +45,7 @@ function makeEntry(
       lastTransitionAt: Date.now(),
     },
     agentType: "worker",
+    priority: 10,
     metadata: {},
     registeredAt: Date.now(),
     ...(parentId !== undefined ? { parentId: agentId(parentId) } : {}),
