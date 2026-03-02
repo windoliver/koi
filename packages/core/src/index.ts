@@ -38,6 +38,19 @@ export type {
 export type { AuditEntry, AuditSink, RedactionRule } from "./audit-backend.js";
 // brick component map — per-kind ECS type mapping
 export type { BrickComponentMap } from "./brick-component-map.js";
+// brick composition — pipeline algebra types
+export type {
+  BrickComposition,
+  BrickPort,
+  CompositionCheck,
+  CompositionError,
+  CompositionErrorKind,
+  CompositionOperator,
+  CompositionWire,
+  CompositionWireEndpoint,
+  PipelineComposition,
+} from "./brick-composition.js";
+export { MAX_PIPELINE_LENGTH } from "./brick-composition.js";
 // brick registry — generic brick discovery and management
 export type {
   BrickPage,
