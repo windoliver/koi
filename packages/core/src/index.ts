@@ -41,11 +41,11 @@ export type { BrickComponentMap } from "./brick-component-map.js";
 // brick composition — pipeline algebra types
 export type {
   BrickComposition,
-  BrickPort,
   CompositionCheck,
   CompositionError,
   CompositionErrorKind,
   CompositionOperator,
+  CompositionPort,
   CompositionWire,
   CompositionWireEndpoint,
   PipelineComposition,

@@ -18,7 +18,7 @@ export type CompositionOperator = "pipeline";
 // Ports — typed I/O endpoints on a brick
 // ---------------------------------------------------------------------------
 
-export interface BrickPort {
+export interface CompositionPort {
   readonly name: string;
   readonly direction: "in" | "out";
   /** JSON Schema describing the port's data shape. */
@@ -50,7 +50,7 @@ export interface PipelineComposition {
   /** Wires connecting consecutive brick ports. */
   readonly wires: readonly CompositionWire[];
   /** Ports exposed by the composed brick (first in + last out). */
-  readonly exposedPorts: readonly BrickPort[];
+  readonly exposedPorts: readonly CompositionPort[];
 }
 
 // ---------------------------------------------------------------------------
