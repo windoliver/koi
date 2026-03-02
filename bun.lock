@@ -512,6 +512,7 @@
         "@koi/memory-fs": "workspace:*",
         "@koi/middleware-compactor": "workspace:*",
         "@koi/middleware-context-editing": "workspace:*",
+        "@koi/middleware-personalization": "workspace:*",
         "@koi/snapshot-chain-store": "workspace:*",
         "@koi/token-estimator": "workspace:*",
         "@koi/tool-squash": "workspace:*",
@@ -1317,6 +1318,18 @@
         "@koi/engine": "workspace:*",
         "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware-personalization": {
+      "name": "@koi/middleware-personalization",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+      "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -2797,6 +2810,8 @@
     "@koi/middleware-pay": ["@koi/middleware-pay@workspace:packages/middleware-pay"],
 
     "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/middleware-permissions"],
+
+    "@koi/middleware-personalization": ["@koi/middleware-personalization@workspace:packages/middleware-personalization"],
 
     "@koi/middleware-pii": ["@koi/middleware-pii@workspace:packages/middleware-pii"],
 

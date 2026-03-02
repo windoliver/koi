@@ -105,6 +105,54 @@ describe("createContextArena", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Personalization wiring
+// ---------------------------------------------------------------------------
+
+describe("createContextArena personalization", () => {
+  test("personalization not added when disabled (default)", async () => {
+    const bundle = await createContextArena(baseConfig());
+    expect(bundle.middleware).toHaveLength(3);
+  });
+
+  test("personalization not added when enabled but no memory", async () => {
+    const bundle = await createContextArena(baseConfig({ personalization: { enabled: true } }));
+    expect(bundle.middleware).toHaveLength(3);
+  });
+
+  test("personalization adds 4th middleware when enabled with memory", async () => {
+    const memory = {
+      recall: mock(() => Promise.resolve([])),
+      store: mock(() => Promise.resolve()),
+    } as unknown as MemoryComponent;
+    const bundle = await createContextArena(
+      baseConfig({ memory, personalization: { enabled: true } }),
+    );
+    expect(bundle.middleware).toHaveLength(4);
+    expect(bundle.middleware[3]?.name).toBe("personalization");
+  });
+
+  test("personalization middleware uses resolved config values", async () => {
+    const memory = {
+      recall: mock(() => Promise.resolve([])),
+      store: mock(() => Promise.resolve()),
+    } as unknown as MemoryComponent;
+    const bundle = await createContextArena(
+      baseConfig({
+        memory,
+        personalization: {
+          enabled: true,
+          relevanceThreshold: 0.5,
+          maxPreferenceTokens: 200,
+        },
+      }),
+    );
+    expect(bundle.config.personalizationEnabled).toBe(true);
+    expect(bundle.config.personalizationRelevanceThreshold).toBe(0.5);
+    expect(bundle.config.personalizationMaxPreferenceTokens).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Memory wiring — integration tests (no mock.module, real L2 factories)
 // ---------------------------------------------------------------------------
 

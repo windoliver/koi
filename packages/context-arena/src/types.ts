@@ -47,6 +47,15 @@ export interface SquashOverrides {
   readonly maxPendingSquashes?: number | undefined;
 }
 
+export interface PersonalizationOverrides {
+  /** Enable personalization middleware. Default: false (opt-in). */
+  readonly enabled?: boolean | undefined;
+  /** Minimum relevance score for preference recall. Default: 0.7. */
+  readonly relevanceThreshold?: number | undefined;
+  /** Max tokens for injected preferences. Default: 500. */
+  readonly maxPreferenceTokens?: number | undefined;
+}
+
 /** User-facing configuration for createContextArena. */
 export interface ContextArenaConfig {
   // --- Required ---
@@ -78,6 +87,8 @@ export interface ContextArenaConfig {
   readonly contextEditing?: ContextEditingOverrides | undefined;
   /** Override squash-specific settings. */
   readonly squash?: SquashOverrides | undefined;
+  /** Override personalization-specific settings. */
+  readonly personalization?: PersonalizationOverrides | undefined;
 
   // --- Opt-in modules ---
   /** Enable context hydrator (deferred — requires Agent at creation time). */
@@ -125,6 +136,11 @@ export interface ResolvedContextArenaConfig {
   // Squash
   readonly squashPreserveRecent: number;
   readonly squashMaxPendingSquashes: number;
+
+  // Personalization
+  readonly personalizationEnabled: boolean;
+  readonly personalizationRelevanceThreshold: number;
+  readonly personalizationMaxPreferenceTokens: number;
 
   // Feature flags
   readonly hydratorEnabled: boolean;

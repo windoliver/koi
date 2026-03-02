@@ -83,6 +83,36 @@ describe("resolveContextArenaConfig", () => {
     ).toThrow("contextWindowSize must be a finite positive number");
   });
 
+  test("personalizationEnabled defaults to false", () => {
+    const resolved = resolveContextArenaConfig(baseConfig());
+    expect(resolved.personalizationEnabled).toBe(false);
+  });
+
+  test("personalizationEnabled true when personalization.enabled is true", () => {
+    const resolved = resolveContextArenaConfig(baseConfig({ personalization: { enabled: true } }));
+    expect(resolved.personalizationEnabled).toBe(true);
+  });
+
+  test("personalization defaults resolve correctly", () => {
+    const resolved = resolveContextArenaConfig(baseConfig());
+    expect(resolved.personalizationRelevanceThreshold).toBe(0.7);
+    expect(resolved.personalizationMaxPreferenceTokens).toBe(500);
+  });
+
+  test("personalization overrides apply", () => {
+    const resolved = resolveContextArenaConfig(
+      baseConfig({
+        personalization: {
+          enabled: true,
+          relevanceThreshold: 0.5,
+          maxPreferenceTokens: 200,
+        },
+      }),
+    );
+    expect(resolved.personalizationRelevanceThreshold).toBe(0.5);
+    expect(resolved.personalizationMaxPreferenceTokens).toBe(200);
+  });
+
   test("hydratorEnabled and memoryFsEnabled flags derived correctly", () => {
     const withoutOpts = resolveContextArenaConfig(baseConfig());
     expect(withoutOpts.hydratorEnabled).toBe(false);
