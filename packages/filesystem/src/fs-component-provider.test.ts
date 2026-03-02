@@ -1,6 +1,14 @@
-import { describe, expect, test } from "bun:test";
-import type { AttachResult, FileSystemBackend, SkillComponent, Tool } from "@koi/core";
+import { describe, expect, mock, test } from "bun:test";
+import type {
+  AttachResult,
+  FileSystemBackend,
+  KoiError,
+  Result,
+  SkillComponent,
+  Tool,
+} from "@koi/core";
 import { FILESYSTEM, isAttachResult, skillToken, toolToken } from "@koi/core";
+import type { Retriever, SearchPage } from "@koi/search-provider";
 
 function extractMap(
   result: AttachResult | ReadonlyMap<string, unknown>,
@@ -11,6 +19,15 @@ function extractMap(
 import { FS_SKILL_NAME } from "./constants.js";
 import { createFileSystemProvider } from "./fs-component-provider.js";
 import { createMockAgent, createMockBackend } from "./test-helpers.js";
+
+function createMockRetriever(): Retriever & { readonly retrieve: ReturnType<typeof mock> } {
+  const page: SearchPage = { results: [], hasMore: false };
+  return {
+    retrieve: mock(() =>
+      Promise.resolve({ ok: true, value: page } satisfies Result<SearchPage, KoiError>),
+    ),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // createFileSystemProvider — attach
@@ -216,5 +233,69 @@ describe("SkillComponent", () => {
     const components = extractMap(await provider.attach(createMockAgent()));
 
     expect(components.has(skillToken(FS_SKILL_NAME) as string)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Semantic search — retriever integration
+// ---------------------------------------------------------------------------
+
+describe("createFileSystemProvider — semantic search", () => {
+  test("does NOT attach semantic_search tool when no retriever provided", async () => {
+    const backend = createMockBackend("local");
+    const provider = createFileSystemProvider({ backend });
+    const components = extractMap(await provider.attach(createMockAgent()));
+
+    expect(components.has(toolToken("fs_semantic_search") as string)).toBe(false);
+  });
+
+  test("attaches semantic_search tool when retriever provided", async () => {
+    const backend = createMockBackend("local");
+    const retriever = createMockRetriever();
+    const provider = createFileSystemProvider({ backend, retriever });
+    const components = extractMap(await provider.attach(createMockAgent()));
+
+    expect(components.has(toolToken("fs_semantic_search") as string)).toBe(true);
+  });
+
+  test("semantic search tool has correct name with prefix", async () => {
+    const backend = createMockBackend("local");
+    const retriever = createMockRetriever();
+    const provider = createFileSystemProvider({ backend, retriever, prefix: "cloud" });
+    const components = extractMap(await provider.attach(createMockAgent()));
+
+    expect(components.has(toolToken("cloud_semantic_search") as string)).toBe(true);
+    const tool = components.get(toolToken("cloud_semantic_search") as string) as Tool;
+    expect(tool.descriptor.name).toBe("cloud_semantic_search");
+  });
+
+  test("component count includes semantic search tool when retriever provided", async () => {
+    const backend = createMockBackend("local");
+    const retriever = createMockRetriever();
+    const provider = createFileSystemProvider({ backend, retriever });
+    const components = extractMap(await provider.attach(createMockAgent()));
+
+    // 5 standard tools + FILESYSTEM token + 1 skill + 1 semantic_search tool = 8
+    expect(components.size).toBe(8);
+  });
+
+  test("skill content includes semantic search guidance when retriever provided", async () => {
+    const backend = createMockBackend("local");
+    const retriever = createMockRetriever();
+    const provider = createFileSystemProvider({ backend, retriever });
+    const components = extractMap(await provider.attach(createMockAgent()));
+
+    const skill = components.get(skillToken(FS_SKILL_NAME) as string) as SkillComponent;
+    expect(skill.content).toContain("fs_semantic_search");
+    expect(skill.content).toContain("conceptually related");
+  });
+
+  test("skill content does NOT include semantic search guidance when no retriever", async () => {
+    const backend = createMockBackend("local");
+    const provider = createFileSystemProvider({ backend });
+    const components = extractMap(await provider.attach(createMockAgent()));
+
+    const skill = components.get(skillToken(FS_SKILL_NAME) as string) as SkillComponent;
+    expect(skill.content).not.toContain("fs_semantic_search");
   });
 });

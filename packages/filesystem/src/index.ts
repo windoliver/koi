@@ -26,11 +26,15 @@ export type {
   FileWriteOptions,
   FileWriteResult,
 } from "@koi/core";
+// types — re-exported from @koi/search-provider for caller convenience
+export type { Retriever } from "@koi/search-provider";
 export type { FileSystemOperation } from "./constants.js";
 // constants
 export {
   CLAUDE_SDK_FILE_TOOLS,
+  createFsSkill,
   DEFAULT_PREFIX,
+  FS_SEMANTIC_SEARCH_SKILL_SECTION,
   FS_SKILL,
   FS_SKILL_CONTENT,
   FS_SKILL_NAME,
@@ -49,4 +53,5 @@ export { createFsEditTool } from "./tools/edit.js";
 export { createFsListTool } from "./tools/list.js";
 export { createFsReadTool } from "./tools/read.js";
 export { createFsSearchTool } from "./tools/search.js";
+export { createFsSemanticSearchTool } from "./tools/semantic-search.js";
 export { createFsWriteTool } from "./tools/write.js";
