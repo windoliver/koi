@@ -24,6 +24,7 @@ import type {
   RegistryFilter,
   Result,
   TransitionReason,
+  VisibilityContext,
 } from "@koi/core";
 import {
   agentId,
@@ -48,7 +49,10 @@ import { agentStreamId, REGISTRY_INDEX_STREAM } from "./stream-ids.js";
  */
 export type EventSourcedRegistry = Omit<AgentRegistry, "lookup" | "list"> & {
   readonly lookup: (agentId: AgentId) => RegistryEntry | undefined;
-  readonly list: (filter?: RegistryFilter) => readonly RegistryEntry[];
+  readonly list: (
+    filter?: RegistryFilter,
+    visibility?: VisibilityContext,
+  ) => readonly RegistryEntry[];
   /** Re-fold all events from the backend to rebuild the projection. */
   readonly rebuild: () => Promise<void>;
 };
@@ -323,7 +327,10 @@ export async function createEventSourcedRegistry(
     return projection.get(id);
   }
 
-  function list(filter?: RegistryFilter): readonly RegistryEntry[] {
+  function list(
+    filter?: RegistryFilter,
+    _visibility?: VisibilityContext,
+  ): readonly RegistryEntry[] {
     const entries = [...projection.values()];
     if (filter === undefined) return entries;
     return entries.filter((e) => matchesFilter(e, filter));

@@ -20,6 +20,7 @@ import type {
   RegistryEvent,
   Result,
   TransitionReason,
+  VisibilityContext,
 } from "@koi/core";
 import { agentId, evolveRegistryEntry, isAgentStateEvent } from "@koi/core";
 
@@ -34,9 +35,10 @@ export interface EventSourcedRegistryForTest {
   readonly lookup: (
     agentId: AgentId,
   ) => RegistryEntry | undefined | Promise<RegistryEntry | undefined>;
-  readonly list: (filter?: {
-    readonly phase?: ProcessState;
-  }) => readonly RegistryEntry[] | Promise<readonly RegistryEntry[]>;
+  readonly list: (
+    filter?: { readonly phase?: ProcessState },
+    visibility?: VisibilityContext,
+  ) => readonly RegistryEntry[] | Promise<readonly RegistryEntry[]>;
   readonly transition: (
     agentId: AgentId,
     targetPhase: ProcessState,

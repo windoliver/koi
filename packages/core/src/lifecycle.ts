@@ -173,6 +173,12 @@ export interface RegistryFilter {
   readonly groupId?: AgentGroupId | undefined;
 }
 
+/** Caller identity context for visibility-filtered discovery. */
+export interface VisibilityContext {
+  readonly callerId: AgentId;
+  readonly callerZoneId?: ZoneId | undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Filter matching (pure function)
 // ---------------------------------------------------------------------------
@@ -273,9 +279,10 @@ export interface AgentRegistry extends AsyncDisposable {
     agentId: AgentId,
   ) => RegistryEntry | undefined | Promise<RegistryEntry | undefined>;
 
-  /** List agents matching an optional filter. */
+  /** List agents matching an optional filter, with optional visibility scoping. */
   readonly list: (
     filter?: RegistryFilter,
+    visibility?: VisibilityContext,
   ) => readonly RegistryEntry[] | Promise<readonly RegistryEntry[]>;
 
   /**

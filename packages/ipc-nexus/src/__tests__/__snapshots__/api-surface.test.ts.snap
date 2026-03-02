@@ -93,7 +93,7 @@ interface SseEvent {
  * Tool factory for ipc_discover — list live agents available for messaging.
  */
 
-declare function createDiscoverTool(registry: AgentRegistry, prefix: string, trustTier: TrustTier): Tool;
+declare function createDiscoverTool(registry: AgentRegistry, prefix: string, trustTier: TrustTier, callerId?: AgentId): Tool;
 
 /**
  * Tool factory for ipc_list — list messages in the agent's inbox.

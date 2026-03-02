@@ -24,6 +24,7 @@ import type {
   RegistryFilter,
   Result,
   TransitionReason,
+  VisibilityContext,
 } from "@koi/core";
 import { agentGroupId, agentId, matchesFilter, VALID_TRANSITIONS } from "@koi/core";
 import type { NexusRegistryConfig } from "./config.js";
@@ -285,7 +286,10 @@ export async function createNexusRegistry(config: NexusRegistryConfig): Promise<
     return projection.get(id);
   }
 
-  function list(filter?: RegistryFilter): readonly RegistryEntry[] {
+  function list(
+    filter?: RegistryFilter,
+    _visibility?: VisibilityContext,
+  ): readonly RegistryEntry[] {
     const entries = [...projection.values()];
     if (filter === undefined) return entries;
     return entries.filter((e) => matchesFilter(e, filter));
