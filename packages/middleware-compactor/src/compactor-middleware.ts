@@ -77,6 +77,11 @@ export function createCompactorMiddleware(config: CompactorConfig): CompactorMid
   const compactionThreshold = contextWindowSize * triggerFraction;
 
   const hasToolEnabled = config.toolEnabled === true;
+  const conventions = config.conventions ?? [];
+  const conventionSuffix =
+    conventions.length > 0
+      ? `. Conventions: ${conventions.map((c) => `${c.label}: ${c.description}`).join("; ")}`
+      : "";
 
   // let required: single mutable state record — each mutation returns a new object
   let state: CompactorState = { epoch: 0, lastTokenFraction: 0, cachedRestore: undefined };
@@ -199,7 +204,8 @@ export function createCompactorMiddleware(config: CompactorConfig): CompactorMid
         `Compaction above ${String(contextWindowSize)} tokens` +
         (hasOverflowRecovery ? `, overflow recovery (${String(overflowMaxRetries)} retries)` : "") +
         (store !== undefined ? ", session restore enabled" : "") +
-        (hasToolEnabled ? ". Use compact_context tool to trigger early compaction" : "");
+        (hasToolEnabled ? ". Use compact_context tool to trigger early compaction" : "") +
+        conventionSuffix;
 
       // Soft trigger warning when above soft threshold
       if (softTriggerFraction !== undefined && state.lastTokenFraction >= softTriggerFraction) {

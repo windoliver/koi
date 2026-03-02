@@ -1102,6 +1102,27 @@ describe("AgentManifest delegation config", () => {
 });
 
 // ---------------------------------------------------------------------------
+// AgentManifest conventions
+// ---------------------------------------------------------------------------
+
+describe("AgentManifest conventions", () => {
+  test("conventions is optional on AgentManifest", () => {
+    const without: AgentManifest = { name: "test", version: "0.0.0", model: { name: "gpt-4" } };
+    expect(without.conventions).toBeUndefined();
+  });
+
+  test("accepts readonly string array", () => {
+    const m: AgentManifest = {
+      name: "test",
+      version: "0.0.0",
+      model: { name: "gpt-4" },
+      conventions: ["ESM-only imports", "No mutation"],
+    };
+    expect(m.conventions).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Model provider types
 // ---------------------------------------------------------------------------
 

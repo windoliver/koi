@@ -17,6 +17,7 @@ import {
 } from "@koi/memory-fs";
 import { createCompactorMiddleware } from "@koi/middleware-compactor";
 import { createContextEditingMiddleware } from "@koi/middleware-context-editing";
+import { createHotMemoryMiddleware } from "@koi/middleware-hot-memory";
 import { createPersonalizationMiddleware } from "@koi/middleware-personalization";
 import { createPreferenceMiddleware } from "@koi/middleware-preference";
 import { createSquashProvider } from "@koi/tool-squash";
@@ -54,7 +55,7 @@ function createDefaultMergeHandler(summarizer: ModelHandler): MergeHandler {
 /**
  * Creates a fully wired context arena bundle with coordinated budget allocation.
  *
- * Middleware ordering in the returned array: squash (220) → compactor (225) → context-editing (250) → personalization (420, opt-in) → preference (410, default-on with memory).
+ * Middleware ordering in the returned array: squash (220) → compactor (225) → context-editing (250) → hot-memory (310, opt-in) → personalization (420, opt-in) → preference (410, default-on with memory).
  * Priority is owned by L2 packages — arena just returns them in priority order.
  *
  * @param config - User-facing configuration with required summarizer, sessionId, and getMessages
@@ -115,6 +116,7 @@ export async function createContextArena(config: ContextArenaConfig): Promise<Co
     maxSummaryTokens: resolved.compactorMaxSummaryTokens,
     tokenEstimator: resolved.tokenEstimator,
     memory: effectiveMemory,
+    ...(resolved.conventions.length > 0 ? { conventions: resolved.conventions } : {}),
   });
 
   // --- Always-on: context-editing middleware ---
@@ -123,6 +125,17 @@ export async function createContextArena(config: ContextArenaConfig): Promise<Co
     numRecentToKeep: resolved.editingNumRecentToKeep,
     tokenEstimator: resolved.tokenEstimator,
   });
+
+  // --- Opt-in: hot memory middleware (requires memoryFs) ---
+  const hotMemoryMiddleware =
+    resolved.hotMemoryEnabled && effectiveMemory !== undefined
+      ? createHotMemoryMiddleware({
+          memory: effectiveMemory,
+          maxTokens: resolved.hotMemoryMaxTokens,
+          refreshInterval: resolved.hotMemoryRefreshInterval,
+          tokenEstimator: resolved.tokenEstimator,
+        })
+      : undefined;
 
   // --- Opt-in: personalization middleware ---
   const personalizationMiddleware =
@@ -150,6 +163,7 @@ export async function createContextArena(config: ContextArenaConfig): Promise<Co
     squashBundle.middleware,
     compactorMiddleware,
     contextEditingMiddleware,
+    ...(hotMemoryMiddleware !== undefined ? [hotMemoryMiddleware] : []),
     ...(personalizationMiddleware !== undefined ? [personalizationMiddleware] : []),
     ...(preferenceMiddleware !== undefined ? [preferenceMiddleware] : []),
   ];

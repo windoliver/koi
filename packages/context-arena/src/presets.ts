@@ -20,6 +20,8 @@ const CONSERVATIVE: PresetSpec = Object.freeze({
   editingTriggerFraction: 0.4,
   editingRecentToKeep: 4,
   maxPendingSquashes: 2,
+  hotMemoryTokenFraction: 0.015,
+  hotMemoryRefreshInterval: 8,
 });
 
 const BALANCED: PresetSpec = Object.freeze({
@@ -30,6 +32,8 @@ const BALANCED: PresetSpec = Object.freeze({
   editingTriggerFraction: 0.5,
   editingRecentToKeep: 3,
   maxPendingSquashes: 3,
+  hotMemoryTokenFraction: 0.02,
+  hotMemoryRefreshInterval: 5,
 });
 
 const AGGRESSIVE: PresetSpec = Object.freeze({
@@ -40,6 +44,8 @@ const AGGRESSIVE: PresetSpec = Object.freeze({
   editingTriggerFraction: 0.6,
   editingRecentToKeep: 2,
   maxPendingSquashes: 4,
+  hotMemoryTokenFraction: 0.03,
+  hotMemoryRefreshInterval: 3,
 });
 
 /** All preset specifications keyed by name. */
@@ -73,5 +79,7 @@ export function computePresetBudget(
     editingNumRecentToKeep: spec.editingRecentToKeep,
     squashPreserveRecent: spec.preserveRecent,
     squashMaxPendingSquashes: spec.maxPendingSquashes,
+    hotMemoryMaxTokens: Math.round(contextWindowSize * spec.hotMemoryTokenFraction),
+    hotMemoryRefreshInterval: spec.hotMemoryRefreshInterval,
   };
 }

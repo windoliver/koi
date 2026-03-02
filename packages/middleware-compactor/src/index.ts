@@ -29,6 +29,7 @@ export { DEFAULT_HEURISTIC_PATTERNS } from "./fact-extraction.js";
 export { createMemoryCompactionStore } from "./memory-compaction-store.js";
 export type { PressureTrendTracker } from "./pressure-trend.js";
 export { createPressureTrendTracker } from "./pressure-trend.js";
+export { formatConventionBlock } from "./prompt.js";
 export type {
   CompactionArchiver,
   CompactionStore,

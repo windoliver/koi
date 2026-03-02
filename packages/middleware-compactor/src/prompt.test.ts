@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { InboundMessage } from "@koi/core/message";
-import { buildSummaryPrompt } from "./prompt.js";
+import type { CapabilityFragment } from "@koi/core/middleware";
+import { buildSummaryPrompt, formatConventionBlock } from "./prompt.js";
 
 function userMsg(text: string): InboundMessage {
   return { content: [{ kind: "text", text }], senderId: "user", timestamp: 1 };
@@ -77,5 +78,51 @@ describe("buildSummaryPrompt", () => {
     const prompt = buildSummaryPrompt([msg], 500);
     expect(prompt).toContain("first block");
     expect(prompt).toContain("second block");
+  });
+
+  test("includes CONVENTIONS section when conventions provided", () => {
+    const conventions: readonly CapabilityFragment[] = [
+      { label: "immutability", description: "Never mutate shared state" },
+      { label: "esm-only", description: "Use .js extensions in imports" },
+    ];
+    const prompt = buildSummaryPrompt([userMsg("test")], 500, conventions);
+    expect(prompt).toContain("## CONVENTIONS (preserve verbatim)");
+    expect(prompt).toContain("**immutability**");
+    expect(prompt).toContain("Never mutate shared state");
+    expect(prompt).toContain("**esm-only**");
+  });
+
+  test("omits CONVENTIONS section when conventions empty", () => {
+    const prompt = buildSummaryPrompt([userMsg("test")], 500, []);
+    expect(prompt).not.toContain("CONVENTIONS");
+  });
+
+  test("omits CONVENTIONS section when conventions undefined", () => {
+    const prompt = buildSummaryPrompt([userMsg("test")], 500);
+    expect(prompt).not.toContain("CONVENTIONS");
+  });
+});
+
+describe("formatConventionBlock", () => {
+  test("formats conventions into labeled block", () => {
+    const conventions: readonly CapabilityFragment[] = [
+      { label: "immutability", description: "No mutation" },
+    ];
+    const block = formatConventionBlock(conventions);
+    expect(block).toBe("[Conventions]\n- **immutability**: No mutation");
+  });
+
+  test("returns empty string for empty array", () => {
+    expect(formatConventionBlock([])).toBe("");
+  });
+
+  test("formats multiple conventions", () => {
+    const conventions: readonly CapabilityFragment[] = [
+      { label: "a", description: "desc-a" },
+      { label: "b", description: "desc-b" },
+    ];
+    const block = formatConventionBlock(conventions);
+    expect(block).toContain("- **a**: desc-a");
+    expect(block).toContain("- **b**: desc-b");
   });
 });

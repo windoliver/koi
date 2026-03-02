@@ -109,6 +109,8 @@ export interface AgentManifest {
   readonly metadata?: JsonObject;
   /** Declared task objectives — used by goal drift detection and attention management middleware. */
   readonly objectives?: readonly string[];
+  /** Project conventions preserved through compaction — surfaced via middleware capabilities. */
+  readonly conventions?: readonly string[] | undefined;
   /** Search provider configuration — resolved to a SearchProvider at assembly time. */
   readonly search?: SearchConfig | undefined;
   /**

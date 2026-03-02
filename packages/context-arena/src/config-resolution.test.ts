@@ -127,4 +127,57 @@ describe("resolveContextArenaConfig", () => {
     expect(withOpts.hydratorEnabled).toBe(true);
     expect(withOpts.memoryFsEnabled).toBe(true);
   });
+
+  test("conventions strings mapped to CapabilityFragment[]", () => {
+    const resolved = resolveContextArenaConfig(
+      baseConfig({ conventions: ["ESM-only", "No mutation"] }),
+    );
+    expect(resolved.conventions).toHaveLength(2);
+    expect(resolved.conventions[0]?.label).toBe("convention");
+    expect(resolved.conventions[0]?.description).toBe("ESM-only");
+    expect(resolved.conventions[1]?.description).toBe("No mutation");
+  });
+
+  test("empty conventions produces empty array", () => {
+    const resolved = resolveContextArenaConfig(baseConfig({ conventions: [] }));
+    expect(resolved.conventions).toHaveLength(0);
+  });
+
+  test("undefined conventions produces empty array", () => {
+    const resolved = resolveContextArenaConfig(baseConfig());
+    expect(resolved.conventions).toHaveLength(0);
+  });
+
+  test("hotMemoryEnabled is true when memoryFs present and not disabled", () => {
+    const resolved = resolveContextArenaConfig(
+      baseConfig({ memoryFs: { config: { baseDir: "/tmp/test" } } }),
+    );
+    expect(resolved.hotMemoryEnabled).toBe(true);
+  });
+
+  test("hotMemoryEnabled is false when memoryFs absent", () => {
+    const resolved = resolveContextArenaConfig(baseConfig());
+    expect(resolved.hotMemoryEnabled).toBe(false);
+  });
+
+  test("hotMemoryEnabled is false when explicitly disabled", () => {
+    const resolved = resolveContextArenaConfig(
+      baseConfig({
+        memoryFs: { config: { baseDir: "/tmp/test" } },
+        hotMemory: { disabled: true },
+      }),
+    );
+    expect(resolved.hotMemoryEnabled).toBe(false);
+  });
+
+  test("hotMemory overrides take precedence over preset", () => {
+    const resolved = resolveContextArenaConfig(
+      baseConfig({
+        memoryFs: { config: { baseDir: "/tmp/test" } },
+        hotMemory: { maxTokens: 8000, refreshInterval: 2 },
+      }),
+    );
+    expect(resolved.hotMemoryMaxTokens).toBe(8000);
+    expect(resolved.hotMemoryRefreshInterval).toBe(2);
+  });
 });

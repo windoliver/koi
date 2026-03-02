@@ -206,11 +206,11 @@ describe("createContextArena memory wiring", () => {
 
     // memoryFs provider still attaches even when config.memory overrides for extraction
     expect(bundle.providers).toHaveLength(2);
-    // 4 middleware: squash + compactor + context-editing + preference (memory available)
-    expect(bundle.middleware).toHaveLength(4);
+    // 3 base + hot memory + preference = 5 middleware
+    expect(bundle.middleware).toHaveLength(5);
   });
 
-  test("memoryFs adds preference middleware to bundle", async () => {
+  test("memoryFs adds hot memory and preference middleware", async () => {
     const dir = await makeTmpDir();
     const bundle = await createContextArena(
       baseConfig({
@@ -218,10 +218,10 @@ describe("createContextArena memory wiring", () => {
       }),
     );
 
-    // 4 middleware: squash + compactor + context-editing + preference (memory available)
-    expect(bundle.middleware).toHaveLength(4);
+    // squash (220) + compactor (225) + context-editing (250) + hot-memory (310) + preference (410)
+    expect(bundle.middleware).toHaveLength(5);
     const priorities = bundle.middleware.map((mw) => mw.priority);
-    expect(priorities).toEqual([220, 225, 250, 410]);
+    expect(priorities).toEqual([220, 225, 250, 310, 410]);
   });
 
   test("preference: false disables preference middleware even with memory", async () => {
@@ -233,7 +233,8 @@ describe("createContextArena memory wiring", () => {
       }),
     );
 
-    expect(bundle.middleware).toHaveLength(3);
+    // squash + compactor + context-editing + hot-memory = 4
+    expect(bundle.middleware).toHaveLength(4);
     const names = bundle.middleware.map((mw) => mw.name);
     expect(names).not.toContain("preference-drift");
   });
@@ -247,7 +248,8 @@ describe("createContextArena memory wiring", () => {
       }),
     );
 
-    expect(bundle.middleware).toHaveLength(4);
+    // squash + compactor + context-editing + hot-memory + preference = 5
+    expect(bundle.middleware).toHaveLength(5);
     const prefMw = bundle.middleware.find((mw) => mw.name === "preference-drift");
     expect(prefMw).toBeDefined();
   });
@@ -354,5 +356,75 @@ describe("createContextArena search wiring", () => {
     expect(bundle.providers).toHaveLength(2);
     // Indexer is deferred — not called during construction
     expect(indexSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature matrix — conventions + hot memory combinations
+// ---------------------------------------------------------------------------
+
+describe("createContextArena feature matrix", () => {
+  const tmpDirs: string[] = [];
+
+  afterAll(async () => {
+    await Promise.all(tmpDirs.map((d) => rm(d, { recursive: true, force: true })));
+  });
+
+  async function makeTmpDir(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "koi-arena-matrix-"));
+    tmpDirs.push(dir);
+    return dir;
+  }
+
+  test("no features: 3 middleware, no conventions", async () => {
+    const bundle = await createContextArena(baseConfig());
+    expect(bundle.middleware).toHaveLength(3);
+    expect(bundle.config.conventions).toHaveLength(0);
+    expect(bundle.config.hotMemoryEnabled).toBe(false);
+  });
+
+  test("conventions only: 3 middleware, conventions resolved", async () => {
+    const bundle = await createContextArena(
+      baseConfig({ conventions: ["ESM-only", "No mutation"] }),
+    );
+    expect(bundle.middleware).toHaveLength(3);
+    expect(bundle.config.conventions).toHaveLength(2);
+    expect(bundle.config.conventions[0]?.label).toBe("convention");
+    expect(bundle.config.conventions[0]?.description).toBe("ESM-only");
+  });
+
+  test("memoryFs only: 5 middleware (includes hot memory + preference)", async () => {
+    const dir = await makeTmpDir();
+    const bundle = await createContextArena(baseConfig({ memoryFs: { config: { baseDir: dir } } }));
+    // squash + compactor + context-editing + hot-memory + preference
+    expect(bundle.middleware).toHaveLength(5);
+    expect(bundle.config.hotMemoryEnabled).toBe(true);
+  });
+
+  test("memoryFs + conventions: 5 middleware, conventions present", async () => {
+    const dir = await makeTmpDir();
+    const bundle = await createContextArena(
+      baseConfig({
+        memoryFs: { config: { baseDir: dir } },
+        conventions: ["ESM-only"],
+      }),
+    );
+    // squash + compactor + context-editing + hot-memory + preference
+    expect(bundle.middleware).toHaveLength(5);
+    expect(bundle.config.conventions).toHaveLength(1);
+    expect(bundle.config.hotMemoryEnabled).toBe(true);
+  });
+
+  test("memoryFs + disabled hot memory: 4 middleware (preference still on)", async () => {
+    const dir = await makeTmpDir();
+    const bundle = await createContextArena(
+      baseConfig({
+        memoryFs: { config: { baseDir: dir } },
+        hotMemory: { disabled: true },
+      }),
+    );
+    // squash + compactor + context-editing + preference (no hot-memory)
+    expect(bundle.middleware).toHaveLength(4);
+    expect(bundle.config.hotMemoryEnabled).toBe(false);
   });
 });

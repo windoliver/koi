@@ -644,3 +644,73 @@ describe("createLlmCompactor", () => {
     expect(forcedResult.messages[0]?.senderId).toBe("system:compactor");
   });
 });
+
+describe("convention preservation", () => {
+  test("convention block is prepended to summary message", async () => {
+    const compactor = createLlmCompactor({
+      summarizer: createMockSummarizer("LLM summary text"),
+      contextWindowSize: 1000,
+      trigger: { messageCount: 3 },
+      preserveRecent: 1,
+      maxSummaryTokens: 500,
+      conventions: [{ label: "immutability", description: "Never mutate shared state" }],
+    });
+
+    const msgs = [userMsg("a"), userMsg("b"), userMsg("c"), userMsg("d")];
+    const result = await compactor.compact(msgs, 1000);
+    expect(result.strategy).toBe("llm-summary");
+    const summaryText = result.messages[0]?.content[0];
+    expect(summaryText?.kind).toBe("text");
+    if (summaryText?.kind === "text") {
+      expect(summaryText.text).toContain("[Conventions]");
+      expect(summaryText.text).toContain("**immutability**");
+      expect(summaryText.text).toContain("LLM summary text");
+    }
+  });
+
+  test("conventions survive multi-cycle compaction", async () => {
+    const conventions = [{ label: "esm-only", description: "Use .js extensions" }] as const;
+    const compactor = createLlmCompactor({
+      summarizer: createMockSummarizer("Cycle summary"),
+      contextWindowSize: 1000,
+      trigger: { messageCount: 3 },
+      preserveRecent: 1,
+      maxSummaryTokens: 500,
+      conventions,
+    });
+
+    // First compaction cycle
+    const msgs1 = [userMsg("a"), userMsg("b"), userMsg("c"), userMsg("d")];
+    const result1 = await compactor.compact(msgs1, 1000);
+    expect(result1.strategy).toBe("llm-summary");
+
+    // Second compaction cycle — use output of first cycle + new messages
+    const msgs2 = [...result1.messages, userMsg("e"), userMsg("f"), userMsg("g")];
+    const result2 = await compactor.compact(msgs2, 1000);
+    expect(result2.strategy).toBe("llm-summary");
+    const text2 = result2.messages[0]?.content[0];
+    if (text2?.kind === "text") {
+      expect(text2.text).toContain("[Conventions]");
+      expect(text2.text).toContain("**esm-only**");
+    }
+  });
+
+  test("no convention block when conventions empty", async () => {
+    const compactor = createLlmCompactor({
+      summarizer: createMockSummarizer("Plain summary"),
+      contextWindowSize: 1000,
+      trigger: { messageCount: 3 },
+      preserveRecent: 1,
+      maxSummaryTokens: 500,
+      conventions: [],
+    });
+
+    const msgs = [userMsg("a"), userMsg("b"), userMsg("c"), userMsg("d")];
+    const result = await compactor.compact(msgs, 1000);
+    const text = result.messages[0]?.content[0];
+    if (text?.kind === "text") {
+      expect(text.text).not.toContain("[Conventions]");
+      expect(text.text).toBe("Plain summary");
+    }
+  });
+});

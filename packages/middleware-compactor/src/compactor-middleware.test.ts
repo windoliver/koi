@@ -636,6 +636,68 @@ describe("createCompactorMiddleware", () => {
       expect(passedMessages?.[0]?.metadata?.compactionEpoch).toBe(0);
     });
   });
+
+  describe("conventions in describeCapabilities", () => {
+    test("includes convention labels when conventions configured", () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer(),
+        conventions: [
+          { label: "immutability", description: "No mutation" },
+          { label: "esm-only", description: "Use .js extensions" },
+        ],
+      });
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.description).toContain("Conventions:");
+      expect(result?.description).toContain("immutability: No mutation");
+      expect(result?.description).toContain("esm-only: Use .js extensions");
+    });
+
+    test("no convention suffix when conventions empty", () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer(),
+        conventions: [],
+      });
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.description).not.toContain("Conventions:");
+    });
+
+    test("no convention suffix when conventions omitted", () => {
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer(),
+      });
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.description).not.toContain("Conventions:");
+    });
+
+    test("current config conventions always win over stale stored ones", async () => {
+      const storedMsg: InboundMessage = {
+        content: [{ kind: "text", text: "Old summary with old conventions" }],
+        senderId: "system:compactor",
+        timestamp: 1,
+        metadata: { compacted: true },
+      };
+      const store: CompactionStore = {
+        save: async () => {},
+        load: async () => ({
+          messages: [storedMsg],
+          originalTokens: 100,
+          compactedTokens: 20,
+          strategy: "llm-summary" as const,
+        }),
+      };
+
+      const mw = createCompactorMiddleware({
+        summarizer: createMockSummarizer(),
+        trigger: { messageCount: 100 },
+        store,
+        conventions: [{ label: "fresh-convention", description: "Latest rule" }],
+      });
+
+      await mw.onSessionStart?.(createMockSessionContext());
+      const result = mw.describeCapabilities?.(ctx);
+      expect(result?.description).toContain("fresh-convention: Latest rule");
+    });
+  });
 });
 
 /** Helper: create a message with exactly `n` tokens (n*4 chars). */
