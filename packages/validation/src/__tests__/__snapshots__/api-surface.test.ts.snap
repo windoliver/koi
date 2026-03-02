@@ -36,23 +36,6 @@ declare function applyBrickUpdate<T extends BrickArtifactBase>(existing: T, upda
 declare function validateBrickArtifact(data: unknown, source: string): Result<BrickArtifact, KoiError>;
 
 /**
- * Drift scoring — measures how much a brick's source files have changed.
- *
- * Pure function: takes glob patterns (from BrickDriftContext.sourceFiles)
- * and a list of changed files, returns a 0–1 score representing the
- * proportion of source patterns with changes.
- */
-/**
- * Compute the drift score for a brick's source file patterns.
- *
- * @param sourcePatterns - Glob patterns of codebase files the brick describes.
- * @param changedFiles - Files that have changed since the brick was last checked.
- * @returns 0–1 score: proportion of source patterns that have matching changes.
- *   Returns 0 if either input is empty.
- */
-declare function computeDrift(sourcePatterns: readonly string[], changedFiles: readonly string[]): number;
-
-/**
  * Pipeline composition validation — structural schema compatibility
  * and pipeline step sequence validation.
  *
@@ -91,6 +74,23 @@ interface PipelineValidation {
  * - Reports all errors (not just the first)
  */
 declare function validatePipeline(steps: readonly PipelineStep[]): PipelineValidation;
+
+/**
+ * Drift scoring — measures how much a brick's source files have changed.
+ *
+ * Pure function: takes glob patterns (from BrickDriftContext.sourceFiles)
+ * and a list of changed files, returns a 0–1 score representing the
+ * proportion of source patterns with changes.
+ */
+/**
+ * Compute the drift score for a brick's source file patterns.
+ *
+ * @param sourcePatterns - Glob patterns of codebase files the brick describes.
+ * @param changedFiles - Files that have changed since the brick was last checked.
+ * @returns 0–1 score: proportion of source patterns that have matching changes.
+ *   Returns 0 if either input is empty.
+ */
+declare function computeDrift(sourcePatterns: readonly string[], changedFiles: readonly string[]): number;
 
 /**
  * Fitness scoring — multiplicative composite score for brick discovery ranking.
