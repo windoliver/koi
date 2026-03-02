@@ -25,7 +25,7 @@ export {
 } from "./config.js";
 export { descriptor } from "./descriptor.js";
 export { personasFromManifest } from "./manifest.js";
-export type { CachedPersona, ResolvedPersona } from "./persona-map.js";
+export type { CachedPersona, PersonaMapResult, ResolvedPersona } from "./persona-map.js";
 export {
   createPersonaMap,
   createPersonaWatchedPaths,

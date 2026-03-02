@@ -88,6 +88,21 @@ describe("validateSoulConfig — valid configs", () => {
     });
     expect(result.ok).toBe(true);
   });
+
+  test("accepts persona with instructions.maxTokens", () => {
+    const result = validateSoulConfig({
+      identity: {
+        personas: [
+          {
+            channelId: "@koi/channel-telegram",
+            instructions: { path: "./persona.md", maxTokens: 500 },
+          },
+        ],
+      },
+      basePath: "/tmp",
+    });
+    expect(result.ok).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -283,5 +298,84 @@ describe("validateSoulConfig — invalid identity", () => {
       basePath: "/tmp",
     });
     expect(result.ok).toBe(false);
+  });
+
+  test("rejects persona with negative instructions.maxTokens", () => {
+    const result = validateSoulConfig({
+      identity: {
+        personas: [
+          {
+            channelId: "@koi/channel-telegram",
+            instructions: { path: "./persona.md", maxTokens: -1 },
+          },
+        ],
+      },
+      basePath: "/tmp",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("maxTokens");
+  });
+
+  test("rejects persona with zero instructions.maxTokens", () => {
+    const result = validateSoulConfig({
+      identity: {
+        personas: [
+          {
+            channelId: "@koi/channel-telegram",
+            instructions: { path: "./persona.md", maxTokens: 0 },
+          },
+        ],
+      },
+      basePath: "/tmp",
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects persona with non-number instructions.maxTokens", () => {
+    const result = validateSoulConfig({
+      identity: {
+        personas: [
+          {
+            channelId: "@koi/channel-telegram",
+            instructions: { path: "./persona.md", maxTokens: "big" },
+          },
+        ],
+      },
+      basePath: "/tmp",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("maxTokens");
+  });
+
+  test("rejects persona with NaN instructions.maxTokens", () => {
+    const result = validateSoulConfig({
+      identity: {
+        personas: [
+          {
+            channelId: "@koi/channel-telegram",
+            instructions: { path: "./persona.md", maxTokens: NaN },
+          },
+        ],
+      },
+      basePath: "/tmp",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("maxTokens");
+  });
+
+  test("rejects persona with Infinity instructions.maxTokens", () => {
+    const result = validateSoulConfig({
+      identity: {
+        personas: [
+          {
+            channelId: "@koi/channel-telegram",
+            instructions: { path: "./persona.md", maxTokens: Infinity },
+          },
+        ],
+      },
+      basePath: "/tmp",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("maxTokens");
   });
 });

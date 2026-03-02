@@ -38,6 +38,7 @@ interface ChannelPersonaConfig {
     /** Inline instructions string or file path reference for this persona. */
     readonly instructions?: string | {
         readonly path: string;
+        readonly maxTokens?: number;
     };
 }
 /** Options for creating the unified soul middleware. */
@@ -125,6 +126,12 @@ interface ResolvedPersona {
     readonly avatar?: string;
     readonly instructions: string;
     readonly sources: readonly string[];
+    readonly warnings: readonly string[];
+}
+/** Result of creating the persona map, including aggregated warnings. */
+interface PersonaMapResult {
+    readonly map: ReadonlyMap<string, CachedPersona>;
+    readonly warnings: readonly string[];
 }
 /** Cached per-channel persona entry. Stores text for O(1) lookup at call time. */
 interface CachedPersona {
@@ -135,10 +142,11 @@ interface CachedPersona {
 }
 /**
  * Resolves instruction content for a single persona config entry.
- * If instructions is a \`{ path }\` object, reads from disk asynchronously.
- * If instructions is an inline string, uses it directly.
+ * If instructions is a \`{ path }\` object, reads from disk with bounded I/O.
+ * If instructions is an inline string, truncates to the token budget.
+ * Applies DEFAULT_IDENTITY_MAX_TOKENS unless overridden per-persona.
  */
-declare function resolvePersonaContent(persona: ChannelPersonaConfig, basePath: string | undefined): Promise<ResolvedPersona>;
+declare function resolvePersonaContent(persona: ChannelPersonaConfig, basePath: string | undefined, maxTokens?: number): Promise<ResolvedPersona>;
 /**
  * Generates the persona text from a resolved persona.
  * Returns undefined when nothing meaningful to inject (no name, no instructions).
@@ -147,8 +155,9 @@ declare function generatePersonaText(resolved: ResolvedPersona): string | undefi
 /**
  * Resolves all personas and creates the channelId => CachedPersona map.
  * Personas with no injectable content (no name, no instructions) are excluded.
+ * Returns the map along with aggregated warnings from all persona resolutions.
  */
-declare function createPersonaMap(personas: readonly ChannelPersonaConfig[], basePath: string | undefined): Promise<Map<string, CachedPersona>>;
+declare function createPersonaMap(personas: readonly ChannelPersonaConfig[], basePath: string | undefined): Promise<PersonaMapResult>;
 /**
  * Collects all tracked file paths from a persona map into a Set.
  */
@@ -242,6 +251,6 @@ declare function generateMetaInstructionText(sources: MetaInstructionSources, se
  */
 declare function createSoulMessage(soulText: string, identityText: string | undefined, userText: string, metaInstructionText?: string): InboundMessage | undefined;
 
-export { type CachedPersona, type ChannelPersonaConfig, type ContentInput, type CreateSoulOptions, DEFAULT_IDENTITY_MAX_TOKENS, DEFAULT_SOUL_MAX_TOKENS, DEFAULT_TOTAL_MAX_TOKENS, DEFAULT_USER_MAX_TOKENS, type MetaInstructionSources, type ResolvedPersona, type SoulMiddleware, type SoulState, createAllWatchedPaths, createPersonaMap, createPersonaWatchedPaths, createSoulMessage, createSoulMiddleware, descriptor, enrichRequest, extractInput, extractMaxTokens, generateMetaInstructionText, generatePersonaText, personasFromManifest, resolvePersonaContent, validateSoulConfig };
+export { type CachedPersona, type ChannelPersonaConfig, type ContentInput, type CreateSoulOptions, DEFAULT_IDENTITY_MAX_TOKENS, DEFAULT_SOUL_MAX_TOKENS, DEFAULT_TOTAL_MAX_TOKENS, DEFAULT_USER_MAX_TOKENS, type MetaInstructionSources, type PersonaMapResult, type ResolvedPersona, type SoulMiddleware, type SoulState, createAllWatchedPaths, createPersonaMap, createPersonaWatchedPaths, createSoulMessage, createSoulMiddleware, descriptor, enrichRequest, extractInput, extractMaxTokens, generateMetaInstructionText, generatePersonaText, personasFromManifest, resolvePersonaContent, validateSoulConfig };
 "
 `;
