@@ -395,6 +395,8 @@ export type {
   EvictionReason,
   EvictionResult,
 } from "./eviction.js";
+// exaptation — purpose drift detection signals
+export type { ExaptationKind, ExaptationSignal, UsagePurposeObservation } from "./exaptation.js";
 // external agent — types for runtime discovery of external coding agents
 export type {
   ExternalAgentDescriptor,

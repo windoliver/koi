@@ -876,6 +876,19 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/forge-exaptation": {
+      "name": "@koi/forge-exaptation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/forge-optimizer": {
       "name": "@koi/forge-optimizer",
       "version": "0.0.0",
@@ -2712,6 +2725,8 @@
     "@koi/forge": ["@koi/forge@workspace:packages/forge"],
 
     "@koi/forge-demand": ["@koi/forge-demand@workspace:packages/forge-demand"],
+
+    "@koi/forge-exaptation": ["@koi/forge-exaptation@workspace:packages/forge-exaptation"],
 
     "@koi/forge-optimizer": ["@koi/forge-optimizer@workspace:packages/forge-optimizer"],
 
