@@ -406,6 +406,41 @@ L2  @koi/middleware-preference ◄───────────────�
 
 ---
 
+## Context Arena integration
+
+`@koi/context-arena` (L3) wires preference drift detection **by default** when
+memory is available. No extra config needed:
+
+```typescript
+const bundle = await createContextArena({
+  summarizer: myModelHandler,
+  sessionId: mySessionId,
+  getMessages: () => messages,
+  memoryFs: { config: { baseDir: "./memory" } },
+  // preference middleware is enabled automatically (keyword-only)
+});
+```
+
+To add LLM-backed cascaded detection, pass a `classify` callback:
+
+```typescript
+const bundle = await createContextArena({
+  // ...
+  preference: { classify: (prompt) => haiku(prompt) },
+});
+```
+
+To disable preference drift detection entirely:
+
+```typescript
+const bundle = await createContextArena({
+  // ...
+  preference: false,
+});
+```
+
+---
+
 ## Related
 
 - [Issue #653](https://github.com/windoliver/koi/issues/653) — Original feature request

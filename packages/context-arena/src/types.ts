@@ -11,6 +11,7 @@ import type { InboundMessage } from "@koi/core/message";
 import type { KoiMiddleware, ModelHandler } from "@koi/core/middleware";
 import type { FsMemoryConfig, FsSearchIndexer, FsSearchRetriever } from "@koi/memory-fs";
 import type { CompactionTrigger } from "@koi/middleware-compactor";
+import type { LlmClassifier } from "@koi/middleware-preference";
 
 // ---------------------------------------------------------------------------
 // Preset
@@ -109,6 +110,15 @@ export interface ContextArenaConfig {
         readonly indexer?: FsSearchIndexer | undefined;
       }
     | undefined;
+
+  // --- Default-on modules ---
+  /**
+   * Preference drift detection + salience gating.
+   * Enabled by default when memory is available. Set to `false` to disable.
+   * Provide an LlmClassifier for cascaded (keyword+LLM) detection;
+   * omit classify for keyword-only (zero LLM cost).
+   */
+  readonly preference?: false | { readonly classify?: LlmClassifier | undefined } | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +155,7 @@ export interface ResolvedContextArenaConfig {
   // Feature flags
   readonly hydratorEnabled: boolean;
   readonly memoryFsEnabled: boolean;
+  readonly preferenceEnabled: boolean;
 }
 
 // ---------------------------------------------------------------------------

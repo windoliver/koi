@@ -513,6 +513,7 @@
         "@koi/middleware-compactor": "workspace:*",
         "@koi/middleware-context-editing": "workspace:*",
         "@koi/middleware-personalization": "workspace:*",
+        "@koi/middleware-preference": "workspace:*",
         "@koi/snapshot-chain-store": "workspace:*",
         "@koi/token-estimator": "workspace:*",
         "@koi/tool-squash": "workspace:*",
@@ -1362,12 +1363,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-loop": "workspace:*",
-        "@koi/model-router": "workspace:*",
-        "@koi/test-utils": "workspace:*",
       },
     },
     "packages/middleware-report": {

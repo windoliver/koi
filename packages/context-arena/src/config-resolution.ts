@@ -66,5 +66,6 @@ export function resolveContextArenaConfig(config: ContextArenaConfig): ResolvedC
     // Feature flags
     hydratorEnabled: config.hydrator !== undefined,
     memoryFsEnabled: config.memoryFs !== undefined,
+    preferenceEnabled: config.preference !== false,
   };
 }
