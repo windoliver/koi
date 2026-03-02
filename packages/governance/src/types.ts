@@ -14,7 +14,7 @@ import type {
   MemoryComponent,
   ScopeEnforcer,
 } from "@koi/core";
-import type { DelegationMiddlewareConfig } from "@koi/delegation";
+import type { DelegationManager, DelegationMiddlewareConfig } from "@koi/delegation";
 import type { ExecApprovalsConfig } from "@koi/exec-approvals";
 import type { AuditMiddlewareConfig } from "@koi/middleware-audit";
 import type { GovernanceBackendMiddlewareConfig } from "@koi/middleware-governance-backend";
@@ -109,6 +109,28 @@ export interface GovernanceStackConfig {
   readonly sanitize?: SanitizeMiddlewareConfig | undefined;
   /** Output schema validation. Priority 375. */
   readonly guardrails?: GuardrailsConfig | undefined;
+
+  // ── Delegation bridge ──────────────────────────────────────────────────
+  /**
+   * Delegation bridge: attaches DelegationComponentProvider to agents.
+   * Provides delegation_grant/revoke/list tools + DELEGATION ECS component.
+   * The manager should be pre-configured with onGrant/onRevoke hooks
+   * (e.g., wired to Nexus permissions.grant RPC).
+   */
+  readonly delegationBridge?: { readonly manager: DelegationManager } | undefined;
+
+  // ── Capability request bridge ──────────────────────────────────────────
+  /**
+   * Capability request bridge: enables pull-model requests between agents.
+   * Requires delegationBridge to also be configured.
+   * Adds a ComponentProvider (priority 101) + KoiMiddleware (priority 125).
+   */
+  readonly capabilityRequest?:
+    | {
+        readonly approvalTimeoutMs?: number | undefined;
+        readonly maxForwardDepth?: number | undefined;
+      }
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------

@@ -240,4 +240,53 @@ describe("createNexusPermissionBackend", () => {
       }
     });
   });
+
+  // -----------------------------------------------------------------------
+  // grant — ReBAC tuple write
+  // -----------------------------------------------------------------------
+
+  describe("grant", () => {
+    test("calls permissions.grant RPC with correct tuple", async () => {
+      let capturedMethod = "";
+      let capturedParams: Record<string, unknown> | undefined;
+      const backend = createNexusPermissionBackend({
+        client: createMockClient(async <T>(method: string, params: Record<string, unknown>) => {
+          capturedMethod = method;
+          capturedParams = params;
+          return { ok: true, value: undefined as unknown as T };
+        }),
+      });
+
+      const result = await backend.grant({
+        subject: "agent:coder",
+        relation: "writer",
+        object: "folder:/src",
+      });
+
+      expect(result.ok).toBe(true);
+      expect(capturedMethod).toBe("permissions.grant");
+      expect(capturedParams).toEqual({
+        subject: "agent:coder",
+        relation: "writer",
+        object: "folder:/src",
+      });
+    });
+
+    test("returns error on RPC failure", async () => {
+      const backend = createNexusPermissionBackend({
+        client: createErrorClient("grant failed"),
+      });
+
+      const result = await backend.grant({
+        subject: "agent:coder",
+        relation: "reader",
+        object: "folder:/data",
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.message).toBe("grant failed");
+      }
+    });
+  });
 });

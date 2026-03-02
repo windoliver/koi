@@ -22,7 +22,7 @@
  */
 
 // ── Types: middleware sub-configs ────────────────────────────────────────
-export type { DelegationMiddlewareConfig } from "@koi/delegation";
+export type { DelegationMiddlewareConfig, DelegationProviderConfig } from "@koi/delegation";
 export type { ExecApprovalsConfig } from "@koi/exec-approvals";
 export type { AuditMiddlewareConfig } from "@koi/middleware-audit";
 export type { GovernanceBackendMiddlewareConfig } from "@koi/middleware-governance-backend";

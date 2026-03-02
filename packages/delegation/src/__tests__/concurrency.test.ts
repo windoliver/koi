@@ -30,14 +30,16 @@ describe("concurrency", () => {
     cleanups.length = 0;
   });
 
-  test("concurrent grant creation produces unique IDs", () => {
+  test("concurrent grant creation produces unique IDs", async () => {
     const manager = createDelegationManager({ config: DEFAULT_CONFIG });
     cleanups.push(manager.dispose);
 
-    const results = Array.from({ length: 50 }, () =>
-      manager.grant(agentId("agent-1"), agentId("agent-2"), {
-        permissions: { allow: ["read_file"] },
-      }),
+    const results = await Promise.all(
+      Array.from({ length: 50 }, () =>
+        manager.grant(agentId("agent-1"), agentId("agent-2"), {
+          permissions: { allow: ["read_file"] },
+        }),
+      ),
     );
 
     const ids = new Set<DelegationId>();
@@ -56,7 +58,7 @@ describe("concurrency", () => {
     cleanups.push(manager.dispose);
 
     // Create a grant
-    const grantResult = manager.grant(agentId("agent-1"), agentId("agent-2"), {
+    const grantResult = await manager.grant(agentId("agent-1"), agentId("agent-2"), {
       permissions: { allow: ["read_file"] },
     });
     expect(grantResult.ok).toBe(true);
@@ -93,11 +95,13 @@ describe("concurrency", () => {
     });
     cleanups.push(manager.dispose);
 
-    // Create 10 grants concurrently (sync operation, but creates events)
-    const grantResults = Array.from({ length: 10 }, (_, i) =>
-      manager.grant(agentId("agent-1"), agentId(`agent-${String(i + 2)}`), {
-        permissions: { allow: ["read_file"] },
-      }),
+    // Create 10 grants concurrently
+    const grantResults = await Promise.all(
+      Array.from({ length: 10 }, (_, i) =>
+        manager.grant(agentId("agent-1"), agentId(`agent-${String(i + 2)}`), {
+          permissions: { allow: ["read_file"] },
+        }),
+      ),
     );
 
     // All should succeed
