@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { brickId } from "@koi/core";
-import { computeBrickId, computeCompositeBrickId, isBrickId } from "./brick-id.js";
+import {
+  computeBrickId,
+  computeCompositeBrickId,
+  computePipelineBrickId,
+  isBrickId,
+} from "./brick-id.js";
 
 /** Regex for the canonical BrickId format: `sha256:<64-hex-chars>`. */
 const BRICK_ID_RE = /^sha256:[0-9a-f]{64}$/;
@@ -125,6 +130,62 @@ describe("computeCompositeBrickId", () => {
     const first = computeCompositeBrickId([childA, childB]);
     const second = computeCompositeBrickId([childA, childB]);
     expect(first).toBe(second);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computePipelineBrickId
+// ---------------------------------------------------------------------------
+
+describe("computePipelineBrickId", () => {
+  const stepA = brickId("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  const stepB = brickId("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+  const stepC = brickId("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
+
+  test("same order produces same ID (deterministic)", () => {
+    const first = computePipelineBrickId([stepA, stepB], "tool");
+    const second = computePipelineBrickId([stepA, stepB], "tool");
+    expect(first).toBe(second);
+  });
+
+  test("different order produces different ID (order-preserving)", () => {
+    const ab = computePipelineBrickId([stepA, stepB], "tool");
+    const ba = computePipelineBrickId([stepB, stepA], "tool");
+    expect(ab).not.toBe(ba);
+  });
+
+  test("different children produce different ID", () => {
+    const ab = computePipelineBrickId([stepA, stepB], "tool");
+    const ac = computePipelineBrickId([stepA, stepC], "tool");
+    expect(ab).not.toBe(ac);
+  });
+
+  test("outputKind affects hash", () => {
+    const asTool = computePipelineBrickId([stepA, stepB], "tool");
+    const asSkill = computePipelineBrickId([stepA, stepB], "skill");
+    expect(asTool).not.toBe(asSkill);
+  });
+
+  test("files affect hash", () => {
+    const withoutFiles = computePipelineBrickId([stepA, stepB], "tool");
+    const withFiles = computePipelineBrickId([stepA, stepB], "tool", { "meta.json": '{"v":1}' });
+    expect(withoutFiles).not.toBe(withFiles);
+  });
+
+  test("empty steps produces valid BrickId", () => {
+    const id = computePipelineBrickId([], "tool");
+    expect(id).toMatch(BRICK_ID_RE);
+  });
+
+  test("single step produces valid BrickId", () => {
+    const id = computePipelineBrickId([stepA], "tool");
+    expect(id).toMatch(BRICK_ID_RE);
+  });
+
+  test("pipeline ID differs from composite ID for same children", () => {
+    const pipelineId = computePipelineBrickId([stepA, stepB], "tool");
+    const compositeId = computeCompositeBrickId([stepA, stepB]);
+    expect(pipelineId).not.toBe(compositeId);
   });
 });
 

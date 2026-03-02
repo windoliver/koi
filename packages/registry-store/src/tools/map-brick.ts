@@ -31,6 +31,9 @@ function mapKindFields(brick: BrickArtifact): JsonObject {
       return {
         implementation: brick.implementation,
         inputSchema: brick.inputSchema as unknown as JsonObject,
+        ...(brick.outputSchema !== undefined
+          ? { outputSchema: brick.outputSchema as unknown as JsonObject }
+          : {}),
         ...(brick.testCases !== undefined
           ? { testCases: brick.testCases as unknown as JsonObject }
           : {}),
@@ -46,6 +49,13 @@ function mapKindFields(brick: BrickArtifact): JsonObject {
         ...(brick.testCases !== undefined
           ? { testCases: brick.testCases as unknown as JsonObject }
           : {}),
+      };
+    case "composite":
+      return {
+        steps: brick.steps as unknown as JsonObject,
+        exposedInput: brick.exposedInput as unknown as JsonObject,
+        exposedOutput: brick.exposedOutput as unknown as JsonObject,
+        outputKind: brick.outputKind,
       };
   }
 }

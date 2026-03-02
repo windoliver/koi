@@ -107,7 +107,7 @@ export const VALID_LIFECYCLE_TRANSITIONS: Readonly<
 });
 
 /** Kind of forged brick. */
-export type BrickKind = "tool" | "skill" | "agent" | "middleware" | "channel";
+export type BrickKind = "tool" | "skill" | "agent" | "middleware" | "channel" | "composite";
 
 // ---------------------------------------------------------------------------
 // Brick-kind constants (architecture-doc invariants)
@@ -120,12 +120,16 @@ export const ALL_BRICK_KINDS: readonly BrickKind[] = [
   "agent",
   "middleware",
   "channel",
+  "composite",
 ] as const;
+
+/** Maximum number of steps in a composite pipeline. */
+export const MAX_PIPELINE_STEPS = 20;
 
 /**
  * Minimum trust tier required per brick kind.
  *
- * - sandbox: tool, skill, agent (sandboxed execution)
+ * - sandbox: tool, skill, agent, composite (sandboxed execution)
  * - promoted: middleware, channel (full interposition)
  */
 export const MIN_TRUST_BY_KIND: Readonly<Record<BrickKind, import("./ecs.js").TrustTier>> = {
@@ -134,4 +138,5 @@ export const MIN_TRUST_BY_KIND: Readonly<Record<BrickKind, import("./ecs.js").Tr
   agent: "sandbox",
   middleware: "promoted",
   channel: "promoted",
+  composite: "sandbox",
 } as const;

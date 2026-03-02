@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/validation API surface . has stable type surface 1`] = `
-"import { BrickArtifactBase, BrickUpdate, Result, BrickArtifact, KoiError, BrickFitnessMetrics, TrustTier, LatencySampler, MutationPressurePolicy, MutationPressure, ForgeQuery, TrailConfig, StoreChangeNotifier } from '@koi/core';
+"import { BrickArtifactBase, BrickUpdate, Result, BrickArtifact, KoiError, PipelineStep, BrickFitnessMetrics, TrustTier, LatencySampler, MutationPressurePolicy, MutationPressure, ForgeQuery, TrailConfig, StoreChangeNotifier } from '@koi/core';
 import { z } from 'zod';
 
 /**
@@ -34,6 +34,46 @@ declare function applyBrickUpdate<T extends BrickArtifactBase>(existing: T, upda
  * @param source - Backend-agnostic context for error messages (file path, DB row id, etc.)
  */
 declare function validateBrickArtifact(data: unknown, source: string): Result<BrickArtifact, KoiError>;
+
+/**
+ * Pipeline composition validation — structural schema compatibility
+ * and pipeline step sequence validation.
+ *
+ * Used by compose_forge to validate that consecutive steps in a pipeline
+ * have compatible I/O schemas before producing a CompositeArtifact.
+ */
+
+/** Result of a structural schema compatibility check. */
+interface SchemaCompatibility {
+    readonly compatible: boolean;
+    readonly errors: readonly string[];
+}
+/**
+ * Check structural compatibility between a producer's output schema
+ * and a consumer's input schema using JSON Schema subset rules.
+ *
+ * Rules:
+ * - \`type\` must match (if both specify it)
+ * - Consumer's \`required\` fields must all exist in producer's \`properties\`
+ * - Nested \`properties\` types are compared recursively up to \`maxDepth\`
+ * - Extra properties in the producer are allowed (open-world assumption)
+ */
+declare function checkSchemaCompatibility(producer: Readonly<Record<string, unknown>>, consumer: Readonly<Record<string, unknown>>, maxDepth?: number): SchemaCompatibility;
+/** Result of pipeline validation. */
+interface PipelineValidation {
+    readonly valid: boolean;
+    readonly errors: readonly string[];
+}
+/**
+ * Validate a pipeline of steps for structural correctness.
+ *
+ * Checks:
+ * - At least 2 steps
+ * - At most MAX_PIPELINE_STEPS steps
+ * - Consecutive steps have compatible schemas (output[i] → input[i+1])
+ * - Reports all errors (not just the first)
+ */
+declare function validatePipeline(steps: readonly PipelineStep[]): PipelineValidation;
 
 /**
  * Drift scoring — measures how much a brick's source files have changed.
@@ -287,6 +327,6 @@ declare function zodToKoiError(zodError: z.core.$ZodError, prefix?: string): Koi
  */
 declare function validateWith<T>(schema: z.ZodType<T>, raw: unknown, prefix?: string): Result<T, KoiError>;
 
-export { DEFAULT_DECAY_THRESHOLDS, DEFAULT_FITNESS_SCORING_CONFIG, type DecayThresholds, type FitnessScoringConfig, SEVERITY_ORDER, type Severity, type SortBricksOptions, applyBrickUpdate, computeBrickFitness, computeDrift, computeEffectiveTrailStrength, computeMutationPressure, computePercentile, computeTrailReinforcement, createLatencySampler, createMemoryStoreChangeNotifier, evaluateTrustDecay, isTrailEvaporated, levenshteinDistance, matchesBrickQuery, mergeSamplers, recordLatency, severityAtOrAbove, sortBricks, validateBrickArtifact, validateWith, zodToKoiError };
+export { DEFAULT_DECAY_THRESHOLDS, DEFAULT_FITNESS_SCORING_CONFIG, type DecayThresholds, type FitnessScoringConfig, type PipelineValidation, SEVERITY_ORDER, type SchemaCompatibility, type Severity, type SortBricksOptions, applyBrickUpdate, checkSchemaCompatibility, computeBrickFitness, computeDrift, computeEffectiveTrailStrength, computeMutationPressure, computePercentile, computeTrailReinforcement, createLatencySampler, createMemoryStoreChangeNotifier, evaluateTrustDecay, isTrailEvaporated, levenshteinDistance, matchesBrickQuery, mergeSamplers, recordLatency, severityAtOrAbove, sortBricks, validateBrickArtifact, validatePipeline, validateWith, zodToKoiError };
 "
 `;

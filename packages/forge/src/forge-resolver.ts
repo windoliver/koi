@@ -33,6 +33,12 @@ export function extractSource(brick: BrickArtifact): SourceBundle {
       return { content: brick.content, language: "markdown", ...files };
     case "agent":
       return { content: brick.manifestYaml, language: "yaml", ...files };
+    case "composite":
+      return {
+        content: brick.steps.map((s) => s.brickId).join(","),
+        language: "typescript",
+        ...files,
+      };
   }
 }
 

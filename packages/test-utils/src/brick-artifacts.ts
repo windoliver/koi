@@ -7,6 +7,7 @@
 
 import type {
   AgentArtifact,
+  CompositeArtifact,
   ForgeProvenance,
   ImplementationArtifact,
   SkillArtifact,
@@ -121,4 +122,35 @@ export const createTestImplementationArtifact: (
   tags: [],
   usageCount: 0,
   implementation: "return middleware;",
+});
+
+export const createTestCompositeArtifact: (
+  overrides?: Partial<CompositeArtifact>,
+) => CompositeArtifact = createFactory<CompositeArtifact>({
+  id: brickId("brick_test-composite"),
+  kind: "composite",
+  name: "test-composite",
+  description: "A test composite pipeline",
+  scope: "agent",
+  trustTier: "sandbox",
+  lifecycle: "active",
+  provenance: DEFAULT_PROVENANCE,
+  version: "0.0.1",
+  tags: [],
+  usageCount: 0,
+  outputKind: "tool",
+  steps: [
+    {
+      brickId: brickId("brick_test-tool"),
+      inputPort: { name: "input", schema: { type: "object" } },
+      outputPort: { name: "output", schema: { type: "object" } },
+    },
+    {
+      brickId: brickId("brick_test-skill"),
+      inputPort: { name: "input", schema: { type: "object" } },
+      outputPort: { name: "output", schema: { type: "string" } },
+    },
+  ],
+  exposedInput: { name: "input", schema: { type: "object" } },
+  exposedOutput: { name: "output", schema: { type: "string" } },
 });

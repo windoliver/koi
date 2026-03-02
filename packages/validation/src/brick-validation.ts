@@ -6,9 +6,9 @@
  */
 
 import type { BrickArtifact, KoiError, Result } from "@koi/core";
-import { internal } from "@koi/core";
+import { ALL_BRICK_KINDS, internal } from "@koi/core";
 
-const VALID_KINDS = new Set(["tool", "skill", "agent", "middleware", "channel"]);
+const VALID_KINDS = new Set<string>(ALL_BRICK_KINDS);
 const VALID_SCOPES = new Set(["agent", "zone", "global"]);
 const VALID_TRUST_TIERS = new Set(["sandbox", "verified", "promoted"]);
 const VALID_LIFECYCLES = new Set([
@@ -76,6 +76,8 @@ function validateKindFields(data: Record<string, unknown>, source: string): Resu
       if (typeof data.implementation !== "string")
         return fail("tool missing 'implementation'", source);
       if (!isRecord(data.inputSchema)) return fail("tool missing 'inputSchema' object", source);
+      if (data.outputSchema !== undefined && !isRecord(data.outputSchema))
+        return fail("tool 'outputSchema' must be an object if present", source);
       break;
     case "skill":
       if (typeof data.content !== "string") return fail("skill missing 'content'", source);
@@ -88,6 +90,14 @@ function validateKindFields(data: Record<string, unknown>, source: string): Resu
     case "channel":
       if (typeof data.implementation !== "string")
         return fail(`${String(data.kind)} missing 'implementation'`, source);
+      break;
+    case "composite":
+      if (!Array.isArray(data.steps)) return fail("composite missing 'steps' array", source);
+      if (!isRecord(data.exposedInput))
+        return fail("composite missing 'exposedInput' object", source);
+      if (!isRecord(data.exposedOutput))
+        return fail("composite missing 'exposedOutput' object", source);
+      if (!isNonEmptyString(data.outputKind)) return fail("composite missing 'outputKind'", source);
       break;
     default:
       break;

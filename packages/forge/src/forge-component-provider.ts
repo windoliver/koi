@@ -88,6 +88,9 @@ function attachBrick(
       return { token: middlewareToken(brick.name) as string, value: brick };
     case "channel":
       return { token: channelToken(brick.name) as string, value: brick };
+    case "composite":
+      // Composite bricks resolve via their output kind's step — not directly attachable
+      return undefined;
   }
 }
 

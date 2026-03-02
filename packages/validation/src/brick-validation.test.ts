@@ -40,6 +40,25 @@ function validAgent(): Record<string, unknown> {
   };
 }
 
+function validComposite(): Record<string, unknown> {
+  return {
+    ...validTool(),
+    kind: "composite",
+    implementation: undefined,
+    inputSchema: undefined,
+    steps: [
+      {
+        brickId: "sha256:aaa",
+        inputPort: { name: "input", schema: { type: "object" } },
+        outputPort: { name: "output", schema: { type: "object" } },
+      },
+    ],
+    exposedInput: { name: "input", schema: { type: "object" } },
+    exposedOutput: { name: "output", schema: { type: "object" } },
+    outputKind: "tool",
+  };
+}
+
 describe("validateBrickArtifact", () => {
   test("accepts valid tool artifact", () => {
     const result = validateBrickArtifact(validTool(), "test-source");
@@ -152,6 +171,28 @@ describe("validateBrickArtifact", () => {
     expect(result.ok).toBe(false);
   });
 
+  test("accepts tool with outputSchema", () => {
+    const result = validateBrickArtifact(
+      {
+        ...validTool(),
+        outputSchema: { type: "object", properties: { result: { type: "string" } } },
+      },
+      "test-source",
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects tool with non-object outputSchema", () => {
+    const result = validateBrickArtifact(
+      { ...validTool(), outputSchema: "not-an-object" },
+      "test-source",
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("outputSchema");
+    }
+  });
+
   test("accepts artifact with valid files", () => {
     const result = validateBrickArtifact(
       { ...validTool(), files: { "lib/helper.ts": "export const x = 1;" } },
@@ -181,6 +222,51 @@ describe("validateBrickArtifact", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.message).toContain("requires");
+    }
+  });
+
+  test("accepts valid composite artifact", () => {
+    const result = validateBrickArtifact(validComposite(), "test-source");
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects composite missing steps", () => {
+    const data = validComposite();
+    delete data.steps;
+    const result = validateBrickArtifact(data, "test-source");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("steps");
+    }
+  });
+
+  test("rejects composite missing exposedInput", () => {
+    const data = validComposite();
+    delete data.exposedInput;
+    const result = validateBrickArtifact(data, "test-source");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("exposedInput");
+    }
+  });
+
+  test("rejects composite missing exposedOutput", () => {
+    const data = validComposite();
+    delete data.exposedOutput;
+    const result = validateBrickArtifact(data, "test-source");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("exposedOutput");
+    }
+  });
+
+  test("rejects composite missing outputKind", () => {
+    const data = validComposite();
+    delete data.outputKind;
+    const result = validateBrickArtifact(data, "test-source");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("outputKind");
     }
   });
 });

@@ -75,6 +75,16 @@ function makeBrick(
         ...overrides,
         kind: "channel" as const,
       } as BrickArtifact;
+    case "composite":
+      return {
+        ...base,
+        steps: [],
+        exposedInput: { name: "input", schema: { type: "object" } },
+        exposedOutput: { name: "output", schema: { type: "object" } },
+        outputKind: "tool",
+        ...overrides,
+        kind: "composite" as const,
+      } as BrickArtifact;
   }
 }
 

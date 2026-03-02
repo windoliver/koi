@@ -52,6 +52,24 @@ export function computeCompositeBrickId(
 }
 
 /**
+ * Compute a content-addressed BrickId for a pipeline (order-preserving).
+ *
+ * Unlike `computeCompositeBrickId` which sorts children (order-independent),
+ * pipeline identity preserves step order: A→B differs from B→A.
+ * Format: `sha256:<64-char-hex>`.
+ */
+export function computePipelineBrickId(
+  stepIds: readonly BrickId[],
+  outputKind: string,
+  files?: Readonly<Record<string, string>>,
+): BrickId {
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(`pipeline:${outputKind}:${stepIds.join(",")}`);
+  feedFiles(hasher, files);
+  return brickId(BRICK_ID_PREFIX + hasher.digest("hex"));
+}
+
+/**
  * Type guard — validates that a string has the `sha256:<64-hex-chars>` format.
  */
 export function isBrickId(value: string): value is BrickId {

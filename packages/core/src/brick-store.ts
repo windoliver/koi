@@ -161,6 +161,7 @@ export interface ToolArtifact extends BrickArtifactBase {
   readonly kind: "tool";
   readonly implementation: string;
   readonly inputSchema: Readonly<Record<string, unknown>>;
+  readonly outputSchema?: Readonly<Record<string, unknown>> | undefined;
   readonly testCases?: readonly TestCase[];
   readonly counterexamples?: readonly CounterExample[];
 }
@@ -182,7 +183,39 @@ export interface ImplementationArtifact extends BrickArtifactBase {
   readonly counterexamples?: readonly CounterExample[];
 }
 
-export type BrickArtifact = ToolArtifact | SkillArtifact | AgentArtifact | ImplementationArtifact;
+// ---------------------------------------------------------------------------
+// Composite pipeline types
+// ---------------------------------------------------------------------------
+
+/** Typed I/O port for pipeline composition — structural JSON Schema descriptor. */
+export interface BrickPort {
+  readonly name: string;
+  readonly schema: Readonly<Record<string, unknown>>;
+}
+
+/** A single step in a composite pipeline, linking brick to its I/O ports. */
+export interface PipelineStep {
+  readonly brickId: BrickId;
+  readonly inputPort: BrickPort;
+  readonly outputPort: BrickPort;
+}
+
+/** A composite brick: ordered pipeline of steps with typed I/O ports. */
+export interface CompositeArtifact extends BrickArtifactBase {
+  readonly kind: "composite";
+  readonly steps: readonly PipelineStep[];
+  readonly exposedInput: BrickPort;
+  readonly exposedOutput: BrickPort;
+  /** Kind of the last step — used for ECS component resolution. */
+  readonly outputKind: BrickKind;
+}
+
+export type BrickArtifact =
+  | ToolArtifact
+  | SkillArtifact
+  | AgentArtifact
+  | ImplementationArtifact
+  | CompositeArtifact;
 
 // ---------------------------------------------------------------------------
 // Forge query (structured search)

@@ -3,12 +3,19 @@ import type { BrickKind, TrustTier } from "../index.js";
 import { ALL_BRICK_KINDS, MIN_TRUST_BY_KIND } from "../index.js";
 
 describe("ALL_BRICK_KINDS", () => {
-  test("contains exactly 5 values", () => {
-    expect(ALL_BRICK_KINDS).toHaveLength(5);
+  test("contains exactly 6 values", () => {
+    expect(ALL_BRICK_KINDS).toHaveLength(6);
   });
 
   test("includes all expected kinds", () => {
-    const expected: readonly BrickKind[] = ["tool", "skill", "agent", "middleware", "channel"];
+    const expected: readonly BrickKind[] = [
+      "tool",
+      "skill",
+      "agent",
+      "middleware",
+      "channel",
+      "composite",
+    ];
     for (const kind of expected) {
       expect(ALL_BRICK_KINDS).toContain(kind);
     }
@@ -28,7 +35,7 @@ describe("MIN_TRUST_BY_KIND", () => {
   });
 
   test("sandbox kinds require sandbox trust", () => {
-    const sandboxKinds: readonly BrickKind[] = ["tool", "skill", "agent"];
+    const sandboxKinds: readonly BrickKind[] = ["tool", "skill", "agent", "composite"];
     for (const kind of sandboxKinds) {
       expect(MIN_TRUST_BY_KIND[kind]).toBe("sandbox" satisfies TrustTier);
     }

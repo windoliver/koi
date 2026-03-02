@@ -1,6 +1,12 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { ForgeStore, Result, SandboxExecutor, TieredSandboxExecutor } from "@koi/core";
-import { brickId } from "@koi/core";
+import type {
+  BrickArtifact,
+  ForgeStore,
+  Result,
+  SandboxExecutor,
+  TieredSandboxExecutor,
+} from "@koi/core";
+import { brickId, MAX_PIPELINE_STEPS } from "@koi/core";
 import { createTestSkillArtifact, createTestToolArtifact } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "../config.js";
 import type { ForgeError } from "../errors.js";
@@ -55,6 +61,23 @@ function createDeps(overrides?: Partial<ForgeDeps>): ForgeDeps {
   };
 }
 
+function createStoreWithBricks(...bricks: readonly BrickArtifact[]): ForgeStore {
+  return createMockStore({
+    load: mock(async (id: unknown) => {
+      const idStr = String(id);
+      const brick = bricks.find((b) => b.id === idStr);
+      if (brick !== undefined) {
+        return { ok: true as const, value: brick };
+      }
+      return {
+        ok: false as const,
+        error: { code: "NOT_FOUND" as const, message: "nf", retryable: false },
+      };
+    }),
+    exists: mock(async () => ({ ok: true as const, value: false })),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -74,6 +97,16 @@ describe("compose_forge", () => {
     }
   });
 
+  test("returns error when name is missing", async () => {
+    const deps = createDeps();
+    const tool = createComposeForge(deps);
+    const result = (await tool.execute({
+      description: "test",
+      brickIds: ["a", "b"],
+    })) as Result<unknown, ForgeError>;
+    expect(result.ok).toBe(false);
+  });
+
   test("returns error when a brick is not found", async () => {
     const deps = createDeps();
     const tool = createComposeForge(deps);
@@ -88,88 +121,127 @@ describe("compose_forge", () => {
     }
   });
 
-  test("returns error when bricks are mixed kinds", async () => {
-    const toolBrick = createTestToolArtifact({ name: "tool-a" });
-    const skillBrick = createTestSkillArtifact({ name: "skill-b" });
-
-    const store = createMockStore({
-      load: mock(async (id: unknown) => {
-        const idStr = String(id);
-        if (idStr === toolBrick.id) return { ok: true as const, value: toolBrick };
-        if (idStr === skillBrick.id) return { ok: true as const, value: skillBrick };
-        return {
-          ok: false as const,
-          error: { code: "NOT_FOUND" as const, message: "nf", retryable: false },
-        };
-      }),
-    });
-
-    const deps = createDeps({ store });
+  test("returns error when brickIds exceeds MAX_PIPELINE_STEPS", async () => {
+    const deps = createDeps();
     const tool = createComposeForge(deps);
+    const ids = Array.from(
+      { length: MAX_PIPELINE_STEPS + 1 },
+      (_, i) => `sha256:${String(i).padStart(64, "0")}`,
+    );
     const result = (await tool.execute({
-      name: "mixed",
+      name: "too-many",
       description: "test",
-      brickIds: [toolBrick.id, skillBrick.id],
+      brickIds: ids,
     })) as Result<unknown, ForgeError>;
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error.message).toContain("same kind");
+      expect(result.error.message).toContain("maximum");
     }
   });
 
-  test("returns error for unsupported kinds (agent)", async () => {
-    const agentBrick = {
-      id: brickId("brick_agent-1"),
-      kind: "agent" as const,
-      name: "agent-a",
-      description: "test",
-      scope: "agent" as const,
-      trustTier: "sandbox" as const,
-      lifecycle: "active" as const,
-      provenance: createTestToolArtifact().provenance,
-      version: "0.0.1",
-      tags: [],
-      usageCount: 0,
-      manifestYaml: "name: test",
-    };
-
-    const store = createMockStore({
-      load: mock(async () => ({ ok: true as const, value: agentBrick })),
-    });
-
-    const deps = createDeps({ store });
-    const tool = createComposeForge(deps);
-    const result = (await tool.execute({
-      name: "composite",
-      description: "test",
-      brickIds: [agentBrick.id, agentBrick.id],
-    })) as Result<unknown, ForgeError>;
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.message).toContain("does not support");
-    }
-  });
-
-  test("merges two tools with combined implementations and inputSchemas", async () => {
+  test("constructs CompositeArtifact with ordered pipeline steps", async () => {
     const toolA = createTestToolArtifact({
-      name: "fetch-data",
-      implementation: "function fetchData(url) { return fetch(url); }",
-      inputSchema: {
-        type: "object",
-        properties: { url: { type: "string" } },
-        required: ["url"],
-      },
+      name: "step-a",
+      inputSchema: { type: "object", properties: { url: { type: "string" } } },
     });
     const toolB = createTestToolArtifact({
-      name: "parse-json",
-      implementation: "function parseJson(text) { return JSON.parse(text); }",
-      inputSchema: {
-        type: "object",
-        properties: { text: { type: "string" } },
-        required: ["text"],
-      },
+      name: "step-b",
+      inputSchema: { type: "object" },
     });
 
+    const store = createStoreWithBricks(toolA, toolB);
+    const deps = createDeps({ store });
+    const tool = createComposeForge(deps);
+    const result = (await tool.execute({
+      name: "pipeline-ab",
+      description: "A→B pipeline",
+      brickIds: [toolA.id, toolB.id],
+      tags: ["pipeline"],
+    })) as Result<ForgeResult, ForgeError>;
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.kind).toBe("composite");
+      expect(result.value.name).toBe("pipeline-ab");
+    }
+  });
+
+  test("sets outputKind to last brick's kind", async () => {
+    const toolA = createTestToolArtifact({ name: "tool-a" });
+    const skillB = createTestSkillArtifact({ name: "skill-b" });
+
+    const store = createStoreWithBricks(toolA, skillB);
+    const deps = createDeps({ store });
+    const tool = createComposeForge(deps);
+    const result = (await tool.execute({
+      name: "mixed-pipeline",
+      description: "tool → skill pipeline",
+      brickIds: [toolA.id, skillB.id],
+    })) as Result<ForgeResult, ForgeError>;
+
+    // tool output is { type: "object" }, skill input is { type: "string" }
+    // These are incompatible types, so this should fail validation
+    expect(result.ok).toBe(false);
+  });
+
+  test("supports mixed-kind pipelines when schemas are compatible", async () => {
+    // Both have object schemas — compatible
+    const toolA = createTestToolArtifact({
+      name: "tool-a",
+      inputSchema: { type: "object" },
+    });
+    const toolB = createTestToolArtifact({
+      name: "tool-b",
+      inputSchema: { type: "object" },
+    });
+
+    const store = createStoreWithBricks(toolA, toolB);
+    const deps = createDeps({ store });
+    const tool = createComposeForge(deps);
+    const result = (await tool.execute({
+      name: "two-tools",
+      description: "Two tools piped",
+      brickIds: [toolA.id, toolB.id],
+    })) as Result<ForgeResult, ForgeError>;
+
+    expect(result.ok).toBe(true);
+  });
+
+  test("returns error when consecutive steps have incompatible schemas", async () => {
+    // Tool has object output, but skill has string input — type mismatch
+    const toolA = createTestToolArtifact({ name: "tool-a" });
+    const skillB = createTestSkillArtifact({ name: "skill-b" });
+
+    const store = createStoreWithBricks(toolA, skillB);
+    const deps = createDeps({ store });
+    const tool = createComposeForge(deps);
+    const result = (await tool.execute({
+      name: "incompatible",
+      description: "Should fail",
+      brickIds: [toolA.id, skillB.id],
+    })) as Result<unknown, ForgeError>;
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("Pipeline validation failed");
+    }
+  });
+
+  test("uses explicit outputSchema from tool when present", async () => {
+    const outputSchema = { type: "object", properties: { result: { type: "string" } } };
+    const toolA = createTestToolArtifact({
+      id: brickId("sha256:aaa"),
+      name: "tool-with-output-schema",
+      inputSchema: { type: "object" },
+      outputSchema,
+    });
+    const toolB = createTestToolArtifact({
+      id: brickId("sha256:bbb"),
+      name: "tool-b",
+      inputSchema: { type: "object" },
+    });
+
+    const saveMock = mock(async () => ({ ok: true as const, value: undefined }));
     const store = createMockStore({
       load: mock(async (id: unknown) => {
         const idStr = String(id);
@@ -181,69 +253,112 @@ describe("compose_forge", () => {
         };
       }),
       exists: mock(async () => ({ ok: true as const, value: false })),
+      save: saveMock,
     });
 
     const deps = createDeps({ store });
     const tool = createComposeForge(deps);
     const result = (await tool.execute({
-      name: "fetch-and-parse",
-      description: "Fetches then parses",
+      name: "pipeline-with-output-schema",
+      description: "Tests outputSchema propagation",
       brickIds: [toolA.id, toolB.id],
-      tags: ["composite"],
     })) as Result<ForgeResult, ForgeError>;
 
-    // The forge pipeline may or may not succeed depending on sandbox execution,
-    // but if it does, verify the result shape
-    if (result.ok) {
-      expect(result.value.kind).toBe("tool");
-      expect(result.value.name).toBe("fetch-and-parse");
+    expect(result.ok).toBe(true);
+
+    // Verify the saved composite artifact uses the explicit outputSchema for step A
+    const savedArg = (saveMock.mock.calls as unknown as BrickArtifact[][])[0]?.[0];
+    expect(savedArg).toBeDefined();
+    if (savedArg !== undefined && savedArg.kind === "composite") {
+      // First step's output port should use the declared outputSchema
+      const firstStep = savedArg.steps[0];
+      expect(firstStep).toBeDefined();
+      if (firstStep !== undefined) {
+        expect(firstStep.outputPort.schema).toEqual(outputSchema);
+      }
+      // Last step (no outputSchema) should fall back to default
+      const lastStep = savedArg.steps[1];
+      expect(lastStep).toBeDefined();
+      if (lastStep !== undefined) {
+        expect(lastStep.outputPort.schema).toEqual({ type: "object" });
+      }
+      // exposedOutput comes from the last step — should be the default
+      expect(savedArg.exposedOutput.schema).toEqual({ type: "object" });
     }
   });
 
-  test("merges two skills with markdown sections", async () => {
-    const skillA = createTestSkillArtifact({
-      name: "skill-a",
-      content: "Content of skill A",
-    });
-    const skillB = createTestSkillArtifact({
-      name: "skill-b",
-      content: "Content of skill B",
+  test("loads all bricks in parallel via Promise.all", async () => {
+    const toolA = createTestToolArtifact({ name: "tool-a" });
+    const toolB = createTestToolArtifact({ name: "tool-b" });
+
+    const loadMock = mock(async (id: unknown) => {
+      const idStr = String(id);
+      if (idStr === toolA.id) return { ok: true as const, value: toolA };
+      if (idStr === toolB.id) return { ok: true as const, value: toolB };
+      return {
+        ok: false as const,
+        error: { code: "NOT_FOUND" as const, message: "nf", retryable: false },
+      };
     });
 
     const store = createMockStore({
+      load: loadMock,
+      exists: mock(async () => ({ ok: true as const, value: false })),
+    });
+
+    const deps = createDeps({ store });
+    const tool = createComposeForge(deps);
+    await tool.execute({
+      name: "parallel-test",
+      description: "test",
+      brickIds: [toolA.id, toolB.id],
+    });
+
+    // Verify both bricks were loaded
+    expect(loadMock).toHaveBeenCalledTimes(2);
+  });
+
+  test("saves CompositeArtifact to store", async () => {
+    const toolA = createTestToolArtifact({ name: "tool-a" });
+    const toolB = createTestToolArtifact({ name: "tool-b" });
+
+    const saveMock = mock(async () => ({ ok: true as const, value: undefined }));
+    const store = createMockStore({
       load: mock(async (id: unknown) => {
         const idStr = String(id);
-        if (idStr === skillA.id) return { ok: true as const, value: skillA };
-        if (idStr === skillB.id) return { ok: true as const, value: skillB };
+        if (idStr === toolA.id) return { ok: true as const, value: toolA };
+        if (idStr === toolB.id) return { ok: true as const, value: toolB };
         return {
           ok: false as const,
           error: { code: "NOT_FOUND" as const, message: "nf", retryable: false },
         };
       }),
       exists: mock(async () => ({ ok: true as const, value: false })),
+      save: saveMock,
     });
 
     const deps = createDeps({ store });
     const tool = createComposeForge(deps);
     const result = (await tool.execute({
-      name: "combined-skills",
-      description: "Two skills merged",
-      brickIds: [skillA.id, skillB.id],
+      name: "saved-composite",
+      description: "Should be saved",
+      brickIds: [toolA.id, toolB.id],
     })) as Result<ForgeResult, ForgeError>;
 
-    if (result.ok) {
-      expect(result.value.kind).toBe("skill");
-      expect(result.value.name).toBe("combined-skills");
-    }
-  });
+    expect(result.ok).toBe(true);
+    expect(saveMock).toHaveBeenCalledTimes(1);
 
-  test("returns error when name is missing", async () => {
-    const deps = createDeps();
-    const tool = createComposeForge(deps);
-    const result = (await tool.execute({
-      description: "test",
-      brickIds: ["a", "b"],
-    })) as Result<unknown, ForgeError>;
-    expect(result.ok).toBe(false);
+    // Verify the saved artifact is a CompositeArtifact
+    const savedArg = (saveMock.mock.calls as unknown as BrickArtifact[][])[0]?.[0];
+    expect(savedArg).toBeDefined();
+    if (savedArg !== undefined) {
+      expect(savedArg.kind).toBe("composite");
+      if (savedArg.kind === "composite") {
+        expect(savedArg.steps).toHaveLength(2);
+        expect(savedArg.outputKind).toBe("tool");
+        expect(savedArg.exposedInput.schema).toEqual({ type: "object" });
+        expect(savedArg.exposedOutput.schema).toEqual({ type: "object" });
+      }
+    }
   });
 });

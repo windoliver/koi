@@ -93,6 +93,7 @@ export interface ParsedBaseInput {
 
 export interface ParsedToolInput extends ParsedBaseInput {
   readonly inputSchema: Record<string, unknown>;
+  readonly outputSchema?: Record<string, unknown> | undefined;
   readonly implementation: string;
   readonly testCases?:
     | readonly {
@@ -157,6 +158,7 @@ const baseInputFields = {
 const forgeToolInputSchema = z.object({
   ...baseInputFields,
   inputSchema: z.record(z.string(), z.unknown()),
+  outputSchema: z.record(z.string(), z.unknown()).optional(),
   implementation: z.string(),
   testCases: z
     .array(
