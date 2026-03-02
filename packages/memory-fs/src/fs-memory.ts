@@ -10,6 +10,7 @@ import { jaccard } from "./dedup.js";
 import { createEntityIndex } from "./entity-index.js";
 import { createFactStore } from "./fact-store.js";
 import { DEFAULT_GRAPH_DECAY_FACTOR, expandCausalGraph } from "./graph-walk.js";
+import { computeSalienceScores } from "./salience.js";
 import { appendSessionLog } from "./session-log.js";
 import { slugifyEntity } from "./slug.js";
 import { rebuildSummary } from "./summary.js";
@@ -43,6 +44,7 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
     perEntityCap = DEFAULT_CROSS_ENTITY_CONFIG.perEntityCap,
     mergeHandler,
     mergeThreshold = DEFAULT_MERGE_THRESHOLD,
+    salienceEnabled = true,
   } = config;
 
   if (baseDir.length === 0) {
@@ -361,6 +363,7 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
     options: MemoryRecallOptions | undefined,
     facts: FactStore,
   ): Promise<readonly MemoryResult[]> {
+    const now = new Date();
     const limit = options?.limit ?? 10;
     const filtered = applyTierFilter(candidates, options?.tierFilter);
 
@@ -375,11 +378,16 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
         ? await applyCrossEntityExpansion(expanded, facts)
         : expanded;
 
+    // Apply composite salience scoring (similarity × log(accessCount+2) × decay)
+    const scored = salienceEnabled
+      ? computeSalienceScores(crossExpanded, now, { halfLifeDays: decayHalfLifeDays })
+      : crossExpanded;
+
     // Sort by score descending, apply limit
-    const sorted = [...crossExpanded].sort((a, b) => b.score - a.score).slice(0, limit);
+    const sorted = [...scored].sort((a, b) => b.score - a.score).slice(0, limit);
 
     // Map to results and batch update access stats
-    const nowIso = new Date().toISOString();
+    const nowIso = now.toISOString();
     const results = sorted.map((c) => mapFactToResult(c.fact, c.score));
     await Promise.all(
       sorted.map((c) =>

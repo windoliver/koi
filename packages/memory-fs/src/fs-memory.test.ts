@@ -655,6 +655,159 @@ describe("createFsMemory", () => {
     });
   });
 
+  describe("salience scoring", () => {
+    test("reinforced facts rank higher than unreinforced", async () => {
+      await mem.component.store("rarely accessed fact", {
+        relatedEntities: ["sal"],
+        category: "a",
+      });
+      await mem.component.store("frequently accessed fact", {
+        relatedEntities: ["sal"],
+        category: "b",
+      });
+
+      // Reinforce the second fact 5 times
+      for (const _ of [1, 2, 3, 4, 5]) {
+        await mem.component.store("frequently accessed fact", {
+          relatedEntities: ["sal"],
+          category: "b",
+          reinforce: true,
+        });
+      }
+
+      const results = await mem.component.recall("fact", { limit: 10 });
+      expect(results.length).toBe(2);
+      // Reinforced fact should rank first
+      expect(results[0]?.content).toBe("frequently accessed fact");
+    });
+
+    test("scores reflect salience range not raw 1.0", async () => {
+      await mem.component.store("single salience fact", {
+        relatedEntities: ["sal2"],
+        category: "ctx",
+      });
+
+      const results = await mem.component.recall("salience");
+      expect(results.length).toBeGreaterThan(0);
+      const score = results[0]?.score ?? 0;
+      // Fresh fact with 0 accesses: score ≈ log(2) * 1.0 * 1.0 ≈ 0.693, not raw 1.0
+      expect(score).toBeCloseTo(Math.log(2), 1);
+    });
+
+    test("retriever re-ranking: high BM25 + low access vs low BM25 + high access", async () => {
+      const retrieverDir = join(testDir, "salience-retriever");
+      mkdirSync(retrieverDir, { recursive: true });
+
+      // Store two facts with controlled access counts
+      const retrieverMem = await createFsMemory({
+        baseDir: retrieverDir,
+        retriever: {
+          retrieve: async (_query, _limit) => [
+            { id: "high-bm25", score: 10.0, content: "high bm25 low access" },
+            { id: "low-bm25", score: 2.0, content: "low bm25 high access" },
+          ],
+        },
+        indexer: {
+          index: async () => {},
+          remove: async () => {},
+        },
+      });
+
+      // Manually create facts via store, then mock retriever results
+      // We need to create facts with specific IDs to match mock retriever
+      // Instead, use the fallback path by creating without retriever first
+      await retrieverMem.close();
+
+      // Create facts with known IDs via direct fact-store
+      const { createFactStore } = await import("./fact-store.js");
+      const fs = createFactStore(retrieverDir);
+      const now = new Date();
+
+      await fs.appendFact("sal3", {
+        id: "high-bm25",
+        fact: "high bm25 low access",
+        category: "ctx",
+        timestamp: now.toISOString(),
+        status: "active",
+        supersededBy: null,
+        relatedEntities: ["sal3"],
+        lastAccessed: now.toISOString(),
+        accessCount: 0,
+      });
+      await fs.appendFact("sal3", {
+        id: "low-bm25",
+        fact: "low bm25 high access",
+        category: "ctx2",
+        timestamp: now.toISOString(),
+        status: "active",
+        supersededBy: null,
+        relatedEntities: ["sal3"],
+        lastAccessed: now.toISOString(),
+        accessCount: 15,
+      });
+      await fs.close();
+
+      // Now create memory with mock retriever
+      const salienceMem = await createFsMemory({
+        baseDir: retrieverDir,
+        retriever: {
+          retrieve: async (_query, _limit) => [
+            { id: "high-bm25", score: 10.0, content: "high bm25 low access" },
+            { id: "low-bm25", score: 2.0, content: "low bm25 high access" },
+          ],
+        },
+        indexer: {
+          index: async () => {},
+          remove: async () => {},
+        },
+      });
+
+      const results = await salienceMem.component.recall("query", { limit: 10 });
+      expect(results.length).toBe(2);
+      // After min-max normalization with floor=0.1:
+      // high-bm25 sim=1.0, low-bm25 sim=0.1
+      // high-bm25: 1.0 * log(2) ≈ 0.693
+      // low-bm25: 0.1 * log(17) ≈ 0.283
+      // high-bm25 still wins — similarity remains the dominant signal
+      expect(results[0]?.content).toBe("high bm25 low access");
+      // low-bm25 score is non-zero thanks to the floor — access count signal preserved
+      expect(results[1]?.score).toBeGreaterThan(0);
+      await salienceMem.close();
+    });
+
+    test("salienceEnabled: false preserves raw score passthrough", async () => {
+      const rawDir = join(testDir, "salience-raw");
+      mkdirSync(rawDir, { recursive: true });
+
+      const rawMem = await createFsMemory({
+        baseDir: rawDir,
+        salienceEnabled: false,
+      });
+
+      await rawMem.component.store("raw score fact", {
+        relatedEntities: ["sal4"],
+        category: "ctx",
+      });
+
+      const results = await rawMem.component.recall("raw score");
+      expect(results.length).toBeGreaterThan(0);
+      // Without salience, fallback score is 1.0 (raw recency)
+      expect(results[0]?.score).toBe(1.0);
+      await rawMem.close();
+    });
+
+    test("single candidate score is positive (no zero-collapse)", async () => {
+      await mem.component.store("only candidate fact", {
+        relatedEntities: ["sal5"],
+        category: "ctx",
+      });
+
+      const results = await mem.component.recall("only candidate");
+      expect(results.length).toBe(1);
+      expect(results[0]?.score).toBeGreaterThan(0);
+    });
+  });
+
   test("works with custom retriever", async () => {
     const customDir = join(testDir, "custom");
     mkdirSync(customDir, { recursive: true });
