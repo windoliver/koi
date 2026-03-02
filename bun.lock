@@ -451,6 +451,14 @@
         "@koi/engine-pi": "workspace:*",
       },
     },
+    "packages/code-executor": {
+      "name": "@koi/code-executor",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/sandbox-wasm": "workspace:*",
+      },
+    },
     "packages/code-mode": {
       "name": "@koi/code-mode",
       "version": "0.0.0",
@@ -1754,6 +1762,7 @@
       "name": "@koi/sandbox-wasm",
       "version": "0.0.0",
       "dependencies": {
+        "@jitl/quickjs-ng-wasmfile-release-asyncify": "0.32.0",
         "@jitl/quickjs-ng-wasmfile-release-sync": "0.32.0",
         "@koi/core": "workspace:*",
         "quickjs-emscripten-core": "0.32.0",
@@ -2635,6 +2644,8 @@
 
     "@jitl/quickjs-ffi-types": ["@jitl/quickjs-ffi-types@0.32.0", "", {}, "sha512-v9T+GQpmk43VDJ7d72sf0Nexhk+ArvtUihW27dy7lqAl0zBObFKtSBBIm5RBjwIhE8VwsPPm9PNuvPvNqLWUEg=="],
 
+    "@jitl/quickjs-ng-wasmfile-release-asyncify": ["@jitl/quickjs-ng-wasmfile-release-asyncify@0.32.0", "", { "dependencies": { "@jitl/quickjs-ffi-types": "0.32.0" } }, "sha512-N4GfnnxR0g4dEaymjclJkGjNaa1dpmPjp8fTu022WWFFyiQ2mOMi5b8V3CEWJOlW/4bflQGbSotuPI/I8/5PQg=="],
+
     "@jitl/quickjs-ng-wasmfile-release-sync": ["@jitl/quickjs-ng-wasmfile-release-sync@0.32.0", "", { "dependencies": { "@jitl/quickjs-ffi-types": "0.32.0" } }, "sha512-XAX2jjZWWh3M0YaRqi82xMKNW/gkF6mo3MpW3UY2cmVxnQai1JuboVsJQVoLU629iEL4XWvHtO4h5lo7NRnAcg=="],
 
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
@@ -2710,6 +2721,8 @@
     "@koi/channel-whatsapp": ["@koi/channel-whatsapp@workspace:packages/channel-whatsapp"],
 
     "@koi/cli": ["@koi/cli@workspace:packages/cli"],
+
+    "@koi/code-executor": ["@koi/code-executor@workspace:packages/code-executor"],
 
     "@koi/code-mode": ["@koi/code-mode@workspace:packages/code-mode"],
 
