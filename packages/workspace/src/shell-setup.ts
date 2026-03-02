@@ -5,7 +5,7 @@
  * which runs a shell command in the new workspace directory.
  */
 
-import type { WorkspaceInfo } from "./types.js";
+import type { WorkspaceInfo } from "@koi/core";
 
 /**
  * Create a postCreate hook that runs a shell command in the workspace.

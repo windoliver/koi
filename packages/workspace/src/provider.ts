@@ -5,9 +5,16 @@
  * Implements attach/detach lifecycle with configurable cleanup policies.
  */
 
-import type { Agent, ComponentProvider, KoiError, Result } from "@koi/core";
+import type {
+  Agent,
+  CleanupPolicy,
+  ComponentProvider,
+  KoiError,
+  Result,
+  WorkspaceId,
+} from "@koi/core";
 import { WORKSPACE } from "@koi/core";
-import type { CleanupPolicy, WorkspaceProviderConfig } from "./types.js";
+import type { WorkspaceProviderConfig } from "./types.js";
 import { type ValidatedWorkspaceConfig, validateWorkspaceConfig } from "./validate-config.js";
 
 /**
@@ -27,7 +34,7 @@ export function createWorkspaceProvider(
   // Mutable Map justified: internal tracking state encapsulated in closure,
   // not exposed to callers. Functional alternative would require
   // closure-over-reassignment which is equally mutable.
-  const workspaces = new Map<string, string>();
+  const workspaces = new Map<string, WorkspaceId>();
 
   const provider: ComponentProvider = {
     name: "workspace",
@@ -114,14 +121,14 @@ function resolveCleanup(policy: CleanupPolicy, agent: Agent): boolean {
 
 async function disposeWithTimeout(
   backend: ValidatedWorkspaceConfig["backend"],
-  workspaceId: string,
+  wsId: WorkspaceId,
   timeoutMs: number,
 ): Promise<void> {
   let timerId: ReturnType<typeof setTimeout> | undefined;
 
   // Catch rejections on the dispose promise so that if timeout wins the race,
   // the abandoned promise doesn't cause an unhandled rejection.
-  const disposePromise = backend.dispose(workspaceId).catch((e: unknown) => ({
+  const disposePromise = backend.dispose(wsId).catch((e: unknown) => ({
     ok: false as const,
     error: {
       code: "EXTERNAL" as const,
@@ -138,11 +145,11 @@ async function disposeWithTimeout(
   if (timerId !== undefined) clearTimeout(timerId);
 
   if (raceResult === "timeout") {
-    console.warn(`[workspace] dispose for ${workspaceId} exceeded ${timeoutMs}ms timeout`);
+    console.warn(`[workspace] dispose for ${wsId} exceeded ${timeoutMs}ms timeout`);
     return;
   }
 
   if (typeof raceResult === "object" && !raceResult.ok) {
-    console.warn(`[workspace] dispose for ${workspaceId} failed: ${raceResult.error.message}`);
+    console.warn(`[workspace] dispose for ${wsId} failed: ${raceResult.error.message}`);
   }
 }

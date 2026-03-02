@@ -1,12 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { rm } from "node:fs/promises";
+import type { WorkspaceInfo } from "@koi/core";
+import { workspaceId } from "@koi/core";
 import { makeTempDir } from "@koi/test-utils";
 import { createShellSetup } from "./shell-setup.js";
-import type { WorkspaceInfo } from "./types.js";
 
 function makeWorkspace(path: string): WorkspaceInfo {
   return {
-    id: "test-ws-1",
+    id: workspaceId("test-ws-1"),
     path,
     createdAt: Date.now(),
     metadata: {},

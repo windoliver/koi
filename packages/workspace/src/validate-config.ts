@@ -5,15 +5,15 @@
  * a Result with the resolved configuration.
  */
 
-import type { KoiError, Result } from "@koi/core";
-import {
-  DEFAULT_CLEANUP_POLICY,
-  DEFAULT_CLEANUP_TIMEOUT_MS,
-  type ResolvedWorkspaceConfig,
-  type WorkspaceBackend,
-  type WorkspaceInfo,
-  type WorkspaceProviderConfig,
-} from "./types.js";
+import type {
+  KoiError,
+  ResolvedWorkspaceConfig,
+  Result,
+  WorkspaceBackend,
+  WorkspaceInfo,
+} from "@koi/core";
+import { DEFAULT_CLEANUP_POLICY, DEFAULT_CLEANUP_TIMEOUT_MS } from "@koi/core";
+import type { WorkspaceProviderConfig } from "./types.js";
 
 const VALID_CLEANUP_POLICIES: ReadonlySet<string> = new Set(["always", "on_success", "never"]);
 

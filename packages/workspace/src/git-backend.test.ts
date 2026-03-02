@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import type { AgentId } from "@koi/core";
-import { agentId } from "@koi/core";
+import type { AgentId, ResolvedWorkspaceConfig, WorkspaceBackend } from "@koi/core";
+import { agentId, workspaceId } from "@koi/core";
 import type { TempGitRepo } from "@koi/test-utils";
-import { createTempGitRepo } from "@koi/test-utils";
+import { createTempGitRepo, runWorkspaceBackendContractTests } from "@koi/test-utils";
 import { createGitWorktreeBackend } from "./git-backend.js";
-import type { ResolvedWorkspaceConfig, WorkspaceBackend } from "./types.js";
 
 const DEFAULT_CONFIG: ResolvedWorkspaceConfig = {
   cleanupPolicy: "on_success",
@@ -146,7 +145,7 @@ describe("GitWorktreeBackend", () => {
     });
 
     it("returns error for unknown workspace ID", async () => {
-      const result = await backend.dispose("unknown-id");
+      const result = await backend.dispose(workspaceId("unknown-id"));
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.error.code).toBe("NOT_FOUND");
@@ -162,7 +161,7 @@ describe("GitWorktreeBackend", () => {
     });
 
     it("returns false for unknown workspace", () => {
-      expect(backend.isHealthy("nonexistent")).toBe(false);
+      expect(backend.isHealthy(workspaceId("nonexistent"))).toBe(false);
     });
 
     it("returns false after dispose", async () => {
@@ -172,5 +171,21 @@ describe("GitWorktreeBackend", () => {
       await backend.dispose(result.value.id);
       expect(backend.isHealthy(result.value.id)).toBe(false);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Contract test suite
+// ---------------------------------------------------------------------------
+
+describe("GitWorktreeBackend (contract)", () => {
+  // let justified: test-local repo cleaned up in afterEach via contract tests
+  let repo: TempGitRepo;
+
+  runWorkspaceBackendContractTests(async () => {
+    repo = await createTempGitRepo();
+    const result = createGitWorktreeBackend({ repoPath: repo.repoPath });
+    if (!result.ok) throw new Error(`Backend creation failed: ${result.error.message}`);
+    return result.value;
   });
 });

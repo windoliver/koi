@@ -10,13 +10,16 @@ import type {
   AgentId,
   FilesystemPolicy,
   KoiError,
+  ResolvedWorkspaceConfig,
   Result,
   SandboxAdapter,
   SandboxInstance,
   SandboxProfile,
+  WorkspaceBackend,
+  WorkspaceId,
+  WorkspaceInfo,
 } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core";
-import type { ResolvedWorkspaceConfig, WorkspaceBackend, WorkspaceInfo } from "./types.js";
+import { RETRYABLE_DEFAULTS, workspaceId } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -280,7 +283,7 @@ export function createDockerWorkspaceBackend(
       _config: ResolvedWorkspaceConfig,
     ): Promise<Result<WorkspaceInfo, KoiError>> => {
       const createdAt = Date.now();
-      const id = `docker-${agentId}-${createdAt}`;
+      const id = workspaceId(`docker-${agentId}-${createdAt}`);
 
       const acquired = await acquireInstance(agentId);
       if (!acquired.ok) return acquired;
@@ -345,14 +348,14 @@ export function createDockerWorkspaceBackend(
       };
     },
 
-    dispose: async (workspaceId: string): Promise<Result<void, KoiError>> => {
-      const entry = tracked.get(workspaceId);
+    dispose: async (wsId: WorkspaceId): Promise<Result<void, KoiError>> => {
+      const entry = tracked.get(wsId);
       if (!entry) {
         return {
           ok: false,
           error: {
             code: "NOT_FOUND",
-            message: `Unknown workspace ID: ${workspaceId}`,
+            message: `Unknown workspace ID: ${wsId}`,
             retryable: RETRYABLE_DEFAULTS.NOT_FOUND,
           },
         };
@@ -360,7 +363,7 @@ export function createDockerWorkspaceBackend(
 
       // Delete before destroy (mirrors git backend pattern — prevents
       // double-dispose if destroy throws and caller retries)
-      tracked.delete(workspaceId);
+      tracked.delete(wsId);
 
       if (scope === "shared" && sharedState) {
         sharedState.refCount -= 1;
@@ -377,7 +380,7 @@ export function createDockerWorkspaceBackend(
             ok: false,
             error: {
               code: "EXTERNAL",
-              message: `Failed to destroy shared container ${workspaceId}: ${e instanceof Error ? e.message : String(e)}`,
+              message: `Failed to destroy shared container ${wsId}: ${e instanceof Error ? e.message : String(e)}`,
               retryable: false,
               cause: e,
             },
@@ -393,7 +396,7 @@ export function createDockerWorkspaceBackend(
           ok: false,
           error: {
             code: "EXTERNAL",
-            message: `Failed to destroy container ${workspaceId}: ${e instanceof Error ? e.message : String(e)}`,
+            message: `Failed to destroy container ${wsId}: ${e instanceof Error ? e.message : String(e)}`,
             retryable: false,
             cause: e,
           },
@@ -403,8 +406,8 @@ export function createDockerWorkspaceBackend(
       return { ok: true, value: undefined };
     },
 
-    isHealthy: async (workspaceId: string): Promise<boolean> => {
-      const entry = tracked.get(workspaceId);
+    isHealthy: async (wsId: WorkspaceId): Promise<boolean> => {
+      const entry = tracked.get(wsId);
       if (!entry) return false;
 
       try {

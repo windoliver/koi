@@ -3,14 +3,16 @@ import type {
   Agent,
   AgentId,
   AttachResult,
+  ResolvedWorkspaceConfig,
   Result,
   TerminationOutcome,
+  WorkspaceBackend,
   WorkspaceComponent,
+  WorkspaceInfo,
 } from "@koi/core";
-import { agentId, isAttachResult, WORKSPACE } from "@koi/core";
+import { agentId, isAttachResult, WORKSPACE, workspaceId } from "@koi/core";
 import { createMockAgent } from "@koi/test-utils";
 import { createWorkspaceProvider } from "./provider.js";
-import type { ResolvedWorkspaceConfig, WorkspaceBackend, WorkspaceInfo } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -57,7 +59,7 @@ function createMockBackend(): WorkspaceBackend & {
       return {
         ok: true,
         value: {
-          id: `mock-ws-${counter}`,
+          id: workspaceId(`mock-ws-${counter}`),
           path: `/tmp/mock-ws-${counter}`,
           createdAt: Date.now(),
           metadata: { backendName: "mock" },
@@ -65,8 +67,8 @@ function createMockBackend(): WorkspaceBackend & {
       };
     },
 
-    dispose: async (workspaceId: string): Promise<Result<void>> => {
-      disposeCalls.push(workspaceId);
+    dispose: async (wsId): Promise<Result<void>> => {
+      disposeCalls.push(wsId);
       return { ok: true, value: undefined };
     },
 
