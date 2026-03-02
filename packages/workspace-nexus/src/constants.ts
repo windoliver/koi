@@ -1,5 +1,5 @@
 /**
- * Default constants for the Nexus workspace backend.
+ * Default constants for the Nexus workspace backend configuration.
  */
 
 /** Default Nexus RPC base path for workspace artifacts. */
