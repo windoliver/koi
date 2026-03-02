@@ -60,6 +60,7 @@ describe("createDefaultForgeConfig", () => {
         totalTimeoutMs: 15_000,
         maxBrickSizeBytes: 25_000,
         failFast: true,
+        maxAutoTestCases: 20,
       },
     });
     expect(config.verification.sandboxTimeoutMs).toBe(2_000);

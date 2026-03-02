@@ -26,6 +26,7 @@ export interface VerificationConfig {
   readonly totalTimeoutMs: number;
   readonly maxBrickSizeBytes: number;
   readonly failFast: boolean;
+  readonly maxAutoTestCases: number;
 }
 
 export interface AutoPromotionConfig {
@@ -115,6 +116,7 @@ const verificationSchema = z.object({
   totalTimeoutMs: z.number().int().positive().optional(),
   maxBrickSizeBytes: z.number().int().positive().optional(),
   failFast: z.boolean().optional(),
+  maxAutoTestCases: z.number().int().min(0).optional(),
 });
 
 const autoPromotionSchema = z.object({
@@ -180,6 +182,7 @@ const DEFAULT_VERIFICATION: VerificationConfig = {
   totalTimeoutMs: 60_000,
   maxBrickSizeBytes: 50_000,
   failFast: true,
+  maxAutoTestCases: 20,
 } as const;
 
 const DEFAULT_AUTO_PROMOTION: AutoPromotionConfig = {
@@ -311,6 +314,8 @@ export function validateForgeConfig(raw: unknown): Result<ForgeConfig, KoiError>
             maxBrickSizeBytes:
               p.verification.maxBrickSizeBytes ?? DEFAULT_VERIFICATION.maxBrickSizeBytes,
             failFast: p.verification.failFast ?? DEFAULT_VERIFICATION.failFast,
+            maxAutoTestCases:
+              p.verification.maxAutoTestCases ?? DEFAULT_VERIFICATION.maxAutoTestCases,
           }
         : DEFAULT_VERIFICATION,
     autoPromotion:

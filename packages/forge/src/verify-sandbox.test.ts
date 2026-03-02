@@ -10,6 +10,7 @@ const DEFAULT_VERIFICATION: VerificationConfig = {
   totalTimeoutMs: 30_000,
   maxBrickSizeBytes: 50_000,
   failFast: true,
+  maxAutoTestCases: 20,
 };
 
 function mockExecutor(overrides?: Partial<SandboxExecutor>): SandboxExecutor {

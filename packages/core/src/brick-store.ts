@@ -23,6 +23,14 @@ export interface TestCase {
   readonly shouldThrow?: boolean;
 }
 
+/** Runtime failure recorded as a future test input for regression testing. */
+export interface CounterExample {
+  readonly input: unknown;
+  readonly expectedBehavior: string;
+  readonly actualBehavior: string;
+  readonly recordedAt: number;
+}
+
 // ---------------------------------------------------------------------------
 // Brick requirements (universal — applies to all forgeable brick kinds)
 // ---------------------------------------------------------------------------
@@ -154,6 +162,7 @@ export interface ToolArtifact extends BrickArtifactBase {
   readonly implementation: string;
   readonly inputSchema: Readonly<Record<string, unknown>>;
   readonly testCases?: readonly TestCase[];
+  readonly counterexamples?: readonly CounterExample[];
 }
 
 export interface SkillArtifact extends BrickArtifactBase {
@@ -170,6 +179,7 @@ export interface ImplementationArtifact extends BrickArtifactBase {
   readonly kind: "middleware" | "channel";
   readonly implementation: string;
   readonly testCases?: readonly TestCase[];
+  readonly counterexamples?: readonly CounterExample[];
 }
 
 export type BrickArtifact = ToolArtifact | SkillArtifact | AgentArtifact | ImplementationArtifact;
