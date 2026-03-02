@@ -1744,6 +1744,17 @@
         "croner": "9.0.0",
       },
     },
+    "packages/scheduler-nexus": {
+      "name": "@koi/scheduler-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/scheduler-provider": {
       "name": "@koi/scheduler-provider",
       "version": "0.0.0",
@@ -2897,6 +2908,8 @@
     "@koi/sandbox-wasm": ["@koi/sandbox-wasm@workspace:packages/sandbox-wasm"],
 
     "@koi/scheduler": ["@koi/scheduler@workspace:packages/scheduler"],
+
+    "@koi/scheduler-nexus": ["@koi/scheduler-nexus@workspace:packages/scheduler-nexus"],
 
     "@koi/scheduler-provider": ["@koi/scheduler-provider@workspace:packages/scheduler-provider"],
 

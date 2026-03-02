@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import type { EngineInput, SchedulerConfig, SchedulerEvent } from "@koi/core";
+import type { EngineInput, SchedulerConfig, SchedulerEvent, TaskQueueBackend } from "@koi/core";
 import { agentId, DEFAULT_SCHEDULER_CONFIG, taskId } from "@koi/core";
 import { createFakeClock } from "../clock.js";
 import type { TaskDispatcher } from "../scheduler.js";
@@ -429,6 +429,100 @@ describe("TaskScheduler", () => {
     ).rejects.toThrow("timeoutMs must be a positive number");
   });
 
+  // -------------------------------------------------------------------------
+  // Regression tests — validate behavior before refactoring
+  // -------------------------------------------------------------------------
+
+  test("pause then resume preserves cron dispatch behavior", async () => {
+    const events: SchedulerEvent[] = [];
+    const clock = createFakeClock(1000);
+    const db = new Database(":memory:");
+    const store = createSqliteTaskStore(db);
+    const dispatcher = mock<TaskDispatcher>(() => Promise.resolve("ok"));
+    const config: SchedulerConfig = {
+      ...DEFAULT_SCHEDULER_CONFIG,
+      pollIntervalMs: 100,
+    };
+    const scheduler = createScheduler(config, store, dispatcher, clock);
+    teardown = async () => scheduler[Symbol.asyncDispose]();
+    scheduler.watch((e) => events.push(e));
+
+    // Schedule a cron job (fires every second via croner)
+    const id = await scheduler.schedule("* * * * * *", agentId("cron-a"), TEXT_INPUT, "spawn");
+
+    // Pause it
+    const paused = scheduler.pause(id);
+    expect(paused).toBe(true);
+    expect(events.some((e) => e.kind === "schedule:paused")).toBe(true);
+
+    // Resume it
+    const resumed = scheduler.resume(id);
+    expect(resumed).toBe(true);
+    expect(events.some((e) => e.kind === "schedule:resumed")).toBe(true);
+
+    // Stats should reflect active (not paused) schedule
+    const s = scheduler.stats();
+    expect(s.activeSchedules).toBe(1);
+    expect(s.pausedSchedules).toBe(0);
+  });
+
+  test("retry dispatches with increasing backoff delay", async () => {
+    const dispatchTimes: number[] = [];
+    const failDispatcher = mock<TaskDispatcher>(async () => {
+      throw new Error("boom");
+    });
+
+    const clock = createFakeClock(1000);
+    const db = new Database(":memory:");
+    const store = createSqliteTaskStore(db);
+    const config: SchedulerConfig = {
+      ...DEFAULT_SCHEDULER_CONFIG,
+      pollIntervalMs: 100,
+      baseRetryDelayMs: 100,
+      maxRetryDelayMs: 10_000,
+      retryJitterMs: 0,
+    };
+    const scheduler = createScheduler(config, store, failDispatcher, clock);
+    teardown = async () => scheduler[Symbol.asyncDispose]();
+    scheduler.watch((e) => {
+      if (e.kind === "task:started") dispatchTimes.push(clock.now());
+    });
+
+    await scheduler.submit(agentId("a1"), TEXT_INPUT, "spawn", { maxRetries: 3 });
+
+    // First dispatch immediate
+    await new Promise((r) => setTimeout(r, 10));
+    expect(dispatchTimes.length).toBe(1);
+
+    // Retry 1: 100ms * 2^0 = 100ms delay
+    clock.tick(200);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(dispatchTimes.length).toBe(2);
+
+    // Retry 2: 100ms * 2^1 = 200ms delay
+    clock.tick(300);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(dispatchTimes.length).toBe(3);
+  });
+
+  test("save and heap are both updated on submit", async () => {
+    const { scheduler, store } = setup();
+    teardown = async () => scheduler[Symbol.asyncDispose]();
+
+    // Submit with delay so it stays in heap
+    const id = await scheduler.submit(agentId("a1"), TEXT_INPUT, "spawn", { delayMs: 5000 });
+
+    // Verify task is in the store
+    const loaded = await store.load(id);
+    expect(loaded).toBeDefined();
+    expect(loaded?.id).toBe(id);
+    expect(loaded?.status).toBe("pending");
+
+    // Verify task is in the heap (reflected in stats)
+    const s = scheduler.stats();
+    expect(s.pending).toBe(1);
+  });
+
   // Gap 2: stale task recovery
   test("stale running task recovered on initialize", async () => {
     const events: SchedulerEvent[] = [];
@@ -540,5 +634,171 @@ describe("TaskScheduler", () => {
 
     const recovered = events.filter((e) => e.kind === "task:recovered");
     expect(recovered.length).toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Queue backend integration
+  // -------------------------------------------------------------------------
+
+  describe("with queue backend", () => {
+    function createMockQueueBackend(): TaskQueueBackend & {
+      readonly enqueueSpy: ReturnType<typeof mock>;
+      readonly cancelSpy: ReturnType<typeof mock>;
+      readonly statusSpy: ReturnType<typeof mock>;
+    } {
+      const enqueueSpy = mock((task: unknown, _key?: string) =>
+        Promise.resolve((task as { readonly id: string }).id),
+      );
+      const cancelSpy = mock((_id: string) => Promise.resolve(true));
+      const statusSpy = mock((_id: string) => Promise.resolve("pending" as const));
+      const disposeSpy = mock(() => Promise.resolve());
+
+      const backend = {
+        enqueue: enqueueSpy,
+        cancel: cancelSpy,
+        status: statusSpy,
+        [Symbol.asyncDispose]: disposeSpy,
+        enqueueSpy,
+        cancelSpy,
+        statusSpy,
+      };
+      return backend as unknown as TaskQueueBackend & {
+        readonly enqueueSpy: ReturnType<typeof mock>;
+        readonly cancelSpy: ReturnType<typeof mock>;
+        readonly statusSpy: ReturnType<typeof mock>;
+      };
+    }
+
+    function setupWithBackend(overrides?: Partial<SchedulerConfig>): {
+      readonly clock: ReturnType<typeof createFakeClock>;
+      readonly db: Database;
+      readonly store: ReturnType<typeof createSqliteTaskStore>;
+      readonly dispatcher: ReturnType<typeof mock<TaskDispatcher>>;
+      readonly backend: ReturnType<typeof createMockQueueBackend>;
+      readonly config: SchedulerConfig;
+      readonly scheduler: ReturnType<typeof createScheduler>;
+    } {
+      const clock = createFakeClock(1000);
+      const db = new Database(":memory:");
+      const store = createSqliteTaskStore(db);
+      const dispatcher = mock<TaskDispatcher>(() => Promise.resolve("ok"));
+      const backend = createMockQueueBackend();
+      const config: SchedulerConfig = {
+        ...DEFAULT_SCHEDULER_CONFIG,
+        pollIntervalMs: 100,
+        ...overrides,
+      };
+      const scheduler = createScheduler(config, store, dispatcher, clock, undefined, backend);
+      return { clock, db, store, dispatcher, backend, config, scheduler } as const;
+    }
+
+    test("submit delegates to backend.enqueue", async () => {
+      const { scheduler, backend } = setupWithBackend();
+      teardown = async () => scheduler[Symbol.asyncDispose]();
+
+      const id = await scheduler.submit(agentId("a1"), TEXT_INPUT, "spawn");
+      expect(backend.enqueueSpy).toHaveBeenCalledTimes(1);
+      const call = backend.enqueueSpy.mock.calls[0];
+      expect((call?.[0] as { readonly agentId: string }).agentId).toBe("a1");
+      expect(typeof id).toBe("string");
+    });
+
+    test("cancel delegates to backend.cancel", async () => {
+      const { scheduler, backend } = setupWithBackend();
+      teardown = async () => scheduler[Symbol.asyncDispose]();
+
+      const id = await scheduler.submit(agentId("a1"), TEXT_INPUT, "spawn");
+      const cancelled = await scheduler.cancel(id);
+      expect(cancelled).toBe(true);
+      expect(backend.cancelSpy).toHaveBeenCalledTimes(1);
+      expect(backend.cancelSpy.mock.calls[0]?.[0]).toBe(id);
+    });
+
+    test("cancel emits event when backend returns true", async () => {
+      const events: SchedulerEvent[] = [];
+      const { scheduler } = setupWithBackend();
+      teardown = async () => scheduler[Symbol.asyncDispose]();
+      scheduler.watch((e) => events.push(e));
+
+      const id = await scheduler.submit(agentId("a1"), TEXT_INPUT, "spawn");
+      await scheduler.cancel(id);
+
+      expect(events.some((e) => e.kind === "task:cancelled")).toBe(true);
+    });
+
+    test("heap remains empty when backend is present", async () => {
+      const { scheduler } = setupWithBackend();
+      teardown = async () => scheduler[Symbol.asyncDispose]();
+
+      await scheduler.submit(agentId("a1"), TEXT_INPUT, "spawn", { delayMs: 5000 });
+
+      // Stats.pending reflects heap size — should be 0 since backend owns the queue
+      const s = scheduler.stats();
+      expect(s.pending).toBe(0);
+    });
+
+    test("dispatcher not called when backend is present", async () => {
+      const { scheduler, dispatcher, clock } = setupWithBackend();
+      teardown = async () => scheduler[Symbol.asyncDispose]();
+
+      await scheduler.submit(agentId("a1"), TEXT_INPUT, "spawn");
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Advance clock to trigger poll timer
+      clock.tick(200);
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Dispatcher should not be called — backend handles dispatch
+      expect(dispatcher).toHaveBeenCalledTimes(0);
+    });
+
+    test("backend receives idempotency key for cron tasks", async () => {
+      const { scheduler, backend } = setupWithBackend();
+      teardown = async () => scheduler[Symbol.asyncDispose]();
+
+      // Schedule a cron job
+      await scheduler.schedule("* * * * * *", agentId("cron-a"), TEXT_INPUT, "spawn");
+
+      // Wait for cron to fire at least once
+      await new Promise((r) => setTimeout(r, 1200));
+
+      // Check that enqueue was called with an idempotency key
+      const calls = backend.enqueueSpy.mock.calls;
+      expect(calls.length).toBeGreaterThanOrEqual(1);
+      // Second argument should be the idempotency key (string)
+      const lastKey = calls[calls.length - 1]?.[1];
+      expect(typeof lastKey).toBe("string");
+      expect((lastKey as string).includes(":")).toBe(true);
+    });
+
+    test("idempotency key format is scheduleId:timestamp", async () => {
+      const { scheduler, backend } = setupWithBackend();
+      teardown = async () => scheduler[Symbol.asyncDispose]();
+
+      await scheduler.schedule("* * * * * *", agentId("cron-a"), TEXT_INPUT, "spawn");
+
+      // Wait for cron to fire
+      await new Promise((r) => setTimeout(r, 1200));
+
+      const calls = backend.enqueueSpy.mock.calls;
+      expect(calls.length).toBeGreaterThanOrEqual(1);
+      const key = calls[calls.length - 1]?.[1] as string;
+      // Key should start with "sched_" (the schedule ID prefix)
+      expect(key.startsWith("sched_")).toBe(true);
+      // Key should contain a colon separator
+      const parts = key.split(":");
+      expect(parts.length).toBe(2);
+    });
+
+    test("submit without backend uses local heap (backward compat)", async () => {
+      const { scheduler, dispatcher } = setup();
+      teardown = async () => scheduler[Symbol.asyncDispose]();
+
+      await scheduler.submit(agentId("a1"), TEXT_INPUT, "spawn");
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Local dispatch still works
+      expect(dispatcher).toHaveBeenCalledTimes(1);
+    });
   });
 });
