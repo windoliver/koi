@@ -76,14 +76,47 @@ the edit will fail with NOT_FOUND. Reading first also reveals context that may c
 `.trim();
 
 /**
- * Pre-built SkillComponent for filesystem behavioral guidance.
+ * Additional skill content section for when a semantic search retriever is available.
+ * Appended to FS_SKILL_CONTENT to teach agents when to prefer semantic vs pattern search.
+ */
+export const FS_SEMANTIC_SEARCH_SKILL_SECTION: string = `
+
+### fs_search vs fs_semantic_search
+
+- **fs_search** — pattern-based content search (exact text or regex).
+  - Use when: you know the exact string, symbol name, or regex pattern to find.
+  - Returns matching lines with file paths — fast and precise.
+
+- **fs_semantic_search** — ranked semantic search over indexed file content.
+  - Use when: you want to find conceptually related code or text, not an exact match.
+  - Returns results ranked by relevance score.
+  - Good for: "find functions related to authentication", "code that handles retries".
+  - NOT for: exact symbol lookup, known patterns, or grep-style matching — use fs_search instead.
+`.trim();
+
+/**
+ * Creates a SkillComponent with or without semantic search guidance.
+ * When `hasRetriever` is true, the skill content includes additional guidance
+ * for choosing between fs_search and fs_semantic_search.
+ */
+export function createFsSkill(hasRetriever: boolean): SkillComponent {
+  const content = hasRetriever
+    ? `${FS_SKILL_CONTENT}\n\n${FS_SEMANTIC_SEARCH_SKILL_SECTION}`
+    : FS_SKILL_CONTENT;
+
+  return {
+    name: FS_SKILL_NAME,
+    description: hasRetriever
+      ? "When to use fs_edit vs fs_write, fs_search vs fs_semantic_search vs fs_list, read-before-edit, and path safety"
+      : "When to use fs_edit vs fs_write, fs_search vs fs_list, read-before-edit, and path safety",
+    content,
+    tags: ["filesystem", "best-practices"],
+  };
+}
+
+/**
+ * Pre-built SkillComponent for filesystem behavioral guidance (no retriever).
  * Attached automatically by createFileSystemProvider.
  * Can also be used standalone with a custom ComponentProvider.
  */
-export const FS_SKILL: SkillComponent = {
-  name: FS_SKILL_NAME,
-  description:
-    "When to use fs_edit vs fs_write, fs_search vs fs_list, read-before-edit, and path safety",
-  content: FS_SKILL_CONTENT,
-  tags: ["filesystem", "best-practices"],
-} as const satisfies SkillComponent;
+export const FS_SKILL: SkillComponent = createFsSkill(false);

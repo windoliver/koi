@@ -18,7 +18,8 @@
   "dependencies": {
     "@koi/core": "workspace:*",
     "@koi/resolve": "workspace:*",
-    "@koi/scope": "workspace:*"
+    "@koi/scope": "workspace:*",
+    "@koi/search-provider": "workspace:*"
   },
   "devDependencies": {
     "@koi/test-utils": "workspace:*"
