@@ -123,6 +123,23 @@ describe("applyBrickUpdate", () => {
     expect(result.lastDemotedAt).toBe(now);
   });
 
+  test("updates trailStrength", () => {
+    const brick = createBrick();
+    const result = applyBrickUpdate(brick, { trailStrength: 0.75 });
+    expect(result.trailStrength).toBe(0.75);
+  });
+
+  test("updates driftContext", () => {
+    const brick = createBrick();
+    const driftContext = {
+      sourceFiles: ["packages/pay/src/**/*.ts"],
+      lastCheckedCommit: "abc123",
+      driftScore: 0.4,
+    };
+    const result = applyBrickUpdate(brick, { driftContext });
+    expect(result.driftContext).toEqual(driftContext);
+  });
+
   // ---------------------------------------------------------------------------
   // Multiple fields
   // ---------------------------------------------------------------------------
