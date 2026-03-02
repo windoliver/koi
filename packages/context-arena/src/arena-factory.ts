@@ -29,7 +29,13 @@ export async function createContextArena(config: ContextArenaConfig): Promise<Co
 
   // --- Opt-in: filesystem memory (created early so squash + compactor can share it) ---
   const fsMemory =
-    config.memoryFs !== undefined ? await createFsMemory(config.memoryFs.config) : undefined;
+    config.memoryFs !== undefined
+      ? await createFsMemory({
+          ...config.memoryFs.config,
+          retriever: config.memoryFs.retriever ?? config.memoryFs.config.retriever,
+          indexer: config.memoryFs.indexer ?? config.memoryFs.config.indexer,
+        })
+      : undefined;
 
   // Single effective memory for fact extraction — explicit config.memory overrides fsMemory.
   // When both are provided, fsMemory provider (tools) still attaches for recall/search.
