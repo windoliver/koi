@@ -5,7 +5,7 @@
 import type { MemoryComponent } from "@koi/core";
 import type { CompactionResult, TokenEstimator } from "@koi/core/context";
 import type { InboundMessage } from "@koi/core/message";
-import type { ModelHandler } from "@koi/core/middleware";
+import type { CapabilityFragment, ModelHandler } from "@koi/core/middleware";
 
 /**
  * Archives original messages before they are replaced by a summary.
@@ -68,7 +68,11 @@ export interface CompactorConfig {
   /** Override the default token estimator (4 chars/token heuristic). */
   readonly tokenEstimator?: TokenEstimator;
   /** Override the default summary prompt builder. */
-  readonly promptBuilder?: (messages: readonly InboundMessage[], maxTokens: number) => string;
+  readonly promptBuilder?: (
+    messages: readonly InboundMessage[],
+    maxTokens: number,
+    conventions?: readonly CapabilityFragment[],
+  ) => string;
   /** Memory component — auto-creates a fact-extracting archiver when set and `archiver` is omitted. */
   readonly memory?: MemoryComponent | undefined;
   /** Archive original messages before summarization. */
@@ -79,6 +83,8 @@ export interface CompactorConfig {
   readonly overflowRecovery?: OverflowRecoveryConfig;
   /** When true, describeCapabilities mentions the compact_context tool. */
   readonly toolEnabled?: boolean;
+  /** Convention fragments preserved through compaction cycles. */
+  readonly conventions?: readonly CapabilityFragment[] | undefined;
 }
 
 /**
@@ -92,9 +98,14 @@ export interface ResolvedCompactorConfig {
   readonly preserveRecent: number;
   readonly maxSummaryTokens: number;
   readonly tokenEstimator: TokenEstimator;
-  readonly promptBuilder: (messages: readonly InboundMessage[], maxTokens: number) => string;
+  readonly promptBuilder: (
+    messages: readonly InboundMessage[],
+    maxTokens: number,
+    conventions?: readonly CapabilityFragment[],
+  ) => string;
   readonly archiver: CompactionArchiver | undefined;
   readonly overflowRecovery: OverflowRecoveryConfig;
+  readonly conventions: readonly CapabilityFragment[];
 }
 
 interface CompactorDefaults {
@@ -103,6 +114,7 @@ interface CompactorDefaults {
   readonly preserveRecent: number;
   readonly maxSummaryTokens: number;
   readonly overflowRecovery: OverflowRecoveryConfig;
+  readonly conventions: readonly CapabilityFragment[];
 }
 
 export const COMPACTOR_DEFAULTS: CompactorDefaults = Object.freeze({
@@ -111,6 +123,7 @@ export const COMPACTOR_DEFAULTS: CompactorDefaults = Object.freeze({
   preserveRecent: 4,
   maxSummaryTokens: 1000,
   overflowRecovery: Object.freeze({ maxRetries: 1 }),
+  conventions: Object.freeze([]),
 });
 
 /** Named presets for common compactor configurations. */

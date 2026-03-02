@@ -63,6 +63,17 @@ export function resolveContextArenaConfig(config: ContextArenaConfig): ResolvedC
     personalizationRelevanceThreshold: config.personalization?.relevanceThreshold ?? 0.7,
     personalizationMaxPreferenceTokens: config.personalization?.maxPreferenceTokens ?? 500,
 
+    // Hot memory — user overrides → preset
+    hotMemoryMaxTokens: config.hotMemory?.maxTokens ?? budget.hotMemoryMaxTokens,
+    hotMemoryRefreshInterval: config.hotMemory?.refreshInterval ?? budget.hotMemoryRefreshInterval,
+    hotMemoryEnabled: config.memoryFs !== undefined && config.hotMemory?.disabled !== true,
+
+    // Conventions — map raw strings to CapabilityFragment[]
+    conventions:
+      config.conventions !== undefined && config.conventions.length > 0
+        ? config.conventions.map((s) => ({ label: "convention", description: s }))
+        : [],
+
     // Feature flags
     hydratorEnabled: config.hydrator !== undefined,
     memoryFsEnabled: config.memoryFs !== undefined,

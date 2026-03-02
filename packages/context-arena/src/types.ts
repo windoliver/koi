@@ -8,7 +8,7 @@ import type { ContextHydratorMiddleware, ContextManifestConfig } from "@koi/cont
 import type { PruningPolicy, SnapshotChainStore, TokenEstimator } from "@koi/core";
 import type { Agent, ComponentProvider, MemoryComponent, SessionId } from "@koi/core/ecs";
 import type { InboundMessage } from "@koi/core/message";
-import type { KoiMiddleware, ModelHandler } from "@koi/core/middleware";
+import type { CapabilityFragment, KoiMiddleware, ModelHandler } from "@koi/core/middleware";
 import type { FsMemoryConfig, FsSearchIndexer, FsSearchRetriever } from "@koi/memory-fs";
 import type { CompactionTrigger } from "@koi/middleware-compactor";
 import type { LlmClassifier } from "@koi/middleware-preference";
@@ -57,6 +57,15 @@ export interface PersonalizationOverrides {
   readonly maxPreferenceTokens?: number | undefined;
 }
 
+export interface HotMemoryOverrides {
+  /** Override max tokens for hot memory injection. */
+  readonly maxTokens?: number | undefined;
+  /** Override turn refresh interval. */
+  readonly refreshInterval?: number | undefined;
+  /** Set true to disable hot memory even when memoryFs is configured. */
+  readonly disabled?: boolean | undefined;
+}
+
 /** User-facing configuration for createContextArena. */
 export interface ContextArenaConfig {
   // --- Required ---
@@ -92,6 +101,10 @@ export interface ContextArenaConfig {
   readonly personalization?: PersonalizationOverrides | undefined;
 
   // --- Opt-in modules ---
+  /** Project conventions preserved through compaction. Mapped to CapabilityFragment internally. */
+  readonly conventions?: readonly string[] | undefined;
+  /** Hot memory injection overrides. Requires memoryFs to be configured. */
+  readonly hotMemory?: HotMemoryOverrides | undefined;
   /** Enable context hydrator (deferred — requires Agent at creation time). */
   readonly hydrator?: { readonly config: ContextManifestConfig } | undefined;
   /** Enable filesystem memory. Async initialization. */
@@ -158,6 +171,14 @@ export interface ResolvedContextArenaConfig {
   readonly personalizationRelevanceThreshold: number;
   readonly personalizationMaxPreferenceTokens: number;
 
+  // Hot memory
+  readonly hotMemoryMaxTokens: number;
+  readonly hotMemoryRefreshInterval: number;
+  readonly hotMemoryEnabled: boolean;
+
+  // Conventions
+  readonly conventions: readonly CapabilityFragment[];
+
   // Feature flags
   readonly hydratorEnabled: boolean;
   readonly memoryFsEnabled: boolean;
@@ -200,6 +221,10 @@ export interface PresetSpec {
   readonly editingRecentToKeep: number;
   /** Squash queue depth. */
   readonly maxPendingSquashes: number;
+  /** Hot memory token budget as fraction of context window. */
+  readonly hotMemoryTokenFraction: number;
+  /** Hot memory turn refresh interval. */
+  readonly hotMemoryRefreshInterval: number;
 }
 
 /** Computed budget values from a preset + window size. */
@@ -212,4 +237,6 @@ export interface PresetBudget {
   readonly editingNumRecentToKeep: number;
   readonly squashPreserveRecent: number;
   readonly squashMaxPendingSquashes: number;
+  readonly hotMemoryMaxTokens: number;
+  readonly hotMemoryRefreshInterval: number;
 }

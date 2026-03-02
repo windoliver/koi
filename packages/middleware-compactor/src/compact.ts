@@ -11,7 +11,7 @@ import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
 import { createFactExtractingArchiver } from "./fact-extracting-archiver.js";
 import { findOptimalSplit } from "./find-split.js";
 import { findValidSplitPoints } from "./pair-boundaries.js";
-import { buildSummaryPrompt } from "./prompt.js";
+import { buildSummaryPrompt, formatConventionBlock } from "./prompt.js";
 import type { CompactionTrigger, CompactorConfig, ResolvedCompactorConfig } from "./types.js";
 import { COMPACTOR_DEFAULTS } from "./types.js";
 
@@ -50,6 +50,7 @@ function resolveConfig(config: CompactorConfig): ResolvedCompactorConfig {
       config.archiver ??
       (config.memory !== undefined ? createFactExtractingArchiver(config.memory) : undefined),
     overflowRecovery: config.overflowRecovery ?? COMPACTOR_DEFAULTS.overflowRecovery,
+    conventions: config.conventions ?? COMPACTOR_DEFAULTS.conventions,
   };
 }
 
@@ -103,6 +104,19 @@ function noopResult(messages: readonly InboundMessage[], tokenCount: number): Co
 export function createLlmCompactor(config: CompactorConfig): LlmCompactor {
   const resolved = resolveConfig(config);
 
+  // Pre-format convention block text once at factory time (format once, reuse across cycles)
+  const conventionBlockText = formatConventionBlock(resolved.conventions);
+
+  // Budget warning: if convention block exceeds 20% of maxSummaryTokens
+  if (conventionBlockText.length > 0) {
+    const estimatedTokens = conventionBlockText.length / 4;
+    if (estimatedTokens > resolved.maxSummaryTokens * 0.2) {
+      console.warn(
+        `[middleware-compactor] Convention block (~${String(Math.round(estimatedTokens))} tokens) exceeds 20% of maxSummaryTokens (${String(resolved.maxSummaryTokens)})`,
+      );
+    }
+  }
+
   // let required: re-entrancy guard toggled within compact() to prevent concurrent summarizations
   let compacting = false;
 
@@ -135,7 +149,15 @@ export function createLlmCompactor(config: CompactorConfig): LlmCompactor {
       // Set guard before any async work
       compacting = true;
       try {
-        return await performCompaction(messages, maxTokens, model, resolved, false, epoch);
+        return await performCompaction(
+          messages,
+          maxTokens,
+          model,
+          resolved,
+          false,
+          epoch,
+          conventionBlockText,
+        );
       } catch (_e: unknown) {
         // Graceful degradation: return original messages on any failure.
         // L0 contract: "Always succeeds — worst case returns an empty message array."
@@ -151,7 +173,15 @@ export function createLlmCompactor(config: CompactorConfig): LlmCompactor {
       model?: string,
       epoch?: number,
     ): Promise<CompactionResult> {
-      return performCompaction(messages, maxTokens, model, resolved, true, epoch);
+      return performCompaction(
+        messages,
+        maxTokens,
+        model,
+        resolved,
+        true,
+        epoch,
+        conventionBlockText,
+      );
     },
   };
 }
@@ -164,6 +194,7 @@ async function performCompaction(
   resolved: ResolvedCompactorConfig,
   force = false,
   epoch?: number,
+  conventionBlockText = "",
 ): Promise<CompactionResult> {
   const contextWindowSize = Math.min(maxTokens, resolved.contextWindowSize);
 
@@ -204,7 +235,10 @@ async function performCompaction(
   // Build prompt from head messages (to be summarized)
   const headMessages = messages.slice(0, splitIndex);
   const tailMessages = messages.slice(splitIndex);
-  const prompt = resolved.promptBuilder(headMessages, resolved.maxSummaryTokens);
+  const prompt =
+    resolved.conventions.length > 0
+      ? resolved.promptBuilder(headMessages, resolved.maxSummaryTokens, resolved.conventions)
+      : resolved.promptBuilder(headMessages, resolved.maxSummaryTokens);
 
   // Resolve which model to use: explicit summarizerModel takes precedence
   const summarizerModel = resolved.summarizerModel ?? model;
@@ -221,9 +255,15 @@ async function performCompaction(
     maxTokens: resolved.maxSummaryTokens,
   });
 
+  // Prepend convention block to summary so conventions survive compaction
+  const summaryText =
+    conventionBlockText.length > 0
+      ? `${conventionBlockText}\n\n${response.content}`
+      : response.content;
+
   // Build summary message
   const summaryMessage: InboundMessage = {
-    content: [{ kind: "text", text: response.content }],
+    content: [{ kind: "text", text: summaryText }],
     senderId: "system:compactor",
     timestamp: Date.now(),
     metadata: { compacted: true, ...(epoch !== undefined ? { compactionEpoch: epoch } : {}) },

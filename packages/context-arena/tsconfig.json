@@ -11,7 +11,9 @@
     { "path": "../memory-fs" },
     { "path": "../middleware-compactor" },
     { "path": "../middleware-context-editing" },
+    { "path": "../middleware-hot-memory" },
     { "path": "../middleware-personalization" },
+    { "path": "../middleware-preference" },
     { "path": "../snapshot-chain-store" },
     { "path": "../token-estimator" },
     { "path": "../tool-squash" }

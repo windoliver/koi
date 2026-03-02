@@ -524,6 +524,7 @@
         "@koi/memory-fs": "workspace:*",
         "@koi/middleware-compactor": "workspace:*",
         "@koi/middleware-context-editing": "workspace:*",
+        "@koi/middleware-hot-memory": "workspace:*",
         "@koi/middleware-personalization": "workspace:*",
         "@koi/middleware-preference": "workspace:*",
         "@koi/snapshot-chain-store": "workspace:*",
@@ -1266,6 +1267,17 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware-hot-memory": {
+      "name": "@koi/middleware-hot-memory",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
@@ -2834,6 +2846,8 @@
     "@koi/middleware-guardrails": ["@koi/middleware-guardrails@workspace:packages/middleware-guardrails"],
 
     "@koi/middleware-guided-retry": ["@koi/middleware-guided-retry@workspace:packages/middleware-guided-retry"],
+
+    "@koi/middleware-hot-memory": ["@koi/middleware-hot-memory@workspace:packages/middleware-hot-memory"],
 
     "@koi/middleware-intent-capsule": ["@koi/middleware-intent-capsule@workspace:packages/middleware-intent-capsule"],
 

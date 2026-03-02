@@ -32,6 +32,8 @@ describe("PRESET_SPECS", () => {
       expect(spec.editingTriggerFraction).toBeGreaterThan(0);
       expect(spec.editingRecentToKeep).toBeGreaterThan(0);
       expect(spec.maxPendingSquashes).toBeGreaterThan(0);
+      expect(spec.hotMemoryTokenFraction).toBeGreaterThan(0);
+      expect(spec.hotMemoryRefreshInterval).toBeGreaterThan(0);
     }
   });
 });
@@ -78,6 +80,8 @@ describe("computePresetBudget", () => {
         expect(budget.editingNumRecentToKeep).toBeGreaterThan(0);
         expect(budget.squashPreserveRecent).toBeGreaterThan(0);
         expect(budget.squashMaxPendingSquashes).toBeGreaterThan(0);
+        expect(budget.hotMemoryMaxTokens).toBeGreaterThan(0);
+        expect(budget.hotMemoryRefreshInterval).toBeGreaterThan(0);
       }
     }
   });
@@ -100,5 +104,24 @@ describe("computePresetBudget", () => {
     expect(budget.editingNumRecentToKeep).toBe(3);
     expect(budget.squashPreserveRecent).toBe(4);
     expect(budget.squashMaxPendingSquashes).toBe(3);
+    expect(budget.hotMemoryMaxTokens).toBe(4_000); // 200_000 * 0.02
+    expect(budget.hotMemoryRefreshInterval).toBe(5);
+  });
+
+  test("hot memory budget scales with window size", () => {
+    for (const name of PRESET_NAMES) {
+      const small = computePresetBudget(name, 50_000);
+      const large = computePresetBudget(name, 1_000_000);
+      expect(large.hotMemoryMaxTokens).toBeGreaterThan(small.hotMemoryMaxTokens);
+    }
+  });
+
+  test("conservative <= balanced <= aggressive hot memory fractions", () => {
+    expect(PRESET_SPECS.conservative.hotMemoryTokenFraction).toBeLessThanOrEqual(
+      PRESET_SPECS.balanced.hotMemoryTokenFraction,
+    );
+    expect(PRESET_SPECS.balanced.hotMemoryTokenFraction).toBeLessThanOrEqual(
+      PRESET_SPECS.aggressive.hotMemoryTokenFraction,
+    );
   });
 });

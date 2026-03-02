@@ -6,6 +6,7 @@
  */
 
 import type { InboundMessage } from "@koi/core/message";
+import type { CapabilityFragment } from "@koi/core/middleware";
 
 const MAX_MESSAGE_CHARS = 2000;
 
@@ -25,19 +26,41 @@ function serializeMessage(msg: InboundMessage): string {
 }
 
 /**
+ * Formats convention fragments into a text block for injection into summaries.
+ * Returns empty string when the array is empty.
+ */
+export function formatConventionBlock(conventions: readonly CapabilityFragment[]): string {
+  if (conventions.length === 0) return "";
+  const lines = conventions.map((c) => `- **${c.label}**: ${c.description}`);
+  return `[Conventions]\n${lines.join("\n")}`;
+}
+
+/**
  * Build a summary prompt from a sequence of messages.
  *
  * The prompt instructs the LLM to produce a structured summary with
  * sections for session intent, key events, artifacts, and next steps.
+ *
+ * When conventions are provided, a CONVENTIONS section is appended
+ * instructing the LLM to preserve them verbatim in the summary.
  */
-export function buildSummaryPrompt(messages: readonly InboundMessage[], maxTokens: number): string {
+export function buildSummaryPrompt(
+  messages: readonly InboundMessage[],
+  maxTokens: number,
+  conventions?: readonly CapabilityFragment[],
+): string {
   const serialized = messages.map(serializeMessage).join("\n");
+
+  const conventionSection =
+    conventions !== undefined && conventions.length > 0
+      ? `\n\n## CONVENTIONS (preserve verbatim)\n${conventions.map((c) => `- **${c.label}**: ${c.description}`).join("\n")}`
+      : "";
 
   return `You are a conversation summarizer. Summarize the following conversation history into a structured summary. Your summary must fit within ${String(maxTokens)} tokens.
 
 <conversation>
 ${serialized}
-</conversation>
+</conversation>${conventionSection}
 
 Produce your summary in the following format:
 

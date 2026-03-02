@@ -39,6 +39,7 @@ export type {
   ContextArenaConfig,
   ContextArenaPreset,
   ContextEditingOverrides,
+  HotMemoryOverrides,
   PersonalizationOverrides,
   PresetBudget,
   PresetSpec,
