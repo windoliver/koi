@@ -22,7 +22,7 @@ import type { AgentHost } from "./agent/host.js";
 import { createAgentHost } from "./agent/host.js";
 import type { StatusReporter } from "./agent/status.js";
 import { createStatusReporter } from "./agent/status.js";
-import { createAgentInbox, isAgentMessagePayload } from "./agent-inbox.js";
+import { createAgentInbox, isAgentMessagePayload, MAX_INBOX_DEPTH } from "./agent-inbox.js";
 import type { CheckpointManager } from "./checkpoint.js";
 import { createCheckpointManager } from "./checkpoint.js";
 import { createCheckpointingEngine } from "./checkpointing-engine.js";
@@ -379,7 +379,15 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
   function buildFullNode(): Result<FullKoiNode, KoiError> {
     // -- Full-only subsystems ------------------------------------------------
     const engines = new Map<string, EngineAdapter>();
-    const inbox = createAgentInbox();
+    const inbox = createAgentInbox({
+      onDrop({ agentId, dropped }) {
+        emit("message_dropped", {
+          agentId,
+          depth: MAX_INBOX_DEPTH,
+          droppedAt: dropped.receivedAt,
+        });
+      },
+    });
     const host: AgentHost = createAgentHost(config.resources);
     const monitor = createMemoryMonitor(config.resources, host, emit);
 
@@ -526,7 +534,19 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
           break;
         }
         case "agent:message": {
-          if (isAgentMessagePayload(frame.payload) && frame.agentId.length > 0) {
+          if (frame.agentId.length === 0) {
+            emit("frame_dropped", {
+              kind: "agent:message",
+              reason: "empty_agent_id",
+              correlationId: frame.correlationId,
+            });
+          } else if (!isAgentMessagePayload(frame.payload)) {
+            emit("frame_dropped", {
+              kind: "agent:message",
+              reason: "invalid_payload",
+              correlationId: frame.correlationId,
+            });
+          } else {
             inbox.push(frame.agentId, frame.payload);
           }
           break;

@@ -331,7 +331,9 @@ export type NodeEventType =
   | "shutdown_complete"
   | "pending_frame_sent"
   | "pending_frame_expired"
-  | "pending_frame_dead_letter";
+  | "pending_frame_dead_letter"
+  | "message_dropped"
+  | "frame_dropped";
 
 export interface NodeEvent {
   readonly type: NodeEventType;
