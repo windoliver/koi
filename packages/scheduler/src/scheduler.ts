@@ -20,6 +20,7 @@ import type {
   TaskHistoryFilter,
   TaskId,
   TaskOptions,
+  TaskQueueBackend,
   TaskRunRecord,
   TaskScheduler,
   TaskStore,
@@ -53,6 +54,7 @@ export function createScheduler(
   dispatcher: TaskDispatcher,
   clock?: Clock,
   scheduleStore?: ScheduleStore,
+  queueBackend?: TaskQueueBackend,
 ): TaskScheduler {
   const clk = clock ?? createSystemClock();
   let disposed = false; // let: set to true on dispose
@@ -67,8 +69,8 @@ export function createScheduler(
     return a.createdAt - b.createdAt;
   });
 
-  const crons = new Map<string, Cron>(); // scheduleId → Cron instance
-  const cronMeta = new Map<string, CronSchedule>(); // scheduleId → metadata
+  const crons = new Map<ScheduleId, Cron>(); // scheduleId → Cron instance
+  const cronMeta = new Map<ScheduleId, CronSchedule>(); // scheduleId → metadata
   const semaphore = createSemaphore(config.maxConcurrent);
   // P9 fix: mutable Set with idempotent unsubscribe (internal state, not shared)
   const listeners = new Set<(event: SchedulerEvent) => void>();
@@ -94,6 +96,74 @@ export function createScheduler(
 
   function generateScheduleId(): ScheduleId {
     return scheduleId(`sched_${clk.now()}_${Math.random().toString(36).slice(2, 10)}`);
+  }
+
+  /** Save task to store and insert into local heap (atomic local enqueue). */
+  async function enqueueLocally(task: ScheduledTask): Promise<void> {
+    await store.save(task);
+    heap.insert(task);
+  }
+
+  /**
+   * Enqueue a task — delegates to queue backend if present, otherwise local heap.
+   * When a backend is present, Nexus owns the priority queue (Decision 14A).
+   */
+  async function enqueueTask(task: ScheduledTask, idempotencyKey?: string): Promise<void> {
+    if (queueBackend !== undefined) {
+      await queueBackend.enqueue(task, idempotencyKey);
+    } else {
+      await enqueueLocally(task);
+    }
+  }
+
+  /**
+   * Core task creation + enqueue logic shared by submit() and cron callbacks.
+   * Validates, builds the task, enqueues (local or backend), emits, and polls.
+   */
+  async function createAndEnqueueTask(
+    agentIdVal: AgentId,
+    input: EngineInput,
+    mode: "spawn" | "dispatch",
+    options?: TaskOptions,
+    idempotencyKey?: string,
+  ): Promise<TaskId> {
+    if (disposed) {
+      throw new Error("Scheduler is disposed");
+    }
+
+    await initPromise;
+
+    if (options?.timeoutMs !== undefined && options.timeoutMs <= 0) {
+      throw new Error("timeoutMs must be a positive number");
+    }
+
+    const id = generateTaskId();
+    const now = clk.now();
+    const task: ScheduledTask = {
+      id,
+      agentId: agentIdVal,
+      input,
+      mode,
+      priority: options?.priority ?? config.defaultPriority,
+      status: "pending",
+      createdAt: now,
+      scheduledAt: options?.delayMs !== undefined ? now + options.delayMs : undefined,
+      retries: 0,
+      maxRetries: options?.maxRetries ?? config.defaultMaxRetries,
+      timeoutMs: options?.timeoutMs,
+      metadata: options?.metadata,
+    };
+
+    await enqueueTask(task, idempotencyKey);
+    emit({ kind: "task:submitted", task });
+
+    // P1 fix: immediately attempt dispatch for zero-delay tasks
+    // When queue backend is present, Nexus handles dispatch — skip local poll
+    if (queueBackend === undefined) {
+      poll();
+    }
+
+    return id;
   }
 
   /** Race a promise against a clock-based timeout. Returns the result or throws TIMEOUT KoiError. */
@@ -180,8 +250,7 @@ export function createScheduler(
             scheduledAt: clk.now() + delay,
             lastError: koiError,
           };
-          await store.save(retask);
-          heap.insert(retask);
+          await enqueueLocally(retask);
           failedCount += 1;
           emit({ kind: "task:failed", taskId: task.id, error: koiError });
         } else {
@@ -257,9 +326,8 @@ export function createScheduler(
           status: "pending",
           retries: nextRetries,
         };
-        await store.save(recovered);
         heap.remove((t) => t.id === task.id); // Remove stale version if present
-        heap.insert(recovered);
+        await enqueueLocally(recovered);
         emit({ kind: "task:recovered", taskId: task.id, retriesUsed: nextRetries });
       } else {
         // Retries exhausted — dead letter
@@ -288,7 +356,14 @@ export function createScheduler(
             : ({ paused: false } as const);
 
         const cronJob = new Cron(meta.expression, cronOptions, () => {
-          void submit(meta.agentId, meta.input, meta.mode, meta.taskOptions);
+          const idempotencyKey = `${meta.id}:${String(clk.now())}`;
+          void createAndEnqueueTask(
+            meta.agentId,
+            meta.input,
+            meta.mode,
+            meta.taskOptions,
+            idempotencyKey,
+          );
         });
 
         crons.set(meta.id, cronJob);
@@ -310,47 +385,21 @@ export function createScheduler(
     mode: "spawn" | "dispatch",
     options?: TaskOptions,
   ): Promise<TaskId> {
-    if (disposed) {
-      throw new Error("Scheduler is disposed");
-    }
-
-    await initPromise;
-
-    if (options?.timeoutMs !== undefined && options.timeoutMs <= 0) {
-      throw new Error("timeoutMs must be a positive number");
-    }
-
-    const id = generateTaskId();
-    const now = clk.now();
-    const task: ScheduledTask = {
-      id,
-      agentId: agentIdVal,
-      input,
-      mode,
-      priority: options?.priority ?? config.defaultPriority,
-      status: "pending",
-      createdAt: now,
-      scheduledAt: options?.delayMs !== undefined ? now + options.delayMs : undefined,
-      retries: 0,
-      maxRetries: options?.maxRetries ?? config.defaultMaxRetries,
-      timeoutMs: options?.timeoutMs,
-      metadata: options?.metadata,
-    };
-
-    await store.save(task);
-    heap.insert(task);
-    emit({ kind: "task:submitted", task });
-
-    // P1 fix: immediately attempt dispatch for zero-delay tasks
-    poll();
-
-    return id;
+    return createAndEnqueueTask(agentIdVal, input, mode, options);
   }
 
   async function cancel(id: TaskId): Promise<boolean> {
     if (disposed) return false;
 
     await initPromise;
+
+    if (queueBackend !== undefined) {
+      const cancelled = await queueBackend.cancel(id);
+      if (cancelled) {
+        emit({ kind: "task:cancelled", taskId: id });
+      }
+      return cancelled;
+    }
 
     const removed = heap.remove((t) => t.id === id);
     if (removed) {
@@ -385,7 +434,8 @@ export function createScheduler(
         : ({ paused: false } as const);
 
     const cronJob = new Cron(expression, cronOptions, () => {
-      void submit(agentIdVal, input, mode, options);
+      const idempotencyKey = `${id}:${String(clk.now())}`;
+      void createAndEnqueueTask(agentIdVal, input, mode, options, idempotencyKey);
     });
 
     crons.set(id, cronJob);
@@ -444,37 +494,33 @@ export function createScheduler(
     return store.query(filter);
   }
 
-  function pause(id: ScheduleId): boolean {
-    const job = crons.get(id as string);
-    const meta = cronMeta.get(id as string);
+  function updateCronState(id: ScheduleId, paused: boolean): boolean {
+    const job = crons.get(id);
+    const meta = cronMeta.get(id);
     if (job === undefined || meta === undefined) return false;
 
-    job.pause();
-    cronMeta.set(id as string, { ...meta, paused: true });
+    if (paused) {
+      job.pause();
+    } else {
+      job.resume();
+    }
+    cronMeta.set(id, { ...meta, paused });
 
     if (scheduleStore !== undefined) {
       // Fire-and-forget persistence — best effort
-      void scheduleStore.saveSchedule({ ...meta, paused: true });
+      void scheduleStore.saveSchedule({ ...meta, paused });
     }
 
-    emit({ kind: "schedule:paused", scheduleId: id });
+    emit({ kind: paused ? "schedule:paused" : "schedule:resumed", scheduleId: id });
     return true;
   }
 
+  function pause(id: ScheduleId): boolean {
+    return updateCronState(id, true);
+  }
+
   function resume(id: ScheduleId): boolean {
-    const job = crons.get(id as string);
-    const meta = cronMeta.get(id as string);
-    if (job === undefined || meta === undefined) return false;
-
-    job.resume();
-    cronMeta.set(id as string, { ...meta, paused: false });
-
-    if (scheduleStore !== undefined) {
-      void scheduleStore.saveSchedule({ ...meta, paused: false });
-    }
-
-    emit({ kind: "schedule:resumed", scheduleId: id });
-    return true;
+    return updateCronState(id, false);
   }
 
   function stats(): SchedulerStats {
@@ -524,6 +570,10 @@ export function createScheduler(
     cronMeta.clear();
 
     listeners.clear();
+
+    if (queueBackend !== undefined) {
+      await queueBackend[Symbol.asyncDispose]();
+    }
   }
 
   return {

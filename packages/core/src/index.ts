@@ -719,6 +719,7 @@ export type {
   TaskHistoryFilter,
   TaskId,
   TaskOptions,
+  TaskQueueBackend,
   TaskRunRecord,
   TaskScheduler,
   TaskStatus,

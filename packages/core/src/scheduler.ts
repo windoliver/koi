@@ -301,3 +301,20 @@ export interface ScheduleStore extends AsyncDisposable {
   readonly removeSchedule: (id: ScheduleId) => void | Promise<void>;
   readonly loadSchedules: () => readonly CronSchedule[] | Promise<readonly CronSchedule[]>;
 }
+
+// ---------------------------------------------------------------------------
+// Pluggable priority-queue backend (local heap or remote Nexus Astraea)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pluggable priority-queue backend for task dispatch.
+ * Local mode uses an in-memory heap; production delegates to Nexus Astraea.
+ */
+export interface TaskQueueBackend extends AsyncDisposable {
+  /** Submit a task to the priority queue. Returns the queue-assigned task ID. */
+  readonly enqueue: (task: ScheduledTask, idempotencyKey?: string | undefined) => Promise<TaskId>;
+  /** Cancel a queued task. Returns true if found and cancelled. */
+  readonly cancel: (taskId: TaskId) => Promise<boolean>;
+  /** Get the current status of a queued task. */
+  readonly status: (taskId: TaskId) => Promise<TaskStatus | undefined>;
+}
