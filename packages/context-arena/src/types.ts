@@ -9,7 +9,7 @@ import type { PruningPolicy, SnapshotChainStore, TokenEstimator } from "@koi/cor
 import type { Agent, ComponentProvider, MemoryComponent, SessionId } from "@koi/core/ecs";
 import type { InboundMessage } from "@koi/core/message";
 import type { KoiMiddleware, ModelHandler } from "@koi/core/middleware";
-import type { FsMemoryConfig } from "@koi/memory-fs";
+import type { FsMemoryConfig, FsSearchIndexer, FsSearchRetriever } from "@koi/memory-fs";
 import type { CompactionTrigger } from "@koi/middleware-compactor";
 
 // ---------------------------------------------------------------------------
@@ -83,7 +83,21 @@ export interface ContextArenaConfig {
   /** Enable context hydrator (deferred — requires Agent at creation time). */
   readonly hydrator?: { readonly config: ContextManifestConfig } | undefined;
   /** Enable filesystem memory. Async initialization. */
-  readonly memoryFs?: { readonly config: FsMemoryConfig } | undefined;
+  readonly memoryFs?:
+    | {
+        readonly config: FsMemoryConfig;
+        /**
+         * Optional semantic search retriever. Overrides `config.retriever` when both set.
+         * Create with factories from `@koi/search` or `@koi/search-nexus`.
+         */
+        readonly retriever?: FsSearchRetriever | undefined;
+        /**
+         * Optional indexer for automatic fact indexing on store. Overrides `config.indexer` when both set.
+         * Create with factories from `@koi/search` or `@koi/search-nexus`.
+         */
+        readonly indexer?: FsSearchIndexer | undefined;
+      }
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------

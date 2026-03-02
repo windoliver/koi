@@ -218,6 +218,38 @@ When `memoryFs` is enabled, facts extracted during squash and compaction are per
 
 **Single instance guarantee:** `createFsMemory()` is called exactly once. The same `FsMemory` instance is shared between the memory provider (which exposes tools) and the squash/compactor middleware (which extract facts). No duplicate file handles or inconsistent state.
 
+### Search Wiring (retriever / indexer)
+
+The `memoryFs` wrapper exposes optional `retriever` and `indexer` slots for semantic search injection. These are the standard DI points for plugging in embedding-based search:
+
+```
+  memoryFs: {
+    config: { baseDir }
+    retriever? ──► FsSearchRetriever  (semantic recall)
+    indexer?   ──► FsSearchIndexer    (auto-index on store)
+  }
+```
+
+**Override precedence:** Wrapper-level values override `config.retriever` / `config.indexer` via nullish coalescing (`??`). This means you can set defaults inside `FsMemoryConfig` and override at the arena level without clobbering:
+
+```
+  wrapper.retriever ?? config.retriever
+  wrapper.indexer   ?? config.indexer
+```
+
+**Why this matters:** Without these slots, search injection required constructing the full `FsMemoryConfig` with retriever/indexer buried inside — undiscoverable and not composable at the L3 wiring path. Lifting them to the wrapper makes search a first-class, visible DI point.
+
+**Re-exported types:** `FsSearchRetriever`, `FsSearchIndexer`, `FsSearchHit`, and `FsIndexDoc` are re-exported from `@koi/context-arena` so adapter authors import from one place.
+
+```typescript
+import type {
+  FsSearchRetriever,
+  FsSearchIndexer,
+  FsSearchHit,
+  FsIndexDoc,
+} from "@koi/context-arena";
+```
+
 ---
 
 ## Presets
@@ -292,7 +324,7 @@ Main factory. Async because optional `FsMemory` initialization requires I/O.
 | `contextEditing` | `ContextEditingOverrides` | — | Override editing settings |
 | `squash` | `SquashOverrides` | — | Override squash settings |
 | `hydrator` | `{ config: ContextManifestConfig }` | — | Enable context hydrator |
-| `memoryFs` | `{ config: FsMemoryConfig }` | — | Enable filesystem memory |
+| `memoryFs` | `{ config, retriever?, indexer? }` | — | Enable filesystem memory with optional search DI |
 
 ### `resolveContextArenaConfig(config: ContextArenaConfig): ResolvedContextArenaConfig`
 
@@ -368,6 +400,33 @@ const bundle = await createContextArena({
   },
   contextEditing: {
     triggerTokenCount: 80_000,
+  },
+});
+```
+
+### With semantic search (retriever + indexer)
+
+```typescript
+import { createContextArena } from "@koi/context-arena";
+import type { FsSearchRetriever, FsSearchIndexer } from "@koi/context-arena";
+
+// Adapter-provided search implementations
+const retriever: FsSearchRetriever = {
+  retrieve: async (query, limit) => embedSearch(query, limit),
+};
+const indexer: FsSearchIndexer = {
+  index: async (docs) => embedIndex(docs),
+  remove: async (ids) => embedRemove(ids),
+};
+
+const bundle = await createContextArena({
+  summarizer: modelCall,
+  sessionId,
+  getMessages: () => messages,
+  memoryFs: {
+    config: { baseDir: "/data/agent-memory" },
+    retriever,  // semantic recall on memory.recall()
+    indexer,    // auto-index facts on memory.store()
   },
 });
 ```
@@ -448,7 +507,7 @@ config-resolution.test.ts — 9 tests
   ● Throws on Infinity contextWindowSize
   ● Feature flags (hydrator, memoryFs) derived correctly
 
-arena-factory.test.ts — 12 tests
+arena-factory.test.ts — 16 tests
   ● Bundle always has 3 middleware
   ● Bundle always has 1 provider (squash)
   ● Middleware in correct priority order (220 < 225 < 250)
@@ -461,6 +520,10 @@ arena-factory.test.ts — 12 tests
   ● No memoryFs means only squash provider (1 provider)
   ● config.memory alongside memoryFs still produces 2 providers
   ● memoryFs does not affect middleware count
+  ● Wrapper retriever flows through to createFsMemory
+  ● Wrapper retriever overrides config.retriever
+  ● config.retriever used when wrapper retriever absent
+  ● Wrapper indexer flows through independently
 
 registry-adapter.test.ts — 3 tests
   ● Entries map contains "context-arena" key

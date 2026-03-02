@@ -21,6 +21,13 @@
  *   });
  */
 
+// Search DI types re-exported for L3 convenience — adapter authors import from one place.
+export type {
+  FsIndexDoc,
+  FsSearchHit,
+  FsSearchIndexer,
+  FsSearchRetriever,
+} from "@koi/memory-fs";
 export { createContextArena } from "./arena-factory.js";
 export { resolveContextArenaConfig } from "./config-resolution.js";
 export { computePresetBudget, PRESET_SPECS } from "./presets.js";
