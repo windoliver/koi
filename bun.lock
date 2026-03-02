@@ -103,6 +103,18 @@
         "@koi/nexus-client": "workspace:*",
       },
     },
+    "packages/audit-sink-nexus": {
+      "name": "@koi/audit-sink-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/autonomous": {
       "name": "@koi/autonomous",
       "version": "0.0.0",
@@ -2640,6 +2652,8 @@
     "@koi/agui": ["@koi/agui@workspace:packages/agui"],
 
     "@koi/artifact-client": ["@koi/artifact-client@workspace:packages/artifact-client"],
+
+    "@koi/audit-sink-nexus": ["@koi/audit-sink-nexus@workspace:packages/audit-sink-nexus"],
 
     "@koi/autonomous": ["@koi/autonomous@workspace:packages/autonomous"],
 
