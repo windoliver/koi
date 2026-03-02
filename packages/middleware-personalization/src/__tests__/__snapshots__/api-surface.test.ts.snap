@@ -1,0 +1,98 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-personalization API surface . has stable type surface 1`] = `
+"import { MemoryResult, MemoryComponent } from '@koi/core/ecs';
+import { Result, KoiError } from '@koi/core/errors';
+import { InboundMessage } from '@koi/core/message';
+import { KoiMiddleware } from '@koi/core/middleware';
+
+/**
+ * Ambiguity classifier — detects when user instructions need clarification.
+ */
+
+interface AmbiguityAssessment {
+    readonly ambiguous: boolean;
+    readonly suggestedDirective?: string;
+}
+interface AmbiguityClassifier {
+    readonly classify: (instruction: string, relevantPreferences: readonly MemoryResult[]) => AmbiguityAssessment | Promise<AmbiguityAssessment>;
+}
+declare function createDefaultAmbiguityClassifier(): AmbiguityClassifier;
+
+/**
+ * Correction detector — identifies preference corrections in user messages.
+ */
+
+interface CorrectionAssessment {
+    readonly corrective: boolean;
+    readonly preferenceUpdate?: string;
+}
+interface CorrectionDetector {
+    readonly detect: (message: string, recentContext: readonly InboundMessage[]) => CorrectionAssessment | Promise<CorrectionAssessment>;
+}
+declare function createDefaultCorrectionDetector(): CorrectionDetector;
+
+/**
+ * Personalization middleware configuration and validation.
+ */
+
+interface PreActionConfig {
+    readonly enabled?: boolean;
+    readonly classifier?: AmbiguityClassifier;
+    readonly maxQuestionTokens?: number;
+}
+interface PostActionConfig {
+    readonly enabled?: boolean;
+    readonly detector?: CorrectionDetector;
+}
+interface PersonalizationConfig {
+    readonly memory: MemoryComponent;
+    readonly preAction?: PreActionConfig;
+    readonly postAction?: PostActionConfig;
+    readonly relevanceThreshold?: number;
+    readonly maxPreferenceTokens?: number;
+    readonly preferenceNamespace?: string;
+    readonly onError?: (error: unknown) => void;
+}
+/** Resolved config with all defaults applied. */
+interface ResolvedPersonalizationConfig {
+    readonly memory: MemoryComponent;
+    readonly preAction: {
+        readonly enabled: boolean;
+        readonly classifier: AmbiguityClassifier;
+        readonly maxQuestionTokens: number;
+    };
+    readonly postAction: {
+        readonly enabled: boolean;
+        readonly detector: CorrectionDetector;
+    };
+    readonly relevanceThreshold: number;
+    readonly maxPreferenceTokens: number;
+    readonly preferenceNamespace: string;
+    readonly onError?: ((error: unknown) => void) | undefined;
+}
+declare function validatePersonalizationConfig(config: unknown): Result<PersonalizationConfig, KoiError>;
+
+/**
+ * Personalization middleware factory — dual-channel preference learning.
+ *
+ * Pre-action: injects relevant preferences + clarification directives.
+ * Post-action: detects corrections and stores preference updates.
+ */
+
+declare function createPersonalizationMiddleware(config: PersonalizationConfig): KoiMiddleware;
+
+/**
+ * Per-session preference cache with invalidation.
+ */
+
+interface PreferenceCache {
+    readonly get: () => readonly MemoryResult[] | undefined;
+    readonly set: (preferences: readonly MemoryResult[]) => void;
+    readonly invalidate: () => void;
+}
+declare function createPreferenceCache(): PreferenceCache;
+
+export { type AmbiguityAssessment, type AmbiguityClassifier, type CorrectionAssessment, type CorrectionDetector, type PersonalizationConfig, type PostActionConfig, type PreActionConfig, type PreferenceCache, type ResolvedPersonalizationConfig, createDefaultAmbiguityClassifier, createDefaultCorrectionDetector, createPersonalizationMiddleware, createPreferenceCache, validatePersonalizationConfig };
+"
+`;

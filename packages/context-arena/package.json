@@ -15,6 +15,7 @@
     "@koi/memory-fs": "workspace:*",
     "@koi/middleware-compactor": "workspace:*",
     "@koi/middleware-context-editing": "workspace:*",
+    "@koi/middleware-personalization": "workspace:*",
     "@koi/snapshot-chain-store": "workspace:*",
     "@koi/token-estimator": "workspace:*",
     "@koi/tool-squash": "workspace:*"
