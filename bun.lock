@@ -1017,6 +1017,19 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/knowledge-vault": {
+      "name": "@koi/knowledge-vault",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/scope": "workspace:*",
+        "@koi/search-provider": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/long-running": {
       "name": "@koi/long-running",
       "version": "0.0.0",
@@ -2817,6 +2830,8 @@
     "@koi/hash": ["@koi/hash@workspace:packages/hash"],
 
     "@koi/ipc-nexus": ["@koi/ipc-nexus@workspace:packages/ipc-nexus"],
+
+    "@koi/knowledge-vault": ["@koi/knowledge-vault@workspace:packages/knowledge-vault"],
 
     "@koi/long-running": ["@koi/long-running@workspace:packages/long-running"],
 
