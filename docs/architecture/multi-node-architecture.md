@@ -115,7 +115,8 @@ How the multi-node packages connect: registry, events, IPC, pay, memory, node, a
 │                           │            │   tool-squash (priority220)│
 │                           │            │   compactor   (priority225)│
 │                           │            │   ctx-editing (priority250)│
-│                           │            │   context hydrator         │
+│                           │            │   context hydrator   
+@koi/middleware-preference      │
 │                           │            │                            │
 │                           │            │ Manifest controls:         │
 │                           │            │   middleware:              │
@@ -212,6 +213,22 @@ How the multi-node packages connect: registry, events, IPC, pay, memory, node, a
 │                           │            │ Manifest: permissions +    │
 │                           │            │   scope sections.          │
 │                           │            │ Code: backends, handlers.  │
+│                           │            │                            │
+│ verified-loop             │ No         │ Orchestrator — wraps L1.   │
+│ (L0u)                     │            │ createVerifiedLoop(config) │
+│                           │            │ External verification loop │
+│                           │            │ Each iteration: fresh Koi  │
+│                           │            │   runtime, clean context.  │
+│                           │            │ PRD file = task list.      │
+│                           │            │ Gate = objective check.    │
+│                           │            │ Learnings = rolling journal│
+│                           │            │ Stuck-loop: skip after 3   │
+│                           │            │   consecutive gate fails.  │
+│                           │            │ Consumer injects:          │
+│                           │            │   RunIterationFn (engine)  │
+│                           │            │   VerificationFn (gate)    │
+│                           │            │   iterationPrompt (prompt) │
+│                           │            │ Zero external deps.        │
 └───────────────────────────┴────────────┴─────────────────────────────┘
 
 Manifest-visible packages:
@@ -296,13 +313,64 @@ pay-nexus is the backend — injected into middleware-pay (or future consumers) 
 │  │ Agent 1 (createKoi)    │  │          │  │ camera.capture         │  │
 │  │ Agent 2 (createKoi)    │  │          │  │ sensor.read            │  │
 │  │ Agent 3 (createKoi)    │  │          │  │ gpio.toggle            │  │
-│  └────────────────────────┘  │          │  └────────────────────────┘  │
-└──────────────────────────────┘          └──────────────────────────────┘
+│  └───────────┬────────────┘  │          │  └────────────────────────┘  │
+│              │               │          │                              │
+└──────────────┼───────────────┘          └──────────────────────────────┘
+               │
+               │ Each agent is assembled from L2 middleware + providers.
+               │ The AUTONOMOUS LAYER (#684, #687, #688) adds:
+               ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│  AUTONOMOUS LAYER (L2 middleware + providers, bundled in L3)             │
+│                                                                          │
+│  ┌─ Thread + Persistence (#684) ───────────────────────────────────────┐ │
+│  │ ThreadStore (L0 contract, SQLite or Nexus backend)                  │ │
+│  │ Auto-checkpoint at turn boundaries                                  │ │
+│  │ Engine inbox: queue modes (collect, steer, followup, interrupt)     │ │
+│  │ Pinned messages survive compaction                                  │ │
+│  └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│  ┌─ Agent Lifecycle (#687) ────────────────────────────────────────────┐ │
+│  │ "idle" ProcessState: agent alive between tasks, accepting messages  │ │
+│  │ Worker pool: acquire(type) → reuse warm agent, evict after TTL     │ │
+│  │ Auto-create copilot: recurring task → persistent agent + thread    │ │
+│  └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│  ┌─ Autonomous Middleware (#684) ──────────────────────────────────────┐ │
+│  │ Always injected, idle by default, zero overhead on "hello"         │ │
+│  │ Agent self-escalates via plan_autonomous() tool                    │ │
+│  │ task_complete() + verified-loop gates for objective verification   │ │
+│  │ Context bridge: pinned resume messages across sessions             │ │
+│  └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│  ┌─ Delegation ────────────────────────────────────────────────────────┐ │
+│  │ parallel-minions: fan-out N tasks (best-effort/fail-fast/quorum)   │ │
+│  │ task-spawn:       single task + copilot routing (findLive/spawn)   │ │
+│  │ orchestrator:     DAG board + dependency tracking + maxConcurrency │ │
+│  └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│  ┌─ Forge Evolution (#688) ────────────────────────────────────────────┐ │
+│  │ forge_agent/tool: LLM creates bricks → 4-stage verification       │ │
+│  │ Fitness tracking: successRate² × recency × usage × latency        │ │
+│  │ Variant selection: N implementations per capability, pick by score │ │
+│  │ Demand detection: capability_gap → auto-forge new agent/tool      │ │
+│  │ Demotion/quarantine: bad variant → lower trust → stop using       │ │
+│  │ ForgeAgentResolver: catalog query → variant select → instantiate  │ │
+│  └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│  Bundled by @koi/autonomous (L3):                                        │
+│    createAutonomousStack({ preset: "minimal"|"standard"|"verified"|     │
+│      "full", threadStore, gates?, parallelConfig?, taskSpawnConfig? })   │
+│    Returns: { middleware[], providers[], dispose() }                      │
+│    Follows same pattern as @koi/governance presets.                       │
+└──────────────────────────────────────────────────────────────────────────┘
 
 Agents run via createKoi (L1).
 Nodes run via createNode (L2).
 Gateway routes frames between nodes.
 Neither createKoi nor createNode call each other — the caller wires them.
+The autonomous layer is middleware + providers injected into createKoi.
+It does NOT modify L1 or the node — it composes on top via standard hooks.
 ```
 
 ---
@@ -1222,6 +1290,340 @@ L2 IMPLEMENTATIONS (all depend on L0 only)
 └──────────────────────────────────────────────────────────────────────┘
 
 
+ORCHESTRATION PATTERNS (L0u — wraps L1, not inside engine loop)
+════════════════════════════════════════════════════════════════
+
+┌──────────────────────────────────────────────────────────────────────┐
+│ @koi/verified-loop (L0u)                                              │
+│ (✅ exists)                                                          │
+│                                                                      │
+│ "Shift from LLM self-assessment to external objective verification"  │
+│                                                                      │
+│ The VerifiedLoop creates a FRESH Koi runtime per iteration.          │
+│ Each iteration gets a clean context window — the filesystem is       │
+│ long-term memory (PRD tracks progress, learnings accumulate).        │
+│ External gates decide ground truth, not the LLM.                     │
+│                                                                      │
+│ Core algorithm:                                                      │
+│   1. Read PRD file (priority-ordered task list)                      │
+│   2. Pick next undone item (nextItem, priority: lower = higher)      │
+│   3. Build prompt via iterationPrompt(ctx)                           │
+│   4. Run iteration (fresh engine via RunIterationFn)                 │
+│   5. Run verification gate (external objective check)                │
+│   6. Gate passes → mark item done, reset failure counter             │
+│      Gate fails  → increment counter                                 │
+│      Counter >= maxConsecutiveFailures → skip item                   │
+│   7. Append learning (rolling journal, last N entries)               │
+│   8. Loop until all items done/skipped or maxIterations              │
+│                                                                      │
+│ Consumer injects (dependency inversion):                             │
+│   RunIterationFn:   (input) → AsyncIterable<EngineEvent>            │
+│     Caller wires createKoi + adapter + middleware inside this fn     │
+│   VerificationFn:   (ctx: GateContext) → VerificationResult          │
+│     Built-in gates: createTestGate, createFileGate, createComposite  │
+│   iterationPrompt:  (ctx) → string                                  │
+│     Receives: currentItem, completedItems, remainingItems, learnings │
+│                                                                      │
+│ Config (all optional except runIteration, prdPath, verify, prompt):  │
+│   maxIterations:           100                                       │
+│   maxConsecutiveFailures:  3 (stuck-loop detection)                  │
+│   iterationTimeoutMs:      600_000 (10 min per iteration)            │
+│   gateTimeoutMs:           120_000 (2 min per gate)                  │
+│   maxLearningEntries:      50 (rolling window)                       │
+│   signal:                  AbortSignal (external abort)              │
+│   onIteration:             callback for progress reporting           │
+│                                                                      │
+│ State on disk (filesystem = long-term memory):                       │
+│   prdPath (JSON):       { items: [{ id, description, done,          │
+│                             priority?, skipped?, verifiedAt? }] }    │
+│   learningsPath (JSON): [{ iteration, timestamp, itemId,            │
+│                             discovered[], failed[], context }]       │
+│                                                                      │
+│ Built-in gate factories:                                             │
+│   createTestGate(["bun", "test"])     — subprocess, exit code 0     │
+│   createFileGate("out.txt", /done/)   — file exists + content match │
+│   createCompositeGate([g1, g2])       — all sub-gates must pass     │
+│                                                                      │
+│ Returns: VerifiedLoopResult                                          │
+│   { iterations, completed[], remaining[], skipped[],                │
+│     learnings[], durationMs, iterationRecords[] }                   │
+│                                                                      │
+│ Error handling:                                                      │
+│   Iteration error → recorded, gate still runs                       │
+│   Gate error → recorded as failure, loop continues                  │
+│   Timeout → AbortSignal.any() ripples, cleanup via iterator.return()│
+│   Learnings corruption → reset silently (advisory, not critical)    │
+│   PRD missing → loop returns 0 iterations                           │
+│                                                                      │
+│ Deps: @koi/core (types), @koi/errors (extractMessage). Zero npm.    │
+│ 773 LOC source. 2,183 LOC tests (unit + integration + E2E).         │
+│                                                                      │
+│ Layer placement: L0u — orchestration utility below L1.               │
+│ Not a middleware. Not a provider. Not a sidecar.                     │
+│ It IS the outer loop that creates Koi instances.                     │
+└──────────────────────────────────────────────────────────────────────┘
+
+
+AUTONOMOUS AGENT SYSTEM (L2 middleware/providers + L3 bundle)
+═════════════════════════════════════════════════════════════
+
+Issues: #684 (thread + inbox), #687 (lifecycle + pool), #688 (forge bridge)
+
+The autonomous layer sits between the engine (L1) and governance (L3).
+It is composed entirely of middleware + providers — no L1 changes needed.
+Injected into createKoi like any other middleware. Zero overhead when idle.
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ THE AUTONOMOUS EVOLUTIONARY LOOP                                     │
+│                                                                      │
+│ ┌─────────────────────────────────────────────────────────────────┐  │
+│ │ 1. DETECT — does this task need autonomy?                       │  │
+│ │                                                                 │  │
+│ │ Autonomous middleware always present, idle by default.           │  │
+│ │ Agent self-escalates by calling plan_autonomous() tool.         │  │
+│ │ "hello" → middleware idle, zero overhead.                       │  │
+│ │ "refactor auth, tests must pass" → agent calls:                │  │
+│ │   plan_autonomous({                                             │  │
+│ │     items: [                                                    │  │
+│ │       { id: "audit",   description: "...", gate: "file" },     │  │
+│ │       { id: "impl",    description: "...", gate: "test",       │  │
+│ │                         parallel: true },                       │  │
+│ │       { id: "tests",   description: "...", gate: "test",       │  │
+│ │                         parallel: true },                       │  │
+│ │       { id: "cleanup", description: "...",                     │  │
+│ │                         dependsOn: ["impl", "tests"] },        │  │
+│ │     ]                                                           │  │
+│ │   })                                                            │  │
+│ │ Middleware activates. TaskBoard created. Agent works items.     │  │
+│ └─────────────────────────┬───────────────────────────────────────┘  │
+│                           │                                          │
+│                           ▼                                          │
+│ ┌─────────────────────────────────────────────────────────────────┐  │
+│ │ 2. DISCOVER — who can do this work?                             │  │
+│ │                                                                 │  │
+│ │ Items with parallel:true or agentType:                          │  │
+│ │   ForgeAgentResolver queries catalog (#688):                    │  │
+│ │     catalog.search({ kind: "agent", tags: [capability] })       │  │
+│ │     → returns N agent bricks, fitness-ranked                    │  │
+│ │     → variant-selection picks best manifest                     │  │
+│ │                                                                 │  │
+│ │ Items with reuse:true:                                          │  │
+│ │   task-spawn's findLive(agentType) queries registry (#687):     │  │
+│ │     registry.list({ agentType: "copilot", phase: "idle" })      │  │
+│ │     → warm copilot found? → message it (skip cold-start)        │  │
+│ │     → not found? → auto-create from manifest + persist          │  │
+│ │                                                                 │  │
+│ │ No agent bricks exist for this capability?                      │  │
+│ │   forge-demand fires "capability_gap" signal                    │  │
+│ │   → LLM creates new agent manifest via forge_agent              │  │
+│ │   → verify in sandbox → save to ForgeStore → now discoverable   │  │
+│ └─────────────────────────┬───────────────────────────────────────┘  │
+│                           │                                          │
+│                           ▼                                          │
+│ ┌─────────────────────────────────────────────────────────────────┐  │
+│ │ 3. DELEGATE — dispatch work to children                         │  │
+│ │                                                                 │  │
+│ │ Sequential items (default):                                     │  │
+│ │   Agent works them one at a time, own context.                  │  │
+│ │                                                                 │  │
+│ │ Parallel items (parallel: true):                                │  │
+│ │   parallel-minions: executeBatch(config, tasks)                 │  │
+│ │   Strategies: best-effort | fail-fast | quorum                  │  │
+│ │   Concurrency: semaphore + lane-semaphore per agent type        │  │
+│ │   Parent → "background" state (#687), still accepting messages  │  │
+│ │                                                                 │  │
+│ │ DAG items (dependsOn: [...]):                                   │  │
+│ │   orchestrator: board.ready() → topological sort                │  │
+│ │   Cycle detection via DFS. maxConcurrency enforcement.          │  │
+│ │                                                                 │  │
+│ │ Copilot items (reuse: true):                                    │  │
+│ │   task-spawn: findLive → message | spawn                        │  │
+│ │   Warm copilot stays alive between tasks (thread persists).     │  │
+│ └─────────────────────────┬───────────────────────────────────────┘  │
+│                           │                                          │
+│                           ▼                                          │
+│ ┌─────────────────────────────────────────────────────────────────┐  │
+│ │ 4. VERIFY — did it actually work?                               │  │
+│ │                                                                 │  │
+│ │ Agent calls task_complete(itemId) when it thinks item is done.  │  │
+│ │ Middleware runs gate (from verified-loop):                       │  │
+│ │   createTestGate(["bun", "test"])  → exit code 0 = pass         │  │
+│ │   createFileGate(path, /pattern/)  → file contains match = pass │  │
+│ │   createCompositeGate([g1, g2])    → all sub-gates pass         │  │
+│ │                                                                 │  │
+│ │ Gate passes → item marked done.                                 │  │
+│ │ Gate fails  → learning recorded, agent retries.                 │  │
+│ │ 3 failures  → item auto-skipped.                                │  │
+│ │                                                                 │  │
+│ │ Shifts from "LLM says done" to "external proof."                │  │
+│ └─────────────────────────┬───────────────────────────────────────┘  │
+│                           │                                          │
+│                           ▼                                          │
+│ ┌─────────────────────────────────────────────────────────────────┐  │
+│ │ 5. EVOLVE — learn from outcomes                                 │  │
+│ │                                                                 │  │
+│ │ feedback-loop tracks success/failure/latency per agent brick:   │  │
+│ │   Success → fitness ↑, trail strength ↑ (stigmergy)             │  │
+│ │   Failure → fitness ↓                                           │  │
+│ │                                                                 │  │
+│ │ Demotion: errorRate ≥ 30% → demote trustTier                   │  │
+│ │   promoted → verified → sandbox (floor)                         │  │
+│ │                                                                 │  │
+│ │ Quarantine: errorRate ≥ 50% → stop using this variant           │  │
+│ │   lifecycle: "active" → "quarantined" (terminal, needs re-forge)│  │
+│ │                                                                 │  │
+│ │ Mutation pressure: fitness > 0.9 → freeze capability space      │  │
+│ │   Blocks forging more variants when incumbent is strong.        │  │
+│ │                                                                 │  │
+│ │ Crystallize: agent always does same 5 tool calls?               │  │
+│ │   → forge composite tool that replaces spawning entirely        │  │
+│ │   → cheaper, faster, no cold-start next time                    │  │
+│ └─────────────────────────┬───────────────────────────────────────┘  │
+│                           │                                          │
+│                           └──── back to DETECT (next task/message)   │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+How it wires into the existing system:
+
+```
+Existing system (no changes needed):
+
+  Gateway ─────── Node ─────── createKoi ─────── Middleware chain
+                                    │
+                                    │ providers: [ipcProvider, memoryProvider,
+                                    │             schedulerProvider,
+                                    │             ...autonomousBundle.providers]
+                                    │
+                                    │ middleware: [payMiddleware,
+                                    │             ...governanceBundle.middleware,
+                                    │             ...autonomousBundle.middleware]
+                                    │
+                                    ▼
+                             Agent has ALL tools:
+                               ipc_send, ipc_discover    (from ipc-nexus)
+                               memory_store/recall        (from memory-fs)
+                               scheduler_schedule/...     (from scheduler-provider)
+                               plan_autonomous            (from autonomous middleware)
+                               task_complete              (from autonomous middleware)
+                               task_status                (from autonomous middleware)
+                               parallel_task              (from parallel-minions)
+                               task                       (from task-spawn)
+                               orchestrate                (from orchestrator)
+                               forge_tool, forge_agent    (from forge)
+
+The autonomous middleware composes with governance. Priority ordering:
+
+  100  permissions           (governance)
+  110  exec-approvals        (governance)
+  120  delegation            (governance)
+  150  governance-backend    (governance)
+  200  autonomous-middleware (autonomous — plan/complete/verify)
+  220  tool-squash           (context-arena)
+  225  compactor             (context-arena)
+  250  ctx-editing           (context-arena)
+  300  audit                 (governance)
+  340  pii                   (governance)
+  350  sanitize              (governance)
+
+Governance runs BEFORE autonomous — permissions/approvals gate tool calls.
+Context-arena runs AFTER autonomous — compaction respects pinned messages.
+Audit sees everything — including plan_autonomous and task_complete calls.
+```
+
+Scheduler + autonomous interaction (daily briefing):
+
+```
+┌───────────────────────────────────────────────────────────────────┐
+│ Personal Assistant (always-on, ThreadId: "user-alice")            │
+│ Middleware: governance + autonomous (verified preset) + arena     │
+│                                                                   │
+│ 1. User: "Set up daily briefing at 8am"                          │
+│    → Agent calls scheduler_schedule("0 8 * * *", ...)            │
+│                                                                   │
+│ [Night passes]                                                    │
+│                                                                   │
+│ 2. Scheduler fires at 8am                                        │
+│    → Nexus dispatches via IPC → agent mailbox                    │
+│    → Engine inbox queues message (agent idle or busy)            │
+│                                                                   │
+│ 3. Agent wakes (idle → running), sees briefing task              │
+│    → Calls task({ description: "daily briefing",                 │
+│                   agent_type: "briefing-copilot" })               │
+│    │                                                              │
+│    ├─ findLive("briefing-copilot") → AgentId found?              │
+│    │   YES → message warm copilot (Day 2+, thread persists)      │
+│    │   NO  → auto-create copilot from manifest (#687)            │
+│    │         copilot runs → returns result → transitions to idle  │
+│    │         registered in AgentRegistry for next findLive()      │
+│    │                                                              │
+│ 4. Result flows back via ChildCompletionResult                   │
+│    → Agent sends briefing to user via Telegram channel           │
+│    → Agent transitions to idle, awaits next message/cron         │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+Layer compliance:
+
+```
+L0 (core):    ThreadId, ThreadStore interface, CheckpointPolicy
+              "idle" + "background" ProcessState
+              Gate interfaces (VerificationFn, GateContext)
+              BrickArtifact{kind:"agent"} (already exists)
+              → pure types, zero imports ✅
+
+L1 (engine):  Thread-aware engine decorator (auto-checkpoint)
+              Engine inbox (FIFO queue per agent)
+              idle ↔ running transitions
+              background state on child spawn
+              → depends only on L0 ✅
+
+L2 (feature): Autonomous middleware (plan/complete/verify)
+              ThreadStore backends (SQLite, Nexus)
+              ForgeAgentResolver (catalog + variant-selection)
+              Agent fitness tracking (extend feedback-loop)
+              Agent demand heuristics (extend forge-demand)
+              parallel-minions, task-spawn, orchestrator (exist)
+              → depends only on L0/L0u ✅
+
+L3 (bundle):  @koi/autonomous bundles middleware + providers
+              Presets: minimal / standard / verified / full
+              Follows @koi/governance pattern exactly
+              → re-exports + wiring only ✅
+```
+
+Comparison with other frameworks (OpenClaw, OpenHands, LangGraph):
+
+```
+┌──────────────────────┬─────────┬──────────┬───────────┬──────────┐
+│ Capability           │ Koi     │ OpenClaw │ OpenHands │ LangGraph│
+│                      │ (plan)  │          │ V1        │          │
+├──────────────────────┼─────────┼──────────┼───────────┼──────────┤
+│ Idle state           │ ✅ #687 │ ✅       │ ✅        │ ✗        │
+│ Worker pool          │ ✅ #687 │ ✅       │ ✗ (prop.) │ ✗        │
+│ Engine inbox/queue   │ ✅ #684 │ ✅ lanes │ ✅ FIFO   │ ✗        │
+│ Thread persistence   │ ✅ #684 │ ✅       │ ✅ events │ ✅ ckpt  │
+│ Auto-checkpoint      │ ✅ #684 │ internal │ ✅ auto   │ ✅ nodes │
+│ Parallel delegation  │ ✅ exist│ ✗        │ ✅ V1     │ ✗        │
+│ DAG orchestration    │ ✅ exist│ ✗        │ ✗         │ ✅ graph │
+│ Copilot routing      │ ✅ exist│ ✗        │ ✗         │ ✗        │
+│ Self-extend (forge)  │ ✅ exist│ ✗        │ ✗         │ ✗        │
+│ Fitness tracking     │ ✅ exist│ ✗        │ ✗         │ ✗        │
+│ Variant selection    │ ✅ exist│ ✗        │ ✗         │ ✗        │
+│ Demand detection     │ ✅ exist│ ✗        │ ✗         │ ✗        │
+│ Verified completion  │ ✅ exist│ ✗        │ ✗         │ ✗        │
+│ Forge→delegate bridge│ ✅ #688 │ ✗        │ ✗         │ ✗        │
+└──────────────────────┴─────────┴──────────┴───────────┴──────────┘
+
+Unique to Koi: the DETECT → DISCOVER → DELEGATE → VERIFY → EVOLVE
+loop does not exist in any other framework. Individual pieces exist
+(OpenClaw has idle+pool, OpenHands has persistence, LangGraph has
+checkpoints), but nobody combines delegation + evolution + verification
+in a single middleware-composable layer.
+```
+
+
 L3 META-PACKAGES (convenience bundles — re-export from L0 + L1 + L2)
 ═════════════════════════════════════════════════════════════════════
 
@@ -1705,6 +2107,49 @@ scheduler + scheduler-provider (sidecar — cron + task queue)
     └──────────────┴───────────────────┴────────────────────────────┘
 
 
+verified-loop (autonomy orchestrator — external verification)
+─────────────────────────────────────────────────────────────
+
+  Not a middleware, provider, or sidecar. An outer loop that wraps L1.
+
+  ┌───────────────────────────────────────────────────────────────────┐
+  │ Consumer app                                                      │
+  │   │                                                               │
+  │   ▼                                                               │
+  │ createVerifiedLoop(config)                                        │
+  │   │                                                               │
+  │   │ for each iteration (1..maxIterations):                        │
+  │   │   ┌─────────────────────────────────────────────────────────┐ │
+  │   │   │ 1. Read PRD → pick next item                           │ │
+  │   │   │ 2. Build prompt (currentItem + learnings + history)    │ │
+  │   │   │ 3. RunIterationFn → createKoi (FRESH runtime)          │ │
+  │   │   │      └── adapter + middleware + providers               │ │
+  │   │   │      └── yields EngineEvent stream                      │ │
+  │   │   │ 4. VerificationFn → gate checks (tests, files, custom) │ │
+  │   │   │ 5. Gate pass → markDone | Gate fail → counter++         │ │
+  │   │   │ 6. Append learning to rolling journal                  │ │
+  │   │   └─────────────────────────────────────────────────────────┘ │
+  │   │                                                               │
+  │   ▼                                                               │
+  │ VerifiedLoopResult { completed[], skipped[], learnings[] }        │
+  └───────────────────────────────────────────────────────────────────┘
+
+  State on disk:
+    PRD file (JSON)       — task list + progress tracking
+    Learnings file (JSON) — rolling journal (last 50 entries)
+
+  Why it matters for multi-node:
+    - Each iteration creates a FRESH Koi runtime → clean context window
+    - Filesystem is the shared state → works across context resets
+    - Gate is external verification → prevents LLM hallucinating completion
+    - Stuck-loop detection → skips items after 3 consecutive failures
+    - Can compose with IPC + scheduler: scheduler triggers loop,
+      loop runs iterations, IPC delivers results to supervisor
+
+  Layer: L0u. Depends on @koi/core + @koi/errors only.
+  Consumer wires their own createKoi + adapter + gates.
+
+
 memory-fs (agent long-term memory with decay + auto-digest)
 ───────────────────────────────────────────────────────────
 
@@ -2052,6 +2497,45 @@ const schedulerProvider = createSchedulerProvider(scheduler)
 
 // Agent gets scheduler tools via provider:
 // node.dispatch(pid, manifest, engine, [ipcProvider, memoryProvider, schedulerProvider])
+
+// verified-loop: autonomy orchestrator (wraps L1, not inside it)
+const loop = createVerifiedLoop({
+  prdPath: "./tasks/prd.json",
+  learningsPath: "./tasks/learnings.json",
+  maxIterations: 20,
+  maxConsecutiveFailures: 3,
+
+  // Consumer wires their own engine per iteration (fresh context each time)
+  runIteration: async function*(input) {
+    const runtime = await createKoi(manifest, adapter, {
+      providers: [ipcProvider, memoryProvider],
+      middleware: [payMiddleware],
+    })
+    yield* runtime.run(input)
+  },
+
+  // External objective check — composable gates
+  verify: createCompositeGate([
+    createTestGate(["bun", "test"]),
+    createFileGate("dist/output.js", /export/),
+  ]),
+
+  // Prompt builder — receives rich context
+  iterationPrompt: (ctx) =>
+    `Work on: ${ctx.currentItem?.description}\n` +
+    `Completed: ${ctx.completedItems.map(i => i.id).join(", ")}\n` +
+    `Learnings: ${ctx.learnings.slice(-3).map(l => l.context).join("; ")}`,
+
+  onIteration: (record) => {
+    console.log(`#${record.iteration}: ${record.itemId} → ${record.gateResult.passed}`)
+  },
+})
+
+const result = await loop.run()
+// result.completed  — items verified done
+// result.skipped    — items skipped after 3 consecutive failures
+// result.remaining  — items not yet attempted
+// result.learnings  — rolling journal of discoveries + failures
 
 // OR via context-arena (L3) — auto-wires memory + compactor + squash:
 const arena = await createContextArena({
