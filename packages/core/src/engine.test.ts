@@ -32,6 +32,8 @@ function engineEventLabel(event: EngineEvent): string {
       return "done";
     case "custom":
       return "custom";
+    case "discovery:miss":
+      return "miss";
     default: {
       const _exhaustive: never = event;
       return String(_exhaustive);
@@ -90,6 +92,15 @@ describe("EngineEvent exhaustiveness", () => {
   test("custom variant is handled", () => {
     const event: EngineEvent = { kind: "custom", type: "x", data: null };
     expect(engineEventLabel(event)).toBe("custom");
+  });
+
+  test("discovery:miss variant is handled", () => {
+    const event: EngineEvent = {
+      kind: "discovery:miss",
+      resolverSource: "forge",
+      timestamp: Date.now(),
+    };
+    expect(engineEventLabel(event)).toBe("miss");
   });
 });
 

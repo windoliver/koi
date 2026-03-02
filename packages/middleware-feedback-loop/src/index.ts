@@ -18,6 +18,7 @@ export { defaultRepairStrategy, formatErrors } from "./repair.js";
 export type { ToolFlushState, ToolHealthTracker } from "./tool-health.js";
 export { createToolHealthTracker } from "./tool-health.js";
 export type {
+  DiscoveryMissRecord,
   ForgeToolErrorFeedback,
   RepairStrategy,
   RetryConfig,
@@ -25,6 +26,7 @@ export type {
   ToolHealthMetrics,
   ToolHealthSnapshot,
   ToolHealthState,
+  TrustDemotionReason,
   ValidationError,
   ValidationResult,
   Validator,

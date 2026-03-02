@@ -43,7 +43,7 @@ interface ForgeToolErrorFeedback {
     readonly suggestion: string;
 }
 /** Reason for a trust tier demotion. */
-type TrustDemotionReason = "error_rate" | "dependency_failure" | "manual" | "re_verification_failed";
+type TrustDemotionReason = "error_rate" | "dependency_failure" | "manual" | "re_verification_failed" | "source_drift";
 /** Event emitted when a tool's trust tier is demoted. */
 interface TrustDemotionEvent {
     readonly brickId: string;
@@ -55,6 +55,11 @@ interface TrustDemotionEvent {
         readonly sampleSize: number;
         readonly periodMs: number;
     };
+}
+/** Record of a resolver discovery returning zero results. */
+interface DiscoveryMissRecord {
+    readonly timestamp: number;
+    readonly resolverSource: string;
 }
 /** Category-aware retry budget configuration. */
 interface RetryConfig {
@@ -127,6 +132,10 @@ interface FeedbackLoopConfig {
     readonly onGateFail?: (gateName: string, errors: readonly ValidationError[]) => void;
     /** Forge tool runtime health tracking configuration. */
     readonly forgeHealth?: ForgeHealthConfig;
+    /** Called when discovery miss count exceeds threshold. */
+    readonly onDiscoveryMiss?: (record: DiscoveryMissRecord) => void;
+    /** Number of misses before emitting a suggestion. Default: 3. */
+    readonly missThreshold?: number;
 }
 /** Validates a config object and returns a typed Result. */
 declare function validateFeedbackLoopConfig(config: unknown): Result<FeedbackLoopConfig, KoiError>;
@@ -247,6 +256,6 @@ declare function formatErrors(errors: readonly ValidationError[]): string;
 /** Default repair: appends assistant response + error summary as messages (~200 tokens). */
 declare const defaultRepairStrategy: RepairStrategy;
 
-export { type FeedbackLoopConfig, type FeedbackLoopHandle, type FlushDeltas, type ForgeHealthConfig, type ForgeRepairConfig, type ForgeToolErrorFeedback, type RepairStrategy, type RetryConfig, type ToolFlushState, type ToolHealthTracker, type ValidationError, type ValidationResult, type Validator, computeMergedFitness, createFeedbackLoopMiddleware, createForgeRepairStrategy, createToolHealthTracker, defaultRepairStrategy, formatErrors, shouldFlush, validateFeedbackLoopConfig };
+export { type DiscoveryMissRecord, type FeedbackLoopConfig, type FeedbackLoopHandle, type FlushDeltas, type ForgeHealthConfig, type ForgeRepairConfig, type ForgeToolErrorFeedback, type RepairStrategy, type RetryConfig, type ToolFlushState, type ToolHealthTracker, type TrustDemotionReason, type ValidationError, type ValidationResult, type Validator, computeMergedFitness, createFeedbackLoopMiddleware, createForgeRepairStrategy, createToolHealthTracker, defaultRepairStrategy, formatErrors, shouldFlush, validateFeedbackLoopConfig };
 "
 `;

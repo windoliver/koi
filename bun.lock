@@ -848,6 +848,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/edit-match": "workspace:*",
+        "@koi/git-utils": "workspace:*",
         "@koi/hash": "workspace:*",
         "@koi/resolve": "workspace:*",
         "@koi/validation": "workspace:*",
