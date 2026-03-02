@@ -43,6 +43,7 @@
       - "packages/test-utils/**"
       - "packages/token-estimator/**"
       - "packages/validation/**"
+      - "packages/variant-selection/**"
 
 "layer:L3":
   - changed-files:
@@ -91,3 +92,4 @@
       - "!packages/test-utils/**"
       - "!packages/token-estimator/**"
       - "!packages/validation/**"
+      - "!packages/variant-selection/**"
