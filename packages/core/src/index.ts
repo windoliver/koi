@@ -865,6 +865,20 @@ export type {
   WebhookPayload,
   WebhookSummary,
 } from "./webhook.js";
+// workspace — workspace isolation contract types
+export type {
+  CleanupPolicy,
+  ResolvedWorkspaceConfig,
+  WorkspaceBackend,
+  WorkspaceId,
+  WorkspaceInfo,
+} from "./workspace.js";
+// workspace — runtime values (branded constructor + defaults)
+export {
+  DEFAULT_CLEANUP_POLICY,
+  DEFAULT_CLEANUP_TIMEOUT_MS,
+  workspaceId,
+} from "./workspace.js";
 // zone — multi-zone agent coordination types
 export type {
   ZoneDescriptor,

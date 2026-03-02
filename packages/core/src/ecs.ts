@@ -28,6 +28,7 @@ import type { ScratchpadComponent } from "./scratchpad.js";
 import type { SkillRegistryReader } from "./skill-registry.js";
 import type { VersionIndexReader } from "./version-index.js";
 import type { WebhookComponent } from "./webhook.js";
+import type { WorkspaceInfo } from "./workspace.js";
 import type { ZoneRegistry } from "./zone.js";
 
 // ---------------------------------------------------------------------------
@@ -456,12 +457,11 @@ export interface SpawnLedger {
   readonly capacity: () => number;
 }
 
-export interface WorkspaceComponent {
-  readonly path: string;
-  readonly id: string;
-  readonly createdAt: number;
-  readonly metadata: Readonly<Record<string, string>>;
-}
+/**
+ * WorkspaceComponent is the ECS component type for workspace isolation.
+ * Aliased from WorkspaceInfo (the backend creation result) for backward compat.
+ */
+export type WorkspaceComponent = WorkspaceInfo;
 
 export interface CredentialComponent {
   readonly get: (key: string) => Promise<string | undefined>;

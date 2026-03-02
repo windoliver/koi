@@ -22,16 +22,16 @@ import type {
   SandboxAdapterResult,
   SandboxInstance,
   SandboxProfile,
+  WorkspaceBackend,
   WorkspaceComponent,
 } from "@koi/core";
-import { agentId, WORKSPACE } from "@koi/core";
+import { agentId, WORKSPACE, workspaceId } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { createPiAdapter } from "@koi/engine-pi";
 import { createAnthropicAdapter } from "@koi/model-router";
 import { createDockerWorkspaceBackend } from "../docker-backend.js";
 import { createWorkspaceProvider } from "../provider.js";
-import type { WorkspaceBackend } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Environment gate
@@ -865,7 +865,7 @@ describeE2E("e2e: requireSandbox through full Koi runtime", () => {
       isSandboxed: false,
       create: async () => ({
         ok: true,
-        value: { id: "x", path: "/tmp", createdAt: 0, metadata: {} },
+        value: { id: workspaceId("x"), path: "/tmp", createdAt: 0, metadata: {} },
       }),
       dispose: async () => ({ ok: true, value: undefined }),
       isHealthy: () => false,
@@ -889,7 +889,7 @@ describeE2E("e2e: requireSandbox through full Koi runtime", () => {
       isSandboxed: false,
       create: async () => ({
         ok: true,
-        value: { id: "x", path: "/tmp", createdAt: 0, metadata: {} },
+        value: { id: workspaceId("x"), path: "/tmp", createdAt: 0, metadata: {} },
       }),
       dispose: async () => ({ ok: true, value: undefined }),
       isHealthy: () => false,

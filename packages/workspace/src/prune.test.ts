@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import type { ResolvedWorkspaceConfig, WorkspaceBackend } from "@koi/core";
 import { agentId } from "@koi/core";
 import type { TempGitRepo } from "@koi/test-utils";
 import { createTempGitRepo } from "@koi/test-utils";
 import { createGitWorktreeBackend } from "./git-backend.js";
 import { pruneStaleWorkspaces } from "./prune.js";
-import type { ResolvedWorkspaceConfig, WorkspaceBackend } from "./types.js";
 
 const DEFAULT_CONFIG: ResolvedWorkspaceConfig = {
   cleanupPolicy: "on_success",

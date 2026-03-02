@@ -1,6 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import type { AgentId, Result } from "@koi/core";
-import type { ResolvedWorkspaceConfig, WorkspaceBackend, WorkspaceInfo } from "./types.js";
+import type {
+  AgentId,
+  ResolvedWorkspaceConfig,
+  Result,
+  WorkspaceBackend,
+  WorkspaceInfo,
+} from "@koi/core";
+import { workspaceId } from "@koi/core";
 import { validateWorkspaceConfig } from "./validate-config.js";
 
 const stubBackend: WorkspaceBackend = {
@@ -11,7 +17,7 @@ const stubBackend: WorkspaceBackend = {
     _config: ResolvedWorkspaceConfig,
   ): Promise<Result<WorkspaceInfo>> => ({
     ok: true,
-    value: { id: "x", path: "/tmp/x", createdAt: 0, metadata: {} },
+    value: { id: workspaceId("x"), path: "/tmp/x", createdAt: 0, metadata: {} },
   }),
   dispose: async () => ({ ok: true as const, value: undefined }),
   isHealthy: () => true,

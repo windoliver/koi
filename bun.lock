@@ -2170,6 +2170,17 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/workspace-nexus": {
+      "name": "@koi/workspace-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/worktree-merge": {
       "name": "@koi/worktree-merge",
       "version": "0.0.0",
@@ -2996,6 +3007,8 @@
     "@koi/webhook-provider": ["@koi/webhook-provider@workspace:packages/webhook-provider"],
 
     "@koi/workspace": ["@koi/workspace@workspace:packages/workspace"],
+
+    "@koi/workspace-nexus": ["@koi/workspace-nexus@workspace:packages/workspace-nexus"],
 
     "@koi/worktree-merge": ["@koi/worktree-merge@workspace:packages/worktree-merge"],
 
