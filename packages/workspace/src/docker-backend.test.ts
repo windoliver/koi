@@ -1,14 +1,15 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import type {
   AgentId,
+  ResolvedWorkspaceConfig,
   SandboxAdapter,
   SandboxAdapterResult,
   SandboxInstance,
   SandboxProfile,
+  WorkspaceBackend,
 } from "@koi/core";
-import { agentId } from "@koi/core";
+import { agentId, workspaceId } from "@koi/core";
 import { createDockerWorkspaceBackend, createFilesystemPolicy } from "./docker-backend.js";
-import type { ResolvedWorkspaceConfig, WorkspaceBackend } from "./types.js";
 import { validateWorkspaceConfig } from "./validate-config.js";
 
 // ---------------------------------------------------------------------------
@@ -272,7 +273,7 @@ describe("DockerWorkspaceBackend", () => {
     });
 
     it("returns NOT_FOUND for unknown workspace ID", async () => {
-      const result = await backend.dispose("unknown-id");
+      const result = await backend.dispose(workspaceId("unknown-id"));
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.error.code).toBe("NOT_FOUND");
@@ -326,7 +327,7 @@ describe("DockerWorkspaceBackend", () => {
     });
 
     it("returns false for unknown workspace ID", async () => {
-      const healthy = await backend.isHealthy("nonexistent");
+      const healthy = await backend.isHealthy(workspaceId("nonexistent"));
       expect(healthy).toBe(false);
     });
 
@@ -649,7 +650,7 @@ describe("requireSandbox", () => {
       isSandboxed: false,
       create: async () => ({
         ok: true,
-        value: { id: "x", path: "/tmp", createdAt: 0, metadata: {} },
+        value: { id: workspaceId("x"), path: "/tmp", createdAt: 0, metadata: {} },
       }),
       dispose: async () => ({ ok: true, value: undefined }),
       isHealthy: () => false,
@@ -672,7 +673,7 @@ describe("requireSandbox", () => {
       isSandboxed: false,
       create: async () => ({
         ok: true,
-        value: { id: "x", path: "/tmp", createdAt: 0, metadata: {} },
+        value: { id: workspaceId("x"), path: "/tmp", createdAt: 0, metadata: {} },
       }),
       dispose: async () => ({ ok: true, value: undefined }),
       isHealthy: () => false,

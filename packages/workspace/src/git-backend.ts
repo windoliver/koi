@@ -8,9 +8,17 @@
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { AgentId, KoiError, Result } from "@koi/core";
+import type {
+  AgentId,
+  KoiError,
+  ResolvedWorkspaceConfig,
+  Result,
+  WorkspaceBackend,
+  WorkspaceId,
+  WorkspaceInfo,
+} from "@koi/core";
+import { workspaceId } from "@koi/core";
 import { resolveWorktreeBasePath, runGit } from "@koi/git-utils";
-import type { ResolvedWorkspaceConfig, WorkspaceBackend, WorkspaceInfo } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -108,7 +116,7 @@ export function createGitWorktreeBackend(
       if (!addResult.ok) return addResult;
 
       const createdAt = Date.now();
-      const id = `git-wt-${agentId}-${createdAt}`;
+      const id = workspaceId(`git-wt-${agentId}-${createdAt}`);
 
       // Write marker file for orphan detection
       const marker = JSON.stringify({
@@ -138,20 +146,20 @@ export function createGitWorktreeBackend(
       };
     },
 
-    dispose: async (workspaceId: string): Promise<Result<void, KoiError>> => {
-      const entry = tracked.get(workspaceId);
+    dispose: async (wsId: WorkspaceId): Promise<Result<void, KoiError>> => {
+      const entry = tracked.get(wsId);
       if (!entry) {
         return {
           ok: false,
           error: {
             code: "NOT_FOUND",
-            message: `Unknown workspace ID: ${workspaceId}`,
+            message: `Unknown workspace ID: ${wsId}`,
             retryable: false,
           },
         };
       }
 
-      tracked.delete(workspaceId);
+      tracked.delete(wsId);
 
       // Remove worktree (try force first, then non-force)
       const removeResult = await runGit(
@@ -177,8 +185,8 @@ export function createGitWorktreeBackend(
       return { ok: true, value: undefined };
     },
 
-    isHealthy: (workspaceId: string): boolean => {
-      const entry = tracked.get(workspaceId);
+    isHealthy: (wsId: WorkspaceId): boolean => {
+      const entry = tracked.get(wsId);
       if (!entry) return false;
       return (
         existsSync(entry.worktreePath) && existsSync(`${entry.worktreePath}/${MARKER_FILENAME}`)

@@ -101,3 +101,4 @@ export {
 export type { VersionIndexContractOptions } from "./version-index-contract.js";
 export { testVersionIndexContract } from "./version-index-contract.js";
 export { createInMemoryVersionIndex } from "./version-index-memory.js";
+export { runWorkspaceBackendContractTests } from "./workspace-backend-contract.js";
