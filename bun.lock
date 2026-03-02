@@ -744,6 +744,17 @@
         "@sinclair/typebox": "0.34.33",
       },
     },
+    "packages/engine-rlm": {
+      "name": "@koi/engine-rlm",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/errors": {
       "name": "@koi/errors",
       "version": "0.0.0",
@@ -2784,6 +2795,8 @@
     "@koi/engine-loop": ["@koi/engine-loop@workspace:packages/engine-loop"],
 
     "@koi/engine-pi": ["@koi/engine-pi@workspace:packages/engine-pi"],
+
+    "@koi/engine-rlm": ["@koi/engine-rlm@workspace:packages/engine-rlm"],
 
     "@koi/errors": ["@koi/errors@workspace:packages/errors"],
 
