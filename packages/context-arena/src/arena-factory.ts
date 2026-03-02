@@ -8,7 +8,13 @@
 import type { ContextHydratorMiddleware } from "@koi/context";
 import { createContextHydrator } from "@koi/context";
 import type { Agent } from "@koi/core/ecs";
-import { createFsMemory, createMemoryProvider } from "@koi/memory-fs";
+import type { ModelHandler } from "@koi/core/middleware";
+import type { MergeHandler } from "@koi/memory-fs";
+import {
+  createFsMemory,
+  createMemoryProvider,
+  createUserScopedMemoryProvider,
+} from "@koi/memory-fs";
 import { createCompactorMiddleware } from "@koi/middleware-compactor";
 import { createContextEditingMiddleware } from "@koi/middleware-context-editing";
 import { createPersonalizationMiddleware } from "@koi/middleware-personalization";
@@ -16,6 +22,34 @@ import { createPreferenceMiddleware } from "@koi/middleware-preference";
 import { createSquashProvider } from "@koi/tool-squash";
 import { resolveContextArenaConfig } from "./config-resolution.js";
 import type { ContextArenaBundle, ContextArenaConfig } from "./types.js";
+
+const MERGE_PROMPT =
+  "Merge these two related facts about the same topic into a single concise fact." +
+  " Preserve all unique details from both. Return only the merged text, nothing else." +
+  "\n\nFact 1: ";
+
+/**
+ * Creates a default merge handler that delegates to the summarizer model.
+ *
+ * Uses a minimal prompt to combine two related facts. Returns undefined
+ * if the model response is empty (falls through to supersede).
+ */
+function createDefaultMergeHandler(summarizer: ModelHandler): MergeHandler {
+  return async (existing: string, incoming: string): Promise<string | undefined> => {
+    const response = await summarizer({
+      messages: [
+        {
+          content: [{ kind: "text", text: `${MERGE_PROMPT}${existing}\n\nFact 2: ${incoming}` }],
+          senderId: "system",
+          timestamp: Date.now(),
+        },
+      ],
+      maxTokens: 256,
+    });
+    const merged = response.content.trim();
+    return merged.length > 0 ? merged : undefined;
+  };
+}
 
 /**
  * Creates a fully wired context arena bundle with coordinated budget allocation.
@@ -29,13 +63,26 @@ import type { ContextArenaBundle, ContextArenaConfig } from "./types.js";
 export async function createContextArena(config: ContextArenaConfig): Promise<ContextArenaBundle> {
   const resolved = resolveContextArenaConfig(config);
 
-  // --- Opt-in: filesystem memory (created early so squash + compactor can share it) ---
+  // --- Opt-in: filesystem memory ---
+  // Auto-wire merge handler when memoryFs is enabled (unless explicitly disabled or provided)
+  const memoryFsConfig = config.memoryFs?.config;
+  const mergeHandler =
+    memoryFsConfig !== undefined && config.memoryFs?.disableMerge !== true
+      ? (memoryFsConfig.mergeHandler ?? createDefaultMergeHandler(config.summarizer))
+      : undefined;
+
+  const effectiveFsConfig =
+    memoryFsConfig !== undefined
+      ? { ...memoryFsConfig, ...(mergeHandler !== undefined ? { mergeHandler } : {}) }
+      : undefined;
+
+  // Create early so squash + compactor can share the component
   const fsMemory =
-    config.memoryFs !== undefined
+    effectiveFsConfig !== undefined
       ? await createFsMemory({
-          ...config.memoryFs.config,
-          retriever: config.memoryFs.retriever ?? config.memoryFs.config.retriever,
-          indexer: config.memoryFs.indexer ?? config.memoryFs.config.indexer,
+          ...effectiveFsConfig,
+          retriever: config.memoryFs?.retriever ?? effectiveFsConfig.retriever,
+          indexer: config.memoryFs?.indexer ?? effectiveFsConfig.indexer,
         })
       : undefined;
 
@@ -107,9 +154,17 @@ export async function createContextArena(config: ContextArenaConfig): Promise<Co
     ...(preferenceMiddleware !== undefined ? [preferenceMiddleware] : []),
   ];
 
-  // --- Opt-in: filesystem memory provider (reuses pre-created fsMemory) ---
+  // --- Opt-in: memory provider (user-scoped or single-instance) ---
   const memoryProvider =
-    fsMemory !== undefined ? createMemoryProvider({ memory: fsMemory }) : undefined;
+    config.memoryFs?.userScoped === true && effectiveFsConfig !== undefined
+      ? createUserScopedMemoryProvider({
+          baseDir: effectiveFsConfig.baseDir,
+          maxCachedUsers: config.memoryFs.maxCachedUsers,
+          memoryConfig: effectiveFsConfig,
+        })
+      : fsMemory !== undefined
+        ? createMemoryProvider({ memory: fsMemory })
+        : undefined;
 
   // --- Providers (immutable) ---
   const providers = [

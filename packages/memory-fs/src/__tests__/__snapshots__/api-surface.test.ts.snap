@@ -20,6 +20,13 @@ interface FsIndexDoc {
     readonly content: string;
     readonly metadata?: Readonly<Record<string, unknown>>;
 }
+/**
+ * Callback that merges two related facts into a single enriched fact.
+ *
+ * Called when an incoming fact has Jaccard similarity in \`[mergeThreshold, dedupThreshold)\`.
+ * Return the merged text string, or \`undefined\` to fall through to supersede logic.
+ */
+type MergeHandler = (existing: string, incoming: string) => Promise<string | undefined>;
 interface FsMemoryConfig {
     readonly baseDir: string;
     readonly retriever?: FsSearchRetriever | undefined;
@@ -31,6 +38,10 @@ interface FsMemoryConfig {
     readonly entityHopDecay?: number | undefined;
     readonly maxEntityHops?: number | undefined;
     readonly perEntityCap?: number | undefined;
+    /** Handler for merging related (but not duplicate) facts. Memory-fs stays LLM-agnostic. */
+    readonly mergeHandler?: MergeHandler | undefined;
+    /** Jaccard threshold below dedupThreshold to trigger merge. Default 0.4. */
+    readonly mergeThreshold?: number | undefined;
 }
 interface FsMemory {
     readonly component: MemoryComponent;
@@ -115,6 +126,49 @@ declare function createMemorySearchTool(memory: FsMemory, prefix: string, trustT
 
 declare function createMemoryStoreTool(component: MemoryComponent, prefix: string, trustTier: TrustTier): Tool;
 
-export { type FsIndexDoc, type FsMemory, type FsMemoryConfig, type FsSearchHit, type FsSearchIndexer, type FsSearchRetriever, MEMORY_OPERATIONS, MEMORY_SKILL_CONTENT, type MemoryOperation, type MemoryProviderConfig, type TierDistribution, createFsMemory, createMemoryProvider, createMemoryRecallTool, createMemorySearchTool, createMemoryStoreTool, generateMemorySkillContent };
+/**
+ * User-scoped memory ComponentProvider.
+ *
+ * Reads \`agent.pid.ownerId\` to route each agent to a per-user FsMemory instance.
+ * Falls back to a shared FsMemory when no userId is available (backward compat).
+ */
+
+interface UserScopedMemoryProviderConfig {
+    readonly baseDir: string;
+    /** Maximum number of per-user FsMemory instances to cache. Default: 100. */
+    readonly maxCachedUsers?: number | undefined;
+    /** Config forwarded to each per-user FsMemory (baseDir is overridden per user). */
+    readonly memoryConfig?: Partial<Omit<FsMemoryConfig, "baseDir">> | undefined;
+    /** Tool name prefix. Default: "memory". */
+    readonly prefix?: string | undefined;
+    /** Trust tier for all tools. Default: "verified". */
+    readonly trustTier?: TrustTier | undefined;
+    /** Subset of operations to expose. Default: all 3. */
+    readonly operations?: readonly MemoryOperation[] | undefined;
+    /** Max results for recall tool. Default: 10. */
+    readonly recallLimit?: number | undefined;
+    /** Max results for search tool. Default: 20. */
+    readonly searchLimit?: number | undefined;
+}
+declare function createUserScopedMemoryProvider(config: UserScopedMemoryProviderConfig): ComponentProvider;
+
+interface UserScopedMemoryConfig {
+    readonly baseDir: string;
+    /** Maximum number of per-user FsMemory instances to cache. Default: 100. */
+    readonly maxCachedUsers?: number | undefined;
+    /** Config forwarded to each per-user FsMemory (baseDir is overridden per user). */
+    readonly memoryConfig?: Partial<Omit<FsMemoryConfig, "baseDir">> | undefined;
+}
+interface UserScopedMemory {
+    /** Get or create an isolated FsMemory for a specific user. */
+    readonly getOrCreate: (userId: string) => Promise<FsMemory>;
+    /** Get the shared (non-user-scoped) FsMemory fallback. */
+    readonly getShared: () => Promise<FsMemory>;
+    /** Flush and close all cached FsMemory instances (including shared). */
+    readonly closeAll: () => Promise<void>;
+}
+declare function createUserScopedMemory(config: UserScopedMemoryConfig): UserScopedMemory;
+
+export { type FsIndexDoc, type FsMemory, type FsMemoryConfig, type FsSearchHit, type FsSearchIndexer, type FsSearchRetriever, MEMORY_OPERATIONS, MEMORY_SKILL_CONTENT, type MemoryOperation, type MemoryProviderConfig, type MergeHandler, type TierDistribution, type UserScopedMemory, type UserScopedMemoryConfig, type UserScopedMemoryProviderConfig, createFsMemory, createMemoryProvider, createMemoryRecallTool, createMemorySearchTool, createMemoryStoreTool, createUserScopedMemory, createUserScopedMemoryProvider, generateMemorySkillContent };
 "
 `;

@@ -8,6 +8,8 @@ export { generateMemorySkillContent, MEMORY_SKILL_CONTENT } from "./provider/ski
 export { createMemoryRecallTool } from "./provider/tools/recall.js";
 export { createMemorySearchTool } from "./provider/tools/search.js";
 export { createMemoryStoreTool } from "./provider/tools/store.js";
+export type { UserScopedMemoryProviderConfig } from "./provider/user-scoped-provider.js";
+export { createUserScopedMemoryProvider } from "./provider/user-scoped-provider.js";
 export type {
   FsIndexDoc,
   FsMemory,
@@ -15,5 +17,8 @@ export type {
   FsSearchHit,
   FsSearchIndexer,
   FsSearchRetriever,
+  MergeHandler,
   TierDistribution,
 } from "./types.js";
+export type { UserScopedMemory, UserScopedMemoryConfig } from "./user-scoped-memory.js";
+export { createUserScopedMemory } from "./user-scoped-memory.js";

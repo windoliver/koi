@@ -24,6 +24,7 @@ import type {
 } from "./types.js";
 
 const DEFAULT_DEDUP_THRESHOLD = 0.7;
+const DEFAULT_MERGE_THRESHOLD = 0.4;
 const DEFAULT_FREQ_PROTECT = 10;
 const DEFAULT_HALF_LIFE_DAYS = 30;
 const DEFAULT_MAX_SUMMARY_FACTS = 10;
@@ -40,10 +41,17 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
     entityHopDecay = DEFAULT_CROSS_ENTITY_CONFIG.entityHopDecay,
     maxEntityHops = DEFAULT_CROSS_ENTITY_CONFIG.maxEntityHops,
     perEntityCap = DEFAULT_CROSS_ENTITY_CONFIG.perEntityCap,
+    mergeHandler,
+    mergeThreshold = DEFAULT_MERGE_THRESHOLD,
   } = config;
 
   if (baseDir.length === 0) {
     throw new Error("FsMemoryConfig.baseDir must be a non-empty string");
+  }
+  if (mergeHandler !== undefined && mergeThreshold >= dedupThreshold) {
+    throw new Error(
+      `FsMemoryConfig.mergeThreshold (${String(mergeThreshold)}) must be less than dedupThreshold (${String(dedupThreshold)})`,
+    );
   }
 
   // let — instance-scoped counter for unique fact IDs
@@ -131,7 +139,8 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
         ? options.causalParents
         : undefined;
 
-    const newFact: MemoryFact = {
+    // let — reassigned in merge path when handler enriches content
+    let newFact: MemoryFact = {
       id: generateId(),
       fact: content,
       category,
@@ -150,9 +159,14 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
       (f) => f.status === "active" && f.category === category,
     );
 
-    // Jaccard dedup: skip if too similar (or reinforce if requested)
+    // Jaccard dedup / merge: skip, merge, or supersede based on similarity zones
+    // [dedupThreshold, 1.0] → skip/reinforce
+    // [mergeThreshold, dedupThreshold) → merge (if handler provided)
+    // [0, mergeThreshold) → new fact (fall through to supersede check)
     for (const old of activeInCategory) {
-      if (jaccard(content, old.fact) >= dedupThreshold) {
+      const similarity = jaccard(content, old.fact);
+
+      if (similarity >= dedupThreshold) {
         if (options?.reinforce === true) {
           // Reinforce: boost existing fact's salience instead of silently skipping
           await factStore.updateFact(entity, old.id, {
@@ -161,6 +175,38 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
           });
         }
         return; // Duplicate — skip creating new fact
+      }
+
+      // Merge zone: handler decides whether to merge or fall through
+      if (similarity >= mergeThreshold && mergeHandler !== undefined) {
+        try {
+          const merged = await mergeHandler(old.fact, content);
+          if (merged !== undefined && merged.length > 0) {
+            // Supersede old fact, store merged text
+            await factStore.updateFact(entity, old.id, {
+              status: "superseded",
+              supersededBy: newFact.id,
+            });
+            // Combine causal parents from both facts
+            const oldParents = old.causalParents ?? [];
+            const newParents = causalParents ?? [];
+            const combinedParents = [...new Set([...oldParents, ...newParents])];
+            // Replace newFact content with merged text and combined parents
+            newFact = {
+              ...newFact,
+              fact: merged,
+              ...(combinedParents.length > 0 ? { causalParents: combinedParents } : {}),
+            };
+            break; // Merged — skip further dedup/merge checks
+          }
+          // Handler returned undefined or "" — fall through to supersede check
+        } catch (mergeErr: unknown) {
+          // Merge handler failed — fall through to supersede check (original fact not lost)
+          console.warn(
+            `[memory-fs] Merge handler failed for entity "${entity}", falling through to supersede`,
+            { cause: mergeErr },
+          );
+        }
       }
     }
 
@@ -353,6 +399,9 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
   ): Promise<readonly MemoryResult[]> => {
     await flushDeferredIndex();
 
+    // Resolve namespace slug for filtering (undefined = no filter)
+    const nsSlug = options?.namespace !== undefined ? slugifyEntity(options.namespace) : undefined;
+
     if (retriever !== undefined) {
       const limit = options?.limit ?? 10;
       const hits = await retriever.retrieve(query, limit * 2);
@@ -366,11 +415,10 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
       for (const hit of hits) {
         const fact = allFacts.get(hit.id);
         if (fact === undefined) continue;
-        candidates.push({
-          fact,
-          entity: resolveEntity({ relatedEntities: fact.relatedEntities }),
-          score: hit.score,
-        });
+        const entity = resolveEntity({ relatedEntities: fact.relatedEntities });
+        // Namespace filter: skip facts that don't belong to the requested namespace
+        if (nsSlug !== undefined && entity !== nsSlug) continue;
+        candidates.push({ fact, entity, score: hit.score });
       }
 
       return processRecallCandidates(candidates, options, factStore);
@@ -378,8 +426,11 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
 
     // Fallback: scan all cached facts, sort by recency
     const allEntities = await factStore.listEntities();
+    // Namespace filter: only scan entities matching the namespace slug
+    const filteredEntities =
+      nsSlug !== undefined ? allEntities.filter((ent) => ent === nsSlug) : allEntities;
     const entityFactArrays = await Promise.all(
-      allEntities.map(async (ent) => ({ ent, facts: await factStore.readFacts(ent) })),
+      filteredEntities.map(async (ent) => ({ ent, facts: await factStore.readFacts(ent) })),
     );
 
     const candidates: Array<{
