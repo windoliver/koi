@@ -27,7 +27,7 @@ export interface ChannelPersonaConfig {
   /** Avatar URL or path for this channel persona. */
   readonly avatar?: string;
   /** Inline instructions string or file path reference for this persona. */
-  readonly instructions?: string | { readonly path: string };
+  readonly instructions?: string | { readonly path: string; readonly maxTokens?: number };
 }
 
 /** Options for creating the unified soul middleware. */
@@ -170,6 +170,18 @@ function validatePersonaEntry(entry: unknown, index: number): KoiError | undefin
         return {
           code: "VALIDATION",
           message: `identity.personas[${index}].instructions.path must be a string`,
+          retryable: RETRYABLE_DEFAULTS.VALIDATION,
+        };
+      }
+      if (
+        entry.instructions.maxTokens !== undefined &&
+        (typeof entry.instructions.maxTokens !== "number" ||
+          !Number.isFinite(entry.instructions.maxTokens) ||
+          entry.instructions.maxTokens <= 0)
+      ) {
+        return {
+          code: "VALIDATION",
+          message: `identity.personas[${index}].instructions.maxTokens must be a positive number`,
           retryable: RETRYABLE_DEFAULTS.VALIDATION,
         };
       }

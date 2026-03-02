@@ -6,8 +6,9 @@
  */
 
 import { resolve } from "node:path";
-import { readBoundedFile } from "@koi/file-resolution";
+import { CHARS_PER_TOKEN, readBoundedFile, truncateToTokenBudget } from "@koi/file-resolution";
 import type { ChannelPersonaConfig } from "./config.js";
+import { DEFAULT_IDENTITY_MAX_TOKENS } from "./config.js";
 
 /** A resolved persona with loaded instruction text and tracked file paths. */
 export interface ResolvedPersona {
@@ -16,6 +17,13 @@ export interface ResolvedPersona {
   readonly avatar?: string;
   readonly instructions: string;
   readonly sources: readonly string[];
+  readonly warnings: readonly string[];
+}
+
+/** Result of creating the persona map, including aggregated warnings. */
+export interface PersonaMapResult {
+  readonly map: ReadonlyMap<string, CachedPersona>;
+  readonly warnings: readonly string[];
 }
 
 /** Cached per-channel persona entry. Stores text for O(1) lookup at call time. */
@@ -28,12 +36,14 @@ export interface CachedPersona {
 
 /**
  * Resolves instruction content for a single persona config entry.
- * If instructions is a `{ path }` object, reads from disk asynchronously.
- * If instructions is an inline string, uses it directly.
+ * If instructions is a `{ path }` object, reads from disk with bounded I/O.
+ * If instructions is an inline string, truncates to the token budget.
+ * Applies DEFAULT_IDENTITY_MAX_TOKENS unless overridden per-persona.
  */
 export async function resolvePersonaContent(
   persona: ChannelPersonaConfig,
   basePath: string | undefined,
+  maxTokens: number = DEFAULT_IDENTITY_MAX_TOKENS,
 ): Promise<ResolvedPersona> {
   const optionalFields = {
     ...(persona.name !== undefined ? { name: persona.name } : {}),
@@ -41,29 +51,68 @@ export async function resolvePersonaContent(
   };
 
   if (persona.instructions === undefined) {
-    return { channelId: persona.channelId, ...optionalFields, instructions: "", sources: [] };
-  }
-
-  if (typeof persona.instructions === "string") {
     return {
       channelId: persona.channelId,
       ...optionalFields,
-      instructions: persona.instructions,
+      instructions: "",
       sources: [],
+      warnings: [],
     };
   }
 
-  // { path: string } — load from file
+  // Determine effective token budget: per-persona override > caller default
+  const effectiveMaxTokens =
+    typeof persona.instructions !== "string" && persona.instructions.maxTokens !== undefined
+      ? persona.instructions.maxTokens
+      : maxTokens;
+
+  const label = `identity persona "${persona.channelId}"`;
+
+  if (typeof persona.instructions === "string") {
+    const { text, warning } = truncateToTokenBudget(
+      persona.instructions,
+      effectiveMaxTokens,
+      label,
+    );
+    return {
+      channelId: persona.channelId,
+      ...optionalFields,
+      instructions: text,
+      sources: [],
+      warnings: warning !== undefined ? [warning] : [],
+    };
+  }
+
+  // { path: string; maxTokens?: number } — load from file with bounded I/O
   const filePath =
     basePath !== undefined
       ? resolve(basePath, persona.instructions.path)
       : resolve(persona.instructions.path);
-  const content = await readBoundedFile(filePath);
+  const maxChars = effectiveMaxTokens * CHARS_PER_TOKEN;
+  const result = await readBoundedFile(filePath, maxChars);
+
+  if (result === undefined) {
+    return {
+      channelId: persona.channelId,
+      ...optionalFields,
+      instructions: "",
+      sources: [],
+      warnings: [],
+    };
+  }
+
+  const warnings: readonly string[] = result.truncated
+    ? [
+        `${label}: content truncated from ${String(result.originalSize)} chars to ${String(maxChars)} chars (~${String(effectiveMaxTokens)} tokens)`,
+      ]
+    : [];
+
   return {
     channelId: persona.channelId,
     ...optionalFields,
-    instructions: content ?? "",
-    sources: content !== undefined ? [filePath] : [],
+    instructions: result.content,
+    sources: [filePath],
+    warnings,
   };
 }
 
@@ -84,12 +133,15 @@ export function generatePersonaText(resolved: ResolvedPersona): string | undefin
 /**
  * Resolves all personas and creates the channelId => CachedPersona map.
  * Personas with no injectable content (no name, no instructions) are excluded.
+ * Returns the map along with aggregated warnings from all persona resolutions.
  */
 export async function createPersonaMap(
   personas: readonly ChannelPersonaConfig[],
   basePath: string | undefined,
-): Promise<Map<string, CachedPersona>> {
+): Promise<PersonaMapResult> {
   const resolved = await Promise.all(personas.map((p) => resolvePersonaContent(p, basePath)));
+
+  const allWarnings = resolved.flatMap((r) => [...r.warnings]);
 
   const map = new Map<string, CachedPersona>();
   for (const r of resolved) {
@@ -98,7 +150,7 @@ export async function createPersonaMap(
 
     map.set(r.channelId, { text, sources: r.sources });
   }
-  return map;
+  return { map, warnings: allWarnings };
 }
 
 /**

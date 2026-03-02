@@ -106,15 +106,17 @@ function emitWarnings(warnings: readonly string[]): void {
  * Creates the full SoulState from all three layers.
  */
 async function createState(options: CreateSoulOptions): Promise<SoulState> {
-  const [soulResult, personaMap, userResult] = await Promise.all([
+  const [soulResult, personaResult, userResult] = await Promise.all([
     resolveSoulLayer(options),
     createPersonaMap(options.identity?.personas ?? [], options.basePath),
     resolveUserLayer(options),
   ]);
 
   emitWarnings(soulResult.warnings);
+  emitWarnings(personaResult.warnings);
   emitWarnings(userResult.warnings);
 
+  const personaMap = personaResult.map;
   const watchedPaths = createAllWatchedPaths(soulResult.sources, personaMap, userResult.sources);
   const selfModify = options.selfModify ?? true;
 

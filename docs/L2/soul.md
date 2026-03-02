@@ -77,7 +77,7 @@ index.ts                 ← public re-exports
 ├── config.ts            ← CreateSoulOptions + ContentInput + ChannelPersonaConfig
 │                           validateSoulConfig(), DEFAULT_*_MAX_TOKENS
 │                           type guards: isRecord(), isContentInput(), isIdentityConfig()
-├── persona-map.ts       ← ResolvedPersona, CachedPersona
+├── persona-map.ts       ← ResolvedPersona, CachedPersona, PersonaMapResult
 │                           resolvePersonaContent(), generatePersonaText()
 │                           createPersonaMap(), createPersonaWatchedPaths()
 ├── state.ts             ← SoulState (atomic closure state)
@@ -228,11 +228,19 @@ Default token budget: `4000` tokens.
 Each persona maps a `channelId` (e.g. `"@koi/channel-telegram"`) to:
 - **name** — injected as `"You are {name}."` prefix
 - **avatar** — metadata only (not injected into text)
-- **instructions** — inline string or file path with persona-specific instructions
+- **instructions** — inline string or `{ path, maxTokens? }` with persona-specific instructions
 
 Personas with no name and no instructions produce no text and are excluded from the map.
 
-Default token budget: `2000` tokens.
+Default token budget: `2000` tokens (`DEFAULT_IDENTITY_MAX_TOKENS`).
+
+**Token budget enforcement:** Both inline and file-based persona instructions are bounded
+to `DEFAULT_IDENTITY_MAX_TOKENS` (2000 tokens ≈ 8000 chars). File reads use bounded I/O
+via `readBoundedFile(path, maxChars)` — only the first `maxChars` bytes are read from disk,
+preventing large persona files from consuming the context window. Inline strings are
+truncated via `truncateToTokenBudget()`. Each persona can override the default budget with
+`{ path: "...", maxTokens: 500 }`. When truncation occurs, a warning is emitted via
+`console.warn` and included in the `PersonaMapResult.warnings` array.
 
 ### User layer (per-user)
 
@@ -464,10 +472,13 @@ interface ChannelPersonaConfig {
   readonly name?: string;
   /** Avatar URL or path for this channel persona. */
   readonly avatar?: string;
-  /** Inline instructions string or file path reference. */
-  readonly instructions?: string | { readonly path: string };
+  /** Inline instructions string or file path reference with optional token budget. */
+  readonly instructions?: string | { readonly path: string; readonly maxTokens?: number };
 }
 ```
+
+When `instructions` is a `{ path, maxTokens? }` object, `maxTokens` overrides the default
+identity token budget (2000) for this persona only. Validated as a positive finite number.
 
 ### `SoulMiddleware`
 
@@ -635,7 +646,34 @@ const mw = await createSoulMiddleware({
 });
 ```
 
-### 4. Manifest-driven via `@koi/starter`
+### 4. Per-persona token budget override
+
+```typescript
+const mw = await createSoulMiddleware({
+  soul: "SOUL.md",
+  identity: {
+    personas: [
+      {
+        channelId: "@koi/channel-telegram",
+        name: "Koi Bot",
+        // Large persona file — bounded to default 2000 tokens (~8000 chars)
+        instructions: { path: "personas/telegram.md" },
+      },
+      {
+        channelId: "@koi/channel-slack",
+        name: "Koi Assistant",
+        // Tight budget — only 500 tokens (~2000 chars) for this persona
+        instructions: { path: "personas/slack.md", maxTokens: 500 },
+      },
+    ],
+  },
+  basePath: import.meta.dir,
+});
+// If telegram.md is 20KB, it's truncated to ~8000 chars with a warning:
+//   [soul middleware] identity persona "@koi/channel-telegram": content truncated ...
+```
+
+### 5. Manifest-driven via `@koi/starter`
 
 ```yaml
 # agent.yaml
@@ -665,7 +703,7 @@ import { createConfiguredKoi } from "@koi/starter";
 const koi = await createConfiguredKoi({ manifestPath: "agent.yaml" });
 ```
 
-### 5. Per-user refresh — dynamic user context
+### 6. Per-user refresh — dynamic user context
 
 ```typescript
 const mw = await createSoulMiddleware({
@@ -677,7 +715,7 @@ const mw = await createSoulMiddleware({
 // External process updates USER.md → next model call picks up new content
 ```
 
-### 6. Composing with other middleware
+### 7. Composing with other middleware
 
 ```typescript
 import { createKoi } from "@koi/engine";
@@ -701,7 +739,7 @@ const koi = createKoi({
 });
 ```
 
-### 7. Self-modification enabled (default)
+### 8. Self-modification enabled (default)
 
 ```typescript
 // selfModify defaults to true — the agent learns about its personality files
@@ -713,7 +751,7 @@ const mw = await createSoulMiddleware({
 // Agent sees: "[Soul System] Your personality is defined in these files: ..."
 ```
 
-### 8. Self-modification disabled
+### 9. Self-modification disabled
 
 ```typescript
 const mw = await createSoulMiddleware({
