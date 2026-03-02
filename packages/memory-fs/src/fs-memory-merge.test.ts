@@ -193,15 +193,17 @@ describe("merge strategy", () => {
       relatedEntities: ["test"],
       category: "parent-a",
     });
-    const parentA = await mergeMem.component.recall("parent A");
-    const parentAId = (parentA[0]?.metadata as Record<string, unknown>)?.id as string;
+    const parentAResults = await mergeMem.component.recall("parent A", { limit: 10 });
+    const parentAFact = parentAResults.find((r) => r.content === "parent A");
+    const parentAId = (parentAFact?.metadata as Record<string, unknown>)?.id as string;
 
     await mergeMem.component.store("parent B", {
       relatedEntities: ["test"],
       category: "parent-b",
     });
-    const parentB = await mergeMem.component.recall("parent B");
-    const parentBId = (parentB[0]?.metadata as Record<string, unknown>)?.id as string;
+    const parentBResults = await mergeMem.component.recall("parent B", { limit: 10 });
+    const parentBFact = parentBResults.find((r) => r.content === "parent B");
+    const parentBId = (parentBFact?.metadata as Record<string, unknown>)?.id as string;
 
     // Store first fact with parent A
     await mergeMem.component.store("fact about topic with context from A", {
