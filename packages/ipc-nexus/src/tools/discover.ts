@@ -3,12 +3,14 @@
  */
 
 import type {
+  AgentId,
   AgentRegistry,
   JsonObject,
   ProcessState,
   RegistryFilter,
   Tool,
   TrustTier,
+  VisibilityContext,
 } from "@koi/core";
 import { isProcessState } from "@koi/core";
 
@@ -18,6 +20,7 @@ export function createDiscoverTool(
   registry: AgentRegistry,
   prefix: string,
   trustTier: TrustTier,
+  callerId?: AgentId,
 ): Tool {
   return {
     descriptor: {
@@ -69,7 +72,9 @@ export function createDiscoverTool(
       };
 
       try {
-        const entries = await registry.list(filter);
+        const visibility: VisibilityContext | undefined =
+          callerId !== undefined ? { callerId } : undefined;
+        const entries = await registry.list(filter, visibility);
         const agents = entries.map((e) => ({
           agentId: e.agentId,
           agentType: e.agentType,

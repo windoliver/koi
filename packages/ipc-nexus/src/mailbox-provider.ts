@@ -102,8 +102,8 @@ export function createIpcNexusProvider(config: IpcNexusProviderConfig): Componen
     prefix,
     ...(registry !== undefined
       ? {
-          customTools: (_backend, _agent) => {
-            const tool = createDiscoverTool(registry, prefix, trustTier);
+          customTools: (_backend, agent) => {
+            const tool = createDiscoverTool(registry, prefix, trustTier, agent.pid.id);
             return [[toolToken(tool.descriptor.name) as string, tool]];
           },
         }

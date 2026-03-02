@@ -139,3 +139,6 @@ export {
   DEFAULT_GOVERNANCE_CONFIG,
   DEFAULT_SPAWN_TOOL_IDS,
 } from "./types.js";
+// visibility filter
+export type { VisibilityFilterConfig } from "./visibility-filter.js";
+export { createVisibilityFilter } from "./visibility-filter.js";

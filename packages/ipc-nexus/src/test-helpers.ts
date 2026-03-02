@@ -138,7 +138,7 @@ export function createMockRegistry(options?: {
     register: async (entry) => entry,
     deregister: async () => true,
     lookup: async (id) => entries.find((e) => e.agentId === id),
-    list: async (filter) => {
+    list: async (filter, _visibility?) => {
       if (filter === undefined) return entries;
       return entries.filter((e) => matchesFilter(e, filter));
     },

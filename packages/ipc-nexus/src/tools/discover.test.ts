@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
+import type { AgentRegistry, VisibilityContext } from "@koi/core";
 import { agentId } from "@koi/core";
 import { createMockRegistry } from "../test-helpers.js";
 import { createDiscoverTool } from "./discover.js";
@@ -134,5 +135,45 @@ describe("createDiscoverTool", () => {
 
     expect(result.code).toBe("INTERNAL");
     expect(result.error).toContain("registry unavailable");
+  });
+
+  // -----------------------------------------------------------------------
+  // Visibility filtering
+  // -----------------------------------------------------------------------
+
+  describe("visibility filtering", () => {
+    test("passes callerId to registry.list as VisibilityContext", async () => {
+      const baseRegistry = createMockRegistry();
+      const listSpy = mock(baseRegistry.list);
+      const registry: AgentRegistry = { ...baseRegistry, list: listSpy };
+
+      const callerId = agentId("caller-agent");
+      const tool = createDiscoverTool(registry, "ipc", "verified", callerId);
+      await tool.execute({});
+
+      expect(listSpy).toHaveBeenCalledTimes(1);
+      const args = listSpy.mock.calls[0];
+      // Second argument should be the VisibilityContext
+      const vis = args?.[1] as VisibilityContext | undefined;
+      expect(vis).toBeDefined();
+      expect(vis?.callerId).toBe(callerId);
+    });
+
+    test("returns all agents when no callerId (backward compat)", async () => {
+      const baseRegistry = createMockRegistry();
+      const listSpy = mock(baseRegistry.list);
+      const registry: AgentRegistry = { ...baseRegistry, list: listSpy };
+
+      const tool = createDiscoverTool(registry, "ipc", "verified");
+      const result = (await tool.execute({})) as {
+        agents: readonly { agentId: string }[];
+      };
+
+      // Should still get results (mock registry has running agents)
+      expect(result.agents.length).toBeGreaterThan(0);
+      // Second argument should be undefined
+      const args = listSpy.mock.calls[0];
+      expect(args?.[1]).toBeUndefined();
+    });
   });
 });

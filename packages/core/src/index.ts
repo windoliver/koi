@@ -549,6 +549,7 @@ export type {
   RegistryEvent,
   RegistryFilter,
   TransitionReason,
+  VisibilityContext,
 } from "./lifecycle.js";
 // lifecycle — runtime values
 export { exitCodeForTransitionReason, matchesFilter, VALID_TRANSITIONS } from "./lifecycle.js";

@@ -16,6 +16,7 @@ import type {
   RegistryFilter,
   Result,
   TransitionReason,
+  VisibilityContext,
 } from "@koi/core";
 import { matchesFilter } from "@koi/core";
 import { applyTransition } from "./transitions.js";
@@ -36,7 +37,10 @@ export type InMemoryRegistry = Omit<
   readonly register: (entry: RegistryEntry) => RegistryEntry;
   readonly deregister: (agentId: AgentId) => boolean;
   readonly lookup: (agentId: AgentId) => RegistryEntry | undefined;
-  readonly list: (filter?: RegistryFilter) => readonly RegistryEntry[];
+  readonly list: (
+    filter?: RegistryFilter,
+    visibility?: VisibilityContext,
+  ) => readonly RegistryEntry[];
   readonly transition: (
     agentId: AgentId,
     targetPhase: ProcessState,
@@ -83,7 +87,10 @@ export function createInMemoryRegistry(): InMemoryRegistry {
     return store.get(id);
   }
 
-  function list(filter?: RegistryFilter): readonly RegistryEntry[] {
+  function list(
+    filter?: RegistryFilter,
+    _visibility?: VisibilityContext,
+  ): readonly RegistryEntry[] {
     const entries = [...store.values()];
     if (filter === undefined) return entries;
     return entries.filter((e) => matchesFilter(e, filter));
