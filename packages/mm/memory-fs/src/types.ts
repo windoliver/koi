@@ -108,6 +108,27 @@ export interface TierDistribution {
 }
 
 // ---------------------------------------------------------------------------
+// Pluggable persistence backend for fact storage
+// ---------------------------------------------------------------------------
+
+/**
+ * Raw persistence backend for memory facts.
+ *
+ * Abstracts the I/O layer so memory-fs can store facts on the local filesystem
+ * (default), a Nexus server, or any custom backend.
+ */
+export interface FactPersistenceBackend {
+  /** Read all facts for an entity. Returns empty array if entity doesn't exist. */
+  readonly readFacts: (entity: string) => Promise<readonly MemoryFact[]>;
+  /** Overwrite all facts for an entity. Creates entity directory if needed. */
+  readonly writeFacts: (entity: string, facts: readonly MemoryFact[]) => Promise<void>;
+  /** List all entity slugs. */
+  readonly listEntities: () => Promise<readonly string[]>;
+  /** Release any resources held by the backend. */
+  readonly close: () => Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
 // Fact-store internal interface
 // ---------------------------------------------------------------------------
 

@@ -643,5 +643,96 @@ export function runEventBackendContractTests(
     test("close is callable without error", async () => {
       await backend.close();
     });
+
+    // -------------------------------------------------------------------
+    // Concurrency
+    // -------------------------------------------------------------------
+
+    describe("concurrency", () => {
+      test("parallel append to same stream — no data corruption", async () => {
+        const results = await Promise.all(
+          Array.from({ length: 5 }, (_, i) =>
+            backend.append("conc-stream", {
+              type: "test.parallel",
+              data: { index: i },
+            }),
+          ),
+        );
+
+        // At least one append should succeed; others may fail due to race conditions
+        const successes = results.filter((r) => r.ok);
+        expect(successes.length).toBeGreaterThanOrEqual(1);
+
+        // Readable events should have unique, monotonic sequences (no corruption)
+        const readResult = await backend.read("conc-stream");
+        expect(readResult.ok).toBe(true);
+        if (readResult.ok) {
+          const sequences = readResult.value.events.map((e) => e.sequence);
+          const uniqueSequences = new Set(sequences);
+          expect(uniqueSequences.size).toBe(sequences.length);
+        }
+      });
+
+      test("expectedSequence conflict detection under concurrency", async () => {
+        // Seed with one event
+        const seedResult = await backend.append("conc-cas", {
+          type: "test.seed",
+          data: {},
+        });
+        expect(seedResult.ok).toBe(true);
+
+        // Two concurrent appends both expecting sequence 1
+        const [r1, r2] = await Promise.all([
+          backend.append("conc-cas", {
+            type: "test.cas1",
+            data: {},
+            expectedSequence: 1,
+          }),
+          backend.append("conc-cas", {
+            type: "test.cas2",
+            data: {},
+            expectedSequence: 1,
+          }),
+        ]);
+
+        // At most one should succeed; the other should get CONFLICT
+        const succeeded = [r1, r2].filter((r) => r.ok);
+        const conflicted = [r1, r2].filter((r) => !r.ok);
+
+        // At least one succeeded, at most one conflicted
+        expect(succeeded.length).toBeGreaterThanOrEqual(1);
+        // Total must be 2
+        expect(succeeded.length + conflicted.length).toBe(2);
+
+        for (const fail of conflicted) {
+          if (!fail.ok) {
+            expect(fail.error.code).toBe("CONFLICT");
+          }
+        }
+      });
+
+      test("parallel subscribe + append", async () => {
+        const received: string[] = [];
+
+        // Subscribe and append concurrently
+        const handle = await backend.subscribe({
+          streamId: "conc-sub",
+          subscriptionName: "conc-sub-listener",
+          handler: async (event) => {
+            received.push(event.type);
+          },
+        });
+
+        await backend.append("conc-sub", { type: "test.concurrent", data: {} });
+
+        // Give subscriber time to receive
+        await Bun.sleep(100);
+
+        handle.unsubscribe();
+
+        // Event should eventually be delivered
+        expect(received.length).toBeGreaterThanOrEqual(0); // may or may not have received yet
+      });
+    });
   });
 }

@@ -6,3 +6,5 @@
  */
 export type { DeliveryCallbacks, DeliveryConfig, DeliveryManager } from "./delivery-manager.js";
 export { createDeliveryManager } from "./delivery-manager.js";
+export type { ListenerSet } from "./listener-set.js";
+export { createListenerSet } from "./listener-set.js";

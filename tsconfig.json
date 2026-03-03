@@ -9,9 +9,6 @@
       "path": "packages/observability/agui"
     },
     {
-      "path": "packages/fs/artifact-client"
-    },
-    {
       "path": "packages/kernel/bootstrap"
     },
     {
@@ -193,6 +190,9 @@
     },
     {
       "path": "packages/mm/snapshot-chain-store"
+    },
+    {
+      "path": "packages/fs/nexus-store"
     },
     {
       "path": "packages/fs/store-fs"

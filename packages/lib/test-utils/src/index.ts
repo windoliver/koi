@@ -82,6 +82,8 @@ export { createInMemoryBrickRegistry } from "./in-memory-brick-registry.js";
 export { runMailboxContractTests } from "./mailbox-contract.js";
 export type { MiddlewareContractOptions } from "./middleware-contract/index.js";
 export { testMiddlewareContract } from "./middleware-contract/index.js";
+export type { NexusStoreAdapter } from "./nexus-store-contract.js";
+export { runNexusStoreContractTests } from "./nexus-store-contract.js";
 export { runPayLedgerContractTests } from "./pay-ledger-contract.js";
 export type { FakePermissionBackend, FakePermissionBackendOptions } from "./permission-backend.js";
 export { createFakePermissionBackend } from "./permission-backend.js";

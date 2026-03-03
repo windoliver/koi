@@ -238,15 +238,6 @@
         "@koi/validation": "workspace:*",
       },
     },
-    "packages/fs/artifact-client": {
-      "name": "@koi/artifact-client",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/hash": "workspace:*",
-        "@koi/nexus-client": "workspace:*",
-      },
-    },
     "packages/fs/catalog": {
       "name": "@koi/catalog",
       "version": "0.0.0",
@@ -283,21 +274,6 @@
         "@koi/hash": "workspace:*",
       },
       "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/fs/events-nexus": {
-      "name": "@koi/events-nexus",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/event-delivery": "workspace:*",
-        "@koi/hash": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/registry-event-sourced": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
@@ -342,6 +318,20 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
+      },
+    },
+    "packages/fs/nexus-store": {
+      "name": "@koi/nexus-store",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/event-delivery": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
       },
     },
     "packages/fs/pay-local": {
@@ -498,18 +488,6 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/fs/store-nexus": {
-      "name": "@koi/store-nexus",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/nexus-client": "workspace:*",
-        "@koi/validation": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
     "packages/fs/store-sqlite": {
       "name": "@koi/store-sqlite",
       "version": "0.0.0",
@@ -591,14 +569,6 @@
         "@koi/engine-pi": "workspace:*",
         "@koi/search-brave": "workspace:*",
         "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/fs/worktree-merge": {
-      "name": "@koi/worktree-merge",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/git-utils": "workspace:*",
       },
     },
     "packages/ipc/competitive-broadcast": {
@@ -2452,7 +2422,6 @@
         "@koi/soul": "workspace:*",
         "@koi/test-utils": "workspace:*",
         "@koi/tool-browser": "workspace:*",
-        "@koi/worktree-merge": "workspace:*",
       },
     },
   },
@@ -2874,8 +2843,6 @@
 
     "@koi/agui": ["@koi/agui@workspace:packages/observability/agui"],
 
-    "@koi/artifact-client": ["@koi/artifact-client@workspace:packages/fs/artifact-client"],
-
     "@koi/audit-sink-local": ["@koi/audit-sink-local@workspace:packages/security/audit-sink-local"],
 
     "@koi/audit-sink-nexus": ["@koi/audit-sink-nexus@workspace:packages/security/audit-sink-nexus"],
@@ -2983,8 +2950,6 @@
     "@koi/event-delivery": ["@koi/event-delivery@workspace:packages/lib/event-delivery"],
 
     "@koi/events-memory": ["@koi/events-memory@workspace:packages/fs/events-memory"],
-
-    "@koi/events-nexus": ["@koi/events-nexus@workspace:packages/fs/events-nexus"],
 
     "@koi/events-sqlite": ["@koi/events-sqlite@workspace:packages/fs/events-sqlite"],
 
@@ -3120,6 +3085,8 @@
 
     "@koi/nexus-client": ["@koi/nexus-client@workspace:packages/lib/nexus-client"],
 
+    "@koi/nexus-store": ["@koi/nexus-store@workspace:packages/fs/nexus-store"],
+
     "@koi/node": ["@koi/node@workspace:packages/deploy/node"],
 
     "@koi/orchestrator": ["@koi/orchestrator@workspace:packages/ipc/orchestrator"],
@@ -3216,8 +3183,6 @@
 
     "@koi/store-fs": ["@koi/store-fs@workspace:packages/fs/store-fs"],
 
-    "@koi/store-nexus": ["@koi/store-nexus@workspace:packages/fs/store-nexus"],
-
     "@koi/store-sqlite": ["@koi/store-sqlite@workspace:packages/fs/store-sqlite"],
 
     "@koi/task-spawn": ["@koi/task-spawn@workspace:packages/ipc/task-spawn"],
@@ -3257,8 +3222,6 @@
     "@koi/workspace": ["@koi/workspace@workspace:packages/ipc/workspace"],
 
     "@koi/workspace-nexus": ["@koi/workspace-nexus@workspace:packages/ipc/workspace-nexus"],
-
-    "@koi/worktree-merge": ["@koi/worktree-merge@workspace:packages/fs/worktree-merge"],
 
     "@linear/sdk": ["@linear/sdk@37.0.0", "", { "dependencies": { "@graphql-typed-document-node/core": "^3.1.0", "graphql": "^15.4.0", "isomorphic-unfetch": "^3.1.0" } }, "sha512-EAZCXtV414Nwtvrwn7Ucu3E8BbYYKsc3HqZCGf1mHUE7FhZGtfISu295DOVv89WhhXlp2N344EMg3K0nnhLxtA=="],
 

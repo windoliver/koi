@@ -4,8 +4,29 @@
  * L0u utility package. Depends only on @koi/core.
  */
 
+export { batchRead } from "./batch-read.js";
 export { mapHttpError, mapRpcError } from "./errors.js";
 export { createNexusClient } from "./nexus-client.js";
+export {
+  agentBrickPath,
+  agentBricksGlob,
+  agentDeadLetterGlob,
+  agentDeadLetterPath,
+  agentEventGlob,
+  agentEventMetaPath,
+  agentEventPath,
+  agentMemoryGlob,
+  agentMemoryPath,
+  agentPendingFramePath,
+  agentPendingFramesGlob,
+  agentSessionPath,
+  agentSnapshotGlob,
+  agentSnapshotPath,
+  agentSubscriptionPath,
+  globalBrickPath,
+  groupScratchGlob,
+  groupScratchPath,
+} from "./paths.js";
 export type { NexusRestClient, NexusRestClientConfig } from "./rest-client.js";
 export { createNexusRestClient, mapRestFetchError, mapRestHttpError } from "./rest-client.js";
 export type {
@@ -16,3 +37,4 @@ export type {
   NexusClient,
   NexusClientConfig,
 } from "./types.js";
+export { validateNexusConfig, validateNexusPath } from "./validate.js";

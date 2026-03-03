@@ -645,6 +645,41 @@ interface MiddlewareContractOptions {
 declare function testMiddlewareContract(options: MiddlewareContractOptions): void;
 
 /**
+ * Reusable contract test suite for Nexus namespace store adapters.
+ *
+ * Tests unified namespace conventions: agent isolation, group sharing,
+ * glob boundaries, and path generation consistency.
+ *
+ * Accepts a factory that returns a NexusStoreAdapter (a minimal interface
+ * for read/write/delete/glob operations on a Nexus-like namespace).
+ */
+
+/**
+ * Minimal adapter interface that any Nexus-backed store must implement
+ * for namespace contract testing. Maps directly to Nexus filesystem ops.
+ */
+interface NexusStoreAdapter {
+    /** Write content to a path. */
+    readonly write: (path: string, content: string) => Promise<Result$1<void, KoiError$1>>;
+    /** Read content from a path. Returns NOT_FOUND error if missing. */
+    readonly read: (path: string) => Promise<Result$1<string, KoiError$1>>;
+    /** Delete a path. */
+    readonly remove: (path: string) => Promise<Result$1<void, KoiError$1>>;
+    /** Glob for paths matching a pattern. */
+    readonly glob: (pattern: string) => Promise<Result$1<readonly string[], KoiError$1>>;
+}
+/**
+ * Run the Nexus namespace contract test suite against any adapter.
+ *
+ * Tests namespace conventions from issue #750:
+ * - Agent isolation: writes to agent A don't appear in agent B's reads
+ * - Group sharing: writes to group path readable by group members
+ * - Glob boundary enforcement
+ * - Path structure consistency
+ */
+declare function runNexusStoreContractTests(createAdapter: () => NexusStoreAdapter | Promise<NexusStoreAdapter>): void;
+
+/**
  * Reusable contract test suite for PayLedger implementations.
  *
  * Accepts a factory that returns a PayLedger (sync or async).
@@ -926,6 +961,6 @@ declare function createInMemoryVersionIndex(): VersionIndexBackend;
  */
 declare function runWorkspaceBackendContractTests(createBackend: () => WorkspaceBackend | Promise<WorkspaceBackend>): void;
 
-export { type AuditSinkContractOptions, type BrickRegistryContractOptions, type CapturedOutput, type ChannelContractOptions, DEFAULT_PROVENANCE, type EngineContractOptions, type EventSourcedRegistryForTest, type EventSourcedRegistryTestContext, type FakeEngineAdapterConfig, type FakeEngineAdapterResult, type FakePermissionBackend, type FakePermissionBackendOptions, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockGovernanceBackendOverrides, type MockGovernanceControllerOverrides, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type RecallCall, type ResolverContractOptions, type SkillRegistryContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, type StoreCall, type TempGitRepo, type VersionIndexContractOptions, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createFakeEngineAdapter, createFakeNexusFetch, createFakePermissionBackend, createInMemoryBrickRegistry, createInMemorySkillRegistry, createInMemoryVersionIndex, createManifestFile, createMockAgent, createMockContextSummary, createMockEngineAdapter, createMockEventBackend, createMockGovernanceBackend, createMockGovernanceController, createMockHarness, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockTaskPlan, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTempGitRepo, createTestAgentArtifact, createTestCompositeArtifact, createTestConfig, createTestConfigStore, createTestImplementationArtifact, createTestSkillArtifact, createTestToolArtifact, createThrowingValidator, makeTempDir, makeTranscriptEntry, runAgentRegistryContractTests, runAuditSinkContractTests, runEventBackendContractTests, runEventSourcedRegistryContractTests, runForgeStoreContractTests, runHarnessContractTests, runMailboxContractTests, runPayLedgerContractTests, runScratchpadContractTests, runSessionPersistenceContractTests, runSessionTranscriptContractTests, runSnapshotChainStoreContractTests, runThreadStoreContractTests, runWorkspaceBackendContractTests, testBrickRegistryContract, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, testSkillRegistryContract, testVersionIndexContract, withTempDir };
+export { type AuditSinkContractOptions, type BrickRegistryContractOptions, type CapturedOutput, type ChannelContractOptions, DEFAULT_PROVENANCE, type EngineContractOptions, type EventSourcedRegistryForTest, type EventSourcedRegistryTestContext, type FakeEngineAdapterConfig, type FakeEngineAdapterResult, type FakePermissionBackend, type FakePermissionBackendOptions, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockGovernanceBackendOverrides, type MockGovernanceControllerOverrides, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type NexusStoreAdapter, type RecallCall, type ResolverContractOptions, type SkillRegistryContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, type StoreCall, type TempGitRepo, type VersionIndexContractOptions, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createFakeEngineAdapter, createFakeNexusFetch, createFakePermissionBackend, createInMemoryBrickRegistry, createInMemorySkillRegistry, createInMemoryVersionIndex, createManifestFile, createMockAgent, createMockContextSummary, createMockEngineAdapter, createMockEventBackend, createMockGovernanceBackend, createMockGovernanceController, createMockHarness, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockTaskPlan, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTempGitRepo, createTestAgentArtifact, createTestCompositeArtifact, createTestConfig, createTestConfigStore, createTestImplementationArtifact, createTestSkillArtifact, createTestToolArtifact, createThrowingValidator, makeTempDir, makeTranscriptEntry, runAgentRegistryContractTests, runAuditSinkContractTests, runEventBackendContractTests, runEventSourcedRegistryContractTests, runForgeStoreContractTests, runHarnessContractTests, runMailboxContractTests, runNexusStoreContractTests, runPayLedgerContractTests, runScratchpadContractTests, runSessionPersistenceContractTests, runSessionTranscriptContractTests, runSnapshotChainStoreContractTests, runThreadStoreContractTests, runWorkspaceBackendContractTests, testBrickRegistryContract, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, testSkillRegistryContract, testVersionIndexContract, withTempDir };
 "
 `;
