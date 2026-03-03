@@ -29,3 +29,19 @@ export interface NexusIndexResponse {
 export interface NexusRefreshResponse {
   readonly removed: number;
 }
+
+export interface NexusHealthResponse {
+  readonly healthy: boolean;
+  readonly index_name?: string;
+  readonly message?: string;
+}
+
+export interface NexusStatsResponse {
+  readonly document_count: number;
+  readonly index_size_bytes?: number;
+  readonly last_refreshed?: string;
+}
+
+export interface NexusReindexResponse {
+  readonly status: string;
+}

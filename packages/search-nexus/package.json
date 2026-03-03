@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
+    "@koi/errors": "workspace:*",
+    "@koi/nexus-client": "workspace:*",
     "@koi/search-provider": "workspace:*"
   },
   "scripts": {
