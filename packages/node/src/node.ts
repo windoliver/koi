@@ -17,7 +17,10 @@ import type {
   ScopeChecker,
   SessionCheckpoint,
   SessionRecord,
+  SessionTranscript,
+  TranscriptEntry,
 } from "@koi/core";
+import { sessionId as toSessionId } from "@koi/core";
 import type { AgentHost } from "./agent/host.js";
 import { createAgentHost } from "./agent/host.js";
 import type { StatusReporter } from "./agent/status.js";
@@ -39,6 +42,7 @@ import { createShutdownHandler } from "./shutdown.js";
 import { handleToolCall as handleToolCallImpl } from "./tool-call-handler.js";
 import type { LocalResolver } from "./tools/local-resolver.js";
 import { createLocalResolver } from "./tools/local-resolver.js";
+import { createTranscriptingEngine } from "./transcripting-engine.js";
 import type {
   AdvertisedTool,
   AgentSignalGroupPayload,
@@ -134,6 +138,8 @@ export interface RecoveryResult {
 export interface NodeDeps {
   /** Session persistence for crash recovery. When provided, enables checkpointing. */
   readonly sessionStore?: NodeSessionStore;
+  /** Transcript store for durable conversation logging. When provided, enables auto-append. */
+  readonly transcript?: SessionTranscript;
   /**
    * Called once per session during startup recovery.
    * Return a `RecoveryResult` to re-dispatch the agent, or `null` to skip it.
@@ -141,6 +147,8 @@ export interface NodeDeps {
   readonly onRecover?: (
     session: SessionRecord,
     checkpoint: SessionCheckpoint | undefined,
+    /** Transcript entries for this session, if transcript store is configured. */
+    transcriptEntries?: readonly TranscriptEntry[],
   ) => RecoveryResult | null | Promise<RecoveryResult | null>;
   /**
    * Permission checker for tool_call authorization. When absent, all tool calls
@@ -606,9 +614,24 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
 
       for (const session of sessions) {
         try {
+          // Load transcript entries if transcript store is available
+          let transcriptEntries: readonly TranscriptEntry[] | undefined;
+          if (deps?.transcript !== undefined) {
+            const loadResult = await deps.transcript.load(toSessionId(session.sessionId));
+            if (loadResult.ok) {
+              transcriptEntries = loadResult.value.entries;
+            } else {
+              emit("agent_crashed", {
+                agentId: session.agentId,
+                reason: "Transcript load failed during recovery (non-fatal)",
+                error: loadResult.error,
+              });
+            }
+          }
+
           frameCounters.restore(session.agentId, session.seq, session.remoteSeq);
           const checkpoint = checkpoints.get(session.agentId);
-          const result = await onRecover(session, checkpoint);
+          const result = await onRecover(session, checkpoint, transcriptEntries);
 
           if (result === null) continue;
 
@@ -783,17 +806,28 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
           };
         }
 
-        const sessionId = checkpointMgr?.getSessionId(pid.id);
-        const effectiveEngine =
-          checkpointMgr !== undefined
-            ? createCheckpointingEngine(engine, {
-                agentId: pid.id,
-                sessionId: sessionId ?? `session-${pid.id}-${String(Date.now())}`,
-                onCheckpoint: async (agentId, sid) => {
-                  await checkpointMgr.checkpointAgent(agentId, sid);
-                },
+        const existingSessionId = checkpointMgr?.getSessionId(pid.id);
+        const sid = existingSessionId ?? `session-${pid.id}-${String(Date.now())}`;
+
+        // Wrap with transcript decorator (inner), then checkpoint (outer)
+        const transcriptEngine =
+          deps?.transcript !== undefined
+            ? createTranscriptingEngine(engine, {
+                sessionId: toSessionId(sid),
+                transcript: deps.transcript,
               })
             : engine;
+
+        const effectiveEngine =
+          checkpointMgr !== undefined
+            ? createCheckpointingEngine(transcriptEngine, {
+                agentId: pid.id,
+                sessionId: sid,
+                onCheckpoint: async (agentId, sessionId) => {
+                  await checkpointMgr.checkpointAgent(agentId, sessionId);
+                },
+              })
+            : transcriptEngine;
 
         const result = await host.dispatch(pid, manifest, effectiveEngine, providers);
         if (result.ok) {

@@ -55,6 +55,7 @@ export function createCheckpointingEngine(
     ...(inner.terminals !== undefined ? { terminals: inner.terminals } : {}),
     ...(inner.saveState !== undefined ? { saveState: inner.saveState } : {}),
     ...(inner.loadState !== undefined ? { loadState: inner.loadState } : {}),
+    ...(inner.inject !== undefined ? { inject: inner.inject } : {}),
     ...(inner.dispose !== undefined ? { dispose: inner.dispose } : {}),
   };
 }
