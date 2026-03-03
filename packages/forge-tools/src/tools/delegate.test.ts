@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ExternalAgentDescriptor, KoiError, Result } from "@koi/core";
-import { createDefaultForgeConfig } from "@koi/forge-types";
 import type { ForgeToolInput } from "@koi/forge-types";
+import { createDefaultForgeConfig } from "@koi/forge-types";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import { delegateImplementation, generateDelegationPrompt } from "./delegate.js";
 import type { DelegateOptions, ForgeDeps } from "./shared.js";
