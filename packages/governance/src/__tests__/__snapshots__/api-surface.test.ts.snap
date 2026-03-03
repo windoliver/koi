@@ -19,7 +19,8 @@ import { PIIConfig } from '@koi/middleware-pii';
 export { PIIConfig } from '@koi/middleware-pii';
 import { SanitizeMiddlewareConfig } from '@koi/middleware-sanitize';
 export { SanitizeMiddlewareConfig } from '@koi/middleware-sanitize';
-import { FileSystemBackend, CredentialComponent, MemoryComponent, AuditSink, ScopeEnforcer, KoiMiddleware, ComponentProvider } from '@koi/core';
+import { FileSystemBackend, CredentialComponent, MemoryComponent, AuditSink, ScopeEnforcer, PermissionBackend, KoiMiddleware, ComponentProvider } from '@koi/core';
+import { NexusPermissionBackend, OnGrantHook, OnRevokeHook } from '@koi/permissions-nexus';
 import { BrowserDriver } from '@koi/tool-browser';
 
 /**
@@ -98,12 +99,19 @@ interface GovernanceStackConfig {
     readonly guardrails?: GuardrailsConfig | undefined;
     /**
      * Delegation bridge: attaches DelegationComponentProvider to agents.
-     * Provides delegation_grant/revoke/list tools + DELEGATION ECS component.
-     * The manager should be pre-configured with onGrant/onRevoke hooks
-     * (e.g., wired to Nexus permissions.grant RPC).
+     * Provides delegation_grant/revoke/list/check tools + DELEGATION ECS component.
+     *
+     * - \`permissionBackend\`: enables escalation prevention + permission_check tool
+     * - \`nexusBackend\`: enables Zanzibar tuple sync via onGrant/onRevoke hooks
+     * - \`sessionScoped\`: enables session-scoped grant lifecycle
      */
     readonly delegationBridge?: {
         readonly manager: DelegationManager;
+        readonly permissionBackend?: PermissionBackend;
+        readonly nexusBackend?: NexusPermissionBackend;
+        readonly sessionScoped?: {
+            readonly getActiveSessions: () => ReadonlySet<string> | Promise<ReadonlySet<string>>;
+        };
     } | undefined;
     /**
      * Capability request bridge: enables pull-model requests between agents.
@@ -128,13 +136,18 @@ interface ResolvedGovernanceMeta {
     readonly payDeprecated: boolean;
     readonly scopeEnabled: boolean;
 }
+/** Nexus delegation hooks for wiring to DelegationManager. */
+interface NexusDelegationHooks {
+    readonly onGrant: OnGrantHook;
+    readonly onRevoke: OnRevokeHook;
+}
 /** Return value of createGovernanceStack(). */
 interface GovernanceBundle {
     readonly middlewares: readonly KoiMiddleware[];
     readonly providers: readonly ComponentProvider[];
     readonly config: ResolvedGovernanceMeta;
-    /** Disposable resources (e.g., parent-side approval handler subscriptions). */
-    readonly disposables: readonly Disposable[];
+    /** Nexus delegation hooks — present when \`delegationBridge.nexusBackend\` is configured. */
+    readonly nexusHooks?: NexusDelegationHooks;
 }
 
 /**
@@ -148,7 +161,7 @@ interface GovernanceBundle {
  *
  * Validation rules:
  * - \`permissions\` and \`permissionRules\` are mutually exclusive (throws)
- * - \`execApprovals.onAsk\` is optional — auto-wired during agent assembly when parent + mailbox available
+ * - \`execApprovals\` requires an \`onAsk\` handler (throws)
  * - \`pay\` emits a console.warn deprecation notice
  */
 declare function resolveGovernanceConfig(config: GovernanceStackConfig): GovernanceStackConfig;
@@ -184,9 +197,9 @@ declare function resolveGovernanceConfig(config: GovernanceStackConfig): Governa
  * \`\`\`
  *
  * Config resolution: defaults -> preset -> user overrides.
- * Agent approval routing is auto-wired via ComponentProvider during assembly.
- * When exec-approvals is configured, the provider auto-discovers agentId, parentId,
- * and mailbox from the agent entity — zero explicit config needed.
+ * Middleware are ordered by priority. Priority overrides are applied for
+ * exec-approvals (110) and delegation (120) so they slot correctly between
+ * permissions (100) and governance-backend (150).
  */
 declare function createGovernanceStack(config: GovernanceStackConfig): GovernanceBundle;
 
@@ -200,6 +213,6 @@ declare function createGovernanceStack(config: GovernanceStackConfig): Governanc
 /** Frozen registry of governance preset specs, keyed by preset name. */
 declare const GOVERNANCE_PRESET_SPECS: Readonly<Record<GovernancePreset, GovernancePresetSpec>>;
 
-export { GOVERNANCE_PRESET_SPECS, type GovernanceBundle, type GovernancePreset, type GovernancePresetSpec, type GovernanceScopeBackends, type GovernanceScopeConfig, type GovernanceStackConfig, type ResolvedGovernanceMeta, createGovernanceStack, resolveGovernanceConfig };
+export { GOVERNANCE_PRESET_SPECS, type GovernanceBundle, type GovernancePreset, type GovernancePresetSpec, type GovernanceScopeBackends, type GovernanceScopeConfig, type GovernanceStackConfig, type NexusDelegationHooks, type ResolvedGovernanceMeta, createGovernanceStack, resolveGovernanceConfig };
 "
 `;

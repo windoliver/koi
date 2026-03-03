@@ -57,6 +57,8 @@ export interface DelegationScope {
   readonly permissions: PermissionConfig;
   /** Optional glob-style resource patterns (e.g., "read_file:/workspace/src/**"). */
   readonly resources?: readonly string[];
+  /** Session that owns this grant — enables session-scoped revocation. */
+  readonly sessionId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,7 +107,9 @@ export type DelegationDenyReason =
   | "scope_exceeded"
   | "chain_depth_exceeded"
   | "invalid_signature"
-  | "unknown_grant";
+  | "unknown_grant"
+  | "session_expired"
+  | "escalation_denied";
 
 /** Result of verifying a delegation grant against a tool call. */
 export type DelegationVerifyResult =

@@ -49,5 +49,6 @@ export type {
   GovernanceScopeBackends,
   GovernanceScopeConfig,
   GovernanceStackConfig,
+  NexusDelegationHooks,
   ResolvedGovernanceMeta,
 } from "./types.js";

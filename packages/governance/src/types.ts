@@ -12,6 +12,7 @@ import type {
   FileSystemBackend,
   KoiMiddleware,
   MemoryComponent,
+  PermissionBackend,
   ScopeEnforcer,
 } from "@koi/core";
 import type { DelegationManager, DelegationMiddlewareConfig } from "@koi/delegation";
@@ -23,6 +24,7 @@ import type { PayMiddlewareConfig } from "@koi/middleware-pay";
 import type { PermissionRules, PermissionsMiddlewareConfig } from "@koi/middleware-permissions";
 import type { PIIConfig } from "@koi/middleware-pii";
 import type { SanitizeMiddlewareConfig } from "@koi/middleware-sanitize";
+import type { NexusPermissionBackend, OnGrantHook, OnRevokeHook } from "@koi/permissions-nexus";
 import type { BrowserDriver } from "@koi/tool-browser";
 
 // ---------------------------------------------------------------------------
@@ -113,11 +115,18 @@ export interface GovernanceStackConfig {
   // ── Delegation bridge ──────────────────────────────────────────────────
   /**
    * Delegation bridge: attaches DelegationComponentProvider to agents.
-   * Provides delegation_grant/revoke/list tools + DELEGATION ECS component.
-   * The manager should be pre-configured with onGrant/onRevoke hooks
-   * (e.g., wired to Nexus permissions.grant RPC).
+   * Provides delegation_grant/revoke/list/check tools + DELEGATION ECS component.
+   *
+   * - `permissionBackend`: enables escalation prevention + permission_check tool
+   * - `nexusBackend`: enables Zanzibar tuple sync via onGrant/onRevoke hooks
    */
-  readonly delegationBridge?: { readonly manager: DelegationManager } | undefined;
+  readonly delegationBridge?:
+    | {
+        readonly manager: DelegationManager;
+        readonly permissionBackend?: PermissionBackend;
+        readonly nexusBackend?: NexusPermissionBackend;
+      }
+    | undefined;
 
   // ── Capability request bridge ──────────────────────────────────────────
   /**
@@ -162,6 +171,12 @@ export interface ResolvedGovernanceMeta {
 // Bundle return value
 // ---------------------------------------------------------------------------
 
+/** Nexus delegation hooks for wiring to DelegationManager. */
+export interface NexusDelegationHooks {
+  readonly onGrant: OnGrantHook;
+  readonly onRevoke: OnRevokeHook;
+}
+
 /** Return value of createGovernanceStack(). */
 export interface GovernanceBundle {
   readonly middlewares: readonly KoiMiddleware[];
@@ -169,4 +184,6 @@ export interface GovernanceBundle {
   readonly config: ResolvedGovernanceMeta;
   /** Disposable resources (e.g., parent-side approval handler subscriptions). */
   readonly disposables: readonly Disposable[];
+  /** Nexus delegation hooks — present when `delegationBridge.nexusBackend` is configured. */
+  readonly nexusHooks?: NexusDelegationHooks;
 }

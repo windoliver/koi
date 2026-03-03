@@ -15,11 +15,13 @@ import type {
   DelegationId,
   DelegationScope,
   DelegationVerifyResult,
+  PermissionBackend,
   Tool,
   TrustTier,
 } from "@koi/core";
 import { DELEGATION } from "@koi/core";
 import type { DelegationManager } from "./delegation-manager.js";
+import { createDelegationCheckTool } from "./tools/check.js";
 import type { DelegationOperation } from "./tools/constants.js";
 import { DEFAULT_PREFIX, OPERATIONS } from "./tools/constants.js";
 import { createDelegationGrantTool } from "./tools/grant.js";
@@ -32,7 +34,7 @@ import { createDelegationRevokeTool } from "./tools/revoke.js";
 
 export interface DelegationProviderConfig {
   readonly manager: DelegationManager;
-  /** Operations to expose. Defaults to all: grant, revoke, list. */
+  /** Operations to expose. Defaults to all: grant, revoke, list, request, check. */
   readonly operations?: readonly DelegationOperation[];
   /** Tool name prefix. Defaults to "delegation". */
   readonly prefix?: string;
@@ -40,6 +42,8 @@ export interface DelegationProviderConfig {
   readonly trustTier?: TrustTier;
   /** When false, attach() returns empty map. Defaults to true. */
   readonly enabled?: boolean;
+  /** Optional permission backend — enables the permission_check tool. */
+  readonly permissionBackend?: PermissionBackend;
 }
 
 // ---------------------------------------------------------------------------
@@ -53,6 +57,7 @@ export function createDelegationProvider(config: DelegationProviderConfig): Comp
     prefix = DEFAULT_PREFIX,
     trustTier = "verified",
     enabled = true,
+    permissionBackend,
   } = config;
 
   return {
@@ -81,6 +86,17 @@ export function createDelegationProvider(config: DelegationProviderConfig): Comp
 
       if (ops.has("list")) {
         const tool: Tool = createDelegationListTool(manager, ownerAgentId, prefix, trustTier);
+        components.set(`tool:${tool.descriptor.name}`, tool);
+      }
+
+      if (ops.has("check")) {
+        const tool: Tool = createDelegationCheckTool(
+          manager,
+          permissionBackend,
+          ownerAgentId,
+          prefix,
+          trustTier,
+        );
         components.set(`tool:${tool.descriptor.name}`, tool);
       }
 

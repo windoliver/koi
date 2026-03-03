@@ -6,7 +6,7 @@
  */
 
 import type { AgentId, JsonObject, Tool, TrustTier } from "@koi/core";
-import { agentId as toAgentId } from "@koi/core";
+import { agentId as toAgentId, delegationId as toDelegationId } from "@koi/core";
 import type { DelegationManager } from "../delegation-manager.js";
 
 // ---------------------------------------------------------------------------
@@ -21,6 +21,7 @@ interface GrantInput {
   };
   readonly resources?: readonly string[];
   readonly ttlMs?: number;
+  readonly parentGrantId?: string;
 }
 
 function validateGrantInput(args: JsonObject): GrantInput {
@@ -45,6 +46,8 @@ function validateGrantInput(args: JsonObject): GrantInput {
     throw new Error("ttlMs must be a positive number");
   }
 
+  const parentGrantId = args.parentGrantId !== undefined ? String(args.parentGrantId) : undefined;
+
   return {
     delegateeId,
     permissions: {
@@ -53,6 +56,7 @@ function validateGrantInput(args: JsonObject): GrantInput {
     },
     ...(resources !== undefined ? { resources } : {}),
     ...(ttlMs !== undefined ? { ttlMs } : {}),
+    ...(parentGrantId !== undefined ? { parentGrantId } : {}),
   };
 }
 
@@ -70,7 +74,7 @@ export function createDelegationGrantTool(
     descriptor: {
       name: `${prefix}_grant`,
       description:
-        "Grant another agent access to resources. Returns the grant ID and scope details.",
+        "Grant another agent access to resources, or attenuate an existing grant. Returns the grant ID and scope details.",
       inputSchema: {
         type: "object",
         properties: {
@@ -89,6 +93,11 @@ export function createDelegationGrantTool(
             description: "Glob resource patterns (e.g., read_file:/workspace/src/**)",
           },
           ttlMs: { type: "number", description: "Grant TTL in milliseconds" },
+          parentGrantId: {
+            type: "string",
+            description:
+              "Parent grant ID — when provided, attenuates the parent grant instead of creating a new root grant",
+          },
         },
         required: ["delegateeId", "permissions"],
       },
@@ -97,15 +106,23 @@ export function createDelegationGrantTool(
     execute: async (args: JsonObject): Promise<unknown> => {
       const input = validateGrantInput(args);
 
-      const result = await manager.grant(
-        ownerAgentId,
-        toAgentId(input.delegateeId),
-        {
-          permissions: input.permissions,
-          ...(input.resources !== undefined ? { resources: input.resources } : {}),
-        },
-        input.ttlMs,
-      );
+      const scope: {
+        readonly permissions: typeof input.permissions;
+        readonly resources?: readonly string[];
+      } = {
+        permissions: input.permissions,
+        ...(input.resources !== undefined ? { resources: input.resources } : {}),
+      };
+
+      const result =
+        input.parentGrantId !== undefined
+          ? await manager.attenuate(
+              toDelegationId(input.parentGrantId),
+              toAgentId(input.delegateeId),
+              scope,
+              input.ttlMs,
+            )
+          : await manager.grant(ownerAgentId, toAgentId(input.delegateeId), scope, input.ttlMs);
 
       if (!result.ok) {
         throw new Error(`Grant failed: ${result.error.message}`);

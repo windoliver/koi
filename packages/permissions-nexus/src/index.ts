@@ -11,7 +11,14 @@ export {
   validateNexusPermissionsConfig,
 } from "./config.js";
 export {
+  createNexusOnGrant,
+  createNexusOnRevoke,
+  type OnGrantHook,
+  type OnRevokeHook,
+} from "./nexus-delegation-hooks.js";
+export {
   createNexusPermissionBackend,
+  mapGrantToTuples,
   type NexusPermissionBackend,
   type NexusPermissionBackendConfig,
 } from "./nexus-permission-backend.js";

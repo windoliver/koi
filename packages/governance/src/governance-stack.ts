@@ -17,7 +17,7 @@
  *   375  koi:guardrails
  */
 
-import type { Agent, ComponentProvider, MailboxComponent } from "@koi/core";
+import type { Agent, ComponentProvider, DelegationId, MailboxComponent } from "@koi/core";
 import { MAILBOX } from "@koi/core";
 import type { KoiMiddleware } from "@koi/core/middleware";
 import {
@@ -42,6 +42,7 @@ import { createPayMiddleware } from "@koi/middleware-pay";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createPIIMiddleware } from "@koi/middleware-pii";
 import { createSanitizeMiddleware } from "@koi/middleware-sanitize";
+import { createNexusOnGrant, createNexusOnRevoke } from "@koi/permissions-nexus";
 
 import { resolveGovernanceConfig } from "./config-resolution.js";
 import { wireGovernanceScope } from "./scope-wiring.js";
@@ -199,6 +200,23 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
     );
   }
 
+  // Wire Nexus delegation hooks when nexusBackend is provided.
+  // These are exposed on the bundle for the caller to attach to a new DelegationManager,
+  // or validated when the manager is already pre-wired.
+  const nexusHooks =
+    config.delegationBridge?.nexusBackend !== undefined
+      ? {
+          onGrant: createNexusOnGrant(config.delegationBridge.nexusBackend),
+          onRevoke: createNexusOnRevoke(
+            config.delegationBridge.nexusBackend,
+            (grantId: DelegationId) => {
+              const grants = config.delegationBridge?.manager.list();
+              return grants?.find((g) => g.id === grantId);
+            },
+          ),
+        }
+      : undefined;
+
   // Create capability request bridge when both delegationBridge and capabilityRequest are configured
   const capabilityRequestBridge =
     config.delegationBridge !== undefined && config.capabilityRequest !== undefined
@@ -261,7 +279,15 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
   // Wire delegation provider when delegationBridge is configured
   const delegationProviders =
     config.delegationBridge !== undefined
-      ? [createDelegationProvider({ manager: config.delegationBridge.manager, enabled: true })]
+      ? [
+          createDelegationProvider({
+            manager: config.delegationBridge.manager,
+            enabled: true,
+            ...(config.delegationBridge.permissionBackend !== undefined
+              ? { permissionBackend: config.delegationBridge.permissionBackend }
+              : {}),
+          }),
+        ]
       : [];
 
   const capabilityRequestProviders =
@@ -288,5 +314,6 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
       payDeprecated: resolved.pay !== undefined,
       scopeEnabled: resolved.scope !== undefined,
     },
+    ...(nexusHooks !== undefined ? { nexusHooks } : {}),
   };
 }

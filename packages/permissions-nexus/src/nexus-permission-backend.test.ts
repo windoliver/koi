@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import type { KoiError, PermissionQuery, Result } from "@koi/core";
+import type { DelegationGrant, KoiError, PermissionQuery, Result } from "@koi/core";
+import { agentId, delegationId } from "@koi/core";
 import type { NexusClient } from "@koi/nexus-client";
-import { createNexusPermissionBackend } from "./nexus-permission-backend.js";
+import { createNexusPermissionBackend, mapGrantToTuples } from "./nexus-permission-backend.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -287,6 +288,200 @@ describe("createNexusPermissionBackend", () => {
       if (!result.ok) {
         expect(result.error.message).toBe("grant failed");
       }
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // delete — ReBAC tuple deletion
+  // -----------------------------------------------------------------------
+
+  describe("delete", () => {
+    test("calls permissions.delete RPC with correct tuple", async () => {
+      let capturedMethod = "";
+      let capturedParams: Record<string, unknown> | undefined;
+      const backend = createNexusPermissionBackend({
+        client: createMockClient(async <T>(method: string, params: Record<string, unknown>) => {
+          capturedMethod = method;
+          capturedParams = params;
+          return { ok: true, value: undefined as unknown as T };
+        }),
+      });
+
+      const result = await backend.delete({
+        subject: "agent:coder",
+        relation: "writer",
+        object: "folder:/src",
+      });
+
+      expect(result.ok).toBe(true);
+      expect(capturedMethod).toBe("permissions.delete");
+      expect(capturedParams).toEqual({
+        subject: "agent:coder",
+        relation: "writer",
+        object: "folder:/src",
+      });
+    });
+
+    test("returns error on RPC failure", async () => {
+      const backend = createNexusPermissionBackend({
+        client: createErrorClient("delete failed"),
+      });
+
+      const result = await backend.delete({
+        subject: "agent:coder",
+        relation: "reader",
+        object: "folder:/data",
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.message).toBe("delete failed");
+      }
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // batchWrite — ReBAC tuple batch operations
+  // -----------------------------------------------------------------------
+
+  describe("batchWrite", () => {
+    test("calls permissions.batchWrite RPC with correct payload", async () => {
+      let capturedMethod = "";
+      let capturedParams: Record<string, unknown> | undefined;
+      const backend = createNexusPermissionBackend({
+        client: createMockClient(async <T>(method: string, params: Record<string, unknown>) => {
+          capturedMethod = method;
+          capturedParams = params;
+          return { ok: true, value: undefined as unknown as T };
+        }),
+      });
+
+      const result = await backend.batchWrite([
+        {
+          tuple: { subject: "agent:a", relation: "reader", object: "file:/x" },
+          operation: "write",
+        },
+        {
+          tuple: { subject: "agent:b", relation: "writer", object: "file:/y" },
+          operation: "delete",
+        },
+      ]);
+
+      expect(result.ok).toBe(true);
+      expect(capturedMethod).toBe("permissions.batchWrite");
+      expect(capturedParams).toEqual({
+        writes: [
+          { subject: "agent:a", relation: "reader", object: "file:/x", operation: "write" },
+          { subject: "agent:b", relation: "writer", object: "file:/y", operation: "delete" },
+        ],
+      });
+    });
+
+    test("returns error on RPC failure", async () => {
+      const backend = createNexusPermissionBackend({
+        client: createErrorClient("batch failed"),
+      });
+
+      const result = await backend.batchWrite([
+        {
+          tuple: { subject: "agent:a", relation: "reader", object: "file:/x" },
+          operation: "write",
+        },
+      ]);
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.message).toBe("batch failed");
+      }
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // mapGrantToTuples
+  // -----------------------------------------------------------------------
+
+  describe("mapGrantToTuples", () => {
+    function createTestGrant(overrides?: Partial<DelegationGrant>): DelegationGrant {
+      return {
+        id: delegationId("grant-1"),
+        issuerId: agentId("agent-1"),
+        delegateeId: agentId("agent-2"),
+        scope: {
+          permissions: { allow: ["read_file", "write_file"] },
+        },
+        chainDepth: 0,
+        maxChainDepth: 3,
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 3600000,
+        proof: { kind: "hmac-sha256", digest: "test-digest" },
+        ...overrides,
+      };
+    }
+
+    test("maps permissions to tuples with delegation object", () => {
+      const grant = createTestGrant();
+      const tuples = mapGrantToTuples(grant);
+
+      expect(tuples).toHaveLength(2);
+      expect(tuples[0]).toEqual({
+        subject: "agent:agent-2",
+        relation: "read_file",
+        object: "delegation:grant-1",
+      });
+      expect(tuples[1]).toEqual({
+        subject: "agent:agent-2",
+        relation: "write_file",
+        object: "delegation:grant-1",
+      });
+    });
+
+    test("maps permissions x resources when resources are present", () => {
+      const grant = createTestGrant({
+        scope: {
+          permissions: { allow: ["read_file", "write_file"] },
+          resources: ["file:/src/**", "file:/lib/**"],
+        },
+      });
+      const tuples = mapGrantToTuples(grant);
+
+      // 2 permissions x 2 resources = 4 tuples
+      expect(tuples).toHaveLength(4);
+      expect(tuples[0]).toEqual({
+        subject: "agent:agent-2",
+        relation: "read_file",
+        object: "file:/src/**",
+      });
+      expect(tuples[1]).toEqual({
+        subject: "agent:agent-2",
+        relation: "read_file",
+        object: "file:/lib/**",
+      });
+      expect(tuples[2]).toEqual({
+        subject: "agent:agent-2",
+        relation: "write_file",
+        object: "file:/src/**",
+      });
+      expect(tuples[3]).toEqual({
+        subject: "agent:agent-2",
+        relation: "write_file",
+        object: "file:/lib/**",
+      });
+    });
+
+    test("returns empty array when no permissions", () => {
+      const grant = createTestGrant({
+        scope: { permissions: {} },
+      });
+      const tuples = mapGrantToTuples(grant);
+      expect(tuples).toHaveLength(0);
+    });
+
+    test("returns empty array when allow is empty", () => {
+      const grant = createTestGrant({
+        scope: { permissions: { allow: [] } },
+      });
+      const tuples = mapGrantToTuples(grant);
+      expect(tuples).toHaveLength(0);
     });
   });
 });
