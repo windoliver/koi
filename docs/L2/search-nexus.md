@@ -1,6 +1,6 @@
 # @koi/search-nexus — Nexus Search REST Adapter
 
-REST adapter that implements `Indexer` and `Retriever` against the Nexus search API v2. One factory call each for indexing and retrieval — plug both into `createSearch({ backend })` to replace the local SQLite backend entirely.
+REST adapter that implements `Retriever` and `Indexer` against the Nexus search API v2. A single `createNexusSearch()` factory returns a composite with search, indexing, health checks, stats, and reindexing — all with automatic retry and batch chunking.
 
 ---
 
@@ -24,19 +24,24 @@ WITHOUT search-nexus (local only):
 
 WITH search-nexus (shared backend):
 ════════════════════════════════════
-  const nexusCfg = { baseUrl: "http://nexus:2026", apiKey: "sk-..." };
-  const search = createSearch({
-    embedder,
-    backend: {
-      indexer:   createNexusIndexer(nexusCfg),
-      retriever: createNexusRetriever(nexusCfg),
-    },
+  const nexus = createNexusSearch({
+    baseUrl: "http://nexus:2026",
+    apiKey: "sk-...",
   });
 
   Agent A indexes docs → Nexus server
   Agent B searches     → same Nexus server
   Shared index. All agents see all data.
+  Health checks, stats, and reindex available.
 ```
+
+### What You Can Do
+
+- **Shared search across agents**: multiple agents index and query the same Nexus backend
+- **Semantic code search**: query a codebase Nexus has auto-indexed, get scored results with line ranges
+- **RAG pipelines**: index summaries, embeddings, or generated content for retrieval-augmented generation
+- **Operational monitoring**: health checks, document count stats, trigger reindexing
+- **Supplemental indexing**: push extra documents (agent-generated summaries, embeddings) alongside Nexus's auto-indexed content
 
 ---
 
@@ -44,99 +49,145 @@ WITH search-nexus (shared backend):
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  @koi/search-nexus  (L2)                                 │
-│                                                          │
-│  nexus-search-config.ts ← NexusSearchConfig type         │
-│  nexus-types.ts         ← internal Nexus wire types      │
-│  http-errors.ts         ← HTTP status → KoiError mapper  │
-│  map-nexus-result.ts    ← NexusSearchHit → SearchResult  │
-│  nexus-retriever.ts     ← GET  /api/v2/search/query      │
-│  nexus-indexer.ts       ← POST /api/v2/search/index      │
-│                           POST /api/v2/search/refresh     │
-│  index.ts               ← public API surface             │
-│                                                          │
-├──────────────────────────────────────────────────────────┤
-│  External deps: NONE (uses platform fetch API)           │
-│                                                          │
-├──────────────────────────────────────────────────────────┤
-│  Internal deps                                           │
-│  ● @koi/core (L0) — KoiError, Result, RETRYABLE_DEFAULTS│
-│  ● @koi/search-provider (L0u) — Indexer, Retriever types│
-└──────────────────────────────────────────────────────────┘
+│  @koi/search-nexus  (L2)                                  │
+│                                                            │
+│  nexus-search.ts         ← createNexusSearch() composite   │
+│  nexus-search-config.ts  ← NexusSearchConfig + defaults    │
+│  nexus-search-types.ts   ← NexusSearch, SearchHealth, etc  │
+│  validate-config.ts      ← config validation → Result      │
+│  parse-response.ts       ← defensive response parsers      │
+│  nexus-retriever.ts      ← GET  /api/v2/search/query       │
+│  nexus-indexer.ts         ← POST /api/v2/search/index       │
+│                             POST /api/v2/search/refresh     │
+│  map-nexus-result.ts      ← NexusSearchHit → SearchResult   │
+│  nexus-types.ts           ← internal Nexus wire types        │
+│  index.ts                 ← public API surface               │
+│                                                            │
+├────────────────────────────────────────────────────────────┤
+│  Internal deps                                             │
+│  ● @koi/core (L0)            — KoiError, Result, types     │
+│  ● @koi/search-provider (L0u) — Indexer, Retriever types   │
+│  ● @koi/nexus-client (L0u)   — NexusRestClient HTTP layer  │
+│  ● @koi/errors (L0u)          — retry, backoff, isRetryable │
+│                                                            │
+│  External deps: NONE                                       │
+└────────────────────────────────────────────────────────────┘
 ```
 
 ### How It Plugs In
 
 ```
-@koi/search-nexus          @koi/search              Koi Runtime
-┌─────────────────┐   ┌──────────────────────┐   ┌────────────────┐
-│createNexusIndexer│──▶│ createSearch({       │──▶│ Agent uses     │
-│createNexusRetriev│   │   embedder,          │   │ search.indexer │
-│ (nexusCfg)       │   │   backend: {         │   │ search.retrieve│
-│                  │   │     indexer,  ▲       │   │                │
-│ returns Indexer  │   │     retriever ▲       │   │ Nexus handles  │
-│ returns Retriever│   │   }                  │   │ all storage    │
-└─────────────────┘   │ })                   │   └────────────────┘
-                       └──────────────────────┘
-  No import between
-  search-nexus and search!
+@koi/search-nexus           @koi/search              Koi Runtime
+┌──────────────────┐   ┌──────────────────────┐   ┌────────────────┐
+│createNexusSearch │──▶│ createSearch({       │──▶│ Agent uses     │
+│ (config)         │   │   embedder,          │   │ search.indexer │
+│                  │   │   backend: {         │   │ search.retrieve│
+│ returns:         │   │     indexer,  ▲       │   │                │
+│  .retriever      │   │     retriever ▲       │   │ Nexus handles  │
+│  .indexer        │   │   }                  │   │ all storage    │
+│  .healthCheck()  │   │ })                   │   └────────────────┘
+│  .getStats()     │   └──────────────────────┘
+│  .reindex()      │
+│  .close()        │   No import between
+└──────────────────┘   search-nexus and search!
 ```
 
 ---
 
 ## Usage
 
-### Basic
+### Quick Start
 
 ```typescript
-import { createNexusIndexer, createNexusRetriever } from "@koi/search-nexus";
-import { createSearch } from "@koi/search";
+import { createNexusSearch } from "@koi/search-nexus";
 
-const nexusCfg = {
+const nexus = createNexusSearch({
   baseUrl: "http://localhost:2026",
   apiKey: process.env.NEXUS_API_KEY ?? "",
-};
-
-const search = createSearch({
-  embedder, // required for type compat (unused in remote mode)
-  backend: {
-    indexer: createNexusIndexer(nexusCfg),
-    retriever: createNexusRetriever(nexusCfg),
-  },
 });
 
 // Index documents
-await search.indexer.index([
+await nexus.indexer.index([
   { id: "doc1", content: "Hello world" },
+  { id: "doc2", content: "Foo bar", metadata: { lang: "en" } },
 ]);
 
 // Search
-const result = await search.retriever.retrieve({ text: "hello", limit: 10 });
+const result = await nexus.retriever.retrieve({ text: "hello", limit: 10 });
+if (result.ok) {
+  for (const hit of result.value.results) {
+    console.log(hit.id, hit.score, hit.content);
+  }
+}
+
+// Health check
+const health = await nexus.healthCheck();
+// { ok: true, value: { healthy: true, indexName: "code-idx" } }
+
+// Stats
+const stats = await nexus.getStats();
+// { ok: true, value: { documentCount: 42, indexSizeBytes: 1024 } }
+
+// Trigger reindex
+await nexus.reindex();
+
+// Cleanup (no-op for REST, but fulfills the interface)
+nexus.close();
 ```
 
-### With Custom Timeout
+### With `createSearch` Backend
 
 ```typescript
-const nexusCfg = {
+import { createNexusSearch } from "@koi/search-nexus";
+import { createSearch } from "@koi/search";
+
+const nexus = createNexusSearch({
   baseUrl: "http://nexus:2026",
   apiKey: "sk-...",
-  timeoutMs: 5_000, // 5s timeout (default: 30s)
-};
+});
+
+const search = createSearch({
+  embedder,
+  backend: {
+    indexer: nexus.indexer,
+    retriever: nexus.retriever,
+  },
+});
 ```
 
-### With Injectable Fetch (for Testing)
+### Full Configuration
+
+```typescript
+const nexus = createNexusSearch({
+  baseUrl: "http://nexus:2026",
+  apiKey: "sk-...",
+  timeoutMs: 5_000,         // 5s timeout (default: 10s)
+  defaultLimit: 20,         // results per query (default: 10)
+  minScore: 0.3,            // min relevance threshold (default: 0)
+  maxBatchSize: 200,        // docs per index batch (default: 100)
+  retry: {
+    maxRetries: 5,          // more retries (default: 3)
+    initialDelayMs: 500,    // faster first retry
+    maxBackoffMs: 60_000,   // cap at 60s
+  },
+});
+```
+
+### Testing With Mock Fetch
 
 ```typescript
 const mockFetch = async () => ({
   ok: true,
   status: 200,
   json: async () => ({ hits: [], total: 0, has_more: false }),
+  text: async () => "{}",
 }) as unknown as typeof fetch;
 
-const retriever = createNexusRetriever({
+const nexus = createNexusSearch({
   baseUrl: "http://test",
   apiKey: "test-key",
   fetchFn: mockFetch,
+  retry: { maxRetries: 0 },
 });
 ```
 
@@ -144,12 +195,23 @@ const retriever = createNexusRetriever({
 
 ## API Reference
 
-### Factories
+### Factory
 
 | Function | Params | Returns |
 |----------|--------|---------|
-| `createNexusRetriever(config)` | `NexusSearchConfig` | `Retriever` |
-| `createNexusIndexer(config)` | `NexusSearchConfig` | `Indexer` |
+| `createNexusSearch(config)` | `NexusSearchConfig` | `NexusSearch` |
+| `validateNexusSearchConfig(config)` | `NexusSearchConfig` | `Result<void, KoiError>` |
+
+### NexusSearch
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `retriever` | `Retriever` | Query the search index |
+| `indexer` | `Indexer` | Index and remove documents |
+| `healthCheck()` | `() => Promise<Result<SearchHealth>>` | Check Nexus health |
+| `getStats()` | `() => Promise<Result<SearchStats>>` | Get index statistics |
+| `reindex()` | `() => Promise<Result<void>>` | Trigger reindexing |
+| `close()` | `() => void` | Cleanup (no-op for REST) |
 
 ### NexusSearchConfig
 
@@ -158,7 +220,19 @@ const retriever = createNexusRetriever({
 | `baseUrl` | `string` | *(required)* | Nexus server base URL |
 | `apiKey` | `string` | *(required)* | API key for Bearer auth |
 | `fetchFn` | `typeof fetch` | `globalThis.fetch` | Custom fetch function |
-| `timeoutMs` | `number` | `30,000` | Request timeout |
+| `timeoutMs` | `number` | `10,000` | Request timeout |
+| `defaultLimit` | `number` | `10` | Default results per query |
+| `minScore` | `number` | `0` | Minimum relevance score (0–1) |
+| `maxBatchSize` | `number` | `100` | Max documents per index batch |
+| `retry` | `Partial<RetryConfig>` | `{ maxRetries: 3, ... }` | Retry policy |
+
+### Constants
+
+| Constant | Value |
+|----------|-------|
+| `DEFAULT_TIMEOUT_MS` | `10_000` |
+| `DEFAULT_LIMIT` | `10` |
+| `DEFAULT_MAX_BATCH_SIZE` | `100` |
 
 ### Nexus → Koi Type Mapping
 
@@ -172,76 +246,111 @@ const retriever = createNexusRetriever({
 | `keyword_score` / `vector_score` | `metadata.keywordScore` / `metadata.vectorScore` |
 | *(N/A)* | `source` = `"nexus"` |
 
-### Error Mapping
+---
+
+## Key Features
+
+### Automatic Retry
+
+All operations (retrieve, index, remove, healthCheck, getStats, reindex) are wrapped with Result-aware retry. Retries only fire on transient errors:
+
+| Error Code | Retryable | Example |
+|------------|-----------|---------|
+| `RATE_LIMIT` | Yes | HTTP 429 |
+| `TIMEOUT` | Yes | HTTP 408/504, network timeout |
+| `EXTERNAL` (5xx) | Yes | HTTP 500, 502, 503 |
+| `VALIDATION` | No | HTTP 400, malformed response |
+| `PERMISSION` | No | HTTP 401, 403 |
+| `NOT_FOUND` | No | HTTP 404 |
+
+Backoff is exponential with jitter, respects `retryAfterMs` from rate-limit responses.
+
+### Batch Chunking
+
+Large `indexer.index()` calls are automatically split into batches of `maxBatchSize` (default: 100). Each batch is a separate HTTP request. Failures stop at the first failing batch.
 
 ```
-╔══════════════╦══════════════════════════╦═══════════╗
-║ HTTP Status  ║ KoiError Code            ║ Retryable ║
-╠══════════════╬══════════════════════════╬═══════════╣
-║ 400          ║ VALIDATION               ║ No        ║
-║ 401, 403     ║ PERMISSION               ║ No        ║
-║ 404          ║ NOT_FOUND                ║ No        ║
-║ 429          ║ RATE_LIMIT               ║ Yes       ║
-║ 5xx          ║ EXTERNAL                 ║ Yes       ║
-║ Network fail ║ EXTERNAL                 ║ No        ║
-║ Timeout      ║ TIMEOUT                  ║ Yes       ║
-║ Unknown      ║ EXTERNAL                 ║ No        ║
-╚══════════════╩══════════════════════════╩═══════════╝
+250 documents, maxBatchSize=100:
+  → POST /index (docs 0–99)     ✓
+  → POST /index (docs 100–199)  ✓
+  → POST /index (docs 200–249)  ✓
 ```
 
-### REST Endpoints Used
+### Filter Rejection
+
+Nexus search does not support client-side filters. Passing `query.filter` returns a `VALIDATION` error immediately (no HTTP call).
+
+### Defensive Response Parsing
+
+All Nexus API responses are validated with type guard predicates before use. Malformed responses return `VALIDATION` errors instead of causing runtime crashes.
+
+### Config Validation
+
+`validateNexusSearchConfig()` checks: non-empty baseUrl (valid URL format), non-empty apiKey, positive timeoutMs, valid defaultLimit, minScore in 0–1 range, positive maxBatchSize. `createNexusSearch()` calls this and throws on failure (fail-fast at construction).
+
+---
+
+## REST Endpoints Used
 
 | Operation | Method | Endpoint |
 |-----------|--------|----------|
 | Query | `GET` | `/api/v2/search/query?q=...&limit=...` |
 | Index | `POST` | `/api/v2/search/index` |
 | Remove | `POST` | `/api/v2/search/refresh` |
-
-### Constants
-
-| Constant | Value |
-|----------|-------|
-| `DEFAULT_TIMEOUT_MS` | `30_000` |
+| Health | `GET` | `/api/v2/search/health` |
+| Stats | `GET` | `/api/v2/search/stats` |
+| Reindex | `POST` | `/api/v2/search/reindex` |
 
 ---
 
 ## Testing
 
 ```
-http-errors.test.ts — 8 tests
-  ● Maps 400 to VALIDATION
-  ● Maps 401 to PERMISSION
-  ● Maps 403 to PERMISSION
-  ● Maps 404 to NOT_FOUND
-  ● Maps 429 to RATE_LIMIT
-  ● Maps 500 to retryable EXTERNAL
-  ● Maps 502 to retryable EXTERNAL
-  ● Maps unknown status to non-retryable EXTERNAL
+52 tests across 6 files:
+
+nexus-search.test.ts — 15 tests
+  ● Factory creation and validation
+  ● healthCheck: happy path, server error, malformed response
+  ● getStats: happy path, server error
+  ● reindex: happy path, server error
+  ● close: no-op
+  ● Retry: retries on 5xx, no retry on 4xx
+  ● Retriever and indexer through composite
+
+validate-config.test.ts — 14 tests
+  ● Valid config, optional fields undefined
+  ● Empty/invalid baseUrl, apiKey
+  ● Negative/zero timeoutMs, defaultLimit, maxBatchSize
+  ● minScore out of 0–1 range
+  ● Invalid URL format
+
+nexus-retriever.test.ts — 10 tests
+  ● Mapped results, query params, error responses
+  ● Filter rejection → VALIDATION error
+  ● Malformed response → VALIDATION error
+  ● Empty results, cursor pagination
+  ● Config defaults (defaultLimit, minScore)
+
+nexus-indexer.test.ts — 10 tests
+  ● Document indexing, embeddings, auth
+  ● Batch chunking: 250 docs → 3 POSTs
+  ● Empty input → no-op (no HTTP call)
+  ● Stops on first batch failure
 
 map-nexus-result.test.ts — 3 tests
-  ● Maps a minimal hit to SearchResult
-  ● Maps a hit with all optional fields
-  ● Omits optional metadata when not present
+  ● Minimal hit, all fields, optional metadata
 
-nexus-retriever.test.ts — 5 tests
-  ● Returns mapped results on success
-  ● Passes query params correctly
-  ● Sends authorization header
-  ● Returns error on non-OK response
-  ● Returns EXTERNAL error on network failure
-
-nexus-indexer.test.ts — 7 tests
-  ● Sends documents to POST /api/v2/search/index
-  ● Includes embeddings when provided
-  ● Returns error on server failure
-  ● Returns EXTERNAL error on network failure
-  ● Sends ids to POST /api/v2/search/refresh
-  ● Sends authorization header
-  ● Returns error on auth failure
+__tests__/integration.test.ts — 7 tests (env-gated)
+  ● Full flow: health → index → retrieve → stats → remove → reindex
+  ● Requires NEXUS_TEST_URL env var
 ```
 
 ```bash
+# Unit tests
 bun --cwd packages/search-nexus test
+
+# Integration tests (requires running Nexus)
+NEXUS_TEST_URL=http://localhost:2026 bun --cwd packages/search-nexus test
 ```
 
 ---
@@ -250,34 +359,40 @@ bun --cwd packages/search-nexus test
 
 | Decision | Rationale |
 |----------|-----------|
-| Separate L2 package | `@koi/search` never imports this — avoids L2→L2 dependency |
-| Uses `fetch` not `@koi/nexus-client` | Nexus search is REST, not JSON-RPC. Using the RPC client would add complexity for no benefit |
-| Injectable `fetchFn` | Same pattern as `@koi/search-brave`. Enables mock-based testing without network |
-| `AbortSignal.timeout()` | Platform-native cancellation. No `setTimeout` + `AbortController` dance |
-| No caching | Nexus server handles caching. This adapter is stateless |
-| `source: "nexus"` on results | Downstream consumers can distinguish local vs remote results |
-| Composite `id` format `path:chunk_index` | Unique, deterministic, and reversible for debugging |
-| 5xx mapped to retryable EXTERNAL | Nexus server errors are transient; retry middleware can handle them |
-| Network errors mapped to non-retryable | Connection refused / DNS failures need human intervention, not retry loops |
+| Single composite factory | One `createNexusSearch()` instead of separate retriever/indexer factories. Simpler API, shared config and client. |
+| Migrated to `@koi/nexus-client` | Shared REST transport eliminates duplicate HTTP plumbing (timeout, auth, error mapping). |
+| Result-aware retry | `withRetry` from `@koi/errors` throws on failure, but our operations return `Result`. Custom `withResultRetry` checks `result.ok` and `isRetryable(result.error)`. |
+| Batch chunking | Large index operations hit Nexus payload limits. Auto-chunking with configurable `maxBatchSize` prevents 413 errors. |
+| Filter rejection | Nexus API doesn't support client-side filters. Fail-fast VALIDATION error is better than silently ignoring the filter. |
+| Type guard parsers | Defensive response parsing without `as Type` assertions. Type guards narrow `unknown` → concrete type safely. |
+| Default timeout 10s (was 30s) | Aligned with `@koi/nexus-client` default. 30s was too generous for search queries. |
+| `source: "nexus"` on results | Downstream consumers can distinguish local vs remote results. |
+| No caching | Nexus server handles caching. This adapter is a stateless HTTP wrapper. |
 
 ---
 
 ## Layer Compliance
 
 ```
-L0  @koi/core ─────────────────────────────────────┐
-    KoiError, Result, RETRYABLE_DEFAULTS            │
-                                                    │
-L0u @koi/search-provider ──────────────────────┐   │
-    Indexer, Retriever, SearchResult            │   │
-                                                │   │
-                                                ▼   ▼
-L2  @koi/search-nexus ◄───────────────────────┘
+L0  @koi/core ─────────────────────────────────────────┐
+    KoiError, Result, RETRYABLE_DEFAULTS                │
+                                                        │
+L0u @koi/search-provider ────────────────────────┐     │
+    Indexer, Retriever, SearchResult              │     │
+                                                  │     │
+L0u @koi/nexus-client ───────────────────────┐   │     │
+    NexusRestClient, error mappers            │   │     │
+                                              │   │     │
+L0u @koi/errors ─────────────────────────┐   │   │     │
+    RetryConfig, isRetryable, backoff    │   │   │     │
+                                          ▼   ▼   ▼     ▼
+L2  @koi/search-nexus ◄─────────────────┘
     imports from L0 + L0u only
     ✗ never imports @koi/engine (L1)
     ✗ never imports peer L2 (@koi/search)
     ✗ zero external npm dependencies
     ✓ All interface properties readonly
-    ✓ Returns Result<T, KoiError> (never throws)
+    ✓ Returns Result<T, KoiError> (never throws expected errors)
     ✓ Stateless adapter (no caching, no side effects beyond HTTP)
+    ✓ Type guard predicates (no `as Type` in production code)
 ```
