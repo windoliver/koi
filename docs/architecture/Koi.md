@@ -36,6 +36,28 @@ A **self-extending agent runtime** — agents that can create, discover, and com
 | **Self-Extension** | @koi/forge | Runtime brick creation, verification, discovery |
 | **Infrastructure** | Pluggable backends | Memory, search, permissions, payments, artifact storage |
 
+### Linux → Koi Mental Model
+
+Every Koi concept maps 1:1 to a Linux kernel equivalent:
+
+| Linux | Koi | Where it lives |
+|-------|-----|----------------|
+| `task_struct` | `ProcessDescriptor` | L0 `@koi/core` — read-only snapshot assembled by agent-procfs |
+| Process state (RUNNING/STOPPED/ZOMBIE) | `ProcessState` + `AgentCondition[]` | L0 type, L1 state machine (single authority via AgentRegistry) |
+| `/proc/PID/status` | `agent-procfs` `/agents/<id>/descriptor` | L2 sidecar — 12+ virtual filesystem entries |
+| `fork(2)` + `exec(2)` | `SpawnFn` | L0 contract → shared adapter in `@koi/execution-context` |
+| `mqueue(7)` | `MailboxComponent` | L0 contract → `ipc-local` / `ipc-nexus` |
+| `mmap(MAP_SHARED)` / `/dev/shm` | `ScratchpadComponent` | L0 contract → Nexus filesystem CAS |
+| Signals (SIGTERM/SIGSTOP) | `AGENT_SIGNALS` (STOP/CONT/TERM/USR1/USR2) | L0 → routed through gateway → node → agent |
+| `cgroups` | `GovernanceVariable` readings | Governance middleware (token budget, error rate, context limits) |
+| `capabilities(7)` | `DelegationGrant` | HMAC-signed, monotonically attenuated, cascade-revocable |
+| `systemd` | `SupervisionController` | L1 `@koi/engine` — unifies 5 scattered reconcilers |
+| `/sys/` | Syscall table (7 contracts, versioned) | L0 — stable ordinals for multi-node compat |
+| VFS | `FileSystemBackend` + Nexus Unified Namespace | Every domain concept is a path under `/agents/{id}/` |
+| netfilter/iptables | `KoiMiddleware` with phase typing | INTERCEPT / OBSERVE / RESOLVE annotations |
+| Device drivers | Engine adapters | L2 — `engine-claude`, `engine-loop`, etc. |
+| Kernel modules | L2 feature packages | Independent, swappable, import only L0/L0u |
+
 ---
 
 ## Architecture Diagram
@@ -121,13 +143,16 @@ Diagram Section              Layer    What It Is
 ───────────────              ─────    ──────────
 Agent.pid, ProcessState      L0      Interfaces (types only, zero logic)
 Agent, SubsystemToken<T>     L0      ECS composition primitives
-KoiMiddleware                L0      Middleware contract
+ProcessDescriptor            L0      Read-only agent snapshot (like /proc/PID/status)
+KoiMiddleware (+ phase)      L0      Middleware contract with INTERCEPT/OBSERVE/RESOLVE
 ChannelAdapter, Resolver     L0      Channel + Discovery contracts
 EngineAdapter                L0      Engine contract
+AgentRegistry                L0      Lifecycle contract (7th core contract)
 
 Engine runtime (guards)      L1      createKoi(), IterationGuard, SpawnGuard
+SupervisionController        L1      Unified health/timeout/governance/signals
 Middleware chain composition L1      Wraps adapter in onion
-ProcessState transitions     L1      Lifecycle state machine
+ProcessState transitions     L1      Lifecycle state machine (single authority)
 
 Gateway, Node                L2      World Services
 ModelRouter, ArtifactClient  L2      World Services
@@ -163,23 +188,25 @@ Infrastructure backends      L3      Pluggable (Nexus, SQLite, custom)
 │  Layer 1: ENGINE (@koi/engine — kernel runtime)              │
 │  createKoi() → assembly → ComponentProvider.attach()         │
 │  IterationGuard, LoopDetector, SpawnGuard                    │
+│  SupervisionController (unified health/timeout/governance)   │
 │  ProcessState transitions (lifecycle state machine)          │
 │  Middleware chain composition → EngineAdapter dispatch        │
 ├─────────────────────────────────────────────────────────────┤
 │  Layer 0u: UTILITIES (pure functions, zero business logic)    │
-│  23 packages: errors, validation, manifest, hash,            │
+│  29 packages: errors, validation, manifest, hash,            │
 │  token-estimator, event-delivery, crypto-utils, edit-match,  │
 │  nexus-client, dashboard-types, harness-scheduler, + more.   │
 │  See scripts/layers.ts → L0U_PACKAGES for full list.         │
 │  Depend on L0 + peer L0u only. Importable by L1 and L2.      │
 ├─────────────────────────────────────────────────────────────┤
 │  Layer 0: KERNEL (@koi/core — types only)                    │
-│  6 core contracts + extended contracts + ECS layer            │
+│  7 core contracts + extended contracts + ECS layer            │
 │  Core: Middleware, Message, Channel, Resolver, Assembly,      │
-│        Engine                                                 │
-│  Extended: Lifecycle, ForgeStore, SnapshotStore, Delegation,  │
+│        Engine, AgentRegistry                                  │
+│  Extended: ForgeStore, SnapshotStore, Delegation,             │
 │           FileSystemBackend, SandboxExecutor, Config, ...     │
-│  ECS: Agent, SubsystemToken<T>, ComponentProvider, Tool       │
+│  ECS: Agent, SubsystemToken<T>, ComponentProvider, Tool,      │
+│       ProcessDescriptor                                       │
 │  ZERO implementations                                        │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -188,7 +215,7 @@ Infrastructure backends      L3      Pluggable (Nexus, SQLite, custom)
 
 | Property | Kernel (L0) | Utilities (L0u) | Engine (L1) | Features (L2) | Meta (L3) |
 |----------|-------------|-----------------|-------------|----------------|-----------|
-| **Contains** | Core + extended contracts, ECS (types only) | Pure functions, error types, validation, hashing | Guards, validation, dispatch | Channels, middleware, providers | Dependency bundles |
+| **Contains** | 7 core contracts + extended contracts, ECS (types only) | Pure functions, error types, validation, hashing | Guards, validation, dispatch, supervision | Channels, middleware, providers | Dependency bundles |
 | **Dependencies** | Zero | @koi/core only | @koi/core + L0u | @koi/core + L0u | L0 + L0u + L1 + selected L2 |
 | **Breakage scope** | All packages | Consumers only | Engine only | Own package only | None |
 | **Can be swapped?** | Never | Yes (per package) | No (it IS the runtime) | Yes (per package) | Yes |
@@ -209,24 +236,24 @@ validation, hashing, token estimation, event delivery, etc.).
 
 `@koi/core` defines the complete contract surface. All properties `readonly`, all data immutable. See source files for exact type signatures — this section describes architectural intent, not verbatim types.
 
-### Core Contracts (original 6)
+### Core Contracts (7)
 
 | # | Contract | Source | Surface | Key Idea |
 |---|----------|--------|---------|----------|
-| 1 | **Middleware** | `middleware.ts` | 7 optional hooks + priority | Sole interposition layer for model/tool calls. Onion composition with `wrapModelCall`, `wrapModelStream`, `wrapToolCall`. HITL approval via `TurnContext.requestApproval`. |
+| 1 | **Middleware** | `middleware.ts` | 7 optional hooks + priority + phase | Sole interposition layer for model/tool calls. Onion composition with `wrapModelCall`, `wrapModelStream`, `wrapToolCall`. Phase annotation (INTERCEPT/OBSERVE/RESOLVE) for ordering semantics. |
 | 2 | **Message** | `message.ts` | `ContentBlock` union, `InboundMessage`, `OutboundMessage` | Content blocks: text, file, image, button, custom. Inbound messages carry `senderId`, `timestamp`, and content blocks. |
 | 3 | **Channel** | `channel.ts` | `ChannelAdapter` — connect, disconnect, send, onMessage | Where the agent talks. Capabilities-aware. Supports status notifications (`sendStatus`). |
 | 4 | **Resolver** | `resolver.ts` | `discover()` + `load()` + optional `onChange()` | Generic `<TMeta, TFull>` discovery. `load()` returns `Result<TFull, KoiError>` (typed errors, not undefined). |
 | 5 | **Assembly** | `assembly.ts` | `AgentManifest` — name, model, tools, channels, middleware, permissions, delegation | Declarative agent definition. YAML IS the agent. |
 | 6 | **Engine** | `engine.ts` | `EngineAdapter` — `stream()` is the only required method | Swappable agent loop. `terminals` enable middleware interposition. `ComposedCallHandlers` passes middleware-wrapped calls back to the adapter including the `tools` descriptor list. |
+| 7 | **AgentRegistry** | `lifecycle.ts` | CAS transitions + `watch()` + conditions | Agent lifecycle management. Single authority for ProcessState transitions. Conditions (Initialized, Ready, Healthy, Draining, Idle) are flags, not states. `registry-nexus` is the cross-node authority. |
 
 ### Extended Contracts
 
-As Koi matured, additional L0 contracts were added for subsystems that need pluggable backends:
+Additional L0 contracts for subsystems that need pluggable backends:
 
 | Contract | Source | Purpose |
 |----------|--------|---------|
-| **AgentRegistry** | `lifecycle.ts` | Agent lifecycle management with CAS-based state transitions, conditions (K8s-inspired), and `watch()` for change notification |
 | **ForgeStore** | `brick-store.ts` | Brick artifact persistence — save, load, search, remove, update with `Result<T, KoiError>` returns. Replaced the earlier `BrickStore` concept |
 | **SnapshotStore** | `brick-snapshot.ts` | Per-brick version history and provenance. Records `created`, `updated`, `promoted`, `deprecated`, `quarantined` events. `BrickSnapshot` is per-brick (not per-agent) |
 | **Delegation** | `delegation.ts` | Capability delegation with HMAC-signed grants, scope checking, and revocation registry |
@@ -267,6 +294,21 @@ interface Tool {
   readonly execute: (args: JsonObject) => Promise<unknown>;
 }
 
+// ProcessDescriptor = read-only snapshot (like Linux /proc/PID/status)
+// Assembled by agent-procfs from existing subsystems — not stored as one object
+interface ProcessDescriptor {
+  readonly identity: ProcessId;              // pid, name, type, depth, parent, groupId
+  readonly phase: ProcessState;              // created | running | waiting | suspended | terminated
+  readonly conditions: readonly AgentCondition[];  // Initialized, Ready, Healthy, Draining, Idle
+  readonly generation: number;               // CAS generation for optimistic concurrency
+  readonly resources: ResourceSnapshot;      // token usage, context occupancy, cost, error rate
+  readonly children: readonly AgentId[];     // child agent IDs
+  readonly credentials: CredentialSnapshot;  // ownerId, zoneId
+  readonly workspace: WorkspaceSnapshot;     // cwd, workspaceId
+  readonly scheduling: SchedulingSnapshot;   // qos: "premium" | "standard" | "spot"
+  readonly timestamps: TimestampSnapshot;    // createdAt, lastScheduledAt, lastCheckpoint
+}
+
 // ComponentProvider attaches components during assembly
 interface ComponentProvider {
   readonly name: string;
@@ -284,6 +326,8 @@ const CREDENTIALS = token<CredentialComponent>("credentials");
 const EVENTS      = token<EventComponent>("events");
 const DELEGATION  = token<DelegationComponent>("delegation");
 const FILESYSTEM  = token<FileSystemBackend>("filesystem");
+const MAILBOX     = token<MailboxComponent>("mailbox");         // IPC: mqueue(7) equivalent
+const SCRATCHPAD  = token<ScratchpadComponent>("scratchpad");   // IPC: /dev/shm equivalent
 
 function toolToken(name: string): SubsystemToken<Tool>;              // "tool:calculator"
 function channelToken(name: string): SubsystemToken<ChannelAdapter>; // "channel:telegram"
@@ -304,8 +348,10 @@ One per agent, accessed via well-known tokens:
 | `EventComponent` | `EVENTS` | Pub/sub event bus (emit + subscribe) |
 | `DelegationComponent` | `DELEGATION` | Capability grants with HMAC signing |
 | `FileSystemBackend` | `FILESYSTEM` | Cross-engine file operations |
+| `MailboxComponent` | `MAILBOX` | IPC inbox — async message passing between agents (Linux `mqueue` equivalent) |
+| `ScratchpadComponent` | `SCRATCHPAD` | Shared memory / CAS store for handoffs and coordination (Linux `/dev/shm` equivalent) |
 
-Additional ECS types: `SpawnLedger` (tree-wide spawn accounting), `ProcessAccounter` (cross-agent spawn counting), `ChildHandle` + `ChildLifecycleEvent` (monitoring child agents).
+Additional ECS types: `SpawnLedger` (tree-wide spawn accounting), `ProcessAccounter` (cross-agent spawn counting), `ChildHandle` + `ChildLifecycleEvent` (monitoring child agents), `ProcessDescriptor` (read-only unified snapshot — see ECS section above).
 
 ### Scoped Component Views (Linux namespace model)
 
@@ -362,6 +408,127 @@ tools:
 Additional types in `@koi/core`: `KoiConfig`, `FeatureFlags`, `ModelConfig`, `PermissionConfig`, `EngineOutput`, `EngineState`, `EngineMetrics`, `EngineStopReason`, `BrickKind` (6 values: tool, skill, agent, composite, middleware, channel), `BrickLifecycle`, `ForgeScope`, `TrustTier`.
 
 Subsystem-specific config types live in their owning packages (e.g., `ExecutionLimitsConfig` in `@koi/engine`).
+
+### Extension Point Recipes
+
+How to expose each extension point. Every package follows the same patterns — no exceptions.
+
+#### Exposing a Tool
+
+```typescript
+// 1. Create a ComponentProvider that returns a Map with toolToken() keys
+import { toolToken, createSingleToolProvider } from "@koi/core";
+
+// Simple (one tool):
+export function createMyProvider(config: MyConfig): ComponentProvider {
+  return createSingleToolProvider({
+    name: "my-package",
+    toolName: "my_tool",          // → toolToken("my_tool") = "tool:my_tool"
+    createTool: () => createMyTool(config),
+  });
+}
+
+// Multi-tool: return Map with multiple toolToken() entries from attach()
+```
+
+Linux equivalent: loading a kernel module that registers device nodes.
+
+#### Exposing a Skill
+
+```typescript
+// Skills attach alongside tools via extras in the same ComponentProvider
+import { skillToken } from "@koi/core";
+import type { SkillComponent } from "@koi/core";
+
+const MY_SKILL: SkillComponent = {
+  name: "my-skill",
+  description: "When and how to use my-tool effectively",
+  content: "# My Skill\n\nMarkdown teaching guide...",
+  tags: ["my-domain"],
+} as const satisfies SkillComponent;
+
+// Attach via extras:
+createSingleToolProvider({
+  name: "my-package",
+  toolName: "my_tool",
+  createTool: () => createMyTool(config),
+  extras: [[skillToken("my-skill") as string, MY_SKILL]],  // ← skill rides with tool
+});
+```
+
+Linux equivalent: man pages installed alongside the binary.
+
+#### Exposing Middleware
+
+```typescript
+// Factory function + config type. No tokens — middleware uses name field.
+import type { KoiMiddleware } from "@koi/core";
+
+export function createMyMiddleware(config: MyMiddlewareConfig): KoiMiddleware {
+  return {
+    name: "my-middleware",
+    priority: 200,             // lower = outer (runs first)
+    phase: "INTERCEPT",        // INTERCEPT | OBSERVE | RESOLVE
+    async wrapToolCall(ctx, req, next) {
+      // ... intercept, then call next(req)
+      return next(req);
+    },
+  };
+}
+```
+
+Passed to `createKoi()` as array. Linux equivalent: netfilter chain rule.
+
+#### Exposing a Channel
+
+```typescript
+// Factory returning ChannelAdapter, using createChannelAdapter<E> helper from @koi/channel-base
+import { createChannelAdapter } from "@koi/channel-base";
+
+export function createMyChannel(config: MyChannelConfig): ChannelAdapter {
+  return createChannelAdapter<MyPlatformEvent>({
+    name: "my-channel",
+    capabilities: MY_CAPABILITIES,
+    platformConnect: async () => { /* ... */ },
+    platformDisconnect: async () => { /* ... */ },
+    platformSend: async (message) => { /* ... */ },
+    onPlatformEvent: (handler) => { /* ... */ },
+  });
+}
+```
+
+Registered via `channelToken("my-channel")`. Linux equivalent: device driver with `/dev/` entry.
+
+#### Building an L3 Bundle
+
+```typescript
+// ZERO new logic. Compose L0 + L1 + L2, return ready-to-use bundle.
+export function createMyBundle(config: MyBundleConfig): MyBundle {
+  const middleware = [
+    createPermissionsMiddleware(config.permissions),
+    createAuditMiddleware(config.audit),
+    // ... compose from L2 packages
+  ];
+  const providers = [
+    createMyToolProvider(config.tools),
+    // ... compose ComponentProviders
+  ];
+  return { middleware, providers };
+}
+```
+
+Presets ("open" / "standard" / "strict") are encouraged. Linux equivalent: distro meta-package.
+
+#### Quick Reference
+
+| I want to expose... | I create... | Token function | Discovered via | Linux ≈ |
+|---------------------|-------------|----------------|----------------|---------|
+| Tool | `ComponentProvider` → `toolToken()` | `toolToken(name)` | `agent.query("tool:")` | `insmod` + `/dev/` |
+| Skill | `SkillComponent` → `skillToken()` | `skillToken(name)` | `agent.query("skill:")` | `man` page |
+| Middleware | `create*Middleware()` factory | none (`name` field) | Array to `createKoi()` | netfilter rule |
+| Channel | `create*Channel()` factory | `channelToken(name)` | `agent.query("channel:")` | device driver |
+| L3 Bundle | Composition factory | none | Direct import | distro meta-package |
+| Forged brick | Forge → ForgeStore → ForgeResolver | auto (`toolToken`/`skillToken`) | Resolver chain | `modprobe` |
 
 ---
 
@@ -565,6 +732,17 @@ The agent can update **anything**. The only thing that varies is the gate:
 
 ## Agent Lifecycle
 
+### One State Machine, Not Four
+
+**Before**: 4 independent state machines (engine ProcessState, harness HarnessPhase, verified-loop implicit, scheduler TaskStatus) — uncoordinated. **After**: One state machine owned by `AgentRegistry`. L2 packages use `registry.transition()` — no private state machines.
+
+```
+ProcessState:  created → running → waiting → suspended → terminated
+                                     ↑
+AgentConditions (flags, not states):  Initialized, Ready, Healthy,
+                                      Draining, BackgroundWork, Idle
+```
+
 ```
                  createKoi()              EngineAdapter.stream()
                       │                        │
@@ -599,18 +777,41 @@ The agent can update **anything**. The only thing that varies is the gate:
 | `suspended → running` | Human approval, budget replenished | Gateway dispatches resume |
 | `* → terminated` | Completed, error, iteration/timeout limit | Engine runtime (L1) |
 
+### Unified Supervision (systemd model)
+
+`SupervisionController` in L1 unifies 5 previously scattered reconcilers (supervision, health, timeout, governance, agent-monitor) into one:
+
+- Receives signals from gateway (STOP/CONT/TERM — like POSIX signals)
+- Manages health checks, timeouts, governance limits
+- Handles cascading termination (parent dies → children die)
+- Controls warm worker pool — reuse idle agents
+- Deterministic shutdown: SIGTERM → drain → checkpoint → respond
+
 ---
 
 ## Agent-to-Agent Communication
 
-**No direct entity-to-entity communication.** Agents interact through infrastructure only.
+**No direct entity-to-entity communication.** Agents interact through 3 IPC primitives (like POSIX), routed through infrastructure.
+
+### Three IPC Primitives
+
+| Primitive | Linux equivalent | Koi component | Multi-node |
+|-----------|-----------------|---------------|------------|
+| **Mailbox** | `mqueue(7)` | `MailboxComponent` | Nexus IPC (`/agents/{id}/mailbox/`) |
+| **Spawn** | `fork(2)` + `exec(2)` | `SpawnFn` | `Node.dispatch()` via registry |
+| **Scratchpad** | `/dev/shm` / filesystem | `ScratchpadComponent` (CAS) | Nexus `/groups/{groupId}/scratch/` |
+
+Coordination patterns (orchestrator, parallel-minions, task-spawn, competitive-broadcast) **use** these primitives — they're not primitives themselves.
+
+### Communication Patterns
 
 | Pattern | Mechanism |
 |---------|-----------|
-| **Parent → Child** | `forge_agent` creates child with inherited components. Result returns to parent. |
-| **Sibling relay** | Agent A sends via Gateway → routes to Agent B |
+| **Parent → Child** | `SpawnFn` creates child with inherited components. Result returns to parent. |
+| **Sibling relay** | Agent A sends via `MailboxComponent` → Gateway routes to Agent B |
+| **Handoff** | Write to `ScratchpadComponent` — persist + authorize + notify in one operation |
 | **Broadcast** | EVENTS component → event bus → subscribers |
-| **Shared state** | Both agents read/write via ArtifactClient or Memory |
+| **Shared state** | Both agents read/write via `ScratchpadComponent` or Memory |
 | **Stigmergy** (#254, planned) | Agents leave traces in the environment (forge store, snapshots) that influence other agents' behavior — indirect coordination like ant pheromone trails |
 
 ```
@@ -632,17 +833,31 @@ The environment IS the coordination medium.
 
 ## Middleware Stack
 
-| Middleware | Layer | Purpose |
-|-----------|-------|---------|
-| `IterationGuard` | Engine runtime (L1) | Hard iteration + timeout caps |
-| `LoopDetector` | Engine runtime (L1) | FNV-1a loop detection |
-| `SpawnGovernance` | Engine runtime (L1) | Depth/fan-out/concurrency limits |
-| `ContextHydrator` | Feature (L2) | Deterministic context pre-loading |
-| `MemoryMiddleware` | Feature (L2) | Persistent memory (agent/user/session scopes) |
-| `PayMiddleware` | Feature (L2) | Budget tracking, alerts, hard kill switch |
-| `PermissionsMiddleware` | Feature (L2) | Permission checks + HITL approval |
-| `AuditMiddleware` | Feature (L2) | Compliance logging, secret/PII redaction |
-| `ForgeGovernance` | Feature (L2) | Depth-aware forge policies, session rate limiting |
+### Phase Annotations (netfilter model)
+
+Every middleware declares a phase — like Linux netfilter chains — for ordering semantics:
+
+```
+Phase       Priority  Purpose                            Examples
+─────────   ────────  ────────                           ────────
+INTERCEPT   100-200   Gate/block before execution        permissions, exec-approvals, delegation, governance, pay
+OBSERVE     300-375   Read-only observation after exec   audit, pii, sanitize, guardrails
+RESOLVE     220-420   Transform/adapt data               tool-squash, compactor, context-editing
+```
+
+### Middleware Table
+
+| Middleware | Layer | Phase | Purpose |
+|-----------|-------|-------|---------|
+| `IterationGuard` | Engine runtime (L1) | INTERCEPT | Hard iteration + timeout caps |
+| `LoopDetector` | Engine runtime (L1) | INTERCEPT | FNV-1a loop detection |
+| `SpawnGovernance` | Engine runtime (L1) | INTERCEPT | Depth/fan-out/concurrency limits |
+| `ContextHydrator` | Feature (L2) | RESOLVE | Deterministic context pre-loading |
+| `MemoryMiddleware` | Feature (L2) | RESOLVE | Persistent memory (agent/user/session scopes) |
+| `PayMiddleware` | Feature (L2) | INTERCEPT | Budget tracking, alerts, hard kill switch |
+| `PermissionsMiddleware` | Feature (L2) | INTERCEPT | Permission checks + HITL approval |
+| `AuditMiddleware` | Feature (L2) | OBSERVE | Compliance logging, secret/PII redaction |
+| `ForgeGovernance` | Feature (L2) | INTERCEPT | Depth-aware forge policies, session rate limiting |
 
 Engine-specific middleware (planning, context offloading, sub-agents) is provided by the engine adapter, not by Koi core.
 
@@ -651,7 +866,7 @@ Engine-specific middleware (planning, context offloading, sub-agents) is provide
 Every tool invocation passes through the full middleware onion:
 
 ```
-Governance → Permissions → Pay → Audit → TERMINAL (tool.execute())
+INTERCEPT: Governance → Permissions → Pay → RESOLVE: Context → OBSERVE: Audit → TERMINAL (tool.execute())
 ```
 
 The sandbox profile is inside the terminal. No "stale authorization" — middleware re-checks on every call.
@@ -1440,10 +1655,10 @@ channels:
 
 ## Middleware Hooks
 
-7 optional hooks on `KoiMiddleware`, ordered by `priority` (lower = outer):
+7 optional hooks on `KoiMiddleware`, ordered by `priority` (lower = outer), with a `phase` annotation for semantic grouping:
 
-| Hook | Phase | Signature |
-|------|-------|-----------|
+| Hook | Hook type | Signature |
+|------|-----------|-----------|
 | `onSessionStart` | Session lifecycle | `(ctx: SessionContext) => Promise<void>` |
 | `onSessionEnd` | Session lifecycle | `(ctx: SessionContext) => Promise<void>` |
 | `onBeforeTurn` | Turn lifecycle | `(ctx: TurnContext) => Promise<void>` |
@@ -1453,6 +1668,8 @@ channels:
 | `wrapToolCall` | Onion interposition | `(ctx, req, next) => Promise<ToolResponse>` |
 
 Lifecycle hooks (`onSession*`, `onBefore/AfterTurn`) run sequentially. Onion hooks (`wrap*`) compose as nested middleware chains with double-call detection.
+
+**Phase annotation** (`phase: "INTERCEPT" | "OBSERVE" | "RESOLVE"`) — declares the middleware's role in the chain. INTERCEPT gates execution (runs BEFORE), OBSERVE reads results (runs AFTER), RESOLVE transforms data. Governance runs before autonomous actions; context-arena runs after (respects pinned messages); audit sees everything.
 
 ---
 
