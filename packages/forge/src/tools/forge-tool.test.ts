@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import type { SigningBackend } from "@koi/core";
+import type { ExternalAgentDescriptor, KoiError, Result, SigningBackend } from "@koi/core";
 import { createDefaultForgeConfig } from "../config.js";
+import type { ForgeError } from "../errors.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import type { ForgeResult } from "../types.js";
 import { createForgeSkillTool } from "./forge-skill.js";
 import { createForgeToolTool } from "./forge-tool.js";
-import type { ForgeDeps } from "./shared.js";
+import type { DelegateOptions, ForgeDeps } from "./shared.js";
 
 function createDeps(overrides?: Partial<ForgeDeps>): ForgeDeps {
   return {
@@ -350,5 +351,107 @@ describe("forge tool with signer", () => {
       expect(loadResult.value.provenance.attestation).toBeDefined();
       expect(loadResult.value.provenance.attestation?.algorithm).toBe("hmac-sha256");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Delegation integration tests
+// ---------------------------------------------------------------------------
+
+const MOCK_AGENT: ExternalAgentDescriptor = {
+  name: "claude-code",
+  transport: "cli",
+  capabilities: ["code-generation"],
+  source: "path",
+};
+
+describe("forge tool delegation", () => {
+  test("delegates implementation to external agent when delegateTo is set", async () => {
+    const store = createInMemoryForgeStore();
+    const deps = createDeps({
+      store,
+      discoverAgent: async () =>
+        ({ ok: true, value: MOCK_AGENT }) as Result<ExternalAgentDescriptor, KoiError>,
+      spawnCodingAgent: async (
+        _agent: ExternalAgentDescriptor,
+        _prompt: string,
+        _options: DelegateOptions,
+      ) => ({ ok: true, value: "return input.a + input.b;" }) as Result<string, KoiError>,
+    });
+    const tool = createForgeToolTool(deps);
+
+    const result = (await tool.execute({
+      name: "delegatedCalc",
+      description: "A delegated calculator",
+      inputSchema: { type: "object" },
+      delegateTo: "claude-code",
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    expect(result.value.kind).toBe("tool");
+    expect(result.value.name).toBe("delegatedCalc");
+  });
+
+  test("returns delegation error when agent not found", async () => {
+    const deps = createDeps({
+      discoverAgent: async () =>
+        ({
+          ok: false,
+          error: { code: "NOT_FOUND", message: "No such agent", retryable: false },
+        }) as Result<ExternalAgentDescriptor, KoiError>,
+      spawnCodingAgent: async () => ({ ok: true, value: "return 1;" }) as Result<string, KoiError>,
+    });
+    const tool = createForgeToolTool(deps);
+
+    const result = (await tool.execute({
+      name: "delegatedTool",
+      description: "A tool",
+      inputSchema: { type: "object" },
+      delegateTo: "nonexistent-agent",
+    })) as {
+      readonly ok: false;
+      readonly error: ForgeError;
+    };
+
+    expect(result.ok).toBe(false);
+    expect(result.error.stage).toBe("delegation");
+    expect(result.error).toHaveProperty("code", "AGENT_NOT_FOUND");
+  });
+
+  test("implementation is optional when delegateTo is provided", async () => {
+    const deps = createDeps({
+      discoverAgent: async () =>
+        ({ ok: true, value: MOCK_AGENT }) as Result<ExternalAgentDescriptor, KoiError>,
+      spawnCodingAgent: async () => ({ ok: true, value: "return 42;" }) as Result<string, KoiError>,
+    });
+    const tool = createForgeToolTool(deps);
+
+    // No implementation field — should succeed via delegation
+    const result = (await tool.execute({
+      name: "noImplTool",
+      description: "Tool without explicit implementation",
+      inputSchema: { type: "object" },
+      delegateTo: "claude-code",
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    expect(result.value.name).toBe("noImplTool");
+  });
+
+  test("returns error when neither implementation nor delegateTo is provided", async () => {
+    const tool = createForgeToolTool(createDeps());
+
+    const result = (await tool.execute({
+      name: "emptyTool",
+      description: "A tool with nothing",
+      inputSchema: { type: "object" },
+    })) as {
+      readonly ok: false;
+      readonly error: { readonly stage: string; readonly message: string };
+    };
+
+    expect(result.ok).toBe(false);
+    expect(result.error.message).toContain("implementation");
+    expect(result.error.message).toContain("delegateTo");
   });
 });

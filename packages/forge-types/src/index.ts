@@ -19,6 +19,7 @@ export { createDefaultForgeConfig, validateForgeConfig } from "./config.js";
 // errors — ForgeError discriminated union + factory functions
 export type { ForgeError, TestFailure } from "./errors.js";
 export {
+  delegationError,
   formatError,
   governanceError,
   resolveError,

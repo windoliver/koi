@@ -103,6 +103,16 @@ const STORE_MAP: Readonly<
   SEARCH_FAILED: { koiCode: "INTERNAL", retryable: RETRYABLE_DEFAULTS.INTERNAL },
 };
 
+/** Delegation stage: external agent failures are EXTERNAL, timeouts are retryable. */
+const DELEGATION_MAP: Readonly<
+  Record<Extract<ForgeError, { readonly stage: "delegation" }>["code"], ForgeMapping>
+> = {
+  AGENT_NOT_FOUND: { koiCode: "NOT_FOUND", retryable: RETRYABLE_DEFAULTS.NOT_FOUND },
+  DELEGATION_TIMEOUT: { koiCode: "TIMEOUT", retryable: RETRYABLE_DEFAULTS.TIMEOUT },
+  DELEGATION_FAILED: { koiCode: "EXTERNAL", retryable: false },
+  DELEGATION_RETRIES_EXHAUSTED: { koiCode: "EXTERNAL", retryable: false },
+};
+
 // ---------------------------------------------------------------------------
 // Adapter function
 // ---------------------------------------------------------------------------
@@ -136,6 +146,8 @@ function lookupMapping(error: ForgeError): ForgeMapping {
       return FORMAT_MAP[error.code];
     case "store":
       return STORE_MAP[error.code];
+    case "delegation":
+      return DELEGATION_MAP[error.code];
     default: {
       const _exhaustive: never = error;
       throw new Error(`Unknown forge error stage: ${(_exhaustive as ForgeError).stage}`);

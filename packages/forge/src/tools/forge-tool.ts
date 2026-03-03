@@ -5,7 +5,9 @@
 import type { Result, Tool } from "@koi/core";
 import { brickId } from "@koi/core";
 import type { ForgeError } from "../errors.js";
+import { staticError } from "../errors.js";
 import type { ForgeResult, ForgeToolInput } from "../types.js";
+import { delegateImplementation } from "./delegate.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import {
   buildBaseFields,
@@ -68,8 +70,21 @@ const FORGE_TOOL_CONFIG: ForgeToolConfig = {
         type: "object",
         description: "JSON Schema describing the tool's output shape",
       },
+      delegateTo: {
+        type: "string",
+        description: "Name of an external coding agent to delegate implementation to",
+      },
+      delegateOptions: {
+        type: "object",
+        description: "Options for the delegation (model, timeoutMs, retries)",
+        properties: {
+          model: { type: "string" },
+          timeoutMs: { type: "number" },
+          retries: { type: "number" },
+        },
+      },
     },
-    required: ["name", "description", "inputSchema", "implementation"],
+    required: ["name", "description", "inputSchema"],
   },
   handler: forgeToolHandler,
 };
@@ -87,13 +102,52 @@ async function forgeToolHandler(
     return parsed;
   }
 
+  // Resolve implementation: either provided directly or via delegation
+  // let justified: implementation may come from delegation below
+  let implementation = parsed.value.implementation ?? "";
+
+  if (parsed.value.delegateTo !== undefined) {
+    // Build a temporary ForgeToolInput for delegation prompt generation
+    const delegationInput: ForgeToolInput = {
+      kind: "tool",
+      name: parsed.value.name,
+      description: parsed.value.description,
+      inputSchema: parsed.value.inputSchema,
+      implementation: "",
+      ...(parsed.value.testCases !== undefined
+        ? { testCases: mapParsedTestCases(parsed.value.testCases) }
+        : {}),
+      ...(parsed.value.outputSchema !== undefined
+        ? { outputSchema: parsed.value.outputSchema }
+        : {}),
+    };
+    const delegated = await delegateImplementation(
+      parsed.value.delegateTo,
+      delegationInput,
+      deps,
+      parsed.value.delegateOptions,
+    );
+    if (!delegated.ok) {
+      return delegated;
+    }
+    implementation = delegated.value;
+  } else if (implementation === "") {
+    return {
+      ok: false,
+      error: staticError(
+        "MISSING_FIELD",
+        "Either implementation or delegateTo must be provided",
+      ),
+    };
+  }
+
   const mapped = mapParsedTestCases(parsed.value.testCases);
   const forgeInput: ForgeToolInput = {
     kind: "tool",
     name: parsed.value.name,
     description: parsed.value.description,
     inputSchema: parsed.value.inputSchema,
-    implementation: parsed.value.implementation,
+    implementation,
     ...(mapped !== undefined ? { testCases: mapped } : {}),
     ...mapParsedBaseFields(parsed.value),
     ...(parsed.value.outputSchema !== undefined ? { outputSchema: parsed.value.outputSchema } : {}),
