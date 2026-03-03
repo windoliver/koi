@@ -313,9 +313,11 @@ async function hydrate(
 ): Promise<HydrationResult> {
   const globalBudget = config.maxTokens ?? DEFAULT_MAX_TOKENS;
 
+  const sources = config.sources ?? [];
+
   // 1. Resolve all sources in parallel
   const settlements = await Promise.allSettled(
-    config.sources.map((source) => resolveSource(source, agent, resolvers)),
+    sources.map((source) => resolveSource(source, agent, resolvers)),
   );
 
   // 2. Handle failures per required flag
@@ -324,7 +326,7 @@ async function hydrate(
 
   for (let i = 0; i < settlements.length; i++) {
     const settlement = settlements[i];
-    const source = config.sources[i];
+    const source = sources[i];
 
     if (settlement === undefined || source === undefined) {
       continue;
@@ -456,10 +458,11 @@ export function createContextHydrator(options: ContextHydratorOptions): ContextH
     priority: 300,
     describeCapabilities: (_ctx: TurnContext): CapabilityFragment => {
       const hydratedTokens = state.hydration?.result.totalTokens;
+      const sourceCount = config.sources?.length ?? 0;
       return {
         label: "context",
         description:
-          `Context: ${String(config.sources.length)} sources, ${String(hydratedTokens ?? 0)}/${String(globalBudgetForDisplay)} token budget` +
+          `Context: ${String(sourceCount)} sources, ${String(hydratedTokens ?? 0)}/${String(globalBudgetForDisplay)} token budget` +
           (config.refreshInterval !== undefined
             ? `, refresh every ${String(config.refreshInterval)} turns`
             : ""),
@@ -483,7 +486,7 @@ export function createContextHydrator(options: ContextHydratorOptions): ContextH
       if (currentHydration === undefined || !shouldRefresh(config.refreshInterval, ctx.turnIndex)) {
         return;
       }
-      const refreshableSources = config.sources.filter((s) => s.refreshable === true);
+      const refreshableSources = (config.sources ?? []).filter((s) => s.refreshable === true);
       if (refreshableSources.length === 0) {
         return;
       }

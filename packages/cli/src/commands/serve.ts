@@ -17,6 +17,7 @@ import { loadManifest } from "@koi/manifest";
 import { createShutdownHandler, EXIT_CONFIG, EXIT_ERROR } from "@koi/shutdown";
 import type { ServeFlags } from "../args.js";
 import { formatResolutionError, resolveAgent } from "../resolve-agent.js";
+import { mergeBootstrapContext } from "../resolve-bootstrap.js";
 
 // ---------------------------------------------------------------------------
 // Text extraction helper
@@ -67,7 +68,9 @@ export async function runServe(flags: ServeFlags): Promise<void> {
   const adapter = resolved.value.engine ?? createLoopAdapter({ modelCall: resolved.value.model });
 
   // 6. WIRE: Create the Koi runtime with resolved middleware + context extension
-  const contextExt = createContextExtension(manifest.context);
+  // Resolve bootstrap sources if configured, then merge with explicit sources
+  const contextConfig = await mergeBootstrapContext(manifest.context, manifestPath, manifest.name);
+  const contextExt = createContextExtension(contextConfig);
   const extensions = contextExt !== undefined ? [contextExt] : [];
 
   const runtime = await createKoi({

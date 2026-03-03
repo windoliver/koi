@@ -20,6 +20,8 @@ export { createContextExtension } from "./extension.js";
 export type { ContextHydratorMiddleware, ContextHydratorOptions } from "./hydrator.js";
 export { createContextHydrator } from "./hydrator.js";
 export type {
+  BootstrapManifestConfig,
+  BootstrapSlotConfig,
   ContextManifestConfig,
   ContextSource,
   FileSource,

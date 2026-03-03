@@ -711,3 +711,21 @@ describe("zodToKoiError", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Context field (pass-through)
+// ---------------------------------------------------------------------------
+
+describe("rawManifestSchema — context field", () => {
+  test("accepts context with explicit sources", () => {
+    expect(parse({ context: { sources: [{ kind: "text", text: "hello" }] } }).success).toBe(true);
+  });
+
+  test("accepts context with bootstrap: true", () => {
+    expect(parse({ context: { bootstrap: true } }).success).toBe(true);
+  });
+
+  test("accepts manifest without context", () => {
+    expect(parse({}).success).toBe(true);
+  });
+});

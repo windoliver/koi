@@ -18,8 +18,10 @@ describe("validateContextConfig", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.maxTokens).toBe(4000);
-      expect(result.value.sources).toHaveLength(5);
-      expect(result.value.sources[0]?.kind).toBe("text");
+      const { sources } = result.value;
+      expect(sources).toBeDefined();
+      expect(sources).toHaveLength(5);
+      expect(sources?.[0]?.kind).toBe("text");
     }
   });
 
@@ -30,6 +32,7 @@ describe("validateContextConfig", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.maxTokens).toBeUndefined();
+      expect(result.value.sources).toBeDefined();
       expect(result.value.sources).toHaveLength(1);
     }
   });
@@ -120,7 +123,7 @@ describe("validateContextConfig", () => {
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      const source = result.value.sources[0];
+      const source = result.value.sources?.[0];
       if (source === undefined) throw new Error("Expected source");
       expect(source.label).toBe("Test Label");
       expect(source.required).toBe(true);
@@ -191,7 +194,7 @@ describe("validateContextConfig", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.refreshInterval).toBe(5);
-      const source = result.value.sources[0];
+      const source = result.value.sources?.[0];
       if (source === undefined) throw new Error("Expected source");
       expect(source.refreshable).toBe(true);
     }
@@ -201,6 +204,80 @@ describe("validateContextConfig", () => {
     const result = validateContextConfig({
       sources: [{ kind: "text", text: "hi", refreshable: false }],
     });
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe("validateContextConfig — bootstrap", () => {
+  test("accepts bootstrap: true (without sources)", () => {
+    const result = validateContextConfig({ bootstrap: true });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.bootstrap).toBe(true);
+      expect(result.value.sources).toBeUndefined();
+    }
+  });
+
+  test("accepts bootstrap: { rootDir: '.' }", () => {
+    const result = validateContextConfig({ bootstrap: { rootDir: "." } });
+    expect(result.ok).toBe(true);
+    if (result.ok && typeof result.value.bootstrap === "object") {
+      expect(result.value.bootstrap.rootDir).toBe(".");
+    }
+  });
+
+  test("accepts bootstrap with custom slots", () => {
+    const result = validateContextConfig({
+      bootstrap: {
+        rootDir: ".",
+        slots: [{ fileName: "CUSTOM.md", label: "Custom", budget: 4000 }, { fileName: "OTHER.md" }],
+      },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("accepts bootstrap: true with sources (both present)", () => {
+    const result = validateContextConfig({
+      bootstrap: true,
+      sources: [{ kind: "text", text: "hello" }],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.bootstrap).toBe(true);
+      expect(result.value.sources).toHaveLength(1);
+    }
+  });
+
+  test("rejects config with neither sources nor bootstrap", () => {
+    const result = validateContextConfig({});
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects config with only empty sources and no bootstrap", () => {
+    const result = validateContextConfig({ sources: [] });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects bootstrap: 'string' (invalid type)", () => {
+    const result = validateContextConfig({ bootstrap: "string" });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects bootstrap: { rootDir: 123 } (invalid rootDir type)", () => {
+    const result = validateContextConfig({ bootstrap: { rootDir: 123 } });
+    expect(result.ok).toBe(false);
+  });
+
+  test("accepts bootstrap with agentName: null (disable agent-specific)", () => {
+    const result = validateContextConfig({ bootstrap: { agentName: null } });
+    expect(result.ok).toBe(true);
+    if (result.ok && typeof result.value.bootstrap === "object") {
+      expect(result.value.bootstrap.agentName).toBeNull();
+    }
+  });
+
+  test("accepts bootstrap with agentName: string", () => {
+    const result = validateContextConfig({ bootstrap: { agentName: "my-agent" } });
     expect(result.ok).toBe(true);
   });
 });
