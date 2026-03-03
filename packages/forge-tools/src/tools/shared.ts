@@ -6,9 +6,11 @@ import type {
   BrickArtifact,
   BrickArtifactBase,
   BrickId,
+  EngineAdapter,
   ForgeStore,
   GovernanceController,
   JsonObject,
+  KoiError,
   Result,
   SigningBackend,
   StoreChangeNotifier,
@@ -71,6 +73,10 @@ export interface ForgeDeps {
   readonly controller?: GovernanceController;
   /** Called after a successful forge with the number of forges consumed. When provided, incrementing the session counter is automatic. */
   readonly onForgeConsumed?: (consumed: number) => void | Promise<void>;
+  /** Optional engine resolver — resolves engine config from a manifest into an EngineAdapter. Used by forge_agent to auto-resolve engines during forge. */
+  readonly engineResolver?: (
+    engineConfig: unknown,
+  ) => Promise<Result<EngineAdapter | undefined, KoiError>>;
   /** DI pipeline — tools use pipeline methods for cross-L2 calls (verify, governance, attestation). Wired by L3 bundle. */
   readonly pipeline?: ForgePipeline;
 }

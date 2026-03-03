@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge-tools API surface . has stable type surface 1`] = `
-"import { BrickArtifact, ForgeStore, Result, CapabilityFragment, ToolArtifact, SandboxExecutor, Tool, BrickId, ForgeScope, StoreChangeEvent, BrickKind, BrickComponentMap, TrustTier, StoreChangeNotifier, ComponentProvider, KoiError, BrickRegistryWriter, Resolver, BrickRequires, SigningBackend, GovernanceController } from '@koi/core';
+"import { BrickArtifact, ForgeStore, Result, CapabilityFragment, ToolArtifact, SandboxExecutor, Tool, BrickId, ForgeScope, StoreChangeEvent, BrickKind, BrickComponentMap, TrustTier, StoreChangeNotifier, ComponentProvider, KoiError, BrickRegistryWriter, Resolver, BrickRequires, SigningBackend, GovernanceController, EngineAdapter } from '@koi/core';
 import { ForgeError, DriftChecker, SandboxExecutor as SandboxExecutor$1, ForgeVerifier, ForgeConfig, ForgeContext, ManifestParser, ForgePipeline, AgentArtifact } from '@koi/forge-types';
 import { BrickDescriptor } from '@koi/resolve';
 export { createMemoryStoreChangeNotifier } from '@koi/validation';
@@ -314,6 +314,8 @@ interface ForgeDeps {
     readonly controller?: GovernanceController;
     /** Called after a successful forge with the number of forges consumed. When provided, incrementing the session counter is automatic. */
     readonly onForgeConsumed?: (consumed: number) => void | Promise<void>;
+    /** Optional engine resolver — resolves engine config from a manifest into an EngineAdapter. Used by forge_agent to auto-resolve engines during forge. */
+    readonly engineResolver?: (engineConfig: unknown) => Promise<Result<EngineAdapter | undefined, KoiError>>;
     /** DI pipeline — tools use pipeline methods for cross-L2 calls (verify, governance, attestation). Wired by L3 bundle. */
     readonly pipeline?: ForgePipeline;
 }
@@ -398,6 +400,15 @@ declare function createComposeForge(deps: ForgeDeps): Tool;
  */
 
 /**
+ * Data passed to the onSpawn callback after a successful forge_agent.
+ * Extensible — new fields can be added without breaking existing callbacks.
+ */
+interface ForgeSpawnData {
+    readonly artifact: AgentArtifact;
+    /** Resolved engine adapter, if the manifest declared an engine and an engineResolver was provided. */
+    readonly engine?: EngineAdapter;
+}
+/**
  * Callback invoked after a successful forge_agent artifact creation.
  * The caller (typically L3 or consumer code) uses this to trigger
  * child agent assembly via \`spawnChildAgent()\`.
@@ -405,7 +416,7 @@ declare function createComposeForge(deps: ForgeDeps): Tool;
  * Returns void — spawn orchestration results are captured by the caller
  * through closure, keeping L2 independent of L1 types.
  */
-type OnForgeAgentSpawn = (artifact: AgentArtifact) => void | Promise<void>;
+type OnForgeAgentSpawn = (data: ForgeSpawnData) => void | Promise<void>;
 declare function createForgeAgentTool(deps: ForgeDeps, onSpawn?: OnForgeAgentSpawn): Tool;
 
 /**
@@ -460,6 +471,6 @@ declare function createPromoteForgeTool(deps: ForgeDeps): Tool;
 
 declare function createSearchForgeTool(deps: ForgeDeps): Tool;
 
-export { type AssembleManifestOptions, type AssembleManifestResult, type DeltaInvalidator, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeDeps, type ForgeRegistrySyncConfig, type ForgeResolverContext, type ForgeToolConfig, type NetworkPolicy, type OnForgeAgentSpawn, type RequiresCheckResult, type SkillMdInput, assembleManifest, brickCapabilityFragment, brickToTool, checkBrickRequires, createComposeForge, createDeltaInvalidator, createForgeAgentTool, createForgeChannelTool, createForgeComponentProvider, createForgeEditTool, createForgeMiddlewareTool, createForgeRegistrySync, createForgeResolver, createForgeSkillTool, createForgeTool, createForgeToolTool, createInMemoryForgeStore, createPromoteForgeTool, createSearchForgeTool, descriptor, forgeErrorToKoiError, generateSkillMd, mapBrickToComponent, mapParsedBaseFields, mapParsedTestCases, meetsKindTrust, meetsMinTrust };
+export { type AssembleManifestOptions, type AssembleManifestResult, type DeltaInvalidator, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeDeps, type ForgeRegistrySyncConfig, type ForgeResolverContext, type ForgeSpawnData, type ForgeToolConfig, type NetworkPolicy, type OnForgeAgentSpawn, type RequiresCheckResult, type SkillMdInput, assembleManifest, brickCapabilityFragment, brickToTool, checkBrickRequires, createComposeForge, createDeltaInvalidator, createForgeAgentTool, createForgeChannelTool, createForgeComponentProvider, createForgeEditTool, createForgeMiddlewareTool, createForgeRegistrySync, createForgeResolver, createForgeSkillTool, createForgeTool, createForgeToolTool, createInMemoryForgeStore, createPromoteForgeTool, createSearchForgeTool, descriptor, forgeErrorToKoiError, generateSkillMd, mapBrickToComponent, mapParsedBaseFields, mapParsedTestCases, meetsKindTrust, meetsMinTrust };
 "
 `;

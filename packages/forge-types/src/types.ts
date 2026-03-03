@@ -233,7 +233,7 @@ export interface PromoteResult {
 // ---------------------------------------------------------------------------
 
 export type ManifestParseResult =
-  | { readonly ok: true; readonly warnings: readonly string[] }
+  | { readonly ok: true; readonly warnings: readonly string[]; readonly engine?: unknown }
   | { readonly ok: false; readonly error: string };
 
 export interface ManifestParser {

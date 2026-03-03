@@ -1,11 +1,11 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { AgentArtifact, SkillArtifact, ToolArtifact } from "@koi/core";
+import type { EngineAdapter, SkillArtifact, ToolArtifact } from "@koi/core";
 import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import type { ForgeResult, ManifestParser } from "../types.js";
-import type { OnForgeAgentSpawn } from "./forge-agent.js";
+import type { ForgeSpawnData, OnForgeAgentSpawn } from "./forge-agent.js";
 import { createForgeAgentTool } from "./forge-agent.js";
 import type { ForgeDeps } from "./shared.js";
 
@@ -503,12 +503,12 @@ describe("createForgeAgentTool onSpawn", () => {
     expect(onSpawn).toHaveBeenCalledTimes(1);
   });
 
-  test("onSpawn receives the saved AgentArtifact with manifestYaml", async () => {
+  test("onSpawn receives ForgeSpawnData with artifact", async () => {
     const store = createInMemoryForgeStore();
-    let receivedArtifact: AgentArtifact | undefined;
+    let receivedData: ForgeSpawnData | undefined;
 
-    const onSpawn: OnForgeAgentSpawn = (artifact) => {
-      receivedArtifact = artifact;
+    const onSpawn: OnForgeAgentSpawn = (data) => {
+      receivedData = data;
     };
     const tool = createForgeAgentTool(createDeps({ store }), onSpawn);
 
@@ -519,11 +519,12 @@ describe("createForgeAgentTool onSpawn", () => {
     })) as { readonly ok: true; readonly value: ForgeResult };
 
     expect(result.ok).toBe(true);
-    expect(receivedArtifact).toBeDefined();
-    expect(receivedArtifact?.kind).toBe("agent");
-    expect(receivedArtifact?.manifestYaml).toBe(VALID_MANIFEST_YAML);
-    expect(receivedArtifact?.name).toBe("spawnAgent");
-    expect(receivedArtifact?.id).toBe(result.value.id);
+    expect(receivedData).toBeDefined();
+    expect(receivedData?.artifact.kind).toBe("agent");
+    expect(receivedData?.artifact.manifestYaml).toBe(VALID_MANIFEST_YAML);
+    expect(receivedData?.artifact.name).toBe("spawnAgent");
+    expect(receivedData?.artifact.id).toBe(result.value.id);
+    expect(receivedData?.engine).toBeUndefined();
   });
 
   test("backward compatible: works without onSpawn", async () => {
@@ -589,5 +590,182 @@ describe("createForgeAgentTool onSpawn", () => {
     expect(result.ok).toBe(false);
     expect(result.error.code).toBe("MANIFEST_PARSE_FAILED");
     expect(onSpawn).toHaveBeenCalledTimes(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Engine resolution tests
+// ---------------------------------------------------------------------------
+
+function createMockEngine(id = "mock-engine"): EngineAdapter {
+  return {
+    engineId: id,
+    stream: () => (async function* () {})(),
+  };
+}
+
+function createEngineParser(engineConfig: unknown): ManifestParser {
+  return {
+    parse: () => ({ ok: true, warnings: [], engine: engineConfig }),
+  };
+}
+
+describe("createForgeAgentTool engine resolution", () => {
+  test("resolves engine when manifest parse result includes engine field", async () => {
+    const store = createInMemoryForgeStore();
+    const mockEngine = createMockEngine();
+    const engineResolver = mock<NonNullable<ForgeDeps["engineResolver"]>>(async () => ({
+      ok: true,
+      value: mockEngine,
+    }));
+    let receivedData: ForgeSpawnData | undefined;
+
+    const onSpawn: OnForgeAgentSpawn = (data) => {
+      receivedData = data;
+    };
+
+    const tool = createForgeAgentTool(
+      createDeps({
+        store,
+        manifestParser: createEngineParser({ type: "rlm" }),
+        engineResolver,
+      }),
+      onSpawn,
+    );
+
+    const result = (await tool.execute({
+      name: "engineAgent",
+      description: "Agent with engine",
+      manifestYaml: VALID_MANIFEST_YAML,
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    expect(engineResolver).toHaveBeenCalledTimes(1);
+    expect(engineResolver).toHaveBeenCalledWith({ type: "rlm" });
+    expect(receivedData?.engine).toBe(mockEngine);
+  });
+
+  test("passes undefined engine when manifest has no engine field", async () => {
+    const store = createInMemoryForgeStore();
+    const engineResolver = mock<NonNullable<ForgeDeps["engineResolver"]>>(async () => ({
+      ok: true,
+      value: createMockEngine(),
+    }));
+    let receivedData: ForgeSpawnData | undefined;
+
+    const onSpawn: OnForgeAgentSpawn = (data) => {
+      receivedData = data;
+    };
+
+    const tool = createForgeAgentTool(
+      createDeps({
+        store,
+        engineResolver,
+      }),
+      onSpawn,
+    );
+
+    const result = (await tool.execute({
+      name: "noEngineAgent",
+      description: "Agent without engine in manifest",
+      manifestYaml: VALID_MANIFEST_YAML,
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    expect(engineResolver).toHaveBeenCalledTimes(0);
+    expect(receivedData?.engine).toBeUndefined();
+  });
+
+  test("returns error when engine resolution fails", async () => {
+    const engineResolver: NonNullable<ForgeDeps["engineResolver"]> = async () => ({
+      ok: false,
+      error: {
+        code: "NOT_FOUND",
+        message: "Engine 'rlm' not found",
+        retryable: false,
+      },
+    });
+
+    const tool = createForgeAgentTool(
+      createDeps({
+        manifestParser: createEngineParser({ type: "rlm" }),
+        engineResolver,
+      }),
+    );
+
+    const result = (await tool.execute({
+      name: "failEngineAgent",
+      description: "Agent with failing engine resolver",
+      manifestYaml: VALID_MANIFEST_YAML,
+    })) as {
+      readonly ok: false;
+      readonly error: { readonly stage: string; readonly code: string; readonly message: string };
+    };
+
+    expect(result.ok).toBe(false);
+    expect(result.error.stage).toBe("resolve");
+    expect(result.error.code).toBe("ENGINE_RESOLVE_FAILED");
+    expect(result.error.message).toContain("rlm");
+  });
+
+  test("skips engine resolution when engineResolver not provided", async () => {
+    const store = createInMemoryForgeStore();
+    let receivedData: ForgeSpawnData | undefined;
+
+    const onSpawn: OnForgeAgentSpawn = (data) => {
+      receivedData = data;
+    };
+
+    const tool = createForgeAgentTool(
+      createDeps({
+        store,
+        manifestParser: createEngineParser({ type: "rlm" }),
+        // No engineResolver
+      }),
+      onSpawn,
+    );
+
+    const result = (await tool.execute({
+      name: "noResolverAgent",
+      description: "Agent with engine in manifest but no resolver",
+      manifestYaml: VALID_MANIFEST_YAML,
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    expect(receivedData?.engine).toBeUndefined();
+  });
+
+  test("onSpawn receives ForgeSpawnData with artifact and engine", async () => {
+    const store = createInMemoryForgeStore();
+    const mockEngine = createMockEngine("test-engine");
+    let receivedData: ForgeSpawnData | undefined;
+
+    const onSpawn: OnForgeAgentSpawn = (data) => {
+      receivedData = data;
+    };
+
+    const tool = createForgeAgentTool(
+      createDeps({
+        store,
+        manifestParser: createEngineParser({ type: "test" }),
+        engineResolver: async () => ({ ok: true, value: mockEngine }),
+      }),
+      onSpawn,
+    );
+
+    const result = (await tool.execute({
+      name: "fullPathAgent",
+      description: "Full happy path with engine",
+      manifestYaml: VALID_MANIFEST_YAML,
+    })) as { readonly ok: true; readonly value: ForgeResult };
+
+    expect(result.ok).toBe(true);
+    expect(receivedData).toBeDefined();
+    expect(receivedData?.artifact).toBeDefined();
+    expect(receivedData?.artifact.kind).toBe("agent");
+    expect(receivedData?.artifact.name).toBe("fullPathAgent");
+    expect(receivedData?.artifact.id).toBe(result.value.id);
+    expect(receivedData?.engine).toBe(mockEngine);
+    expect(receivedData?.engine?.engineId).toBe("test-engine");
   });
 });

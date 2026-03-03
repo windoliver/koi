@@ -8,10 +8,10 @@
  * without importing @koi/manifest (avoids L2 peer dependency).
  */
 
-import type { BrickArtifact, Result, Tool } from "@koi/core";
+import type { BrickArtifact, EngineAdapter, Result, Tool } from "@koi/core";
 import { brickId } from "@koi/core";
 import type { AgentArtifact, ForgeAgentInput, ForgeError, ForgeResult } from "@koi/forge-types";
-import { staticError } from "@koi/forge-types";
+import { resolveError, staticError } from "@koi/forge-types";
 import { assembleManifest } from "../assemble-manifest.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import {
@@ -27,6 +27,16 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
+ * Data passed to the onSpawn callback after a successful forge_agent.
+ * Extensible — new fields can be added without breaking existing callbacks.
+ */
+export interface ForgeSpawnData {
+  readonly artifact: AgentArtifact;
+  /** Resolved engine adapter, if the manifest declared an engine and an engineResolver was provided. */
+  readonly engine?: EngineAdapter;
+}
+
+/**
  * Callback invoked after a successful forge_agent artifact creation.
  * The caller (typically L3 or consumer code) uses this to trigger
  * child agent assembly via `spawnChildAgent()`.
@@ -34,13 +44,13 @@ import {
  * Returns void — spawn orchestration results are captured by the caller
  * through closure, keeping L2 independent of L1 types.
  */
-export type OnForgeAgentSpawn = (artifact: AgentArtifact) => void | Promise<void>;
+export type OnForgeAgentSpawn = (data: ForgeSpawnData) => void | Promise<void>;
 
 // ---------------------------------------------------------------------------
 // Tool config
 // ---------------------------------------------------------------------------
 
-const FORGE_AGENT_CONFIG: ForgeToolConfig = {
+const FORGE_AGENT_DESCRIPTOR = {
   name: "forge_agent",
   description:
     "Creates a new sub-agent from a YAML manifest or brick IDs through the verification pipeline",
@@ -75,8 +85,16 @@ const FORGE_AGENT_CONFIG: ForgeToolConfig = {
     },
     required: ["name", "description"],
   },
-  handler: forgeAgentHandler,
-};
+} as const;
+
+// ---------------------------------------------------------------------------
+// Internal result — carries resolved engine alongside the forge result
+// ---------------------------------------------------------------------------
+
+interface ForgeAgentHandlerResult {
+  readonly result: Result<ForgeResult, ForgeError>;
+  readonly resolvedEngine?: EngineAdapter | undefined;
+}
 
 // ---------------------------------------------------------------------------
 // Handler
@@ -85,20 +103,22 @@ const FORGE_AGENT_CONFIG: ForgeToolConfig = {
 async function forgeAgentHandler(
   input: unknown,
   deps: ForgeDeps,
-): Promise<Result<ForgeResult, ForgeError>> {
+): Promise<ForgeAgentHandlerResult> {
   const parsed = parseAgentInput(input);
   if (!parsed.ok) {
-    return parsed;
+    return { result: parsed };
   }
 
   // Validate manifest parser is available
   if (deps.manifestParser === undefined) {
     return {
-      ok: false,
-      error: staticError(
-        "MANIFEST_PARSE_FAILED",
-        "ManifestParser not provided in ForgeDeps — required for forge_agent",
-      ),
+      result: {
+        ok: false,
+        error: staticError(
+          "MANIFEST_PARSE_FAILED",
+          "ManifestParser not provided in ForgeDeps — required for forge_agent",
+        ),
+      },
     };
   }
 
@@ -115,7 +135,7 @@ async function forgeAgentHandler(
       ...(parsed.value.agentType !== undefined ? { agentType: parsed.value.agentType } : {}),
     });
     if (!assemblyResult.ok) {
-      return assemblyResult;
+      return { result: assemblyResult };
     }
     manifestYaml = assemblyResult.value.manifestYaml;
     _loadedBricks = assemblyResult.value.loadedBricks;
@@ -128,12 +148,32 @@ async function forgeAgentHandler(
   const parseResult = await deps.manifestParser.parse(manifestYaml);
   if (!parseResult.ok) {
     return {
-      ok: false,
-      error: staticError(
-        "MANIFEST_PARSE_FAILED",
-        `Manifest validation failed: ${parseResult.error}`,
-      ),
+      result: {
+        ok: false,
+        error: staticError(
+          "MANIFEST_PARSE_FAILED",
+          `Manifest validation failed: ${parseResult.error}`,
+        ),
+      },
     };
+  }
+
+  // Eagerly resolve engine if manifest declared one and a resolver is available
+  let resolvedEngine: EngineAdapter | undefined;
+  if (deps.engineResolver !== undefined && parseResult.engine !== undefined) {
+    const engineResult = await deps.engineResolver(parseResult.engine);
+    if (!engineResult.ok) {
+      return {
+        result: {
+          ok: false,
+          error: resolveError(
+            "ENGINE_RESOLVE_FAILED",
+            `Engine resolution failed: ${engineResult.error.message}`,
+          ),
+        },
+      };
+    }
+    resolvedEngine = engineResult.value;
   }
 
   const forgeInput: ForgeAgentInput = {
@@ -144,13 +184,15 @@ async function forgeAgentHandler(
     ...mapParsedBaseFields(parsed.value),
   };
 
-  return runForgePipeline(forgeInput, deps, (report) => ({
+  const result = await runForgePipeline(forgeInput, deps, (report) => ({
     ...buildBaseFields(brickId("placeholder"), forgeInput, report, deps),
     kind: "agent" as const,
     manifestYaml,
     ...(forgeInput.files !== undefined ? { files: forgeInput.files } : {}),
     ...(forgeInput.requires !== undefined ? { requires: forgeInput.requires } : {}),
   }));
+
+  return { result, resolvedEngine };
 }
 
 // ---------------------------------------------------------------------------
@@ -158,24 +200,24 @@ async function forgeAgentHandler(
 // ---------------------------------------------------------------------------
 
 export function createForgeAgentTool(deps: ForgeDeps, onSpawn?: OnForgeAgentSpawn): Tool {
-  if (onSpawn === undefined) {
-    return createForgeTool(FORGE_AGENT_CONFIG, deps);
-  }
-
-  // Wrap handler to call onSpawn after successful artifact creation
-  const wrappedConfig: ForgeToolConfig = {
-    ...FORGE_AGENT_CONFIG,
+  const config: ForgeToolConfig = {
+    ...FORGE_AGENT_DESCRIPTOR,
     handler: async (input: unknown, handlerDeps: ForgeDeps) => {
-      const result = await forgeAgentHandler(input, handlerDeps);
-      if (result.ok) {
+      const { result, resolvedEngine } = await forgeAgentHandler(input, handlerDeps);
+      if (result.ok && onSpawn !== undefined) {
         // Load the saved artifact and invoke the spawn callback
         const loadResult = await handlerDeps.store.load(result.value.id);
         if (loadResult.ok && loadResult.value.kind === "agent") {
           // onSpawn failure should not prevent artifact save from succeeding
           try {
-            await onSpawn(loadResult.value as AgentArtifact);
-          } catch (e: unknown) {
-            console.debug("[forge-agent] onSpawn callback failed:", e);
+            await onSpawn({
+              artifact: loadResult.value,
+              ...(resolvedEngine !== undefined ? { engine: resolvedEngine } : {}),
+            });
+          } catch (_e: unknown) {
+            // Non-fatal: artifact persistence already succeeded.
+            // Spawn orchestration failures are reported through the callback closure.
+            void _e;
           }
         }
       }
@@ -183,5 +225,5 @@ export function createForgeAgentTool(deps: ForgeDeps, onSpawn?: OnForgeAgentSpaw
     },
   };
 
-  return createForgeTool(wrappedConfig, deps);
+  return createForgeTool(config, deps);
 }
