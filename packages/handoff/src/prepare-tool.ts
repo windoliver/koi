@@ -76,7 +76,10 @@ export function createPrepareTool(config: CreatePrepareToolConfig): Tool {
         metadata: input.metadata ?? {},
       };
 
-      config.store.put(envelope);
+      const putResult = await config.store.put(envelope);
+      if (!putResult.ok) {
+        return { error: `Failed to store handoff: ${putResult.error.message}` };
+      }
 
       config.onEvent?.({ kind: "handoff:prepared", envelope });
 

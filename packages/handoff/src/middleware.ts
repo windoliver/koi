@@ -18,7 +18,7 @@ import type { HandoffMiddlewareConfig } from "./types.js";
  * Creates middleware that:
  * 1. Injects handoffId + handoffPhase into turn metadata (every turn)
  * 2. Prepends a summary system message on the first model call (once)
- * 3. Transitions envelope status from pending → injected
+ * 3. Transitions envelope status from pending -> injected
  */
 export function createHandoffMiddleware(config: HandoffMiddlewareConfig): KoiMiddleware {
   // let justified: mutable closure flag for first-turn detection (Decision #7)
@@ -29,7 +29,9 @@ export function createHandoffMiddleware(config: HandoffMiddlewareConfig): KoiMid
     priority: 400,
 
     onBeforeTurn: async (ctx: TurnContext): Promise<void> => {
-      const envelope = config.store.findPendingForAgent(config.agentId);
+      const result = await config.store.findPendingForAgent(config.agentId);
+      if (!result.ok) return;
+      const envelope = result.value;
       if (envelope === undefined) return;
 
       // Inject metadata for programmatic access
@@ -41,12 +43,14 @@ export function createHandoffMiddleware(config: HandoffMiddlewareConfig): KoiMid
     wrapModelCall: async (_ctx: TurnContext, request: ModelRequest, next: ModelHandler) => {
       if (injected) return next(request);
 
-      const envelope = config.store.findPendingForAgent(config.agentId);
+      const result = await config.store.findPendingForAgent(config.agentId);
+      if (!result.ok) return next(request);
+      const envelope = result.value;
       if (envelope === undefined) return next(request);
 
       // First model call: inject summary
       injected = true;
-      config.store.transition(envelope.id, envelope.status, "injected");
+      await config.store.transition(envelope.id, envelope.status, "injected");
 
       config.onEvent?.({ kind: "handoff:injected", handoffId: envelope.id });
 
@@ -65,7 +69,12 @@ export function createHandoffMiddleware(config: HandoffMiddlewareConfig): KoiMid
         return;
       }
 
-      const envelope = config.store.findPendingForAgent(config.agentId);
+      const result = await config.store.findPendingForAgent(config.agentId);
+      if (!result.ok) {
+        yield* next(request);
+        return;
+      }
+      const envelope = result.value;
       if (envelope === undefined) {
         yield* next(request);
         return;
@@ -73,7 +82,7 @@ export function createHandoffMiddleware(config: HandoffMiddlewareConfig): KoiMid
 
       // First model call: inject summary (streaming path)
       injected = true;
-      config.store.transition(envelope.id, envelope.status, "injected");
+      await config.store.transition(envelope.id, envelope.status, "injected");
 
       config.onEvent?.({ kind: "handoff:injected", handoffId: envelope.id });
 
@@ -83,7 +92,14 @@ export function createHandoffMiddleware(config: HandoffMiddlewareConfig): KoiMid
     },
 
     describeCapabilities: (_ctx: TurnContext) => {
-      const envelope = config.store.findPendingForAgent(config.agentId);
+      // describeCapabilities is sync — use synchronous findPendingForAgent
+      // In-memory store returns Result synchronously; persistent backends
+      // should pre-cache pending state for this hook.
+      const result = config.store.findPendingForAgent(config.agentId);
+      // If it's a Promise, we can't await in sync context — return undefined
+      if (result instanceof Promise) return undefined;
+      if (!result.ok) return undefined;
+      const envelope = result.value;
       if (envelope === undefined) return undefined;
 
       return {

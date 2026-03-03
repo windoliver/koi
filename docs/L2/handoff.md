@@ -27,20 +27,23 @@ Benefits:
 - **Full details on demand** — `accept_handoff` tool returns complete results, artifacts, decisions, and warnings
 - **Pipeline-ready** — warnings and artifacts accumulate through A → B → C chains
 - **Observable** — `HandoffEvent` union enables telemetry, UI, and orchestrator integration
-- **Backend-swappable** — in-memory store today, Nexus/SQLite planned (#447)
+- **Backend-swappable** — in-memory, SQLite, and Nexus backends shipped
 
 ---
 
 ## Architecture
 
-`@koi/handoff` is an **L2 feature package** — it depends only on `@koi/core` (L0). No L1 or peer L2 imports.
+`@koi/handoff` is an **L2 feature package** — it depends on `@koi/core` (L0) and L0u utilities (`@koi/sqlite-utils`, `@koi/nexus-client`). No L1 or peer L2 imports.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  @koi/handoff  (L2)                                      │
 │                                                          │
 │  types.ts          ← Config types, tool descriptors      │
-│  store.ts          ← HandoffStore (Map wrapper + CAS)    │
+│  store.ts          ← HandoffStore interface + in-memory   │
+│  sqlite-store.ts   ← SQLite backend (bun:sqlite)         │
+│  nexus-store.ts    ← Nexus backend (JSON-RPC)            │
+│  errors.ts         ← Shared error factories              │
 │  validate.ts       ← Input + artifact validation         │
 │  summary.ts        ← Generate prompt summary (~300 tok)  │
 │  prepare-tool.ts   ← prepare_handoff tool factory        │
@@ -52,8 +55,10 @@ Benefits:
 ├──────────────────────────────────────────────────────────┤
 │  Dependencies                                            │
 │                                                          │
-│  @koi/core  (L0)   HandoffEnvelope, AgentId, Tool, etc. │
-│  crypto     (rt)   randomUUID for HandoffId generation   │
+│  @koi/core          (L0)  HandoffEnvelope, AgentId, etc. │
+│  @koi/sqlite-utils  (L0u) openDb, mapSqliteError         │
+│  @koi/nexus-client  (L0u) createNexusClient              │
+│  crypto             (rt)  randomUUID for HandoffId        │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -95,14 +100,14 @@ interface HandoffEnvelope {
      │                                  accept_handoff)
      │
      └──────────▶ expired
-                  (TTL — future #447)
+                  (passive TTL, default 24h)
 ```
 
 | Transition | Triggered by | What happens |
 |-----------|-------------|-------------|
 | `pending → injected` | Middleware `wrapModelCall` | Summary prepended to first model request |
 | `injected → accepted` | `accept_handoff` tool | Full context returned to agent |
-| `pending → expired` | TTL (planned) | Envelope becomes unavailable |
+| `pending → expired` | Passive TTL (default 24h) | Envelope becomes unavailable on read |
 
 All transitions are **CAS (compare-and-swap)** — the transition only succeeds if the current status matches the expected `from` status.
 
@@ -129,21 +134,29 @@ All transitions are **CAS (compare-and-swap)** — the transition only succeeds 
 
 The `HandoffStore` is the shared envelope registry. Both the sending and receiving agents reference the same store instance.
 
+All methods return `Result<T, KoiError>` or `T | Promise<T>` per Koi async convention:
+
 ```typescript
 interface HandoffStore {
-  put(envelope: HandoffEnvelope): void
-  get(id: HandoffId): HandoffEnvelope | undefined
-  transition(id: HandoffId, from: HandoffStatus, to: HandoffStatus): HandoffEnvelope | undefined
-  listByAgent(agentId: AgentId): readonly HandoffEnvelope[]
-  findPendingForAgent(agentId: AgentId): HandoffEnvelope | undefined
-  remove(id: HandoffId): boolean
-  removeByAgent(agentId: AgentId): void
-  bindRegistry(registry: AgentRegistry): void   // auto-cleanup on termination
-  dispose(): void
+  put(envelope): Result<void, KoiError> | Promise<Result<void, KoiError>>
+  get(id): Result<HandoffEnvelope, KoiError> | Promise<Result<HandoffEnvelope, KoiError>>
+  transition(id, from, to): Result<HandoffEnvelope, KoiError> | Promise<...>
+  listByAgent(agentId): Result<readonly HandoffEnvelope[], KoiError> | Promise<...>
+  findPendingForAgent(agentId): Result<HandoffEnvelope | undefined, KoiError> | Promise<...>
+  remove(id): Result<boolean, KoiError> | Promise<...>
+  removeByAgent(agentId): Result<void, KoiError> | Promise<...>
+  bindRegistry(registry: AgentRegistry): void
+  dispose(): void | Promise<void>
 }
 ```
 
-Today this is in-memory (`Map`). SQLite and Nexus backends are planned (#447).
+Three backends are available:
+
+| Factory | Backend | Best for |
+|---------|---------|----------|
+| `createInMemoryHandoffStore()` | In-memory `Map` | Tests, same-process agents |
+| `createSqliteHandoffStore({ dbPath })` | bun:sqlite WAL | Local dev, CLI, single-node |
+| `createNexusHandoffStore({ baseUrl, apiKey })` | Nexus JSON-RPC | Multi-node, shared state |
 
 ### Provider — Tool Registration
 
@@ -316,9 +329,21 @@ Artifact validation produces **warnings, not errors** — an unsupported URI sch
 
 ### Factory Functions
 
-#### `createHandoffStore()`
+#### `createInMemoryHandoffStore(config?)`
 
-Returns `HandoffStore`. In-memory `Map`-based. Process-lifetime only.
+Returns `HandoffStore`. In-memory `Map`-based. Process-lifetime only. Accepts optional `HandoffStoreConfig` with `ttlMs`.
+
+#### `createSqliteHandoffStore(config)`
+
+Returns `HandoffStore & { close(): void }`. Persistent SQLite backend via `bun:sqlite`. Config requires `dbPath` (string), optional `ttlMs`.
+
+#### `createNexusHandoffStore(config)`
+
+Returns `HandoffStore`. Persistent Nexus backend via JSON-RPC 2.0. Config requires `baseUrl` and `apiKey`, optional `basePath` and `ttlMs`.
+
+#### `createHandoffStore(config?)` (deprecated)
+
+Alias for `createInMemoryHandoffStore()`. Will be removed in a future release.
 
 #### `createHandoffProvider(config)`
 
@@ -511,18 +536,48 @@ createHandoffProvider({
         │ same     │ │ dev &    │ │ prod &   │
         │ process  │ │ single   │ │ multi    │
         │          │ │ node     │ │ node     │
-        │ ✅ Today  │ │ 🔜 #447  │ │ 🔜 #447  │
         └──────────┘ └──────────┘ └──────────┘
 ```
 
-| Concern | InMemory | SQLite (planned) | Nexus (planned) |
-|---------|----------|-----------------|-----------------|
+| Concern | InMemory | SQLite | Nexus |
+|---------|----------|--------|-------|
 | Persistence | None (process lifetime) | Disk file | Remote server |
-| Setup | Zero config | File path | URL + API key |
+| Setup | Zero config | `dbPath` | `baseUrl` + `apiKey` |
 | Concurrency | Single process | WAL mode | Multi-node via HTTP |
-| Best for | Tests, same-process agents | Local dev, CLI | Multi-node, shared state |
+| TTL | Passive (check-on-read) | Passive + startup cleanup | Passive (check-on-read) |
+| CAS transitions | In-memory compare-and-swap | SQL `WHERE status = ?` | Read-compare-write |
+| Best for | Tests, same-process agents | Local dev, CLI, single-node | Multi-node, shared state |
 
-See #447 for persistent backend tracking.
+### SQLite Backend
+
+```typescript
+import { createSqliteHandoffStore } from "@koi/handoff";
+
+const store = createSqliteHandoffStore({
+  dbPath: "./handoffs.db",  // or ":memory:" for tests
+  ttlMs: 86_400_000,        // optional, default 24h
+});
+
+// Close when done
+store.close();
+```
+
+Features: WAL mode, prepared statements, 3 targeted indexes, startup TTL cleanup, atomic CAS via `UPDATE ... WHERE status = ?`.
+
+### Nexus Backend
+
+```typescript
+import { createNexusHandoffStore } from "@koi/handoff";
+
+const store = createNexusHandoffStore({
+  baseUrl: "http://localhost:2026",
+  apiKey: process.env.NEXUS_API_KEY,
+  basePath: "/handoffs",     // optional, default "/handoffs"
+  ttlMs: 86_400_000,         // optional, default 24h
+});
+```
+
+Features: JSON-RPC 2.0 transport, glob + parallel reads for queries, injectable `fetch` for testing.
 
 ---
 
@@ -532,8 +587,14 @@ See #447 for persistent backend tracking.
 L0  @koi/core ──────────────────────────────────────────┐
     HandoffEnvelope, HandoffEvent, AgentId, Tool, etc.   │
                                                          │
+L0u @koi/sqlite-utils ──────────────────────────────────┤
+    openDb, mapSqliteError, wrapSqlite                   │
+                                                         │
+L0u @koi/nexus-client ──────────────────────────────────┤
+    createNexusClient                                    │
+                                                         │
 L2  @koi/handoff ◄───────────────────────────────────────┘
-    imports from L0 only
+    imports from L0 + L0u only
     ✗ never imports @koi/engine (L1)
     ✗ never imports peer L2 packages
     ✓ crypto.randomUUID() is a runtime built-in
@@ -542,6 +603,7 @@ L2  @koi/handoff ◄────────────────────
 - [x] `@koi/core/handoff.ts` has zero imports from other `@koi/*` packages
 - [x] `@koi/core/handoff.ts` has no function bodies (except branded `handoffId()` cast)
 - [x] No vendor types (LangGraph, OpenAI, etc.) in any file
-- [x] Runtime source imports from `@koi/core` only — `@koi/engine` and `@koi/engine-loop` are devDependencies (E2E tests)
+- [x] Runtime source imports from `@koi/core` (L0) and L0u utilities only — `@koi/engine` and `@koi/engine-loop` are devDependencies (E2E tests)
 - [x] All interface properties are `readonly`
 - [x] All array parameters are `readonly T[]`
+- [x] All store methods return `Result<T, KoiError>` or `T | Promise<T>`

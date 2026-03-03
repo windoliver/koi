@@ -10,7 +10,9 @@
     }
   },
   "dependencies": {
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "@koi/nexus-client": "workspace:*",
+    "@koi/sqlite-utils": "workspace:*"
   },
   "devDependencies": {
     "@koi/engine": "workspace:*",

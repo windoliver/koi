@@ -3,7 +3,7 @@ import type { HandoffEnvelope, HandoffEvent, ModelRequest, ModelResponse } from 
 import { agentId, handoffId } from "@koi/core";
 import { createMockTurnContext } from "@koi/test-utils";
 import { createHandoffMiddleware } from "./middleware.js";
-import { createHandoffStore, type HandoffStore } from "./store.js";
+import { createInMemoryHandoffStore, type HandoffStore } from "./store.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -55,7 +55,7 @@ describe("HandoffMiddleware", () => {
   const events: HandoffEvent[] = [];
 
   beforeEach(() => {
-    store = createHandoffStore();
+    store = createInMemoryHandoffStore();
     events.length = 0;
   });
 
@@ -127,7 +127,11 @@ describe("HandoffMiddleware", () => {
 
       await mw.wrapModelCall?.(ctx, createMockModelRequest(), async () => MOCK_RESPONSE);
 
-      expect(store.get(handoffId("hoff-1"))?.status).toBe("injected");
+      const result = await store.get(handoffId("hoff-1"));
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.status).toBe("injected");
+      }
     });
 
     test("emits handoff:injected event", async () => {

@@ -2,14 +2,14 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import type { HandoffEvent, JsonObject } from "@koi/core";
 import { agentId } from "@koi/core";
 import { createPrepareTool } from "./prepare-tool.js";
-import { createHandoffStore, type HandoffStore } from "./store.js";
+import { createInMemoryHandoffStore, type HandoffStore } from "./store.js";
 
 describe("prepare_handoff tool", () => {
   let store: HandoffStore;
   const events: HandoffEvent[] = [];
 
   beforeEach(() => {
-    store = createHandoffStore();
+    store = createInMemoryHandoffStore();
     events.length = 0;
   });
 
@@ -36,13 +36,17 @@ describe("prepare_handoff tool", () => {
     expect(output.status).toBe("pending");
 
     // Verify stored
-    const stored = [...store.listByAgent(agentId("agent-a"))];
-    expect(stored).toHaveLength(1);
-    expect(stored[0]?.from).toBe(agentId("agent-a"));
-    expect(stored[0]?.to).toBe(agentId("agent-b"));
-    expect(stored[0]?.status).toBe("pending");
-    expect(stored[0]?.phase.completed).toBe("Analyzed the data");
-    expect(stored[0]?.phase.next).toBe("Generate report from analysis");
+    const listResult = await store.listByAgent(agentId("agent-a"));
+    expect(listResult.ok).toBe(true);
+    if (listResult.ok) {
+      const stored = listResult.value;
+      expect(stored).toHaveLength(1);
+      expect(stored[0]?.from).toBe(agentId("agent-a"));
+      expect(stored[0]?.to).toBe(agentId("agent-b"));
+      expect(stored[0]?.status).toBe("pending");
+      expect(stored[0]?.phase.completed).toBe("Analyzed the data");
+      expect(stored[0]?.phase.next).toBe("Generate report from analysis");
+    }
   });
 
   test("emits handoff:prepared event", async () => {
@@ -97,9 +101,12 @@ describe("prepare_handoff tool", () => {
       warnings: ["Watch out for edge case X"],
     } as JsonObject);
 
-    const stored = store.listByAgent(agentId("agent-a"));
-    expect(stored[0]?.context.artifacts).toHaveLength(1);
-    expect(stored[0]?.context.warnings).toContain("Watch out for edge case X");
+    const listResult = await store.listByAgent(agentId("agent-a"));
+    expect(listResult.ok).toBe(true);
+    if (listResult.ok) {
+      expect(listResult.value[0]?.context.artifacts).toHaveLength(1);
+      expect(listResult.value[0]?.context.warnings).toContain("Watch out for edge case X");
+    }
   });
 
   test("adds artifact validation warnings", async () => {
@@ -111,9 +118,12 @@ describe("prepare_handoff tool", () => {
       artifacts: [{ id: "a1", kind: "data", uri: "s3://bucket/key" }],
     } as JsonObject);
 
-    const stored = store.listByAgent(agentId("agent-a"));
-    expect(stored[0]?.context.warnings.length).toBeGreaterThan(0);
-    expect(stored[0]?.context.warnings[0]).toContain("unsupported URI scheme");
+    const listResult = await store.listByAgent(agentId("agent-a"));
+    expect(listResult.ok).toBe(true);
+    if (listResult.ok) {
+      expect(listResult.value[0]?.context.warnings.length).toBeGreaterThan(0);
+      expect(listResult.value[0]?.context.warnings[0]).toContain("unsupported URI scheme");
+    }
   });
 
   test("concurrent calls produce unique IDs", async () => {
@@ -144,9 +154,12 @@ describe("prepare_handoff tool", () => {
       ],
     } as JsonObject);
 
-    const stored = store.listByAgent(agentId("agent-a"));
-    expect(stored[0]?.context.decisions).toHaveLength(1);
-    expect(stored[0]?.context.decisions[0]?.action).toBe("chose_strategy");
+    const listResult = await store.listByAgent(agentId("agent-a"));
+    expect(listResult.ok).toBe(true);
+    if (listResult.ok) {
+      expect(listResult.value[0]?.context.decisions).toHaveLength(1);
+      expect(listResult.value[0]?.context.decisions[0]?.action).toBe("chose_strategy");
+    }
   });
 
   test("includes metadata in envelope", async () => {
@@ -158,7 +171,10 @@ describe("prepare_handoff tool", () => {
       metadata: { priority: "high" },
     } as JsonObject);
 
-    const stored = store.listByAgent(agentId("agent-a"));
-    expect(stored[0]?.metadata).toEqual({ priority: "high" });
+    const listResult = await store.listByAgent(agentId("agent-a"));
+    expect(listResult.ok).toBe(true);
+    if (listResult.ok) {
+      expect(listResult.value[0]?.metadata).toEqual({ priority: "high" });
+    }
   });
 });

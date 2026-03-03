@@ -4,22 +4,36 @@
  * Provides tools (prepare_handoff, accept_handoff) and middleware for
  * packaging and injecting typed handoff envelopes between pipeline agents.
  *
- * Depends on @koi/core only.
+ * Depends on @koi/core, @koi/sqlite-utils, @koi/nexus-client.
  */
 
 // accept tool
 export type { CreateAcceptToolConfig } from "./accept-tool.js";
 export { createAcceptTool } from "./accept-tool.js";
+// errors
+export {
+  conflictError,
+  internalError,
+  notFoundError,
+  validateHandoffId,
+  validationError,
+} from "./errors.js";
 // middleware
 export { createHandoffMiddleware } from "./middleware.js";
+// nexus store
+export type { NexusHandoffStoreConfig } from "./nexus-store.js";
+export { createNexusHandoffStore } from "./nexus-store.js";
 // prepare tool
 export type { CreatePrepareToolConfig } from "./prepare-tool.js";
 export { createPrepareTool } from "./prepare-tool.js";
 // provider
 export { createHandoffProvider } from "./provider.js";
+// sqlite store
+export type { SqliteHandoffStoreConfig } from "./sqlite-store.js";
+export { createSqliteHandoffStore } from "./sqlite-store.js";
 // store
-export type { HandoffStore } from "./store.js";
-export { createHandoffStore } from "./store.js";
+export type { HandoffStore, HandoffStoreConfig } from "./store.js";
+export { createHandoffStore, createInMemoryHandoffStore } from "./store.js";
 // summary
 export { generateHandoffSummary } from "./summary.js";
 // types

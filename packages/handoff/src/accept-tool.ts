@@ -34,7 +34,7 @@ export function createAcceptTool(config: CreateAcceptToolConfig): Tool {
       }
 
       const id: HandoffId = handoffId(validation.handoffId);
-      const result = accept(config, id);
+      const result = await accept(config, id);
 
       if (!result.ok) {
         const err = result.error;
@@ -78,11 +78,12 @@ export function createAcceptTool(config: CreateAcceptToolConfig): Tool {
 // Core accept logic (pure, testable)
 // ---------------------------------------------------------------------------
 
-function accept(config: CreateAcceptToolConfig, id: HandoffId): HandoffAcceptResult {
-  const envelope = config.store.get(id);
-  if (envelope === undefined) {
+async function accept(config: CreateAcceptToolConfig, id: HandoffId): Promise<HandoffAcceptResult> {
+  const getResult = await config.store.get(id);
+  if (!getResult.ok) {
     return { ok: false, error: { code: "NOT_FOUND", handoffId: id } };
   }
+  const envelope = getResult.value;
 
   if (envelope.status === "accepted") {
     return { ok: false, error: { code: "ALREADY_ACCEPTED", handoffId: id } };
@@ -106,16 +107,16 @@ function accept(config: CreateAcceptToolConfig, id: HandoffId): HandoffAcceptRes
   // Validate artifact refs — collect warnings (not hard fail)
   const artifactWarnings = validateArtifactRefs(envelope.context.artifacts);
 
-  // Transition: pending|injected → accepted
-  const updated = config.store.transition(envelope.id, envelope.status, "accepted");
-  if (updated === undefined) {
+  // Transition: pending|injected -> accepted
+  const transitionResult = await config.store.transition(envelope.id, envelope.status, "accepted");
+  if (!transitionResult.ok) {
     // CAS conflict — envelope changed between get and transition
     return { ok: false, error: { code: "NOT_FOUND", handoffId: id } };
   }
 
   return {
     ok: true,
-    envelope: updated,
+    envelope: transitionResult.value,
     warnings: artifactWarnings,
   };
 }
