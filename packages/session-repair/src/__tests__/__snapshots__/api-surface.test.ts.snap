@@ -1,0 +1,87 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/session-repair API surface . has stable type surface 1`] = `
+"import * as _koi_core_message from '@koi/core/message';
+import { InboundMessage } from '@koi/core/message';
+
+/**
+ * Types for the session repair pipeline.
+ */
+/** Describes a single repair action taken during session repair. */
+interface RepairIssue {
+    readonly phase: "orphan-tool" | "dedup" | "merge";
+    readonly description: string;
+    readonly index: number;
+    readonly action: "removed" | "merged" | "inserted" | "kept";
+}
+/** Result of running the session repair pipeline. */
+interface RepairResult {
+    readonly messages: readonly _koi_core_message.InboundMessage[];
+    readonly issues: readonly RepairIssue[];
+}
+/** Mapping of callId pairs and orphan indices within a message array. */
+interface CallIdPairMap {
+    /** Map from callId to the index of the assistant message that initiated it. */
+    readonly assistantByCallId: ReadonlyMap<string, number>;
+    /** Indices of tool messages whose callId has no matching assistant message. */
+    readonly orphanToolIndices: readonly number[];
+    /** Indices of assistant messages whose callId has no matching tool result. */
+    readonly danglingToolUseIndices: readonly number[];
+}
+
+/**
+ * Call-ID pair mapping for assistant+tool message pairing.
+ *
+ * Builds a map of callId -> assistant index and identifies orphans
+ * (tool results with no matching assistant) and dangling tool_use
+ * (assistant messages with no matching tool result).
+ */
+
+/**
+ * Map callId pairs in a message array.
+ *
+ * Scans all messages to build:
+ * - assistantByCallId: callId -> assistant message index
+ * - orphanToolIndices: tool messages whose callId has no matching assistant
+ * - danglingToolUseIndices: assistant messages whose callId has no matching tool result
+ */
+declare function mapCallIdPairs(messages: readonly InboundMessage[]): CallIdPairMap;
+
+/**
+ * Fast-path check for whether a message array needs repair.
+ *
+ * Single O(n) pass with lazy hashing. Returns true if any repair
+ * phase would produce changes, false otherwise.
+ */
+
+/**
+ * Fast-path check: does this message array need any repairs?
+ *
+ * Checks all 3 phases:
+ * 1. Orphan detection via mapCallIdPairs (works on any length)
+ * 2. Adjacent dedup detection (lazy hashing, requires 2+ messages)
+ * 3. Merge eligibility detection (requires 2+ messages)
+ */
+declare function needsRepair(messages: readonly InboundMessage[]): boolean;
+
+/**
+ * Session repair pipeline — 3-phase message history repair.
+ *
+ * Phase 1 (orphan repair): Insert synthetic messages to pair orphan tools / dangling tool_use.
+ * Phase 2 (dedup): Remove consecutive duplicate messages (lazy hashing).
+ * Phase 3 (merge): Merge consecutive same-sender messages when safe.
+ *
+ * Pure function — no side effects, no I/O.
+ */
+
+/**
+ * Repair a session message history.
+ *
+ * Runs 3 phases: orphan repair -> dedup -> merge.
+ * Returns original array reference when no repairs are needed (zero allocation).
+ */
+declare function repairSession(messages: readonly InboundMessage[]): RepairResult;
+
+export { type CallIdPairMap, type RepairIssue, type RepairResult, mapCallIdPairs, needsRepair, repairSession };
+"
+`;

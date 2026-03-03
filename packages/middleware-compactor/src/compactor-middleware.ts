@@ -22,6 +22,7 @@ import type {
   TurnContext,
 } from "@koi/core/middleware";
 import { isContextOverflowError } from "@koi/errors";
+import { repairSession } from "@koi/session-repair";
 import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
 import { createLlmCompactor } from "./compact.js";
 import { createCompactorGovernanceContributor } from "./compactor-governance-contributor.js";
@@ -130,9 +131,10 @@ export function createCompactorMiddleware(config: CompactorConfig): CompactorMid
       state = { ...state, cachedRestore: undefined };
       if (restored.strategy !== "noop" && restored.messages.length > 0) {
         const mergedMessages = [...restored.messages, ...request.messages];
-        await updateOccupancyTracking(mergedMessages);
+        const repaired = repairSession(mergedMessages);
+        await updateOccupancyTracking(repaired.messages);
         return {
-          request: { ...request, messages: mergedMessages },
+          request: { ...request, messages: repaired.messages },
           result: undefined,
         };
       }

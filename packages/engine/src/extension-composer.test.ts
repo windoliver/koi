@@ -357,27 +357,29 @@ describe("createDefaultGuardExtension", () => {
     expect(ext.name).toBe("koi:default-guards");
   });
 
-  test("produces 3 guards by default", () => {
+  test("produces 4 guards by default", () => {
     const ext = createDefaultGuardExtension();
     const guards = ext.guards?.(testGuardCtx());
     // Sync path — should return array directly
     expect(Array.isArray(guards)).toBe(true);
     if (Array.isArray(guards)) {
-      expect(guards).toHaveLength(3);
-      expect(guards[0]?.name).toBe("koi:iteration-guard");
-      expect(guards[1]?.name).toBe("koi:loop-detector");
-      expect(guards[2]?.name).toBe("koi:spawn-guard");
+      expect(guards).toHaveLength(4);
+      expect(guards[0]?.name).toBe("koi:session-repair");
+      expect(guards[1]?.name).toBe("koi:iteration-guard");
+      expect(guards[2]?.name).toBe("koi:loop-detector");
+      expect(guards[3]?.name).toBe("koi:spawn-guard");
     }
   });
 
-  test("produces 2 guards when loopDetection is false", () => {
+  test("produces 3 guards when loopDetection is false", () => {
     const ext = createDefaultGuardExtension({ loopDetection: false });
     const guards = ext.guards?.(testGuardCtx());
     expect(Array.isArray(guards)).toBe(true);
     if (Array.isArray(guards)) {
-      expect(guards).toHaveLength(2);
-      expect(guards[0]?.name).toBe("koi:iteration-guard");
-      expect(guards[1]?.name).toBe("koi:spawn-guard");
+      expect(guards).toHaveLength(3);
+      expect(guards[0]?.name).toBe("koi:session-repair");
+      expect(guards[1]?.name).toBe("koi:iteration-guard");
+      expect(guards[2]?.name).toBe("koi:spawn-guard");
     }
   });
 
@@ -386,6 +388,6 @@ describe("createDefaultGuardExtension", () => {
     const ctx = testGuardCtx({ agentDepth: 2 });
     const composed = await composeExtensions([ext], ctx);
     // Spawn guard should be created with depth 2 — verified by composition succeeding
-    expect(composed.guardMiddleware).toHaveLength(3);
+    expect(composed.guardMiddleware).toHaveLength(4);
   });
 });

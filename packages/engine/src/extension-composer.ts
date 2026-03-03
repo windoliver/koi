@@ -17,6 +17,7 @@ import type {
   ValidationResult,
 } from "@koi/core";
 import { EXTENSION_PRIORITY } from "@koi/core";
+import { needsRepair, repairSession } from "@koi/session-repair";
 import { createIterationGuard, createLoopDetector, createSpawnGuard } from "./guards.js";
 import type { IterationLimits, LoopDetectionConfig, SpawnPolicy } from "./types.js";
 
@@ -191,11 +192,45 @@ export interface DefaultGuardExtensionConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Session repair guard
+// ---------------------------------------------------------------------------
+
+/** Repairs broken message history before every model call. Priority -1 (before all other guards). */
+function createSessionRepairGuard(): KoiMiddleware {
+  return {
+    name: "koi:session-repair",
+    priority: -1,
+    describeCapabilities: () => undefined,
+
+    async wrapModelCall(_ctx, request, next) {
+      if (!needsRepair(request.messages)) return next(request);
+      const result = repairSession(request.messages);
+      for (const issue of result.issues) {
+        console.warn(`[session-repair] ${issue.phase}: ${issue.description}`);
+      }
+      return next({ ...request, messages: result.messages });
+    },
+
+    async *wrapModelStream(_ctx, request, next) {
+      if (!needsRepair(request.messages)) {
+        yield* next(request);
+        return;
+      }
+      const result = repairSession(request.messages);
+      for (const issue of result.issues) {
+        console.warn(`[session-repair] ${issue.phase}: ${issue.description}`);
+      }
+      yield* next({ ...request, messages: result.messages });
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // createDefaultGuardExtension
 // ---------------------------------------------------------------------------
 
 /**
- * Wraps the existing 3 L1 guards (iteration, loop, spawn) as a
+ * Wraps the existing L1 guards (session-repair, iteration, loop, spawn) as a
  * KernelExtension at CORE priority (0) for dogfooding.
  *
  * This is the default extension created by createKoi() when sugar fields
@@ -207,7 +242,10 @@ export function createDefaultGuardExtension(config?: DefaultGuardExtensionConfig
     priority: EXTENSION_PRIORITY.CORE,
 
     guards: (ctx: GuardContext): readonly KoiMiddleware[] => {
-      const guards: KoiMiddleware[] = [createIterationGuard(config?.limits ?? undefined)];
+      const guards: KoiMiddleware[] = [
+        createSessionRepairGuard(),
+        createIterationGuard(config?.limits ?? undefined),
+      ];
 
       if (config?.loopDetection !== false) {
         const loopConfig = config?.loopDetection;
