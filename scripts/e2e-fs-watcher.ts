@@ -25,6 +25,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolDescriptor } from "../packages/core/src/ecs.js";
 import type { EngineAdapter, EngineEvent, EngineInput } from "../packages/core/src/engine.js";
+import type { SandboxExecutor } from "../packages/core/src/index.js";
 import type {
   ModelHandler,
   ModelStreamHandler,
@@ -37,7 +38,6 @@ import { createDefaultForgeConfig } from "../packages/forge/src/config.js";
 import { createForgeRuntime } from "../packages/forge/src/forge-runtime.js";
 import { createForgeToolTool } from "../packages/forge/src/tools/forge-tool.js";
 import type { ForgeDeps } from "../packages/forge/src/tools/shared.js";
-import type { SandboxExecutor, TieredSandboxExecutor } from "../packages/forge/src/types.js";
 import { createFsForgeStore } from "../packages/store-fs/src/fs-store.js";
 
 // ---------------------------------------------------------------------------
@@ -116,10 +116,6 @@ const executor: SandboxExecutor = {
   },
 };
 
-const tieredExecutor: TieredSandboxExecutor = {
-  forTier: () => ({ executor, tier: "sandbox" }),
-};
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -130,7 +126,7 @@ function makeForgeDeps(
 ): ForgeDeps {
   return {
     store,
-    executor: tieredExecutor,
+    executor,
     verifiers: [],
     config: createDefaultForgeConfig({ maxForgesPerSession: 10 }),
     context: {
@@ -189,7 +185,7 @@ try {
   const storeA = await createFsForgeStore({ baseDir: tempDir, watch: true });
 
   // ForgeRuntime backed by Store A
-  const runtimeA = createForgeRuntime({ store: storeA, executor: tieredExecutor });
+  const runtimeA = createForgeRuntime({ store: storeA, executor });
 
   const beforeA = await runtimeA.toolDescriptors();
   assert("Store A starts empty", beforeA.length === 0, `found ${beforeA.length} tools`);

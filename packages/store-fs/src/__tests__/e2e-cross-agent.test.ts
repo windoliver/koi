@@ -21,7 +21,6 @@ import type {
   ForgeProvenance,
   ForgeScope,
   SandboxExecutor,
-  TieredSandboxExecutor,
   ToolArtifact,
 } from "@koi/core";
 import { brickId, isAttachResult } from "@koi/core";
@@ -59,17 +58,6 @@ function echoExecutor(): SandboxExecutor {
     execute: async (_code, input, _timeout) => ({
       ok: true,
       value: { output: input, durationMs: 1 },
-    }),
-  };
-}
-
-function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
-  return {
-    forTier: (tier) => ({
-      executor: exec,
-      requestedTier: tier,
-      resolvedTier: tier,
-      fallback: false,
     }),
   };
 }
@@ -144,7 +132,7 @@ async function createCrossAgentSetup(): Promise<CrossAgentSetup> {
 function createDeps(store: OverlayForgeStore, agentId: string): ForgeDeps {
   return {
     store,
-    executor: mockTiered(echoExecutor()),
+    executor: echoExecutor(),
     verifiers: [],
     config: createDefaultForgeConfig({
       scopePromotion: {
@@ -428,7 +416,7 @@ describe("cross-agent brick reuse e2e", () => {
     // Provider with agent scope sees both (agent sees agent + zone + global)
     const agentProvider = createForgeComponentProvider({
       store: agentAlphaStore,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       scope: "agent",
     });
 
@@ -454,7 +442,7 @@ describe("cross-agent brick reuse e2e", () => {
     // Provider with global scope sees neither (both are narrower than global)
     const globalProvider = createForgeComponentProvider({
       store: agentAlphaStore,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       scope: "global",
     });
 

@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { SandboxExecutor, SigningBackend, TieredSandboxExecutor } from "@koi/core";
+import type { SandboxExecutor, SigningBackend } from "@koi/core";
 import { createDefaultForgeConfig } from "../config.js";
 import { createForgeRuntime } from "../forge-runtime.js";
 import { verifyBrickAttestation, verifyBrickIntegrity } from "../integrity.js";
@@ -73,18 +73,6 @@ function mockExecutor(): SandboxExecutor {
   };
 }
 
-function mockTiered(): TieredSandboxExecutor {
-  const e = mockExecutor();
-  return {
-    forTier: (tier) => ({
-      executor: e,
-      requestedTier: tier,
-      resolvedTier: tier,
-      fallback: false,
-    }),
-  };
-}
-
 // ---------------------------------------------------------------------------
 // E2E test
 // ---------------------------------------------------------------------------
@@ -96,7 +84,7 @@ describe("forge lifecycle with provenance", () => {
     const store = createInMemoryForgeStore();
     const deps: ForgeDeps = {
       store,
-      executor: mockTiered(),
+      executor: mockExecutor(),
       verifiers: [],
       config: createDefaultForgeConfig(),
       context: {
@@ -152,7 +140,7 @@ describe("forge lifecycle with provenance", () => {
     expect(statement.predicate.koi_verification.passed).toBe(true);
 
     // 7. Create ForgeRuntime with same signer — resolveTool succeeds
-    const runtime = createForgeRuntime({ store, executor: mockTiered(), signer });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor(), signer });
     const resolved = await runtime.resolveTool("lifecycle-adder");
     expect(resolved).toBeDefined();
     expect(resolved?.descriptor.name).toBe("lifecycle-adder");

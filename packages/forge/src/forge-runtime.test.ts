@@ -14,7 +14,7 @@ import {
 import { signAttestation } from "./attestation.js";
 import { createForgeRuntime } from "./forge-runtime.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
-import type { SandboxExecutor, TieredSandboxExecutor } from "./types.js";
+import type { SandboxExecutor } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -56,18 +56,6 @@ function mockExecutor(): SandboxExecutor {
   };
 }
 
-function mockTiered(exec?: SandboxExecutor): TieredSandboxExecutor {
-  const e = exec ?? mockExecutor();
-  return {
-    forTier: (tier) => ({
-      executor: e,
-      requestedTier: tier,
-      resolvedTier: tier,
-      fallback: false,
-    }),
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -78,7 +66,7 @@ describe("createForgeRuntime", () => {
     const brick = testToolArtifact({ name: "adder" });
     await store.save(brick);
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
     const tool = await runtime.resolveTool("adder");
 
     expect(tool).toBeDefined();
@@ -87,7 +75,7 @@ describe("createForgeRuntime", () => {
 
   test("resolveTool returns undefined for non-existent tool", async () => {
     const store = createInMemoryForgeStore();
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
 
     const tool = await runtime.resolveTool("nonexistent");
     expect(tool).toBeUndefined();
@@ -97,7 +85,7 @@ describe("createForgeRuntime", () => {
     const store = createInMemoryForgeStore();
     await store.save(testToolArtifact({ name: "draft-tool", lifecycle: "draft" }));
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
     const tool = await runtime.resolveTool("draft-tool");
 
     expect(tool).toBeUndefined();
@@ -111,7 +99,7 @@ describe("createForgeRuntime", () => {
       testToolArtifact({ id: brickId("t3"), name: "draft-tool", lifecycle: "draft" }),
     );
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
     const descriptors = await runtime.toolDescriptors();
 
     expect(descriptors).toHaveLength(2);
@@ -122,7 +110,7 @@ describe("createForgeRuntime", () => {
 
   test("toolDescriptors returns empty array when store is empty", async () => {
     const store = createInMemoryForgeStore();
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
 
     const descriptors = await runtime.toolDescriptors();
     expect(descriptors).toHaveLength(0);
@@ -130,7 +118,7 @@ describe("createForgeRuntime", () => {
 
   test("cache invalidation: forge new tool → watch → resolveTool finds it", async () => {
     const store = createInMemoryForgeStore();
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
 
     // Initially no tools
     const before = await runtime.resolveTool("new-tool");
@@ -150,7 +138,7 @@ describe("createForgeRuntime", () => {
 
   test("watch propagates typed events from store", async () => {
     const store = createInMemoryForgeStore();
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
 
     expect(runtime.watch).toBeDefined();
 
@@ -172,7 +160,7 @@ describe("createForgeRuntime", () => {
 
   test("throws when external listener limit is exceeded", () => {
     const store = createInMemoryForgeStore();
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
 
     expect(runtime.watch).toBeDefined();
 
@@ -191,7 +179,7 @@ describe("createForgeRuntime", () => {
     // Attach a dispose method to the store
     const storeWithDispose = { ...store, dispose: disposeSpy };
 
-    const runtime = createForgeRuntime({ store: storeWithDispose, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store: storeWithDispose, executor: mockExecutor() });
     runtime.dispose?.();
 
     expect(disposeSpy).toHaveBeenCalledTimes(1);
@@ -199,7 +187,7 @@ describe("createForgeRuntime", () => {
 
   test("dispose works when store has no dispose method", () => {
     const store = createInMemoryForgeStore();
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
 
     // Should not throw even though store has no dispose
     expect(() => runtime.dispose?.()).not.toThrow();
@@ -221,7 +209,7 @@ describe("createForgeRuntime — integrity verification", () => {
       }),
     );
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
     const tool = await runtime.resolveTool("tampered");
 
     expect(tool).toBeUndefined();
@@ -231,7 +219,7 @@ describe("createForgeRuntime — integrity verification", () => {
     const store = createInMemoryForgeStore();
     await store.save(testToolArtifact({ name: "valid-tool" }));
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
     const tool = await runtime.resolveTool("valid-tool");
 
     expect(tool).toBeDefined();
@@ -242,7 +230,7 @@ describe("createForgeRuntime — integrity verification", () => {
     const store = createInMemoryForgeStore();
     await store.save(testToolArtifact({ name: "cached-tool" }));
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
 
     // First resolve — verifies integrity
     const first = await runtime.resolveTool("cached-tool");
@@ -257,7 +245,7 @@ describe("createForgeRuntime — integrity verification", () => {
     const store = createInMemoryForgeStore();
     await store.save(testToolArtifact({ name: "evolving-tool" }));
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
 
     // First resolve caches integrity
     const first = await runtime.resolveTool("evolving-tool");
@@ -288,7 +276,7 @@ describe("createForgeRuntime — integrity verification", () => {
       }),
     );
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
 
     // First resolve — detects tamper, caches failure
     const first = await runtime.resolveTool("bad-tool");
@@ -338,7 +326,7 @@ describe("createForgeRuntime — attestation verification", () => {
     const signedProvenance = await signAttestation(brick.provenance, signer);
     await store.save({ ...brick, provenance: signedProvenance });
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered(), signer });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor(), signer });
     const tool = await runtime.resolveTool("signed-tool");
 
     expect(tool).toBeDefined();
@@ -360,7 +348,7 @@ describe("createForgeRuntime — attestation verification", () => {
     };
     await store.save({ ...brick, provenance: fakeProvenance });
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered(), signer });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor(), signer });
     const tool = await runtime.resolveTool("forged-sig");
 
     expect(tool).toBeUndefined();
@@ -373,7 +361,7 @@ describe("createForgeRuntime — attestation verification", () => {
     // Save a brick with no attestation — content id is still valid
     await store.save(testToolArtifact({ name: "unsigned-tool" }));
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered(), signer });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor(), signer });
     const tool = await runtime.resolveTool("unsigned-tool");
 
     // verifyBrickAttestation passes when no attestation present (only checks hash)
@@ -388,7 +376,7 @@ describe("createForgeRuntime — attestation verification", () => {
     const signedProvenance = await signAttestation(brick.provenance, signer);
     await store.save({ ...brick, provenance: signedProvenance });
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered(), signer });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor(), signer });
 
     // First resolve — verifies attestation, caches result
     const first = await runtime.resolveTool("cache-attest-tool");
@@ -410,7 +398,7 @@ describe("createForgeRuntime — attestation verification", () => {
     };
     await store.save({ ...brick, provenance: fakeProvenance });
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered(), signer });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor(), signer });
 
     // First resolve — detects invalid attestation, caches failure
     const first = await runtime.resolveTool("bad-attest");
@@ -450,7 +438,7 @@ describe.each(RESOLVE_CASES)("resolve('$kind', name)", ({ kind, factory, check }
     const store = createInMemoryForgeStore();
     await store.save(factory({ name: `test-${kind}` }));
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
     const result = await runtime.resolve?.(kind, `test-${kind}`);
 
     expect(result).toBeDefined();
@@ -459,7 +447,7 @@ describe.each(RESOLVE_CASES)("resolve('$kind', name)", ({ kind, factory, check }
 
   test("returns undefined for unknown name", async () => {
     const store = createInMemoryForgeStore();
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
 
     const result = await runtime.resolve?.(kind, "nonexistent");
     expect(result).toBeUndefined();
@@ -467,7 +455,7 @@ describe.each(RESOLVE_CASES)("resolve('$kind', name)", ({ kind, factory, check }
 
   test("respects cache invalidation", async () => {
     const store = createInMemoryForgeStore();
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
 
     // Initially no bricks
     const before = await runtime.resolve?.(kind, `new-${kind}`);
@@ -489,7 +477,7 @@ describe("resolve() specific behavior", () => {
     const store = createInMemoryForgeStore();
     await store.save(testToolArtifact({ name: "resolver-tool" }));
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
     const result = await runtime.resolve?.("tool", "resolver-tool");
 
     expect(result).toBeDefined();
@@ -508,7 +496,7 @@ describe("resolve() specific behavior", () => {
       }),
     );
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
     const result = (await runtime.resolve?.("skill", "research")) as SkillComponent | undefined;
 
     expect(result).toBeDefined();
@@ -528,7 +516,7 @@ describe("resolve() specific behavior", () => {
       }),
     );
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
     const result = (await runtime.resolve?.("agent", "planner")) as AgentDescriptor | undefined;
 
     expect(result).toBeDefined();
@@ -546,7 +534,7 @@ describe("resolve() specific behavior", () => {
       }),
     );
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
     const result = await runtime.resolve?.("skill", "needs-tool");
     expect(result).toBeUndefined();
   });
@@ -562,7 +550,7 @@ describe("resolve() specific behavior", () => {
       }),
     );
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
     const result = await runtime.resolve?.("skill", "has-dep");
     expect(result).toBeDefined();
   });
@@ -576,7 +564,7 @@ describe("resolve() specific behavior", () => {
       }),
     );
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
     const result = await runtime.resolve?.("agent", "needs-env");
     expect(result).toBeUndefined();
   });
@@ -585,7 +573,7 @@ describe("resolve() specific behavior", () => {
     const store = createInMemoryForgeStore();
     await store.save(createTestSkillArtifact({ name: "draft-skill", lifecycle: "draft" }));
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
     const result = await runtime.resolve?.("skill", "draft-skill");
     expect(result).toBeUndefined();
   });
@@ -607,7 +595,7 @@ describe("createForgeRuntime — npm dependency wire-up", () => {
 
     const runtime = createForgeRuntime({
       store,
-      executor: mockTiered(),
+      executor: mockExecutor(),
       dependencyConfig: {
         blockedPackages: ["blocked-pkg"],
         maxDependencies: 20,
@@ -639,7 +627,7 @@ describe("createForgeRuntime — npm dependency wire-up", () => {
 
     const runtime = createForgeRuntime({
       store,
-      executor: mockTiered(),
+      executor: mockExecutor(),
       dependencyConfig: {
         maxDependencies: 2, // Limit to 2 — tool has 5
         installTimeoutMs: 15_000,
@@ -664,7 +652,7 @@ describe("createForgeRuntime — npm dependency wire-up", () => {
       }),
     );
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
     const tool = await runtime.resolveTool("range-tool");
     expect(tool).toBeUndefined();
   });
@@ -673,7 +661,7 @@ describe("createForgeRuntime — npm dependency wire-up", () => {
     const store = createInMemoryForgeStore();
     await store.save(testToolArtifact({ name: "simple-tool" }));
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
     const tool = await runtime.resolveTool("simple-tool");
     expect(tool).toBeDefined();
     expect(tool?.descriptor.name).toBe("simple-tool");
@@ -688,7 +676,7 @@ describe("createForgeRuntime — npm dependency wire-up", () => {
       }),
     );
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
     const tool = await runtime.resolveTool("empty-deps-tool");
     expect(tool).toBeDefined();
     expect(tool?.descriptor.name).toBe("empty-deps-tool");
@@ -705,7 +693,7 @@ describe("createForgeRuntime — npm dependency wire-up", () => {
 
     const runtime = createForgeRuntime({
       store,
-      executor: mockTiered(),
+      executor: mockExecutor(),
       dependencyConfig: {
         allowedPackages: ["only-this-one"],
         maxDependencies: 20,
@@ -733,7 +721,7 @@ describe("createForgeRuntime — npm dependency wire-up", () => {
 
     const runtime = createForgeRuntime({
       store,
-      executor: mockTiered(),
+      executor: mockExecutor(),
       dependencyConfig: {
         blockedPackages: ["evil-pkg"],
         maxDependencies: 20,
@@ -761,7 +749,7 @@ describe("createForgeRuntime — npm dependency wire-up", () => {
     await store.save(testToolArtifact({ name: "tool-a", implementation: "return 1;" }));
     await store.save(testToolArtifact({ name: "tool-b", implementation: "return 2;" }));
 
-    const runtime = createForgeRuntime({ store, executor: mockTiered() });
+    const runtime = createForgeRuntime({ store, executor: mockExecutor() });
 
     const [toolA, toolB] = await Promise.all([
       runtime.resolveTool("tool-a"),

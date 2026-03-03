@@ -27,7 +27,7 @@ import { auditDependencies } from "./dependency-audit.js";
 import { DEFAULT_SANDBOX_TIMEOUT_MS, MAX_EXTERNAL_LISTENERS } from "./forge-defaults.js";
 import { verifyBrickAttestation, verifyBrickIntegrity } from "./integrity.js";
 import { checkBrickRequires } from "./requires-check.js";
-import type { TieredSandboxExecutor } from "./types.js";
+import type { SandboxExecutor } from "./types.js";
 import { createBrickWorkspace, writeBrickEntry } from "./workspace-manager.js";
 
 // Re-use the ForgeRuntime interface from L1 types.
@@ -36,7 +36,7 @@ import { createBrickWorkspace, writeBrickEntry } from "./workspace-manager.js";
 
 export interface CreateForgeRuntimeOptions {
   readonly store: ForgeStore;
-  readonly executor: TieredSandboxExecutor;
+  readonly executor: SandboxExecutor;
   readonly sandboxTimeoutMs?: number;
   /** When provided, verifies attestation signatures on tool load. */
   readonly signer?: SigningBackend;
@@ -199,8 +199,6 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
       }
     }
 
-    const { executor: tierExecutor } = executor.forTier(artifact.trustTier);
-
     // Resolve workspace for bricks with npm dependencies
     const packages = artifact.requires?.packages;
     if (packages !== undefined && Object.keys(packages).length > 0) {
@@ -225,14 +223,14 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
 
       return brickToTool(
         artifact,
-        tierExecutor,
+        executor,
         sandboxTimeoutMs,
         wsResult.value.workspacePath,
         entryPath,
       );
     }
 
-    return brickToTool(artifact, tierExecutor, sandboxTimeoutMs);
+    return brickToTool(artifact, executor, sandboxTimeoutMs);
   };
 
   const toolDescriptors = async (): Promise<readonly ToolDescriptor[]> => {

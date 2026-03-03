@@ -232,31 +232,21 @@ export function checkScopePromotion(
 }
 
 // ---------------------------------------------------------------------------
-// Trust tier demotion map (one step down)
-// ---------------------------------------------------------------------------
-
-const TRUST_DEMOTION_TARGET: Readonly<Record<TrustTier, TrustTier | undefined>> = {
-  promoted: "verified",
-  verified: "sandbox",
-  sandbox: undefined, // floor — cannot demote further
-} as const;
-
-// ---------------------------------------------------------------------------
 // Shared trust transition validator
 // ---------------------------------------------------------------------------
 
 /**
  * Validates a trust tier transition.
  *
- * - `caller: "agent"` → blocks demotion (agents can only promote)
- * - `caller: "system"` → allows one-step demotion, blocks skip-demotion
+ * Only promotions are allowed (Issue #703). Demotions are blocked for all
+ * callers — runtime safety is handled via lifecycle quarantine instead.
  *
  * Returns `undefined` value when current === target (no-op).
  */
 export function validateTrustTransition(
   current: TrustTier,
   target: TrustTier,
-  caller: TrustTransitionCaller,
+  _caller: TrustTransitionCaller,
 ): Result<PromoteChange<TrustTier> | undefined, ForgeError> {
   if (target === current) {
     return { ok: true, value: undefined };
@@ -265,36 +255,17 @@ export function validateTrustTransition(
   const currentOrder = TRUST_ORDER[current];
   const targetOrder = TRUST_ORDER[target];
 
-  // Promotion — allowed for both callers
+  // Promotion — allowed for all callers
   if (targetOrder > currentOrder) {
     return { ok: true, value: { from: current, to: target } };
   }
 
-  // Demotion — only system caller can demote
-  if (caller === "agent") {
-    return {
-      ok: false,
-      error: governanceError(
-        "TRUST_DEMOTION_NOT_ALLOWED",
-        `Trust tier demotion not allowed: "${current}" → "${target}"`,
-      ),
-    };
-  }
-
-  // System caller — validate one-step demotion only
-  const expectedTarget = TRUST_DEMOTION_TARGET[current];
-  if (expectedTarget === undefined || target !== expectedTarget) {
-    return {
-      ok: false,
-      error: governanceError(
-        "TRUST_DEMOTION_NOT_ALLOWED",
-        `Trust demotion must be one step: "${current}" → "${target}" is not allowed. ` +
-          (expectedTarget !== undefined
-            ? `Expected: "${current}" → "${expectedTarget}"`
-            : `"${current}" is already at the floor`),
-      ),
-    };
-  }
-
-  return { ok: true, value: { from: current, to: target } };
+  // Demotion — blocked for all callers (Issue #703)
+  return {
+    ok: false,
+    error: governanceError(
+      "TRUST_DEMOTION_NOT_ALLOWED",
+      `Trust tier demotion not allowed: "${current}" → "${target}". Use lifecycle quarantine instead.`,
+    ),
+  };
 }

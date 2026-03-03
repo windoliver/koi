@@ -18,6 +18,7 @@
 import type {
   ComponentProvider,
   EngineEvent,
+  SandboxExecutor,
   StoreChangeEvent,
 } from "../packages/core/src/index.js";
 import { toolToken } from "../packages/core/src/index.js";
@@ -32,7 +33,6 @@ import { createForgeToolTool } from "../packages/forge/src/tools/forge-tool.js";
 import { createPromoteForgeTool } from "../packages/forge/src/tools/promote-forge.js";
 import { createSearchForgeTool } from "../packages/forge/src/tools/search-forge.js";
 import type { ForgeDeps } from "../packages/forge/src/tools/shared.js";
-import type { SandboxExecutor, TieredSandboxExecutor } from "../packages/forge/src/types.js";
 
 // ---------------------------------------------------------------------------
 // Preflight
@@ -110,15 +110,6 @@ const executor: SandboxExecutor = {
   },
 };
 
-const tieredExecutor: TieredSandboxExecutor = {
-  forTier: (tier) => ({
-    executor,
-    requestedTier: tier,
-    resolvedTier: tier,
-    fallback: false,
-  }),
-};
-
 // Config: disable HITL and lower trust requirements for scope promotion in tests
 const config = createDefaultForgeConfig({
   maxForgesPerSession: 50,
@@ -132,7 +123,7 @@ const config = createDefaultForgeConfig({
 function makeDeps(agentId: string, forgesThisSession: number): ForgeDeps {
   return {
     store,
-    executor: tieredExecutor,
+    executor,
     verifiers: [],
     config,
     context: {
@@ -378,7 +369,7 @@ console.log("\n[test 3] Agent Beta discovers + executes the promoted doubler\n")
 
 const forgeProvider = createForgeComponentProvider({
   store,
-  executor: tieredExecutor,
+  executor,
   notifier,
 });
 

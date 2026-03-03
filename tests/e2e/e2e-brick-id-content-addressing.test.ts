@@ -27,12 +27,13 @@ import type {
   KoiMiddleware,
   ModelRequest,
   ModelResponse,
+  SandboxExecutor,
   ToolRequest,
 } from "@koi/core";
 import { toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
-import type { ForgeDeps, ForgeResult, SandboxExecutor, TieredSandboxExecutor } from "@koi/forge";
+import type { ForgeDeps, ForgeResult } from "@koi/forge";
 import {
   createDefaultForgeConfig,
   createForgeComponentProvider,
@@ -100,17 +101,6 @@ function adderExecutor(): SandboxExecutor {
   };
 }
 
-function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
-  return {
-    forTier: (tier) => ({
-      executor: exec,
-      requestedTier: tier,
-      resolvedTier: tier,
-      fallback: false,
-    }),
-  };
-}
-
 function defaultDeps(
   store: ReturnType<typeof createInMemoryForgeStore>,
   executor: SandboxExecutor,
@@ -118,7 +108,7 @@ function defaultDeps(
 ): ForgeDeps {
   return {
     store,
-    executor: mockTiered(executor),
+    executor,
     verifiers: [],
     config: createDefaultForgeConfig(),
     context: {
@@ -312,7 +302,7 @@ describeE2E("e2e: Content-Addressed BrickId through full runtime", () => {
       // Create full L1 runtime
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor,
       });
 
       const modelCall = createModelCall();
@@ -402,7 +392,7 @@ describeE2E("e2e: Content-Addressed BrickId through full runtime", () => {
       // Full runtime
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor,
       });
 
       const modelCall = createModelCall();

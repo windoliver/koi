@@ -211,16 +211,14 @@ export type {
   SandboxResult,
   SelfTestStageReport,
   StageReport,
-  TieredSandboxExecutor,
-  TierResolution,
   TrustStageReport,
   VerificationReport,
   VerificationStage,
   VerifierResult,
 } from "./types.js";
-// runtime values — usage tracking & auto-promotion
-export type { UsagePromotedResult, UsageRecordedResult, UsageResult } from "./usage.js";
-export { computeAutoPromotion, recordBrickUsage } from "./usage.js";
+// runtime values — usage tracking
+export type { UsageRecordedResult, UsageResult } from "./usage.js";
+export { recordBrickUsage } from "./usage.js";
 // runtime values — verification
 export { verify } from "./verify.js";
 // runtime values — format verification

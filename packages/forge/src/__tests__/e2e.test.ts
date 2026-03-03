@@ -37,7 +37,7 @@ import { createMemoryStoreChangeNotifier } from "../store-notifier.js";
 import { createForgeMiddlewareTool } from "../tools/forge-middleware.js";
 import { createForgeToolTool } from "../tools/forge-tool.js";
 import type { ForgeDeps } from "../tools/shared.js";
-import type { ForgeResult, SandboxExecutor, TieredSandboxExecutor } from "../types.js";
+import type { ForgeResult, SandboxExecutor } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Environment gate
@@ -105,17 +105,6 @@ function adderExecutor(): SandboxExecutor {
   };
 }
 
-function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
-  return {
-    forTier: (tier) => ({
-      executor: exec,
-      requestedTier: tier,
-      resolvedTier: tier,
-      fallback: false,
-    }),
-  };
-}
-
 function defaultDeps(
   store: ReturnType<typeof createInMemoryForgeStore>,
   executor: SandboxExecutor,
@@ -123,7 +112,7 @@ function defaultDeps(
 ): ForgeDeps {
   return {
     store,
-    executor: mockTiered(executor),
+    executor: executor,
     verifiers: [],
     config: createDefaultForgeConfig(),
     context: {
@@ -165,7 +154,7 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
       // Step 2: Create ForgeComponentProvider
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       // Step 3: Create the full L1 runtime with real LLM
@@ -241,7 +230,7 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
       // Step 2: ComponentProvider + middleware spy
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       const interceptedToolIds: string[] = [];
@@ -315,7 +304,7 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
       // Step 3: ComponentProvider should skip the gated tool
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       const modelCall = createModelCall();
@@ -409,7 +398,7 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
 
       const runtime = createForgeRuntime({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       expect(runtime.watch).toBeDefined();
@@ -460,7 +449,7 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
       // Create provider wired to the notifier — this subscribes 1 listener
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
         notifier,
       });
 
@@ -571,7 +560,7 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
       // Step 3: Wire through createForgeRuntime with integrity verification
       const forgeRuntime = createForgeRuntime({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       // Tool should resolve (integrity check passes)
@@ -584,7 +573,7 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
       // Step 4: Full L1 runtime — LLM calls the provenance-verified tool
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       const modelCall = createModelCall();
@@ -649,7 +638,7 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
       // Step 3: ForgeRuntime should reject the tampered tool
       const forgeRuntime = createForgeRuntime({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       const tool = await forgeRuntime.resolveTool("tamper-target");
@@ -694,7 +683,7 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
       // Forge with signer injected into deps
       const deps: ForgeDeps = {
         store,
-        executor: mockTiered(executor),
+        executor: executor,
         verifiers: [],
         config: createDefaultForgeConfig(),
         context: {
@@ -733,7 +722,7 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
       // Step 3: ForgeRuntime with signer verifies attestation on load
       const forgeRuntime = createForgeRuntime({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
         signer,
       });
 
@@ -746,7 +735,7 @@ describeE2E("e2e: forge through createKoi + createLoopAdapter with Anthropic", (
       // Step 4: Full runtime — LLM uses the signed tool
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       const modelCall = createModelCall();

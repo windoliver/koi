@@ -23,6 +23,7 @@ import type {
   InboundMessage,
   ModelRequest,
   ModelResponse,
+  SandboxExecutor,
   StoreChangeEvent,
   ToolArtifact,
 } from "../packages/core/src/index.js";
@@ -30,7 +31,6 @@ import { createKoi } from "../packages/engine/src/koi.js";
 import { createLoopAdapter } from "../packages/engine-loop/src/loop-adapter.js";
 import { createForgeRuntime } from "../packages/forge/src/forge-runtime.js";
 import { createInMemoryForgeStore } from "../packages/forge/src/memory-store.js";
-import type { SandboxExecutor, TieredSandboxExecutor } from "../packages/forge/src/types.js";
 
 // ---------------------------------------------------------------------------
 // Preflight
@@ -263,13 +263,9 @@ const executor: SandboxExecutor = {
   },
 };
 
-const tieredExecutor: TieredSandboxExecutor = {
-  forTier: () => ({ executor, tier: "sandbox" }),
-};
-
 const forgeRuntime = createForgeRuntime({
   store,
-  executor: tieredExecutor,
+  executor,
 });
 
 // ---------------------------------------------------------------------------
@@ -663,7 +659,7 @@ try {
   const disposeStore = createInMemoryForgeStore();
   const disposeForgeRuntime = createForgeRuntime({
     store: disposeStore,
-    executor: tieredExecutor,
+    executor,
   });
 
   const disposeRuntime = await createKoi({

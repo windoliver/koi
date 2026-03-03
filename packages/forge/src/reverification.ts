@@ -1,6 +1,6 @@
 /**
  * TTL-based re-verification — checks whether bricks are stale and
- * need re-verification. Provides config types and staleness logic.
+ * need re-verification. Single TTL for all non-sandbox tiers (Issue #703).
  */
 
 import type { TrustTier } from "@koi/core";
@@ -10,23 +10,17 @@ import type { TrustTier } from "@koi/core";
 // ---------------------------------------------------------------------------
 
 export interface ReverificationConfig {
-  /** TTL in millis for promoted bricks (default: 24h). */
-  readonly promotedTtlMs: number;
-  /** TTL in millis for verified bricks (default: 1h). */
-  readonly verifiedTtlMs: number;
+  /** TTL in millis for all non-sandbox bricks (default: 24h). */
+  readonly ttlMs: number;
   /** Maximum concurrent re-verifications. */
   readonly maxConcurrency: number;
-  /** Re-verify promoted before verified. */
-  readonly promotedFirst: boolean;
   /** Injectable clock for testing. Defaults to Date.now. */
   readonly now?: () => number;
 }
 
 export const DEFAULT_REVERIFICATION_CONFIG: ReverificationConfig = {
-  promotedTtlMs: 24 * 60 * 60 * 1_000, // 24h
-  verifiedTtlMs: 60 * 60 * 1_000, // 1h
+  ttlMs: 24 * 60 * 60 * 1_000, // 24h
   maxConcurrency: 3,
-  promotedFirst: true,
 } as const satisfies ReverificationConfig;
 
 // ---------------------------------------------------------------------------
@@ -38,14 +32,10 @@ export const DEFAULT_REVERIFICATION_CONFIG: ReverificationConfig = {
  * Sandbox bricks are never re-verified — returns undefined.
  */
 export function computeTtl(trustTier: TrustTier, config: ReverificationConfig): number | undefined {
-  if (trustTier === "promoted") {
-    return config.promotedTtlMs;
+  if (trustTier === "sandbox") {
+    return undefined;
   }
-  if (trustTier === "verified") {
-    return config.verifiedTtlMs;
-  }
-  // sandbox — never re-verify
-  return undefined;
+  return config.ttlMs;
 }
 
 // ---------------------------------------------------------------------------

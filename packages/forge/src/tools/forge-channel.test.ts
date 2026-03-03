@@ -1,31 +1,19 @@
 import { describe, expect, test } from "bun:test";
-import type { SandboxExecutor, TieredSandboxExecutor } from "@koi/core";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import type { ForgeResult } from "../types.js";
 import { createForgeChannelTool } from "./forge-channel.js";
 import type { ForgeDeps } from "./shared.js";
 
-function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
-  return {
-    forTier: (tier) => ({
-      executor: exec,
-      requestedTier: tier,
-      resolvedTier: tier,
-      fallback: false,
-    }),
-  };
-}
-
 function createDeps(overrides?: Partial<ForgeDeps>): ForgeDeps {
   return {
     store: createInMemoryForgeStore(),
-    executor: mockTiered({
+    executor: {
       execute: async (_code, input, _timeout) => ({
         ok: true,
         value: { output: input, durationMs: 1 },
       }),
-    }),
+    },
     verifiers: [],
     config: createDefaultForgeConfig(),
     context: { agentId: "agent-1", depth: 0, sessionId: "session-1", forgesThisSession: 0 },

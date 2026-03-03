@@ -16,13 +16,7 @@
  *   ANTHROPIC_API_KEY=sk-... bun scripts/e2e-forge-usage-integrity.ts
  */
 
-import type {
-  BrickArtifact,
-  ForgeStore,
-  SandboxExecutor,
-  TieredSandboxExecutor,
-  TrustTier,
-} from "../packages/core/src/index.js";
+import type { BrickArtifact, ForgeStore, SandboxExecutor } from "../packages/core/src/index.js";
 import { createAdversarialVerifiers } from "../packages/forge/src/adversarial-verifiers.js";
 import { createDefaultForgeConfig } from "../packages/forge/src/config.js";
 import { loadAndVerify, verifyBrickIntegrity } from "../packages/forge/src/integrity.js";
@@ -89,17 +83,6 @@ const executor: SandboxExecutor = {
   },
 };
 
-function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
-  return {
-    forTier: (tier: TrustTier) => ({
-      executor: exec,
-      requestedTier: tier,
-      resolvedTier: tier,
-      fallback: false,
-    }),
-  };
-}
-
 // Auto-promotion enabled: sandbox→verified at 5, verified→promoted at 10
 // (lower thresholds for E2E speed)
 const config = createDefaultForgeConfig({
@@ -116,7 +99,7 @@ const verifiers = createAdversarialVerifiers(executor);
 function makeDeps(): ForgeDeps {
   return {
     store,
-    executor: mockTiered(executor),
+    executor,
     verifiers,
     config,
     context: {

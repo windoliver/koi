@@ -1,11 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import type {
-  BrickArtifact,
-  ForgeStore,
-  Result,
-  SandboxExecutor,
-  TieredSandboxExecutor,
-} from "@koi/core";
+import type { BrickArtifact, ForgeStore, Result, SandboxExecutor } from "@koi/core";
 import { brickId, MAX_PIPELINE_STEPS } from "@koi/core";
 import { createTestSkillArtifact, createTestToolArtifact } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "../config.js";
@@ -33,20 +27,12 @@ function createMockStore(overrides?: Partial<ForgeStore>): ForgeStore {
   } as ForgeStore;
 }
 
-function createMockExecutor(): TieredSandboxExecutor {
-  const executor: SandboxExecutor = {
+function createMockExecutor(): SandboxExecutor {
+  return {
     execute: mock(async () => ({
       ok: true as const,
       value: { output: "test", durationMs: 10 },
     })),
-  };
-  return {
-    forTier: () => ({
-      executor,
-      requestedTier: "sandbox",
-      resolvedTier: "sandbox",
-      fallback: false,
-    }),
   };
 }
 

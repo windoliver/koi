@@ -1,9 +1,9 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { DemotionCriteria, KoiError } from "@koi/core";
-import { DEFAULT_DEMOTION_CRITERIA } from "@koi/core";
+import type { KoiError } from "@koi/core";
 import type { ForgeHealthConfig } from "./config.js";
 import { computeHealthAction, createToolHealthTracker, type HealthAction } from "./tool-health.js";
-import type { ToolHealthMetrics } from "./types.js";
+import type { DemotionCriteria, ToolHealthMetrics } from "./types.js";
+import { DEFAULT_DEMOTION_CRITERIA } from "./types.js";
 
 type StoreResult<T> =
   | { readonly ok: true; readonly value: T }

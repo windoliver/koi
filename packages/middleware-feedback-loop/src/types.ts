@@ -84,6 +84,33 @@ export interface TrustDemotionEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Demotion criteria — moved from @koi/core (Issue #703)
+// ---------------------------------------------------------------------------
+
+/** Configuration for automated trust tier demotion on sustained error rate. */
+export interface DemotionCriteria {
+  /** Error rate threshold to trigger demotion (0-1). E.g., 0.3 = 30%. */
+  readonly errorRateThreshold: number;
+  /** Number of recent invocations to evaluate for demotion. */
+  readonly windowSize: number;
+  /** Minimum number of filled slots before demotion can trigger. */
+  readonly minSampleSize: number;
+  /** Don't demote within this many ms of a promotion. */
+  readonly gracePeriodMs: number;
+  /** Minimum time between consecutive demotions in ms. */
+  readonly demotionCooldownMs: number;
+}
+
+/** Sensible defaults for demotion criteria. */
+export const DEFAULT_DEMOTION_CRITERIA: DemotionCriteria = Object.freeze({
+  errorRateThreshold: 0.3,
+  windowSize: 20,
+  minSampleSize: 10,
+  gracePeriodMs: 3_600_000,
+  demotionCooldownMs: 1_800_000,
+});
+
+// ---------------------------------------------------------------------------
 // Discovery miss tracking
 // ---------------------------------------------------------------------------
 

@@ -21,7 +21,11 @@
  *   ANTHROPIC_API_KEY=sk-... bun scripts/e2e-brickkind-consolidation.ts
  */
 
-import type { ComponentProvider, EngineEvent } from "../packages/core/src/index.js";
+import type {
+  ComponentProvider,
+  EngineEvent,
+  SandboxExecutor,
+} from "../packages/core/src/index.js";
 import { toolToken } from "../packages/core/src/index.js";
 import { createKoi } from "../packages/engine/src/koi.js";
 import { createPiAdapter } from "../packages/engine-pi/src/adapter.js";
@@ -36,7 +40,6 @@ import { createForgeToolTool } from "../packages/forge/src/tools/forge-tool.js";
 import { createPromoteForgeTool } from "../packages/forge/src/tools/promote-forge.js";
 import { createSearchForgeTool } from "../packages/forge/src/tools/search-forge.js";
 import type { ForgeDeps } from "../packages/forge/src/tools/shared.js";
-import type { SandboxExecutor, TieredSandboxExecutor } from "../packages/forge/src/types.js";
 
 // ---------------------------------------------------------------------------
 // Preflight
@@ -107,15 +110,6 @@ const executor: SandboxExecutor = {
   },
 };
 
-const tieredExecutor: TieredSandboxExecutor = {
-  forTier: (tier) => ({
-    executor,
-    requestedTier: tier,
-    resolvedTier: tier,
-    fallback: false,
-  }),
-};
-
 const config = createDefaultForgeConfig({
   maxForgesPerSession: 50,
   scopePromotion: {
@@ -128,7 +122,7 @@ const config = createDefaultForgeConfig({
 function makeDeps(forgesThisSession: number): ForgeDeps {
   return {
     store,
-    executor: tieredExecutor,
+    executor,
     verifiers: [],
     config,
     context: {
@@ -718,13 +712,13 @@ try {
   // Create a ForgeComponentProvider that exposes forged tools
   const forgeProvider = createForgeComponentProvider({
     store,
-    executor: tieredExecutor,
+    executor,
   });
 
   // Create a ForgeRuntime for live tool resolution
   const forgeRuntime = createForgeRuntime({
     store,
-    executor: tieredExecutor,
+    executor,
   });
 
   const adapter = createPiAdapter({
