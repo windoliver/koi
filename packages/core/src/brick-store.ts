@@ -6,6 +6,7 @@
  * `@koi/core`.
  */
 
+import type { BrickComposition } from "./brick-composition.js";
 import type { BrickId } from "./brick-snapshot.js";
 import type { TrustTier } from "./ecs.js";
 import type { KoiError, Result } from "./errors.js";
@@ -155,6 +156,8 @@ export interface BrickArtifactBase {
   readonly trailStrength?: number | undefined;
   /** Source-file mapping for drift detection. Undefined = no source tracking. */
   readonly driftContext?: BrickDriftContext | undefined;
+  /** Composition metadata — how this brick was assembled. Undefined = not composed. */
+  readonly composition?: BrickComposition | undefined;
 }
 
 export interface ToolArtifact extends BrickArtifactBase {
