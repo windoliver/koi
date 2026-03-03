@@ -107,20 +107,20 @@ async function forgeToolHandler(
   let implementation = parsed.value.implementation ?? "";
 
   if (parsed.value.delegateTo !== undefined) {
-    // Build a temporary ForgeToolInput for delegation prompt generation
-    const delegationInput: ForgeToolInput = {
-      kind: "tool",
+    // Build a ForgeToolInput for delegation prompt generation.
+    // Use satisfies to validate shape without exactOptionalPropertyTypes conflict.
+    const mappedForDelegation = mapParsedTestCases(parsed.value.testCases);
+    const delegationInput = {
+      kind: "tool" as const,
       name: parsed.value.name,
       description: parsed.value.description,
       inputSchema: parsed.value.inputSchema,
       implementation: "",
-      ...(parsed.value.testCases !== undefined
-        ? { testCases: mapParsedTestCases(parsed.value.testCases) }
-        : {}),
+      ...(mappedForDelegation !== undefined ? { testCases: mappedForDelegation } : {}),
       ...(parsed.value.outputSchema !== undefined
         ? { outputSchema: parsed.value.outputSchema }
         : {}),
-    };
+    } satisfies ForgeToolInput;
     const delegated = await delegateImplementation(
       parsed.value.delegateTo,
       delegationInput,
@@ -134,10 +134,7 @@ async function forgeToolHandler(
   } else if (implementation === "") {
     return {
       ok: false,
-      error: staticError(
-        "MISSING_FIELD",
-        "Either implementation or delegateTo must be provided",
-      ),
+      error: staticError("MISSING_FIELD", "Either implementation or delegateTo must be provided"),
     };
   }
 
