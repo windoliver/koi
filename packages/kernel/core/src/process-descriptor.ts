@@ -52,7 +52,16 @@ function mapReasonToOutcome(reason: TransitionReason | undefined): TerminationOu
     case "stale":
     case "signal_stop":
       return "interrupted";
-    default:
+    // Non-terminal reasons — no termination outcome
+    case "assembly_complete":
+    case "awaiting_response":
+    case "response_received":
+    case "hitl_pause":
+    case "governance_block":
+    case "human_approval":
+    case "budget_replenished":
+    case "restarted":
+    case "signal_cont":
       return undefined;
   }
 }

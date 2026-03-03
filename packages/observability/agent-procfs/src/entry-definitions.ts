@@ -43,11 +43,11 @@ export interface EntryDefinition {
 }
 
 // ---------------------------------------------------------------------------
-// Entry definitions — 12 entries (7 existing + 5 new)
+// Entry definitions — 12 entries
 // ---------------------------------------------------------------------------
 
 export const PROCFS_ENTRIES: readonly EntryDefinition[] = [
-  // ---- Existing 7 entries ----
+  // ---- Core entries ----
 
   {
     path: "status",
@@ -154,7 +154,7 @@ export const PROCFS_ENTRIES: readonly EntryDefinition[] = [
     },
   },
 
-  // ---- New 5 entries ----
+  // ---- Extended entries ----
 
   {
     path: "descriptor",

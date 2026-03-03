@@ -12,7 +12,7 @@
  * derived from L0 type definitions.
  */
 
-import type { AgentId } from "./ecs.js";
+import type { AgentId, ProcessState } from "./ecs.js";
 import type { EngineInput } from "./engine.js";
 import type { KoiError } from "./errors.js";
 
@@ -74,7 +74,7 @@ export type TaskStatus = "pending" | "running" | "completed" | "failed" | "dead_
  *
  * Exception: pure function operating only on L0 types, permitted in L0.
  */
-export function mapTaskStatusToProcessState(status: TaskStatus): import("./ecs.js").ProcessState {
+export function mapTaskStatusToProcessState(status: TaskStatus): ProcessState {
   switch (status) {
     case "pending":
       return "created";

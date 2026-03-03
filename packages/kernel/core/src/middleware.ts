@@ -124,7 +124,7 @@ export interface CapabilityFragment {
  *   "resolve"   (tier 1) — default; core business logic (dedup, retry, routing)
  *   "observe"   (tier 2) — read-only telemetry/audit (tracing, metrics)
  */
-export type MiddlewarePhase = "intercept" | "observe" | "resolve";
+export type MiddlewarePhase = "intercept" | "resolve" | "observe";
 
 export interface KoiMiddleware {
   readonly name: string;
