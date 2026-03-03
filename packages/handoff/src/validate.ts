@@ -46,7 +46,8 @@ function isDecisionArray(value: unknown): value is PrepareInput["decisions"] {
 // ---------------------------------------------------------------------------
 
 export interface PrepareInput {
-  readonly to: string;
+  readonly to?: string | undefined;
+  readonly capability?: string | undefined;
   readonly completed: string;
   readonly next: string;
   readonly results?: JsonObject | undefined;
@@ -71,9 +72,16 @@ export type ValidatePrepareResult =
 
 /** Validate and extract prepare_handoff tool input. */
 export function validatePrepareInput(args: JsonObject): ValidatePrepareResult {
-  const to = args.to;
-  if (typeof to !== "string" || to.length === 0) {
-    return { ok: false, message: "'to' is required and must be a non-empty string" };
+  const to = typeof args.to === "string" && args.to.length > 0 ? args.to : undefined;
+  const capability =
+    typeof args.capability === "string" && args.capability.length > 0 ? args.capability : undefined;
+
+  // XOR: exactly one of `to` or `capability` must be provided
+  if (to !== undefined && capability !== undefined) {
+    return { ok: false, message: "Provide exactly one of 'to' or 'capability', not both" };
+  }
+  if (to === undefined && capability === undefined) {
+    return { ok: false, message: "Provide exactly one of 'to' or 'capability'" };
   }
 
   const completed = args.completed;
@@ -90,6 +98,7 @@ export function validatePrepareInput(args: JsonObject): ValidatePrepareResult {
     ok: true,
     value: {
       to,
+      capability,
       completed,
       next,
       results: isJsonObject(args.results) ? args.results : undefined,

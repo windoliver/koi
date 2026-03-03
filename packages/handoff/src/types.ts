@@ -41,7 +41,16 @@ export const PREPARE_HANDOFF_DESCRIPTOR: ToolDescriptor = {
   inputSchema: {
     type: "object",
     properties: {
-      to: { type: "string", description: "Target agent ID" },
+      to: {
+        type: "string",
+        description: "Target agent ID (provide exactly one of 'to' or 'capability')",
+      },
+      capability: {
+        type: "string",
+        description:
+          "Resolve target by capability — hand off to the first running agent that declares " +
+          "this capability (provide exactly one of 'to' or 'capability')",
+      },
       completed: { type: "string", description: "Summary of what was accomplished" },
       next: { type: "string", description: "Instructions for the next agent" },
       results: { type: "object", description: "Structured results (JSON object)" },
@@ -83,7 +92,7 @@ export const PREPARE_HANDOFF_DESCRIPTOR: ToolDescriptor = {
       delegation: { type: "object", description: "Optional delegation grant to forward" },
       metadata: { type: "object", description: "Arbitrary metadata" },
     },
-    required: ["to", "completed", "next"],
+    required: ["completed", "next"],
   },
 };
 

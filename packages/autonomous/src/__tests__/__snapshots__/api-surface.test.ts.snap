@@ -1,7 +1,8 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/autonomous API surface . has stable type surface 1`] = `
-"import { KoiMiddleware, ComponentProvider, ThreadStore, CheckpointPolicy, InboxPolicy } from '@koi/core';
+"import { KoiMiddleware, ComponentProvider, Result, HandoffId, KoiError, ThreadStore, CheckpointPolicy, InboxPolicy, HarnessSnapshotStore, AgentId, HarnessSnapshot, HandoffEvent, AgentRegistry, ContextSummary, DecisionRecord, KeyArtifact, ArtifactRef, HandoffEnvelope, TaskResult, JsonObject } from '@koi/core';
+import { HandoffStore } from '@koi/handoff';
 import { HarnessScheduler } from '@koi/harness-scheduler';
 import { LongRunningHarness } from '@koi/long-running';
 
@@ -9,6 +10,23 @@ import { LongRunningHarness } from '@koi/long-running';
  * Types for @koi/autonomous — coordinated autonomous agent composition.
  */
 
+/** Config for the harness-to-handoff bridge. */
+interface HarnessHandoffBridgeConfig {
+    readonly harnessStore: HarnessSnapshotStore;
+    readonly handoffStore: HandoffStore;
+    /** Static target. Use this OR resolveTarget, not both. */
+    readonly targetAgentId?: AgentId | undefined;
+    /** Dynamic target resolution. Called at bridge fire time with the completed snapshot. */
+    readonly resolveTarget?: ((snapshot: HarnessSnapshot) => AgentId | Promise<AgentId>) | undefined;
+    /** What the next agent should do. Defaults to generated summary. */
+    readonly nextPhaseInstructions?: string | undefined;
+    readonly onEvent?: ((event: HandoffEvent) => void) | undefined;
+}
+/** Bridge handle — call onHarnessCompleted() when harness reaches "completed". */
+interface HarnessHandoffBridge {
+    readonly onHarnessCompleted: () => Promise<Result<HandoffId, KoiError>>;
+    readonly hasFired: () => boolean;
+}
 interface AutonomousAgentParts {
     /** The long-running harness managing multi-session lifecycle. */
     readonly harness: LongRunningHarness;
@@ -22,6 +40,8 @@ interface AutonomousAgentParts {
     readonly checkpointPolicy?: CheckpointPolicy | undefined;
     /** Inbox policy override. Defaults to DEFAULT_INBOX_POLICY. */
     readonly inboxPolicy?: InboxPolicy | undefined;
+    /** Optional harness-to-handoff bridge config. */
+    readonly handoffBridge?: HarnessHandoffBridgeConfig | undefined;
 }
 interface AutonomousAgent {
     /** The underlying harness. */
@@ -34,6 +54,8 @@ interface AutonomousAgent {
     readonly providers: () => readonly ComponentProvider[];
     /** Dispose all parts in correct order (scheduler first, then harness). */
     readonly dispose: () => Promise<void>;
+    /** Optional harness-to-handoff bridge handle. */
+    readonly handoffBridge?: HarnessHandoffBridge | undefined;
 }
 
 /**
@@ -45,6 +67,65 @@ interface AutonomousAgent {
 
 declare function createAutonomousAgent(parts: AutonomousAgentParts): AutonomousAgent;
 
-export { type AutonomousAgent, type AutonomousAgentParts, createAutonomousAgent };
+/**
+ * Harness → Handoff bridge factory.
+ *
+ * Reads the final HarnessSnapshot from the snapshot chain store,
+ * maps it to a HandoffEnvelope, and stores it for the receiving agent.
+ * Idempotent: calling onHarnessCompleted() multiple times returns the same result.
+ */
+
+/**
+ * Create a harness-to-handoff bridge.
+ *
+ * The bridge reads the harness snapshot on demand (when onHarnessCompleted is called),
+ * maps it to a HandoffEnvelope, and stores it in the handoff store.
+ *
+ * Exactly one of \`targetAgentId\` or \`resolveTarget\` must be provided.
+ */
+declare function createHarnessHandoffBridge(harness: LongRunningHarness, config: HarnessHandoffBridgeConfig): HarnessHandoffBridge;
+
+/**
+ * Capability-based handoff target resolution.
+ *
+ * Connects the AgentRegistry to the bridge's resolveTarget callback,
+ * finding a running agent that declares the requested capability.
+ */
+
+/**
+ * Create a resolveTarget callback that queries the registry for a running
+ * agent with the given capability.
+ *
+ * Usage:
+ * \`\`\`ts
+ * handoffBridge: {
+ *   harnessStore,
+ *   handoffStore,
+ *   resolveTarget: createCapabilityResolver(registry, "deployment"),
+ * }
+ * \`\`\`
+ */
+declare function createCapabilityResolver(registry: AgentRegistry, capability: string): (snapshot: HarnessSnapshot) => Promise<AgentId>;
+
+/**
+ * Pure mapping functions — convert HarnessSnapshot fields to HandoffEnvelope fields.
+ *
+ * All functions are pure, side-effect-free, and operate only on L0 types.
+ */
+
+/** Map a harness KeyArtifact to a handoff ArtifactRef with harness:// URI scheme. */
+declare function mapKeyArtifactToArtifactRef(artifact: KeyArtifact, index: number): ArtifactRef;
+/** Map a harness ContextSummary to a handoff DecisionRecord. */
+declare function mapContextSummaryToDecisionRecord(summary: ContextSummary, sourceAgentId: AgentId): DecisionRecord;
+/** Map task results to a JSON object keyed by taskId. */
+declare function mapTaskResultsToJsonObject(results: readonly TaskResult[]): JsonObject;
+/** Generate a human-readable summary of the completed harness phase. */
+declare function generateCompletedPhaseDescription(snapshot: HarnessSnapshot): string;
+/** Generate warnings for failed tasks and high session counts. */
+declare function generateWarnings(snapshot: HarnessSnapshot): readonly string[];
+/** Map a completed HarnessSnapshot to a HandoffEnvelope. */
+declare function mapSnapshotToEnvelope(snapshot: HarnessSnapshot, targetAgentId: AgentId, nextPhaseInstructions?: string): HandoffEnvelope;
+
+export { type AutonomousAgent, type AutonomousAgentParts, type HarnessHandoffBridge, type HarnessHandoffBridgeConfig, createAutonomousAgent, createCapabilityResolver, createHarnessHandoffBridge, generateCompletedPhaseDescription, generateWarnings, mapContextSummaryToDecisionRecord, mapKeyArtifactToArtifactRef, mapSnapshotToEnvelope, mapTaskResultsToJsonObject };
 "
 `;

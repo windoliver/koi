@@ -141,6 +141,31 @@ describe("InMemoryRegistry", () => {
     expect(healthy[0]?.agentId).toBe(agentId("a1"));
   });
 
+  test("list filters by capability in metadata", () => {
+    registry.register({
+      ...entry("a1"),
+      metadata: { capabilities: ["code-review", "deployment"] },
+    });
+    registry.register({
+      ...entry("a2"),
+      metadata: { capabilities: ["deployment"] },
+    });
+    registry.register({
+      ...entry("a3"),
+      metadata: {},
+    });
+
+    const deployers = registry.list({ capability: "deployment" });
+    expect(deployers).toHaveLength(2);
+
+    const reviewers = registry.list({ capability: "code-review" });
+    expect(reviewers).toHaveLength(1);
+    expect(reviewers[0]?.agentId).toBe(agentId("a1"));
+
+    const none = registry.list({ capability: "unknown" });
+    expect(none).toHaveLength(0);
+  });
+
   test("list filters by parentId", () => {
     registry.register(entry("root"));
     registry.register({ ...entry("child-1"), parentId: agentId("root") });

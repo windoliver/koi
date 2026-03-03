@@ -31,7 +31,9 @@ Create a typed envelope containing:
 
 - **completed**: summary of what you accomplished (required)
 - **next**: instructions for the receiving agent (required)
-- **to**: target agent ID (required)
+- **to**: target agent ID (provide exactly one of \`to\` or \`capability\`)
+- **capability**: resolve target by capability — hand off to the first running agent
+  that declares this capability (provide exactly one of \`to\` or \`capability\`)
 - **results**: structured data (optional JSON object)
 - **artifacts**: references to files, URLs, or other resources (optional)
 - **decisions**: record of key decisions made with reasoning (optional)
@@ -54,6 +56,8 @@ Accept an envelope by its ID to get the full context:
 - **Structured context transfer**: when you need typed, schema-validated data transfer
   rather than free-text messages
 - **Audit trail**: handoff envelopes create a record of what was passed and when
+- **Capability-based routing**: use \`capability\` instead of \`to\` when you don't know the
+  target agent ID but know what capability is needed (e.g., "deployment", "code-review")
 
 ## When NOT to use handoff
 
@@ -90,8 +94,10 @@ Accept an envelope by its ID to get the full context:
   prepare step
 - **Already accepted**: each envelope can only be accepted once — if you need the data
   again, ask the sender to create a new handoff
-- **Validation errors**: required fields (to, completed, next) must be provided — check
-  the error message for which field is missing
+- **Validation errors**: required fields (completed, next, and one of to/capability) must be
+  provided — check the error message for which field is missing
+- **No agent found**: when using \`capability\`, no running agent declares that capability —
+  verify the capability string matches the target agent's manifest
 `.trim();
 
 /**

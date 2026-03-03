@@ -177,6 +177,8 @@ export interface RegistryFilter {
   readonly zoneId?: ZoneId | undefined;
   /** Filter by process group ID. */
   readonly groupId?: AgentGroupId | undefined;
+  /** Filter by declared capability (matches against metadata.capabilities). */
+  readonly capability?: string | undefined;
 }
 
 /** Caller identity context for visibility-filtered discovery. */
@@ -207,6 +209,10 @@ export function matchesFilter(entry: RegistryEntry, filter: RegistryFilter): boo
   if (filter.parentId !== undefined && entry.parentId !== filter.parentId) return false;
   if (filter.zoneId !== undefined && entry.zoneId !== filter.zoneId) return false;
   if (filter.groupId !== undefined && entry.groupId !== filter.groupId) return false;
+  if (filter.capability !== undefined) {
+    const caps = entry.metadata.capabilities;
+    if (!Array.isArray(caps) || !caps.includes(filter.capability)) return false;
+  }
   return true;
 }
 

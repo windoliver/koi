@@ -120,9 +120,23 @@ declare function createNexusHandoffStore(config: NexusHandoffStoreConfig): Hando
  * into a typed HandoffEnvelope for the next agent.
  */
 
+type ResolveTargetResult = {
+    readonly ok: true;
+    readonly agentId: AgentId;
+} | {
+    readonly ok: false;
+    readonly message: string;
+};
+/**
+ * Resolve the target agent for a capability-based handoff.
+ * Queries the registry for running agents that declare the requested capability.
+ * Returns the first match (deterministic ordering from registry).
+ */
+declare function resolveTarget(registry: AgentRegistry, capability: string): Promise<ResolveTargetResult>;
 interface CreatePrepareToolConfig {
     readonly store: HandoffStore;
     readonly agentId: AgentId;
+    readonly registry?: AgentRegistry | undefined;
     readonly onEvent?: ((event: HandoffEvent) => void) | undefined;
 }
 declare function createPrepareTool(config: CreatePrepareToolConfig): Tool;
@@ -192,7 +206,8 @@ declare function generateHandoffSummary(envelope: HandoffEnvelope): string;
  */
 
 interface PrepareInput {
-    readonly to: string;
+    readonly to?: string | undefined;
+    readonly capability?: string | undefined;
     readonly completed: string;
     readonly next: string;
     readonly results?: JsonObject | undefined;
@@ -232,6 +247,6 @@ declare function validateAcceptInput(args: JsonObject): ValidateAcceptResult;
  */
 declare function validateArtifactRefs(refs: readonly ArtifactRef[]): readonly string[];
 
-export { ACCEPT_HANDOFF_DESCRIPTOR, type CreateAcceptToolConfig, type CreatePrepareToolConfig, HANDOFF_SKILL, HANDOFF_SKILL_CONTENT, HANDOFF_SKILL_NAME, type HandoffConfig, type HandoffMiddlewareConfig, type HandoffStore, type HandoffStoreConfig, type NexusHandoffStoreConfig, PREPARE_HANDOFF_DESCRIPTOR, type PrepareInput, type SqliteHandoffStoreConfig, type ValidateAcceptResult, type ValidatePrepareResult, conflictError, createAcceptTool, createHandoffMiddleware, createHandoffProvider, createHandoffStore, createInMemoryHandoffStore, createNexusHandoffStore, createPrepareTool, createSqliteHandoffStore, generateHandoffSummary, internalError, notFoundError, validateAcceptInput, validateArtifactRefs, validateHandoffId, validatePrepareInput, validationError };
+export { ACCEPT_HANDOFF_DESCRIPTOR, type CreateAcceptToolConfig, type CreatePrepareToolConfig, HANDOFF_SKILL, HANDOFF_SKILL_CONTENT, HANDOFF_SKILL_NAME, type HandoffConfig, type HandoffMiddlewareConfig, type HandoffStore, type HandoffStoreConfig, type NexusHandoffStoreConfig, PREPARE_HANDOFF_DESCRIPTOR, type PrepareInput, type SqliteHandoffStoreConfig, type ValidateAcceptResult, type ValidatePrepareResult, conflictError, createAcceptTool, createHandoffMiddleware, createHandoffProvider, createHandoffStore, createInMemoryHandoffStore, createNexusHandoffStore, createPrepareTool, createSqliteHandoffStore, generateHandoffSummary, internalError, notFoundError, resolveTarget, validateAcceptInput, validateArtifactRefs, validateHandoffId, validatePrepareInput, validationError };
 "
 `;

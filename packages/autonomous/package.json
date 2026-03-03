@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
+    "@koi/handoff": "workspace:*",
     "@koi/long-running": "workspace:*",
     "@koi/harness-scheduler": "workspace:*"
   },

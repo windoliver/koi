@@ -191,7 +191,9 @@ Called by the **sending** agent to package work into an envelope.
 ```
   Input (JSON Schema):
   ┌────────────────────────────────────────────────────────┐
-  │  to          string  (required)  Target agent ID       │
+  │  to          string  (XOR)       Target agent ID       │
+  │  capability  string  (XOR)       Resolve target by     │
+  │                                  declared capability    │
   │  completed   string  (required)  What was done         │
   │  next        string  (required)  Instructions for next │
   │  results     object  (optional)  Structured results    │
@@ -200,12 +202,21 @@ Called by the **sending** agent to package work into an envelope.
   │  warnings    array   (optional)  Pitfalls to avoid     │
   └────────────────────────────────────────────────────────┘
 
-  Output:
+  Output (direct handoff — using `to`):
   { handoffId: "hoff-abc123", status: "pending" }
+
+  Output (capability-based — using `capability`):
+  { handoffId: "hoff-abc123", status: "pending", resolvedTo: "deploy-agent" }
 ```
 
+Targeting:
+- **Direct** (`to`): provide the exact agent ID — no registry needed
+- **Capability-based** (`capability`): queries `registry.list({ phase: "running", capability })` and picks the first match. Requires `registry` in `HandoffConfig`
+- Exactly one of `to` or `capability` must be provided (XOR — enforced at runtime)
+
 Validation:
-- `to`, `completed`, `next` are required non-empty strings
+- `completed`, `next` are required non-empty strings
+- Exactly one of `to` or `capability` must be non-empty
 - Artifact URIs are validated (unsupported schemes → warnings, not errors)
 - `HandoffId` generated via `crypto.randomUUID()`
 
@@ -309,16 +320,23 @@ For a 3-agent pipeline (A → B → C):
 Tools return typed error objects — never throw on expected failures:
 
 ```
-  ┌────────────────────┐     ┌──────────────────┐     ┌──────────┐
-  │ Expected error     │     │ Error code       │     │ Retryable│
-  ├────────────────────┤     ├──────────────────┤     ├──────────┤
-  │ Missing to/next    │ ──> │ (validation msg) │ ──> │ No       │
-  │ Envelope not found │ ──> │ NOT_FOUND        │ ──> │ No       │
-  │ Already accepted   │ ──> │ ALREADY_ACCEPTED │ ──> │ No       │
-  │ Wrong target agent │ ──> │ TARGET_MISMATCH  │ ──> │ No       │
-  │ Envelope expired   │ ──> │ EXPIRED          │ ──> │ No       │
-  │ Bad artifact URI   │ ──> │ (warning only)   │ ──> │ N/A      │
-  └────────────────────┘     └──────────────────┘     └──────────┘
+  ┌──────────────────────────┐     ┌──────────────────┐     ┌──────────┐
+  │ Expected error           │     │ Error code       │     │ Retryable│
+  ├──────────────────────────┤     ├──────────────────┤     ├──────────┤
+  │ Missing completed/next   │ ──> │ (validation msg) │ ──> │ No       │
+  │ Both to + capability     │ ──> │ (validation msg) │ ──> │ No       │
+  │ Neither to nor capability│ ──> │ (validation msg) │ ──> │ No       │
+  │ No registry configured   │ ──> │ (error msg)      │ ──> │ No       │
+  │ No agent with capability │ ──> │ (error msg)      │ ──> │ Yes*     │
+  │ Registry lookup failed   │ ──> │ (error msg)      │ ──> │ Yes      │
+  │ Envelope not found       │ ──> │ NOT_FOUND        │ ──> │ No       │
+  │ Already accepted         │ ──> │ ALREADY_ACCEPTED │ ──> │ No       │
+  │ Wrong target agent       │ ──> │ TARGET_MISMATCH  │ ──> │ No       │
+  │ Envelope expired         │ ──> │ EXPIRED          │ ──> │ No       │
+  │ Bad artifact URI         │ ──> │ (warning only)   │ ──> │ N/A      │
+  └──────────────────────────┘     └──────────────────┘     └──────────┘
+
+  * "No agent with capability" is retryable if the target agent hasn't started yet.
 ```
 
 Artifact validation produces **warnings, not errors** — an unsupported URI scheme doesn't block the handoff, it's surfaced in the warnings array.
@@ -351,7 +369,7 @@ Alias for `createInMemoryHandoffStore()`. Will be removed in a future release.
 |-----------|------|-------------|
 | `config.store` | `HandoffStore` | Shared envelope store |
 | `config.agentId` | `AgentId` | This agent's ID |
-| `config.registry` | `AgentRegistry` | Optional — auto-cleanup on termination |
+| `config.registry` | `AgentRegistry` | Optional — enables capability-based handoff resolution and auto-cleanup on termination |
 | `config.onEvent` | `(e: HandoffEvent) => void` | Optional event listener |
 
 Returns `ComponentProvider`. Registers `tool:prepare_handoff` and `tool:accept_handoff`.
@@ -369,6 +387,10 @@ Returns `KoiMiddleware` (name: `koi:handoff`, priority: 400).
 #### `createPrepareTool(config)` / `createAcceptTool(config)`
 
 Lower-level factories — use `createHandoffProvider` unless you need manual tool registration.
+
+#### `resolveTarget(registry, capability)`
+
+Standalone function that queries the registry for a running agent with the given capability. Returns `Promise<ResolveTargetResult>` — a discriminated union of `{ ok: true, agentId }` or `{ ok: false, message }`. Used internally by `prepare_handoff` when `capability` is provided; exported for programmatic use.
 
 ### Types
 
@@ -504,7 +526,46 @@ await collectEvents(runtimeC.run({ kind: "text", text: "Build based on the archi
 // Warnings accumulate: A's warnings flow through B into C
 ```
 
-### 4. With Registry Cleanup (Production)
+### 4. Capability-Based Handoff
+
+Instead of hardcoding `to: "deploy-agent"`, let the tool resolve the target at runtime by capability:
+
+```typescript
+// Agent A doesn't know which agent handles deployment — it just knows the capability
+// The LLM calls: prepare_handoff({ capability: "deployment", completed: "...", next: "..." })
+
+const store = createHandoffStore();
+const registry = myAgentRegistry; // must contain running agents with capabilities
+
+const runtimeA = await createKoi({
+  manifest: { name: "builder", version: "1.0.0", model: { name: "claude-sonnet" } },
+  adapter: createLoopAdapter({ modelCall, maxTurns: 5 }),
+  providers: [
+    createHandoffProvider({ store, agentId: agentId("builder"), registry }),
+  ],
+});
+
+// Target agent must declare capabilities in its manifest:
+// manifest: { name: "deployer", capabilities: ["deployment", "rollback"], ... }
+
+// When builder calls prepare_handoff({ capability: "deployment", ... }):
+//   1. Tool queries registry.list({ phase: "running", capability: "deployment" })
+//   2. First matching agent (e.g. "deployer") is selected
+//   3. Response includes resolvedTo: "deployer" so the LLM knows who received it
+```
+
+The `resolveTarget` function is also exported for programmatic use outside the tool:
+
+```typescript
+import { resolveTarget } from "@koi/handoff";
+
+const result = await resolveTarget(registry, "code-review");
+if (result.ok) {
+  console.log(`Found reviewer: ${result.agentId}`);
+}
+```
+
+### 5. With Registry Cleanup (Production)
 
 ```typescript
 createHandoffProvider({
