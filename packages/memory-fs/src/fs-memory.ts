@@ -45,6 +45,7 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
     mergeHandler,
     mergeThreshold = DEFAULT_MERGE_THRESHOLD,
     salienceEnabled = true,
+    categoryInferrer,
   } = config;
 
   if (baseDir.length === 0) {
@@ -134,7 +135,22 @@ export async function createFsMemory(config: FsMemoryConfig): Promise<FsMemory> 
   const store = async (content: string, options?: MemoryStoreOptions): Promise<void> => {
     const entity = resolveEntity(options);
     const now = new Date();
-    const category = options?.category ?? "context";
+    // let — reassigned in inferrer fallback path
+    let category = options?.category;
+    if (category === undefined && categoryInferrer !== undefined) {
+      try {
+        const inferred = await categoryInferrer(content);
+        category = inferred.length > 0 ? inferred : "context";
+      } catch (inferErr: unknown) {
+        console.warn(`[memory-fs] Category inferrer failed, falling back to "context"`, {
+          cause: inferErr,
+        });
+        category = "context";
+      }
+    }
+    if (category === undefined) {
+      category = "context";
+    }
 
     const causalParents =
       options?.causalParents !== undefined && options.causalParents.length > 0

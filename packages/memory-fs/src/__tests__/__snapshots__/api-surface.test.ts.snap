@@ -27,6 +27,13 @@ interface FsIndexDoc {
  * Return the merged text string, or \`undefined\` to fall through to supersede logic.
  */
 type MergeHandler = (existing: string, incoming: string) => Promise<string | undefined>;
+/**
+ * Infers a category from fact content when no explicit category is provided.
+ *
+ * May be sync (keyword matching) or async (LLM-backed).
+ * Return a category string; the default fallback is \`"context"\`.
+ */
+type CategoryInferrer = (content: string) => string | Promise<string>;
 interface FsMemoryConfig {
     readonly baseDir: string;
     readonly retriever?: FsSearchRetriever | undefined;
@@ -44,6 +51,8 @@ interface FsMemoryConfig {
     readonly mergeThreshold?: number | undefined;
     /** Enable composite salience scoring for recall ranking. Default true. */
     readonly salienceEnabled?: boolean | undefined;
+    /** Infers a category when the caller omits \`options.category\`. Default: none (falls back to \`"context"\`). */
+    readonly categoryInferrer?: CategoryInferrer | undefined;
 }
 interface FsMemory {
     readonly component: MemoryComponent;
@@ -58,6 +67,25 @@ interface TierDistribution {
     readonly cold: number;
     readonly total: number;
 }
+
+/**
+ * Keyword-based category inferrer — pure heuristic, no LLM cost.
+ *
+ * Scans fact content for category-indicating keywords and returns the
+ * first matching category. Falls back to \`"context"\` when no rule matches.
+ */
+
+interface CategoryRule {
+    readonly category: string;
+    readonly pattern: RegExp;
+}
+interface KeywordCategoryInferrerOptions {
+    /** Additional rules prepended to defaults (higher priority). */
+    readonly additionalRules?: readonly CategoryRule[] | undefined;
+    /** Override the default fallback category (\`"context"\`). */
+    readonly fallback?: string | undefined;
+}
+declare function createKeywordCategoryInferrer(options?: KeywordCategoryInferrerOptions): CategoryInferrer;
 
 declare function createFsMemory(config: FsMemoryConfig): Promise<FsMemory>;
 
@@ -171,6 +199,6 @@ interface UserScopedMemory {
 }
 declare function createUserScopedMemory(config: UserScopedMemoryConfig): UserScopedMemory;
 
-export { type FsIndexDoc, type FsMemory, type FsMemoryConfig, type FsSearchHit, type FsSearchIndexer, type FsSearchRetriever, MEMORY_OPERATIONS, MEMORY_SKILL_CONTENT, type MemoryOperation, type MemoryProviderConfig, type MergeHandler, type TierDistribution, type UserScopedMemory, type UserScopedMemoryConfig, type UserScopedMemoryProviderConfig, createFsMemory, createMemoryProvider, createMemoryRecallTool, createMemorySearchTool, createMemoryStoreTool, createUserScopedMemory, createUserScopedMemoryProvider, generateMemorySkillContent };
+export { type CategoryInferrer, type CategoryRule, type FsIndexDoc, type FsMemory, type FsMemoryConfig, type FsSearchHit, type FsSearchIndexer, type FsSearchRetriever, type KeywordCategoryInferrerOptions, MEMORY_OPERATIONS, MEMORY_SKILL_CONTENT, type MemoryOperation, type MemoryProviderConfig, type MergeHandler, type TierDistribution, type UserScopedMemory, type UserScopedMemoryConfig, type UserScopedMemoryProviderConfig, createFsMemory, createKeywordCategoryInferrer, createMemoryProvider, createMemoryRecallTool, createMemorySearchTool, createMemoryStoreTool, createUserScopedMemory, createUserScopedMemoryProvider, generateMemorySkillContent };
 "
 `;

@@ -12,6 +12,7 @@ import type { ModelHandler } from "@koi/core/middleware";
 import type { MergeHandler } from "@koi/memory-fs";
 import {
   createFsMemory,
+  createKeywordCategoryInferrer,
   createMemoryProvider,
   createUserScopedMemoryProvider,
 } from "@koi/memory-fs";
@@ -77,9 +78,19 @@ export async function createContextArena(config: ContextArenaConfig): Promise<Co
       ? (memoryFsConfig.mergeHandler ?? createDefaultMergeHandler(config.summarizer))
       : undefined;
 
+  // Auto-wire keyword category inferrer when not explicitly provided (zero LLM cost)
+  const categoryInferrer =
+    memoryFsConfig !== undefined
+      ? (memoryFsConfig.categoryInferrer ?? createKeywordCategoryInferrer())
+      : undefined;
+
   const effectiveFsConfig =
     memoryFsConfig !== undefined
-      ? { ...memoryFsConfig, ...(mergeHandler !== undefined ? { mergeHandler } : {}) }
+      ? {
+          ...memoryFsConfig,
+          ...(mergeHandler !== undefined ? { mergeHandler } : {}),
+          ...(categoryInferrer !== undefined ? { categoryInferrer } : {}),
+        }
       : undefined;
 
   // Create early so squash + compactor can share the component
