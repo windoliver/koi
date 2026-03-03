@@ -7,8 +7,9 @@
  */
 
 import type { Agent, ComponentProvider, Tool, TrustTier } from "@koi/core";
-import { toolToken } from "@koi/core";
+import { skillToken, toolToken } from "@koi/core";
 import { OPERATIONS, type WebOperation } from "./constants.js";
+import { WEB_SKILL, WEB_SKILL_NAME } from "./skill.js";
 import { createWebFetchTool } from "./tools/web-fetch.js";
 import { createWebSearchTool } from "./tools/web-search.js";
 import type { WebExecutor } from "./web-executor.js";
@@ -37,15 +38,16 @@ export function createWebProvider(config: WebProviderConfig): ComponentProvider 
     name: `web:${prefix}`,
 
     attach: async (_agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
-      const entries: ReadonlyMap<string, unknown> = new Map(
-        operations.map((op) => {
-          const factory = TOOL_FACTORIES[op];
-          const tool = factory(executor, prefix, trustTier);
-          const key: string = toolToken(tool.descriptor.name);
-          return [key, tool] as const;
-        }),
-      );
-      return entries;
+      const toolEntries = operations.map((op) => {
+        const factory = TOOL_FACTORIES[op];
+        const tool = factory(executor, prefix, trustTier);
+        const key: string = toolToken(tool.descriptor.name);
+        return [key, tool] as const;
+      });
+      return new Map<string, unknown>([
+        ...toolEntries,
+        [skillToken(WEB_SKILL_NAME) as string, WEB_SKILL],
+      ]);
     },
   };
 }

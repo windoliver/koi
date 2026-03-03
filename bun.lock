@@ -2202,6 +2202,7 @@
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
         "@koi/search-brave": "workspace:*",
+        "@koi/test-utils": "workspace:*",
       },
     },
     "packages/tracing": {

@@ -50,7 +50,7 @@ describe("createTaskSpawnProvider", () => {
     const components = extractMap(await provider.attach(agent));
 
     expect(components.has("tool:task")).toBe(true);
-    expect(components.size).toBe(1);
+    expect(components.size).toBe(2);
   });
 
   it("attached tool has correct descriptor name", async () => {

@@ -13,7 +13,8 @@ import type {
   Result,
   WorkspaceId,
 } from "@koi/core";
-import { WORKSPACE } from "@koi/core";
+import { skillToken, WORKSPACE } from "@koi/core";
+import { WORKSPACE_SKILL, WORKSPACE_SKILL_NAME } from "./skill.js";
 import type { WorkspaceProviderConfig } from "./types.js";
 import { type ValidatedWorkspaceConfig, validateWorkspaceConfig } from "./validate-config.js";
 
@@ -70,8 +71,10 @@ export function createWorkspaceProvider(
 
       workspaces.set(agent.pid.id, workspace.id);
 
-      const key: string = WORKSPACE;
-      return new Map([[key, workspace]]);
+      return new Map<string, unknown>([
+        [WORKSPACE as string, workspace],
+        [skillToken(WORKSPACE_SKILL_NAME) as string, WORKSPACE_SKILL],
+      ]);
     },
 
     detach: async (agent: Agent): Promise<void> => {

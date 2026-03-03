@@ -168,4 +168,64 @@ describe("createSingleToolProvider", () => {
     });
     expect(provider.detach).toBeUndefined();
   });
+
+  test("includes extras entries in returned Map", async () => {
+    const skill = { name: "my-skill", description: "Test skill", content: "skill content" };
+    const provider = createSingleToolProvider({
+      name: "task-spawn",
+      toolName: "task",
+      createTool: () => createMockTool("task"),
+      extras: [["skill:my-skill", skill]],
+    });
+    const components = extractMap(await provider.attach(createMockAgent()));
+
+    expect(components.size).toBe(2);
+    expect(components.get("skill:my-skill")).toBe(skill);
+    expect(components.has("tool:task")).toBe(true);
+  });
+
+  test("extras are cached with tool on subsequent attach() calls", async () => {
+    const provider = createSingleToolProvider({
+      name: "task-spawn",
+      toolName: "task",
+      createTool: () => createMockTool("task"),
+      extras: [["skill:test", { name: "test" }]],
+    });
+
+    const first = await provider.attach(createMockAgent());
+    const second = await provider.attach(createMockAgent());
+    expect(first).toBe(second);
+  });
+
+  test("works without extras (backwards compatible)", async () => {
+    const provider = createSingleToolProvider({
+      name: "task-spawn",
+      toolName: "task",
+      createTool: () => createMockTool("task"),
+    });
+    const components = extractMap(await provider.attach(createMockAgent()));
+
+    expect(components.size).toBe(1);
+    expect(components.has("tool:task")).toBe(true);
+  });
+
+  test("supports multiple extras entries", async () => {
+    const extra1 = { data: "one" };
+    const extra2 = { data: "two" };
+    const provider = createSingleToolProvider({
+      name: "multi-extra",
+      toolName: "my_tool",
+      createTool: () => createMockTool("my_tool"),
+      extras: [
+        ["skill:alpha", extra1],
+        ["custom:beta", extra2],
+      ],
+    });
+    const components = extractMap(await provider.attach(createMockAgent()));
+
+    expect(components.size).toBe(3);
+    expect(components.get("skill:alpha")).toBe(extra1);
+    expect(components.get("custom:beta")).toBe(extra2);
+    expect(components.has("tool:my_tool")).toBe(true);
+  });
 });

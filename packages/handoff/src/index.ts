@@ -28,6 +28,8 @@ export type { CreatePrepareToolConfig } from "./prepare-tool.js";
 export { createPrepareTool } from "./prepare-tool.js";
 // provider
 export { createHandoffProvider } from "./provider.js";
+// skill
+export { HANDOFF_SKILL, HANDOFF_SKILL_CONTENT, HANDOFF_SKILL_NAME } from "./skill.js";
 // sqlite store
 export type { SqliteHandoffStoreConfig } from "./sqlite-store.js";
 export { createSqliteHandoffStore } from "./sqlite-store.js";

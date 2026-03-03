@@ -26,6 +26,8 @@ export type { WebOperation } from "./constants.js";
 export { DEFAULT_PREFIX, OPERATIONS, READ_OPERATIONS, WEB_SYSTEM_PROMPT } from "./constants.js";
 // Content conversion utilities
 export { htmlToMarkdown } from "./html-to-markdown.js";
+// skill
+export { WEB_SKILL, WEB_SKILL_CONTENT, WEB_SKILL_NAME } from "./skill.js";
 export { stripHtml } from "./strip-html.js";
 // tool factories — for advanced usage (custom tool composition)
 export { createWebFetchTool } from "./tools/web-fetch.js";

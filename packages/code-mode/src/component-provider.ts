@@ -3,9 +3,10 @@
  */
 
 import type { Agent, ComponentProvider, FileSystemBackend, Tool, TrustTier } from "@koi/core";
-import { FILESYSTEM, toolToken } from "@koi/core";
+import { FILESYSTEM, skillToken, toolToken } from "@koi/core";
 import { DEFAULT_PREFIX } from "./constants.js";
 import { createPlanStore } from "./plan-store.js";
+import { CODE_MODE_SKILL, CODE_MODE_SKILL_NAME } from "./skill.js";
 import { createPlanApplyTool } from "./tools/plan-apply.js";
 import { createPlanCreateTool } from "./tools/plan-create.js";
 import { createPlanStatusTool } from "./tools/plan-status.js";
@@ -52,7 +53,10 @@ export function createCodeModeProvider(config: CodeModeProviderConfig = {}): Com
         (tool) => [toolToken(tool.descriptor.name) as string, tool] as const,
       );
 
-      return new Map<string, unknown>(entries);
+      return new Map<string, unknown>([
+        ...entries,
+        [skillToken(CODE_MODE_SKILL_NAME) as string, CODE_MODE_SKILL],
+      ]);
     },
   };
 }
