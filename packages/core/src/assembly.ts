@@ -141,6 +141,8 @@ export interface AgentManifest {
    */
   readonly lifecycle?: "copilot" | "worker" | undefined;
   readonly metadata?: JsonObject;
+  /** Declared agent capabilities for discovery and handoff routing. */
+  readonly capabilities?: readonly string[] | undefined;
   /** Declared task objectives — used by goal drift detection and attention management middleware. */
   readonly objectives?: readonly string[];
   /** Project conventions preserved through compaction — surfaced via middleware capabilities. */
