@@ -7,7 +7,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "packages/core/**"
+      - "packages/kernel/core/**"
       - "scripts/layers.ts"
       - "scripts/check-layers.ts"
       - "scripts/check-doc-sync.ts"
@@ -15,7 +15,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "packages/core/**"
+      - "packages/kernel/core/**"
       - "scripts/layers.ts"
       - "scripts/check-layers.ts"
       - "scripts/check-doc-sync.ts"

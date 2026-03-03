@@ -1,0 +1,31 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*"],
+  "references": [
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../kernel/engine"
+    },
+    {
+      "path": "../../drivers/engine-pi"
+    },
+    {
+      "path": "../../lib/event-delivery"
+    },
+    {
+      "path": "../../lib/hash"
+    },
+    {
+      "path": "../registry-event-sourced"
+    },
+    {
+      "path": "../../lib/test-utils"
+    }
+  ]
+}

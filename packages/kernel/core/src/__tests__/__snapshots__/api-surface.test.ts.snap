@@ -1,0 +1,3622 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/core API surface . has stable type surface 1`] = `
+"import { A as AgentId, E as EngineState, P as ProcessState, B as BrickRef, a as PatchableRegistryFields, b as AgentGroupId, T as TransitionReason, c as AgentCondition, d as AgentStatus, R as RegistryEntry, e as Tool, S as SkillComponent, f as AgentDescriptor, I as ImplementationArtifact, g as BrickArtifact, D as DelegationDenyReason, h as PermissionConfig, i as SessionId, C as CapabilityProof, j as BrickKind, k as SubsystemToken, l as TrustTier, m as Agent, n as ComponentProvider, o as AgentManifest, K as KoiMiddleware, p as AgentRegistry, q as ToolCallId } from './assembly-HASH.js';
+export { r as AGENT_SIGNALS, s as ALL_BRICK_KINDS, t as ANS_SCOPE_PRIORITY, u as AbortReason, v as AdvisoryLock, w as AgentArtifact, x as AgentEnv, y as AgentMessage, z as AgentMessageInput, F as AgentSignal, G as AnsConfig, H as ApprovalDecision, J as ApprovalHandler, L as ApprovalRequest, M as ArtifactRef, N as AttachResult, O as BROWSER, Q as BrickArtifactBase, U as BrickComposition, V as BrickDriftContext, W as BrickFitnessMetrics, X as BrickId, Y as BrickLifecycle, Z as BrickPage, _ as BrickPort, $ as BrickRegistryBackend, a0 as BrickRegistryChangeEvent, a1 as BrickRegistryChangeKind, a2 as BrickRegistryReader, a3 as BrickRegistryWriter, a4 as BrickRequires, a5 as BrickSearchQuery, a6 as BrickSnapshot, a7 as BrickSource, a8 as BrickUpdate, a9 as BrowserActionOptions, aa as BrowserConsoleEntry, ab as BrowserConsoleLevel, ac as BrowserConsoleOptions, ad as BrowserConsoleResult, ae as BrowserDriver, af as BrowserEvaluateOptions, ag as BrowserEvaluateResult, ah as BrowserFormField, ai as BrowserNavigateOptions, aj as BrowserNavigateResult, ak as BrowserRefInfo, al as BrowserScreenshotOptions, am as BrowserScreenshotResult, an as BrowserScrollOptions, ao as BrowserSnapshotOptions, ap as BrowserSnapshotResult, aq as BrowserTabCloseOptions, ar as BrowserTabFocusOptions, as as BrowserTabInfo, at as BrowserTabNewOptions, au as BrowserTraceOptions, av as BrowserTraceResult, aw as BrowserTypeOptions, ax as BrowserUploadFile, ay as BrowserUploadOptions, az as BrowserWaitOptions, aA as BrowserWaitUntil, aB as COMPONENT_PRIORITY, aC as CREDENTIALS, aD as CapabilityConfig, aE as CapabilityFragment, aF as ChannelConfig, aG as ChannelIdentity, aH as ChildCompletionResult, aI as ChildHandle, aJ as ChildLifecycleEvent, aK as ChildSpec, aL as CircuitBreakerConfig, aM as CleanupPolicy, aN as CompanionSkillDefinition, aO as ComplianceRecord, aP as ComplianceRecorder, aQ as ComponentEvent, aR as ComponentEventKind, aS as ComposedCallHandlers, aT as CompositeArtifact, aU as CompositionCheck, aV as CompositionError, aW as CompositionErrorKind, aX as CompositionOperator, aY as CompositionPort, aZ as CompositionWire, a_ as CompositionWireEndpoint, a$ as ConstraintChecker, b0 as ConstraintQuery, b1 as ContentMarker, b2 as ContextPressureTrend, b3 as CorrelationIds, b4 as CounterExample, b5 as CredentialComponent, b6 as CronSchedule, b7 as DEFAULT_ANS_CONFIG, b8 as DEFAULT_BRICK_FITNESS, b9 as DEFAULT_BRICK_SEARCH_LIMIT, ba as DEFAULT_CIRCUIT_BREAKER_CONFIG, bb as DEFAULT_CLEANUP_POLICY, bc as DEFAULT_CLEANUP_TIMEOUT_MS, bd as DEFAULT_DEGENERACY_CONFIG, be as DEFAULT_INBOX_POLICY, bf as DEFAULT_MUTATION_PRESSURE_POLICY, bg as DEFAULT_REPUTATION_QUERY_LIMIT, bh as DEFAULT_SCHEDULER_CONFIG, bi as DEFAULT_SKILL_SEARCH_LIMIT, bj as DEFAULT_SUPERVISION_CONFIG, bk as DEFAULT_TRAIL_CONFIG, bl as DEFAULT_TRAIL_STRENGTH, bm as DEFAULT_VIOLATION_QUERY_LIMIT, bn as DELEGATION, bo as DataClassification, bp as DecisionRecord, bq as DegeneracyConfig, br as DelegationComponent, bs as DelegationConfig, bt as DelegationEvent, bu as DelegationGrant, bv as DelegationId, bw as DelegationManagerConfig, bx as DelegationScope, by as DelegationVerifyResult, bz as ENV, bA as EVENTS, bB as EXTERNAL_AGENTS, bC as EngineAdapter, bD as EngineCapabilities, bE as EngineEvent, bF as EngineInput, bG as EngineInputBase, bH as EngineMetrics, bI as EngineOutput, bJ as EngineStopReason, bK as EventComponent, bL as ExternalAgentDescriptor, bM as ExternalAgentSource, bN as ExternalAgentTransport, bO as FILESYSTEM, bP as FeedbackKind, bQ as FilesystemSkillSource, bR as ForgeAttestationSignature, bS as ForgeBuildDefinition, bT as ForgeBuilder, bU as ForgeProvenance, bV as ForgeQuery, bW as ForgeResourceRef, bX as ForgeRunMetadata, bY as ForgeScope, bZ as ForgeStageDigest, b_ as ForgeStore, b$ as ForgeVerificationSummary, c0 as ForgedSkillSource, c1 as GOVERNANCE, c2 as GOVERNANCE_ALLOW, c3 as GOVERNANCE_BACKEND, c4 as GOVERNANCE_VARIABLES, c5 as GovernanceBackend, c6 as GovernanceCheck, c7 as GovernanceController, c8 as GovernanceEvent, c9 as GovernanceSnapshot, ca as GovernanceVariable, cb as GovernanceVariableContributor, cc as GovernanceVerdict, cd as HANDOFF, ce as HandoffAcceptError, cf as HandoffAcceptResult, cg as HandoffComponent, ch as HandoffEnvelope, ci as HandoffEvent, cj as HandoffId, ck as HandoffStatus, cl as INBOX, cm as InTotoStatementV1, cn as InTotoSubject, co as InboxComponent, cp as InboxItem, cq as InboxMode, cr as InboxPolicy, cs as LatencySampler, ct as LockHandle, cu as LockMode, cv as LockRequest, cw as MAILBOX, cx as MAX_PIPELINE_LENGTH, cy as MAX_PIPELINE_STEPS, cz as MEMORY, cA as MIN_TRUST_BY_KIND, cB as MailboxComponent, cC as MemoryComponent, cD as MemoryRecallOptions, cE as MemoryResult, cF as MemoryStoreOptions, cG as MemoryTier, cH as MessageFilter, cI as MessageId, cJ as MessageKind, cK as MiddlewareBundle, cL as MiddlewareConfig, cM as MiddlewarePhase, cN as ModelChunk, cO as ModelConfig, cP as ModelHandler, cQ as ModelRequest, cR as ModelResponse, cS as ModelStreamHandler, cT as MutationPressure, cU as MutationPressurePolicy, cV as NAME_SERVICE, cW as NameBinding, cX as NameChangeEvent, cY as NameChangeKind, cZ as NameQuery, c_ as NameRecord, c$ as NameRegistration, d0 as NameResolution, d1 as NameServiceBackend, d2 as NameServiceReader, d3 as NameServiceWriter, d4 as NameSuggestion, d5 as PipelineComposition, d6 as PipelineStep, d7 as PolicyEvaluator, d8 as PolicyRequest, d9 as PolicyRequestKind, da as ProcessAccounter, db as ProcessDescriptor, dc as ProcessId, dd as PublisherId, de as REGISTRY, df as REPUTATION, dg as REPUTATION_LEVEL_ORDER, dh as RegistryComponent, di as RegistryEvent, dj as RegistryFilter, dk as ReputationBackend, dl as ReputationFeedback, dm as ReputationLevel, dn as ReputationQuery, dp as ReputationQueryResult, dq as ReputationScore, dr as ResolvedWorkspaceConfig, ds as RestartType, dt as RevocationRegistry, du as RunId, dv as SCHEDULER, dw as SCRATCHPAD, dx as SCRATCHPAD_DEFAULTS, dy as ScheduleId, dz as ScheduleStore, dA as ScheduledTask, dB as SchedulerComponent, dC as SchedulerConfig, dD as SchedulerEvent, dE as SchedulerStats, dF as ScopeChecker, dG as ScratchpadChangeEvent, dH as ScratchpadComponent, dI as ScratchpadEntry, dJ as ScratchpadEntrySummary, dK as ScratchpadFilter, dL as ScratchpadGeneration, dM as ScratchpadPath, dN as ScratchpadWriteInput, dO as ScratchpadWriteResult, dP as SearchConfig, dQ as SelectionStrategy, dR as SensorReading, dS as SessionContext, dT as ShadowWarning, dU as SigningBackend, dV as SkillArtifact, dW as SkillConfig, dX as SkillId, dY as SkillMetadata, dZ as SkillPage, d_ as SkillPublishRequest, d$ as SkillRegistryBackend, e0 as SkillRegistryChangeEvent, e1 as SkillRegistryChangeKind, e2 as SkillRegistryEntry, e3 as SkillRegistryReader, e4 as SkillRegistryWriter, e5 as SkillSearchQuery, e6 as SkillSource, e7 as SkillVersion, e8 as SkippedComponent, e9 as SnapshotEvent, ea as SnapshotId, eb as SnapshotQuery, ec as SnapshotStore, ed as SpawnLedger, ee as StoreChangeEvent, ef as StoreChangeKind, eg as StoreChangeNotifier, eh as SupervisionConfig, ei as SupervisionStrategy, ej as TaskFilter, ek as TaskHistoryFilter, el as TaskId, em as TaskOptions, en as TaskQueueBackend, eo as TaskRunRecord, ep as TaskScheduler, eq as TaskStatus, er as TaskStore, es as TerminationOutcome, et as TestCase, eu as ToolArtifact, ev as ToolConfig, ew as ToolDescriptor, ex as ToolExecuteOptions, ey as ToolHandler, ez as ToolRequest, eA as ToolResponse, eB as TrailConfig, eC as TrustTransitionCaller, eD as TurnContext, eE as TurnId, eF as VALID_LIFECYCLE_TRANSITIONS, eG as VALID_TRANSITIONS, eH as VIOLATION_SEVERITY_ORDER, eI as VariantAttempt, eJ as VersionChangeEvent, eK as VersionChangeKind, eL as VersionEntry, eM as VersionIndexBackend, eN as VersionIndexReader, eO as VersionIndexWriter, eP as VersionedBrickRef, eQ as Violation, eR as ViolationFilter, eS as ViolationPage, eT as ViolationSeverity, eU as ViolationStore, eV as VisibilityContext, eW as WEBHOOK, eX as WORKSPACE, eY as WorkspaceBackend, eZ as WorkspaceComponent, e_ as WorkspaceId, e$ as WorkspaceInfo, f0 as ZONE_REGISTRY, f1 as agentGroupId, f2 as agentId, f3 as agentToken, f4 as brickId, f5 as channelToken, f6 as delegationId, f7 as exitCodeForTransitionReason, f8 as forgedSkill, f9 as fsSkill, fa as governanceContributorToken, fb as handoffId, fc as isAttachResult, fd as mapContentBlocksForEngine, fe as mapRegistryEntryToDescriptor, ff as mapStopReasonToOutcome, fg as mapTaskStatusToProcessState, fh as matchesFilter, fi as messageId, fj as middlewareToken, fk as publisherId, fl as runId, fm as scheduleId, fn as scratchpadPath, fo as sessionId, fp as skillId, fq as skillToken, fr as snapshotId, fs as taskId, ft as token, fu as toolCallId, fv as toolToken, fw as turnId, fx as workspaceId } from './assembly-HASH.js';
+import { Result, KoiError } from './errors.js';
+export { BackendErrorMapper, KoiErrorCode, RETRYABLE_DEFAULTS } from './errors.js';
+import { JsonObject } from './common.js';
+export { ChannelAdapter, ChannelCapabilities, ChannelInheritMode, ChannelStatus, ChannelStatusKind, DEFAULT_SPAWN_CHANNEL_POLICY, MessageHandler, SpawnChannelPolicy } from './channel.js';
+export { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, FeatureFlags, ForgeConfigSection, KoiConfig, LimitsConfig, LogLevel, LoopDetectionConfigSection, ModelRouterConfigSection, ModelTargetConfigEntry, SpawnConfig, TelemetryConfig } from './config.js';
+export { CompactionResult, ContextCompactor, TokenEstimator } from './context.js';
+export { BudgetTracker, CostBreakdown, CostCalculator, CostEntry, ModelCostBreakdown, ToolCostBreakdown, UsageInfo } from './cost-HASH.js';
+export { Breakpoint, BreakpointId, BreakpointOptions, BreakpointPredicate, ComponentMetadata, ComponentSnapshot, DEFAULT_DEBUG_BUFFER_SIZE, DEFAULT_INSPECT_LIMIT, DebugEvent, DebugObserver, DebugSession, DebugSessionId, DebugSnapshot, DebugState, InspectComponentOptions, StepOptions, breakpointId, debugSessionId } from './debug.js';
+export { ElicitationOption, ElicitationQuestion, ElicitationResult } from './elicitation.js';
+export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, EventEnvelope, EventInput, ReadOptions, ReadResult, SubscribeOptions, SubscriptionHandle } from './event-HASH.js';
+export { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult } from './eviction.js';
+export { FileDeleteResult, FileEdit, FileEditOptions, FileEditResult, FileEntryKind, FileListEntry, FileListOptions, FileListResult, FileReadOptions, FileReadResult, FileRenameResult, FileSearchMatch, FileSearchOptions, FileSearchResult, FileSystemBackend, FileWriteOptions, FileWriteResult } from './filesystem-HASH.js';
+export { DEFAULT_HEALTH_MONITOR_CONFIG, HealthMonitor, HealthMonitorConfig, HealthMonitorStats, HealthSnapshot, HealthStatus } from './health.js';
+export { CapsuleId, CapsulePayloadVersion, CapsuleVerifier, CapsuleVerifyResult, CapsuleViolationReason, IntentCapsule, capsuleId, isIntentCapsule } from './intent-HASH.js';
+export { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock } from './message.js';
+export { ModelCapabilities, ModelProvider, ModelTarget } from './model-HASH.js';
+export { PermissionBackend, PermissionDecision, PermissionQuery } from './permission-HASH.js';
+export { ProcEntry, ProcFs, WritableProcEntry } from './procfs.js';
+export { Resolver, SourceBundle, SourceLanguage } from './resolver.js';
+export { ActionEntry, IssueEntry, ReportStore, ReportSummary, RunCost, RunDuration, RunReport } from './run-HASH.js';
+export { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance } from './sandbox-HASH.js';
+export { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult } from './sandbox-HASH.js';
+export { FilesystemPolicy, NetworkPolicy, NexusFuseMount, ResourceLimits, SandboxProfile } from './sandbox-HASH.js';
+export { RISK_ANALYSIS_UNKNOWN, RISK_LEVEL_ORDER, RiskAnalysis, RiskFinding, RiskLevel, SecurityAnalyzer } from './security-HASH.js';
+export { OutboundWebhookConfig, WebhookComponent, WebhookDeliveryStatus, WebhookEndpointHealth, WebhookEventKind, WebhookPayload, WebhookSummary } from './webhook.js';
+export { ZoneDescriptor, ZoneEvent, ZoneFilter, ZoneId, ZoneRegistry, ZoneStatus, zoneId } from './zone.js';
+
+/**
+ * Generic snapshot chain types — immutable DAG for time travel, fork, and recovery.
+ *
+ * \`SnapshotChainStore<T>\` is a generic interface for versioned snapshot chains.
+ * It supports linear history, branching (DAG with \`parentIds[]\`), ancestor
+ * walking, and pruning. Reusable for agents (via AgentSnapshot) and bricks.
+ */
+
+declare const __chainIdBrand: unique symbol;
+/** Branded string for chain identity. Each chain is an independent snapshot sequence. */
+type ChainId = string & {
+    readonly [__chainIdBrand]: "ChainId";
+};
+/** Create a ChainId from a raw string. */
+declare function chainId(raw: string): ChainId;
+declare const __nodeIdBrand: unique symbol;
+/** Branded string for node identity. Each node is a unique snapshot in the DAG. */
+type NodeId = string & {
+    readonly [__nodeIdBrand]: "NodeId";
+};
+/** Create a NodeId from a raw string. */
+declare function nodeId(raw: string): NodeId;
+/** An immutable node in a snapshot chain DAG. */
+interface SnapshotNode<T> {
+    /** Unique identifier for this node. */
+    readonly nodeId: NodeId;
+    /** The chain this node belongs to. */
+    readonly chainId: ChainId;
+    /** Parent node IDs. Empty = root, one = linear, many = merge. */
+    readonly parentIds: readonly NodeId[];
+    /** Content hash for deduplication (skip-if-unchanged). */
+    readonly contentHash: string;
+    /** The snapshot payload. */
+    readonly data: T;
+    /** Unix timestamp ms when this node was created. */
+    readonly createdAt: number;
+    /** Arbitrary metadata (e.g., trigger reason, actor). */
+    readonly metadata: Readonly<Record<string, unknown>>;
+}
+/** Pointer from a forked chain back to its source node. */
+interface ForkRef {
+    /** The node in the source chain that was forked from. */
+    readonly parentNodeId: NodeId;
+    /** Human-readable label for the fork (e.g., "experiment-a"). */
+    readonly label: string;
+}
+/** Parameters for ancestor walking. */
+interface AncestorQuery {
+    /** Node to start walking from. */
+    readonly startNodeId: NodeId;
+    /** Maximum depth to walk (undefined = walk to root). */
+    readonly maxDepth?: number;
+}
+/** Policy for pruning old snapshots from a chain. */
+interface PruningPolicy {
+    /** Maximum number of nodes to retain. */
+    readonly retainCount?: number;
+    /** Maximum age in ms. Nodes older than \`Date.now() - retainDuration\` are pruned. */
+    readonly retainDuration?: number;
+    /** If true, protect branch head nodes from pruning. Default: true. */
+    readonly retainBranches?: boolean;
+}
+/** Options for the \`put\` operation. */
+interface PutOptions {
+    /** If true, skip the write when contentHash matches the current head. */
+    readonly skipIfUnchanged?: boolean;
+}
+/**
+ * Optional strategy for compacting a chain by summarizing old nodes.
+ * Future use — not required for v1.
+ */
+interface ChainCompactor<T> {
+    /** Summarize a sequence of nodes into a single compacted node. */
+    readonly compact: (nodes: readonly SnapshotNode<T>[]) => T;
+}
+/**
+ * Generic snapshot chain store supporting DAG topology, content-hash dedup,
+ * ancestor walking, forking, and pruning.
+ *
+ * All fallible operations return \`Result<T, KoiError> | Promise<Result<T, KoiError>>\`
+ * so implementations can be sync (in-memory) or async (SQLite/network).
+ */
+interface SnapshotChainStore<T> {
+    /**
+     * Append a new snapshot node to a chain.
+     *
+     * @param chainId - Target chain. Created implicitly if it doesn't exist.
+     * @param data - The snapshot payload.
+     * @param parentIds - Parent node IDs. Empty for root nodes.
+     * @param metadata - Optional metadata for this node.
+     * @param options - Put options (e.g., skipIfUnchanged).
+     * @returns The created node, or undefined if skipped due to unchanged content.
+     */
+    readonly put: (chainId: ChainId, data: T, parentIds: readonly NodeId[], metadata?: Readonly<Record<string, unknown>>, options?: PutOptions) => Result<SnapshotNode<T> | undefined, KoiError> | Promise<Result<SnapshotNode<T> | undefined, KoiError>>;
+    /** Retrieve a single node by ID. */
+    readonly get: (nodeId: NodeId) => Result<SnapshotNode<T>, KoiError> | Promise<Result<SnapshotNode<T>, KoiError>>;
+    /** Get the current head (most recent node) of a chain. Undefined if chain is empty. */
+    readonly head: (chainId: ChainId) => Result<SnapshotNode<T> | undefined, KoiError> | Promise<Result<SnapshotNode<T> | undefined, KoiError>>;
+    /** List all nodes in a chain, newest first. */
+    readonly list: (chainId: ChainId) => Result<readonly SnapshotNode<T>[], KoiError> | Promise<Result<readonly SnapshotNode<T>[], KoiError>>;
+    /** Walk ancestors from a start node, optionally limited by depth. */
+    readonly ancestors: (query: AncestorQuery) => Result<readonly SnapshotNode<T>[], KoiError> | Promise<Result<readonly SnapshotNode<T>[], KoiError>>;
+    /**
+     * Create a new chain forked from a node in an existing chain.
+     * Returns a ForkRef describing the branch point.
+     */
+    readonly fork: (sourceNodeId: NodeId, newChainId: ChainId, label: string) => Result<ForkRef, KoiError> | Promise<Result<ForkRef, KoiError>>;
+    /** Prune nodes from a chain according to a policy. Returns the number of nodes removed. */
+    readonly prune: (chainId: ChainId, policy: PruningPolicy) => Result<number, KoiError> | Promise<Result<number, KoiError>>;
+    /** Close the store and release resources. */
+    readonly close: () => void | Promise<void>;
+}
+
+/**
+ * AgentSnapshot — per-agent state capture for time travel, fork, and recovery.
+ *
+ * Subsumes SessionCheckpoint as the single source of truth for agent state.
+ * Used as the payload type \`T\` in \`SnapshotChainStore<AgentSnapshot>\`.
+ */
+
+/**
+ * Immutable snapshot of an agent's complete state at a point in time.
+ *
+ * Contains everything needed to restore an agent: engine state, process phase,
+ * generation counter, attached components (as BrickRefs), and config.
+ */
+interface AgentSnapshot {
+    /** The agent this snapshot belongs to. */
+    readonly agentId: AgentId;
+    /** Gateway session this agent was part of. */
+    readonly sessionId: string;
+    /** Opaque engine state from EngineAdapter.saveState(). */
+    readonly engineState: EngineState;
+    /** Lifecycle phase at snapshot time. */
+    readonly processState: ProcessState;
+    /** CAS generation counter from AgentStatus. */
+    readonly generation: number;
+    /** Attached components as lightweight brick references. */
+    readonly components: ReadonlyMap<string, BrickRef>;
+    /** Agent configuration snapshot (opaque, agent-defined). */
+    readonly config: unknown;
+    /** Arbitrary metadata (e.g., trigger reason). */
+    readonly metadata: Readonly<Record<string, unknown>>;
+}
+/** A SnapshotChainStore specialized for AgentSnapshot payloads. */
+type AgentSnapshotStore = SnapshotChainStore<AgentSnapshot>;
+
+/**
+ * Agent state events — persisted domain events for event-sourced registry.
+ *
+ * AgentStateEvent is a discriminated union of all state-change events
+ * for an agent's lifecycle. These events are appended to per-agent
+ * event streams and folded to derive the current RegistryEntry projection.
+ *
+ * evolveRegistryEntry is a pure fold function that derives RegistryEntry
+ * state from a sequence of AgentStateEvents. Permitted in L0 as a
+ * side-effect-free data constructor operating only on L0 types.
+ */
+
+/** String union of all AgentStateEvent kind values. */
+type AgentStateEventKind = "agent_registered" | "agent_transitioned" | "agent_deregistered" | "agent_patched";
+/** An agent was registered in the lifecycle registry. */
+interface AgentRegisteredEvent {
+    readonly kind: "agent_registered";
+    readonly agentId: AgentId;
+    readonly agentType: "copilot" | "worker";
+    readonly parentId?: AgentId | undefined;
+    /** Immutable provenance — the agent that spawned this one. */
+    readonly spawner?: AgentId | undefined;
+    /** Process group this agent belongs to. */
+    readonly groupId?: AgentGroupId | undefined;
+    readonly metadata: Readonly<Record<string, unknown>>;
+    readonly registeredAt: number;
+}
+/** An agent transitioned between process states (with CAS generation). */
+interface AgentTransitionedEvent {
+    readonly kind: "agent_transitioned";
+    readonly agentId: AgentId;
+    readonly from: ProcessState;
+    readonly to: ProcessState;
+    readonly generation: number;
+    readonly reason: TransitionReason;
+    readonly conditions: readonly AgentCondition[];
+    readonly transitionedAt: number;
+}
+/** An agent was removed from the lifecycle registry. */
+interface AgentDeregisteredEvent {
+    readonly kind: "agent_deregistered";
+    readonly agentId: AgentId;
+    readonly deregisteredAt: number;
+}
+/** Mutable fields on a registered agent were patched. */
+interface AgentPatchedEvent {
+    readonly kind: "agent_patched";
+    readonly agentId: AgentId;
+    readonly fields: PatchableRegistryFields;
+    readonly patchedAt: number;
+}
+/** Persisted domain events for agent lifecycle state changes. */
+type AgentStateEvent = AgentRegisteredEvent | AgentTransitionedEvent | AgentDeregisteredEvent | AgentPatchedEvent;
+declare const INITIAL_AGENT_STATUS: AgentStatus;
+/**
+ * Runtime type guard for AgentStateEvent.
+ * Validates the \`kind\` discriminator on an unknown payload.
+ */
+declare function isAgentStateEvent(value: unknown): value is AgentStateEvent;
+/**
+ * Pure fold function that derives a RegistryEntry from a sequence of events.
+ *
+ * Given the current state (or undefined for the first event) and an event,
+ * returns the new state. Returns undefined on agent_deregistered (agent
+ * removed from projection).
+ *
+ * This function is deterministic and side-effect-free — the same sequence
+ * of events always produces the same final state.
+ */
+declare function evolveRegistryEntry(state: RegistryEntry | undefined, event: AgentStateEvent): RegistryEntry | undefined;
+
+/**
+ * Audit backend — structured audit logging contract (Layer 0).
+ *
+ * Defines the shape of audit entries, sinks, and redaction rules.
+ * L2 packages implement AuditSink for specific backends (console, Nexus, etc.).
+ */
+
+interface AuditEntry {
+    readonly timestamp: number;
+    readonly sessionId: string;
+    readonly agentId: string;
+    readonly turnIndex: number;
+    readonly kind: "model_call" | "tool_call" | "session_start" | "session_end" | "secret_access";
+    readonly request?: unknown;
+    readonly response?: unknown;
+    readonly error?: unknown;
+    readonly durationMs: number;
+    readonly metadata?: JsonObject;
+}
+interface AuditSink {
+    readonly log: (entry: AuditEntry) => Promise<void>;
+    readonly flush?: () => Promise<void>;
+}
+interface RedactionRule {
+    readonly pattern: RegExp;
+    readonly replacement: string;
+}
+
+/**
+ * BrickComponentMap — maps each BrickKind to its ECS component type.
+ * Used by ForgeRuntime.resolve() for type-safe per-kind resolution.
+ */
+
+interface BrickComponentMap {
+    readonly tool: Tool;
+    readonly skill: SkillComponent;
+    readonly agent: AgentDescriptor;
+    readonly middleware: ImplementationArtifact;
+    readonly channel: ImplementationArtifact;
+    /** Composite resolves to the output kind's component type. */
+    readonly composite: Tool | SkillComponent | AgentDescriptor | ImplementationArtifact;
+}
+
+/**
+ * Agent bundle types — portable export/import envelope.
+ *
+ * Defines the \`.koibundle\` format: a JSON artifact containing an agent's
+ * manifest + all referenced bricks. Follows the BrickId/SnapshotId pattern
+ * for branded identity.
+ */
+
+declare const __bundleIdBrand: unique symbol;
+/**
+ * Branded string for bundle identity.
+ * Prevents mixing bundle IDs with other string-typed IDs at compile time.
+ */
+type BundleId = string & {
+    readonly [__bundleIdBrand]: "BundleId";
+};
+/** Create a BundleId from a raw string. */
+declare function bundleId(raw: string): BundleId;
+/** Current \`.koibundle\` format version. Incremented on breaking format changes. */
+declare const BUNDLE_FORMAT_VERSION: "1";
+/**
+ * Portable agent bundle — serializable envelope containing an agent's
+ * full definition (manifest + forged bricks).
+ *
+ * Design: Docker-style export/import. Content-addressed for integrity.
+ */
+interface AgentBundle {
+    readonly version: typeof BUNDLE_FORMAT_VERSION;
+    readonly id: BundleId;
+    readonly name: string;
+    readonly description: string;
+    readonly manifestYaml: string;
+    readonly bricks: readonly BrickArtifact[];
+    readonly contentHash: string;
+    readonly createdAt: number;
+    readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Capability token types — unforgeable bearer tokens granting specific rights.
+ *
+ * Layer 3 of Koi's security model: capability = unforgeable token granting
+ * specific rights, replacing permission = (subject, action, resource) checked
+ * per call.
+ *
+ * Design decisions:
+ * - CapabilityProof: discriminated union replacing opaque \`signature: string\`
+ * - CapabilityToken: superset of DelegationGrant — wraps it as one proof kind
+ * - Hybrid HMAC/Ed25519: HMAC for root→engine internal; Ed25519 for agent-to-agent
+ * - Session-scoped revocation: tokens carry sessionId; parent death = all child tokens invalid
+ * - requiresPoP: field reserved for v2 Proof-of-Possession; not enforced in v1
+ *
+ * All types are immutable (readonly). No runtime code except:
+ * - branded type constructor for CapabilityId
+ * - type guard isCapabilityToken
+ */
+
+declare const __capabilityBrand: unique symbol;
+/**
+ * Branded string type for capability token identifiers.
+ * Prevents accidental mixing with DelegationId or other string IDs at compile time.
+ */
+type CapabilityId = string & {
+    readonly [__capabilityBrand]: "CapabilityId";
+};
+/** Create a branded CapabilityId from a plain string. */
+declare function capabilityId(raw: string): CapabilityId;
+
+/**
+ * What is being granted. Extends DelegationScope with session binding for
+ * session-scoped revocation: when the issuer's session terminates, all tokens
+ * bearing that sessionId become invalid.
+ */
+interface CapabilityScope {
+    /** The permission set granted to the delegatee. */
+    readonly permissions: PermissionConfig;
+    /** Optional glob-style resource patterns (e.g., "read_file:/workspace/src/**"). */
+    readonly resources?: readonly string[];
+    /**
+     * Session the token is bound to. When this session is terminated,
+     * all tokens with this sessionId are implicitly revoked.
+     */
+    readonly sessionId: SessionId;
+}
+/**
+ * An immutable capability token representing bearer authority.
+ *
+ * A CapabilityToken is the superset of DelegationGrant: the \`proof\` field
+ * is a discriminated union supporting HMAC, Ed25519, and Nexus proofs.
+ *
+ * Invariants:
+ * - chainDepth <= maxChainDepth (enforced at grant time)
+ * - scope must be a strict subset of parent's scope (monotonic attenuation)
+ * - expiresAt > createdAt
+ * - expiresAt <= parent.expiresAt (TTL cannot exceed parent's TTL)
+ */
+interface CapabilityToken {
+    /** Unique identifier for this token. */
+    readonly id: CapabilityId;
+    /** Agent that issued this token. */
+    readonly issuerId: AgentId;
+    /** Agent that received (holds) this token. */
+    readonly delegateeId: AgentId;
+    /** What is being granted, including session binding. */
+    readonly scope: CapabilityScope;
+    /** Parent token ID — undefined for root (engine-issued) tokens. */
+    readonly parentId?: CapabilityId;
+    /** Depth in the delegation chain (0 = root, issued by engine). */
+    readonly chainDepth: number;
+    /** Maximum allowed re-delegation depth from this token. */
+    readonly maxChainDepth: number;
+    /** Unix timestamp ms — when this token was created. */
+    readonly createdAt: number;
+    /** Unix timestamp ms — when this token expires. */
+    readonly expiresAt: number;
+    /** Cryptographic proof binding this token to its issuer. */
+    readonly proof: CapabilityProof;
+    /**
+     * Reserved for v2 Proof-of-Possession (PoP) challenge/response.
+     * When true, the verifier must challenge the holder before granting access.
+     * Not enforced in v1 — field exists to allow forward-compatible token storage.
+     */
+    readonly requiresPoP?: boolean;
+}
+/**
+ * Inputs available at verification time.
+ * Passed to CapabilityVerifier.verify alongside the token.
+ */
+interface VerifyContext {
+    /** The tool being invoked — used for scope checking. */
+    readonly toolId: string;
+    /** Current Unix timestamp ms — used for expiry checking. */
+    readonly now: number;
+    /**
+     * Set of currently active session IDs.
+     * A token whose scope.sessionId is NOT in this set is revoked (session terminated).
+     */
+    readonly activeSessionIds: ReadonlySet<SessionId>;
+}
+/**
+ * Why a capability token was denied.
+ *
+ * Extends DelegationDenyReason with capability-specific reasons:
+ * - \`session_invalid\`: The token's sessionId is not in the active session set.
+ * - \`proof_type_unsupported\`: The proof.kind is not handled by this verifier.
+ */
+type CapabilityDenyReason = DelegationDenyReason | "session_invalid" | "proof_type_unsupported";
+/** Result of verifying a capability token against a tool call and context. */
+type CapabilityVerifyResult = {
+    readonly ok: true;
+    readonly token: CapabilityToken;
+} | {
+    readonly ok: false;
+    readonly reason: CapabilityDenyReason;
+};
+/**
+ * Optional verification result cache for CapabilityVerifier.
+ *
+ * Implementors may use any eviction strategy (LRU, TTL-based, etc.).
+ * The \`evict\` method MUST be called on revocation to prevent stale positives.
+ *
+ * The cache key is (tokenId, toolId) — both dimensions needed because the same
+ * token may be allowed for one tool but denied for another (scope mismatch).
+ */
+interface VerifierCache {
+    /** Look up a cached result for the given token+tool pair. */
+    readonly get: (tokenId: CapabilityId, toolId: string) => CapabilityVerifyResult | undefined;
+    /** Store a result for the given token+tool pair. */
+    readonly set: (tokenId: CapabilityId, toolId: string, result: CapabilityVerifyResult) => void;
+    /** Evict all cached entries for a token (called on revocation). */
+    readonly evict: (tokenId: CapabilityId) => void;
+}
+/**
+ * L0 contract for verifying capability tokens.
+ *
+ * Implementations:
+ * - \`@koi/capability-verifier\`: HMAC + Ed25519 composite verifier (L2)
+ *
+ * The \`verify\` method returns synchronously for in-memory implementations
+ * and asynchronously for remote/Nexus-backed implementations. Callers must
+ * always \`await\` the result.
+ */
+interface CapabilityVerifier {
+    /**
+     * Verify a capability token against the given context.
+     *
+     * @param token - The bearer token to verify.
+     * @param context - Current tool ID, timestamp, and active session set.
+     * @returns CapabilityVerifyResult — ok=true if all checks pass, ok=false with reason otherwise.
+     */
+    readonly verify: (token: CapabilityToken, context: VerifyContext) => CapabilityVerifyResult | Promise<CapabilityVerifyResult>;
+    /**
+     * Optional verification result cache.
+     * When provided, the verifier should consult the cache before computing.
+     * The cache evict() MUST be called on revocation.
+     */
+    readonly cache?: VerifierCache | undefined;
+    /**
+     * Optional cleanup hook. Called when the verifier is no longer needed.
+     * Implementations should release any held resources (timers, connections).
+     */
+    readonly dispose?: () => void | Promise<void>;
+}
+/**
+ * Type guard for CapabilityToken.
+ * Pure function — permitted in L0 as a side-effect-free data inspector.
+ */
+declare function isCapabilityToken(value: unknown): value is CapabilityToken;
+
+/**
+ * Capability registry — shared wire types and contracts for node capability
+ * advertisement and tool routing.
+ *
+ * These types are shared between @koi/gateway and @koi/node (L2 peers that
+ * cannot import each other). Placing them in L0 eliminates duplication.
+ */
+/** Descriptor for a single tool advertised by a Node. */
+interface AdvertisedTool {
+    readonly name: string;
+    readonly description?: string | undefined;
+    /** JSON Schema for the tool's arguments. */
+    readonly schema?: Readonly<Record<string, unknown>> | undefined;
+}
+/** Capacity snapshot reported by a Node. */
+interface CapacityReport {
+    readonly current: number;
+    readonly max: number;
+    readonly available: number;
+}
+/** Gateway → Node: execute a tool on this Node (may originate from a remote agent). */
+interface ToolCallPayload {
+    readonly toolName: string;
+    readonly args: Readonly<Record<string, unknown>>;
+    /** Agent requesting the tool call (for permission checks). */
+    readonly callerAgentId: string;
+    /** Zone scope for permission enforcement (backend-dependent). */
+    readonly zone?: string | undefined;
+}
+/** Node → Gateway: tool execution result returned to calling agent. */
+interface ToolResultPayload {
+    readonly toolName: string;
+    readonly result: unknown;
+}
+/** Node → Gateway: tool execution failed or permission denied. */
+interface ToolErrorPayload {
+    readonly toolName: string;
+    readonly code: string;
+    readonly message: string;
+}
+/** A node's advertised capability set. */
+interface NodeCapability {
+    readonly nodeId: string;
+    readonly nodeType: "full" | "thin";
+    readonly tools: readonly AdvertisedTool[];
+}
+/**
+ * Registry of node capabilities — maps tool names to nodes that can execute them.
+ *
+ * L0 interface with swappable L2 backends (in-memory, distributed, etc.).
+ */
+interface CapabilityRegistry {
+    /** Advertise tools for a node. Replaces any previous advertisement. */
+    readonly advertise: (nodeId: string, tools: readonly AdvertisedTool[]) => void | Promise<void>;
+    /** Withdraw specific tools from a node's advertisement. */
+    readonly withdraw: (nodeId: string, toolNames: readonly string[]) => void | Promise<void>;
+    /** Resolve which nodes can execute a given tool. */
+    readonly resolve: (toolName: string) => readonly NodeCapability[] | Promise<readonly NodeCapability[]>;
+}
+/** Type guard — validates ToolCallPayload shape without \`as\` assertion. */
+declare function isToolCallPayload(value: unknown): value is ToolCallPayload;
+
+/**
+ * Catalog — unified capability discovery across all sources.
+ *
+ * Types for the CatalogReader contract: search + get across bundled,
+ * forged, MCP, and skill-registry sources. Implementation lives in
+ * @koi/catalog (L2).
+ *
+ * Exception: ALL_CATALOG_SOURCES and DEFAULT_CATALOG_SEARCH_LIMIT are
+ * pure readonly data constants derived from L0 type definitions.
+ */
+
+type CatalogSource = "bundled" | "forged" | "mcp" | "skill-registry";
+declare const ALL_CATALOG_SOURCES: readonly CatalogSource[];
+interface CatalogEntry {
+    /** Source-prefixed name, e.g. "bundled:@koi/middleware-pii". */
+    readonly name: string;
+    readonly kind: BrickKind;
+    readonly source: CatalogSource;
+    readonly description: string;
+    readonly trustTier?: "sandbox" | "verified" | "promoted";
+    readonly version?: string;
+    readonly tags?: readonly string[];
+    /** Composite fitness score in [0, 1]. Undefined if brick has no usage data. */
+    readonly fitnessScore?: number;
+}
+interface CatalogQuery {
+    readonly kind?: BrickKind;
+    readonly text?: string;
+    readonly source?: CatalogSource;
+    readonly tags?: readonly string[];
+    readonly limit?: number;
+    /** Reserved for future cursor-based pagination. */
+    readonly cursor?: string;
+}
+declare const DEFAULT_CATALOG_SEARCH_LIMIT: 50;
+interface CatalogSourceError {
+    readonly source: CatalogSource;
+    readonly error: KoiError;
+}
+interface CatalogPage {
+    readonly items: readonly CatalogEntry[];
+    /** Unused initially — interface-ready for cursor pagination. */
+    readonly cursor?: string;
+    readonly total?: number;
+    readonly sourceErrors?: readonly CatalogSourceError[];
+}
+interface CatalogReader {
+    readonly search: (query: CatalogQuery) => CatalogPage | Promise<CatalogPage>;
+    readonly get: (name: string) => Result<CatalogEntry, KoiError> | Promise<Result<CatalogEntry, KoiError>>;
+    readonly onChange?: (listener: () => void) => () => void;
+}
+
+/**
+ * Generic Backend+Tools ComponentProvider factory.
+ *
+ * Extracts the common pattern from FileSystemProvider, BrowserProvider,
+ * WebhookProvider, and SchedulerProvider into a reusable factory.
+ *
+ * Exception: permitted in L0 as a pure function operating only on L0 types
+ * (ComponentProvider, SubsystemToken, Tool, TrustTier, Agent).
+ */
+
+interface ServiceProviderConfig<TBackend, TOperation extends string> {
+    /** Provider name (e.g., "filesystem:local", "browser:playwright"). */
+    readonly name: string;
+    /**
+     * Well-known singleton token (e.g., FILESYSTEM, BROWSER, WEBHOOK).
+     * When provided, the backend is attached under this token alongside tools.
+     * Omit for tool-only providers.
+     */
+    readonly singletonToken?: SubsystemToken<TBackend> | undefined;
+    /** Backend instance attached under singletonToken and passed to tool factories. */
+    readonly backend?: TBackend | undefined;
+    /** Operations to include — each maps to a tool factory. Must be non-empty, no duplicates. */
+    readonly operations: readonly TOperation[];
+    /** Map of operation name → tool factory function. */
+    readonly factories: Readonly<Record<TOperation, (backend: TBackend, prefix: string, tier: TrustTier) => Tool>>;
+    /** Trust tier for all standard tools. Defaults to "verified". */
+    readonly trustTier?: TrustTier | undefined;
+    /** Prefix for tool names. Defaults to empty string. */
+    readonly prefix?: string | undefined;
+    /** Assembly priority. Lower = higher precedence. */
+    readonly priority?: number | undefined;
+    /**
+     * Cache the component Map after first attach. Defaults to true.
+     * Set to false for providers that create per-agent components (e.g., Scheduler).
+     */
+    readonly cache?: boolean | undefined;
+    /**
+     * Hook to append extra tools alongside the standard TOOL_FACTORIES tools.
+     * Receives the backend and agent, returns additional [key, value] pairs.
+     * Use for special-cased tools (e.g., Browser's navigate with security config).
+     */
+    readonly customTools?: (backend: TBackend, agent: Agent) => ReadonlyArray<readonly [string, unknown]>;
+    /**
+     * Cleanup callback invoked on detach. Receives the backend.
+     * Omit if no cleanup is needed (provider will have no detach method).
+     */
+    readonly detach?: (backend: TBackend) => Promise<void>;
+}
+/**
+ * Creates a ComponentProvider that attaches a backend singleton token
+ * and Tool components from a factories map.
+ *
+ * Centralizes the repeated pattern of:
+ * 1. Iterate operations → call factory → collect [toolToken(name), tool]
+ * 2. Return Map([[SINGLETON_TOKEN, backend], ...toolEntries])
+ * 3. Optionally cache the Map after first attach
+ * 4. Optionally call backend.dispose on detach
+ *
+ * @throws {Error} if operations is empty or contains duplicates.
+ */
+declare function createServiceProvider<TBackend, TOperation extends string>(config: ServiceProviderConfig<TBackend, TOperation>): ComponentProvider;
+
+/**
+ * Minimal ComponentProvider factory for single-tool providers.
+ *
+ * Eliminates copy-paste between TaskSpawnProvider, ParallelMinionsProvider,
+ * and similar providers that attach exactly one tool with lazy caching.
+ *
+ * Exception: permitted in L0 as a pure function operating only on L0 types.
+ */
+
+interface SingleToolProviderConfig {
+    /** Provider name (e.g., "task-spawn", "parallel-minions"). */
+    readonly name: string;
+    /** Tool name without the "tool:" prefix (e.g., "task", "parallel_task"). */
+    readonly toolName: string;
+    /** Factory function that creates the Tool instance. Called once (cached). */
+    readonly createTool: () => Tool | Promise<Tool>;
+    /** Assembly priority. Lower = higher precedence. */
+    readonly priority?: number | undefined;
+    /** Extra components to attach alongside the tool (e.g., SkillComponent). Evaluated once and cached. */
+    readonly extras?: ReadonlyArray<readonly [string, unknown]> | undefined;
+}
+/**
+ * Creates a ComponentProvider that attaches a single \`tool:<toolName>\` component.
+ * The tool is created once on first attach and cached for subsequent calls.
+ */
+declare function createSingleToolProvider(config: SingleToolProviderConfig): ComponentProvider;
+
+/**
+ * Diagnostic provider — vendor-neutral contract for code diagnostics.
+ *
+ * L0 interface: no LSP numeric codes, no vendor-specific concepts.
+ * L2 adapters (e.g., @koi/lsp) map vendor formats to this interface.
+ */
+type DiagnosticSeverity = "error" | "warning" | "info" | "hint";
+interface DiagnosticRange {
+    readonly start: {
+        readonly line: number;
+        readonly character: number;
+    };
+    readonly end: {
+        readonly line: number;
+        readonly character: number;
+    };
+}
+interface DiagnosticItem {
+    readonly uri: string;
+    readonly range: DiagnosticRange;
+    readonly severity: DiagnosticSeverity;
+    readonly message: string;
+    readonly source?: string;
+    readonly code?: string | number;
+}
+interface DiagnosticProvider {
+    readonly name: string;
+    readonly diagnose: (uri: string, content: string) => readonly DiagnosticItem[] | Promise<readonly DiagnosticItem[]>;
+    readonly dispose?: () => void;
+}
+
+/**
+ * Pure data constructors for KoiError objects.
+ *
+ * Eliminates duplication of error helper functions across store
+ * implementations. Each factory is a zero-logic identity function
+ * that returns a KoiError with correct code, retryability, and context.
+ *
+ * Exception: These are pure data constructors (like branded type casts),
+ * permitted in L0 per architecture doc.
+ */
+
+/** Resource not found. Non-retryable. */
+declare function notFound(resourceId: string, message?: string): KoiError;
+/** Resource already exists. Retryable (with merge). */
+declare function conflict(resourceId: string, message?: string): KoiError;
+/** Invalid input or parameters. Non-retryable. */
+declare function validation(message: string): KoiError;
+/** Unexpected internal error. Non-retryable. */
+declare function internal(message: string, cause?: unknown): KoiError;
+/** Rate limit exceeded. Retryable (with backoff). */
+declare function rateLimit(message: string, context?: JsonObject): KoiError;
+/** Operation timed out. Retryable (with backoff). */
+declare function timeout(message: string, retryAfterMs?: number): KoiError;
+/** Third-party service failure. Not retryable by default. */
+declare function external(message: string, cause?: unknown): KoiError;
+/** Unauthorized action. Non-retryable. */
+declare function permission(message: string): KoiError;
+/**
+ * A cached reference has become invalid because the underlying resource changed.
+ * Non-retryable as-is — the caller must re-acquire a fresh reference first.
+ *
+ * @param refId - The stale reference identifier (e.g., "e1", "cursor-42").
+ * @param hint - Optional actionable hint for the caller (e.g., "call browser_snapshot").
+ */
+declare function staleRef(refId: string, hint?: string): KoiError;
+
+/**
+ * Exaptation detection types — purpose drift signal system.
+ *
+ * Defines the signal and observation types for detecting when bricks
+ * (tools, skills, agents) are used beyond their original purpose.
+ * When multiple agents repurpose a tool, that's a signal to generalize
+ * the interface or forge a new specialized brick.
+ */
+/** The kind of exaptation detected. */
+type ExaptationKind = "purpose_drift" | "interface_pressure" | "convergent_need";
+/** Signal emitted by the exaptation detector when purpose drift is detected. */
+interface ExaptationSignal {
+    readonly id: string;
+    readonly kind: "exaptation";
+    readonly exaptationKind: ExaptationKind;
+    readonly brickId: string;
+    readonly brickName: string;
+    /** Confidence score (0-1) that exaptation is genuine. */
+    readonly confidence: number;
+    /** The brick's original stated description. */
+    readonly statedPurpose: string;
+    /** Top-N divergent usage contexts observed (bounded). */
+    readonly observedContexts: readonly string[];
+    /** Jaccard distance between stated purpose and observed usage (0-1). */
+    readonly divergenceScore: number;
+    /** Number of distinct agents showing purpose drift. */
+    readonly agentCount: number;
+    readonly emittedAt: number;
+}
+/** Raw usage observation recording how a brick was used vs its stated purpose. */
+interface UsagePurposeObservation {
+    /** Truncated model response text preceding the tool call. */
+    readonly contextText: string;
+    /** Agent that made the observation. */
+    readonly agentId: string;
+    /** Jaccard distance vs the brick's stated purpose (0-1). */
+    readonly divergenceScore: number;
+    readonly observedAt: number;
+}
+
+/**
+ * Forge demand types — demand-triggered forging signal system.
+ *
+ * Defines the signal and budget types for pull-based forge triggering.
+ * Middleware detects capability gaps and emits ForgeDemandSignal when
+ * environmental pressure demands new tool creation.
+ */
+
+/** Discriminated union of demand trigger kinds. */
+type ForgeTrigger = {
+    readonly kind: "repeated_failure";
+    readonly toolName: string;
+    readonly count: number;
+} | {
+    readonly kind: "no_matching_tool";
+    readonly query: string;
+    readonly attempts: number;
+} | {
+    readonly kind: "capability_gap";
+    readonly requiredCapability: string;
+} | {
+    readonly kind: "performance_degradation";
+    readonly toolName: string;
+    readonly metric: string;
+};
+/** Signal emitted by the demand detector middleware when a forge need is detected. */
+interface ForgeDemandSignal {
+    readonly id: string;
+    readonly kind: "forge_demand";
+    readonly trigger: ForgeTrigger;
+    /** Confidence score (0-1) that forging is warranted. */
+    readonly confidence: number;
+    readonly suggestedBrickKind: BrickKind;
+    readonly context: {
+        readonly failureCount: number;
+        readonly failedToolCalls: readonly string[];
+        readonly taskDescription?: string | undefined;
+    };
+    readonly emittedAt: number;
+}
+/** Demand-aware budget configuration for forge triggering. */
+interface ForgeBudget {
+    /** Hard cap on forges per session (safety limit). */
+    readonly maxForgesPerSession: number;
+    /** Total forge compute time budget in milliseconds. */
+    readonly computeTimeBudgetMs: number;
+    /** Minimum confidence to auto-suggest forge (0-1). */
+    readonly demandThreshold: number;
+    /** Minimum time between forge suggestions for the same trigger key (ms). */
+    readonly cooldownMs: number;
+}
+/** Sensible defaults for forge budget. */
+declare const DEFAULT_FORGE_BUDGET: ForgeBudget;
+
+/**
+ * TaskBoard contract — persistent task coordination for multi-agent swarms.
+ *
+ * A TaskBoard maintains a DAG of tasks with dependency tracking,
+ * assignment, completion, failure/retry, and board-level queries.
+ *
+ * Exception: branded type constructor (taskItemId) is permitted in L0
+ * as a zero-logic identity cast for type safety.
+ * Exception: DEFAULT_TASK_BOARD_CONFIG is a pure readonly data constant
+ * derived from L0 type definitions.
+ */
+
+declare const __taskItemBrand: unique symbol;
+/** Branded string type for task board item identifiers. */
+type TaskItemId = string & {
+    readonly [__taskItemBrand]: "TaskItemId";
+};
+/** Create a branded TaskItemId from a plain string. */
+declare function taskItemId(id: string): TaskItemId;
+type TaskItemStatus = "pending" | "assigned" | "completed" | "failed";
+/** Input shape for adding a task to the board. */
+interface TaskItemInput {
+    readonly id: TaskItemId;
+    readonly description: string;
+    readonly dependencies?: readonly TaskItemId[] | undefined;
+    readonly priority?: number | undefined;
+    readonly maxRetries?: number | undefined;
+    readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+}
+/** A task item on the board with full state. */
+interface TaskItem {
+    readonly id: TaskItemId;
+    readonly description: string;
+    readonly dependencies: readonly TaskItemId[];
+    readonly priority: number;
+    readonly maxRetries: number;
+    readonly retries: number;
+    readonly status: TaskItemStatus;
+    readonly assignedTo?: AgentId | undefined;
+    readonly error?: KoiError | undefined;
+    readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+}
+/** Result produced by a completed task. */
+interface TaskResult {
+    readonly taskId: TaskItemId;
+    readonly output: string;
+    readonly durationMs: number;
+    readonly workerId?: string | undefined;
+    readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+}
+/** Patch fields for updating a pending or assigned task. */
+interface TaskItemPatch {
+    readonly priority?: number | undefined;
+    readonly description?: string | undefined;
+    readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+}
+type TaskBoardEvent = {
+    readonly kind: "task:added";
+    readonly item: TaskItem;
+} | {
+    readonly kind: "task:assigned";
+    readonly taskId: TaskItemId;
+    readonly agentId: AgentId;
+} | {
+    readonly kind: "task:completed";
+    readonly taskId: TaskItemId;
+    readonly result: TaskResult;
+} | {
+    readonly kind: "task:failed";
+    readonly taskId: TaskItemId;
+    readonly error: KoiError;
+} | {
+    readonly kind: "task:retried";
+    readonly taskId: TaskItemId;
+    readonly retries: number;
+};
+interface TaskBoardSnapshot {
+    readonly items: readonly TaskItem[];
+    readonly results: readonly TaskResult[];
+}
+interface TaskBoardConfig {
+    readonly maxRetries?: number | undefined;
+    readonly onEvent?: ((event: TaskBoardEvent) => void) | undefined;
+}
+declare const DEFAULT_TASK_BOARD_CONFIG: TaskBoardConfig;
+interface TaskBoard {
+    readonly add: (item: TaskItemInput) => Result<TaskBoard, KoiError>;
+    readonly addAll: (items: readonly TaskItemInput[]) => Result<TaskBoard, KoiError>;
+    readonly assign: (taskId: TaskItemId, agentId: AgentId) => Result<TaskBoard, KoiError>;
+    readonly complete: (taskId: TaskItemId, result: TaskResult) => Result<TaskBoard, KoiError>;
+    readonly fail: (taskId: TaskItemId, error: KoiError) => Result<TaskBoard, KoiError>;
+    readonly update: (taskId: TaskItemId, patch: TaskItemPatch) => Result<TaskBoard, KoiError>;
+    readonly get: (taskId: TaskItemId) => TaskItem | undefined;
+    readonly ready: () => readonly TaskItem[];
+    readonly pending: () => readonly TaskItem[];
+    readonly blocked: () => readonly TaskItem[];
+    readonly inProgress: () => readonly TaskItem[];
+    readonly completed: () => readonly TaskResult[];
+    readonly failed: () => readonly TaskItem[];
+    readonly unreachable: () => readonly TaskItem[];
+    readonly dependentsOf: (taskId: TaskItemId) => readonly TaskItem[];
+    readonly all: () => readonly TaskItem[];
+    readonly size: () => number;
+}
+
+/**
+ * Long-running harness types — multi-session agent lifecycle management.
+ *
+ * Provides types for agents that operate over hours/days across multiple
+ * sessions, tracking progress, bridging context, and checkpointing at
+ * meaningful task boundaries.
+ *
+ * Exception: branded type constructor (harnessId) is permitted in L0
+ * as a zero-logic identity cast for type safety.
+ */
+
+declare const __harnessIdBrand: unique symbol;
+/** Branded string type for harness identifiers. */
+type HarnessId = string & {
+    readonly [__harnessIdBrand]: "HarnessId";
+};
+/** Create a branded HarnessId from a plain string. */
+declare function harnessId(raw: string): HarnessId;
+/** Lifecycle phase of a long-running harness. */
+type HarnessPhase = "idle" | "active" | "suspended" | "completed" | "failed";
+/** Narrative summary generated eagerly at session end. */
+interface ContextSummary {
+    readonly narrative: string;
+    readonly sessionSeq: number;
+    readonly completedTaskIds: readonly string[];
+    readonly estimatedTokens: number;
+    readonly generatedAt: number;
+}
+interface KeyArtifact {
+    readonly toolName: string;
+    readonly content: string;
+    readonly turnIndex: number;
+    readonly capturedAt: number;
+}
+interface HarnessMetrics {
+    readonly totalSessions: number;
+    readonly totalTurns: number;
+    readonly totalInputTokens: number;
+    readonly totalOutputTokens: number;
+    readonly completedTaskCount: number;
+    readonly pendingTaskCount: number;
+    readonly elapsedMs: number;
+}
+interface HarnessStatus {
+    readonly harnessId: HarnessId;
+    readonly phase: HarnessPhase;
+    readonly currentSessionSeq: number;
+    readonly taskBoard: TaskBoardSnapshot;
+    readonly metrics: HarnessMetrics;
+    readonly lastSessionEndedAt?: number | undefined;
+    readonly startedAt?: number | undefined;
+    readonly failureReason?: string | undefined;
+}
+interface HarnessSnapshot {
+    readonly harnessId: HarnessId;
+    readonly phase: HarnessPhase;
+    readonly sessionSeq: number;
+    readonly taskBoard: TaskBoardSnapshot;
+    readonly summaries: readonly ContextSummary[];
+    readonly keyArtifacts: readonly KeyArtifact[];
+    readonly lastSessionId?: string | undefined;
+    readonly agentId: string;
+    readonly metrics: HarnessMetrics;
+    readonly startedAt: number;
+    readonly checkpointedAt: number;
+    readonly failureReason?: string | undefined;
+}
+/** A SnapshotChainStore specialized for HarnessSnapshot payloads. */
+type HarnessSnapshotStore = SnapshotChainStore<HarnessSnapshot>;
+
+/**
+ * Kernel extension contract — pluggable L1 guard/lifecycle/assembly slots.
+ *
+ * Extensions allow composable, replaceable kernel behaviors without forking
+ * createKoi(). Guard slots produce KoiMiddleware (sole interposition layer),
+ * lifecycle validators gate state transitions, and assembly validators
+ * verify component correctness before an agent starts.
+ *
+ * Exception: EXTENSION_PRIORITY constant is permitted in L0 as a pure
+ * readonly data constant derived from L0 type definitions with zero logic.
+ */
+
+/**
+ * Priority tiers for KernelExtension ordering.
+ * Lower number = higher precedence (runs first / takes priority).
+ * Order: Core > Platform > User > Addon.
+ */
+declare const EXTENSION_PRIORITY: Readonly<{
+    readonly CORE: 0;
+    readonly PLATFORM: 10;
+    readonly USER: 50;
+    readonly ADDON: 100;
+}>;
+/**
+ * Context provided to a KernelExtension's guard slot at assembly time.
+ * Guards use this to produce middleware tailored to the current agent.
+ */
+interface GuardContext {
+    /** Depth of the agent in the process tree (0 = root). */
+    readonly agentDepth: number;
+    /** The agent's manifest. */
+    readonly manifest: AgentManifest;
+    /** All attached components as a readonly map. */
+    readonly components: ReadonlyMap<string, unknown>;
+    /** The assembled agent entity (for GovernanceController lookup, etc.). */
+    readonly agent?: Agent;
+}
+/**
+ * Context for lifecycle transition validation.
+ * Validators receive the current and target states.
+ */
+interface TransitionContext {
+    /** Current process state before the transition. */
+    readonly from: ProcessState;
+    /** Target process state after the transition. */
+    readonly to: ProcessState;
+}
+/** A single diagnostic produced by assembly validation. */
+interface ValidationDiagnostic {
+    /** Name of the extension or validator that produced this diagnostic. */
+    readonly source: string;
+    /** Human-readable description of the issue. */
+    readonly message: string;
+    /** Severity: "error" blocks agent creation, "warning" is advisory. */
+    readonly severity: "error" | "warning";
+}
+/** Result of assembly validation — discriminated union. */
+type ValidationResult = {
+    readonly ok: true;
+} | {
+    readonly ok: false;
+    readonly diagnostics: readonly ValidationDiagnostic[];
+};
+/**
+ * A composable kernel extension that plugs into L1 guard, lifecycle,
+ * and assembly validation slots.
+ *
+ * All slots are optional — an extension can provide any combination.
+ * Extensions are sorted by priority (ascending) before composition.
+ */
+interface KernelExtension {
+    /** Unique name for this extension (e.g., "koi:default-guards"). */
+    readonly name: string;
+    /**
+     * Extension priority. Lower = higher precedence.
+     * Defaults to EXTENSION_PRIORITY.USER (50) if omitted.
+     */
+    readonly priority?: number;
+    /**
+     * Guard slot — produces KoiMiddleware for the agent session.
+     * Called once at assembly time. The returned middleware array is
+     * composed into the agent's middleware chain.
+     */
+    readonly guards?: (ctx: GuardContext) => readonly KoiMiddleware[] | Promise<readonly KoiMiddleware[]>;
+    /**
+     * Lifecycle transition validator — sync only for hot-path performance.
+     * Returns true to allow the transition, false to block it.
+     * Only called for significant transitions (not wait/resume hot path).
+     */
+    readonly validateTransition?: (ctx: TransitionContext) => boolean;
+    /**
+     * Assembly validator — checks component/manifest correctness before
+     * the agent starts running. Can be async for I/O-backed validation.
+     * Return { ok: true } to pass, or { ok: false, diagnostics } to report issues.
+     */
+    readonly validateAssembly?: (components: ReadonlyMap<string, unknown>, manifest: AgentManifest) => ValidationResult | Promise<ValidationResult>;
+}
+
+/**
+ * Proposal + ProposalGate — unified change governance contract.
+ *
+ * Every agent-submitted change request flows through this contract.
+ * The gate requirement scales with the architectural blast radius of the target layer:
+ *   brick:sandboxed  → auto (sandbox verifies), takes effect immediately
+ *   brick:promoted   → HITL required, takes effect next session
+ *   bundle_l2        → auto (forge store shadows it), takes effect immediately
+ *   l1_extension     → HITL + full agent test, takes effect at next startup
+ *   l1_core          → HITL + full agent test, requires new binary
+ *   l0_interface     → HITL + all agents test, requires new binary
+ *   sandbox_policy   → HITL + meta-sandbox, takes effect on config push
+ *   gateway_routing  → HITL + staging gateway, takes effect on config push
+ *
+ * Exception: proposalId() is a branded type constructor (identity cast), permitted
+ * in L0 as a zero-logic operation for type safety.
+ *
+ * Exception: ALL_CHANGE_TARGETS and PROPOSAL_GATE_REQUIREMENTS are pure readonly
+ * data constants derived from L0 type definitions, codifying architecture-doc
+ * invariants with zero logic.
+ */
+
+declare const __proposalBrand: unique symbol;
+/**
+ * Branded string type for proposal identifiers.
+ * Prevents accidental mixing with other string IDs at compile time.
+ */
+type ProposalId = string & {
+    readonly [__proposalBrand]: "ProposalId";
+};
+/** Create a branded ProposalId from a plain string. */
+declare function proposalId(raw: string): ProposalId;
+/**
+ * The architectural layer targeted by a proposal.
+ * Names align with TrustTier vocabulary so submitters can reason about them:
+ *   "brick:sandboxed" — tool or skill (TrustTier "sandbox", auto-verified)
+ *   "brick:promoted"  — middleware or channel (TrustTier "promoted", HITL required)
+ *
+ * Maps 1:1 to the "Trust Gate by Layer" table in the architecture doc.
+ */
+type ChangeTarget = "brick:sandboxed" | "brick:promoted" | "bundle_l2" | "l1_extension" | "l1_core" | "l0_interface" | "sandbox_policy" | "gateway_routing";
+/** All valid ChangeTarget values. Used for exhaustiveness checks in tests and implementations. */
+declare const ALL_CHANGE_TARGETS: readonly ChangeTarget[];
+/** The type of change being proposed. */
+type ChangeKind = "create" | "update" | "promote" | "delete" | "configure" | "extend";
+/**
+ * Lifecycle state of a proposal.
+ * Terminal states: approved, rejected, superseded, expired.
+ * Non-terminal: pending.
+ */
+type ProposalStatus = "pending" | "approved" | "rejected" | "superseded" | "expired";
+/**
+ * Gate requirements for a given ChangeTarget.
+ * Encodes the "Trust Gate by Layer" table from the architecture doc.
+ */
+interface GateRequirement {
+    /** Whether a human must explicitly approve before the change proceeds. */
+    readonly requiresHitl: boolean;
+    /**
+     * Whether the change requires a full test suite (full agent test or all agents test)
+     * beyond the isolated brick verification.
+     */
+    readonly requiresFullTest: boolean;
+    /** When the change takes effect after gate approval. */
+    readonly takeEffectOn: "immediately" | "next_session" | "next_startup" | "next_binary" | "config_push";
+    /** Scope of sandbox testing required for this change. */
+    readonly sandboxTestScope: "brick_only" | "brick_plus_integration" | "full_agent_test" | "all_agents_test" | "meta_sandbox" | "staging_gateway";
+}
+/**
+ * Gate requirements per ChangeTarget. Encodes the full "Trust Gate by Layer"
+ * table from the architecture doc. Zero logic — pure lookup.
+ *
+ * Blast radius increases from top to bottom:
+ *   brick:sandboxed  → lowest (affects this brick only, immediately)
+ *   l0_interface     → highest (affects all agents, requires new binary)
+ */
+declare const PROPOSAL_GATE_REQUIREMENTS: Readonly<Record<ChangeTarget, GateRequirement>>;
+/**
+ * The outcome of a human (or automated) review of a proposal.
+ * Distinct from ApprovalDecision (middleware.ts) which is per-tool-call.
+ * Rejection always requires a reason; approval reason is optional.
+ */
+type ReviewDecision = {
+    readonly kind: "approved";
+    readonly reason?: string | undefined;
+} | {
+    readonly kind: "rejected";
+    readonly reason: string;
+};
+/**
+ * Events emitted by ProposalGate during proposal lifecycle operations.
+ * Follows the RegistryEvent / DelegationEvent discriminated union pattern.
+ */
+type ProposalEvent = {
+    readonly kind: "proposal:submitted";
+    readonly proposal: Proposal;
+} | {
+    readonly kind: "proposal:reviewed";
+    readonly proposalId: ProposalId;
+    readonly decision: ReviewDecision;
+} | {
+    readonly kind: "proposal:expired";
+    readonly proposalId: ProposalId;
+} | {
+    readonly kind: "proposal:superseded";
+    readonly proposalId: ProposalId;
+    readonly supersededBy: ProposalId;
+};
+/**
+ * Data provided by the agent when submitting a change proposal.
+ * The gate assigns id, status, and submittedAt.
+ */
+interface ProposalInput {
+    /** Agent ID of the submitter. */
+    readonly submittedBy: AgentId;
+    /** Which architectural layer this change targets. */
+    readonly changeTarget: ChangeTarget;
+    /** What kind of operation is being requested. */
+    readonly changeKind: ChangeKind;
+    /** Human-readable description of what is being changed and why. */
+    readonly description: string;
+    /** Optional reference to the specific brick being changed. */
+    readonly brickRef?: BrickRef | undefined;
+    /** Optional expiry timestamp (ms). If set, proposal transitions to "expired" after this time. */
+    readonly expiresAt?: number | undefined;
+    /** Optional structured metadata for the change (schema, diff, etc.). */
+    readonly metadata?: JsonObject | undefined;
+}
+/**
+ * A complete proposal record as stored and returned by the gate.
+ * Immutable — each state transition produces a new Proposal object.
+ */
+interface Proposal {
+    /** Gate-assigned unique identifier. */
+    readonly id: ProposalId;
+    /** Agent ID of the submitter. */
+    readonly submittedBy: AgentId;
+    /** Which architectural layer this change targets. */
+    readonly changeTarget: ChangeTarget;
+    /** What kind of operation is being requested. */
+    readonly changeKind: ChangeKind;
+    /** Human-readable description of what is being changed and why. */
+    readonly description: string;
+    /** Optional reference to the specific brick being changed. */
+    readonly brickRef?: BrickRef | undefined;
+    /** Current lifecycle state. */
+    readonly status: ProposalStatus;
+    /** Unix timestamp (ms) when the proposal was submitted. */
+    readonly submittedAt: number;
+    /** Optional expiry timestamp (ms). */
+    readonly expiresAt?: number | undefined;
+    /** Unix timestamp (ms) when the proposal was reviewed. Set when status is approved or rejected. */
+    readonly reviewedAt?: number | undefined;
+    /** The review verdict. Set when status is approved or rejected. */
+    readonly reviewDecision?: ReviewDecision | undefined;
+    /** The proposal that replaced this one. Set when status is "superseded". */
+    readonly supersededBy?: ProposalId | undefined;
+    /** Optional structured metadata for the change (schema, diff, etc.). */
+    readonly metadata?: JsonObject | undefined;
+}
+/** Result of submitting a proposal. */
+type ProposalResult = Result<Proposal, KoiError>;
+/** Call to stop receiving proposal events from a ProposalGate.watch() subscription. */
+type ProposalUnsubscribe = () => void;
+/**
+ * Submit/review interface for change governance.
+ * Separate from KoiMiddleware.ApprovalHandler — this is for structural
+ * layer changes (persistent, cross-session) not per-tool-call approval (in-turn).
+ *
+ * Methods return T | Promise<T> per the L0 async-by-default-for-I/O pattern:
+ * in-memory gates return sync values; HTTP-backed gates return Promises.
+ * Callers must always await.
+ */
+interface ProposalGate {
+    /**
+     * Submit a change proposal to the gate.
+     * The gate assigns id, status ("pending"), and submittedAt.
+     * Returns the created Proposal on success, or a KoiError on validation failure.
+     */
+    readonly submit: (input: ProposalInput) => ProposalResult | Promise<ProposalResult>;
+    /**
+     * Record a review decision for a pending proposal.
+     * Transitions the proposal to "approved" or "rejected".
+     * No-op if the proposal is already in a terminal state.
+     */
+    readonly review: (id: ProposalId, decision: ReviewDecision) => void | Promise<void>;
+    /**
+     * Subscribe to proposal lifecycle events.
+     * Returns a ProposalUnsubscribe function — call it to stop receiving events.
+     * Handler may be sync or async; the gate does not await handler results.
+     */
+    readonly watch: (handler: (event: ProposalEvent) => void | Promise<void>) => ProposalUnsubscribe;
+}
+
+/**
+ * Reconciliation contract — K8s-style desired-state convergence.
+ *
+ * Defines the extension point for L2 reconciliation controllers and the
+ * configuration surface for the L1 reconcile runner. Controllers implement
+ * \`observe(actual) → diff(desired) → act()\` loops that converge the system
+ * to its declared desired state.
+ *
+ * Exception: DEFAULT_RECONCILE_RUNNER_CONFIG is a pure readonly data constant
+ * derived from L0 type definitions, codifying architecture-doc invariants.
+ */
+
+/** Discriminated union describing the outcome of a single reconcile pass. */
+type ReconcileResult = {
+    readonly kind: "converged";
+} | {
+    readonly kind: "retry";
+    readonly afterMs: number;
+} | {
+    readonly kind: "terminal";
+    readonly reason: string;
+} | {
+    readonly kind: "recheck";
+    readonly afterMs: number;
+};
+/** Read-only context provided to each reconciliation controller invocation. */
+interface ReconcileContext {
+    readonly registry: AgentRegistry;
+    readonly manifest: AgentManifest;
+}
+/**
+ * A reconciliation controller observes actual state, diffs against desired
+ * state (manifest), and returns an action result. The runner calls each
+ * registered controller for every enqueued agent.
+ *
+ * Level-triggered: the controller re-reads current state on each invocation
+ * rather than relying on edge-triggered event payloads.
+ */
+interface ReconciliationController extends AsyncDisposable {
+    readonly name: string;
+    readonly reconcile: (agentId: AgentId, ctx: ReconcileContext) => ReconcileResult | Promise<ReconcileResult>;
+}
+/** Configurable options for the reconcile runner processing loop. */
+interface ReconcileRunnerConfig {
+    /** Interval between drift sweep scans of running agents (ms). Default: 60_000. */
+    readonly driftCheckIntervalMs: number;
+    /** Timeout for a single controller.reconcile() call (ms). Default: 30_000. */
+    readonly reconcileTimeoutMs: number;
+    /** Consecutive failures before circuit-breaking an agent+controller pair. Default: 5. */
+    readonly maxConsecutiveFailures: number;
+    /** Base delay for decorrelated jitter backoff (ms). Default: 100. */
+    readonly backoffBaseMs: number;
+    /** Maximum backoff cap (ms). Default: 30_000. */
+    readonly backoffCapMs: number;
+    /** Minimum interval between reconcile passes for the same agent (ms). Default: 5_000. */
+    readonly minReconcileIntervalMs: number;
+    /** Maximum concurrent async reconciles. 0 = unlimited. Default: 10. */
+    readonly maxConcurrentReconciles: number;
+}
+/** Sensible defaults for the reconcile runner. */
+declare const DEFAULT_RECONCILE_RUNNER_CONFIG: ReconcileRunnerConfig;
+
+/**
+ * Scope enforcement — pluggable policy backend for subsystem access checks.
+ *
+ * Default enforcement lives in \`@koi/scope\` (local compiled patterns).
+ * Alternative backends (SQLite, Nexus ReBAC, custom) implement this interface
+ * for centralized or external policy evaluation.
+ */
+/** The four scoped infrastructure subsystems. */
+type ScopeSubsystem = "filesystem" | "browser" | "credentials" | "memory";
+/**
+ * Describes a single access check against a scope enforcer.
+ *
+ * The enforcer decides allow/deny based on its own policy (local patterns,
+ * database lookup, HTTP call to a ReBAC server, etc.).
+ */
+interface ScopeAccessRequest {
+    /** Which infrastructure subsystem is being accessed. */
+    readonly subsystem: ScopeSubsystem;
+    /** The operation being performed (e.g., "read", "write", "navigate", "get", "store"). */
+    readonly operation: string;
+    /** The resource being accessed (normalized path, URL, key, namespace). */
+    readonly resource: string;
+    /** Optional additional context for the enforcer. */
+    readonly context?: Readonly<Record<string, unknown>>;
+}
+/**
+ * Pluggable enforcement backend for scope access checks.
+ *
+ * Returns \`boolean\` for sync backends (local patterns) or \`Promise<boolean>\`
+ * for async backends (HTTP, database). Callers must always \`await\` the result.
+ */
+interface ScopeEnforcer {
+    /** Check whether the given access request is allowed. */
+    readonly checkAccess: (request: ScopeAccessRequest) => boolean | Promise<boolean>;
+    /** Optional cleanup for stateful enforcers (connection pools, timers). */
+    readonly dispose?: () => void | Promise<void>;
+}
+
+/**
+ * Session persistence contract — L0 types for crash recovery.
+ *
+ * Promoted from @koi/session-store so that both @koi/session-store (L2)
+ * and @koi/node (L2) can depend on the same contract without L2→L2 imports.
+ *
+ * Implementation-specific config (dbPath, durability) stays in L2.
+ */
+
+interface SessionCheckpoint {
+    /** Unique checkpoint ID (e.g., \`\${agentId}:\${Date.now()}\`). */
+    readonly id: string;
+    /** Agent this checkpoint belongs to. */
+    readonly agentId: AgentId;
+    /** Gateway session this agent was part of. */
+    readonly sessionId: SessionId;
+    /** Opaque engine state from EngineAdapter.saveState(). */
+    readonly engineState: EngineState;
+    /** Lifecycle phase at checkpoint time. */
+    readonly processState: ProcessState;
+    /** CAS generation counter from AgentStatus. */
+    readonly generation: number;
+    /** Arbitrary metadata (e.g., trigger reason). */
+    readonly metadata: Readonly<Record<string, unknown>>;
+    /** Unix timestamp ms when this checkpoint was created. */
+    readonly createdAt: number;
+}
+interface SessionRecord {
+    /** Gateway session ID. */
+    readonly sessionId: SessionId;
+    /** Agent this session belongs to. */
+    readonly agentId: AgentId;
+    /** Agent manifest snapshot for re-assembly on recovery. */
+    readonly manifestSnapshot: AgentManifest;
+    /** Outbound sequence counter. */
+    readonly seq: number;
+    /** Last accepted inbound sequence from remote. */
+    readonly remoteSeq: number;
+    /** Unix timestamp ms when session was created. */
+    readonly connectedAt: number;
+    /** Unix timestamp ms of the most recent checkpoint. */
+    readonly lastCheckpointAt: number;
+    /** Arbitrary metadata. */
+    readonly metadata: Readonly<Record<string, unknown>>;
+}
+interface PendingFrame {
+    /** Unique frame identifier. */
+    readonly frameId: string;
+    /** Session this frame belongs to. */
+    readonly sessionId: SessionId;
+    /** Agent that originated this frame. */
+    readonly agentId: AgentId;
+    /** Frame type discriminator (e.g., "agent:message"). */
+    readonly frameType: string;
+    /** Serialized frame payload. */
+    readonly payload: unknown;
+    /** Ordering index within the session's pending queue. */
+    readonly orderIndex: number;
+    /** Unix timestamp ms when this frame was buffered. */
+    readonly createdAt: number;
+    /** Optional time-to-live in ms. Undefined = no expiry. */
+    readonly ttl?: number | undefined;
+    /** Number of delivery attempts. 0 = never attempted. */
+    readonly retryCount: number;
+}
+interface SkippedRecoveryEntry {
+    /** Which table the corrupt row came from. */
+    readonly source: "session" | "checkpoint" | "pending_frame";
+    /** Row identifier (sessionId, checkpoint id, or frameId). */
+    readonly id: string;
+    /** Human-readable error description. */
+    readonly error: string;
+}
+interface RecoveryPlan {
+    /** All session records found in the store. */
+    readonly sessions: readonly SessionRecord[];
+    /** Latest checkpoint per agent (keyed by agentId string). */
+    readonly checkpoints: ReadonlyMap<string, SessionCheckpoint>;
+    /** Pending outbound frames per session (keyed by sessionId). */
+    readonly pendingFrames: ReadonlyMap<string, readonly PendingFrame[]>;
+    /** Rows that could not be deserialized (corrupt JSON, invalid state, etc.). */
+    readonly skipped: readonly SkippedRecoveryEntry[];
+}
+interface SessionFilter {
+    readonly agentId?: AgentId;
+    readonly processState?: ProcessState;
+}
+/**
+ * Pluggable interface for durable session storage.
+ *
+ * All methods return \`T | Promise<T>\` — in-memory implementations are sync,
+ * SQLite/network implementations are async. Callers must always \`await\`.
+ *
+ * All fallible operations return \`Result<T, KoiError>\`.
+ */
+interface SessionPersistence {
+    /** Save or update a session record. */
+    readonly saveSession: (record: SessionRecord) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    /** Load a session record by session ID. NOT_FOUND if missing. */
+    readonly loadSession: (sessionId: string) => Result<SessionRecord, KoiError> | Promise<Result<SessionRecord, KoiError>>;
+    /** Remove a session record and its checkpoints. NOT_FOUND if missing. */
+    readonly removeSession: (sessionId: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    /** List session records matching an optional filter. */
+    readonly listSessions: (filter?: SessionFilter) => Result<readonly SessionRecord[], KoiError> | Promise<Result<readonly SessionRecord[], KoiError>>;
+    /** Save a checkpoint. Prunes oldest if over retention limit. */
+    readonly saveCheckpoint: (checkpoint: SessionCheckpoint) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    /** Load the most recent checkpoint for an agent. Returns undefined if none. */
+    readonly loadLatestCheckpoint: (agentId: AgentId) => Result<SessionCheckpoint | undefined, KoiError> | Promise<Result<SessionCheckpoint | undefined, KoiError>>;
+    /** List all checkpoints for an agent, newest first. */
+    readonly listCheckpoints: (agentId: AgentId) => Result<readonly SessionCheckpoint[], KoiError> | Promise<Result<readonly SessionCheckpoint[], KoiError>>;
+    /** Save a pending outbound frame for replay after reconnection. */
+    readonly savePendingFrame: (frame: PendingFrame) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    /** Load all pending frames for a session, ordered by orderIndex. */
+    readonly loadPendingFrames: (sessionId: string) => Result<readonly PendingFrame[], KoiError> | Promise<Result<readonly PendingFrame[], KoiError>>;
+    /** Clear all pending frames for a session (after successful drain). */
+    readonly clearPendingFrames: (sessionId: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    /** Remove a single pending frame by ID. No-op if not found. */
+    readonly removePendingFrame: (frameId: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    /**
+     * Build a full recovery plan from all stored data.
+     * Returns all session records, the latest checkpoint per agent,
+     * and pending frames per session. Corrupt rows are skipped and
+     * reported in the \`skipped\` field.
+     */
+    readonly recover: () => Result<RecoveryPlan, KoiError> | Promise<Result<RecoveryPlan, KoiError>>;
+    /** Close the store and release resources. */
+    readonly close: () => void | Promise<void>;
+}
+
+/**
+ * Time-travel types — filesystem side-effect journal, backtrack constraints,
+ * and per-event trace types for rewind, guided retry, and event-level granularity.
+ *
+ * Used by L2 middleware packages:
+ *   - @koi/middleware-fs-rollback (FileOpRecord, CompensatingOp)
+ *   - @koi/middleware-guided-retry (BacktrackReason, BacktrackConstraint)
+ *   - @koi/middleware-event-trace (TraceEventKind, TraceEvent, TurnTrace, EventCursor)
+ */
+
+/** Kind of filesystem operation that can be rewound. */
+type FileOpKind = "write" | "edit";
+/** Record of a single file operation captured during a tool call. */
+interface FileOpRecord {
+    /** Identifier of the tool call that produced this operation. */
+    readonly callId: ToolCallId;
+    /** Kind of file operation. */
+    readonly kind: FileOpKind;
+    /** Absolute path to the affected file. */
+    readonly path: string;
+    /** File content before the operation. undefined = file did not exist. */
+    readonly previousContent: string | undefined;
+    /** File content after the operation. */
+    readonly newContent: string;
+    /** Which turn this operation occurred in. */
+    readonly turnIndex: number;
+    /** Index within the event trace for cross-feature correlation. -1 = uncorrelated. */
+    readonly eventIndex: number;
+    /** Unix timestamp ms when this operation was captured. */
+    readonly timestamp: number;
+}
+/** Action needed to undo a file operation. */
+type CompensatingOp = {
+    readonly kind: "restore";
+    readonly path: string;
+    readonly content: string;
+} | {
+    readonly kind: "delete";
+    readonly path: string;
+};
+/** Why a backtrack/fork was triggered. */
+type BacktrackReasonKind = "validation_failure" | "gate_failure" | "user_rejection" | "timeout" | "error" | "manual";
+/** Structured reason for a backtrack event. */
+interface BacktrackReason {
+    readonly kind: BacktrackReasonKind;
+    readonly message: string;
+    readonly details?: Readonly<Record<string, unknown>>;
+    /** NodeId of the snapshot that was abandoned (if available). */
+    readonly abandonedNodeId?: string;
+    readonly timestamp: number;
+}
+/** Constraint injected into the model call after a backtrack. */
+interface BacktrackConstraint {
+    readonly reason: BacktrackReason;
+    /** Free-text guidance for the model (e.g., "prefer X", "avoid Y"). */
+    readonly instructions?: string;
+    /** Maximum number of model calls to inject this constraint into. Default: 1. */
+    readonly maxInjections?: number;
+}
+/**
+ * Metadata key used to store BacktrackReason in AgentSnapshot.metadata.
+ * Convention: \`koi:\` prefix for framework-owned keys.
+ */
+declare const BACKTRACK_REASON_KEY: "koi:backtrack_reason";
+/** Discriminated union of traceable event kinds. */
+type TraceEventKind = {
+    readonly kind: "model_call";
+    readonly request: unknown;
+    readonly response: unknown;
+    readonly durationMs: number;
+} | {
+    readonly kind: "tool_call";
+    readonly toolId: string;
+    readonly callId: ToolCallId;
+    readonly input: unknown;
+    readonly output: unknown;
+    readonly durationMs: number;
+} | {
+    readonly kind: "model_stream_start";
+    readonly request: unknown;
+} | {
+    readonly kind: "model_stream_end";
+    readonly response: unknown;
+    readonly durationMs: number;
+};
+/** A single traced event with position metadata. */
+interface TraceEvent {
+    /** Monotonic index within the session. */
+    readonly eventIndex: number;
+    /** Turn this event belongs to. */
+    readonly turnIndex: number;
+    /** The event payload. */
+    readonly event: TraceEventKind;
+    /** Unix timestamp ms when this event was recorded. */
+    readonly timestamp: number;
+}
+/** Complete trace of all events within a single turn. */
+interface TurnTrace {
+    readonly turnIndex: number;
+    readonly sessionId: SessionId;
+    readonly agentId: string;
+    readonly events: readonly TraceEvent[];
+    readonly durationMs: number;
+}
+/** Cursor pointing to a specific event within the trace. */
+interface EventCursor {
+    readonly turnIndex: number;
+    readonly eventIndex: number;
+}
+
+/**
+ * Unified spawn types — single SpawnFn/SpawnRequest/SpawnResult contract (Decision 5B).
+ *
+ * Replaces the per-package spawn types (MinionSpawnFn, TaskSpawnFn, SpawnWorkerFn)
+ * with a unified interface in L0. Each L2 package provides a thin adapter that
+ * maps the unified types to its internal representation.
+ *
+ * This allows middleware, governance, and telemetry to operate on a single spawn
+ * interface without knowing which L2 package initiated the spawn.
+ */
+
+/**
+ * Unified spawn request for all agent-spawning patterns.
+ *
+ * Covers parallel-minions (taskIndex), task-spawn (taskId),
+ * orchestrator (agentId routing), and direct spawn.
+ */
+interface SpawnRequest {
+    /** Human-readable description of the task to perform. */
+    readonly description: string;
+    /** Name of the agent to spawn (resolved via AgentResolver or manifest). */
+    readonly agentName: string;
+    /** Optional inline manifest. If omitted, resolved by name. */
+    readonly manifest?: AgentManifest | undefined;
+    /** Abort signal for cooperative cancellation. */
+    readonly signal: AbortSignal;
+    /** Correlation index for parallel-minions result matching. */
+    readonly taskIndex?: number | undefined;
+    /** Task board item reference for orchestrator correlation. */
+    readonly taskId?: TaskItemId | undefined;
+    /** Target agent ID for copilot routing. */
+    readonly agentId?: AgentId | undefined;
+}
+/**
+ * Unified spawn result — success with output string, or failure with KoiError.
+ */
+type SpawnResult = {
+    readonly ok: true;
+    readonly output: string;
+} | {
+    readonly ok: false;
+    readonly error: KoiError;
+};
+/**
+ * Unified spawn function signature.
+ * Consumer provides this to wire L2 → L1 spawnChildAgent + runtime.run().
+ */
+type SpawnFn = (request: SpawnRequest) => Promise<SpawnResult>;
+
+/**
+ * Thread types — unified execution model with persistent threads and checkpoints.
+ *
+ * Combines single-shot \`koi.run()\`, multi-session harness, and harness-scheduler
+ * into one thread primitive. A thread is a persistent, resumable conversation
+ * with checkpoint support and an inbox queue for message steering.
+ *
+ * Exception: branded type constructors (threadId, threadMessageId) are permitted
+ * in L0 as zero-logic identity casts for type safety.
+ * Exception: DEFAULT_CHECKPOINT_POLICY and DEFAULT_THREAD_PRUNING_POLICY are pure
+ * readonly data constants derived from L0 type definitions.
+ * Exception: isMessageSnapshot and isHarnessSnapshot are pure type guards operating
+ * only on L0 types.
+ */
+
+declare const __threadIdBrand: unique symbol;
+/** Branded string type for thread identifiers. */
+type ThreadId = string & {
+    readonly [__threadIdBrand]: "ThreadId";
+};
+/** Create a branded ThreadId from a plain string. */
+declare function threadId(raw: string): ThreadId;
+declare const __threadMessageIdBrand: unique symbol;
+/** Branded string type for thread message identifiers. Used as idempotency key (Decision 6A). */
+type ThreadMessageId = string & {
+    readonly [__threadMessageIdBrand]: "ThreadMessageId";
+};
+/** Create a branded ThreadMessageId from a plain string. */
+declare function threadMessageId(raw: string): ThreadMessageId;
+/** Allowed roles for thread messages. */
+type ThreadMessageRole = "user" | "assistant" | "system" | "tool";
+/**
+ * A single message within a thread.
+ * \`id\` serves as the idempotency key (Decision 6A) — duplicate IDs are
+ * rejected by the ThreadStore to prevent double-appends.
+ */
+interface ThreadMessage {
+    readonly id: ThreadMessageId;
+    readonly role: ThreadMessageRole;
+    readonly content: string;
+    readonly createdAt: number;
+    readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+}
+/** Lightweight reference to a per-session context summary for thread snapshots. */
+interface ContextSummaryRef {
+    readonly sessionSeq: number;
+    readonly estimatedTokens: number;
+    readonly generatedAt: number;
+}
+/** Accumulated metrics across all sessions within a thread. */
+interface ThreadMetrics {
+    readonly totalMessages: number;
+    readonly totalTurns: number;
+    readonly totalTokens: number;
+    readonly lastActivityAt: number;
+}
+/**
+ * A message-type snapshot capturing conversation history within a thread.
+ * Used for standard chat-style interactions.
+ */
+interface MessageThreadSnapshot {
+    readonly kind: "message";
+    readonly threadId: ThreadId;
+    readonly agentId: AgentId;
+    readonly sessionId?: SessionId | undefined;
+    readonly messages: readonly ThreadMessage[];
+    readonly turnIndex: number;
+    readonly createdAt: number;
+}
+/**
+ * A harness-type snapshot capturing autonomous task execution state.
+ * Used for long-running, multi-session agent workflows.
+ */
+interface HarnessThreadSnapshot {
+    readonly kind: "harness";
+    readonly threadId: ThreadId;
+    readonly agentId: AgentId;
+    readonly sessionId?: SessionId | undefined;
+    readonly taskBoard: TaskBoardSnapshot;
+    readonly summaries: readonly ContextSummaryRef[];
+    readonly metrics: ThreadMetrics;
+    readonly createdAt: number;
+}
+/**
+ * Discriminated union of thread snapshot types (Decision 8C).
+ * Both message-style and harness-style snapshots coexist in the same chain,
+ * enabling unified persistence for chat and autonomous workflows.
+ */
+type ThreadSnapshot = MessageThreadSnapshot | HarnessThreadSnapshot;
+/** Type guard for message-kind thread snapshots. */
+declare function isMessageSnapshot(snapshot: ThreadSnapshot): snapshot is MessageThreadSnapshot;
+/** Type guard for harness-kind thread snapshots. */
+declare function isHarnessSnapshot(snapshot: ThreadSnapshot): snapshot is HarnessThreadSnapshot;
+/**
+ * Configurable checkpoint frequency and triggers.
+ * Controls when the ThreadStore persists snapshots during execution.
+ */
+interface CheckpointPolicy {
+    /** Fire a checkpoint every N turns. Default: 5. */
+    readonly intervalTurns: number;
+    /** Fire a checkpoint when a session ends cleanly. Default: true. */
+    readonly onSessionEnd: boolean;
+    /** Fire a checkpoint when the agent suspends. Default: true. */
+    readonly onSuspend: boolean;
+}
+/** Sensible defaults for checkpoint policy. */
+declare const DEFAULT_CHECKPOINT_POLICY: CheckpointPolicy;
+/**
+ * Controls how old thread snapshots are pruned to bound storage growth.
+ * Keeps the last N message snapshots and optionally compacts older ones
+ * into context summaries.
+ */
+interface ThreadPruningPolicy {
+    /** Number of recent message snapshots to retain. Default: 50. */
+    readonly retainMessageSnapshots: number;
+    /** Whether to compact older snapshots into summaries. Default: true. */
+    readonly compactOlder: boolean;
+}
+/** Sensible defaults for thread pruning. */
+declare const DEFAULT_THREAD_PRUNING_POLICY: ThreadPruningPolicy;
+/**
+ * Type alias for the underlying snapshot chain specialized for ThreadSnapshot.
+ * ThreadStore delegates persistence to this store.
+ */
+type ThreadSnapshotStore = SnapshotChainStore<ThreadSnapshot>;
+/**
+ * High-level thread persistence API (Decision 1C).
+ *
+ * A thin facade over \`SnapshotChainStore<ThreadSnapshot>\` that provides
+ * idempotent append-and-checkpoint, thread loading, and message listing.
+ *
+ * All fallible operations return \`Result<T, KoiError> | Promise<Result<T, KoiError>>\`
+ * so implementations can be sync (in-memory) or async (SQLite/network).
+ */
+interface ThreadStore {
+    /**
+     * Atomically append messages and persist a snapshot checkpoint.
+     * Duplicate message IDs (idempotency key) produce a CONFLICT error.
+     */
+    readonly appendAndCheckpoint: (threadId: ThreadId, messages: readonly ThreadMessage[], snapshot: ThreadSnapshot) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    /**
+     * Load the latest snapshot for a thread.
+     * Returns undefined if the thread does not exist.
+     */
+    readonly loadThread: (threadId: ThreadId) => Result<ThreadSnapshot | undefined, KoiError> | Promise<Result<ThreadSnapshot | undefined, KoiError>>;
+    /**
+     * List messages for a thread, ordered by createdAt ascending.
+     * Optional limit caps the number of messages returned (newest first before limiting).
+     */
+    readonly listMessages: (threadId: ThreadId, limit?: number) => Result<readonly ThreadMessage[], KoiError> | Promise<Result<readonly ThreadMessage[], KoiError>>;
+    /** Close the store and release resources. Idempotent. */
+    readonly close: () => void | Promise<void>;
+}
+
+/**
+ * Tool health types — promoted to L0 for cross-package consumption.
+ *
+ * These types were originally defined in @koi/middleware-feedback-loop.
+ * Promoted to L0 so L2 packages (e.g., @koi/forge-demand) can consume
+ * health data without L2→L2 imports.
+ */
+/** Aggregated health metrics for a single tool. */
+interface ToolHealthMetrics {
+    /** Success rate (0-1). */
+    readonly successRate: number;
+    /** Error rate (0-1). */
+    readonly errorRate: number;
+    /** Total invocations in the tracking window. */
+    readonly usageCount: number;
+    /** Average latency in milliseconds. */
+    readonly avgLatencyMs: number;
+}
+/** Health state of a forged tool. */
+type ToolHealthState = "healthy" | "degraded" | "quarantined";
+/** Point-in-time snapshot of a tool's health. */
+interface ToolHealthSnapshot {
+    readonly brickId: string;
+    readonly toolId: string;
+    readonly metrics: ToolHealthMetrics;
+    readonly state: ToolHealthState;
+    readonly recentFailures: readonly ToolFailureRecord[];
+    readonly lastUpdatedAt: number;
+}
+/** Record of a single tool failure. */
+interface ToolFailureRecord {
+    readonly timestamp: number;
+    readonly error: string;
+    readonly latencyMs: number;
+}
+
+/**
+ * Transcript types — append-only message log for session crash recovery.
+ *
+ * A SessionTranscript captures every turn as a JSONL entry. On restart,
+ * messages are replayed from the log. This is the industry-standard pattern
+ * used by Claude Code, Codex, and Gemini CLI.
+ *
+ * Exception: branded type constructor (transcriptEntryId) is permitted
+ * in L0 as a zero-logic identity cast for type safety.
+ */
+
+declare const __transcriptEntryIdBrand: unique symbol;
+/** Branded string type for transcript entry identifiers. */
+type TranscriptEntryId = string & {
+    readonly [__transcriptEntryIdBrand]: "TranscriptEntryId";
+};
+/** Create a branded TranscriptEntryId from a plain string. */
+declare function transcriptEntryId(raw: string): TranscriptEntryId;
+/** Allowed roles for transcript entries. */
+type TranscriptEntryRole = "user" | "assistant" | "tool_call" | "tool_result" | "system" | "compaction";
+/**
+ * A single entry within a session transcript.
+ * Content is a plain string — callers JSON-serialize structured data before storing.
+ */
+interface TranscriptEntry {
+    readonly id: TranscriptEntryId;
+    readonly role: TranscriptEntryRole;
+    readonly content: string;
+    /** Unix epoch milliseconds. */
+    readonly timestamp: number;
+    readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+}
+/** Options for paginated transcript reads. */
+interface TranscriptPageOptions {
+    readonly offset?: number | undefined;
+    readonly limit: number;
+}
+/** A page of transcript entries with cursor metadata. */
+interface TranscriptPage {
+    readonly entries: readonly TranscriptEntry[];
+    readonly total: number;
+    readonly hasMore: boolean;
+}
+/** A transcript line that could not be parsed (corruption diagnostic). */
+interface SkippedTranscriptEntry {
+    readonly lineNumber: number;
+    readonly raw: string;
+    readonly error: string;
+}
+/** Result of loading a full transcript — includes corruption diagnostics. */
+interface TranscriptLoadResult {
+    readonly entries: readonly TranscriptEntry[];
+    readonly skipped: readonly SkippedTranscriptEntry[];
+}
+/**
+ * Append-only transcript store for session crash recovery.
+ *
+ * - \`append\` writes entries to the log
+ * - \`load\` reads all entries (with corruption diagnostics)
+ * - \`loadPage\` reads a page of entries
+ * - \`compact\` replaces old entries with a summary + preserved tail
+ * - \`remove\` deletes the transcript
+ * - \`close\` releases resources
+ */
+interface SessionTranscript {
+    readonly append: (sessionId: SessionId, entries: readonly TranscriptEntry[]) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly load: (sessionId: SessionId) => Result<TranscriptLoadResult, KoiError> | Promise<Result<TranscriptLoadResult, KoiError>>;
+    readonly loadPage: (sessionId: SessionId, options: TranscriptPageOptions) => Result<TranscriptPage, KoiError> | Promise<Result<TranscriptPage, KoiError>>;
+    readonly compact: (sessionId: SessionId, summary: string, preserveLastN: number) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly remove: (sessionId: SessionId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly close: () => void | Promise<void>;
+}
+
+/**
+ * Validation utilities — pure functions for L0 type safety.
+ *
+ * isProcessState: runtime type guard matching the ProcessState union.
+ * validateNonEmpty: shared validation helper for non-empty string fields.
+ */
+
+/**
+ * Runtime type guard for ProcessState.
+ * Returns true if the value is a valid ProcessState string.
+ */
+declare function isProcessState(value: string): value is ProcessState;
+/**
+ * Validate that a string is non-empty.
+ * Returns a VALIDATION error Result if the string is empty.
+ */
+declare function validateNonEmpty(value: string, name: string): Result<void, KoiError>;
+
+export { ALL_CATALOG_SOURCES, ALL_CHANGE_TARGETS, type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentGroupId, AgentId, AgentManifest, type AgentPatchedEvent, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickKind, BrickRef, type BundleId, type CapabilityDenyReason, type CapabilityId, CapabilityProof, type CapabilityRegistry, type CapabilityScope, type CapabilityToken, type CapabilityVerifier, type CapabilityVerifyResult, type CapacityReport, type CatalogEntry, type CatalogPage, type CatalogQuery, type CatalogReader, type CatalogSource, type CatalogSourceError, type ChainCompactor, type ChainId, type ChangeKind, type ChangeTarget, type CheckpointPolicy, type CompensatingOp, ComponentProvider, type ContextSummary, type ContextSummaryRef, DEFAULT_CATALOG_SEARCH_LIMIT, DEFAULT_CHECKPOINT_POLICY, DEFAULT_FORGE_BUDGET, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_TASK_BOARD_CONFIG, DEFAULT_THREAD_PRUNING_POLICY, DelegationDenyReason, type DiagnosticItem, type DiagnosticProvider, type DiagnosticRange, type DiagnosticSeverity, EXTENSION_PRIORITY, EngineState, type EventCursor, type ExaptationKind, type ExaptationSignal, type FileOpKind, type FileOpRecord, type ForgeBudget, type ForgeDemandSignal, type ForgeTrigger, type ForkRef, type GateRequirement, type GuardContext, type HarnessId, type HarnessMetrics, type HarnessPhase, type HarnessSnapshot, type HarnessSnapshotStore, type HarnessStatus, type HarnessThreadSnapshot, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, type KeyArtifact, KoiError, KoiMiddleware, type MessageThreadSnapshot, type NodeCapability, type NodeId, PROPOSAL_GATE_REQUIREMENTS, PatchableRegistryFields, type PendingFrame, PermissionConfig, ProcessState, type Proposal, type ProposalEvent, type ProposalGate, type ProposalId, type ProposalInput, type ProposalResult, type ProposalStatus, type ProposalUnsubscribe, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, Result, type ReviewDecision, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type ServiceProviderConfig, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SessionTranscript, type SingleToolProviderConfig, SkillComponent, type SkippedRecoveryEntry, type SkippedTranscriptEntry, type SnapshotChainStore, type SnapshotNode, type SpawnFn, type SpawnRequest, type SpawnResult, SubsystemToken, type TaskBoard, type TaskBoardConfig, type TaskBoardEvent, type TaskBoardSnapshot, type TaskItem, type TaskItemId, type TaskItemInput, type TaskItemPatch, type TaskItemStatus, type TaskResult, type ThreadId, type ThreadMessage, type ThreadMessageId, type ThreadMessageRole, type ThreadMetrics, type ThreadPruningPolicy, type ThreadSnapshot, type ThreadSnapshotStore, type ThreadStore, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolFailureRecord, type ToolHealthMetrics, type ToolHealthSnapshot, type ToolHealthState, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TranscriptEntry, type TranscriptEntryId, type TranscriptEntryRole, type TranscriptLoadResult, type TranscriptPage, type TranscriptPageOptions, type TransitionContext, TransitionReason, TrustTier, type TurnTrace, type UsagePurposeObservation, type ValidationDiagnostic, type ValidationResult, type VerifierCache, type VerifyContext, bundleId, capabilityId, chainId, conflict, createServiceProvider, createSingleToolProvider, evolveRegistryEntry, external, harnessId, internal, isAgentStateEvent, isCapabilityToken, isHarnessSnapshot, isMessageSnapshot, isProcessState, isToolCallPayload, nodeId, notFound, permission, proposalId, rateLimit, staleRef, taskItemId, threadId, threadMessageId, timeout, transcriptEntryId, validateNonEmpty, validation };
+"
+`;
+
+exports[`@koi/core API surface ./config has stable type surface 1`] = `
+"/**
+ * Configuration contracts — system-level config types and reactive store interface.
+ *
+ * KoiConfig defines the shape of system-wide runtime policy.
+ * ConfigStore<T> provides a reactive get/subscribe interface for hot-reload.
+ */
+type LogLevel = "debug" | "info" | "warn" | "error" | "silent";
+interface FeatureFlags {
+    readonly [key: string]: boolean | undefined;
+}
+interface TelemetryConfig {
+    readonly enabled: boolean;
+    readonly endpoint?: string | undefined;
+    readonly sampleRate?: number | undefined;
+}
+interface LimitsConfig {
+    readonly maxTurns: number;
+    readonly maxDurationMs: number;
+    readonly maxTokens: number;
+}
+interface LoopDetectionConfigSection {
+    readonly enabled: boolean;
+    readonly windowSize: number;
+    readonly threshold: number;
+    readonly warningThreshold?: number | undefined;
+}
+interface SpawnConfig {
+    readonly maxDepth: number;
+    readonly maxFanOut: number;
+    readonly maxTotalProcesses: number;
+    readonly spawnToolIds?: readonly string[] | undefined;
+}
+interface ForgeConfigSection {
+    readonly enabled: boolean;
+    readonly maxForgeDepth: number;
+    readonly maxForgesPerSession: number;
+    readonly defaultScope: string;
+    readonly defaultTrustTier: string;
+}
+interface ModelRouterConfigSection {
+    readonly strategy: string;
+    readonly targets: readonly ModelTargetConfigEntry[];
+}
+interface ModelTargetConfigEntry {
+    readonly provider: string;
+    readonly model: string;
+    readonly weight?: number | undefined;
+    readonly enabled?: boolean | undefined;
+}
+interface KoiConfig {
+    readonly logLevel: LogLevel;
+    readonly telemetry: TelemetryConfig;
+    readonly limits: LimitsConfig;
+    readonly loopDetection: LoopDetectionConfigSection;
+    readonly spawn: SpawnConfig;
+    readonly forge: ForgeConfigSection;
+    readonly modelRouter: ModelRouterConfigSection;
+    readonly features: FeatureFlags;
+}
+/** Callback invoked when the config value changes. */
+type ConfigListener<T> = (next: T, prev: T) => void;
+/** Unsubscribe function returned by subscribe(). */
+type ConfigUnsubscribe = () => void;
+/**
+ * Read-only reactive config store.
+ *
+ * - \`get()\` is O(1), zero-allocation (returns a cached frozen reference).
+ * - \`subscribe()\` fires synchronously on each update.
+ */
+interface ConfigStore<T> {
+    /** Returns the current config snapshot (shallow-frozen). */
+    readonly get: () => T;
+    /** Subscribes to config changes. Returns an unsubscribe function. */
+    readonly subscribe: (listener: ConfigListener<T>) => ConfigUnsubscribe;
+}
+type ConfigSource = {
+    readonly kind: "default";
+} | {
+    readonly kind: "file";
+    readonly filePath: string;
+} | {
+    readonly kind: "env";
+    readonly variable: string;
+} | {
+    readonly kind: "override";
+};
+
+export type { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, FeatureFlags, ForgeConfigSection, KoiConfig, LimitsConfig, LogLevel, LoopDetectionConfigSection, ModelRouterConfigSection, ModelTargetConfigEntry, SpawnConfig, TelemetryConfig };
+"
+`;
+
+exports[`@koi/core API surface ./assembly has stable type surface 1`] = `
+"export { o as AgentManifest, aD as CapabilityConfig, aF as ChannelConfig, aG as ChannelIdentity, bQ as FilesystemSkillSource, c0 as ForgedSkillSource, cL as MiddlewareConfig, cO as ModelConfig, h as PermissionConfig, dP as SearchConfig, dW as SkillConfig, e6 as SkillSource, ev as ToolConfig, f8 as forgedSkill, f9 as fsSkill } from './assembly-HASH.js';
+import './common.js';
+import './webhook.js';
+import './errors.js';
+import './message.js';
+import './channel.js';
+import './zone.js';
+import './filesystem-HASH.js';
+"
+`;
+
+exports[`@koi/core API surface ./channel has stable type surface 1`] = `
+"import { JsonObject } from './common.js';
+import { OutboundMessage, InboundMessage } from './message.js';
+
+/**
+ * Channel adapter contract — I/O interface to users.
+ */
+
+interface ChannelCapabilities {
+    readonly text: boolean;
+    readonly images: boolean;
+    readonly files: boolean;
+    readonly buttons: boolean;
+    readonly audio: boolean;
+    readonly video: boolean;
+    readonly threads: boolean;
+    readonly supportsA2ui: boolean;
+}
+type MessageHandler = (message: InboundMessage) => Promise<void>;
+type ChannelStatusKind = "processing" | "idle" | "error";
+interface ChannelStatus {
+    readonly kind: ChannelStatusKind;
+    readonly turnIndex: number;
+    /** Correlates to the inbound message that triggered this turn. */
+    readonly messageRef?: string;
+    /** Human-readable hint for rich UIs: "thinking", "calling search", etc. */
+    readonly detail?: string;
+    readonly metadata?: JsonObject;
+}
+interface ChannelAdapter {
+    readonly name: string;
+    readonly capabilities: ChannelCapabilities;
+    readonly connect: () => Promise<void>;
+    readonly disconnect: () => Promise<void>;
+    readonly send: (message: OutboundMessage) => Promise<void>;
+    readonly onMessage: (handler: MessageHandler) => () => void;
+    readonly sendStatus?: (status: ChannelStatus) => Promise<void>;
+}
+type ChannelInheritMode = "all" | "none" | "output-only";
+/** Policy controlling how a spawned child inherits the parent's channel. */
+interface SpawnChannelPolicy {
+    readonly mode: ChannelInheritMode;
+    /** How child attribution is injected. Default: "metadata". */
+    readonly attribution?: "metadata" | "prefix" | "none" | undefined;
+    /** Whether child sendStatus() delegates to parent. Default: false. */
+    readonly propagateStatus?: boolean | undefined;
+}
+declare const DEFAULT_SPAWN_CHANNEL_POLICY: SpawnChannelPolicy;
+
+export { type ChannelAdapter, type ChannelCapabilities, type ChannelInheritMode, type ChannelStatus, type ChannelStatusKind, DEFAULT_SPAWN_CHANNEL_POLICY, type MessageHandler, type SpawnChannelPolicy };
+"
+`;
+
+exports[`@koi/core API surface ./common has stable type surface 1`] = `
+"/**
+ * Shared type aliases used across all contracts.
+ */
+type JsonObject = Readonly<Record<string, unknown>>;
+
+export type { JsonObject };
+"
+`;
+
+exports[`@koi/core API surface ./context has stable type surface 1`] = `
+"import { InboundMessage } from './message.js';
+import './common.js';
+
+/**
+ * Token estimation and context compaction contracts.
+ *
+ * Both interfaces support sync/async implementations via \`T | Promise<T>\`:
+ * local tokenizers (tiktoken, heuristic) run sync; remote APIs run async.
+ */
+
+/**
+ * Estimate token counts for text and message sequences.
+ *
+ * The optional \`model\` parameter acts as a tokenizer dispatch key —
+ * a single estimator instance may handle different models across turns.
+ */
+interface TokenEstimator {
+    readonly estimateText: (text: string, model?: string) => number | Promise<number>;
+    readonly estimateMessages: (messages: readonly InboundMessage[], model?: string) => number | Promise<number>;
+}
+/**
+ * Outcome of a compaction pass, carrying observability metadata.
+ *
+ * \`strategy\` is an open string — L2 packages invent new strategies freely.
+ */
+interface CompactionResult {
+    readonly messages: readonly InboundMessage[];
+    readonly originalTokens: number;
+    readonly compactedTokens: number;
+    readonly strategy: string;
+}
+/**
+ * Reduce a message sequence to fit within a token budget.
+ *
+ * Always succeeds — worst case returns an empty message array.
+ * If the underlying LLM summarizer breaks, throw with \`cause\`.
+ */
+interface ContextCompactor {
+    readonly compact: (messages: readonly InboundMessage[], maxTokens: number, model?: string) => CompactionResult | Promise<CompactionResult>;
+}
+
+export type { CompactionResult, ContextCompactor, TokenEstimator };
+"
+`;
+
+exports[`@koi/core API surface ./delegation has stable type surface 1`] = `
+"export { C as CapabilityProof, aL as CircuitBreakerConfig, ba as DEFAULT_CIRCUIT_BREAKER_CONFIG, br as DelegationComponent, bs as DelegationConfig, D as DelegationDenyReason, bt as DelegationEvent, bu as DelegationGrant, bv as DelegationId, bw as DelegationManagerConfig, bx as DelegationScope, by as DelegationVerifyResult, dt as RevocationRegistry, dF as ScopeChecker, f6 as delegationId } from './assembly-HASH.js';
+import './errors.js';
+import './common.js';
+import './message.js';
+import './channel.js';
+import './zone.js';
+import './webhook.js';
+import './filesystem-HASH.js';
+"
+`;
+
+exports[`@koi/core API surface ./ecs has stable type surface 1`] = `
+"export { r as AGENT_SIGNALS, m as Agent, f as AgentDescriptor, x as AgentEnv, b as AgentGroupId, A as AgentId, F as AgentSignal, N as AttachResult, O as BROWSER, aB as COMPONENT_PRIORITY, aC as CREDENTIALS, aI as ChildHandle, aJ as ChildLifecycleEvent, aN as CompanionSkillDefinition, aQ as ComponentEvent, aR as ComponentEventKind, n as ComponentProvider, b5 as CredentialComponent, bn as DELEGATION, bz as ENV, bA as EVENTS, bB as EXTERNAL_AGENTS, bK as EventComponent, bO as FILESYSTEM, c1 as GOVERNANCE, c3 as GOVERNANCE_BACKEND, cd as HANDOFF, cl as INBOX, cw as MAILBOX, cz as MEMORY, cC as MemoryComponent, cD as MemoryRecallOptions, cE as MemoryResult, cF as MemoryStoreOptions, cG as MemoryTier, cV as NAME_SERVICE, da as ProcessAccounter, dc as ProcessId, P as ProcessState, de as REGISTRY, df as REPUTATION, dh as RegistryComponent, du as RunId, dv as SCHEDULER, dw as SCRATCHPAD, i as SessionId, S as SkillComponent, dY as SkillMetadata, e8 as SkippedComponent, ed as SpawnLedger, k as SubsystemToken, e as Tool, q as ToolCallId, ew as ToolDescriptor, ex as ToolExecuteOptions, l as TrustTier, eE as TurnId, eW as WEBHOOK, eX as WORKSPACE, eZ as WorkspaceComponent, f0 as ZONE_REGISTRY, f1 as agentGroupId, f2 as agentId, f3 as agentToken, f5 as channelToken, fc as isAttachResult, fj as middlewareToken, fl as runId, fo as sessionId, fq as skillToken, ft as token, fu as toolCallId, fv as toolToken, fw as turnId } from './assembly-HASH.js';
+import './channel.js';
+import './common.js';
+import './filesystem-HASH.js';
+import './webhook.js';
+import './zone.js';
+import './errors.js';
+import './message.js';
+"
+`;
+
+exports[`@koi/core API surface ./handoff has stable type surface 1`] = `
+"import './common.js';
+export { M as ArtifactRef, bp as DecisionRecord, ce as HandoffAcceptError, cf as HandoffAcceptResult, cg as HandoffComponent, ch as HandoffEnvelope, ci as HandoffEvent, cj as HandoffId, ck as HandoffStatus, fb as handoffId } from './assembly-HASH.js';
+import './errors.js';
+import './message.js';
+import './channel.js';
+import './zone.js';
+import './webhook.js';
+import './filesystem-HASH.js';
+"
+`;
+
+exports[`@koi/core API surface ./engine has stable type surface 1`] = `
+"import './common.js';
+export { u as AbortReason, aS as ComposedCallHandlers, bC as EngineAdapter, bD as EngineCapabilities, bE as EngineEvent, bF as EngineInput, bG as EngineInputBase, bH as EngineMetrics, bI as EngineOutput, E as EngineState, bJ as EngineStopReason, es as TerminationOutcome, fd as mapContentBlocksForEngine, ff as mapStopReasonToOutcome } from './assembly-HASH.js';
+import './message.js';
+import './errors.js';
+import './channel.js';
+import './zone.js';
+import './webhook.js';
+import './filesystem-HASH.js';
+"
+`;
+
+exports[`@koi/core API surface ./event-backend has stable type surface 1`] = `
+"import { Result, KoiError } from './errors.js';
+import './common.js';
+
+/**
+ * Event backend contract — L0 types for durable event infrastructure.
+ *
+ * Defines the pluggable event backend with real-time subscriptions,
+ * event replay from checkpoint, and dead letter queue for failed deliveries.
+ *
+ * Stream-based model: events belong to named streams (e.g., "agent:<id>"),
+ * each with its own monotonically increasing sequence numbers.
+ */
+
+interface EventEnvelope {
+    /** Globally unique, time-sortable event ID (ULID). */
+    readonly id: string;
+    /** Stream this event belongs to (e.g., "agent:<id>", "brick:<id>"). */
+    readonly streamId: string;
+    /** Event type discriminator (e.g., "agent:state_changed"). */
+    readonly type: string;
+    /** Unix timestamp ms when the event was appended. */
+    readonly timestamp: number;
+    /** Per-stream position — 1-based, monotonically increasing. May have gaps after FIFO eviction. */
+    readonly sequence: number;
+    /** Event payload. */
+    readonly data: unknown;
+    /** Optional structured metadata (e.g., correlationId, causationId). */
+    readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+}
+interface EventInput {
+    /** Event type discriminator. */
+    readonly type: string;
+    /** Event payload. */
+    readonly data: unknown;
+    /** Optional structured metadata. */
+    readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+    /**
+     * Optimistic concurrency control for stream appends.
+     *
+     * If provided, the append only succeeds when the current stream length
+     * equals this value. Returns a CONFLICT error otherwise.
+     * When undefined, no concurrency check is performed (backward compatible).
+     */
+    readonly expectedSequence?: number | undefined;
+}
+interface ReadOptions {
+    /** Inclusive start sequence (default: 1). */
+    readonly fromSequence?: number | undefined;
+    /** Exclusive end sequence. */
+    readonly toSequence?: number | undefined;
+    /** Maximum events to return. */
+    readonly limit?: number | undefined;
+    /** Read direction (default: "forward"). */
+    readonly direction?: "forward" | "backward" | undefined;
+    /** Filter by event types. Only events matching one of these types are returned. */
+    readonly types?: readonly string[] | undefined;
+}
+interface ReadResult {
+    /** Events matching the read options. */
+    readonly events: readonly EventEnvelope[];
+    /** True if more events exist beyond the returned batch. */
+    readonly hasMore: boolean;
+}
+interface SubscribeOptions {
+    /** Stream to subscribe to. */
+    readonly streamId: string;
+    /** Durable subscription name — position tracked by this name. */
+    readonly subscriptionName: string;
+    /** Resume from this sequence (default: latest — only new events). */
+    readonly fromPosition?: number | undefined;
+    /** Handler called for each event. Throw to trigger retry + DLQ. */
+    readonly handler: (event: EventEnvelope) => void | Promise<void>;
+    /** Max delivery attempts before dead-lettering (default: 3). */
+    readonly maxRetries?: number | undefined;
+    /** Called when an event is dead-lettered. */
+    readonly onDeadLetter?: ((entry: DeadLetterEntry) => void) | undefined;
+    /** Filter by event types. Only events matching one of these types are delivered. */
+    readonly types?: readonly string[] | undefined;
+}
+interface SubscriptionHandle {
+    /** The durable subscription name. */
+    readonly subscriptionName: string;
+    /** The stream being subscribed to. */
+    readonly streamId: string;
+    /** Stop receiving events. */
+    readonly unsubscribe: () => void;
+    /** Current cursor position (last successfully processed sequence). */
+    readonly position: () => number;
+}
+interface DeadLetterEntry {
+    /** Unique DLQ entry ID. */
+    readonly id: string;
+    /** The event that failed delivery. */
+    readonly event: EventEnvelope;
+    /** Subscription that failed to process this event. */
+    readonly subscriptionName: string;
+    /** Error message from the last failed attempt. */
+    readonly error: string;
+    /** Total delivery attempts before dead-lettering. */
+    readonly attempts: number;
+    /** Unix timestamp ms when the event was dead-lettered. */
+    readonly deadLetteredAt: number;
+}
+interface DeadLetterFilter {
+    /** Filter by stream. */
+    readonly streamId?: string | undefined;
+    /** Filter by subscription name. */
+    readonly subscriptionName?: string | undefined;
+    /** Maximum entries to return. */
+    readonly limit?: number | undefined;
+}
+interface EventBackendConfig {
+    /** Max events per stream before FIFO eviction (default: 10_000). */
+    readonly maxEventsPerStream?: number | undefined;
+    /** Time-to-live for events in ms. Expired events are excluded from reads. */
+    readonly eventTtlMs?: number | undefined;
+}
+/**
+ * Pluggable event backend with persistence, replay, subscriptions, and DLQ.
+ *
+ * All fallible operations return \`Result<T, KoiError>\`.
+ * All methods return \`T | Promise<T>\` — in-memory implementations are sync,
+ * database/network implementations are async. Callers must always \`await\`.
+ */
+interface EventBackend {
+    /** Append an event to a stream. Returns the full envelope with assigned id + sequence. */
+    readonly append: (streamId: string, event: EventInput) => Result<EventEnvelope, KoiError> | Promise<Result<EventEnvelope, KoiError>>;
+    /** Read events from a stream (batch, paginated). */
+    readonly read: (streamId: string, options?: ReadOptions) => Result<ReadResult, KoiError> | Promise<Result<ReadResult, KoiError>>;
+    /** Subscribe to a stream for real-time delivery with durable position tracking. */
+    readonly subscribe: (options: SubscribeOptions) => SubscriptionHandle | Promise<SubscriptionHandle>;
+    /** Query dead-lettered events. */
+    readonly queryDeadLetters: (filter?: DeadLetterFilter) => Result<readonly DeadLetterEntry[], KoiError> | Promise<Result<readonly DeadLetterEntry[], KoiError>>;
+    /** Retry a dead-lettered event (re-deliver to its subscription handler). */
+    readonly retryDeadLetter: (entryId: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
+    /** Purge dead-lettered entries matching an optional filter. */
+    readonly purgeDeadLetters: (filter?: DeadLetterFilter) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    /** Return the number of (non-expired) events in a stream. */
+    readonly streamLength: (streamId: string) => number | Promise<number>;
+    /** Return the lowest available sequence in a stream (0 if empty). Useful after FIFO eviction or TTL expiry. */
+    readonly firstSequence: (streamId: string) => number | Promise<number>;
+    /** Close the backend and release resources. */
+    readonly close: () => void | Promise<void>;
+}
+
+export type { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, EventEnvelope, EventInput, ReadOptions, ReadResult, SubscribeOptions, SubscriptionHandle };
+"
+`;
+
+exports[`@koi/core API surface ./governance-backend has stable type surface 1`] = `
+"import './common.js';
+export { aO as ComplianceRecord, aP as ComplianceRecorder, a$ as ConstraintChecker, b0 as ConstraintQuery, bm as DEFAULT_VIOLATION_QUERY_LIMIT, c2 as GOVERNANCE_ALLOW, c5 as GovernanceBackend, cc as GovernanceVerdict, d7 as PolicyEvaluator, d8 as PolicyRequest, d9 as PolicyRequestKind, eH as VIOLATION_SEVERITY_ORDER, eQ as Violation, eR as ViolationFilter, eS as ViolationPage, eT as ViolationSeverity, eU as ViolationStore } from './assembly-HASH.js';
+import './errors.js';
+import './message.js';
+import './channel.js';
+import './zone.js';
+import './webhook.js';
+import './filesystem-HASH.js';
+"
+`;
+
+exports[`@koi/core API surface ./errors has stable type surface 1`] = `
+"import { JsonObject } from './common.js';
+
+/**
+ * Error types, Result discriminated union, and retry defaults.
+ *
+ * ## Exhaustive error code handling
+ *
+ * Use the \`never\` pattern to ensure all codes are handled:
+ *
+ * \`\`\`typescript
+ * function handle(code: KoiErrorCode): string {
+ *   switch (code) {
+ *     case "VALIDATION": return "bad input";
+ *     case "NOT_FOUND":  return "missing";
+ *     // ... all 9 codes ...
+ *     default: {
+ *       const _exhaustive: never = code;
+ *       throw new Error(\`Unhandled code: \${String(_exhaustive)}\`);
+ *     }
+ *   }
+ * }
+ * \`\`\`
+ */
+
+type KoiErrorCode = "VALIDATION" | "NOT_FOUND" | "PERMISSION" | "CONFLICT" | "RATE_LIMIT" | "TIMEOUT" | "EXTERNAL" | "INTERNAL"
+/**
+ * A cached reference (browser element ref, DB cursor, WebSocket token, etc.)
+ * has become invalid because the underlying resource changed or was replaced.
+ * The caller must re-acquire a fresh reference before retrying the operation.
+ *
+ * Distinct from NOT_FOUND (which means the resource never existed or was
+ * permanently deleted). STALE_REF means the resource likely still exists
+ * but the handle pointing to it is no longer valid.
+ *
+ * Common browser automation pattern: call browser_snapshot to obtain fresh
+ * [ref=eN] markers, then retry the action with the new ref.
+ */
+ | "STALE_REF";
+interface KoiError {
+    readonly code: KoiErrorCode;
+    readonly message: string;
+    readonly cause?: unknown;
+    readonly retryable: boolean;
+    /** Structured metadata for programmatic handling (e.g., resourceId, limit). */
+    readonly context?: JsonObject;
+    /** Hint for retry middleware — non-negative milliseconds to wait before retrying. */
+    readonly retryAfterMs?: number;
+}
+/**
+ * Default retryability per error code. Derived from the architecture doc's
+ * error taxonomy. EXTERNAL defaults to \`false\` — callers should override
+ * based on the specific external failure.
+ */
+declare const RETRYABLE_DEFAULTS: Readonly<Record<KoiErrorCode, boolean>>;
+type Result<T, E = KoiError> = {
+    readonly ok: true;
+    readonly value: T;
+} | {
+    readonly ok: false;
+    readonly error: E;
+};
+/**
+ * Standard signature for backend error mappers.
+ * Each L2 backend adapter should export a function matching this shape.
+ */
+type BackendErrorMapper = (error: unknown, context: string) => KoiError;
+
+export { type BackendErrorMapper, type KoiError, type KoiErrorCode, RETRYABLE_DEFAULTS, type Result };
+"
+`;
+
+exports[`@koi/core API surface ./intent-capsule has stable type surface 1`] = `
+"import { A as AgentId, i as SessionId } from './assembly-HASH.js';
+import './errors.js';
+import './common.js';
+import './message.js';
+import './channel.js';
+import './zone.js';
+import './webhook.js';
+import './filesystem-HASH.js';
+
+/**
+ * Intent Capsule types — cryptographic mandate binding for ASI01 defense.
+ *
+ * An IntentCapsule is an unforgeable, signed record of an agent's mandate
+ * (system prompt + objectives) created at session start. It defends against
+ * OWASP ASI01 (Agentic Goal Hijacking) by making the original mandate
+ * tamper-evident and verifiable at runtime.
+ *
+ * Design decisions:
+ * - Mandate is hashed and signed with Ed25519 at onSessionStart (one-time cost)
+ * - wrapModelCall verifies hash consistency (cheap — no crypto on hot path)
+ * - publicKey is embedded in the capsule for offline/external verification
+ * - sessionId is included in the mandate hash for replay-attack prevention
+ * - version byte in the canonical payload enables future format evolution
+ *
+ * Layer: L0 — types only. No implementations, no imports from other packages.
+ */
+
+declare const __capsuleBrand: unique symbol;
+/**
+ * Branded string type for intent capsule identifiers.
+ * Prevents accidental mixing with other ID types at compile time.
+ */
+type CapsuleId = string & {
+    readonly [__capsuleBrand]: "CapsuleId";
+};
+/** Create a branded CapsuleId from a plain string. */
+declare function capsuleId(raw: string): CapsuleId;
+/**
+ * Schema version for the canonical mandate payload.
+ * Increment when the serialization format changes.
+ * Old capsules with a lower version are rejected as incompatible.
+ */
+type CapsulePayloadVersion = 1;
+/**
+ * An immutable, cryptographically signed record of an agent's mandate.
+ *
+ * Created at session start. The mandateHash binds the capsule to the
+ * agent's original instructions (system prompt + objectives + session).
+ * The Ed25519 signature proves the capsule was created legitimately
+ * and enables offline/external verification.
+ *
+ * Invariants:
+ * - mandateHash === sha256Hex(canonicalize({ version, agentId, sessionId, systemPrompt, objectives }))
+ * - signature === Ed25519.sign(mandateHash, privateKey)
+ * - publicKey is the SPKI DER base64 counterpart of the signing private key
+ */
+interface IntentCapsule {
+    /** Unique identifier for this capsule. */
+    readonly id: CapsuleId;
+    /** Agent that created this capsule. */
+    readonly agentId: AgentId;
+    /** Session this capsule is bound to. */
+    readonly sessionId: SessionId;
+    /** SHA-256 hex digest of the canonical mandate payload. */
+    readonly mandateHash: string;
+    /** Base64-encoded Ed25519 signature of mandateHash. */
+    readonly signature: string;
+    /** Base64-encoded SPKI DER Ed25519 public key for external verification. */
+    readonly publicKey: string;
+    /** Unix timestamp ms — when this capsule was created. */
+    readonly createdAt: number;
+    /** Payload format version — enables future format evolution. */
+    readonly version: CapsulePayloadVersion;
+}
+/** Why an intent capsule check failed. */
+type CapsuleViolationReason = "mandate_hash_mismatch" | "capsule_not_found" | "invalid_signature";
+/** Result of checking the intent capsule for a session. */
+type CapsuleVerifyResult = {
+    readonly ok: true;
+    readonly capsule: IntentCapsule;
+} | {
+    readonly ok: false;
+    readonly reason: CapsuleViolationReason;
+};
+/**
+ * L0 contract for verifying the intent capsule for a session.
+ *
+ * The default implementation checks that the stored mandateHash matches
+ * the hash of the current mandate fields (config values + agentId + sessionId).
+ *
+ * Implementations may also:
+ * - Re-verify the Ed25519 signature (for audit/forensic use cases)
+ * - Check against an external attestation store
+ *
+ * Callers must always await — sync implementations return directly.
+ */
+interface CapsuleVerifier {
+    /**
+     * Verify the intent capsule for the given session.
+     *
+     * @param capsule - The stored capsule to verify.
+     * @param currentMandateHash - SHA-256 of the current canonical mandate payload.
+     * @returns CapsuleVerifyResult — ok=true if the mandate is intact.
+     */
+    readonly verify: (capsule: IntentCapsule, currentMandateHash: string) => CapsuleVerifyResult | Promise<CapsuleVerifyResult>;
+}
+/**
+ * Type guard for IntentCapsule.
+ * Pure function — permitted in L0 as a side-effect-free data inspector.
+ */
+declare function isIntentCapsule(value: unknown): value is IntentCapsule;
+
+export { type CapsuleId, type CapsulePayloadVersion, type CapsuleVerifier, type CapsuleVerifyResult, type CapsuleViolationReason, type IntentCapsule, capsuleId, isIntentCapsule };
+"
+`;
+
+exports[`@koi/core API surface ./message has stable type surface 1`] = `
+"import { JsonObject } from './common.js';
+
+/**
+ * Content block union and message types.
+ */
+
+interface TextBlock {
+    readonly kind: "text";
+    readonly text: string;
+}
+interface FileBlock {
+    readonly kind: "file";
+    readonly url: string;
+    readonly mimeType: string;
+    readonly name?: string;
+}
+interface ImageBlock {
+    readonly kind: "image";
+    readonly url: string;
+    readonly alt?: string;
+}
+interface ButtonBlock {
+    readonly kind: "button";
+    readonly label: string;
+    readonly action: string;
+    readonly payload?: unknown;
+}
+interface CustomBlock {
+    readonly kind: "custom";
+    readonly type: string;
+    readonly data: unknown;
+}
+type ContentBlock = TextBlock | FileBlock | ImageBlock | ButtonBlock | CustomBlock;
+interface OutboundMessage {
+    readonly content: readonly ContentBlock[];
+    readonly threadId?: string;
+    readonly metadata?: JsonObject;
+}
+interface InboundMessage {
+    readonly content: readonly ContentBlock[];
+    readonly senderId: string;
+    readonly threadId?: string;
+    readonly timestamp: number;
+    readonly metadata?: JsonObject;
+    /** When true, compaction middleware must preserve this message verbatim. */
+    readonly pinned?: boolean | undefined;
+}
+
+export type { ButtonBlock, ContentBlock, CustomBlock, FileBlock, ImageBlock, InboundMessage, OutboundMessage, TextBlock };
+"
+`;
+
+exports[`@koi/core API surface ./middleware has stable type surface 1`] = `
+"import './channel.js';
+import './common.js';
+export { H as ApprovalDecision, J as ApprovalHandler, L as ApprovalRequest, aE as CapabilityFragment, K as KoiMiddleware, cK as MiddlewareBundle, cM as MiddlewarePhase, cN as ModelChunk, cP as ModelHandler, cQ as ModelRequest, cR as ModelResponse, cS as ModelStreamHandler, dS as SessionContext, ey as ToolHandler, ez as ToolRequest, eA as ToolResponse, eD as TurnContext } from './assembly-HASH.js';
+import './message.js';
+import './errors.js';
+import './zone.js';
+import './webhook.js';
+import './filesystem-HASH.js';
+"
+`;
+
+exports[`@koi/core API surface ./eviction has stable type surface 1`] = `
+"import { A as AgentId, P as ProcessState } from './assembly-HASH.js';
+import './errors.js';
+import './common.js';
+import './message.js';
+import './channel.js';
+import './zone.js';
+import './webhook.js';
+import './filesystem-HASH.js';
+
+/**
+ * Eviction policy contract — candidate selection for agent eviction.
+ *
+ * The EvictionPolicy interface defines a pluggable strategy for selecting
+ * which agents to evict when resources are constrained. Implementations
+ * (LRU, QoS-aware) are L2 packages.
+ */
+
+/** An agent eligible for eviction, with metadata for policy decisions. */
+interface EvictionCandidate {
+    readonly agentId: AgentId;
+    readonly phase: ProcessState;
+    /** Unix timestamp ms of the last heartbeat. */
+    readonly lastHeartbeat: number;
+    /** Eviction priority — lower values are evicted first. */
+    readonly priority: number;
+    readonly metadata: Readonly<Record<string, unknown>>;
+}
+/** Why eviction was triggered. */
+type EvictionReason = "idle_timeout" | "memory_pressure" | "preemption" | "manual";
+/** Outcome of an eviction cycle. */
+interface EvictionResult {
+    readonly evicted: readonly AgentId[];
+    readonly skipped: number;
+    readonly reason: EvictionReason;
+}
+/**
+ * Strategy for selecting which agents to evict. Implementations receive
+ * a pre-filtered candidate list and return the selected subset.
+ *
+ * Built-in implementations (L2):
+ * - LRU: oldest heartbeat first
+ * - QoS-aware: lowest priority first, then oldest heartbeat
+ */
+interface EvictionPolicy {
+    readonly name: string;
+    /** Select up to \`count\` candidates for eviction from the provided list. */
+    readonly selectCandidates: (candidates: readonly EvictionCandidate[], count: number) => readonly EvictionCandidate[];
+}
+
+export type { EvictionCandidate, EvictionPolicy, EvictionReason, EvictionResult };
+"
+`;
+
+exports[`@koi/core API surface ./health has stable type surface 1`] = `
+"import { A as AgentId } from './assembly-HASH.js';
+import './errors.js';
+import './common.js';
+import './message.js';
+import './channel.js';
+import './zone.js';
+import './webhook.js';
+import './filesystem-HASH.js';
+
+/**
+ * Health monitoring contract — heartbeat recording, staleness detection.
+ *
+ * Implementations use a two-tier architecture: in-memory buffer for hot
+ * writes, periodic flush to the registry for staleness sweeps.
+ */
+
+/** Agent health determined by heartbeat recency. */
+type HealthStatus = "alive" | "suspect" | "dead";
+/** Point-in-time health assessment for a single agent. */
+interface HealthSnapshot {
+    readonly agentId: AgentId;
+    readonly status: HealthStatus;
+    /** Unix timestamp ms of the last recorded heartbeat. 0 if never received. */
+    readonly lastHeartbeat: number;
+    /** Number of consecutive missed health checks. */
+    readonly missedChecks: number;
+}
+/** Operational statistics for the health monitoring system. */
+interface HealthMonitorStats {
+    /** Total heartbeats recorded since startup. */
+    readonly totalRecorded: number;
+    /** Total heartbeats flushed to the registry. */
+    readonly totalFlushed: number;
+    /** Current number of entries in the in-memory buffer. */
+    readonly bufferSize: number;
+    /** Number of flush cycles completed. */
+    readonly flushCount: number;
+}
+/** Configuration for the health monitoring system. */
+interface HealthMonitorConfig {
+    /** How often to flush the heartbeat buffer to the registry (ms). Default: 30_000. */
+    readonly flushIntervalMs: number;
+    /** How often to sweep for stale agents (ms). Default: 10_000. */
+    readonly sweepIntervalMs: number;
+    /** Time without heartbeat before an agent is considered suspect (ms). Default: 60_000. */
+    readonly suspectThresholdMs: number;
+    /** Time without heartbeat before an agent is considered dead (ms). Default: 120_000. */
+    readonly deadThresholdMs: number;
+}
+/** Default health monitor configuration. */
+declare const DEFAULT_HEALTH_MONITOR_CONFIG: HealthMonitorConfig;
+/**
+ * Pluggable health monitoring interface. Tracks agent heartbeats
+ * and detects staleness.
+ *
+ * \`record()\` is synchronous (hot path — writes to in-memory buffer).
+ * \`check()\` returns \`T | Promise<T>\` for async-ready implementations.
+ */
+interface HealthMonitor extends AsyncDisposable {
+    /** Record a heartbeat for an agent. Hot path — always synchronous. */
+    readonly record: (agentId: AgentId) => void;
+    /** Check the current health of an agent. May involve I/O. */
+    readonly check: (agentId: AgentId) => HealthSnapshot | Promise<HealthSnapshot>;
+    /** Return current buffer and flush statistics. */
+    readonly stats: () => HealthMonitorStats;
+}
+
+export { DEFAULT_HEALTH_MONITOR_CONFIG, type HealthMonitor, type HealthMonitorConfig, type HealthMonitorStats, type HealthSnapshot, type HealthStatus };
+"
+`;
+
+exports[`@koi/core API surface ./lifecycle has stable type surface 1`] = `
+"export { c as AgentCondition, p as AgentRegistry, d as AgentStatus, aH as ChildCompletionResult, a as PatchableRegistryFields, R as RegistryEntry, di as RegistryEvent, dj as RegistryFilter, T as TransitionReason, eG as VALID_TRANSITIONS, eV as VisibilityContext, f7 as exitCodeForTransitionReason, fh as matchesFilter } from './assembly-HASH.js';
+import './errors.js';
+import './zone.js';
+import './common.js';
+import './message.js';
+import './channel.js';
+import './webhook.js';
+import './filesystem-HASH.js';
+"
+`;
+
+exports[`@koi/core API surface ./model-provider has stable type surface 1`] = `
+"/**
+ * Model provider types for routing and capability matching.
+ *
+ * These thin types live in L0 so that L2 packages (model-router, engine adapters)
+ * can share a common vocabulary for providers without importing each other.
+ */
+/**
+ * Feature flags for model capability matching.
+ *
+ * Used by the model router to validate that a target model supports
+ * the features required by a given request (e.g., vision, function calling).
+ */
+interface ModelCapabilities {
+    readonly streaming: boolean;
+    readonly functionCalling: boolean;
+    readonly vision: boolean;
+    readonly jsonMode: boolean;
+    readonly maxContextTokens: number;
+    readonly maxOutputTokens: number;
+}
+/**
+ * Identifies a model provider for routing and capability matching.
+ *
+ * A provider represents a single LLM API endpoint (e.g., OpenAI, Anthropic).
+ * The model router uses this to select and validate routing targets.
+ */
+interface ModelProvider {
+    readonly id: string;
+    readonly name: string;
+    readonly capabilities: ModelCapabilities;
+}
+/**
+ * A routing target: provider + model + weight.
+ *
+ * Used in routing configuration to define the ordered list of
+ * provider/model combinations the router can dispatch to.
+ */
+interface ModelTarget {
+    readonly provider: string;
+    readonly model: string;
+    /** Routing weight between 0 and 1. Default: 1. */
+    readonly weight?: number;
+    /** Whether this target is active. Default: true. */
+    readonly enabled?: boolean;
+}
+
+export type { ModelCapabilities, ModelProvider, ModelTarget };
+"
+`;
+
+exports[`@koi/core API surface ./resolver has stable type surface 1`] = `
+"import { Result, KoiError } from './errors.js';
+import './common.js';
+
+/**
+ * Resolver contract — discovery of tools/skills/agents.
+ */
+
+type SourceLanguage = "typescript" | "javascript" | "markdown" | "yaml" | "json";
+interface SourceBundle {
+    readonly content: string;
+    readonly language: SourceLanguage;
+    readonly files?: Readonly<Record<string, string>>;
+}
+interface Resolver<TMeta, TFull> {
+    readonly discover: () => Promise<readonly TMeta[]>;
+    readonly load: (id: string) => Promise<Result<TFull, KoiError>>;
+    readonly onChange?: (listener: () => void) => () => void;
+    readonly source?: (id: string) => Promise<Result<SourceBundle, KoiError>>;
+}
+
+export type { Resolver, SourceBundle, SourceLanguage };
+"
+`;
+
+exports[`@koi/core API surface ./brick-snapshot has stable type surface 1`] = `
+"import './errors.js';
+export { X as BrickId, B as BrickRef, a6 as BrickSnapshot, a7 as BrickSource, e9 as SnapshotEvent, ea as SnapshotId, eb as SnapshotQuery, ec as SnapshotStore, f4 as brickId, fr as snapshotId } from './assembly-HASH.js';
+import './common.js';
+import './message.js';
+import './channel.js';
+import './zone.js';
+import './webhook.js';
+import './filesystem-HASH.js';
+"
+`;
+
+exports[`@koi/core API surface ./brick-store has stable type surface 1`] = `
+"export { v as AdvisoryLock, w as AgentArtifact, g as BrickArtifact, Q as BrickArtifactBase, V as BrickDriftContext, W as BrickFitnessMetrics, _ as BrickPort, a4 as BrickRequires, a8 as BrickUpdate, aT as CompositeArtifact, b4 as CounterExample, b8 as DEFAULT_BRICK_FITNESS, bk as DEFAULT_TRAIL_CONFIG, bl as DEFAULT_TRAIL_STRENGTH, bV as ForgeQuery, b_ as ForgeStore, I as ImplementationArtifact, cs as LatencySampler, ct as LockHandle, cu as LockMode, cv as LockRequest, d6 as PipelineStep, dV as SkillArtifact, ee as StoreChangeEvent, ef as StoreChangeKind, eg as StoreChangeNotifier, et as TestCase, eu as ToolArtifact, eB as TrailConfig } from './assembly-HASH.js';
+import './errors.js';
+import './common.js';
+import './message.js';
+import './channel.js';
+import './zone.js';
+import './webhook.js';
+import './filesystem-HASH.js';
+"
+`;
+
+exports[`@koi/core API surface ./sandbox-adapter has stable type surface 1`] = `
+"import { SandboxProfile } from './sandbox-HASH.js';
+import './assembly-HASH.js';
+import './errors.js';
+import './common.js';
+import './message.js';
+import './channel.js';
+import './zone.js';
+import './webhook.js';
+import './filesystem-HASH.js';
+
+/**
+ * Sandbox adapter contract — pluggable sandbox backends for isolated execution.
+ *
+ * Defines the extension point for sandbox providers (OS-level, cloud, WASM).
+ * Each backend implements SandboxAdapter to create SandboxInstance environments.
+ *
+ * Note: These types describe OS/container-level process execution (exitCode, stdout, stderr).
+ * The SandboxResult in sandbox-executor.ts describes code-level return values (output, durationMs).
+ */
+
+/** Options for executing a command inside a sandbox instance. */
+interface SandboxExecOptions {
+    readonly cwd?: string;
+    readonly env?: Readonly<Record<string, string>>;
+    readonly stdin?: string;
+    readonly timeoutMs?: number;
+    /** Streaming callback for stdout chunks. */
+    readonly onStdout?: (chunk: string) => void;
+    /** Streaming callback for stderr chunks. */
+    readonly onStderr?: (chunk: string) => void;
+    /** Maximum bytes to capture for stdout+stderr. Default: 10 MB. */
+    readonly maxOutputBytes?: number;
+}
+/** Result of a completed sandboxed execution (process-level). */
+interface SandboxAdapterResult {
+    readonly exitCode: number;
+    readonly stdout: string;
+    readonly stderr: string;
+    readonly signal?: string;
+    readonly durationMs: number;
+    readonly timedOut: boolean;
+    readonly oomKilled: boolean;
+    /** Whether stdout or stderr was truncated due to maxOutputBytes. */
+    readonly truncated?: boolean;
+}
+/**
+ * A running sandbox environment. Stateful — must be destroyed when done.
+ *
+ * For OS-level backends, the instance wraps per-command process isolation.
+ * For cloud backends, the instance represents a live microVM or container.
+ */
+interface SandboxInstance {
+    readonly exec: (command: string, args: readonly string[], options?: SandboxExecOptions) => Promise<SandboxAdapterResult>;
+    readonly readFile: (path: string) => Promise<Uint8Array>;
+    readonly writeFile: (path: string, content: Uint8Array) => Promise<void>;
+    readonly destroy: () => Promise<void>;
+}
+/**
+ * Backend that creates sandbox instances from a profile.
+ *
+ * Each backend (OS-level, E2B, Vercel, Cloudflare, Daytona, K8s)
+ * implements this contract as an independent L2 package.
+ */
+interface SandboxAdapter {
+    readonly name: string;
+    readonly create: (profile: SandboxProfile) => Promise<SandboxInstance>;
+}
+
+export type { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance };
+"
+`;
+
+exports[`@koi/core API surface ./sandbox-executor has stable type surface 1`] = `
+"/**
+ * Sandbox executor contract — injected dependency for code execution in isolation.
+ *
+ * Used by @koi/forge (verification pipeline) and @koi/sandbox-ipc (IPC bridge).
+ * The executor runs arbitrary code in an OS-level sandbox and returns a typed result.
+ *
+ * Note: @koi/sandbox (L2) also defines a \`SandboxResult\` for OS process output
+ * (exitCode, stdout, stderr). These are different types serving different purposes.
+ * This module's \`SandboxResult\` represents the return value of executed code.
+ */
+type SandboxErrorCode = "TIMEOUT" | "OOM" | "PERMISSION" | "CRASH";
+interface SandboxError {
+    readonly code: SandboxErrorCode;
+    readonly message: string;
+    readonly durationMs: number;
+    /** Raw stack trace from the sandbox subprocess, if available. */
+    readonly stack?: string;
+}
+interface SandboxResult {
+    readonly output: unknown;
+    readonly durationMs: number;
+    readonly memoryUsedBytes?: number;
+}
+/**
+ * Optional execution context — provides workspace and dependency metadata
+ * for bricks that require npm packages or filesystem access.
+ */
+interface ExecutionContext {
+    /** Absolute path to the brick's per-dependency workspace (contains node_modules). */
+    readonly workspacePath?: string;
+    /** Absolute path to the brick's entry .ts file within the workspace. */
+    readonly entryPath?: string;
+    /** Whether the brick is allowed to make network requests. Default: false. */
+    readonly networkAllowed?: boolean;
+    /** OS-level resource limits for the subprocess. */
+    readonly resourceLimits?: {
+        readonly maxMemoryMb?: number;
+        readonly maxPids?: number;
+    };
+}
+interface SandboxExecutor {
+    readonly execute: (code: string, input: unknown, timeoutMs: number, context?: ExecutionContext) => Promise<{
+        readonly ok: true;
+        readonly value: SandboxResult;
+    } | {
+        readonly ok: false;
+        readonly error: SandboxError;
+    }>;
+}
+
+export type { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult };
+"
+`;
+
+exports[`@koi/core API surface ./sandbox-profile has stable type surface 1`] = `
+"import { l as TrustTier } from './assembly-HASH.js';
+import './errors.js';
+import './common.js';
+import './message.js';
+import './channel.js';
+import './zone.js';
+import './webhook.js';
+import './filesystem-HASH.js';
+
+/**
+ * Sandbox profile contract — platform-agnostic isolation policy.
+ *
+ * Defines what a sandboxed process is allowed to do: filesystem access,
+ * network access, and resource limits. Used by @koi/sandbox (OS-level)
+ * and @koi/sandbox-ipc (IPC bridge) to configure execution environments.
+ *
+ * Platform-specific implementations (seatbelt, bwrap, Docker) translate
+ * this profile into their native configuration format.
+ */
+
+/** Filesystem isolation policy. */
+interface FilesystemPolicy {
+    readonly allowRead?: readonly string[];
+    readonly denyRead?: readonly string[];
+    readonly allowWrite?: readonly string[];
+    readonly denyWrite?: readonly string[];
+}
+/** Network isolation policy. */
+interface NetworkPolicy {
+    readonly allow: boolean;
+    readonly allowedHosts?: readonly string[];
+}
+/** OS-level resource limits for sandboxed processes. */
+interface ResourceLimits {
+    readonly maxMemoryMb?: number;
+    readonly timeoutMs?: number;
+    readonly maxPids?: number;
+    readonly maxOpenFiles?: number;
+}
+/** Nexus FUSE mount — mounts Nexus virtual filesystem inside a sandbox. */
+interface NexusFuseMount {
+    readonly nexusUrl: string;
+    readonly apiKey: string;
+    readonly mountPath: string;
+    readonly agentId?: string;
+}
+/** Declarative sandbox profile — platform-agnostic policy. */
+interface SandboxProfile {
+    readonly tier: TrustTier;
+    readonly filesystem: FilesystemPolicy;
+    readonly network: NetworkPolicy;
+    readonly resources: ResourceLimits;
+    readonly env?: Readonly<Record<string, string>>;
+    readonly nexusMounts?: readonly NexusFuseMount[];
+}
+
+export type { FilesystemPolicy, NetworkPolicy, NexusFuseMount, ResourceLimits, SandboxProfile };
+"
+`;
+
+exports[`@koi/core API surface ./skill-registry has stable type surface 1`] = `
+"export { bi as DEFAULT_SKILL_SEARCH_LIMIT, dX as SkillId, dZ as SkillPage, d_ as SkillPublishRequest, d$ as SkillRegistryBackend, e0 as SkillRegistryChangeEvent, e1 as SkillRegistryChangeKind, e2 as SkillRegistryEntry, e3 as SkillRegistryReader, e4 as SkillRegistryWriter, e5 as SkillSearchQuery, e7 as SkillVersion, fp as skillId } from './assembly-HASH.js';
+import './errors.js';
+import './common.js';
+import './message.js';
+import './channel.js';
+import './zone.js';
+import './webhook.js';
+import './filesystem-HASH.js';
+"
+`;
+
+exports[`@koi/core API surface ./permission-backend has stable type surface 1`] = `
+"import { JsonObject } from './common.js';
+
+/**
+ * PermissionBackend — pluggable authorization contract (L0).
+ *
+ * Supports sync (in-memory pattern matching) and async (OPA, OpenFGA, Cedar,
+ * HTTP ReBAC) backends behind the same interface.
+ */
+
+interface PermissionQuery {
+    readonly principal: string;
+    readonly action: string;
+    readonly resource: string;
+    readonly context?: JsonObject;
+}
+type PermissionDecision = {
+    readonly effect: "allow";
+} | {
+    readonly effect: "deny";
+    readonly reason: string;
+} | {
+    readonly effect: "ask";
+    readonly reason: string;
+};
+interface PermissionBackend {
+    readonly check: (query: PermissionQuery) => PermissionDecision | Promise<PermissionDecision>;
+    readonly checkBatch?: (queries: readonly PermissionQuery[]) => readonly PermissionDecision[] | Promise<readonly PermissionDecision[]>;
+    readonly dispose?: () => void | Promise<void>;
+}
+
+export type { PermissionBackend, PermissionDecision, PermissionQuery };
+"
+`;
+
+exports[`@koi/core API surface ./version-index has stable type surface 1`] = `
+"export { eM as VersionIndexBackend, eN as VersionIndexReader, eO as VersionIndexWriter } from './assembly-HASH.js';
+import './errors.js';
+import './common.js';
+import './message.js';
+import './channel.js';
+import './zone.js';
+import './webhook.js';
+import './filesystem-HASH.js';
+"
+`;
+
+exports[`@koi/core API surface ./version-types has stable type surface 1`] = `
+"export { dd as PublisherId, dT as ShadowWarning, eJ as VersionChangeEvent, eK as VersionChangeKind, eL as VersionEntry, eP as VersionedBrickRef, fk as publisherId } from './assembly-HASH.js';
+import './errors.js';
+import './common.js';
+import './message.js';
+import './channel.js';
+import './zone.js';
+import './webhook.js';
+import './filesystem-HASH.js';
+"
+`;
+
+exports[`@koi/core API surface ./run-report has stable type surface 1`] = `
+"import { JsonObject } from './common.js';
+import { A as AgentId, i as SessionId, du as RunId, M as ArtifactRef } from './assembly-HASH.js';
+import './errors.js';
+import './message.js';
+import './channel.js';
+import './zone.js';
+import './webhook.js';
+import './filesystem-HASH.js';
+
+/**
+ * Run report types — structured summary of an autonomous agent run.
+ *
+ * Pure types only. No runtime code, no imports from other packages.
+ * Reuses ArtifactRef from handoff.ts for artifact references.
+ */
+
+/** A single action (model call or tool call) recorded during a run. */
+interface ActionEntry {
+    readonly kind: "model_call" | "tool_call";
+    readonly name: string;
+    readonly turnIndex: number;
+    readonly durationMs: number;
+    readonly success: boolean;
+    readonly errorMessage?: string | undefined;
+    readonly tokenUsage?: {
+        readonly inputTokens: number;
+        readonly outputTokens: number;
+    } | undefined;
+    /** Estimated cost in USD for this action, when available. */
+    readonly costUsd?: number | undefined;
+}
+/** An issue (error, warning, informational) encountered during a run. */
+interface IssueEntry {
+    readonly severity: "critical" | "warning" | "info";
+    readonly message: string;
+    readonly turnIndex: number;
+    readonly resolved: boolean;
+    readonly resolution?: string | undefined;
+}
+/** AI-generated or template summary with recommendations. */
+interface ReportSummary {
+    readonly summary: string;
+    readonly recommendations: readonly string[];
+}
+/** Timing metadata for the run. */
+interface RunDuration {
+    readonly startedAt: number;
+    readonly completedAt: number;
+    readonly durationMs: number;
+    readonly totalTurns: number;
+    readonly totalActions: number;
+    readonly truncated: boolean;
+}
+/** Token usage and estimated cost for the run. */
+interface RunCost {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly totalTokens: number;
+    readonly estimatedCostUsd?: number | undefined;
+}
+/** Structured report of an autonomous agent run. */
+interface RunReport {
+    readonly agentId: AgentId;
+    readonly sessionId: SessionId;
+    readonly runId: RunId;
+    readonly summary: string;
+    readonly objective?: string | undefined;
+    readonly duration: RunDuration;
+    readonly actions: readonly ActionEntry[];
+    readonly artifacts: readonly ArtifactRef[];
+    readonly issues: readonly IssueEntry[];
+    readonly cost: RunCost;
+    readonly recommendations: readonly string[];
+    readonly childReports?: readonly RunReport[] | undefined;
+    readonly metadata?: JsonObject | undefined;
+}
+/** Persistence backend for run reports. */
+interface ReportStore {
+    readonly put: (report: RunReport) => void | Promise<void>;
+    readonly getBySession: (sessionId: SessionId) => readonly RunReport[] | Promise<readonly RunReport[]>;
+}
+
+export type { ActionEntry, IssueEntry, ReportStore, ReportSummary, RunCost, RunDuration, RunReport };
+"
+`;
+
+exports[`@koi/core API surface ./elicitation has stable type surface 1`] = `
+"/**
+ * Elicitation types — structured user questioning contract (Layer 0).
+ *
+ * Defines the data shapes for asking users structured questions
+ * (multi-choice or free-text) and receiving their responses.
+ * No runtime code — types only.
+ */
+/** A single predefined choice within a question. */
+interface ElicitationOption {
+    /** Concise choice text (1-5 words). */
+    readonly label: string;
+    /** Explanation of what this option means or what happens if chosen. */
+    readonly description: string;
+}
+/** A structured question to present to a user. */
+interface ElicitationQuestion {
+    /** Full question text. Should be clear, specific, and end with a question mark. */
+    readonly question: string;
+    /** Short label for UI grouping (max 12 chars). E.g., "Approach", "Library". */
+    readonly header?: string | undefined;
+    /** Predefined choices for the user (2+). */
+    readonly options: readonly ElicitationOption[];
+    /** Whether the user can select multiple options. Default: false. */
+    readonly multiSelect?: boolean | undefined;
+}
+/** The user's response to an elicitation question. */
+interface ElicitationResult {
+    /** Labels of selected options (empty if free-text only). */
+    readonly selected: readonly string[];
+    /** Custom text input when the user chooses "Other" or types freely. */
+    readonly freeText?: string | undefined;
+}
+
+export type { ElicitationOption, ElicitationQuestion, ElicitationResult };
+"
+`;
+
+exports[`@koi/core API surface ./mailbox has stable type surface 1`] = `
+"import './common.js';
+export { y as AgentMessage, z as AgentMessageInput, cB as MailboxComponent, cH as MessageFilter, cI as MessageId, cJ as MessageKind, fi as messageId } from './assembly-HASH.js';
+import './errors.js';
+import './message.js';
+import './channel.js';
+import './zone.js';
+import './webhook.js';
+import './filesystem-HASH.js';
+"
+`;
+
+exports[`@koi/core API surface ./security-analyzer has stable type surface 1`] = `
+"import { JsonObject } from './common.js';
+
+/**
+ * SecurityAnalyzer — dynamic risk classification contract (Layer 0).
+ *
+ * Evaluates a tool call and assigns a RiskLevel. Plugs into @koi/exec-approvals
+ * and @koi/middleware-permissions via the withRiskAnalysis HOF in
+ * @koi/security-analyzer.
+ *
+ * Zero dependencies — types only.
+ */
+
+/**
+ * Ordered risk levels from least to most severe.
+ * "unknown" means the analyzer errored or was unavailable (fail-open).
+ */
+type RiskLevel = "low" | "medium" | "high" | "critical" | "unknown";
+/**
+ * Canonical ordering of RiskLevel from least to most severe.
+ * Use maxRiskLevel() from @koi/security-analyzer to compare levels.
+ */
+declare const RISK_LEVEL_ORDER: readonly RiskLevel[];
+/**
+ * A single matched pattern and its associated risk classification.
+ */
+interface RiskFinding {
+    /** The raw pattern string that matched, e.g. "rm -rf". */
+    readonly pattern: string;
+    /** Human-readable explanation of why this is risky. */
+    readonly description: string;
+    /** Risk level assigned to this specific finding. */
+    readonly riskLevel: RiskLevel;
+}
+/**
+ * Aggregated result from a SecurityAnalyzer.analyze() call.
+ */
+interface RiskAnalysis {
+    /** Maximum risk level across all findings. */
+    readonly riskLevel: RiskLevel;
+    /** All individual findings that contributed to riskLevel. */
+    readonly findings: readonly RiskFinding[];
+    /** Human-readable summary for display in approval prompts. */
+    readonly rationale: string;
+}
+/**
+ * Sentinel value used when an analyzer errors or times out (fail-open).
+ * onAsk still runs when this value is returned.
+ */
+declare const RISK_ANALYSIS_UNKNOWN: RiskAnalysis;
+/**
+ * Pluggable risk classification contract.
+ *
+ * Implementations may be synchronous (rules-based) or asynchronous (LLM-based,
+ * remote API, etc.). Return type is \`RiskAnalysis | Promise<RiskAnalysis>\` per
+ * Koi I/O-bound interface convention — callers must always await.
+ *
+ * Analyzer errors must NOT propagate to callers; use the withRiskAnalysis HOF
+ * from @koi/security-analyzer which enforces fail-open semantics.
+ */
+interface SecurityAnalyzer {
+    readonly analyze: (toolId: string, input: JsonObject, 
+    /** Optional session/turn metadata (sessionId, agentId, turnIndex, etc.) */
+    context?: JsonObject) => RiskAnalysis | Promise<RiskAnalysis>;
+}
+
+export { RISK_ANALYSIS_UNKNOWN, RISK_LEVEL_ORDER, type RiskAnalysis, type RiskFinding, type RiskLevel, type SecurityAnalyzer };
+"
+`;
+
+exports[`@koi/core API surface ./pay-ledger has stable type surface 1`] = `
+"/**
+ * PayLedger contract — persistent credit ledger interface.
+ *
+ * Defines the L0 contract for credit-based budget enforcement.
+ * L2 implementations (e.g., @koi/pay-nexus) talk to a backend
+ * (TigerBeetle + PostgreSQL via Nexus pay API).
+ *
+ * All amounts are decimal strings (e.g., "100.50") to avoid
+ * floating-point precision issues at the interface boundary.
+ * Implementations may use integer micro-units internally.
+ */
+interface PayBalance {
+    readonly available: string;
+    readonly reserved: string;
+    readonly total: string;
+}
+interface PayReceipt {
+    readonly id: string;
+    readonly method: string;
+    readonly amount: string;
+    readonly fromAgent: string;
+    readonly toAgent: string;
+    readonly memo: string | null;
+    readonly timestamp: string | null;
+}
+interface PayReservation {
+    readonly id: string;
+    readonly amount: string;
+    readonly purpose: string;
+    readonly expiresAt: string | null;
+    readonly status: string;
+}
+interface PayMeterResult {
+    readonly success: boolean;
+}
+interface PayCanAffordResult {
+    readonly canAfford: boolean;
+    readonly amount: string;
+}
+interface PayLedger {
+    /** Get current balance (available, reserved, total). */
+    readonly getBalance: () => PayBalance | Promise<PayBalance>;
+    /** Check whether the account can afford a given amount. */
+    readonly canAfford: (amount: string) => PayCanAffordResult | Promise<PayCanAffordResult>;
+    /** Transfer credits to another agent. */
+    readonly transfer: (to: string, amount: string, memo?: string) => PayReceipt | Promise<PayReceipt>;
+    /** Reserve credits for future use. */
+    readonly reserve: (amount: string, timeoutSeconds?: number, purpose?: string) => PayReservation | Promise<PayReservation>;
+    /** Commit a reservation (optionally with adjusted amount). */
+    readonly commit: (reservationId: string, actualAmount?: string) => void | Promise<void>;
+    /** Release a reservation, returning credits to available balance. */
+    readonly release: (reservationId: string) => void | Promise<void>;
+    /** Record a metered usage event. */
+    readonly meter: (amount: string, eventType?: string) => PayMeterResult | Promise<PayMeterResult>;
+}
+
+export type { PayBalance, PayCanAffordResult, PayLedger, PayMeterResult, PayReceipt, PayReservation };
+"
+`;
+
+exports[`@koi/core API surface ./zone has stable type surface 1`] = `
+"/**
+ * Zone types — multi-zone agent coordination (L0 contract).
+ *
+ * Defines ZoneId branded type, ZoneDescriptor, ZoneEvent discriminated union,
+ * and the ZoneRegistry interface for zone lifecycle management.
+ *
+ * Exception: zoneId() branded type constructor is permitted in L0 as a
+ * zero-logic identity cast for type safety.
+ */
+declare const __zoneBrand: unique symbol;
+/** Branded string type for zone identifiers. */
+type ZoneId = string & {
+    readonly [__zoneBrand]: "ZoneId";
+};
+/** Create a branded ZoneId from a plain string. */
+declare function zoneId(id: string): ZoneId;
+/** Zone lifecycle states. */
+type ZoneStatus = "active" | "draining" | "offline";
+/** A registered zone's identity and metadata. */
+interface ZoneDescriptor {
+    readonly zoneId: ZoneId;
+    readonly displayName: string;
+    readonly status: ZoneStatus;
+    /** Arbitrary metadata (labels, region, etc.). */
+    readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+    /** Unix timestamp ms when the zone was registered. */
+    readonly registeredAt: number;
+}
+/** Events emitted by the ZoneRegistry on zone state changes. */
+type ZoneEvent = {
+    readonly kind: "zone_registered";
+    readonly descriptor: ZoneDescriptor;
+} | {
+    readonly kind: "zone_deregistered";
+    readonly zoneId: ZoneId;
+} | {
+    readonly kind: "zone_updated";
+    readonly descriptor: ZoneDescriptor;
+} | {
+    readonly kind: "zone_status_changed";
+    readonly zoneId: ZoneId;
+    readonly from: ZoneStatus;
+    readonly to: ZoneStatus;
+};
+/** Filter criteria for listing registered zones. */
+interface ZoneFilter {
+    readonly status?: ZoneStatus | undefined;
+    readonly zoneId?: ZoneId | undefined;
+}
+/**
+ * Pluggable zone lifecycle registry. Manages zone registration, lookup,
+ * listing, and change notification.
+ *
+ * All methods return \`T | Promise<T>\` — in-memory implementations are sync,
+ * network-backed implementations (e.g., Nexus) are async.
+ */
+interface ZoneRegistry extends AsyncDisposable {
+    /** Register a new zone. Returns the stored descriptor. */
+    readonly register: (descriptor: ZoneDescriptor) => ZoneDescriptor | Promise<ZoneDescriptor>;
+    /** Remove a zone from the registry. Returns true if found. */
+    readonly deregister: (zoneId: ZoneId) => boolean | Promise<boolean>;
+    /** Look up a zone by ID. Returns undefined if not found. */
+    readonly lookup: (zoneId: ZoneId) => ZoneDescriptor | undefined | Promise<ZoneDescriptor | undefined>;
+    /** List zones matching an optional filter. */
+    readonly list: (filter?: ZoneFilter) => readonly ZoneDescriptor[] | Promise<readonly ZoneDescriptor[]>;
+    /** Subscribe to zone change events. Returns unsubscribe function. */
+    readonly watch: (listener: (event: ZoneEvent) => void) => () => void;
+}
+
+export { type ZoneDescriptor, type ZoneEvent, type ZoneFilter, type ZoneId, type ZoneRegistry, type ZoneStatus, zoneId };
+"
+`;
+
+exports[`@koi/core API surface ./cost-tracker has stable type surface 1`] = `
+"/**
+ * Cost tracking contracts — per-session, per-tool, per-model cost transparency.
+ *
+ * Pure types only. No runtime code, no imports from other packages.
+ * Defines the canonical cost tracking interfaces shared across L0, L1, and L2.
+ */
+/** A single cost event recorded during a model call. */
+interface CostEntry {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly model: string;
+    readonly costUsd: number;
+    readonly timestamp: number;
+    /** Optional tool attribution — set when the model call was on behalf of a tool. */
+    readonly toolName?: string | undefined;
+}
+/** Aggregated cost for a single model within a session. */
+interface ModelCostBreakdown {
+    readonly model: string;
+    readonly totalCostUsd: number;
+    readonly totalInputTokens: number;
+    readonly totalOutputTokens: number;
+    readonly callCount: number;
+}
+/** Aggregated cost for a single tool within a session. */
+interface ToolCostBreakdown {
+    readonly toolName: string;
+    readonly totalCostUsd: number;
+    readonly callCount: number;
+}
+/** Full cost breakdown for a session — total + per-model + per-tool. */
+interface CostBreakdown {
+    readonly totalCostUsd: number;
+    readonly byModel: readonly ModelCostBreakdown[];
+    readonly byTool: readonly ToolCostBreakdown[];
+}
+/**
+ * Calculates the USD cost of a model call from token counts.
+ *
+ * Implementations may use static rate tables or dynamic pricing APIs.
+ */
+interface CostCalculator {
+    readonly calculate: (model: string, inputTokens: number, outputTokens: number) => number;
+}
+/**
+ * Session-scoped budget tracker with breakdown queries.
+ *
+ * All methods return \`T | Promise<T>\` so implementations can be
+ * sync (in-memory) or async (network/database) without interface changes.
+ */
+interface BudgetTracker {
+    readonly record: (sessionId: string, entry: CostEntry) => void | Promise<void>;
+    readonly totalSpend: (sessionId: string) => number | Promise<number>;
+    readonly remaining: (sessionId: string, budget: number) => number | Promise<number>;
+    readonly breakdown: (sessionId: string) => CostBreakdown | Promise<CostBreakdown>;
+}
+/** Enriched usage information passed to onUsage callbacks. */
+interface UsageInfo {
+    readonly entry: CostEntry;
+    readonly totalSpent: number;
+    readonly remaining: number;
+    readonly breakdown: CostBreakdown;
+}
+
+export type { BudgetTracker, CostBreakdown, CostCalculator, CostEntry, ModelCostBreakdown, ToolCostBreakdown, UsageInfo };
+"
+`;
+
+exports[`@koi/core API surface ./procfs has stable type surface 1`] = `
+"/**
+ * ProcFs contract — virtual filesystem for agent introspection.
+ *
+ * Read-only entries expose agent state lazily; writable entries
+ * allow runtime tuning (e.g., priority).
+ * L0 types only — implementations live in L2.
+ */
+/** Read-only introspection entry — lazily evaluated. */
+interface ProcEntry {
+    readonly read: () => unknown | Promise<unknown>;
+    readonly list?: () => readonly string[] | Promise<readonly string[]>;
+}
+/** Writable proc entry for runtime tuning (e.g., priority). */
+interface WritableProcEntry extends ProcEntry {
+    readonly write: (value: unknown) => void | Promise<void>;
+}
+/** Virtual filesystem for agent introspection and runtime tuning. */
+interface ProcFs {
+    readonly mount: (path: string, entry: ProcEntry | WritableProcEntry) => void;
+    readonly unmount: (path: string) => void;
+    readonly read: (path: string) => unknown | Promise<unknown>;
+    readonly write: (path: string, value: unknown) => void | Promise<void>;
+    readonly list: (path: string) => readonly string[] | Promise<readonly string[]>;
+    readonly entries: () => readonly string[];
+}
+
+export type { ProcEntry, ProcFs, WritableProcEntry };
+"
+`;

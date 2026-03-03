@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * E2E test script for @koi/webhook-delivery — validates the full outbound
  * webhook pipeline with a real Anthropic LLM call through createKoi + createPiAdapter.
@@ -31,18 +32,18 @@
  * Cost: ~$0.02-0.05 per run (haiku model, minimal prompts).
  */
 
-import type { EngineEvent } from "../packages/core/src/engine.js";
-import type { EventBackend } from "../packages/core/src/event-backend.js";
-import type { KoiMiddleware, SessionContext } from "../packages/core/src/middleware.js";
-import type { WebhookPayload } from "../packages/core/src/webhook.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createPiAdapter } from "../packages/engine-pi/src/adapter.js";
-import { createInMemoryEventBackend } from "../packages/events-memory/src/memory-backend.js";
-import { DEFAULT_WEBHOOK_DELIVERY_CONFIG } from "../packages/webhook-delivery/src/config.js";
-import type { WebhookDeliveryService } from "../packages/webhook-delivery/src/delivery-service.js";
-import { createWebhookDeliveryService } from "../packages/webhook-delivery/src/delivery-service.js";
-import { createWebhookMiddleware } from "../packages/webhook-delivery/src/middleware.js";
-import { verifySignature } from "../packages/webhook-delivery/src/signing.js";
+import { createPiAdapter } from "../packages/drivers/engine-pi/src/adapter.js";
+import { createInMemoryEventBackend } from "../packages/fs/events-memory/src/memory-backend.js";
+import type { EngineEvent } from "../packages/kernel/core/src/engine.js";
+import type { EventBackend } from "../packages/kernel/core/src/event-backend.js";
+import type { KoiMiddleware, SessionContext } from "../packages/kernel/core/src/middleware.js";
+import type { WebhookPayload } from "../packages/kernel/core/src/webhook.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import { DEFAULT_WEBHOOK_DELIVERY_CONFIG } from "../packages/net/webhook-delivery/src/config.js";
+import type { WebhookDeliveryService } from "../packages/net/webhook-delivery/src/delivery-service.js";
+import { createWebhookDeliveryService } from "../packages/net/webhook-delivery/src/delivery-service.js";
+import { createWebhookMiddleware } from "../packages/net/webhook-delivery/src/middleware.js";
+import { verifySignature } from "../packages/net/webhook-delivery/src/signing.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

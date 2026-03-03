@@ -23,11 +23,11 @@
  */
 
 import { existsSync } from "node:fs";
-import { createPlaywrightBrowserDriver } from "../packages/browser-playwright/src/playwright-browser-driver.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createPiAdapter } from "../packages/engine-pi/src/adapter.js";
-import { createBrowserProvider } from "../packages/tool-browser/src/browser-component-provider.js";
-import { ALL_OPERATIONS } from "../packages/tool-browser/src/constants.js";
+import { createPlaywrightBrowserDriver } from "../packages/drivers/browser-playwright/src/playwright-browser-driver.js";
+import { createPiAdapter } from "../packages/drivers/engine-pi/src/adapter.js";
+import { createBrowserProvider } from "../packages/fs/tool-browser/src/browser-component-provider.js";
+import { ALL_OPERATIONS } from "../packages/fs/tool-browser/src/constants.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
 
 // ---------------------------------------------------------------------------
 // Config

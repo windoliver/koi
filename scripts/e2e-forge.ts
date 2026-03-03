@@ -12,15 +12,15 @@
  *   ANTHROPIC_API_KEY=sk-... bun scripts/e2e-forge.ts
  */
 
-import { createAdversarialVerifiers } from "../packages/forge/src/adversarial-verifiers.js";
-import { createDefaultForgeConfig } from "../packages/forge/src/config.js";
-import { createInMemoryForgeStore } from "../packages/forge/src/memory-store.js";
-import { createForgeSkillTool } from "../packages/forge/src/tools/forge-skill.js";
-import { createForgeToolTool } from "../packages/forge/src/tools/forge-tool.js";
-import { createPromoteForgeTool } from "../packages/forge/src/tools/promote-forge.js";
-import { createSearchForgeTool } from "../packages/forge/src/tools/search-forge.js";
-import type { ForgeDeps } from "../packages/forge/src/tools/shared.js";
-import type { ForgeResult, SandboxExecutor } from "../packages/forge/src/types.js";
+import { createAdversarialVerifiers } from "../packages/meta/forge/src/adversarial-verifiers.js";
+import { createDefaultForgeConfig } from "../packages/meta/forge/src/config.js";
+import { createInMemoryForgeStore } from "../packages/meta/forge/src/memory-store.js";
+import { createForgeSkillTool } from "../packages/meta/forge/src/tools/forge-skill.js";
+import { createForgeToolTool } from "../packages/meta/forge/src/tools/forge-tool.js";
+import { createPromoteForgeTool } from "../packages/meta/forge/src/tools/promote-forge.js";
+import { createSearchForgeTool } from "../packages/meta/forge/src/tools/search-forge.js";
+import type { ForgeDeps } from "../packages/meta/forge/src/tools/shared.js";
+import type { ForgeResult, SandboxExecutor } from "../packages/meta/forge/src/types.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

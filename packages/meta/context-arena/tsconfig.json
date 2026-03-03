@@ -1,0 +1,43 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*"],
+  "references": [
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../mm/context"
+    },
+    {
+      "path": "../../mm/memory-fs"
+    },
+    {
+      "path": "../../mm/middleware-compactor"
+    },
+    {
+      "path": "../../mm/middleware-context-editing"
+    },
+    {
+      "path": "../../mm/middleware-hot-memory"
+    },
+    {
+      "path": "../../mm/middleware-personalization"
+    },
+    {
+      "path": "../../mm/middleware-preference"
+    },
+    {
+      "path": "../../mm/snapshot-chain-store"
+    },
+    {
+      "path": "../../mm/token-estimator"
+    },
+    {
+      "path": "../../mm/tool-squash"
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * Manual E2E test: @koi/middleware-context-editing
  *
@@ -18,21 +19,21 @@
  *   ANTHROPIC_API_KEY=sk-... bun scripts/e2e-context-editing.ts
  */
 
+import { createLoopAdapter } from "../packages/drivers/engine-loop/src/loop-adapter.js";
+import { createPiAdapter } from "../packages/drivers/engine-pi/src/adapter.js";
+import { createAnthropicAdapter } from "../packages/drivers/model-router/src/adapters/anthropic.js";
 import type {
   EngineEvent,
   InboundMessage,
   KoiMiddleware,
   ModelHandler,
   ModelRequest,
-} from "../packages/core/src/index.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createLoopAdapter } from "../packages/engine-loop/src/loop-adapter.js";
-import { createPiAdapter } from "../packages/engine-pi/src/adapter.js";
-import { createContextEditingMiddleware } from "../packages/middleware-context-editing/src/context-editing.js";
-import { editMessages } from "../packages/middleware-context-editing/src/edit-messages.js";
-import { heuristicTokenEstimator } from "../packages/middleware-context-editing/src/estimator.js";
-import { CONTEXT_EDITING_DEFAULTS } from "../packages/middleware-context-editing/src/types.js";
-import { createAnthropicAdapter } from "../packages/model-router/src/adapters/anthropic.js";
+} from "../packages/kernel/core/src/index.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import { createContextEditingMiddleware } from "../packages/mm/middleware-context-editing/src/context-editing.js";
+import { editMessages } from "../packages/mm/middleware-context-editing/src/edit-messages.js";
+import { heuristicTokenEstimator } from "../packages/mm/middleware-context-editing/src/estimator.js";
+import { CONTEXT_EDITING_DEFAULTS } from "../packages/mm/middleware-context-editing/src/types.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

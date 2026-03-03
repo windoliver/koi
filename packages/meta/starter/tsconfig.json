@@ -1,0 +1,31 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*"],
+  "references": [
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../fs/filesystem"
+    },
+    {
+      "path": "../../kernel/manifest"
+    },
+    {
+      "path": "../../middleware/middleware-goal-anchor"
+    },
+    {
+      "path": "../../security/scope"
+    },
+    {
+      "path": "../../kernel/soul"
+    },
+    {
+      "path": "../../fs/tool-browser"
+    }
+  ]
+}

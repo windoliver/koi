@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * Manual E2E test: @koi/tracing → real LLM call → OTel span verification.
  *
@@ -10,10 +11,10 @@
  *   ANTHROPIC_API_KEY=sk-... bun scripts/e2e-tracing.ts
  */
 
-import type { EngineEvent, ModelRequest } from "../packages/core/src/index.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createLoopAdapter } from "../packages/engine-loop/src/loop-adapter.js";
-import { createAnthropicAdapter } from "../packages/model-router/src/adapters/anthropic.js";
+import { createLoopAdapter } from "../packages/drivers/engine-loop/src/loop-adapter.js";
+import { createAnthropicAdapter } from "../packages/drivers/model-router/src/adapters/anthropic.js";
+import type { EngineEvent, ModelRequest } from "../packages/kernel/core/src/index.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
 import {
   GEN_AI_OPERATION_NAME,
   GEN_AI_RESPONSE_MODEL,
@@ -22,10 +23,10 @@ import {
   KOI_AGENT_ID,
   KOI_SESSION_ID,
   KOI_TURN_INDEX,
-} from "../packages/tracing/src/semantic-conventions.js";
-import type { ReadableSpan } from "../packages/tracing/src/test-setup.js";
-import { createTestTracer } from "../packages/tracing/src/test-setup.js";
-import { createTracingMiddleware } from "../packages/tracing/src/tracing.js";
+} from "../packages/observability/tracing/src/semantic-conventions.js";
+import type { ReadableSpan } from "../packages/observability/tracing/src/test-setup.js";
+import { createTestTracer } from "../packages/observability/tracing/src/test-setup.js";
+import { createTracingMiddleware } from "../packages/observability/tracing/src/tracing.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

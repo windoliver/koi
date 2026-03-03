@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * Manual E2E test: Spawn child agent lifecycle (#191)
  *
@@ -15,20 +16,20 @@
  *   ANTHROPIC_API_KEY=sk-... bun scripts/e2e-spawn-lifecycle.ts
  */
 
+import { createLoopAdapter } from "../packages/drivers/engine-loop/src/loop-adapter.js";
+import { createAnthropicAdapter } from "../packages/drivers/model-router/src/adapters/anthropic.js";
 import type {
   ChildLifecycleEvent,
   EngineEvent,
   ModelRequest,
   Tool,
-} from "../packages/core/src/index.js";
-import { toolToken } from "../packages/core/src/index.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createInMemoryRegistry } from "../packages/engine/src/registry.js";
-import { spawnChildAgent } from "../packages/engine/src/spawn-child.js";
-import { createInMemorySpawnLedger } from "../packages/engine/src/spawn-ledger.js";
-import { DEFAULT_SPAWN_POLICY } from "../packages/engine/src/types.js";
-import { createLoopAdapter } from "../packages/engine-loop/src/loop-adapter.js";
-import { createAnthropicAdapter } from "../packages/model-router/src/adapters/anthropic.js";
+} from "../packages/kernel/core/src/index.js";
+import { toolToken } from "../packages/kernel/core/src/index.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import { createInMemoryRegistry } from "../packages/kernel/engine/src/registry.js";
+import { spawnChildAgent } from "../packages/kernel/engine/src/spawn-child.js";
+import { createInMemorySpawnLedger } from "../packages/kernel/engine/src/spawn-ledger.js";
+import { DEFAULT_SPAWN_POLICY } from "../packages/kernel/engine/src/types.js";
 
 // ---------------------------------------------------------------------------
 // Preflight
@@ -210,7 +211,7 @@ const parentWithTool = {
       const combined = new Map(base as ReadonlyMap<string, unknown>);
       combined.set(toolToken("greet") as string, greetTool);
       return combined as unknown as ReadonlyMap<
-        import("../packages/core/src/index.js").SubsystemToken<T>,
+        import("../packages/kernel/core/src/index.js").SubsystemToken<T>,
         T
       >;
     }

@@ -15,21 +15,21 @@
  *   bun scripts/demo-canvas-viewer.ts
  */
 
+import type { KoiError, Result } from "../packages/kernel/core/src/index.js";
 import {
   applySurfaceUpdate,
   componentId,
   createCanvasSurface,
   serializeSurface,
   surfaceId,
-} from "../packages/canvas/src/index.js";
-import type { KoiError, Result } from "../packages/core/src/index.js";
+} from "../packages/net/canvas/src/index.js";
 import type {
   CanvasAuthenticator,
   CanvasAuthResult,
-} from "../packages/gateway/src/canvas-routes.js";
-import { createCanvasServer } from "../packages/gateway/src/canvas-routes.js";
-import { createCanvasSseManager } from "../packages/gateway/src/canvas-sse.js";
-import { createInMemorySurfaceStore } from "../packages/gateway/src/canvas-store.js";
+} from "../packages/net/gateway/src/canvas-routes.js";
+import { createCanvasServer } from "../packages/net/gateway/src/canvas-routes.js";
+import { createCanvasSseManager } from "../packages/net/gateway/src/canvas-sse.js";
+import { createInMemorySurfaceStore } from "../packages/net/gateway/src/canvas-store.js";
 
 // ---------------------------------------------------------------------------
 // Config

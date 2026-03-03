@@ -36,7 +36,7 @@ interface Violation {
 
 /**
  * Files in @koi/core (L0) permitted to have function bodies.
- * Each entry is a relative path from packages/core/src/.
+ * Each entry is a relative path from packages/kernel/core/src/.
  *
  * All functions in these files are either branded type constructors,
  * pure type guards, validation helpers, error factories, or
@@ -77,6 +77,7 @@ export const L0_RUNTIME_ALLOWLIST: ReadonlySet<string> = new Set([
   "scratchpad.ts",
   "workspace.ts",
   "assembly.ts",
+  "process-descriptor.ts",
 ]);
 
 // --- Predicates (exported for testing) ---
@@ -308,100 +309,121 @@ async function scanL0ClassViolations(srcDir: string): Promise<readonly Violation
   return fileViolationGroups.flat();
 }
 
+// --- Package directory listing (2-level deep) ---
+
+/**
+ * Lists package directories at 2 levels deep: packages/<subsystem>/<name>/.
+ * Returns objects with `name` (the package directory name) and `path` (absolute path).
+ */
+async function listPackageDirs(): Promise<
+  readonly { readonly name: string; readonly path: string }[]
+> {
+  const subsystems = await readdir(PACKAGES_DIR, { withFileTypes: true });
+  const results: { readonly name: string; readonly path: string }[] = [];
+  for (const sub of subsystems) {
+    if (!sub.isDirectory()) continue;
+    const subPath = `${PACKAGES_DIR}${sub.name}`;
+    const children = await readdir(subPath, { withFileTypes: true });
+    for (const child of children) {
+      if (!child.isDirectory()) continue;
+      results.push({ name: child.name, path: `${subPath}/${child.name}` });
+    }
+  }
+  return results;
+}
+
 // --- Main ---
 
 async function main(): Promise<void> {
-  const dirs = await readdir(PACKAGES_DIR, { withFileTypes: true });
+  const dirs = await listPackageDirs();
 
   // ── 1. package.json dependency checks ──────────────────────────────────────
 
   const pkgViolationGroups = await Promise.all(
-    dirs
-      .filter((dir) => dir.isDirectory())
-      .map(async (dir): Promise<readonly Violation[]> => {
-        const pkgPath = `${PACKAGES_DIR}${dir.name}/package.json`;
-        const file = Bun.file(pkgPath);
-        if (!(await file.exists())) return [];
+    dirs.map(async (dir): Promise<readonly Violation[]> => {
+      const pkgPath = `${dir.path}/package.json`;
+      const file = Bun.file(pkgPath);
+      if (!(await file.exists())) return [];
 
-        const pkg = (await file.json()) as {
-          name: string;
-          dependencies?: Record<string, string>;
-          devDependencies?: Record<string, string>;
-        };
+      const pkg = (await file.json()) as {
+        name: string;
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
 
-        const koiDeps = getKoiDeps(pkg.dependencies);
-        const koiDevDeps = getKoiDeps(pkg.devDependencies);
-        const allKoiDeps = [...koiDeps, ...koiDevDeps];
+      const koiDeps = getKoiDeps(pkg.dependencies);
+      const koiDevDeps = getKoiDeps(pkg.devDependencies);
+      const allKoiDeps = [...koiDeps, ...koiDevDeps];
 
-        // --- L0: must have ZERO @koi/* deps ---
-        if (L0_PACKAGES.has(pkg.name)) {
-          if (allKoiDeps.length > 0) {
-            return [
-              {
-                pkg: pkg.name,
-                message: `L0 package must have zero @koi/* dependencies, found: ${allKoiDeps.join(", ")}`,
-              },
-            ];
-          }
-          return [];
-        }
-
-        // --- L0u: may depend on L0 + peer L0u ---
-        if (L0U_PACKAGES.has(pkg.name)) {
-          const allowedL0u = new Set([...L0_PACKAGES, ...L0U_PACKAGES]);
-          const badDeps = koiDeps.filter((d) => !allowedL0u.has(d));
-          if (badDeps.length > 0) {
-            return [
-              {
-                pkg: pkg.name,
-                message: `L0u package may only depend on L0 + L0u, found: ${badDeps.join(", ")}`,
-              },
-            ];
-          }
-          return [];
-        }
-
-        // --- L1: may depend on L0 + L0u ---
-        if (L1_PACKAGES.has(pkg.name)) {
-          const allowedL1 = new Set([...L0_PACKAGES, ...L0U_PACKAGES]);
-          const badDeps = koiDeps.filter((d) => !allowedL1.has(d));
-          if (badDeps.length > 0) {
-            return [
-              {
-                pkg: pkg.name,
-                message: `L1 package may only depend on L0 + L0u, found: ${badDeps.join(", ")}`,
-              },
-            ];
-          }
-          return [];
-        }
-
-        // --- L3: may depend on any layer (meta-package / orchestrator) ---
-        if (L3_PACKAGES.has(pkg.name)) {
-          return [];
-        }
-
-        // --- L2: runtime deps on L0 + L0u only; devDeps may include L1 + L2 (for tests) ---
-        const allowedRuntime = new Set([...L0_PACKAGES, ...L0U_PACKAGES]);
-        const badDeps = koiDeps.filter((d) => !allowedRuntime.has(d));
-        if (badDeps.length > 0) {
+      // --- L0: must have ZERO @koi/* deps ---
+      if (L0_PACKAGES.has(pkg.name)) {
+        if (allKoiDeps.length > 0) {
           return [
             {
               pkg: pkg.name,
-              message: `L2 runtime deps may only include L0 + L0u, found: ${badDeps.join(", ")}`,
+              message: `L0 package must have zero @koi/* dependencies, found: ${allKoiDeps.join(", ")}`,
             },
           ];
         }
         return [];
-      }),
+      }
+
+      // --- L0u: may depend on L0 + peer L0u ---
+      if (L0U_PACKAGES.has(pkg.name)) {
+        const allowedL0u = new Set([...L0_PACKAGES, ...L0U_PACKAGES]);
+        const badDeps = koiDeps.filter((d) => !allowedL0u.has(d));
+        if (badDeps.length > 0) {
+          return [
+            {
+              pkg: pkg.name,
+              message: `L0u package may only depend on L0 + L0u, found: ${badDeps.join(", ")}`,
+            },
+          ];
+        }
+        return [];
+      }
+
+      // --- L1: may depend on L0 + L0u ---
+      if (L1_PACKAGES.has(pkg.name)) {
+        const allowedL1 = new Set([...L0_PACKAGES, ...L0U_PACKAGES]);
+        const badDeps = koiDeps.filter((d) => !allowedL1.has(d));
+        if (badDeps.length > 0) {
+          return [
+            {
+              pkg: pkg.name,
+              message: `L1 package may only depend on L0 + L0u, found: ${badDeps.join(", ")}`,
+            },
+          ];
+        }
+        return [];
+      }
+
+      // --- L3: may depend on any layer (meta-package / orchestrator) ---
+      if (L3_PACKAGES.has(pkg.name)) {
+        return [];
+      }
+
+      // --- L2: runtime deps on L0 + L0u only; devDeps may include L1 + L2 (for tests) ---
+      const allowedRuntime = new Set([...L0_PACKAGES, ...L0U_PACKAGES]);
+      const badDeps = koiDeps.filter((d) => !allowedRuntime.has(d));
+      if (badDeps.length > 0) {
+        return [
+          {
+            pkg: pkg.name,
+            message: `L2 runtime deps may only include L0 + L0u, found: ${badDeps.join(", ")}`,
+          },
+        ];
+      }
+      return [];
+    }),
   );
 
   const pkgViolations = pkgViolationGroups.flat();
 
   // ── 2. L0 source scans: @koi/core must not import external modules or declare classes ──
 
-  const coreSrcDir = `${PACKAGES_DIR}core/src`;
-  const coreExists = await Bun.file(`${PACKAGES_DIR}core/package.json`).exists();
+  const coreSrcDir = `${PACKAGES_DIR}kernel/core/src`;
+  const coreExists = await Bun.file(`${PACKAGES_DIR}kernel/core/package.json`).exists();
 
   const [l0ImportViolations, l0ClassViolations] = coreExists
     ? await Promise.all([
@@ -418,24 +440,15 @@ async function main(): Promise<void> {
 
   // ── 3. L0u source scan: non-test files must not import from L1 or L2 ───────
 
-  const l0uDirs = dirs.filter(
-    (dir) =>
-      dir.isDirectory() &&
-      // We'll check the package name below after reading package.json — pre-filter by checking
-      // if the dir name could correspond to a known L0u package is not possible without I/O,
-      // so we scan all dirs and filter after reading package.json inline.
-      true,
-  );
-
   const l0uViolationGroups = await Promise.all(
-    l0uDirs.map(async (dir): Promise<readonly Violation[]> => {
-      const pkgPath = `${PACKAGES_DIR}${dir.name}/package.json`;
+    dirs.map(async (dir): Promise<readonly Violation[]> => {
+      const pkgPath = `${dir.path}/package.json`;
       const file = Bun.file(pkgPath);
       if (!(await file.exists())) return [];
       const pkg = (await file.json()) as { name: string };
       if (!L0U_PACKAGES.has(pkg.name)) return [];
 
-      const srcDir = `${PACKAGES_DIR}${dir.name}/src`;
+      const srcDir = `${dir.path}/src`;
       return scanFilesForViolations(
         srcDir,
         pkg.name,
@@ -451,31 +464,29 @@ async function main(): Promise<void> {
   // ── 4. L2 source scan: non-test files must not import from L1 ──────────────
 
   const l2ViolationGroups = await Promise.all(
-    dirs
-      .filter((dir) => dir.isDirectory())
-      .map(async (dir): Promise<readonly Violation[]> => {
-        const pkgPath = `${PACKAGES_DIR}${dir.name}/package.json`;
-        const file = Bun.file(pkgPath);
-        if (!(await file.exists())) return [];
-        const pkg = (await file.json()) as { name: string };
+    dirs.map(async (dir): Promise<readonly Violation[]> => {
+      const pkgPath = `${dir.path}/package.json`;
+      const file = Bun.file(pkgPath);
+      if (!(await file.exists())) return [];
+      const pkg = (await file.json()) as { name: string };
 
-        // Only L2 source is constrained — skip L0, L0u, L1, and L3
-        if (
-          L0_PACKAGES.has(pkg.name) ||
-          L0U_PACKAGES.has(pkg.name) ||
-          L1_PACKAGES.has(pkg.name) ||
-          L3_PACKAGES.has(pkg.name)
-        )
-          return [];
+      // Only L2 source is constrained — skip L0, L0u, L1, and L3
+      if (
+        L0_PACKAGES.has(pkg.name) ||
+        L0U_PACKAGES.has(pkg.name) ||
+        L1_PACKAGES.has(pkg.name) ||
+        L3_PACKAGES.has(pkg.name)
+      )
+        return [];
 
-        const srcDir = `${PACKAGES_DIR}${dir.name}/src`;
-        return scanFilesForViolations(
-          srcDir,
-          pkg.name,
-          isL2Violation,
-          (_specifier, relPath) => `L2 source imports from L1 (@koi/engine) at ${relPath}`,
-        );
-      }),
+      const srcDir = `${dir.path}/src`;
+      return scanFilesForViolations(
+        srcDir,
+        pkg.name,
+        isL2Violation,
+        (_specifier, relPath) => `L2 source imports from L1 (@koi/engine) at ${relPath}`,
+      );
+    }),
   );
 
   const l2Violations = l2ViolationGroups.flat();

@@ -35,10 +35,10 @@
  */
 
 import type { EngineEvent, EngineOutput, KoiMiddleware } from "@koi/core";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createAcpAdapter } from "../packages/engine-acp/src/adapter.js";
-import type { AcpEngineAdapter } from "../packages/engine-acp/src/types.js";
-import { createPiAdapter } from "../packages/engine-pi/src/adapter.js";
+import { createAcpAdapter } from "../packages/drivers/engine-acp/src/adapter.js";
+import type { AcpEngineAdapter } from "../packages/drivers/engine-acp/src/types.js";
+import { createPiAdapter } from "../packages/drivers/engine-pi/src/adapter.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

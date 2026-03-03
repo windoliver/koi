@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * E2E: Long-Running Harness with Pi-Engine (Real LLM).
  *
@@ -17,6 +18,7 @@
  *   ANTHROPIC_API_KEY=sk-... bun scripts/e2e-long-running-pi.ts
  */
 
+import { createPiAdapter } from "../packages/drivers/engine-pi/src/adapter.js";
 import type {
   AgentId,
   EngineEvent,
@@ -26,13 +28,15 @@ import type {
   HarnessSnapshotStore,
   SessionCheckpoint,
   SessionPersistence,
-} from "../packages/core/src/index.js";
-import { agentId, chainId, harnessId, taskItemId } from "../packages/core/src/index.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createPiAdapter } from "../packages/engine-pi/src/adapter.js";
-import { createLongRunningHarness } from "../packages/long-running/src/harness.js";
-import type { LongRunningHarness, SessionResult } from "../packages/long-running/src/types.js";
-import { createInMemorySnapshotChainStore } from "../packages/snapshot-chain-store/src/memory-store.js";
+} from "../packages/kernel/core/src/index.js";
+import { agentId, chainId, harnessId, taskItemId } from "../packages/kernel/core/src/index.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import { createInMemorySnapshotChainStore } from "../packages/mm/snapshot-chain-store/src/memory-store.js";
+import { createLongRunningHarness } from "../packages/sched/long-running/src/harness.js";
+import type {
+  LongRunningHarness,
+  SessionResult,
+} from "../packages/sched/long-running/src/types.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

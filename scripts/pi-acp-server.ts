@@ -14,11 +14,11 @@
  * Usage (via E2E): spawned by createAcpAdapter in e2e-engine-acp.ts
  */
 
-import { createSingleToolProvider } from "../packages/core/src/create-single-tool-provider.js";
-import type { Tool } from "../packages/core/src/ecs.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import type { KoiRuntime } from "../packages/engine/src/types.js";
-import { createPiAdapter } from "../packages/engine-pi/src/adapter.js";
+import { createPiAdapter } from "../packages/drivers/engine-pi/src/adapter.js";
+import { createSingleToolProvider } from "../packages/kernel/core/src/create-single-tool-provider.js";
+import type { Tool } from "../packages/kernel/core/src/ecs.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import type { KoiRuntime } from "../packages/kernel/engine/src/types.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

@@ -1,0 +1,28 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*"],
+  "references": [
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../lib/hash"
+    },
+    {
+      "path": "../../lib/validation"
+    },
+    {
+      "path": "../../kernel/engine"
+    },
+    {
+      "path": "../../drivers/engine-pi"
+    },
+    {
+      "path": "../../meta/forge"
+    }
+  ]
+}

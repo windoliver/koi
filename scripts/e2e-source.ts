@@ -15,10 +15,10 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SourceBundle, ToolArtifact } from "../packages/core/src/index.js";
-import { createForgeResolver } from "../packages/forge/src/forge-resolver.js";
-import { createInMemoryForgeStore } from "../packages/forge/src/memory-store.js";
-import { createLocalResolver } from "../packages/node/src/tools/local-resolver.js";
+import { createLocalResolver } from "../packages/deploy/node/src/tools/local-resolver.js";
+import type { SourceBundle, ToolArtifact } from "../packages/kernel/core/src/index.js";
+import { createForgeResolver } from "../packages/meta/forge/src/forge-resolver.js";
+import { createInMemoryForgeStore } from "../packages/meta/forge/src/memory-store.js";
 
 // ---------------------------------------------------------------------------
 // Config

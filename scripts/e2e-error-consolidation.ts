@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * Manual E2E test: Error consolidation (#132) + gap-closing features.
  *
@@ -13,18 +14,18 @@
  *   ANTHROPIC_API_KEY=sk-... bun scripts/e2e-error-consolidation.ts
  */
 
-import type { EngineEvent, ModelRequest } from "../packages/core/src/index.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createLoopAdapter } from "../packages/engine-loop/src/loop-adapter.js";
-import { isContextOverflowError } from "../packages/errors/src/error-utils.js";
-import { KoiRuntimeError } from "../packages/errors/src/runtime-error.js";
-import { createAnthropicAdapter } from "../packages/model-router/src/adapters/anthropic.js";
+import { createLoopAdapter } from "../packages/drivers/engine-loop/src/loop-adapter.js";
+import { createAnthropicAdapter } from "../packages/drivers/model-router/src/adapters/anthropic.js";
+import type { EngineEvent, ModelRequest } from "../packages/kernel/core/src/index.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import { isContextOverflowError } from "../packages/lib/errors/src/error-utils.js";
+import { KoiRuntimeError } from "../packages/lib/errors/src/runtime-error.js";
 import {
   EXIT_CONFIG,
   EXIT_ERROR,
   EXIT_UNAVAILABLE,
   exitCodeForError,
-} from "../packages/shutdown/src/exit-codes.js";
+} from "../packages/lib/shutdown/src/exit-codes.js";
 
 // ---------------------------------------------------------------------------
 // Preflight
@@ -286,15 +287,15 @@ console.log("[test 6] KoiEngineError is fully removed");
 let engineErrorExists = false;
 try {
   // Dynamic import — should fail since the file was deleted
-  await import("../packages/engine/src/errors.js");
+  await import("../packages/kernel/engine/src/errors.js");
   engineErrorExists = true;
 } catch {
   engineErrorExists = false;
 }
-assert("packages/engine/src/errors.ts no longer exists", !engineErrorExists);
+assert("packages/kernel/engine/src/errors.ts no longer exists", !engineErrorExists);
 
 // Verify KoiRuntimeError is re-exported from @koi/engine index
-const engineExports = await import("../packages/engine/src/index.js");
+const engineExports = await import("../packages/kernel/engine/src/index.js");
 assert("@koi/engine re-exports KoiRuntimeError", "KoiRuntimeError" in engineExports);
 // Note: identity check (===) may fail due to source vs dist module resolution,
 // so we verify structural compatibility: an instance created with the engine's

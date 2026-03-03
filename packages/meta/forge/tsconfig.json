@@ -1,0 +1,34 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*"],
+  "references": [
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../forge/forge-integrity"
+    },
+    {
+      "path": "../../forge/forge-policy"
+    },
+    {
+      "path": "../../forge/forge-tools"
+    },
+    {
+      "path": "../../forge/forge-types"
+    },
+    {
+      "path": "../../forge/forge-verifier"
+    },
+    {
+      "path": "../../lib/hash"
+    },
+    {
+      "path": "../../fs/resolve"
+    }
+  ]
+}

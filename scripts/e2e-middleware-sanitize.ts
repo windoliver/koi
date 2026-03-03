@@ -21,6 +21,8 @@
  * Cost: ~$0.02-0.04 per run (haiku model, minimal prompts).
  */
 
+import { createLoopAdapter } from "../packages/drivers/engine-loop/src/loop-adapter.js";
+import { createAnthropicAdapter } from "../packages/drivers/model-router/src/adapters/anthropic.js";
 import type {
   EngineEvent,
   KoiMiddleware,
@@ -30,12 +32,10 @@ import type {
   ToolHandler,
   ToolRequest,
   ToolResponse,
-} from "../packages/core/src/index.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createLoopAdapter } from "../packages/engine-loop/src/loop-adapter.js";
-import { createSanitizeMiddleware } from "../packages/middleware-sanitize/src/sanitize-middleware.js";
-import type { SanitizationEvent } from "../packages/middleware-sanitize/src/types.js";
-import { createAnthropicAdapter } from "../packages/model-router/src/adapters/anthropic.js";
+} from "../packages/kernel/core/src/index.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import { createSanitizeMiddleware } from "../packages/security/middleware-sanitize/src/sanitize-middleware.js";
+import type { SanitizationEvent } from "../packages/security/middleware-sanitize/src/types.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

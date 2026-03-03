@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * E2E: ForgeScope Enforcement with Pi-Engine (Real LLM).
  *
@@ -19,21 +20,21 @@
  *   ANTHROPIC_API_KEY=sk-... bun scripts/e2e-scope-enforcement-pi.ts
  */
 
+import { createPiAdapter } from "../packages/drivers/engine-pi/src/adapter.js";
 import type {
   ComponentProvider,
   EngineEvent,
   SandboxExecutor,
-} from "../packages/core/src/index.js";
-import { toolToken } from "../packages/core/src/index.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createPiAdapter } from "../packages/engine-pi/src/adapter.js";
-import { createDefaultForgeConfig } from "../packages/forge/src/config.js";
-import { createForgeResolver } from "../packages/forge/src/forge-resolver.js";
-import { createInMemoryForgeStore } from "../packages/forge/src/memory-store.js";
-import { createForgeToolTool } from "../packages/forge/src/tools/forge-tool.js";
-import { createPromoteForgeTool } from "../packages/forge/src/tools/promote-forge.js";
-import { createSearchForgeTool } from "../packages/forge/src/tools/search-forge.js";
-import type { ForgeDeps } from "../packages/forge/src/tools/shared.js";
+} from "../packages/kernel/core/src/index.js";
+import { toolToken } from "../packages/kernel/core/src/index.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import { createDefaultForgeConfig } from "../packages/meta/forge/src/config.js";
+import { createForgeResolver } from "../packages/meta/forge/src/forge-resolver.js";
+import { createInMemoryForgeStore } from "../packages/meta/forge/src/memory-store.js";
+import { createForgeToolTool } from "../packages/meta/forge/src/tools/forge-tool.js";
+import { createPromoteForgeTool } from "../packages/meta/forge/src/tools/promote-forge.js";
+import { createSearchForgeTool } from "../packages/meta/forge/src/tools/search-forge.js";
+import type { ForgeDeps } from "../packages/meta/forge/src/tools/shared.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

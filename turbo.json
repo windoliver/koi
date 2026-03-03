@@ -23,7 +23,7 @@
       "outputs": []
     },
     "check:layers": {
-      "inputs": ["packages/*/package.json", "packages/*/src/**/*.ts", "scripts/layers.ts"],
+      "inputs": ["packages/*/*/package.json", "packages/*/*/src/**/*.ts", "scripts/layers.ts"],
       "outputs": [],
       "cache": true
     }
