@@ -87,6 +87,61 @@ describe("createE2bAdapter", () => {
     );
   });
 
+  test("passes mounts to client", async () => {
+    const client = createMockClient();
+    const mounts = [{ type: "s3" as const, bucket: "b", mountPath: "/mnt/data", credentials: {} }];
+    const result = createE2bAdapter({ apiKey: "test-key", mounts, client });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    await result.value.create({
+      tier: "sandbox",
+      filesystem: {},
+      network: { allow: false },
+      resources: {},
+    });
+
+    expect(client.createSandbox).toHaveBeenCalledWith(expect.objectContaining({ mounts }));
+  });
+
+  test("omits mounts from opts when not configured", async () => {
+    const client = createMockClient();
+    const result = createE2bAdapter({ apiKey: "test-key", client });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    await result.value.create({
+      tier: "sandbox",
+      filesystem: {},
+      network: { allow: false },
+      resources: {},
+    });
+
+    const calledWith = (client.createSandbox as ReturnType<typeof mock>).mock
+      .calls[0]?.[0] as Record<string, unknown>;
+    expect(calledWith).not.toHaveProperty("mounts");
+  });
+
+  test("mounts nexus fuse when profile has nexusMounts", async () => {
+    const sdk = createMockSdk();
+    const client = createMockClient(sdk);
+    const result = createE2bAdapter({ apiKey: "test-key", client });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const instance = await result.value.create({
+      tier: "sandbox",
+      filesystem: {},
+      network: { allow: false },
+      resources: {},
+      nexusMounts: [{ nexusUrl: "https://nexus.test", apiKey: "nk", mountPath: "/mnt/nexus" }],
+    });
+
+    // mkdir, nexus-fuse, ls — 3 calls from mountNexusFuse
+    expect(sdk.commands.run).toHaveBeenCalledTimes(3);
+    expect(instance).toBeDefined();
+  });
+
   test("throws without injected client", async () => {
     const result = createE2bAdapter({ apiKey: "test-key" });
     expect(result.ok).toBe(true);

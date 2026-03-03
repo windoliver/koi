@@ -16,7 +16,8 @@ export { classifyCloudError } from "./classify-error.js";
 // Destroy guard — prevents method calls after destroy()
 export type { DestroyGuard } from "./guard.js";
 export { createDestroyGuard } from "./guard.js";
-
+// Nexus FUSE mount — post-creation Nexus VFS mounting
+export { mountNexusFuse } from "./nexus-mount.js";
 // Test fixtures — shared profiles and streaming helpers
 export { createTestProfile } from "./test-profiles.js";
 export type { StreamCollector } from "./test-streaming.js";

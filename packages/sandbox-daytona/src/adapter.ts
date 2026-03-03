@@ -3,6 +3,7 @@
  */
 
 import type { KoiError, Result, SandboxAdapter, SandboxProfile } from "@koi/core";
+import { mountNexusFuse } from "@koi/sandbox-cloud-base";
 import { createDaytonaInstance } from "./instance.js";
 import type { DaytonaAdapterConfig, DaytonaCreateOpts } from "./types.js";
 import { validateDaytonaConfig } from "./validate.js";
@@ -27,9 +28,16 @@ export function createDaytonaAdapter(
             apiKey: resolvedConfig.apiKey,
             apiUrl: resolvedConfig.apiUrl,
             target: resolvedConfig.target,
+            ...(resolvedConfig.volumes !== undefined && resolvedConfig.volumes.length > 0
+              ? { volumes: resolvedConfig.volumes }
+              : {}),
           };
           const sdkSandbox = await client.createSandbox(opts);
-          return createDaytonaInstance(sdkSandbox);
+          const instance = createDaytonaInstance(sdkSandbox);
+          if (_profile.nexusMounts !== undefined && _profile.nexusMounts.length > 0) {
+            await mountNexusFuse(instance, _profile.nexusMounts);
+          }
+          return instance;
         }
 
         throw new Error(

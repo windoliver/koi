@@ -25,7 +25,7 @@ export { Resolver, SourceBundle, SourceLanguage } from './resolver.js';
 export { ActionEntry, IssueEntry, ReportStore, ReportSummary, RunCost, RunDuration, RunReport } from './run-HASH.js';
 export { SandboxAdapter, SandboxAdapterResult, SandboxExecOptions, SandboxInstance } from './sandbox-HASH.js';
 export { ExecutionContext, SandboxError, SandboxErrorCode, SandboxExecutor, SandboxResult } from './sandbox-HASH.js';
-export { FilesystemPolicy, NetworkPolicy, ResourceLimits, SandboxProfile } from './sandbox-HASH.js';
+export { FilesystemPolicy, NetworkPolicy, NexusFuseMount, ResourceLimits, SandboxProfile } from './sandbox-HASH.js';
 export { RISK_ANALYSIS_UNKNOWN, RISK_LEVEL_ORDER, RiskAnalysis, RiskFinding, RiskLevel, SecurityAnalyzer } from './security-HASH.js';
 export { OutboundWebhookConfig, WebhookComponent, WebhookDeliveryStatus, WebhookEndpointHealth, WebhookEventKind, WebhookPayload, WebhookSummary } from './webhook.js';
 export { ZoneDescriptor, ZoneEvent, ZoneFilter, ZoneId, ZoneRegistry, ZoneStatus, zoneId } from './zone.js';
@@ -3014,6 +3014,13 @@ interface ResourceLimits {
     readonly maxPids?: number;
     readonly maxOpenFiles?: number;
 }
+/** Nexus FUSE mount — mounts Nexus virtual filesystem inside a sandbox. */
+interface NexusFuseMount {
+    readonly nexusUrl: string;
+    readonly apiKey: string;
+    readonly mountPath: string;
+    readonly agentId?: string;
+}
 /** Declarative sandbox profile — platform-agnostic policy. */
 interface SandboxProfile {
     readonly tier: TrustTier;
@@ -3021,9 +3028,10 @@ interface SandboxProfile {
     readonly network: NetworkPolicy;
     readonly resources: ResourceLimits;
     readonly env?: Readonly<Record<string, string>>;
+    readonly nexusMounts?: readonly NexusFuseMount[];
 }
 
-export type { FilesystemPolicy, NetworkPolicy, ResourceLimits, SandboxProfile };
+export type { FilesystemPolicy, NetworkPolicy, NexusFuseMount, ResourceLimits, SandboxProfile };
 "
 `;
 

@@ -45,6 +45,65 @@ describe("createCloudflareAdapter", () => {
     await instance.destroy();
   });
 
+  test("passes r2Mounts to client", async () => {
+    const client = createMockClient();
+    const r2Mounts = [{ bucketName: "my-bucket", mountPath: "/mnt/r2" }];
+    const result = createCloudflareAdapter({
+      apiToken: "token",
+      r2Mounts,
+      client,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    await result.value.create({
+      tier: "sandbox",
+      filesystem: {},
+      network: { allow: false },
+      resources: {},
+    });
+
+    expect(client.createSandbox).toHaveBeenCalledWith(expect.objectContaining({ r2Mounts }));
+  });
+
+  test("omits r2Mounts from opts when not configured", async () => {
+    const client = createMockClient();
+    const result = createCloudflareAdapter({ apiToken: "token", client });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    await result.value.create({
+      tier: "sandbox",
+      filesystem: {},
+      network: { allow: false },
+      resources: {},
+    });
+
+    const calledWith = (client.createSandbox as ReturnType<typeof mock>).mock
+      .calls[0]?.[0] as Record<string, unknown>;
+    expect(calledWith).not.toHaveProperty("r2Mounts");
+  });
+
+  test("mounts nexus fuse when profile has nexusMounts", async () => {
+    const sdk = createMockSdk();
+    const client = createMockClient(sdk);
+    const result = createCloudflareAdapter({ apiToken: "token", client });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const instance = await result.value.create({
+      tier: "sandbox",
+      filesystem: {},
+      network: { allow: false },
+      resources: {},
+      nexusMounts: [{ nexusUrl: "https://nexus.test", apiKey: "nk", mountPath: "/mnt/nexus" }],
+    });
+
+    // mkdir, nexus-fuse, ls — 3 calls from mountNexusFuse
+    expect(sdk.commands.run).toHaveBeenCalledTimes(3);
+    expect(instance).toBeDefined();
+  });
+
   test("throws without injected client", async () => {
     const result = createCloudflareAdapter({ apiToken: "token" });
     if (!result.ok) return;

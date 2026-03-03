@@ -65,6 +65,65 @@ describe("createDaytonaAdapter", () => {
     );
   });
 
+  test("passes volumes to client", async () => {
+    const client = createMockClient();
+    const volumes = [{ volumeId: "vol-1", mountPath: "/mnt/data" }];
+    const result = createDaytonaAdapter({
+      apiKey: "key",
+      volumes,
+      client,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    await result.value.create({
+      tier: "sandbox",
+      filesystem: {},
+      network: { allow: false },
+      resources: {},
+    });
+
+    expect(client.createSandbox).toHaveBeenCalledWith(expect.objectContaining({ volumes }));
+  });
+
+  test("omits volumes from opts when not configured", async () => {
+    const client = createMockClient();
+    const result = createDaytonaAdapter({ apiKey: "key", client });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    await result.value.create({
+      tier: "sandbox",
+      filesystem: {},
+      network: { allow: false },
+      resources: {},
+    });
+
+    const calledWith = (client.createSandbox as ReturnType<typeof mock>).mock
+      .calls[0]?.[0] as Record<string, unknown>;
+    expect(calledWith).not.toHaveProperty("volumes");
+  });
+
+  test("mounts nexus fuse when profile has nexusMounts", async () => {
+    const sdk = createMockSdk();
+    const client = createMockClient(sdk);
+    const result = createDaytonaAdapter({ apiKey: "key", client });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const instance = await result.value.create({
+      tier: "sandbox",
+      filesystem: {},
+      network: { allow: false },
+      resources: {},
+      nexusMounts: [{ nexusUrl: "https://nexus.test", apiKey: "nk", mountPath: "/mnt/nexus" }],
+    });
+
+    // mkdir, nexus-fuse, ls — 3 calls from mountNexusFuse
+    expect(sdk.commands.run).toHaveBeenCalledTimes(3);
+    expect(instance).toBeDefined();
+  });
+
   test("throws without injected client", async () => {
     const result = createDaytonaAdapter({ apiKey: "key" });
     if (!result.ok) return;

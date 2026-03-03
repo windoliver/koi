@@ -716,6 +716,7 @@ export type {
 export type {
   FilesystemPolicy,
   NetworkPolicy,
+  NexusFuseMount,
   ResourceLimits,
   SandboxProfile,
 } from "./sandbox-profile.js";
