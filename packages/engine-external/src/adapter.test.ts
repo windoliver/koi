@@ -502,3 +502,51 @@ describe("createExternalAdapter — engineId", () => {
     expect(adapter.engineId).toBe("external");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Content-block mapping (EngineCapabilities)
+// ---------------------------------------------------------------------------
+
+describe("content-block mapping", () => {
+  test("exposes capabilities with images: false, files: false", () => {
+    const adapter = createExternalAdapter({ command: "echo", mode: "single-shot" });
+    expect(adapter.capabilities).toEqual({
+      text: true,
+      images: false,
+      files: false,
+      audio: false,
+    });
+  });
+
+  test("extractInputText includes ImageBlock as text description", async () => {
+    const adapter = createExternalAdapter({
+      command: "cat",
+      mode: "single-shot",
+    });
+
+    const events = await collectEvents(
+      adapter.stream({
+        kind: "messages",
+        messages: [
+          {
+            content: [
+              { kind: "text", text: "Look at this:" },
+              { kind: "image", url: "https://example.com/photo.png", alt: "a sunset" },
+            ],
+            senderId: "user",
+            timestamp: Date.now(),
+          },
+        ],
+      }),
+    );
+
+    // cat echoes stdin back to stdout — verify image was converted to text
+    const textDeltas = events.filter((e) => e.kind === "text_delta");
+    const fullText = textDeltas.map((e) => (e.kind === "text_delta" ? e.delta : "")).join("");
+
+    expect(fullText).toContain("Look at this:");
+    expect(fullText).toContain("[Image: a sunset]");
+
+    await adapter.dispose?.();
+  });
+});

@@ -1347,3 +1347,73 @@ describe("lifecycle edge cases", () => {
     await collectEvents(adapter.stream({ kind: "text", text: "Test" }));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Content-block mapping (EngineCapabilities)
+// ---------------------------------------------------------------------------
+
+describe("content-block mapping", () => {
+  test("exposes capabilities with images: false, files: false", () => {
+    const sdk = createMockSdk([]);
+    const adapter = createClaudeAdapter({}, sdk);
+    expect(adapter.capabilities).toEqual({
+      text: true,
+      images: false,
+      files: false,
+      audio: false,
+    });
+  });
+
+  test("inputToSdkInputMessage includes FileBlock as text description", async () => {
+    const { sdk, getCapturedPrompt } = createHitlMockSdk([
+      { type: "system", subtype: "init", session_id: "sess-1" },
+      {
+        type: "result",
+        subtype: "success",
+        result: "Done",
+        session_id: "sess-1",
+        num_turns: 1,
+        duration_ms: 100,
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    ]);
+
+    const adapter = createClaudeAdapter({}, sdk);
+    await collectEvents(
+      adapter.stream({
+        kind: "messages",
+        messages: [
+          {
+            content: [
+              { kind: "text", text: "Please read this" },
+              {
+                kind: "file",
+                url: "https://example.com/report.pdf",
+                mimeType: "application/pdf",
+                name: "report.pdf",
+              },
+            ],
+            senderId: "user",
+            timestamp: Date.now(),
+          },
+        ],
+      }),
+    );
+
+    // The queue received the message — verify it was captured
+    const prompt = getCapturedPrompt();
+    expect(prompt).toBeDefined();
+
+    // Drain the queue to get the actual message content
+    if (prompt !== undefined && typeof prompt !== "string") {
+      const messages: SdkInputMessage[] = [];
+      for await (const msg of prompt) {
+        messages.push(msg);
+      }
+      // The file block should have been converted to text
+      const content = messages[0]?.message.content ?? "";
+      expect(content).toContain("Please read this");
+      expect(content).toContain("[File: report.pdf]");
+    }
+  });
+});

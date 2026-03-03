@@ -223,6 +223,7 @@ describe("overlay store -> agent e2e", () => {
     const toolResults: ToolResponse[] = [];
     const adapter: EngineAdapter = {
       engineId: "bundled-e2e-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async (): Promise<ModelResponse> => ({ content: "ok", model: "test" }),
       },
@@ -288,6 +289,7 @@ describe("overlay store -> agent e2e", () => {
     const forgeResults: ToolResponse[] = [];
     const adapter1: EngineAdapter = {
       engineId: "forge-overlay-run1",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async (): Promise<ModelResponse> => ({ content: "ok", model: "test" }),
       },
@@ -343,6 +345,7 @@ describe("overlay store -> agent e2e", () => {
     const toolResults: ToolResponse[] = [];
     const adapter2: EngineAdapter = {
       engineId: "forge-overlay-run2",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async (): Promise<ModelResponse> => ({ content: "ok", model: "test" }),
       },
@@ -606,6 +609,7 @@ describe("overlay store -> agent e2e", () => {
     const toolResults: ToolResponse[] = [];
     const adapter: EngineAdapter = {
       engineId: "lifecycle-e2e",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async (): Promise<ModelResponse> => ({ content: "ok", model: "test" }),
       },
@@ -708,6 +712,7 @@ describe("overlay store -> agent e2e", () => {
     const discoveredTools: ToolDescriptor[] = [];
     const adapter: EngineAdapter = {
       engineId: "multi-tier-discovery",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async (): Promise<ModelResponse> => ({ content: "ok", model: "test" }),
       },

@@ -29,6 +29,7 @@ function makeContext(): ResolutionContext {
 /** Minimal mock — tests only verify resolution, not engine behavior. */
 const MOCK_ADAPTER: EngineAdapter = {
   engineId: "mock-engine",
+  capabilities: { text: true, images: false, files: false, audio: false },
   stream() {
     return (async function* () {
       /* empty */

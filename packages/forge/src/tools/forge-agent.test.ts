@@ -600,6 +600,7 @@ describe("createForgeAgentTool onSpawn", () => {
 function createMockEngine(id = "mock-engine"): EngineAdapter {
   return {
     engineId: id,
+    capabilities: { text: true, images: false, files: false, audio: false },
     stream: () => (async function* () {})(),
   };
 }

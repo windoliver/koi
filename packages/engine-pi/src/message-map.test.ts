@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { EngineInput } from "@koi/core/engine";
+import type { InboundMessage } from "@koi/core/message";
 import type {
   AssistantMessage,
   Message,
@@ -10,6 +11,7 @@ import {
   engineInputToPrompt,
   inboundToPiMessage,
   inboundToPiMessages,
+  PI_CAPABILITIES,
   piMessagesToInbound,
   piMessageToInbound,
 } from "./message-map.js";
@@ -357,7 +359,7 @@ describe("engineInputToPrompt", () => {
     expect(engineInputToPrompt(input)).toBe("");
   });
 
-  test("handles user message with non-text content blocks", () => {
+  test("handles user message with image-only content (images supported, returns empty for non-text)", () => {
     const input: EngineInput = {
       kind: "messages",
       messages: [
@@ -368,6 +370,141 @@ describe("engineInputToPrompt", () => {
         },
       ],
     };
+    // Image blocks pass through (pi supports images) but engineInputToPrompt
+    // looks for text blocks — an image-only message has no text to extract
     expect(engineInputToPrompt(input)).toBe("");
+  });
+
+  test("file-only message returns empty prompt (files pass through, no text to extract)", () => {
+    const input: EngineInput = {
+      kind: "messages",
+      messages: [
+        {
+          content: [
+            {
+              kind: "file",
+              url: "https://example.com/doc.pdf",
+              mimeType: "application/pdf",
+              name: "doc.pdf",
+            },
+          ],
+          senderId: "user",
+          timestamp: now,
+        },
+      ],
+    };
+    // File blocks pass through (PI_CAPABILITIES.files = true), no text block to extract
+    expect(engineInputToPrompt(input)).toBe("");
+  });
+
+  test("mixed file and text message extracts text", () => {
+    const input: EngineInput = {
+      kind: "messages",
+      messages: [
+        {
+          content: [
+            { kind: "file", url: "https://example.com/doc.pdf", mimeType: "application/pdf" },
+            { kind: "text", text: "Summarize this document" },
+          ],
+          senderId: "user",
+          timestamp: now,
+        },
+      ],
+    };
+    expect(engineInputToPrompt(input)).toBe("Summarize this document");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// blocksToUserContent — FileBlock handling
+// ---------------------------------------------------------------------------
+
+describe("blocksToUserContent — FileBlock", () => {
+  test("FileBlock with URL maps to Anthropic document block", () => {
+    const msg: InboundMessage = {
+      content: [
+        {
+          kind: "file",
+          url: "https://example.com/report.pdf",
+          mimeType: "application/pdf",
+          name: "report.pdf",
+        },
+      ],
+      senderId: "user",
+      timestamp: now,
+    };
+    const piMsg = inboundToPiMessage(msg);
+    expect(piMsg.role).toBe("user");
+    if (piMsg.role === "user" && Array.isArray(piMsg.content)) {
+      // @ts-expect-error — document block not in pi-ai types, passed through at runtime
+      expect(piMsg.content[0]).toEqual({
+        type: "document",
+        source: { type: "url", url: "https://example.com/report.pdf" },
+      });
+    }
+  });
+
+  test("FileBlock with base64 data URL maps to Anthropic document block", () => {
+    const msg: InboundMessage = {
+      content: [
+        {
+          kind: "file",
+          url: "data:application/pdf;base64,JVBERi0xLjQK",
+          mimeType: "application/pdf",
+          name: "report.pdf",
+        },
+      ],
+      senderId: "user",
+      timestamp: now,
+    };
+    const piMsg = inboundToPiMessage(msg);
+    expect(piMsg.role).toBe("user");
+    if (piMsg.role === "user" && Array.isArray(piMsg.content)) {
+      // @ts-expect-error — document block not in pi-ai types, passed through at runtime
+      expect(piMsg.content[0]).toEqual({
+        type: "document",
+        source: { type: "base64", media_type: "application/pdf", data: "JVBERi0xLjQK" },
+      });
+    }
+  });
+
+  test("FileBlock in tool result maps to Anthropic document block", () => {
+    const msg: InboundMessage = {
+      content: [
+        {
+          kind: "file",
+          url: "https://example.com/result.csv",
+          mimeType: "text/csv",
+          name: "result.csv",
+        },
+      ],
+      senderId: "tool",
+      timestamp: now,
+      metadata: { toolCallId: "call-1", toolName: "export", isError: false },
+    };
+    const piMsg = inboundToPiMessage(msg);
+    expect(piMsg.role).toBe("toolResult");
+    if (piMsg.role === "toolResult") {
+      // @ts-expect-error — document block not in pi-ai types, passed through at runtime
+      expect(piMsg.content[0]).toEqual({
+        type: "document",
+        source: { type: "url", url: "https://example.com/result.csv" },
+      });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PI_CAPABILITIES export
+// ---------------------------------------------------------------------------
+
+describe("PI_CAPABILITIES", () => {
+  test("declares images and files supported", () => {
+    expect(PI_CAPABILITIES).toEqual({
+      text: true,
+      images: true,
+      files: true,
+      audio: false,
+    });
   });
 });

@@ -499,7 +499,11 @@ describe("EngineAdapter negative types", () => {
         },
       };
     }
-    const e: EngineAdapter = { engineId: "test", stream: fakeStream };
+    const e: EngineAdapter = {
+      engineId: "test",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream: fakeStream,
+    };
     expect(e.engineId).toBe("test");
   });
 });

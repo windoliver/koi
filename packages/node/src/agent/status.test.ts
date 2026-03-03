@@ -22,6 +22,7 @@ const testManifest: AgentManifest = {
 function makeEngine(): EngineAdapter {
   return {
     engineId: "test-engine",
+    capabilities: { text: true, images: false, files: false, audio: false },
     async *stream() {
       yield {
         kind: "done" as const,

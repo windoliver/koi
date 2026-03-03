@@ -59,6 +59,7 @@ function cooperatingAdapterWithToolCall(
 
   return {
     engineId: "tool-context-adapter",
+    capabilities: { text: true, images: false, files: false, audio: false },
     terminals: {
       modelCall: rawModelCall,
     },
@@ -236,6 +237,7 @@ describe("tool execution context in L1", () => {
 
     const adapter: EngineAdapter = {
       engineId: "multi-turn-tool-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: { modelCall: rawModelCall },
       stream: (input: EngineInput) => ({
         async *[Symbol.asyncIterator]() {

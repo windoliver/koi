@@ -18,6 +18,7 @@ import { createTranscriptingEngine } from "./transcripting-engine.js";
 function createMockEngine(events: readonly EngineEvent[]): EngineAdapter {
   return {
     engineId: "test-engine",
+    capabilities: { text: true, images: false, files: false, audio: false },
     async *stream(_input: EngineInput): AsyncGenerator<EngineEvent> {
       for (const event of events) {
         yield event;

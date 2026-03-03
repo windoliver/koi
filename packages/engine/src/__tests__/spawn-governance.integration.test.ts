@@ -71,6 +71,7 @@ function spawnTestAdapter(
   );
   return {
     engineId: "spawn-test",
+    capabilities: { text: true, images: false, files: false, audio: false },
     terminals: {
       modelCall: async () => ({ content: "ok", model: "test" }),
       toolCall: rawToolCall,
@@ -106,6 +107,7 @@ function spawnTestAdapter(
 function concurrentSpawnAdapter(count: number, results: string[]): EngineAdapter {
   return {
     engineId: "concurrent-spawn-test",
+    capabilities: { text: true, images: false, files: false, audio: false },
     terminals: {
       modelCall: async () => ({ content: "ok", model: "test" }),
       toolCall: async () => ({ output: "spawned" }),
@@ -268,6 +270,7 @@ describe("spawn governance integration", () => {
     const results: string[] = [];
     const adapter: EngineAdapter = {
       engineId: "spy-terminal",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async () => ({ content: "ok", model: "test" }),
         toolCall: rawToolCallSpy,

@@ -163,6 +163,7 @@ export function createMockEngineAdapter(options?: MockEngineAdapterOptions): Eng
 
   return {
     engineId: options?.engineId ?? "mock-engine",
+    capabilities: { text: true, images: false, files: false, audio: false },
 
     async *stream(input: EngineInput): AsyncIterable<EngineEvent> {
       streamCalls.push(input);
@@ -241,6 +242,7 @@ export function createMockStatefulEngine(options?: MockStatefulEngineOptions): E
 
   return {
     engineId: eid,
+    capabilities: { text: true, images: false, files: false, audio: false },
 
     async *stream(input: EngineInput): AsyncIterable<EngineEvent> {
       data = {

@@ -133,6 +133,7 @@ function makeCooperatingAdapter(
 ): EngineAdapter {
   return {
     engineId: "e2e-cooperating",
+    capabilities: { text: true, images: false, files: false, audio: false },
     terminals: {
       modelCall: async () => ({ content: "ok", model: "test" }),
     },

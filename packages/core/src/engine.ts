@@ -124,8 +124,75 @@ export type EngineEvent =
       readonly timestamp: number;
     };
 
+// ---------------------------------------------------------------------------
+// Engine capabilities
+// ---------------------------------------------------------------------------
+
+/**
+ * Declares which content block types an engine adapter can natively handle.
+ * Used by `mapContentBlocksForEngine()` to gracefully downgrade unsupported
+ * block types to text instead of silently dropping them.
+ */
+export interface EngineCapabilities {
+  readonly text: boolean;
+  readonly images: boolean;
+  readonly files: boolean;
+  readonly audio: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Content block downgrade for engines
+// ---------------------------------------------------------------------------
+
+/**
+ * Downgrade a single content block for an engine that lacks native support.
+ * Returns the block unchanged if the engine supports its kind.
+ */
+function downgradeForEngine(block: ContentBlock, capabilities: EngineCapabilities): ContentBlock {
+  switch (block.kind) {
+    case "image":
+      if (!capabilities.images) {
+        return { kind: "text", text: `[Image: ${block.alt ?? block.url}]` };
+      }
+      return block;
+    case "file":
+      if (!capabilities.files) {
+        return { kind: "text", text: `[File: ${block.name ?? block.url}]` };
+      }
+      return block;
+    case "text":
+    case "button":
+    case "custom":
+      return block;
+    default: {
+      // Exhaustive check — future block kinds will cause a compile error here
+      const _exhaustive: never = block;
+      return _exhaustive;
+    }
+  }
+}
+
+/**
+ * Map content blocks for engine consumption, downgrading unsupported block
+ * types to text descriptions. Returns the same array reference when all
+ * content capabilities are supported (fast path).
+ *
+ * Pure function — no side effects, returns new array or same reference.
+ */
+export function mapContentBlocksForEngine(
+  blocks: readonly ContentBlock[],
+  capabilities: EngineCapabilities,
+): readonly ContentBlock[] {
+  // Fast path: return same reference if all content capabilities are true
+  if (capabilities.images && capabilities.files) {
+    return blocks;
+  }
+  return blocks.map((block) => downgradeForEngine(block, capabilities));
+}
+
 export interface EngineAdapter {
   readonly engineId: string;
+  readonly capabilities: EngineCapabilities;
   /**
    * Raw function pointers for model/tool calls. When provided, the engine
    * wraps these with the middleware chain and passes the composed handlers

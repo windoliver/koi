@@ -72,6 +72,7 @@ async function createKoiAdapter(middleware?: readonly KoiMiddleware[]): Promise<
 
   return {
     engineId: "koi-pi-e2e",
+    capabilities: { text: true, images: false, files: false, audio: false },
     stream: (input: EngineInput) => runtime.run(input),
     dispose: () => runtime.dispose(),
   };

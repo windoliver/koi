@@ -739,3 +739,21 @@ describe("turn_end events", () => {
     expect(turnEnds[1]?.turnIndex).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Content-block mapping (EngineCapabilities)
+// ---------------------------------------------------------------------------
+
+describe("content-block mapping", () => {
+  test("exposes capabilities with images: true, files: true", () => {
+    const adapter = createLoopAdapter({
+      modelCall: createSimpleModelHandler("ok"),
+    });
+    expect(adapter.capabilities).toEqual({
+      text: true,
+      images: true,
+      files: true,
+      audio: false,
+    });
+  });
+});

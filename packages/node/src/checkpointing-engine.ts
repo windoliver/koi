@@ -51,6 +51,7 @@ export function createCheckpointingEngine(
   // This satisfies exactOptionalPropertyTypes (absent property vs. undefined).
   return {
     engineId: inner.engineId,
+    capabilities: inner.capabilities,
     stream: wrappedStream,
     ...(inner.terminals !== undefined ? { terminals: inner.terminals } : {}),
     ...(inner.saveState !== undefined ? { saveState: inner.saveState } : {}),

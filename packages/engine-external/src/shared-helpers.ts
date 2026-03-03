@@ -5,7 +5,23 @@
  * single-shot, long-lived, and PTY modes.
  */
 
-import type { EngineInput, EngineMetrics } from "@koi/core";
+import type { EngineCapabilities, EngineInput, EngineMetrics } from "@koi/core";
+import { mapContentBlocksForEngine } from "@koi/core";
+
+// ---------------------------------------------------------------------------
+// Capabilities
+// ---------------------------------------------------------------------------
+
+/**
+ * External adapter capabilities — text only.
+ * External processes receive stdin as plain text.
+ */
+export const EXTERNAL_CAPABILITIES: EngineCapabilities = {
+  text: true,
+  images: false,
+  files: false,
+  audio: false,
+} as const;
 
 // ---------------------------------------------------------------------------
 // Input extraction
@@ -14,6 +30,7 @@ import type { EngineInput, EngineMetrics } from "@koi/core";
 /**
  * Extract text input from EngineInput. Falls back to concatenating message
  * content blocks for the "messages" variant; returns empty string for "resume".
+ * Non-text blocks are downgraded via mapContentBlocksForEngine before extraction.
  */
 export function extractInputText(input: EngineInput): string {
   switch (input.kind) {
@@ -22,7 +39,8 @@ export function extractInputText(input: EngineInput): string {
     case "messages": {
       const parts: string[] = [];
       for (const msg of input.messages) {
-        for (const block of msg.content) {
+        const mapped = mapContentBlocksForEngine(msg.content, EXTERNAL_CAPABILITIES);
+        for (const block of mapped) {
           if (block.kind === "text") {
             parts.push(block.text);
           }

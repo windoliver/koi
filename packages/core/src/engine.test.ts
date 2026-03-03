@@ -1,10 +1,17 @@
 /**
- * Exhaustiveness and shape tests for EngineEvent and ChannelStatus types.
+ * Exhaustiveness and shape tests for EngineEvent, ChannelStatus, and
+ * mapContentBlocksForEngine types.
  */
 
 import { describe, expect, test } from "bun:test";
-import type { ChannelStatus, ChannelStatusKind, EngineEvent } from "./index.js";
-import { toolCallId } from "./index.js";
+import type {
+  ChannelStatus,
+  ChannelStatusKind,
+  ContentBlock,
+  EngineCapabilities,
+  EngineEvent,
+} from "./index.js";
+import { mapContentBlocksForEngine, toolCallId } from "./index.js";
 
 // ---------------------------------------------------------------------------
 // EngineEvent exhaustiveness (compile-time + runtime)
@@ -138,5 +145,142 @@ describe("ChannelStatus shape", () => {
   test("ChannelStatusKind type covers all values", () => {
     const kinds: readonly ChannelStatusKind[] = ["processing", "idle", "error"];
     expect(kinds).toHaveLength(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mapContentBlocksForEngine
+// ---------------------------------------------------------------------------
+
+describe("mapContentBlocksForEngine", () => {
+  const ALL_CAPABLE: EngineCapabilities = {
+    text: true,
+    images: true,
+    files: true,
+    audio: true,
+  };
+
+  const TEXT_ONLY: EngineCapabilities = {
+    text: true,
+    images: false,
+    files: false,
+    audio: false,
+  };
+
+  const IMAGES_ONLY: EngineCapabilities = {
+    text: true,
+    images: true,
+    files: false,
+    audio: false,
+  };
+
+  const FILES_ONLY: EngineCapabilities = {
+    text: true,
+    images: false,
+    files: true,
+    audio: false,
+  };
+
+  test("fast path: returns same array reference when images and files are true", () => {
+    const blocks: readonly ContentBlock[] = [
+      { kind: "text", text: "hello" },
+      { kind: "image", url: "https://img.png", alt: "photo" },
+      { kind: "file", url: "https://file.pdf", mimeType: "application/pdf", name: "doc.pdf" },
+    ];
+    const result = mapContentBlocksForEngine(blocks, ALL_CAPABLE);
+    expect(result).toBe(blocks); // same reference
+  });
+
+  test("image downgrade uses alt text when available", () => {
+    const blocks: readonly ContentBlock[] = [
+      { kind: "image", url: "https://img.png", alt: "a cat" },
+    ];
+    const result = mapContentBlocksForEngine(blocks, TEXT_ONLY);
+    expect(result).toEqual([{ kind: "text", text: "[Image: a cat]" }]);
+  });
+
+  test("image downgrade uses url when alt is missing", () => {
+    const blocks: readonly ContentBlock[] = [{ kind: "image", url: "https://img.png" }];
+    const result = mapContentBlocksForEngine(blocks, TEXT_ONLY);
+    expect(result).toEqual([{ kind: "text", text: "[Image: https://img.png]" }]);
+  });
+
+  test("file downgrade uses name when available", () => {
+    const blocks: readonly ContentBlock[] = [
+      { kind: "file", url: "https://file.pdf", mimeType: "application/pdf", name: "report.pdf" },
+    ];
+    const result = mapContentBlocksForEngine(blocks, TEXT_ONLY);
+    expect(result).toEqual([{ kind: "text", text: "[File: report.pdf]" }]);
+  });
+
+  test("file downgrade uses url when name is missing", () => {
+    const blocks: readonly ContentBlock[] = [
+      { kind: "file", url: "https://file.pdf", mimeType: "application/pdf" },
+    ];
+    const result = mapContentBlocksForEngine(blocks, TEXT_ONLY);
+    expect(result).toEqual([{ kind: "text", text: "[File: https://file.pdf]" }]);
+  });
+
+  test("text block always passes through unchanged", () => {
+    const blocks: readonly ContentBlock[] = [{ kind: "text", text: "hello" }];
+    const result = mapContentBlocksForEngine(blocks, TEXT_ONLY);
+    expect(result).toEqual([{ kind: "text", text: "hello" }]);
+  });
+
+  test("button block always passes through unchanged", () => {
+    const blocks: readonly ContentBlock[] = [{ kind: "button", label: "Click", action: "submit" }];
+    const result = mapContentBlocksForEngine(blocks, TEXT_ONLY);
+    expect(result).toEqual([{ kind: "button", label: "Click", action: "submit" }]);
+  });
+
+  test("custom block always passes through unchanged", () => {
+    const blocks: readonly ContentBlock[] = [{ kind: "custom", type: "chart", data: { x: 1 } }];
+    const result = mapContentBlocksForEngine(blocks, TEXT_ONLY);
+    expect(result).toEqual([{ kind: "custom", type: "chart", data: { x: 1 } }]);
+  });
+
+  test("mixed blocks: only unsupported blocks are downgraded", () => {
+    const blocks: readonly ContentBlock[] = [
+      { kind: "text", text: "intro" },
+      { kind: "image", url: "https://img.png", alt: "photo" },
+      { kind: "file", url: "https://f.pdf", mimeType: "application/pdf", name: "doc.pdf" },
+      { kind: "button", label: "Go", action: "go" },
+    ];
+    const result = mapContentBlocksForEngine(blocks, TEXT_ONLY);
+    expect(result).toEqual([
+      { kind: "text", text: "intro" },
+      { kind: "text", text: "[Image: photo]" },
+      { kind: "text", text: "[File: doc.pdf]" },
+      { kind: "button", label: "Go", action: "go" },
+    ]);
+  });
+
+  test("images capable but files not: only files downgraded", () => {
+    const blocks: readonly ContentBlock[] = [
+      { kind: "image", url: "https://img.png", alt: "photo" },
+      { kind: "file", url: "https://f.pdf", mimeType: "application/pdf", name: "doc.pdf" },
+    ];
+    const result = mapContentBlocksForEngine(blocks, IMAGES_ONLY);
+    expect(result).toEqual([
+      { kind: "image", url: "https://img.png", alt: "photo" },
+      { kind: "text", text: "[File: doc.pdf]" },
+    ]);
+  });
+
+  test("files capable but images not: only images downgraded", () => {
+    const blocks: readonly ContentBlock[] = [
+      { kind: "image", url: "https://img.png", alt: "photo" },
+      { kind: "file", url: "https://f.pdf", mimeType: "application/pdf", name: "doc.pdf" },
+    ];
+    const result = mapContentBlocksForEngine(blocks, FILES_ONLY);
+    expect(result).toEqual([
+      { kind: "text", text: "[Image: photo]" },
+      { kind: "file", url: "https://f.pdf", mimeType: "application/pdf", name: "doc.pdf" },
+    ]);
+  });
+
+  test("empty input returns empty array", () => {
+    const result = mapContentBlocksForEngine([], TEXT_ONLY);
+    expect(result).toEqual([]);
   });
 });

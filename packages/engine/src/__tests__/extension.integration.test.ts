@@ -50,6 +50,7 @@ function doneOutput(overrides?: Partial<EngineOutput>): EngineOutput {
 function mockAdapter(events: readonly EngineEvent[]): EngineAdapter {
   return {
     engineId: "mock-adapter",
+    capabilities: { text: true, images: false, files: false, audio: false },
     stream: () => {
       // let justified: mutable index for iterator position
       let index = 0;

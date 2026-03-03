@@ -59,6 +59,7 @@ function makeDoneOutput(): EngineOutput {
 function makeNoopAdapter(): EngineAdapter {
   return {
     engineId: "noop",
+    capabilities: { text: true, images: false, files: false, audio: false },
     terminals: {
       modelCall: async () => ({ content: "ok", model: "test" }),
     },

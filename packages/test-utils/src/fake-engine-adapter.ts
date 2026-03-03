@@ -34,6 +34,7 @@ export function createFakeEngineAdapter(config: FakeEngineAdapterConfig): FakeEn
 
   const adapter: EngineAdapter = {
     engineId: "fake-engine",
+    capabilities: { text: true, images: false, files: false, audio: false },
 
     stream(_input: EngineInput): AsyncIterable<EngineEvent> {
       return {

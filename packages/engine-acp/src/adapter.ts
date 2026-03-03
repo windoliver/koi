@@ -26,7 +26,13 @@ import {
   safeParseTerminalCreateParams,
   safeParseTerminalSessionParams,
 } from "@koi/acp-protocol";
-import type { EngineEvent, EngineInput, EngineMetrics, EngineOutput } from "@koi/core";
+import type {
+  EngineCapabilities,
+  EngineEvent,
+  EngineInput,
+  EngineMetrics,
+  EngineOutput,
+} from "@koi/core";
 import { resolvePermission } from "./approval-bridge.js";
 import { handleReadTextFile, handleWriteTextFile } from "./fs-handlers.js";
 import { createTerminalRegistry } from "./terminal-handlers.js";
@@ -41,6 +47,17 @@ import type { AcpAdapterConfig, AcpEngineAdapter, PendingRequest } from "./types
 const ENGINE_ID = "acp" as const;
 const DEFAULT_TIMEOUT_MS = 300_000 as const; // 5 minutes
 const ACP_PROTOCOL_VERSION = 1 as const;
+
+/**
+ * ACP adapter capabilities — text only for now.
+ * ACP protocol communicates via JSON-RPC text messages.
+ */
+const ACP_CAPABILITIES: EngineCapabilities = {
+  text: true,
+  images: false,
+  files: false,
+  audio: false,
+} as const;
 
 // ---------------------------------------------------------------------------
 // Input → ACP prompt content
@@ -644,6 +661,7 @@ export function createAcpAdapter(config: AcpAdapterConfig): AcpEngineAdapter {
 
   return {
     engineId: ENGINE_ID,
+    capabilities: ACP_CAPABILITIES,
 
     get agentCapabilities(): AgentCapabilities | undefined {
       return negotiatedCapabilities;
