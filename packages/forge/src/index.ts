@@ -1,15 +1,17 @@
 /**
- * @koi/forge — Self-extension system (Layer 2)
+ * @koi/forge — Self-extension system (Layer 3 bundle)
  *
- * Enables agents to create, discover, and compose tools, skills, and
- * sub-agents at runtime through a 4-stage verification pipeline.
+ * Re-exports from @koi/forge-types, @koi/forge-integrity, @koi/forge-policy,
+ * @koi/forge-verifier, and @koi/forge-tools. Plus the L3-only composition root
+ * (createForgePipeline, createForgeRuntime).
  *
- * Depends on @koi/core only — never on L1 or peer L2 packages.
+ * Backward-compatible: all prior exports are preserved via sub-package re-exports.
  */
 
-// provenance types from L0
-// Advisory lock types (for persistent backends)
-// types — brick artifacts & query from L0
+// ---------------------------------------------------------------------------
+// L0 re-exports (types from @koi/core, for backward compatibility)
+// ---------------------------------------------------------------------------
+
 export type {
   AdvisoryLock,
   AgentArtifact,
@@ -41,51 +43,67 @@ export type {
   TestCase,
   ToolArtifact,
 } from "@koi/core";
-// runtime values — adversarial verifiers
-export {
-  createAdversarialVerifiers,
-  createContentScanningVerifier,
-  createExfiltrationVerifier,
-  createInjectionVerifier,
-  createResourceExhaustionVerifier,
-  createStructuralHidingVerifier,
-} from "./adversarial-verifiers.js";
-// runtime values — manifest assembly
-export type { AssembleManifestOptions, AssembleManifestResult } from "./assemble-manifest.js";
-export { assembleManifest } from "./assemble-manifest.js";
-// runtime values — attestation
-export type { CreateProvenanceOptions } from "./attestation.js";
-export {
-  canonicalJsonSerialize,
-  createForgeProvenance,
-  signAttestation,
-  verifyAttestation,
-} from "./attestation.js";
-// runtime values — attestation cache
-export type { AttestationCache } from "./attestation-cache.js";
-export { createAttestationCache } from "./attestation-cache.js";
-// runtime values — brick content extraction
-export { extractBrickContent } from "./brick-content.js";
+
+// ---------------------------------------------------------------------------
+// @koi/forge-types (L0u) — shared types, errors, config
+// ---------------------------------------------------------------------------
+
 export type {
   AutoPromotionConfig,
+  BrickContentInput,
+  CreateProvenanceOptions,
   DependencyConfig,
+  DriftChecker,
+  DriftCheckResult,
+  ForgeAgentInput,
+  ForgeAgentInputWithBricks,
+  ForgeAgentInputWithManifest,
+  ForgeChannelInput,
   ForgeConfig,
+  ForgeContext,
+  ForgeError,
+  ForgeInput,
+  ForgeInputBase,
+  ForgeMiddlewareInput,
+  ForgePipeline,
+  ForgeResult,
+  ForgeResultMetadata,
+  ForgeSkillInput,
+  ForgeToolInput,
+  ForgeVerifier,
   FormatConfig,
+  GovernanceResult,
+  ManifestParseResult,
+  ManifestParser,
+  MutationPressureConfig,
+  PromoteChange,
+  PromoteResult,
+  ResolveStageReport,
+  ReverificationConfig,
+  SandboxError,
+  SandboxErrorCode,
+  SandboxExecutor,
+  SandboxResult,
   ScopePromotionConfig,
+  SelfTestStageReport,
+  StageReport,
+  TestFailure,
+  TrustStageReport,
   VerificationConfig,
-} from "./config.js";
-// runtime values — config
-export { createDefaultForgeConfig, validateForgeConfig } from "./config.js";
-// runtime values — dependency management
-export { auditDependencies, auditTransitiveDependencies } from "./dependency-audit.js";
-export { descriptor } from "./descriptor.js";
-export type { DriftChecker, DriftCheckerConfig, DriftCheckResult } from "./drift-checker.js";
-export { createDriftChecker } from "./drift-checker.js";
-export type { ForgeError, TestFailure } from "./errors.js";
-// runtime values — errors
+  VerificationReport,
+  VerificationStage,
+  VerifierResult,
+} from "@koi/forge-types";
+
 export {
+  computeTtl,
+  createDefaultForgeConfig,
+  DEFAULT_REVERIFICATION_CONFIG,
+  filterByAgentScope,
   formatError,
   governanceError,
+  isStale,
+  isVisibleToAgent,
   resolveError,
   sandboxError,
   selfTestError,
@@ -93,73 +111,19 @@ export {
   storeError,
   trustError,
   typeError,
-} from "./errors.js";
-// runtime values — component provider
+  validateForgeConfig,
+} from "@koi/forge-types";
+
+// ---------------------------------------------------------------------------
+// @koi/forge-integrity (L2) — attestation, integrity, SLSA
+// ---------------------------------------------------------------------------
+
 export type {
-  ForgeComponentProviderConfig,
-  ForgeComponentProviderInstance,
-} from "./forge-component-provider.js";
-export { brickToTool, createForgeComponentProvider } from "./forge-component-provider.js";
-// runtime values — diagnostic verifier
-export type { DiagnosticVerifierConfig } from "./forge-diagnostic-verifier.js";
-export { createDiagnosticVerifier } from "./forge-diagnostic-verifier.js";
-// runtime values — forge governance contributor
-export {
-  createForgeGovernanceContributor,
-  FORGE_GOVERNANCE,
-} from "./forge-governance-contributor.js";
-export type { ForgeRegistrySyncConfig } from "./forge-registry-sync.js";
-export { createForgeRegistrySync } from "./forge-registry-sync.js";
-export type { ForgeResolverContext } from "./forge-resolver.js";
-export { createForgeResolver } from "./forge-resolver.js";
-export type { CreateForgeRuntimeOptions, ForgeRuntimeInstance } from "./forge-runtime.js";
-export { createForgeRuntime } from "./forge-runtime.js";
-// runtime values — forge session counter
-export type {
-  ForgeSessionCounterInstance,
-  ForgeSessionCounterOptions,
-} from "./forge-session-counter.js";
-export { createForgeSessionCounter } from "./forge-session-counter.js";
-// runtime values — usage tracking middleware
-export type { ForgeUsageMiddlewareConfig } from "./forge-usage-middleware.js";
-export { createForgeUsageMiddleware } from "./forge-usage-middleware.js";
-// runtime values — SKILL.md generation
-export type { SkillMdInput } from "./generate-skill-md.js";
-export { generateSkillMd } from "./generate-skill-md.js";
-// runtime values — test case auto-generation
-export type { GenerateTestCasesConfig } from "./generate-test-cases.js";
-export { generateTestCases } from "./generate-test-cases.js";
-export type { GovernanceResult } from "./governance.js";
-// runtime values — governance
-export { checkGovernance, checkScopePromotion } from "./governance.js";
-// runtime values — integrity verification
-export type {
+  AttestationCache,
   IntegrityAttestationFailed,
   IntegrityContentMismatch,
   IntegrityOk,
   IntegrityResult,
-} from "./integrity.js";
-export { loadAndVerify, verifyBrickAttestation, verifyBrickIntegrity } from "./integrity.js";
-// runtime values — storage
-export { createInMemoryForgeStore } from "./memory-store.js";
-export type { NetworkPolicy, RequiresCheckResult } from "./requires-check.js";
-export { checkBrickRequires } from "./requires-check.js";
-// runtime values — re-verification
-export type { ReverificationConfig } from "./reverification.js";
-export { computeTtl, DEFAULT_REVERIFICATION_CONFIG, isStale } from "./reverification.js";
-export type { ReverificationHandler, ReverificationQueue } from "./reverification-queue.js";
-export { createReverificationQueue } from "./reverification-queue.js";
-// runtime values — sandbox error enrichment
-export type { CodeSnippet, EnrichedSandboxError } from "./sandbox-error-enrichment.js";
-export {
-  computeRemediation,
-  enrichSandboxError,
-  extractSnippet,
-  sanitizeInput,
-} from "./sandbox-error-enrichment.js";
-export { filterByAgentScope, isVisibleToAgent } from "./scope-filter.js";
-// runtime values — SLSA serializer
-export type {
   SlsaBuildDefinition,
   SlsaBuilder,
   SlsaBuildMetadata,
@@ -168,76 +132,150 @@ export type {
   SlsaProvenanceV1WithExtensions,
   SlsaResourceDescriptor,
   SlsaRunDetails,
-} from "./slsa-serializer.js";
-export { mapProvenanceToSlsa, mapProvenanceToStatement } from "./slsa-serializer.js";
-// runtime values — store change notification
-export { createMemoryStoreChangeNotifier } from "./store-notifier.js";
-export { createComposeForge } from "./tools/compose-forge.js";
-export type { OnForgeAgentSpawn } from "./tools/forge-agent.js";
-export { createForgeAgentTool } from "./tools/forge-agent.js";
-export { createForgeChannelTool } from "./tools/forge-channel.js";
-export { createForgeEditTool } from "./tools/forge-edit.js";
-export { createForgeMiddlewareTool } from "./tools/forge-middleware.js";
-export { createForgeSkillTool } from "./tools/forge-skill.js";
-export { createForgeToolTool } from "./tools/forge-tool.js";
-export { createPromoteForgeTool } from "./tools/promote-forge.js";
-export { createSearchForgeTool } from "./tools/search-forge.js";
-export type { ForgeDeps, ForgeToolConfig } from "./tools/shared.js";
-// runtime values — primordial tools
-export { createForgeTool } from "./tools/shared.js";
-// types — forge-specific (remain in L2)
-export type {
-  ForgeAgentInput,
-  ForgeAgentInputWithBricks,
-  ForgeAgentInputWithManifest,
-  ForgeChannelInput,
-  ForgeContext,
-  ForgeInput,
-  ForgeInputBase,
-  ForgeMiddlewareInput,
-  ForgeResult,
-  ForgeResultMetadata,
-  ForgeSkillInput,
-  ForgeToolInput,
-  ForgeVerifier,
-  ManifestParseResult,
-  ManifestParser,
-  PromoteChange,
-  PromoteResult,
-  ResolveStageReport,
-  SandboxError,
-  SandboxErrorCode,
-  SandboxExecutor,
-  SandboxResult,
-  SelfTestStageReport,
-  StageReport,
-  TrustStageReport,
-  VerificationReport,
-  VerificationStage,
-  VerifierResult,
-} from "./types.js";
-// runtime values — usage tracking
-export type { UsageRecordedResult, UsageResult } from "./usage.js";
-export { recordBrickUsage } from "./usage.js";
-// runtime values — verification
-export { verify } from "./verify.js";
-// runtime values — format verification
-export type { FormatStageReport } from "./verify-format.js";
-export { verifyFormat } from "./verify-format.js";
-// runtime values — install integrity verification
-export { verifyInstallIntegrity } from "./verify-install-integrity.js";
-export { verifyResolve } from "./verify-resolve.js";
-export { verifySandbox } from "./verify-sandbox.js";
-export { verifySelfTest } from "./verify-self-test.js";
-export { verifyStatic } from "./verify-static.js";
-export { assignTrust } from "./verify-trust.js";
-export type { WorkspaceResult } from "./workspace-manager.js";
+} from "@koi/forge-integrity";
+
 export {
+  canonicalJsonSerialize,
+  createAttestationCache,
+  createForgeProvenance,
+  extractBrickContent,
+  loadAndVerify,
+  mapProvenanceToSlsa,
+  mapProvenanceToStatement,
+  signAttestation,
+  verifyAttestation,
+  verifyBrickAttestation,
+  verifyBrickIntegrity,
+} from "@koi/forge-integrity";
+
+// ---------------------------------------------------------------------------
+// @koi/forge-policy (L2) — governance, usage, drift, mutation pressure
+// ---------------------------------------------------------------------------
+
+export type {
+  DriftCheckerConfig,
+  ForgeSessionCounterInstance,
+  ForgeSessionCounterOptions,
+  ForgeUsageMiddlewareConfig,
+  ReverificationHandler,
+  ReverificationQueue,
+  UsagePromotedResult,
+  UsageRecordedResult,
+  UsageResult,
+} from "@koi/forge-policy";
+
+export {
+  checkGovernance,
+  checkMutationPressure,
+  checkScopePromotion,
+  computeAutoPromotion,
+  createDriftChecker,
+  createForgeGovernanceContributor,
+  createForgeSessionCounter,
+  createForgeUsageMiddleware,
+  createReverificationQueue,
+  FORGE_GOVERNANCE,
+  recordBrickUsage,
+  validateTrustTransition,
+} from "@koi/forge-policy";
+
+// ---------------------------------------------------------------------------
+// @koi/forge-verifier (L2) — verification pipeline, workspace, adversarial
+// ---------------------------------------------------------------------------
+
+export type {
+  BrickModulePath,
+  CodeSnippet,
+  DiagnosticVerifierConfig,
+  EnrichedSandboxError,
+  FormatStageReport,
+  GenerateTestCasesConfig,
+  ScanFinding,
+  ScanResult,
+  WorkspaceResult,
+} from "@koi/forge-verifier";
+
+export {
+  assignTrust,
+  auditDependencies,
+  auditTransitiveDependencies,
+  cleanupOrphanedModules,
   cleanupStaleWorkspaces,
+  compileBrickModule,
   computeDependencyHash,
+  computeRemediation,
+  createAdversarialVerifiers,
   createBrickWorkspace,
+  createContentScanningVerifier,
+  createDiagnosticVerifier,
+  createExfiltrationVerifier,
+  createInjectionVerifier,
+  createResourceExhaustionVerifier,
+  createStructuralHidingVerifier,
+  enrichSandboxError,
+  extractSnippet,
+  generateTestCases,
   resolveWorkspacePath,
+  sanitizeInput,
+  scanWorkspaceCode,
+  verify,
+  verifyFormat,
+  verifyInstallIntegrity,
+  verifyResolve,
+  verifySandbox,
+  verifySelfTest,
+  verifyStatic,
   writeBrickEntry,
-} from "./workspace-manager.js";
-export type { ScanFinding, ScanResult } from "./workspace-scan.js";
-export { scanWorkspaceCode } from "./workspace-scan.js";
+} from "@koi/forge-verifier";
+
+// ---------------------------------------------------------------------------
+// @koi/forge-tools (L2) — primordial tools, component provider, resolver
+// ---------------------------------------------------------------------------
+
+export type {
+  AssembleManifestOptions,
+  AssembleManifestResult,
+  ForgeComponentProviderConfig,
+  ForgeComponentProviderInstance,
+  ForgeDeps,
+  ForgeRegistrySyncConfig,
+  ForgeResolverContext,
+  ForgeToolConfig,
+  NetworkPolicy,
+  OnForgeAgentSpawn,
+  RequiresCheckResult,
+  SkillMdInput,
+} from "@koi/forge-tools";
+
+export {
+  assembleManifest,
+  brickToTool,
+  checkBrickRequires,
+  createComposeForge,
+  createForgeAgentTool,
+  createForgeChannelTool,
+  createForgeComponentProvider,
+  createForgeEditTool,
+  createForgeMiddlewareTool,
+  createForgeRegistrySync,
+  createForgeResolver,
+  createForgeSkillTool,
+  createForgeTool,
+  createForgeToolTool,
+  createInMemoryForgeStore,
+  createMemoryStoreChangeNotifier,
+  createPromoteForgeTool,
+  createSearchForgeTool,
+  descriptor,
+  generateSkillMd,
+  mapParsedBaseFields,
+  mapParsedTestCases,
+} from "@koi/forge-tools";
+
+// ---------------------------------------------------------------------------
+// L3-only: composition root + runtime
+// ---------------------------------------------------------------------------
+
+export { createForgePipeline } from "./create-forge-stack.js";
+export type { CreateForgeRuntimeOptions, ForgeRuntimeInstance } from "./forge-runtime.js";
+export { createForgeRuntime } from "./forge-runtime.js";

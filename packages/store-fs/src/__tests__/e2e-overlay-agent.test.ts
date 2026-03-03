@@ -38,6 +38,7 @@ import type { ForgeDeps, ForgeResult } from "@koi/forge";
 import {
   createDefaultForgeConfig,
   createForgeComponentProvider,
+  createForgePipeline,
   createForgeToolTool,
   createSearchForgeTool,
 } from "@koi/forge";
@@ -163,6 +164,7 @@ function createDeps(
       sessionId: "overlay-e2e-session",
       forgesThisSession: 0,
     },
+    pipeline: createForgePipeline(),
   };
 }
 

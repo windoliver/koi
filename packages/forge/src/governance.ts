@@ -7,7 +7,10 @@ import { GOVERNANCE_VARIABLES } from "@koi/core";
 import type { ForgeConfig } from "./config.js";
 import type { ForgeError } from "./errors.js";
 import { governanceError } from "./errors.js";
-import type { ForgeContext, ForgeScope, PromoteChange } from "./types.js";
+import type { ForgeContext, ForgeScope, GovernanceResult, PromoteChange } from "./types.js";
+
+// Re-export GovernanceResult for backward compatibility
+export type { GovernanceResult } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Trust tier ordering (for comparison)
@@ -24,15 +27,6 @@ const SCOPE_ORDER: Readonly<Record<ForgeScope, number>> = {
   zone: 1,
   global: 2,
 } as const;
-
-// ---------------------------------------------------------------------------
-// Governance check result for HITL
-// ---------------------------------------------------------------------------
-
-export interface GovernanceResult {
-  readonly requiresHumanApproval: boolean;
-  readonly message?: string;
-}
 
 // ---------------------------------------------------------------------------
 // Depth-aware tool filtering (per architecture doc)

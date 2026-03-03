@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*"],
+  "references": [
+    { "path": "../core" },
+    { "path": "../edit-match" },
+    { "path": "../forge-types" },
+    { "path": "../git-utils" },
+    { "path": "../hash" },
+    { "path": "../resolve" },
+    { "path": "../validation" }
+  ]
+}

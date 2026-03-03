@@ -25,6 +25,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/event-delivery",
   "@koi/execution-context",
   "@koi/file-resolution",
+  "@koi/forge-types",
   "@koi/git-utils",
   "@koi/harness-scheduler",
   "@koi/hash",
@@ -56,6 +57,7 @@ export const L3_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/autonomous",
   "@koi/cli",
   "@koi/context-arena",
+  "@koi/forge",
   "@koi/governance",
   "@koi/starter",
 ]);

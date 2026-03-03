@@ -15,6 +15,7 @@ import type {
   Tool,
   ToolDescriptor,
 } from "@koi/core";
+import type { ForgePipeline } from "@koi/forge-types";
 import { computeBrickId } from "@koi/hash";
 import { z } from "zod";
 import { createForgeProvenance, signAttestation } from "../attestation.js";
@@ -55,6 +56,8 @@ export interface ForgeDeps {
   readonly controller?: GovernanceController;
   /** Called after a successful forge with the number of forges consumed. When provided, incrementing the session counter is automatic. */
   readonly onForgeConsumed?: (consumed: number) => void | Promise<void>;
+  /** Optional DI pipeline — when provided, tools use pipeline methods instead of direct imports. Wired by L3 bundle. */
+  readonly pipeline?: ForgePipeline;
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +289,81 @@ export function parseImplementationInput(
 }
 
 // ---------------------------------------------------------------------------
+// DRY helpers for parsed → ForgeInput mapping
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps parsed test cases into the ForgeInput test case shape.
+ * Strips undefined optional fields to match exactOptionalPropertyTypes.
+ */
+export function mapParsedTestCases(
+  testCases:
+    | readonly {
+        readonly name: string;
+        readonly input: unknown;
+        readonly expectedOutput?: unknown | undefined;
+        readonly shouldThrow?: boolean | undefined;
+      }[]
+    | undefined,
+):
+  | readonly {
+      readonly name: string;
+      readonly input: unknown;
+      readonly expectedOutput?: unknown;
+      readonly shouldThrow?: boolean;
+    }[]
+  | undefined {
+  if (testCases === undefined) return undefined;
+  return testCases.map((tc) => ({
+    name: tc.name,
+    input: tc.input,
+    ...(tc.expectedOutput !== undefined ? { expectedOutput: tc.expectedOutput } : {}),
+    ...(tc.shouldThrow !== undefined ? { shouldThrow: tc.shouldThrow } : {}),
+  }));
+}
+
+/**
+ * Extracts common ForgeInput base fields from a parsed input.
+ * DRYs the requires/tags/files/classification/contentMarkers spread
+ * that was duplicated in every tool handler.
+ */
+export function mapParsedBaseFields(parsed: ParsedBaseInput): {
+  readonly tags?: readonly string[];
+  readonly files?: Readonly<Record<string, string>>;
+  readonly requires?: {
+    readonly bins?: readonly string[];
+    readonly env?: readonly string[];
+    readonly tools?: readonly string[];
+    readonly packages?: Readonly<Record<string, string>>;
+    readonly network?: boolean;
+  };
+  readonly configSchema?: Readonly<Record<string, unknown>>;
+  readonly classification?: "public" | "internal" | "secret";
+  readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[];
+} {
+  return {
+    ...(parsed.tags !== undefined ? { tags: parsed.tags } : {}),
+    ...(parsed.files !== undefined ? { files: parsed.files } : {}),
+    ...(parsed.requires !== undefined
+      ? {
+          requires: {
+            ...(parsed.requires.bins !== undefined ? { bins: parsed.requires.bins } : {}),
+            ...(parsed.requires.env !== undefined ? { env: parsed.requires.env } : {}),
+            ...(parsed.requires.tools !== undefined ? { tools: parsed.requires.tools } : {}),
+            ...(parsed.requires.packages !== undefined
+              ? { packages: parsed.requires.packages }
+              : {}),
+            ...(parsed.requires.network !== undefined ? { network: parsed.requires.network } : {}),
+          },
+        }
+      : {}),
+    ...(parsed.configSchema !== undefined ? { configSchema: parsed.configSchema } : {}),
+    ...(parsed.classification !== undefined ? { classification: parsed.classification } : {}),
+    ...(parsed.contentMarkers !== undefined ? { contentMarkers: parsed.contentMarkers } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Shared base fields builder (DRY artifact construction)
 // ---------------------------------------------------------------------------
 
@@ -321,8 +399,12 @@ export function buildBaseFields(
 /**
  * Compute a content-addressed BrickId for any artifact body (provenance not required).
  */
-function computeArtifactId(artifact: Omit<BrickArtifact, "provenance">): BrickId {
-  const { kind, content } = extractBrickContent(artifact);
+function computeArtifactId(
+  artifact: Omit<BrickArtifact, "provenance">,
+  pipeline?: ForgePipeline,
+): BrickId {
+  const extract = pipeline?.extractBrickContent ?? extractBrickContent;
+  const { kind, content } = extract(artifact);
   return computeBrickId(kind, content, artifact.files);
 }
 
@@ -347,13 +429,16 @@ export async function runForgePipeline(
 ): Promise<Result<ForgeResult, ForgeError>> {
   const startedAt = Date.now();
 
+  const p = deps.pipeline;
+
   // Mutation pressure gate — block forge when capability space is frozen
   if (
     deps.config.mutationPressure?.enabled &&
     forgeInput.tags !== undefined &&
     forgeInput.tags.length > 0
   ) {
-    const pressureResult = await checkMutationPressure(
+    const checkPressure = p?.checkMutationPressure ?? checkMutationPressure;
+    const pressureResult = await checkPressure(
       forgeInput.tags,
       deps.store,
       deps.config.mutationPressure,
@@ -364,7 +449,8 @@ export async function runForgePipeline(
     }
   }
 
-  const verifyResult = await verify(
+  const doVerify = p?.verify ?? verify;
+  const verifyResult = await doVerify(
     forgeInput,
     deps.context,
     deps.executor,
@@ -382,7 +468,7 @@ export async function runForgePipeline(
   const artifactBody = buildArtifact(report, deps);
 
   // Compute content-addressed ID
-  const id = computeArtifactId(artifactBody);
+  const id = computeArtifactId(artifactBody, p);
 
   // Replace placeholder id with content-addressed id
   const artifactWithId = { ...artifactBody, id };
@@ -418,7 +504,8 @@ export async function runForgePipeline(
 
   // Build provenance from pipeline outputs
   // let justified: provenance may be signed in-place below
-  let provenance = createForgeProvenance({
+  const doCreateProvenance = p?.createProvenance ?? createForgeProvenance;
+  let provenance = doCreateProvenance({
     input: forgeInput,
     context: deps.context,
     report,
@@ -437,7 +524,8 @@ export async function runForgePipeline(
 
   // Sign attestation if signer is available
   if (deps.signer !== undefined) {
-    provenance = await signAttestation(provenance, deps.signer);
+    const doSign = p?.signAttestation ?? signAttestation;
+    provenance = await doSign(provenance, deps.signer);
   }
 
   // Justified `as BrickArtifact`: reconstructing the exact union variant by adding back
@@ -464,7 +552,9 @@ export async function runForgePipeline(
   if (deps.notifier !== undefined) {
     void Promise.resolve(
       deps.notifier.notify({ kind: "saved", brickId: id, scope: deps.config.defaultScope }),
-    ).catch(() => {});
+    ).catch((e: unknown) => {
+      console.debug("[forge] notifier.notify failed:", e);
+    });
   }
 
   const forgeResult: ForgeResult = {
@@ -505,12 +595,8 @@ export function createForgeTool(toolConfig: ForgeToolConfig, deps: ForgeDeps): T
 
   const execute = async (input: JsonObject): Promise<unknown> => {
     // Governance pre-check (includes depth-aware tool filtering)
-    const govResult = await checkGovernance(
-      deps.context,
-      deps.config,
-      toolConfig.name,
-      deps.controller,
-    );
+    const doCheckGov = deps.pipeline?.checkGovernance ?? checkGovernance;
+    const govResult = await doCheckGov(deps.context, deps.config, toolConfig.name, deps.controller);
     if (!govResult.ok) {
       return { ok: false, error: govResult.error };
     }
@@ -521,7 +607,11 @@ export function createForgeTool(toolConfig: ForgeToolConfig, deps: ForgeDeps): T
     // Increment engine-owned counter when a new brick was forged.
     // Treat counter update failure as non-fatal — the brick is already saved.
     if (deps.onForgeConsumed !== undefined && isForgeConsumed(result)) {
-      await Promise.resolve(deps.onForgeConsumed(result.value.forgesConsumed)).catch(() => {});
+      await Promise.resolve(deps.onForgeConsumed(result.value.forgesConsumed)).catch(
+        (e: unknown) => {
+          console.debug("[forge] onForgeConsumed callback failed:", e);
+        },
+      );
     }
 
     return result;

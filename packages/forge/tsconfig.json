@@ -5,5 +5,14 @@
     "rootDir": "src"
   },
   "include": ["src/**/*"],
-  "references": [{ "path": "../core" }, { "path": "../hash" }, { "path": "../resolve" }]
+  "references": [
+    { "path": "../core" },
+    { "path": "../forge-integrity" },
+    { "path": "../forge-policy" },
+    { "path": "../forge-tools" },
+    { "path": "../forge-types" },
+    { "path": "../forge-verifier" },
+    { "path": "../hash" },
+    { "path": "../resolve" }
+  ]
 }

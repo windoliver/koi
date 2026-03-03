@@ -29,6 +29,30 @@ import { verify } from "../verify.js";
 import type { ForgeDeps } from "./shared.js";
 
 // ---------------------------------------------------------------------------
+// Pipeline-aware helpers
+// ---------------------------------------------------------------------------
+
+function getVerify(deps: ForgeDeps): typeof verify {
+  return deps.pipeline?.verify ?? verify;
+}
+
+function getCreateProvenance(deps: ForgeDeps): typeof createForgeProvenance {
+  return deps.pipeline?.createProvenance ?? createForgeProvenance;
+}
+
+function getSignAttestation(deps: ForgeDeps): typeof signAttestation {
+  return deps.pipeline?.signAttestation ?? signAttestation;
+}
+
+function getExtractBrickContent(deps: ForgeDeps): typeof extractBrickContent {
+  return deps.pipeline?.extractBrickContent ?? extractBrickContent;
+}
+
+function getCheckGovernance(deps: ForgeDeps): typeof checkGovernance {
+  return deps.pipeline?.checkGovernance ?? checkGovernance;
+}
+
+// ---------------------------------------------------------------------------
 // Input validation
 // ---------------------------------------------------------------------------
 
@@ -162,7 +186,7 @@ async function forgeEditHandler(
   }
 
   // Re-run verification pipeline
-  const verifyResult = await verify(
+  const verifyResult = await getVerify(deps)(
     forgeInput,
     deps.context,
     deps.executor,
@@ -174,12 +198,12 @@ async function forgeEditHandler(
   }
 
   // Compute new content-addressed ID
-  const { kind, content } = extractBrickContent(updatedBrick);
+  const { kind, content } = getExtractBrickContent(deps)(updatedBrick);
   const newId = computeBrickId(kind, content, updatedBrick.files);
 
   // Build new provenance
   const startedAt = Date.now();
-  let provenance = createForgeProvenance({
+  let provenance = getCreateProvenance(deps)({
     input: forgeInput,
     context: deps.context,
     report: verifyResult.value,
@@ -191,7 +215,7 @@ async function forgeEditHandler(
   });
 
   if (deps.signer !== undefined) {
-    provenance = await signAttestation(provenance, deps.signer);
+    provenance = await getSignAttestation(deps)(provenance, deps.signer);
   }
 
   // Save new brick (immutable — new ID)
@@ -334,7 +358,7 @@ const FORGE_EDIT_DESCRIPTOR: ToolDescriptor = {
 
 export function createForgeEditTool(deps: ForgeDeps): Tool {
   const execute = async (input: JsonObject): Promise<unknown> => {
-    const govResult = await checkGovernance(deps.context, deps.config, "forge_edit");
+    const govResult = await getCheckGovernance(deps)(deps.context, deps.config, "forge_edit");
     if (!govResult.ok) {
       return { ok: false, error: govResult.error };
     }
