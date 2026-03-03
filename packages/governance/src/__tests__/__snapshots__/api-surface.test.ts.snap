@@ -103,15 +103,11 @@ interface GovernanceStackConfig {
      *
      * - \`permissionBackend\`: enables escalation prevention + permission_check tool
      * - \`nexusBackend\`: enables Zanzibar tuple sync via onGrant/onRevoke hooks
-     * - \`sessionScoped\`: enables session-scoped grant lifecycle
      */
     readonly delegationBridge?: {
         readonly manager: DelegationManager;
         readonly permissionBackend?: PermissionBackend;
         readonly nexusBackend?: NexusPermissionBackend;
-        readonly sessionScoped?: {
-            readonly getActiveSessions: () => ReadonlySet<string> | Promise<ReadonlySet<string>>;
-        };
     } | undefined;
     /**
      * Capability request bridge: enables pull-model requests between agents.
@@ -146,6 +142,8 @@ interface GovernanceBundle {
     readonly middlewares: readonly KoiMiddleware[];
     readonly providers: readonly ComponentProvider[];
     readonly config: ResolvedGovernanceMeta;
+    /** Disposable resources (e.g., parent-side approval handler subscriptions). */
+    readonly disposables: readonly Disposable[];
     /** Nexus delegation hooks — present when \`delegationBridge.nexusBackend\` is configured. */
     readonly nexusHooks?: NexusDelegationHooks;
 }
@@ -161,7 +159,7 @@ interface GovernanceBundle {
  *
  * Validation rules:
  * - \`permissions\` and \`permissionRules\` are mutually exclusive (throws)
- * - \`execApprovals\` requires an \`onAsk\` handler (throws)
+ * - \`execApprovals.onAsk\` is optional — auto-wired during agent assembly when parent + mailbox available
  * - \`pay\` emits a console.warn deprecation notice
  */
 declare function resolveGovernanceConfig(config: GovernanceStackConfig): GovernanceStackConfig;
@@ -197,9 +195,9 @@ declare function resolveGovernanceConfig(config: GovernanceStackConfig): Governa
  * \`\`\`
  *
  * Config resolution: defaults -> preset -> user overrides.
- * Middleware are ordered by priority. Priority overrides are applied for
- * exec-approvals (110) and delegation (120) so they slot correctly between
- * permissions (100) and governance-backend (150).
+ * Agent approval routing is auto-wired via ComponentProvider during assembly.
+ * When exec-approvals is configured, the provider auto-discovers agentId, parentId,
+ * and mailbox from the agent entity — zero explicit config needed.
  */
 declare function createGovernanceStack(config: GovernanceStackConfig): GovernanceBundle;
 
