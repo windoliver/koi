@@ -3,11 +3,13 @@
  */
 
 import type { Agent, ComponentProvider, TaskBoard } from "@koi/core";
+import { skillToken } from "@koi/core";
 import { executeAssignWorker } from "./assign-worker-tool.js";
 import { createTaskBoard } from "./board.js";
 import type { BoardHolder } from "./orchestrate-tool.js";
 import { executeOrchestrate } from "./orchestrate-tool.js";
 import { executeReviewOutput } from "./review-output-tool.js";
+import { ORCHESTRATOR_SKILL, ORCHESTRATOR_SKILL_NAME } from "./skill.js";
 import { executeSynthesize } from "./synthesize-tool.js";
 import type { OrchestratorConfig } from "./types.js";
 import { DEFAULT_ORCHESTRATOR_CONFIG } from "./types.js";
@@ -76,6 +78,8 @@ export function createOrchestratorProvider(config: OrchestratorConfig): Componen
         name: "synthesize",
         execute: (input: unknown) => executeSynthesize(input, holder, maxOutput),
       });
+
+      components.set(skillToken(ORCHESTRATOR_SKILL_NAME) as string, ORCHESTRATOR_SKILL);
 
       cached = components;
       return cached;

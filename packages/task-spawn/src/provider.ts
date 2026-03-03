@@ -2,8 +2,9 @@
  * ComponentProvider that attaches the task tool to an agent.
  */
 
-import { createSingleToolProvider } from "@koi/core";
+import { createSingleToolProvider, skillToken } from "@koi/core";
 import type { ComponentProvider } from "@koi/core/ecs";
+import { TASK_SPAWN_SKILL, TASK_SPAWN_SKILL_NAME } from "./skill.js";
 import { createTaskTool } from "./task-tool.js";
 import type { TaskSpawnConfig } from "./types.js";
 
@@ -18,5 +19,6 @@ export function createTaskSpawnProvider(config: TaskSpawnConfig): ComponentProvi
     name: "task-spawn",
     toolName: "task",
     createTool: () => createTaskTool(config),
+    extras: [[skillToken(TASK_SPAWN_SKILL_NAME) as string, TASK_SPAWN_SKILL]],
   });
 }

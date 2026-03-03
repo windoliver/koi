@@ -21,6 +21,12 @@ export { executeOrchestrate } from "./orchestrate-tool.js";
 // provider
 export { createOrchestratorProvider } from "./provider.js";
 export { executeReviewOutput } from "./review-output-tool.js";
+// skill
+export {
+  ORCHESTRATOR_SKILL,
+  ORCHESTRATOR_SKILL_CONTENT,
+  ORCHESTRATOR_SKILL_NAME,
+} from "./skill.js";
 export { mapSpawnToWorker } from "./spawn-adapter.js";
 export { executeSynthesize } from "./synthesize-tool.js";
 // types

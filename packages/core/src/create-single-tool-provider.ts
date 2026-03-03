@@ -25,6 +25,9 @@ export interface SingleToolProviderConfig {
 
   /** Assembly priority. Lower = higher precedence. */
   readonly priority?: number | undefined;
+
+  /** Extra components to attach alongside the tool (e.g., SkillComponent). Evaluated once and cached. */
+  readonly extras?: ReadonlyArray<readonly [string, unknown]> | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -36,7 +39,7 @@ export interface SingleToolProviderConfig {
  * The tool is created once on first attach and cached for subsequent calls.
  */
 export function createSingleToolProvider(config: SingleToolProviderConfig): ComponentProvider {
-  const { name, toolName, createTool, priority } = config;
+  const { name, toolName, createTool, priority, extras } = config;
 
   // let justified: mutable cache (set once on first attach)
   let cached: ReadonlyMap<string, unknown> | undefined;
@@ -49,7 +52,7 @@ export function createSingleToolProvider(config: SingleToolProviderConfig): Comp
       if (cached !== undefined) return cached;
 
       const tool = await Promise.resolve(createTool());
-      cached = new Map<string, unknown>([[`tool:${toolName}`, tool]]);
+      cached = new Map<string, unknown>([[`tool:${toolName}`, tool], ...(extras ?? [])]);
       return cached;
     },
   };

@@ -15,6 +15,11 @@ export { formatBatchResult } from "./output.js";
 export { createParallelTool } from "./parallel-tool.js";
 export { createParallelMinionsProvider } from "./provider.js";
 export { createSemaphore } from "./semaphore.js";
+export {
+  PARALLEL_MINIONS_SKILL,
+  PARALLEL_MINIONS_SKILL_CONTENT,
+  PARALLEL_MINIONS_SKILL_NAME,
+} from "./skill.js";
 export { mapSpawnToMinion } from "./spawn-adapter.js";
 export {
   createBestEffortStrategy,

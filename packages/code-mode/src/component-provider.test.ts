@@ -13,13 +13,13 @@ import { DEFAULT_PREFIX } from "./constants.js";
 import { createMockAgent, createMockBackend } from "./test-helpers.js";
 
 describe("createCodeModeProvider", () => {
-  test("attaches 3 tools when FILESYSTEM is present", async () => {
+  test("attaches 3 tools + 1 skill when FILESYSTEM is present", async () => {
     const backend = createMockBackend();
     const agent = createMockAgent(backend);
     const provider = createCodeModeProvider();
 
     const components = extractMap(await provider.attach(agent));
-    expect(components.size).toBe(3);
+    expect(components.size).toBe(4);
 
     const createTool = components.get(toolToken(`${DEFAULT_PREFIX}_create`) as string) as
       | Tool

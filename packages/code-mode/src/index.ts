@@ -29,6 +29,8 @@ export type { PlanStore } from "./plan-store.js";
 export { createPlanStore } from "./plan-store.js";
 // preview
 export { generatePreview } from "./preview.js";
+// skill
+export { CODE_MODE_SKILL, CODE_MODE_SKILL_CONTENT, CODE_MODE_SKILL_NAME } from "./skill.js";
 export { createPlanApplyTool } from "./tools/plan-apply.js";
 // tool factories — for advanced usage (custom tool composition)
 export { createPlanCreateTool } from "./tools/plan-create.js";

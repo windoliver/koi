@@ -23,14 +23,15 @@ describe("createOrchestratorProvider", () => {
     expect(provider.name).toBe("orchestrator");
   });
 
-  test("attach returns 4 tool components", async () => {
+  test("attach returns 4 tool components and 1 skill component", async () => {
     const provider = createOrchestratorProvider(config);
     const components = extractMap(await provider.attach(mockAgent));
-    expect(components.size).toBe(4);
+    expect(components.size).toBe(5);
     expect(components.has("tool:orchestrate")).toBe(true);
     expect(components.has("tool:assign_worker")).toBe(true);
     expect(components.has("tool:review_output")).toBe(true);
     expect(components.has("tool:synthesize")).toBe(true);
+    expect(components.has("skill:orchestrator")).toBe(true);
   });
 
   test("attach is idempotent (returns cached result)", async () => {
@@ -40,12 +41,14 @@ describe("createOrchestratorProvider", () => {
     expect(first).toBe(second);
   });
 
-  test("tools have execute methods", async () => {
+  test("tool components have execute methods", async () => {
     const provider = createOrchestratorProvider(config);
     const components = extractMap(await provider.attach(mockAgent));
-    for (const [, value] of components) {
-      const tool = value as { execute: unknown };
-      expect(typeof tool.execute).toBe("function");
+    for (const [key, value] of components) {
+      if (key.startsWith("tool:")) {
+        const tool = value as { execute: unknown };
+        expect(typeof tool.execute).toBe("function");
+      }
     }
   });
 });

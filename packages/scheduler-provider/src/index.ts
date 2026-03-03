@@ -35,10 +35,11 @@ export {
   DEFAULT_QUERY_LIMIT,
   OPERATIONS,
 } from "./constants.js";
-
 // provider
 export type { SchedulerProviderConfig } from "./scheduler-component-provider.js";
 export { createSchedulerProvider } from "./scheduler-component-provider.js";
+// skill
+export { SCHEDULER_SKILL, SCHEDULER_SKILL_CONTENT, SCHEDULER_SKILL_NAME } from "./skill.js";
 
 // tool factories — for advanced usage (custom tool composition)
 export { createCancelTool } from "./tools/cancel.js";

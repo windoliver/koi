@@ -46,8 +46,8 @@ describe("createSchedulerProvider — attach", () => {
     const provider = createSchedulerProvider({ scheduler: createMockTaskScheduler() });
     const components = extractMap(await provider.attach(createMockAgent()));
 
-    // 9 tools + SCHEDULER token
-    expect(components.size).toBe(10);
+    // 9 tools + SCHEDULER token + skill token
+    expect(components.size).toBe(11);
     expect(components.has(toolToken("scheduler_submit") as string)).toBe(true);
     expect(components.has(toolToken("scheduler_cancel") as string)).toBe(true);
     expect(components.has(toolToken("scheduler_schedule") as string)).toBe(true);
@@ -100,8 +100,8 @@ describe("createSchedulerProvider — attach", () => {
     });
     const components = extractMap(await provider.attach(createMockAgent()));
 
-    // 2 tools + SCHEDULER token
-    expect(components.size).toBe(3);
+    // 2 tools + SCHEDULER token + skill token
+    expect(components.size).toBe(4);
     expect(components.has(toolToken("scheduler_submit") as string)).toBe(true);
     expect(components.has(toolToken("scheduler_stats") as string)).toBe(true);
     expect(components.has(toolToken("scheduler_cancel") as string)).toBe(false);

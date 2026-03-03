@@ -21,7 +21,7 @@ import type {
   Tool,
   TrustTier,
 } from "@koi/core";
-import { SCHEDULER, toolToken } from "@koi/core";
+import { SCHEDULER, skillToken, toolToken } from "@koi/core";
 import type { SchedulerOperation } from "./constants.js";
 import {
   DEFAULT_HISTORY_DEFAULT,
@@ -31,6 +31,7 @@ import {
   DEFAULT_QUERY_LIMIT,
   OPERATIONS,
 } from "./constants.js";
+import { SCHEDULER_SKILL, SCHEDULER_SKILL_NAME } from "./skill.js";
 import { createCancelTool } from "./tools/cancel.js";
 import { createHistoryTool } from "./tools/history.js";
 import { createPauseTool } from "./tools/pause.js";
@@ -150,7 +151,11 @@ export function createSchedulerProvider(config: SchedulerProviderConfig): Compon
         return [toolToken(tool.descriptor.name) as string, tool] as const;
       });
 
-      return new Map<string, unknown>([[SCHEDULER as string, component], ...toolEntries]);
+      return new Map<string, unknown>([
+        [SCHEDULER as string, component],
+        ...toolEntries,
+        [skillToken(SCHEDULER_SKILL_NAME) as string, SCHEDULER_SKILL],
+      ]);
     },
 
     detach: async (_agent: Agent): Promise<void> => {

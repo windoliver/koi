@@ -209,13 +209,16 @@ function enforceTokenBudget(
       readonly value: number;
     }[] = [];
     for (let si = 0; si < sections.length; si++) {
-      const section = sections[si]!;
+      const section = sections[si];
+      if (section === undefined) continue;
       if (section.bullets.length <= 1) continue;
       for (let bi = 0; bi < section.bullets.length; bi++) {
+        const bullet = section.bullets[bi];
+        if (bullet === undefined) continue;
         candidates.push({
           sectionIdx: si,
           bulletIdx: bi,
-          value: computeBulletValue(section.bullets[bi]!),
+          value: computeBulletValue(bullet),
         });
       }
     }
@@ -224,8 +227,10 @@ function enforceTokenBudget(
 
     // Remove the lowest-value bullet
     const sorted = [...candidates].sort((a, b) => a.value - b.value);
-    const lowest = sorted[0]!;
-    const section = sections[lowest.sectionIdx]!;
+    const lowest = sorted[0];
+    if (lowest === undefined) break;
+    const section = sections[lowest.sectionIdx];
+    if (section === undefined) break;
     section.bullets = section.bullets.filter((_, i) => i !== lowest.bulletIdx);
 
     // Recalculate tokens

@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/handoff API surface . has stable type surface 1`] = `
-"import { HandoffEnvelope, Result, KoiError, HandoffId, HandoffStatus, AgentId, AgentRegistry, HandoffEvent, Tool, ToolDescriptor, KoiMiddleware, ComponentProvider, JsonObject, ArtifactRef } from '@koi/core';
+"import { HandoffEnvelope, Result, KoiError, HandoffId, HandoffStatus, AgentId, AgentRegistry, HandoffEvent, Tool, ToolDescriptor, KoiMiddleware, ComponentProvider, SkillComponent, JsonObject, ArtifactRef } from '@koi/core';
 
 /**
  * HandoffStore — interface + in-memory implementation with CAS status
@@ -142,6 +142,25 @@ declare function createPrepareTool(config: CreatePrepareToolConfig): Tool;
 declare function createHandoffProvider(config: HandoffConfig): ComponentProvider;
 
 /**
+ * Skill component for the handoff tools — teaches agents structured context relay.
+ *
+ * L2 — imports from @koi/core only.
+ */
+
+/** Skill component name. */
+declare const HANDOFF_SKILL_NAME: "handoff";
+/**
+ * Markdown content teaching agents the handoff workflow.
+ * Injected into the agent's context alongside the tool descriptors.
+ */
+declare const HANDOFF_SKILL_CONTENT: string;
+/**
+ * Pre-built SkillComponent for handoff workflow guidance.
+ * Attached automatically by createHandoffProvider alongside the tools.
+ */
+declare const HANDOFF_SKILL: SkillComponent;
+
+/**
  * SqliteHandoffStore — bun:sqlite backend for persistent handoff envelopes.
  *
  * Schema: single \`handoff_envelopes\` table with JSON data + queryable columns.
@@ -213,6 +232,6 @@ declare function validateAcceptInput(args: JsonObject): ValidateAcceptResult;
  */
 declare function validateArtifactRefs(refs: readonly ArtifactRef[]): readonly string[];
 
-export { ACCEPT_HANDOFF_DESCRIPTOR, type CreateAcceptToolConfig, type CreatePrepareToolConfig, type HandoffConfig, type HandoffMiddlewareConfig, type HandoffStore, type HandoffStoreConfig, type NexusHandoffStoreConfig, PREPARE_HANDOFF_DESCRIPTOR, type PrepareInput, type SqliteHandoffStoreConfig, type ValidateAcceptResult, type ValidatePrepareResult, conflictError, createAcceptTool, createHandoffMiddleware, createHandoffProvider, createHandoffStore, createInMemoryHandoffStore, createNexusHandoffStore, createPrepareTool, createSqliteHandoffStore, generateHandoffSummary, internalError, notFoundError, validateAcceptInput, validateArtifactRefs, validateHandoffId, validatePrepareInput, validationError };
+export { ACCEPT_HANDOFF_DESCRIPTOR, type CreateAcceptToolConfig, type CreatePrepareToolConfig, HANDOFF_SKILL, HANDOFF_SKILL_CONTENT, HANDOFF_SKILL_NAME, type HandoffConfig, type HandoffMiddlewareConfig, type HandoffStore, type HandoffStoreConfig, type NexusHandoffStoreConfig, PREPARE_HANDOFF_DESCRIPTOR, type PrepareInput, type SqliteHandoffStoreConfig, type ValidateAcceptResult, type ValidatePrepareResult, conflictError, createAcceptTool, createHandoffMiddleware, createHandoffProvider, createHandoffStore, createInMemoryHandoffStore, createNexusHandoffStore, createPrepareTool, createSqliteHandoffStore, generateHandoffSummary, internalError, notFoundError, validateAcceptInput, validateArtifactRefs, validateHandoffId, validatePrepareInput, validationError };
 "
 `;

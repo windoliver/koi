@@ -3,8 +3,10 @@
  */
 
 import type { ComponentProvider } from "@koi/core";
+import { skillToken } from "@koi/core";
 import { createAcceptTool } from "./accept-tool.js";
 import { createPrepareTool } from "./prepare-tool.js";
+import { HANDOFF_SKILL, HANDOFF_SKILL_NAME } from "./skill.js";
 import type { HandoffConfig } from "./types.js";
 
 /**
@@ -45,6 +47,7 @@ export function createHandoffProvider(config: HandoffConfig): ComponentProvider 
       const components = new Map<string, unknown>();
       components.set("tool:prepare_handoff", prepareTool);
       components.set("tool:accept_handoff", acceptTool);
+      components.set(skillToken(HANDOFF_SKILL_NAME) as string, HANDOFF_SKILL);
       cached = components;
       return cached;
     },

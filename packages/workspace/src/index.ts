@@ -22,6 +22,7 @@ export { createWorkspaceProvider } from "./provider.js";
 export type { PruneOptions, PruneResult } from "./prune.js";
 export { pruneStaleWorkspaces } from "./prune.js";
 export { createShellSetup } from "./shell-setup.js";
+export { WORKSPACE_SKILL, WORKSPACE_SKILL_CONTENT, WORKSPACE_SKILL_NAME } from "./skill.js";
 // Provider-specific types (not in L0)
 export type { WorkspaceProviderConfig } from "./types.js";
 export type { ValidatedWorkspaceConfig } from "./validate-config.js";

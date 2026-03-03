@@ -694,6 +694,8 @@ interface SingleToolProviderConfig {
     readonly createTool: () => Tool | Promise<Tool>;
     /** Assembly priority. Lower = higher precedence. */
     readonly priority?: number | undefined;
+    /** Extra components to attach alongside the tool (e.g., SkillComponent). Evaluated once and cached. */
+    readonly extras?: ReadonlyArray<readonly [string, unknown]> | undefined;
 }
 /**
  * Creates a ComponentProvider that attaches a single \`tool:<toolName>\` component.
