@@ -22,12 +22,16 @@ export { parseSkillMd } from "./parse.js";
 // Provider
 export type { SkillProviderConfig } from "./provider.js";
 export { createSkillComponentProvider } from "./provider.js";
+// Include resolution
+export { resolveIncludes } from "./resolve-includes.js";
 // Skill activator middleware
 export type { SkillActivatorConfig } from "./skill-activator-middleware.js";
 export { createSkillActivatorMiddleware } from "./skill-activator-middleware.js";
 // Types
 export type {
+  IncludeResolutionOptions,
   ProgressiveSkillProvider,
+  ResolvedInclude,
   SkillBodyEntry,
   SkillBundledEntry,
   SkillEntry,

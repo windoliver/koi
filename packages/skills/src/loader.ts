@@ -13,7 +13,9 @@ import type { KoiError, Result } from "@koi/core";
 import type { ScanFinding } from "@koi/skill-scanner";
 import { createScanner } from "@koi/skill-scanner";
 import { parseSkillMd } from "./parse.js";
+import { resolveIncludes } from "./resolve-includes.js";
 import type {
+  IncludeResolutionOptions,
   SkillBodyEntry,
   SkillBundledEntry,
   SkillEntry,
@@ -196,10 +198,14 @@ export async function loadSkillMetadata(
 /**
  * Load skill at body level — frontmatter + markdown body + security scan.
  * Uses cached parse results when available (populated by loadSkillMetadata).
+ *
+ * When `skillsRoot` is provided and the frontmatter contains `includes`,
+ * the included file contents are appended to the body.
  */
 export async function loadSkillBody(
   dirPath: string,
   onSecurityFinding?: (findings: readonly ScanFinding[]) => void,
+  skillsRoot?: string,
 ): Promise<Result<SkillBodyEntry, KoiError>> {
   // Check cache first — reuse frontmatter and rawContent from prior metadata load
   const cached = skillCache.get(dirPath);
@@ -237,13 +243,24 @@ export async function loadSkillBody(
     onSecurityFinding(report.findings);
   }
 
+  // Resolve includes — append included content to body
+  let resolvedBody = body; // let: conditionally extended with included content
+  if (fm.includes !== undefined && fm.includes.length > 0 && skillsRoot !== undefined) {
+    const includeOptions: IncludeResolutionOptions = { skillsRoot };
+    const includesResult = await resolveIncludes(fm.includes, dirPath, includeOptions);
+    if (!includesResult.ok) return includesResult;
+
+    const includedContent = includesResult.value.map((inc) => inc.content).join("\n\n");
+    resolvedBody = `${body}\n\n${includedContent}`;
+  }
+
   return {
     ok: true,
     value: {
       level: "body",
       name: fm.name,
       description: fm.description,
-      body,
+      body: resolvedBody,
       dirPath,
       ...(fm.license !== undefined ? { license: fm.license } : {}),
       ...(fm.compatibility !== undefined ? { compatibility: fm.compatibility } : {}),
@@ -259,8 +276,9 @@ export async function loadSkillBody(
 export async function loadSkillBundled(
   dirPath: string,
   onSecurityFinding?: (findings: readonly ScanFinding[]) => void,
+  skillsRoot?: string,
 ): Promise<Result<SkillBundledEntry, KoiError>> {
-  const bodyResult = await loadSkillBody(dirPath, onSecurityFinding);
+  const bodyResult = await loadSkillBody(dirPath, onSecurityFinding, skillsRoot);
   if (!bodyResult.ok) return bodyResult;
 
   const scriptsDir = join(dirPath, "scripts");
@@ -299,14 +317,15 @@ export async function loadSkill(
   dirPath: string,
   level: SkillLoadLevel = "body",
   onSecurityFinding?: (findings: readonly ScanFinding[]) => void,
+  skillsRoot?: string,
 ): Promise<Result<SkillEntry, KoiError>> {
   switch (level) {
     case "metadata":
       return loadSkillMetadata(dirPath);
     case "body":
-      return loadSkillBody(dirPath, onSecurityFinding);
+      return loadSkillBody(dirPath, onSecurityFinding, skillsRoot);
     case "bundled":
-      return loadSkillBundled(dirPath, onSecurityFinding);
+      return loadSkillBundled(dirPath, onSecurityFinding, skillsRoot);
   }
 }
 

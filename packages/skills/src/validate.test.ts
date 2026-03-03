@@ -127,4 +127,76 @@ describe("validateSkillFrontmatter", () => {
     });
     expect(result.ok).toBe(false);
   });
+
+  // ---------------------------------------------------------------------------
+  // includes directive
+  // ---------------------------------------------------------------------------
+
+  test("accepts valid includes with relative path", () => {
+    const result = validateSkillFrontmatter({
+      name: "with-includes",
+      description: "test",
+      includes: ["./doc.md"],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.includes).toEqual(["./doc.md"]);
+    }
+  });
+
+  test("accepts includes with parent-relative and local paths", () => {
+    const result = validateSkillFrontmatter({
+      name: "multi-includes",
+      description: "test",
+      includes: ["../sibling/SKILL.md", "./local.md"],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.includes).toEqual(["../sibling/SKILL.md", "./local.md"]);
+    }
+  });
+
+  test("accepts empty includes array", () => {
+    const result = validateSkillFrontmatter({
+      name: "empty-includes",
+      description: "test",
+      includes: [],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.includes).toEqual([]);
+    }
+  });
+
+  test("omits includes when not present (backwards compat)", () => {
+    const result = validateSkillFrontmatter({ name: "no-includes", description: "test" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect("includes" in result.value).toBe(false);
+    }
+  });
+
+  test("rejects absolute path in includes", () => {
+    const result = validateSkillFrontmatter({
+      name: "bad-includes",
+      description: "test",
+      includes: ["/etc/passwd"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+    }
+  });
+
+  test("rejects URL in includes", () => {
+    const result = validateSkillFrontmatter({
+      name: "url-includes",
+      description: "test",
+      includes: ["https://evil.com/payload.md"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+    }
+  });
 });

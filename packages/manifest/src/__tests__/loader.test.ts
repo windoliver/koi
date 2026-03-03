@@ -236,6 +236,19 @@ describe("loadManifest (file-based)", () => {
     }
   });
 
+  test("loads guide-agent.yaml fixture", async () => {
+    const result = await loadManifest(resolve(FIXTURES, "guide-agent.yaml"));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.manifest.name).toBe("knowledge-guide");
+      expect(result.value.manifest.model).toEqual({
+        name: "anthropic:claude-haiku-4-5-20251001",
+      });
+      expect(result.value.manifest.skills).toHaveLength(1);
+      expect(result.value.manifest.skills?.[0]?.name).toBe("domain-knowledge");
+    }
+  });
+
   test("returns error for non-existent file", async () => {
     const result = await loadManifest("/does/not/exist.yaml");
     expect(result.ok).toBe(false);

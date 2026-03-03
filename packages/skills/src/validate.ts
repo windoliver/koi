@@ -20,6 +20,7 @@ export interface ValidatedSkillFrontmatter {
   readonly compatibility?: string;
   readonly metadata?: Readonly<Record<string, string>>;
   readonly allowedTools?: readonly string[];
+  readonly includes?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -40,6 +41,12 @@ const skillNameSchema = z
   )
   .refine((s) => !s.includes("--"), "Skill name must not contain consecutive hyphens");
 
+/**
+ * Allowed include path pattern: relative paths only (./file.md, ../sibling/file.md).
+ * Rejects absolute paths (/etc/passwd) and URL schemes (https://...).
+ */
+const INCLUDE_PATH_RE = /^\.{1,2}\/[a-zA-Z0-9._/-]+$/;
+
 const skillFrontmatterSchema = z.object({
   name: skillNameSchema,
   description: z
@@ -50,6 +57,11 @@ const skillFrontmatterSchema = z.object({
   compatibility: z.string().max(500, "Compatibility must be at most 500 characters").optional(),
   metadata: z.record(z.string(), z.string()).optional(),
   "allowed-tools": z.string().optional(),
+  includes: z
+    .array(
+      z.string().regex(INCLUDE_PATH_RE, "Include path must be a relative path (./... or ../..)"),
+    )
+    .optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -70,7 +82,7 @@ export function validateSkillFrontmatter(
     return { ok: false, error: zodToKoiError(result.error, "Skill frontmatter validation failed") };
   }
 
-  const { name, description, license, compatibility, metadata } = result.data;
+  const { name, description, license, compatibility, metadata, includes } = result.data;
   const allowedToolsRaw = result.data["allowed-tools"];
 
   // Parse allowed-tools: space-delimited string → array
@@ -86,6 +98,7 @@ export function validateSkillFrontmatter(
     ...(compatibility !== undefined ? { compatibility } : {}),
     ...(metadata !== undefined ? { metadata } : {}),
     ...(allowedTools !== undefined ? { allowedTools } : {}),
+    ...(includes !== undefined ? { includes } : {}),
   };
 
   return { ok: true, value: validated };
