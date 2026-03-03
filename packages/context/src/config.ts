@@ -48,11 +48,33 @@ const contextSourceSchema = z.discriminatedUnion("kind", [
   toolSchemaSourceSchema,
 ]);
 
-const contextManifestConfigSchema = z.object({
-  sources: z.array(contextSourceSchema).min(1, "At least one context source is required"),
-  maxTokens: z.number().positive().optional(),
-  refreshInterval: z.number().int().positive().optional(),
+const bootstrapSlotSchema = z.object({
+  fileName: z.string(),
+  label: z.string().optional(),
+  budget: z.number().positive().optional(),
 });
+
+const bootstrapObjectSchema = z.object({
+  rootDir: z.string().optional(),
+  agentName: z.string().nullable().optional(),
+  slots: z.array(bootstrapSlotSchema).optional(),
+});
+
+const contextManifestConfigSchema = z
+  .object({
+    sources: z.array(contextSourceSchema).optional(),
+    bootstrap: z.union([z.literal(true), bootstrapObjectSchema]).optional(),
+    maxTokens: z.number().positive().optional(),
+    refreshInterval: z.number().int().positive().optional(),
+  })
+  .refine(
+    (data) => {
+      const hasSources = data.sources !== undefined && data.sources.length > 0;
+      const hasBootstrap = data.bootstrap !== undefined;
+      return hasSources || hasBootstrap;
+    },
+    { message: "At least one of 'sources' or 'bootstrap' must be present" },
+  );
 
 /**
  * Validates raw context configuration from koi.yaml.

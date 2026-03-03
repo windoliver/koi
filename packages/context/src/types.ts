@@ -51,9 +51,29 @@ export interface ToolSchemaSource extends SourceBase {
   readonly tools?: readonly string[] | undefined;
 }
 
+/** Per-slot overrides for bootstrap file resolution. */
+export interface BootstrapSlotConfig {
+  readonly fileName: string;
+  readonly label?: string | undefined;
+  readonly budget?: number | undefined;
+}
+
+/** Object-form configuration for `context.bootstrap`. */
+export interface BootstrapManifestConfig {
+  /** Root directory for .koi/ hierarchy. Relative to manifest file location. */
+  readonly rootDir?: string | undefined;
+  /** Agent name for agent-specific overrides. null = disable agent-specific resolution. */
+  readonly agentName?: string | null | undefined;
+  /** Custom slot definitions overriding the default INSTRUCTIONS/TOOLS/CONTEXT slots. */
+  readonly slots?: readonly BootstrapSlotConfig[] | undefined;
+}
+
 /** Top-level context configuration from koi.yaml. */
 export interface ContextManifestConfig {
-  readonly sources: readonly ContextSource[];
+  /** Explicit context sources. Optional when bootstrap is enabled. */
+  readonly sources?: readonly ContextSource[] | undefined;
+  /** Auto-resolve .koi/ file hierarchy. true = defaults, object = custom config. */
+  readonly bootstrap?: boolean | BootstrapManifestConfig | undefined;
   /** Global token budget for all sources combined. Default: 8000. */
   readonly maxTokens?: number | undefined;
   /** Re-resolve refreshable sources every N turns. Requires at least one refreshable source. */

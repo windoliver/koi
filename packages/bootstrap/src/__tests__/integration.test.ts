@@ -79,4 +79,86 @@ describe("bootstrap → context hydrator integration", () => {
     expect(fullText).toContain("You are a research agent.");
     expect(fullText).toContain("Use search tools wisely.");
   });
+
+  test("bootstrap with agent-specific override flows through hydrator", async () => {
+    // Agent-specific file takes priority over project-level
+    await writeKoiFile("INSTRUCTIONS.md", "Global instructions.");
+    await writeKoiFile("agents/researcher/INSTRUCTIONS.md", "Agent-specific instructions.");
+
+    const bootstrapResult = await resolveBootstrap({
+      rootDir: tempDir,
+      agentName: "researcher",
+    });
+    expect(bootstrapResult.ok).toBe(true);
+    if (!bootstrapResult.ok) return;
+
+    // Agent-specific overrides project-level entirely
+    const instructionSource = bootstrapResult.value.sources.find(
+      (s) => s.label === "Agent Instructions",
+    );
+    expect(instructionSource).toBeDefined();
+    expect(instructionSource?.text).toBe("Agent-specific instructions.");
+
+    // Verify it passes through the hydrator
+    const contextSources: readonly TextSource[] = bootstrapResult.value.sources.map((s) => ({
+      ...s,
+    }));
+    const agent = createMockAgent();
+    const config: ContextManifestConfig = { sources: contextSources };
+    const mw = createContextHydrator({ config, agent });
+
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
+
+    const ctx = createMockTurnContext();
+    const spy = createSpyModelHandler();
+    await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
+
+    const textBlocks = spy.calls[0]?.messages[0]?.content.filter((b) => b.kind === "text") ?? [];
+    const fullText = textBlocks.map((b) => ("text" in b ? b.text : "")).join("");
+    expect(fullText).toContain("Agent-specific instructions.");
+    expect(fullText).not.toContain("Global instructions.");
+  });
+
+  test("bootstrap sources merged with explicit sources in hydrator", async () => {
+    await writeKoiFile("INSTRUCTIONS.md", "Bootstrap content.");
+
+    const bootstrapResult = await resolveBootstrap({ rootDir: tempDir });
+    expect(bootstrapResult.ok).toBe(true);
+    if (!bootstrapResult.ok) return;
+
+    const bootstrapSources: readonly TextSource[] = bootstrapResult.value.sources.map((s) => ({
+      ...s,
+    }));
+
+    // Combine bootstrap + explicit source
+    const allSources: readonly TextSource[] = [
+      ...bootstrapSources,
+      { kind: "text", text: "Explicit source content.", label: "Explicit", priority: 99 },
+    ];
+
+    const agent = createMockAgent();
+    const config: ContextManifestConfig = { sources: allSources };
+    const mw = createContextHydrator({ config, agent });
+
+    await mw.onSessionStart?.({
+      agentId: "a",
+      sessionId: sessionId("s"),
+      runId: runId("r"),
+      metadata: {},
+    });
+
+    const ctx = createMockTurnContext();
+    const spy = createSpyModelHandler();
+    await mw.wrapModelCall?.(ctx, { messages: [] }, spy.handler);
+
+    const textBlocks = spy.calls[0]?.messages[0]?.content.filter((b) => b.kind === "text") ?? [];
+    const fullText = textBlocks.map((b) => ("text" in b ? b.text : "")).join("");
+    expect(fullText).toContain("Bootstrap content.");
+    expect(fullText).toContain("Explicit source content.");
+  });
 });

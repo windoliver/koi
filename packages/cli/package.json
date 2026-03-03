@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@clack/prompts": "0.10.0",
+    "@koi/bootstrap": "workspace:*",
     "@koi/context": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/deploy": "workspace:*",

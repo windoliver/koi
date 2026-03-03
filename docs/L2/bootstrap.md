@@ -17,6 +17,42 @@ Koi agents need bootstrap context: system instructions, tool usage guidelines, a
 
 ---
 
+## What This Enables
+
+### Before: Manual Wiring
+
+Every project had to write CLI-level glue code to connect bootstrap file resolution to the context hydrator:
+
+```typescript
+// Before — manual glue in every project
+const result = await resolveBootstrap({ rootDir: ".", agentName: manifest.name });
+if (result.ok) {
+  const sources = result.value.sources.map(s => ({ ...s }));
+  const config = { sources: [...sources, ...manifest.context.sources] };
+  const ext = createContextExtension(config);
+  // ... wire into createKoi()
+}
+```
+
+### After: One Line in koi.yaml
+
+```yaml
+context:
+  bootstrap: true
+```
+
+The CLI resolves `.koi/` files automatically, merges them with explicit sources, and feeds the combined config into the hydrator. Zero manual wiring. Agent-specific overrides, budget truncation, and error recovery all work out of the box.
+
+### What You Get
+
+- **Project-level instructions** — `.koi/INSTRUCTIONS.md` auto-loaded for every agent
+- **Agent-specific overrides** — `.koi/agents/<name>/INSTRUCTIONS.md` takes priority
+- **Mix bootstrap + explicit sources** — bootstrap files prepend to manual `sources`
+- **Non-fatal** — missing files or errors produce warnings, agent starts anyway
+- **Custom slots** — swap default files for project-specific ones via object config
+
+---
+
 ## Architecture
 
 `@koi/bootstrap` is an **L2 feature package** — it depends only on L0 (`@koi/core`) and L0-utility packages (`@koi/errors`, `@koi/hash`).
@@ -289,7 +325,73 @@ const result = await resolveBootstrap({
 });
 ```
 
-### Integration with @koi/context
+### Manifest Auto-Resolution (Zero Glue Code)
+
+The recommended way to use bootstrap. Add `context.bootstrap` to your `koi.yaml` — the CLI auto-resolves `.koi/` files and feeds them to the context hydrator at startup:
+
+```yaml
+# koi.yaml
+name: researcher
+version: 1.0.0
+model: anthropic:claude-sonnet-4-5-20250929
+
+context:
+  bootstrap: true
+```
+
+That's it. On `koi start`, the CLI:
+1. Reads `bootstrap: true` from the manifest
+2. Calls `resolveBootstrap()` with `rootDir` = manifest directory, `agentName` = manifest name
+3. Maps `BootstrapTextSource[]` → `TextSource[]`
+4. Prepends them to any explicit `sources` in the context config
+5. Passes the merged config to `createContextExtension()` → hydrator pipeline
+
+#### Object Form
+
+Override defaults with the object form:
+
+```yaml
+context:
+  bootstrap:
+    rootDir: ./config           # relative to manifest file location
+    agentName: my-custom-agent  # override agent-specific directory name
+    slots:                      # custom file slots (replaces defaults)
+      - fileName: GUIDELINES.md
+        label: Custom Guidelines
+        budget: 5000
+      - fileName: EXAMPLES.md
+
+  # Mix with explicit sources — bootstrap sources come first
+  sources:
+    - kind: memory
+      query: "user preferences"
+    - kind: tool_schema
+```
+
+#### agentName Resolution
+
+| Config | Behavior |
+|--------|----------|
+| `bootstrap: true` | Uses `manifest.name` as agentName |
+| `bootstrap: { agentName: "custom" }` | Uses `"custom"` |
+| `bootstrap: { agentName: null }` | Disables agent-specific resolution (project-level only) |
+| `bootstrap: {}` | Uses `manifest.name` (same as `true`) |
+
+#### Error Handling
+
+Bootstrap resolution is **non-fatal**. If `.koi/` files are missing or resolution fails:
+- Warnings are printed to stderr
+- Empty sources are returned
+- The agent starts normally with any remaining explicit sources
+
+```
+warn: [bootstrap] "Agent Instructions" truncated to 8000 characters (original: 45000 bytes)
+warn: Bootstrap resolution failed: rootDir must be a non-empty string
+```
+
+### Manual Integration with @koi/context
+
+For programmatic use outside the CLI (e.g., custom harnesses), wire the packages manually:
 
 ```typescript
 import { resolveBootstrap } from "@koi/bootstrap";
