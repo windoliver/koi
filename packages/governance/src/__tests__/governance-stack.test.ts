@@ -19,12 +19,20 @@
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type {
+  Agent,
   AgentManifest,
+  AgentMessage,
+  AgentMessageInput,
+  ComponentProvider,
   EngineAdapter,
   EngineEvent,
   EngineInput,
   EngineOutput,
+  MailboxComponent,
+  SubsystemToken,
 } from "@koi/core";
+import { agentId, MAILBOX, messageId } from "@koi/core";
+import type { KoiError, Result } from "@koi/core/errors";
 import type { GovernanceBackend, GovernanceVerdict } from "@koi/core/governance-backend";
 import { createKoi } from "@koi/engine";
 import { createInMemoryAuditSink } from "@koi/middleware-audit";
@@ -411,7 +419,7 @@ describe("createGovernanceStack integration", () => {
     await runtime.dispose();
   });
 
-  test("governance-backend-only stack: allowed backend passes through cleanly", async () => {
+  test("governance-backend-only stack: allowed backend passes through cleanly (integration)", async () => {
     const { middlewares } = createGovernanceStack({
       governanceBackend: { backend: makeAllowGovernanceBackend() },
     });
@@ -431,5 +439,189 @@ describe("createGovernanceStack integration", () => {
     expect(output?.stopReason).toBe("completed");
 
     await runtime.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Agent approval routing — auto-discovery via ComponentProvider
+// ---------------------------------------------------------------------------
+
+function createMockMailbox(): MailboxComponent {
+  const handlers: Array<(msg: AgentMessage) => void | Promise<void>> = [];
+  let counter = 0;
+
+  return {
+    send: async (input: AgentMessageInput): Promise<Result<AgentMessage, KoiError>> => {
+      counter++;
+      const msg: AgentMessage = {
+        ...input,
+        id: messageId(`msg-${counter}`),
+        createdAt: new Date().toISOString(),
+      };
+      for (const handler of handlers) {
+        handler(msg);
+      }
+      return { ok: true, value: msg };
+    },
+    onMessage: (handler: (msg: AgentMessage) => void | Promise<void>): (() => void) => {
+      handlers.push(handler);
+      return () => {
+        const idx = handlers.indexOf(handler);
+        if (idx >= 0) handlers.splice(idx, 1);
+      };
+    },
+    list: async () => [],
+  };
+}
+
+/** Create a minimal mock Agent for ComponentProvider.attach() testing. */
+function createMockAgent(opts: {
+  readonly id: string;
+  readonly parent?: string | undefined;
+  readonly mailbox?: MailboxComponent | undefined;
+}): Agent {
+  const components = new Map<string, unknown>();
+  if (opts.mailbox !== undefined) {
+    components.set(MAILBOX as string, opts.mailbox);
+  }
+
+  return {
+    pid: {
+      id: agentId(opts.id),
+      name: `agent-${opts.id}`,
+      type: "worker",
+      depth: opts.parent !== undefined ? 1 : 0,
+      ...(opts.parent !== undefined ? { parent: agentId(opts.parent) } : {}),
+    },
+    manifest: { name: `agent-${opts.id}`, version: "1.0.0", model: { name: "test" } },
+    state: "running",
+    component: <T>(token: SubsystemToken<T>): T | undefined =>
+      components.get(token as string) as T | undefined,
+    has: (token: SubsystemToken<unknown>): boolean => components.has(token as string),
+    hasAll: (...tokens: readonly SubsystemToken<unknown>[]): boolean =>
+      tokens.every((t) => components.has(t as string)),
+    query: <T>(_prefix: string): ReadonlyMap<SubsystemToken<T>, T> => new Map(),
+    components: (): ReadonlyMap<string, unknown> => components,
+  };
+}
+
+function findApprovalProvider(
+  providers: readonly ComponentProvider[],
+): ComponentProvider | undefined {
+  return providers.find((p) => p.name === "koi:approval-routing");
+}
+
+describe("createGovernanceStack — agent approval routing", () => {
+  // Provider is returned when exec-approvals is configured
+  test("exec-approvals configured → approval-routing provider in providers", () => {
+    const { providers } = createGovernanceStack({
+      execApprovals: {
+        rules: { allow: ["*"], deny: [], ask: [] },
+        onAsk: async () => ({ kind: "allow_once" as const }),
+      },
+    });
+    const approvalProvider = findApprovalProvider(providers);
+    expect(approvalProvider).toBeDefined();
+    expect(approvalProvider?.name).toBe("koi:approval-routing");
+  });
+
+  // No provider when no exec-approvals
+  test("no exec-approvals → no approval-routing provider", () => {
+    const { providers } = createGovernanceStack({});
+    const approvalProvider = findApprovalProvider(providers);
+    expect(approvalProvider).toBeUndefined();
+  });
+
+  // Child agent with parent + mailbox → wires child→parent routing
+  test("attach with parent + mailbox → wires parent-side handler (disposable)", async () => {
+    const mailbox = createMockMailbox();
+    const { providers, disposables } = createGovernanceStack({
+      execApprovals: {
+        rules: { allow: ["*"], deny: [], ask: [] },
+        onAsk: async () => ({ kind: "allow_once" as const }),
+      },
+    });
+
+    const approvalProvider = findApprovalProvider(providers);
+    expect(approvalProvider).toBeDefined();
+
+    const agent = createMockAgent({ id: "child-1", parent: "parent-1", mailbox });
+    await approvalProvider?.attach(agent);
+
+    expect(disposables.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // Agent without parent but with mailbox → still wires parent-side handler
+  test("attach without parent + with mailbox → wires parent-side handler only", async () => {
+    const mailbox = createMockMailbox();
+    const { providers, disposables } = createGovernanceStack({
+      execApprovals: {
+        rules: { allow: ["*"], deny: [], ask: [] },
+        onAsk: async () => ({ kind: "allow_once" as const }),
+      },
+    });
+
+    const approvalProvider = findApprovalProvider(providers);
+    const agent = createMockAgent({ id: "agent-1", mailbox });
+    await approvalProvider?.attach(agent);
+
+    expect(disposables).toHaveLength(1); // parent-side only, no child routing
+  });
+
+  // Agent without mailbox → no handlers wired
+  test("attach without mailbox → no handlers wired", async () => {
+    const { providers, disposables } = createGovernanceStack({
+      execApprovals: {
+        rules: { allow: ["*"], deny: [], ask: [] },
+        onAsk: async () => ({ kind: "allow_once" as const }),
+      },
+    });
+
+    const approvalProvider = findApprovalProvider(providers);
+    const agent = createMockAgent({ id: "agent-1" }); // no mailbox
+    await approvalProvider?.attach(agent);
+
+    expect(disposables).toHaveLength(0);
+  });
+
+  // exec-approvals without onAsk → still creates provider (dynamic handler)
+  test("exec-approvals without onAsk → creates provider with dynamic handler", () => {
+    const { middlewares, providers } = createGovernanceStack({
+      execApprovals: {
+        rules: { allow: ["*"], deny: [], ask: [] },
+        // no onAsk — will be wired dynamically during assembly
+      },
+    });
+    const ea = middlewares.find((mw) => mw.name === "exec-approvals");
+    expect(ea).toBeDefined();
+    const approvalProvider = findApprovalProvider(providers);
+    expect(approvalProvider).toBeDefined();
+  });
+
+  // Disposables are properly disposed
+  test("disposables properly clean up on dispose", async () => {
+    const mailbox = createMockMailbox();
+    const { providers, disposables } = createGovernanceStack({
+      execApprovals: {
+        rules: { allow: ["*"], deny: [], ask: [] },
+        onAsk: async () => ({ kind: "allow_once" as const }),
+      },
+    });
+
+    const approvalProvider = findApprovalProvider(providers);
+    const agent = createMockAgent({ id: "agent-1", mailbox });
+    await approvalProvider?.attach(agent);
+
+    // Should not throw
+    for (const d of disposables) {
+      d[Symbol.dispose]();
+    }
+    expect(disposables.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // No exec-approvals + no providers → zero disposables
+  test("no exec-approvals → zero disposables", () => {
+    const { disposables } = createGovernanceStack({});
+    expect(disposables).toHaveLength(0);
   });
 });

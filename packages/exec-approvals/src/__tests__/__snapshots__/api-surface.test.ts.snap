@@ -1,9 +1,10 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/exec-approvals API surface . has stable type surface 1`] = `
-"import { JsonObject } from '@koi/core/common';
-import { Result, KoiError } from '@koi/core/errors';
+"import { AgentId, MailboxComponent, JsonObject as JsonObject$1 } from '@koi/core';
+import { JsonObject } from '@koi/core/common';
 import { RiskAnalysis, SecurityAnalyzer } from '@koi/core/security-analyzer';
+import { Result, KoiError } from '@koi/core/errors';
 import { KoiMiddleware } from '@koi/core/middleware';
 
 /**
@@ -70,6 +71,35 @@ interface ExecApprovalRequest {
 }
 
 /**
+ * Child-side agent approval handler factory.
+ *
+ * When a child agent's exec-approvals middleware hits an "ask" rule,
+ * this handler routes the request to the parent agent via MailboxComponent
+ * instead of prompting a human directly.
+ *
+ * Flow: child ask → send IPC to parent → wait for response → map to ProgressiveDecision
+ * Fallback: on timeout, malformed response, or send failure → delegate to fallback (HITL).
+ */
+
+interface AgentApprovalHandlerConfig {
+    readonly parentId: AgentId;
+    readonly childAgentId: AgentId;
+    readonly mailbox: MailboxComponent;
+    /** Timeout for waiting on parent response. Defaults to 30s. */
+    readonly timeoutMs?: number | undefined;
+    /** Fallback when IPC fails (timeout, malformed, send error). Typically HITL prompt. */
+    readonly fallback?: ((req: ExecApprovalRequest) => Promise<ProgressiveDecision>) | undefined;
+}
+/**
+ * Create an onAsk handler that routes approval requests to a parent agent.
+ *
+ * Returns a function matching the \`onAsk\` signature in ExecApprovalsConfig.
+ * On any IPC failure, falls back to the provided fallback handler (HITL).
+ * If no fallback is configured, throws a KoiRuntimeError.
+ */
+declare function createAgentApprovalHandler(config: AgentApprovalHandlerConfig): (req: ExecApprovalRequest) => Promise<ProgressiveDecision>;
+
+/**
  * ExecApprovalsConfig interface and validation.
  */
 
@@ -80,8 +110,12 @@ interface ExecApprovalsConfig {
         readonly deny: readonly string[];
         readonly ask: readonly string[];
     };
-    /** Called when an ask rule fires. Must return a ProgressiveDecision. */
-    readonly onAsk: (req: ExecApprovalRequest) => Promise<ProgressiveDecision>;
+    /**
+     * Called when an ask rule fires. Must return a ProgressiveDecision.
+     * When omitted, ask-tier tool calls are denied by default (fail-safe).
+     * Governance auto-wires this via ComponentProvider when parent + mailbox are available.
+     */
+    readonly onAsk?: ((req: ExecApprovalRequest) => Promise<ProgressiveDecision>) | undefined;
     /** Backing store for "always" decisions. Defaults to createInMemoryRulesStore(). */
     readonly store?: ExecRulesStore;
     /** Timeout for onAsk. Defaults to DEFAULT_APPROVAL_TIMEOUT_MS (30_000 ms). */
@@ -113,10 +147,130 @@ interface ExecApprovalsConfig {
 declare function validateExecApprovalsConfig(config: unknown): Result<ExecApprovalsConfig, KoiError>;
 
 /**
+ * Pure evaluation function for tool request approval decisions.
+ *
+ * Extracted from middleware.ts to enable reuse in parent-side approval routing.
+ * The 6-step evaluation order is a security invariant — do not reorder.
+ */
+
+/**
+ * Result of evaluating a tool request against the rule set.
+ *
+ * - \`allow\` — tool matches an allow rule, proceed without prompting
+ * - \`deny\` — tool matches a deny rule, block with reason
+ * - \`ask\` — tool matches an ask rule, prompt for approval
+ */
+type EvaluationResult = {
+    readonly kind: "allow";
+} | {
+    readonly kind: "deny";
+    readonly reason: string;
+} | {
+    readonly kind: "ask";
+    readonly matchedPattern: string;
+};
+/**
+ * Configuration for the evaluation function.
+ * All pattern arrays should already be normalized.
+ */
+interface EvaluationConfig {
+    readonly baseDeny: readonly string[];
+    readonly sessionDeny: readonly string[];
+    readonly sessionAllow: readonly string[];
+    readonly baseAllow: readonly string[];
+    readonly baseAsk: readonly string[];
+    readonly extractCommand: (input: JsonObject) => string;
+}
+/**
+ * Evaluate a tool request against a layered rule set.
+ *
+ * Evaluation order (security invariant — do not reorder):
+ * 1. base deny    → ABSOLUTE, cannot be overridden by any session approval
+ * 2. session deny → accumulated deny_always decisions
+ * 3. session allow → accumulated allow_session / allow_always decisions
+ * 4. base allow   → static allow list
+ * 5. base ask     → trigger onAsk, handle ProgressiveDecision
+ * 6. default deny → no rule matched
+ */
+declare function evaluateToolRequest(toolId: string, input: JsonObject, config: EvaluationConfig): EvaluationResult;
+
+/**
+ * IPC payload types for agent-to-agent approval routing.
+ *
+ * Defines the wire format and Zod schemas for exec-approval request/response
+ * messages exchanged between child and parent agents via MailboxComponent.
+ *
+ * All exported types are declared explicitly (isolatedDeclarations compatible).
+ * Zod schemas are module-private; validation is exposed via validateWith wrappers.
+ */
+
+/** Message type discriminator for exec-approval IPC messages. */
+declare const EXEC_APPROVAL_REQUEST_TYPE: "exec-approval-request";
+/** IPC payload sent from child to parent requesting approval. */
+interface ExecApprovalIpcPayload {
+    readonly toolId: string;
+    readonly input: JsonObject;
+    readonly matchedPattern: string;
+    readonly childAgentId: string;
+    readonly riskAnalysis?: {
+        readonly riskLevel: "low" | "medium" | "high" | "critical" | "unknown";
+        readonly rationale: string;
+    } | undefined;
+}
+/** Validate an unknown value as an ExecApprovalIpcPayload. */
+declare function validateExecApprovalIpcPayload(raw: unknown): Result<ExecApprovalIpcPayload, KoiError>;
+/** Decision kind returned by parent agent. */
+type ExecApprovalDecisionKind = "allow_once" | "allow_session" | "allow_always" | "deny_once" | "deny_always" | "ask";
+/** IPC response payload sent from parent to child with approval decision. */
+interface ExecApprovalIpcResponse {
+    readonly decision: {
+        readonly kind: ExecApprovalDecisionKind;
+        readonly pattern?: string | undefined;
+        readonly reason?: string | undefined;
+    };
+}
+/** Validate an unknown value as an ExecApprovalIpcResponse. */
+declare function validateExecApprovalIpcResponse(raw: unknown): Result<ExecApprovalIpcResponse, KoiError>;
+
+/**
  * Progressive command allowlisting middleware factory.
  */
 
 declare function createExecApprovalsMiddleware(rawConfig: ExecApprovalsConfig): KoiMiddleware;
+
+/**
+ * Parent-side approval handler factory.
+ *
+ * Listens for exec-approval IPC requests from child agents, evaluates them
+ * against the parent's own rules using evaluateToolRequest(), and responds
+ * with a ProgressiveDecision-compatible IPC response.
+ *
+ * Flow: child request → validate payload → evaluate rules → respond
+ * If rules say "ask" and onAsk is configured → delegate to parent's HITL.
+ * If rules say "ask" and no onAsk → respond with "ask" (escalation signal).
+ */
+
+interface ParentApprovalHandlerConfig {
+    readonly agentId: AgentId;
+    readonly mailbox: MailboxComponent;
+    readonly rules: {
+        readonly allow: readonly string[];
+        readonly deny: readonly string[];
+        readonly ask: readonly string[];
+    };
+    readonly extractCommand?: ((input: JsonObject$1) => string) | undefined;
+    readonly onAsk?: ((req: ExecApprovalRequest) => Promise<ProgressiveDecision>) | undefined;
+    readonly sessionState?: {
+        readonly extraAllow: readonly string[];
+        readonly extraDeny: readonly string[];
+    } | undefined;
+}
+/**
+ * Create a parent-side approval handler that listens for child requests.
+ *
+ * Returns a Disposable — call \`[Symbol.dispose]()\` to unsubscribe.
+ */
+declare function createParentApprovalHandler(config: ParentApprovalHandlerConfig): Disposable;
 
 /**
  * Compound pattern matching for @koi/exec-approvals.
@@ -145,6 +299,6 @@ declare function defaultExtractCommand(input: JsonObject): string;
 
 declare function createInMemoryRulesStore(): ExecRulesStore;
 
-export { DEFAULT_APPROVAL_TIMEOUT_MS, type ExecApprovalRequest, type ExecApprovalsConfig, type ExecRulesStore, type PersistedRules, type ProgressiveDecision, createExecApprovalsMiddleware, createInMemoryRulesStore, defaultExtractCommand, validateExecApprovalsConfig };
+export { type AgentApprovalHandlerConfig, DEFAULT_APPROVAL_TIMEOUT_MS, EXEC_APPROVAL_REQUEST_TYPE, type EvaluationConfig, type EvaluationResult, type ExecApprovalDecisionKind, type ExecApprovalIpcPayload, type ExecApprovalIpcResponse, type ExecApprovalRequest, type ExecApprovalsConfig, type ExecRulesStore, type ParentApprovalHandlerConfig, type PersistedRules, type ProgressiveDecision, createAgentApprovalHandler, createExecApprovalsMiddleware, createInMemoryRulesStore, createParentApprovalHandler, defaultExtractCommand, evaluateToolRequest, validateExecApprovalIpcPayload, validateExecApprovalIpcResponse, validateExecApprovalsConfig };
 "
 `;

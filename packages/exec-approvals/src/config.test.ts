@@ -71,12 +71,11 @@ describe("validateExecApprovalsConfig", () => {
     if (!result.ok) expect(result.error.code).toBe("VALIDATION");
   });
 
-  test("returns error when onAsk is missing", () => {
+  test("returns ok when onAsk is omitted (optional)", () => {
     const result = validateExecApprovalsConfig({
       rules: { allow: [], deny: [], ask: [] },
     });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.message).toContain("onAsk");
+    expect(result.ok).toBe(true);
   });
 
   test("returns error when onAsk is not a function", () => {

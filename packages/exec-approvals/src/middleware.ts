@@ -15,12 +15,8 @@ import type { RiskAnalysis, SecurityAnalyzer } from "@koi/core/security-analyzer
 import { RISK_ANALYSIS_UNKNOWN } from "@koi/core/security-analyzer";
 import { KoiRuntimeError } from "@koi/errors";
 import { DEFAULT_APPROVAL_TIMEOUT_MS, type ExecApprovalsConfig } from "./config.js";
-import {
-  defaultExtractCommand,
-  findFirstAskMatch,
-  matchesAnyCompound,
-  normalizePattern,
-} from "./pattern.js";
+import { evaluateToolRequest } from "./evaluate.js";
+import { defaultExtractCommand, normalizePattern } from "./pattern.js";
 import { createInMemoryRulesStore } from "./store.js";
 import type {
   ExecApprovalRequest,
@@ -108,143 +104,131 @@ export function createExecApprovalsMiddleware(rawConfig: ExecApprovalsConfig): K
       const { toolId, input } = request;
       const state = sessions.get(ctx.session.sessionId);
 
-      // -----------------------------------------------------------------------
-      // Evaluation order (security invariant):
-      // 1. base deny    → ABSOLUTE, cannot be overridden by any session approval
-      // 2. session deny → accumulated deny_always decisions
-      // 3. session allow → accumulated allow_session / allow_always decisions
-      // 4. base allow   → static allow list
-      // 5. base ask     → trigger onAsk, handle ProgressiveDecision
-      // 6. default deny → no rule matched
-      // -----------------------------------------------------------------------
+      const evaluation = evaluateToolRequest(toolId, input, {
+        baseDeny,
+        sessionDeny: state?.extraDeny ?? [],
+        sessionAllow: state?.extraAllow ?? [],
+        baseAllow,
+        baseAsk,
+        extractCommand,
+      });
 
-      // 1. Base deny — absolute
-      if (matchesAnyCompound(baseDeny, toolId, input, extractCommand)) {
-        throw KoiRuntimeError.from("PERMISSION", `Tool "${toolId}" is denied by policy`, {
-          context: { toolId },
-        });
-      }
-
-      // 2. Session deny (accumulated deny_always)
-      if (
-        state !== undefined &&
-        matchesAnyCompound(state.extraDeny, toolId, input, extractCommand)
-      ) {
-        throw KoiRuntimeError.from("PERMISSION", `Tool "${toolId}" is denied by session policy`, {
-          context: { toolId },
-        });
-      }
-
-      // 3. Session allow (accumulated allow_session / allow_always)
-      if (
-        state !== undefined &&
-        matchesAnyCompound(state.extraAllow, toolId, input, extractCommand)
-      ) {
-        return next(request);
-      }
-
-      // 4. Base allow
-      if (matchesAnyCompound(baseAllow, toolId, input, extractCommand)) {
-        return next(request);
-      }
-
-      // 5. Base ask
-      const matchedPattern = findFirstAskMatch(baseAsk, toolId, input, extractCommand);
-      if (matchedPattern !== undefined) {
-        // Run risk analysis if a SecurityAnalyzer is configured (fail-open).
-        // Analyzer fires only on the ask-tier — zero overhead for allow/deny paths.
-        let riskAnalysis: RiskAnalysis | undefined;
-        if (securityAnalyzer !== undefined) {
-          const analyzerCtx: JsonObject = { sessionId: ctx.session.sessionId };
-          riskAnalysis = await runAnalyzer(
-            securityAnalyzer,
-            toolId,
-            input,
-            analyzerCtx,
-            analyzerTimeoutMs,
-          );
+      switch (evaluation.kind) {
+        case "deny": {
+          throw KoiRuntimeError.from("PERMISSION", evaluation.reason, {
+            context: { toolId },
+          });
         }
 
-        // Auto-deny critical risk without prompting the user
-        if (riskAnalysis?.riskLevel === "critical") {
-          throw KoiRuntimeError.from(
-            "PERMISSION",
-            `Tool "${toolId}" auto-denied: critical risk — ${riskAnalysis.rationale}`,
-            { context: { toolId, riskLevel: "critical" } },
-          );
+        case "allow": {
+          return next(request);
         }
 
-        const askRequest: ExecApprovalRequest =
-          riskAnalysis !== undefined
-            ? { toolId, input, matchedPattern, riskAnalysis }
-            : { toolId, input, matchedPattern };
-
-        const decision = await askWithTimeout(onAsk, askRequest, approvalTimeoutMs);
-
-        switch (decision.kind) {
-          case "allow_once": {
-            return next(request);
-          }
-
-          case "allow_session": {
-            if (state !== undefined) {
-              state.extraAllow.push(normalizePattern(decision.pattern));
-            }
-            return next(request);
-          }
-
-          case "allow_always": {
-            if (state !== undefined) {
-              state.extraAllow.push(normalizePattern(decision.pattern));
-            }
-            try {
-              if (state !== undefined) {
-                await persistRules(state);
-              }
-            } catch (e: unknown) {
-              onSaveError?.(e);
-            }
-            return next(request);
-          }
-
-          case "deny_once": {
-            throw KoiRuntimeError.from("PERMISSION", decision.reason, {
-              context: { toolId },
-            });
-          }
-
-          case "deny_always": {
-            if (state !== undefined) {
-              state.extraDeny.push(normalizePattern(decision.pattern));
-            }
-            try {
-              if (state !== undefined) {
-                await persistRules(state);
-              }
-            } catch (e: unknown) {
-              onSaveError?.(e);
-            }
-            throw KoiRuntimeError.from("PERMISSION", decision.reason, {
-              context: { toolId },
-            });
-          }
-
-          default: {
-            // Exhaustive check
-            const _exhaustive: never = decision;
-            throw new Error(
-              `Unhandled decision kind: ${String((_exhaustive as { kind: string }).kind)}`,
+        case "ask": {
+          // Fail-safe: if no onAsk handler is configured, deny ask-tier calls
+          if (onAsk === undefined) {
+            throw KoiRuntimeError.from(
+              "PERMISSION",
+              `Tool "${toolId}" denied: no approval handler configured for ask-tier calls`,
+              { context: { toolId } },
             );
           }
+
+          // Run risk analysis if a SecurityAnalyzer is configured (fail-open).
+          // Analyzer fires only on the ask-tier — zero overhead for allow/deny paths.
+          let riskAnalysis: RiskAnalysis | undefined;
+          if (securityAnalyzer !== undefined) {
+            const analyzerCtx: JsonObject = { sessionId: ctx.session.sessionId };
+            riskAnalysis = await runAnalyzer(
+              securityAnalyzer,
+              toolId,
+              input,
+              analyzerCtx,
+              analyzerTimeoutMs,
+            );
+          }
+
+          // Auto-deny critical risk without prompting the user
+          if (riskAnalysis?.riskLevel === "critical") {
+            throw KoiRuntimeError.from(
+              "PERMISSION",
+              `Tool "${toolId}" auto-denied: critical risk — ${riskAnalysis.rationale}`,
+              { context: { toolId, riskLevel: "critical" } },
+            );
+          }
+
+          const askRequest: ExecApprovalRequest =
+            riskAnalysis !== undefined
+              ? { toolId, input, matchedPattern: evaluation.matchedPattern, riskAnalysis }
+              : { toolId, input, matchedPattern: evaluation.matchedPattern };
+
+          const decision = await askWithTimeout(onAsk, askRequest, approvalTimeoutMs);
+
+          switch (decision.kind) {
+            case "allow_once": {
+              return next(request);
+            }
+
+            case "allow_session": {
+              if (state !== undefined) {
+                state.extraAllow.push(normalizePattern(decision.pattern));
+              }
+              return next(request);
+            }
+
+            case "allow_always": {
+              if (state !== undefined) {
+                state.extraAllow.push(normalizePattern(decision.pattern));
+              }
+              try {
+                if (state !== undefined) {
+                  await persistRules(state);
+                }
+              } catch (e: unknown) {
+                onSaveError?.(e);
+              }
+              return next(request);
+            }
+
+            case "deny_once": {
+              throw KoiRuntimeError.from("PERMISSION", decision.reason, {
+                context: { toolId },
+              });
+            }
+
+            case "deny_always": {
+              if (state !== undefined) {
+                state.extraDeny.push(normalizePattern(decision.pattern));
+              }
+              try {
+                if (state !== undefined) {
+                  await persistRules(state);
+                }
+              } catch (e: unknown) {
+                onSaveError?.(e);
+              }
+              throw KoiRuntimeError.from("PERMISSION", decision.reason, {
+                context: { toolId },
+              });
+            }
+
+            default: {
+              // Exhaustive check
+              const _exhaustive: never = decision;
+              throw new Error(
+                `Unhandled decision kind: ${String((_exhaustive as { kind: string }).kind)}`,
+              );
+            }
+          }
+        }
+
+        default: {
+          const _exhaustive: never = evaluation;
+          throw new Error(
+            `Unhandled evaluation kind: ${String((_exhaustive as { kind: string }).kind)}`,
+          );
         }
       }
-
-      // 6. Default deny
-      throw KoiRuntimeError.from(
-        "PERMISSION",
-        `Tool "${toolId}" is not in the allow list (default deny)`,
-        { context: { toolId } },
-      );
     },
   };
 }

@@ -17,13 +17,24 @@
  *   375  koi:guardrails
  */
 
+import type { Agent, ComponentProvider, MailboxComponent } from "@koi/core";
+import { MAILBOX } from "@koi/core";
 import type { KoiMiddleware } from "@koi/core/middleware";
 import {
   createCapabilityRequestBridge,
   createDelegationMiddleware,
   createDelegationProvider,
 } from "@koi/delegation";
-import { createExecApprovalsMiddleware } from "@koi/exec-approvals";
+import type {
+  ExecApprovalRequest,
+  ExecApprovalsConfig,
+  ProgressiveDecision,
+} from "@koi/exec-approvals";
+import {
+  createAgentApprovalHandler,
+  createExecApprovalsMiddleware,
+  createParentApprovalHandler,
+} from "@koi/exec-approvals";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createGovernanceBackendMiddleware } from "@koi/middleware-governance-backend";
 import { createGuardrailsMiddleware } from "@koi/middleware-guardrails";
@@ -37,7 +48,129 @@ import { wireGovernanceScope } from "./scope-wiring.js";
 import type { GovernanceBundle, GovernanceStackConfig } from "./types.js";
 
 // ---------------------------------------------------------------------------
-// Factory
+// Approval routing provider (auto-discovery)
+// ---------------------------------------------------------------------------
+
+/** Priority for approval routing provider — runs after BUNDLED (100) so MAILBOX is available. */
+const APPROVAL_ROUTING_PRIORITY = 200;
+
+interface ApprovalRoutingResult {
+  readonly provider: ComponentProvider;
+  readonly effectiveConfig: ExecApprovalsConfig;
+}
+
+/**
+ * Create a ComponentProvider that auto-wires agent approval routing during assembly.
+ *
+ * During attach(agent), the provider discovers:
+ *   - agentId from agent.pid.id (always available)
+ *   - parentId from agent.pid.parent (present for child agents)
+ *   - mailbox from agent.component(MAILBOX) (present when IPC is configured)
+ *
+ * If parentId + mailbox are found → wires child→parent approval routing.
+ * If agentId + mailbox are found → wires parent-side handler for incoming requests.
+ *
+ * Returns an effectiveConfig with a late-bound onAsk that delegates to a mutable ref.
+ * The ref is updated during attach() — justified by the late-binding lifecycle.
+ */
+function createApprovalRoutingProvider(
+  execApprovals: ExecApprovalsConfig,
+  disposables: Disposable[],
+): ApprovalRoutingResult {
+  const userOnAsk = execApprovals.onAsk;
+
+  // Per-agent handler map — keyed by agent ID string for multi-agent safety.
+  // In Koi's 1:1 stack-to-agent model, this map typically has 0-1 entries.
+  // The map provides defensive correctness if the same stack is shared.
+  const agentHandlers = new Map<
+    string,
+    (req: ExecApprovalRequest) => Promise<ProgressiveDecision>
+  >();
+
+  // Per-agent disposable tracking for proper cleanup in detach()
+  const agentDisposables = new Map<string, readonly Disposable[]>();
+
+  // Late-binding onAsk — resolves the correct handler per agent at call time.
+  // Falls back to user's original onAsk, then to deny_once.
+  const dynamicOnAsk = async (req: ExecApprovalRequest): Promise<ProgressiveDecision> => {
+    // In 1:1 model, the map has one entry. Use the first handler found.
+    // This is safe: the governance stack is created per-agent in Koi's architecture.
+    for (const handler of agentHandlers.values()) {
+      return handler(req);
+    }
+    // No agent handler wired — fall back to user's onAsk or deny
+    if (userOnAsk !== undefined) {
+      return userOnAsk(req);
+    }
+    return { kind: "deny_once", reason: "No approval handler configured" };
+  };
+
+  const effectiveConfig: ExecApprovalsConfig = {
+    ...execApprovals,
+    onAsk: dynamicOnAsk,
+  };
+
+  const provider: ComponentProvider = {
+    name: "koi:approval-routing",
+    priority: APPROVAL_ROUTING_PRIORITY,
+
+    attach: async (agent: Agent): Promise<ReadonlyMap<string, unknown>> => {
+      const id = agent.pid.id;
+      const parentId = agent.pid.parent;
+      const mailbox = agent.component<MailboxComponent>(MAILBOX);
+      const localDisposables: Disposable[] = [];
+
+      if (mailbox !== undefined) {
+        // Child-side: if this agent has a parent, route approvals to it
+        if (parentId !== undefined) {
+          agentHandlers.set(
+            id as string,
+            createAgentApprovalHandler({
+              parentId,
+              childAgentId: id,
+              mailbox,
+              timeoutMs: execApprovals.approvalTimeoutMs,
+              fallback: userOnAsk, // user's original onAsk (HITL) as fallback
+            }),
+          );
+        }
+
+        // Parent-side: listen for child approval requests
+        const parentHandler = createParentApprovalHandler({
+          agentId: id,
+          mailbox,
+          rules: execApprovals.rules,
+          extractCommand: execApprovals.extractCommand,
+          onAsk: userOnAsk,
+        });
+        localDisposables.push(parentHandler);
+        disposables.push(parentHandler);
+      }
+
+      agentDisposables.set(id as string, localDisposables);
+      return new Map();
+    },
+
+    detach: async (agent: Agent): Promise<void> => {
+      const id = agent.pid.id as string;
+      // Clean up per-agent handlers
+      agentHandlers.delete(id);
+      // Dispose per-agent subscriptions
+      const entries = agentDisposables.get(id);
+      if (entries !== undefined) {
+        for (const d of entries) {
+          d[Symbol.dispose]();
+        }
+        agentDisposables.delete(id);
+      }
+    },
+  };
+
+  return { provider, effectiveConfig };
+}
+
+// ---------------------------------------------------------------------------
+// Main factory
 // ---------------------------------------------------------------------------
 
 /**
@@ -52,9 +185,9 @@ import type { GovernanceBundle, GovernanceStackConfig } from "./types.js";
  * ```
  *
  * Config resolution: defaults -> preset -> user overrides.
- * Middleware are ordered by priority. Priority overrides are applied for
- * exec-approvals (110) and delegation (120) so they slot correctly between
- * permissions (100) and governance-backend (150).
+ * Agent approval routing is auto-wired via ComponentProvider during assembly.
+ * When exec-approvals is configured, the provider auto-discovers agentId, parentId,
+ * and mailbox from the agent entity — zero explicit config needed.
  */
 export function createGovernanceStack(config: GovernanceStackConfig): GovernanceBundle {
   const resolved = resolveGovernanceConfig(config);
@@ -76,12 +209,22 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
         })
       : undefined;
 
+  // ── Agent approval routing auto-wiring ────────────────────────────────
+  // When exec-approvals is configured, create a ComponentProvider that auto-discovers
+  // agentId (pid.id), parentId (pid.parent), and mailbox (MAILBOX component) during
+  // agent assembly. Zero explicit config needed — routing is wired dynamically.
+  const disposables: Disposable[] = [];
+  const approvalRouting =
+    resolved.execApprovals !== undefined
+      ? createApprovalRoutingProvider(resolved.execApprovals, disposables)
+      : undefined;
+
   const candidates: ReadonlyArray<KoiMiddleware | undefined> = [
     resolved.permissions !== undefined
       ? createPermissionsMiddleware(resolved.permissions) // 100
       : undefined,
-    resolved.execApprovals !== undefined
-      ? { ...createExecApprovalsMiddleware(resolved.execApprovals), priority: 110 } // override
+    approvalRouting !== undefined
+      ? { ...createExecApprovalsMiddleware(approvalRouting.effectiveConfig), priority: 110 }
       : undefined,
     resolved.delegation !== undefined
       ? { ...createDelegationMiddleware(resolved.delegation), priority: 120 } // override
@@ -124,13 +267,20 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
   const capabilityRequestProviders =
     capabilityRequestBridge !== undefined ? [capabilityRequestBridge.provider] : [];
 
-  const providers = [...scopeProviders, ...delegationProviders, ...capabilityRequestProviders];
+  const approvalRoutingProviders = approvalRouting !== undefined ? [approvalRouting.provider] : [];
+  const providers = [
+    ...scopeProviders,
+    ...delegationProviders,
+    ...capabilityRequestProviders,
+    ...approvalRoutingProviders,
+  ];
 
   const preset = resolved.preset ?? "open";
 
   return {
     middlewares,
     providers,
+    disposables,
     config: {
       preset,
       middlewareCount: middlewares.length,

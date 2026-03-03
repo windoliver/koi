@@ -11,7 +11,9 @@
   },
   "dependencies": {
     "@koi/core": "workspace:*",
-    "@koi/errors": "workspace:*"
+    "@koi/errors": "workspace:*",
+    "@koi/validation": "workspace:*",
+    "zod": "4.3.6"
   },
   "devDependencies": {
     "@koi/engine": "workspace:*",
