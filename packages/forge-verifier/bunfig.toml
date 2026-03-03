@@ -1,0 +1,13 @@
+[test]
+coverage = true
+coverageSkipTestFiles = true
+coverageReporter = ["text", "lcov"]
+coverageDir = "coverage"
+# Note: coverageThreshold is intentionally omitted.
+# Bun 1.3.x instruments workspace dependency dist files (../core/dist/,
+# ../forge-types/dist/, etc.) in coverage totals and coveragePathIgnorePatterns
+# does not exclude them from threshold calculation. Most forge-verifier source
+# files are tested in the L3 @koi/forge bundle where full integration tests
+# exercise verify-*, dependency-audit, and workspace-scan.
+# workspace-manager coverage is 70%+ — verify via `bun test packages/forge-verifier/`
+# from the monorepo root, which correctly scopes to src/ files only.

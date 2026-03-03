@@ -1,0 +1,465 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/forge-tools API surface . has stable type surface 1`] = `
+"import { BrickArtifact, ForgeStore, Result, CapabilityFragment, ToolArtifact, SandboxExecutor, Tool, BrickId, ForgeScope, StoreChangeEvent, BrickKind, BrickComponentMap, TrustTier, StoreChangeNotifier, ComponentProvider, KoiError, BrickRegistryWriter, Resolver, BrickRequires, SigningBackend, GovernanceController } from '@koi/core';
+import { ForgeError, DriftChecker, SandboxExecutor as SandboxExecutor$1, ForgeVerifier, ForgeConfig, ForgeContext, ManifestParser, ForgePipeline, AgentArtifact } from '@koi/forge-types';
+import { BrickDescriptor } from '@koi/resolve';
+export { createMemoryStoreChangeNotifier } from '@koi/validation';
+
+/**
+ * Brick-based agent manifest assembly.
+ *
+ * Given a list of brick IDs, loads them from the store and generates
+ * a \`koi.yaml\`-style manifest YAML string. Returns both the YAML and
+ * the loaded brick artifacts for reuse by callers (e.g. trust propagation).
+ */
+
+interface AssembleManifestOptions {
+    readonly name: string;
+    readonly description: string;
+    readonly model?: string;
+    readonly agentType?: string;
+}
+interface AssembleManifestResult {
+    readonly manifestYaml: string;
+    readonly loadedBricks: readonly BrickArtifact[];
+}
+declare function assembleManifest(brickIds: readonly string[], store: ForgeStore, options: AssembleManifestOptions): Promise<Result<AssembleManifestResult, ForgeError>>;
+
+/**
+ * Brick → Tool conversion — shared utility for converting ToolArtifact bricks
+ * into executable Tool instances via a sandbox executor.
+ *
+ * Supports two execution modes:
+ * - **With workspace**: passes \`ExecutionContext\` with workspace/entry paths
+ *   to the executor, enabling \`import()\` for promoted-tier bricks with npm deps.
+ * - **Without workspace**: falls back to \`new Function()\` (existing behavior).
+ *
+ * Also provides \`brickCapabilityFragment\` for auto-mapping BrickArtifact.description
+ * to the \`CapabilityFragment\` convention used by self-describing middleware.
+ */
+
+/**
+ * Convert a ToolArtifact into an executable Tool backed by a sandbox executor.
+ *
+ * @param brick - The tool artifact to convert
+ * @param executor - Sandbox executor for the brick's trust tier
+ * @param timeoutMs - Execution timeout in milliseconds (default: 5000)
+ * @param workspacePath - Optional workspace path for bricks with npm dependencies
+ * @param entryPath - Optional entry file path for import()-based execution
+ */
+declare function brickToTool(brick: ToolArtifact, executor: SandboxExecutor, timeoutMs?: number, workspacePath?: string, entryPath?: string): Tool;
+/**
+ * Auto-generates a CapabilityFragment from a BrickArtifact's name and description.
+ * Used when converting forged middleware bricks to KoiMiddleware at runtime.
+ * Agent updates description by re-forging (new content hash = new brick).
+ */
+declare function brickCapabilityFragment(brick: BrickArtifact): CapabilityFragment;
+
+/**
+ * Shared brick resolution utilities — extracted from ForgeRuntime and
+ * ForgeComponentProvider to eliminate DRY violations.
+ *
+ * Provides:
+ * - \`mapBrickToComponent\` — exhaustive switch over BrickKind to create
+ *   ECS component values (shared by both ForgeRuntime.resolve() and
+ *   ForgeComponentProvider.attachBrick())
+ * - \`createDeltaInvalidator\` — targeted cache invalidation by brickId
+ *   instead of blanket clear
+ * - Trust tier enforcement helpers
+ */
+
+/** Returns true if \`actual\` meets or exceeds \`required\` trust tier. */
+declare function meetsMinTrust(actual: TrustTier, required: TrustTier): boolean;
+/** Returns true if the brick's trust tier meets the minimum for its kind. */
+declare function meetsKindTrust(brick: BrickArtifact): boolean;
+/**
+ * Map a BrickArtifact to its ECS component value based on kind.
+ *
+ * Returns \`undefined\` if the brick kind is unrecognized.
+ *
+ * Justified \`as BrickComponentMap[K]\` casts: TypeScript cannot prove
+ * that when artifact.kind === "skill", the generic K is narrowed to "skill".
+ * Each branch is individually type-safe.
+ */
+declare function mapBrickToComponent<K extends BrickKind>(artifact: BrickArtifact): BrickComponentMap[K] | undefined;
+interface DeltaInvalidator<V> {
+    /** Targeted invalidation by brick ID — removes single entry if cached. */
+    readonly invalidateByBrickId: (brickId: BrickId, cache: Map<string, V>) => boolean;
+    /** Targeted invalidation by scope — removes all entries of matching scope. */
+    readonly invalidateByScope: (scope: ForgeScope, scopeTracker: ReadonlyMap<string, ForgeScope>) => boolean;
+    /**
+     * Determine invalidation strategy from a store change event.
+     * Returns "full" if the cache should be fully cleared, "delta" if targeted,
+     * or "none" if no invalidation needed.
+     */
+    readonly classifyEvent: (event: StoreChangeEvent) => "full" | "delta" | "none";
+}
+/**
+ * Create a delta invalidator for targeted cache eviction.
+ *
+ * Strategy per event kind:
+ * - "saved" → full (new brick may match cache filter criteria)
+ * - "removed" → delta (only the specific brick needs eviction)
+ * - "updated" → delta (only the specific brick needs eviction)
+ * - "promoted" → delta (scope/tier changed for specific brick)
+ * - "demoted" → delta (trust tier decreased for specific brick)
+ */
+declare function createDeltaInvalidator<V>(): DeltaInvalidator<V>;
+
+/**
+ * BrickDescriptor for @koi/forge.
+ *
+ * Enables manifest auto-resolution for the forge component provider.
+ * Creates a forge runtime that auto-discovers forged artifacts.
+ */
+
+/**
+ * Descriptor for forge component provider.
+ *
+ * Note: The forge provider requires a ForgeStore and SandboxExecutor
+ * that cannot be resolved from YAML alone. The factory throws — the CLI
+ * must inject runtime dependencies after resolution. This descriptor
+ * registers the name/alias so the resolver can validate and locate it.
+ */
+declare const descriptor: BrickDescriptor<unknown>;
+
+/**
+ * ForgeComponentProvider — attaches forged bricks as components to agents.
+ *
+ * Implements the L0 ComponentProvider interface. On first attach(), it discovers
+ * all active bricks from the ForgeStore: tool bricks are wrapped as executable
+ * Tools; implementation bricks (middleware, channel) are registered as raw
+ * ImplementationArtifact values under kind-specific tokens.
+ * Results are cached for subsequent attach() calls.
+ *
+ * Lazy loading (decision 13A): bricks are loaded on first attach(), not at creation.
+ * Scope + zoneId filtering (Issue 8A): only agent-scoped + zone-scoped bricks visible.
+ * Delta-based invalidation (Issue 15A): invalidate by scope or brick ID.
+ */
+
+interface ForgeComponentProviderConfig {
+    readonly store: ForgeStore;
+    readonly executor: SandboxExecutor;
+    readonly sandboxTimeoutMs?: number;
+    /** Agent's current scope — filters bricks to this scope and broader. */
+    readonly scope?: ForgeScope | undefined;
+    /** Zone identifier — when set, zone-scoped bricks are filtered by this zone tag. */
+    readonly zoneId?: string | undefined;
+    /** Optional notifier — auto-subscribes for cross-agent cache invalidation. */
+    readonly notifier?: StoreChangeNotifier | undefined;
+}
+/**
+ * Extended ComponentProvider with cache invalidation support.
+ * Call \`invalidate()\` after store mutations (save/remove/update) to ensure
+ * the next \`attach()\` re-queries the store for fresh data.
+ *
+ * Delta-based invalidation (Issue 15A):
+ * - \`invalidate()\` — full cache clear (backward-compatible)
+ * - \`invalidateByScope(scope)\` — clear only if cached bricks include that scope
+ * - \`invalidateByBrickId(id)\` — clear only if the specific brick is cached
+ */
+interface ForgeComponentProviderInstance extends ComponentProvider {
+    /** Clears the cached tool set. Next \`attach()\` will re-query the store. */
+    readonly invalidate: () => void;
+    /** Invalidate cache if it contains bricks of the given scope. */
+    readonly invalidateByScope: (scope: ForgeScope) => void;
+    /** Invalidate cache if the specific brick ID is cached. */
+    readonly invalidateByBrickId: (brickId: string) => void;
+    /** Resolves a brick name to its brick ID. Returns \`undefined\` for non-forged bricks or before first \`attach()\`. */
+    readonly lookupBrickId: (brickName: string) => string | undefined;
+    /** Unsubscribes from the notifier (if one was provided). */
+    readonly dispose: () => void;
+}
+/**
+ * Creates a ComponentProvider that lazily loads forged tools on first attach().
+ * Results are cached — subsequent attach() calls return the same tool instances.
+ * Call \`invalidate()\` to clear the cache after store mutations.
+ *
+ * Scope filtering (Issue 8A): when \`config.scope\` is set, only bricks at that
+ * scope or broader are included. Zone-scoped bricks are further filtered by
+ * \`config.zoneId\` tag matching.
+ */
+declare function createForgeComponentProvider(config: ForgeComponentProviderConfig): ForgeComponentProviderInstance;
+
+/**
+ * Adapter: ForgeError → KoiError.
+ *
+ * Maps each ForgeError stage/code combination to the Koi 8-type error model
+ * with appropriate retryability. Used at the boundary between the forge
+ * subsystem and the broader Koi engine.
+ */
+
+/** Convert a ForgeError to a KoiError. */
+declare function forgeErrorToKoiError(error: ForgeError): KoiError;
+
+/**
+ * Forge → Registry sync — publishes promoted bricks to a BrickRegistryWriter.
+ *
+ * Subscribes to ForgeStore.watch() for "promoted" events and fires
+ * registry.register() in a fire-and-forget pattern. Opt-in via factory.
+ */
+
+interface ForgeRegistrySyncConfig {
+    readonly forgeStore: ForgeStore;
+    readonly registry: BrickRegistryWriter;
+    /** Called after a brick is successfully published to the registry. */
+    readonly onPublished?: (brickId: string, name: string) => void;
+    /** Called when loading or registering a promoted brick fails. */
+    readonly onError?: (brickId: string, error: unknown) => void;
+}
+/**
+ * Creates a sync listener that auto-publishes promoted bricks to a registry.
+ *
+ * Returns an unsubscribe function. Call it to stop listening.
+ * Requires \`forgeStore.watch\` to be defined — throws otherwise.
+ */
+declare function createForgeRegistrySync(config: ForgeRegistrySyncConfig): () => void;
+
+/**
+ * ForgeResolver — Resolver adapter backed by a ForgeStore.
+ * Implements the L0 Resolver<BrickArtifact, BrickArtifact> interface.
+ */
+
+interface ForgeResolverContext {
+    readonly agentId: string;
+    /** Called when a brick is demoted due to fitness decay. */
+    readonly onDecayDemotion?: (brickId: string, from: TrustTier, to: TrustTier) => void;
+    /** Called when a decay-related store update or callback throws. */
+    readonly onError?: (error: unknown) => void;
+    /** Called when discover() returns zero visible bricks. */
+    readonly onDiscoveryMiss?: () => void;
+    /** Injected drift checker for source-file staleness detection on load(). */
+    readonly driftChecker?: DriftChecker;
+}
+declare function createForgeResolver(store: ForgeStore, context: ForgeResolverContext): Resolver<BrickArtifact, BrickArtifact>;
+
+/**
+ * Pure function to generate SKILL.md with YAML frontmatter from structured input.
+ *
+ * Output format follows the Agent Skills specification:
+ * \`\`\`
+ * ---
+ * name: skill-name
+ * description: "What this skill does"
+ * metadata:
+ *   author: agent-id
+ *   version: "0.0.1"
+ *   tags:
+ *     - tag1
+ * ---
+ *
+ * <body content>
+ * \`\`\`
+ */
+interface SkillMdInput {
+    readonly name: string;
+    readonly description: string;
+    readonly tags?: readonly string[];
+    readonly agentId: string;
+    readonly version: string;
+    readonly body: string;
+}
+declare function generateSkillMd(input: SkillMdInput): string;
+
+/**
+ * InMemoryForgeStore — simple Map-based store for tests and development.
+ * No eviction, no persistence across restarts.
+ */
+
+declare function createInMemoryForgeStore(): ForgeStore;
+
+/**
+ * Runtime enforcement of BrickRequires — checks bins, env vars, tool availability,
+ * package resolvability, and network policy.
+ */
+
+/** Simplified network policy for requires-check: does the environment allow network? */
+interface NetworkPolicy {
+    readonly allowed: boolean;
+}
+type ViolationKind = "bin" | "env" | "tool" | "package" | "network";
+interface RequiresCheckResult {
+    readonly satisfied: boolean;
+    readonly violation?: {
+        readonly kind: ViolationKind;
+        readonly name: string;
+    };
+}
+/**
+ * Validates that all runtime requirements declared by a brick are satisfied.
+ * Returns the first violation found (fail-fast). No requires -> always satisfied.
+ *
+ * Check order: bins -> env -> tools -> packages -> network.
+ */
+declare function checkBrickRequires(requires: BrickRequires | undefined, availableToolNames: ReadonlySet<string>, networkPolicy?: NetworkPolicy): RequiresCheckResult;
+
+/**
+ * Shared factory for primordial forge tools — DRY across all 6 tools.
+ */
+
+interface ForgeDeps {
+    readonly store: ForgeStore;
+    readonly executor: SandboxExecutor$1;
+    readonly verifiers: readonly ForgeVerifier[];
+    readonly config: ForgeConfig;
+    readonly context: ForgeContext;
+    /** Injected manifest parser — required only for forge_agent. Avoids L2 peer import of @koi/manifest. */
+    readonly manifestParser?: ManifestParser;
+    /** Optional notifier for cross-agent cache invalidation after store mutations. */
+    readonly notifier?: StoreChangeNotifier;
+    /** Optional signing backend for attestation. When provided, forged bricks get cryptographic signatures. */
+    readonly signer?: SigningBackend;
+    /** Optional governance controller for live-counter budget checks (bypasses static ForgeContext.forgesThisSession). */
+    readonly controller?: GovernanceController;
+    /** Called after a successful forge with the number of forges consumed. When provided, incrementing the session counter is automatic. */
+    readonly onForgeConsumed?: (consumed: number) => void | Promise<void>;
+    /** DI pipeline — tools use pipeline methods for cross-L2 calls (verify, governance, attestation). Wired by L3 bundle. */
+    readonly pipeline?: ForgePipeline;
+}
+interface ForgeToolConfig {
+    readonly name: string;
+    readonly description: string;
+    readonly inputSchema: Readonly<Record<string, unknown>>;
+    readonly handler: (input: unknown, deps: ForgeDeps) => Promise<Result<unknown, ForgeError>>;
+}
+interface ParsedBaseInput {
+    readonly name: string;
+    readonly description: string;
+    readonly tags?: readonly string[] | undefined;
+    readonly files?: Readonly<Record<string, string>> | undefined;
+    readonly requires?: {
+        readonly bins?: readonly string[] | undefined;
+        readonly env?: readonly string[] | undefined;
+        readonly tools?: readonly string[] | undefined;
+        readonly packages?: Readonly<Record<string, string>> | undefined;
+        readonly network?: boolean | undefined;
+    } | undefined;
+    readonly configSchema?: Readonly<Record<string, unknown>> | undefined;
+    readonly classification?: "public" | "internal" | "secret" | undefined;
+    readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[] | undefined;
+}
+/**
+ * Maps parsed test cases into the ForgeInput test case shape.
+ * Strips undefined optional fields to match exactOptionalPropertyTypes.
+ */
+declare function mapParsedTestCases(testCases: readonly {
+    readonly name: string;
+    readonly input: unknown;
+    readonly expectedOutput?: unknown | undefined;
+    readonly shouldThrow?: boolean | undefined;
+}[] | undefined): readonly {
+    readonly name: string;
+    readonly input: unknown;
+    readonly expectedOutput?: unknown;
+    readonly shouldThrow?: boolean;
+}[] | undefined;
+/**
+ * Extracts common ForgeInput base fields from a parsed input.
+ * DRYs the requires/tags/files/classification/contentMarkers spread
+ * that was duplicated in every tool handler.
+ */
+declare function mapParsedBaseFields(parsed: ParsedBaseInput): {
+    readonly tags?: readonly string[];
+    readonly files?: Readonly<Record<string, string>>;
+    readonly requires?: {
+        readonly bins?: readonly string[];
+        readonly env?: readonly string[];
+        readonly tools?: readonly string[];
+        readonly packages?: Readonly<Record<string, string>>;
+        readonly network?: boolean;
+    };
+    readonly configSchema?: Readonly<Record<string, unknown>>;
+    readonly classification?: "public" | "internal" | "secret";
+    readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[];
+};
+declare function createForgeTool(toolConfig: ForgeToolConfig, deps: ForgeDeps): Tool;
+
+/**
+ * compose_forge — Composes multiple bricks into a linear pipeline (A→B→C).
+ *
+ * Loads all referenced bricks from the store, extracts typed I/O ports,
+ * validates consecutive schema compatibility, and produces a CompositeArtifact
+ * with a content-addressed pipeline ID (order-preserving).
+ *
+ * v2: Pipeline semantics. Mixed kinds allowed. Order matters.
+ */
+
+declare function createComposeForge(deps: ForgeDeps): Tool;
+
+/**
+ * forge_agent — Creates a new sub-agent with manifest validation.
+ * Supports two input modes:
+ *   1. \`manifestYaml\` — raw YAML manifest (existing behavior)
+ *   2. \`brickIds\` — auto-assembles manifest from referenced bricks
+ *
+ * Requires a ManifestParser injected via ForgeDeps to validate YAML
+ * without importing @koi/manifest (avoids L2 peer dependency).
+ */
+
+/**
+ * Callback invoked after a successful forge_agent artifact creation.
+ * The caller (typically L3 or consumer code) uses this to trigger
+ * child agent assembly via \`spawnChildAgent()\`.
+ *
+ * Returns void — spawn orchestration results are captured by the caller
+ * through closure, keeping L2 independent of L1 types.
+ */
+type OnForgeAgentSpawn = (artifact: AgentArtifact) => void | Promise<void>;
+declare function createForgeAgentTool(deps: ForgeDeps, onSpawn?: OnForgeAgentSpawn): Tool;
+
+/**
+ * forge_edit — Edit an existing forged brick's implementation via search-and-replace.
+ *
+ * Loads the brick from the store, applies the edit via @koi/edit-match cascading
+ * match strategies, re-runs verification, and saves the result as a new brick
+ * (immutable — new content-addressed BrickId).
+ */
+
+declare function createForgeEditTool(deps: ForgeDeps): Tool;
+
+/**
+ * forge_middleware + forge_channel — Creates implementation bricks (middleware or channel)
+ * through the verification pipeline.
+ *
+ * Both brick kinds share identical input schemas and handler logic — the only difference
+ * is \`kind\` and the tool name/description. This file merges the two into a single factory.
+ */
+
+declare function createForgeMiddlewareTool(deps: ForgeDeps): Tool;
+declare function createForgeChannelTool(deps: ForgeDeps): Tool;
+
+/**
+ * forge_skill — Creates a new SKILL.md (markdown-based knowledge unit).
+ * Lighter verification — no sandbox stage for markdown content.
+ */
+
+declare function createForgeSkillTool(deps: ForgeDeps): Tool;
+
+/**
+ * forge_tool — Creates a new tool through the verification pipeline.
+ */
+
+declare function createForgeToolTool(deps: ForgeDeps): Tool;
+
+/**
+ * promote_forge — Promotes a brick's scope, trust tier, or lifecycle.
+ *
+ * Per-field evaluation (Issue 5A): each dimension is validated independently.
+ * Scope HITL does NOT block trust or lifecycle changes.
+ * Uses VALID_LIFECYCLE_TRANSITIONS for state machine enforcement (Issue 7A).
+ * Dedicated error codes: TRUST_DEMOTION_NOT_ALLOWED, LIFECYCLE_INVALID_TRANSITION (Issue 6A).
+ * Wires scope promotion to store.promote() if available (Issue 1A).
+ */
+
+declare function createPromoteForgeTool(deps: ForgeDeps): Tool;
+
+/**
+ * search_forge — Discovers existing bricks via ForgeStore queries.
+ */
+
+declare function createSearchForgeTool(deps: ForgeDeps): Tool;
+
+export { type AssembleManifestOptions, type AssembleManifestResult, type DeltaInvalidator, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeDeps, type ForgeRegistrySyncConfig, type ForgeResolverContext, type ForgeToolConfig, type NetworkPolicy, type OnForgeAgentSpawn, type RequiresCheckResult, type SkillMdInput, assembleManifest, brickCapabilityFragment, brickToTool, checkBrickRequires, createComposeForge, createDeltaInvalidator, createForgeAgentTool, createForgeChannelTool, createForgeComponentProvider, createForgeEditTool, createForgeMiddlewareTool, createForgeRegistrySync, createForgeResolver, createForgeSkillTool, createForgeTool, createForgeToolTool, createInMemoryForgeStore, createPromoteForgeTool, createSearchForgeTool, descriptor, forgeErrorToKoiError, generateSkillMd, mapBrickToComponent, mapParsedBaseFields, mapParsedTestCases, meetsKindTrust, meetsMinTrust };
+"
+`;

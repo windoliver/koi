@@ -17,18 +17,25 @@ import type {
   ToolArtifact,
   ToolDescriptor,
 } from "@koi/core";
-import type { AttestationCache } from "./attestation-cache.js";
-import { createAttestationCache } from "./attestation-cache.js";
-import { brickToTool } from "./brick-conversion.js";
-import { createDeltaInvalidator, mapBrickToComponent } from "./brick-resolver.js";
-import type { DependencyConfig } from "./config.js";
-import { createDefaultForgeConfig } from "./config.js";
-import { auditDependencies } from "./dependency-audit.js";
-import { DEFAULT_SANDBOX_TIMEOUT_MS, MAX_EXTERNAL_LISTENERS } from "./forge-defaults.js";
-import { verifyBrickAttestation, verifyBrickIntegrity } from "./integrity.js";
-import { checkBrickRequires } from "./requires-check.js";
-import type { SandboxExecutor } from "./types.js";
-import { createBrickWorkspace, writeBrickEntry } from "./workspace-manager.js";
+import type { AttestationCache } from "@koi/forge-integrity";
+import {
+  createAttestationCache,
+  verifyBrickAttestation,
+  verifyBrickIntegrity,
+} from "@koi/forge-integrity";
+import {
+  brickToTool,
+  checkBrickRequires,
+  createDeltaInvalidator,
+  mapBrickToComponent,
+} from "@koi/forge-tools";
+import type { DependencyConfig, SandboxExecutor } from "@koi/forge-types";
+import {
+  createDefaultForgeConfig,
+  DEFAULT_SANDBOX_TIMEOUT_MS,
+  MAX_EXTERNAL_LISTENERS,
+} from "@koi/forge-types";
+import { auditDependencies, createBrickWorkspace, writeBrickEntry } from "@koi/forge-verifier";
 
 // Re-use the ForgeRuntime interface from L1 types.
 // Import it as a type-only import to avoid L2→L1 dependency.
@@ -296,8 +303,8 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
       for (const listener of snapshot) {
         try {
           listener(event);
-        } catch (_: unknown) {
-          // Never let one listener break others — silently continue
+        } catch (e: unknown) {
+          console.debug("[forge-runtime] external listener threw:", e);
         }
       }
     });

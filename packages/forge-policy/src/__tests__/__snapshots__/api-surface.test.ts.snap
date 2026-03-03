@@ -1,0 +1,226 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/forge-policy API surface . has stable type surface 1`] = `
+"import { DriftChecker, ForgeConfig, ForgeContext, ForgeError, ForgeScope, GovernanceResult, PromoteChange, MutationPressureConfig, ReverificationConfig, AutoPromotionConfig } from '@koi/forge-types';
+export { DriftCheckResult, DriftChecker, GovernanceResult } from '@koi/forge-types';
+import { changedFilesSince, getHeadCommit } from '@koi/git-utils';
+import { SubsystemToken, GovernanceVariableContributor, ComponentProvider, ForgeStore, StoreChangeNotifier, KoiMiddleware, TrustTier, GovernanceController, Result, TrustTransitionCaller, MutationPressure, BrickId, BrickArtifact } from '@koi/core';
+
+/**
+ * Drift checker — detects source file staleness for forge bricks.
+ *
+ * Injected into ForgeResolver to lazily compute drift scores on load().
+ * Uses @koi/git-utils for changed file detection and @koi/validation
+ * for drift score computation. Implements TTL-based caching to avoid
+ * redundant git diff calls.
+ */
+
+/** Configuration for the concrete drift checker. */
+interface DriftCheckerConfig {
+    /** Working directory for git commands. */
+    readonly cwd: string;
+    /** TTL in milliseconds for the changed-files cache. Default: 60_000. */
+    readonly cacheTtlMs?: number;
+    /** Injected git functions (enables testing without real repos). */
+    readonly git: {
+        readonly changedFilesSince: typeof changedFilesSince;
+        readonly getHeadCommit: typeof getHeadCommit;
+    };
+}
+/** Creates a concrete DriftChecker with TTL-cached git diff results. */
+declare function createDriftChecker(config: DriftCheckerConfig): DriftChecker;
+
+/**
+ * Forge governance contributor — L2 package that declares forge-specific
+ * governance variables via the GovernanceVariableContributor pattern.
+ *
+ * Attached as an ECS component under "governance:contrib:forge".
+ * The L1 governance extension discovers it via generic prefix query.
+ */
+
+declare const FORGE_GOVERNANCE: SubsystemToken<GovernanceVariableContributor>;
+declare function createForgeGovernanceContributor(config: ForgeConfig, readDepth: () => number, readForgeCount: () => number): GovernanceVariableContributor;
+
+/**
+ * Forge session counter — engine-owned mutable counter that prevents
+ * child agents from resetting forgesThisSession to bypass budget limits.
+ *
+ * Provides:
+ * - readForgeCount / incrementForgeCount — closures for the governance contributor
+ * - provider — ComponentProvider that attaches the FORGE_GOVERNANCE contributor
+ *
+ * When spawning a child agent, pass the parent's current count as \`initialCount\`
+ * to prevent the child from starting at 0.
+ */
+
+interface ForgeSessionCounterInstance {
+    /** Current forge count (live). */
+    readonly readForgeCount: () => number;
+    /** Increment the counter by \`delta\` (typically 1). */
+    readonly incrementForgeCount: (delta: number) => void;
+    /** ComponentProvider that attaches the FORGE_GOVERNANCE contributor. */
+    readonly provider: ComponentProvider;
+}
+interface ForgeSessionCounterOptions {
+    readonly config: ForgeConfig;
+    /** Depth reader — typically () => context.depth. */
+    readonly readDepth: () => number;
+    /** Starting count. Pass the parent's current count to prevent reset-to-0 bypass. */
+    readonly initialCount?: number;
+}
+declare function createForgeSessionCounter(options: ForgeSessionCounterOptions): ForgeSessionCounterInstance;
+
+/**
+ * Forge usage tracking middleware — records brick usage after successful tool calls.
+ *
+ * Wraps tool calls via \`KoiMiddleware.wrapToolCall\`. After a successful call,
+ * fires \`recordBrickUsage\` in fire-and-forget mode. Non-forged tools are silently
+ * skipped. Usage recording failures never break tool calls.
+ */
+
+interface ForgeUsageMiddlewareConfig {
+    readonly store: ForgeStore;
+    readonly config: ForgeConfig;
+    /** Resolves a tool name to its forge brick ID. Returns \`undefined\` for non-forged tools. */
+    readonly resolveBrickId: (toolName: string) => string | undefined;
+    /** Optional notifier for cross-agent cache invalidation after usage-based mutations. */
+    readonly notifier?: StoreChangeNotifier | undefined;
+    /** Optional error handler for usage recording failures. */
+    readonly onUsageError?: (toolName: string, brickId: string, error: unknown) => void;
+}
+/**
+ * Creates a \`KoiMiddleware\` that tracks usage of forged tools.
+ *
+ * After each successful tool call, looks up the tool's brick ID via
+ * \`resolveBrickId\`. If found, calls \`recordBrickUsage\` fire-and-forget.
+ * Failed tool calls do not record usage. Non-forged tools are silently skipped.
+ */
+declare function createForgeUsageMiddleware(cfg: ForgeUsageMiddlewareConfig): KoiMiddleware;
+
+/**
+ * Governance — depth-aware forge policies and scope promotion checks.
+ */
+
+declare const TRUST_ORDER: Readonly<Record<TrustTier, number>>;
+/**
+ * Check forge governance with optional controller delegation.
+ *
+ * When a GovernanceController is provided, forge_depth and forge_budget
+ * checks delegate to the unified controller. The controller path returns
+ * the first failing GovernanceCheck or \`{ ok: true }\`.
+ *
+ * When no controller is provided (backward compat), uses standalone
+ * ForgeContext-based logic.
+ *
+ * Depth-aware tool filtering and config.enabled always use local logic
+ * regardless of controller presence.
+ */
+declare function checkGovernance(context: ForgeContext, config: ForgeConfig, toolName?: string | undefined, controller?: GovernanceController | undefined): Result<void, ForgeError> | Promise<Result<void, ForgeError>>;
+declare function checkScopePromotion(currentScope: ForgeScope, targetScope: ForgeScope, trustTier: TrustTier, config: ForgeConfig): Result<GovernanceResult, ForgeError>;
+/**
+ * Validates a trust tier transition.
+ *
+ * - \`caller: "agent"\` → blocks demotion (agents can only promote)
+ * - \`caller: "system"\` → allows one-step demotion, blocks skip-demotion
+ *
+ * Returns \`undefined\` value when current === target (no-op).
+ */
+declare function validateTrustTransition(current: TrustTier, target: TrustTier, caller: TrustTransitionCaller): Result<PromoteChange<TrustTier> | undefined, ForgeError>;
+
+/**
+ * Mutation pressure check — capability space lookup for forge governance.
+ *
+ * Queries active bricks in the same capability space (via tag matching),
+ * computes the max fitness among them, and maps to a mutation pressure zone.
+ * Returns MUTATION_PRESSURE_FROZEN error when high-fitness incumbents protect
+ * the capability space.
+ *
+ * Fail-open: store errors allow the forge to proceed (don't block on infra failures).
+ */
+
+interface MutationPressureResult {
+    /** The computed mutation pressure zone. */
+    readonly pressure: MutationPressure;
+    /** Max fitness score among overlapping active bricks (0 if none). */
+    readonly maxFitness: number;
+    /** BrickId of the highest-fitness overlapping brick, if any. */
+    readonly dominantBrickId: BrickId | undefined;
+}
+/**
+ * Checks mutation pressure for a capability space defined by tags.
+ *
+ * Queries active bricks with overlapping tags, finds the highest fitness,
+ * and maps to a pressure zone. Returns a governance error when the zone is "frozen".
+ *
+ * @param tags - Tags defining the capability space to check.
+ * @param store - ForgeStore to query for overlapping bricks.
+ * @param config - Mutation pressure thresholds.
+ * @param nowMs - Current time in epoch ms (for fitness scoring).
+ * @returns Ok with pressure result, or error if capability space is frozen.
+ */
+declare function checkMutationPressure(tags: readonly string[], store: ForgeStore, config: MutationPressureConfig, nowMs: number): Promise<Result<MutationPressureResult, ForgeError>>;
+
+/**
+ * Bounded concurrency FIFO queue for brick re-verification.
+ *
+ * All non-sandbox bricks are accepted. No tier-based priority (Issue #703).
+ * Dedup: skips bricks already in-flight or pending.
+ * Bounded: max N concurrent re-verifications.
+ */
+
+interface ReverificationQueue {
+    /** Enqueue a brick for re-verification. Returns false if already in-flight or at capacity. */
+    readonly enqueue: (brick: BrickArtifact) => boolean;
+    /** Number of currently in-flight re-verifications. */
+    readonly activeCount: () => number;
+    /** Number of bricks waiting in the queue. */
+    readonly pendingCount: () => number;
+    /** Dispose: clear all pending items. */
+    readonly dispose: () => void;
+}
+type ReverificationHandler = (brick: BrickArtifact) => Promise<boolean>;
+declare function createReverificationQueue(config: ReverificationConfig, handler: ReverificationHandler): ReverificationQueue;
+
+/**
+ * Usage-based auto-promotion — tracks brick usage and promotes trust tier
+ * when configurable thresholds are crossed.
+ */
+
+interface UsageRecordedResult {
+    readonly kind: "recorded";
+    readonly brickId: string;
+    readonly newUsageCount: number;
+}
+interface UsagePromotedResult {
+    readonly kind: "promoted";
+    readonly brickId: string;
+    readonly newUsageCount: number;
+    readonly previousTier: TrustTier;
+    readonly newTier: TrustTier;
+}
+type UsageResult = UsageRecordedResult | UsagePromotedResult;
+/** Optional signal providing success/failure and latency for fitness tracking. */
+interface UsageSignal {
+    readonly success: boolean;
+    readonly latencyMs: number;
+    readonly timestamp?: number;
+}
+/**
+ * Given a brick's current trust tier and its new usage count, returns the
+ * tier it should be promoted to — or \`undefined\` if no promotion applies.
+ */
+declare function computeAutoPromotion(currentTier: TrustTier, newUsageCount: number, config: AutoPromotionConfig): TrustTier | undefined;
+/**
+ * Records a single usage of a brick. Increments \`usageCount\` and, when
+ * auto-promotion is enabled and a threshold is crossed, promotes the
+ * brick's trust tier.
+ *
+ * When \`signal\` is provided, also updates fitness metrics (success/error
+ * counts, latency, recency). The \`usageCount\` is derived from total
+ * fitness calls to stay DRY.
+ */
+declare function recordBrickUsage(store: ForgeStore, brickId: string, config: ForgeConfig, signal?: UsageSignal): Promise<Result<UsageResult, ForgeError>>;
+
+export { type DriftCheckerConfig, FORGE_GOVERNANCE, type ForgeSessionCounterInstance, type ForgeSessionCounterOptions, type ForgeUsageMiddlewareConfig, type MutationPressureResult, type ReverificationHandler, type ReverificationQueue, TRUST_ORDER, type UsagePromotedResult, type UsageRecordedResult, type UsageResult, type UsageSignal, checkGovernance, checkMutationPressure, checkScopePromotion, computeAutoPromotion, createDriftChecker, createForgeGovernanceContributor, createForgeSessionCounter, createForgeUsageMiddleware, createReverificationQueue, recordBrickUsage, validateTrustTransition };
+"
+`;

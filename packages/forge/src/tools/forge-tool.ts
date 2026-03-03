@@ -7,7 +7,14 @@ import { brickId } from "@koi/core";
 import type { ForgeError } from "../errors.js";
 import type { ForgeResult, ForgeToolInput } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
-import { buildBaseFields, createForgeTool, parseToolInput, runForgePipeline } from "./shared.js";
+import {
+  buildBaseFields,
+  createForgeTool,
+  mapParsedBaseFields,
+  mapParsedTestCases,
+  parseToolInput,
+  runForgePipeline,
+} from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Tool config
@@ -80,51 +87,16 @@ async function forgeToolHandler(
     return parsed;
   }
 
+  const mapped = mapParsedTestCases(parsed.value.testCases);
   const forgeInput: ForgeToolInput = {
     kind: "tool",
     name: parsed.value.name,
     description: parsed.value.description,
     inputSchema: parsed.value.inputSchema,
     implementation: parsed.value.implementation,
-    ...(parsed.value.testCases !== undefined
-      ? {
-          testCases: parsed.value.testCases.map((tc) => ({
-            name: tc.name,
-            input: tc.input,
-            ...(tc.expectedOutput !== undefined ? { expectedOutput: tc.expectedOutput } : {}),
-            ...(tc.shouldThrow !== undefined ? { shouldThrow: tc.shouldThrow } : {}),
-          })),
-        }
-      : {}),
-    ...(parsed.value.tags !== undefined ? { tags: parsed.value.tags } : {}),
-    ...(parsed.value.files !== undefined ? { files: parsed.value.files } : {}),
-    ...(parsed.value.requires !== undefined
-      ? {
-          requires: {
-            ...(parsed.value.requires.bins !== undefined
-              ? { bins: parsed.value.requires.bins }
-              : {}),
-            ...(parsed.value.requires.env !== undefined ? { env: parsed.value.requires.env } : {}),
-            ...(parsed.value.requires.tools !== undefined
-              ? { tools: parsed.value.requires.tools }
-              : {}),
-            ...(parsed.value.requires.packages !== undefined
-              ? { packages: parsed.value.requires.packages }
-              : {}),
-            ...(parsed.value.requires.network !== undefined
-              ? { network: parsed.value.requires.network }
-              : {}),
-          },
-        }
-      : {}),
+    ...(mapped !== undefined ? { testCases: mapped } : {}),
+    ...mapParsedBaseFields(parsed.value),
     ...(parsed.value.outputSchema !== undefined ? { outputSchema: parsed.value.outputSchema } : {}),
-    ...(parsed.value.configSchema !== undefined ? { configSchema: parsed.value.configSchema } : {}),
-    ...(parsed.value.classification !== undefined
-      ? { classification: parsed.value.classification }
-      : {}),
-    ...(parsed.value.contentMarkers !== undefined
-      ? { contentMarkers: parsed.value.contentMarkers }
-      : {}),
   };
 
   // Placeholder id — pipeline replaces with content-addressed hash

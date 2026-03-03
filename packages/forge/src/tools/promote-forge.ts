@@ -27,6 +27,14 @@ import type { PromoteChange, PromoteResult } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import { createForgeTool, parseForgeInput } from "./shared.js";
 
+// Pipeline-aware helpers: use deps.pipeline when available
+function getCheckScopePromotion(deps: ForgeDeps): typeof checkScopePromotion {
+  return deps.pipeline?.checkScopePromotion ?? checkScopePromotion;
+}
+function getValidateTrustTransition(deps: ForgeDeps): typeof validateTrustTransition {
+  return deps.pipeline?.validateTrustTransition ?? validateTrustTransition;
+}
+
 // ---------------------------------------------------------------------------
 // Zod schema — includes quarantined for remediation path
 // ---------------------------------------------------------------------------
@@ -92,7 +100,7 @@ function validateScopeChange(
   if (target === current) {
     return { ok: true, value: { change: undefined, requiresHitl: false } };
   }
-  const scopeResult = checkScopePromotion(current, target, trustTier, deps.config);
+  const scopeResult = getCheckScopePromotion(deps)(current, target, trustTier, deps.config);
   if (!scopeResult.ok) {
     return { ok: false, error: scopeResult.error };
   }
@@ -108,8 +116,9 @@ function validateScopeChange(
 function validateTrustChange(
   current: TrustTier,
   target: TrustTier,
+  deps: ForgeDeps,
 ): Result<PromoteChange<TrustTier> | undefined, ForgeError> {
-  return validateTrustTransition(current, target, "agent");
+  return getValidateTrustTransition(deps)(current, target, "agent");
 }
 
 function validateLifecycleChange(
@@ -186,7 +195,7 @@ async function promoteForgeHandler(
   // Trust tier — independent of scope HITL
   let trustChange: PromoteChange<TrustTier> | undefined;
   if (obj.targetTrustTier !== undefined) {
-    const trustResult = validateTrustChange(brick.trustTier, obj.targetTrustTier);
+    const trustResult = validateTrustChange(brick.trustTier, obj.targetTrustTier, deps);
     if (!trustResult.ok) {
       return { ok: false, error: trustResult.error };
     }

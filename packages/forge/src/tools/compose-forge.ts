@@ -27,6 +27,11 @@ import type { ForgeResult } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import { buildBaseFields, createForgeTool, parseCompositeInput } from "./shared.js";
 
+// Pipeline-aware helper: use deps.pipeline when available
+function getCreateProvenance(deps: ForgeDeps): typeof createForgeProvenance {
+  return deps.pipeline?.createProvenance ?? createForgeProvenance;
+}
+
 // ---------------------------------------------------------------------------
 // Tool config
 // ---------------------------------------------------------------------------
@@ -198,7 +203,7 @@ async function composeForgeHandler(
     deps,
   );
 
-  const provenance = createForgeProvenance({
+  const provenance = getCreateProvenance(deps)({
     input: { kind: "composite", name, description, brickIds: parsed.value.brickIds },
     context: deps.context,
     report: {
@@ -241,7 +246,9 @@ async function composeForgeHandler(
   if (deps.notifier !== undefined) {
     void Promise.resolve(
       deps.notifier.notify({ kind: "saved", brickId: id, scope: deps.config.defaultScope }),
-    ).catch(() => {});
+    ).catch((e: unknown) => {
+      console.debug("[compose-forge] notifier.notify failed:", e);
+    });
   }
 
   const forgeResult: ForgeResult = {

@@ -9,7 +9,13 @@ import type { ForgeError } from "../errors.js";
 import { generateSkillMd } from "../generate-skill-md.js";
 import type { ForgeResult, ForgeSkillInput } from "../types.js";
 import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
-import { buildBaseFields, createForgeTool, parseSkillInput, runForgePipeline } from "./shared.js";
+import {
+  buildBaseFields,
+  createForgeTool,
+  mapParsedBaseFields,
+  parseSkillInput,
+  runForgePipeline,
+} from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Tool config
@@ -59,33 +65,7 @@ async function forgeSkillHandler(
     name: parsed.value.name,
     description: parsed.value.description,
     body: parsed.value.body,
-    ...(parsed.value.tags !== undefined ? { tags: parsed.value.tags } : {}),
-    ...(parsed.value.files !== undefined ? { files: parsed.value.files } : {}),
-    ...(parsed.value.requires !== undefined
-      ? {
-          requires: {
-            ...(parsed.value.requires.bins !== undefined
-              ? { bins: parsed.value.requires.bins }
-              : {}),
-            ...(parsed.value.requires.env !== undefined ? { env: parsed.value.requires.env } : {}),
-            ...(parsed.value.requires.tools !== undefined
-              ? { tools: parsed.value.requires.tools }
-              : {}),
-            ...(parsed.value.requires.packages !== undefined
-              ? { packages: parsed.value.requires.packages }
-              : {}),
-            ...(parsed.value.requires.network !== undefined
-              ? { network: parsed.value.requires.network }
-              : {}),
-          },
-        }
-      : {}),
-    ...(parsed.value.classification !== undefined
-      ? { classification: parsed.value.classification }
-      : {}),
-    ...(parsed.value.contentMarkers !== undefined
-      ? { contentMarkers: parsed.value.contentMarkers }
-      : {}),
+    ...mapParsedBaseFields(parsed.value),
   };
 
   // Generate full SKILL.md with YAML frontmatter

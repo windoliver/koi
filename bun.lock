@@ -896,6 +896,11 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/edit-match": "workspace:*",
+        "@koi/forge-integrity": "workspace:*",
+        "@koi/forge-policy": "workspace:*",
+        "@koi/forge-tools": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+        "@koi/forge-verifier": "workspace:*",
         "@koi/git-utils": "workspace:*",
         "@koi/hash": "workspace:*",
         "@koi/resolve": "workspace:*",
@@ -937,6 +942,15 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/forge-integrity": {
+      "name": "@koi/forge-integrity",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+    },
     "packages/forge-optimizer": {
       "name": "@koi/forge-optimizer",
       "version": "0.0.0",
@@ -945,6 +959,49 @@
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/forge-policy": {
+      "name": "@koi/forge-policy",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+        "@koi/git-utils": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+    },
+    "packages/forge-tools": {
+      "name": "@koi/forge-tools",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/edit-match": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+        "@koi/git-utils": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
+    "packages/forge-types": {
+      "name": "@koi/forge-types",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
+    "packages/forge-verifier": {
+      "name": "@koi/forge-verifier",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/validation": "workspace:*",
       },
     },
     "packages/gateway": {
@@ -2923,7 +2980,17 @@
 
     "@koi/forge-exaptation": ["@koi/forge-exaptation@workspace:packages/forge-exaptation"],
 
+    "@koi/forge-integrity": ["@koi/forge-integrity@workspace:packages/forge-integrity"],
+
     "@koi/forge-optimizer": ["@koi/forge-optimizer@workspace:packages/forge-optimizer"],
+
+    "@koi/forge-policy": ["@koi/forge-policy@workspace:packages/forge-policy"],
+
+    "@koi/forge-tools": ["@koi/forge-tools@workspace:packages/forge-tools"],
+
+    "@koi/forge-types": ["@koi/forge-types@workspace:packages/forge-types"],
+
+    "@koi/forge-verifier": ["@koi/forge-verifier@workspace:packages/forge-verifier"],
 
     "@koi/gateway": ["@koi/gateway@workspace:packages/gateway"],
 

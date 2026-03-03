@@ -1,9 +1,13 @@
 # @koi/forge — Self-Extension Runtime
 
-`@koi/forge` is an L2 package that enables agents to create, verify, sign, and compose
+`@koi/forge` is an **L3 bundle** that enables agents to create, verify, sign, and compose
 tools, skills, and sub-agents at runtime. Every forged artifact passes a 4-stage verification
 pipeline, receives a content-addressed identity, and carries SLSA v1.0–compatible provenance
 metadata with optional cryptographic attestation.
+
+> **Architecture note**: `@koi/forge` was split from a monolith into 5 focused packages
+> (see [forge-subsystem.md](./forge-subsystem.md)). The L3 bundle re-exports everything
+> for backward compatibility and provides `createForgePipeline()` to wire the sub-packages.
 
 ---
 

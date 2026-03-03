@@ -28,6 +28,7 @@ import type { ForgeDeps } from "@koi/forge";
 import {
   createDefaultForgeConfig,
   createForgeComponentProvider,
+  createForgePipeline,
   createPromoteForgeTool,
 } from "@koi/forge";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
@@ -147,6 +148,7 @@ function createDeps(store: OverlayForgeStore, agentId: string): ForgeDeps {
       sessionId: `session-${agentId}`,
       forgesThisSession: 0,
     },
+    pipeline: createForgePipeline(),
   };
 }
 
