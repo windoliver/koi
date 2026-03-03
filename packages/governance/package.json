@@ -20,6 +20,7 @@
     "@koi/middleware-pay": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
     "@koi/middleware-pii": "workspace:*",
+    "@koi/permissions-nexus": "workspace:*",
     "@koi/middleware-sanitize": "workspace:*",
     "@koi/scope": "workspace:*",
     "@koi/tool-browser": "workspace:*"
@@ -27,6 +28,7 @@
   "devDependencies": {
     "@koi/engine": "workspace:*",
     "@koi/engine-pi": "workspace:*",
+    "@koi/nexus-client": "workspace:*",
     "@koi/test-utils": "workspace:*"
   },
   "scripts": {

@@ -199,6 +199,109 @@ Priority order in the governance stack:
 
 ---
 
+## Dynamic Permission Management
+
+Three safety controls for delegation grant lifecycle, added in #644.
+
+### Escalation Prevention
+
+Agents cannot grant permissions they don't hold. When `permissionBackend` is configured on the manager, every `grant()` and `attenuate()` call checks that the grantor holds all permissions being delegated. Batch check first, fail-fast sequential fallback. Backend errors are fail-closed (deny).
+
+```typescript
+const manager = createDelegationManager({
+  config,
+  permissionBackend: myBackend, // ← enables escalation prevention
+});
+
+// Agent "coder" has read_file only — tries to grant deploy → DENIED
+await manager.grant(agentId("coder"), agentId("helper"), {
+  permissions: { allow: ["deploy"] },
+});
+// → { ok: false, error: { code: "PERMISSION", message: "Escalation denied..." } }
+```
+
+### Session-Scoped Grants
+
+Grants can be tied to a session via `scope.sessionId`. When `getActiveSessions` is configured, `verify()` checks the session is still active before allowing tool calls. When the session ends, all its grants become invalid immediately — no explicit revocation needed.
+
+```typescript
+const manager = createDelegationManager({
+  config,
+  getActiveSessions: () => activeSessions, // ← Set<string> of live session IDs
+});
+
+// Grant tied to a session
+await manager.grant(agentId("parent"), agentId("child"), {
+  permissions: { allow: ["read_file"] },
+  sessionId: "session-42", // ← new field on DelegationScope
+});
+
+// After session ends: verify() → { ok: false, reason: "session_expired" }
+```
+
+### Nexus ReBAC Tuple Sync
+
+Grant and revoke events can be synced to Nexus (Zanzibar-style authorization) via hook factories from `@koi/permissions-nexus`:
+
+```typescript
+import { createNexusOnGrant, createNexusOnRevoke } from "@koi/permissions-nexus";
+
+const manager = createDelegationManager({
+  config,
+  onGrant: createNexusOnGrant(nexusBackend),   // async-blocking, fail-closed
+  onRevoke: createNexusOnRevoke(nexusBackend, getGrant), // best-effort
+});
+```
+
+`mapGrantToTuples()` converts a `DelegationGrant` to Zanzibar tuples:
+- Each (permission, resource) pair → one tuple
+- Without resources: `subject: "agent:<delegateeId>"`, `relation: <permission>`, `object: "delegation:<grantId>"`
+
+### delegation_check Tool
+
+Agents can verify a delegated permission before acting:
+
+```typescript
+// Agent calls: delegation_check({ grantId: "g-abc", permission: "read_file" })
+// → { allowed: true }
+// → { allowed: false, reason: "session_expired" }
+// → { allowed: false, reason: "unknown_grant" }
+```
+
+When `permissionBackend` is configured on the provider, the check also queries the backend after grant verification.
+
+### Attenuate via delegation_grant
+
+The `delegation_grant` tool now accepts an optional `parentGrantId` field. When present, it calls `manager.attenuate()` instead of `manager.grant()`, enabling re-delegation:
+
+```typescript
+// Agent calls:
+{
+  delegateeId: "intern",
+  permissions: { allow: ["read_file"] },  // must be subset of parent
+  parentGrantId: "g-root"                 // attenuates this grant
+}
+```
+
+---
+
+## Governance Integration (Expanded)
+
+```typescript
+const { middlewares, providers, nexusHooks } = createGovernanceStack({
+  delegationBridge: {
+    manager,
+    permissionBackend: nexusBackend,  // enables delegation_check tool
+    nexusBackend,                     // produces nexusHooks on bundle
+  },
+  capabilityRequest: { approvalTimeoutMs: 60_000 },
+});
+
+// nexusHooks.onGrant / nexusHooks.onRevoke — wire to a new manager if needed
+```
+
+---
+
 ## Configuration
 
 ### DelegationManager
@@ -211,6 +314,8 @@ Priority order in the governance stack:
 | `circuitBreaker` | `DEFAULT_CIRCUIT_BREAKER_CONFIG` | Per-delegatee circuit breaker thresholds |
 | `onGrant` | — | Hook called on grant creation (throw to roll back) |
 | `onRevoke` | — | Hook called on revocation (best-effort, no rollback) |
+| `permissionBackend` | — | Enables escalation prevention at grant-time |
+| `getActiveSessions` | — | Enables session-scoped grant verification |
 
 ### CapabilityRequestBridge
 

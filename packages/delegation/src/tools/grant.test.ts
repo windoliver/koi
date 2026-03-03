@@ -96,4 +96,71 @@ describe("createDelegationGrantTool", () => {
     expect(tool.descriptor.name).toBe("custom_grant");
     expect(tool.trustTier).toBe("sandbox");
   });
+
+  // -----------------------------------------------------------------------
+  // parentGrantId (attenuate via grant tool)
+  // -----------------------------------------------------------------------
+
+  test("attenuates parent grant when parentGrantId is provided", async () => {
+    const { tool, manager } = setup();
+
+    // Create root grant first
+    const rootResult = await tool.execute({
+      delegateeId: "agent-2",
+      permissions: { allow: ["read_file", "write_file"] },
+    });
+    const root = rootResult as { grantId: string; scope: DelegationScope; expiresAt: number };
+
+    // Attenuate using parentGrantId
+    const childResult = await tool.execute({
+      delegateeId: "agent-3",
+      permissions: { allow: ["read_file"] },
+      parentGrantId: root.grantId,
+    });
+    const child = childResult as { grantId: string; scope: DelegationScope; expiresAt: number };
+
+    expect(child.grantId).toBeDefined();
+    expect(child.grantId).not.toBe(root.grantId);
+    expect(child.scope.permissions.allow).toEqual(["read_file"]);
+
+    // Verify both grants exist
+    expect(manager.list()).toHaveLength(2);
+  });
+
+  test("throws when parentGrantId does not exist", async () => {
+    const { tool } = setup();
+    await expect(
+      tool.execute({
+        delegateeId: "agent-3",
+        permissions: { allow: ["read_file"] },
+        parentGrantId: "nonexistent-grant-id",
+      }),
+    ).rejects.toThrow("Grant failed");
+  });
+
+  test("throws when attenuated scope exceeds parent", async () => {
+    const { tool } = setup();
+
+    // Create root grant with limited permissions
+    const rootResult = await tool.execute({
+      delegateeId: "agent-2",
+      permissions: { allow: ["read_file"] },
+    });
+    const root = rootResult as { grantId: string; scope: DelegationScope; expiresAt: number };
+
+    // Try to attenuate with wider scope
+    await expect(
+      tool.execute({
+        delegateeId: "agent-3",
+        permissions: { allow: ["read_file", "write_file"] },
+        parentGrantId: root.grantId,
+      }),
+    ).rejects.toThrow("Grant failed");
+  });
+
+  test("schema includes parentGrantId property", () => {
+    const { tool } = setup();
+    const schema = tool.descriptor.inputSchema as { properties: Record<string, unknown> };
+    expect(schema.properties).toHaveProperty("parentGrantId");
+  });
 });

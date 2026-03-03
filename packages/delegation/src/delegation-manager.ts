@@ -17,6 +17,8 @@ import type {
   DelegationScope,
   DelegationVerifyResult,
   KoiError,
+  PermissionBackend,
+  PermissionDecision,
   RegistryEvent,
   Result,
   RevocationRegistry,
@@ -44,6 +46,10 @@ export interface CreateDelegationManagerParams {
   readonly onGrant?: (grant: DelegationGrant) => void | Promise<void>;
   /** Called after a revocation completes. Best-effort — failures are logged, not re-thrown. */
   readonly onRevoke?: (grantId: DelegationId, cascade: boolean) => void | Promise<void>;
+  /** Optional permission backend for escalation prevention at grant-time. */
+  readonly permissionBackend?: PermissionBackend;
+  /** Optional session resolver for session-scoped grant verification. */
+  readonly getActiveSessions?: () => ReadonlySet<string> | Promise<ReadonlySet<string>>;
 }
 
 export interface DelegationManager {
@@ -80,7 +86,15 @@ export interface DelegationManager {
 // ---------------------------------------------------------------------------
 
 export function createDelegationManager(params: CreateDelegationManagerParams): DelegationManager {
-  const { config, scopeChecker, onEvent, onGrant: onGrantHook, onRevoke: onRevokeHook } = params;
+  const {
+    config,
+    scopeChecker,
+    onEvent,
+    onGrant: onGrantHook,
+    onRevoke: onRevokeHook,
+    permissionBackend,
+    getActiveSessions,
+  } = params;
 
   // Internal state — single source of truth
   const grantStore = new Map<DelegationId, DelegationGrant>();
@@ -127,6 +141,87 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
   }
 
   // ---------------------------------------------------------------------------
+  // Escalation prevention
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Checks that the grantor actually holds all permissions being delegated.
+   * Batch check first, fail-fast sequential fallback.
+   * Fail-closed: any backend error → deny.
+   */
+  async function checkEscalation(
+    grantorId: AgentId,
+    scope: DelegationScope,
+  ): Promise<Result<void, KoiError>> {
+    if (permissionBackend === undefined) {
+      return { ok: true, value: undefined };
+    }
+
+    const permissions = scope.permissions.allow ?? [];
+    if (permissions.length === 0) {
+      return { ok: true, value: undefined };
+    }
+
+    const resources = scope.resources ?? [`delegation:${grantorId}`];
+    const queries = permissions.flatMap((action) =>
+      resources.map((resource) => ({
+        principal: `agent:${grantorId}`,
+        action,
+        resource,
+      })),
+    );
+
+    try {
+      // Prefer batch check when available
+      if (permissionBackend.checkBatch !== undefined) {
+        const decisions = await permissionBackend.checkBatch(queries);
+        const denied = decisions.find((d: PermissionDecision) => d.effect !== "allow");
+        if (denied !== undefined) {
+          return {
+            ok: false,
+            error: {
+              code: "PERMISSION",
+              message: `Escalation denied: grantor lacks delegated permission${denied.effect === "deny" ? ` — ${denied.reason}` : ""}`,
+              retryable: false,
+              context: { grantorId },
+            },
+          };
+        }
+        return { ok: true, value: undefined };
+      }
+
+      // Fall back to fail-fast sequential checks
+      for (const query of queries) {
+        const decision = await permissionBackend.check(query);
+        if (decision.effect !== "allow") {
+          return {
+            ok: false,
+            error: {
+              code: "PERMISSION",
+              message: `Escalation denied: grantor lacks permission "${query.action}" on "${query.resource}"${decision.effect === "deny" ? ` — ${decision.reason}` : ""}`,
+              retryable: false,
+              context: { grantorId, action: query.action, resource: query.resource },
+            },
+          };
+        }
+      }
+
+      return { ok: true, value: undefined };
+    } catch (e: unknown) {
+      // Fail-closed: backend error → deny
+      return {
+        ok: false,
+        error: {
+          code: "EXTERNAL",
+          message: `Escalation check failed (fail-closed): ${e instanceof Error ? e.message : String(e)}`,
+          retryable: true,
+          context: { grantorId },
+        },
+      };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Grant lifecycle
   // ---------------------------------------------------------------------------
 
@@ -136,6 +231,10 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
     scope: DelegationScope,
     ttlMs?: number,
   ): Promise<Result<DelegationGrant, KoiError>> {
+    // Escalation prevention: verify grantor holds all permissions being delegated
+    const escalationResult = await checkEscalation(issuerId, scope);
+    if (!escalationResult.ok) return escalationResult;
+
     const result = createGrant({
       issuerId,
       delegateeId,
@@ -184,6 +283,10 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
         },
       };
     }
+
+    // Escalation prevention: verify the attenuator holds all permissions being delegated
+    const escalationResult = await checkEscalation(parent.delegateeId, scope);
+    if (!escalationResult.ok) return escalationResult;
 
     const result = attenuateGrant(
       parent,
@@ -255,6 +358,21 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
     const storedGrant = grantStore.get(grantId);
     if (storedGrant === undefined) {
       return { ok: false, reason: "unknown_grant" };
+    }
+
+    // Session check runs BEFORE verify cache — a cached "allowed" must not
+    // be served after the owning session has expired.
+    if (storedGrant.scope.sessionId !== undefined && getActiveSessions !== undefined) {
+      const activeSessions = await getActiveSessions();
+      if (!activeSessions.has(storedGrant.scope.sessionId)) {
+        emit({
+          kind: "delegation:denied",
+          grantId,
+          toolId,
+          reason: "session_expired",
+        });
+        return { ok: false, reason: "session_expired" };
+      }
     }
 
     // Fast path — return cached result if available

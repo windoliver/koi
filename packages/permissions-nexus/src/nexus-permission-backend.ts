@@ -8,6 +8,7 @@
  */
 
 import type {
+  DelegationGrant,
   KoiError,
   PermissionBackend,
   PermissionDecision,
@@ -29,9 +30,16 @@ export interface NexusPermissionBackendConfig {
 // Extended return type (superset of PermissionBackend with grant RPC)
 // ---------------------------------------------------------------------------
 
-/** PermissionBackend + ReBAC grant RPC. */
+/** PermissionBackend + ReBAC tuple management. */
 export interface NexusPermissionBackend extends PermissionBackend {
   readonly grant: (tuple: RelationshipTuple) => Promise<Result<void, KoiError>>;
+  readonly delete: (tuple: RelationshipTuple) => Promise<Result<void, KoiError>>;
+  readonly batchWrite: (
+    writes: ReadonlyArray<{
+      readonly tuple: RelationshipTuple;
+      readonly operation: "write" | "delete";
+    }>,
+  ) => Promise<Result<void, KoiError>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,5 +108,78 @@ export function createNexusPermissionBackend(
     return { ok: true, value: undefined };
   };
 
-  return { check, checkBatch, grant };
+  const deleteTuple = async (tuple: RelationshipTuple): Promise<Result<void, KoiError>> => {
+    const result = await config.client.rpc<void>("permissions.delete", {
+      subject: tuple.subject,
+      relation: tuple.relation,
+      object: tuple.object,
+    });
+
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
+
+    return { ok: true, value: undefined };
+  };
+
+  const batchWrite = async (
+    writes: ReadonlyArray<{
+      readonly tuple: RelationshipTuple;
+      readonly operation: "write" | "delete";
+    }>,
+  ): Promise<Result<void, KoiError>> => {
+    const result = await config.client.rpc<void>("permissions.batchWrite", {
+      writes: writes.map((w) => ({
+        subject: w.tuple.subject,
+        relation: w.tuple.relation,
+        object: w.tuple.object,
+        operation: w.operation,
+      })),
+    });
+
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
+
+    return { ok: true, value: undefined };
+  };
+
+  return { check, checkBatch, grant, delete: deleteTuple, batchWrite };
+}
+
+// ---------------------------------------------------------------------------
+// Grant → tuple mapping
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps a DelegationGrant to Zanzibar-style relationship tuples for Nexus sync.
+ *
+ * Each allowed permission in the grant scope produces a tuple:
+ *   subject: "agent:<delegateeId>"
+ *   relation: the permission name (e.g., "read_file")
+ *   object: "delegation:<grantId>"
+ *
+ * If the grant has resource patterns, each (permission, resource) pair
+ * produces a separate tuple.
+ */
+export function mapGrantToTuples(grant: DelegationGrant): readonly RelationshipTuple[] {
+  const permissions = grant.scope.permissions.allow ?? [];
+  const resources = grant.scope.resources;
+  const subject = `agent:${grant.delegateeId}`;
+
+  if (resources !== undefined && resources.length > 0) {
+    return permissions.flatMap((permission) =>
+      resources.map((resource) => ({
+        subject,
+        relation: permission,
+        object: resource,
+      })),
+    );
+  }
+
+  return permissions.map((permission) => ({
+    subject,
+    relation: permission,
+    object: `delegation:${grant.id}`,
+  }));
 }

@@ -9,9 +9,11 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import type { DelegationGrant, DelegationId } from "@koi/core";
+import type { DelegationGrant, DelegationId, KoiError, PermissionBackend, Result } from "@koi/core";
 import { agentId, DEFAULT_CIRCUIT_BREAKER_CONFIG } from "@koi/core";
 import { createDelegationManager, parseResourcePattern } from "@koi/delegation";
+import type { NexusClient } from "@koi/nexus-client";
+import { createNexusPermissionBackend } from "@koi/permissions-nexus";
 import { createGovernanceStack } from "../governance-stack.js";
 
 const SECRET = "test-secret-key-32-bytes-minimum";
@@ -206,5 +208,56 @@ describe("delegation bridge in createGovernanceStack", () => {
         capabilityRequest: { approvalTimeoutMs: 30_000 },
       }),
     ).toThrow("capabilityRequest requires delegationBridge");
+  });
+
+  // -----------------------------------------------------------------------
+  // Expanded delegation bridge config
+  // -----------------------------------------------------------------------
+
+  test("permissionBackend is passed through to delegation provider", () => {
+    const manager = createDelegationManager({ config: DEFAULT_MANAGER_CONFIG });
+    cleanups.push(manager.dispose);
+
+    const mockBackend: PermissionBackend = {
+      check: async () => ({ effect: "allow" as const }),
+    };
+
+    const bundle = createGovernanceStack({
+      delegationBridge: { manager, permissionBackend: mockBackend },
+    });
+
+    // Provider is present with delegation tools
+    const delegationProvider = bundle.providers.find((p) => p.name === "delegation-tools");
+    expect(delegationProvider).toBeDefined();
+  });
+
+  test("nexusBackend config produces nexusHooks in bundle", () => {
+    const manager = createDelegationManager({ config: DEFAULT_MANAGER_CONFIG });
+    cleanups.push(manager.dispose);
+
+    const mockNexusClient: NexusClient = {
+      rpc: async <T>() =>
+        ({ ok: true, value: undefined as unknown as T }) satisfies Result<T, KoiError>,
+    };
+    const nexusBackend = createNexusPermissionBackend({ client: mockNexusClient });
+
+    const bundle = createGovernanceStack({
+      delegationBridge: { manager, nexusBackend },
+    });
+
+    expect(bundle.nexusHooks).toBeDefined();
+    expect(typeof bundle.nexusHooks?.onGrant).toBe("function");
+    expect(typeof bundle.nexusHooks?.onRevoke).toBe("function");
+  });
+
+  test("no nexusBackend → no nexusHooks in bundle", () => {
+    const manager = createDelegationManager({ config: DEFAULT_MANAGER_CONFIG });
+    cleanups.push(manager.dispose);
+
+    const bundle = createGovernanceStack({
+      delegationBridge: { manager },
+    });
+
+    expect(bundle.nexusHooks).toBeUndefined();
   });
 });

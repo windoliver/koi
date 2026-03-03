@@ -52,6 +52,8 @@ export {
   createRegistryCleanup,
   mustCreateGrant,
 } from "./test-helpers.js";
+// tool: check
+export { createDelegationCheckTool } from "./tools/check.js";
 // tool constants
 export { DEFAULT_PREFIX, type DelegationOperation, OPERATIONS } from "./tools/constants.js";
 // verification
