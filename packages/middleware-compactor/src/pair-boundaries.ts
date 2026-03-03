@@ -6,14 +6,8 @@
  * point indices that respect these group boundaries.
  */
 
-import type { JsonObject } from "@koi/core/common";
 import type { InboundMessage } from "@koi/core/message";
-
-/** Safely reads a string value from metadata. */
-function readStringMeta(metadata: JsonObject | undefined, key: string): string | undefined {
-  const value = metadata?.[key];
-  return typeof value === "string" ? value : undefined;
-}
+import { mapCallIdPairs } from "@koi/session-repair";
 
 /**
  * Build a set of index ranges that form atomic groups (assistant + tool results).
@@ -23,25 +17,14 @@ function readStringMeta(metadata: JsonObject | undefined, key: string): string |
  */
 function findAtomicGroupInteriors(messages: readonly InboundMessage[]): ReadonlySet<number> {
   const interiors = new Set<number>();
+  const { assistantByCallId } = mapCallIdPairs(messages);
 
-  // Map callId → assistant message index
-  const assistantByCallId = new Map<string, number>();
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-    if (msg === undefined) continue;
-    if (msg.senderId !== "assistant") continue;
-    const callId = readStringMeta(msg.metadata, "callId");
-    if (callId !== undefined) {
-      assistantByCallId.set(callId, i);
-    }
-  }
-
-  // For each tool result, find its matching assistant and mark the range interior
+  // For each tool result with a callId, find its matching assistant and mark the range interior
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (msg === undefined) continue;
     if (msg.senderId !== "tool") continue;
-    const callId = readStringMeta(msg.metadata, "callId");
+    const callId = typeof msg.metadata?.callId === "string" ? msg.metadata.callId : undefined;
     if (callId === undefined) continue;
     const assistantIdx = assistantByCallId.get(callId);
     if (assistantIdx === undefined) continue;

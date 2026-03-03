@@ -35,6 +35,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/sandbox-wasm",
   "@koi/scope",
   "@koi/search-provider",
+  "@koi/session-repair",
   "@koi/shutdown",
   "@koi/skill-scanner",
   "@koi/snapshot-chain-store",

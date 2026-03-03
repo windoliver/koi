@@ -659,6 +659,7 @@
         "@koi/errors": "workspace:*",
         "@koi/execution-context": "workspace:*",
         "@koi/hash": "workspace:*",
+        "@koi/session-repair": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine-acp": "workspace:*",
@@ -1171,6 +1172,7 @@
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
         "@koi/resolve": "workspace:*",
+        "@koi/session-repair": "workspace:*",
         "@koi/token-estimator": "workspace:*",
       },
       "devDependencies": {
@@ -1908,6 +1910,14 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
+      },
+    },
+    "packages/session-repair": {
+      "name": "@koi/session-repair",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
       },
     },
     "packages/session-store": {
@@ -3027,6 +3037,8 @@
     "@koi/security-analyzer": ["@koi/security-analyzer@workspace:packages/security-analyzer"],
 
     "@koi/self-test": ["@koi/self-test@workspace:packages/self-test"],
+
+    "@koi/session-repair": ["@koi/session-repair@workspace:packages/session-repair"],
 
     "@koi/session-store": ["@koi/session-store@workspace:packages/session-store"],
 

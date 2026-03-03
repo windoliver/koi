@@ -13,7 +13,8 @@
     "@koi/core": "workspace:*",
     "@koi/errors": "workspace:*",
     "@koi/execution-context": "workspace:*",
-    "@koi/hash": "workspace:*"
+    "@koi/hash": "workspace:*",
+    "@koi/session-repair": "workspace:*"
   },
   "devDependencies": {
     "@koi/engine-acp": "workspace:*",
