@@ -109,7 +109,7 @@ index.ts                         ← public re-exports (60+ symbols)
 ├── governance.ts                ← depth-aware tool filtering, session limits
 ├── forge-governance-contributor.ts ← GovernanceVariableContributor for forge budget/depth
 ├── forge-session-counter.ts     ← engine-owned session counter (prevents budget bypass)
-├── requires-check.ts            ← BrickRequires validation (bins, env, tools)
+├── requires-check.ts            ← BrickRequires validation (bins, env, tools, agents)
 │
 ├── memory-store.ts              ← in-memory ForgeStore implementation
 ├── store-notifier.ts            ← StoreChangeNotifier (pub/sub)

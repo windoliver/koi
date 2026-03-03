@@ -18,7 +18,7 @@ export interface NetworkPolicy {
 // Result type
 // ---------------------------------------------------------------------------
 
-type ViolationKind = "bin" | "env" | "tool" | "package" | "network";
+type ViolationKind = "bin" | "env" | "tool" | "agent" | "package" | "network";
 
 export interface RequiresCheckResult {
   readonly satisfied: boolean;
@@ -47,12 +47,13 @@ function isPackageResolvable(pkgName: string): boolean {
  * Validates that all runtime requirements declared by a brick are satisfied.
  * Returns the first violation found (fail-fast). No requires -> always satisfied.
  *
- * Check order: bins -> env -> tools -> packages -> network.
+ * Check order: bins -> env -> tools -> agents -> packages -> network.
  */
 export function checkBrickRequires(
   requires: BrickRequires | undefined,
   availableToolNames: ReadonlySet<string>,
   networkPolicy?: NetworkPolicy,
+  availableAgentNames?: ReadonlySet<string>,
 ): RequiresCheckResult {
   if (requires === undefined) {
     return { satisfied: true };
@@ -85,7 +86,17 @@ export function checkBrickRequires(
     }
   }
 
-  // 4. npm package resolvability
+  // 4. Agent brick names
+  if (requires.agents !== undefined) {
+    const agentSet = availableAgentNames ?? new Set<string>();
+    for (const agentName of requires.agents) {
+      if (!agentSet.has(agentName)) {
+        return { satisfied: false, violation: { kind: "agent", name: agentName } };
+      }
+    }
+  }
+
+  // 5. npm package resolvability
   if (requires.packages !== undefined) {
     for (const pkgName of Object.keys(requires.packages)) {
       if (!isPackageResolvable(pkgName)) {
@@ -94,7 +105,7 @@ export function checkBrickRequires(
     }
   }
 
-  // 5. Network access: brick declares network: true but policy disallows it
+  // 6. Network access: brick declares network: true but policy disallows it
   if (requires.network === true && networkPolicy !== undefined && !networkPolicy.allowed) {
     return { satisfied: false, violation: { kind: "network", name: "network" } };
   }

@@ -10,6 +10,8 @@ import type { ForgeDeps, ForgeToolConfig } from "./shared.js";
 import {
   buildBaseFields,
   createForgeTool,
+  mapParsedBaseFields,
+  mapParsedTestCases,
   parseImplementationInput,
   runForgePipeline,
 } from "./shared.js";
@@ -46,11 +48,25 @@ const FORGE_MIDDLEWARE_CONFIG: ForgeToolConfig = {
       files: { type: "object", description: "Companion files: relative path → content" },
       requires: {
         type: "object",
-        description: "Runtime requirements (bins, env, tools)",
+        description: "Runtime requirements (bins, env, tools, agents, npm packages)",
         properties: {
           bins: { type: "array", items: { type: "string" } },
           env: { type: "array", items: { type: "string" } },
           tools: { type: "array", items: { type: "string" } },
+          agents: {
+            type: "array",
+            items: { type: "string" },
+            description: "Agent brick names required as peer dependencies",
+          },
+          packages: {
+            type: "object",
+            description:
+              'npm packages: package name → exact semver version (e.g. { "zod": "3.22.0" })',
+          },
+          network: {
+            type: "boolean",
+            description: "Whether this brick requires network access at runtime (default: false)",
+          },
         },
       },
       configSchema: { type: "object", description: "JSON Schema for brick config parameters" },
@@ -73,49 +89,14 @@ async function forgeMiddlewareHandler(
     return parsed;
   }
 
+  const mapped = mapParsedTestCases(parsed.value.testCases);
   const forgeInput: ForgeMiddlewareInput = {
     kind: "middleware",
     name: parsed.value.name,
     description: parsed.value.description,
     implementation: parsed.value.implementation,
-    ...(parsed.value.testCases !== undefined
-      ? {
-          testCases: parsed.value.testCases.map((tc) => ({
-            name: tc.name,
-            input: tc.input,
-            ...(tc.expectedOutput !== undefined ? { expectedOutput: tc.expectedOutput } : {}),
-            ...(tc.shouldThrow !== undefined ? { shouldThrow: tc.shouldThrow } : {}),
-          })),
-        }
-      : {}),
-    ...(parsed.value.tags !== undefined ? { tags: parsed.value.tags } : {}),
-    ...(parsed.value.files !== undefined ? { files: parsed.value.files } : {}),
-    ...(parsed.value.requires !== undefined
-      ? {
-          requires: {
-            ...(parsed.value.requires.bins !== undefined
-              ? { bins: parsed.value.requires.bins }
-              : {}),
-            ...(parsed.value.requires.env !== undefined ? { env: parsed.value.requires.env } : {}),
-            ...(parsed.value.requires.tools !== undefined
-              ? { tools: parsed.value.requires.tools }
-              : {}),
-            ...(parsed.value.requires.packages !== undefined
-              ? { packages: parsed.value.requires.packages }
-              : {}),
-            ...(parsed.value.requires.network !== undefined
-              ? { network: parsed.value.requires.network }
-              : {}),
-          },
-        }
-      : {}),
-    ...(parsed.value.configSchema !== undefined ? { configSchema: parsed.value.configSchema } : {}),
-    ...(parsed.value.classification !== undefined
-      ? { classification: parsed.value.classification }
-      : {}),
-    ...(parsed.value.contentMarkers !== undefined
-      ? { contentMarkers: parsed.value.contentMarkers }
-      : {}),
+    ...(mapped !== undefined ? { testCases: mapped } : {}),
+    ...mapParsedBaseFields(parsed.value),
   };
 
   return runForgePipeline(forgeInput, deps, (report) => ({
