@@ -278,7 +278,7 @@ declare function createInMemoryForgeStore(): ForgeStore;
 interface NetworkPolicy {
     readonly allowed: boolean;
 }
-type ViolationKind = "bin" | "env" | "tool" | "package" | "network";
+type ViolationKind = "bin" | "env" | "tool" | "agent" | "package" | "network";
 interface RequiresCheckResult {
     readonly satisfied: boolean;
     readonly violation?: {
@@ -290,9 +290,9 @@ interface RequiresCheckResult {
  * Validates that all runtime requirements declared by a brick are satisfied.
  * Returns the first violation found (fail-fast). No requires -> always satisfied.
  *
- * Check order: bins -> env -> tools -> packages -> network.
+ * Check order: bins -> env -> tools -> agents -> packages -> network.
  */
-declare function checkBrickRequires(requires: BrickRequires | undefined, availableToolNames: ReadonlySet<string>, networkPolicy?: NetworkPolicy): RequiresCheckResult;
+declare function checkBrickRequires(requires: BrickRequires | undefined, availableToolNames: ReadonlySet<string>, networkPolicy?: NetworkPolicy, availableAgentNames?: ReadonlySet<string>): RequiresCheckResult;
 
 /**
  * Shared factory for primordial forge tools — DRY across all 6 tools.
@@ -334,6 +334,7 @@ interface ParsedBaseInput {
         readonly bins?: readonly string[] | undefined;
         readonly env?: readonly string[] | undefined;
         readonly tools?: readonly string[] | undefined;
+        readonly agents?: readonly string[] | undefined;
         readonly packages?: Readonly<Record<string, string>> | undefined;
         readonly network?: boolean | undefined;
     } | undefined;
@@ -368,6 +369,7 @@ declare function mapParsedBaseFields(parsed: ParsedBaseInput): {
         readonly bins?: readonly string[];
         readonly env?: readonly string[];
         readonly tools?: readonly string[];
+        readonly agents?: readonly string[];
         readonly packages?: Readonly<Record<string, string>>;
         readonly network?: boolean;
     };
