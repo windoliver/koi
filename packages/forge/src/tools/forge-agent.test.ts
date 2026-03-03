@@ -614,7 +614,7 @@ describe("createForgeAgentTool engine resolution", () => {
   test("resolves engine when manifest parse result includes engine field", async () => {
     const store = createInMemoryForgeStore();
     const mockEngine = createMockEngine();
-    const engineResolver = mock<ForgeDeps["engineResolver"]>(async () => ({
+    const engineResolver = mock<NonNullable<ForgeDeps["engineResolver"]>>(async () => ({
       ok: true,
       value: mockEngine,
     }));
@@ -628,7 +628,7 @@ describe("createForgeAgentTool engine resolution", () => {
       createDeps({
         store,
         manifestParser: createEngineParser({ type: "rlm" }),
-        engineResolver: engineResolver as NonNullable<ForgeDeps["engineResolver"]>,
+        engineResolver,
       }),
       onSpawn,
     );
@@ -647,7 +647,7 @@ describe("createForgeAgentTool engine resolution", () => {
 
   test("passes undefined engine when manifest has no engine field", async () => {
     const store = createInMemoryForgeStore();
-    const engineResolver = mock<ForgeDeps["engineResolver"]>(async () => ({
+    const engineResolver = mock<NonNullable<ForgeDeps["engineResolver"]>>(async () => ({
       ok: true,
       value: createMockEngine(),
     }));
@@ -660,7 +660,7 @@ describe("createForgeAgentTool engine resolution", () => {
     const tool = createForgeAgentTool(
       createDeps({
         store,
-        engineResolver: engineResolver as NonNullable<ForgeDeps["engineResolver"]>,
+        engineResolver,
       }),
       onSpawn,
     );
