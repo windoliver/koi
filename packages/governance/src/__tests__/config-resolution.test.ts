@@ -98,15 +98,14 @@ describe("resolveGovernanceConfig", () => {
 
   // ── Exec-approvals validation ─────────────────────────────────────────
 
-  test("exec-approvals without onAsk throws", () => {
-    expect(() =>
-      resolveGovernanceConfig({
-        execApprovals: {
-          rules: { allow: ["*"], deny: [], ask: [] },
-          // Missing onAsk
-        } as never,
-      }),
-    ).toThrow(/onAsk/);
+  test("exec-approvals without onAsk is valid (auto-wired dynamically)", () => {
+    const result = resolveGovernanceConfig({
+      execApprovals: {
+        rules: { allow: ["*"], deny: [], ask: [] },
+        // No onAsk — auto-wired during agent assembly via ComponentProvider
+      },
+    });
+    expect(result.execApprovals).toBeDefined();
   });
 
   // ── Pay deprecation ──────────────────────────────────────────────────

@@ -16,8 +16,12 @@ export interface ExecApprovalsConfig {
     readonly deny: readonly string[];
     readonly ask: readonly string[];
   };
-  /** Called when an ask rule fires. Must return a ProgressiveDecision. */
-  readonly onAsk: (req: ExecApprovalRequest) => Promise<ProgressiveDecision>;
+  /**
+   * Called when an ask rule fires. Must return a ProgressiveDecision.
+   * When omitted, ask-tier tool calls are denied by default (fail-safe).
+   * Governance auto-wires this via ComponentProvider when parent + mailbox are available.
+   */
+  readonly onAsk?: ((req: ExecApprovalRequest) => Promise<ProgressiveDecision>) | undefined;
   /** Backing store for "always" decisions. Defaults to createInMemoryRulesStore(). */
   readonly store?: ExecRulesStore;
   /** Timeout for onAsk. Defaults to DEFAULT_APPROVAL_TIMEOUT_MS (30_000 ms). */
@@ -86,12 +90,12 @@ export function validateExecApprovalsConfig(
     };
   }
 
-  if (typeof c.onAsk !== "function") {
+  if (c.onAsk !== undefined && typeof c.onAsk !== "function") {
     return {
       ok: false,
       error: {
         code: "VALIDATION",
-        message: "Config requires 'onAsk' to be a function",
+        message: "'onAsk' must be a function when provided",
         retryable: RETRYABLE_DEFAULTS.VALIDATION,
       },
     };

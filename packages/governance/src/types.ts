@@ -167,4 +167,6 @@ export interface GovernanceBundle {
   readonly middlewares: readonly KoiMiddleware[];
   readonly providers: readonly ComponentProvider[];
   readonly config: ResolvedGovernanceMeta;
+  /** Disposable resources (e.g., parent-side approval handler subscriptions). */
+  readonly disposables: readonly Disposable[];
 }

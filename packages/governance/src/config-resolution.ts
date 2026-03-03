@@ -27,7 +27,7 @@ export const PAY_DEPRECATION_WARNING: string =
  *
  * Validation rules:
  * - `permissions` and `permissionRules` are mutually exclusive (throws)
- * - `execApprovals` requires an `onAsk` handler (throws)
+ * - `execApprovals.onAsk` is optional — auto-wired during agent assembly when parent + mailbox available
  * - `pay` emits a console.warn deprecation notice
  */
 export function resolveGovernanceConfig(config: GovernanceStackConfig): GovernanceStackConfig {
@@ -43,14 +43,8 @@ export function resolveGovernanceConfig(config: GovernanceStackConfig): Governan
     );
   }
 
-  // 3. Validate exec-approvals has onAsk when present
+  // 3. Resolve exec-approvals (onAsk is optional — auto-wired during agent assembly if parent + mailbox available)
   const effectiveExecApprovals = config.execApprovals ?? spec.execApprovals;
-  if (effectiveExecApprovals !== undefined && effectiveExecApprovals.onAsk === undefined) {
-    throw new Error(
-      "[@koi/governance] exec-approvals requires an 'onAsk' handler. " +
-        "Presets cannot provide this — supply it explicitly via execApprovals.onAsk.",
-    );
-  }
 
   // 4. Resolve permissions from rules shorthand or preset
   const effectivePermissionRules = config.permissionRules ?? spec.permissionRules;
