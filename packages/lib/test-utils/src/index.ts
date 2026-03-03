@@ -49,11 +49,6 @@ export { testEngineAdapter } from "./engine-contract.js";
 export { runEventBackendContractTests } from "./event-backend-contract.js";
 export type { MockEventBackend } from "./event-backend-mock.js";
 export { createMockEventBackend } from "./event-backend-mock.js";
-export type {
-  EventSourcedRegistryForTest,
-  EventSourcedRegistryTestContext,
-} from "./event-sourced-registry-contract.js";
-export { runEventSourcedRegistryContractTests } from "./event-sourced-registry-contract.js";
 export { createFactory } from "./factory.js";
 export type { FakeEngineAdapterConfig, FakeEngineAdapterResult } from "./fake-engine-adapter.js";
 export { createFakeEngineAdapter } from "./fake-engine-adapter.js";
@@ -80,6 +75,11 @@ export {
 } from "./harness-mocks.js";
 export { createInMemoryBrickRegistry } from "./in-memory-brick-registry.js";
 export { runMailboxContractTests } from "./mailbox-contract.js";
+export type {
+  MemoryRegistryForTest,
+  MemoryRegistryTestContext,
+} from "./memory-registry-contract.js";
+export { runMemoryRegistryContractTests } from "./memory-registry-contract.js";
 export type { MiddlewareContractOptions } from "./middleware-contract/index.js";
 export { testMiddlewareContract } from "./middleware-contract/index.js";
 export type { NexusStoreAdapter } from "./nexus-store-contract.js";

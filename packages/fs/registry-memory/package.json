@@ -1,6 +1,6 @@
 {
-  "name": "@koi/registry-event-sourced",
-  "description": "Derive agent state from event stream as single source of truth",
+  "name": "@koi/registry-memory",
+  "description": "In-memory AgentRegistry backed by event sourcing",
   "version": "0.0.0",
   "private": true,
   "type": "module",

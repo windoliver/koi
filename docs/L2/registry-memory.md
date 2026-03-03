@@ -1,6 +1,6 @@
-# @koi/registry-event-sourced — Event-Sourced Agent Registry
+# @koi/registry-memory — In-Memory Agent Registry
 
-An L2 implementation of the `AgentRegistry` contract (L0) backed by event sourcing. Events are the source of truth; the current state of every agent is a derived projection rebuilt by folding events through a pure function. Swap any `EventBackend` — in-memory for tests, SQLite for single-node, Nexus for multi-node — without changing a line of registry code.
+An L2 implementation of the `AgentRegistry` contract (L0) backed by an EventBackend. Events are the source of truth; the current state of every agent is a derived projection rebuilt by folding events through a pure function. Swap any `EventBackend` — in-memory for tests, SQLite for single-node, Nexus for multi-node — without changing a line of registry code.
 
 ---
 
@@ -12,10 +12,10 @@ The default `InMemoryRegistry` (L1) stores mutable state in a `Map`. State trans
 - No replay — you cannot reconstruct state from history after a crash
 - No time-travel debugging — you cannot inspect intermediate states
 
-`@koi/registry-event-sourced` fixes all three by making events the source of truth:
+`@koi/registry-memory` fixes all three by making events the source of truth:
 
 ```
-                InMemoryRegistry              EventSourcedRegistry
+                InMemoryRegistry              MemoryRegistry
                 ────────────────              ────────────────────
 State store:    Map<AgentId, Entry>           EventBackend (append-only log)
 Current state:  IS the store                  DERIVED from fold(events)
@@ -32,17 +32,17 @@ Concurrency:    Last-write-wins               CAS via expectedSequence
 
 ```
 L0  @koi/core               ─ AgentRegistry, AgentStateEvent, evolveRegistryEntry
-L2  @koi/registry-event-sourced  ─ this package (no L1 dependency)
+L2  @koi/registry-memory  ─ this package (no L1 dependency)
 ```
 
-`@koi/registry-event-sourced` imports only from `@koi/core` (L0). It never touches `@koi/engine` (L1) or any peer L2 package. This means it can be used in any context — tests, CLI tools, standalone services — without pulling in the full runtime.
+`@koi/registry-memory` imports only from `@koi/core` (L0). It never touches `@koi/engine` (L1) or any peer L2 package. This means it can be used in any context — tests, CLI tools, standalone services — without pulling in the full runtime.
 
 ### Internal module map
 
 ```
 index.ts                       ← public re-exports
 │
-├── event-sourced-registry.ts  ← factory + AgentRegistry implementation
+├── memory-registry.ts  ← factory + AgentRegistry implementation
 ├── stream-ids.ts              ← per-agent stream ID helpers
 └── __tests__/
     └── e2e.test.ts            ← full-stack E2E with real LLM
@@ -76,7 +76,7 @@ EventBackend
 ### Register
 
 ```
-caller                  EventSourcedRegistry              EventBackend
+caller                  MemoryRegistry              EventBackend
   │                            │                              │
   │  register(entry)           │                              │
   │ ──────────────────────────>│                              │
@@ -99,7 +99,7 @@ caller                  EventSourcedRegistry              EventBackend
 ### Transition (with CAS)
 
 ```
-caller                  EventSourcedRegistry              EventBackend
+caller                  MemoryRegistry              EventBackend
   │                            │                              │
   │  transition(id, "running", │                              │
   │    gen=0, reason)          │                              │
@@ -126,7 +126,7 @@ caller                  EventSourcedRegistry              EventBackend
 ### Rebuild (startup or recovery)
 
 ```
-EventSourcedRegistry                          EventBackend
+MemoryRegistry                          EventBackend
        │                                          │
        │  read("agent-registry-index")            │
        │ ────────────────────────────────────────>│
@@ -204,21 +204,21 @@ The fold is **deterministic** — the same event sequence always produces the sa
 
 ### Factory
 
-#### `createEventSourcedRegistry(backend)`
+#### `createMemoryRegistry(backend)`
 
-Creates an event-sourced `AgentRegistry` backed by an `EventBackend`.
+Creates an in-memory `AgentRegistry` backed by an `EventBackend`.
 
-Returns a `Promise<EventSourcedRegistry>` because startup requires folding existing events to rebuild the projection cache.
+Returns a `Promise<MemoryRegistry>` because startup requires folding existing events to rebuild the projection cache.
 
 ```typescript
-import { createEventSourcedRegistry } from "@koi/registry-event-sourced";
+import { createMemoryRegistry } from "@koi/registry-memory";
 import { createInMemoryEventBackend } from "@koi/events-memory";
 
 const backend = createInMemoryEventBackend();
-const registry = await createEventSourcedRegistry(backend);
+const registry = await createMemoryRegistry(backend);
 ```
 
-### EventSourcedRegistry interface
+### MemoryRegistry interface
 
 Extends `AgentRegistry` with sync-narrowed read methods and a `rebuild()` method.
 
@@ -250,10 +250,10 @@ Extends `AgentRegistry` with sync-narrowed read methods and a `rebuild()` method
 ```typescript
 import { agentId } from "@koi/core";
 import { createInMemoryEventBackend } from "@koi/events-memory";
-import { createEventSourcedRegistry } from "@koi/registry-event-sourced";
+import { createMemoryRegistry } from "@koi/registry-memory";
 
 const backend = createInMemoryEventBackend();
-const registry = await createEventSourcedRegistry(backend);
+const registry = await createMemoryRegistry(backend);
 
 // Register
 const entry = await registry.register({
@@ -304,7 +304,7 @@ unsubscribe();
 
 ```typescript
 // Simulate crash: create a new registry instance from the same backend
-const recovered = await createEventSourcedRegistry(backend);
+const recovered = await createMemoryRegistry(backend);
 
 // All state is restored by folding events
 const entry = recovered.lookup(agentId("worker-1"));
@@ -328,7 +328,7 @@ const running = registry.list({ phase: "running", agentType: "worker" });
 ### 5. Audit trail from event backend
 
 ```typescript
-import { agentStreamId } from "@koi/registry-event-sourced";
+import { agentStreamId } from "@koi/registry-memory";
 
 // Read the raw event log for any agent
 const streamId = agentStreamId(agentId("worker-1"));
@@ -352,7 +352,7 @@ The registry is parameterized by `EventBackend` (L0 interface). Swap the backend
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│         createEventSourcedRegistry(backend)               │
+│         createMemoryRegistry(backend)               │
 │                                                          │
 │  EventBackend                                            │
 │  ┌───────────────────────────────────────────────────┐   │
@@ -421,13 +421,13 @@ Each transition is CAS-protected by `generation` — stale writes are rejected w
 Reusable contract tests live in `@koi/test-utils`:
 
 ```typescript
-import { runEventSourcedRegistryContractTests } from "@koi/test-utils";
+import { runMemoryRegistryContractTests } from "@koi/test-utils";
 import { createInMemoryEventBackend } from "@koi/events-memory";
-import { createEventSourcedRegistry } from "@koi/registry-event-sourced";
+import { createMemoryRegistry } from "@koi/registry-memory";
 
-runEventSourcedRegistryContractTests(async () => {
+runMemoryRegistryContractTests(async () => {
   const backend = createInMemoryEventBackend();
-  const registry = await createEventSourcedRegistry(backend);
+  const registry = await createMemoryRegistry(backend);
   return { registry, backend };
 });
 ```
@@ -442,7 +442,7 @@ Contract tests cover:
 
 ### E2E tests
 
-Full-stack E2E tests run through `createKoi` + `createPiAdapter` with real Anthropic API calls, verifying the event-sourced registry works correctly within the complete L1 runtime.
+Full-stack E2E tests run through `createKoi` + `createPiAdapter` with real Anthropic API calls, verifying the memory registry works correctly within the complete L1 runtime.
 
 ---
 
@@ -454,7 +454,7 @@ L0  @koi/core ──────────────────────
     VALID_TRANSITIONS, error factories                      │
                                                             │
                                                             ▼
-L2  @koi/registry-event-sourced ◄───────────────────────────┘
+L2  @koi/registry-memory ◄───────────────────────────┘
     imports from L0 only
     ✗ never imports @koi/engine (L1)
     ✗ never imports peer L2 packages

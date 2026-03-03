@@ -1,5 +1,5 @@
 /**
- * Reusable contract test suite for event-sourced AgentRegistry implementations.
+ * Reusable contract test suite for memory AgentRegistry implementations.
  *
  * Validates both standard AgentRegistry behavior and event-sourcing invariants:
  * - Events are persisted and readable from the backend
@@ -28,8 +28,8 @@ import { agentId, evolveRegistryEntry, isAgentStateEvent } from "@koi/core";
 // Factory type
 // ---------------------------------------------------------------------------
 
-/** Registry with a rebuild method for event-sourcing tests. */
-export interface EventSourcedRegistryForTest {
+/** Registry with a rebuild method for memory registry tests. */
+export interface MemoryRegistryForTest {
   readonly register: (entry: RegistryEntry) => RegistryEntry | Promise<RegistryEntry>;
   readonly deregister: (agentId: AgentId) => boolean | Promise<boolean>;
   readonly lookup: (
@@ -50,8 +50,8 @@ export interface EventSourcedRegistryForTest {
   readonly [Symbol.asyncDispose]: () => PromiseLike<void>;
 }
 
-export interface EventSourcedRegistryTestContext {
-  readonly registry: EventSourcedRegistryForTest;
+export interface MemoryRegistryTestContext {
+  readonly registry: MemoryRegistryForTest;
   readonly backend: EventBackend;
 }
 
@@ -80,15 +80,15 @@ function entry(id: string, phase: ProcessState = "created", generation = 0): Reg
 // ---------------------------------------------------------------------------
 
 /**
- * Run the event-sourced AgentRegistry contract test suite.
+ * Run the memory AgentRegistry contract test suite.
  *
  * The factory should return a fresh registry + backend pair for each test.
  */
-export function runEventSourcedRegistryContractTests(
-  createContext: () => EventSourcedRegistryTestContext | Promise<EventSourcedRegistryTestContext>,
+export function runMemoryRegistryContractTests(
+  createContext: () => MemoryRegistryTestContext | Promise<MemoryRegistryTestContext>,
 ): void {
-  describe("EventSourcedRegistry contract", () => {
-    let ctx: EventSourcedRegistryTestContext;
+  describe("MemoryRegistry contract", () => {
+    let ctx: MemoryRegistryTestContext;
 
     beforeEach(async () => {
       ctx = await createContext();

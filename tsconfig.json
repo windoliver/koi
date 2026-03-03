@@ -132,7 +132,7 @@
       "path": "packages/deploy/node"
     },
     {
-      "path": "packages/fs/registry-event-sourced"
+      "path": "packages/fs/registry-memory"
     },
     {
       "path": "packages/fs/registry-http"
