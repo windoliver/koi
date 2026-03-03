@@ -98,6 +98,7 @@ export { createManifestFile, makeTempDir, withTempDir } from "./temp-dir.js";
 export type { TempGitRepo } from "./temp-git-repo.js";
 export { createTempGitRepo } from "./temp-git-repo.js";
 export { runThreadStoreContractTests } from "./thread-store-contract.js";
+export { makeTranscriptEntry, runSessionTranscriptContractTests } from "./transcript-contract.js";
 export type { MockValidationError, MockValidationResult, MockValidator } from "./validators.js";
 export {
   createAsyncValidator,

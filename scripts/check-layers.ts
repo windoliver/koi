@@ -63,6 +63,7 @@ export const L0_RUNTIME_ALLOWLIST: ReadonlySet<string> = new Set([
   "proposal.ts",
   "snapshot-chain.ts",
   "thread.ts",
+  "transcript.ts",
   "skill-registry.ts",
   "agent-state-event.ts",
   "bundle-types.ts",
