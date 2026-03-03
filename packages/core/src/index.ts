@@ -878,6 +878,18 @@ export type {
   ToolHealthSnapshot,
   ToolHealthState,
 } from "./tool-health-types.js";
+// transcript — append-only message log for crash recovery
+export type {
+  SessionTranscript,
+  SkippedTranscriptEntry,
+  TranscriptEntry,
+  TranscriptEntryId,
+  TranscriptEntryRole,
+  TranscriptLoadResult,
+  TranscriptPage,
+  TranscriptPageOptions,
+} from "./transcript.js";
+export { transcriptEntryId } from "./transcript.js";
 // validation utilities — runtime type guards and validators
 export { isProcessState, validateNonEmpty } from "./validation-utils.js";
 // version index — version label → BrickId resolution contract

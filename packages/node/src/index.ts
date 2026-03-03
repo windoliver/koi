@@ -78,6 +78,9 @@ export type { LocalResolver, ToolMeta } from "./tools/local-resolver.js";
 // -- Tools ------------------------------------------------------------------
 export { createLocalResolver } from "./tools/local-resolver.js";
 export { createShellTool } from "./tools/shell.js";
+// -- Auto-transcripting engine decorator ------------------------------------
+export type { TranscriptingEngineConfig } from "./transcripting-engine.js";
+export { createTranscriptingEngine } from "./transcripting-engine.js";
 export type {
   AdvertisedTool,
   AgentSignalGroupPayload,

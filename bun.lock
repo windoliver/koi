@@ -2300,6 +2300,17 @@
         "@opentelemetry/sdk-trace-node": "^2.5.0",
       },
     },
+    "packages/transcript": {
+      "name": "@koi/transcript",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/validation": {
       "name": "@koi/validation",
       "version": "0.0.0",
@@ -3232,6 +3243,8 @@
     "@koi/tools-web": ["@koi/tools-web@workspace:packages/tools-web"],
 
     "@koi/tracing": ["@koi/tracing@workspace:packages/tracing"],
+
+    "@koi/transcript": ["@koi/transcript@workspace:packages/transcript"],
 
     "@koi/validation": ["@koi/validation@workspace:packages/validation"],
 
