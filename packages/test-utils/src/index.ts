@@ -20,6 +20,8 @@ export {
 } from "./agents.js";
 export { assertKoiError } from "./assert-koi-error.js";
 export { assertErr, assertOk } from "./assert-result.js";
+export type { AuditSinkContractOptions } from "./audit-sink-contract.js";
+export { runAuditSinkContractTests } from "./audit-sink-contract.js";
 export {
   createTestAgentArtifact,
   createTestCompositeArtifact,
@@ -77,12 +79,15 @@ export {
   createMockTaskPlan,
 } from "./harness-mocks.js";
 export { createInMemoryBrickRegistry } from "./in-memory-brick-registry.js";
+export { runMailboxContractTests } from "./mailbox-contract.js";
 export type { MiddlewareContractOptions } from "./middleware-contract/index.js";
 export { testMiddlewareContract } from "./middleware-contract/index.js";
+export { runPayLedgerContractTests } from "./pay-ledger-contract.js";
 export type { FakePermissionBackend, FakePermissionBackendOptions } from "./permission-backend.js";
 export { createFakePermissionBackend } from "./permission-backend.js";
 export type { ResolverContractOptions } from "./resolver-contract.js";
 export { testResolverContract } from "./resolver-contract.js";
+export { runScratchpadContractTests } from "./scratchpad-contract.js";
 export { runSessionPersistenceContractTests } from "./session-persistence-contract.js";
 export type { SkillRegistryContractOptions } from "./skill-registry-contract.js";
 export { testSkillRegistryContract } from "./skill-registry-contract.js";

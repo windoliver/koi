@@ -32,6 +32,11 @@
  */
 
 export type { AgentMonitorCallbacks } from "./adapters/agent-monitor.js";
+export {
+  createLocalBackends,
+  type LocalBackends,
+  type LocalBackendsConfig,
+} from "./adapters/local-backends.js";
 export type { PermissionsCallbacks } from "./adapters/permissions.js";
 export type { BuiltinCallbacks } from "./builtin-registry.js";
 export { createDefaultRegistry } from "./builtin-registry.js";

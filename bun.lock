@@ -103,6 +103,17 @@
         "@koi/nexus-client": "workspace:*",
       },
     },
+    "packages/audit-sink-local": {
+      "name": "@koi/audit-sink-local",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/sqlite-utils": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/audit-sink-nexus": {
       "name": "@koi/audit-sink-nexus",
       "version": "0.0.0",
@@ -1022,6 +1033,16 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/ipc-local": {
+      "name": "@koi/ipc-local",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/ipc-nexus": {
       "name": "@koi/ipc-nexus",
       "version": "0.0.0",
@@ -1602,6 +1623,17 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/pay-local": {
+      "name": "@koi/pay-local",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/sqlite-utils": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/pay-nexus": {
       "name": "@koi/pay-nexus",
       "version": "0.0.0",
@@ -1847,6 +1879,16 @@
         "@koi/execution-context": "workspace:*",
       },
     },
+    "packages/scratchpad-local": {
+      "name": "@koi/scratchpad-local",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/scratchpad-nexus": {
       "name": "@koi/scratchpad-nexus",
       "version": "0.0.0",
@@ -2013,14 +2055,18 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/agent-monitor": "workspace:*",
+        "@koi/audit-sink-local": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/errors": "workspace:*",
         "@koi/filesystem": "workspace:*",
+        "@koi/ipc-local": "workspace:*",
         "@koi/manifest": "workspace:*",
         "@koi/middleware-goal-anchor": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
+        "@koi/pay-local": "workspace:*",
         "@koi/scope": "workspace:*",
+        "@koi/scratchpad-local": "workspace:*",
         "@koi/soul": "workspace:*",
         "@koi/tool-browser": "workspace:*",
       },
@@ -2738,6 +2784,8 @@
 
     "@koi/artifact-client": ["@koi/artifact-client@workspace:packages/artifact-client"],
 
+    "@koi/audit-sink-local": ["@koi/audit-sink-local@workspace:packages/audit-sink-local"],
+
     "@koi/audit-sink-nexus": ["@koi/audit-sink-nexus@workspace:packages/audit-sink-nexus"],
 
     "@koi/autonomous": ["@koi/autonomous@workspace:packages/autonomous"],
@@ -2880,6 +2928,8 @@
 
     "@koi/hash": ["@koi/hash@workspace:packages/hash"],
 
+    "@koi/ipc-local": ["@koi/ipc-local@workspace:packages/ipc-local"],
+
     "@koi/ipc-nexus": ["@koi/ipc-nexus@workspace:packages/ipc-nexus"],
 
     "@koi/knowledge-vault": ["@koi/knowledge-vault@workspace:packages/knowledge-vault"],
@@ -2976,6 +3026,8 @@
 
     "@koi/parallel-minions": ["@koi/parallel-minions@workspace:packages/parallel-minions"],
 
+    "@koi/pay-local": ["@koi/pay-local@workspace:packages/pay-local"],
+
     "@koi/pay-nexus": ["@koi/pay-nexus@workspace:packages/pay-nexus"],
 
     "@koi/permissions-nexus": ["@koi/permissions-nexus@workspace:packages/permissions-nexus"],
@@ -3023,6 +3075,8 @@
     "@koi/scheduler-provider": ["@koi/scheduler-provider@workspace:packages/scheduler-provider"],
 
     "@koi/scope": ["@koi/scope@workspace:packages/scope"],
+
+    "@koi/scratchpad-local": ["@koi/scratchpad-local@workspace:packages/scratchpad-local"],
 
     "@koi/scratchpad-nexus": ["@koi/scratchpad-nexus@workspace:packages/scratchpad-nexus"],
 

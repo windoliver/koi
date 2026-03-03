@@ -11,6 +11,10 @@ export type { AuditEntry, AuditSink, RedactionRule } from "@koi/core";
 
 /**
  * In-memory audit sink. Stores entries in an array for testing/dev.
+ *
+ * @deprecated Use `createSqliteAuditSink` or `createNdjsonAuditSink` from
+ * `@koi/audit-sink-local` instead. They provide batched inserts, redaction,
+ * and persistent storage.
  */
 export function createInMemoryAuditSink(): AuditSink & {
   readonly entries: readonly AuditEntry[];

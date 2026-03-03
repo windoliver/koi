@@ -48,6 +48,10 @@ declare const descriptor: BrickDescriptor<KoiMiddleware$1>;
 
 /**
  * In-memory audit sink. Stores entries in an array for testing/dev.
+ *
+ * @deprecated Use \`createSqliteAuditSink\` or \`createNdjsonAuditSink\` from
+ * \`@koi/audit-sink-local\` instead. They provide batched inserts, redaction,
+ * and persistent storage.
  */
 declare function createInMemoryAuditSink(): AuditSink & {
     readonly entries: readonly AuditEntry[];
