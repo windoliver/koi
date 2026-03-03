@@ -82,12 +82,16 @@ function createMockAgent(id: string, controller?: GovernanceController): Agent {
   }
 
   return {
-    pid: { id: agentId(id), seq: 0 },
+    pid: { id: agentId(id), name: id, type: "worker", depth: 0 },
     manifest: makeManifest(),
     state: "running",
     component: <T>(token: SubsystemToken<T>): T | undefined =>
       components.get(token as string) as T | undefined,
     has: (token: SubsystemToken<unknown>): boolean => components.has(token as string),
+    hasAll: (...tokens: readonly SubsystemToken<unknown>[]): boolean =>
+      tokens.every((t) => components.has(t as string)),
+    query: <T>(_prefix: string): ReadonlyMap<SubsystemToken<T>, T> => new Map(),
+    components: (): ReadonlyMap<string, unknown> => components,
   };
 }
 

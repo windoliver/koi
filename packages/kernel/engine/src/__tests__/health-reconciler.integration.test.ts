@@ -237,11 +237,11 @@ describe("HealthReconciler", () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 120));
 
     // Bump generation so CAS fails (generation mismatch)
-    registry.transition(agentId("agent-1"), "suspended", 0, { kind: "manual" });
+    registry.transition(agentId("agent-1"), "suspended", 0, { kind: "hitl_pause" });
     // Now agent is at generation 1, suspended
 
     // Health reconciler won't check non-running agents, so put it back
-    registry.transition(agentId("agent-1"), "running", 1, { kind: "manual" });
+    registry.transition(agentId("agent-1"), "running", 1, { kind: "signal_cont" });
     // Now agent is at generation 2
 
     // Health reconciler will read generation 2 from the entry, so CAS should succeed
