@@ -70,7 +70,11 @@ function findDone(
 
 describe("e2e: engine-external standalone", () => {
   test("echo produces text_delta + done(completed)", async () => {
-    const adapter = createExternalAdapter({ command: "echo", args: ["hello e2e"] });
+    const adapter = createExternalAdapter({
+      command: "echo",
+      args: ["hello e2e"],
+      mode: "single-shot",
+    });
     const events = await collectEvents(adapter.stream({ kind: "text", text: "" }));
 
     const textDeltas = events.filter((e) => e.kind === "text_delta");
@@ -119,7 +123,11 @@ describe("e2e: engine-external standalone", () => {
   }, 15_000);
 
   test("exit 1 produces done(error)", async () => {
-    const adapter = createExternalAdapter({ command: "sh", args: ["-c", "exit 1"] });
+    const adapter = createExternalAdapter({
+      command: "sh",
+      args: ["-c", "exit 1"],
+      mode: "single-shot",
+    });
     const events = await collectEvents(adapter.stream({ kind: "text", text: "" }));
 
     const done = findDone(events);
@@ -133,6 +141,7 @@ describe("e2e: engine-external standalone", () => {
     const adapter = createExternalAdapter({
       command: "echo",
       args: ['{"kind":"text_delta","delta":"structured!"}'],
+      mode: "single-shot",
       parser: createJsonLinesParser(),
     });
 
@@ -148,6 +157,7 @@ describe("e2e: engine-external standalone", () => {
     const adapter = createExternalAdapter({
       command: "sh",
       args: ["-c", "sleep 30"],
+      mode: "single-shot",
       timeoutMs: 300,
     });
 
@@ -165,6 +175,7 @@ describe("e2e: engine-external standalone", () => {
     const adapter = createExternalAdapter({
       command: "sh",
       args: ["-c", "echo start; sleep 30"],
+      mode: "single-shot",
       noOutputTimeoutMs: 300,
       timeoutMs: 0,
     });
@@ -180,13 +191,21 @@ describe("e2e: engine-external standalone", () => {
   }, 10_000);
 
   test("saveState/loadState round-trip", async () => {
-    const adapter = createExternalAdapter({ command: "echo", args: ["state-test"] });
+    const adapter = createExternalAdapter({
+      command: "echo",
+      args: ["state-test"],
+      mode: "single-shot",
+    });
     await collectEvents(adapter.stream({ kind: "text", text: "" }));
 
     const state = await adapter.saveState?.();
     expect(state.engineId).toBe("external");
 
-    const adapter2 = createExternalAdapter({ command: "echo", args: ["state-test"] });
+    const adapter2 = createExternalAdapter({
+      command: "echo",
+      args: ["state-test"],
+      mode: "single-shot",
+    });
     await adapter2.loadState?.(state);
     const state2 = await adapter2.saveState?.();
     expect(state2.engineId).toBe("external");
@@ -223,7 +242,11 @@ describe("e2e: engine-external through createKoi", () => {
         },
       };
 
-      const adapter = createExternalAdapter({ command: "echo", args: ["hello koi"] });
+      const adapter = createExternalAdapter({
+        command: "echo",
+        args: ["hello koi"],
+        mode: "single-shot",
+      });
 
       const runtime = await createKoi({
         manifest: { name: "e2e-external-echo", version: "0.0.1", model: { name: "external" } },
@@ -258,7 +281,11 @@ describe("e2e: engine-external through createKoi", () => {
   test(
     "error exit propagates through createKoi",
     async () => {
-      const adapter = createExternalAdapter({ command: "sh", args: ["-c", "exit 1"] });
+      const adapter = createExternalAdapter({
+        command: "sh",
+        args: ["-c", "exit 1"],
+        mode: "single-shot",
+      });
 
       const runtime = await createKoi({
         manifest: { name: "e2e-external-error", version: "0.0.1", model: { name: "external" } },
@@ -305,7 +332,11 @@ describe("e2e: engine-external through createKoi", () => {
         },
       };
 
-      const adapter = createExternalAdapter({ command: "echo", args: ["compose"] });
+      const adapter = createExternalAdapter({
+        command: "echo",
+        args: ["compose"],
+        mode: "single-shot",
+      });
 
       const runtime = await createKoi({
         manifest: { name: "e2e-external-compose", version: "0.0.1", model: { name: "external" } },
@@ -361,6 +392,7 @@ describeLLM("e2e: engine-external with real LLM via curl", () => {
       const adapter = createExternalAdapter({
         command: "sh",
         args: ["-c", curlScript],
+        mode: "single-shot",
         timeoutMs: 30_000,
       });
 
@@ -435,6 +467,7 @@ describeLLM("e2e: engine-external with real LLM via curl", () => {
       const adapter = createExternalAdapter({
         command: "sh",
         args: ["-c", curlScript],
+        mode: "single-shot",
         timeoutMs: 30_000,
       });
 

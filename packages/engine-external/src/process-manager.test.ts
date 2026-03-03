@@ -5,6 +5,7 @@ import {
   readStream,
   spawnFallback,
   spawnProcess,
+  spawnPtyProcess,
 } from "./process-manager.js";
 
 describe("spawnProcess", () => {
@@ -207,6 +208,92 @@ describe("isEbadf", () => {
     expect(isEbadf(null)).toBe(false);
     expect(isEbadf(undefined)).toBe(false);
   });
+});
+
+describe("spawnPtyProcess", () => {
+  test("spawns echo and delivers output via onData callback", async () => {
+    const chunks: Uint8Array[] = [];
+    const result = spawnPtyProcess(
+      "echo",
+      ["pty-hello"],
+      { PATH: process.env.PATH ?? "", TERM: "xterm-256color" },
+      process.cwd(),
+      { cols: 80, rows: 24 },
+      (data) => chunks.push(data),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const proc = result.value;
+    expect(proc.kind).toBe("pty");
+    expect(proc.pid).toBeGreaterThan(0);
+
+    const exitCode = await proc.exited;
+    expect(exitCode).toBe(0);
+
+    // Give a moment for data callback to fire
+    await new Promise((r) => setTimeout(r, 100));
+    const output = new TextDecoder().decode(Buffer.concat(chunks));
+    expect(output).toContain("pty-hello");
+  });
+
+  test("returns error for non-existent command", () => {
+    const result = spawnPtyProcess(
+      "__nonexistent_pty_cmd__",
+      [],
+      { PATH: process.env.PATH ?? "" },
+      process.cwd(),
+      { cols: 80, rows: 24 },
+      () => {},
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("EXTERNAL");
+  });
+
+  test("terminal.write sends data to process", async () => {
+    const chunks: Uint8Array[] = [];
+    const result = spawnPtyProcess(
+      "cat",
+      [],
+      { PATH: process.env.PATH ?? "", TERM: "xterm-256color" },
+      process.cwd(),
+      { cols: 80, rows: 24 },
+      (data) => chunks.push(data),
+    );
+
+    if (!result.ok) throw new Error("spawn failed");
+    const proc = result.value;
+
+    // Write to the terminal — cat echoes it back
+    proc.terminal.write("pty-input\n");
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Close terminal to end cat
+    proc.terminal.close();
+    await proc.exited;
+
+    const output = new TextDecoder().decode(Buffer.concat(chunks));
+    expect(output).toContain("pty-input");
+  }, 10_000);
+
+  test("killProcess handles PTY process", async () => {
+    const result = spawnPtyProcess(
+      "sh",
+      ["-c", "sleep 30"],
+      { PATH: process.env.PATH ?? "" },
+      process.cwd(),
+      { cols: 80, rows: 24 },
+      () => {},
+    );
+
+    if (!result.ok) throw new Error("spawn failed");
+
+    const exitCode = await killProcess(result.value, { gracePeriodMs: 1000 });
+    expect(typeof exitCode).toBe("number");
+  }, 10_000);
 });
 
 describe("spawnFallback", () => {

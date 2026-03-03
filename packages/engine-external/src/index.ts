@@ -2,7 +2,7 @@
  * @koi/engine-external — External process engine adapter (Layer 2)
  *
  * Wraps any external process as an EngineAdapter via Bun.spawn().
- * Supports single-shot and long-lived modes with pluggable output parsers.
+ * Supports single-shot, long-lived, and PTY modes with pluggable output parsers.
  */
 
 export { createExternalAdapter } from "./adapter.js";
@@ -17,9 +17,13 @@ export type {
   ExternalAdapterConfig,
   ExternalEngineAdapter,
   ExternalProcessState,
+  ManagedProcess,
   OutputParseResult,
   OutputParser,
   OutputParserFactory,
+  PipedProcess,
+  PtyConfig,
+  PtyProcess,
   ShutdownConfig,
 } from "./types.js";
 export { validateExternalAdapterConfig } from "./validate-config.js";

@@ -5,7 +5,7 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
-import type { ManagedProcess, ShutdownConfig } from "./types.js";
+import type { ManagedProcess, PipedProcess, PtyProcess, ShutdownConfig } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -30,7 +30,7 @@ export function spawnProcess(
   args: readonly string[],
   env: Record<string, string>,
   cwd: string,
-): Result<ManagedProcess, KoiError> {
+): Result<PipedProcess, KoiError> {
   try {
     const proc = Bun.spawn([command, ...args], {
       stdin: "pipe",
@@ -43,6 +43,7 @@ export function spawnProcess(
     return {
       ok: true,
       value: {
+        kind: "piped",
         pid: proc.pid,
         stdin: proc.stdin,
         stdout: proc.stdout as ReadableStream<Uint8Array>,
@@ -82,7 +83,7 @@ export function spawnFallback(
   args: readonly string[],
   env: Record<string, string>,
   cwd: string,
-): Result<ManagedProcess, KoiError> {
+): Result<PipedProcess, KoiError> {
   try {
     const proc = Bun.spawn([command, ...args], {
       stdin: "ignore",
@@ -105,6 +106,7 @@ export function spawnFallback(
     return {
       ok: true,
       value: {
+        kind: "piped",
         pid: proc.pid,
         stdin: noopStdin,
         stdout: proc.stdout as ReadableStream<Uint8Array>,
@@ -119,6 +121,80 @@ export function spawnFallback(
       error: {
         code: "EXTERNAL",
         message: `Failed to spawn process "${command}" (EBADF retry): ${e instanceof Error ? e.message : String(e)}`,
+        cause: e,
+        retryable: false,
+      },
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PTY spawn
+// ---------------------------------------------------------------------------
+
+/**
+ * Spawn a child process with a pseudo-terminal (PTY) via Bun.Terminal.
+ *
+ * Output is delivered through the `onData` callback (Uint8Array chunks).
+ * Unlike piped processes, stdin/stdout/stderr are not available — all I/O
+ * goes through `proc.terminal`.
+ */
+export function spawnPtyProcess(
+  command: string,
+  args: readonly string[],
+  env: Record<string, string>,
+  cwd: string,
+  ptyConfig: { readonly cols: number; readonly rows: number },
+  onData: (data: Uint8Array) => void,
+): Result<PtyProcess, KoiError> {
+  try {
+    const proc = Bun.spawn([command, ...args], {
+      cwd,
+      env,
+      terminal: {
+        cols: ptyConfig.cols,
+        rows: ptyConfig.rows,
+        data(_terminal, data) {
+          onData(data);
+        },
+      },
+    });
+
+    const terminal = proc.terminal;
+    if (terminal === undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "EXTERNAL",
+          message: `PTY terminal not available for "${command}" — ensure Bun >= 1.3.5 on a POSIX system`,
+          retryable: false,
+        },
+      };
+    }
+
+    return {
+      ok: true,
+      value: {
+        kind: "pty",
+        pid: proc.pid,
+        terminal: {
+          write: (data: string | Uint8Array) => terminal.write(data),
+          resize: (cols: number, rows: number) => terminal.resize(cols, rows),
+          close: () => terminal.close(),
+          get closed() {
+            return terminal.closed;
+          },
+        },
+        exited: proc.exited,
+        kill: (signal?: number) => proc.kill(signal),
+      },
+    };
+  } catch (e: unknown) {
+    return {
+      ok: false,
+      error: {
+        code: "EXTERNAL",
+        message: `Failed to spawn PTY process "${command}": ${e instanceof Error ? e.message : String(e)}`,
         cause: e,
         retryable: false,
       },
@@ -231,6 +307,11 @@ export async function killProcess(
 ): Promise<number> {
   const signal = shutdown?.signal ?? DEFAULT_SIGNAL;
   const gracePeriodMs = shutdown?.gracePeriodMs ?? DEFAULT_GRACE_PERIOD_MS;
+
+  // Close PTY terminal if applicable (sends EOF to subprocess)
+  if (proc.kind === "pty" && !proc.terminal.closed) {
+    proc.terminal.close();
+  }
 
   killTree(proc.pid, signal);
 
