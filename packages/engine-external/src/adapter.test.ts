@@ -25,7 +25,11 @@ function findDone(
 
 describe("createExternalAdapter — single-shot", () => {
   test("echo produces text_delta + done(completed)", async () => {
-    const adapter = createExternalAdapter({ command: "echo", args: ["hello"] });
+    const adapter = createExternalAdapter({
+      command: "echo",
+      args: ["hello"],
+      mode: "single-shot",
+    });
     const events = await collectEvents(adapter.stream({ kind: "text", text: "" }));
 
     const textDeltas = events.filter((e) => e.kind === "text_delta");
@@ -41,7 +45,11 @@ describe("createExternalAdapter — single-shot", () => {
   });
 
   test("exit 1 produces done(error)", async () => {
-    const adapter = createExternalAdapter({ command: "sh", args: ["-c", "exit 1"] });
+    const adapter = createExternalAdapter({
+      command: "sh",
+      args: ["-c", "exit 1"],
+      mode: "single-shot",
+    });
     const events = await collectEvents(adapter.stream({ kind: "text", text: "" }));
 
     const done = findDone(events);
@@ -55,6 +63,7 @@ describe("createExternalAdapter — single-shot", () => {
     const adapter = createExternalAdapter({
       command: "sh",
       args: ["-c", "sleep 2"],
+      mode: "single-shot",
       timeoutMs: 5000,
     });
 
@@ -79,6 +88,7 @@ describe("createExternalAdapter — single-shot", () => {
     const adapter = createExternalAdapter({
       command: "sh",
       args: ["-c", "sleep 30"],
+      mode: "single-shot",
       timeoutMs: 200,
     });
 
@@ -98,6 +108,7 @@ describe("createExternalAdapter — single-shot", () => {
     const adapter = createExternalAdapter({
       command: "sh",
       args: ["-c", "sleep 30"],
+      mode: "single-shot",
       timeoutMs: 0, // no timeout
     });
 
@@ -116,7 +127,7 @@ describe("createExternalAdapter — single-shot", () => {
   }, 10_000);
 
   test("messages input extracts text", async () => {
-    const adapter = createExternalAdapter({ command: "cat" });
+    const adapter = createExternalAdapter({ command: "cat", mode: "single-shot" });
     const events = await collectEvents(
       adapter.stream({
         kind: "messages",
@@ -138,7 +149,7 @@ describe("createExternalAdapter — single-shot", () => {
   });
 
   test("stdin receives input text", async () => {
-    const adapter = createExternalAdapter({ command: "cat" });
+    const adapter = createExternalAdapter({ command: "cat", mode: "single-shot" });
     const events = await collectEvents(adapter.stream({ kind: "text", text: "piped input" }));
 
     const textDeltas = events.filter((e) => e.kind === "text_delta");
@@ -152,6 +163,7 @@ describe("createExternalAdapter — single-shot", () => {
     const adapter = createExternalAdapter({
       command: "sh",
       args: ["-c", "echo error >&2"],
+      mode: "single-shot",
     });
     const events = await collectEvents(adapter.stream({ kind: "text", text: "" }));
 
@@ -162,7 +174,11 @@ describe("createExternalAdapter — single-shot", () => {
   });
 
   test("metrics have zero tokens and positive durationMs", async () => {
-    const adapter = createExternalAdapter({ command: "echo", args: ["metrics test"] });
+    const adapter = createExternalAdapter({
+      command: "echo",
+      args: ["metrics test"],
+      mode: "single-shot",
+    });
     const events = await collectEvents(adapter.stream({ kind: "text", text: "" }));
 
     const done = findDone(events);
@@ -269,7 +285,7 @@ describe("createExternalAdapter — write()", () => {
   }, 10_000);
 
   test("write throws when no process is running", () => {
-    const adapter = createExternalAdapter({ command: "echo", args: ["hi"] });
+    const adapter = createExternalAdapter({ command: "echo", args: ["hi"], mode: "single-shot" });
     expect(() => adapter.write("test")).toThrow("No running process");
   });
 });
@@ -298,13 +314,13 @@ describe("createExternalAdapter — dispose", () => {
   }, 10_000);
 
   test("is idempotent", async () => {
-    const adapter = createExternalAdapter({ command: "echo", args: ["hi"] });
+    const adapter = createExternalAdapter({ command: "echo", args: ["hi"], mode: "single-shot" });
     await adapter.dispose?.();
     await adapter.dispose?.();
   });
 
   test("stream throws after dispose", async () => {
-    const adapter = createExternalAdapter({ command: "echo", args: ["hi"] });
+    const adapter = createExternalAdapter({ command: "echo", args: ["hi"], mode: "single-shot" });
     await adapter.dispose?.();
 
     expect(() => adapter.stream({ kind: "text", text: "" })).toThrow("disposed");
@@ -313,7 +329,11 @@ describe("createExternalAdapter — dispose", () => {
 
 describe("createExternalAdapter — saveState/loadState", () => {
   test("round-trip preserves state", async () => {
-    const adapter = createExternalAdapter({ command: "echo", args: ["hello"] });
+    const adapter = createExternalAdapter({
+      command: "echo",
+      args: ["hello"],
+      mode: "single-shot",
+    });
     await collectEvents(adapter.stream({ kind: "text", text: "" }));
 
     const state = await adapter.saveState?.();
@@ -322,7 +342,11 @@ describe("createExternalAdapter — saveState/loadState", () => {
     expect(state.engineId).toBe("external");
 
     // Create a new adapter and load state
-    const adapter2 = createExternalAdapter({ command: "echo", args: ["hello"] });
+    const adapter2 = createExternalAdapter({
+      command: "echo",
+      args: ["hello"],
+      mode: "single-shot",
+    });
     await adapter2.loadState?.(state);
 
     const state2 = await adapter2.saveState?.();
@@ -335,7 +359,7 @@ describe("createExternalAdapter — saveState/loadState", () => {
   });
 
   test("loadState rejects wrong engineId", async () => {
-    const adapter = createExternalAdapter({ command: "echo" });
+    const adapter = createExternalAdapter({ command: "echo", mode: "single-shot" });
 
     await expect(adapter.loadState?.({ engineId: "wrong", data: {} })).rejects.toThrow(
       "Cannot load state",
@@ -343,7 +367,7 @@ describe("createExternalAdapter — saveState/loadState", () => {
   });
 
   test("loadState rejects invalid data shape", async () => {
-    const adapter = createExternalAdapter({ command: "echo" });
+    const adapter = createExternalAdapter({ command: "echo", mode: "single-shot" });
 
     await expect(
       adapter.loadState?.({ engineId: "external", data: "not an object" }),
@@ -356,6 +380,7 @@ describe("createExternalAdapter — maxOutputBytes", () => {
     const adapter = createExternalAdapter({
       command: "sh",
       args: ["-c", "dd if=/dev/zero bs=10000 count=1 2>/dev/null | tr '\\0' '_'"],
+      mode: "single-shot",
       maxOutputBytes: 100,
     });
 
@@ -376,6 +401,7 @@ describe("createExternalAdapter — custom parser", () => {
     const adapter = createExternalAdapter({
       command: "echo",
       args: ['{"kind":"text_delta","delta":"parsed!"}'],
+      mode: "single-shot",
       parser: createJsonLinesParser(),
     });
 
@@ -395,6 +421,7 @@ describe("createExternalAdapter — noOutputTimeoutMs (watchdog)", () => {
       command: "sh",
       // Produce one line of output, then go silent
       args: ["-c", "echo start; sleep 30"],
+      mode: "single-shot",
       noOutputTimeoutMs: 300,
       timeoutMs: 0, // disable overall timeout
     });
@@ -415,6 +442,7 @@ describe("createExternalAdapter — noOutputTimeoutMs (watchdog)", () => {
       command: "sh",
       // Produce output every 50ms for 500ms total — watchdog at 300ms should NOT fire
       args: ["-c", "for i in 1 2 3 4 5 6 7 8 9 10; do echo line$i; sleep 0.05; done"],
+      mode: "single-shot",
       noOutputTimeoutMs: 300,
       timeoutMs: 0,
     });
@@ -458,7 +486,85 @@ describe("createExternalAdapter — noOutputTimeoutMs (watchdog)", () => {
 
 describe("createExternalAdapter — engineId", () => {
   test("engineId is 'external'", () => {
-    const adapter = createExternalAdapter({ command: "echo" });
+    const adapter = createExternalAdapter({ command: "echo", mode: "single-shot" });
     expect(adapter.engineId).toBe("external");
   });
+});
+
+describe("createExternalAdapter — resume input", () => {
+  test("resume input kind returns empty string from extractInputText", async () => {
+    const adapter = createExternalAdapter({ command: "cat", mode: "single-shot" });
+    const events = await collectEvents(adapter.stream({ kind: "resume" }));
+
+    const done = findDone(events);
+    expect(done).toBeDefined();
+    // cat with empty stdin produces no output, exits successfully
+    expect(done?.output.stopReason).toBe("completed");
+
+    // No text_delta events since no input was piped
+    const textDeltas = events.filter((e) => e.kind === "text_delta");
+    expect(textDeltas.length).toBe(0);
+
+    await adapter.dispose?.();
+  });
+});
+
+describe("createExternalAdapter — loadState oversized history", () => {
+  test("loadState with oversized history enforces cap", async () => {
+    const adapter = createExternalAdapter({ command: "echo", mode: "single-shot" });
+
+    // Create state with more than 10,000 history entries
+    const oversizedHistory = Array.from({ length: 15_000 }, (_, i) => `line-${i}`);
+    const state = {
+      engineId: "external" as const,
+      data: {
+        command: "echo",
+        args: [] as readonly string[],
+        cwd: process.cwd(),
+        outputHistory: oversizedHistory,
+      },
+    };
+
+    await adapter.loadState?.(state);
+
+    // After loading, saveState should show capped history
+    const saved = await adapter.saveState?.();
+    expect(saved).toBeDefined();
+    if (saved === undefined) return;
+
+    const savedData = saved.data as { readonly outputHistory: readonly string[] };
+    expect(savedData.outputHistory.length).toBe(10_000);
+    // Should keep the most recent entries (tail)
+    expect(savedData.outputHistory[0]).toBe("line-5000");
+    expect(savedData.outputHistory[9999]).toBe("line-14999");
+
+    await adapter.dispose?.();
+  });
+});
+
+describe("createExternalAdapter — noOutputTimeoutMs + abort signal", () => {
+  test("abort signal takes priority over watchdog timeout", async () => {
+    const controller = new AbortController();
+    const adapter = createExternalAdapter({
+      command: "sh",
+      args: ["-c", "echo start; sleep 30"],
+      mode: "single-shot",
+      noOutputTimeoutMs: 2000, // watchdog at 2s
+      timeoutMs: 0,
+    });
+
+    // Abort after 200ms — should beat the 2s watchdog
+    setTimeout(() => controller.abort(), 200);
+
+    const events = await collectEvents(
+      adapter.stream({ kind: "text", text: "", signal: controller.signal }),
+    );
+
+    const done = findDone(events);
+    expect(done).toBeDefined();
+    // Abort signal → "interrupted" (not "error" from watchdog)
+    expect(done?.output.stopReason).toBe("interrupted");
+
+    await adapter.dispose?.();
+  }, 10_000);
 });

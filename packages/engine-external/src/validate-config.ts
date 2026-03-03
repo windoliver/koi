@@ -8,6 +8,9 @@
 import type { KoiError, Result } from "@koi/core";
 import type { ExternalAdapterConfig } from "./types.js";
 
+/** Max length for prompt regex patterns to mitigate ReDoS from untrusted input. */
+const MAX_PROMPT_PATTERN_LENGTH = 256 as const;
+
 /**
  * Validate an ExternalAdapterConfig from untrusted input.
  */
@@ -95,17 +98,121 @@ export function validateExternalAdapterConfig(
     }
   }
 
-  // mode: optional "single-shot" | "long-lived"
+  // mode: optional "single-shot" | "long-lived" | "pty"
   if (c.mode !== undefined) {
-    if (c.mode !== "single-shot" && c.mode !== "long-lived") {
+    if (c.mode !== "single-shot" && c.mode !== "long-lived" && c.mode !== "pty") {
       return {
         ok: false,
         error: {
           code: "VALIDATION",
-          message: 'ExternalAdapterConfig.mode must be "single-shot" or "long-lived"',
+          message: 'ExternalAdapterConfig.mode must be "single-shot", "long-lived", or "pty"',
           retryable: false,
         },
       };
+    }
+  }
+
+  // pty: optional PtyConfig object
+  if (c.pty !== undefined) {
+    if (typeof c.pty !== "object" || c.pty === null) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message: "ExternalAdapterConfig.pty must be an object",
+          retryable: false,
+        },
+      };
+    }
+    const p = c.pty as Record<string, unknown>;
+
+    if (p.idleThresholdMs !== undefined) {
+      if (typeof p.idleThresholdMs !== "number" || p.idleThresholdMs <= 0) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: "ExternalAdapterConfig.pty.idleThresholdMs must be a positive number",
+            retryable: false,
+          },
+        };
+      }
+    }
+
+    if (p.ansiStrip !== undefined) {
+      if (typeof p.ansiStrip !== "boolean") {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: "ExternalAdapterConfig.pty.ansiStrip must be a boolean",
+            retryable: false,
+          },
+        };
+      }
+    }
+
+    if (p.cols !== undefined) {
+      if (typeof p.cols !== "number" || p.cols <= 0 || !Number.isInteger(p.cols)) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: "ExternalAdapterConfig.pty.cols must be a positive integer",
+            retryable: false,
+          },
+        };
+      }
+    }
+
+    if (p.rows !== undefined) {
+      if (typeof p.rows !== "number" || p.rows <= 0 || !Number.isInteger(p.rows)) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: "ExternalAdapterConfig.pty.rows must be a positive integer",
+            retryable: false,
+          },
+        };
+      }
+    }
+
+    if (p.promptPattern !== undefined) {
+      if (typeof p.promptPattern !== "string") {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: "ExternalAdapterConfig.pty.promptPattern must be a string",
+            retryable: false,
+          },
+        };
+      }
+      // Length limit to mitigate ReDoS from overly complex patterns
+      if (p.promptPattern.length > MAX_PROMPT_PATTERN_LENGTH) {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: `ExternalAdapterConfig.pty.promptPattern exceeds max length of ${MAX_PROMPT_PATTERN_LENGTH} characters`,
+            retryable: false,
+          },
+        };
+      }
+      // Verify it compiles as a valid regex
+      try {
+        new RegExp(p.promptPattern);
+      } catch {
+        return {
+          ok: false,
+          error: {
+            code: "VALIDATION",
+            message: `ExternalAdapterConfig.pty.promptPattern is not a valid regex: "${p.promptPattern}"`,
+            retryable: false,
+          },
+        };
+      }
     }
   }
 

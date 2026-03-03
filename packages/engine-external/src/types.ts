@@ -71,7 +71,10 @@ export interface ExternalAdapterConfig {
   readonly noOutputTimeoutMs?: number | undefined;
   readonly maxOutputBytes?: number | undefined;
   readonly shutdown?: ShutdownConfig | undefined;
-  readonly mode?: "single-shot" | "long-lived" | undefined;
+  /** Process lifecycle mode. Default: "pty" (interactive CLI agents). */
+  readonly mode?: "single-shot" | "long-lived" | "pty" | undefined;
+  /** PTY-specific configuration. Used when mode is "pty" (the default). */
+  readonly pty?: PtyConfig | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -98,10 +101,29 @@ export interface ExternalProcessState {
 }
 
 // ---------------------------------------------------------------------------
+// PTY config
+// ---------------------------------------------------------------------------
+
+export interface PtyConfig {
+  /** Silence threshold before idle detector fires. Default: 30_000 ms. */
+  readonly idleThresholdMs?: number | undefined;
+  /** Strip ANSI escape sequences from output. Default: true. */
+  readonly ansiStrip?: boolean | undefined;
+  /** PTY column count. Default: 120. */
+  readonly cols?: number | undefined;
+  /** PTY row count. Default: 40. */
+  readonly rows?: number | undefined;
+  /** Optional regex pattern for prompt-based turn completion (fast path). */
+  readonly promptPattern?: string | undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Managed process (internal abstraction over Bun.spawn result)
 // ---------------------------------------------------------------------------
 
-export interface ManagedProcess {
+/** Standard piped-IO process (single-shot and long-lived modes). */
+export interface PipedProcess {
+  readonly kind: "piped";
   readonly pid: number;
   readonly stdin: { write(data: string | Uint8Array): number | Promise<number>; end(): void };
   readonly stdout: ReadableStream<Uint8Array>;
@@ -109,3 +131,19 @@ export interface ManagedProcess {
   readonly exited: Promise<number>;
   readonly kill: (signal?: number) => void;
 }
+
+/** PTY-based process for interactive CLI agents. */
+export interface PtyProcess {
+  readonly kind: "pty";
+  readonly pid: number;
+  readonly terminal: {
+    readonly write: (data: string | Uint8Array) => number;
+    readonly resize: (cols: number, rows: number) => void;
+    readonly close: () => void;
+    readonly closed: boolean;
+  };
+  readonly exited: Promise<number>;
+  readonly kill: (signal?: number) => void;
+}
+
+export type ManagedProcess = PipedProcess | PtyProcess;

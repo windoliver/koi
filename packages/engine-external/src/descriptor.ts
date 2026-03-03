@@ -10,7 +10,7 @@ import type { CompanionSkillDefinition, EngineAdapter, KoiError, Result } from "
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "@koi/resolve";
 import { createExternalAdapter } from "./adapter.js";
-import type { ExternalAdapterConfig } from "./types.js";
+import { validateExternalAdapterConfig } from "./validate-config.js";
 
 const EXTERNAL_COMPANION_SKILL: CompanionSkillDefinition = {
   name: "engine-external-guide",
@@ -19,12 +19,26 @@ const EXTERNAL_COMPANION_SKILL: CompanionSkillDefinition = {
   content: `# Engine: external
 
 ## When to use
+- Wrapping interactive CLI agents (Claude CLI, Codex, Gemini, Aider)
 - Running arbitrary CLI subprocess as an agent engine
 - Non-ACP tools that communicate via stdin/stdout
-- Single-shot or long-lived external processes
 - Shell scripts, Python scripts, or any executable
 
-## Manifest example
+## Manifest examples
+
+### Default (PTY mode — interactive CLI agents)
+\`\`\`yaml
+engine:
+  name: external
+  options:
+    command: "claude"
+    args: ["--no-ui"]
+    pty:
+      idleThresholdMs: 10000
+      promptPattern: "\\\\$ $"
+\`\`\`
+
+### Single-shot mode (simple scripts)
 \`\`\`yaml
 engine:
   name: external
@@ -41,10 +55,15 @@ engine:
 ## Optional options
 - \`args\` (string[]): Arguments passed to the command
 - \`cwd\` (string): Working directory for the process
-- \`mode\` ("single-shot" | "long-lived"): Process lifecycle mode
+- \`mode\` ("pty" | "single-shot" | "long-lived"): Process lifecycle mode (default: "pty")
 - \`timeoutMs\` (number): Overall process timeout
 - \`noOutputTimeoutMs\` (number): Timeout when no output is received
 - \`maxOutputBytes\` (number): Maximum output size before truncation
+- \`pty.idleThresholdMs\` (number): Silence threshold before turn completes (default: 30000)
+- \`pty.ansiStrip\` (boolean): Strip ANSI escape codes from output (default: true)
+- \`pty.cols\` (number): Terminal columns (default: 120)
+- \`pty.rows\` (number): Terminal rows (default: 40)
+- \`pty.promptPattern\` (string): Regex for fast-path prompt detection
 
 ## When NOT to use
 - For ACP-compatible agents like Claude Code (use \`acp\` instead)
@@ -94,27 +113,10 @@ export const descriptor: BrickDescriptor<EngineAdapter> = {
   companionSkills: [EXTERNAL_COMPANION_SKILL],
   optionsValidator: validateExternalEngineOptions,
   factory(options): EngineAdapter {
-    const command = options.command;
-    if (typeof command !== "string") {
-      throw new Error("external.command is required");
+    const result = validateExternalAdapterConfig(options);
+    if (!result.ok) {
+      throw new Error(result.error.message);
     }
-
-    const config: ExternalAdapterConfig = {
-      command,
-      ...(Array.isArray(options.args) ? { args: options.args as readonly string[] } : {}),
-      ...(typeof options.cwd === "string" ? { cwd: options.cwd } : {}),
-      ...(options.mode === "single-shot" || options.mode === "long-lived"
-        ? { mode: options.mode }
-        : {}),
-      ...(typeof options.timeoutMs === "number" ? { timeoutMs: options.timeoutMs } : {}),
-      ...(typeof options.noOutputTimeoutMs === "number"
-        ? { noOutputTimeoutMs: options.noOutputTimeoutMs }
-        : {}),
-      ...(typeof options.maxOutputBytes === "number"
-        ? { maxOutputBytes: options.maxOutputBytes }
-        : {}),
-    };
-
-    return createExternalAdapter(config);
+    return createExternalAdapter(result.value);
   },
 };

@@ -5,7 +5,8 @@
  * EngineAdapter via Bun.spawn(). Maps stdout/stderr to EngineEvent stream,
  * process lifecycle to agent lifecycle, stdin to mid-task redirection.
  *
- * Supports two modes:
+ * Supports three modes:
+ * - pty (default): pseudo-terminal for interactive CLI agents, idle-based turn detection
  * - single-shot: spawn per stream() call, stdin closed after input, process exit = done
  * - long-lived: persistent process across stream() calls, parser-driven turn completion
  */
@@ -14,7 +15,6 @@ import type {
   ContentBlock,
   EngineEvent,
   EngineInput,
-  EngineMetrics,
   EngineOutput,
   EngineState,
   EngineStopReason,
@@ -23,11 +23,16 @@ import { createAsyncQueue } from "./async-queue.js";
 import { resolveEnv } from "./env.js";
 import { createTextDeltaParser } from "./parsers.js";
 import { killProcess, readStream, spawnProcess } from "./process-manager.js";
+import type { PtySharedState } from "./pty-mode.js";
+import { resolvePtyConfig, runPty } from "./pty-mode.js";
+import { createZeroMetrics, extractInputText, trimHistory } from "./shared-helpers.js";
+import { createTurnContext } from "./turn-context.js";
 import type {
   ExternalAdapterConfig,
   ExternalEngineAdapter,
   ExternalProcessState,
   ManagedProcess,
+  PipedProcess,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -39,34 +44,6 @@ const DEFAULT_TIMEOUT_MS = 300_000 as const; // 5 minutes
 const DEFAULT_MAX_OUTPUT_BYTES = 1_048_576 as const; // 1 MiB
 const DEFAULT_MAX_HISTORY_ENTRIES = 10_000 as const;
 const TEXT_ENCODER = new TextEncoder();
-
-// ---------------------------------------------------------------------------
-// Input extraction
-// ---------------------------------------------------------------------------
-
-/**
- * Extract text input from EngineInput. Falls back to concatenating message
- * content blocks for the "messages" variant.
- */
-function extractInputText(input: EngineInput): string {
-  switch (input.kind) {
-    case "text":
-      return input.text;
-    case "messages": {
-      const parts: string[] = [];
-      for (const msg of input.messages) {
-        for (const block of msg.content) {
-          if (block.kind === "text") {
-            parts.push(block.text);
-          }
-        }
-      }
-      return parts.join("\n");
-    }
-    case "resume":
-      return "";
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -85,16 +62,41 @@ export function createExternalAdapter(config: ExternalAdapterConfig): ExternalEn
   const noOutputTimeoutMs = config.noOutputTimeoutMs ?? 0;
   const maxOutputBytes = config.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const shutdown = config.shutdown;
-  const mode = config.mode ?? "single-shot";
+  const mode = config.mode ?? "pty";
+
+  // Resolve PTY config eagerly (even if mode != pty — no cost, avoids lazy check)
+  const resolvedPty =
+    mode === "pty"
+      ? resolvePtyConfig(
+          command,
+          args,
+          cwd,
+          env,
+          parserFactory,
+          timeoutMs,
+          noOutputTimeoutMs,
+          shutdown,
+          config.pty,
+        )
+      : undefined;
 
   // let: lifecycle flag — toggled once by dispose()
   let disposed = false;
   // let: concurrency guard for single-shot mode
   let running = false;
-  // let: persistent process for long-lived mode
-  let currentProcess: ManagedProcess | undefined;
+  // let: persistent process for piped modes (long-lived / single-shot)
+  let currentProcess: PipedProcess | undefined;
+  // let: PTY process reference (pty mode)
+  let currentPtyProcess: ManagedProcess | undefined;
   // let: output history for saveState (mutated via push — internal state, defensively copied in saveState/loadState)
   let outputHistory: string[] = [];
+
+  // Shared mutable state for PTY mode (passed by reference to runPty)
+  const ptyShared: PtySharedState = {
+    outputHistory,
+    currentProcess: undefined,
+    disposed: false,
+  };
 
   // --- Long-lived mode: persistent dispatch handlers ---
   // These are set by each stream() call and cleared when the turn ends.
@@ -114,7 +116,7 @@ export function createExternalAdapter(config: ExternalAdapterConfig): ExternalEn
    * Start persistent readers on stdout/stderr that dispatch to the current
    * turn handlers. Called once when the long-lived process is spawned.
    */
-  function startPersistentReaders(proc: ManagedProcess): void {
+  function startPersistentReaders(proc: PipedProcess): void {
     if (persistentReadersStarted) return;
     persistentReadersStarted = true;
 
@@ -241,8 +243,10 @@ export function createExternalAdapter(config: ExternalAdapterConfig): ExternalEn
         proc.stdout,
         (text) => {
           watchdog?.reset();
-          outputHistory.push(text);
-          trimHistory(outputHistory, DEFAULT_MAX_HISTORY_ENTRIES);
+          outputHistory = trimHistory(
+            [...outputHistory, text],
+            DEFAULT_MAX_HISTORY_ENTRIES,
+          ) as string[];
           const result = parser.parseStdout(text);
           for (const event of result.events) {
             queue.push(event);
@@ -339,82 +343,62 @@ export function createExternalAdapter(config: ExternalAdapterConfig): ExternalEn
       const proc = currentProcess;
       const inputText = extractInputText(input);
       const parser = parserFactory();
-      const queue = createAsyncQueue<EngineEvent>();
 
-      // let: flag to prevent double-ending the queue
-      let queueEnded = false;
-      // let: timeout handle — declared before finishTurn to avoid temporal dead zone
-      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-
-      // No-output watchdog for this turn
-      const watchdog = createWatchdog(noOutputTimeoutMs, () => {
-        finishTurn("error");
+      const turn = createTurnContext({
+        timeoutMs,
+        noOutputTimeoutMs,
+        signal: input.signal,
+        parser,
+        startTime,
+        onFinished() {
+          // Detach handlers so persistent readers stop dispatching to this turn
+          onStdoutChunk = undefined;
+          onStderrChunk = undefined;
+          onProcessExit = undefined;
+          currentFinishTurn = undefined;
+        },
       });
 
-      function finishTurn(stopReason: EngineStopReason): void {
-        if (queueEnded) return;
-        queueEnded = true;
-        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
-        watchdog?.clear();
+      // Expose finish for dispose()
+      currentFinishTurn = turn.finish;
 
-        // Detach handlers so persistent readers stop dispatching to this turn
-        onStdoutChunk = undefined;
-        onStderrChunk = undefined;
-        onProcessExit = undefined;
-        currentFinishTurn = undefined;
-
-        const flushed = parser.flush();
-        for (const event of flushed) {
-          queue.push(event);
+      // If already finished (e.g. aborted signal), bail early
+      if (turn.isFinished()) {
+        for await (const event of turn.queue) {
+          yield event;
         }
-        const output: EngineOutput = {
-          content: [],
-          stopReason,
-          metrics: createZeroMetrics(Date.now() - startTime),
-        };
-        queue.push({ kind: "done", output });
-        queue.end();
-      }
-
-      // Expose finishTurn for dispose()
-      currentFinishTurn = finishTurn;
-
-      // Abort signal handling
-      if (input.signal !== undefined) {
-        if (input.signal.aborted) {
-          finishTurn("interrupted");
-          return;
-        }
-        input.signal.addEventListener("abort", () => finishTurn("interrupted"), { once: true });
+        return;
       }
 
       // Wire up dispatch handlers for this turn
       onStdoutChunk = (text: string) => {
-        if (queueEnded) return;
-        watchdog?.reset();
-        outputHistory.push(text);
-        trimHistory(outputHistory, DEFAULT_MAX_HISTORY_ENTRIES);
+        if (turn.isFinished()) return;
+        turn.resetWatchdog();
+        outputHistory = trimHistory(
+          [...outputHistory, text],
+          DEFAULT_MAX_HISTORY_ENTRIES,
+        ) as string[];
         const result = parser.parseStdout(text);
         for (const event of result.events) {
-          queue.push(event);
+          turn.queue.push(event);
         }
         if (result.turnComplete === true) {
-          finishTurn("completed");
+          turn.finish("completed");
         }
       };
 
       onStderrChunk = (text: string) => {
-        if (queueEnded) return;
-        watchdog?.reset();
+        if (turn.isFinished()) return;
+        turn.resetWatchdog();
         const events = parser.parseStderr(text);
         for (const event of events) {
-          queue.push(event);
+          turn.queue.push(event);
         }
       };
 
       onProcessExit = () => {
-        if (!queueEnded) {
-          finishTurn("error");
+        if (!turn.isFinished()) {
+          turn.finish("error");
           currentProcess = undefined;
           persistentReadersStarted = false;
         }
@@ -428,14 +412,7 @@ export function createExternalAdapter(config: ExternalAdapterConfig): ExternalEn
         proc.stdin.write(TEXT_ENCODER.encode(`${inputText}\n`));
       }
 
-      // Timeout for this turn
-      if (timeoutMs > 0) {
-        timeoutHandle = setTimeout(() => {
-          finishTurn("error");
-        }, timeoutMs);
-      }
-
-      for await (const event of queue) {
+      for await (const event of turn.queue) {
         yield event;
       }
     } finally {
@@ -454,6 +431,33 @@ export function createExternalAdapter(config: ExternalAdapterConfig): ExternalEn
       if (disposed) {
         throw new Error("ExternalAdapter has been disposed");
       }
+      if (mode === "pty") {
+        if (running) {
+          throw new Error("ExternalAdapter does not support concurrent PTY runs");
+        }
+        running = true;
+        // Sync shared state for PTY mode
+        ptyShared.outputHistory = outputHistory;
+        ptyShared.disposed = disposed;
+
+        if (resolvedPty === undefined) {
+          throw new Error("PTY config not resolved — this should not happen");
+        }
+        const gen = runPty(resolvedPty, input, ptyShared);
+        // Wrap to reset running flag on completion
+        return (async function* (): AsyncGenerator<EngineEvent, void, undefined> {
+          try {
+            for await (const event of gen) {
+              yield event;
+            }
+          } finally {
+            running = false;
+            // Sync back from shared state
+            outputHistory = ptyShared.outputHistory;
+            currentPtyProcess = ptyShared.currentProcess;
+          }
+        })();
+      }
       if (mode === "long-lived") {
         return runLongLived(input);
       }
@@ -461,6 +465,15 @@ export function createExternalAdapter(config: ExternalAdapterConfig): ExternalEn
     },
 
     write(data: string): void {
+      // PTY mode: write directly to terminal
+      if (mode === "pty") {
+        const ptyProc = ptyShared.currentProcess ?? currentPtyProcess;
+        if (ptyProc === undefined || ptyProc.kind !== "pty") {
+          throw new Error("No running PTY process to write to");
+        }
+        ptyProc.terminal.write(data);
+        return;
+      }
       if (currentProcess === undefined) {
         throw new Error("No running process to write to");
       }
@@ -468,6 +481,9 @@ export function createExternalAdapter(config: ExternalAdapterConfig): ExternalEn
     },
 
     isRunning(): boolean {
+      if (mode === "pty") {
+        return (ptyShared.currentProcess ?? currentPtyProcess) !== undefined;
+      }
       return currentProcess !== undefined;
     },
 
@@ -501,6 +517,7 @@ export function createExternalAdapter(config: ExternalAdapterConfig): ExternalEn
     async dispose(): Promise<void> {
       if (disposed) return;
       disposed = true;
+      ptyShared.disposed = true;
       // End current turn if one is active (unblocks pending queue consumers)
       currentFinishTurn?.("interrupted");
       // Clear remaining handlers
@@ -511,6 +528,13 @@ export function createExternalAdapter(config: ExternalAdapterConfig): ExternalEn
       if (currentProcess !== undefined) {
         await killProcess(currentProcess, shutdown);
         currentProcess = undefined;
+      }
+      // Kill PTY process if running
+      const ptyProc = ptyShared.currentProcess ?? currentPtyProcess;
+      if (ptyProc !== undefined) {
+        await killProcess(ptyProc, shutdown);
+        ptyShared.currentProcess = undefined;
+        currentPtyProcess = undefined;
       }
     },
   };
@@ -549,26 +573,6 @@ function createWatchdog(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Trim output history to prevent unbounded growth in long-lived mode.
- * Drops the oldest entries when the cap is exceeded.
- */
-function trimHistory(history: string[], maxEntries: number): void {
-  if (history.length > maxEntries) {
-    history.splice(0, history.length - maxEntries);
-  }
-}
-
-function createZeroMetrics(durationMs: number): EngineMetrics {
-  return {
-    totalTokens: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    turns: 1,
-    durationMs,
-  };
-}
 
 function isExternalProcessState(value: unknown): value is ExternalProcessState {
   if (typeof value !== "object" || value === null) return false;
