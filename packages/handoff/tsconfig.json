@@ -5,5 +5,9 @@
     "rootDir": "src"
   },
   "include": ["src/**/*"],
-  "references": [{ "path": "../core" }]
+  "references": [
+    { "path": "../core" },
+    { "path": "../sqlite-utils" },
+    { "path": "../nexus-client" }
+  ]
 }

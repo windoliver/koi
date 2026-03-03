@@ -1,7 +1,7 @@
 /**
  * Integration test — simulates a 3-agent pipeline with handoff envelopes.
  *
- * Agent A → prepare_handoff → Agent B → accept + prepare → Agent C → accept
+ * Agent A -> prepare_handoff -> Agent B -> accept + prepare -> Agent C -> accept
  */
 
 import { describe, expect, test } from "bun:test";
@@ -11,13 +11,13 @@ import { createMockTurnContext } from "@koi/test-utils";
 import { createAcceptTool } from "../accept-tool.js";
 import { createHandoffMiddleware } from "../middleware.js";
 import { createPrepareTool } from "../prepare-tool.js";
-import { createHandoffStore } from "../store.js";
+import { createInMemoryHandoffStore } from "../store.js";
 
 const MOCK_RESPONSE: ModelResponse = { content: "ok", model: "test" };
 
 describe("3-agent pipeline integration", () => {
-  test("envelopes flow through A → B → C with correct status transitions", async () => {
-    const store = createHandoffStore();
+  test("envelopes flow through A -> B -> C with correct status transitions", async () => {
+    const store = createInMemoryHandoffStore();
     const events: HandoffEvent[] = [];
     const onEvent = (e: HandoffEvent): void => {
       events.push(e);
@@ -78,7 +78,12 @@ describe("3-agent pipeline integration", () => {
     });
 
     expect(injectedRequest?.messages.length).toBe(1); // system message prepended
-    expect(store.get(handoffId(envelopeIdAB))?.status).toBe("injected");
+
+    const injectedEnvelope = await store.get(handoffId(envelopeIdAB));
+    expect(injectedEnvelope.ok).toBe(true);
+    if (injectedEnvelope.ok) {
+      expect(injectedEnvelope.value.status).toBe("injected");
+    }
 
     // Agent B accepts the handoff
     const acceptB = createAcceptTool({
@@ -92,7 +97,12 @@ describe("3-agent pipeline integration", () => {
     } as JsonObject)) as Record<string, unknown>;
     expect(acceptResultB.handoffId).toBe(envelopeIdAB);
     expect(acceptResultB.results).toEqual({ requirements: ["auth", "api", "ui"] });
-    expect(store.get(handoffId(envelopeIdAB))?.status).toBe("accepted");
+
+    const acceptedEnvelope = await store.get(handoffId(envelopeIdAB));
+    expect(acceptedEnvelope.ok).toBe(true);
+    if (acceptedEnvelope.ok) {
+      expect(acceptedEnvelope.value.status).toBe("accepted");
+    }
 
     // Agent B prepares handoff for C
     const prepareB = createPrepareTool({
@@ -140,7 +150,11 @@ describe("3-agent pipeline integration", () => {
       async () => MOCK_RESPONSE,
     );
 
-    expect(store.get(handoffId(envelopeIdBC))?.status).toBe("injected");
+    const injectedBC = await store.get(handoffId(envelopeIdBC));
+    expect(injectedBC.ok).toBe(true);
+    if (injectedBC.ok) {
+      expect(injectedBC.value.status).toBe("injected");
+    }
 
     // Agent C accepts
     const acceptC = createAcceptTool({
@@ -157,7 +171,12 @@ describe("3-agent pipeline integration", () => {
       architecture: "microservices",
       services: ["auth-service", "api-gateway", "ui-service"],
     });
-    expect(store.get(handoffId(envelopeIdBC))?.status).toBe("accepted");
+
+    const acceptedBC = await store.get(handoffId(envelopeIdBC));
+    expect(acceptedBC.ok).toBe(true);
+    if (acceptedBC.ok) {
+      expect(acceptedBC.value.status).toBe("accepted");
+    }
 
     // -----------------------------------------------------------------------
     // Verify event sequence
@@ -173,13 +192,13 @@ describe("3-agent pipeline integration", () => {
     ]);
 
     // Verify warnings accumulated through pipeline
-    const _cWarnings = (acceptResultC.warnings as readonly string[]) ?? [];
-    // Agent B forwarded budget constraint + added its own warning
-    const bEnvelope = store.get(handoffId(envelopeIdBC));
-    expect(bEnvelope).toBeDefined();
-    expect(bEnvelope?.context.warnings).toContain("Budget constraint: keep it simple");
-    expect(bEnvelope?.context.warnings).toContain(
-      "Use existing auth library, don't build from scratch",
-    );
+    const bEnvelope = await store.get(handoffId(envelopeIdBC));
+    expect(bEnvelope.ok).toBe(true);
+    if (bEnvelope.ok) {
+      expect(bEnvelope.value.context.warnings).toContain("Budget constraint: keep it simple");
+      expect(bEnvelope.value.context.warnings).toContain(
+        "Use existing auth library, don't build from scratch",
+      );
+    }
   });
 });

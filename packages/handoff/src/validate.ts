@@ -5,6 +5,43 @@
 import type { ArtifactRef, JsonObject } from "@koi/core";
 
 // ---------------------------------------------------------------------------
+// Type guards (replace `as` casts per banned-constructs rules)
+// ---------------------------------------------------------------------------
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isArtifactRefArray(value: unknown): value is readonly ArtifactRef[] {
+  if (!Array.isArray(value)) return false;
+  return value.every(
+    (item) =>
+      item !== null &&
+      typeof item === "object" &&
+      typeof item.id === "string" &&
+      typeof item.kind === "string" &&
+      typeof item.uri === "string",
+  );
+}
+
+function isStringArray(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isDecisionArray(value: unknown): value is PrepareInput["decisions"] {
+  if (!Array.isArray(value)) return false;
+  return value.every(
+    (item) =>
+      item !== null &&
+      typeof item === "object" &&
+      typeof item.agentId === "string" &&
+      typeof item.action === "string" &&
+      typeof item.reasoning === "string" &&
+      typeof item.timestamp === "number",
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Prepare input validation
 // ---------------------------------------------------------------------------
 
@@ -55,22 +92,12 @@ export function validatePrepareInput(args: JsonObject): ValidatePrepareResult {
       to,
       completed,
       next,
-      results:
-        typeof args.results === "object" && args.results !== null
-          ? (args.results as JsonObject)
-          : undefined,
-      artifacts: Array.isArray(args.artifacts)
-        ? (args.artifacts as readonly ArtifactRef[])
-        : undefined,
-      decisions: Array.isArray(args.decisions)
-        ? (args.decisions as PrepareInput["decisions"])
-        : undefined,
-      warnings: Array.isArray(args.warnings) ? (args.warnings as readonly string[]) : undefined,
+      results: isJsonObject(args.results) ? args.results : undefined,
+      artifacts: isArtifactRefArray(args.artifacts) ? args.artifacts : undefined,
+      decisions: isDecisionArray(args.decisions) ? args.decisions : undefined,
+      warnings: isStringArray(args.warnings) ? args.warnings : undefined,
       delegation: args.delegation,
-      metadata:
-        typeof args.metadata === "object" && args.metadata !== null
-          ? (args.metadata as JsonObject)
-          : undefined,
+      metadata: isJsonObject(args.metadata) ? args.metadata : undefined,
     },
   };
 }

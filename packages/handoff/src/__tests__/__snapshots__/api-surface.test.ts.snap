@@ -1,27 +1,37 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/handoff API surface . has stable type surface 1`] = `
-"import { HandoffEnvelope, HandoffId, HandoffStatus, AgentId, AgentRegistry, HandoffEvent, Tool, ToolDescriptor, KoiMiddleware, ComponentProvider, JsonObject, ArtifactRef } from '@koi/core';
+"import { HandoffEnvelope, Result, KoiError, HandoffId, HandoffStatus, AgentId, AgentRegistry, HandoffEvent, Tool, ToolDescriptor, KoiMiddleware, ComponentProvider, JsonObject, ArtifactRef } from '@koi/core';
 
 /**
- * HandoffStore — thin wrapper around Map<HandoffId, HandoffEnvelope>
- * with CAS status transitions and registry-bound cleanup.
+ * HandoffStore — interface + in-memory implementation with CAS status
+ * transitions, TTL expiration, conflict detection, and registry-bound cleanup.
  */
 
+/** Base configuration for all HandoffStore backends. */
+interface HandoffStoreConfig {
+    /** Time-to-live for envelopes in milliseconds. Default: 86_400_000 (24h). */
+    readonly ttlMs?: number | undefined;
+}
 interface HandoffStore {
-    readonly put: (envelope: HandoffEnvelope) => void;
-    readonly get: (id: HandoffId) => HandoffEnvelope | undefined;
-    /** CAS status transition. Returns updated envelope or undefined on mismatch. */
-    readonly transition: (id: HandoffId, from: HandoffStatus, to: HandoffStatus) => HandoffEnvelope | undefined;
-    readonly listByAgent: (agentId: AgentId) => readonly HandoffEnvelope[];
-    readonly remove: (id: HandoffId) => boolean;
-    readonly removeByAgent: (agentId: AgentId) => void;
-    readonly findPendingForAgent: (agentId: AgentId) => HandoffEnvelope | undefined;
+    readonly put: (envelope: HandoffEnvelope) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
+    readonly get: (id: HandoffId) => Result<HandoffEnvelope, KoiError> | Promise<Result<HandoffEnvelope, KoiError>>;
+    /** CAS status transition. Returns updated envelope or error on mismatch. */
+    readonly transition: (id: HandoffId, from: HandoffStatus, to: HandoffStatus) => Result<HandoffEnvelope, KoiError> | Promise<Result<HandoffEnvelope, KoiError>>;
+    readonly listByAgent: (agentId: AgentId) => Result<readonly HandoffEnvelope[], KoiError> | Promise<Result<readonly HandoffEnvelope[], KoiError>>;
+    readonly findPendingForAgent: (agentId: AgentId) => Result<HandoffEnvelope | undefined, KoiError> | Promise<Result<HandoffEnvelope | undefined, KoiError>>;
+    readonly remove: (id: HandoffId) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
+    readonly removeByAgent: (agentId: AgentId) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
     /** Bind to AgentRegistry — removes envelopes when agents terminate. */
     readonly bindRegistry: (registry: AgentRegistry) => void;
-    readonly dispose: () => void;
+    readonly dispose: () => void | Promise<void>;
 }
-declare function createHandoffStore(): HandoffStore;
+declare function createInMemoryHandoffStore(config?: HandoffStoreConfig): HandoffStore;
+/**
+ * @deprecated Use \`createInMemoryHandoffStore()\` instead.
+ * Kept for backward compatibility — will be removed in a future release.
+ */
+declare function createHandoffStore(config?: HandoffStoreConfig): HandoffStore;
 
 /**
  * accept_handoff tool factory — creates a Tool that accepts and
@@ -34,6 +44,19 @@ interface CreateAcceptToolConfig {
     readonly onEvent?: ((event: HandoffEvent) => void) | undefined;
 }
 declare function createAcceptTool(config: CreateAcceptToolConfig): Tool;
+
+/**
+ * Shared error helpers for @koi/handoff stores.
+ *
+ * Thin wrappers around @koi/core error factories with handoff-specific messages.
+ * Used by in-memory, sqlite, and nexus store implementations.
+ */
+
+declare function notFoundError(id: string): KoiError;
+declare function conflictError(id: string): KoiError;
+declare function validationError(message: string): KoiError;
+declare function internalError(message: string, cause?: unknown): KoiError;
+declare function validateHandoffId(id: string): Result<void, KoiError>;
 
 /**
  * Configuration types and tool descriptors for @koi/handoff.
@@ -69,9 +92,28 @@ declare const ACCEPT_HANDOFF_DESCRIPTOR: ToolDescriptor;
  * Creates middleware that:
  * 1. Injects handoffId + handoffPhase into turn metadata (every turn)
  * 2. Prepends a summary system message on the first model call (once)
- * 3. Transitions envelope status from pending → injected
+ * 3. Transitions envelope status from pending -> injected
  */
 declare function createHandoffMiddleware(config: HandoffMiddlewareConfig): KoiMiddleware;
+
+/**
+ * NexusHandoffStore — persistent handoff envelope storage via Nexus JSON-RPC 2.0.
+ *
+ * Each envelope is stored at \`{basePath}/{id}.json\` as self-contained JSON.
+ * Search is implemented client-side: glob all files, read in parallel, filter.
+ */
+
+interface NexusHandoffStoreConfig extends HandoffStoreConfig {
+    /** Nexus server base URL (e.g., "http://localhost:2026"). */
+    readonly baseUrl: string;
+    /** Nexus API key for authentication. */
+    readonly apiKey: string;
+    /** Storage path prefix. Default: "/handoffs". */
+    readonly basePath?: string | undefined;
+    /** Injectable fetch for testing. Default: globalThis.fetch. */
+    readonly fetch?: typeof globalThis.fetch | undefined;
+}
+declare function createNexusHandoffStore(config: NexusHandoffStoreConfig): HandoffStore;
 
 /**
  * prepare_handoff tool factory — creates a Tool that packages work
@@ -98,6 +140,21 @@ declare function createPrepareTool(config: CreatePrepareToolConfig): Tool;
  * return the same instances.
  */
 declare function createHandoffProvider(config: HandoffConfig): ComponentProvider;
+
+/**
+ * SqliteHandoffStore — bun:sqlite backend for persistent handoff envelopes.
+ *
+ * Schema: single \`handoff_envelopes\` table with JSON data + queryable columns.
+ * WAL mode + prepared statements + parameterized CAS transitions.
+ */
+
+interface SqliteHandoffStoreConfig extends HandoffStoreConfig {
+    /** Database file path, or ":memory:" for tests. */
+    readonly dbPath: string;
+}
+declare function createSqliteHandoffStore(config: SqliteHandoffStoreConfig): HandoffStore & {
+    readonly close: () => void;
+};
 
 /**
  * Generate concise prompt summaries from handoff envelopes.
@@ -156,6 +213,6 @@ declare function validateAcceptInput(args: JsonObject): ValidateAcceptResult;
  */
 declare function validateArtifactRefs(refs: readonly ArtifactRef[]): readonly string[];
 
-export { ACCEPT_HANDOFF_DESCRIPTOR, type CreateAcceptToolConfig, type CreatePrepareToolConfig, type HandoffConfig, type HandoffMiddlewareConfig, type HandoffStore, PREPARE_HANDOFF_DESCRIPTOR, type PrepareInput, type ValidateAcceptResult, type ValidatePrepareResult, createAcceptTool, createHandoffMiddleware, createHandoffProvider, createHandoffStore, createPrepareTool, generateHandoffSummary, validateAcceptInput, validateArtifactRefs, validatePrepareInput };
+export { ACCEPT_HANDOFF_DESCRIPTOR, type CreateAcceptToolConfig, type CreatePrepareToolConfig, type HandoffConfig, type HandoffMiddlewareConfig, type HandoffStore, type HandoffStoreConfig, type NexusHandoffStoreConfig, PREPARE_HANDOFF_DESCRIPTOR, type PrepareInput, type SqliteHandoffStoreConfig, type ValidateAcceptResult, type ValidatePrepareResult, conflictError, createAcceptTool, createHandoffMiddleware, createHandoffProvider, createHandoffStore, createInMemoryHandoffStore, createNexusHandoffStore, createPrepareTool, createSqliteHandoffStore, generateHandoffSummary, internalError, notFoundError, validateAcceptInput, validateArtifactRefs, validateHandoffId, validatePrepareInput, validationError };
 "
 `;

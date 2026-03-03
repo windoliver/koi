@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import type { HandoffEnvelope, HandoffEvent, JsonObject } from "@koi/core";
 import { agentId, handoffId } from "@koi/core";
 import { createAcceptTool } from "./accept-tool.js";
-import { createHandoffStore, type HandoffStore } from "./store.js";
+import { createInMemoryHandoffStore, type HandoffStore } from "./store.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -36,7 +36,7 @@ describe("accept_handoff tool", () => {
   const events: HandoffEvent[] = [];
 
   beforeEach(() => {
-    store = createHandoffStore();
+    store = createInMemoryHandoffStore();
     events.length = 0;
   });
 
@@ -66,8 +66,11 @@ describe("accept_handoff tool", () => {
     expect(result.phase).toEqual({ completed: "phase 1 done", next: "do phase 2" });
 
     // Verify status transitioned
-    const stored = store.get(handoffId("hoff-1"));
-    expect(stored?.status).toBe("accepted");
+    const stored = await store.get(handoffId("hoff-1"));
+    expect(stored.ok).toBe(true);
+    if (stored.ok) {
+      expect(stored.value.status).toBe("accepted");
+    }
   });
 
   test("emits handoff:accepted event", async () => {
@@ -163,7 +166,7 @@ describe("accept_handoff tool", () => {
     expect(warnings[0]).toContain("unsupported URI scheme");
   });
 
-  test("accepts injected envelope (pending → injected → accepted)", async () => {
+  test("accepts injected envelope (pending -> injected -> accepted)", async () => {
     store.put(createTestEnvelope({ status: "injected" }));
 
     const tool = makeTool();
@@ -173,7 +176,11 @@ describe("accept_handoff tool", () => {
     >;
 
     expect(result.handoffId).toBe("hoff-1");
-    expect(store.get(handoffId("hoff-1"))?.status).toBe("accepted");
+    const stored = await store.get(handoffId("hoff-1"));
+    expect(stored.ok).toBe(true);
+    if (stored.ok) {
+      expect(stored.value.status).toBe("accepted");
+    }
   });
 
   test("returns delegation grant if present", async () => {

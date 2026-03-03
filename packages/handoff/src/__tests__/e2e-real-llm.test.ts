@@ -29,7 +29,7 @@ import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { createHandoffMiddleware } from "../middleware.js";
 import { createHandoffProvider } from "../provider.js";
-import { createHandoffStore, type HandoffStore } from "../store.js";
+import { createInMemoryHandoffStore, type HandoffStore } from "../store.js";
 
 // ---------------------------------------------------------------------------
 // Gate on API key + E2E_TESTS env var
@@ -368,7 +368,7 @@ describeE2E("e2e: handoff pipeline with real Anthropic LLM", () => {
   test(
     "Agent A prepares handoff → Agent B receives context injection + accepts",
     async () => {
-      const store = createHandoffStore();
+      const store = createInMemoryHandoffStore();
       const events: HandoffEvent[] = [];
       const onEvent = (e: HandoffEvent): void => {
         events.push(e);
@@ -410,12 +410,16 @@ describeE2E("e2e: handoff pipeline with real Anthropic LLM", () => {
       expect(findToolCallEnds(eventsA).length).toBeGreaterThanOrEqual(1);
 
       // Verify envelope was created in the store
-      const allEnvelopes = store.listByAgent(agentId("agent-a"));
-      expect(allEnvelopes.length).toBeGreaterThanOrEqual(1);
+      const allEnvelopesResult = await store.listByAgent(agentId("agent-a"));
+      expect(allEnvelopesResult.ok).toBe(true);
+      if (!allEnvelopesResult.ok) throw new Error("Failed to list envelopes");
+      expect(allEnvelopesResult.value.length).toBeGreaterThanOrEqual(1);
 
       // Find the pending envelope for agent-b
-      const pendingEnvelope = store.findPendingForAgent(agentId("agent-b"));
-      expect(pendingEnvelope).toBeDefined();
+      const pendingResult = await store.findPendingForAgent(agentId("agent-b"));
+      expect(pendingResult.ok).toBe(true);
+      if (!pendingResult.ok) throw new Error("Failed to find pending");
+      const pendingEnvelope = pendingResult.value;
       if (pendingEnvelope === undefined) throw new Error("No pending envelope found");
 
       expect(pendingEnvelope.from).toBe(agentId("agent-a"));
@@ -462,9 +466,11 @@ describeE2E("e2e: handoff pipeline with real Anthropic LLM", () => {
       expect(findToolCallEnds(eventsB).length).toBeGreaterThanOrEqual(1);
 
       // Verify envelope status transitioned to accepted
-      const finalEnvelope = store.get(pendingEnvelope.id);
-      expect(finalEnvelope).toBeDefined();
-      expect(finalEnvelope?.status).toBe("accepted");
+      const finalResult = await store.get(pendingEnvelope.id);
+      expect(finalResult.ok).toBe(true);
+      if (finalResult.ok) {
+        expect(finalResult.value.status).toBe("accepted");
+      }
 
       // Verify full event lifecycle
       const eventKinds = events.map((e) => e.kind);
@@ -497,7 +503,7 @@ describeE2E("e2e: handoff pipeline with real Anthropic LLM", () => {
   test(
     "Agent B receives injected context summary even without tool call",
     async () => {
-      const store = createHandoffStore();
+      const store = createInMemoryHandoffStore();
       const events: HandoffEvent[] = [];
       const onEvent = (e: HandoffEvent): void => {
         events.push(e);
@@ -554,9 +560,12 @@ describeE2E("e2e: handoff pipeline with real Anthropic LLM", () => {
       expect(injectedEvents.length).toBe(1);
 
       // Verify envelope was transitioned (LLM may also call accept_handoff proactively)
-      const envelope = store.get(envelopeId);
-      const status = envelope?.status;
-      expect(status === "injected" || status === "accepted").toBe(true);
+      const envelopeResult = await store.get(envelopeId);
+      expect(envelopeResult.ok).toBe(true);
+      if (envelopeResult.ok) {
+        const status = envelopeResult.value.status;
+        expect(status === "injected" || status === "accepted").toBe(true);
+      }
 
       // The LLM should have seen the handoff context (check text response)
       const textDeltas = eventsB
@@ -575,7 +584,7 @@ describeE2E("e2e: handoff pipeline with real Anthropic LLM", () => {
   test(
     "middleware injects metadata (handoffId + handoffPhase) into turn context",
     async () => {
-      const store = createHandoffStore();
+      const store = createInMemoryHandoffStore();
       const events: HandoffEvent[] = [];
       const onEvent = (e: HandoffEvent): void => {
         events.push(e);
@@ -624,8 +633,12 @@ describeE2E("e2e: handoff pipeline with real Anthropic LLM", () => {
       expect(events.some((e) => e.kind === "handoff:injected")).toBe(true);
 
       // Verify envelope was transitioned (LLM may also call accept_handoff proactively)
-      const finalStatus = store.get(envelopeId)?.status;
-      expect(finalStatus === "injected" || finalStatus === "accepted").toBe(true);
+      const finalEnvelopeResult = await store.get(envelopeId);
+      expect(finalEnvelopeResult.ok).toBe(true);
+      if (finalEnvelopeResult.ok) {
+        const finalStatus = finalEnvelopeResult.value.status;
+        expect(finalStatus === "injected" || finalStatus === "accepted").toBe(true);
+      }
 
       await runtimeB.dispose();
     },
