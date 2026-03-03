@@ -55,6 +55,14 @@ export interface FsIndexDoc {
  */
 export type MergeHandler = (existing: string, incoming: string) => Promise<string | undefined>;
 
+/**
+ * Infers a category from fact content when no explicit category is provided.
+ *
+ * May be sync (keyword matching) or async (LLM-backed).
+ * Return a category string; the default fallback is `"context"`.
+ */
+export type CategoryInferrer = (content: string) => string | Promise<string>;
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -76,6 +84,8 @@ export interface FsMemoryConfig {
   readonly mergeThreshold?: number | undefined;
   /** Enable composite salience scoring for recall ranking. Default true. */
   readonly salienceEnabled?: boolean | undefined;
+  /** Infers a category when the caller omits `options.category`. Default: none (falls back to `"context"`). */
+  readonly categoryInferrer?: CategoryInferrer | undefined;
 }
 
 // ---------------------------------------------------------------------------

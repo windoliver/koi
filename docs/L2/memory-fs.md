@@ -51,6 +51,7 @@ packages/memory-fs/
 ├── src/
 │   ├── index.ts              ─ Public exports (backend + provider + types)
 │   ├── types.ts              ─ MemoryFact (internal), FsMemory, config, DI contracts
+│   ├── category-inferrer.ts   ─ createKeywordCategoryInferrer() — keyword-based auto-categorization
 │   ├── fs-memory.ts          ─ createFsMemory() factory (~400 LOC)
 │   ├── fact-store.ts         ─ File I/O: read/write/append, write queue, cache
 │   ├── graph-walk.ts         ─ BFS causal graph expansion with score decay
@@ -142,32 +143,38 @@ Only 2 out of 5 exchanges stored — agent used judgment.
 When the agent calls `memory_store`:
 
 ```
-memory_store({ content, category, entities, causalParents? })
+memory_store({ content, category?, entities, causalParents? })
   │
   ▼
 1. Resolve entity: slugify(entities[0] ?? namespace ?? "_default")
   │
   ▼
-2. Read active facts for entity (from cache)
+2. Resolve category:
+   explicit category provided? → use it
+   categoryInferrer configured? → infer from content (keyword regex)
+   neither? → fall back to "context"
   │
   ▼
-3. Category pre-filter: only compare against same-category facts
+3. Read active facts for entity (from cache)
   │
   ▼
-4. Jaccard dedup: similarity ≥ 0.7 → REJECT (duplicate)
+4. Category pre-filter: only compare against same-category facts
   │
   ▼
-5. Contradiction check: same category + same entities → SUPERSEDE old fact
+5. Jaccard dedup: similarity ≥ 0.7 → REJECT (duplicate)
   │
   ▼
-6. Append fact via write queue (temp-file + rename for atomicity)
+6. Contradiction check: same category + same entities → SUPERSEDE old fact
   │
   ▼
-7. Bidirectional causal edges: if causalParents provided,
+7. Append fact via write queue (temp-file + rename for atomicity)
+  │
+  ▼
+8. Bidirectional causal edges: if causalParents provided,
    update each parent's causalChildren to include new fact ID
   │
   ▼
-8. Mark entity as dirty (for summary rebuild)
+9. Mark entity as dirty (for summary rebuild)
 ```
 
 ### Recall Flow
@@ -478,6 +485,109 @@ Merge behavior:
 - Handler returns `undefined` or `""` → falls through to supersede check
 - Handler throws → error logged, falls through (original fact not lost)
 
+### Auto-Category Inference
+
+When agents store facts via `memory_store` without an explicit `category`, the fact defaults to `"context"`. As memory stores grow (100+ facts), this "context" bucket becomes a junk drawer — degrading dedup, merge, and contradiction detection (all category-scoped).
+
+A `CategoryInferrer` DI slot on `FsMemoryConfig` solves this by auto-assigning categories at write time:
+
+```typescript
+type CategoryInferrer = (content: string) => string | Promise<string>;
+```
+
+The built-in `createKeywordCategoryInferrer()` maps 6 categories via regex — zero LLM cost:
+
+| Category | Trigger keywords |
+|----------|-----------------|
+| `decision` | chose, decided, picked, went with, settled on |
+| `error-pattern` | error, failed, bug, crash, exception, broken |
+| `preference` | prefers, likes, always uses, favourite, dislikes |
+| `correction` | corrected, fixed, wrong, mistake, shouldn't have |
+| `milestone` | completed, shipped, launched, deployed, released |
+| `relationship` | works with/for/at, reports to, manages, team |
+| *(no match)* | falls back to `"context"` |
+
+Rules are evaluated top-to-bottom; first match wins. All patterns are case-insensitive.
+
+```typescript
+import { createFsMemory, createKeywordCategoryInferrer } from "@koi/memory-fs";
+
+const mem = await createFsMemory({
+  baseDir: "/path/to/memory",
+  categoryInferrer: createKeywordCategoryInferrer(),
+});
+
+await mem.component.store("We decided to use Bun");
+// → category: "decision" (matched "decided")
+
+await mem.component.store("Build failed after upgrading tsup");
+// → category: "error-pattern" (matched "failed")
+
+await mem.component.store("The sky is blue");
+// → category: "context" (no match — fallback)
+
+// Explicit category always wins — inferrer is not called
+await mem.component.store("We decided on React", { category: "milestone" });
+// → category: "milestone"
+```
+
+**Customization**: Add domain-specific rules (prepended, higher priority) or override the fallback:
+
+```typescript
+const inferrer = createKeywordCategoryInferrer({
+  additionalRules: [
+    { category: "security", pattern: /\b(?:vulnerability|CVE|exploit)\b/i },
+  ],
+  fallback: "general", // instead of "context"
+});
+```
+
+**Async inferrers**: The DI slot accepts `Promise<string>`, so LLM-backed classifiers work too:
+
+```typescript
+const mem = await createFsMemory({
+  baseDir: "/path/to/memory",
+  categoryInferrer: async (content) => {
+    const response = await myModel.classify(content);
+    return response.category;
+  },
+});
+```
+
+**Error handling**: If the inferrer throws (LLM timeout, etc.), the error is logged and category falls back to `"context"` — the fact is never lost.
+
+**Context-Arena integration**: `createContextArena` auto-wires `createKeywordCategoryInferrer()` when `memoryFs` is configured. No extra config needed:
+
+```typescript
+const bundle = await createContextArena({
+  summarizer: myModel,
+  sessionId,
+  getMessages: () => messages,
+  memoryFs: {
+    config: { baseDir: "/data/memory" },
+    // categoryInferrer auto-wired ← keyword-based, zero LLM cost
+    // mergeHandler auto-wired ← uses summarizer
+  },
+});
+```
+
+#### Why This Matters
+
+Without auto-categorization, all uncategorized facts land in `"context"`:
+
+```
+"context" bucket (before):
+  - "We decided to use Bun"        ← should be "decision"
+  - "Build failed on CI"            ← should be "error-pattern"
+  - "User prefers dark mode"        ← should be "preference"
+  - "Deployed v2.0 to prod"         ← should be "milestone"
+
+  Dedup compares ALL of these against each other — false positives.
+  Contradiction detection treats them as same-category — false supersessions.
+```
+
+With auto-categorization, facts are bucketed correctly. Dedup only compares decisions against decisions, errors against errors, etc. Merge and contradiction detection become more precise.
+
 ---
 
 ## Per-User Memory Isolation
@@ -705,6 +815,7 @@ const mem = await createFsMemory({
   perEntityCap: 10,               // max cross-entity results per source entity (default: 10)
   retriever: customRetriever,     // optional: semantic search (DI)
   indexer: customIndexer,         // optional: search indexing (DI)
+  categoryInferrer: inferrer,     // optional: auto-categorize when category omitted (DI)
 });
 ```
 
@@ -813,7 +924,7 @@ The DI contracts (`FsSearchRetriever`, `FsSearchIndexer`) are local function typ
 
 ## Testing
 
-200+ tests total across 17 test files:
+230+ tests total across 19 test files:
 
 | Test File | Count | What It Covers |
 |-----------|-------|----------------|
@@ -827,7 +938,9 @@ The DI contracts (`FsSearchRetriever`, `FsSearchIndexer`) are local function typ
 | `graph-walk.test.ts` | 9 | BFS expansion, cycle detection, score decay, dedup |
 | `entity-index.test.ts` | 11 | Reverse index: build, add, lookup, dedup, self-ref guard |
 | `cross-entity.test.ts` | 17 | Cross-entity: decay, cap, cycles, hops, integration |
+| `category-inferrer.test.ts` | 28 | Keyword rules (6 categories), fallback, case insensitivity, ordering, custom rules, custom fallback |
 | `fs-memory.test.ts` | 38 | Full integration: store → recall → dedup → decay → causal → graph expansion → salience |
+| `fs-memory-category.test.ts` | 6 | Category inference integration: infer, override, backward compat, async, error fallback, dedup |
 | `provider/tools/store.test.ts` | 10 | Store tool: validation, causal_parents, dedup, errors |
 | `provider/tools/recall.test.ts` | 12 | Recall tool: limits, tiers, graph_expand, max_hops, errors |
 | `provider/tools/search.test.ts` | 7 | Search tool: entity list, entity lookup, errors |

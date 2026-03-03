@@ -1,3 +1,5 @@
+export type { CategoryRule, KeywordCategoryInferrerOptions } from "./category-inferrer.js";
+export { createKeywordCategoryInferrer } from "./category-inferrer.js";
 export { createFsMemory } from "./fs-memory.js";
 export type { MemoryOperation } from "./provider/constants.js";
 export { MEMORY_OPERATIONS } from "./provider/constants.js";
@@ -11,6 +13,7 @@ export { createMemoryStoreTool } from "./provider/tools/store.js";
 export type { UserScopedMemoryProviderConfig } from "./provider/user-scoped-provider.js";
 export { createUserScopedMemoryProvider } from "./provider/user-scoped-provider.js";
 export type {
+  CategoryInferrer,
   FsIndexDoc,
   FsMemory,
   FsMemoryConfig,
