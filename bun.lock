@@ -1863,6 +1863,17 @@
         "@koi/sandbox": "workspace:*",
       },
     },
+    "packages/sandbox-stack": {
+      "name": "@koi/sandbox-stack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/sandbox-cloud-base": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/sandbox-vercel": {
       "name": "@koi/sandbox-vercel",
       "version": "0.0.0",
@@ -3147,6 +3158,8 @@
     "@koi/sandbox-executor": ["@koi/sandbox-executor@workspace:packages/sandbox-executor"],
 
     "@koi/sandbox-ipc": ["@koi/sandbox-ipc@workspace:packages/sandbox-ipc"],
+
+    "@koi/sandbox-stack": ["@koi/sandbox-stack@workspace:packages/sandbox-stack"],
 
     "@koi/sandbox-vercel": ["@koi/sandbox-vercel@workspace:packages/sandbox-vercel"],
 

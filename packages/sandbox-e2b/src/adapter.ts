@@ -19,34 +19,25 @@ export function createE2bAdapter(config: E2bAdapterConfig): Result<SandboxAdapte
   if (!validated.ok) return validated;
 
   const resolvedConfig = validated.value;
-  const client = config.client;
 
   return {
     ok: true,
     value: {
       name: "e2b",
       create: async (_profile: SandboxProfile) => {
-        if (client !== undefined) {
-          const opts: E2bCreateOpts = {
-            apiKey: resolvedConfig.apiKey,
-            ...(resolvedConfig.template !== undefined ? { template: resolvedConfig.template } : {}),
-            ...(resolvedConfig.mounts !== undefined && resolvedConfig.mounts.length > 0
-              ? { mounts: resolvedConfig.mounts }
-              : {}),
-          };
-          const sdkSandbox = await client.createSandbox(opts);
-          const instance = createE2bInstance(sdkSandbox);
-          if (_profile.nexusMounts !== undefined && _profile.nexusMounts.length > 0) {
-            await mountNexusFuse(instance, _profile.nexusMounts);
-          }
-          return instance;
+        const opts: E2bCreateOpts = {
+          apiKey: resolvedConfig.apiKey,
+          ...(resolvedConfig.template !== undefined ? { template: resolvedConfig.template } : {}),
+          ...(resolvedConfig.mounts !== undefined && resolvedConfig.mounts.length > 0
+            ? { mounts: resolvedConfig.mounts }
+            : {}),
+        };
+        const sdkSandbox = await resolvedConfig.client.createSandbox(opts);
+        const instance = createE2bInstance(sdkSandbox);
+        if (_profile.nexusMounts !== undefined && _profile.nexusMounts.length > 0) {
+          await mountNexusFuse(instance, _profile.nexusMounts);
         }
-
-        throw new Error(
-          "E2B SDK client not provided. " +
-            "Pass a client in E2bAdapterConfig for production use, " +
-            "or use a mock client for testing.",
-        );
+        return instance;
       },
     },
   };

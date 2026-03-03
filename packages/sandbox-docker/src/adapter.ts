@@ -22,24 +22,15 @@ export function createDockerAdapter(config: DockerAdapterConfig): Result<Sandbox
   if (!validated.ok) return validated;
 
   const resolvedConfig = validated.value;
-  const client = config.client;
 
   return {
     ok: true,
     value: {
       name: "docker",
       create: async (profile: SandboxProfile) => {
-        if (client !== undefined) {
-          const { opts, networkConfig } = profileToDockerOpts(profile, resolvedConfig.image);
-          const container = await client.createContainer(opts);
-          return createDockerInstance(container, networkConfig);
-        }
-
-        throw new Error(
-          "Docker client not provided. " +
-            "Pass a client in DockerAdapterConfig for production use, " +
-            "or use a mock client for testing.",
-        );
+        const { opts, networkConfig } = profileToDockerOpts(profile, resolvedConfig.image);
+        const container = await resolvedConfig.client.createContainer(opts);
+        return createDockerInstance(container, networkConfig);
       },
     },
   };

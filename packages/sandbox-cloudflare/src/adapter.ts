@@ -16,36 +16,27 @@ export function createCloudflareAdapter(
   if (!validated.ok) return validated;
 
   const resolvedConfig = validated.value;
-  const client = config.client;
 
   return {
     ok: true,
     value: {
       name: "cloudflare",
       create: async (_profile: SandboxProfile) => {
-        if (client !== undefined) {
-          const opts: CfCreateOpts = {
-            apiToken: resolvedConfig.apiToken,
-            ...(resolvedConfig.accountId !== undefined
-              ? { accountId: resolvedConfig.accountId }
-              : {}),
-            ...(resolvedConfig.r2Mounts !== undefined && resolvedConfig.r2Mounts.length > 0
-              ? { r2Mounts: resolvedConfig.r2Mounts }
-              : {}),
-          };
-          const sdkSandbox = await client.createSandbox(opts);
-          const instance = createCloudflareInstance(sdkSandbox);
-          if (_profile.nexusMounts !== undefined && _profile.nexusMounts.length > 0) {
-            await mountNexusFuse(instance, _profile.nexusMounts);
-          }
-          return instance;
+        const opts: CfCreateOpts = {
+          apiToken: resolvedConfig.apiToken,
+          ...(resolvedConfig.accountId !== undefined
+            ? { accountId: resolvedConfig.accountId }
+            : {}),
+          ...(resolvedConfig.r2Mounts !== undefined && resolvedConfig.r2Mounts.length > 0
+            ? { r2Mounts: resolvedConfig.r2Mounts }
+            : {}),
+        };
+        const sdkSandbox = await resolvedConfig.client.createSandbox(opts);
+        const instance = createCloudflareInstance(sdkSandbox);
+        if (_profile.nexusMounts !== undefined && _profile.nexusMounts.length > 0) {
+          await mountNexusFuse(instance, _profile.nexusMounts);
         }
-
-        throw new Error(
-          "Cloudflare SDK client not provided. " +
-            "Pass a client in CloudflareAdapterConfig for production use, " +
-            "or use a mock client for testing.",
-        );
+        return instance;
       },
     },
   };

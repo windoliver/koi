@@ -6,7 +6,10 @@
  */
 
 /** Default maximum output bytes: 10 MB. */
-const DEFAULT_MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
+export const DEFAULT_MAX_OUTPUT_BYTES: number = 10 * 1024 * 1024;
+
+/** Shared encoder — hoisted to module scope to avoid per-accumulator allocation. */
+const encoder = new TextEncoder();
 
 export interface OutputAccumulator {
   /** Append a chunk of output. No-op after limit is reached. */
@@ -25,7 +28,6 @@ export interface OutputAccumulator {
  */
 export function createOutputAccumulator(maxBytes?: number): OutputAccumulator {
   const limit = maxBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
-  const encoder = new TextEncoder();
 
   // Mutable state — accumulating output
   let totalBytes = 0;

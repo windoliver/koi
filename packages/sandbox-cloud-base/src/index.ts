@@ -13,6 +13,10 @@ export { createCachedBridge } from "./bridge.js";
 export type { ClassifiedError } from "./classify-error.js";
 export { classifyCloudError } from "./classify-error.js";
 
+// Cloud instance factory — shared exec/readFile/writeFile/destroy
+export type { CloudInstanceConfig, CloudSdkSandbox } from "./cloud-instance.js";
+export { createCloudInstance } from "./cloud-instance.js";
+
 // Destroy guard — prevents method calls after destroy()
 export type { DestroyGuard } from "./guard.js";
 export { createDestroyGuard } from "./guard.js";
@@ -25,4 +29,4 @@ export { createStreamCollector } from "./test-streaming.js";
 
 // Output truncation — byte-limited accumulator
 export type { OutputAccumulator } from "./truncate.js";
-export { createOutputAccumulator } from "./truncate.js";
+export { createOutputAccumulator, DEFAULT_MAX_OUTPUT_BYTES } from "./truncate.js";

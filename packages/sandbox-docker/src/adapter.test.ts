@@ -30,13 +30,22 @@ describe("createDockerAdapter", () => {
   });
 
   test("returns error with empty image", () => {
-    const result = createDockerAdapter({ image: "" });
+    const result = createDockerAdapter({ image: "", client: createMockClient() });
     expect(result.ok).toBe(false);
   });
 
   test("returns error with empty socketPath", () => {
-    const result = createDockerAdapter({ socketPath: "" });
+    const result = createDockerAdapter({ socketPath: "", client: createMockClient() });
     expect(result.ok).toBe(false);
+  });
+
+  test("returns error without injected client", () => {
+    const result = createDockerAdapter({});
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("client");
+    }
   });
 
   test("create returns a working SandboxInstance", async () => {
@@ -120,20 +129,5 @@ describe("createDockerAdapter", () => {
         capAdd: ["NET_ADMIN"],
       }),
     );
-  });
-
-  test("throws without injected client", async () => {
-    const result = createDockerAdapter({});
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    await expect(
-      result.value.create({
-        tier: "sandbox",
-        filesystem: {},
-        network: { allow: false },
-        resources: {},
-      }),
-    ).rejects.toThrow("Docker client not provided");
   });
 });

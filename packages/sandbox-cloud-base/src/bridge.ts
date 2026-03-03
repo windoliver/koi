@@ -26,9 +26,13 @@ export interface BridgeConfig {
 /** Default TTL: 60 seconds. */
 const DEFAULT_TTL_MS = 60_000;
 
-/** Extended executor with explicit dispose method. */
+/** Extended executor with explicit dispose, warmup, and instance access. */
 export interface CachedExecutor extends SandboxExecutor {
   readonly dispose: () => Promise<void>;
+  /** Eagerly create and cache the instance. No-op if already warm. */
+  readonly warmup: () => Promise<void>;
+  /** Get the currently cached instance, or undefined if not yet created. */
+  readonly getInstance: () => SandboxInstance | undefined;
 }
 
 /**
@@ -39,6 +43,7 @@ export interface CachedExecutor extends SandboxExecutor {
  */
 export function createCachedBridge(config: BridgeConfig): CachedExecutor {
   const ttlMs = config.ttlMs ?? DEFAULT_TTL_MS;
+  const profileTimeoutMs = config.profile.resources.timeoutMs;
 
   // Mutable state — instance lifecycle management
   let instance: SandboxInstance | undefined;
@@ -88,11 +93,15 @@ export function createCachedBridge(config: BridgeConfig): CachedExecutor {
     > => {
       const startTime = performance.now();
 
+      // Clamp caller timeout to profile-defined maximum (Decision 6)
+      const effectiveTimeout =
+        profileTimeoutMs !== undefined ? Math.min(timeoutMs, profileTimeoutMs) : timeoutMs;
+
       try {
         const inst = await ensureInstance();
 
         // Execute code via the sandbox instance's exec method
-        const result = await inst.exec("sh", ["-c", code], { timeoutMs });
+        const result = await inst.exec("sh", ["-c", code], { timeoutMs: effectiveTimeout });
 
         const durationMs = performance.now() - startTime;
 
@@ -150,5 +159,11 @@ export function createCachedBridge(config: BridgeConfig): CachedExecutor {
       disposed = true;
       await destroyInstance();
     },
+
+    warmup: async (): Promise<void> => {
+      await ensureInstance();
+    },
+
+    getInstance: (): SandboxInstance | undefined => instance,
   };
 }
