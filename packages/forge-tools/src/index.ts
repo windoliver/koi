@@ -61,7 +61,7 @@ export { createMemoryStoreChangeNotifier } from "./store-notifier.js";
 export { createComposeForge } from "./tools/compose-forge.js";
 
 // forge_agent
-export type { OnForgeAgentSpawn } from "./tools/forge-agent.js";
+export type { ForgeSpawnData, OnForgeAgentSpawn } from "./tools/forge-agent.js";
 export { createForgeAgentTool } from "./tools/forge-agent.js";
 
 // forge_edit

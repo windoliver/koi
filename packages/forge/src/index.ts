@@ -240,6 +240,7 @@ export type {
   ForgeDeps,
   ForgeRegistrySyncConfig,
   ForgeResolverContext,
+  ForgeSpawnData,
   ForgeToolConfig,
   NetworkPolicy,
   OnForgeAgentSpawn,

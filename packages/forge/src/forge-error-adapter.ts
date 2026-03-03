@@ -38,6 +38,7 @@ const RESOLVE_MAP: Readonly<
   Record<Extract<ForgeError, { readonly stage: "resolve" }>["code"], ForgeMapping>
 > = {
   AUDIT_FAILED: { koiCode: "VALIDATION", retryable: RETRYABLE_DEFAULTS.VALIDATION },
+  ENGINE_RESOLVE_FAILED: { koiCode: "EXTERNAL", retryable: false },
   INSTALL_FAILED: { koiCode: "EXTERNAL", retryable: false },
   INSTALL_TIMEOUT: { koiCode: "TIMEOUT", retryable: RETRYABLE_DEFAULTS.TIMEOUT },
   INTEGRITY_MISMATCH: { koiCode: "VALIDATION", retryable: RETRYABLE_DEFAULTS.VALIDATION },

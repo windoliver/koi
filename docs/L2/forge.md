@@ -1112,13 +1112,54 @@ These are the tools an agent calls to forge bricks:
 All inputs accept optional `classification`, `contentMarkers`, `tags`, `requires`, and `files`.
 `requires.packages` enables npm dependency management (audit → install → scan → execute).
 
+### Engine auto-resolution (`forge_agent`)
+
+When a child agent's manifest declares an `engine` field (e.g. `engine: "deepagents"`),
+`forge_agent` can automatically resolve it to an `EngineAdapter` during the forge pipeline.
+This avoids every spawn-site duplicating manifest re-parsing and engine lookup.
+
+**How it works:**
+
+1. `ManifestParser.parse(yaml)` returns `{ ok: true, warnings, engine?: unknown }` —
+   the `engine` field carries whatever the manifest declared (string or object form).
+2. If `ForgeDeps.engineResolver` is provided **and** the parse result includes `engine`,
+   the handler calls `engineResolver(parseResult.engine)` eagerly.
+3. On success, the resolved `EngineAdapter` is passed to the `onSpawn` callback
+   via `ForgeSpawnData { artifact, engine }`.
+4. On failure, the forge fails fast with a `resolve` / `ENGINE_RESOLVE_FAILED` error —
+   the artifact is **not** saved.
+
+```
+manifest says engine: "rlm"
+    ↓
+manifestParser.parse() → { ok: true, engine: "rlm" }
+    ↓
+engineResolver("rlm") → EngineAdapter   (or error → fail fast)
+    ↓
+onSpawn({ artifact, engine })            (caller spawns child with resolved engine)
+```
+
+**Backward compatible:** If `engineResolver` is not provided in `ForgeDeps` or the manifest
+has no `engine` field, the behavior is unchanged — `onSpawn` receives `engine: undefined`.
+
+**Types:**
+
+```typescript
+interface ForgeSpawnData {
+  readonly artifact: AgentArtifact;
+  readonly engine?: EngineAdapter;    // resolved engine, if manifest declared one
+}
+
+type OnForgeAgentSpawn = (data: ForgeSpawnData) => void | Promise<void>;
+```
+
 ### Factory functions
 
 ```typescript
 // Create forge tools with custom deps
 createForgeToolTool(deps: ForgeDeps): Tool
 createForgeSkillTool(deps: ForgeDeps): Tool
-createForgeAgentTool(deps: ForgeDeps): Tool
+createForgeAgentTool(deps: ForgeDeps, onSpawn?: OnForgeAgentSpawn): Tool
 createForgeMiddlewareTool(deps: ForgeDeps): Tool
 createForgeChannelTool(deps: ForgeDeps): Tool
 createSearchForgeTool(deps: ForgeDeps): Tool

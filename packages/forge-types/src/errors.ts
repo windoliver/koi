@@ -70,6 +70,7 @@ export type ForgeError =
       readonly stage: "resolve";
       readonly code:
         | "AUDIT_FAILED"
+        | "ENGINE_RESOLVE_FAILED"
         | "INSTALL_FAILED"
         | "INSTALL_TIMEOUT"
         | "INTEGRITY_MISMATCH"
