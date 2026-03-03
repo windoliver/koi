@@ -21,6 +21,12 @@ export interface TaskableAgentSummary {
   readonly description: string;
 }
 
+/** Handle returned by findLive — includes agent state for routing decisions. */
+export interface LiveAgentHandle {
+  readonly agentId: AgentId;
+  readonly state: "idle" | "busy";
+}
+
 /**
  * Dynamic agent resolver — replaces static Map for agent lookup.
  * Enables registry-backed, catalog-backed, or file-system-backed discovery.
@@ -32,9 +38,9 @@ export interface AgentResolver {
   ) => TaskableAgent | undefined | Promise<TaskableAgent | undefined>;
   /** List all available agent summaries (for tool descriptor enum). */
   readonly list: () => readonly TaskableAgentSummary[] | Promise<readonly TaskableAgentSummary[]>;
-  /** Find a live agent of the given type (copilot routing). Returns AgentId if one is running. */
+  /** Find a live agent of the given type (copilot routing). Returns handle with state info. */
   readonly findLive?:
-    | ((agentType: string) => AgentId | undefined | Promise<AgentId | undefined>)
+    | ((agentType: string) => LiveAgentHandle | undefined | Promise<LiveAgentHandle | undefined>)
     | undefined;
 }
 
@@ -90,56 +96,6 @@ export interface TaskSpawnConfig {
   readonly message?: MessageFn | undefined;
 }
 
-/** Tool descriptor exposed to the model for the task tool. */
-export const TASK_TOOL_DESCRIPTOR: ToolDescriptor = {
-  name: "task",
-  description: "Delegate a task to a specialized subagent. Returns the agent's final response.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      description: {
-        type: "string",
-        description: "What the subagent should do — clear, self-contained instruction",
-      },
-      agent_type: {
-        type: "string",
-        description: "Which agent type to use (optional, defaults to general-purpose)",
-      },
-    },
-    required: ["description"],
-  },
-};
-
-/** Type guard for TaskSpawnResult. */
-export function isTaskSpawnSuccess(
-  result: TaskSpawnResult,
-): result is { readonly ok: true; readonly output: string } {
-  return result.ok === true;
-}
-
-/** Type guard for TaskSpawnResult failure. */
-export function isTaskSpawnFailure(
-  result: TaskSpawnResult,
-): result is { readonly ok: false; readonly error: string } {
-  return result.ok === false;
-}
-
-/** Creates an AgentResolver backed by a static ReadonlyMap (backward compat). */
-export function createMapAgentResolver(agents: ReadonlyMap<string, TaskableAgent>): AgentResolver {
-  return {
-    resolve(agentType: string): TaskableAgent | undefined {
-      return agents.get(agentType);
-    },
-    list(): readonly TaskableAgentSummary[] {
-      return [...agents.entries()].map(([key, agent]) => ({
-        key,
-        name: agent.name,
-        description: agent.description,
-      }));
-    },
-  };
-}
-
 /** Creates a ToolDescriptor with agent_type enum populated from summaries. */
 export function createTaskToolDescriptor(
   summaries: readonly TaskableAgentSummary[],
@@ -169,6 +125,41 @@ export function createTaskToolDescriptor(
         agent_type: agentTypeProperty,
       },
       required: ["description"],
+    },
+  };
+}
+
+/** Tool descriptor exposed to the model for the task tool (no agent enum). */
+export const TASK_TOOL_DESCRIPTOR: ToolDescriptor = createTaskToolDescriptor([]);
+
+/** Type guard for TaskSpawnResult. */
+export function isTaskSpawnSuccess(
+  result: TaskSpawnResult,
+): result is { readonly ok: true; readonly output: string } {
+  return result.ok === true;
+}
+
+/** Type guard for TaskSpawnResult failure. */
+export function isTaskSpawnFailure(
+  result: TaskSpawnResult,
+): result is { readonly ok: false; readonly error: string } {
+  return result.ok === false;
+}
+
+/** Creates an AgentResolver backed by a static ReadonlyMap (backward compat). */
+export function createMapAgentResolver(agents: ReadonlyMap<string, TaskableAgent>): AgentResolver {
+  const summaries: readonly TaskableAgentSummary[] = [...agents.entries()].map(([key, agent]) => ({
+    key,
+    name: agent.name,
+    description: agent.description,
+  }));
+
+  return {
+    resolve(agentType: string): TaskableAgent | undefined {
+      return agents.get(agentType);
+    },
+    list(): readonly TaskableAgentSummary[] {
+      return summaries;
     },
   };
 }

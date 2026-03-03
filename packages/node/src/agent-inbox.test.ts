@@ -1,6 +1,6 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, mock } from "bun:test";
 import type { AgentMessagePayload } from "./agent-inbox.js";
-import { createAgentInbox, MAX_INBOX_DEPTH } from "./agent-inbox.js";
+import { createAgentInbox, isAgentMessagePayload, MAX_INBOX_DEPTH } from "./agent-inbox.js";
 
 function makePayload(text: string): AgentMessagePayload {
   return {
@@ -87,5 +87,70 @@ describe("createAgentInbox", () => {
     expect(messages[MAX_INBOX_DEPTH - 1]?.payload.content).toEqual([
       { kind: "text", text: `msg-${String(MAX_INBOX_DEPTH)}` },
     ]);
+  });
+
+  it("calls onDrop when overflow drops a message", () => {
+    const onDrop = mock(() => {});
+    const inbox = createAgentInbox({ onDrop });
+
+    for (let i = 0; i < MAX_INBOX_DEPTH; i++) {
+      inbox.push("a1", makePayload(`msg-${String(i)}`));
+    }
+    expect(onDrop).not.toHaveBeenCalled();
+
+    inbox.push("a1", makePayload("overflow"));
+    expect(onDrop).toHaveBeenCalledTimes(1);
+
+    const call = onDrop.mock.calls[0] as unknown as [
+      { agentId: string; dropped: { payload: AgentMessagePayload } },
+    ];
+    expect(call[0].agentId).toBe("a1");
+    expect(call[0].dropped.payload.content).toEqual([{ kind: "text", text: "msg-0" }]);
+  });
+
+  it("does not call onDrop within capacity", () => {
+    const onDrop = mock(() => {});
+    const inbox = createAgentInbox({ onDrop });
+
+    inbox.push("a1", makePayload("within-capacity"));
+    expect(onDrop).not.toHaveBeenCalled();
+  });
+});
+
+describe("isAgentMessagePayload", () => {
+  it("accepts valid payload with text content block", () => {
+    expect(isAgentMessagePayload({ content: [{ kind: "text", text: "hi" }] })).toBe(true);
+  });
+
+  it("accepts empty content array (metadata-only message)", () => {
+    expect(isAgentMessagePayload({ content: [] })).toBe(true);
+  });
+
+  it("rejects number element in content", () => {
+    expect(isAgentMessagePayload({ content: [42] })).toBe(false);
+  });
+
+  it("rejects null element in content", () => {
+    expect(isAgentMessagePayload({ content: [null] })).toBe(false);
+  });
+
+  it("rejects object missing kind field", () => {
+    expect(isAgentMessagePayload({ content: [{ text: "no kind" }] })).toBe(false);
+  });
+
+  it("rejects non-object value (string)", () => {
+    expect(isAgentMessagePayload("not an object")).toBe(false);
+  });
+
+  it("rejects null", () => {
+    expect(isAgentMessagePayload(null)).toBe(false);
+  });
+
+  it("rejects object with missing content field", () => {
+    expect(isAgentMessagePayload({ senderId: "abc" })).toBe(false);
+  });
+
+  it("rejects object with non-array content field", () => {
+    expect(isAgentMessagePayload({ content: "not array" })).toBe(false);
   });
 });

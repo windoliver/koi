@@ -131,7 +131,7 @@ interface AgentSignalGroupPayload {
     readonly deadlineMs?: number | undefined;
 }
 type NodeState = "starting" | "connected" | "reconnecting" | "stopping" | "stopped";
-type NodeEventType = "connected" | "disconnected" | "reconnecting" | "reconnected" | "reconnect_exhausted" | "heartbeat_timeout" | "auth_started" | "auth_success" | "auth_failed" | "agent_dispatched" | "agent_suspended" | "agent_resumed" | "agent_terminated" | "agent_crashed" | "agent_recovered" | "tool_timeout" | "tool_error" | "memory_warning" | "memory_eviction" | "shutdown_started" | "shutdown_complete" | "pending_frame_sent" | "pending_frame_expired" | "pending_frame_dead_letter";
+type NodeEventType = "connected" | "disconnected" | "reconnecting" | "reconnected" | "reconnect_exhausted" | "heartbeat_timeout" | "auth_started" | "auth_success" | "auth_failed" | "agent_dispatched" | "agent_suspended" | "agent_resumed" | "agent_terminated" | "agent_crashed" | "agent_recovered" | "tool_timeout" | "tool_error" | "memory_warning" | "memory_eviction" | "shutdown_started" | "shutdown_complete" | "pending_frame_sent" | "pending_frame_expired" | "pending_frame_dead_letter" | "message_dropped" | "frame_dropped";
 interface NodeEvent {
     readonly type: NodeEventType;
     readonly timestamp: number;
@@ -240,6 +240,16 @@ interface QueuedAgentMessage {
     readonly payload: AgentMessagePayload;
     readonly receivedAt: number;
 }
+/** Metadata emitted when a message is dropped due to inbox overflow. */
+interface InboxDropEvent {
+    readonly agentId: string;
+    readonly dropped: QueuedAgentMessage;
+}
+/** Options for createAgentInbox(). */
+interface AgentInboxOptions {
+    /** Called when a message is dropped due to inbox overflow. */
+    readonly onDrop?: ((event: InboxDropEvent) => void) | undefined;
+}
 /** Per-agent message inbox with FIFO semantics. */
 interface AgentInbox {
     /** Append a message to the agent's queue. Drops oldest if over capacity. */
@@ -253,7 +263,7 @@ interface AgentInbox {
 }
 /** Validates that a value conforms to AgentMessagePayload at runtime. */
 declare function isAgentMessagePayload(value: unknown): value is AgentMessagePayload;
-declare function createAgentInbox(): AgentInbox;
+declare function createAgentInbox(options?: AgentInboxOptions): AgentInbox;
 
 /**
  * Per-agent outbound/inbound frame sequence counters.
@@ -755,6 +765,6 @@ declare function createFilesystemTool(allowedPaths?: readonly string[]): Tool;
 
 declare function createShellTool(): Tool;
 
-export { type AgentHost, type AgentInbox, type AgentMessagePayload, type AgentSignalGroupPayload, type AgentSignalPayload, type AgentStatusPayload, type AuthAckPayload, type AuthChallengePayload, type AuthConfig, type AuthHandshake, type AuthHandshakeConfig, type AuthPayload, type AuthResponsePayload, type CapabilitiesPayload, type CheckpointManager, type CheckpointManagerDeps, type CheckpointingEngineConfig, DEFAULT_DELIVERY_CONFIG, DEFAULT_TOOL_CALL_TIMEOUT_MS, type DeliveryManager, type DeliveryManagerConfig, type DeliveryManagerDeps, type DiscoveryConfig, type DiscoveryService, type FrameCounterState, type FrameCounters, type FrameDeduplicator, type FullKoiNode, type GatewayConnectionConfig, type HandshakePayload, type HeartbeatCallbacks, type HeartbeatConfig, type HeartbeatMonitor, type KoiNode, type LocalResolver, MAX_INBOX_DEPTH, type MemoryMetrics, type MemoryMonitor, type NodeCheckpoint, type NodeConfig, type NodeDeps, type NodeEvent, type NodeEventListener, type NodeEventType, type NodeFrame, type NodeFrameKind, type NodeMode, type NodePendingFrame, type NodeRecoveryPlan, type NodeSessionRecord, type NodeSessionStore, type NodeState, type QueuedAgentMessage, type ReconnectState, type RecoveryResult, type ResourcesConfig, type ServiceInfo, type StatusReporter, type ThinKoiNode, type ToolCallHandlerDeps, type ToolMeta, type ToolResolverConfig, type Transport, type TransportState, type WriteQueue, type WriteQueueConfig, computeReconnectDelay, createAgentHost, createAgentInbox, createAuthHandshake, createAuthPayload, createCheckpointManager, createCheckpointingEngine, createDeliveryManager, createDiscoveryService, createFilesystemTool, createFrameCounters, createFrameDeduplicator, createHeartbeatMonitor, createLocalResolver, createMemoryMonitor, createNode, createReconnectState, createShellTool, createStatusReporter, createTransport, createWriteQueue, decodeFrame, encodeFrame, generateCorrelationId, handleToolCall, isAgentMessagePayload, isCleanClose, nextAttempt, parseNodeConfig, resetReconnectState, signChallenge };
+export { type AgentHost, type AgentInbox, type AgentInboxOptions, type AgentMessagePayload, type AgentSignalGroupPayload, type AgentSignalPayload, type AgentStatusPayload, type AuthAckPayload, type AuthChallengePayload, type AuthConfig, type AuthHandshake, type AuthHandshakeConfig, type AuthPayload, type AuthResponsePayload, type CapabilitiesPayload, type CheckpointManager, type CheckpointManagerDeps, type CheckpointingEngineConfig, DEFAULT_DELIVERY_CONFIG, DEFAULT_TOOL_CALL_TIMEOUT_MS, type DeliveryManager, type DeliveryManagerConfig, type DeliveryManagerDeps, type DiscoveryConfig, type DiscoveryService, type FrameCounterState, type FrameCounters, type FrameDeduplicator, type FullKoiNode, type GatewayConnectionConfig, type HandshakePayload, type HeartbeatCallbacks, type HeartbeatConfig, type HeartbeatMonitor, type InboxDropEvent, type KoiNode, type LocalResolver, MAX_INBOX_DEPTH, type MemoryMetrics, type MemoryMonitor, type NodeCheckpoint, type NodeConfig, type NodeDeps, type NodeEvent, type NodeEventListener, type NodeEventType, type NodeFrame, type NodeFrameKind, type NodeMode, type NodePendingFrame, type NodeRecoveryPlan, type NodeSessionRecord, type NodeSessionStore, type NodeState, type QueuedAgentMessage, type ReconnectState, type RecoveryResult, type ResourcesConfig, type ServiceInfo, type StatusReporter, type ThinKoiNode, type ToolCallHandlerDeps, type ToolMeta, type ToolResolverConfig, type Transport, type TransportState, type WriteQueue, type WriteQueueConfig, computeReconnectDelay, createAgentHost, createAgentInbox, createAuthHandshake, createAuthPayload, createCheckpointManager, createCheckpointingEngine, createDeliveryManager, createDiscoveryService, createFilesystemTool, createFrameCounters, createFrameDeduplicator, createHeartbeatMonitor, createLocalResolver, createMemoryMonitor, createNode, createReconnectState, createShellTool, createStatusReporter, createTransport, createWriteQueue, decodeFrame, encodeFrame, generateCorrelationId, handleToolCall, isAgentMessagePayload, isCleanClose, nextAttempt, parseNodeConfig, resetReconnectState, signChallenge };
 "
 `;
