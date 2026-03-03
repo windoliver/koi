@@ -4,4 +4,6 @@ model: "anthropic:claude-haiku-4-5-20251001"
 description: "A guide agent that answers knowledge questions within a token budget"
 skills:
   - name: "domain-knowledge"
-    path: "./skills/domain"
+    source:
+      kind: filesystem
+      path: "./skills/domain"

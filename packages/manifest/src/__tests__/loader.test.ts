@@ -92,16 +92,20 @@ describe("loadManifestFromString", () => {
     }
   });
 
-  test("loads skills from YAML", () => {
+  test("loads skills from YAML with source discriminant", () => {
     const yaml = [
       'name: "test"',
       'version: "1.0.0"',
       'model: "x"',
       "skills:",
       '  - name: "code-review"',
-      '    path: "./skills/code-review"',
+      "    source:",
+      "      kind: filesystem",
+      '      path: "./skills/code-review"',
       '  - name: "deploy"',
-      '    path: "./skills/deploy"',
+      "    source:",
+      "      kind: filesystem",
+      '      path: "./skills/deploy"',
       "    options:",
       "      env: production",
     ].join("\n");
@@ -111,11 +115,11 @@ describe("loadManifestFromString", () => {
       expect(result.value.manifest.skills).toHaveLength(2);
       expect(result.value.manifest.skills?.[0]).toEqual({
         name: "code-review",
-        path: "./skills/code-review",
+        source: { kind: "filesystem", path: "./skills/code-review" },
       });
       expect(result.value.manifest.skills?.[1]).toEqual({
         name: "deploy",
-        path: "./skills/deploy",
+        source: { kind: "filesystem", path: "./skills/deploy" },
         options: { env: "production" },
       });
     }

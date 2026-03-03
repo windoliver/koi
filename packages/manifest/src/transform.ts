@@ -231,7 +231,7 @@ export function transformToLoadedManifest(raw: RawManifest): LoadedManifest {
   const skills: readonly SkillConfig[] | undefined = raw.skills?.map(
     (s): SkillConfig => ({
       name: s.name,
-      path: s.path,
+      source: s.source,
       ...(s.options !== undefined ? { options: toJsonObject(s.options) } : {}),
     }),
   );

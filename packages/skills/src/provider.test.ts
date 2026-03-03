@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
 import type { Agent, ComponentEvent } from "@koi/core";
-import { COMPONENT_PRIORITY } from "@koi/core";
+import { COMPONENT_PRIORITY, fsSkill } from "@koi/core";
 import { clearSkillCache } from "./loader.js";
 import { createSkillComponentProvider } from "./provider.js";
 
@@ -26,7 +26,7 @@ describe("createSkillComponentProvider", () => {
 
   test("attaches valid skill at metadata level initially", async () => {
     const provider = createSkillComponentProvider({
-      skills: [{ name: "code-review", path: "./valid-skill" }],
+      skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
     const result = await provider.attach(stubAgent);
@@ -59,7 +59,7 @@ describe("createSkillComponentProvider", () => {
 
   test("skips skill with invalid name and reports reason", async () => {
     const provider = createSkillComponentProvider({
-      skills: [{ name: "invalid-name-skill", path: "./invalid-name" }],
+      skills: [fsSkill("invalid-name-skill", "./invalid-name")],
       basePath: FIXTURES,
     });
     const result = await provider.attach(stubAgent);
@@ -71,7 +71,7 @@ describe("createSkillComponentProvider", () => {
 
   test("skips skill when directory not found", async () => {
     const provider = createSkillComponentProvider({
-      skills: [{ name: "missing", path: "./nonexistent" }],
+      skills: [fsSkill("missing", "./nonexistent")],
       basePath: FIXTURES,
     });
     const result = await provider.attach(stubAgent);
@@ -84,10 +84,7 @@ describe("createSkillComponentProvider", () => {
 
   test("first-wins on duplicate skill names", async () => {
     const provider = createSkillComponentProvider({
-      skills: [
-        { name: "code-review", path: "./valid-skill" },
-        { name: "code-review", path: "./valid-skill" },
-      ],
+      skills: [fsSkill("code-review", "./valid-skill"), fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
     const result = await provider.attach(stubAgent);
@@ -100,7 +97,7 @@ describe("createSkillComponentProvider", () => {
 
   test("caches result across multiple attach calls", async () => {
     const provider = createSkillComponentProvider({
-      skills: [{ name: "code-review", path: "./valid-skill" }],
+      skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
     const result1 = await provider.attach(stubAgent);
@@ -110,7 +107,7 @@ describe("createSkillComponentProvider", () => {
 
   test("loads at metadata level — content is description", async () => {
     const provider = createSkillComponentProvider({
-      skills: [{ name: "minimal-skill", path: "./minimal-skill" }],
+      skills: [fsSkill("minimal-skill", "./minimal-skill")],
       basePath: FIXTURES,
       loadLevel: "metadata",
     });
@@ -129,9 +126,9 @@ describe("createSkillComponentProvider", () => {
   test("handles mixed valid and invalid skills (partial success)", async () => {
     const provider = createSkillComponentProvider({
       skills: [
-        { name: "code-review", path: "./valid-skill" },
-        { name: "bad", path: "./invalid-name" },
-        { name: "minimal-skill", path: "./minimal-skill" },
+        fsSkill("code-review", "./valid-skill"),
+        fsSkill("bad", "./invalid-name"),
+        fsSkill("minimal-skill", "./minimal-skill"),
       ],
       basePath: FIXTURES,
     });
@@ -141,12 +138,23 @@ describe("createSkillComponentProvider", () => {
       expect(result.skipped.length).toBe(1);
     }
   });
+
+  test("throws when forged skills exist but no ForgeStore provided", () => {
+    expect(() =>
+      createSkillComponentProvider({
+        skills: [
+          { name: "forged-review", source: { kind: "forged", brickId: "sha256:abc" as never } },
+        ],
+        basePath: FIXTURES,
+      }),
+    ).toThrow("SkillConfig contains forged skills but no ForgeStore was provided");
+  });
 });
 
 describe("ProgressiveSkillProvider.getLevel", () => {
   test("returns metadata after initial attach", async () => {
     const provider = createSkillComponentProvider({
-      skills: [{ name: "code-review", path: "./valid-skill" }],
+      skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
     await provider.attach(stubAgent);
@@ -166,7 +174,7 @@ describe("ProgressiveSkillProvider.getLevel", () => {
 describe("ProgressiveSkillProvider.promote", () => {
   test("promotes skill from metadata to body", async () => {
     const provider = createSkillComponentProvider({
-      skills: [{ name: "code-review", path: "./valid-skill" }],
+      skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
     await provider.attach(stubAgent);
@@ -188,7 +196,7 @@ describe("ProgressiveSkillProvider.promote", () => {
 
   test("promotes skill from metadata to bundled", async () => {
     const provider = createSkillComponentProvider({
-      skills: [{ name: "code-review", path: "./valid-skill" }],
+      skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
     await provider.attach(stubAgent);
@@ -213,7 +221,7 @@ describe("ProgressiveSkillProvider.promote", () => {
 
   test("promotes to configured loadLevel when no targetLevel given", async () => {
     const provider = createSkillComponentProvider({
-      skills: [{ name: "code-review", path: "./valid-skill" }],
+      skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
       loadLevel: "bundled",
     });
@@ -227,7 +235,7 @@ describe("ProgressiveSkillProvider.promote", () => {
 
   test("no-op when already at target level", async () => {
     const provider = createSkillComponentProvider({
-      skills: [{ name: "code-review", path: "./valid-skill" }],
+      skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
     await provider.attach(stubAgent);
@@ -240,7 +248,7 @@ describe("ProgressiveSkillProvider.promote", () => {
 
   test("no-op when already above target level", async () => {
     const provider = createSkillComponentProvider({
-      skills: [{ name: "code-review", path: "./valid-skill" }],
+      skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
     await provider.attach(stubAgent);
@@ -272,7 +280,7 @@ describe("ProgressiveSkillProvider.promote", () => {
 describe("ProgressiveSkillProvider.watch", () => {
   test("fires attached event on promote", async () => {
     const provider = createSkillComponentProvider({
-      skills: [{ name: "code-review", path: "./valid-skill" }],
+      skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
     await provider.attach(stubAgent);
@@ -293,7 +301,7 @@ describe("ProgressiveSkillProvider.watch", () => {
 
   test("does not fire event on no-op promote", async () => {
     const provider = createSkillComponentProvider({
-      skills: [{ name: "code-review", path: "./valid-skill" }],
+      skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
     await provider.attach(stubAgent);
@@ -313,7 +321,7 @@ describe("ProgressiveSkillProvider.watch", () => {
 
   test("unsubscribe stops further events", async () => {
     const provider = createSkillComponentProvider({
-      skills: [{ name: "code-review", path: "./valid-skill" }],
+      skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
     await provider.attach(stubAgent);

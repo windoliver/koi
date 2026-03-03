@@ -7,7 +7,7 @@
 
 // Catalog integration
 export { discoverSkillCatalogEntries, mapSkillToCatalogEntry } from "./catalog.js";
-// Loader
+// Loader (filesystem)
 export {
   clearSkillCache,
   discoverSkillDirs,
@@ -16,6 +16,14 @@ export {
   loadSkillBundled,
   loadSkillMetadata,
 } from "./loader.js";
+// Loader (forge)
+export {
+  clearForgeSkillCache,
+  loadForgeSkill,
+  loadForgeSkillBody,
+  loadForgeSkillBundled,
+  loadForgeSkillMetadata,
+} from "./loader-forge.js";
 // Parse
 export type { ParsedSkillMd } from "./parse.js";
 export { parseSkillMd } from "./parse.js";

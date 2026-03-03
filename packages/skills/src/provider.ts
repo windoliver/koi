@@ -1,6 +1,7 @@
 /**
- * ComponentProvider for filesystem-based Agent Skills with progressive loading.
+ * ComponentProvider for Agent Skills with progressive loading.
  *
+ * Supports both filesystem (SKILL.md) and forged (ForgeStore) skill sources.
  * Initial attach loads all skills at "metadata" level (cheapest). Skills can then
  * be promoted to higher levels ("body", "bundled") on demand via promote().
  *
@@ -13,16 +14,20 @@ import type {
   Agent,
   AgentId,
   AttachResult,
+  BrickId,
   ComponentEvent,
+  ForgeStore,
   KoiError,
   Result,
   SkillComponent,
   SkillConfig,
+  SkillSource,
   SkippedComponent,
 } from "@koi/core";
 import { agentId, COMPONENT_PRIORITY, skillToken } from "@koi/core";
 import type { ScanFinding } from "@koi/skill-scanner";
 import { loadSkill, resolveSecurePath } from "./loader.js";
+import { loadForgeSkill } from "./loader-forge.js";
 import type {
   ProgressiveSkillProvider,
   SkillBundledEntry,
@@ -96,21 +101,33 @@ export interface SkillProviderConfig {
   readonly loadLevel?: SkillLoadLevel;
   /** Called when security scanner finds issues in a skill. Receives skill name and findings. */
   readonly onSecurityFinding?: (name: string, findings: readonly ScanFinding[]) => void;
+  /** ForgeStore instance — required if any skill has source.kind === "forged". */
+  readonly store?: ForgeStore;
 }
 
 // ---------------------------------------------------------------------------
 // Internal types
 // ---------------------------------------------------------------------------
 
-interface PendingSkill {
+interface PendingFilesystemSkill {
+  readonly kind: "filesystem";
   readonly skillConfig: SkillConfig;
   readonly securePath: string;
 }
 
+interface PendingForgedSkill {
+  readonly kind: "forged";
+  readonly skillConfig: SkillConfig;
+  readonly brickId: BrickId;
+}
+
+type PendingSkill = PendingFilesystemSkill | PendingForgedSkill;
+
 interface LoadOutcome {
   readonly skillConfig: SkillConfig;
-  readonly securePath: string;
   readonly result: Result<SkillEntry, KoiError>;
+  /** Present only for filesystem skills. */
+  readonly securePath?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +135,7 @@ interface LoadOutcome {
 // ---------------------------------------------------------------------------
 
 /**
- * Creates a ProgressiveSkillProvider that loads filesystem skills from SKILL.md files.
+ * Creates a ProgressiveSkillProvider that loads skills from filesystem or ForgeStore.
  *
  * - Priority: BUNDLED (100) — forge skills (0-50) win on name collision
  * - Initial load: "metadata" level for all skills (cheapest)
@@ -126,11 +143,27 @@ interface LoadOutcome {
  * - Parallel loading via Promise.allSettled
  * - Partial success: failed loads go to `skipped`, rest succeed
  * - First-wins on duplicate skill names
+ *
+ * @throws Error if forged skills exist but no ForgeStore was provided
  */
 export function createSkillComponentProvider(
   config: SkillProviderConfig,
 ): ProgressiveSkillProvider {
-  const { skills, basePath, loadLevel = "body", onSecurityFinding } = config;
+  const { skills, basePath, loadLevel = "body", onSecurityFinding, store } = config;
+
+  // Fail-fast: error at creation if forged skills exist but no ForgeStore
+  const hasForgedSkills = skills.some((s) => s.source.kind === "forged");
+  if (hasForgedSkills && store === undefined) {
+    throw new Error("SkillConfig contains forged skills but no ForgeStore was provided");
+  }
+
+  // Narrow store for forged skill paths — throws if missing (should never happen after fail-fast)
+  const requireStore = (): ForgeStore => {
+    if (store === undefined) {
+      throw new Error("ForgeStore is required for forged skills");
+    }
+    return store;
+  };
 
   // Internal mutable state
   // let: cached/components/attachedAgentId are set once during first attach()
@@ -139,6 +172,7 @@ export function createSkillComponentProvider(
   let attachedAgentId: AgentId = agentId("unknown");
 
   const levels = new Map<string, SkillLoadLevel>();
+  const skillSources = new Map<string, SkillSource>();
   const resolvedPaths = new Map<string, string>();
   const listeners = new Set<(event: ComponentEvent) => void>();
 
@@ -155,7 +189,7 @@ export function createSkillComponentProvider(
     const skipped: SkippedComponent[] = [];
     const seenNames = new Set<string>();
 
-    // Phase 1: resolve paths sequentially (cheap I/O, needs dedup ordering)
+    // Phase 1: resolve paths / validate sources sequentially (cheap I/O, needs dedup ordering)
     const pending: PendingSkill[] = [];
 
     for (const skillConfig of skills) {
@@ -168,14 +202,22 @@ export function createSkillComponentProvider(
       }
       seenNames.add(skillConfig.name);
 
-      const resolvedDir = resolve(basePath, skillConfig.path);
-      const secureResult = await resolveSecurePath(resolvedDir, basePath);
-      if (!secureResult.ok) {
-        skipped.push({ name: skillConfig.name, reason: secureResult.error.message });
-        continue;
+      switch (skillConfig.source.kind) {
+        case "filesystem": {
+          const resolvedDir = resolve(basePath, skillConfig.source.path);
+          const secureResult = await resolveSecurePath(resolvedDir, basePath);
+          if (!secureResult.ok) {
+            skipped.push({ name: skillConfig.name, reason: secureResult.error.message });
+            continue;
+          }
+          pending.push({ kind: "filesystem", skillConfig, securePath: secureResult.value });
+          break;
+        }
+        case "forged": {
+          pending.push({ kind: "forged", skillConfig, brickId: skillConfig.source.brickId });
+          break;
+        }
       }
-
-      pending.push({ skillConfig, securePath: secureResult.value });
     }
 
     // Phase 2: load all skills in parallel at "metadata" level
@@ -185,8 +227,23 @@ export function createSkillComponentProvider(
           onSecurityFinding !== undefined
             ? (findings: readonly ScanFinding[]) => onSecurityFinding(p.skillConfig.name, findings)
             : undefined;
-        const result = await loadSkill(p.securePath, "metadata", findingCallback);
-        return { skillConfig: p.skillConfig, securePath: p.securePath, result };
+
+        switch (p.kind) {
+          case "filesystem": {
+            const result = await loadSkill(p.securePath, "metadata", findingCallback);
+            return { skillConfig: p.skillConfig, securePath: p.securePath, result };
+          }
+          case "forged": {
+            // store is guaranteed non-undefined by fail-fast check above
+            const result = await loadForgeSkill(
+              p.brickId,
+              requireStore(),
+              "metadata",
+              findingCallback,
+            );
+            return { skillConfig: p.skillConfig, result };
+          }
+        }
       }),
     );
 
@@ -208,7 +265,10 @@ export function createSkillComponentProvider(
       const tokenKey: string = skillToken(entry.name);
       components.set(tokenKey, component);
       levels.set(entry.name, "metadata");
-      resolvedPaths.set(entry.name, securePath);
+      skillSources.set(entry.name, skillConfig.source);
+      if (securePath !== undefined) {
+        resolvedPaths.set(entry.name, securePath);
+      }
     }
 
     cached = { components, skipped };
@@ -243,25 +303,34 @@ export function createSkillComponentProvider(
       return { ok: true, value: undefined };
     }
 
-    const securePath = resolvedPaths.get(name);
-    if (securePath === undefined) {
-      return {
-        ok: false,
-        error: {
-          code: "INTERNAL",
-          message: `No resolved path for skill "${name}"`,
-          retryable: false,
-          context: { name },
-        },
-      };
-    }
-
+    const source = skillSources.get(name);
     const findingCallback =
       onSecurityFinding !== undefined
         ? (findings: readonly ScanFinding[]) => onSecurityFinding(name, findings)
         : undefined;
 
-    const loadResult = await loadSkill(securePath, target, findingCallback);
+    // let: loadResult assigned in exactly one branch
+    let loadResult: Result<SkillEntry, KoiError>;
+
+    if (source?.kind === "forged") {
+      // store is guaranteed non-undefined by fail-fast check
+      loadResult = await loadForgeSkill(source.brickId, requireStore(), target, findingCallback);
+    } else {
+      const securePath = resolvedPaths.get(name);
+      if (securePath === undefined) {
+        return {
+          ok: false,
+          error: {
+            code: "INTERNAL",
+            message: `No resolved path for skill "${name}"`,
+            retryable: false,
+            context: { name },
+          },
+        };
+      }
+      loadResult = await loadSkill(securePath, target, findingCallback);
+    }
+
     if (!loadResult.ok) {
       return { ok: false, error: loadResult.error };
     }

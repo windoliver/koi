@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
 import type { Agent, SkillComponent } from "@koi/core";
+import { fsSkill } from "@koi/core";
 import { loadSkillBody, loadSkillBundled } from "../loader.js";
 import { parseSkillMd } from "../parse.js";
 import { createSkillComponentProvider } from "../provider.js";
@@ -29,7 +30,7 @@ describe("end-to-end pipeline", () => {
 
     // Step 4: Load via provider
     const provider = createSkillComponentProvider({
-      skills: [{ name: "code-review", path: "./valid-skill" }],
+      skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
 
@@ -76,8 +77,8 @@ describe("end-to-end pipeline", () => {
   test("multiple skills from manifest-style config", async () => {
     const provider = createSkillComponentProvider({
       skills: [
-        { name: "code-review", path: "./valid-skill" },
-        { name: "minimal-skill", path: "./minimal-skill" },
+        fsSkill("code-review", "./valid-skill"),
+        fsSkill("minimal-skill", "./minimal-skill"),
       ],
       basePath: FIXTURES,
     });
