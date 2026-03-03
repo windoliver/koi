@@ -231,16 +231,20 @@ export function createForgeComponentProvider(
     const nameTracker: Map<string, string> = new Map();
     const skipped: SkippedComponent[] = [];
 
-    // Pass 1: Build available tool names set for requires.tools checking
+    // Pass 1: Build available tool + agent names sets for requires checking
     const availableToolNames: Set<string> = new Set();
+    const availableAgentNames: Set<string> = new Set();
     for (const brick of searchResult.value) {
-      if (brick.kind === "tool" && brick.lifecycle === "active") {
-        if (!isScopeVisible(brick.scope, config.scope)) continue;
-        if (brick.scope === "zone" && config.zoneId !== undefined) {
-          const zoneTag = `zone:${config.zoneId}`;
-          if (!brick.tags.includes(zoneTag)) continue;
-        }
+      if (brick.lifecycle !== "active") continue;
+      if (!isScopeVisible(brick.scope, config.scope)) continue;
+      if (brick.scope === "zone" && config.zoneId !== undefined) {
+        const zoneTag = `zone:${config.zoneId}`;
+        if (!brick.tags.includes(zoneTag)) continue;
+      }
+      if (brick.kind === "tool") {
         availableToolNames.add(brick.name);
+      } else if (brick.kind === "agent") {
+        availableAgentNames.add(brick.name);
       }
     }
 
@@ -265,7 +269,12 @@ export function createForgeComponentProvider(
       }
 
       // Requires enforcement: skip bricks with unsatisfied requirements
-      const requiresResult = checkBrickRequires(brick.requires, availableToolNames);
+      const requiresResult = checkBrickRequires(
+        brick.requires,
+        availableToolNames,
+        undefined,
+        availableAgentNames,
+      );
       if (!requiresResult.satisfied) {
         const v = requiresResult.violation;
         const detail = v !== undefined ? `${v.kind}:${v.name}` : "unknown";

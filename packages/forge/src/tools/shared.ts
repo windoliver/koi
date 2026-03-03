@@ -91,6 +91,7 @@ export interface ParsedBaseInput {
         readonly bins?: readonly string[] | undefined;
         readonly env?: readonly string[] | undefined;
         readonly tools?: readonly string[] | undefined;
+        readonly agents?: readonly string[] | undefined;
         readonly packages?: Readonly<Record<string, string>> | undefined;
         readonly network?: boolean | undefined;
       }
@@ -155,6 +156,7 @@ const baseInputFields = {
       bins: z.array(z.string()).optional(),
       env: z.array(z.string()).optional(),
       tools: z.array(z.string()).optional(),
+      agents: z.array(z.string()).optional(),
       packages: z.record(z.string(), z.string()).optional(),
       network: z.boolean().optional(),
     })
@@ -340,6 +342,7 @@ export function mapParsedBaseFields(parsed: ParsedBaseInput): {
     readonly bins?: readonly string[];
     readonly env?: readonly string[];
     readonly tools?: readonly string[];
+    readonly agents?: readonly string[];
     readonly packages?: Readonly<Record<string, string>>;
     readonly network?: boolean;
   };
@@ -356,6 +359,7 @@ export function mapParsedBaseFields(parsed: ParsedBaseInput): {
             ...(parsed.requires.bins !== undefined ? { bins: parsed.requires.bins } : {}),
             ...(parsed.requires.env !== undefined ? { env: parsed.requires.env } : {}),
             ...(parsed.requires.tools !== undefined ? { tools: parsed.requires.tools } : {}),
+            ...(parsed.requires.agents !== undefined ? { agents: parsed.requires.agents } : {}),
             ...(parsed.requires.packages !== undefined
               ? { packages: parsed.requires.packages }
               : {}),

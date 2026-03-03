@@ -108,6 +108,40 @@ describe("checkBrickRequires", () => {
   });
 
   // -------------------------------------------------------------------------
+  // agents
+  // -------------------------------------------------------------------------
+
+  describe("agents", () => {
+    test("satisfied when agent is available", () => {
+      const requires: BrickRequires = { agents: ["summarizer"] };
+      const agentNames: ReadonlySet<string> = new Set(["summarizer"]);
+      const result = checkBrickRequires(requires, EMPTY_TOOLS, undefined, agentNames);
+      expect(result.satisfied).toBe(true);
+    });
+
+    test("violation when agent is missing", () => {
+      const requires: BrickRequires = { agents: ["summarizer"] };
+      const result = checkBrickRequires(requires, EMPTY_TOOLS, undefined, new Set());
+      expect(result.satisfied).toBe(false);
+      expect(result.violation).toEqual({ kind: "agent", name: "summarizer" });
+    });
+
+    test("reports first missing agent when multiple are absent", () => {
+      const requires: BrickRequires = { agents: ["summarizer", "web-crawler"] };
+      const result = checkBrickRequires(requires, EMPTY_TOOLS, undefined, new Set());
+      expect(result.satisfied).toBe(false);
+      expect(result.violation).toEqual({ kind: "agent", name: "summarizer" });
+    });
+
+    test("defaults to empty set when availableAgentNames not provided", () => {
+      const requires: BrickRequires = { agents: ["summarizer"] };
+      const result = checkBrickRequires(requires, EMPTY_TOOLS);
+      expect(result.satisfied).toBe(false);
+      expect(result.violation).toEqual({ kind: "agent", name: "summarizer" });
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // packages
   // -------------------------------------------------------------------------
 
@@ -191,16 +225,18 @@ describe("checkBrickRequires", () => {
   // -------------------------------------------------------------------------
 
   describe("combined requirements", () => {
-    test("satisfied when all five requirement kinds pass", () => {
+    test("satisfied when all six requirement kinds pass", () => {
       const requires: BrickRequires = {
         bins: [PRESENT_BIN],
         env: [PRESENT_ENV],
         tools: ["foo"],
+        agents: ["summarizer"],
         packages: { "bun:test": "0.0.0" },
         network: true,
       };
       const policy: NetworkPolicy = { allowed: true };
-      const result = checkBrickRequires(requires, TOOLS_WITH_FOO, policy);
+      const agentNames: ReadonlySet<string> = new Set(["summarizer"]);
+      const result = checkBrickRequires(requires, TOOLS_WITH_FOO, policy, agentNames);
       expect(result.satisfied).toBe(true);
       expect(result.violation).toBeUndefined();
     });
@@ -239,11 +275,12 @@ describe("checkBrickRequires", () => {
       expect(result.violation?.kind).toBe("env");
     });
 
-    test("tools fails before packages when bins and env pass", () => {
+    test("tools fails before agents when bins and env pass", () => {
       const requires: BrickRequires = {
         bins: [PRESENT_BIN],
         env: [PRESENT_ENV],
         tools: ["missing"],
+        agents: ["missing-agent"],
         packages: { __koi_missing__: "1.0.0" },
         network: true,
       };
@@ -253,16 +290,33 @@ describe("checkBrickRequires", () => {
       expect(result.violation?.kind).toBe("tool");
     });
 
-    test("packages fails before network when bins, env, and tools pass", () => {
+    test("agents fails before packages when bins, env, and tools pass", () => {
       const requires: BrickRequires = {
         bins: [PRESENT_BIN],
         env: [PRESENT_ENV],
         tools: ["foo"],
+        agents: ["missing-agent"],
         packages: { __koi_missing__: "1.0.0" },
         network: true,
       };
       const policy: NetworkPolicy = { allowed: false };
       const result = checkBrickRequires(requires, TOOLS_WITH_FOO, policy);
+      expect(result.satisfied).toBe(false);
+      expect(result.violation?.kind).toBe("agent");
+    });
+
+    test("packages fails before network when bins, env, tools, and agents pass", () => {
+      const requires: BrickRequires = {
+        bins: [PRESENT_BIN],
+        env: [PRESENT_ENV],
+        tools: ["foo"],
+        agents: ["summarizer"],
+        packages: { __koi_missing__: "1.0.0" },
+        network: true,
+      };
+      const policy: NetworkPolicy = { allowed: false };
+      const agentNames: ReadonlySet<string> = new Set(["summarizer"]);
+      const result = checkBrickRequires(requires, TOOLS_WITH_FOO, policy, agentNames);
       expect(result.satisfied).toBe(false);
       expect(result.violation?.kind).toBe("package");
     });
@@ -272,11 +326,13 @@ describe("checkBrickRequires", () => {
         bins: [PRESENT_BIN],
         env: [PRESENT_ENV],
         tools: ["foo"],
+        agents: ["summarizer"],
         packages: { "bun:test": "0.0.0" },
         network: true,
       };
       const policy: NetworkPolicy = { allowed: false };
-      const result = checkBrickRequires(requires, TOOLS_WITH_FOO, policy);
+      const agentNames: ReadonlySet<string> = new Set(["summarizer"]);
+      const result = checkBrickRequires(requires, TOOLS_WITH_FOO, policy, agentNames);
       expect(result.satisfied).toBe(false);
       expect(result.violation?.kind).toBe("network");
     });

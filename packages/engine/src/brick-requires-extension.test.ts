@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { AgentManifest, KernelExtension, SkillComponent, ValidationResult } from "@koi/core";
-import { createSkillRequiresExtension } from "./skill-requires-extension.js";
+import { createBrickRequiresExtension } from "./brick-requires-extension.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -18,12 +18,24 @@ function makeComponents(
   return new Map(entries);
 }
 
-function makeSkill(name: string, requiredTools?: readonly string[]): SkillComponent {
+function makeSkill(
+  name: string,
+  requiredTools?: readonly string[],
+  requiredAgents?: readonly string[],
+): SkillComponent {
+  const requires: {
+    readonly tools?: readonly string[];
+    readonly agents?: readonly string[];
+  } = {
+    ...(requiredTools !== undefined ? { tools: requiredTools } : {}),
+    ...(requiredAgents !== undefined ? { agents: requiredAgents } : {}),
+  };
+  const hasRequires = requiredTools !== undefined || requiredAgents !== undefined;
   return {
     name,
     description: `Skill ${name}`,
     content: `# ${name}`,
-    ...(requiredTools !== undefined ? { requires: { tools: requiredTools } } : {}),
+    ...(hasRequires ? { requires } : {}),
   };
 }
 
@@ -42,13 +54,13 @@ function validate(
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("createSkillRequiresExtension", () => {
+describe("createBrickRequiresExtension", () => {
   afterEach(() => {
     mock.restore();
   });
 
   test("returns ok when no skills have requires", () => {
-    const ext = createSkillRequiresExtension();
+    const ext = createBrickRequiresExtension();
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
     const components = makeComponents([
@@ -62,7 +74,7 @@ describe("createSkillRequiresExtension", () => {
   });
 
   test("returns ok when skill requires are satisfied", () => {
-    const ext = createSkillRequiresExtension();
+    const ext = createBrickRequiresExtension();
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
     const components = makeComponents([
@@ -77,7 +89,7 @@ describe("createSkillRequiresExtension", () => {
   });
 
   test("warns when skill requires unsatisfied tool", () => {
-    const ext = createSkillRequiresExtension();
+    const ext = createBrickRequiresExtension();
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
     const components = makeComponents([
@@ -93,7 +105,7 @@ describe("createSkillRequiresExtension", () => {
   });
 
   test("handles multiple skills with mixed satisfaction", () => {
-    const ext = createSkillRequiresExtension();
+    const ext = createBrickRequiresExtension();
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
     const components = makeComponents([
@@ -110,8 +122,8 @@ describe("createSkillRequiresExtension", () => {
     expect(warnSpy.mock.calls[1]?.[0]).toContain("scraper");
   });
 
-  test("ignores requires without tools field", () => {
-    const ext = createSkillRequiresExtension();
+  test("ignores requires without tools or agents field", () => {
+    const ext = createBrickRequiresExtension();
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
     const skill: SkillComponent = {
@@ -129,17 +141,68 @@ describe("createSkillRequiresExtension", () => {
   });
 
   test("has correct name and priority", () => {
-    const ext = createSkillRequiresExtension();
-    expect(ext.name).toBe("koi:skill-requires");
+    const ext = createBrickRequiresExtension();
+    expect(ext.name).toBe("koi:brick-requires");
     expect(ext.priority).toBe(0); // EXTENSION_PRIORITY.CORE
   });
 
   test("returns ok with empty components map", () => {
-    const ext = createSkillRequiresExtension();
+    const ext = createBrickRequiresExtension();
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
     const result = validate(ext, new Map());
     expect(result).toEqual({ ok: true });
     expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Agent requires
+  // -------------------------------------------------------------------------
+
+  describe("agents", () => {
+    test("no warn when requires.agents satisfied", () => {
+      const ext = createBrickRequiresExtension();
+      const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+      const components = makeComponents([
+        ["agent:web-crawler", { name: "web-crawler" }],
+        ["skill:deep-research", makeSkill("deep-research", undefined, ["web-crawler"])],
+      ]);
+
+      const result = validate(ext, components);
+      expect(result).toEqual({ ok: true });
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    test("warns when required agent is absent", () => {
+      const ext = createBrickRequiresExtension();
+      const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+      const components = makeComponents([
+        ["skill:deep-research", makeSkill("deep-research", undefined, ["web-crawler"])],
+      ]);
+
+      const result = validate(ext, components);
+      expect(result).toEqual({ ok: true });
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0]?.[0]).toContain("deep-research");
+      expect(warnSpy.mock.calls[0]?.[0]).toContain("web-crawler");
+    });
+
+    test("satisfied tools + missing agents produces agent warning only", () => {
+      const ext = createBrickRequiresExtension();
+      const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+      const components = makeComponents([
+        ["tool:calculator", { descriptor: { name: "calculator" } }],
+        ["skill:research", makeSkill("research", ["calculator"], ["summarizer"])],
+      ]);
+
+      const result = validate(ext, components);
+      expect(result).toEqual({ ok: true });
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0]?.[0]).toContain("summarizer");
+      expect(warnSpy.mock.calls[0]?.[0]).toContain("agent");
+    });
   });
 });

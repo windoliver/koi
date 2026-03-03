@@ -35,7 +35,7 @@ createKoi(options) → KoiRuntime
           ▼
  ┌─────────────────┐
  │ composeExtensions│  2. Compose kernel extensions (governance, guards,
- │ ()               │     skill-requires, user extensions)
+ │ ()               │     brick-requires, user extensions)
  └────────┬────────┘
           ▼
  ┌─────────────────┐

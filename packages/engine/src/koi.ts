@@ -40,6 +40,7 @@ import { agentId, INBOX, runId, sessionId, toolToken, turnId } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
 import { runWithExecutionContext } from "@koi/execution-context";
 import { AgentEntity } from "./agent-entity.js";
+import { createBrickRequiresExtension } from "./brick-requires-extension.js";
 import {
   composeModelChain,
   composeModelStreamChain,
@@ -53,7 +54,6 @@ import { createDedupedToolsAccessor } from "./deduped-tools-accessor.js";
 import { composeExtensions, createDefaultGuardExtension } from "./extension-composer.js";
 import { createGovernanceExtension } from "./governance-extension.js";
 import { createGovernanceProvider } from "./governance-provider.js";
-import { createSkillRequiresExtension } from "./skill-requires-extension.js";
 import type { CreateKoiOptions, KoiRuntime } from "./types.js";
 
 /** Generate a unique process ID for a new agent. */
@@ -134,11 +134,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     ...(options.loopDetection !== undefined ? { loopDetection: options.loopDetection } : {}),
     ...(options.spawn !== undefined ? { spawn: options.spawn } : {}),
   });
-  const skillRequiresExt = createSkillRequiresExtension();
+  const brickRequiresExt = createBrickRequiresExtension();
   const allExtensions = [
     governanceExt,
     defaultGuardExt,
-    skillRequiresExt,
+    brickRequiresExt,
     ...(options.extensions ?? []),
   ];
 

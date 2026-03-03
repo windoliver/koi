@@ -274,9 +274,15 @@ export function createForgeRuntime(options: CreateForgeRuntimeOptions): ForgeRun
     const artifact = cache.get(name);
     if (artifact === undefined) return undefined;
 
-    // Runtime requires enforcement (bins, env, tools) — mirrors ForgeComponentProvider
+    // Runtime requires enforcement (bins, env, tools, agents) — mirrors ForgeComponentProvider
     const toolNames = await ensureCache();
-    const requiresResult = checkBrickRequires(artifact.requires, new Set(toolNames.keys()));
+    const agentCache = await ensureKindCache("agent");
+    const requiresResult = checkBrickRequires(
+      artifact.requires,
+      new Set(toolNames.keys()),
+      undefined,
+      new Set(agentCache.keys()),
+    );
     if (!requiresResult.satisfied) return undefined;
 
     return mapBrickToComponent<K>(artifact);
