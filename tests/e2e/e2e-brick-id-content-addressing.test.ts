@@ -37,6 +37,7 @@ import type { ForgeDeps, ForgeResult } from "@koi/forge";
 import {
   createDefaultForgeConfig,
   createForgeComponentProvider,
+  createForgePipeline,
   createForgeSkillTool,
   createForgeToolTool,
   createInMemoryForgeStore,
@@ -117,6 +118,7 @@ function defaultDeps(
       sessionId: "e2e-session",
       forgesThisSession: sessionForges,
     },
+    pipeline: createForgePipeline(),
   };
 }
 

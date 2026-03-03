@@ -27,6 +27,7 @@ import { createLoopAdapter } from "@koi/engine-loop";
 import type { ForgeDeps, PromoteResult, ToolArtifact } from "@koi/forge";
 import {
   createDefaultForgeConfig,
+  createForgePipeline,
   createInMemoryForgeStore,
   createPromoteForgeTool,
 } from "@koi/forge";
@@ -88,6 +89,7 @@ function createTestDeps(overrides?: Partial<ForgeDeps>): ForgeDeps {
     // agentId must match DEFAULT_PROVENANCE.metadata.agentId ("agent-1")
     // because isVisibleToAgent requires matching agentId for scope: "agent" bricks
     context: { agentId: "agent-1", depth: 0, sessionId: "e2e-session", forgesThisSession: 0 },
+    pipeline: createForgePipeline(),
     ...overrides,
   };
 }
