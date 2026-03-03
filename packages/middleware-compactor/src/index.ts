@@ -18,6 +18,7 @@ export {
 } from "./compactor-governance-contributor.js";
 export type { CompactorMiddleware } from "./compactor-middleware.js";
 export { createCompactorMiddleware } from "./compactor-middleware.js";
+export { createCompositeArchiver } from "./composite-archiver.js";
 export { descriptor } from "./descriptor.js";
 export { createFactExtractingArchiver } from "./fact-extracting-archiver.js";
 export type {
@@ -30,6 +31,8 @@ export { createMemoryCompactionStore } from "./memory-compaction-store.js";
 export type { PressureTrendTracker } from "./pressure-trend.js";
 export { createPressureTrendTracker } from "./pressure-trend.js";
 export { formatConventionBlock } from "./prompt.js";
+export type { SnapshotArchiverOptions } from "./snapshot-archiver.js";
+export { createSnapshotArchiver } from "./snapshot-archiver.js";
 export type {
   CompactionArchiver,
   CompactionStore,

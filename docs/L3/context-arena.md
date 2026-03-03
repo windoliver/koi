@@ -218,6 +218,26 @@ When `memoryFs` is enabled, facts extracted during squash and compaction are per
 
 **Single instance guarantee:** `createFsMemory()` is called exactly once. The same `FsMemory` instance is shared between the memory provider (which exposes tools) and the squash/compactor middleware (which extract facts). No duplicate file handles or inconsistent state.
 
+### Compactor Archiver Wiring
+
+The arena automatically wires a durable archiver for the compactor so that original messages are preserved before summarization:
+
+```
+resolved.archiver (SnapshotChainStore)
+        │
+        ▼
+  createSnapshotArchiver(store, { sessionId })
+        │
+        ├──► without memory: snapshotArchiver used directly
+        │
+        └──► with memory: createCompositeArchiver([
+                 snapshotArchiver,           ← raw message preservation
+                 factExtractingArchiver,     ← semantic fact extraction
+             ])
+```
+
+The snapshot archiver writes to chain `compact:{sessionId}` (namespace-separated from squash's `squash:{sessionId}`). Both chains share the same `SnapshotChainStore` instance but track independent histories. On store errors, the archiver throws so `compact.ts`'s existing try/catch can log the failure.
+
 ### Search Wiring (retriever / indexer)
 
 The `memoryFs` wrapper exposes optional `retriever` and `indexer` slots for semantic search injection. These are the standard DI points for plugging in embedding-based search:

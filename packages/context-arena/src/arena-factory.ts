@@ -15,7 +15,12 @@ import {
   createMemoryProvider,
   createUserScopedMemoryProvider,
 } from "@koi/memory-fs";
-import { createCompactorMiddleware } from "@koi/middleware-compactor";
+import {
+  createCompactorMiddleware,
+  createCompositeArchiver,
+  createFactExtractingArchiver,
+  createSnapshotArchiver,
+} from "@koi/middleware-compactor";
 import { createContextEditingMiddleware } from "@koi/middleware-context-editing";
 import { createHotMemoryMiddleware } from "@koi/middleware-hot-memory";
 import { createPersonalizationMiddleware } from "@koi/middleware-personalization";
@@ -105,6 +110,16 @@ export async function createContextArena(config: ContextArenaConfig): Promise<Co
   );
 
   // --- Always-on: compactor middleware ---
+  // Build compactor archiver: durable snapshot storage + fact extraction when memory available.
+  // Snapshot archiver runs first (preserves raw messages), then fact extractor (semantic extraction).
+  const snapshotArchiver = createSnapshotArchiver(resolved.archiver, {
+    sessionId: config.sessionId,
+  });
+  const compactorArchiver =
+    effectiveMemory !== undefined
+      ? createCompositeArchiver([snapshotArchiver, createFactExtractingArchiver(effectiveMemory)])
+      : snapshotArchiver;
+
   const compactorMiddleware = createCompactorMiddleware({
     summarizer: config.summarizer,
     contextWindowSize: resolved.contextWindowSize,
@@ -115,7 +130,10 @@ export async function createContextArena(config: ContextArenaConfig): Promise<Co
     preserveRecent: resolved.compactorPreserveRecent,
     maxSummaryTokens: resolved.compactorMaxSummaryTokens,
     tokenEstimator: resolved.tokenEstimator,
+    // memory is kept for potential future use by the compactor (e.g., memory-aware prompts);
+    // fact extraction is handled by the explicit composite archiver above.
     memory: effectiveMemory,
+    archiver: compactorArchiver,
     ...(resolved.conventions.length > 0 ? { conventions: resolved.conventions } : {}),
   });
 
