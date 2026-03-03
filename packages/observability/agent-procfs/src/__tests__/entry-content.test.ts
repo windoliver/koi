@@ -26,7 +26,7 @@ import type {
   ToolDescriptor,
   WorkspaceComponent,
 } from "@koi/core";
-import { agentId, ENV, MAILBOX, SCRATCHPAD, WORKSPACE } from "@koi/core";
+import { agentId, ENV, MAILBOX, messageId, SCRATCHPAD, WORKSPACE } from "@koi/core";
 import type { EntryContext } from "../entry-definitions.js";
 import { PROCFS_ENTRIES } from "../entry-definitions.js";
 import { createEntriesFromDefinitions } from "../entry-factory.js";
@@ -42,17 +42,18 @@ const TEST_AGENT_ID = agentId("agent-test-001");
 // ---------------------------------------------------------------------------
 
 function createToolDescriptor(name: string, desc: string): ToolDescriptor {
-  return { name, description: desc, parameters: {} };
+  return { name, description: desc, inputSchema: {} };
 }
 
 function createFullAgent(): Agent {
   const pid: ProcessId = { id: TEST_AGENT_ID, name: "test-agent", type: "worker", depth: 0 };
   const manifest: AgentManifest = {
     name: "test-agent",
+    version: "1.0.0",
     description: "A test agent for procfs",
-    model: "claude-sonnet-4-5-20250514",
-    lifecycle: "standard",
-  } as AgentManifest;
+    model: { name: "claude-sonnet-4-5-20250514" },
+    lifecycle: "worker",
+  };
 
   const envValues: Readonly<Record<string, string>> = { FOO: "bar", DEBUG: "true" };
   const mockEnv: AgentEnv = { values: envValues };
@@ -69,11 +70,13 @@ function createFullAgent(): Agent {
     onMessage: () => () => {},
     list: () => [
       {
-        id: "msg-1",
+        id: messageId("msg-1"),
         from: agentId("sender"),
         to: TEST_AGENT_ID,
-        content: [{ kind: "text" as const, text: "hello" }],
-        timestamp: 1700000000000,
+        kind: "request" as const,
+        createdAt: "2023-11-14T22:13:20.000Z",
+        type: "text",
+        payload: { text: "hello" },
       },
     ],
   };
@@ -82,7 +85,15 @@ function createFullAgent(): Agent {
     write: () => ({ ok: true, value: { path: "f.txt", version: 1 } }) as never,
     read: () => ({ ok: true, value: {} }) as never,
     list: () => [
-      { path: "notes.md" as never, version: 1, sizeBytes: 42, updatedAt: 1700000000000 },
+      {
+        path: "notes.md" as never,
+        generation: 1,
+        sizeBytes: 42,
+        updatedAt: "2023-11-14T22:13:20.000Z",
+        groupId: "test-group" as never,
+        authorId: agentId("test"),
+        createdAt: "2023-11-14T22:13:20.000Z",
+      },
     ],
     delete: () => ({ ok: true, value: undefined }) as never,
     flush: () => {},
@@ -93,17 +104,17 @@ function createFullAgent(): Agent {
   const tool1: Tool = {
     descriptor: createToolDescriptor("search", "Search the web"),
     execute: () => Promise.resolve({ output: "result" }),
-    trustTier: "standard",
+    trustTier: "sandbox",
   };
   const tool2: Tool = {
     descriptor: createToolDescriptor("write_file", "Write a file"),
     execute: () => Promise.resolve({ output: "ok" }),
-    trustTier: "elevated",
+    trustTier: "verified",
   };
 
   // Middleware
-  const mw1: KoiMiddleware = { name: "audit-logger" };
-  const mw2: KoiMiddleware = { name: "rate-limiter" };
+  const mw1: KoiMiddleware = { name: "audit-logger", describeCapabilities: () => undefined };
+  const mw2: KoiMiddleware = { name: "rate-limiter", describeCapabilities: () => undefined };
 
   // Component storage
   const components = new Map<string, unknown>();
@@ -134,7 +145,7 @@ function createFullAgent(): Agent {
       }
       return result;
     },
-    components: () => components as ReadonlyMap<SubsystemToken<unknown>, unknown>,
+    components: () => components as ReadonlyMap<string, unknown>,
   };
 }
 
@@ -282,8 +293,8 @@ describe("procfs entry content", () => {
     expect(result).toHaveLength(2);
     expect(result).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: "search", trustTier: "standard" }),
-        expect.objectContaining({ name: "write_file", trustTier: "elevated" }),
+        expect.objectContaining({ name: "search", trustTier: "sandbox" }),
+        expect.objectContaining({ name: "write_file", trustTier: "verified" }),
       ]),
     );
   });
@@ -343,8 +354,8 @@ describe("procfs entry content", () => {
     expect(result).toEqual({
       name: "test-agent",
       description: "A test agent for procfs",
-      model: "claude-sonnet-4-5-20250514",
-      lifecycle: "standard",
+      model: { name: "claude-sonnet-4-5-20250514" },
+      lifecycle: "worker",
     });
   });
 
@@ -409,7 +420,7 @@ describe("procfs entry content", () => {
   test("scratchpad returns entry summaries from component", async () => {
     const result = (await getEntry("scratchpad").entry.read()) as readonly unknown[];
     expect(result).toHaveLength(1);
-    expect(result[0]).toEqual(expect.objectContaining({ path: "notes.md", version: 1 }));
+    expect(result[0]).toEqual(expect.objectContaining({ path: "notes.md", generation: 1 }));
   });
 
   // -----------------------------------------------------------------------
@@ -435,7 +446,7 @@ describe("procfs entry content", () => {
       // Agent with NO components attached
       const bareAgent: Agent = {
         pid: { id: TEST_AGENT_ID, name: "bare", type: "worker", depth: 0 },
-        manifest: { name: "bare", description: "bare" } as AgentManifest,
+        manifest: { name: "bare", version: "1.0.0", model: { name: "test" } } as AgentManifest,
         state: "created",
         component: () => undefined,
         has: () => false,
