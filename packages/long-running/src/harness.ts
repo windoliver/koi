@@ -8,6 +8,7 @@
  */
 
 import type {
+  AgentStatus,
   ContextSummary,
   EngineState,
   HarnessMetrics,
@@ -18,6 +19,8 @@ import type {
   KoiError,
   KoiMiddleware,
   NodeId,
+  ProcessState,
+  RegistryEntry,
   Result,
   SessionCheckpoint,
   SessionContext,
@@ -27,6 +30,7 @@ import type {
   TaskResult,
   ToolHandler,
   ToolRequest,
+  TransitionReason,
   TurnContext,
 } from "@koi/core";
 import { chainId, sessionId as createSessionId, validation } from "@koi/core";
@@ -97,6 +101,29 @@ function allTasksCompleted(board: TaskBoardSnapshot): boolean {
   );
 }
 
+/**
+ * Map a ProcessState + optional reason to HarnessPhase for snapshot serialization.
+ *
+ * Mapping: created→idle, running→active, waiting→active,
+ * suspended→suspended, terminated(completed)→completed, terminated(error)→failed.
+ */
+export function mapProcessStateToHarnessPhase(
+  processState: ProcessState,
+  reason?: TransitionReason,
+): HarnessPhase {
+  switch (processState) {
+    case "created":
+      return "idle";
+    case "running":
+    case "waiting":
+      return "active";
+    case "suspended":
+      return "suspended";
+    case "terminated":
+      return reason?.kind === "completed" ? "completed" : "failed";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -105,7 +132,7 @@ function allTasksCompleted(board: TaskBoardSnapshot): boolean {
  * Create a long-running harness for multi-session agent operation.
  */
 export function createLongRunningHarness(config: LongRunningConfig): LongRunningHarness {
-  const { harnessId, agentId, harnessStore, sessionPersistence } = config;
+  const { harnessId, agentId, harnessStore, sessionPersistence, registry } = config;
   const softCheckpointInterval =
     config.softCheckpointInterval ?? DEFAULT_LONG_RUNNING_CONFIG.softCheckpointInterval;
   const maxKeyArtifacts = config.maxKeyArtifacts ?? DEFAULT_LONG_RUNNING_CONFIG.maxKeyArtifacts;
@@ -119,12 +146,13 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
   // Internal mutable state (references to immutable snapshots)
   let currentSnapshot: HarnessSnapshot | undefined;
   let currentNodeId: NodeId | undefined;
-  let phase: HarnessPhase = "idle";
+  let phase: HarnessPhase = "idle"; // let: local cache; updated after each transition
   let turnCount = 0;
   let capturedArtifacts: readonly KeyArtifact[] = [];
   let disposed = false;
   let currentSessionId: string | undefined;
   let startedAt: number | undefined;
+  let registryGeneration = 0; // let: CAS generation counter for registry transitions
 
   // -------------------------------------------------------------------------
   // Snapshot persistence
@@ -159,6 +187,49 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
         error: validation(`Invalid phase: expected one of [${allowed.join(", ")}], got "${phase}"`),
       };
     }
+    return { ok: true, value: undefined };
+  }
+
+  // -------------------------------------------------------------------------
+  // Registry integration helpers
+  // -------------------------------------------------------------------------
+
+  /**
+   * Register the agent in the registry at "created" phase.
+   * No-op when registry is not provided.
+   */
+  async function registryRegister(now: number): Promise<void> {
+    if (registry === undefined) return;
+    const status: AgentStatus = {
+      phase: "created",
+      generation: 0,
+      conditions: [],
+      lastTransitionAt: now,
+    };
+    const entry: RegistryEntry = {
+      agentId,
+      status,
+      agentType: "worker",
+      metadata: { harnessId },
+      registeredAt: now,
+      priority: 10,
+    };
+    const registered = await registry.register(entry);
+    registryGeneration = registered.status.generation;
+  }
+
+  /**
+   * Perform a CAS state transition in the registry.
+   * No-op when registry is not provided. Updates local generation on success.
+   */
+  async function registryTransition(
+    targetPhase: ProcessState,
+    reason: TransitionReason,
+  ): Promise<Result<void, KoiError>> {
+    if (registry === undefined) return { ok: true, value: undefined };
+    const result = await registry.transition(agentId, targetPhase, registryGeneration, reason);
+    if (!result.ok) return result;
+    registryGeneration = result.value.status.generation;
     return { ok: true, value: undefined };
   }
 
@@ -201,6 +272,11 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
     const persistResult = await persistSnapshot(snapshot);
     if (!persistResult.ok) return persistResult;
 
+    // Register in registry at "created", then transition to "running"
+    await registryRegister(now);
+    const transResult = await registryTransition("running", { kind: "assembly_complete" });
+    if (!transResult.ok) return transResult;
+
     phase = "active";
     turnCount = 0;
     capturedArtifacts = [];
@@ -231,13 +307,16 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
     turnCount = 0;
     capturedArtifacts = [];
 
-    // Try to load from store if we don't have in-memory snapshot
-    if (currentSnapshot === undefined) {
-      const headResult = await harnessStore.head(cid);
-      if (headResult.ok && headResult.value !== undefined) {
-        currentSnapshot = headResult.value.data;
-        currentNodeId = headResult.value.nodeId;
-      }
+    // Parallelize I/O: snapshot head load + checkpoint recovery (Decision 14A)
+    const needsHead = currentSnapshot === undefined;
+    const [headResult, checkpointResult] = await Promise.all([
+      needsHead ? harnessStore.head(cid) : undefined,
+      sessionPersistence.loadLatestCheckpoint(config.agentId),
+    ]);
+
+    if (needsHead && headResult !== undefined && headResult.ok && headResult.value !== undefined) {
+      currentSnapshot = headResult.value.data;
+      currentNodeId = headResult.value.nodeId;
     }
 
     if (currentSnapshot === undefined) {
@@ -247,14 +326,8 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
       };
     }
 
-    // Try engine state recovery
-    const checkpointResult = await sessionPersistence.loadLatestCheckpoint(config.agentId);
-
-    let _engineStateRecovered = false;
-
     if (checkpointResult.ok && checkpointResult.value !== undefined) {
       const checkpoint = checkpointResult.value;
-      _engineStateRecovered = true;
 
       const nextSeq = currentSnapshot.sessionSeq + 1;
       const updated: HarnessSnapshot = {
@@ -264,6 +337,10 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
         checkpointedAt: Date.now(),
       };
       await persistSnapshot(updated);
+
+      // Transition from suspended → running
+      const transResult = await registryTransition("running", { kind: "signal_cont" });
+      if (!transResult.ok) return transResult;
       phase = "active";
 
       return {
@@ -288,6 +365,10 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
       checkpointedAt: Date.now(),
     };
     await persistSnapshot(updated);
+
+    // Transition from suspended → running
+    const transResult = await registryTransition("running", { kind: "signal_cont" });
+    if (!transResult.ok) return transResult;
     phase = "active";
 
     return {
@@ -370,6 +451,9 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
     const persistResult = await persistSnapshot(snapshot);
     if (!persistResult.ok) return persistResult;
 
+    // Transition from running → suspended
+    const transResult = await registryTransition("suspended", { kind: "signal_stop" });
+    if (!transResult.ok) return transResult;
     phase = "suspended";
     capturedArtifacts = [];
 
@@ -432,6 +516,9 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
     if (!persistResult.ok) return persistResult;
 
     if (allDone) {
+      // Transition to terminated with success outcome
+      const transResult = await registryTransition("terminated", { kind: "completed" });
+      if (!transResult.ok) return transResult;
       phase = "completed";
     }
 
@@ -466,6 +553,12 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
     const persistResult = await persistSnapshot(snapshot);
     if (!persistResult.ok) return persistResult;
 
+    // Transition to terminated with error outcome
+    const transResult = await registryTransition("terminated", {
+      kind: "error",
+      cause: error.message,
+    });
+    if (!transResult.ok) return transResult;
     phase = "failed";
     return { ok: true, value: undefined };
   };
@@ -574,6 +667,9 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
 
   const dispose = async (): Promise<void> => {
     disposed = true;
+    if (registry !== undefined) {
+      await registry.deregister(agentId);
+    }
   };
 
   // -------------------------------------------------------------------------

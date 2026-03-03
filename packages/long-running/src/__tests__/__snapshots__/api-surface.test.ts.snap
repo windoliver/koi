@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/long-running API surface . has stable type surface 1`] = `
-"import { InboxPolicy, InboxComponent, ComponentProvider, CheckpointPolicy, KoiMiddleware, HarnessId, TaskBoardSnapshot, HarnessSnapshot, Result, InboundMessage, KoiError, PruningPolicy, AgentId, HarnessSnapshotStore, SessionPersistence, EngineState, EngineInput, EngineMetrics, TaskItemId, TaskResult, HarnessStatus, MailboxComponent, Tool, ThreadPruningPolicy, ChainCompactor, ThreadSnapshot } from '@koi/core';
+"import { InboxPolicy, InboxComponent, ComponentProvider, CheckpointPolicy, KoiMiddleware, HarnessId, TaskBoardSnapshot, HarnessSnapshot, Result, InboundMessage, KoiError, PruningPolicy, AgentId, HarnessSnapshotStore, SessionPersistence, EngineState, AgentRegistry, EngineInput, EngineMetrics, TaskItemId, TaskResult, HarnessStatus, ProcessState, TransitionReason, HarnessPhase, MailboxComponent, Tool, ThreadPruningPolicy, ChainCompactor, ThreadSnapshot } from '@koi/core';
 
 /**
  * Autonomous provider — attaches InboxComponent to agents (Decision 4C).
@@ -121,6 +121,8 @@ interface LongRunningConfig {
     readonly artifactToolNames?: readonly string[] | undefined;
     readonly pruningPolicy?: PruningPolicy | undefined;
     readonly saveState?: SaveStateCallback | undefined;
+    /** Optional agent registry for CAS-based lifecycle transitions. */
+    readonly registry?: AgentRegistry | undefined;
 }
 interface LongRunningHarness {
     readonly harnessId: HarnessId;
@@ -164,6 +166,13 @@ declare const DEFAULT_LONG_RUNNING_CONFIG: {
  * Harness state lives in SnapshotChainStore<HarnessSnapshot> (semantic history).
  */
 
+/**
+ * Map a ProcessState + optional reason to HarnessPhase for snapshot serialization.
+ *
+ * Mapping: created→idle, running→active, waiting→active,
+ * suspended→suspended, terminated(completed)→completed, terminated(error)→failed.
+ */
+declare function mapProcessStateToHarnessPhase(processState: ProcessState, reason?: TransitionReason): HarnessPhase;
 /**
  * Create a long-running harness for multi-session agent operation.
  */
@@ -260,6 +269,6 @@ declare function createTaskTools(config: TaskToolsConfig): readonly Tool[];
  */
 declare function createThreadCompactor(policy?: ThreadPruningPolicy): ChainCompactor<ThreadSnapshot>;
 
-export { type AutonomousProviderConfig, type CheckpointMiddlewareConfig, DEFAULT_LONG_RUNNING_CONFIG, type InboxMiddlewareConfig, type LongRunningConfig, type LongRunningHarness, type PlanAutonomousConfig, type ResumeResult, type SaveStateCallback, type SessionResult, type StartResult, type TaskToolsConfig, buildInitialPrompt, buildResumeContext, computeCheckpointId, createAutonomousProvider, createCheckpointMiddleware, createInboxMiddleware, createLongRunningHarness, createPlanAutonomousProvider, createTaskTools, createThreadCompactor, shouldSoftCheckpoint };
+export { type AutonomousProviderConfig, type CheckpointMiddlewareConfig, DEFAULT_LONG_RUNNING_CONFIG, type InboxMiddlewareConfig, type LongRunningConfig, type LongRunningHarness, type PlanAutonomousConfig, type ResumeResult, type SaveStateCallback, type SessionResult, type StartResult, type TaskToolsConfig, buildInitialPrompt, buildResumeContext, computeCheckpointId, createAutonomousProvider, createCheckpointMiddleware, createInboxMiddleware, createLongRunningHarness, createPlanAutonomousProvider, createTaskTools, createThreadCompactor, mapProcessStateToHarnessPhase, shouldSoftCheckpoint };
 "
 `;

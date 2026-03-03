@@ -6,6 +6,7 @@
 
 import type {
   AgentId,
+  AgentRegistry,
   EngineInput,
   EngineMetrics,
   EngineState,
@@ -44,6 +45,8 @@ export interface LongRunningConfig {
   readonly artifactToolNames?: readonly string[] | undefined;
   readonly pruningPolicy?: PruningPolicy | undefined;
   readonly saveState?: SaveStateCallback | undefined;
+  /** Optional agent registry for CAS-based lifecycle transitions. */
+  readonly registry?: AgentRegistry | undefined;
 }
 
 // ---------------------------------------------------------------------------

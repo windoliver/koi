@@ -12,7 +12,7 @@ export type { CheckpointMiddlewareConfig } from "./checkpoint-middleware.js";
 export { createCheckpointMiddleware } from "./checkpoint-middleware.js";
 export { computeCheckpointId, shouldSoftCheckpoint } from "./checkpoint-policy.js";
 export { buildInitialPrompt, buildResumeContext } from "./context-bridge.js";
-export { createLongRunningHarness } from "./harness.js";
+export { createLongRunningHarness, mapProcessStateToHarnessPhase } from "./harness.js";
 export type { InboxMiddlewareConfig } from "./inbox-middleware.js";
 export { createInboxMiddleware } from "./inbox-middleware.js";
 export type { PlanAutonomousConfig } from "./plan-autonomous-tool.js";
