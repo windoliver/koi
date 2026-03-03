@@ -11,6 +11,7 @@
 export { validateTaskSpawnConfig } from "./config.js";
 export { extractOutput } from "./output.js";
 export { createTaskSpawnProvider } from "./provider.js";
+export { mapSpawnToTask } from "./spawn-adapter.js";
 export { createTaskTool, DEFAULT_DESCRIPTOR_TTL_MS } from "./task-tool.js";
 export type {
   AgentResolver,

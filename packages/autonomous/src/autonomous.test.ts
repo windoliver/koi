@@ -107,6 +107,53 @@ describe("createAutonomousAgent", () => {
     expect(mw[1]?.name).toBe("compactor-mw");
   });
 
+  test("providers returns plan_autonomous provider by default", () => {
+    const harness = createMockHarness();
+    const scheduler = createMockScheduler();
+    const agent = createAutonomousAgent({ harness, scheduler });
+
+    const provs = agent.providers();
+    expect(provs).toHaveLength(1);
+    expect(provs[0]?.name).toBe("plan-autonomous-provider");
+  });
+
+  test("middleware includes checkpoint + inbox when threadStore provided", () => {
+    const harness = createMockHarness({ middlewareName: "lr-mw" });
+    const scheduler = createMockScheduler();
+    const fakeStore = {
+      appendAndCheckpoint: async () => ({ ok: true as const, value: undefined }),
+      loadThread: async () => ({ ok: true as const, value: undefined }),
+      listMessages: async () => ({ ok: true as const, value: [] as const }),
+      close: () => {},
+    };
+
+    const agent = createAutonomousAgent({ harness, scheduler, threadStore: fakeStore });
+
+    const mw = agent.middleware();
+    expect(mw).toHaveLength(3); // harness + checkpoint + inbox
+    expect(mw[0]?.name).toBe("lr-mw");
+    expect(mw[1]?.name).toBe("checkpoint-middleware");
+    expect(mw[2]?.name).toBe("inbox-middleware");
+  });
+
+  test("providers includes autonomous-provider when threadStore provided", () => {
+    const harness = createMockHarness();
+    const scheduler = createMockScheduler();
+    const fakeStore = {
+      appendAndCheckpoint: async () => ({ ok: true as const, value: undefined }),
+      loadThread: async () => ({ ok: true as const, value: undefined }),
+      listMessages: async () => ({ ok: true as const, value: [] as const }),
+      close: () => {},
+    };
+
+    const agent = createAutonomousAgent({ harness, scheduler, threadStore: fakeStore });
+
+    const provs = agent.providers();
+    expect(provs).toHaveLength(2); // plan_autonomous + autonomous
+    expect(provs[0]?.name).toBe("plan-autonomous-provider");
+    expect(provs[1]?.name).toBe("autonomous-provider");
+  });
+
   test("dispose stops scheduler first, then harness", async () => {
     const disposeCalls: string[] = [];
     const harness = createMockHarness({ disposeCalls });

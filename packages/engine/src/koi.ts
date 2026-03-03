@@ -17,6 +17,8 @@ import type {
   ComposedCallHandlers,
   EngineEvent,
   EngineInput,
+  InboxComponent,
+  InboxItem,
   KoiMiddleware,
   ModelChunk,
   ModelHandler,
@@ -34,7 +36,7 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
-import { agentId, runId, sessionId, toolToken, turnId } from "@koi/core";
+import { agentId, INBOX, runId, sessionId, toolToken, turnId } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
 import { runWithExecutionContext } from "@koi/execution-context";
 import { AgentEntity } from "./agent-entity.js";
@@ -473,6 +475,26 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 }
               });
             });
+          }
+        }
+
+        // Inbox drain: process queued messages at turn boundary.
+        // Steer items → adapter.inject() if available; fallback to followup.
+        // Collect/followup items accumulate for next turn context.
+        const inboxComponent: InboxComponent | undefined = agent.component(INBOX);
+        if (inboxComponent !== undefined && inboxComponent.depth() > 0) {
+          const inboxItems: readonly InboxItem[] = inboxComponent.drain();
+          for (const item of inboxItems) {
+            if (item.mode === "steer" && adapter.inject !== undefined) {
+              await adapter.inject({
+                senderId: item.from,
+                content: [{ kind: "text", text: item.content }],
+                timestamp: item.createdAt,
+              });
+            }
+            // collect/followup items: no immediate action needed here —
+            // middleware (e.g., inbox-middleware in L2) will route them
+            // into the next turn's context during onBeforeTurn hooks.
           }
         }
 

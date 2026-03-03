@@ -335,6 +335,7 @@ export {
   GOVERNANCE,
   GOVERNANCE_BACKEND,
   HANDOFF,
+  INBOX,
   isAttachResult,
   MAILBOX,
   MEMORY,
@@ -532,6 +533,9 @@ export type {
 } from "./health.js";
 // health — runtime values
 export { DEFAULT_HEALTH_MONITOR_CONFIG } from "./health.js";
+// inbox — message steering queue for autonomous agents
+export type { InboxComponent, InboxItem, InboxMode, InboxPolicy } from "./inbox.js";
+export { DEFAULT_INBOX_POLICY } from "./inbox.js";
 // intent capsule — cryptographic mandate binding for ASI01 defense (L0 types + contract)
 export type {
   CapsuleId,
@@ -821,6 +825,8 @@ export type {
   TurnTrace,
 } from "./snapshot-time-travel.js";
 export { BACKTRACK_REASON_KEY } from "./snapshot-time-travel.js";
+// spawn — unified spawn types for all agent-spawning patterns
+export type { SpawnFn, SpawnRequest, SpawnResult } from "./spawn.js";
 // supervision — Erlang/OTP-style hierarchical fault recovery
 export type {
   ChildSpec,
@@ -844,6 +850,30 @@ export type {
 } from "./task-board.js";
 // task-board — runtime values (branded constructor + defaults)
 export { DEFAULT_TASK_BOARD_CONFIG, taskItemId } from "./task-board.js";
+// thread — unified execution model with persistent threads and checkpoints
+export type {
+  CheckpointPolicy,
+  ContextSummaryRef,
+  HarnessThreadSnapshot,
+  MessageThreadSnapshot,
+  ThreadId,
+  ThreadMessage,
+  ThreadMessageId,
+  ThreadMessageRole,
+  ThreadMetrics,
+  ThreadPruningPolicy,
+  ThreadSnapshot,
+  ThreadSnapshotStore,
+  ThreadStore,
+} from "./thread.js";
+export {
+  DEFAULT_CHECKPOINT_POLICY,
+  DEFAULT_THREAD_PRUNING_POLICY,
+  isHarnessSnapshot,
+  isMessageSnapshot,
+  threadId,
+  threadMessageId,
+} from "./thread.js";
 // tool health — promoted L0 types for cross-package health data consumption
 export type {
   ToolFailureRecord,

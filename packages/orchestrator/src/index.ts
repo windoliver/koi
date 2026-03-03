@@ -21,6 +21,7 @@ export { executeOrchestrate } from "./orchestrate-tool.js";
 // provider
 export { createOrchestratorProvider } from "./provider.js";
 export { executeReviewOutput } from "./review-output-tool.js";
+export { mapSpawnToWorker } from "./spawn-adapter.js";
 export { executeSynthesize } from "./synthesize-tool.js";
 // types
 export type {

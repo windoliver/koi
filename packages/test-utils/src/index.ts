@@ -53,6 +53,8 @@ export type {
 } from "./event-sourced-registry-contract.js";
 export { runEventSourcedRegistryContractTests } from "./event-sourced-registry-contract.js";
 export { createFactory } from "./factory.js";
+export type { FakeEngineAdapterConfig, FakeEngineAdapterResult } from "./fake-engine-adapter.js";
+export { createFakeEngineAdapter } from "./fake-engine-adapter.js";
 export { createFakeNexusFetch } from "./fake-nexus-fetch.js";
 export type {
   MockGovernanceBackendOverrides,
@@ -90,6 +92,7 @@ export { runForgeStoreContractTests } from "./store-contract.js";
 export { createManifestFile, makeTempDir, withTempDir } from "./temp-dir.js";
 export type { TempGitRepo } from "./temp-git-repo.js";
 export { createTempGitRepo } from "./temp-git-repo.js";
+export { runThreadStoreContractTests } from "./thread-store-contract.js";
 export type { MockValidationError, MockValidationResult, MockValidator } from "./validators.js";
 export {
   createAsyncValidator,

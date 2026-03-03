@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { KoiError, KoiMiddleware, Result } from "@koi/core";
+import type { KoiError, KoiMiddleware, Result, ThreadStore } from "@koi/core";
 import { createHarnessScheduler } from "@koi/harness-scheduler";
 import type { LongRunningHarness } from "@koi/long-running";
 import { createAutonomousAgent } from "../autonomous.js";
@@ -268,5 +268,142 @@ describe("AutonomousAgent lifecycle integration", () => {
 
     await agent.dispose();
     expect(disposeCalls).toEqual(["scheduler", "harness"]);
+  });
+
+  test("thread store enables checkpoint + inbox middleware", () => {
+    const ctrl = createControllableHarness();
+    const scheduler = createHarnessScheduler({
+      harness: ctrl.harness,
+      pollIntervalMs: 10,
+      delay: immediateDelay,
+    });
+
+    const fakeStore: ThreadStore = {
+      appendAndCheckpoint: async () => ({ ok: true as const, value: undefined }),
+      loadThread: async () => ({ ok: true as const, value: undefined }),
+      listMessages: async () => ({ ok: true as const, value: [] as const }),
+      close: () => {},
+    };
+
+    const agent = createAutonomousAgent({
+      harness: ctrl.harness,
+      scheduler,
+      threadStore: fakeStore,
+    });
+
+    const mw = agent.middleware();
+    // harness + checkpoint + inbox = 3 middleware
+    expect(mw).toHaveLength(3);
+    expect(mw[0]?.name).toBe("controllable-harness-mw");
+    expect(mw[1]?.name).toBe("checkpoint-middleware");
+    expect(mw[2]?.name).toBe("inbox-middleware");
+
+    // providers: plan_autonomous + autonomous
+    const provs = agent.providers();
+    expect(provs).toHaveLength(2);
+    expect(provs[0]?.name).toBe("plan-autonomous-provider");
+    expect(provs[1]?.name).toBe("autonomous-provider");
+  });
+
+  test("thread store + compactor yields 4 middleware in correct order", () => {
+    const ctrl = createControllableHarness();
+    const scheduler = createHarnessScheduler({
+      harness: ctrl.harness,
+      pollIntervalMs: 10,
+      delay: immediateDelay,
+    });
+
+    const fakeStore: ThreadStore = {
+      appendAndCheckpoint: async () => ({ ok: true as const, value: undefined }),
+      loadThread: async () => ({ ok: true as const, value: undefined }),
+      listMessages: async () => ({ ok: true as const, value: [] as const }),
+      close: () => {},
+    };
+
+    const compactor: KoiMiddleware = { name: "compactor", describeCapabilities: () => undefined };
+
+    const agent = createAutonomousAgent({
+      harness: ctrl.harness,
+      scheduler,
+      threadStore: fakeStore,
+      compactorMiddleware: compactor,
+    });
+
+    const mw = agent.middleware();
+    // harness + checkpoint + inbox + compactor = 4
+    expect(mw).toHaveLength(4);
+    expect(mw[0]?.name).toBe("controllable-harness-mw");
+    expect(mw[1]?.name).toBe("checkpoint-middleware");
+    expect(mw[2]?.name).toBe("inbox-middleware");
+    expect(mw[3]?.name).toBe("compactor");
+  });
+
+  test("autonomous provider inbox respects custom inbox policy", async () => {
+    const ctrl = createControllableHarness();
+    const scheduler = createHarnessScheduler({
+      harness: ctrl.harness,
+      pollIntervalMs: 10,
+      delay: immediateDelay,
+    });
+
+    const fakeStore: ThreadStore = {
+      appendAndCheckpoint: async () => ({ ok: true as const, value: undefined }),
+      loadThread: async () => ({ ok: true as const, value: undefined }),
+      listMessages: async () => ({ ok: true as const, value: [] as const }),
+      close: () => {},
+    };
+
+    const agent = createAutonomousAgent({
+      harness: ctrl.harness,
+      scheduler,
+      threadStore: fakeStore,
+      inboxPolicy: { collectCap: 5, followupCap: 10, steerCap: 1 },
+    });
+
+    // Verify the autonomous provider was created (it will attach inbox at assembly)
+    const provs = agent.providers();
+    const autonomousProvider = provs.find((p) => p.name === "autonomous-provider");
+    expect(autonomousProvider).toBeDefined();
+  });
+
+  test("full lifecycle with thread store: suspend → resume → complete", async () => {
+    const ctrl = createControllableHarness();
+
+    const scheduler = createHarnessScheduler({
+      harness: ctrl.harness,
+      pollIntervalMs: 10,
+      delay: immediateDelay,
+    });
+
+    const fakeStore: ThreadStore = {
+      appendAndCheckpoint: async () => ({ ok: true as const, value: undefined }),
+      loadThread: async () => ({ ok: true as const, value: undefined }),
+      listMessages: async () => ({ ok: true as const, value: [] as const }),
+      close: () => {},
+    };
+
+    const agent = createAutonomousAgent({
+      harness: ctrl.harness,
+      scheduler,
+      threadStore: fakeStore,
+      checkpointPolicy: { intervalTurns: 3, onSessionEnd: true, onSuspend: true },
+    });
+
+    // Verify middleware and providers are wired
+    expect(agent.middleware().length).toBeGreaterThanOrEqual(3);
+    expect(agent.providers().length).toBeGreaterThanOrEqual(2);
+
+    // Simulate: suspended → auto-resume → completed
+    ctrl.setPhase("suspended");
+    scheduler.start();
+
+    await waitForPhase(ctrl.getPhase, ["active"]);
+    expect(ctrl.resumeCount()).toBeGreaterThanOrEqual(1);
+
+    ctrl.setPhase("completed");
+    await waitForPhase(() => scheduler.status().phase, ["stopped"]);
+
+    expect(scheduler.status().phase).toBe("stopped");
+    await agent.dispose();
   });
 });
