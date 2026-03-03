@@ -30,6 +30,7 @@ import {
   injectCapabilities,
   runSessionHooks,
   runTurnHooks,
+  sortMiddlewareByPhase,
 } from "./compose.js";
 
 // ---------------------------------------------------------------------------
@@ -502,6 +503,92 @@ async function createStartedAgent(): Promise<AgentEntity> {
 }
 
 // ---------------------------------------------------------------------------
+// sortMiddlewareByPhase
+// ---------------------------------------------------------------------------
+
+describe("sortMiddlewareByPhase", () => {
+  test("sorts by phase tier: intercept < resolve < observe", () => {
+    const observe: KoiMiddleware = {
+      name: "observe",
+      phase: "observe",
+      describeCapabilities: () => undefined,
+    };
+    const intercept: KoiMiddleware = {
+      name: "intercept",
+      phase: "intercept",
+      describeCapabilities: () => undefined,
+    };
+    const resolve: KoiMiddleware = {
+      name: "resolve",
+      phase: "resolve",
+      describeCapabilities: () => undefined,
+    };
+
+    const sorted = sortMiddlewareByPhase([observe, resolve, intercept]);
+
+    expect(sorted.map((m) => m.name)).toEqual(["intercept", "resolve", "observe"]);
+  });
+
+  test("defaults to resolve phase when phase is omitted", () => {
+    const noPhase: KoiMiddleware = { name: "no-phase", describeCapabilities: () => undefined };
+    const intercept: KoiMiddleware = {
+      name: "intercept",
+      phase: "intercept",
+      describeCapabilities: () => undefined,
+    };
+    const observe: KoiMiddleware = {
+      name: "observe",
+      phase: "observe",
+      describeCapabilities: () => undefined,
+    };
+
+    const sorted = sortMiddlewareByPhase([observe, noPhase, intercept]);
+
+    expect(sorted.map((m) => m.name)).toEqual(["intercept", "no-phase", "observe"]);
+  });
+
+  test("sorts by priority within the same phase tier", () => {
+    const low: KoiMiddleware = {
+      name: "low",
+      phase: "resolve",
+      priority: 100,
+      describeCapabilities: () => undefined,
+    };
+    const high: KoiMiddleware = {
+      name: "high",
+      phase: "resolve",
+      priority: 900,
+      describeCapabilities: () => undefined,
+    };
+    const mid: KoiMiddleware = {
+      name: "mid",
+      phase: "resolve",
+      priority: 500,
+      describeCapabilities: () => undefined,
+    };
+
+    const sorted = sortMiddlewareByPhase([high, low, mid]);
+
+    expect(sorted.map((m) => m.name)).toEqual(["low", "mid", "high"]);
+  });
+
+  test("does not mutate the input array", () => {
+    const a: KoiMiddleware = { name: "a", phase: "observe", describeCapabilities: () => undefined };
+    const b: KoiMiddleware = {
+      name: "b",
+      phase: "intercept",
+      describeCapabilities: () => undefined,
+    };
+    const input = [a, b];
+
+    const sorted = sortMiddlewareByPhase(input);
+
+    expect(input.map((m) => m.name)).toEqual(["a", "b"]);
+    expect(sorted.map((m) => m.name)).toEqual(["b", "a"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // createTerminalHandlers
 // ---------------------------------------------------------------------------
 
@@ -749,6 +836,58 @@ describe("createComposedCallHandlers", () => {
 
     expect(receivedRequest).toBeDefined();
     expect(receivedRequest?.tools).toEqual(customTools);
+  });
+
+  test("sorts middleware by phase before composing chains", async () => {
+    const agent = await createStartedAgent();
+    const order: string[] = [];
+
+    const observe: KoiMiddleware = {
+      name: "observe",
+      phase: "observe",
+      describeCapabilities: () => undefined,
+      wrapModelCall: async (_ctx, req, next) => {
+        order.push("observe");
+        return next(req);
+      },
+    };
+
+    const intercept: KoiMiddleware = {
+      name: "intercept",
+      phase: "intercept",
+      describeCapabilities: () => undefined,
+      wrapModelCall: async (_ctx, req, next) => {
+        order.push("intercept");
+        return next(req);
+      },
+    };
+
+    const resolve: KoiMiddleware = {
+      name: "resolve",
+      phase: "resolve",
+      describeCapabilities: () => undefined,
+      wrapModelCall: async (_ctx, req, next) => {
+        order.push("resolve");
+        return next(req);
+      },
+    };
+
+    const rawModel = mock(() => Promise.resolve(mockModelResponse()));
+    const rawTool = mock(() => Promise.resolve(mockToolResponse()));
+
+    // Pass middleware in reverse order — compose should sort by phase tier
+    const handlers = createComposedCallHandlers(
+      [observe, resolve, intercept],
+      () => mockTurnContext(),
+      agent,
+      rawModel,
+      rawTool,
+    );
+
+    await handlers.modelCall(mockModelRequest());
+
+    // Onion order: intercept (outer) → resolve (middle) → observe (inner) → terminal
+    expect(order).toEqual(["intercept", "resolve", "observe"]);
   });
 });
 
