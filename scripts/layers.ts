@@ -59,5 +59,6 @@ export const L3_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/context-arena",
   "@koi/forge",
   "@koi/governance",
+  "@koi/sandbox-stack",
   "@koi/starter",
 ]);
