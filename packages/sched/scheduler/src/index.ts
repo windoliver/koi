@@ -17,3 +17,5 @@ export type { Semaphore } from "./semaphore.js";
 export { createSemaphore } from "./semaphore.js";
 export type { SqliteTaskStore } from "./sqlite-store.js";
 export { createSqliteTaskStore } from "./sqlite-store.js";
+export type { ProcessStateCounts } from "./stats-mapping.js";
+export { mapSchedulerStatsByProcessState } from "./stats-mapping.js";

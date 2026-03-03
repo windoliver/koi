@@ -424,6 +424,8 @@ export function createComposedCallHandlers(
   rawModelStreamTerminal?: ModelStreamHandler,
   capabilityConfig?: CapabilityInjectionConfig,
 ): ComposedCallHandlers {
+  const sorted = sortMiddlewareByPhase(middleware);
+
   const { modelHandler, modelStreamHandler, toolHandler } = createTerminalHandlers(
     agent,
     rawModelTerminal,
@@ -431,8 +433,8 @@ export function createComposedCallHandlers(
     rawModelStreamTerminal,
   );
 
-  const modelChain = composeModelChain(middleware, modelHandler);
-  const toolChain = composeToolChain(middleware, toolHandler);
+  const modelChain = composeModelChain(sorted, modelHandler);
+  const toolChain = composeToolChain(sorted, toolHandler);
 
   // Extract tool descriptors from the agent's ECS components
   const toolComponents = agent.query<Tool>("tool:");
@@ -447,7 +449,7 @@ export function createComposedCallHandlers(
 
   const prepareRequest = (request: ModelRequest): ModelRequest => {
     const withTools = injectTools(request);
-    return injectCapabilities(middleware, getTurnContext(), withTools, capabilityConfig);
+    return injectCapabilities(sorted, getTurnContext(), withTools, capabilityConfig);
   };
 
   if (modelStreamHandler === undefined) {
@@ -458,7 +460,7 @@ export function createComposedCallHandlers(
     };
   }
 
-  const streamChain = composeModelStreamChain(middleware, modelStreamHandler);
+  const streamChain = composeModelStreamChain(sorted, modelStreamHandler);
 
   return {
     modelCall: (request) => modelChain(getTurnContext(), prepareRequest(request)),
