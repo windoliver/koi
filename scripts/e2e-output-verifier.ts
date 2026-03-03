@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * E2E test script for @koi/middleware-output-verifier — validates the two-stage
  * output quality gate works end-to-end with real Anthropic API calls through the
@@ -25,26 +26,26 @@
  * Cost: ~$0.05–0.10 per run (~15–18 Haiku calls, minimal prompts).
  */
 
+import { createPiAdapter } from "../packages/drivers/engine-pi/src/adapter.js";
 import type {
   EngineEvent,
   InboundMessage,
   ModelHandler,
   ModelRequest,
   ModelResponse,
-} from "../packages/core/src/index.js";
-import { composeModelChain } from "../packages/engine/src/compose.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createPiAdapter } from "../packages/engine-pi/src/adapter.js";
-import { KoiRuntimeError } from "../packages/errors/dist/index.js";
+} from "../packages/kernel/core/src/index.js";
+import { composeModelChain } from "../packages/kernel/engine/src/compose.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import { KoiRuntimeError } from "../packages/lib/errors/dist/index.js";
+import { createMockTurnContext } from "../packages/lib/test-utils/src/index.js";
 import {
   BUILTIN_CHECKS,
   createOutputVerifierMiddleware,
-} from "../packages/middleware-output-verifier/src/index.js";
+} from "../packages/middleware/middleware-output-verifier/src/index.js";
 import type {
   DeterministicCheck,
   VerifierVetoEvent,
-} from "../packages/middleware-output-verifier/src/types.js";
-import { createMockTurnContext } from "../packages/test-utils/src/index.js";
+} from "../packages/middleware/middleware-output-verifier/src/types.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

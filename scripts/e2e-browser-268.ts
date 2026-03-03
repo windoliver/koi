@@ -38,11 +38,11 @@ import { join } from "node:path";
 import {
   createPlaywrightBrowserDriver,
   detectInstalledBrowsers,
-} from "../packages/browser-playwright/src/index.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createPiAdapter } from "../packages/engine-pi/src/adapter.js";
-import { createBrowserProvider } from "../packages/tool-browser/src/browser-component-provider.js";
-import { ALL_OPERATIONS } from "../packages/tool-browser/src/constants.js";
+} from "../packages/drivers/browser-playwright/src/index.js";
+import { createPiAdapter } from "../packages/drivers/engine-pi/src/adapter.js";
+import { createBrowserProvider } from "../packages/fs/tool-browser/src/browser-component-provider.js";
+import { ALL_OPERATIONS } from "../packages/fs/tool-browser/src/constants.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
 
 // ---------------------------------------------------------------------------
 // Config

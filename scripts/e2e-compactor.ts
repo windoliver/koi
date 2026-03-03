@@ -15,7 +15,10 @@
  * Cost: ~$0.02-0.04 per run (haiku model, minimal prompts).
  */
 
-import type { CompactionResult } from "../packages/core/src/context.js";
+import { createLoopAdapter } from "../packages/drivers/engine-loop/src/loop-adapter.js";
+import { createPiAdapter } from "../packages/drivers/engine-pi/src/adapter.js";
+import { createAnthropicAdapter } from "../packages/drivers/model-router/src/adapters/anthropic.js";
+import type { CompactionResult } from "../packages/kernel/core/src/context.js";
 import type {
   EngineEvent,
   InboundMessage,
@@ -23,17 +26,14 @@ import type {
   ModelHandler,
   ModelRequest,
   ModelResponse,
-} from "../packages/core/src/index.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createLoopAdapter } from "../packages/engine-loop/src/loop-adapter.js";
-import { createPiAdapter } from "../packages/engine-pi/src/adapter.js";
-import { createCompactorMiddleware } from "../packages/middleware-compactor/src/compactor-middleware.js";
-import { createMemoryCompactionStore } from "../packages/middleware-compactor/src/memory-compaction-store.js";
+} from "../packages/kernel/core/src/index.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import { createCompactorMiddleware } from "../packages/mm/middleware-compactor/src/compactor-middleware.js";
+import { createMemoryCompactionStore } from "../packages/mm/middleware-compactor/src/memory-compaction-store.js";
 import type {
   CompactionArchiver,
   CompactionStore,
-} from "../packages/middleware-compactor/src/types.js";
-import { createAnthropicAdapter } from "../packages/model-router/src/adapters/anthropic.js";
+} from "../packages/mm/middleware-compactor/src/types.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

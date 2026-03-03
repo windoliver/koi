@@ -25,17 +25,17 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
+import { createLoopAdapter } from "../packages/drivers/engine-loop/src/loop-adapter.js";
+import { createAnthropicAdapter } from "../packages/drivers/model-router/src/adapters/anthropic.js";
 import {
   agentId,
   COMPONENT_PRIORITY,
   GOVERNANCE,
   GOVERNANCE_BACKEND,
-} from "../packages/core/src/ecs.js";
-import { GOVERNANCE_ALLOW } from "../packages/core/src/governance-backend.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createLoopAdapter } from "../packages/engine-loop/src/loop-adapter.js";
-import { KoiRuntimeError } from "../packages/errors/src/runtime-error.js";
-import { createAnthropicAdapter } from "../packages/model-router/src/adapters/anthropic.js";
+} from "../packages/kernel/core/src/ecs.js";
+import { GOVERNANCE_ALLOW } from "../packages/kernel/core/src/governance-backend.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import { KoiRuntimeError } from "../packages/lib/errors/src/runtime-error.js";
 
 // Preflight
 const API_KEY = process.env.ANTHROPIC_API_KEY;

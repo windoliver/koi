@@ -25,7 +25,7 @@
  * Cost: ~$0.02 per run (2–3 haiku calls).
  */
 
-import { createAutonomousAgent } from "../packages/autonomous/src/autonomous.js";
+import { createPiAdapter } from "../packages/drivers/engine-pi/src/adapter.js";
 import type {
   EngineEvent,
   EngineMetrics,
@@ -34,14 +34,17 @@ import type {
   HarnessSnapshotStore,
   SessionCheckpoint,
   SessionPersistence,
-} from "../packages/core/src/index.js";
-import { agentId, chainId, harnessId, taskItemId } from "../packages/core/src/index.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createPiAdapter } from "../packages/engine-pi/src/adapter.js";
-import { createHarnessScheduler } from "../packages/harness-scheduler/src/scheduler.js";
-import { createLongRunningHarness } from "../packages/long-running/src/harness.js";
-import type { LongRunningHarness, SessionResult } from "../packages/long-running/src/types.js";
-import { createSqliteSnapshotStore } from "../packages/snapshot-store-sqlite/src/sqlite-store.js";
+} from "../packages/kernel/core/src/index.js";
+import { agentId, chainId, harnessId, taskItemId } from "../packages/kernel/core/src/index.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import { createAutonomousAgent } from "../packages/meta/autonomous/src/autonomous.js";
+import { createSqliteSnapshotStore } from "../packages/mm/snapshot-store-sqlite/src/sqlite-store.js";
+import { createHarnessScheduler } from "../packages/sched/harness-scheduler/src/scheduler.js";
+import { createLongRunningHarness } from "../packages/sched/long-running/src/harness.js";
+import type {
+  LongRunningHarness,
+  SessionResult,
+} from "../packages/sched/long-running/src/types.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

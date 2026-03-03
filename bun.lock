@@ -15,155 +15,7 @@
         "typescript": "^5.9.3",
       },
     },
-    "packages/acp": {
-      "name": "@koi/acp",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/acp-protocol": "workspace:*",
-        "@koi/channel-base": "workspace:*",
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/acp-protocol": {
-      "name": "@koi/acp-protocol",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "zod": "4.3.6",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/agent-discovery": {
-      "name": "@koi/agent-discovery",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-loop": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/model-router": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/agent-monitor": {
-      "name": "@koi/agent-monitor",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-loop": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/model-router": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/agent-procfs": {
-      "name": "@koi/agent-procfs",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/agui": {
-      "name": "@koi/agui",
-      "version": "0.0.0",
-      "dependencies": {
-        "@ag-ui/core": "0.0.45",
-        "@ag-ui/encoder": "0.0.45",
-        "@koi/channel-base": "workspace:*",
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/artifact-client": {
-      "name": "@koi/artifact-client",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/hash": "workspace:*",
-        "@koi/nexus-client": "workspace:*",
-      },
-    },
-    "packages/audit-sink-local": {
-      "name": "@koi/audit-sink-local",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/sqlite-utils": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/audit-sink-nexus": {
-      "name": "@koi/audit-sink-nexus",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/nexus-client": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/autonomous": {
-      "name": "@koi/autonomous",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/handoff": "workspace:*",
-        "@koi/harness-scheduler": "workspace:*",
-        "@koi/long-running": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/snapshot-chain-store": "workspace:*",
-        "@koi/snapshot-store-sqlite": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/bootstrap": {
-      "name": "@koi/bootstrap",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/file-resolution": "workspace:*",
-        "@koi/hash": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/context": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/browser-playwright": {
-      "name": "@koi/browser-playwright",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/token-estimator": "workspace:*",
-        "playwright": "^1.49.0",
-      },
-    },
-    "packages/bundle": {
+    "packages/deploy/bundle": {
       "name": "@koi/bundle",
       "version": "0.0.0",
       "dependencies": {
@@ -178,11 +30,132 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/canvas": {
-      "name": "@koi/canvas",
+    "packages/deploy/deploy": {
+      "name": "@koi/deploy",
+      "version": "0.0.0",
+    },
+    "packages/deploy/node": {
+      "name": "@koi/node",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/execution-context": "workspace:*",
+        "@koi/shutdown": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/session-store": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/drivers/browser-playwright": {
+      "name": "@koi/browser-playwright",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+        "playwright": "^1.49.0",
+      },
+    },
+    "packages/drivers/engine-acp": {
+      "name": "@koi/engine-acp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/acp-protocol": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/drivers/engine-claude": {
+      "name": "@koi/engine-claude",
+      "version": "0.0.0",
+      "dependencies": {
+        "@anthropic-ai/claude-agent-sdk": "^0.2.37",
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/drivers/engine-external": {
+      "name": "@koi/engine-external",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/drivers/engine-loop": {
+      "name": "@koi/engine-loop",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/drivers/engine-pi": {
+      "name": "@koi/engine-pi",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "@mariozechner/pi-agent-core": "0.54.0",
+        "@mariozechner/pi-ai": "0.54.0",
+      },
+      "devDependencies": {
+        "@sinclair/typebox": "0.34.33",
+      },
+    },
+    "packages/drivers/engine-rlm": {
+      "name": "@koi/engine-rlm",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/drivers/model-router": {
+      "name": "@koi/model-router",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
+    "packages/forge/crystallize": {
+      "name": "@koi/crystallize",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/forge/forge-demand": {
+      "name": "@koi/forge-demand",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
       },
@@ -190,16 +163,91 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/capability-verifier": {
-      "name": "@koi/capability-verifier",
+    "packages/forge/forge-exaptation": {
+      "name": "@koi/forge-exaptation",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/crypto-utils": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/catalog": {
+    "packages/forge/forge-integrity": {
+      "name": "@koi/forge-integrity",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+    },
+    "packages/forge/forge-optimizer": {
+      "name": "@koi/forge-optimizer",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/forge/forge-policy": {
+      "name": "@koi/forge-policy",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+        "@koi/git-utils": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+    },
+    "packages/forge/forge-tools": {
+      "name": "@koi/forge-tools",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/edit-match": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+        "@koi/git-utils": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
+    "packages/forge/forge-types": {
+      "name": "@koi/forge-types",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
+    "packages/forge/forge-verifier": {
+      "name": "@koi/forge-verifier",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/forge-types": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+    },
+    "packages/fs/artifact-client": {
+      "name": "@koi/artifact-client",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+    },
+    "packages/fs/catalog": {
       "name": "@koi/catalog",
       "version": "0.0.0",
       "dependencies": {
@@ -212,218 +260,695 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/channel-base": {
-      "name": "@koi/channel-base",
+    "packages/fs/code-mode": {
+      "name": "@koi/code-mode",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/model-router": "workspace:*",
+      },
+    },
+    "packages/fs/events-memory": {
+      "name": "@koi/events-memory",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/event-delivery": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/fs/events-nexus": {
+      "name": "@koi/events-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/event-delivery": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/registry-event-sourced": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/fs/events-sqlite": {
+      "name": "@koi/events-sqlite",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/event-delivery": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/sqlite-utils": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/registry-event-sourced": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/fs/filesystem": {
+      "name": "@koi/filesystem",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "@koi/scope": "workspace:*",
+        "@koi/search-provider": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/fs/lsp": {
+      "name": "@koi/lsp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+      },
+    },
+    "packages/fs/pay-local": {
+      "name": "@koi/pay-local",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/sqlite-utils": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/fs/pay-nexus": {
+      "name": "@koi/pay-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/fs/registry-event-sourced": {
+      "name": "@koi/registry-event-sourced",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/events-memory": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/fs/registry-http": {
+      "name": "@koi/registry-http",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/fs/registry-nexus": {
+      "name": "@koi/registry-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/fs/registry-store": {
+      "name": "@koi/registry-store",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/sqlite-utils": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/fs/resolve": {
+      "name": "@koi/resolve",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/search-provider": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+    },
+    "packages/fs/search": {
+      "name": "@koi/search",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/search-provider": "workspace:*",
+      },
+    },
+    "packages/fs/search-brave": {
+      "name": "@koi/search-brave",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "@koi/search-provider": "workspace:*",
+      },
+    },
+    "packages/fs/search-nexus": {
+      "name": "@koi/search-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+        "@koi/search-provider": "workspace:*",
+      },
+    },
+    "packages/fs/search-provider": {
+      "name": "@koi/search-provider",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/fs/skill-scanner": {
+      "name": "@koi/skill-scanner",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/validation": "workspace:*",
+        "oxc-parser": "0.114.0",
+      },
+    },
+    "packages/fs/skills": {
+      "name": "@koi/skills",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/skill-scanner": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/crystallize": "workspace:*",
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/fs/store-fs": {
+      "name": "@koi/store-fs",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/forge": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/fs/store-nexus": {
+      "name": "@koi/store-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/fs/store-sqlite": {
+      "name": "@koi/store-sqlite",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/sqlite-utils": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/fs/tool-ask-guide": {
+      "name": "@koi/tool-ask-guide",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/search-provider": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/fs/tool-ask-user": {
+      "name": "@koi/tool-ask-user",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/fs/tool-browser": {
+      "name": "@koi/tool-browser",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/scope": "workspace:*",
+      },
+    },
+    "packages/fs/tool-exec": {
+      "name": "@koi/tool-exec",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/fs/tools-github": {
+      "name": "@koi/tools-github",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+      },
+    },
+    "packages/fs/tools-web": {
+      "name": "@koi/tools-web",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/search-provider": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/search-brave": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/fs/worktree-merge": {
+      "name": "@koi/worktree-merge",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/git-utils": "workspace:*",
+      },
+    },
+    "packages/ipc/competitive-broadcast": {
+      "name": "@koi/competitive-broadcast",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/ipc/federation": {
+      "name": "@koi/federation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/ipc/handoff": {
+      "name": "@koi/handoff",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+        "@koi/sqlite-utils": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/ipc/ipc-local": {
+      "name": "@koi/ipc-local",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/ipc/ipc-nexus": {
+      "name": "@koi/ipc-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/ipc/orchestrator": {
+      "name": "@koi/orchestrator",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/ipc/parallel-minions": {
+      "name": "@koi/parallel-minions",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/ipc/scratchpad-local": {
+      "name": "@koi/scratchpad-local",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/ipc/scratchpad-nexus": {
+      "name": "@koi/scratchpad-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/ipc/task-spawn": {
+      "name": "@koi/task-spawn",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/node": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/ipc/workspace": {
+      "name": "@koi/workspace",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/git-utils": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/ipc/workspace-nexus": {
+      "name": "@koi/workspace-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/kernel/bootstrap": {
+      "name": "@koi/bootstrap",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/file-resolution": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/context": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/kernel/config": {
+      "name": "@koi/config",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
+    "packages/kernel/core": {
+      "name": "@koi/core",
+      "version": "0.0.0",
+    },
+    "packages/kernel/engine": {
+      "name": "@koi/engine",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/execution-context": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/session-repair": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine-acp": "workspace:*",
+        "@koi/engine-claude": "workspace:*",
+        "@koi/engine-external": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/filesystem": "workspace:*",
+        "@koi/middleware-audit": "workspace:*",
+        "@koi/middleware-event-trace": "workspace:*",
+        "@koi/middleware-fs-rollback": "workspace:*",
+        "@koi/middleware-guided-retry": "workspace:*",
+        "@koi/middleware-pay": "workspace:*",
+        "@koi/middleware-sandbox": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/node": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "@koi/scheduler": "workspace:*",
+        "@koi/scheduler-provider": "workspace:*",
+        "@koi/scope": "workspace:*",
+        "@koi/snapshot-chain-store": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+        "@koi/webhook-provider": "workspace:*",
+      },
+    },
+    "packages/kernel/manifest": {
+      "name": "@koi/manifest",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
+    "packages/kernel/soul": {
+      "name": "@koi/soul",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/file-resolution": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/lib/crypto-utils": {
+      "name": "@koi/crypto-utils",
+      "version": "0.0.0",
+    },
+    "packages/lib/edit-match": {
+      "name": "@koi/edit-match",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/lib/errors": {
+      "name": "@koi/errors",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/event-delivery": {
+      "name": "@koi/event-delivery",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+    },
+    "packages/lib/execution-context": {
+      "name": "@koi/execution-context",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/file-resolution": {
+      "name": "@koi/file-resolution",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/token-estimator": "workspace:*",
+      },
+    },
+    "packages/lib/git-utils": {
+      "name": "@koi/git-utils",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/hash": {
+      "name": "@koi/hash",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/nexus-client": {
+      "name": "@koi/nexus-client",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/shutdown": {
+      "name": "@koi/shutdown",
+      "version": "0.0.0",
+    },
+    "packages/lib/sqlite-utils": {
+      "name": "@koi/sqlite-utils",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
       },
     },
-    "packages/channel-canvas-fallback": {
-      "name": "@koi/channel-canvas-fallback",
+    "packages/lib/test-utils": {
+      "name": "@koi/test-utils",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
       },
     },
-    "packages/channel-chat-sdk": {
-      "name": "@koi/channel-chat-sdk",
+    "packages/lib/validation": {
+      "name": "@koi/validation",
       "version": "0.0.0",
       "dependencies": {
-        "@chat-adapter/discord": "4.14.0",
-        "@chat-adapter/gchat": "4.14.0",
-        "@chat-adapter/github": "4.14.0",
-        "@chat-adapter/linear": "4.14.0",
-        "@chat-adapter/slack": "4.14.0",
-        "@chat-adapter/state-memory": "4.14.0",
-        "@chat-adapter/teams": "4.14.0",
-        "@koi/channel-base": "workspace:*",
         "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "chat": "4.14.0",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/channel-cli": {
-      "name": "@koi/channel-cli",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/channel-base": "workspace:*",
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
+        "zod": "4.3.6",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/channel-discord": {
-      "name": "@koi/channel-discord",
+    "packages/lib/variant-selection": {
+      "name": "@koi/variant-selection",
       "version": "0.0.0",
       "dependencies": {
-        "@discordjs/voice": "0.18.0",
-        "@koi/channel-base": "workspace:*",
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "discord.js": "14.18.0",
-        "libsodium-wrappers": "0.7.15",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-        "@types/libsodium-wrappers": "0.7.14",
-      },
-    },
-    "packages/channel-email": {
-      "name": "@koi/channel-email",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/channel-base": "workspace:*",
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "imapflow": "1.0.171",
-        "mailparser": "3.7.2",
-        "nodemailer": "6.10.1",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-        "@types/nodemailer": "6.4.17",
-      },
-    },
-    "packages/channel-matrix": {
-      "name": "@koi/channel-matrix",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/channel-base": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "matrix-bot-sdk": "0.7.1",
+        "@koi/validation": "workspace:*",
       },
       "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/channel-mobile": {
-      "name": "@koi/channel-mobile",
+    "packages/meta/autonomous": {
+      "name": "@koi/autonomous",
       "version": "0.0.0",
       "dependencies": {
-        "@koi/channel-base": "workspace:*",
         "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
+        "@koi/handoff": "workspace:*",
+        "@koi/harness-scheduler": "workspace:*",
+        "@koi/long-running": "workspace:*",
       },
       "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
+        "@koi/snapshot-chain-store": "workspace:*",
+        "@koi/snapshot-store-sqlite": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/channel-signal": {
-      "name": "@koi/channel-signal",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/channel-base": "workspace:*",
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/channel-slack": {
-      "name": "@koi/channel-slack",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/channel-base": "workspace:*",
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "@slack/socket-mode": "2.0.3",
-        "@slack/web-api": "7.9.1",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/channel-teams": {
-      "name": "@koi/channel-teams",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/channel-base": "workspace:*",
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/channel-telegram": {
-      "name": "@koi/channel-telegram",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/channel-base": "workspace:*",
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "grammy": "1.40.0",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-        "@mariozechner/pi-ai": "0.54.0",
-      },
-    },
-    "packages/channel-voice": {
-      "name": "@koi/channel-voice",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/channel-base": "workspace:*",
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "@livekit/agents": "1.0.47",
-        "@livekit/agents-plugin-deepgram": "1.0.47",
-        "@livekit/agents-plugin-openai": "1.0.47",
-        "livekit-server-sdk": "2.15.0",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/channel-whatsapp": {
-      "name": "@koi/channel-whatsapp",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/channel-base": "workspace:*",
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "@whiskeysockets/baileys": "6.7.16",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/cli": {
+    "packages/meta/cli": {
       "name": "@koi/cli",
       "version": "0.0.0",
       "bin": {
@@ -464,78 +989,7 @@
         "@koi/engine-pi": "workspace:*",
       },
     },
-    "packages/code-executor": {
-      "name": "@koi/code-executor",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/sandbox-wasm": "workspace:*",
-      },
-    },
-    "packages/code-mode": {
-      "name": "@koi/code-mode",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/hash": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-loop": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/model-router": "workspace:*",
-      },
-    },
-    "packages/collusion-detector": {
-      "name": "@koi/collusion-detector",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/competitive-broadcast": {
-      "name": "@koi/competitive-broadcast",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/config": {
-      "name": "@koi/config",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/validation": "workspace:*",
-        "zod": "4.3.6",
-      },
-    },
-    "packages/context": {
-      "name": "@koi/context",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "@koi/token-estimator": "workspace:*",
-        "@koi/validation": "workspace:*",
-        "zod": "4.3.6",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-loop": "workspace:*",
-        "@koi/model-router": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/context-arena": {
+    "packages/meta/context-arena": {
       "name": "@koi/context-arena",
       "version": "0.0.0",
       "dependencies": {
@@ -555,341 +1009,7 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/core": {
-      "name": "@koi/core",
-      "version": "0.0.0",
-    },
-    "packages/crypto-utils": {
-      "name": "@koi/crypto-utils",
-      "version": "0.0.0",
-    },
-    "packages/crystallize": {
-      "name": "@koi/crystallize",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/dashboard-api": {
-      "name": "@koi/dashboard-api",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/dashboard-types": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/node": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/dashboard-types": {
-      "name": "@koi/dashboard-types",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-    },
-    "packages/dashboard-ui": {
-      "name": "@koi/dashboard-ui",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/dashboard-types": "workspace:*",
-        "@tanstack/react-query": "5.80.7",
-        "react": "19.1.0",
-        "react-dom": "19.1.0",
-        "react-router-dom": "7.6.2",
-        "zustand": "5.0.5",
-      },
-      "devDependencies": {
-        "@tailwindcss/vite": "4.1.8",
-        "@testing-library/jest-dom": "6.6.3",
-        "@testing-library/react": "16.3.0",
-        "@types/react": "19.1.8",
-        "@types/react-dom": "19.1.6",
-        "@vitejs/plugin-react": "4.5.2",
-        "tailwindcss": "4.1.8",
-        "vite": "6.3.5",
-      },
-    },
-    "packages/debug": {
-      "name": "@koi/debug",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/delegation": {
-      "name": "@koi/delegation",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-    },
-    "packages/deploy": {
-      "name": "@koi/deploy",
-      "version": "0.0.0",
-    },
-    "packages/doctor": {
-      "name": "@koi/doctor",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/validation": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/edit-match": {
-      "name": "@koi/edit-match",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/engine": {
-      "name": "@koi/engine",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/execution-context": "workspace:*",
-        "@koi/hash": "workspace:*",
-        "@koi/session-repair": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine-acp": "workspace:*",
-        "@koi/engine-claude": "workspace:*",
-        "@koi/engine-external": "workspace:*",
-        "@koi/engine-loop": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/filesystem": "workspace:*",
-        "@koi/middleware-audit": "workspace:*",
-        "@koi/middleware-event-trace": "workspace:*",
-        "@koi/middleware-fs-rollback": "workspace:*",
-        "@koi/middleware-guided-retry": "workspace:*",
-        "@koi/middleware-pay": "workspace:*",
-        "@koi/middleware-sandbox": "workspace:*",
-        "@koi/model-router": "workspace:*",
-        "@koi/node": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "@koi/scheduler": "workspace:*",
-        "@koi/scheduler-provider": "workspace:*",
-        "@koi/scope": "workspace:*",
-        "@koi/snapshot-chain-store": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-        "@koi/webhook-provider": "workspace:*",
-      },
-    },
-    "packages/engine-acp": {
-      "name": "@koi/engine-acp",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/acp-protocol": "workspace:*",
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/engine-claude": {
-      "name": "@koi/engine-claude",
-      "version": "0.0.0",
-      "dependencies": {
-        "@anthropic-ai/claude-agent-sdk": "^0.2.37",
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/engine-external": {
-      "name": "@koi/engine-external",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/engine-loop": {
-      "name": "@koi/engine-loop",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/model-router": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/engine-pi": {
-      "name": "@koi/engine-pi",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "@mariozechner/pi-agent-core": "0.54.0",
-        "@mariozechner/pi-ai": "0.54.0",
-      },
-      "devDependencies": {
-        "@sinclair/typebox": "0.34.33",
-      },
-    },
-    "packages/engine-rlm": {
-      "name": "@koi/engine-rlm",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/errors": {
-      "name": "@koi/errors",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-    },
-    "packages/eval": {
-      "name": "@koi/eval",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/event-delivery": {
-      "name": "@koi/event-delivery",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/hash": "workspace:*",
-      },
-    },
-    "packages/events-memory": {
-      "name": "@koi/events-memory",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/event-delivery": "workspace:*",
-        "@koi/hash": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/events-nexus": {
-      "name": "@koi/events-nexus",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/event-delivery": "workspace:*",
-        "@koi/hash": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/registry-event-sourced": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/events-sqlite": {
-      "name": "@koi/events-sqlite",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/event-delivery": "workspace:*",
-        "@koi/hash": "workspace:*",
-        "@koi/sqlite-utils": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/registry-event-sourced": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/exec-approvals": {
-      "name": "@koi/exec-approvals",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/execution-context": {
-      "name": "@koi/execution-context",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-    },
-    "packages/federation": {
-      "name": "@koi/federation",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/nexus-client": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/file-resolution": {
-      "name": "@koi/file-resolution",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/token-estimator": "workspace:*",
-      },
-    },
-    "packages/filesystem": {
-      "name": "@koi/filesystem",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "@koi/scope": "workspace:*",
-        "@koi/search-provider": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/forge": {
+    "packages/meta/forge": {
       "name": "@koi/forge",
       "version": "0.0.0",
       "dependencies": {
@@ -915,114 +1035,7 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/forge-demand": {
-      "name": "@koi/forge-demand",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/validation": "workspace:*",
-        "zod": "4.3.6",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/forge-exaptation": {
-      "name": "@koi/forge-exaptation",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/validation": "workspace:*",
-        "zod": "4.3.6",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/forge-integrity": {
-      "name": "@koi/forge-integrity",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/forge-types": "workspace:*",
-        "@koi/hash": "workspace:*",
-      },
-    },
-    "packages/forge-optimizer": {
-      "name": "@koi/forge-optimizer",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/forge-policy": {
-      "name": "@koi/forge-policy",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/forge-types": "workspace:*",
-        "@koi/git-utils": "workspace:*",
-        "@koi/validation": "workspace:*",
-      },
-    },
-    "packages/forge-tools": {
-      "name": "@koi/forge-tools",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/edit-match": "workspace:*",
-        "@koi/forge-types": "workspace:*",
-        "@koi/git-utils": "workspace:*",
-        "@koi/hash": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "@koi/validation": "workspace:*",
-        "zod": "4.3.6",
-      },
-    },
-    "packages/forge-types": {
-      "name": "@koi/forge-types",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/validation": "workspace:*",
-        "zod": "4.3.6",
-      },
-    },
-    "packages/forge-verifier": {
-      "name": "@koi/forge-verifier",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/forge-types": "workspace:*",
-        "@koi/hash": "workspace:*",
-        "@koi/validation": "workspace:*",
-      },
-    },
-    "packages/gateway": {
-      "name": "@koi/gateway",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-      },
-    },
-    "packages/git-utils": {
-      "name": "@koi/git-utils",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-    },
-    "packages/governance": {
+    "packages/meta/governance": {
       "name": "@koi/governance",
       "version": "0.0.0",
       "dependencies": {
@@ -1048,825 +1061,7 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/governance-memory": {
-      "name": "@koi/governance-memory",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/validation": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/handoff": {
-      "name": "@koi/handoff",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/nexus-client": "workspace:*",
-        "@koi/sqlite-utils": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-loop": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/harness-scheduler": {
-      "name": "@koi/harness-scheduler",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/hash": {
-      "name": "@koi/hash",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-    },
-    "packages/ipc-local": {
-      "name": "@koi/ipc-local",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/ipc-nexus": {
-      "name": "@koi/ipc-nexus",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/knowledge-vault": {
-      "name": "@koi/knowledge-vault",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/scope": "workspace:*",
-        "@koi/search-provider": "workspace:*",
-        "@koi/token-estimator": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/long-running": {
-      "name": "@koi/long-running",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/token-estimator": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/snapshot-chain-store": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/lsp": {
-      "name": "@koi/lsp",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/validation": "workspace:*",
-        "zod": "4.3.6",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-      },
-    },
-    "packages/manifest": {
-      "name": "@koi/manifest",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/validation": "workspace:*",
-        "zod": "4.3.6",
-      },
-    },
-    "packages/mcp": {
-      "name": "@koi/mcp",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/validation": "workspace:*",
-        "@modelcontextprotocol/sdk": "1.12.1",
-        "zod": "4.3.6",
-      },
-    },
-    "packages/mcp-server": {
-      "name": "@koi/mcp-server",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@modelcontextprotocol/sdk": "1.12.1",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/memory-fs": {
-      "name": "@koi/memory-fs",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-ace": {
-      "name": "@koi/middleware-ace",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "@koi/token-estimator": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-loop": "workspace:*",
-        "@koi/model-router": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-audit": {
-      "name": "@koi/middleware-audit",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-call-dedup": {
-      "name": "@koi/middleware-call-dedup",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/hash": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-call-limits": {
-      "name": "@koi/middleware-call-limits",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-compactor": {
-      "name": "@koi/middleware-compactor",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "@koi/session-repair": "workspace:*",
-        "@koi/token-estimator": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-loop": "workspace:*",
-        "@koi/memory-fs": "workspace:*",
-        "@koi/model-router": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-context-editing": {
-      "name": "@koi/middleware-context-editing",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "@koi/token-estimator": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-degenerate": {
-      "name": "@koi/middleware-degenerate",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/validation": "workspace:*",
-        "@koi/variant-selection": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-delegation-escalation": {
-      "name": "@koi/middleware-delegation-escalation",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-event-trace": {
-      "name": "@koi/middleware-event-trace",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/snapshot-chain-store": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-feedback-loop": {
-      "name": "@koi/middleware-feedback-loop",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/validation": "workspace:*",
-        "zod": "4.3.6",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/forge": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-fs-rollback": {
-      "name": "@koi/middleware-fs-rollback",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/snapshot-chain-store": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-goal-anchor": {
-      "name": "@koi/middleware-goal-anchor",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/agent-monitor": "workspace:*",
-        "@koi/engine": "workspace:*",
-        "@koi/engine-loop": "workspace:*",
-        "@koi/model-router": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-goal-reminder": {
-      "name": "@koi/middleware-goal-reminder",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-loop": "workspace:*",
-        "@koi/model-router": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-governance-backend": {
-      "name": "@koi/middleware-governance-backend",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-guardrails": {
-      "name": "@koi/middleware-guardrails",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "zod": "4.3.6",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-loop": "workspace:*",
-        "@koi/model-router": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-guided-retry": {
-      "name": "@koi/middleware-guided-retry",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-hot-memory": {
-      "name": "@koi/middleware-hot-memory",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/token-estimator": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-intent-capsule": {
-      "name": "@koi/middleware-intent-capsule",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/crypto-utils": "workspace:*",
-        "@koi/errors": "workspace:*",
-      },
-    },
-    "packages/middleware-output-verifier": {
-      "name": "@koi/middleware-output-verifier",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-pay": {
-      "name": "@koi/middleware-pay",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-permissions": {
-      "name": "@koi/middleware-permissions",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/hash": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-loop": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-personalization": {
-      "name": "@koi/middleware-personalization",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/token-estimator": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-pii": {
-      "name": "@koi/middleware-pii",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-planning": {
-      "name": "@koi/middleware-planning",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-preference": {
-      "name": "@koi/middleware-preference",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-    },
-    "packages/middleware-report": {
-      "name": "@koi/middleware-report",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-sandbox": {
-      "name": "@koi/middleware-sandbox",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-sanitize": {
-      "name": "@koi/middleware-sanitize",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-semantic-retry": {
-      "name": "@koi/middleware-semantic-retry",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-tool-audit": {
-      "name": "@koi/middleware-tool-audit",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-tool-recovery": {
-      "name": "@koi/middleware-tool-recovery",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-tool-selector": {
-      "name": "@koi/middleware-tool-selector",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/middleware-turn-ack": {
-      "name": "@koi/middleware-turn-ack",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/model-router": {
-      "name": "@koi/model-router",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/token-estimator": "workspace:*",
-        "@koi/validation": "workspace:*",
-        "zod": "4.3.6",
-      },
-    },
-    "packages/name-service": {
-      "name": "@koi/name-service",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/validation": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/nexus-client": {
-      "name": "@koi/nexus-client",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-    },
-    "packages/node": {
-      "name": "@koi/node",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/execution-context": "workspace:*",
-        "@koi/shutdown": "workspace:*",
-        "zod": "4.3.6",
-      },
-      "devDependencies": {
-        "@koi/session-store": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/orchestrator": {
-      "name": "@koi/orchestrator",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/parallel-minions": {
-      "name": "@koi/parallel-minions",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-loop": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/model-router": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/pay-local": {
-      "name": "@koi/pay-local",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/sqlite-utils": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/pay-nexus": {
-      "name": "@koi/pay-nexus",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/permissions-nexus": {
-      "name": "@koi/permissions-nexus",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/nexus-client": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/redaction": {
-      "name": "@koi/redaction",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/middleware-audit": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/registry-event-sourced": {
-      "name": "@koi/registry-event-sourced",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/events-memory": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/registry-http": {
-      "name": "@koi/registry-http",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/registry-nexus": {
-      "name": "@koi/registry-nexus",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/registry-store": {
-      "name": "@koi/registry-store",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/sqlite-utils": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/reputation": {
-      "name": "@koi/reputation",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/resolve": {
-      "name": "@koi/resolve",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/hash": "workspace:*",
-        "@koi/search-provider": "workspace:*",
-        "@koi/validation": "workspace:*",
-      },
-    },
-    "packages/sandbox": {
-      "name": "@koi/sandbox",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-    },
-    "packages/sandbox-cloud-base": {
-      "name": "@koi/sandbox-cloud-base",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/sandbox-cloudflare": {
-      "name": "@koi/sandbox-cloudflare",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/sandbox-cloud-base": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/sandbox-daytona": {
-      "name": "@koi/sandbox-daytona",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/sandbox-cloud-base": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/sandbox-docker": {
-      "name": "@koi/sandbox-docker",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/sandbox-cloud-base": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/sandbox-e2b": {
-      "name": "@koi/sandbox-e2b",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/sandbox-cloud-base": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/sandbox-executor": {
-      "name": "@koi/sandbox-executor",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/sandbox": "workspace:*",
-        "@koi/sandbox-ipc": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/sandbox-ipc": {
-      "name": "@koi/sandbox-ipc",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "zod": "4.3.6",
-      },
-      "devDependencies": {
-        "@koi/sandbox": "workspace:*",
-      },
-    },
-    "packages/sandbox-stack": {
+    "packages/meta/sandbox-stack": {
       "name": "@koi/sandbox-stack",
       "version": "0.0.0",
       "dependencies": {
@@ -1877,237 +1072,7 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/sandbox-vercel": {
-      "name": "@koi/sandbox-vercel",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/sandbox-cloud-base": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/sandbox-wasm": {
-      "name": "@koi/sandbox-wasm",
-      "version": "0.0.0",
-      "dependencies": {
-        "@jitl/quickjs-ng-wasmfile-release-asyncify": "0.32.0",
-        "@jitl/quickjs-ng-wasmfile-release-sync": "0.32.0",
-        "@koi/core": "workspace:*",
-        "quickjs-emscripten-core": "0.32.0",
-      },
-    },
-    "packages/scheduler": {
-      "name": "@koi/scheduler",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "croner": "9.0.0",
-      },
-    },
-    "packages/scheduler-nexus": {
-      "name": "@koi/scheduler-nexus",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/scheduler-provider": {
-      "name": "@koi/scheduler-provider",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/scope": {
-      "name": "@koi/scope",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/execution-context": "workspace:*",
-      },
-    },
-    "packages/scratchpad-local": {
-      "name": "@koi/scratchpad-local",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/scratchpad-nexus": {
-      "name": "@koi/scratchpad-nexus",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/nexus-client": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/search": {
-      "name": "@koi/search",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/search-provider": "workspace:*",
-      },
-    },
-    "packages/search-brave": {
-      "name": "@koi/search-brave",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "@koi/search-provider": "workspace:*",
-      },
-    },
-    "packages/search-nexus": {
-      "name": "@koi/search-nexus",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/nexus-client": "workspace:*",
-        "@koi/search-provider": "workspace:*",
-      },
-    },
-    "packages/search-provider": {
-      "name": "@koi/search-provider",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-    },
-    "packages/security-analyzer": {
-      "name": "@koi/security-analyzer",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-    },
-    "packages/self-test": {
-      "name": "@koi/self-test",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-      },
-    },
-    "packages/session-repair": {
-      "name": "@koi/session-repair",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/hash": "workspace:*",
-      },
-    },
-    "packages/session-store": {
-      "name": "@koi/session-store",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/sqlite-utils": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/shutdown": {
-      "name": "@koi/shutdown",
-      "version": "0.0.0",
-    },
-    "packages/skill-scanner": {
-      "name": "@koi/skill-scanner",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/validation": "workspace:*",
-        "oxc-parser": "0.114.0",
-      },
-    },
-    "packages/skills": {
-      "name": "@koi/skills",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/skill-scanner": "workspace:*",
-        "@koi/validation": "workspace:*",
-        "zod": "4.3.6",
-      },
-      "devDependencies": {
-        "@koi/crystallize": "workspace:*",
-        "@koi/engine": "workspace:*",
-        "@koi/engine-loop": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/snapshot-chain-store": {
-      "name": "@koi/snapshot-chain-store",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/hash": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/snapshot-store-sqlite": {
-      "name": "@koi/snapshot-store-sqlite",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/hash": "workspace:*",
-        "@koi/sqlite-utils": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/snapshot-chain-store": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/soul": {
-      "name": "@koi/soul",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/file-resolution": "workspace:*",
-        "@koi/resolve": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/sqlite-utils": {
-      "name": "@koi/sqlite-utils",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-      },
-    },
-    "packages/starter": {
+    "packages/meta/starter": {
       "name": "@koi/starter",
       "version": "0.0.0",
       "dependencies": {
@@ -2131,46 +1096,86 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/store-fs": {
-      "name": "@koi/store-fs",
+    "packages/middleware/middleware-call-dedup": {
+      "name": "@koi/middleware-call-dedup",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware/middleware-call-limits": {
+      "name": "@koi/middleware-call-limits",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware/middleware-degenerate": {
+      "name": "@koi/middleware-degenerate",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
         "@koi/validation": "workspace:*",
+        "@koi/variant-selection": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware/middleware-feedback-loop": {
+      "name": "@koi/middleware-feedback-loop",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
         "@koi/forge": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/store-nexus": {
-      "name": "@koi/store-nexus",
+    "packages/middleware/middleware-fs-rollback": {
+      "name": "@koi/middleware-fs-rollback",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/nexus-client": "workspace:*",
-        "@koi/validation": "workspace:*",
       },
       "devDependencies": {
+        "@koi/snapshot-chain-store": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/store-sqlite": {
-      "name": "@koi/store-sqlite",
+    "packages/middleware/middleware-goal-anchor": {
+      "name": "@koi/middleware-goal-anchor",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/sqlite-utils": "workspace:*",
-        "@koi/validation": "workspace:*",
       },
       "devDependencies": {
+        "@koi/agent-monitor": "workspace:*",
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/model-router": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/task-spawn": {
-      "name": "@koi/task-spawn",
+    "packages/middleware/middleware-goal-reminder": {
+      "name": "@koi/middleware-goal-reminder",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
@@ -2178,72 +1183,301 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-loop": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
         "@koi/model-router": "workspace:*",
-        "@koi/node": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/test-utils": {
-      "name": "@koi/test-utils",
+    "packages/middleware/middleware-guided-retry": {
+      "name": "@koi/middleware-guided-retry",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware/middleware-output-verifier": {
+      "name": "@koi/middleware-output-verifier",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware/middleware-planning": {
+      "name": "@koi/middleware-planning",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware/middleware-report": {
+      "name": "@koi/middleware-report",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware/middleware-sandbox": {
+      "name": "@koi/middleware-sandbox",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware/middleware-semantic-retry": {
+      "name": "@koi/middleware-semantic-retry",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware/middleware-tool-audit": {
+      "name": "@koi/middleware-tool-audit",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware/middleware-tool-recovery": {
+      "name": "@koi/middleware-tool-recovery",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware/middleware-tool-selector": {
+      "name": "@koi/middleware-tool-selector",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/middleware/middleware-turn-ack": {
+      "name": "@koi/middleware-turn-ack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/mm/context": {
+      "name": "@koi/context",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/mm/knowledge-vault": {
+      "name": "@koi/knowledge-vault",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/scope": "workspace:*",
+        "@koi/search-provider": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/mm/memory-fs": {
+      "name": "@koi/memory-fs",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/mm/middleware-ace": {
+      "name": "@koi/middleware-ace",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/mm/middleware-compactor": {
+      "name": "@koi/middleware-compactor",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "@koi/session-repair": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/memory-fs": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/mm/middleware-context-editing": {
+      "name": "@koi/middleware-context-editing",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/mm/middleware-hot-memory": {
+      "name": "@koi/middleware-hot-memory",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/mm/middleware-personalization": {
+      "name": "@koi/middleware-personalization",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/mm/middleware-preference": {
+      "name": "@koi/middleware-preference",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
       },
     },
-    "packages/token-estimator": {
+    "packages/mm/session-repair": {
+      "name": "@koi/session-repair",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+    },
+    "packages/mm/session-store": {
+      "name": "@koi/session-store",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/sqlite-utils": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/mm/snapshot-chain-store": {
+      "name": "@koi/snapshot-chain-store",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/mm/snapshot-store-sqlite": {
+      "name": "@koi/snapshot-store-sqlite",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/sqlite-utils": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/snapshot-chain-store": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/mm/token-estimator": {
       "name": "@koi/token-estimator",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
       },
     },
-    "packages/tool-ask-guide": {
-      "name": "@koi/tool-ask-guide",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/search-provider": "workspace:*",
-        "@koi/token-estimator": "workspace:*",
-        "@koi/validation": "workspace:*",
-        "zod": "4.3.6",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/tool-ask-user": {
-      "name": "@koi/tool-ask-user",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/validation": "workspace:*",
-        "zod": "4.3.6",
-      },
-      "devDependencies": {
-        "@koi/engine": "workspace:*",
-        "@koi/engine-loop": "workspace:*",
-        "@koi/engine-pi": "workspace:*",
-        "@koi/model-router": "workspace:*",
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/tool-browser": {
-      "name": "@koi/tool-browser",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/scope": "workspace:*",
-      },
-    },
-    "packages/tool-exec": {
-      "name": "@koi/tool-exec",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-    },
-    "packages/tool-squash": {
+    "packages/mm/tool-squash": {
       "name": "@koi/tool-squash",
       "version": "0.0.0",
       "dependencies": {
@@ -2256,8 +1490,345 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/tools-github": {
-      "name": "@koi/tools-github",
+    "packages/mm/transcript": {
+      "name": "@koi/transcript",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/net/acp": {
+      "name": "@koi/acp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/acp-protocol": "workspace:*",
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/net/acp-protocol": {
+      "name": "@koi/acp-protocol",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/net/canvas": {
+      "name": "@koi/canvas",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/net/channel-base": {
+      "name": "@koi/channel-base",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
+    "packages/net/channel-canvas-fallback": {
+      "name": "@koi/channel-canvas-fallback",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/net/channel-chat-sdk": {
+      "name": "@koi/channel-chat-sdk",
+      "version": "0.0.0",
+      "dependencies": {
+        "@chat-adapter/discord": "4.14.0",
+        "@chat-adapter/gchat": "4.14.0",
+        "@chat-adapter/github": "4.14.0",
+        "@chat-adapter/linear": "4.14.0",
+        "@chat-adapter/slack": "4.14.0",
+        "@chat-adapter/state-memory": "4.14.0",
+        "@chat-adapter/teams": "4.14.0",
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "chat": "4.14.0",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/net/channel-cli": {
+      "name": "@koi/channel-cli",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/net/channel-discord": {
+      "name": "@koi/channel-discord",
+      "version": "0.0.0",
+      "dependencies": {
+        "@discordjs/voice": "0.18.0",
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "discord.js": "14.18.0",
+        "libsodium-wrappers": "0.7.15",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+        "@types/libsodium-wrappers": "0.7.14",
+      },
+    },
+    "packages/net/channel-email": {
+      "name": "@koi/channel-email",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "imapflow": "1.0.171",
+        "mailparser": "3.7.2",
+        "nodemailer": "6.10.1",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+        "@types/nodemailer": "6.4.17",
+      },
+    },
+    "packages/net/channel-matrix": {
+      "name": "@koi/channel-matrix",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "matrix-bot-sdk": "0.7.1",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/net/channel-mobile": {
+      "name": "@koi/channel-mobile",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/net/channel-signal": {
+      "name": "@koi/channel-signal",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/net/channel-slack": {
+      "name": "@koi/channel-slack",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "@slack/socket-mode": "2.0.3",
+        "@slack/web-api": "7.9.1",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/net/channel-teams": {
+      "name": "@koi/channel-teams",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/net/channel-telegram": {
+      "name": "@koi/channel-telegram",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "grammy": "1.40.0",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+        "@mariozechner/pi-ai": "0.54.0",
+      },
+    },
+    "packages/net/channel-voice": {
+      "name": "@koi/channel-voice",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "@livekit/agents": "1.0.47",
+        "@livekit/agents-plugin-deepgram": "1.0.47",
+        "@livekit/agents-plugin-openai": "1.0.47",
+        "livekit-server-sdk": "2.15.0",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/net/channel-whatsapp": {
+      "name": "@koi/channel-whatsapp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "@whiskeysockets/baileys": "6.7.16",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/net/gateway": {
+      "name": "@koi/gateway",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+      },
+    },
+    "packages/net/mcp": {
+      "name": "@koi/mcp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "@modelcontextprotocol/sdk": "1.12.1",
+        "zod": "4.3.6",
+      },
+    },
+    "packages/net/mcp-server": {
+      "name": "@koi/mcp-server",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@modelcontextprotocol/sdk": "1.12.1",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/net/name-service": {
+      "name": "@koi/name-service",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/net/webhook-delivery": {
+      "name": "@koi/webhook-delivery",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+    },
+    "packages/net/webhook-provider": {
+      "name": "@koi/webhook-provider",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/observability/agent-discovery": {
+      "name": "@koi/agent-discovery",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/observability/agent-monitor": {
+      "name": "@koi/agent-monitor",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
@@ -2266,23 +1837,128 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-loop": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/tools-web": {
-      "name": "@koi/tools-web",
+    "packages/observability/agent-procfs": {
+      "name": "@koi/agent-procfs",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/search-provider": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/observability/agui": {
+      "name": "@koi/agui",
+      "version": "0.0.0",
+      "dependencies": {
+        "@ag-ui/core": "0.0.45",
+        "@ag-ui/encoder": "0.0.45",
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-pi": "workspace:*",
-        "@koi/search-brave": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/tracing": {
+    "packages/observability/dashboard-api": {
+      "name": "@koi/dashboard-api",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/dashboard-types": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/node": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/observability/dashboard-types": {
+      "name": "@koi/dashboard-types",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/observability/dashboard-ui": {
+      "name": "@koi/dashboard-ui",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/dashboard-types": "workspace:*",
+        "@tanstack/react-query": "5.80.7",
+        "react": "19.1.0",
+        "react-dom": "19.1.0",
+        "react-router-dom": "7.6.2",
+        "zustand": "5.0.5",
+      },
+      "devDependencies": {
+        "@tailwindcss/vite": "4.1.8",
+        "@testing-library/jest-dom": "6.6.3",
+        "@testing-library/react": "16.3.0",
+        "@types/react": "19.1.8",
+        "@types/react-dom": "19.1.6",
+        "@vitejs/plugin-react": "4.5.2",
+        "tailwindcss": "4.1.8",
+        "vite": "6.3.5",
+      },
+    },
+    "packages/observability/debug": {
+      "name": "@koi/debug",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/observability/eval": {
+      "name": "@koi/eval",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/observability/middleware-event-trace": {
+      "name": "@koi/middleware-event-trace",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/snapshot-chain-store": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/observability/self-test": {
+      "name": "@koi/self-test",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+      },
+    },
+    "packages/observability/tracing": {
       "name": "@koi/tracing",
       "version": "0.0.0",
       "dependencies": {
@@ -2296,41 +1972,59 @@
         "@opentelemetry/sdk-trace-node": "^2.5.0",
       },
     },
-    "packages/transcript": {
-      "name": "@koi/transcript",
+    "packages/sched/harness-scheduler": {
+      "name": "@koi/harness-scheduler",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/validation": {
-      "name": "@koi/validation",
+    "packages/sched/long-running": {
+      "name": "@koi/long-running",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "zod": "4.3.6",
+        "@koi/token-estimator": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/snapshot-chain-store": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/sched/scheduler": {
+      "name": "@koi/scheduler",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
+        "croner": "9.0.0",
+      },
+    },
+    "packages/sched/scheduler-nexus": {
+      "name": "@koi/scheduler-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/resolve": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/variant-selection": {
-      "name": "@koi/variant-selection",
+    "packages/sched/scheduler-provider": {
+      "name": "@koi/scheduler-provider",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/validation": "workspace:*",
       },
       "devDependencies": {
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/verified-loop": {
+    "packages/sched/verified-loop": {
       "name": "@koi/verified-loop",
       "version": "0.0.0",
       "dependencies": {
@@ -2343,8 +2037,168 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/webhook-delivery": {
-      "name": "@koi/webhook-delivery",
+    "packages/security/audit-sink-local": {
+      "name": "@koi/audit-sink-local",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/sqlite-utils": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/security/audit-sink-nexus": {
+      "name": "@koi/audit-sink-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/security/capability-verifier": {
+      "name": "@koi/capability-verifier",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/crypto-utils": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
+    "packages/security/collusion-detector": {
+      "name": "@koi/collusion-detector",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/security/delegation": {
+      "name": "@koi/delegation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/security/doctor": {
+      "name": "@koi/doctor",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/security/exec-approvals": {
+      "name": "@koi/exec-approvals",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/security/governance-memory": {
+      "name": "@koi/governance-memory",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/security/middleware-audit": {
+      "name": "@koi/middleware-audit",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/security/middleware-delegation-escalation": {
+      "name": "@koi/middleware-delegation-escalation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/security/middleware-governance-backend": {
+      "name": "@koi/middleware-governance-backend",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/security/middleware-guardrails": {
+      "name": "@koi/middleware-guardrails",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-loop": "workspace:*",
+        "@koi/model-router": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/security/middleware-intent-capsule": {
+      "name": "@koi/middleware-intent-capsule",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/crypto-utils": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
+    "packages/security/middleware-pay": {
+      "name": "@koi/middleware-pay",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/security/middleware-permissions": {
+      "name": "@koi/middleware-permissions",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
@@ -2352,34 +2206,39 @@
         "@koi/hash": "workspace:*",
         "@koi/resolve": "workspace:*",
       },
-    },
-    "packages/webhook-provider": {
-      "name": "@koi/webhook-provider",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
-      },
-    },
-    "packages/workspace": {
-      "name": "@koi/workspace",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/git-utils": "workspace:*",
-      },
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-loop": "workspace:*",
         "@koi/engine-pi": "workspace:*",
-        "@koi/model-router": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/workspace-nexus": {
-      "name": "@koi/workspace-nexus",
+    "packages/security/middleware-pii": {
+      "name": "@koi/middleware-pii",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/security/middleware-sanitize": {
+      "name": "@koi/middleware-sanitize",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/security/permissions-nexus": {
+      "name": "@koi/permissions-nexus",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
@@ -2389,12 +2248,155 @@
         "@koi/test-utils": "workspace:*",
       },
     },
-    "packages/worktree-merge": {
-      "name": "@koi/worktree-merge",
+    "packages/security/redaction": {
+      "name": "@koi/redaction",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/git-utils": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/engine": "workspace:*",
+        "@koi/engine-pi": "workspace:*",
+        "@koi/middleware-audit": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/security/reputation": {
+      "name": "@koi/reputation",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/security/scope": {
+      "name": "@koi/scope",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/execution-context": "workspace:*",
+      },
+    },
+    "packages/security/security-analyzer": {
+      "name": "@koi/security-analyzer",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/virt/code-executor": {
+      "name": "@koi/code-executor",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/sandbox-wasm": "workspace:*",
+      },
+    },
+    "packages/virt/sandbox": {
+      "name": "@koi/sandbox",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/virt/sandbox-cloud-base": {
+      "name": "@koi/sandbox-cloud-base",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/virt/sandbox-cloudflare": {
+      "name": "@koi/sandbox-cloudflare",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/sandbox-cloud-base": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/virt/sandbox-daytona": {
+      "name": "@koi/sandbox-daytona",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/sandbox-cloud-base": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/virt/sandbox-docker": {
+      "name": "@koi/sandbox-docker",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/sandbox-cloud-base": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/virt/sandbox-e2b": {
+      "name": "@koi/sandbox-e2b",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/sandbox-cloud-base": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/virt/sandbox-executor": {
+      "name": "@koi/sandbox-executor",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/sandbox": "workspace:*",
+        "@koi/sandbox-ipc": "workspace:*",
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/virt/sandbox-ipc": {
+      "name": "@koi/sandbox-ipc",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/sandbox": "workspace:*",
+      },
+    },
+    "packages/virt/sandbox-vercel": {
+      "name": "@koi/sandbox-vercel",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/sandbox-cloud-base": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/virt/sandbox-wasm": {
+      "name": "@koi/sandbox-wasm",
+      "version": "0.0.0",
+      "dependencies": {
+        "@jitl/quickjs-ng-wasmfile-release-asyncify": "0.32.0",
+        "@jitl/quickjs-ng-wasmfile-release-sync": "0.32.0",
+        "@koi/core": "workspace:*",
+        "quickjs-emscripten-core": "0.32.0",
       },
     },
     "recipes/codex-mcp": {
@@ -2860,403 +2862,403 @@
 
     "@keyv/serialize": ["@keyv/serialize@1.1.1", "", {}, "sha512-dXn3FZhPv0US+7dtJsIi2R+c7qWYiReoEh5zUntWCf4oSpMNib8FDhSoed6m3QyZdx5hK7iLFkYk3rNxwt8vTA=="],
 
-    "@koi/acp": ["@koi/acp@workspace:packages/acp"],
+    "@koi/acp": ["@koi/acp@workspace:packages/net/acp"],
 
-    "@koi/acp-protocol": ["@koi/acp-protocol@workspace:packages/acp-protocol"],
+    "@koi/acp-protocol": ["@koi/acp-protocol@workspace:packages/net/acp-protocol"],
 
-    "@koi/agent-discovery": ["@koi/agent-discovery@workspace:packages/agent-discovery"],
+    "@koi/agent-discovery": ["@koi/agent-discovery@workspace:packages/observability/agent-discovery"],
 
-    "@koi/agent-monitor": ["@koi/agent-monitor@workspace:packages/agent-monitor"],
+    "@koi/agent-monitor": ["@koi/agent-monitor@workspace:packages/observability/agent-monitor"],
 
-    "@koi/agent-procfs": ["@koi/agent-procfs@workspace:packages/agent-procfs"],
+    "@koi/agent-procfs": ["@koi/agent-procfs@workspace:packages/observability/agent-procfs"],
 
-    "@koi/agui": ["@koi/agui@workspace:packages/agui"],
+    "@koi/agui": ["@koi/agui@workspace:packages/observability/agui"],
 
-    "@koi/artifact-client": ["@koi/artifact-client@workspace:packages/artifact-client"],
+    "@koi/artifact-client": ["@koi/artifact-client@workspace:packages/fs/artifact-client"],
 
-    "@koi/audit-sink-local": ["@koi/audit-sink-local@workspace:packages/audit-sink-local"],
+    "@koi/audit-sink-local": ["@koi/audit-sink-local@workspace:packages/security/audit-sink-local"],
 
-    "@koi/audit-sink-nexus": ["@koi/audit-sink-nexus@workspace:packages/audit-sink-nexus"],
+    "@koi/audit-sink-nexus": ["@koi/audit-sink-nexus@workspace:packages/security/audit-sink-nexus"],
 
-    "@koi/autonomous": ["@koi/autonomous@workspace:packages/autonomous"],
+    "@koi/autonomous": ["@koi/autonomous@workspace:packages/meta/autonomous"],
 
-    "@koi/bootstrap": ["@koi/bootstrap@workspace:packages/bootstrap"],
+    "@koi/bootstrap": ["@koi/bootstrap@workspace:packages/kernel/bootstrap"],
 
-    "@koi/browser-playwright": ["@koi/browser-playwright@workspace:packages/browser-playwright"],
+    "@koi/browser-playwright": ["@koi/browser-playwright@workspace:packages/drivers/browser-playwright"],
 
-    "@koi/bundle": ["@koi/bundle@workspace:packages/bundle"],
+    "@koi/bundle": ["@koi/bundle@workspace:packages/deploy/bundle"],
 
-    "@koi/canvas": ["@koi/canvas@workspace:packages/canvas"],
+    "@koi/canvas": ["@koi/canvas@workspace:packages/net/canvas"],
 
-    "@koi/capability-verifier": ["@koi/capability-verifier@workspace:packages/capability-verifier"],
+    "@koi/capability-verifier": ["@koi/capability-verifier@workspace:packages/security/capability-verifier"],
 
-    "@koi/catalog": ["@koi/catalog@workspace:packages/catalog"],
+    "@koi/catalog": ["@koi/catalog@workspace:packages/fs/catalog"],
 
-    "@koi/channel-base": ["@koi/channel-base@workspace:packages/channel-base"],
+    "@koi/channel-base": ["@koi/channel-base@workspace:packages/net/channel-base"],
 
-    "@koi/channel-canvas-fallback": ["@koi/channel-canvas-fallback@workspace:packages/channel-canvas-fallback"],
+    "@koi/channel-canvas-fallback": ["@koi/channel-canvas-fallback@workspace:packages/net/channel-canvas-fallback"],
 
-    "@koi/channel-chat-sdk": ["@koi/channel-chat-sdk@workspace:packages/channel-chat-sdk"],
+    "@koi/channel-chat-sdk": ["@koi/channel-chat-sdk@workspace:packages/net/channel-chat-sdk"],
 
-    "@koi/channel-cli": ["@koi/channel-cli@workspace:packages/channel-cli"],
+    "@koi/channel-cli": ["@koi/channel-cli@workspace:packages/net/channel-cli"],
 
-    "@koi/channel-discord": ["@koi/channel-discord@workspace:packages/channel-discord"],
+    "@koi/channel-discord": ["@koi/channel-discord@workspace:packages/net/channel-discord"],
 
-    "@koi/channel-email": ["@koi/channel-email@workspace:packages/channel-email"],
+    "@koi/channel-email": ["@koi/channel-email@workspace:packages/net/channel-email"],
 
-    "@koi/channel-matrix": ["@koi/channel-matrix@workspace:packages/channel-matrix"],
+    "@koi/channel-matrix": ["@koi/channel-matrix@workspace:packages/net/channel-matrix"],
 
-    "@koi/channel-mobile": ["@koi/channel-mobile@workspace:packages/channel-mobile"],
+    "@koi/channel-mobile": ["@koi/channel-mobile@workspace:packages/net/channel-mobile"],
 
-    "@koi/channel-signal": ["@koi/channel-signal@workspace:packages/channel-signal"],
+    "@koi/channel-signal": ["@koi/channel-signal@workspace:packages/net/channel-signal"],
 
-    "@koi/channel-slack": ["@koi/channel-slack@workspace:packages/channel-slack"],
+    "@koi/channel-slack": ["@koi/channel-slack@workspace:packages/net/channel-slack"],
 
-    "@koi/channel-teams": ["@koi/channel-teams@workspace:packages/channel-teams"],
+    "@koi/channel-teams": ["@koi/channel-teams@workspace:packages/net/channel-teams"],
 
-    "@koi/channel-telegram": ["@koi/channel-telegram@workspace:packages/channel-telegram"],
+    "@koi/channel-telegram": ["@koi/channel-telegram@workspace:packages/net/channel-telegram"],
 
-    "@koi/channel-voice": ["@koi/channel-voice@workspace:packages/channel-voice"],
+    "@koi/channel-voice": ["@koi/channel-voice@workspace:packages/net/channel-voice"],
 
-    "@koi/channel-whatsapp": ["@koi/channel-whatsapp@workspace:packages/channel-whatsapp"],
+    "@koi/channel-whatsapp": ["@koi/channel-whatsapp@workspace:packages/net/channel-whatsapp"],
 
-    "@koi/cli": ["@koi/cli@workspace:packages/cli"],
+    "@koi/cli": ["@koi/cli@workspace:packages/meta/cli"],
 
-    "@koi/code-executor": ["@koi/code-executor@workspace:packages/code-executor"],
+    "@koi/code-executor": ["@koi/code-executor@workspace:packages/virt/code-executor"],
 
-    "@koi/code-mode": ["@koi/code-mode@workspace:packages/code-mode"],
+    "@koi/code-mode": ["@koi/code-mode@workspace:packages/fs/code-mode"],
 
-    "@koi/collusion-detector": ["@koi/collusion-detector@workspace:packages/collusion-detector"],
+    "@koi/collusion-detector": ["@koi/collusion-detector@workspace:packages/security/collusion-detector"],
 
-    "@koi/competitive-broadcast": ["@koi/competitive-broadcast@workspace:packages/competitive-broadcast"],
+    "@koi/competitive-broadcast": ["@koi/competitive-broadcast@workspace:packages/ipc/competitive-broadcast"],
 
-    "@koi/config": ["@koi/config@workspace:packages/config"],
+    "@koi/config": ["@koi/config@workspace:packages/kernel/config"],
 
-    "@koi/context": ["@koi/context@workspace:packages/context"],
+    "@koi/context": ["@koi/context@workspace:packages/mm/context"],
 
-    "@koi/context-arena": ["@koi/context-arena@workspace:packages/context-arena"],
+    "@koi/context-arena": ["@koi/context-arena@workspace:packages/meta/context-arena"],
 
-    "@koi/core": ["@koi/core@workspace:packages/core"],
+    "@koi/core": ["@koi/core@workspace:packages/kernel/core"],
 
-    "@koi/crypto-utils": ["@koi/crypto-utils@workspace:packages/crypto-utils"],
+    "@koi/crypto-utils": ["@koi/crypto-utils@workspace:packages/lib/crypto-utils"],
 
-    "@koi/crystallize": ["@koi/crystallize@workspace:packages/crystallize"],
+    "@koi/crystallize": ["@koi/crystallize@workspace:packages/forge/crystallize"],
 
-    "@koi/dashboard-api": ["@koi/dashboard-api@workspace:packages/dashboard-api"],
+    "@koi/dashboard-api": ["@koi/dashboard-api@workspace:packages/observability/dashboard-api"],
 
-    "@koi/dashboard-types": ["@koi/dashboard-types@workspace:packages/dashboard-types"],
+    "@koi/dashboard-types": ["@koi/dashboard-types@workspace:packages/observability/dashboard-types"],
 
-    "@koi/dashboard-ui": ["@koi/dashboard-ui@workspace:packages/dashboard-ui"],
+    "@koi/dashboard-ui": ["@koi/dashboard-ui@workspace:packages/observability/dashboard-ui"],
 
-    "@koi/debug": ["@koi/debug@workspace:packages/debug"],
+    "@koi/debug": ["@koi/debug@workspace:packages/observability/debug"],
 
-    "@koi/delegation": ["@koi/delegation@workspace:packages/delegation"],
+    "@koi/delegation": ["@koi/delegation@workspace:packages/security/delegation"],
 
-    "@koi/deploy": ["@koi/deploy@workspace:packages/deploy"],
+    "@koi/deploy": ["@koi/deploy@workspace:packages/deploy/deploy"],
 
-    "@koi/doctor": ["@koi/doctor@workspace:packages/doctor"],
+    "@koi/doctor": ["@koi/doctor@workspace:packages/security/doctor"],
 
     "@koi/e2e-contracts": ["@koi/e2e-contracts@workspace:tests/e2e"],
 
-    "@koi/edit-match": ["@koi/edit-match@workspace:packages/edit-match"],
+    "@koi/edit-match": ["@koi/edit-match@workspace:packages/lib/edit-match"],
 
-    "@koi/engine": ["@koi/engine@workspace:packages/engine"],
+    "@koi/engine": ["@koi/engine@workspace:packages/kernel/engine"],
 
-    "@koi/engine-acp": ["@koi/engine-acp@workspace:packages/engine-acp"],
+    "@koi/engine-acp": ["@koi/engine-acp@workspace:packages/drivers/engine-acp"],
 
-    "@koi/engine-claude": ["@koi/engine-claude@workspace:packages/engine-claude"],
+    "@koi/engine-claude": ["@koi/engine-claude@workspace:packages/drivers/engine-claude"],
 
-    "@koi/engine-external": ["@koi/engine-external@workspace:packages/engine-external"],
+    "@koi/engine-external": ["@koi/engine-external@workspace:packages/drivers/engine-external"],
 
-    "@koi/engine-loop": ["@koi/engine-loop@workspace:packages/engine-loop"],
+    "@koi/engine-loop": ["@koi/engine-loop@workspace:packages/drivers/engine-loop"],
 
-    "@koi/engine-pi": ["@koi/engine-pi@workspace:packages/engine-pi"],
+    "@koi/engine-pi": ["@koi/engine-pi@workspace:packages/drivers/engine-pi"],
 
-    "@koi/engine-rlm": ["@koi/engine-rlm@workspace:packages/engine-rlm"],
+    "@koi/engine-rlm": ["@koi/engine-rlm@workspace:packages/drivers/engine-rlm"],
 
-    "@koi/errors": ["@koi/errors@workspace:packages/errors"],
+    "@koi/errors": ["@koi/errors@workspace:packages/lib/errors"],
 
-    "@koi/eval": ["@koi/eval@workspace:packages/eval"],
+    "@koi/eval": ["@koi/eval@workspace:packages/observability/eval"],
 
-    "@koi/event-delivery": ["@koi/event-delivery@workspace:packages/event-delivery"],
+    "@koi/event-delivery": ["@koi/event-delivery@workspace:packages/lib/event-delivery"],
 
-    "@koi/events-memory": ["@koi/events-memory@workspace:packages/events-memory"],
+    "@koi/events-memory": ["@koi/events-memory@workspace:packages/fs/events-memory"],
 
-    "@koi/events-nexus": ["@koi/events-nexus@workspace:packages/events-nexus"],
+    "@koi/events-nexus": ["@koi/events-nexus@workspace:packages/fs/events-nexus"],
 
-    "@koi/events-sqlite": ["@koi/events-sqlite@workspace:packages/events-sqlite"],
+    "@koi/events-sqlite": ["@koi/events-sqlite@workspace:packages/fs/events-sqlite"],
 
-    "@koi/exec-approvals": ["@koi/exec-approvals@workspace:packages/exec-approvals"],
+    "@koi/exec-approvals": ["@koi/exec-approvals@workspace:packages/security/exec-approvals"],
 
-    "@koi/execution-context": ["@koi/execution-context@workspace:packages/execution-context"],
+    "@koi/execution-context": ["@koi/execution-context@workspace:packages/lib/execution-context"],
 
-    "@koi/federation": ["@koi/federation@workspace:packages/federation"],
+    "@koi/federation": ["@koi/federation@workspace:packages/ipc/federation"],
 
-    "@koi/file-resolution": ["@koi/file-resolution@workspace:packages/file-resolution"],
+    "@koi/file-resolution": ["@koi/file-resolution@workspace:packages/lib/file-resolution"],
 
-    "@koi/filesystem": ["@koi/filesystem@workspace:packages/filesystem"],
+    "@koi/filesystem": ["@koi/filesystem@workspace:packages/fs/filesystem"],
 
-    "@koi/forge": ["@koi/forge@workspace:packages/forge"],
+    "@koi/forge": ["@koi/forge@workspace:packages/meta/forge"],
 
-    "@koi/forge-demand": ["@koi/forge-demand@workspace:packages/forge-demand"],
+    "@koi/forge-demand": ["@koi/forge-demand@workspace:packages/forge/forge-demand"],
 
-    "@koi/forge-exaptation": ["@koi/forge-exaptation@workspace:packages/forge-exaptation"],
+    "@koi/forge-exaptation": ["@koi/forge-exaptation@workspace:packages/forge/forge-exaptation"],
 
-    "@koi/forge-integrity": ["@koi/forge-integrity@workspace:packages/forge-integrity"],
+    "@koi/forge-integrity": ["@koi/forge-integrity@workspace:packages/forge/forge-integrity"],
 
-    "@koi/forge-optimizer": ["@koi/forge-optimizer@workspace:packages/forge-optimizer"],
+    "@koi/forge-optimizer": ["@koi/forge-optimizer@workspace:packages/forge/forge-optimizer"],
 
-    "@koi/forge-policy": ["@koi/forge-policy@workspace:packages/forge-policy"],
+    "@koi/forge-policy": ["@koi/forge-policy@workspace:packages/forge/forge-policy"],
 
-    "@koi/forge-tools": ["@koi/forge-tools@workspace:packages/forge-tools"],
+    "@koi/forge-tools": ["@koi/forge-tools@workspace:packages/forge/forge-tools"],
 
-    "@koi/forge-types": ["@koi/forge-types@workspace:packages/forge-types"],
+    "@koi/forge-types": ["@koi/forge-types@workspace:packages/forge/forge-types"],
 
-    "@koi/forge-verifier": ["@koi/forge-verifier@workspace:packages/forge-verifier"],
+    "@koi/forge-verifier": ["@koi/forge-verifier@workspace:packages/forge/forge-verifier"],
 
-    "@koi/gateway": ["@koi/gateway@workspace:packages/gateway"],
+    "@koi/gateway": ["@koi/gateway@workspace:packages/net/gateway"],
 
-    "@koi/git-utils": ["@koi/git-utils@workspace:packages/git-utils"],
+    "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 
-    "@koi/governance": ["@koi/governance@workspace:packages/governance"],
+    "@koi/governance": ["@koi/governance@workspace:packages/meta/governance"],
 
-    "@koi/governance-memory": ["@koi/governance-memory@workspace:packages/governance-memory"],
+    "@koi/governance-memory": ["@koi/governance-memory@workspace:packages/security/governance-memory"],
 
-    "@koi/handoff": ["@koi/handoff@workspace:packages/handoff"],
+    "@koi/handoff": ["@koi/handoff@workspace:packages/ipc/handoff"],
 
-    "@koi/harness-scheduler": ["@koi/harness-scheduler@workspace:packages/harness-scheduler"],
+    "@koi/harness-scheduler": ["@koi/harness-scheduler@workspace:packages/sched/harness-scheduler"],
 
-    "@koi/hash": ["@koi/hash@workspace:packages/hash"],
+    "@koi/hash": ["@koi/hash@workspace:packages/lib/hash"],
 
-    "@koi/ipc-local": ["@koi/ipc-local@workspace:packages/ipc-local"],
+    "@koi/ipc-local": ["@koi/ipc-local@workspace:packages/ipc/ipc-local"],
 
-    "@koi/ipc-nexus": ["@koi/ipc-nexus@workspace:packages/ipc-nexus"],
+    "@koi/ipc-nexus": ["@koi/ipc-nexus@workspace:packages/ipc/ipc-nexus"],
 
-    "@koi/knowledge-vault": ["@koi/knowledge-vault@workspace:packages/knowledge-vault"],
+    "@koi/knowledge-vault": ["@koi/knowledge-vault@workspace:packages/mm/knowledge-vault"],
 
-    "@koi/long-running": ["@koi/long-running@workspace:packages/long-running"],
+    "@koi/long-running": ["@koi/long-running@workspace:packages/sched/long-running"],
 
-    "@koi/lsp": ["@koi/lsp@workspace:packages/lsp"],
+    "@koi/lsp": ["@koi/lsp@workspace:packages/fs/lsp"],
 
-    "@koi/manifest": ["@koi/manifest@workspace:packages/manifest"],
+    "@koi/manifest": ["@koi/manifest@workspace:packages/kernel/manifest"],
 
-    "@koi/mcp": ["@koi/mcp@workspace:packages/mcp"],
+    "@koi/mcp": ["@koi/mcp@workspace:packages/net/mcp"],
 
-    "@koi/mcp-server": ["@koi/mcp-server@workspace:packages/mcp-server"],
+    "@koi/mcp-server": ["@koi/mcp-server@workspace:packages/net/mcp-server"],
 
-    "@koi/memory-fs": ["@koi/memory-fs@workspace:packages/memory-fs"],
+    "@koi/memory-fs": ["@koi/memory-fs@workspace:packages/mm/memory-fs"],
 
-    "@koi/middleware-ace": ["@koi/middleware-ace@workspace:packages/middleware-ace"],
+    "@koi/middleware-ace": ["@koi/middleware-ace@workspace:packages/mm/middleware-ace"],
 
-    "@koi/middleware-audit": ["@koi/middleware-audit@workspace:packages/middleware-audit"],
+    "@koi/middleware-audit": ["@koi/middleware-audit@workspace:packages/security/middleware-audit"],
 
-    "@koi/middleware-call-dedup": ["@koi/middleware-call-dedup@workspace:packages/middleware-call-dedup"],
+    "@koi/middleware-call-dedup": ["@koi/middleware-call-dedup@workspace:packages/middleware/middleware-call-dedup"],
 
-    "@koi/middleware-call-limits": ["@koi/middleware-call-limits@workspace:packages/middleware-call-limits"],
+    "@koi/middleware-call-limits": ["@koi/middleware-call-limits@workspace:packages/middleware/middleware-call-limits"],
 
-    "@koi/middleware-compactor": ["@koi/middleware-compactor@workspace:packages/middleware-compactor"],
+    "@koi/middleware-compactor": ["@koi/middleware-compactor@workspace:packages/mm/middleware-compactor"],
 
-    "@koi/middleware-context-editing": ["@koi/middleware-context-editing@workspace:packages/middleware-context-editing"],
+    "@koi/middleware-context-editing": ["@koi/middleware-context-editing@workspace:packages/mm/middleware-context-editing"],
 
-    "@koi/middleware-degenerate": ["@koi/middleware-degenerate@workspace:packages/middleware-degenerate"],
+    "@koi/middleware-degenerate": ["@koi/middleware-degenerate@workspace:packages/middleware/middleware-degenerate"],
 
-    "@koi/middleware-delegation-escalation": ["@koi/middleware-delegation-escalation@workspace:packages/middleware-delegation-escalation"],
+    "@koi/middleware-delegation-escalation": ["@koi/middleware-delegation-escalation@workspace:packages/security/middleware-delegation-escalation"],
 
-    "@koi/middleware-event-trace": ["@koi/middleware-event-trace@workspace:packages/middleware-event-trace"],
+    "@koi/middleware-event-trace": ["@koi/middleware-event-trace@workspace:packages/observability/middleware-event-trace"],
 
-    "@koi/middleware-feedback-loop": ["@koi/middleware-feedback-loop@workspace:packages/middleware-feedback-loop"],
+    "@koi/middleware-feedback-loop": ["@koi/middleware-feedback-loop@workspace:packages/middleware/middleware-feedback-loop"],
 
-    "@koi/middleware-fs-rollback": ["@koi/middleware-fs-rollback@workspace:packages/middleware-fs-rollback"],
+    "@koi/middleware-fs-rollback": ["@koi/middleware-fs-rollback@workspace:packages/middleware/middleware-fs-rollback"],
 
-    "@koi/middleware-goal-anchor": ["@koi/middleware-goal-anchor@workspace:packages/middleware-goal-anchor"],
+    "@koi/middleware-goal-anchor": ["@koi/middleware-goal-anchor@workspace:packages/middleware/middleware-goal-anchor"],
 
-    "@koi/middleware-goal-reminder": ["@koi/middleware-goal-reminder@workspace:packages/middleware-goal-reminder"],
+    "@koi/middleware-goal-reminder": ["@koi/middleware-goal-reminder@workspace:packages/middleware/middleware-goal-reminder"],
 
-    "@koi/middleware-governance-backend": ["@koi/middleware-governance-backend@workspace:packages/middleware-governance-backend"],
+    "@koi/middleware-governance-backend": ["@koi/middleware-governance-backend@workspace:packages/security/middleware-governance-backend"],
 
-    "@koi/middleware-guardrails": ["@koi/middleware-guardrails@workspace:packages/middleware-guardrails"],
+    "@koi/middleware-guardrails": ["@koi/middleware-guardrails@workspace:packages/security/middleware-guardrails"],
 
-    "@koi/middleware-guided-retry": ["@koi/middleware-guided-retry@workspace:packages/middleware-guided-retry"],
+    "@koi/middleware-guided-retry": ["@koi/middleware-guided-retry@workspace:packages/middleware/middleware-guided-retry"],
 
-    "@koi/middleware-hot-memory": ["@koi/middleware-hot-memory@workspace:packages/middleware-hot-memory"],
+    "@koi/middleware-hot-memory": ["@koi/middleware-hot-memory@workspace:packages/mm/middleware-hot-memory"],
 
-    "@koi/middleware-intent-capsule": ["@koi/middleware-intent-capsule@workspace:packages/middleware-intent-capsule"],
+    "@koi/middleware-intent-capsule": ["@koi/middleware-intent-capsule@workspace:packages/security/middleware-intent-capsule"],
 
-    "@koi/middleware-output-verifier": ["@koi/middleware-output-verifier@workspace:packages/middleware-output-verifier"],
+    "@koi/middleware-output-verifier": ["@koi/middleware-output-verifier@workspace:packages/middleware/middleware-output-verifier"],
 
-    "@koi/middleware-pay": ["@koi/middleware-pay@workspace:packages/middleware-pay"],
+    "@koi/middleware-pay": ["@koi/middleware-pay@workspace:packages/security/middleware-pay"],
 
-    "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/middleware-permissions"],
+    "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/security/middleware-permissions"],
 
-    "@koi/middleware-personalization": ["@koi/middleware-personalization@workspace:packages/middleware-personalization"],
+    "@koi/middleware-personalization": ["@koi/middleware-personalization@workspace:packages/mm/middleware-personalization"],
 
-    "@koi/middleware-pii": ["@koi/middleware-pii@workspace:packages/middleware-pii"],
+    "@koi/middleware-pii": ["@koi/middleware-pii@workspace:packages/security/middleware-pii"],
 
-    "@koi/middleware-planning": ["@koi/middleware-planning@workspace:packages/middleware-planning"],
+    "@koi/middleware-planning": ["@koi/middleware-planning@workspace:packages/middleware/middleware-planning"],
 
-    "@koi/middleware-preference": ["@koi/middleware-preference@workspace:packages/middleware-preference"],
+    "@koi/middleware-preference": ["@koi/middleware-preference@workspace:packages/mm/middleware-preference"],
 
-    "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/middleware-report"],
+    "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/middleware/middleware-report"],
 
-    "@koi/middleware-sandbox": ["@koi/middleware-sandbox@workspace:packages/middleware-sandbox"],
+    "@koi/middleware-sandbox": ["@koi/middleware-sandbox@workspace:packages/middleware/middleware-sandbox"],
 
-    "@koi/middleware-sanitize": ["@koi/middleware-sanitize@workspace:packages/middleware-sanitize"],
+    "@koi/middleware-sanitize": ["@koi/middleware-sanitize@workspace:packages/security/middleware-sanitize"],
 
-    "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/middleware-semantic-retry"],
+    "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/middleware/middleware-semantic-retry"],
 
-    "@koi/middleware-tool-audit": ["@koi/middleware-tool-audit@workspace:packages/middleware-tool-audit"],
+    "@koi/middleware-tool-audit": ["@koi/middleware-tool-audit@workspace:packages/middleware/middleware-tool-audit"],
 
-    "@koi/middleware-tool-recovery": ["@koi/middleware-tool-recovery@workspace:packages/middleware-tool-recovery"],
+    "@koi/middleware-tool-recovery": ["@koi/middleware-tool-recovery@workspace:packages/middleware/middleware-tool-recovery"],
 
-    "@koi/middleware-tool-selector": ["@koi/middleware-tool-selector@workspace:packages/middleware-tool-selector"],
+    "@koi/middleware-tool-selector": ["@koi/middleware-tool-selector@workspace:packages/middleware/middleware-tool-selector"],
 
-    "@koi/middleware-turn-ack": ["@koi/middleware-turn-ack@workspace:packages/middleware-turn-ack"],
+    "@koi/middleware-turn-ack": ["@koi/middleware-turn-ack@workspace:packages/middleware/middleware-turn-ack"],
 
-    "@koi/model-router": ["@koi/model-router@workspace:packages/model-router"],
+    "@koi/model-router": ["@koi/model-router@workspace:packages/drivers/model-router"],
 
-    "@koi/name-service": ["@koi/name-service@workspace:packages/name-service"],
+    "@koi/name-service": ["@koi/name-service@workspace:packages/net/name-service"],
 
-    "@koi/nexus-client": ["@koi/nexus-client@workspace:packages/nexus-client"],
+    "@koi/nexus-client": ["@koi/nexus-client@workspace:packages/lib/nexus-client"],
 
-    "@koi/node": ["@koi/node@workspace:packages/node"],
+    "@koi/node": ["@koi/node@workspace:packages/deploy/node"],
 
-    "@koi/orchestrator": ["@koi/orchestrator@workspace:packages/orchestrator"],
+    "@koi/orchestrator": ["@koi/orchestrator@workspace:packages/ipc/orchestrator"],
 
-    "@koi/parallel-minions": ["@koi/parallel-minions@workspace:packages/parallel-minions"],
+    "@koi/parallel-minions": ["@koi/parallel-minions@workspace:packages/ipc/parallel-minions"],
 
-    "@koi/pay-local": ["@koi/pay-local@workspace:packages/pay-local"],
+    "@koi/pay-local": ["@koi/pay-local@workspace:packages/fs/pay-local"],
 
-    "@koi/pay-nexus": ["@koi/pay-nexus@workspace:packages/pay-nexus"],
+    "@koi/pay-nexus": ["@koi/pay-nexus@workspace:packages/fs/pay-nexus"],
 
-    "@koi/permissions-nexus": ["@koi/permissions-nexus@workspace:packages/permissions-nexus"],
+    "@koi/permissions-nexus": ["@koi/permissions-nexus@workspace:packages/security/permissions-nexus"],
 
     "@koi/recipe-codex-mcp": ["@koi/recipe-codex-mcp@workspace:recipes/codex-mcp"],
 
-    "@koi/redaction": ["@koi/redaction@workspace:packages/redaction"],
+    "@koi/redaction": ["@koi/redaction@workspace:packages/security/redaction"],
 
-    "@koi/registry-event-sourced": ["@koi/registry-event-sourced@workspace:packages/registry-event-sourced"],
+    "@koi/registry-event-sourced": ["@koi/registry-event-sourced@workspace:packages/fs/registry-event-sourced"],
 
-    "@koi/registry-http": ["@koi/registry-http@workspace:packages/registry-http"],
+    "@koi/registry-http": ["@koi/registry-http@workspace:packages/fs/registry-http"],
 
-    "@koi/registry-nexus": ["@koi/registry-nexus@workspace:packages/registry-nexus"],
+    "@koi/registry-nexus": ["@koi/registry-nexus@workspace:packages/fs/registry-nexus"],
 
-    "@koi/registry-store": ["@koi/registry-store@workspace:packages/registry-store"],
+    "@koi/registry-store": ["@koi/registry-store@workspace:packages/fs/registry-store"],
 
-    "@koi/reputation": ["@koi/reputation@workspace:packages/reputation"],
+    "@koi/reputation": ["@koi/reputation@workspace:packages/security/reputation"],
 
-    "@koi/resolve": ["@koi/resolve@workspace:packages/resolve"],
+    "@koi/resolve": ["@koi/resolve@workspace:packages/fs/resolve"],
 
-    "@koi/sandbox": ["@koi/sandbox@workspace:packages/sandbox"],
+    "@koi/sandbox": ["@koi/sandbox@workspace:packages/virt/sandbox"],
 
-    "@koi/sandbox-cloud-base": ["@koi/sandbox-cloud-base@workspace:packages/sandbox-cloud-base"],
+    "@koi/sandbox-cloud-base": ["@koi/sandbox-cloud-base@workspace:packages/virt/sandbox-cloud-base"],
 
-    "@koi/sandbox-cloudflare": ["@koi/sandbox-cloudflare@workspace:packages/sandbox-cloudflare"],
+    "@koi/sandbox-cloudflare": ["@koi/sandbox-cloudflare@workspace:packages/virt/sandbox-cloudflare"],
 
-    "@koi/sandbox-daytona": ["@koi/sandbox-daytona@workspace:packages/sandbox-daytona"],
+    "@koi/sandbox-daytona": ["@koi/sandbox-daytona@workspace:packages/virt/sandbox-daytona"],
 
-    "@koi/sandbox-docker": ["@koi/sandbox-docker@workspace:packages/sandbox-docker"],
+    "@koi/sandbox-docker": ["@koi/sandbox-docker@workspace:packages/virt/sandbox-docker"],
 
-    "@koi/sandbox-e2b": ["@koi/sandbox-e2b@workspace:packages/sandbox-e2b"],
+    "@koi/sandbox-e2b": ["@koi/sandbox-e2b@workspace:packages/virt/sandbox-e2b"],
 
-    "@koi/sandbox-executor": ["@koi/sandbox-executor@workspace:packages/sandbox-executor"],
+    "@koi/sandbox-executor": ["@koi/sandbox-executor@workspace:packages/virt/sandbox-executor"],
 
-    "@koi/sandbox-ipc": ["@koi/sandbox-ipc@workspace:packages/sandbox-ipc"],
+    "@koi/sandbox-ipc": ["@koi/sandbox-ipc@workspace:packages/virt/sandbox-ipc"],
 
-    "@koi/sandbox-stack": ["@koi/sandbox-stack@workspace:packages/sandbox-stack"],
+    "@koi/sandbox-stack": ["@koi/sandbox-stack@workspace:packages/meta/sandbox-stack"],
 
-    "@koi/sandbox-vercel": ["@koi/sandbox-vercel@workspace:packages/sandbox-vercel"],
+    "@koi/sandbox-vercel": ["@koi/sandbox-vercel@workspace:packages/virt/sandbox-vercel"],
 
-    "@koi/sandbox-wasm": ["@koi/sandbox-wasm@workspace:packages/sandbox-wasm"],
+    "@koi/sandbox-wasm": ["@koi/sandbox-wasm@workspace:packages/virt/sandbox-wasm"],
 
-    "@koi/scheduler": ["@koi/scheduler@workspace:packages/scheduler"],
+    "@koi/scheduler": ["@koi/scheduler@workspace:packages/sched/scheduler"],
 
-    "@koi/scheduler-nexus": ["@koi/scheduler-nexus@workspace:packages/scheduler-nexus"],
+    "@koi/scheduler-nexus": ["@koi/scheduler-nexus@workspace:packages/sched/scheduler-nexus"],
 
-    "@koi/scheduler-provider": ["@koi/scheduler-provider@workspace:packages/scheduler-provider"],
+    "@koi/scheduler-provider": ["@koi/scheduler-provider@workspace:packages/sched/scheduler-provider"],
 
-    "@koi/scope": ["@koi/scope@workspace:packages/scope"],
+    "@koi/scope": ["@koi/scope@workspace:packages/security/scope"],
 
-    "@koi/scratchpad-local": ["@koi/scratchpad-local@workspace:packages/scratchpad-local"],
+    "@koi/scratchpad-local": ["@koi/scratchpad-local@workspace:packages/ipc/scratchpad-local"],
 
-    "@koi/scratchpad-nexus": ["@koi/scratchpad-nexus@workspace:packages/scratchpad-nexus"],
+    "@koi/scratchpad-nexus": ["@koi/scratchpad-nexus@workspace:packages/ipc/scratchpad-nexus"],
 
-    "@koi/search": ["@koi/search@workspace:packages/search"],
+    "@koi/search": ["@koi/search@workspace:packages/fs/search"],
 
-    "@koi/search-brave": ["@koi/search-brave@workspace:packages/search-brave"],
+    "@koi/search-brave": ["@koi/search-brave@workspace:packages/fs/search-brave"],
 
-    "@koi/search-nexus": ["@koi/search-nexus@workspace:packages/search-nexus"],
+    "@koi/search-nexus": ["@koi/search-nexus@workspace:packages/fs/search-nexus"],
 
-    "@koi/search-provider": ["@koi/search-provider@workspace:packages/search-provider"],
+    "@koi/search-provider": ["@koi/search-provider@workspace:packages/fs/search-provider"],
 
-    "@koi/security-analyzer": ["@koi/security-analyzer@workspace:packages/security-analyzer"],
+    "@koi/security-analyzer": ["@koi/security-analyzer@workspace:packages/security/security-analyzer"],
 
-    "@koi/self-test": ["@koi/self-test@workspace:packages/self-test"],
+    "@koi/self-test": ["@koi/self-test@workspace:packages/observability/self-test"],
 
-    "@koi/session-repair": ["@koi/session-repair@workspace:packages/session-repair"],
+    "@koi/session-repair": ["@koi/session-repair@workspace:packages/mm/session-repair"],
 
-    "@koi/session-store": ["@koi/session-store@workspace:packages/session-store"],
+    "@koi/session-store": ["@koi/session-store@workspace:packages/mm/session-store"],
 
-    "@koi/shutdown": ["@koi/shutdown@workspace:packages/shutdown"],
+    "@koi/shutdown": ["@koi/shutdown@workspace:packages/lib/shutdown"],
 
-    "@koi/skill-scanner": ["@koi/skill-scanner@workspace:packages/skill-scanner"],
+    "@koi/skill-scanner": ["@koi/skill-scanner@workspace:packages/fs/skill-scanner"],
 
-    "@koi/skills": ["@koi/skills@workspace:packages/skills"],
+    "@koi/skills": ["@koi/skills@workspace:packages/fs/skills"],
 
-    "@koi/snapshot-chain-store": ["@koi/snapshot-chain-store@workspace:packages/snapshot-chain-store"],
+    "@koi/snapshot-chain-store": ["@koi/snapshot-chain-store@workspace:packages/mm/snapshot-chain-store"],
 
-    "@koi/snapshot-store-sqlite": ["@koi/snapshot-store-sqlite@workspace:packages/snapshot-store-sqlite"],
+    "@koi/snapshot-store-sqlite": ["@koi/snapshot-store-sqlite@workspace:packages/mm/snapshot-store-sqlite"],
 
-    "@koi/soul": ["@koi/soul@workspace:packages/soul"],
+    "@koi/soul": ["@koi/soul@workspace:packages/kernel/soul"],
 
-    "@koi/sqlite-utils": ["@koi/sqlite-utils@workspace:packages/sqlite-utils"],
+    "@koi/sqlite-utils": ["@koi/sqlite-utils@workspace:packages/lib/sqlite-utils"],
 
-    "@koi/starter": ["@koi/starter@workspace:packages/starter"],
+    "@koi/starter": ["@koi/starter@workspace:packages/meta/starter"],
 
-    "@koi/store-fs": ["@koi/store-fs@workspace:packages/store-fs"],
+    "@koi/store-fs": ["@koi/store-fs@workspace:packages/fs/store-fs"],
 
-    "@koi/store-nexus": ["@koi/store-nexus@workspace:packages/store-nexus"],
+    "@koi/store-nexus": ["@koi/store-nexus@workspace:packages/fs/store-nexus"],
 
-    "@koi/store-sqlite": ["@koi/store-sqlite@workspace:packages/store-sqlite"],
+    "@koi/store-sqlite": ["@koi/store-sqlite@workspace:packages/fs/store-sqlite"],
 
-    "@koi/task-spawn": ["@koi/task-spawn@workspace:packages/task-spawn"],
+    "@koi/task-spawn": ["@koi/task-spawn@workspace:packages/ipc/task-spawn"],
 
-    "@koi/test-utils": ["@koi/test-utils@workspace:packages/test-utils"],
+    "@koi/test-utils": ["@koi/test-utils@workspace:packages/lib/test-utils"],
 
-    "@koi/token-estimator": ["@koi/token-estimator@workspace:packages/token-estimator"],
+    "@koi/token-estimator": ["@koi/token-estimator@workspace:packages/mm/token-estimator"],
 
-    "@koi/tool-ask-guide": ["@koi/tool-ask-guide@workspace:packages/tool-ask-guide"],
+    "@koi/tool-ask-guide": ["@koi/tool-ask-guide@workspace:packages/fs/tool-ask-guide"],
 
-    "@koi/tool-ask-user": ["@koi/tool-ask-user@workspace:packages/tool-ask-user"],
+    "@koi/tool-ask-user": ["@koi/tool-ask-user@workspace:packages/fs/tool-ask-user"],
 
-    "@koi/tool-browser": ["@koi/tool-browser@workspace:packages/tool-browser"],
+    "@koi/tool-browser": ["@koi/tool-browser@workspace:packages/fs/tool-browser"],
 
-    "@koi/tool-exec": ["@koi/tool-exec@workspace:packages/tool-exec"],
+    "@koi/tool-exec": ["@koi/tool-exec@workspace:packages/fs/tool-exec"],
 
-    "@koi/tool-squash": ["@koi/tool-squash@workspace:packages/tool-squash"],
+    "@koi/tool-squash": ["@koi/tool-squash@workspace:packages/mm/tool-squash"],
 
-    "@koi/tools-github": ["@koi/tools-github@workspace:packages/tools-github"],
+    "@koi/tools-github": ["@koi/tools-github@workspace:packages/fs/tools-github"],
 
-    "@koi/tools-web": ["@koi/tools-web@workspace:packages/tools-web"],
+    "@koi/tools-web": ["@koi/tools-web@workspace:packages/fs/tools-web"],
 
-    "@koi/tracing": ["@koi/tracing@workspace:packages/tracing"],
+    "@koi/tracing": ["@koi/tracing@workspace:packages/observability/tracing"],
 
-    "@koi/transcript": ["@koi/transcript@workspace:packages/transcript"],
+    "@koi/transcript": ["@koi/transcript@workspace:packages/mm/transcript"],
 
-    "@koi/validation": ["@koi/validation@workspace:packages/validation"],
+    "@koi/validation": ["@koi/validation@workspace:packages/lib/validation"],
 
-    "@koi/variant-selection": ["@koi/variant-selection@workspace:packages/variant-selection"],
+    "@koi/variant-selection": ["@koi/variant-selection@workspace:packages/lib/variant-selection"],
 
-    "@koi/verified-loop": ["@koi/verified-loop@workspace:packages/verified-loop"],
+    "@koi/verified-loop": ["@koi/verified-loop@workspace:packages/sched/verified-loop"],
 
-    "@koi/webhook-delivery": ["@koi/webhook-delivery@workspace:packages/webhook-delivery"],
+    "@koi/webhook-delivery": ["@koi/webhook-delivery@workspace:packages/net/webhook-delivery"],
 
-    "@koi/webhook-provider": ["@koi/webhook-provider@workspace:packages/webhook-provider"],
+    "@koi/webhook-provider": ["@koi/webhook-provider@workspace:packages/net/webhook-provider"],
 
-    "@koi/workspace": ["@koi/workspace@workspace:packages/workspace"],
+    "@koi/workspace": ["@koi/workspace@workspace:packages/ipc/workspace"],
 
-    "@koi/workspace-nexus": ["@koi/workspace-nexus@workspace:packages/workspace-nexus"],
+    "@koi/workspace-nexus": ["@koi/workspace-nexus@workspace:packages/ipc/workspace-nexus"],
 
-    "@koi/worktree-merge": ["@koi/worktree-merge@workspace:packages/worktree-merge"],
+    "@koi/worktree-merge": ["@koi/worktree-merge@workspace:packages/fs/worktree-merge"],
 
     "@linear/sdk": ["@linear/sdk@37.0.0", "", { "dependencies": { "@graphql-typed-document-node/core": "^3.1.0", "graphql": "^15.4.0", "isomorphic-unfetch": "^3.1.0" } }, "sha512-EAZCXtV414Nwtvrwn7Ucu3E8BbYYKsc3HqZCGf1mHUE7FhZGtfISu295DOVv89WhhXlp2N344EMg3K0nnhLxtA=="],
 

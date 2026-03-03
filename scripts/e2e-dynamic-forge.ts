@@ -15,6 +15,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createLoopAdapter } from "../packages/drivers/engine-loop/src/loop-adapter.js";
 import type {
   EngineEvent,
   JsonObject,
@@ -23,11 +24,10 @@ import type {
   ModelResponse,
   Tool,
   ToolDescriptor,
-} from "../packages/core/src/index.js";
-import { toolToken } from "../packages/core/src/index.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import type { ForgeRuntime } from "../packages/engine/src/types.js";
-import { createLoopAdapter } from "../packages/engine-loop/src/loop-adapter.js";
+} from "../packages/kernel/core/src/index.js";
+import { toolToken } from "../packages/kernel/core/src/index.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import type { ForgeRuntime } from "../packages/kernel/engine/src/types.js";
 
 // ---------------------------------------------------------------------------
 // Scripted model — returns pre-programmed responses per turn

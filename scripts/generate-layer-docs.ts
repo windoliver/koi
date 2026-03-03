@@ -44,12 +44,12 @@ export function generateLabelerYml(
   const l0uDirs = sorted(l0uPackages).map(toDir);
   const l3Dirs = sorted(l3Packages).map(toDir);
 
-  const l0uEntries = l0uDirs.map((d) => `      - "packages/${d}/**"`).join("\n");
-  const l3Entries = l3Dirs.map((d) => `      - "packages/${d}/**"`).join("\n");
+  const l0uEntries = l0uDirs.map((d) => `      - "packages/**/${d}/**"`).join("\n");
+  const l3Entries = l3Dirs.map((d) => `      - "packages/**/${d}/**"`).join("\n");
 
   // L2 catch-all excludes L0 (core), L1 (engine), all L0u, and all L3 dirs.
   const excludedDirs = ["core", "engine", ...l0uDirs, ...l3Dirs].sort();
-  const l2Exclusions = excludedDirs.map((d) => `      - "!packages/${d}/**"`).join("\n");
+  const l2Exclusions = excludedDirs.map((d) => `      - "!packages/**/${d}/**"`).join("\n");
 
   return `# PR auto-labeler — assigns layer labels based on changed files.
 # Used by .github/workflows/label-layers.yml (actions/labeler@v5).
@@ -62,11 +62,11 @@ export function generateLabelerYml(
 
 "layer:L0":
   - changed-files:
-    - any-glob-to-any-file: "packages/core/**"
+    - any-glob-to-any-file: "packages/kernel/core/**"
 
 "layer:L1":
   - changed-files:
-    - any-glob-to-any-file: "packages/engine/**"
+    - any-glob-to-any-file: "packages/kernel/engine/**"
 
 "layer:L0u":
   - changed-files:

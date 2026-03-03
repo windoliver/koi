@@ -24,7 +24,8 @@
  * Cost: ~$0.02-0.05 per run (4-5 real LLM calls to Haiku, minimal prompts).
  */
 
-import { toolToken } from "../packages/core/src/ecs.js";
+import { createPiAdapter } from "../packages/drivers/engine-pi/src/adapter.js";
+import { toolToken } from "../packages/kernel/core/src/ecs.js";
 import type {
   ComponentProvider,
   EngineEvent,
@@ -36,13 +37,12 @@ import type {
   ToolHandler,
   ToolRequest,
   ToolResponse,
-} from "../packages/core/src/index.js";
-import { composeModelChain, composeToolChain } from "../packages/engine/src/compose.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createPiAdapter } from "../packages/engine-pi/src/adapter.js";
-import { createSemanticRetryMiddleware } from "../packages/middleware-semantic-retry/src/index.js";
-import type { RetryRecord } from "../packages/middleware-semantic-retry/src/types.js";
-import { createMockTurnContext } from "../packages/test-utils/src/index.js";
+} from "../packages/kernel/core/src/index.js";
+import { composeModelChain, composeToolChain } from "../packages/kernel/engine/src/compose.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import { createMockTurnContext } from "../packages/lib/test-utils/src/index.js";
+import { createSemanticRetryMiddleware } from "../packages/middleware/middleware-semantic-retry/src/index.js";
+import type { RetryRecord } from "../packages/middleware/middleware-semantic-retry/src/types.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

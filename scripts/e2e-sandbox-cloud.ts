@@ -27,21 +27,25 @@
 // Imports (direct from source — Bun runs .ts natively)
 // ---------------------------------------------------------------------------
 
-import type { SandboxInstance } from "../packages/core/src/index.js";
-import { createDockerAdapter } from "../packages/sandbox-docker/src/adapter.js";
+import type { SandboxInstance } from "../packages/kernel/core/src/index.js";
+import { createDockerAdapter } from "../packages/virt/sandbox-docker/src/adapter.js";
 import type {
   DockerClient,
   DockerContainer,
   DockerCreateOpts,
-} from "../packages/sandbox-docker/src/types.js";
-import { createE2bAdapter } from "../packages/sandbox-e2b/src/adapter.js";
-import type { E2bClient, E2bCreateOpts, E2bSdkSandbox } from "../packages/sandbox-e2b/src/types.js";
-import { createVercelAdapter } from "../packages/sandbox-vercel/src/adapter.js";
+} from "../packages/virt/sandbox-docker/src/types.js";
+import { createE2bAdapter } from "../packages/virt/sandbox-e2b/src/adapter.js";
+import type {
+  E2bClient,
+  E2bCreateOpts,
+  E2bSdkSandbox,
+} from "../packages/virt/sandbox-e2b/src/types.js";
+import { createVercelAdapter } from "../packages/virt/sandbox-vercel/src/adapter.js";
 import type {
   VercelClient,
   VercelCreateOpts,
   VercelSdkSandbox,
-} from "../packages/sandbox-vercel/src/types.js";
+} from "../packages/virt/sandbox-vercel/src/types.js";
 
 // ---------------------------------------------------------------------------
 // Test harness (same pattern as e2e-sandbox-wasm.ts)

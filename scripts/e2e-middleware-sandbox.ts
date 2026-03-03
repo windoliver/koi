@@ -22,8 +22,9 @@
  * Cost: ~$0.01-0.03 per run (haiku model, minimal prompts).
  */
 
-import type { TrustTier } from "../packages/core/src/ecs.js";
-import { toolToken } from "../packages/core/src/ecs.js";
+import { createPiAdapter } from "../packages/drivers/engine-pi/src/adapter.js";
+import type { TrustTier } from "../packages/kernel/core/src/ecs.js";
+import { toolToken } from "../packages/kernel/core/src/ecs.js";
 import type {
   ComponentProvider,
   EngineEvent,
@@ -31,14 +32,13 @@ import type {
   ToolHandler,
   ToolRequest,
   ToolResponse,
-} from "../packages/core/src/index.js";
-import type { SandboxProfile } from "../packages/core/src/sandbox-profile.js";
-import { composeToolChain } from "../packages/engine/src/compose.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createPiAdapter } from "../packages/engine-pi/src/adapter.js";
-import { KoiRuntimeError } from "../packages/errors/src/index.js";
-import { createSandboxMiddleware } from "../packages/middleware-sandbox/src/index.js";
-import { createMockTurnContext } from "../packages/test-utils/src/index.js";
+} from "../packages/kernel/core/src/index.js";
+import type { SandboxProfile } from "../packages/kernel/core/src/sandbox-profile.js";
+import { composeToolChain } from "../packages/kernel/engine/src/compose.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import { KoiRuntimeError } from "../packages/lib/errors/src/index.js";
+import { createMockTurnContext } from "../packages/lib/test-utils/src/index.js";
+import { createSandboxMiddleware } from "../packages/middleware/middleware-sandbox/src/index.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

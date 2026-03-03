@@ -16,7 +16,7 @@
  */
 
 import type { EngineEvent, EngineOutput } from "@koi/core";
-import type { ClaudeAdapterConfig } from "../packages/engine-claude/src/types.js";
+import type { ClaudeAdapterConfig } from "../packages/drivers/engine-claude/src/types.js";
 
 // ---------------------------------------------------------------------------
 // Preflight
@@ -97,11 +97,11 @@ async function withTimeout<T>(fn: () => Promise<T>, ms: number, label: string): 
 // Resolve SDK from engine-claude's node_modules (isolated linker means
 // the root can't see workspace-scoped deps directly).
 const sdkPath = new URL(
-  "../packages/engine-claude/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs",
+  "../packages/drivers/engine-claude/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs",
   import.meta.url,
 ).pathname;
 const { query } = await import(sdkPath);
-const { createClaudeAdapter } = await import("../packages/engine-claude/src/adapter.js");
+const { createClaudeAdapter } = await import("../packages/drivers/engine-claude/src/adapter.js");
 
 // ---------------------------------------------------------------------------
 // Shared config — bypassPermissions requires the safety flag via sdkOverrides

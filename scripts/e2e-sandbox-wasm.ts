@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * E2E test script for @koi/sandbox-wasm — validates the full execution pipeline.
  *
@@ -17,6 +18,7 @@
 // Imports (direct from source — Bun runs .ts natively)
 // ---------------------------------------------------------------------------
 
+import { createLoopAdapter } from "../packages/drivers/engine-loop/src/loop-adapter.js";
 import type {
   EngineEvent,
   JsonObject,
@@ -24,11 +26,10 @@ import type {
   ModelResponse,
   SandboxResult,
   Tool,
-} from "../packages/core/src/index.js";
-import { toolToken } from "../packages/core/src/index.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createLoopAdapter } from "../packages/engine-loop/src/loop-adapter.js";
-import { createWasmSandboxExecutor } from "../packages/sandbox-wasm/src/index.js";
+} from "../packages/kernel/core/src/index.js";
+import { toolToken } from "../packages/kernel/core/src/index.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import { createWasmSandboxExecutor } from "../packages/virt/sandbox-wasm/src/index.js";
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -331,7 +332,7 @@ async function stage4(): Promise<void> {
     return;
   }
 
-  const { createPiAdapter } = await import("../packages/engine-pi/src/adapter.js");
+  const { createPiAdapter } = await import("../packages/drivers/engine-pi/src/adapter.js");
 
   const wasmExecutor = createWasmSandboxExecutor();
 

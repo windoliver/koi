@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * E2E test script for @koi/events-memory — validates the InMemoryEventBackend
  * works end-to-end with real LLM engine events flowing through it.
@@ -16,11 +17,11 @@
  *   ANTHROPIC_API_KEY=... bun scripts/e2e-event-backend.ts
  */
 
-import type { EngineEvent, ModelRequest } from "../packages/core/src/engine.js";
-import type { EventEnvelope, EventInput } from "../packages/core/src/event-backend.js";
-import { createLoopAdapter } from "../packages/engine-loop/src/loop-adapter.js";
-import { createInMemoryEventBackend } from "../packages/events-memory/src/memory-backend.js";
-import { createAnthropicAdapter } from "../packages/model-router/src/adapters/anthropic.js";
+import { createLoopAdapter } from "../packages/drivers/engine-loop/src/loop-adapter.js";
+import { createAnthropicAdapter } from "../packages/drivers/model-router/src/adapters/anthropic.js";
+import { createInMemoryEventBackend } from "../packages/fs/events-memory/src/memory-backend.js";
+import type { EngineEvent, ModelRequest } from "../packages/kernel/core/src/engine.js";
+import type { EventEnvelope, EventInput } from "../packages/kernel/core/src/event-backend.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

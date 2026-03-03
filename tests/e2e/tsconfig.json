@@ -5,5 +5,5 @@
     "rootDir": ".",
     "types": ["bun-types"]
   },
-  "include": ["*.test.ts", "../../packages/cli/src/resolve-agent.ts"]
+  "include": ["*.test.ts", "../../packages/meta/cli/src/resolve-agent.ts"]
 }

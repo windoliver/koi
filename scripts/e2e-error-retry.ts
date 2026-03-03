@@ -10,12 +10,12 @@
  *   bun run scripts/e2e-error-retry.ts
  */
 
-import { formatErrorForChannel } from "../packages/channel-base/src/format-error.js";
-import type { EngineEvent, KoiError, ModelRequest } from "../packages/core/src/index.js";
-import { createLoopAdapter } from "../packages/engine-loop/src/loop-adapter.js";
-import { computeBackoff, isRetryable, withRetry } from "../packages/errors/src/retry.js";
-import { createOpenAIAdapter } from "../packages/model-router/src/adapters/openai.js";
-import { createOpenRouterAdapter } from "../packages/model-router/src/adapters/openrouter.js";
+import { createLoopAdapter } from "../packages/drivers/engine-loop/src/loop-adapter.js";
+import { createOpenAIAdapter } from "../packages/drivers/model-router/src/adapters/openai.js";
+import { createOpenRouterAdapter } from "../packages/drivers/model-router/src/adapters/openrouter.js";
+import type { EngineEvent, KoiError, ModelRequest } from "../packages/kernel/core/src/index.js";
+import { computeBackoff, isRetryable, withRetry } from "../packages/lib/errors/src/retry.js";
+import { formatErrorForChannel } from "../packages/net/channel-base/src/format-error.js";
 
 // ---------------------------------------------------------------------------
 // Setup

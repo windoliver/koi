@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * E2E test script for hot-attach with Pi engine adapter + real Claude API calls.
  *
@@ -15,21 +16,25 @@
  *   ANTHROPIC_API_KEY=sk-... bun scripts/e2e-hot-attach.ts
  */
 
-import type { ToolDescriptor } from "../packages/core/src/ecs.js";
-import type { EngineAdapter, EngineEvent, EngineInput } from "../packages/core/src/engine.js";
-import type { SandboxExecutor } from "../packages/core/src/index.js";
+import { createPiAdapter } from "../packages/drivers/engine-pi/src/adapter.js";
+import type { ToolDescriptor } from "../packages/kernel/core/src/ecs.js";
+import type {
+  EngineAdapter,
+  EngineEvent,
+  EngineInput,
+} from "../packages/kernel/core/src/engine.js";
+import type { SandboxExecutor } from "../packages/kernel/core/src/index.js";
 import type {
   ModelHandler,
   ModelStreamHandler,
   ToolRequest,
   ToolResponse,
-} from "../packages/core/src/middleware.js";
-import { createPiAdapter } from "../packages/engine-pi/src/adapter.js";
-import { createDefaultForgeConfig } from "../packages/forge/src/config.js";
-import { createForgeRuntime } from "../packages/forge/src/forge-runtime.js";
-import { createInMemoryForgeStore } from "../packages/forge/src/memory-store.js";
-import { createForgeToolTool } from "../packages/forge/src/tools/forge-tool.js";
-import type { ForgeDeps } from "../packages/forge/src/tools/shared.js";
+} from "../packages/kernel/core/src/middleware.js";
+import { createDefaultForgeConfig } from "../packages/meta/forge/src/config.js";
+import { createForgeRuntime } from "../packages/meta/forge/src/forge-runtime.js";
+import { createInMemoryForgeStore } from "../packages/meta/forge/src/memory-store.js";
+import { createForgeToolTool } from "../packages/meta/forge/src/tools/forge-tool.js";
+import type { ForgeDeps } from "../packages/meta/forge/src/tools/shared.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

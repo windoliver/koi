@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * E2E: Cross-Agent Brick Reuse + Promotion with Pi-Engine (Real LLM).
  *
@@ -15,24 +16,24 @@
  *   ANTHROPIC_API_KEY=sk-... bun scripts/e2e-cross-agent-pi.ts
  */
 
+import { createPiAdapter } from "../packages/drivers/engine-pi/src/adapter.js";
 import type {
   ComponentProvider,
   EngineEvent,
   SandboxExecutor,
   StoreChangeEvent,
-} from "../packages/core/src/index.js";
-import { toolToken } from "../packages/core/src/index.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createPiAdapter } from "../packages/engine-pi/src/adapter.js";
-import { createDefaultForgeConfig } from "../packages/forge/src/config.js";
-import { createForgeComponentProvider } from "../packages/forge/src/forge-component-provider.js";
-import { createForgeUsageMiddleware } from "../packages/forge/src/forge-usage-middleware.js";
-import { createInMemoryForgeStore } from "../packages/forge/src/memory-store.js";
-import { createMemoryStoreChangeNotifier } from "../packages/forge/src/store-notifier.js";
-import { createForgeToolTool } from "../packages/forge/src/tools/forge-tool.js";
-import { createPromoteForgeTool } from "../packages/forge/src/tools/promote-forge.js";
-import { createSearchForgeTool } from "../packages/forge/src/tools/search-forge.js";
-import type { ForgeDeps } from "../packages/forge/src/tools/shared.js";
+} from "../packages/kernel/core/src/index.js";
+import { toolToken } from "../packages/kernel/core/src/index.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import { createDefaultForgeConfig } from "../packages/meta/forge/src/config.js";
+import { createForgeComponentProvider } from "../packages/meta/forge/src/forge-component-provider.js";
+import { createForgeUsageMiddleware } from "../packages/meta/forge/src/forge-usage-middleware.js";
+import { createInMemoryForgeStore } from "../packages/meta/forge/src/memory-store.js";
+import { createMemoryStoreChangeNotifier } from "../packages/meta/forge/src/store-notifier.js";
+import { createForgeToolTool } from "../packages/meta/forge/src/tools/forge-tool.js";
+import { createPromoteForgeTool } from "../packages/meta/forge/src/tools/promote-forge.js";
+import { createSearchForgeTool } from "../packages/meta/forge/src/tools/search-forge.js";
+import type { ForgeDeps } from "../packages/meta/forge/src/tools/shared.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

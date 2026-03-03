@@ -5,75 +5,212 @@
     "noEmit": true
   },
   "references": [
-    { "path": "packages/agui" },
-    { "path": "packages/artifact-client" },
-    { "path": "packages/bootstrap" },
-    { "path": "packages/catalog" },
-    { "path": "packages/channel-base" },
-    { "path": "packages/channel-cli" },
-    { "path": "packages/cli" },
-    { "path": "packages/config" },
-    { "path": "packages/context" },
-    { "path": "packages/core" },
-    { "path": "packages/crystallize" },
-    { "path": "packages/dashboard-api" },
-    { "path": "packages/dashboard-types" },
-    { "path": "packages/dashboard-ui" },
-    { "path": "packages/delegation" },
-    { "path": "packages/deploy" },
-    { "path": "packages/engine" },
-    { "path": "packages/engine-claude" },
-    { "path": "packages/engine-loop" },
-    { "path": "packages/engine-pi" },
-    { "path": "packages/errors" },
-    { "path": "packages/eval" },
-    { "path": "packages/events-memory" },
-    { "path": "packages/filesystem" },
-    { "path": "packages/forge" },
-    { "path": "packages/gateway" },
-    { "path": "packages/hash" },
-    { "path": "packages/manifest" },
-    { "path": "packages/mcp" },
-    { "path": "packages/memory-fs" },
-    { "path": "packages/middleware-audit" },
-    { "path": "packages/middleware-delegation-escalation" },
-    { "path": "packages/middleware-event-trace" },
-    { "path": "packages/middleware-feedback-loop" },
-    { "path": "packages/middleware-fs-rollback" },
-    { "path": "packages/middleware-guided-retry" },
-    { "path": "packages/middleware-semantic-retry" },
-    { "path": "packages/middleware-output-verifier" },
-    { "path": "packages/middleware-pay" },
-    { "path": "packages/middleware-permissions" },
-    { "path": "packages/middleware-turn-ack" },
-    { "path": "packages/model-router" },
-    { "path": "packages/node" },
-    { "path": "packages/ralph" },
-    { "path": "packages/registry-event-sourced" },
-    { "path": "packages/registry-http" },
-    { "path": "packages/sandbox" },
-    { "path": "packages/scope" },
-    { "path": "packages/sandbox-cloud-base" },
-    { "path": "packages/sandbox-cloudflare" },
-    { "path": "packages/sandbox-daytona" },
-    { "path": "packages/sandbox-docker" },
-    { "path": "packages/sandbox-e2b" },
-    { "path": "packages/sandbox-ipc" },
-    { "path": "packages/sandbox-vercel" },
-    { "path": "packages/scheduler" },
-    { "path": "packages/search" },
-    { "path": "packages/search-provider" },
-    { "path": "packages/search-brave" },
-    { "path": "packages/search-nexus" },
-    { "path": "packages/session-store" },
-    { "path": "packages/shutdown" },
-    { "path": "packages/skill-scanner" },
-    { "path": "packages/snapshot-chain-store" },
-    { "path": "packages/store-fs" },
-    { "path": "packages/store-sqlite" },
-    { "path": "packages/test-utils" },
-    { "path": "packages/tools-web" },
-    { "path": "packages/validation" },
-    { "path": "recipes/codex-mcp" }
+    {
+      "path": "packages/observability/agui"
+    },
+    {
+      "path": "packages/fs/artifact-client"
+    },
+    {
+      "path": "packages/kernel/bootstrap"
+    },
+    {
+      "path": "packages/fs/catalog"
+    },
+    {
+      "path": "packages/net/channel-base"
+    },
+    {
+      "path": "packages/net/channel-cli"
+    },
+    {
+      "path": "packages/meta/cli"
+    },
+    {
+      "path": "packages/kernel/config"
+    },
+    {
+      "path": "packages/mm/context"
+    },
+    {
+      "path": "packages/kernel/core"
+    },
+    {
+      "path": "packages/forge/crystallize"
+    },
+    {
+      "path": "packages/observability/dashboard-api"
+    },
+    {
+      "path": "packages/observability/dashboard-types"
+    },
+    {
+      "path": "packages/observability/dashboard-ui"
+    },
+    {
+      "path": "packages/security/delegation"
+    },
+    {
+      "path": "packages/deploy/deploy"
+    },
+    {
+      "path": "packages/kernel/engine"
+    },
+    {
+      "path": "packages/drivers/engine-claude"
+    },
+    {
+      "path": "packages/drivers/engine-loop"
+    },
+    {
+      "path": "packages/drivers/engine-pi"
+    },
+    {
+      "path": "packages/lib/errors"
+    },
+    {
+      "path": "packages/observability/eval"
+    },
+    {
+      "path": "packages/fs/events-memory"
+    },
+    {
+      "path": "packages/fs/filesystem"
+    },
+    {
+      "path": "packages/meta/forge"
+    },
+    {
+      "path": "packages/net/gateway"
+    },
+    {
+      "path": "packages/lib/hash"
+    },
+    {
+      "path": "packages/kernel/manifest"
+    },
+    {
+      "path": "packages/net/mcp"
+    },
+    {
+      "path": "packages/mm/memory-fs"
+    },
+    {
+      "path": "packages/security/middleware-audit"
+    },
+    {
+      "path": "packages/security/middleware-delegation-escalation"
+    },
+    {
+      "path": "packages/observability/middleware-event-trace"
+    },
+    {
+      "path": "packages/middleware/middleware-feedback-loop"
+    },
+    {
+      "path": "packages/middleware/middleware-fs-rollback"
+    },
+    {
+      "path": "packages/middleware/middleware-guided-retry"
+    },
+    {
+      "path": "packages/middleware/middleware-semantic-retry"
+    },
+    {
+      "path": "packages/middleware/middleware-output-verifier"
+    },
+    {
+      "path": "packages/security/middleware-pay"
+    },
+    {
+      "path": "packages/security/middleware-permissions"
+    },
+    {
+      "path": "packages/middleware/middleware-turn-ack"
+    },
+    {
+      "path": "packages/drivers/model-router"
+    },
+    {
+      "path": "packages/deploy/node"
+    },
+    {
+      "path": "packages/fs/registry-event-sourced"
+    },
+    {
+      "path": "packages/fs/registry-http"
+    },
+    {
+      "path": "packages/virt/sandbox"
+    },
+    {
+      "path": "packages/security/scope"
+    },
+    {
+      "path": "packages/virt/sandbox-cloud-base"
+    },
+    {
+      "path": "packages/virt/sandbox-cloudflare"
+    },
+    {
+      "path": "packages/virt/sandbox-daytona"
+    },
+    {
+      "path": "packages/virt/sandbox-docker"
+    },
+    {
+      "path": "packages/virt/sandbox-e2b"
+    },
+    {
+      "path": "packages/virt/sandbox-ipc"
+    },
+    {
+      "path": "packages/virt/sandbox-vercel"
+    },
+    {
+      "path": "packages/sched/scheduler"
+    },
+    {
+      "path": "packages/fs/search"
+    },
+    {
+      "path": "packages/fs/search-provider"
+    },
+    {
+      "path": "packages/fs/search-brave"
+    },
+    {
+      "path": "packages/fs/search-nexus"
+    },
+    {
+      "path": "packages/mm/session-store"
+    },
+    {
+      "path": "packages/lib/shutdown"
+    },
+    {
+      "path": "packages/fs/skill-scanner"
+    },
+    {
+      "path": "packages/mm/snapshot-chain-store"
+    },
+    {
+      "path": "packages/fs/store-fs"
+    },
+    {
+      "path": "packages/fs/store-sqlite"
+    },
+    {
+      "path": "packages/lib/test-utils"
+    },
+    {
+      "path": "packages/fs/tools-web"
+    },
+    {
+      "path": "packages/lib/validation"
+    },
+    {
+      "path": "recipes/codex-mcp"
+    }
   ]
 }

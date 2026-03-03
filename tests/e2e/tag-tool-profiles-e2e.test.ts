@@ -35,7 +35,7 @@ import { createLoopAdapter } from "@koi/engine-loop";
 import { createPiAdapter } from "@koi/engine-pi";
 import { loadManifestFromString } from "@koi/manifest";
 import { createAnthropicAdapter } from "@koi/model-router";
-import { formatResolutionError, resolveAgent } from "../../packages/cli/src/resolve-agent.js";
+import { formatResolutionError, resolveAgent } from "../../packages/meta/cli/src/resolve-agent.js";
 
 // ---------------------------------------------------------------------------
 // Environment gate

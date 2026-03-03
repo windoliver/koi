@@ -30,12 +30,12 @@ import type {
   ToolRequest,
   TurnContext,
 } from "@koi/core";
-import { composeModelChain, composeToolChain } from "../packages/engine/src/compose.js";
-import { createPatternPermissionBackend } from "../packages/middleware-permissions/src/engine.js";
-import { createPermissionsMiddleware } from "../packages/middleware-permissions/src/permissions.js";
-import type { SoulMiddleware } from "../packages/soul/src/soul.js";
-import { createSoulMiddleware } from "../packages/soul/src/soul.js";
-import { createMockTurnContext } from "../packages/test-utils/src/index.js";
+import { composeModelChain, composeToolChain } from "../packages/kernel/engine/src/compose.js";
+import type { SoulMiddleware } from "../packages/kernel/soul/src/soul.js";
+import { createSoulMiddleware } from "../packages/kernel/soul/src/soul.js";
+import { createMockTurnContext } from "../packages/lib/test-utils/src/index.js";
+import { createPatternPermissionBackend } from "../packages/security/middleware-permissions/src/engine.js";
+import { createPermissionsMiddleware } from "../packages/security/middleware-permissions/src/permissions.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

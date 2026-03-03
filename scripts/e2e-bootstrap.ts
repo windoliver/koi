@@ -14,14 +14,14 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveBootstrap } from "../packages/bootstrap/src/resolve.js";
-import { createContextHydrator } from "../packages/context/src/hydrator.js";
-import type { TextSource } from "../packages/context/src/types.js";
-import type { EngineEvent, ModelRequest } from "../packages/core/src/index.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createLoopAdapter } from "../packages/engine-loop/src/loop-adapter.js";
-import { createAnthropicAdapter } from "../packages/model-router/src/adapters/anthropic.js";
-import { createMockAgent } from "../packages/test-utils/src/agents.js";
+import { createLoopAdapter } from "../packages/drivers/engine-loop/src/loop-adapter.js";
+import { createAnthropicAdapter } from "../packages/drivers/model-router/src/adapters/anthropic.js";
+import { resolveBootstrap } from "../packages/kernel/bootstrap/src/resolve.js";
+import type { EngineEvent, ModelRequest } from "../packages/kernel/core/src/index.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import { createMockAgent } from "../packages/lib/test-utils/src/agents.js";
+import { createContextHydrator } from "../packages/mm/context/src/hydrator.js";
+import type { TextSource } from "../packages/mm/context/src/types.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

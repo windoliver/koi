@@ -28,12 +28,12 @@ import type {
   ModelResponse,
   RedactionRule,
 } from "@koi/core";
-import { composeModelChain, runSessionHooks } from "../packages/engine/src/compose.js";
+import { composeModelChain, runSessionHooks } from "../packages/kernel/engine/src/compose.js";
+import { createMockTurnContext } from "../packages/lib/test-utils/src/index.js";
 import {
   createAuditMiddleware,
   createInMemoryAuditSink,
-} from "../packages/middleware-audit/src/index.js";
-import { createMockTurnContext } from "../packages/test-utils/src/index.js";
+} from "../packages/security/middleware-audit/src/index.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

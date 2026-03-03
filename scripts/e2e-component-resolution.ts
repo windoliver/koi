@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * E2E: Issue #246 — ComponentProvider Resolution Semantics.
  *
@@ -16,6 +17,7 @@
  *   bun scripts/e2e-component-resolution.ts
  */
 
+import { createLoopAdapter } from "../packages/drivers/engine-loop/src/loop-adapter.js";
 import type {
   ComponentProvider,
   EngineAdapter,
@@ -26,11 +28,10 @@ import type {
   ModelResponse,
   Tool,
   ToolDescriptor,
-} from "../packages/core/src/index.js";
-import { COMPONENT_PRIORITY, toolToken } from "../packages/core/src/index.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import type { ForgeRuntime } from "../packages/engine/src/types.js";
-import { createLoopAdapter } from "../packages/engine-loop/src/loop-adapter.js";
+} from "../packages/kernel/core/src/index.js";
+import { COMPONENT_PRIORITY, toolToken } from "../packages/kernel/core/src/index.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import type { ForgeRuntime } from "../packages/kernel/engine/src/types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -379,7 +380,7 @@ async function testRealLlm(): Promise<void> {
   console.log("\n--- Test 4: Real LLM call through assembled runtime with forge ---\n");
 
   const { createAnthropicAdapter } = await import(
-    "../packages/model-router/src/adapters/anthropic.js"
+    "../packages/drivers/model-router/src/adapters/anthropic.js"
   );
 
   const SECRET = `MAGIC_${Date.now()}`;

@@ -29,12 +29,15 @@
  *   SECTION=A bun scripts/e2e-browser-270.ts                                 # no API key needed
  */
 
-import { translatePlaywrightError } from "../packages/browser-playwright/src/error-translator.js";
-import { createPlaywrightBrowserDriver } from "../packages/browser-playwright/src/playwright-browser-driver.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createPiAdapter } from "../packages/engine-pi/src/adapter.js";
-import { createBrowserProvider } from "../packages/tool-browser/src/browser-component-provider.js";
-import { ALL_OPERATIONS, BROWSER_SYSTEM_PROMPT } from "../packages/tool-browser/src/constants.js";
+import { translatePlaywrightError } from "../packages/drivers/browser-playwright/src/error-translator.js";
+import { createPlaywrightBrowserDriver } from "../packages/drivers/browser-playwright/src/playwright-browser-driver.js";
+import { createPiAdapter } from "../packages/drivers/engine-pi/src/adapter.js";
+import { createBrowserProvider } from "../packages/fs/tool-browser/src/browser-component-provider.js";
+import {
+  ALL_OPERATIONS,
+  BROWSER_SYSTEM_PROMPT,
+} from "../packages/fs/tool-browser/src/constants.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
 
 // ---------------------------------------------------------------------------
 // Config

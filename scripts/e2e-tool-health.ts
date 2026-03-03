@@ -13,6 +13,7 @@
  * No API key needed — uses scripted model responses.
  */
 
+import { createLoopAdapter } from "../packages/drivers/engine-loop/src/loop-adapter.js";
 import type {
   EngineEvent,
   ForgeStore,
@@ -21,15 +22,14 @@ import type {
   ModelResponse,
   SnapshotStore,
   Tool,
-} from "../packages/core/src/index.js";
-import { toolToken } from "../packages/core/src/index.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createLoopAdapter } from "../packages/engine-loop/src/loop-adapter.js";
+} from "../packages/kernel/core/src/index.js";
+import { toolToken } from "../packages/kernel/core/src/index.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
 import type {
   ForgeHealthConfig,
   ForgeToolErrorFeedback,
-} from "../packages/middleware-feedback-loop/src/index.js";
-import { createFeedbackLoopMiddleware } from "../packages/middleware-feedback-loop/src/index.js";
+} from "../packages/middleware/middleware-feedback-loop/src/index.js";
+import { createFeedbackLoopMiddleware } from "../packages/middleware/middleware-feedback-loop/src/index.js";
 
 // ---------------------------------------------------------------------------
 // Scripted model — returns pre-programmed responses per turn

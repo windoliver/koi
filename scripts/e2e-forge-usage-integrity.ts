@@ -16,15 +16,19 @@
  *   ANTHROPIC_API_KEY=sk-... bun scripts/e2e-forge-usage-integrity.ts
  */
 
-import type { BrickArtifact, ForgeStore, SandboxExecutor } from "../packages/core/src/index.js";
-import { createAdversarialVerifiers } from "../packages/forge/src/adversarial-verifiers.js";
-import { createDefaultForgeConfig } from "../packages/forge/src/config.js";
-import { loadAndVerify, verifyBrickIntegrity } from "../packages/forge/src/integrity.js";
-import { createInMemoryForgeStore } from "../packages/forge/src/memory-store.js";
-import { createForgeToolTool } from "../packages/forge/src/tools/forge-tool.js";
-import type { ForgeDeps } from "../packages/forge/src/tools/shared.js";
-import type { ForgeResult } from "../packages/forge/src/types.js";
-import { computeAutoPromotion, recordBrickUsage } from "../packages/forge/src/usage.js";
+import type {
+  BrickArtifact,
+  ForgeStore,
+  SandboxExecutor,
+} from "../packages/kernel/core/src/index.js";
+import { createAdversarialVerifiers } from "../packages/meta/forge/src/adversarial-verifiers.js";
+import { createDefaultForgeConfig } from "../packages/meta/forge/src/config.js";
+import { loadAndVerify, verifyBrickIntegrity } from "../packages/meta/forge/src/integrity.js";
+import { createInMemoryForgeStore } from "../packages/meta/forge/src/memory-store.js";
+import { createForgeToolTool } from "../packages/meta/forge/src/tools/forge-tool.js";
+import type { ForgeDeps } from "../packages/meta/forge/src/tools/shared.js";
+import type { ForgeResult } from "../packages/meta/forge/src/types.js";
+import { computeAutoPromotion, recordBrickUsage } from "../packages/meta/forge/src/usage.js";
 
 // ---------------------------------------------------------------------------
 // Preflight

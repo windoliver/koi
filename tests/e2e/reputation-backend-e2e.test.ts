@@ -6,7 +6,7 @@
  *   2. createKoi + createPiAdapter   (Pi streaming, real Anthropic LLM calls)
  *
  * The test builds an in-memory ReputationBackend implementation inline and
- * exercises every method and shape defined in packages/core/src/reputation-backend.ts:
+ * exercises every method and shape defined in packages/kernel/core/src/reputation-backend.ts:
  *   - record()          — feedback input → stored
  *   - getScore()        — fail-closed: undefined for unknown agents
  *   - getScores()       — batch scoring for N+1-safe routing

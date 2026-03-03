@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * E2E test script for ForgeStore.watch() typed event semantics through the
  * full L1 runtime assembly: createKoi + createLoopAdapter + ForgeRuntime.
@@ -17,6 +18,7 @@
  *   ANTHROPIC_API_KEY=sk-... bun scripts/e2e-watch-semantics.ts
  */
 
+import { createLoopAdapter } from "../packages/drivers/engine-loop/src/loop-adapter.js";
 import type {
   ContentBlock,
   EngineEvent,
@@ -26,11 +28,10 @@ import type {
   SandboxExecutor,
   StoreChangeEvent,
   ToolArtifact,
-} from "../packages/core/src/index.js";
-import { createKoi } from "../packages/engine/src/koi.js";
-import { createLoopAdapter } from "../packages/engine-loop/src/loop-adapter.js";
-import { createForgeRuntime } from "../packages/forge/src/forge-runtime.js";
-import { createInMemoryForgeStore } from "../packages/forge/src/memory-store.js";
+} from "../packages/kernel/core/src/index.js";
+import { createKoi } from "../packages/kernel/engine/src/koi.js";
+import { createForgeRuntime } from "../packages/meta/forge/src/forge-runtime.js";
+import { createInMemoryForgeStore } from "../packages/meta/forge/src/memory-store.js";
 
 // ---------------------------------------------------------------------------
 // Preflight
