@@ -1,21 +1,20 @@
 /**
- * Harness error-path tests — behavioral baseline before Phase 1 refactor.
+ * Harness error-path tests — behavioral baseline.
  *
  * Tests cover:
- * 1. resume() with checkpoint recovery (engine state restored)
+ * 1. resume() with engine state recovery (from session record)
  * 2. fail() transitions harness to "failed" phase
- * 3. saveCheckpoint failure during pause() is surfaced (not swallowed)
- * 4. resume() without engine checkpoint falls back to context reconstruction
+ * 3. pause() with engineState persists via saveSession()
+ * 4. resume() without engine state falls back to context reconstruction
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
 import type {
-  AgentId,
   EngineMetrics,
   EngineState,
   HarnessSnapshotStore,
-  SessionCheckpoint,
   SessionPersistence,
+  SessionRecord,
   TaskBoardSnapshot,
 } from "@koi/core";
 import { agentId, harnessId, taskItemId } from "@koi/core";
@@ -60,24 +59,32 @@ const MOCK_ENGINE_STATE: EngineState = {
 };
 
 function createMockPersistence(overrides?: Partial<SessionPersistence>): SessionPersistence {
+  const savedSessions = new Map<string, SessionRecord>();
+
   return {
-    saveSession: () => ({ ok: true as const, value: undefined }),
-    loadSession: () => ({
-      ok: false as const,
-      error: { code: "NOT_FOUND" as const, message: "Not found", retryable: false },
-    }),
+    saveSession: (record: SessionRecord) => {
+      savedSessions.set(record.sessionId, record);
+      return { ok: true as const, value: undefined };
+    },
+    loadSession: (sid: string) => {
+      const record = savedSessions.get(sid);
+      if (record !== undefined) {
+        return { ok: true as const, value: record };
+      }
+      return {
+        ok: false as const,
+        error: { code: "NOT_FOUND" as const, message: "Not found", retryable: false },
+      };
+    },
     removeSession: () => ({ ok: true as const, value: undefined }),
     listSessions: () => ({ ok: true as const, value: [] }),
-    saveCheckpoint: () => ({ ok: true as const, value: undefined }),
-    loadLatestCheckpoint: (_aid: AgentId) => ({ ok: true as const, value: undefined }),
-    listCheckpoints: () => ({ ok: true as const, value: [] }),
     savePendingFrame: () => ({ ok: true as const, value: undefined }),
     loadPendingFrames: () => ({ ok: true as const, value: [] }),
     clearPendingFrames: () => ({ ok: true as const, value: undefined }),
     removePendingFrame: () => ({ ok: true as const, value: undefined }),
     recover: () => ({
       ok: true as const,
-      value: { sessions: [], checkpoints: new Map(), pendingFrames: new Map(), skipped: [] },
+      value: { sessions: [], pendingFrames: new Map(), skipped: [] },
     }),
     close: () => undefined,
     ...overrides,
@@ -118,27 +125,11 @@ describe("harness error paths", () => {
   });
 
   // -----------------------------------------------------------------------
-  // 1. resume() with checkpoint recovery
+  // 1. resume() with engine state recovery
   // -----------------------------------------------------------------------
 
-  test("resume() restores from engine state checkpoint when available", async () => {
-    const savedCheckpoint: SessionCheckpoint = {
-      id: "cp-1",
-      agentId: TEST_AGENT_ID,
-      sessionId: "session-original" as ReturnType<typeof import("@koi/core").sessionId>,
-      engineState: MOCK_ENGINE_STATE,
-      processState: "running",
-      generation: 1,
-      metadata: {},
-      createdAt: Date.now(),
-    };
-
-    const persistence = createMockPersistence({
-      loadLatestCheckpoint: (_aid: AgentId) => ({
-        ok: true as const,
-        value: savedCheckpoint,
-      }),
-    });
+  test("resume() restores engine state from session record when available", async () => {
+    const persistence = createMockPersistence();
 
     const harness = createLongRunningHarness({
       harnessId: TEST_HARNESS_ID,
@@ -147,7 +138,7 @@ describe("harness error paths", () => {
       sessionPersistence: persistence,
     });
 
-    // Start → pause → resume
+    // Start → pause with engine state → resume
     const startResult = await harness.start(createPlan());
     assertOk(startResult);
 
@@ -158,7 +149,7 @@ describe("harness error paths", () => {
     const resumeResult = await harness.resume();
     assertOk(resumeResult);
 
-    // Engine state should be recovered
+    // Engine state should be recovered from session record
     expect(resumeResult.value.engineStateRecovered).toBe(true);
     expect(resumeResult.value.engineInput.kind).toBe("resume");
     if (resumeResult.value.engineInput.kind === "resume") {
@@ -220,14 +211,14 @@ describe("harness error paths", () => {
   });
 
   // -----------------------------------------------------------------------
-  // 3. saveCheckpoint failure during pause is propagated via engineState
+  // 3. pause() with engineState persists via saveSession()
   // -----------------------------------------------------------------------
 
-  test("pause() with engineState calls saveCheckpoint on persistence", async () => {
-    let checkpointSaved = false; // let: toggled in mock
+  test("pause() with engineState saves session record with lastEngineState", async () => {
+    let savedRecord: SessionRecord | undefined;
     const persistence = createMockPersistence({
-      saveCheckpoint: (_cp: SessionCheckpoint) => {
-        checkpointSaved = true;
+      saveSession: (record: SessionRecord) => {
+        savedRecord = record;
         return { ok: true as const, value: undefined };
       },
     });
@@ -244,15 +235,16 @@ describe("harness error paths", () => {
     const pauseResult = await harness.pause(makeSessionResult("s-1", MOCK_ENGINE_STATE));
     assertOk(pauseResult);
 
-    // Verify the checkpoint was saved
-    expect(checkpointSaved).toBe(true);
+    // Verify the session record was saved with engine state
+    expect(savedRecord).toBeDefined();
+    expect(savedRecord?.lastEngineState).toEqual(MOCK_ENGINE_STATE);
   });
 
-  test("pause() without engineState skips saveCheckpoint", async () => {
-    let checkpointSaved = false; // let: toggled in mock
+  test("pause() without engineState saves session record without lastEngineState", async () => {
+    let savedRecord: SessionRecord | undefined;
     const persistence = createMockPersistence({
-      saveCheckpoint: (_cp: SessionCheckpoint) => {
-        checkpointSaved = true;
+      saveSession: (record: SessionRecord) => {
+        savedRecord = record;
         return { ok: true as const, value: undefined };
       },
     });
@@ -273,16 +265,17 @@ describe("harness error paths", () => {
     });
     assertOk(pauseResult);
 
-    // Checkpoint should NOT have been saved (no engine state provided)
-    expect(checkpointSaved).toBe(false);
+    // Session record should NOT have engine state
+    expect(savedRecord).toBeDefined();
+    expect(savedRecord?.lastEngineState).toBeUndefined();
   });
 
   // -----------------------------------------------------------------------
-  // 4. resume() without checkpoint falls back to context reconstruction
+  // 4. resume() without engine state falls back to context reconstruction
   // -----------------------------------------------------------------------
 
-  test("resume() without checkpoint builds context from summaries", async () => {
-    // Default mock persistence returns no checkpoint (undefined)
+  test("resume() without engine state builds context from summaries", async () => {
+    // Default mock persistence returns NOT_FOUND for loadSession
     const harness = createHarness(store);
 
     // Start, produce a summary, then pause
@@ -296,7 +289,7 @@ describe("harness error paths", () => {
     });
     assertOk(pauseResult);
 
-    // Resume — no checkpoint available, should fall back to context reconstruction
+    // Resume — no engine state available, should fall back to context reconstruction
     const resumeResult = await harness.resume();
     assertOk(resumeResult);
 
