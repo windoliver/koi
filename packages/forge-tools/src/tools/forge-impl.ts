@@ -51,11 +51,25 @@ const IMPLEMENTATION_INPUT_SCHEMA: Readonly<Record<string, unknown>> = {
     files: { type: "object", description: "Companion files: relative path → content" },
     requires: {
       type: "object",
-      description: "Runtime requirements (bins, env, tools)",
+      description: "Runtime requirements (bins, env, tools, agents, npm packages)",
       properties: {
         bins: { type: "array", items: { type: "string" } },
         env: { type: "array", items: { type: "string" } },
         tools: { type: "array", items: { type: "string" } },
+        agents: {
+          type: "array",
+          items: { type: "string" },
+          description: "Agent brick names required as peer dependencies",
+        },
+        packages: {
+          type: "object",
+          description:
+            'npm packages: package name → exact semver version (e.g. { "zod": "3.22.0" })',
+        },
+        network: {
+          type: "boolean",
+          description: "Whether this brick requires network access at runtime (default: false)",
+        },
       },
     },
     configSchema: { type: "object", description: "JSON Schema for brick config parameters" },

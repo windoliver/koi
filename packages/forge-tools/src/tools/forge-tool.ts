@@ -46,11 +46,16 @@ const FORGE_TOOL_CONFIG: ForgeToolConfig = {
       files: { type: "object", description: "Companion files: relative path → content" },
       requires: {
         type: "object",
-        description: "Runtime requirements (bins, env, tools, npm packages)",
+        description: "Runtime requirements (bins, env, tools, agents, npm packages)",
         properties: {
           bins: { type: "array", items: { type: "string" } },
           env: { type: "array", items: { type: "string" } },
           tools: { type: "array", items: { type: "string" } },
+          agents: {
+            type: "array",
+            items: { type: "string" },
+            description: "Agent brick names required as peer dependencies",
+          },
           packages: {
             type: "object",
             description:
