@@ -11,6 +11,7 @@
 
 import type { AgentGroupId, AgentId, ProcessState } from "./ecs.js";
 import type { KoiError, Result } from "./errors.js";
+import type { ProcessDescriptor } from "./process-descriptor.js";
 import type { ZoneId } from "./zone.js";
 
 // ---------------------------------------------------------------------------
@@ -321,4 +322,13 @@ export interface AgentRegistry extends AsyncDisposable {
 
   /** Subscribe to registry change events. Returns unsubscribe function. */
   readonly watch: (listener: (event: RegistryEvent) => void) => () => void;
+
+  /**
+   * Return a read-only ProcessDescriptor snapshot for an agent.
+   * Returns undefined if the agent is not registered.
+   * Optional — implementations may omit (returns undefined by default).
+   */
+  readonly descriptor?: (
+    agentId: AgentId,
+  ) => ProcessDescriptor | undefined | Promise<ProcessDescriptor | undefined>;
 }

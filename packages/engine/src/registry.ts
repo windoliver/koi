@@ -10,6 +10,7 @@ import type {
   AgentRegistry,
   KoiError,
   PatchableRegistryFields,
+  ProcessDescriptor,
   ProcessState,
   RegistryEntry,
   RegistryEvent,
@@ -18,7 +19,7 @@ import type {
   TransitionReason,
   VisibilityContext,
 } from "@koi/core";
-import { matchesFilter } from "@koi/core";
+import { mapRegistryEntryToDescriptor, matchesFilter } from "@koi/core";
 import { applyTransition } from "./transitions.js";
 
 // ---------------------------------------------------------------------------
@@ -53,6 +54,8 @@ export type InMemoryRegistry = Omit<
   ) => Result<RegistryEntry, KoiError>;
   /** Manually trigger flush of any buffered heartbeats. */
   readonly flush: () => void;
+  /** Return a read-only ProcessDescriptor snapshot for an agent. */
+  readonly descriptor: (agentId: AgentId) => ProcessDescriptor | undefined;
 };
 
 // ---------------------------------------------------------------------------
@@ -180,6 +183,12 @@ export function createInMemoryRegistry(): InMemoryRegistry {
     listeners = new Set();
   }
 
+  function descriptor(id: AgentId): ProcessDescriptor | undefined {
+    const entry = store.get(id);
+    if (entry === undefined) return undefined;
+    return mapRegistryEntryToDescriptor(entry);
+  }
+
   return {
     register,
     deregister,
@@ -188,6 +197,7 @@ export function createInMemoryRegistry(): InMemoryRegistry {
     transition,
     patch,
     watch,
+    descriptor,
     flush: () => {},
     [Symbol.asyncDispose]: dispose,
   };

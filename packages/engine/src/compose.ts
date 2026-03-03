@@ -11,6 +11,7 @@ import type {
   ComposedCallHandlers,
   InboundMessage,
   KoiMiddleware,
+  MiddlewarePhase,
   ModelChunk,
   ModelHandler,
   ModelRequest,
@@ -25,6 +26,33 @@ import type {
   TurnContext,
 } from "@koi/core";
 import type { AgentEntity } from "./agent-entity.js";
+
+// ---------------------------------------------------------------------------
+// Phase-aware middleware sorting
+// ---------------------------------------------------------------------------
+
+/** Phase → numeric tier for sorting. Lower tier = outer onion layer (runs first). */
+const PHASE_TIER: Readonly<Record<MiddlewarePhase, number>> = {
+  intercept: 0,
+  resolve: 1,
+  observe: 2,
+};
+
+/**
+ * Sort middleware by phase tier first, then by priority within the same tier.
+ * Default phase is "resolve" (tier 1); default priority is 500.
+ * Returns a new sorted array (immutable — does not mutate the input).
+ */
+export function sortMiddlewareByPhase(
+  middleware: readonly KoiMiddleware[],
+): readonly KoiMiddleware[] {
+  return [...middleware].sort((a, b) => {
+    const tierA = PHASE_TIER[a.phase ?? "resolve"];
+    const tierB = PHASE_TIER[b.phase ?? "resolve"];
+    if (tierA !== tierB) return tierA - tierB;
+    return (a.priority ?? 500) - (b.priority ?? 500);
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Generic onion composition

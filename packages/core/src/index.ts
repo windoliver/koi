@@ -602,6 +602,7 @@ export type {
   CapabilityFragment,
   KoiMiddleware,
   MiddlewareBundle,
+  MiddlewarePhase,
   ModelChunk,
   ModelHandler,
   ModelRequest,
@@ -637,6 +638,9 @@ export type {
   PermissionDecision,
   PermissionQuery,
 } from "./permission-backend.js";
+// process descriptor — read-only snapshot of an agent's process state
+export type { ProcessDescriptor } from "./process-descriptor.js";
+export { mapRegistryEntryToDescriptor } from "./process-descriptor.js";
 // procfs — virtual filesystem for agent introspection
 export type { ProcEntry, ProcFs, WritableProcEntry } from "./procfs.js";
 // proposal — unified change governance contract
@@ -745,8 +749,13 @@ export type {
   TaskStatus,
   TaskStore,
 } from "./scheduler.js";
-// scheduler — runtime values (branded constructors + defaults)
-export { DEFAULT_SCHEDULER_CONFIG, scheduleId, taskId } from "./scheduler.js";
+// scheduler — runtime values (branded constructors + defaults + mapping)
+export {
+  DEFAULT_SCHEDULER_CONFIG,
+  mapTaskStatusToProcessState,
+  scheduleId,
+  taskId,
+} from "./scheduler.js";
 // scope enforcement — pluggable policy backend for subsystem access checks
 export type {
   ScopeAccessRequest,

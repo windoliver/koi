@@ -51,6 +51,43 @@ export function scheduleId(id: string): ScheduleId {
 export type TaskStatus = "pending" | "running" | "completed" | "failed" | "dead_letter";
 
 // ---------------------------------------------------------------------------
+// TaskStatus → ProcessState mapping
+// ---------------------------------------------------------------------------
+
+/**
+ * Map a scheduler TaskStatus to the equivalent ProcessState for correlation.
+ *
+ * A scheduler "task" and an agent "process" are distinct concepts:
+ * - Task = "deliver input to agent at scheduled time/priority"
+ * - Process = agent lifecycle (created → running → terminated)
+ *
+ * This mapping enables cross-domain correlation (e.g., procfs, monitoring)
+ * without coupling the scheduler to the lifecycle registry.
+ *
+ * | TaskStatus  | ProcessState | Rationale                              |
+ * |-------------|--------------|----------------------------------------|
+ * | pending     | created      | Exists but not yet executing           |
+ * | running     | running      | Actively executing                     |
+ * | completed   | terminated   | Finished successfully                  |
+ * | failed      | terminated   | Finished with error                    |
+ * | dead_letter | terminated   | Exhausted retries, moved to DLQ        |
+ *
+ * Exception: pure function operating only on L0 types, permitted in L0.
+ */
+export function mapTaskStatusToProcessState(status: TaskStatus): import("./ecs.js").ProcessState {
+  switch (status) {
+    case "pending":
+      return "created";
+    case "running":
+      return "running";
+    case "completed":
+    case "failed":
+    case "dead_letter":
+      return "terminated";
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Scheduled task — "deliver input to agent"
 // ---------------------------------------------------------------------------
 

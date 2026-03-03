@@ -116,10 +116,22 @@ export interface CapabilityFragment {
   readonly description: string;
 }
 
+/**
+ * Middleware phase annotation for pipeline ordering.
+ *
+ * Middleware is sorted by phase tier first, then by priority within the tier:
+ *   "intercept" (tier 0) — mutates or blocks requests (permissions, guardrails)
+ *   "resolve"   (tier 1) — default; core business logic (dedup, retry, routing)
+ *   "observe"   (tier 2) — read-only telemetry/audit (tracing, metrics)
+ */
+export type MiddlewarePhase = "intercept" | "observe" | "resolve";
+
 export interface KoiMiddleware {
   readonly name: string;
   /** Middleware execution priority. Lower = outer onion layer (runs first). Default: 500. */
   readonly priority?: number;
+  /** Pipeline phase for tier-based ordering. Default: "resolve". */
+  readonly phase?: MiddlewarePhase;
   /** Called once when an agent session begins. */
   readonly onSessionStart?: (ctx: SessionContext) => Promise<void>;
   /** Called once when an agent session ends. */
