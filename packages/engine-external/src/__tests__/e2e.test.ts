@@ -37,7 +37,8 @@ function findDone(
 
 describe("engine adapter contract", () => {
   testEngineAdapter({
-    createAdapter: () => createExternalAdapter({ command: "echo", args: ["hello"] }),
+    createAdapter: () =>
+      createExternalAdapter({ command: "echo", args: ["hello"], mode: "single-shot" }),
   });
 });
 
@@ -47,7 +48,11 @@ describe("engine adapter contract", () => {
 
 describe("e2e: echo", () => {
   test("echo produces text_delta events with expected content", async () => {
-    const adapter = createExternalAdapter({ command: "echo", args: ["hello world"] });
+    const adapter = createExternalAdapter({
+      command: "echo",
+      args: ["hello world"],
+      mode: "single-shot",
+    });
     const events = await collectEvents(adapter.stream({ kind: "text", text: "" }));
 
     const textDeltas = events.filter((e) => e.kind === "text_delta");
@@ -63,7 +68,11 @@ describe("e2e: echo", () => {
 
 describe("e2e: exit code", () => {
   test("exit 1 produces done with error stopReason", async () => {
-    const adapter = createExternalAdapter({ command: "sh", args: ["-c", "exit 1"] });
+    const adapter = createExternalAdapter({
+      command: "sh",
+      args: ["-c", "exit 1"],
+      mode: "single-shot",
+    });
     const events = await collectEvents(adapter.stream({ kind: "text", text: "" }));
 
     const done = findDone(events);
@@ -103,6 +112,7 @@ describe("e2e: timeout", () => {
     const adapter = createExternalAdapter({
       command: "sh",
       args: ["-c", "sleep 10"],
+      mode: "single-shot",
       timeoutMs: 200,
     });
 
@@ -122,6 +132,7 @@ describe("e2e: JSON-lines parser", () => {
     const adapter = createExternalAdapter({
       command: "echo",
       args: ['{"kind":"text_delta","delta":"from json"}'],
+      mode: "single-shot",
       parser: createJsonLinesParser(),
     });
 

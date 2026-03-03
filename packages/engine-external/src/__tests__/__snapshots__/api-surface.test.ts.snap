@@ -59,7 +59,10 @@ interface ExternalAdapterConfig {
     readonly noOutputTimeoutMs?: number | undefined;
     readonly maxOutputBytes?: number | undefined;
     readonly shutdown?: ShutdownConfig | undefined;
-    readonly mode?: "single-shot" | "long-lived" | undefined;
+    /** Process lifecycle mode. Default: "pty" (interactive CLI agents). */
+    readonly mode?: "single-shot" | "long-lived" | "pty" | undefined;
+    /** PTY-specific configuration. Used when mode is "pty" (the default). */
+    readonly pty?: PtyConfig | undefined;
 }
 /** Engine adapter with additional methods for external process interaction. */
 interface ExternalEngineAdapter extends EngineAdapter {
@@ -74,6 +77,45 @@ interface ExternalProcessState {
     readonly cwd: string;
     readonly outputHistory: readonly string[];
 }
+interface PtyConfig {
+    /** Silence threshold before idle detector fires. Default: 30_000 ms. */
+    readonly idleThresholdMs?: number | undefined;
+    /** Strip ANSI escape sequences from output. Default: true. */
+    readonly ansiStrip?: boolean | undefined;
+    /** PTY column count. Default: 120. */
+    readonly cols?: number | undefined;
+    /** PTY row count. Default: 40. */
+    readonly rows?: number | undefined;
+    /** Optional regex pattern for prompt-based turn completion (fast path). */
+    readonly promptPattern?: string | undefined;
+}
+/** Standard piped-IO process (single-shot and long-lived modes). */
+interface PipedProcess {
+    readonly kind: "piped";
+    readonly pid: number;
+    readonly stdin: {
+        write(data: string | Uint8Array): number | Promise<number>;
+        end(): void;
+    };
+    readonly stdout: ReadableStream<Uint8Array>;
+    readonly stderr: ReadableStream<Uint8Array>;
+    readonly exited: Promise<number>;
+    readonly kill: (signal?: number) => void;
+}
+/** PTY-based process for interactive CLI agents. */
+interface PtyProcess {
+    readonly kind: "pty";
+    readonly pid: number;
+    readonly terminal: {
+        readonly write: (data: string | Uint8Array) => number;
+        readonly resize: (cols: number, rows: number) => void;
+        readonly close: () => void;
+        readonly closed: boolean;
+    };
+    readonly exited: Promise<number>;
+    readonly kill: (signal?: number) => void;
+}
+type ManagedProcess = PipedProcess | PtyProcess;
 
 /**
  * External process engine adapter factory.
@@ -82,7 +124,8 @@ interface ExternalProcessState {
  * EngineAdapter via Bun.spawn(). Maps stdout/stderr to EngineEvent stream,
  * process lifecycle to agent lifecycle, stdin to mid-task redirection.
  *
- * Supports two modes:
+ * Supports three modes:
+ * - pty (default): pseudo-terminal for interactive CLI agents, idle-based turn detection
  * - single-shot: spawn per stream() call, stdin closed after input, process exit = done
  * - long-lived: persistent process across stream() calls, parser-driven turn completion
  */
@@ -145,6 +188,6 @@ declare function createLineParser(mapLine: (line: string, source: "stdout" | "st
  */
 declare function validateExternalAdapterConfig(config: unknown): Result<ExternalAdapterConfig, KoiError>;
 
-export { type EnvStrategy, type ExternalAdapterConfig, type ExternalEngineAdapter, type ExternalProcessState, type OutputParseResult, type OutputParser, type OutputParserFactory, type ShutdownConfig, createExternalAdapter, createJsonLinesParser, createLineParser, createTextDeltaParser, descriptor, validateExternalAdapterConfig };
+export { type EnvStrategy, type ExternalAdapterConfig, type ExternalEngineAdapter, type ExternalProcessState, type ManagedProcess, type OutputParseResult, type OutputParser, type OutputParserFactory, type PipedProcess, type PtyConfig, type PtyProcess, type ShutdownConfig, createExternalAdapter, createJsonLinesParser, createLineParser, createTextDeltaParser, descriptor, validateExternalAdapterConfig };
 "
 `;

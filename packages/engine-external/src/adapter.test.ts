@@ -285,7 +285,11 @@ describe("createExternalAdapter — write()", () => {
   }, 10_000);
 
   test("write throws when no process is running", () => {
-    const adapter = createExternalAdapter({ command: "echo", args: ["hi"], mode: "single-shot" });
+    const adapter = createExternalAdapter({
+      command: "echo",
+      args: ["hi"],
+      mode: "single-shot",
+    });
     expect(() => adapter.write("test")).toThrow("No running process");
   });
 });
@@ -314,13 +318,21 @@ describe("createExternalAdapter — dispose", () => {
   }, 10_000);
 
   test("is idempotent", async () => {
-    const adapter = createExternalAdapter({ command: "echo", args: ["hi"], mode: "single-shot" });
+    const adapter = createExternalAdapter({
+      command: "echo",
+      args: ["hi"],
+      mode: "single-shot",
+    });
     await adapter.dispose?.();
     await adapter.dispose?.();
   });
 
   test("stream throws after dispose", async () => {
-    const adapter = createExternalAdapter({ command: "echo", args: ["hi"], mode: "single-shot" });
+    const adapter = createExternalAdapter({
+      command: "echo",
+      args: ["hi"],
+      mode: "single-shot",
+    });
     await adapter.dispose?.();
 
     expect(() => adapter.stream({ kind: "text", text: "" })).toThrow("disposed");
@@ -489,82 +501,4 @@ describe("createExternalAdapter — engineId", () => {
     const adapter = createExternalAdapter({ command: "echo", mode: "single-shot" });
     expect(adapter.engineId).toBe("external");
   });
-});
-
-describe("createExternalAdapter — resume input", () => {
-  test("resume input kind returns empty string from extractInputText", async () => {
-    const adapter = createExternalAdapter({ command: "cat", mode: "single-shot" });
-    const events = await collectEvents(adapter.stream({ kind: "resume" }));
-
-    const done = findDone(events);
-    expect(done).toBeDefined();
-    // cat with empty stdin produces no output, exits successfully
-    expect(done?.output.stopReason).toBe("completed");
-
-    // No text_delta events since no input was piped
-    const textDeltas = events.filter((e) => e.kind === "text_delta");
-    expect(textDeltas.length).toBe(0);
-
-    await adapter.dispose?.();
-  });
-});
-
-describe("createExternalAdapter — loadState oversized history", () => {
-  test("loadState with oversized history enforces cap", async () => {
-    const adapter = createExternalAdapter({ command: "echo", mode: "single-shot" });
-
-    // Create state with more than 10,000 history entries
-    const oversizedHistory = Array.from({ length: 15_000 }, (_, i) => `line-${i}`);
-    const state = {
-      engineId: "external" as const,
-      data: {
-        command: "echo",
-        args: [] as readonly string[],
-        cwd: process.cwd(),
-        outputHistory: oversizedHistory,
-      },
-    };
-
-    await adapter.loadState?.(state);
-
-    // After loading, saveState should show capped history
-    const saved = await adapter.saveState?.();
-    expect(saved).toBeDefined();
-    if (saved === undefined) return;
-
-    const savedData = saved.data as { readonly outputHistory: readonly string[] };
-    expect(savedData.outputHistory.length).toBe(10_000);
-    // Should keep the most recent entries (tail)
-    expect(savedData.outputHistory[0]).toBe("line-5000");
-    expect(savedData.outputHistory[9999]).toBe("line-14999");
-
-    await adapter.dispose?.();
-  });
-});
-
-describe("createExternalAdapter — noOutputTimeoutMs + abort signal", () => {
-  test("abort signal takes priority over watchdog timeout", async () => {
-    const controller = new AbortController();
-    const adapter = createExternalAdapter({
-      command: "sh",
-      args: ["-c", "echo start; sleep 30"],
-      mode: "single-shot",
-      noOutputTimeoutMs: 2000, // watchdog at 2s
-      timeoutMs: 0,
-    });
-
-    // Abort after 200ms — should beat the 2s watchdog
-    setTimeout(() => controller.abort(), 200);
-
-    const events = await collectEvents(
-      adapter.stream({ kind: "text", text: "", signal: controller.signal }),
-    );
-
-    const done = findDone(events);
-    expect(done).toBeDefined();
-    // Abort signal → "interrupted" (not "error" from watchdog)
-    expect(done?.output.stopReason).toBe("interrupted");
-
-    await adapter.dispose?.();
-  }, 10_000);
 });

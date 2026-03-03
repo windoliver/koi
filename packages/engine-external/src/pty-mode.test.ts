@@ -307,7 +307,9 @@ describe("runPty — resume input", () => {
     );
 
     const shared = createSharedState();
-    const events = await collectEvents(runPty(config, { kind: "resume" }, shared));
+    const events = await collectEvents(
+      runPty(config, { kind: "resume", state: { engineId: "external", data: {} } }, shared),
+    );
 
     const done = findDone(events);
     expect(done).toBeDefined();
