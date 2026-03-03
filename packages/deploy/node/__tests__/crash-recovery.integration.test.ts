@@ -1,20 +1,24 @@
 /**
- * Integration tests for checkpoint manager + crash recovery.
+ * Integration tests for session-based crash recovery.
  *
  * Uses @koi/session-store (in-memory) as the concrete implementation
  * of the NodeSessionStore interface.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import type { AgentManifest, EngineAdapter, ProcessId } from "@koi/core";
-import { agentId } from "@koi/core";
+import type {
+  AgentManifest,
+  EngineAdapter,
+  PendingFrame,
+  ProcessId,
+  SessionRecord,
+} from "@koi/core";
+import { agentId, sessionId } from "@koi/core";
 import { createInMemorySessionPersistence } from "@koi/session-store";
 import { createMockStatefulEngine } from "@koi/test-utils";
-import { createAgentHost } from "../src/agent/host.js";
-import { createCheckpointManager } from "../src/checkpoint.js";
 import type { RecoveryResult } from "../src/node.js";
 import { createNode } from "../src/node.js";
-import type { NodeEvent, NodePendingFrame, NodeSessionStore } from "../src/types.js";
+import type { NodeEvent, NodeSessionStore } from "../src/types.js";
 import type { MockGateway } from "./helpers/mock-gateway.js";
 import { createMockGateway } from "./helpers/mock-gateway.js";
 
@@ -33,264 +37,40 @@ function makePid(id: string): ProcessId {
   return { id: agentId(id), name: `Agent ${id}`, type: "worker", depth: 0 };
 }
 
-// Helper: drain all events from async iterable
-async function drainEngine(engine: EngineAdapter): Promise<void> {
-  for await (const _event of engine.stream({ kind: "text", text: "tick" })) {
-    // drain
+function makeSessionRecord(
+  id: string,
+  opts?: {
+    readonly turns?: number;
+    readonly withEngineState?: boolean;
+    readonly engineId?: string;
+  },
+): SessionRecord {
+  const now = Date.now();
+  const engineId = opts?.engineId ?? `engine-${id}`;
+  const base: SessionRecord = {
+    sessionId: sessionId(`session-${id}`),
+    agentId: agentId(id),
+    manifestSnapshot: TEST_MANIFEST,
+    seq: 0,
+    remoteSeq: 0,
+    connectedAt: now,
+    lastPersistedAt: now,
+    metadata: {},
+  };
+  if (opts?.withEngineState) {
+    return {
+      ...base,
+      lastEngineState: {
+        engineId,
+        data: { turnCount: opts?.turns ?? 0, customData: undefined },
+      },
+    };
   }
+  return base;
 }
 
 // ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-describe("CheckpointManager", () => {
-  const engines = new Map<string, EngineAdapter>();
-  const host = createAgentHost({
-    maxAgents: 10,
-    memoryWarningPercent: 80,
-    memoryEvictionPercent: 90,
-    monitorInterval: 30000,
-  });
-
-  afterEach(() => {
-    host.terminateAll();
-    engines.clear();
-  });
-
-  test("saves session record on agent dispatch", async () => {
-    const store = createInMemorySessionPersistence({
-      maxCheckpointsPerAgent: 3,
-    }) as NodeSessionStore;
-    const mgr = createCheckpointManager(store, host, (id) => engines.get(id));
-
-    const engine = createMockStatefulEngine();
-    engines.set("agent-1", engine);
-    await host.dispatch(makePid("agent-1"), TEST_MANIFEST, engine, []);
-
-    // Recover should show the session
-    const result = await mgr.recover();
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.sessions.length).toBe(1);
-      expect(result.value.sessions[0]?.agentId).toBe(agentId("agent-1"));
-    }
-
-    mgr.dispose();
-  });
-
-  test("removes session record on agent terminate", async () => {
-    const store = createInMemorySessionPersistence({
-      maxCheckpointsPerAgent: 3,
-    }) as NodeSessionStore;
-    const mgr = createCheckpointManager(store, host, (id) => engines.get(id));
-
-    const engine = createMockStatefulEngine();
-    engines.set("agent-2", engine);
-    await host.dispatch(makePid("agent-2"), TEST_MANIFEST, engine, []);
-
-    // Verify session exists
-    const before = await mgr.recover();
-    expect(before.ok).toBe(true);
-    if (before.ok) expect(before.value.sessions.length).toBe(1);
-
-    // Terminate
-    host.terminate("agent-2");
-    engines.delete("agent-2");
-
-    // Session should be removed
-    const after = await mgr.recover();
-    expect(after.ok).toBe(true);
-    if (after.ok) expect(after.value.sessions.length).toBe(0);
-
-    mgr.dispose();
-  });
-
-  test("checkpointAgent saves engine state to store", async () => {
-    const store = createInMemorySessionPersistence({
-      maxCheckpointsPerAgent: 3,
-    }) as NodeSessionStore;
-    const mgr = createCheckpointManager(store, host, (id) => engines.get(id));
-
-    const engine = createMockStatefulEngine({ engineId: "stateful-1" });
-    engines.set("agent-3", engine);
-    await host.dispatch(makePid("agent-3"), TEST_MANIFEST, engine, []);
-
-    // Simulate some turns
-    await drainEngine(engine);
-    await drainEngine(engine);
-    expect(engine.currentData().turnCount).toBe(2);
-
-    // Checkpoint
-    const cpResult = await mgr.checkpointAgent(agentId("agent-3"), "session-agent-3");
-    expect(cpResult.ok).toBe(true);
-
-    // Recover should include the checkpoint
-    const recovery = await mgr.recover();
-    expect(recovery.ok).toBe(true);
-    if (recovery.ok) {
-      expect(recovery.value.checkpoints.size).toBe(1);
-      const cp = recovery.value.checkpoints.get(agentId("agent-3"));
-      expect(cp).toBeDefined();
-      expect(cp?.engineState.engineId).toBe("stateful-1");
-      const data = cp?.engineState.data as { turnCount: number };
-      expect(data.turnCount).toBe(2);
-    }
-
-    mgr.dispose();
-  });
-
-  test("checkpoint survives JSON round-trip (simulating SQLite persistence)", async () => {
-    const store = createInMemorySessionPersistence({
-      maxCheckpointsPerAgent: 3,
-    }) as NodeSessionStore;
-    const mgr = createCheckpointManager(store, host, (id) => engines.get(id));
-
-    const engine = createMockStatefulEngine({ initialCustomData: { nested: { key: "value" } } });
-    engines.set("agent-4", engine);
-    await host.dispatch(makePid("agent-4"), TEST_MANIFEST, engine, []);
-
-    await drainEngine(engine);
-
-    await mgr.checkpointAgent(agentId("agent-4"), "session-agent-4");
-
-    // Simulate JSON round-trip (like SQLite would do)
-    const recovery = await mgr.recover();
-    expect(recovery.ok).toBe(true);
-    if (recovery.ok) {
-      const cp = recovery.value.checkpoints.get(agentId("agent-4"));
-      const roundTripped = JSON.parse(JSON.stringify(cp?.engineState));
-
-      // Load into a fresh engine and verify
-      const engine2 = createMockStatefulEngine();
-      await engine2.loadState?.(roundTripped);
-      expect(engine2.currentData().turnCount).toBe(1);
-      expect(engine2.currentData().customData).toEqual({ nested: { key: "value" } });
-    }
-
-    mgr.dispose();
-  });
-
-  test("multiple agents checkpoint independently", async () => {
-    const store = createInMemorySessionPersistence({
-      maxCheckpointsPerAgent: 3,
-    }) as NodeSessionStore;
-    const mgr = createCheckpointManager(store, host, (id) => engines.get(id));
-
-    // Dispatch 3 agents with different turn counts
-    for (let i = 0; i < 3; i++) {
-      const id = `multi-${i}`;
-      const engine = createMockStatefulEngine({ engineId: `engine-${i}` });
-      engines.set(id, engine);
-      await host.dispatch(makePid(id), TEST_MANIFEST, engine, []);
-
-      // Each agent runs i+1 turns
-      for (let t = 0; t <= i; t++) {
-        await drainEngine(engine);
-      }
-
-      await mgr.checkpointAgent(agentId(id), `session-${id}`);
-    }
-
-    const recovery = await mgr.recover();
-    expect(recovery.ok).toBe(true);
-    if (recovery.ok) {
-      expect(recovery.value.sessions.length).toBe(3);
-      expect(recovery.value.checkpoints.size).toBe(3);
-
-      // Verify each agent's checkpoint has correct turn count
-      for (let i = 0; i < 3; i++) {
-        const cp = recovery.value.checkpoints.get(agentId(`multi-${i}`));
-        expect(cp).toBeDefined();
-        const data = cp?.engineState.data as { turnCount: number };
-        expect(data.turnCount).toBe(i + 1);
-      }
-    }
-
-    mgr.dispose();
-  });
-
-  test("checkpointAgent fails gracefully for unknown agent", async () => {
-    const store = createInMemorySessionPersistence({
-      maxCheckpointsPerAgent: 3,
-    }) as NodeSessionStore;
-    const mgr = createCheckpointManager(store, host, (id) => engines.get(id));
-
-    const result = await mgr.checkpointAgent(agentId("nonexistent"), "session-x");
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe("INTERNAL");
-    }
-
-    mgr.dispose();
-  });
-
-  test("recovery returns empty plan when no data", async () => {
-    const store = createInMemorySessionPersistence({
-      maxCheckpointsPerAgent: 3,
-    }) as NodeSessionStore;
-    const mgr = createCheckpointManager(store, host, (id) => engines.get(id));
-
-    const result = await mgr.recover();
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.sessions.length).toBe(0);
-      expect(result.value.checkpoints.size).toBe(0);
-    }
-
-    mgr.dispose();
-  });
-
-  test("dispose stops listening to host events", async () => {
-    const store = createInMemorySessionPersistence({
-      maxCheckpointsPerAgent: 3,
-    }) as NodeSessionStore;
-    const mgr = createCheckpointManager(store, host, (id) => engines.get(id));
-
-    mgr.dispose();
-
-    // Dispatch after dispose — should NOT save session
-    const engine = createMockStatefulEngine();
-    engines.set("agent-disposed", engine);
-    await host.dispatch(makePid("agent-disposed"), TEST_MANIFEST, engine, []);
-
-    const result = await mgr.recover();
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.sessions.length).toBe(0);
-    }
-  });
-
-  test("generation counter increments with each checkpoint", async () => {
-    const store = createInMemorySessionPersistence({
-      maxCheckpointsPerAgent: 3,
-    }) as NodeSessionStore;
-    const mgr = createCheckpointManager(store, host, (id) => engines.get(id));
-
-    const engine = createMockStatefulEngine();
-    engines.set("agent-gen", engine);
-    await host.dispatch(makePid("agent-gen"), TEST_MANIFEST, engine, []);
-
-    // Take 3 checkpoints
-    for (let i = 0; i < 3; i++) {
-      await drainEngine(engine);
-      await mgr.checkpointAgent(agentId("agent-gen"), "session-gen");
-    }
-
-    // The latest checkpoint should have generation 3
-    const recovery = await mgr.recover();
-    expect(recovery.ok).toBe(true);
-    if (recovery.ok) {
-      const cp = recovery.value.checkpoints.get(agentId("agent-gen"));
-      expect(cp?.generation).toBe(3);
-    }
-
-    mgr.dispose();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Recovery on startup (Phase 6.3 — createNode().start() calls recoverAgents)
+// Recovery on startup
 // ---------------------------------------------------------------------------
 
 describe("Recovery on startup", () => {
@@ -305,54 +85,31 @@ describe("Recovery on startup", () => {
   });
 
   /**
-   * Seed a session store with dispatched agents and optional checkpoints.
-   * Uses a temporary AgentHost + CheckpointManager to replicate the
-   * dispatch→checkpoint cycle, then disposes the helpers — leaving the
-   * store populated for recovery tests.
+   * Seed a session store with session records.
    */
   async function seedStore(
     store: NodeSessionStore,
     agents: ReadonlyArray<{
       readonly id: string;
       readonly turns: number;
-      readonly checkpoint: boolean;
+      readonly withEngineState: boolean;
     }>,
   ): Promise<void> {
-    const seedHost = createAgentHost({
-      maxAgents: 50,
-      memoryWarningPercent: 80,
-      memoryEvictionPercent: 90,
-      monitorInterval: 30000,
-    });
-    const seedEngines = new Map<string, EngineAdapter>();
-    const seedMgr = createCheckpointManager(store, seedHost, (id) => seedEngines.get(id));
-
     for (const agent of agents) {
-      const engine = createMockStatefulEngine({ engineId: `engine-${agent.id}` });
-      seedEngines.set(agent.id, engine);
-      await seedHost.dispatch(makePid(agent.id), TEST_MANIFEST, engine, []);
-
-      // Run the requested number of turns
-      for (let t = 0; t < agent.turns; t++) {
-        await drainEngine(engine);
-      }
-
-      if (agent.checkpoint) {
-        await seedMgr.checkpointAgent(agentId(agent.id), `session-${agent.id}`);
-      }
+      const record = makeSessionRecord(agent.id, {
+        turns: agent.turns,
+        withEngineState: agent.withEngineState,
+        engineId: `engine-${agent.id}`,
+      });
+      await store.saveSession(record);
     }
-
-    seedMgr.dispose();
-    // Do NOT terminate agents — we want the sessions to remain in the store
   }
 
-  test("full cycle: dispatch → checkpoint → new node → recover → verify state", async () => {
-    const store = createInMemorySessionPersistence({
-      maxCheckpointsPerAgent: 3,
-    }) as NodeSessionStore;
+  test("full cycle: save session with engine state → new node → recover → verify state", async () => {
+    const store = createInMemorySessionPersistence() as NodeSessionStore;
 
-    // Seed: dispatch agent with 3 turns + checkpoint
-    await seedStore(store, [{ id: "recover-1", turns: 3, checkpoint: true }]);
+    // Seed: save session with engine state (3 turns)
+    await seedStore(store, [{ id: "recover-1", turns: 3, withEngineState: true }]);
 
     // Create a new node with recovery
     const recoveredEngines = new Map<
@@ -365,7 +122,7 @@ describe("Recovery on startup", () => {
       { gateway: { url: gateway.url } },
       {
         sessionStore: store,
-        onRecover(session, _checkpoint): RecoveryResult {
+        onRecover(session): RecoveryResult {
           const engine = createMockStatefulEngine({ engineId: `recovered-${session.agentId}` });
           recoveredEngines.set(session.agentId, engine);
           return {
@@ -389,7 +146,7 @@ describe("Recovery on startup", () => {
     expect(agent).toBeDefined();
     expect(agent?.state).toBe("running");
 
-    // Verify engine state was restored (turnCount should be 3 from checkpoint)
+    // Verify engine state was restored (turnCount should be 3 from session record)
     const recoveredEngine = recoveredEngines.get("recover-1");
     expect(recoveredEngine).toBeDefined();
     expect(recoveredEngine?.currentData().turnCount).toBe(3);
@@ -398,18 +155,16 @@ describe("Recovery on startup", () => {
     const recoveryEvents = events.filter((e) => e.type === "agent_recovered");
     expect(recoveryEvents.length).toBe(1);
     expect((recoveryEvents[0]?.data as { agentId: string }).agentId).toBe("recover-1");
-    expect((recoveryEvents[0]?.data as { hadCheckpoint: boolean }).hadCheckpoint).toBe(true);
+    expect((recoveryEvents[0]?.data as { hadEngineState: boolean }).hadEngineState).toBe(true);
 
     await node.stop();
   });
 
-  test("recovery without checkpoint (session-only) dispatches with fresh engine", async () => {
-    const store = createInMemorySessionPersistence({
-      maxCheckpointsPerAgent: 3,
-    }) as NodeSessionStore;
+  test("recovery without engine state dispatches with fresh engine", async () => {
+    const store = createInMemorySessionPersistence() as NodeSessionStore;
 
-    // Seed: dispatch agent WITHOUT checkpoint
-    await seedStore(store, [{ id: "no-cp-agent", turns: 2, checkpoint: false }]);
+    // Seed: save session WITHOUT engine state
+    await seedStore(store, [{ id: "no-state-agent", turns: 2, withEngineState: false }]);
 
     const recoveredEngines = new Map<
       string,
@@ -420,8 +175,7 @@ describe("Recovery on startup", () => {
       { gateway: { url: gateway.url } },
       {
         sessionStore: store,
-        onRecover(session, checkpoint): RecoveryResult {
-          expect(checkpoint).toBeUndefined();
+        onRecover(session): RecoveryResult {
           const engine = createMockStatefulEngine({ engineId: `fresh-${session.agentId}` });
           recoveredEngines.set(session.agentId, engine);
           return {
@@ -440,21 +194,19 @@ describe("Recovery on startup", () => {
 
     // Agent should be running with fresh engine (turnCount 0)
     expect(node.listAgents().length).toBe(1);
-    const recoveredEngine = recoveredEngines.get("no-cp-agent");
+    const recoveredEngine = recoveredEngines.get("no-state-agent");
     expect(recoveredEngine?.currentData().turnCount).toBe(0);
 
     await node.stop();
   });
 
   test("onRecover returns null skips agent", async () => {
-    const store = createInMemorySessionPersistence({
-      maxCheckpointsPerAgent: 3,
-    }) as NodeSessionStore;
+    const store = createInMemorySessionPersistence() as NodeSessionStore;
 
     // Seed: two agents
     await seedStore(store, [
-      { id: "keep-agent", turns: 1, checkpoint: true },
-      { id: "skip-agent", turns: 1, checkpoint: true },
+      { id: "keep-agent", turns: 1, withEngineState: true },
+      { id: "skip-agent", turns: 1, withEngineState: true },
     ]);
 
     const result = createNode(
@@ -486,14 +238,12 @@ describe("Recovery on startup", () => {
   });
 
   test("onRecover throws does not block other agents", async () => {
-    const store = createInMemorySessionPersistence({
-      maxCheckpointsPerAgent: 3,
-    }) as NodeSessionStore;
+    const store = createInMemorySessionPersistence() as NodeSessionStore;
 
     // Seed: two agents
     await seedStore(store, [
-      { id: "crash-agent", turns: 1, checkpoint: true },
-      { id: "ok-agent", turns: 1, checkpoint: true },
+      { id: "crash-agent", turns: 1, withEngineState: true },
+      { id: "ok-agent", turns: 1, withEngineState: true },
     ]);
 
     const events: NodeEvent[] = [];
@@ -536,12 +286,10 @@ describe("Recovery on startup", () => {
   });
 
   test("recovery skipped when onRecover not provided", async () => {
-    const store = createInMemorySessionPersistence({
-      maxCheckpointsPerAgent: 3,
-    }) as NodeSessionStore;
+    const store = createInMemorySessionPersistence() as NodeSessionStore;
 
-    // Seed: dispatch agent with checkpoint
-    await seedStore(store, [{ id: "orphan-agent", turns: 2, checkpoint: true }]);
+    // Seed: save session with engine state
+    await seedStore(store, [{ id: "orphan-agent", turns: 2, withEngineState: true }]);
 
     // Create node with sessionStore but NO onRecover
     const result = createNode({ gateway: { url: gateway.url } }, { sessionStore: store });
@@ -555,6 +303,54 @@ describe("Recovery on startup", () => {
     // No agents should be recovered
     expect(node.listAgents().length).toBe(0);
     expect(node.state()).toBe("connected");
+
+    await node.stop();
+  });
+
+  test("multiple agents recover independently with engine state", async () => {
+    const store = createInMemorySessionPersistence() as NodeSessionStore;
+
+    // Seed: 3 agents with different turn counts
+    await seedStore(store, [
+      { id: "multi-0", turns: 1, withEngineState: true },
+      { id: "multi-1", turns: 2, withEngineState: true },
+      { id: "multi-2", turns: 3, withEngineState: true },
+    ]);
+
+    const recoveredEngines = new Map<
+      string,
+      EngineAdapter & { readonly currentData: () => { readonly turnCount: number } }
+    >();
+
+    const result = createNode(
+      { gateway: { url: gateway.url } },
+      {
+        sessionStore: store,
+        onRecover(session): RecoveryResult {
+          const engine = createMockStatefulEngine({ engineId: `recovered-${session.agentId}` });
+          recoveredEngines.set(session.agentId, engine);
+          return {
+            pid: makePid(session.agentId),
+            engine,
+          };
+        },
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const node = result.value;
+    await node.start();
+
+    expect(node.listAgents().length).toBe(3);
+
+    // Verify each agent's engine state was restored
+    for (let i = 0; i < 3; i++) {
+      const recoveredEngine = recoveredEngines.get(`multi-${i}`);
+      expect(recoveredEngine).toBeDefined();
+      expect(recoveredEngine?.currentData().turnCount).toBe(i + 1);
+    }
 
     await node.stop();
   });
@@ -575,7 +371,7 @@ describe("Outbound frame persistence and replay", () => {
     gateway.close();
   });
 
-  function makePendingFrame(overrides: Partial<NodePendingFrame>): NodePendingFrame {
+  function makePendingFrame(overrides: Partial<PendingFrame>): PendingFrame {
     return {
       frameId: "pf-1",
       sessionId: "s-1",
@@ -590,38 +386,20 @@ describe("Outbound frame persistence and replay", () => {
   }
 
   test("seeded pending frames replayed to gateway on recovery", async () => {
-    const store = createInMemorySessionPersistence({
-      maxCheckpointsPerAgent: 3,
-    }) as NodeSessionStore;
+    const store = createInMemorySessionPersistence() as NodeSessionStore;
 
-    // Seed: dispatch agent with checkpoint
-    const seedHost = createAgentHost({
-      maxAgents: 50,
-      memoryWarningPercent: 80,
-      memoryEvictionPercent: 90,
-      monitorInterval: 30000,
-    });
-    const seedEngines = new Map<string, EngineAdapter>();
-    const seedMgr = createCheckpointManager(store, seedHost, (id) => seedEngines.get(id));
+    const sid = "session-replay-agent";
 
-    const engine = createMockStatefulEngine({ engineId: "engine-replay" });
-    seedEngines.set("replay-agent", engine);
-    await seedHost.dispatch(makePid("replay-agent"), TEST_MANIFEST, engine, []);
-    await drainEngine(engine);
+    // Seed: save session record with engine state
+    await store.saveSession(
+      makeSessionRecord("replay-agent", { withEngineState: true, engineId: "engine-replay" }),
+    );
 
-    // Get the auto-generated session ID from the checkpoint manager
-    const realSessionId = seedMgr.getSessionId("replay-agent");
-    expect(realSessionId).toBeDefined();
-    if (realSessionId === undefined) return;
-
-    await seedMgr.checkpointAgent(agentId("replay-agent"), realSessionId);
-    seedMgr.dispose();
-
-    // Manually seed a pending frame using the real session ID
+    // Seed a pending frame using the session ID
     await store.savePendingFrame(
       makePendingFrame({
         frameId: "pf-replay-1",
-        sessionId: realSessionId,
+        sessionId: sid,
         agentId: agentId("replay-agent"),
         frameType: "agent:message",
         payload: { text: "persisted-msg" },
@@ -668,9 +446,7 @@ describe("Outbound frame persistence and replay", () => {
   });
 
   test("duplicate inbound frames are dropped", async () => {
-    const store = createInMemorySessionPersistence({
-      maxCheckpointsPerAgent: 3,
-    }) as NodeSessionStore;
+    const store = createInMemorySessionPersistence() as NodeSessionStore;
 
     const result = createNode({ gateway: { url: gateway.url } }, { sessionStore: store });
 
@@ -703,9 +479,7 @@ describe("Outbound frame persistence and replay", () => {
     // The agent:terminate handler tries host.terminate() which may fail
     // (no such agent), but the key test is: the frame should only be
     // processed once. We verify by checking that we don't get two
-    // terminate attempts. Since the agent doesn't exist, the handler
-    // is a no-op, but the dedup layer should prevent the second call entirely.
-    // The fact that the test completes without double-processing is the assertion.
+    // terminate attempts.
 
     await node.stop();
   });

@@ -3,17 +3,17 @@
  */
 
 import { describe, expect, mock, test } from "bun:test";
-import type { KoiError, Result } from "@koi/core";
+import type { KoiError, PendingFrame, Result } from "@koi/core";
 import { agentId, sessionId } from "@koi/core";
 import type { DeliveryManagerDeps } from "./delivery-manager.js";
 import { createDeliveryManager } from "./delivery-manager.js";
-import type { NodeEvent, NodeFrame, NodePendingFrame, NodeSessionStore } from "./types.js";
+import type { NodeEvent, NodeFrame, NodeSessionStore } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makePendingFrame(overrides: Partial<NodePendingFrame> = {}): NodePendingFrame {
+function makePendingFrame(overrides: Partial<PendingFrame> = {}): PendingFrame {
   return {
     frameId: "f1",
     sessionId: sessionId("s1"),
@@ -31,15 +31,13 @@ function ok(): Result<void, KoiError> {
   return { ok: true, value: undefined };
 }
 
-function createMockStore(frames: readonly NodePendingFrame[] = []): NodeSessionStore {
+function createMockStore(frames: readonly PendingFrame[] = []): NodeSessionStore {
   const storedFrames = [...frames];
 
   return {
     saveSession: mock(() => ok()),
     removeSession: mock(() => ok()),
-    saveCheckpoint: mock(() => ok()),
-    loadLatestCheckpoint: mock(() => ({ ok: true as const, value: undefined })),
-    savePendingFrame: mock((frame: NodePendingFrame) => {
+    savePendingFrame: mock((frame: PendingFrame) => {
       const idx = storedFrames.findIndex((f) => f.frameId === frame.frameId);
       if (idx >= 0) {
         storedFrames[idx] = frame;
@@ -60,14 +58,14 @@ function createMockStore(frames: readonly NodePendingFrame[] = []): NodeSessionS
     }),
     recover: mock(() => ({
       ok: true as const,
-      value: { sessions: [], checkpoints: new Map(), pendingFrames: new Map(), skipped: [] },
+      value: { sessions: [], pendingFrames: new Map(), skipped: [] },
     })),
     close: mock(() => {}),
   };
 }
 
 function createMockDeps(
-  frames: readonly NodePendingFrame[] = [],
+  frames: readonly PendingFrame[] = [],
   connected = true,
 ): {
   readonly deps: DeliveryManagerDeps;
@@ -153,7 +151,7 @@ describe("DeliveryManager", () => {
     // Should have saved with incremented retryCount
     expect(store.savePendingFrame).toHaveBeenCalled();
     const savedCall = (store.savePendingFrame as ReturnType<typeof mock>).mock.calls[0];
-    const savedFrame = savedCall?.[0] as NodePendingFrame | undefined;
+    const savedFrame = savedCall?.[0] as PendingFrame | undefined;
     expect(savedFrame?.retryCount).toBe(1);
 
     // Should NOT have sent (transport disconnected)
@@ -205,7 +203,7 @@ describe("DeliveryManager", () => {
 
     // Simulate slow sends: each sendFrame burns 30ms
     let sendCount = 0;
-    (deps as { sendFrame: (frame: NodePendingFrame) => void }).sendFrame = () => {
+    (deps as { sendFrame: (frame: PendingFrame) => void }).sendFrame = () => {
       sendCount++;
       const start = Date.now();
       // Busy-wait to simulate work (bun:test doesn't support fake timers for Date.now)
@@ -372,7 +370,7 @@ describe("DeliveryManager.enqueueSend", () => {
     dm.dispose();
 
     const savedFrame = (store.savePendingFrame as ReturnType<typeof mock>).mock.calls[0]?.[0] as
-      | NodePendingFrame
+      | PendingFrame
       | undefined;
     expect(savedFrame?.frameId).toBe("pf-abc-123");
   });
@@ -385,7 +383,7 @@ describe("DeliveryManager.enqueueSend", () => {
     dm.dispose();
 
     const savedFrame = (store.savePendingFrame as ReturnType<typeof mock>).mock.calls[0]?.[0] as
-      | NodePendingFrame
+      | PendingFrame
       | undefined;
     expect(savedFrame?.ttl).toBe(30_000);
   });

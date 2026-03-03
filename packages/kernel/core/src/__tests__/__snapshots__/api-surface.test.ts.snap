@@ -146,7 +146,7 @@ interface SnapshotChainStore<T> {
 /**
  * AgentSnapshot — per-agent state capture for time travel, fork, and recovery.
  *
- * Subsumes SessionCheckpoint as the single source of truth for agent state.
+ * Single source of truth for agent state snapshots.
  * Used as the payload type \`T\` in \`SnapshotChainStore<AgentSnapshot>\`.
  */
 
@@ -1440,24 +1440,6 @@ interface ScopeEnforcer {
  * Implementation-specific config (dbPath, durability) stays in L2.
  */
 
-interface SessionCheckpoint {
-    /** Unique checkpoint ID (e.g., \`\${agentId}:\${Date.now()}\`). */
-    readonly id: string;
-    /** Agent this checkpoint belongs to. */
-    readonly agentId: AgentId;
-    /** Gateway session this agent was part of. */
-    readonly sessionId: SessionId;
-    /** Opaque engine state from EngineAdapter.saveState(). */
-    readonly engineState: EngineState;
-    /** Lifecycle phase at checkpoint time. */
-    readonly processState: ProcessState;
-    /** CAS generation counter from AgentStatus. */
-    readonly generation: number;
-    /** Arbitrary metadata (e.g., trigger reason). */
-    readonly metadata: Readonly<Record<string, unknown>>;
-    /** Unix timestamp ms when this checkpoint was created. */
-    readonly createdAt: number;
-}
 interface SessionRecord {
     /** Gateway session ID. */
     readonly sessionId: SessionId;
@@ -1471,8 +1453,10 @@ interface SessionRecord {
     readonly remoteSeq: number;
     /** Unix timestamp ms when session was created. */
     readonly connectedAt: number;
-    /** Unix timestamp ms of the most recent checkpoint. */
-    readonly lastCheckpointAt: number;
+    /** Unix timestamp ms of the most recent persistence event. */
+    readonly lastPersistedAt: number;
+    /** Opaque engine state for fast stateful recovery. */
+    readonly lastEngineState?: EngineState | undefined;
     /** Arbitrary metadata. */
     readonly metadata: Readonly<Record<string, unknown>>;
 }
@@ -1498,8 +1482,8 @@ interface PendingFrame {
 }
 interface SkippedRecoveryEntry {
     /** Which table the corrupt row came from. */
-    readonly source: "session" | "checkpoint" | "pending_frame";
-    /** Row identifier (sessionId, checkpoint id, or frameId). */
+    readonly source: "session" | "pending_frame";
+    /** Row identifier (sessionId or frameId). */
     readonly id: string;
     /** Human-readable error description. */
     readonly error: string;
@@ -1507,8 +1491,6 @@ interface SkippedRecoveryEntry {
 interface RecoveryPlan {
     /** All session records found in the store. */
     readonly sessions: readonly SessionRecord[];
-    /** Latest checkpoint per agent (keyed by agentId string). */
-    readonly checkpoints: ReadonlyMap<string, SessionCheckpoint>;
     /** Pending outbound frames per session (keyed by sessionId). */
     readonly pendingFrames: ReadonlyMap<string, readonly PendingFrame[]>;
     /** Rows that could not be deserialized (corrupt JSON, invalid state, etc.). */
@@ -1531,16 +1513,10 @@ interface SessionPersistence {
     readonly saveSession: (record: SessionRecord) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
     /** Load a session record by session ID. NOT_FOUND if missing. */
     readonly loadSession: (sessionId: string) => Result<SessionRecord, KoiError> | Promise<Result<SessionRecord, KoiError>>;
-    /** Remove a session record and its checkpoints. NOT_FOUND if missing. */
+    /** Remove a session record and its associated data. NOT_FOUND if missing. */
     readonly removeSession: (sessionId: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
     /** List session records matching an optional filter. */
     readonly listSessions: (filter?: SessionFilter) => Result<readonly SessionRecord[], KoiError> | Promise<Result<readonly SessionRecord[], KoiError>>;
-    /** Save a checkpoint. Prunes oldest if over retention limit. */
-    readonly saveCheckpoint: (checkpoint: SessionCheckpoint) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
-    /** Load the most recent checkpoint for an agent. Returns undefined if none. */
-    readonly loadLatestCheckpoint: (agentId: AgentId) => Result<SessionCheckpoint | undefined, KoiError> | Promise<Result<SessionCheckpoint | undefined, KoiError>>;
-    /** List all checkpoints for an agent, newest first. */
-    readonly listCheckpoints: (agentId: AgentId) => Result<readonly SessionCheckpoint[], KoiError> | Promise<Result<readonly SessionCheckpoint[], KoiError>>;
     /** Save a pending outbound frame for replay after reconnection. */
     readonly savePendingFrame: (frame: PendingFrame) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
     /** Load all pending frames for a session, ordered by orderIndex. */
@@ -1551,9 +1527,8 @@ interface SessionPersistence {
     readonly removePendingFrame: (frameId: string) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
     /**
      * Build a full recovery plan from all stored data.
-     * Returns all session records, the latest checkpoint per agent,
-     * and pending frames per session. Corrupt rows are skipped and
-     * reported in the \`skipped\` field.
+     * Returns all session records and pending frames per session.
+     * Corrupt rows are skipped and reported in the \`skipped\` field.
      */
     readonly recover: () => Result<RecoveryPlan, KoiError> | Promise<Result<RecoveryPlan, KoiError>>;
     /** Close the store and release resources. */
@@ -2000,7 +1975,7 @@ declare function isProcessState(value: string): value is ProcessState;
  */
 declare function validateNonEmpty(value: string, name: string): Result<void, KoiError>;
 
-export { ALL_CATALOG_SOURCES, ALL_CHANGE_TARGETS, type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentGroupId, AgentId, AgentManifest, type AgentPatchedEvent, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickKind, BrickRef, type BundleId, type CapabilityDenyReason, type CapabilityId, CapabilityProof, type CapabilityRegistry, type CapabilityScope, type CapabilityToken, type CapabilityVerifier, type CapabilityVerifyResult, type CapacityReport, type CatalogEntry, type CatalogPage, type CatalogQuery, type CatalogReader, type CatalogSource, type CatalogSourceError, type ChainCompactor, type ChainId, type ChangeKind, type ChangeTarget, type CheckpointPolicy, type CompensatingOp, ComponentProvider, type ContextSummary, type ContextSummaryRef, DEFAULT_CATALOG_SEARCH_LIMIT, DEFAULT_CHECKPOINT_POLICY, DEFAULT_FORGE_BUDGET, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_TASK_BOARD_CONFIG, DEFAULT_THREAD_PRUNING_POLICY, DelegationDenyReason, type DiagnosticItem, type DiagnosticProvider, type DiagnosticRange, type DiagnosticSeverity, EXTENSION_PRIORITY, EngineState, type EventCursor, type ExaptationKind, type ExaptationSignal, type FileOpKind, type FileOpRecord, type ForgeBudget, type ForgeDemandSignal, type ForgeTrigger, type ForkRef, type GateRequirement, type GuardContext, type HarnessId, type HarnessMetrics, type HarnessPhase, type HarnessSnapshot, type HarnessSnapshotStore, type HarnessStatus, type HarnessThreadSnapshot, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, type KeyArtifact, KoiError, KoiMiddleware, type MessageThreadSnapshot, type NodeCapability, type NodeId, PROPOSAL_GATE_REQUIREMENTS, PatchableRegistryFields, type PendingFrame, PermissionConfig, ProcessState, type Proposal, type ProposalEvent, type ProposalGate, type ProposalId, type ProposalInput, type ProposalResult, type ProposalStatus, type ProposalUnsubscribe, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, Result, type ReviewDecision, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type ServiceProviderConfig, type SessionCheckpoint, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SessionTranscript, type SingleToolProviderConfig, SkillComponent, type SkippedRecoveryEntry, type SkippedTranscriptEntry, type SnapshotChainStore, type SnapshotNode, type SpawnFn, type SpawnRequest, type SpawnResult, SubsystemToken, type TaskBoard, type TaskBoardConfig, type TaskBoardEvent, type TaskBoardSnapshot, type TaskItem, type TaskItemId, type TaskItemInput, type TaskItemPatch, type TaskItemStatus, type TaskResult, type ThreadId, type ThreadMessage, type ThreadMessageId, type ThreadMessageRole, type ThreadMetrics, type ThreadPruningPolicy, type ThreadSnapshot, type ThreadSnapshotStore, type ThreadStore, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolFailureRecord, type ToolHealthMetrics, type ToolHealthSnapshot, type ToolHealthState, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TranscriptEntry, type TranscriptEntryId, type TranscriptEntryRole, type TranscriptLoadResult, type TranscriptPage, type TranscriptPageOptions, type TransitionContext, TransitionReason, TrustTier, type TurnTrace, type UsagePurposeObservation, type ValidationDiagnostic, type ValidationResult, type VerifierCache, type VerifyContext, bundleId, capabilityId, chainId, conflict, createServiceProvider, createSingleToolProvider, evolveRegistryEntry, external, harnessId, internal, isAgentStateEvent, isCapabilityToken, isHarnessSnapshot, isMessageSnapshot, isProcessState, isToolCallPayload, nodeId, notFound, permission, proposalId, rateLimit, staleRef, taskItemId, threadId, threadMessageId, timeout, transcriptEntryId, validateNonEmpty, validation };
+export { ALL_CATALOG_SOURCES, ALL_CHANGE_TARGETS, type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentGroupId, AgentId, AgentManifest, type AgentPatchedEvent, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickKind, BrickRef, type BundleId, type CapabilityDenyReason, type CapabilityId, CapabilityProof, type CapabilityRegistry, type CapabilityScope, type CapabilityToken, type CapabilityVerifier, type CapabilityVerifyResult, type CapacityReport, type CatalogEntry, type CatalogPage, type CatalogQuery, type CatalogReader, type CatalogSource, type CatalogSourceError, type ChainCompactor, type ChainId, type ChangeKind, type ChangeTarget, type CheckpointPolicy, type CompensatingOp, ComponentProvider, type ContextSummary, type ContextSummaryRef, DEFAULT_CATALOG_SEARCH_LIMIT, DEFAULT_CHECKPOINT_POLICY, DEFAULT_FORGE_BUDGET, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_TASK_BOARD_CONFIG, DEFAULT_THREAD_PRUNING_POLICY, DelegationDenyReason, type DiagnosticItem, type DiagnosticProvider, type DiagnosticRange, type DiagnosticSeverity, EXTENSION_PRIORITY, EngineState, type EventCursor, type ExaptationKind, type ExaptationSignal, type FileOpKind, type FileOpRecord, type ForgeBudget, type ForgeDemandSignal, type ForgeTrigger, type ForkRef, type GateRequirement, type GuardContext, type HarnessId, type HarnessMetrics, type HarnessPhase, type HarnessSnapshot, type HarnessSnapshotStore, type HarnessStatus, type HarnessThreadSnapshot, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, type KeyArtifact, KoiError, KoiMiddleware, type MessageThreadSnapshot, type NodeCapability, type NodeId, PROPOSAL_GATE_REQUIREMENTS, PatchableRegistryFields, type PendingFrame, PermissionConfig, ProcessState, type Proposal, type ProposalEvent, type ProposalGate, type ProposalId, type ProposalInput, type ProposalResult, type ProposalStatus, type ProposalUnsubscribe, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, Result, type ReviewDecision, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type ServiceProviderConfig, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SessionTranscript, type SingleToolProviderConfig, SkillComponent, type SkippedRecoveryEntry, type SkippedTranscriptEntry, type SnapshotChainStore, type SnapshotNode, type SpawnFn, type SpawnRequest, type SpawnResult, SubsystemToken, type TaskBoard, type TaskBoardConfig, type TaskBoardEvent, type TaskBoardSnapshot, type TaskItem, type TaskItemId, type TaskItemInput, type TaskItemPatch, type TaskItemStatus, type TaskResult, type ThreadId, type ThreadMessage, type ThreadMessageId, type ThreadMessageRole, type ThreadMetrics, type ThreadPruningPolicy, type ThreadSnapshot, type ThreadSnapshotStore, type ThreadStore, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolFailureRecord, type ToolHealthMetrics, type ToolHealthSnapshot, type ToolHealthState, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TranscriptEntry, type TranscriptEntryId, type TranscriptEntryRole, type TranscriptLoadResult, type TranscriptPage, type TranscriptPageOptions, type TransitionContext, TransitionReason, TrustTier, type TurnTrace, type UsagePurposeObservation, type ValidationDiagnostic, type ValidationResult, type VerifierCache, type VerifyContext, bundleId, capabilityId, chainId, conflict, createServiceProvider, createSingleToolProvider, evolveRegistryEntry, external, harnessId, internal, isAgentStateEvent, isCapabilityToken, isHarnessSnapshot, isMessageSnapshot, isProcessState, isToolCallPayload, nodeId, notFound, permission, proposalId, rateLimit, staleRef, taskItemId, threadId, threadMessageId, timeout, transcriptEntryId, validateNonEmpty, validation };
 "
 `;
 

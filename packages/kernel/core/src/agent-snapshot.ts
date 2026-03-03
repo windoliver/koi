@@ -1,7 +1,7 @@
 /**
  * AgentSnapshot — per-agent state capture for time travel, fork, and recovery.
  *
- * Subsumes SessionCheckpoint as the single source of truth for agent state.
+ * Single source of truth for agent state snapshots.
  * Used as the payload type `T` in `SnapshotChainStore<AgentSnapshot>`.
  */
 

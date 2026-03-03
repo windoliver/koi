@@ -12,12 +12,8 @@ import type {
   AdvertisedTool,
   CapacityReport,
   KoiError,
-  PendingFrame,
-  RecoveryPlan,
   Result,
-  SessionCheckpoint,
   SessionPersistence,
-  SessionRecord,
 } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core";
 
@@ -345,21 +341,8 @@ export interface NodeEvent {
 export type NodeEventListener = (event: NodeEvent) => void;
 
 // ---------------------------------------------------------------------------
-// Session persistence types — aliases to L0 (@koi/core) contracts.
-// Previously duplicated here; now single source of truth in L0.
+// Session persistence types
 // ---------------------------------------------------------------------------
-
-/** @deprecated Use `SessionRecord` from `@koi/core` directly. */
-export type NodeSessionRecord = SessionRecord;
-
-/** @deprecated Use `SessionCheckpoint` from `@koi/core` directly. */
-export type NodeCheckpoint = SessionCheckpoint;
-
-/** @deprecated Use `PendingFrame` from `@koi/core` directly. */
-export type NodePendingFrame = PendingFrame;
-
-/** @deprecated Use `RecoveryPlan` from `@koi/core` directly. */
-export type NodeRecoveryPlan = RecoveryPlan;
 
 /**
  * Session persistence interface accepted by the node for crash recovery.
@@ -372,8 +355,6 @@ export type NodeSessionStore = Pick<
   SessionPersistence,
   | "saveSession"
   | "removeSession"
-  | "saveCheckpoint"
-  | "loadLatestCheckpoint"
   | "savePendingFrame"
   | "loadPendingFrames"
   | "clearPendingFrames"

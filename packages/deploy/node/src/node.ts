@@ -15,7 +15,6 @@ import type {
   ProcessId,
   Result,
   ScopeChecker,
-  SessionCheckpoint,
   SessionRecord,
   SessionTranscript,
   TranscriptEntry,
@@ -26,9 +25,6 @@ import { createAgentHost } from "./agent/host.js";
 import type { StatusReporter } from "./agent/status.js";
 import { createStatusReporter } from "./agent/status.js";
 import { createAgentInbox, isAgentMessagePayload, MAX_INBOX_DEPTH } from "./agent-inbox.js";
-import type { CheckpointManager } from "./checkpoint.js";
-import { createCheckpointManager } from "./checkpoint.js";
-import { createCheckpointingEngine } from "./checkpointing-engine.js";
 import { generateCorrelationId } from "./connection/protocol.js";
 import { createTransport } from "./connection/transport.js";
 import type { DeliveryManager } from "./delivery-manager.js";
@@ -59,8 +55,6 @@ import type {
   NodeState,
 } from "./types.js";
 import { parseNodeConfig } from "./types.js";
-import type { WriteQueue } from "./write-queue.js";
-import { createWriteQueue } from "./write-queue.js";
 
 // ---------------------------------------------------------------------------
 // KoiNode handle — discriminated union by mode
@@ -84,7 +78,7 @@ interface KoiNodeBase {
   readonly toolResolver: LocalResolver;
 }
 
-/** Full mode — hosts agents, dispatches engines, manages checkpoints. */
+/** Full mode — hosts agents, dispatches engines, persists sessions. */
 export interface FullKoiNode extends KoiNodeBase {
   readonly mode: "full";
   /** Dispatch a new agent onto this node. */
@@ -108,8 +102,6 @@ export interface FullKoiNode extends KoiNodeBase {
   ) => readonly import("./agent-inbox.js").QueuedAgentMessage[];
   /** Number of queued messages for a given agent. */
   readonly inboxDepth: (agentId: string) => number;
-  /** Checkpoint manager (available when sessionStore is provided). */
-  readonly checkpoint: CheckpointManager | undefined;
 }
 
 /** Thin mode — exposes tools only, no engine execution. */
@@ -136,7 +128,7 @@ export interface RecoveryResult {
 
 /** Optional dependencies injected into the node. */
 export interface NodeDeps {
-  /** Session persistence for crash recovery. When provided, enables checkpointing. */
+  /** Session persistence for crash recovery. */
   readonly sessionStore?: NodeSessionStore;
   /** Transcript store for durable conversation logging. When provided, enables auto-append. */
   readonly transcript?: SessionTranscript;
@@ -146,7 +138,6 @@ export interface NodeDeps {
    */
   readonly onRecover?: (
     session: SessionRecord,
-    checkpoint: SessionCheckpoint | undefined,
     /** Transcript entries for this session, if transcript store is configured. */
     transcriptEntries?: readonly TranscriptEntry[],
   ) => RecoveryResult | null | Promise<RecoveryResult | null>;
@@ -399,16 +390,8 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
     const host: AgentHost = createAgentHost(config.resources);
     const monitor = createMemoryMonitor(config.resources, host, emit);
 
-    const writeQueue: WriteQueue | undefined =
-      deps?.sessionStore !== undefined ? createWriteQueue(deps.sessionStore) : undefined;
-
-    const checkpointMgr: CheckpointManager | undefined =
-      deps?.sessionStore !== undefined
-        ? createCheckpointManager(deps.sessionStore, host, (id) => engines.get(id), {
-            frameCounters,
-            ...(writeQueue !== undefined ? { writeQueue } : {}),
-          })
-        : undefined;
+    // sessionId → agentId mapping for delivery routing
+    const sessionByAgent = new Map<string, string>();
 
     const deliveryMgr: DeliveryManager | undefined =
       deps?.sessionStore !== undefined
@@ -448,13 +431,12 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
       }
       if (
         deliveryMgr !== undefined &&
-        checkpointMgr !== undefined &&
         frame.agentId.length > 0 &&
         PERSISTENT_FRAME_KINDS.has(frame.kind)
       ) {
-        const sessionId = checkpointMgr.getSessionId(frame.agentId);
-        if (sessionId !== undefined) {
-          deliveryMgr.enqueueSend(frame, sessionId).catch((e: unknown) => {
+        const sid = sessionByAgent.get(frame.agentId);
+        if (sid !== undefined) {
+          deliveryMgr.enqueueSend(frame, sid).catch((e: unknown) => {
             emit("agent_crashed", {
               reason: "enqueueSend failed",
               agentId: frame.agentId,
@@ -480,17 +462,13 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
 
     // Reconnect replay for full mode
     const unsubReconnect = transport.onEvent((event) => {
-      if (
-        event.type === "reconnected" &&
-        deliveryMgr !== undefined &&
-        checkpointMgr !== undefined
-      ) {
+      if (event.type === "reconnected" && deliveryMgr !== undefined) {
         void (async () => {
           try {
             for (const agent of host.list()) {
-              const sessionId = checkpointMgr.getSessionId(agent.pid.id);
-              if (sessionId !== undefined) {
-                await deliveryMgr.replayPendingFrames(sessionId);
+              const sid = sessionByAgent.get(agent.pid.id);
+              if (sid !== undefined) {
+                await deliveryMgr.replayPendingFrames(sid);
               }
             }
           } catch (e: unknown) {
@@ -599,9 +577,9 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
 
     async function recoverAgents(
       onRecover: NonNullable<NodeDeps["onRecover"]>,
-      mgr: CheckpointManager,
+      store: NodeSessionStore,
     ): Promise<void> {
-      const planResult = await mgr.recover();
+      const planResult = await store.recover();
       if (!planResult.ok) {
         emit("agent_crashed", {
           reason: "Failed to load recovery plan",
@@ -610,7 +588,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
         return;
       }
 
-      const { sessions, checkpoints, pendingFrames } = planResult.value;
+      const { sessions, pendingFrames } = planResult.value;
 
       for (const session of sessions) {
         try {
@@ -630,13 +608,13 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
           }
 
           frameCounters.restore(session.agentId, session.seq, session.remoteSeq);
-          const checkpoint = checkpoints.get(session.agentId);
-          const result = await onRecover(session, checkpoint, transcriptEntries);
+          const result = await onRecover(session, transcriptEntries);
 
           if (result === null) continue;
 
-          if (checkpoint !== undefined && result.engine.loadState !== undefined) {
-            await result.engine.loadState(checkpoint.engineState);
+          // Restore engine state from session record if available
+          if (session.lastEngineState !== undefined && result.engine.loadState !== undefined) {
+            await result.engine.loadState(session.lastEngineState);
           }
 
           const dispatchResult = await host.dispatch(
@@ -648,13 +626,14 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
 
           if (dispatchResult.ok) {
             engines.set(result.pid.id, result.engine);
+            sessionByAgent.set(result.pid.id, session.sessionId);
             if (deliveryMgr !== undefined && pendingFrames.has(session.sessionId)) {
               await deliveryMgr.replayPendingFrames(session.sessionId);
             }
             emit("agent_recovered", {
               agentId: result.pid.id,
               sessionId: session.sessionId,
-              hadCheckpoint: checkpoint !== undefined,
+              hadEngineState: session.lastEngineState !== undefined,
             });
           } else {
             emit("agent_crashed", {
@@ -724,8 +703,8 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
           throw new Error("Failed to connect to Gateway", { cause: connectResult.reason });
         }
 
-        if (checkpointMgr !== undefined && deps?.onRecover !== undefined) {
-          await recoverAgents(deps.onRecover, checkpointMgr);
+        if (deps?.sessionStore !== undefined && deps?.onRecover !== undefined) {
+          await recoverAgents(deps.onRecover, deps.sessionStore);
         }
 
         currentState = "connected";
@@ -749,10 +728,6 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
             },
             async onCleanup() {
               deliveryMgr?.dispose();
-              if (writeQueue !== undefined) {
-                await writeQueue.dispose();
-              }
-              checkpointMgr?.dispose();
               statusReporter.stop();
               monitor.stop();
               unsubTransport();
@@ -776,10 +751,6 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
           shutdown.uninstall();
         } else {
           deliveryMgr?.dispose();
-          if (writeQueue !== undefined) {
-            await writeQueue.dispose();
-          }
-          checkpointMgr?.dispose();
           statusReporter.stop();
           monitor.stop();
           unsubTransport();
@@ -806,11 +777,11 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
           };
         }
 
-        const existingSessionId = checkpointMgr?.getSessionId(pid.id);
+        const existingSessionId = sessionByAgent.get(pid.id);
         const sid = existingSessionId ?? `session-${pid.id}-${String(Date.now())}`;
 
-        // Wrap with transcript decorator (inner), then checkpoint (outer)
-        const transcriptEngine =
+        // Wrap with transcript decorator if transcript store is available
+        const effectiveEngine =
           deps?.transcript !== undefined
             ? createTranscriptingEngine(engine, {
                 sessionId: toSessionId(sid),
@@ -818,20 +789,10 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
               })
             : engine;
 
-        const effectiveEngine =
-          checkpointMgr !== undefined
-            ? createCheckpointingEngine(transcriptEngine, {
-                agentId: pid.id,
-                sessionId: sid,
-                onCheckpoint: async (agentId, sessionId) => {
-                  await checkpointMgr.checkpointAgent(agentId, sessionId);
-                },
-              })
-            : transcriptEngine;
-
         const result = await host.dispatch(pid, manifest, effectiveEngine, providers);
         if (result.ok) {
           engines.set(pid.id, effectiveEngine);
+          sessionByAgent.set(pid.id, sid);
         }
         return result;
       },
@@ -840,6 +801,7 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
         const result = host.terminate(agentId);
         if (result.ok) {
           engines.delete(agentId);
+          sessionByAgent.delete(agentId);
           frameCounters.remove(agentId);
           inbox.clear(agentId);
         }
@@ -868,7 +830,6 @@ export function createNode(rawConfig: unknown, deps?: NodeDeps): Result<KoiNode,
 
       onEvent,
       toolResolver: resolver,
-      checkpoint: checkpointMgr,
     };
 
     return { ok: true, value: node };

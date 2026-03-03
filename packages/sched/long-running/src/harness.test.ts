@@ -4,19 +4,18 @@
 
 import { beforeEach, describe, expect, test } from "bun:test";
 import type {
-  AgentId,
   EngineMetrics,
   EngineState,
   HarnessSnapshotStore,
   KoiError,
-  SessionCheckpoint,
   SessionPersistence,
+  SessionRecord,
   TaskBoardSnapshot,
   TaskResult,
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
-import { agentId, chainId, harnessId, sessionId, taskItemId } from "@koi/core";
+import { agentId, chainId, harnessId, taskItemId } from "@koi/core";
 import { createInMemorySnapshotChainStore } from "@koi/snapshot-chain-store";
 import {
   assertErr,
@@ -79,39 +78,46 @@ function createTaskResult(taskId: string): TaskResult {
 // ---------------------------------------------------------------------------
 
 function createMockSessionPersistence(): SessionPersistence & {
-  readonly savedCheckpoints: SessionCheckpoint[];
-  setLatestCheckpoint: (cp: SessionCheckpoint | undefined) => void;
+  readonly savedSessions: SessionRecord[];
+  setSessionForLoad: (record: SessionRecord | undefined) => void;
 } {
-  const savedCheckpoints: SessionCheckpoint[] = [];
-  let latestCheckpoint: SessionCheckpoint | undefined;
+  const savedSessions: SessionRecord[] = [];
+  let sessionForLoad: SessionRecord | undefined;
 
   return {
-    savedCheckpoints,
-    setLatestCheckpoint(cp: SessionCheckpoint | undefined): void {
-      latestCheckpoint = cp;
+    savedSessions,
+    setSessionForLoad(record: SessionRecord | undefined): void {
+      sessionForLoad = record;
     },
-    saveSession: () => ({ ok: true as const, value: undefined }),
-    loadSession: () => ({
-      ok: false as const,
-      error: { code: "NOT_FOUND" as const, message: "Not found", retryable: false },
-    }),
-    removeSession: () => ({ ok: true as const, value: undefined }),
-    listSessions: () => ({ ok: true as const, value: [] }),
-    saveCheckpoint(cp: SessionCheckpoint) {
-      savedCheckpoints.push(cp);
+    saveSession(record: SessionRecord) {
+      savedSessions.push(record);
       return { ok: true as const, value: undefined };
     },
-    loadLatestCheckpoint(_aid: AgentId) {
-      return { ok: true as const, value: latestCheckpoint };
+    loadSession(sid: string) {
+      if (sessionForLoad !== undefined && sessionForLoad.sessionId === sid) {
+        return { ok: true as const, value: sessionForLoad };
+      }
+      // Also check savedSessions (most recent first)
+      for (let i = savedSessions.length - 1; i >= 0; i--) {
+        const s = savedSessions[i];
+        if (s !== undefined && s.sessionId === sid) {
+          return { ok: true as const, value: s };
+        }
+      }
+      return {
+        ok: false as const,
+        error: { code: "NOT_FOUND" as const, message: "Not found", retryable: false },
+      };
     },
-    listCheckpoints: () => ({ ok: true as const, value: [] }),
+    removeSession: () => ({ ok: true as const, value: undefined }),
+    listSessions: () => ({ ok: true as const, value: [] }),
     savePendingFrame: () => ({ ok: true as const, value: undefined }),
     loadPendingFrames: () => ({ ok: true as const, value: [] }),
     clearPendingFrames: () => ({ ok: true as const, value: undefined }),
     removePendingFrame: () => ({ ok: true as const, value: undefined }),
     recover: () => ({
       ok: true as const,
-      value: { sessions: [], checkpoints: new Map(), pendingFrames: new Map(), skipped: [] },
+      value: { sessions: [], pendingFrames: new Map(), skipped: [] },
     }),
     close: () => undefined,
   };
@@ -215,7 +221,11 @@ describe("pause", () => {
   test("saves engine state via session persistence", async () => {
     const engineState: EngineState = { engineId: "test", data: { foo: "bar" } };
     await harness.pause(createSessionResult({ engineState }));
-    expect(persistence.savedCheckpoints.length).toBeGreaterThan(0);
+    // Session record should be saved with lastEngineState
+    const saved = persistence.savedSessions;
+    expect(saved.length).toBeGreaterThan(0);
+    const lastSaved = saved[saved.length - 1];
+    expect(lastSaved?.lastEngineState).toEqual(engineState);
   });
 
   test("creates hard checkpoint in harness store", async () => {
@@ -254,17 +264,13 @@ describe("resume", () => {
 
   test("resumes with engine state when available", async () => {
     const engineState: EngineState = { engineId: "test", data: { turnCount: 5 } };
-    const checkpoint: SessionCheckpoint = {
-      id: "cp-1",
-      agentId: TEST_AGENT_ID,
-      sessionId: sessionId("s-1"),
-      engineState,
-      processState: "running",
-      generation: 1,
-      metadata: {},
-      createdAt: Date.now(),
-    };
-    persistence.setLatestCheckpoint(checkpoint);
+    // The harness stores the lastSessionId in the snapshot. On resume it loads that session.
+    // After start+pause, a session record was saved. Find it and update with engine state.
+    const lastSaved = persistence.savedSessions[persistence.savedSessions.length - 1];
+    expect(lastSaved).toBeDefined();
+    if (lastSaved !== undefined) {
+      persistence.setSessionForLoad({ ...lastSaved, lastEngineState: engineState });
+    }
 
     const result = await harness.resume();
     assertOk(result);
@@ -520,19 +526,20 @@ describe("createMiddleware", () => {
     expect(mw.priority).toBe(50);
   });
 
-  test("onAfterTurn increments turn count and fires soft checkpoint", async () => {
+  test("onAfterTurn increments turn count and fires periodic saveSession", async () => {
     const testHarness = createTestHarness({ softCheckpointInterval: 1 });
     await testHarness.start(createTestPlan());
+    const countBefore = persistence.savedSessions.length;
     const mw = testHarness.createMiddleware();
 
     const ctx = createMockTurnContext({ turnIndex: 0 });
 
-    // Fire onAfterTurn — should trigger soft checkpoint at every turn
+    // Fire onAfterTurn — should trigger periodic save at every turn
     await mw.onAfterTurn?.(ctx);
 
-    // Check that a checkpoint was saved
-    expect(persistence.savedCheckpoints.length).toBe(1);
-    expect(persistence.savedCheckpoints[0]?.metadata).toEqual({ softCheckpoint: true });
+    // Check that a session record was saved (fire-and-forget, so await flush)
+    await new Promise((r) => setTimeout(r, 10));
+    expect(persistence.savedSessions.length).toBeGreaterThan(countBefore);
   });
 
   test("onAfterTurn uses saveState callback for real engine state", async () => {
@@ -542,44 +549,51 @@ describe("createMiddleware", () => {
       saveState: () => realState,
     });
     await testHarness.start(createTestPlan());
+    const countBefore = persistence.savedSessions.length;
     const mw = testHarness.createMiddleware();
 
     const ctx = createMockTurnContext({ turnIndex: 0 });
     await mw.onAfterTurn?.(ctx);
 
-    expect(persistence.savedCheckpoints.length).toBe(1);
-    expect(persistence.savedCheckpoints[0]?.engineState).toEqual(realState);
+    await new Promise((r) => setTimeout(r, 10));
+    const lastSaved = persistence.savedSessions[persistence.savedSessions.length - 1];
+    expect(persistence.savedSessions.length).toBeGreaterThan(countBefore);
+    expect(lastSaved?.lastEngineState).toEqual(realState);
   });
 
-  test("onAfterTurn uses placeholder when no saveState callback", async () => {
+  test("onAfterTurn saves no engine state when no saveState callback", async () => {
     const testHarness = createTestHarness({ softCheckpointInterval: 1 });
     await testHarness.start(createTestPlan());
+    const countBefore = persistence.savedSessions.length;
     const mw = testHarness.createMiddleware();
 
     const ctx = createMockTurnContext({ turnIndex: 0 });
     await mw.onAfterTurn?.(ctx);
 
-    expect(persistence.savedCheckpoints[0]?.engineState).toEqual({
-      engineId: "soft-checkpoint",
-      data: null,
-    });
+    await new Promise((r) => setTimeout(r, 10));
+    const lastSaved = persistence.savedSessions[persistence.savedSessions.length - 1];
+    expect(persistence.savedSessions.length).toBeGreaterThan(countBefore);
+    expect(lastSaved?.lastEngineState).toBeUndefined();
   });
 
   test("onAfterTurn respects checkpoint interval", async () => {
     const testHarness = createTestHarness({ softCheckpointInterval: 3 });
     await testHarness.start(createTestPlan());
+    const countBefore = persistence.savedSessions.length;
     const mw = testHarness.createMiddleware();
 
     const ctx = createMockTurnContext({ turnIndex: 0 });
 
-    // Turns 1, 2 — no checkpoint
+    // Turns 1, 2 — no save
     await mw.onAfterTurn?.(ctx);
     await mw.onAfterTurn?.(ctx);
-    expect(persistence.savedCheckpoints.length).toBe(0);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(persistence.savedSessions.length).toBe(countBefore);
 
-    // Turn 3 — checkpoint
+    // Turn 3 — save
     await mw.onAfterTurn?.(ctx);
-    expect(persistence.savedCheckpoints.length).toBe(1);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(persistence.savedSessions.length).toBeGreaterThan(countBefore);
   });
 
   test("wrapToolCall captures artifact for configured tool names", async () => {

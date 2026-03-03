@@ -7,11 +7,9 @@
 
 import { describe, expect, test } from "bun:test";
 import type {
-  AgentId,
   AgentManifest,
   EngineState,
   PendingFrame,
-  SessionCheckpoint,
   SessionId,
   SessionPersistence,
   SessionRecord,
@@ -38,7 +36,7 @@ function makeSessionRecord(
     seq: 0,
     remoteSeq: 0,
     connectedAt: Date.now(),
-    lastCheckpointAt: Date.now(),
+    lastPersistedAt: Date.now(),
     metadata: {},
     ...overrides,
   };
@@ -55,20 +53,6 @@ function makePendingFrame(
     orderIndex: 0,
     createdAt: Date.now(),
     retryCount: 0,
-    ...overrides,
-  };
-}
-
-function makeCheckpoint(
-  overrides: Partial<SessionCheckpoint> & { readonly id: string; readonly agentId: AgentId },
-): SessionCheckpoint {
-  return {
-    sessionId: sessionId("session-1"),
-    engineState: { engineId: "test-engine", data: { turnCount: 1 } },
-    processState: "running",
-    generation: 1,
-    metadata: {},
-    createdAt: Date.now(),
     ...overrides,
   };
 }
@@ -118,24 +102,16 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
       }
     });
 
-    test("remove deletes session and its checkpoints", async () => {
+    test("remove deletes session and associated data", async () => {
       const store = createStore();
       const aid = agentId("agent-rm");
       await store.saveSession(makeSessionRecord({ sessionId: sessionId("s1"), agentId: aid }));
-      await store.saveCheckpoint(makeCheckpoint({ id: "cp1", agentId: aid }));
 
       const removeResult = await store.removeSession("s1");
       expect(removeResult.ok).toBe(true);
 
       const loadResult = await store.loadSession("s1");
       expect(loadResult.ok).toBe(false);
-
-      // Checkpoints for this agent should also be gone
-      const cpResult = await store.loadLatestCheckpoint(aid);
-      expect(cpResult.ok).toBe(true);
-      if (cpResult.ok) {
-        expect(cpResult.value).toBeUndefined();
-      }
     });
 
     test("remove returns NOT_FOUND for missing session", async () => {
@@ -179,89 +155,34 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
         expect(result.value[0]?.sessionId).toBe(sessionId("s1"));
       }
     });
-  });
 
-  // -----------------------------------------------------------------------
-  // Checkpoints
-  // -----------------------------------------------------------------------
-  describe("checkpoints", () => {
-    test("save and load latest checkpoint", async () => {
+    test("saveSession preserves lastEngineState field", async () => {
       const store = createStore();
-      const aid = agentId("agent-cp");
-      await store.saveCheckpoint(makeCheckpoint({ id: "cp1", agentId: aid, createdAt: 1000 }));
-      await store.saveCheckpoint(makeCheckpoint({ id: "cp2", agentId: aid, createdAt: 2000 }));
+      const engineState: EngineState = { engineId: "test-engine", data: { step: 42 } };
+      await store.saveSession(
+        makeSessionRecord({
+          sessionId: sessionId("s-state"),
+          lastEngineState: engineState,
+        }),
+      );
 
-      const result = await store.loadLatestCheckpoint(aid);
+      const result = await store.loadSession("s-state");
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.value).toBeDefined();
-        expect(result.value?.id).toBe("cp2");
+        expect(result.value.lastEngineState).toBeDefined();
+        expect(result.value.lastEngineState?.engineId).toBe("test-engine");
+        expect(result.value.lastEngineState?.data).toEqual({ step: 42 });
       }
     });
 
-    test("loadLatestCheckpoint returns undefined for unknown agent", async () => {
+    test("saveSession without lastEngineState round-trips as undefined", async () => {
       const store = createStore();
-      const result = await store.loadLatestCheckpoint(agentId("unknown"));
+      await store.saveSession(makeSessionRecord({ sessionId: sessionId("s-no-state") }));
+
+      const result = await store.loadSession("s-no-state");
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.value).toBeUndefined();
-      }
-    });
-
-    test("listCheckpoints returns newest first", async () => {
-      const store = createStore();
-      const aid = agentId("agent-list");
-      await store.saveCheckpoint(makeCheckpoint({ id: "cp1", agentId: aid, createdAt: 1000 }));
-      await store.saveCheckpoint(makeCheckpoint({ id: "cp2", agentId: aid, createdAt: 3000 }));
-      await store.saveCheckpoint(makeCheckpoint({ id: "cp3", agentId: aid, createdAt: 2000 }));
-
-      const result = await store.listCheckpoints(aid);
-      expect(result.ok).toBe(true);
-      if (result.ok) {
-        expect(result.value.length).toBe(3);
-        expect(result.value[0]?.id).toBe("cp2");
-        expect(result.value[1]?.id).toBe("cp3");
-        expect(result.value[2]?.id).toBe("cp1");
-      }
-    });
-
-    test("checkpoint retention prunes oldest beyond limit", async () => {
-      // Contract: stores configured with maxCheckpointsPerAgent=3
-      const store = createStore();
-      const aid = agentId("agent-prune");
-      for (let i = 0; i < 5; i++) {
-        await store.saveCheckpoint(
-          makeCheckpoint({ id: `cp-${i}`, agentId: aid, createdAt: 1000 * (i + 1) }),
-        );
-      }
-
-      const result = await store.listCheckpoints(aid);
-      expect(result.ok).toBe(true);
-      if (result.ok) {
-        expect(result.value.length).toBe(3);
-        // Should keep cp-4, cp-3, cp-2 (newest 3)
-        expect(result.value[0]?.id).toBe("cp-4");
-        expect(result.value[1]?.id).toBe("cp-3");
-        expect(result.value[2]?.id).toBe("cp-2");
-      }
-    });
-
-    test("checkpoints for different agents are independent", async () => {
-      const store = createStore();
-      const a1 = agentId("agent-a");
-      const a2 = agentId("agent-b");
-      await store.saveCheckpoint(makeCheckpoint({ id: "cp-a", agentId: a1 }));
-      await store.saveCheckpoint(makeCheckpoint({ id: "cp-b", agentId: a2 }));
-
-      const r1 = await store.listCheckpoints(a1);
-      const r2 = await store.listCheckpoints(a2);
-      expect(r1.ok).toBe(true);
-      expect(r2.ok).toBe(true);
-      if (r1.ok && r2.ok) {
-        expect(r1.value.length).toBe(1);
-        expect(r2.value.length).toBe(1);
-        expect(r1.value[0]?.id).toBe("cp-a");
-        expect(r2.value[0]?.id).toBe("cp-b");
+        expect(result.value.lastEngineState).toBeUndefined();
       }
     });
   });
@@ -276,12 +197,11 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value.sessions.length).toBe(0);
-        expect(result.value.checkpoints.size).toBe(0);
         expect(result.value.skipped).toEqual([]);
       }
     });
 
-    test("recover returns all sessions and latest checkpoints", async () => {
+    test("recover returns all sessions", async () => {
       const store = createStore();
       const a1 = agentId("agent-1");
       const a2 = agentId("agent-2");
@@ -289,18 +209,51 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
       await store.saveSession(makeSessionRecord({ sessionId: sessionId("s1"), agentId: a1 }));
       await store.saveSession(makeSessionRecord({ sessionId: sessionId("s2"), agentId: a2 }));
 
-      await store.saveCheckpoint(makeCheckpoint({ id: "cp1-old", agentId: a1, createdAt: 1000 }));
-      await store.saveCheckpoint(makeCheckpoint({ id: "cp1-new", agentId: a1, createdAt: 2000 }));
-      await store.saveCheckpoint(makeCheckpoint({ id: "cp2", agentId: a2, createdAt: 1500 }));
-
       const result = await store.recover();
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value.sessions.length).toBe(2);
-        expect(result.value.checkpoints.size).toBe(2);
-        expect(result.value.checkpoints.get(a1)?.id).toBe("cp1-new");
-        expect(result.value.checkpoints.get(a2)?.id).toBe("cp2");
         expect(result.value.skipped).toEqual([]);
+      }
+    });
+
+    test("recover returns sessions with lastEngineState", async () => {
+      const store = createStore();
+      const aid = agentId("agent-state");
+      const engineState: EngineState = { engineId: "pi", data: { messages: ["hello"] } };
+      await store.saveSession(
+        makeSessionRecord({
+          sessionId: sessionId("s-recover"),
+          agentId: aid,
+          lastEngineState: engineState,
+        }),
+      );
+
+      const result = await store.recover();
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.sessions.length).toBe(1);
+        const session = result.value.sessions[0];
+        expect(session?.lastEngineState).toBeDefined();
+        expect(session?.lastEngineState?.engineId).toBe("pi");
+      }
+    });
+
+    test("recover plan has no checkpoints field", async () => {
+      const store = createStore();
+      await store.saveSession(
+        makeSessionRecord({ sessionId: sessionId("s1"), agentId: agentId("a1") }),
+      );
+
+      const result = await store.recover();
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        // Verify the plan shape — no checkpoints field
+        const plan = result.value;
+        expect(plan).toHaveProperty("sessions");
+        expect(plan).toHaveProperty("pendingFrames");
+        expect(plan).toHaveProperty("skipped");
+        expect(plan).not.toHaveProperty("checkpoints");
       }
     });
 
@@ -311,14 +264,12 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
         await store.saveSession(
           makeSessionRecord({ sessionId: sessionId(`s-${i}`), agentId: aid }),
         );
-        await store.saveCheckpoint(makeCheckpoint({ id: `cp-${i}`, agentId: aid }));
       }
 
       const result = await store.recover();
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value.sessions.length).toBe(10);
-        expect(result.value.checkpoints.size).toBe(10);
         expect(result.value.skipped).toEqual([]);
       }
     });
@@ -603,70 +554,31 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
         expect(result.error.code).toBe("VALIDATION");
       }
     });
-
-    test("saveCheckpoint rejects empty checkpoint ID", async () => {
-      const store = createStore();
-      const result = await store.saveCheckpoint(
-        makeCheckpoint({ id: "", agentId: agentId("agent-1") }),
-      );
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.error.code).toBe("VALIDATION");
-      }
-    });
-
-    test("saveCheckpoint rejects empty agent ID", async () => {
-      const store = createStore();
-      const result = await store.saveCheckpoint(
-        makeCheckpoint({ id: "cp1", agentId: agentId("") }),
-      );
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.error.code).toBe("VALIDATION");
-      }
-    });
-
-    test("loadLatestCheckpoint rejects empty agent ID", async () => {
-      const store = createStore();
-      const result = await store.loadLatestCheckpoint(agentId(""));
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.error.code).toBe("VALIDATION");
-      }
-    });
-
-    test("listCheckpoints rejects empty agent ID", async () => {
-      const store = createStore();
-      const result = await store.listCheckpoints(agentId(""));
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.error.code).toBe("VALIDATION");
-      }
-    });
   });
 
   // -----------------------------------------------------------------------
   // Edge cases
   // -----------------------------------------------------------------------
   describe("edge cases", () => {
-    test("engine state with null data", async () => {
+    test("engine state with null data round-trips in session record", async () => {
       const store = createStore();
-      const aid = agentId("agent-null");
       const nullState: EngineState = { engineId: "test", data: null };
-      await store.saveCheckpoint(
-        makeCheckpoint({ id: "cp-null", agentId: aid, engineState: nullState }),
+      await store.saveSession(
+        makeSessionRecord({
+          sessionId: sessionId("s-null-state"),
+          lastEngineState: nullState,
+        }),
       );
 
-      const result = await store.loadLatestCheckpoint(aid);
+      const result = await store.loadSession("s-null-state");
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.value?.engineState.data).toBeNull();
+        expect(result.value.lastEngineState?.data).toBeNull();
       }
     });
 
-    test("engine state with large data (>1MB JSON)", async () => {
+    test("engine state with large data (>1MB JSON) in session record", async () => {
       const store = createStore();
-      const aid = agentId("agent-large");
       const largeData = {
         messages: Array.from({ length: 10000 }, (_, i) => ({
           role: "assistant",
@@ -674,14 +586,17 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
         })),
       };
       const largeState: EngineState = { engineId: "test", data: largeData };
-      await store.saveCheckpoint(
-        makeCheckpoint({ id: "cp-large", agentId: aid, engineState: largeState }),
+      await store.saveSession(
+        makeSessionRecord({
+          sessionId: sessionId("s-large-state"),
+          lastEngineState: largeState,
+        }),
       );
 
-      const result = await store.loadLatestCheckpoint(aid);
+      const result = await store.loadSession("s-large-state");
       expect(result.ok).toBe(true);
       if (result.ok) {
-        const data = result.value?.engineState.data as typeof largeData;
+        const data = result.value.lastEngineState?.data as typeof largeData;
         expect(data.messages.length).toBe(10000);
       }
     });
@@ -701,30 +616,6 @@ export function runSessionPersistenceContractTests(createStore: () => SessionPer
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value.metadata).toEqual({ name: "工具-名前-도구", emoji: "🤖" });
-      }
-    });
-
-    test("concurrent saves for different agents do not interfere", async () => {
-      const store = createStore();
-      const saves = Array.from({ length: 10 }, (_, i) => {
-        const aid = agentId(`concurrent-${i}`);
-        return store.saveCheckpoint(
-          makeCheckpoint({ id: `cp-c-${i}`, agentId: aid, createdAt: Date.now() + i }),
-        );
-      });
-      const results = await Promise.all(saves);
-      for (const r of results) {
-        expect(r.ok).toBe(true);
-      }
-
-      // Each agent should have exactly 1 checkpoint
-      for (let i = 0; i < 10; i++) {
-        const aid = agentId(`concurrent-${i}`);
-        const cpResult = await store.loadLatestCheckpoint(aid);
-        expect(cpResult.ok).toBe(true);
-        if (cpResult.ok) {
-          expect(cpResult.value?.id).toBe(`cp-c-${i}`);
-        }
       }
     });
 

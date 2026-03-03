@@ -4,11 +4,10 @@
 
 import { beforeEach, describe, expect, test } from "bun:test";
 import type {
-  AgentId,
   EngineMetrics,
   HarnessSnapshotStore,
-  SessionCheckpoint,
   SessionPersistence,
+  SessionRecord,
   TaskBoardSnapshot,
 } from "@koi/core";
 import { agentId, chainId, harnessId, taskItemId } from "@koi/core";
@@ -68,35 +67,35 @@ function createPlan(): TaskBoardSnapshot {
 }
 
 function createMockPersistence(): SessionPersistence & {
-  setLatestCheckpoint: (cp: SessionCheckpoint | undefined) => void;
+  readonly savedSessions: Map<string, SessionRecord>;
 } {
-  let latestCheckpoint: SessionCheckpoint | undefined;
+  const savedSessions = new Map<string, SessionRecord>();
 
   return {
-    setLatestCheckpoint(cp: SessionCheckpoint | undefined): void {
-      latestCheckpoint = cp;
-    },
-    saveSession: () => ({ ok: true as const, value: undefined }),
-    loadSession: () => ({
-      ok: false as const,
-      error: { code: "NOT_FOUND" as const, message: "Not found", retryable: false },
-    }),
-    removeSession: () => ({ ok: true as const, value: undefined }),
-    listSessions: () => ({ ok: true as const, value: [] }),
-    saveCheckpoint() {
+    savedSessions,
+    saveSession: (record: SessionRecord) => {
+      savedSessions.set(record.sessionId, record);
       return { ok: true as const, value: undefined };
     },
-    loadLatestCheckpoint(_aid: AgentId) {
-      return { ok: true as const, value: latestCheckpoint };
+    loadSession: (sessionId: string) => {
+      const record = savedSessions.get(sessionId);
+      if (record) {
+        return { ok: true as const, value: record };
+      }
+      return {
+        ok: false as const,
+        error: { code: "NOT_FOUND" as const, message: "Not found", retryable: false },
+      };
     },
-    listCheckpoints: () => ({ ok: true as const, value: [] }),
+    removeSession: () => ({ ok: true as const, value: undefined }),
+    listSessions: () => ({ ok: true as const, value: [] }),
     savePendingFrame: () => ({ ok: true as const, value: undefined }),
     loadPendingFrames: () => ({ ok: true as const, value: [] }),
     clearPendingFrames: () => ({ ok: true as const, value: undefined }),
     removePendingFrame: () => ({ ok: true as const, value: undefined }),
     recover: () => ({
       ok: true as const,
-      value: { sessions: [], checkpoints: new Map(), pendingFrames: new Map(), skipped: [] },
+      value: { sessions: [], pendingFrames: new Map(), skipped: [] },
     }),
     close: () => undefined,
   };
