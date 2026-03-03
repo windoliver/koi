@@ -213,10 +213,12 @@ function enforceTokenBudget(
       if (section === undefined) continue;
       if (section.bullets.length <= 1) continue;
       for (let bi = 0; bi < section.bullets.length; bi++) {
+        const bullet = section.bullets[bi];
+        if (bullet === undefined) continue;
         candidates.push({
           sectionIdx: si,
           bulletIdx: bi,
-          value: computeBulletValue(section.bullets[bi] ?? ""),
+          value: computeBulletValue(bullet),
         });
       }
     }
