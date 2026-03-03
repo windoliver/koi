@@ -64,6 +64,10 @@ index.ts                    ← public re-exports
 ├── compactor-middleware.ts      ← createCompactorMiddleware() factory
 ├── compactor-bundle.ts          ← createCompactorBundle() = middleware + tool
 │
+├── snapshot-archiver.ts         ← bridges SnapshotChainStore → CompactionArchiver
+├── composite-archiver.ts        ← composes multiple archivers sequentially
+├── fact-extracting-archiver.ts  ← extracts structured facts to MemoryComponent
+│
 ├── memory-compaction-store.ts   ← in-memory CompactionStore
 └── descriptor.ts                ← BrickDescriptor for manifest resolution
 ```
@@ -423,6 +427,50 @@ const snapshot = await governanceController.snapshot();
 const occupancy = snapshot.readings.find(r => r.name === "context_occupancy");
 // { current: 124000, limit: 200000, utilization: 0.62 }
 ```
+
+### Durable Compaction Archive
+
+When compaction fires, original messages are replaced by a summary. Without archiving, those messages are lost forever. The archiver pipeline preserves them:
+
+```
+Compaction fires (60% context window)
+│
+├──► snapshot-archiver          → store.put("compact:{sessionId}", rawMessages)
+│    Preserves raw messages       Chain: root → node₁ → node₂ → ...
+│    in a SnapshotChainStore      Each compaction appends to the chain
+│
+└──► fact-extracting-archiver   → memory.store("User prefers JWT")
+     Extracts structured facts    Semantic knowledge survives compaction
+     into MemoryComponent
+```
+
+The two archivers are composed via `createCompositeArchiver`:
+
+```typescript
+import {
+  createCompositeArchiver,
+  createFactExtractingArchiver,
+  createSnapshotArchiver,
+} from "@koi/middleware-compactor";
+
+// Snapshot first (raw preservation), then facts (semantic extraction)
+const archiver = createCompositeArchiver([
+  createSnapshotArchiver(store, { sessionId }),
+  createFactExtractingArchiver(memory),
+]);
+
+const mw = createCompactorMiddleware({
+  summarizer: modelCall,
+  archiver,
+});
+```
+
+The composite archiver handles edge cases:
+- 0 archivers → noop (no allocation)
+- 1 archiver → returned directly (no wrapper overhead)
+- N archivers → sequential execution, `AggregateError` if any fail
+
+Recovery: `store.list(chainId("compact:{sessionId}"))` returns all archived batches, newest first.
 
 ### Pressure Trend Tracking
 
