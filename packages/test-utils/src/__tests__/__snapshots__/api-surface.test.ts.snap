@@ -1,10 +1,11 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/test-utils API surface . has stable type surface 1`] = `
-"import { AgentRegistry, ProcessId, AgentManifest, ProcessState, TerminationOutcome, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, ForgeProvenance, AgentArtifact, CompositeArtifact, ImplementationArtifact, SkillArtifact, ToolArtifact, BrickRegistryBackend, ChannelAdapter, MemoryResult, MemoryRecallOptions, MemoryStoreOptions, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, RegistryEntry, AgentId, VisibilityContext, TransitionReason, Result as Result$1, KoiError as KoiError$1, RegistryEvent, InboundMessage as InboundMessage$1, PolicyEvaluator, PolicyRequestKind, ConstraintChecker, ComplianceRecorder, ViolationStore, GovernanceCheck, GovernanceEvent, GovernanceSnapshot, GovernanceVariable, SensorReading, GovernanceBackend, GovernanceController, HarnessId, TaskBoardSnapshot, EngineMetrics, TaskItemId, TaskResult, HarnessStatus, KoiMiddleware, ContextSummary, SessionPersistence, SkillRegistryBackend, SnapshotChainStore, ForgeStore, ThreadStore, VersionIndexBackend, WorkspaceBackend } from '@koi/core';
+"import { AgentRegistry, ProcessId, AgentManifest, ProcessState, TerminationOutcome, EngineEvent, Agent, EngineAdapter, EngineInput, KoiErrorCode, AuditSink, AuditEntry, ForgeProvenance, AgentArtifact, CompositeArtifact, ImplementationArtifact, SkillArtifact, ToolArtifact, BrickRegistryBackend, ChannelAdapter, MemoryResult, MemoryRecallOptions, MemoryStoreOptions, MemoryComponent, KoiConfig, ConfigStore, EventBackend, EventEnvelope, DeadLetterEntry, RegistryEntry, AgentId, VisibilityContext, TransitionReason, Result as Result$1, KoiError as KoiError$1, RegistryEvent, InboundMessage as InboundMessage$1, PolicyEvaluator, PolicyRequestKind, ConstraintChecker, ComplianceRecorder, ViolationStore, GovernanceCheck, GovernanceEvent, GovernanceSnapshot, GovernanceVariable, SensorReading, GovernanceBackend, GovernanceController, HarnessId, TaskBoardSnapshot, EngineMetrics, TaskItemId, TaskResult, HarnessStatus, KoiMiddleware, ContextSummary, MailboxComponent, ScratchpadComponent, SessionPersistence, SkillRegistryBackend, SnapshotChainStore, ForgeStore, ThreadStore, VersionIndexBackend, WorkspaceBackend } from '@koi/core';
 import { Result, KoiError } from '@koi/core/errors';
 import { InboundMessage } from '@koi/core/message';
 import { SessionContext, TurnContext, ModelHandler, ModelRequest, ModelStreamHandler, ToolHandler, ToolRequest, ModelResponse, ModelChunk, ToolResponse, KoiMiddleware as KoiMiddleware$1 } from '@koi/core/middleware';
+import { PayLedger } from '@koi/core/pay-ledger';
 import { PermissionBackend, PermissionQuery, PermissionDecision } from '@koi/core/permission-backend';
 import { Resolver } from '@koi/core/resolver';
 
@@ -138,6 +139,31 @@ declare function assertErr<T>(result: Result<T, KoiError>): asserts result is {
     readonly ok: false;
     readonly error: KoiError;
 };
+
+/**
+ * Reusable contract test suite for AuditSink implementations.
+ *
+ * Accepts a factory that returns an AuditSink (sync or async).
+ * Each test creates a fresh instance for isolation.
+ */
+
+/**
+ * Factory result must include a way to read back logged entries.
+ * The \`getEntries\` function returns all entries stored by the sink.
+ */
+interface AuditSinkContractOptions {
+    readonly createSink: () => {
+        readonly sink: AuditSink;
+        readonly getEntries: () => readonly AuditEntry[] | Promise<readonly AuditEntry[]>;
+    } | Promise<{
+        readonly sink: AuditSink;
+        readonly getEntries: () => readonly AuditEntry[] | Promise<readonly AuditEntry[]>;
+    }>;
+}
+/**
+ * Run the AuditSink contract test suite against any implementation.
+ */
+declare function runAuditSinkContractTests(options: AuditSinkContractOptions): void;
 
 /**
  * Test artifact factories for forged bricks.
@@ -581,6 +607,20 @@ declare function createMockContextSummary(sessionSeq?: number): ContextSummary;
 declare function createInMemoryBrickRegistry(): BrickRegistryBackend;
 
 /**
+ * Reusable contract test suite for MailboxComponent implementations.
+ *
+ * Accepts a factory that returns a MailboxComponent (sync or async).
+ * Each test creates a fresh instance for isolation.
+ */
+
+/**
+ * Run the MailboxComponent contract test suite against any implementation.
+ *
+ * The factory should return a mailbox configured for a specific agent.
+ */
+declare function runMailboxContractTests(createMailbox: () => MailboxComponent | Promise<MailboxComponent>): void;
+
+/**
  * Middleware contract test suite.
  *
  * Validates that any KoiMiddleware implementation satisfies the L0 contract.
@@ -603,6 +643,21 @@ interface MiddlewareContractOptions {
  * the middleware satisfies all L0 contract invariants.
  */
 declare function testMiddlewareContract(options: MiddlewareContractOptions): void;
+
+/**
+ * Reusable contract test suite for PayLedger implementations.
+ *
+ * Accepts a factory that returns a PayLedger (sync or async).
+ * Each test creates a fresh instance for isolation.
+ */
+
+/**
+ * Run the PayLedger contract test suite against any implementation.
+ *
+ * The factory should return a ledger pre-configured with an initial budget
+ * of "1000" credits and an agentId of "agent-1".
+ */
+declare function runPayLedgerContractTests(createLedger: () => PayLedger | Promise<PayLedger>): void;
 
 /**
  * Fake PermissionBackend for testing — configurable per-resource decisions.
@@ -645,6 +700,20 @@ interface ResolverContractOptions<TMeta, TFull> {
  * the resolver satisfies all L0 contract invariants.
  */
 declare function testResolverContract<TMeta, TFull>(options: ResolverContractOptions<TMeta, TFull>): void;
+
+/**
+ * Reusable contract test suite for ScratchpadComponent implementations.
+ *
+ * Accepts a factory that returns a ScratchpadComponent (sync or async).
+ * Each test creates a fresh instance for isolation.
+ */
+
+/**
+ * Run the ScratchpadComponent contract test suite against any implementation.
+ *
+ * The factory should return a scratchpad pre-configured with a groupId and authorId.
+ */
+declare function runScratchpadContractTests(createScratchpad: () => ScratchpadComponent | Promise<ScratchpadComponent>): void;
 
 /**
  * Reusable contract test suite for any SessionPersistence implementation.
@@ -843,6 +912,6 @@ declare function createInMemoryVersionIndex(): VersionIndexBackend;
  */
 declare function runWorkspaceBackendContractTests(createBackend: () => WorkspaceBackend | Promise<WorkspaceBackend>): void;
 
-export { type BrickRegistryContractOptions, type CapturedOutput, type ChannelContractOptions, DEFAULT_PROVENANCE, type EngineContractOptions, type EventSourcedRegistryForTest, type EventSourcedRegistryTestContext, type FakeEngineAdapterConfig, type FakeEngineAdapterResult, type FakePermissionBackend, type FakePermissionBackendOptions, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockGovernanceBackendOverrides, type MockGovernanceControllerOverrides, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type RecallCall, type ResolverContractOptions, type SkillRegistryContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, type StoreCall, type TempGitRepo, type VersionIndexContractOptions, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createFakeEngineAdapter, createFakeNexusFetch, createFakePermissionBackend, createInMemoryBrickRegistry, createInMemorySkillRegistry, createInMemoryVersionIndex, createManifestFile, createMockAgent, createMockContextSummary, createMockEngineAdapter, createMockEventBackend, createMockGovernanceBackend, createMockGovernanceController, createMockHarness, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockTaskPlan, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTempGitRepo, createTestAgentArtifact, createTestCompositeArtifact, createTestConfig, createTestConfigStore, createTestImplementationArtifact, createTestSkillArtifact, createTestToolArtifact, createThrowingValidator, makeTempDir, runAgentRegistryContractTests, runEventBackendContractTests, runEventSourcedRegistryContractTests, runForgeStoreContractTests, runHarnessContractTests, runSessionPersistenceContractTests, runSnapshotChainStoreContractTests, runThreadStoreContractTests, runWorkspaceBackendContractTests, testBrickRegistryContract, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, testSkillRegistryContract, testVersionIndexContract, withTempDir };
+export { type AuditSinkContractOptions, type BrickRegistryContractOptions, type CapturedOutput, type ChannelContractOptions, DEFAULT_PROVENANCE, type EngineContractOptions, type EventSourcedRegistryForTest, type EventSourcedRegistryTestContext, type FakeEngineAdapterConfig, type FakeEngineAdapterResult, type FakePermissionBackend, type FakePermissionBackendOptions, type MiddlewareContractOptions, type MockAgentOptions, type MockEngineAdapterOptions, type MockEngineData, type MockEventBackend, type MockGovernanceBackendOverrides, type MockGovernanceControllerOverrides, type MockMemoryComponentOptions, type MockStatefulEngineOptions, type MockValidationError, type MockValidationResult, type MockValidator, type RecallCall, type ResolverContractOptions, type SkillRegistryContractOptions, type SpyModelHandler, type SpyModelStreamHandler, type SpyToolHandler, type StoreCall, type TempGitRepo, type VersionIndexContractOptions, assertErr, assertKoiError, assertOk, captureOutput, createAsyncValidator, createConditionalValidator, createFactory, createFailingValidator, createFakeEngineAdapter, createFakeNexusFetch, createFakePermissionBackend, createInMemoryBrickRegistry, createInMemorySkillRegistry, createInMemoryVersionIndex, createManifestFile, createMockAgent, createMockContextSummary, createMockEngineAdapter, createMockEventBackend, createMockGovernanceBackend, createMockGovernanceController, createMockHarness, createMockInboundMessage, createMockMemoryComponent, createMockModelHandler, createMockModelStreamHandler, createMockSessionContext, createMockStatefulEngine, createMockTaskPlan, createMockToolHandler, createMockTurnContext, createMockValidator, createSpyModelHandler, createSpyModelStreamHandler, createSpyToolHandler, createTempGitRepo, createTestAgentArtifact, createTestCompositeArtifact, createTestConfig, createTestConfigStore, createTestImplementationArtifact, createTestSkillArtifact, createTestToolArtifact, createThrowingValidator, makeTempDir, runAgentRegistryContractTests, runAuditSinkContractTests, runEventBackendContractTests, runEventSourcedRegistryContractTests, runForgeStoreContractTests, runHarnessContractTests, runMailboxContractTests, runPayLedgerContractTests, runScratchpadContractTests, runSessionPersistenceContractTests, runSnapshotChainStoreContractTests, runThreadStoreContractTests, runWorkspaceBackendContractTests, testBrickRegistryContract, testChannelAdapter, testEngineAdapter, testMiddlewareContract, testResolverContract, testSkillRegistryContract, testVersionIndexContract, withTempDir };
 "
 `;

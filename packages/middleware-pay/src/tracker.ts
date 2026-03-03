@@ -79,6 +79,10 @@ const EMPTY_BREAKDOWN: CostBreakdown = { totalCostUsd: 0, byModel: [], byTool: [
  * In-memory PayLedger backed by a running spend total.
  * Implements only `meter()`, `getBalance()`, and `canAfford()`.
  * Unused methods (`transfer`, `reserve`, `commit`, `release`) throw.
+ *
+ * @deprecated Use `createLocalPayLedger` from `@koi/pay-local` instead.
+ * It provides a fully-functional PayLedger with all 7 methods implemented,
+ * optional SQLite persistence, and reservation tracking.
  */
 export function createInMemoryPayLedger(initialBudget: number): PayLedger {
   if (!Number.isFinite(initialBudget) || initialBudget < 0) {

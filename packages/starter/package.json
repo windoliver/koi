@@ -20,7 +20,11 @@
     "@koi/middleware-permissions": "workspace:*",
     "@koi/scope": "workspace:*",
     "@koi/soul": "workspace:*",
-    "@koi/tool-browser": "workspace:*"
+    "@koi/tool-browser": "workspace:*",
+    "@koi/pay-local": "workspace:*",
+    "@koi/audit-sink-local": "workspace:*",
+    "@koi/scratchpad-local": "workspace:*",
+    "@koi/ipc-local": "workspace:*"
   },
   "devDependencies": {
     "@koi/test-utils": "workspace:*"
