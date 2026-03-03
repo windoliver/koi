@@ -35,6 +35,7 @@ export function createHandoffProvider(config: HandoffConfig): ComponentProvider 
       const prepareTool = createPrepareTool({
         store: config.store,
         agentId: config.agentId,
+        registry: config.registry,
         onEvent: config.onEvent,
       });
 

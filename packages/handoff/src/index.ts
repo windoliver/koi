@@ -25,7 +25,7 @@ export type { NexusHandoffStoreConfig } from "./nexus-store.js";
 export { createNexusHandoffStore } from "./nexus-store.js";
 // prepare tool
 export type { CreatePrepareToolConfig } from "./prepare-tool.js";
-export { createPrepareTool } from "./prepare-tool.js";
+export { createPrepareTool, resolveTarget } from "./prepare-tool.js";
 // provider
 export { createHandoffProvider } from "./provider.js";
 // skill
