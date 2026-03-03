@@ -67,7 +67,7 @@ describe("SkillSource type narrowing", () => {
       expect(fs.source.path).toBe("./skills/fs");
     }
     if (forged.source.kind === "forged") {
-      expect(forged.source.brickId).toBe("sha256:def456");
+      expect(forged.source.brickId).toBe(brickId("sha256:def456"));
     }
   });
 });
