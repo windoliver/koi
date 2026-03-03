@@ -179,7 +179,7 @@ describe("harness error paths", () => {
     expect(harness.status().phase).toBe("active");
 
     const failResult = await harness.fail({
-      code: "ENGINE_ERROR",
+      code: "INTERNAL",
       message: "Unrecoverable model failure",
       retryable: false,
     });
@@ -211,7 +211,7 @@ describe("harness error paths", () => {
     const harness = createHarness(store);
 
     const failResult = await harness.fail({
-      code: "ENGINE_ERROR",
+      code: "INTERNAL",
       message: "Cannot fail from idle",
       retryable: false,
     });
