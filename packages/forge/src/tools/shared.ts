@@ -7,6 +7,7 @@ import type {
   BrickArtifactBase,
   BrickId,
   EngineAdapter,
+  ExternalAgentDescriptor,
   ForgeStore,
   GovernanceController,
   JsonObject,
@@ -39,6 +40,19 @@ import type {
 import { verify } from "../verify.js";
 
 // ---------------------------------------------------------------------------
+// Delegation options
+// ---------------------------------------------------------------------------
+
+export interface DelegateOptions {
+  /** Model to use for the coding agent (e.g., "opus"). */
+  readonly model?: string | undefined;
+  /** Timeout per attempt in milliseconds. Default: 120,000 (2 min). */
+  readonly timeoutMs?: number | undefined;
+  /** Number of retries after failure. Default: 0 (no retries). */
+  readonly retries?: number | undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Shared dependencies
 // ---------------------------------------------------------------------------
 
@@ -64,6 +78,14 @@ export interface ForgeDeps {
   ) => Promise<Result<EngineAdapter | undefined, KoiError>>;
   /** Optional DI pipeline — when provided, tools use pipeline methods instead of direct imports. Wired by L3 bundle. */
   readonly pipeline?: ForgePipeline;
+  /** Discovers an external coding agent by name. Injected by L3 consumer. */
+  readonly discoverAgent?: (name: string) => Promise<Result<ExternalAgentDescriptor, KoiError>>;
+  /** Spawns an external coding agent to produce implementation code. Injected by L3 consumer. */
+  readonly spawnCodingAgent?: (
+    agent: ExternalAgentDescriptor,
+    prompt: string,
+    options: DelegateOptions,
+  ) => Promise<Result<string, KoiError>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,7 +125,7 @@ export interface ParsedBaseInput {
 export interface ParsedToolInput extends ParsedBaseInput {
   readonly inputSchema: Record<string, unknown>;
   readonly outputSchema?: Record<string, unknown> | undefined;
-  readonly implementation: string;
+  readonly implementation?: string | undefined;
   readonly testCases?:
     | readonly {
         readonly name: string;
@@ -112,6 +134,8 @@ export interface ParsedToolInput extends ParsedBaseInput {
         readonly shouldThrow?: boolean | undefined;
       }[]
     | undefined;
+  readonly delegateTo?: string | undefined;
+  readonly delegateOptions?: DelegateOptions | undefined;
 }
 
 export interface ParsedSkillInput extends ParsedBaseInput {
@@ -168,7 +192,7 @@ const forgeToolInputSchema = z.object({
   ...baseInputFields,
   inputSchema: z.record(z.string(), z.unknown()),
   outputSchema: z.record(z.string(), z.unknown()).optional(),
-  implementation: z.string(),
+  implementation: z.string().optional(),
   testCases: z
     .array(
       z.object({
@@ -178,6 +202,14 @@ const forgeToolInputSchema = z.object({
         shouldThrow: z.boolean().optional(),
       }),
     )
+    .optional(),
+  delegateTo: z.string().optional(),
+  delegateOptions: z
+    .object({
+      model: z.string().optional(),
+      timeoutMs: z.number().min(1_000).max(600_000).optional(),
+      retries: z.number().int().min(0).max(10).optional(),
+    })
     .optional(),
 });
 

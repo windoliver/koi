@@ -55,6 +55,9 @@ export { checkBrickRequires } from "./requires-check.js";
 // store change notifier
 export { createMemoryStoreChangeNotifier } from "./store-notifier.js";
 
+// --- delegation ---
+export { delegateImplementation, generateDelegationPrompt } from "./tools/delegate.js";
+
 // --- primordial tools ---
 
 // compose_forge
@@ -83,5 +86,5 @@ export { createPromoteForgeTool } from "./tools/promote-forge.js";
 export { createSearchForgeTool } from "./tools/search-forge.js";
 
 // shared — tool utilities, parsers, pipeline runner
-export type { ForgeDeps, ForgeToolConfig } from "./tools/shared.js";
+export type { DelegateOptions, ForgeDeps, ForgeToolConfig } from "./tools/shared.js";
 export { createForgeTool, mapParsedBaseFields, mapParsedTestCases } from "./tools/shared.js";

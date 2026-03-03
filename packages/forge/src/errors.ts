@@ -4,6 +4,7 @@
 
 export type { ForgeError, TestFailure } from "@koi/forge-types";
 export {
+  delegationError,
   formatError,
   governanceError,
   resolveError,

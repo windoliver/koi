@@ -81,6 +81,15 @@ export type ForgeError =
       readonly stage: "store";
       readonly code: "SAVE_FAILED" | "LOAD_FAILED" | "SEARCH_FAILED";
       readonly message: string;
+    }
+  | {
+      readonly stage: "delegation";
+      readonly code:
+        | "AGENT_NOT_FOUND"
+        | "DELEGATION_TIMEOUT"
+        | "DELEGATION_FAILED"
+        | "DELEGATION_RETRIES_EXHAUSTED";
+      readonly message: string;
     };
 
 // ---------------------------------------------------------------------------
@@ -151,4 +160,11 @@ export function storeError(
   message: string,
 ): ForgeError {
   return { stage: "store", code, message };
+}
+
+export function delegationError(
+  code: Extract<ForgeError, { readonly stage: "delegation" }>["code"],
+  message: string,
+): ForgeError {
+  return { stage: "delegation", code, message };
 }

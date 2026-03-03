@@ -1,8 +1,8 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/forge-tools API surface . has stable type surface 1`] = `
-"import { BrickArtifact, ForgeStore, Result, CapabilityFragment, ToolArtifact, SandboxExecutor, Tool, BrickId, ForgeScope, StoreChangeEvent, BrickKind, BrickComponentMap, TrustTier, StoreChangeNotifier, ComponentProvider, KoiError, BrickRegistryWriter, Resolver, BrickRequires, SigningBackend, GovernanceController, EngineAdapter } from '@koi/core';
-import { ForgeError, DriftChecker, SandboxExecutor as SandboxExecutor$1, ForgeVerifier, ForgeConfig, ForgeContext, ManifestParser, ForgePipeline, AgentArtifact } from '@koi/forge-types';
+"import { BrickArtifact, ForgeStore, Result, CapabilityFragment, ToolArtifact, SandboxExecutor, Tool, BrickId, ForgeScope, StoreChangeEvent, BrickKind, BrickComponentMap, TrustTier, StoreChangeNotifier, ComponentProvider, KoiError, BrickRegistryWriter, Resolver, BrickRequires, SigningBackend, GovernanceController, EngineAdapter, ExternalAgentDescriptor } from '@koi/core';
+import { ForgeError, DriftChecker, SandboxExecutor as SandboxExecutor$1, ForgeVerifier, ForgeConfig, ForgeContext, ManifestParser, ForgePipeline, ForgeToolInput, AgentArtifact } from '@koi/forge-types';
 import { BrickDescriptor } from '@koi/resolve';
 export { createMemoryStoreChangeNotifier } from '@koi/validation';
 
@@ -298,6 +298,14 @@ declare function checkBrickRequires(requires: BrickRequires | undefined, availab
  * Shared factory for primordial forge tools — DRY across all 6 tools.
  */
 
+interface DelegateOptions {
+    /** Model to use for the coding agent (e.g., "opus"). */
+    readonly model?: string | undefined;
+    /** Timeout per attempt in milliseconds. Default: 120,000 (2 min). */
+    readonly timeoutMs?: number | undefined;
+    /** Number of retries after failure. Default: 0 (no retries). */
+    readonly retries?: number | undefined;
+}
 interface ForgeDeps {
     readonly store: ForgeStore;
     readonly executor: SandboxExecutor$1;
@@ -318,6 +326,10 @@ interface ForgeDeps {
     readonly engineResolver?: (engineConfig: unknown) => Promise<Result<EngineAdapter | undefined, KoiError>>;
     /** DI pipeline — tools use pipeline methods for cross-L2 calls (verify, governance, attestation). Wired by L3 bundle. */
     readonly pipeline?: ForgePipeline;
+    /** Discovers an external coding agent by name. Injected by L3 consumer. */
+    readonly discoverAgent?: (name: string) => Promise<Result<ExternalAgentDescriptor, KoiError>>;
+    /** Spawns an external coding agent to produce implementation code. Injected by L3 consumer. */
+    readonly spawnCodingAgent?: (agent: ExternalAgentDescriptor, prompt: string, options: DelegateOptions) => Promise<Result<string, KoiError>>;
 }
 interface ForgeToolConfig {
     readonly name: string;
@@ -376,6 +388,28 @@ declare function mapParsedBaseFields(parsed: ParsedBaseInput): {
     readonly contentMarkers?: readonly ("credentials" | "pii" | "phi" | "payment")[];
 };
 declare function createForgeTool(toolConfig: ForgeToolConfig, deps: ForgeDeps): Tool;
+
+/**
+ * External agent delegation — delegates implementation authoring to an
+ * external coding agent (Claude Code, Codex, etc.) while retaining the
+ * full Forge verification pipeline.
+ */
+
+/**
+ * Builds a coding prompt from the forge input so an external agent
+ * knows exactly what interface to implement.
+ */
+declare function generateDelegationPrompt(input: ForgeToolInput): string;
+/**
+ * Delegates implementation authoring to an external coding agent.
+ *
+ * - Validates that DI callbacks are present
+ * - Discovers the agent by name
+ * - Generates a coding prompt
+ * - Retry loop with per-attempt timeout
+ * - Returns implementation string or ForgeError
+ */
+declare function delegateImplementation(agentName: string, input: ForgeToolInput, deps: ForgeDeps, options?: DelegateOptions): Promise<Result<string, ForgeError>>;
 
 /**
  * compose_forge — Composes multiple bricks into a linear pipeline (A→B→C).
@@ -471,6 +505,6 @@ declare function createPromoteForgeTool(deps: ForgeDeps): Tool;
 
 declare function createSearchForgeTool(deps: ForgeDeps): Tool;
 
-export { type AssembleManifestOptions, type AssembleManifestResult, type DeltaInvalidator, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeDeps, type ForgeRegistrySyncConfig, type ForgeResolverContext, type ForgeSpawnData, type ForgeToolConfig, type NetworkPolicy, type OnForgeAgentSpawn, type RequiresCheckResult, type SkillMdInput, assembleManifest, brickCapabilityFragment, brickToTool, checkBrickRequires, createComposeForge, createDeltaInvalidator, createForgeAgentTool, createForgeChannelTool, createForgeComponentProvider, createForgeEditTool, createForgeMiddlewareTool, createForgeRegistrySync, createForgeResolver, createForgeSkillTool, createForgeTool, createForgeToolTool, createInMemoryForgeStore, createPromoteForgeTool, createSearchForgeTool, descriptor, forgeErrorToKoiError, generateSkillMd, mapBrickToComponent, mapParsedBaseFields, mapParsedTestCases, meetsKindTrust, meetsMinTrust };
+export { type AssembleManifestOptions, type AssembleManifestResult, type DelegateOptions, type DeltaInvalidator, type ForgeComponentProviderConfig, type ForgeComponentProviderInstance, type ForgeDeps, type ForgeRegistrySyncConfig, type ForgeResolverContext, type ForgeSpawnData, type ForgeToolConfig, type NetworkPolicy, type OnForgeAgentSpawn, type RequiresCheckResult, type SkillMdInput, assembleManifest, brickCapabilityFragment, brickToTool, checkBrickRequires, createComposeForge, createDeltaInvalidator, createForgeAgentTool, createForgeChannelTool, createForgeComponentProvider, createForgeEditTool, createForgeMiddlewareTool, createForgeRegistrySync, createForgeResolver, createForgeSkillTool, createForgeTool, createForgeToolTool, createInMemoryForgeStore, createPromoteForgeTool, createSearchForgeTool, delegateImplementation, descriptor, forgeErrorToKoiError, generateDelegationPrompt, generateSkillMd, mapBrickToComponent, mapParsedBaseFields, mapParsedTestCases, meetsKindTrust, meetsMinTrust };
 "
 `;
