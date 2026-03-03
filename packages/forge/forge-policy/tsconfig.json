@@ -6,9 +6,17 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../forge-types" },
-    { "path": "../git-utils" },
-    { "path": "../validation" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../forge-types"
+    },
+    {
+      "path": "../../lib/git-utils"
+    },
+    {
+      "path": "../../lib/validation"
+    }
   ]
 }

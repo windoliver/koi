@@ -6,9 +6,17 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../engine" },
-    { "path": "../engine-pi" },
-    { "path": "../middleware-audit" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../kernel/engine"
+    },
+    {
+      "path": "../../drivers/engine-pi"
+    },
+    {
+      "path": "../middleware-audit"
+    }
   ]
 }

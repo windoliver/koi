@@ -6,9 +6,17 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../scope" },
-    { "path": "../search-provider" },
-    { "path": "../token-estimator" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../security/scope"
+    },
+    {
+      "path": "../../fs/search-provider"
+    },
+    {
+      "path": "../token-estimator"
+    }
   ]
 }

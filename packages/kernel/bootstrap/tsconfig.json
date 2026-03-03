@@ -5,5 +5,15 @@
     "rootDir": "src"
   },
   "include": ["src/**/*"],
-  "references": [{ "path": "../core" }, { "path": "../file-resolution" }, { "path": "../hash" }]
+  "references": [
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../../lib/file-resolution"
+    },
+    {
+      "path": "../../lib/hash"
+    }
+  ]
 }

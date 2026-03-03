@@ -5,5 +5,12 @@
     "rootDir": "src"
   },
   "include": ["src/**/*"],
-  "references": [{ "path": "../core" }, { "path": "../scope" }]
+  "references": [
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../security/scope"
+    }
+  ]
 }

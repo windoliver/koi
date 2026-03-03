@@ -6,12 +6,26 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../filesystem" },
-    { "path": "../manifest" },
-    { "path": "../middleware-goal-anchor" },
-    { "path": "../scope" },
-    { "path": "../soul" },
-    { "path": "../tool-browser" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../fs/filesystem"
+    },
+    {
+      "path": "../../kernel/manifest"
+    },
+    {
+      "path": "../../middleware/middleware-goal-anchor"
+    },
+    {
+      "path": "../../security/scope"
+    },
+    {
+      "path": "../../kernel/soul"
+    },
+    {
+      "path": "../../fs/tool-browser"
+    }
   ]
 }

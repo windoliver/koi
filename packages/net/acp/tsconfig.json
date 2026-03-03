@@ -6,9 +6,17 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../acp-protocol" },
-    { "path": "../channel-base" },
-    { "path": "../resolve" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../acp-protocol"
+    },
+    {
+      "path": "../channel-base"
+    },
+    {
+      "path": "../../fs/resolve"
+    }
   ]
 }

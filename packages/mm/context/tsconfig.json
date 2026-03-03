@@ -6,9 +6,17 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../resolve" },
-    { "path": "../token-estimator" },
-    { "path": "../validation" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../fs/resolve"
+    },
+    {
+      "path": "../token-estimator"
+    },
+    {
+      "path": "../../lib/validation"
+    }
   ]
 }

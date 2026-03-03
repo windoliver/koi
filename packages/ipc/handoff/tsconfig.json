@@ -6,8 +6,14 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../sqlite-utils" },
-    { "path": "../nexus-client" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../lib/sqlite-utils"
+    },
+    {
+      "path": "../../lib/nexus-client"
+    }
   ]
 }

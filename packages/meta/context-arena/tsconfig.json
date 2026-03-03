@@ -6,16 +6,38 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../context" },
-    { "path": "../memory-fs" },
-    { "path": "../middleware-compactor" },
-    { "path": "../middleware-context-editing" },
-    { "path": "../middleware-hot-memory" },
-    { "path": "../middleware-personalization" },
-    { "path": "../middleware-preference" },
-    { "path": "../snapshot-chain-store" },
-    { "path": "../token-estimator" },
-    { "path": "../tool-squash" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../mm/context"
+    },
+    {
+      "path": "../../mm/memory-fs"
+    },
+    {
+      "path": "../../mm/middleware-compactor"
+    },
+    {
+      "path": "../../mm/middleware-context-editing"
+    },
+    {
+      "path": "../../mm/middleware-hot-memory"
+    },
+    {
+      "path": "../../mm/middleware-personalization"
+    },
+    {
+      "path": "../../mm/middleware-preference"
+    },
+    {
+      "path": "../../mm/snapshot-chain-store"
+    },
+    {
+      "path": "../../mm/token-estimator"
+    },
+    {
+      "path": "../../mm/tool-squash"
+    }
   ]
 }

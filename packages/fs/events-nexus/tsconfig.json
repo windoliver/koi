@@ -6,12 +6,26 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../engine" },
-    { "path": "../engine-pi" },
-    { "path": "../event-delivery" },
-    { "path": "../hash" },
-    { "path": "../registry-event-sourced" },
-    { "path": "../test-utils" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../kernel/engine"
+    },
+    {
+      "path": "../../drivers/engine-pi"
+    },
+    {
+      "path": "../../lib/event-delivery"
+    },
+    {
+      "path": "../../lib/hash"
+    },
+    {
+      "path": "../registry-event-sourced"
+    },
+    {
+      "path": "../../lib/test-utils"
+    }
   ]
 }

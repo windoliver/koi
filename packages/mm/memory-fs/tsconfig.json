@@ -6,9 +6,17 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../engine" },
-    { "path": "../engine-loop" },
-    { "path": "../model-router" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../kernel/engine"
+    },
+    {
+      "path": "../../drivers/engine-loop"
+    },
+    {
+      "path": "../../drivers/model-router"
+    }
   ]
 }

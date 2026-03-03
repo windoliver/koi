@@ -5,5 +5,15 @@
     "rootDir": "src"
   },
   "include": ["src/**/*"],
-  "references": [{ "path": "../core" }, { "path": "../resolve" }, { "path": "../token-estimator" }]
+  "references": [
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../fs/resolve"
+    },
+    {
+      "path": "../token-estimator"
+    }
+  ]
 }

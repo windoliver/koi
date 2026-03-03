@@ -5,5 +5,12 @@
     "rootDir": "src"
   },
   "include": ["src/**/*"],
-  "references": [{ "path": "../core" }, { "path": "../sandbox-wasm" }]
+  "references": [
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../sandbox-wasm"
+    }
+  ]
 }

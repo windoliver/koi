@@ -6,10 +6,20 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../engine" },
-    { "path": "../engine-loop" },
-    { "path": "../engine-pi" },
-    { "path": "../model-router" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../kernel/engine"
+    },
+    {
+      "path": "../../drivers/engine-loop"
+    },
+    {
+      "path": "../../drivers/engine-pi"
+    },
+    {
+      "path": "../../drivers/model-router"
+    }
   ]
 }

@@ -6,9 +6,17 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../resolve" },
-    { "path": "../session-repair" },
-    { "path": "../token-estimator" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../fs/resolve"
+    },
+    {
+      "path": "../session-repair"
+    },
+    {
+      "path": "../token-estimator"
+    }
   ]
 }

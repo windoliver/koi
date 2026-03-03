@@ -6,12 +6,26 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../edit-match" },
-    { "path": "../forge-types" },
-    { "path": "../git-utils" },
-    { "path": "../hash" },
-    { "path": "../resolve" },
-    { "path": "../validation" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../lib/edit-match"
+    },
+    {
+      "path": "../forge-types"
+    },
+    {
+      "path": "../../lib/git-utils"
+    },
+    {
+      "path": "../../lib/hash"
+    },
+    {
+      "path": "../../fs/resolve"
+    },
+    {
+      "path": "../../lib/validation"
+    }
   ]
 }

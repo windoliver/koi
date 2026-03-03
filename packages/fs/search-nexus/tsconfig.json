@@ -6,9 +6,17 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../errors" },
-    { "path": "../nexus-client" },
-    { "path": "../search-provider" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../lib/errors"
+    },
+    {
+      "path": "../../lib/nexus-client"
+    },
+    {
+      "path": "../search-provider"
+    }
   ]
 }

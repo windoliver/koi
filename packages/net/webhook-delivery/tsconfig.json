@@ -6,9 +6,17 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../errors" },
-    { "path": "../hash" },
-    { "path": "../resolve" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../lib/errors"
+    },
+    {
+      "path": "../../lib/hash"
+    },
+    {
+      "path": "../../fs/resolve"
+    }
   ]
 }

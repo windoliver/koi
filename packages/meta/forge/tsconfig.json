@@ -6,13 +6,29 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../forge-integrity" },
-    { "path": "../forge-policy" },
-    { "path": "../forge-tools" },
-    { "path": "../forge-types" },
-    { "path": "../forge-verifier" },
-    { "path": "../hash" },
-    { "path": "../resolve" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../forge/forge-integrity"
+    },
+    {
+      "path": "../../forge/forge-policy"
+    },
+    {
+      "path": "../../forge/forge-tools"
+    },
+    {
+      "path": "../../forge/forge-types"
+    },
+    {
+      "path": "../../forge/forge-verifier"
+    },
+    {
+      "path": "../../lib/hash"
+    },
+    {
+      "path": "../../fs/resolve"
+    }
   ]
 }

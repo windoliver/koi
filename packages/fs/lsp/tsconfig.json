@@ -6,9 +6,17 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../validation" },
-    { "path": "../engine" },
-    { "path": "../engine-pi" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../lib/validation"
+    },
+    {
+      "path": "../../kernel/engine"
+    },
+    {
+      "path": "../../drivers/engine-pi"
+    }
   ]
 }

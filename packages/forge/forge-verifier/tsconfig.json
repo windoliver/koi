@@ -6,9 +6,17 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../forge-types" },
-    { "path": "../hash" },
-    { "path": "../validation" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../forge-types"
+    },
+    {
+      "path": "../../lib/hash"
+    },
+    {
+      "path": "../../lib/validation"
+    }
   ]
 }

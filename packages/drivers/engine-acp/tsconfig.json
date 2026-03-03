@@ -5,5 +5,15 @@
     "rootDir": "src"
   },
   "include": ["src/**/*"],
-  "references": [{ "path": "../core" }, { "path": "../acp-protocol" }, { "path": "../resolve" }]
+  "references": [
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../net/acp-protocol"
+    },
+    {
+      "path": "../../fs/resolve"
+    }
+  ]
 }

@@ -6,10 +6,20 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../events-memory" },
-    { "path": "../test-utils" },
-    { "path": "../engine" },
-    { "path": "../engine-pi" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../events-memory"
+    },
+    {
+      "path": "../../lib/test-utils"
+    },
+    {
+      "path": "../../kernel/engine"
+    },
+    {
+      "path": "../../drivers/engine-pi"
+    }
   ]
 }

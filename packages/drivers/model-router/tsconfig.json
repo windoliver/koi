@@ -6,8 +6,14 @@
   },
   "include": ["src/**/*"],
   "references": [
-    { "path": "../core" },
-    { "path": "../token-estimator" },
-    { "path": "../validation" }
+    {
+      "path": "../../kernel/core"
+    },
+    {
+      "path": "../../mm/token-estimator"
+    },
+    {
+      "path": "../../lib/validation"
+    }
   ]
 }
