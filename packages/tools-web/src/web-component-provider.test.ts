@@ -43,9 +43,11 @@ describe("createWebProvider", () => {
     const provider = createWebProvider({ executor: createMockExecutor() });
     const components = extractMap(await provider.attach(MOCK_AGENT));
 
-    expect(components.size).toBe(2);
+    // 2 tools + 1 skill
+    expect(components.size).toBe(3);
     expect(components.has("tool:web_fetch")).toBe(true);
     expect(components.has("tool:web_search")).toBe(true);
+    expect(components.has("skill:web")).toBe(true);
   });
 
   test("respects custom prefix", async () => {
@@ -63,9 +65,11 @@ describe("createWebProvider", () => {
     });
     const components = extractMap(await provider.attach(MOCK_AGENT));
 
-    expect(components.size).toBe(1);
+    // 1 tool + 1 skill
+    expect(components.size).toBe(2);
     expect(components.has("tool:web_fetch")).toBe(true);
     expect(components.has("tool:web_search")).toBe(false);
+    expect(components.has("skill:web")).toBe(true);
   });
 
   test("sets trust tier on tools", async () => {
