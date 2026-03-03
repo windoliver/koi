@@ -43,3 +43,23 @@ describe("engine-acp descriptor", () => {
     expect(skill.tags).toContain("engine");
   });
 });
+
+describe("optionsValidator", () => {
+  test("accepts valid object with command", () => {
+    const result = descriptor.optionsValidator({ command: "claude" });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects non-object input", () => {
+    const result = descriptor.optionsValidator("invalid");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+    }
+  });
+
+  test("rejects null and undefined", () => {
+    expect(descriptor.optionsValidator(null).ok).toBe(false);
+    expect(descriptor.optionsValidator(undefined).ok).toBe(false);
+  });
+});

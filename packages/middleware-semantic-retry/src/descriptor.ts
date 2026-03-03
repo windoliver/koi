@@ -8,21 +8,15 @@
 import type { KoiError, KoiMiddleware, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "@koi/resolve";
+import { validateRequiredDescriptorOptions } from "@koi/resolve";
 import { createSemanticRetryMiddleware } from "./semantic-retry.js";
 
-function validateSemanticRetryDescriptorOptions(input: unknown): Result<unknown, KoiError> {
-  if (input === null || input === undefined || typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Semantic retry options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-
-  const opts = input as Record<string, unknown>;
+function validateSemanticRetryDescriptorOptions(
+  input: unknown,
+): Result<Record<string, unknown>, KoiError> {
+  const base = validateRequiredDescriptorOptions(input, "Semantic retry");
+  if (!base.ok) return base;
+  const opts = base.value;
 
   if (
     opts.maxRetries !== undefined &&
@@ -38,7 +32,7 @@ function validateSemanticRetryDescriptorOptions(input: unknown): Result<unknown,
     };
   }
 
-  return { ok: true, value: input };
+  return { ok: true, value: opts };
 }
 
 /**

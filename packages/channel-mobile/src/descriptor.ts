@@ -5,25 +5,11 @@
  * Port is read from options or defaults to 8080.
  */
 
-import type { ChannelAdapter, KoiError, Result } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
+import type { ChannelAdapter } from "@koi/core";
 import type { BrickDescriptor, ResolutionContext } from "@koi/resolve";
+import { validateOptionalDescriptorOptions } from "@koi/resolve";
 import { DEFAULT_MOBILE_PORT } from "./config.js";
 import { createMobileChannel } from "./mobile-channel.js";
-
-function validateMobileChannelOptions(input: unknown): Result<unknown, KoiError> {
-  if (input !== null && input !== undefined && typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Mobile channel options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-  return { ok: true, value: input ?? {} };
-}
 
 /**
  * Descriptor for mobile channel adapter.
@@ -33,7 +19,7 @@ export const descriptor: BrickDescriptor<ChannelAdapter> = {
   kind: "channel",
   name: "@koi/channel-mobile",
   aliases: ["mobile"],
-  optionsValidator: validateMobileChannelOptions,
+  optionsValidator: (input) => validateOptionalDescriptorOptions(input, "Mobile channel"),
   factory(options, _context: ResolutionContext): ChannelAdapter {
     const opts = options as Readonly<Record<string, unknown>>;
     const port = typeof opts.port === "number" ? opts.port : DEFAULT_MOBILE_PORT;

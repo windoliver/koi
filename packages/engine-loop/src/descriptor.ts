@@ -4,8 +4,9 @@
  * Enables manifest auto-resolution for the pure TypeScript ReAct loop engine.
  */
 
-import type { CompanionSkillDefinition, EngineAdapter, KoiError, Result } from "@koi/core";
+import type { CompanionSkillDefinition, EngineAdapter } from "@koi/core";
 import type { BrickDescriptor } from "@koi/resolve";
+import { validateOptionalDescriptorOptions } from "@koi/resolve";
 
 const LOOP_COMPANION_SKILL: CompanionSkillDefinition = {
   name: "engine-loop-guide",
@@ -38,20 +39,6 @@ engine:
 `,
 };
 
-function validateLoopEngineOptions(input: unknown): Result<unknown, KoiError> {
-  if (input !== null && input !== undefined && typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Loop engine options must be an object",
-        retryable: false,
-      },
-    };
-  }
-  return { ok: true, value: input ?? {} };
-}
-
 /**
  * Descriptor for loop engine adapter.
  *
@@ -67,7 +54,7 @@ export const descriptor: BrickDescriptor<EngineAdapter> = {
   description: "Default lightweight ReAct loop engine in pure TypeScript",
   tags: ["default", "react-loop", "typescript"],
   companionSkills: [LOOP_COMPANION_SKILL],
-  optionsValidator: validateLoopEngineOptions,
+  optionsValidator: (input) => validateOptionalDescriptorOptions(input, "Loop engine"),
   factory(): EngineAdapter {
     throw new Error(
       "@koi/engine-loop requires a modelCall handler. " +

@@ -5,24 +5,10 @@
  * IMAP and SMTP settings are read from environment variables.
  */
 
-import type { ChannelAdapter, KoiError, Result } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
+import type { ChannelAdapter } from "@koi/core";
 import type { BrickDescriptor, ResolutionContext } from "@koi/resolve";
+import { validateOptionalDescriptorOptions } from "@koi/resolve";
 import { createEmailChannel } from "./email-channel.js";
-
-function validateEmailChannelOptions(input: unknown): Result<unknown, KoiError> {
-  if (input !== null && input !== undefined && typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Email channel options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-  return { ok: true, value: input ?? {} };
-}
 
 /**
  * Descriptor for Email channel adapter.
@@ -32,7 +18,7 @@ export const descriptor: BrickDescriptor<ChannelAdapter> = {
   kind: "channel",
   name: "@koi/channel-email",
   aliases: ["email"],
-  optionsValidator: validateEmailChannelOptions,
+  optionsValidator: (input) => validateOptionalDescriptorOptions(input, "Email channel"),
   factory(options, context: ResolutionContext): ChannelAdapter {
     const opts = options as Readonly<Record<string, unknown>>;
 

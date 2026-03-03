@@ -8,25 +8,17 @@
 import type { KoiError, KoiMiddleware, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "@koi/resolve";
+import { validateRequiredDescriptorOptions } from "@koi/resolve";
 import { createAllDetectors } from "./detectors.js";
 import { createPIIMiddleware } from "./pii-middleware.js";
 import type { PIIConfig, PIIStrategy } from "./types.js";
 
 const VALID_STRATEGIES: readonly string[] = ["block", "redact", "mask", "hash"];
 
-function validatePIIDescriptorOptions(input: unknown): Result<unknown, KoiError> {
-  if (input === null || input === undefined || typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "PII options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-
-  const opts = input as Record<string, unknown>;
+function validatePIIDescriptorOptions(input: unknown): Result<Record<string, unknown>, KoiError> {
+  const base = validateRequiredDescriptorOptions(input, "PII");
+  if (!base.ok) return base;
+  const opts = base.value;
 
   if (opts.strategy !== undefined && !VALID_STRATEGIES.includes(opts.strategy as string)) {
     return {
@@ -50,7 +42,7 @@ function validatePIIDescriptorOptions(input: unknown): Result<unknown, KoiError>
     };
   }
 
-  return { ok: true, value: input };
+  return { ok: true, value: opts };
 }
 
 /**

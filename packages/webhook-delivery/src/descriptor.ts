@@ -5,23 +5,9 @@
  * Validates webhook endpoint configuration from the manifest.
  */
 
-import type { KoiError, KoiMiddleware, Result } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
+import type { KoiMiddleware } from "@koi/core";
 import type { BrickDescriptor } from "@koi/resolve";
-
-function validateWebhookDescriptorOptions(input: unknown): Result<unknown, KoiError> {
-  if (input !== null && input !== undefined && typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Webhook options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-  return { ok: true, value: input ?? {} };
-}
+import { validateOptionalDescriptorOptions } from "@koi/resolve";
 
 /**
  * Descriptor for webhook delivery middleware.
@@ -35,7 +21,7 @@ export const descriptor: BrickDescriptor<KoiMiddleware> = {
   kind: "webhook",
   name: "@koi/webhook-delivery",
   aliases: ["webhook", "webhooks"],
-  optionsValidator: validateWebhookDescriptorOptions,
+  optionsValidator: (input) => validateOptionalDescriptorOptions(input, "Webhook delivery"),
   factory(): KoiMiddleware {
     throw new Error(
       "@koi/webhook-delivery requires an EventBackend. " +

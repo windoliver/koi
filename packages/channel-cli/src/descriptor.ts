@@ -4,23 +4,10 @@
  * Enables manifest auto-resolution for the CLI stdin/stdout channel.
  */
 
-import type { ChannelAdapter, KoiError, Result } from "@koi/core";
+import type { ChannelAdapter } from "@koi/core";
 import type { BrickDescriptor } from "@koi/resolve";
+import { validateOptionalDescriptorOptions } from "@koi/resolve";
 import { createCliChannel } from "./cli-channel.js";
-
-function validateCliChannelOptions(input: unknown): Result<unknown, KoiError> {
-  if (input !== null && input !== undefined && typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "CLI channel options must be an object",
-        retryable: false,
-      },
-    };
-  }
-  return { ok: true, value: input ?? {} };
-}
 
 /**
  * Descriptor for CLI channel adapter.
@@ -30,7 +17,7 @@ export const descriptor: BrickDescriptor<ChannelAdapter> = {
   kind: "channel",
   name: "@koi/channel-cli",
   aliases: ["cli"],
-  optionsValidator: validateCliChannelOptions,
+  optionsValidator: (input) => validateOptionalDescriptorOptions(input, "CLI channel"),
   factory(): ChannelAdapter {
     return createCliChannel();
   },

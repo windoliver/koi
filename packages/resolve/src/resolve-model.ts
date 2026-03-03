@@ -7,7 +7,7 @@
 
 import type { KoiError, ModelConfig, ModelHandler, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
-import { findClosestName } from "./errors.js";
+import { findClosestMatch } from "@koi/validation";
 import type { ResolutionContext, ResolveRegistry } from "./types.js";
 
 /**
@@ -69,7 +69,7 @@ export async function resolveModel(
   const descriptor = registry.get("model", provider);
   if (descriptor === undefined) {
     const available = registry.list("model").map((d) => d.name);
-    const suggestion = findClosestName(provider, available);
+    const suggestion = findClosestMatch(provider, available);
     const hint = suggestion !== undefined ? ` Did you mean "${suggestion}"?` : "";
 
     return {

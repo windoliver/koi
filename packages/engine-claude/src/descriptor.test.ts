@@ -43,3 +43,23 @@ describe("engine-claude descriptor", () => {
     expect(skill.tags).toContain("engine");
   });
 });
+
+describe("optionsValidator", () => {
+  test("accepts valid object", () => {
+    const result = descriptor.optionsValidator({});
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects non-object input", () => {
+    const result = descriptor.optionsValidator("invalid");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+    }
+  });
+
+  test("accepts null and undefined as optional", () => {
+    expect(descriptor.optionsValidator(null).ok).toBe(true);
+    expect(descriptor.optionsValidator(undefined).ok).toBe(true);
+  });
+});

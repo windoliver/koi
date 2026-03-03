@@ -8,6 +8,7 @@
 import type { KoiError, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "@koi/resolve";
+import { validateRequiredDescriptorOptions } from "@koi/resolve";
 
 /** Schedule entry as it appears in the manifest. */
 interface ScheduleEntry {
@@ -30,19 +31,12 @@ function isScheduleArray(value: unknown): value is readonly ScheduleEntry[] {
   );
 }
 
-function validateSchedulerDescriptorOptions(input: unknown): Result<unknown, KoiError> {
-  if (input === null || input === undefined || typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Scheduler options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-
-  const opts = input as Record<string, unknown>;
+function validateSchedulerDescriptorOptions(
+  input: unknown,
+): Result<Record<string, unknown>, KoiError> {
+  const base = validateRequiredDescriptorOptions(input, "Scheduler");
+  if (!base.ok) return base;
+  const opts = base.value;
 
   if (opts.schedules !== undefined && !isScheduleArray(opts.schedules)) {
     return {
@@ -55,7 +49,7 @@ function validateSchedulerDescriptorOptions(input: unknown): Result<unknown, Koi
     };
   }
 
-  return { ok: true, value: input };
+  return { ok: true, value: opts };
 }
 
 /**

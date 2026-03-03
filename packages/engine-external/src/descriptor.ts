@@ -9,6 +9,7 @@
 import type { CompanionSkillDefinition, EngineAdapter, KoiError, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "@koi/resolve";
+import { validateRequiredDescriptorOptions } from "@koi/resolve";
 import { createExternalAdapter } from "./adapter.js";
 import type { ExternalAdapterConfig } from "./types.js";
 
@@ -53,19 +54,10 @@ engine:
 `,
 };
 
-function validateExternalEngineOptions(input: unknown): Result<unknown, KoiError> {
-  if (input === null || input === undefined || typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "External engine options must be an object with a 'command' field",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-
-  const opts = input as Record<string, unknown>;
+function validateExternalEngineOptions(input: unknown): Result<Record<string, unknown>, KoiError> {
+  const base = validateRequiredDescriptorOptions(input, "External engine");
+  if (!base.ok) return base;
+  const opts = base.value;
 
   if (typeof opts.command !== "string" || opts.command === "") {
     return {
@@ -78,7 +70,7 @@ function validateExternalEngineOptions(input: unknown): Result<unknown, KoiError
     };
   }
 
-  return { ok: true, value: input };
+  return { ok: true, value: opts };
 }
 
 /**

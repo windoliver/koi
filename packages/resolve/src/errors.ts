@@ -4,25 +4,7 @@
 
 import type { KoiError } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
-import { levenshteinDistance } from "@koi/validation";
 import type { ResolutionFailure } from "./types.js";
-
-/** Maximum Levenshtein distance to consider a name a "close match". */
-const MAX_SUGGESTION_DISTANCE = 3;
-
-/**
- * Finds the closest name from a list of candidates.
- * Returns undefined if no match is within MAX_SUGGESTION_DISTANCE.
- */
-export function findClosestName(target: string, candidates: readonly string[]): string | undefined {
-  return candidates.reduce<{ readonly distance: number; readonly match: string | undefined }>(
-    (best, candidate) => {
-      const distance = levenshteinDistance(target, candidate, MAX_SUGGESTION_DISTANCE);
-      return distance < best.distance ? { distance, match: candidate } : best;
-    },
-    { distance: MAX_SUGGESTION_DISTANCE + 1, match: undefined },
-  ).match;
-}
 
 /**
  * Aggregates multiple resolution failures into a single KoiError.

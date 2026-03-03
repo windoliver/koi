@@ -11,27 +11,17 @@
 import type { ComponentProvider, KoiError, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "@koi/resolve";
+import { validateOptionalDescriptorOptions } from "@koi/resolve";
 import { OPERATIONS } from "./constants.js";
 
 const TRUST_TIERS = ["sandbox", "verified", "promoted"] as const;
 
-function validateFilesystemDescriptorOptions(input: unknown): Result<unknown, KoiError> {
-  if (input === null || input === undefined) {
-    return { ok: true, value: {} };
-  }
-
-  if (typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Filesystem options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-
-  const opts = input as Record<string, unknown>;
+function validateFilesystemDescriptorOptions(
+  input: unknown,
+): Result<Record<string, unknown>, KoiError> {
+  const base = validateOptionalDescriptorOptions(input, "Filesystem");
+  if (!base.ok) return base;
+  const opts = base.value;
 
   // Validate operations
   if (opts.operations !== undefined) {
@@ -85,7 +75,7 @@ function validateFilesystemDescriptorOptions(input: unknown): Result<unknown, Ko
     }
   }
 
-  return { ok: true, value: input };
+  return { ok: true, value: opts };
 }
 
 /**

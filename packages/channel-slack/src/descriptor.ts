@@ -6,25 +6,11 @@
  * App token is read from context.env.SLACK_APP_TOKEN.
  */
 
-import type { ChannelAdapter, KoiError, Result } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
+import type { ChannelAdapter } from "@koi/core";
 import type { BrickDescriptor, ResolutionContext } from "@koi/resolve";
+import { validateOptionalDescriptorOptions } from "@koi/resolve";
 import type { SlackDeployment, SlackFeatures } from "./config.js";
 import { createSlackChannel } from "./slack-channel.js";
-
-function validateSlackChannelOptions(input: unknown): Result<unknown, KoiError> {
-  if (input !== null && input !== undefined && typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Slack channel options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-  return { ok: true, value: input ?? {} };
-}
 
 function parseDeployment(
   options: Readonly<Record<string, unknown>>,
@@ -72,7 +58,7 @@ export const descriptor: BrickDescriptor<ChannelAdapter> = {
   kind: "channel",
   name: "@koi/channel-slack",
   aliases: ["slack"],
-  optionsValidator: validateSlackChannelOptions,
+  optionsValidator: (input) => validateOptionalDescriptorOptions(input, "Slack channel"),
   factory(options, context: ResolutionContext): ChannelAdapter {
     const botToken = context.env.SLACK_BOT_TOKEN;
     if (botToken === undefined || botToken === "") {

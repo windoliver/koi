@@ -12,6 +12,7 @@
 import type { KoiError, KoiMiddleware, Result, ToolDescriptor } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor, ResolutionContext } from "@koi/resolve";
+import { validateRequiredDescriptorOptions } from "@koi/resolve";
 import type { ToolSelectorConfig } from "./config.js";
 import { extractLastUserText } from "./extract-query.js";
 import { detectModelTier } from "./model-tier.js";
@@ -22,19 +23,12 @@ function isStringArray(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.every((x) => typeof x === "string");
 }
 
-function validateToolSelectorDescriptorOptions(input: unknown): Result<unknown, KoiError> {
-  if (input === null || input === undefined || typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Tool selector options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-
-  const opts = input as Record<string, unknown>;
+function validateToolSelectorDescriptorOptions(
+  input: unknown,
+): Result<Record<string, unknown>, KoiError> {
+  const base = validateRequiredDescriptorOptions(input, "Tool selector");
+  if (!base.ok) return base;
+  const opts = base.value;
 
   if (
     opts.maxTools !== undefined &&
@@ -121,7 +115,7 @@ function validateToolSelectorDescriptorOptions(input: unknown): Result<unknown, 
     };
   }
 
-  return { ok: true, value: input };
+  return { ok: true, value: opts };
 }
 
 /**

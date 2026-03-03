@@ -5,25 +5,11 @@
  * Token is read from context.env.TELEGRAM_BOT_TOKEN.
  */
 
-import type { ChannelAdapter, KoiError, Result } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
+import type { ChannelAdapter } from "@koi/core";
 import type { BrickDescriptor, ResolutionContext } from "@koi/resolve";
+import { validateOptionalDescriptorOptions } from "@koi/resolve";
 import type { TelegramDeployment } from "./telegram-channel.js";
 import { createTelegramChannel } from "./telegram-channel.js";
-
-function validateTelegramChannelOptions(input: unknown): Result<unknown, KoiError> {
-  if (input !== null && input !== undefined && typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Telegram channel options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-  return { ok: true, value: input ?? {} };
-}
 
 function parseDeployment(options: Readonly<Record<string, unknown>>): TelegramDeployment {
   if (typeof options.webhookUrl === "string") {
@@ -44,7 +30,7 @@ export const descriptor: BrickDescriptor<ChannelAdapter> = {
   kind: "channel",
   name: "@koi/channel-telegram",
   aliases: ["telegram"],
-  optionsValidator: validateTelegramChannelOptions,
+  optionsValidator: (input) => validateOptionalDescriptorOptions(input, "Telegram channel"),
   factory(options, context: ResolutionContext): ChannelAdapter {
     const token = context.env.TELEGRAM_BOT_TOKEN;
     if (token === undefined || token === "") {

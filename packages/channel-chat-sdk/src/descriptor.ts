@@ -5,25 +5,11 @@
  * channel adapter. Each platform in the config gets its own ChannelAdapter.
  */
 
-import type { ChannelAdapter, KoiError, Result } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
+import type { ChannelAdapter } from "@koi/core";
 import type { BrickDescriptor, ResolutionContext } from "@koi/resolve";
+import { validateOptionalDescriptorOptions } from "@koi/resolve";
 import { validateChatSdkChannelConfig } from "./config.js";
 import { createChatSdkChannels } from "./create-chat-sdk-channels.js";
-
-function validateChatSdkChannelOptions(input: unknown): Result<unknown, KoiError> {
-  if (input !== null && input !== undefined && typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Chat SDK channel options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-  return { ok: true, value: input ?? {} };
-}
 
 /**
  * Descriptor for Chat SDK multi-platform channel adapter.
@@ -35,7 +21,7 @@ export const descriptor: BrickDescriptor<ChannelAdapter> = {
   kind: "channel",
   name: "@koi/channel-chat-sdk",
   aliases: ["chat-sdk"],
-  optionsValidator: validateChatSdkChannelOptions,
+  optionsValidator: (input) => validateOptionalDescriptorOptions(input, "Chat SDK channel"),
   factory(options: unknown, _context: ResolutionContext): ChannelAdapter {
     const raw = (options ?? {}) as Record<string, unknown>;
 

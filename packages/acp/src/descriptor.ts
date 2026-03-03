@@ -5,9 +5,9 @@
  * No required options — the channel operates from the current process.
  */
 
-import type { ChannelAdapter, CompanionSkillDefinition, KoiError, Result } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
+import type { ChannelAdapter, CompanionSkillDefinition } from "@koi/core";
 import type { BrickDescriptor, ResolutionContext } from "@koi/resolve";
+import { validateOptionalDescriptorOptions } from "@koi/resolve";
 import { createAcpChannel } from "./acp-channel.js";
 import type { AcpServerConfig } from "./types.js";
 
@@ -43,21 +43,6 @@ channel:
 `,
 };
 
-function validateAcpServerOptions(input: unknown): Result<unknown, KoiError> {
-  // No required options — all are optional
-  if (input !== null && input !== undefined && typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "ACP server options must be an object (or omitted entirely)",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-  return { ok: true, value: input ?? {} };
-}
-
 /**
  * Descriptor for the ACP server channel.
  * Registered under the name "@koi/acp" with alias "acp-server".
@@ -69,7 +54,7 @@ export const descriptor: BrickDescriptor<ChannelAdapter> = {
   description: "ACP protocol server channel for IDE integration",
   tags: ["acp", "ide", "channel", "json-rpc"],
   companionSkills: [ACP_SERVER_COMPANION_SKILL],
-  optionsValidator: validateAcpServerOptions,
+  optionsValidator: (input) => validateOptionalDescriptorOptions(input, "ACP"),
   factory(options: Record<string, unknown>, _context: ResolutionContext): ChannelAdapter {
     const config: AcpServerConfig = {
       ...(typeof options === "object" && options !== null ? (options as AcpServerConfig) : {}),

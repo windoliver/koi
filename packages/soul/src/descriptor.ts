@@ -8,6 +8,7 @@
 import type { KoiError, KoiMiddleware, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "@koi/resolve";
+import { validateRequiredDescriptorOptions } from "@koi/resolve";
 import type { ContentInput, CreateSoulOptions } from "./config.js";
 import { createSoulMiddleware } from "./soul.js";
 
@@ -17,19 +18,10 @@ import { createSoulMiddleware } from "./soul.js";
  * Accepts { soul?: ContentInput, user?: ContentInput } — basePath
  * is injected from context.manifestDir by the factory, not from YAML.
  */
-function validateSoulDescriptorOptions(input: unknown): Result<unknown, KoiError> {
-  if (input === null || input === undefined || typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Soul options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-
-  const opts = input as Record<string, unknown>;
+function validateSoulDescriptorOptions(input: unknown): Result<Record<string, unknown>, KoiError> {
+  const base = validateRequiredDescriptorOptions(input, "Soul");
+  if (!base.ok) return base;
+  const opts = base.value;
 
   // Validate soul field if present
   if (opts.soul !== undefined) {
@@ -59,7 +51,7 @@ function validateSoulDescriptorOptions(input: unknown): Result<unknown, KoiError
     }
   }
 
-  return { ok: true, value: input };
+  return { ok: true, value: opts };
 }
 
 function isValidContentInput(value: unknown): value is ContentInput {

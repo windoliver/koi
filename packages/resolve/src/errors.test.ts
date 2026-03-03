@@ -3,8 +3,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { levenshteinDistance } from "@koi/validation";
-import { aggregateErrors, findClosestName, formatResolutionError } from "./errors.js";
+import { findClosestMatch, levenshteinDistance } from "@koi/validation";
+import { aggregateErrors, formatResolutionError } from "./errors.js";
 import type { ResolutionFailure } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -34,23 +34,23 @@ describe("levenshteinDistance", () => {
 });
 
 // ---------------------------------------------------------------------------
-// findClosestName
+// findClosestMatch (moved from local findClosestName to @koi/validation)
 // ---------------------------------------------------------------------------
 
-describe("findClosestName", () => {
+describe("findClosestMatch", () => {
   test("finds closest match within threshold", () => {
     const candidates = ["anthropic", "openai", "openrouter"];
-    expect(findClosestName("anthrpic", candidates)).toBe("anthropic"); // distance 1
-    expect(findClosestName("opanai", candidates)).toBe("openai"); // distance 1
+    expect(findClosestMatch("anthrpic", candidates)).toBe("anthropic"); // distance 1
+    expect(findClosestMatch("opanai", candidates)).toBe("openai"); // distance 1
   });
 
   test("returns undefined when no match within threshold", () => {
     const candidates = ["anthropic", "openai"];
-    expect(findClosestName("completely-different", candidates)).toBeUndefined();
+    expect(findClosestMatch("completely-different", candidates)).toBeUndefined();
   });
 
   test("returns undefined for empty candidates", () => {
-    expect(findClosestName("anything", [])).toBeUndefined();
+    expect(findClosestMatch("anything", [])).toBeUndefined();
   });
 });
 

@@ -6,23 +6,9 @@
  * environment variables plus STT/TTS provider configuration.
  */
 
-import type { ChannelAdapter, KoiError, Result } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
+import type { ChannelAdapter } from "@koi/core";
 import type { BrickDescriptor } from "@koi/resolve";
-
-function validateVoiceChannelOptions(input: unknown): Result<unknown, KoiError> {
-  if (input !== null && input !== undefined && typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Voice channel options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-  return { ok: true, value: input ?? {} };
-}
+import { validateOptionalDescriptorOptions } from "@koi/resolve";
 
 /**
  * Descriptor for voice channel adapter.
@@ -37,7 +23,7 @@ export const descriptor: BrickDescriptor<ChannelAdapter> = {
   kind: "channel",
   name: "@koi/channel-voice",
   aliases: ["voice"],
-  optionsValidator: validateVoiceChannelOptions,
+  optionsValidator: (input) => validateOptionalDescriptorOptions(input, "Voice channel"),
   factory(): ChannelAdapter {
     throw new Error(
       "@koi/channel-voice requires LiveKit credentials and STT/TTS config. " +

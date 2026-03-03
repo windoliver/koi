@@ -9,23 +9,17 @@
 import type { KoiError, KoiMiddleware, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "@koi/resolve";
+import { validateRequiredDescriptorOptions } from "@koi/resolve";
 import { nonEmpty } from "./builtin-checks.js";
 import { createOutputVerifierMiddleware } from "./output-verifier.js";
 import type { JudgeConfig, VerifierConfig } from "./types.js";
 
-function validateVerifierDescriptorOptions(input: unknown): Result<unknown, KoiError> {
-  if (input === null || input === undefined || typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Output verifier options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-
-  const opts = input as Record<string, unknown>;
+function validateVerifierDescriptorOptions(
+  input: unknown,
+): Result<Record<string, unknown>, KoiError> {
+  const base = validateRequiredDescriptorOptions(input, "Output verifier");
+  if (!base.ok) return base;
+  const opts = base.value;
 
   if (
     opts.vetoThreshold !== undefined &&
@@ -66,7 +60,7 @@ function validateVerifierDescriptorOptions(input: unknown): Result<unknown, KoiE
     };
   }
 
-  return { ok: true, value: input };
+  return { ok: true, value: opts };
 }
 
 /**
