@@ -1,15 +1,13 @@
 /**
  * InMemorySessionPersistence — Map-based store for tests and development.
- * No persistence across restarts. Implements checkpoint retention.
+ * No persistence across restarts.
  */
 
 import type {
-  AgentId,
   KoiError,
   PendingFrame,
   RecoveryPlan,
   Result,
-  SessionCheckpoint,
   SessionFilter,
   SessionPersistence,
   SessionRecord,
@@ -17,37 +15,13 @@ import type {
 import { notFound, validateNonEmpty } from "@koi/core";
 
 // ---------------------------------------------------------------------------
-// Defaults
-// ---------------------------------------------------------------------------
-
-const DEFAULT_MAX_CHECKPOINTS_PER_AGENT = 3;
-
-// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-export interface InMemorySessionStoreConfig {
-  readonly maxCheckpointsPerAgent?: number;
-}
-
-export function createInMemorySessionPersistence(
-  config?: InMemorySessionStoreConfig,
-): SessionPersistence {
-  const maxCheckpoints = config?.maxCheckpointsPerAgent ?? DEFAULT_MAX_CHECKPOINTS_PER_AGENT;
+export function createInMemorySessionPersistence(): SessionPersistence {
   const sessions = new Map<string, SessionRecord>();
-  // agentId → checkpoints (newest first)
-  const checkpointsByAgent = new Map<string, SessionCheckpoint[]>();
   // sessionId → pending frames (ordered by orderIndex)
   const pendingFramesBySession = new Map<string, PendingFrame[]>();
-
-  function agentCheckpoints(agentId: string): SessionCheckpoint[] {
-    let list = checkpointsByAgent.get(agentId);
-    if (list === undefined) {
-      list = [];
-      checkpointsByAgent.set(agentId, list);
-    }
-    return list;
-  }
 
   const saveSession = (record: SessionRecord): Result<void, KoiError> => {
     const idCheck = validateNonEmpty(record.sessionId, "Session ID");
@@ -79,8 +53,6 @@ export function createInMemorySessionPersistence(
       return { ok: false, error: notFound(sessionId, `Session not found: ${sessionId}`) };
     }
     sessions.delete(sessionId);
-    // Also remove checkpoints for this session's agent
-    checkpointsByAgent.delete(record.agentId);
     // Cascade pending frames by agentId (across all sessions for this agent)
     for (const [sid, frames] of pendingFramesBySession) {
       if (frames[0]?.agentId === record.agentId) {
@@ -94,52 +66,9 @@ export function createInMemorySessionPersistence(
     const results: SessionRecord[] = [];
     for (const record of sessions.values()) {
       if (filter?.agentId !== undefined && record.agentId !== filter.agentId) continue;
-      // Filter by processState: check the latest checkpoint for this agent
-      if (filter?.processState !== undefined) {
-        const checkpoints = checkpointsByAgent.get(record.agentId);
-        const latest = checkpoints?.[0];
-        if (latest === undefined || latest.processState !== filter.processState) continue;
-      }
       results.push(record);
     }
     return { ok: true, value: results };
-  };
-
-  const saveCheckpoint = (checkpoint: SessionCheckpoint): Result<void, KoiError> => {
-    const idCheck = validateNonEmpty(checkpoint.id, "Checkpoint ID");
-    if (!idCheck.ok) return idCheck;
-    const agentCheck = validateNonEmpty(checkpoint.agentId, "Agent ID");
-    if (!agentCheck.ok) return agentCheck;
-
-    const list = agentCheckpoints(checkpoint.agentId);
-    // Insert at front (newest first), maintain sorted order by createdAt desc
-    list.unshift(checkpoint);
-    list.sort((a, b) => b.createdAt - a.createdAt);
-
-    // Prune oldest beyond retention limit
-    while (list.length > maxCheckpoints) {
-      list.pop();
-    }
-
-    return { ok: true, value: undefined };
-  };
-
-  const loadLatestCheckpoint = (
-    agentId: AgentId,
-  ): Result<SessionCheckpoint | undefined, KoiError> => {
-    const agentCheck = validateNonEmpty(agentId, "Agent ID");
-    if (!agentCheck.ok) return agentCheck;
-
-    const list = checkpointsByAgent.get(agentId);
-    return { ok: true, value: list?.[0] };
-  };
-
-  const listCheckpoints = (agentId: AgentId): Result<readonly SessionCheckpoint[], KoiError> => {
-    const agentCheck = validateNonEmpty(agentId, "Agent ID");
-    if (!agentCheck.ok) return agentCheck;
-
-    const list = checkpointsByAgent.get(agentId) ?? [];
-    return { ok: true, value: [...list] };
   };
 
   const savePendingFrame = (frame: PendingFrame): Result<void, KoiError> => {
@@ -199,12 +128,6 @@ export function createInMemorySessionPersistence(
 
   const recover = (): Result<RecoveryPlan, KoiError> => {
     const allSessions = [...sessions.values()];
-    const checkpointMap = new Map<string, SessionCheckpoint>();
-    for (const [agentId, list] of checkpointsByAgent) {
-      if (list.length > 0 && list[0] !== undefined) {
-        checkpointMap.set(agentId, list[0]);
-      }
-    }
     const pendingFrames = new Map<string, PendingFrame[]>();
     for (const [sessionId, frames] of pendingFramesBySession) {
       if (frames.length > 0) {
@@ -213,13 +136,12 @@ export function createInMemorySessionPersistence(
     }
     return {
       ok: true,
-      value: { sessions: allSessions, checkpoints: checkpointMap, pendingFrames, skipped: [] },
+      value: { sessions: allSessions, pendingFrames, skipped: [] },
     };
   };
 
   const close = (): void => {
     sessions.clear();
-    checkpointsByAgent.clear();
     pendingFramesBySession.clear();
   };
 
@@ -228,9 +150,6 @@ export function createInMemorySessionPersistence(
     loadSession,
     removeSession,
     listSessions,
-    saveCheckpoint,
-    loadLatestCheckpoint,
-    listCheckpoints,
     savePendingFrame,
     loadPendingFrames,
     clearPendingFrames,

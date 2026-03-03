@@ -8,6 +8,7 @@
  */
 
 import type {
+  AgentManifest,
   AgentStatus,
   ContextSummary,
   EngineState,
@@ -22,8 +23,8 @@ import type {
   ProcessState,
   RegistryEntry,
   Result,
-  SessionCheckpoint,
   SessionContext,
+  SessionRecord,
   TaskBoardSnapshot,
   TaskItem,
   TaskItemId,
@@ -35,7 +36,7 @@ import type {
 } from "@koi/core";
 import { chainId, sessionId as createSessionId, validation } from "@koi/core";
 import { estimateTokens } from "@koi/token-estimator";
-import { computeCheckpointId, shouldSoftCheckpoint } from "./checkpoint-policy.js";
+import { shouldSoftCheckpoint } from "./checkpoint-policy.js";
 import { buildInitialPrompt, buildResumeContext } from "./context-bridge.js";
 import type {
   LongRunningConfig,
@@ -143,6 +144,12 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
 
   const cid = chainId(harnessId);
 
+  // Minimal manifest snapshot for session records (harness-internal)
+  const harnessManifest: AgentManifest = {
+    name: `harness-${harnessId}`,
+    version: "0.0.0",
+  } as AgentManifest;
+
   // Internal mutable state (references to immutable snapshots)
   let currentSnapshot: HarnessSnapshot | undefined;
   let currentNodeId: NodeId | undefined;
@@ -167,6 +174,28 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
     }
     currentSnapshot = snapshot;
     return { ok: true, value: undefined };
+  }
+
+  // -------------------------------------------------------------------------
+  // Session record helpers
+  // -------------------------------------------------------------------------
+
+  function buildSessionRecord(sid: string, engineState?: EngineState | undefined): SessionRecord {
+    const now = Date.now();
+    const base: SessionRecord = {
+      sessionId: createSessionId(sid),
+      agentId: config.agentId,
+      manifestSnapshot: harnessManifest,
+      seq: 0,
+      remoteSeq: 0,
+      connectedAt: startedAt ?? now,
+      lastPersistedAt: now,
+      metadata: { harnessId },
+    };
+    if (engineState !== undefined) {
+      return { ...base, lastEngineState: engineState };
+    }
+    return base;
   }
 
   // -------------------------------------------------------------------------
@@ -307,11 +336,13 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
     turnCount = 0;
     capturedArtifacts = [];
 
-    // Parallelize I/O: snapshot head load + checkpoint recovery (Decision 14A)
+    // Parallelize I/O: snapshot head load + session recovery (Decision 14A)
     const needsHead = currentSnapshot === undefined;
-    const [headResult, checkpointResult] = await Promise.all([
+    const lastSidForLoad = currentSnapshot?.lastSessionId;
+
+    const [headResult, sessionResult] = await Promise.all([
       needsHead ? harnessStore.head(cid) : undefined,
-      sessionPersistence.loadLatestCheckpoint(config.agentId),
+      lastSidForLoad !== undefined ? sessionPersistence.loadSession(lastSidForLoad) : undefined,
     ]);
 
     if (needsHead && headResult !== undefined && headResult.ok && headResult.value !== undefined) {
@@ -326,9 +357,17 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
       };
     }
 
-    if (checkpointResult.ok && checkpointResult.value !== undefined) {
-      const checkpoint = checkpointResult.value;
+    // If we didn't have lastSid before loading head, try again with the loaded snapshot
+    let resolvedSessionResult = sessionResult;
+    if (lastSidForLoad === undefined && currentSnapshot.lastSessionId !== undefined) {
+      resolvedSessionResult = await sessionPersistence.loadSession(currentSnapshot.lastSessionId);
+    }
 
+    const lastEngineState = resolvedSessionResult?.ok
+      ? resolvedSessionResult.value.lastEngineState
+      : undefined;
+
+    if (lastEngineState !== undefined) {
       const nextSeq = currentSnapshot.sessionSeq + 1;
       const updated: HarnessSnapshot = {
         ...currentSnapshot,
@@ -346,7 +385,7 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
       return {
         ok: true,
         value: {
-          engineInput: { kind: "resume", state: checkpoint.engineState },
+          engineInput: { kind: "resume", state: lastEngineState },
           sessionId: sid,
           engineStateRecovered: true,
         },
@@ -418,19 +457,10 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
           ]
         : currentSnapshot.summaries;
 
-    // Save engine state via session persistence if available
-    if (sessionResult.engineState !== undefined) {
-      const checkpoint: SessionCheckpoint = {
-        id: computeCheckpointId(harnessId, sessionResult.sessionId, turnCount),
-        agentId: config.agentId,
-        sessionId: createSessionId(sessionResult.sessionId),
-        engineState: sessionResult.engineState,
-        processState: "running",
-        generation: currentSnapshot.sessionSeq,
-        metadata: {},
-        createdAt: Date.now(),
-      };
-      await sessionPersistence.saveCheckpoint(checkpoint);
+    // Persist engine state in session record for fast recovery
+    if (currentSessionId !== undefined) {
+      const record = buildSessionRecord(currentSessionId, sessionResult.engineState);
+      await sessionPersistence.saveSession(record);
     }
 
     // Limit artifacts
@@ -604,24 +634,11 @@ export function createLongRunningHarness(config: LongRunningConfig): LongRunning
           currentSnapshot !== undefined &&
           currentSessionId !== undefined
         ) {
-          // Capture real engine state if callback provided, else use placeholder
-          let engineState: EngineState = { engineId: "soft-checkpoint", data: null };
-          if (saveState !== undefined) {
-            engineState = await saveState();
-          }
-
-          const checkpoint: SessionCheckpoint = {
-            id: computeCheckpointId(harnessId, currentSessionId, turnCount),
-            agentId: config.agentId,
-            sessionId: createSessionId(currentSessionId),
-            engineState,
-            processState: "running",
-            generation: currentSnapshot.sessionSeq,
-            metadata: { softCheckpoint: true },
-            createdAt: Date.now(),
-          };
-          // Fire-and-forget
-          void sessionPersistence.saveCheckpoint(checkpoint);
+          // Capture real engine state if callback provided
+          const engineState = saveState !== undefined ? await saveState() : undefined;
+          // Persist engine state in session record (fire-and-forget)
+          const record = buildSessionRecord(currentSessionId, engineState);
+          void sessionPersistence.saveSession(record);
         }
       },
 

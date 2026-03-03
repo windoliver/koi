@@ -1,6 +1,6 @@
 # @koi/long-running — Multi-Session Agent Harness for Long-Horizon Tasks
 
-State manager for agents that operate over hours or days across multiple sessions. Tracks task progress, bridges context between sessions via structured summaries, checkpoints at meaningful task boundaries, and captures key artifacts — enabling an agent to pick up exactly where it left off after any session boundary.
+State manager for agents that operate over hours or days across multiple sessions. Tracks task progress, bridges context between sessions via structured summaries, persists engine state at meaningful boundaries, and captures key artifacts — enabling an agent to pick up exactly where it left off after any session boundary.
 
 ---
 
@@ -12,7 +12,7 @@ Single-session agents lose all context when a session ends. Crash recovery (`Ses
 
 - **Task tracking** — knows which tasks are pending, completed, or failed across sessions
 - **Context bridging** — builds a structured resume prompt from summaries and artifacts so the agent doesn't start blind
-- **Soft checkpoints** — saves engine state every N turns so crash recovery loses minimal work
+- **Periodic engine state saves** — persists engine state to session record every N turns so crash recovery loses minimal work
 - **Artifact capture** — records notable tool outputs for cross-session continuity
 - **Pinned messages** — resume context is marked `pinned: true` so the compactor never erases it
 
@@ -31,7 +31,7 @@ Without this package, every long-running agent would reinvent progress tracking,
 │  types.ts              ← Config, LongRunningHarness interface      │
 │  harness.ts            ← Factory + state machine implementation    │
 │  context-bridge.ts     ← Builds resume context from snapshots      │
-│  checkpoint-policy.ts  ← Soft checkpoint timing + ID generation    │
+│  checkpoint-policy.ts  ← Engine state save timing + ID generation   │
 │  index.ts              ← Public API surface                        │
 │                                                                    │
 ├──────────────────────────────────────────────────────────────────  │
@@ -48,7 +48,7 @@ Without this package, every long-running agent would reinvent progress tracking,
 
 ## How It Works
 
-The harness is a **state manager called at session boundaries by Node** — it is not a middleware or engine decorator. It owns the task plan, context summaries, and progress tracking. Engine state lives in `SessionPersistence` (crash recovery). Harness state lives in `SnapshotChainStore<HarnessSnapshot>` (semantic history).
+The harness is a **state manager called at session boundaries by Node** — it is not a middleware or engine decorator. It owns the task plan, context summaries, and progress tracking. Engine state lives in `SessionRecord.lastEngineState` via `SessionPersistence` (crash recovery). Harness state lives in `SnapshotChainStore<HarnessSnapshot>` (semantic history).
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -88,7 +88,7 @@ The harness is a **state manager called at session boundaries by Node** — it i
 │                                                                    │
 │  Persistence:                                                      │
 │  ├─ HarnessSnapshot → SnapshotChainStore (semantic history)        │
-│  └─ EngineState     → SessionPersistence  (crash recovery)         │
+│  └─ EngineState     → SessionRecord.lastEngineState (crash recovery)│
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -107,7 +107,7 @@ start(plan)                  resume()                     resume()
   │ harness middleware         │ context bridge OR          │ ...
   │                            │ engine state recovery      │
   │ onAfterTurn:               │                            │
-  │   soft checkpoint @5,10    │ completeTask("task-2")     │ completeTask("task-3")
+  │   save engine state @5,10  │ completeTask("task-2")     │ completeTask("task-3")
   │                            │                            │  → all done!
   │ completeTask("task-1")     │                            │  → phase = completed
   │                            │                            │
@@ -126,18 +126,18 @@ pause(sessionResult)         pause(sessionResult)
 
 When `resume()` is called, the harness attempts two strategies in order:
 
-1. **Engine state recovery** — loads the latest `SessionCheckpoint` from `SessionPersistence`. If found, returns `{ kind: "resume", state }` so the engine can restore its internal state. This is the "hot" path — cheapest and most accurate.
+1. **Engine state recovery** — loads the `SessionRecord` and checks `lastEngineState`. If present, returns `{ kind: "resume", state }` so the engine can restore its internal state. This is the "hot" path — cheapest and most accurate.
 
-2. **Context bridge fallback** — if no checkpoint exists, builds `InboundMessage[]` from the harness snapshot's task board, summaries, and artifacts. Returns `{ kind: "messages", messages }`. Messages are marked `pinned: true` to survive compaction.
+2. **Context bridge fallback** — if no engine state exists, builds `InboundMessage[]` from the harness snapshot's task board, summaries, and artifacts. Returns `{ kind: "messages", messages }`. Messages are marked `pinned: true` to survive compaction.
 
 ```
 resume()
    │
-   ├── loadLatestCheckpoint(agentId)
+   ├── loadSession(lastSessionId)
    │       │
-   │       ├── found? → { kind: "resume", state }     ← hot path
+   │       ├── session.lastEngineState? → { kind: "resume", state }  ← hot path
    │       │
-   │       └── not found?
+   │       └── no engine state?
    │               │
    │               └── buildResumeContext(snapshot)
    │                       │
@@ -153,14 +153,14 @@ resume()
 
 `harness.createMiddleware()` returns a `KoiMiddleware` named `"long-running-harness"` (priority 50) with three hooks:
 
-### onAfterTurn — Soft Checkpoints
+### onAfterTurn — Periodic Engine State Saves
 
-Every `softCheckpointInterval` turns (default: 5), fires a soft checkpoint to `SessionPersistence`. If `saveState` callback is provided, captures real engine state; otherwise uses a placeholder.
+Every `softCheckpointInterval` turns (default: 5), persists engine state to `SessionRecord.lastEngineState` via `saveSession()`. If `saveState` callback is provided, captures real engine state; otherwise skips.
 
 ```
 Turn 1  2  3  4  5  6  7  8  9  10  11  12  ...
                   ↑                 ↑
-              checkpoint         checkpoint
+            saveSession()     saveSession()
 ```
 
 ### wrapToolCall — Artifact Capture
@@ -371,13 +371,13 @@ await mock.start(createMockTaskPlan(3));
 
 ---
 
-## Checkpoint Policy
+## Save Policy
 
-Two pure functions control soft checkpoint behavior:
+Two pure functions control periodic engine state save behavior:
 
 ### shouldSoftCheckpoint
 
-Determines if a soft checkpoint should fire at the current turn:
+Determines if an engine state save should fire at the current turn:
 
 ```typescript
 shouldSoftCheckpoint(turnIndex: 0, interval: 5)  // false (turn 0 never fires)
@@ -388,7 +388,7 @@ shouldSoftCheckpoint(turnIndex: 10, interval: 5) // true
 
 ### computeCheckpointId
 
-Generates a deterministic checkpoint ID from harness, session, and turn:
+Generates a deterministic ID from harness, session, and turn:
 
 ```typescript
 computeCheckpointId(harnessId("h1"), "session-1", 5)
@@ -445,12 +445,12 @@ Context window during Session 2:
 | `buildInitialPrompt(plan)` | `(TaskBoardSnapshot) → string` | Formats task plan as text for first session |
 | `buildResumeContext(snapshot, config)` | `(HarnessSnapshot, { maxContextTokens }) → Result<InboundMessage[], KoiError>` | Builds pinned resume messages from snapshot |
 
-### Checkpoint Policy
+### Save Policy
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `shouldSoftCheckpoint(turn, interval)` | `(number, number) → boolean` | Whether to fire at this turn |
-| `computeCheckpointId(harness, session, turn)` | `(HarnessId, string, number) → string` | Deterministic checkpoint ID |
+| `shouldSoftCheckpoint(turn, interval)` | `(number, number) → boolean` | Whether to save engine state at this turn |
+| `computeCheckpointId(harness, session, turn)` | `(HarnessId, string, number) → string` | Deterministic save-point ID |
 
 ### Types
 
@@ -488,7 +488,7 @@ Context window during Session 2:
 | Snapshot chain (DAG) over flat store | Enables branching, forking, and pruning of harness history |
 | Resume tries engine state first | Hot path is cheapest — avoids LLM summarization when possible |
 | Context bridge messages are `pinned` | Prevents compactor from erasing task plan and summaries |
-| Soft checkpoints are fire-and-forget | Checkpoint failures must never block the agent's work |
+| Engine state saves are fire-and-forget | Persistence failures must never block the agent's work |
 | Token budget for context bridge | Prevents resume context from consuming entire context window |
 | `fail()` separate from `pause()` | Failed state is terminal — prevents accidental resume of broken agents |
 

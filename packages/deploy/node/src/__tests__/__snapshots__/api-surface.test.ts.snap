@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/node API surface . has stable type surface 1`] = `
-"import { AdvertisedTool, SessionPersistence, CapacityReport, SessionCheckpoint, PendingFrame, RecoveryPlan, SessionRecord, Result, KoiError, ProcessId, AgentManifest, EngineAdapter, ComponentProvider, Agent, AgentId, AgentGroupId, Tool, SourceBundle, SessionTranscript, TranscriptEntry, ScopeChecker, DelegationScope, SessionId } from '@koi/core';
+"import { AdvertisedTool, SessionPersistence, CapacityReport, Result, KoiError, ProcessId, AgentManifest, EngineAdapter, ComponentProvider, Agent, AgentId, AgentGroupId, PendingFrame, Tool, SourceBundle, SessionTranscript, SessionRecord, TranscriptEntry, ScopeChecker, DelegationScope, SessionId } from '@koi/core';
 export { AdvertisedTool, CapacityReport, ToolCallPayload, ToolErrorPayload, ToolResultPayload, isToolCallPayload } from '@koi/core';
 import { JsonObject } from '@koi/core/common';
 import { ContentBlock } from '@koi/core/message';
@@ -139,14 +139,6 @@ interface NodeEvent {
 }
 /** Listener for node events. */
 type NodeEventListener = (event: NodeEvent) => void;
-/** @deprecated Use \`SessionRecord\` from \`@koi/core\` directly. */
-type NodeSessionRecord = SessionRecord;
-/** @deprecated Use \`SessionCheckpoint\` from \`@koi/core\` directly. */
-type NodeCheckpoint = SessionCheckpoint;
-/** @deprecated Use \`PendingFrame\` from \`@koi/core\` directly. */
-type NodePendingFrame = PendingFrame;
-/** @deprecated Use \`RecoveryPlan\` from \`@koi/core\` directly. */
-type NodeRecoveryPlan = RecoveryPlan;
 /**
  * Session persistence interface accepted by the node for crash recovery.
  *
@@ -154,7 +146,7 @@ type NodeRecoveryPlan = RecoveryPlan;
  * the node actually uses. Any \`SessionPersistence\` implementation
  * (sqlite, in-memory) is structurally assignable to this type.
  */
-type NodeSessionStore = Pick<SessionPersistence, "saveSession" | "removeSession" | "saveCheckpoint" | "loadLatestCheckpoint" | "savePendingFrame" | "loadPendingFrames" | "clearPendingFrames" | "removePendingFrame" | "recover" | "close">;
+type NodeSessionStore = Pick<SessionPersistence, "saveSession" | "removeSession" | "savePendingFrame" | "loadPendingFrames" | "clearPendingFrames" | "removePendingFrame" | "recover" | "close">;
 
 /**
  * Agent host — registry, lifecycle, and capacity management.
@@ -264,112 +256,6 @@ interface AgentInbox {
 /** Validates that a value conforms to AgentMessagePayload at runtime. */
 declare function isAgentMessagePayload(value: unknown): value is AgentMessagePayload;
 declare function createAgentInbox(options?: AgentInboxOptions): AgentInbox;
-
-/**
- * Per-agent outbound/inbound frame sequence counters.
- *
- * Used to populate \`seq\` and \`remoteSeq\` in session records so that
- * crash recovery can resume from the correct position.
- */
-interface FrameCounterState {
-    readonly seq: number;
-    readonly remoteSeq: number;
-}
-interface FrameCounters {
-    /** Increment outbound sequence for an agent. Returns the new seq. */
-    readonly increment: (agentId: string) => number;
-    /** Update the latest known remote (inbound) sequence for an agent. */
-    readonly updateRemote: (agentId: string, remoteSeq: number) => void;
-    /** Get current counters for an agent. Returns 0/0 for unknown agents. */
-    readonly get: (agentId: string) => FrameCounterState;
-    /** Remove counters for an agent. */
-    readonly remove: (agentId: string) => void;
-    /** Restore counters from a recovered session record. */
-    readonly restore: (agentId: string, seq: number, remoteSeq: number) => void;
-}
-declare function createFrameCounters(): FrameCounters;
-
-/**
- * Write queue — batches checkpoint writes to reduce SQLite transaction overhead.
- *
- * Only keeps the latest checkpoint per agent (overwrites on enqueue).
- * Flushes on a configurable interval and on dispose.
- */
-
-interface WriteQueueConfig {
-    /** Milliseconds between automatic flushes. Default: 5000. */
-    readonly flushIntervalMs: number;
-}
-interface WriteQueue {
-    /** Enqueue a checkpoint for batched write. Keeps only the latest per agent. */
-    readonly enqueue: (agentId: string, checkpoint: SessionCheckpoint) => void;
-    /** Flush all pending checkpoints to the store immediately. */
-    readonly flush: () => Promise<void>;
-    /** Stop the auto-flush timer and flush remaining checkpoints. */
-    readonly dispose: () => Promise<void>;
-}
-declare function createWriteQueue(store: NodeSessionStore, config?: Partial<WriteQueueConfig>): WriteQueue;
-
-/**
- * Checkpoint manager — event-driven session persistence for crash recovery.
- *
- * Subscribes to agent host events and saves/removes session records
- * and engine state checkpoints to a pluggable \`NodeSessionStore\`.
- *
- * Checkpoint triggers:
- *   - \`agent_dispatched\` → save initial SessionRecord
- *   - \`checkpointAgent(agentId)\` → engine.saveState() → store.saveCheckpoint()
- *   - \`agent_terminated\` → removeSession (clears record + checkpoints)
- *
- * Recovery:
- *   - \`recover()\` loads all sessions + latest checkpoints from the store
- */
-
-interface CheckpointManager {
-    /** Save an engine state checkpoint for the given agent. */
-    readonly checkpointAgent: (agentId: AgentId | string, sessionId: string) => Promise<Result<void, KoiError>>;
-    /** Look up the session ID for a given agent. */
-    readonly getSessionId: (agentId: string) => string | undefined;
-    /** Load recovery plan from the store. */
-    readonly recover: () => Promise<Result<RecoveryPlan, KoiError>>;
-    /** Flush any pending writes (no-op when write queue is absent). */
-    readonly flush: () => Promise<void>;
-    /** Stop listening to host events. */
-    readonly dispose: () => void;
-}
-/** Optional dependencies for checkpoint manager. */
-interface CheckpointManagerDeps {
-    readonly frameCounters?: FrameCounters;
-    readonly writeQueue?: WriteQueue;
-    /** Emit a node event. Used to surface fire-and-forget store errors. */
-    readonly emit?: (type: string, data?: unknown) => void;
-}
-/**
- * Create a checkpoint manager wired to the agent host and session store.
- *
- * The manager subscribes to host events automatically. Call \`dispose()\` to
- * unsubscribe when the node shuts down.
- */
-declare function createCheckpointManager(store: NodeSessionStore, host: AgentHost, getEngine: (agentId: string) => EngineAdapter | undefined, deps?: CheckpointManagerDeps): CheckpointManager;
-
-/**
- * Checkpointing engine decorator — wraps an EngineAdapter to auto-checkpoint
- * on \`turn_end\` and \`done\` events.
- *
- * The checkpoint callback is fire-and-forget: failures are swallowed (logged
- * via catch) so they never block the event stream.
- */
-
-interface CheckpointingEngineConfig {
-    readonly agentId: string;
-    readonly sessionId: string;
-    readonly onCheckpoint: (agentId: string, sessionId: string) => Promise<void>;
-}
-/**
- * Wrap an engine adapter so that \`turn_end\` and \`done\` events automatically
- * trigger a checkpoint callback.
- */
-declare function createCheckpointingEngine(inner: EngineAdapter, config: CheckpointingEngineConfig): EngineAdapter;
 
 /**
  * WebSocket auth handshake — token + optional HMAC challenge/response.
@@ -569,6 +455,30 @@ interface DiscoveryService {
 declare function createDiscoveryService(config: DiscoveryConfig): DiscoveryService;
 
 /**
+ * Per-agent outbound/inbound frame sequence counters.
+ *
+ * Used to populate \`seq\` and \`remoteSeq\` in session records so that
+ * crash recovery can resume from the correct position.
+ */
+interface FrameCounterState {
+    readonly seq: number;
+    readonly remoteSeq: number;
+}
+interface FrameCounters {
+    /** Increment outbound sequence for an agent. Returns the new seq. */
+    readonly increment: (agentId: string) => number;
+    /** Update the latest known remote (inbound) sequence for an agent. */
+    readonly updateRemote: (agentId: string, remoteSeq: number) => void;
+    /** Get current counters for an agent. Returns 0/0 for unknown agents. */
+    readonly get: (agentId: string) => FrameCounterState;
+    /** Remove counters for an agent. */
+    readonly remove: (agentId: string) => void;
+    /** Restore counters from a recovered session record. */
+    readonly restore: (agentId: string, seq: number, remoteSeq: number) => void;
+}
+declare function createFrameCounters(): FrameCounters;
+
+/**
  * Frame deduplicator — bounded Set + FIFO ring buffer for inbound frame dedup.
  *
  * Tracks frame IDs (correlationIds) to detect and drop duplicate inbound
@@ -657,7 +567,7 @@ interface KoiNodeBase {
     /** Access the local tool resolver. */
     readonly toolResolver: LocalResolver;
 }
-/** Full mode — hosts agents, dispatches engines, manages checkpoints. */
+/** Full mode — hosts agents, dispatches engines, persists sessions. */
 interface FullKoiNode extends KoiNodeBase {
     readonly mode: "full";
     /** Dispatch a new agent onto this node. */
@@ -674,8 +584,6 @@ interface FullKoiNode extends KoiNodeBase {
     readonly drainInbox: (agentId: string) => readonly QueuedAgentMessage[];
     /** Number of queued messages for a given agent. */
     readonly inboxDepth: (agentId: string) => number;
-    /** Checkpoint manager (available when sessionStore is provided). */
-    readonly checkpoint: CheckpointManager | undefined;
 }
 /** Thin mode — exposes tools only, no engine execution. */
 interface ThinKoiNode extends KoiNodeBase {
@@ -698,7 +606,7 @@ interface RecoveryResult {
 }
 /** Optional dependencies injected into the node. */
 interface NodeDeps {
-    /** Session persistence for crash recovery. When provided, enables checkpointing. */
+    /** Session persistence for crash recovery. */
     readonly sessionStore?: NodeSessionStore;
     /** Transcript store for durable conversation logging. When provided, enables auto-append. */
     readonly transcript?: SessionTranscript;
@@ -706,7 +614,7 @@ interface NodeDeps {
      * Called once per session during startup recovery.
      * Return a \`RecoveryResult\` to re-dispatch the agent, or \`null\` to skip it.
      */
-    readonly onRecover?: (session: SessionRecord, checkpoint: SessionCheckpoint | undefined, 
+    readonly onRecover?: (session: SessionRecord, 
     /** Transcript entries for this session, if transcript store is configured. */
     transcriptEntries?: readonly TranscriptEntry[]) => RecoveryResult | null | Promise<RecoveryResult | null>;
     /**
@@ -790,6 +698,6 @@ interface TranscriptingEngineConfig {
  */
 declare function createTranscriptingEngine(inner: EngineAdapter, config: TranscriptingEngineConfig): EngineAdapter;
 
-export { type AgentHost, type AgentInbox, type AgentInboxOptions, type AgentMessagePayload, type AgentSignalGroupPayload, type AgentSignalPayload, type AgentStatusPayload, type AuthAckPayload, type AuthChallengePayload, type AuthConfig, type AuthHandshake, type AuthHandshakeConfig, type AuthPayload, type AuthResponsePayload, type CapabilitiesPayload, type CheckpointManager, type CheckpointManagerDeps, type CheckpointingEngineConfig, DEFAULT_DELIVERY_CONFIG, DEFAULT_TOOL_CALL_TIMEOUT_MS, type DeliveryManager, type DeliveryManagerConfig, type DeliveryManagerDeps, type DiscoveryConfig, type DiscoveryService, type FrameCounterState, type FrameCounters, type FrameDeduplicator, type FullKoiNode, type GatewayConnectionConfig, type HandshakePayload, type HeartbeatCallbacks, type HeartbeatConfig, type HeartbeatMonitor, type InboxDropEvent, type KoiNode, type LocalResolver, MAX_INBOX_DEPTH, type MemoryMetrics, type MemoryMonitor, type NodeCheckpoint, type NodeConfig, type NodeDeps, type NodeEvent, type NodeEventListener, type NodeEventType, type NodeFrame, type NodeFrameKind, type NodeMode, type NodePendingFrame, type NodeRecoveryPlan, type NodeSessionRecord, type NodeSessionStore, type NodeState, type QueuedAgentMessage, type ReconnectState, type RecoveryResult, type ResourcesConfig, type ServiceInfo, type StatusReporter, type ThinKoiNode, type ToolCallHandlerDeps, type ToolMeta, type ToolResolverConfig, type TranscriptingEngineConfig, type Transport, type TransportState, type WriteQueue, type WriteQueueConfig, computeReconnectDelay, createAgentHost, createAgentInbox, createAuthHandshake, createAuthPayload, createCheckpointManager, createCheckpointingEngine, createDeliveryManager, createDiscoveryService, createFilesystemTool, createFrameCounters, createFrameDeduplicator, createHeartbeatMonitor, createLocalResolver, createMemoryMonitor, createNode, createReconnectState, createShellTool, createStatusReporter, createTranscriptingEngine, createTransport, createWriteQueue, decodeFrame, encodeFrame, generateCorrelationId, handleToolCall, isAgentMessagePayload, isCleanClose, nextAttempt, parseNodeConfig, resetReconnectState, signChallenge };
+export { type AgentHost, type AgentInbox, type AgentInboxOptions, type AgentMessagePayload, type AgentSignalGroupPayload, type AgentSignalPayload, type AgentStatusPayload, type AuthAckPayload, type AuthChallengePayload, type AuthConfig, type AuthHandshake, type AuthHandshakeConfig, type AuthPayload, type AuthResponsePayload, type CapabilitiesPayload, DEFAULT_DELIVERY_CONFIG, DEFAULT_TOOL_CALL_TIMEOUT_MS, type DeliveryManager, type DeliveryManagerConfig, type DeliveryManagerDeps, type DiscoveryConfig, type DiscoveryService, type FrameCounterState, type FrameCounters, type FrameDeduplicator, type FullKoiNode, type GatewayConnectionConfig, type HandshakePayload, type HeartbeatCallbacks, type HeartbeatConfig, type HeartbeatMonitor, type InboxDropEvent, type KoiNode, type LocalResolver, MAX_INBOX_DEPTH, type MemoryMetrics, type MemoryMonitor, type NodeConfig, type NodeDeps, type NodeEvent, type NodeEventListener, type NodeEventType, type NodeFrame, type NodeFrameKind, type NodeMode, type NodeSessionStore, type NodeState, type QueuedAgentMessage, type ReconnectState, type RecoveryResult, type ResourcesConfig, type ServiceInfo, type StatusReporter, type ThinKoiNode, type ToolCallHandlerDeps, type ToolMeta, type ToolResolverConfig, type TranscriptingEngineConfig, type Transport, type TransportState, computeReconnectDelay, createAgentHost, createAgentInbox, createAuthHandshake, createAuthPayload, createDeliveryManager, createDiscoveryService, createFilesystemTool, createFrameCounters, createFrameDeduplicator, createHeartbeatMonitor, createLocalResolver, createMemoryMonitor, createNode, createReconnectState, createShellTool, createStatusReporter, createTranscriptingEngine, createTransport, decodeFrame, encodeFrame, generateCorrelationId, handleToolCall, isAgentMessagePayload, isCleanClose, nextAttempt, parseNodeConfig, resetReconnectState, signChallenge };
 "
 `;

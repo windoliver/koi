@@ -7,7 +7,7 @@
  * using createPiAdapter() + createKoi():
  *
  *   Test 1: start() → engine runs with text input → agent produces output
- *   Test 2: middleware onAfterTurn fires → soft checkpoint saved
+ *   Test 2: middleware onAfterTurn fires → soft session save
  *   Test 3: middleware wrapToolCall captures artifacts
  *   Test 4: pause() persists snapshot + metrics
  *   Test 5: resume() returns messages input with context bridge
@@ -20,14 +20,13 @@
 
 import { createPiAdapter } from "../packages/drivers/engine-pi/src/adapter.js";
 import type {
-  AgentId,
   EngineEvent,
   EngineMetrics,
   EngineOutput,
   EngineState,
   HarnessSnapshotStore,
-  SessionCheckpoint,
   SessionPersistence,
+  SessionRecord,
 } from "../packages/kernel/core/src/index.js";
 import { agentId, chainId, harnessId, taskItemId } from "../packages/kernel/core/src/index.js";
 import { createKoi } from "../packages/kernel/engine/src/koi.js";
@@ -80,43 +79,33 @@ async function withTimeout<T>(fn: () => Promise<T>, ms: number, label: string): 
 }
 
 // ---------------------------------------------------------------------------
-// Mock SessionPersistence (captures checkpoints for assertions)
+// Mock SessionPersistence (captures saved sessions for assertions)
 // ---------------------------------------------------------------------------
 
 function createTrackingPersistence(): SessionPersistence & {
-  readonly savedCheckpoints: SessionCheckpoint[];
-  setLatestCheckpoint: (cp: SessionCheckpoint | undefined) => void;
+  readonly savedSessions: SessionRecord[];
 } {
-  const savedCheckpoints: SessionCheckpoint[] = [];
-  let latestCheckpoint: SessionCheckpoint | undefined;
+  const savedSessions: SessionRecord[] = [];
 
   return {
-    savedCheckpoints,
-    setLatestCheckpoint(cp: SessionCheckpoint | undefined): void {
-      latestCheckpoint = cp;
+    savedSessions,
+    saveSession(record: SessionRecord) {
+      savedSessions.push(record);
+      return { ok: true as const, value: undefined };
     },
-    saveSession: () => ({ ok: true as const, value: undefined }),
     loadSession: () => ({
       ok: false as const,
       error: { code: "NOT_FOUND" as const, message: "Not found", retryable: false },
     }),
     removeSession: () => ({ ok: true as const, value: undefined }),
     listSessions: () => ({ ok: true as const, value: [] }),
-    saveCheckpoint(cp: SessionCheckpoint) {
-      savedCheckpoints.push(cp);
-      return { ok: true as const, value: undefined };
-    },
-    loadLatestCheckpoint(_aid: AgentId) {
-      return { ok: true as const, value: latestCheckpoint };
-    },
-    listCheckpoints: () => ({ ok: true as const, value: [] }),
     savePendingFrame: () => ({ ok: true as const, value: undefined }),
     loadPendingFrames: () => ({ ok: true as const, value: [] }),
     clearPendingFrames: () => ({ ok: true as const, value: undefined }),
     removePendingFrame: () => ({ ok: true as const, value: undefined }),
     recover: () => ({
       ok: true as const,
-      value: { sessions: [], checkpoints: new Map(), pendingFrames: new Map(), skipped: [] },
+      value: { sessions: [], pendingFrames: new Map(), skipped: [] },
     }),
     close: () => undefined,
   };
@@ -246,22 +235,25 @@ await koi1.dispose();
 
 console.log("\n[test 2] middleware onAfterTurn soft checkpoints");
 
-// With softCheckpointInterval=1, every turn should trigger a checkpoint
+// With softCheckpointInterval=1, every turn should trigger a session save
 const turnEnds = events1.filter((e) => e.kind === "turn_end");
 assert("at least 1 turn completed", turnEnds.length >= 1);
 
-// Give fire-and-forget checkpoint a moment to settle
+// Give fire-and-forget save a moment to settle
 await new Promise((resolve) => setTimeout(resolve, 100));
 
 assert(
   "soft checkpoint(s) saved to persistence",
-  persistence.savedCheckpoints.length > 0,
-  `saved: ${persistence.savedCheckpoints.length}`,
+  persistence.savedSessions.length > 0,
+  `saved: ${persistence.savedSessions.length}`,
 );
 
-if (persistence.savedCheckpoints.length > 0) {
-  const firstCp = persistence.savedCheckpoints[0];
-  assert("checkpoint has softCheckpoint metadata", firstCp?.metadata?.softCheckpoint === true);
+if (persistence.savedSessions.length > 0) {
+  const firstRecord = persistence.savedSessions[0];
+  assert(
+    "saved session has softCheckpoint metadata",
+    firstRecord?.metadata?.softCheckpoint === true,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -309,13 +301,13 @@ if (headResult.ok && headResult.value !== undefined) {
 }
 
 // Verify engine state was saved via persistence
-const engineStateCps = persistence.savedCheckpoints.filter(
-  (cp) => cp.metadata?.softCheckpoint !== true,
+const engineStateRecords = persistence.savedSessions.filter(
+  (r) => r.metadata?.softCheckpoint !== true,
 );
 assert(
-  "engine state checkpoint saved on pause",
-  engineStateCps.length > 0,
-  `found: ${engineStateCps.length}`,
+  "engine state session saved on pause",
+  engineStateRecords.length > 0,
+  `found: ${engineStateRecords.length}`,
 );
 
 // ---------------------------------------------------------------------------
@@ -517,19 +509,19 @@ await withTimeout(
 
 await new Promise((resolve) => setTimeout(resolve, 100));
 
-const realStateCps = persistence3.savedCheckpoints.filter(
-  (cp) => cp.engineState.engineId === "pi-real",
+const realStateRecords = persistence3.savedSessions.filter(
+  (r) => r.lastEngineState?.engineId === "pi-real",
 );
 assert(
-  "saveState callback produced real engine state in checkpoint",
-  realStateCps.length > 0,
-  `found: ${realStateCps.length}, total: ${persistence3.savedCheckpoints.length}`,
+  "saveState callback produced real engine state in session record",
+  realStateRecords.length > 0,
+  `found: ${realStateRecords.length}, total: ${persistence3.savedSessions.length}`,
 );
 
-if (realStateCps.length > 0) {
+if (realStateRecords.length > 0) {
   assert(
-    "checkpoint engine state matches saveState return value",
-    JSON.stringify(realStateCps[0]?.engineState) === JSON.stringify(capturedState),
+    "session record engine state matches saveState return value",
+    JSON.stringify(realStateRecords[0]?.lastEngineState) === JSON.stringify(capturedState),
   );
 }
 

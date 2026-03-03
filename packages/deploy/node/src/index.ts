@@ -20,12 +20,6 @@ export type {
 } from "./agent-inbox.js";
 // -- Agent inbox ------------------------------------------------------------
 export { createAgentInbox, isAgentMessagePayload, MAX_INBOX_DEPTH } from "./agent-inbox.js";
-export type { CheckpointManager, CheckpointManagerDeps } from "./checkpoint.js";
-// -- Checkpoint manager -----------------------------------------------------
-export { createCheckpointManager } from "./checkpoint.js";
-export type { CheckpointingEngineConfig } from "./checkpointing-engine.js";
-// -- Auto-checkpointing engine decorator ------------------------------------
-export { createCheckpointingEngine } from "./checkpointing-engine.js";
 export type { AuthHandshake, AuthHandshakeConfig } from "./connection/auth.js";
 export { createAuthHandshake, createAuthPayload, signChallenge } from "./connection/auth.js";
 export type { HeartbeatCallbacks, HeartbeatMonitor } from "./connection/heartbeat.js";
@@ -97,7 +91,6 @@ export type {
   GatewayConnectionConfig,
   HandshakePayload,
   HeartbeatConfig,
-  NodeCheckpoint,
   NodeConfig,
   NodeEvent,
   NodeEventListener,
@@ -105,9 +98,6 @@ export type {
   NodeFrame,
   NodeFrameKind,
   NodeMode,
-  NodePendingFrame,
-  NodeRecoveryPlan,
-  NodeSessionRecord,
   NodeSessionStore,
   NodeState,
   ResourcesConfig,
@@ -118,6 +108,3 @@ export type {
 } from "./types.js";
 // -- Configuration & types --------------------------------------------------
 export { parseNodeConfig } from "./types.js";
-export type { WriteQueue, WriteQueueConfig } from "./write-queue.js";
-// -- Write queue ------------------------------------------------------------
-export { createWriteQueue } from "./write-queue.js";

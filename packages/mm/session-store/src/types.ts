@@ -1,9 +1,9 @@
 /**
  * Session persistence types for crash recovery on edge devices.
  *
- * Core types (SessionCheckpoint, SessionRecord, PendingFrame, RecoveryPlan,
- * SessionFilter, SkippedRecoveryEntry) are defined in @koi/core (L0) and
- * re-exported here for backward compatibility.
+ * Core types (SessionRecord, PendingFrame, RecoveryPlan, SessionFilter,
+ * SkippedRecoveryEntry) are defined in @koi/core (L0) and re-exported here
+ * for backward compatibility.
  *
  * Implementation-specific config (SessionStoreConfig) stays in this L2 package.
  */
@@ -12,7 +12,6 @@
 export type {
   PendingFrame,
   RecoveryPlan,
-  SessionCheckpoint,
   SessionFilter,
   SessionRecord,
   SkippedRecoveryEntry,
@@ -32,6 +31,4 @@ export interface SessionStoreConfig {
    * Default: "process"
    */
   readonly durability?: "process" | "os";
-  /** Maximum checkpoints retained per agent. Oldest pruned on save. Default: 3. */
-  readonly maxCheckpointsPerAgent?: number;
 }

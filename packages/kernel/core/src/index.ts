@@ -787,7 +787,6 @@ export { RISK_ANALYSIS_UNKNOWN, RISK_LEVEL_ORDER } from "./security-analyzer.js"
 export type {
   PendingFrame,
   RecoveryPlan,
-  SessionCheckpoint,
   SessionFilter,
   SessionPersistence,
   SessionRecord,

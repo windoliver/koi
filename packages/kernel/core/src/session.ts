@@ -13,29 +13,6 @@ import type { EngineState } from "./engine.js";
 import type { KoiError, Result } from "./errors.js";
 
 // ---------------------------------------------------------------------------
-// Checkpoint — engine state snapshot at a point in time
-// ---------------------------------------------------------------------------
-
-export interface SessionCheckpoint {
-  /** Unique checkpoint ID (e.g., `${agentId}:${Date.now()}`). */
-  readonly id: string;
-  /** Agent this checkpoint belongs to. */
-  readonly agentId: AgentId;
-  /** Gateway session this agent was part of. */
-  readonly sessionId: SessionId;
-  /** Opaque engine state from EngineAdapter.saveState(). */
-  readonly engineState: EngineState;
-  /** Lifecycle phase at checkpoint time. */
-  readonly processState: ProcessState;
-  /** CAS generation counter from AgentStatus. */
-  readonly generation: number;
-  /** Arbitrary metadata (e.g., trigger reason). */
-  readonly metadata: Readonly<Record<string, unknown>>;
-  /** Unix timestamp ms when this checkpoint was created. */
-  readonly createdAt: number;
-}
-
-// ---------------------------------------------------------------------------
 // Session record — lightweight session metadata for reconnection
 // ---------------------------------------------------------------------------
 
@@ -52,8 +29,10 @@ export interface SessionRecord {
   readonly remoteSeq: number;
   /** Unix timestamp ms when session was created. */
   readonly connectedAt: number;
-  /** Unix timestamp ms of the most recent checkpoint. */
-  readonly lastCheckpointAt: number;
+  /** Unix timestamp ms of the most recent persistence event. */
+  readonly lastPersistedAt: number;
+  /** Opaque engine state for fast stateful recovery. */
+  readonly lastEngineState?: EngineState | undefined;
   /** Arbitrary metadata. */
   readonly metadata: Readonly<Record<string, unknown>>;
 }
@@ -89,8 +68,8 @@ export interface PendingFrame {
 
 export interface SkippedRecoveryEntry {
   /** Which table the corrupt row came from. */
-  readonly source: "session" | "checkpoint" | "pending_frame";
-  /** Row identifier (sessionId, checkpoint id, or frameId). */
+  readonly source: "session" | "pending_frame";
+  /** Row identifier (sessionId or frameId). */
   readonly id: string;
   /** Human-readable error description. */
   readonly error: string;
@@ -103,8 +82,6 @@ export interface SkippedRecoveryEntry {
 export interface RecoveryPlan {
   /** All session records found in the store. */
   readonly sessions: readonly SessionRecord[];
-  /** Latest checkpoint per agent (keyed by agentId string). */
-  readonly checkpoints: ReadonlyMap<string, SessionCheckpoint>;
   /** Pending outbound frames per session (keyed by sessionId). */
   readonly pendingFrames: ReadonlyMap<string, readonly PendingFrame[]>;
   /** Rows that could not be deserialized (corrupt JSON, invalid state, etc.). */
@@ -145,7 +122,7 @@ export interface SessionPersistence {
     sessionId: string,
   ) => Result<SessionRecord, KoiError> | Promise<Result<SessionRecord, KoiError>>;
 
-  /** Remove a session record and its checkpoints. NOT_FOUND if missing. */
+  /** Remove a session record and its associated data. NOT_FOUND if missing. */
   readonly removeSession: (
     sessionId: string,
   ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
@@ -156,27 +133,6 @@ export interface SessionPersistence {
   ) =>
     | Result<readonly SessionRecord[], KoiError>
     | Promise<Result<readonly SessionRecord[], KoiError>>;
-
-  // -- Checkpoints ---------------------------------------------------------
-
-  /** Save a checkpoint. Prunes oldest if over retention limit. */
-  readonly saveCheckpoint: (
-    checkpoint: SessionCheckpoint,
-  ) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
-
-  /** Load the most recent checkpoint for an agent. Returns undefined if none. */
-  readonly loadLatestCheckpoint: (
-    agentId: AgentId,
-  ) =>
-    | Result<SessionCheckpoint | undefined, KoiError>
-    | Promise<Result<SessionCheckpoint | undefined, KoiError>>;
-
-  /** List all checkpoints for an agent, newest first. */
-  readonly listCheckpoints: (
-    agentId: AgentId,
-  ) =>
-    | Result<readonly SessionCheckpoint[], KoiError>
-    | Promise<Result<readonly SessionCheckpoint[], KoiError>>;
 
   // -- Pending frames ------------------------------------------------------
 
@@ -206,9 +162,8 @@ export interface SessionPersistence {
 
   /**
    * Build a full recovery plan from all stored data.
-   * Returns all session records, the latest checkpoint per agent,
-   * and pending frames per session. Corrupt rows are skipped and
-   * reported in the `skipped` field.
+   * Returns all session records and pending frames per session.
+   * Corrupt rows are skipped and reported in the `skipped` field.
    */
   readonly recover: () => Result<RecoveryPlan, KoiError> | Promise<Result<RecoveryPlan, KoiError>>;
 

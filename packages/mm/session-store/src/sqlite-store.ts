@@ -5,40 +5,24 @@
  * durable), configurable to FULL (OS/power-crash durable).
  *
  * Single shared DB per node. All agents share one file.
- * Checkpoint retention: keeps latest N per agent, prunes oldest on save.
  */
 
 import type {
-  AgentId,
   AgentManifest,
+  EngineState,
   KoiError,
   PendingFrame,
-  ProcessState,
   RecoveryPlan,
   Result,
-  SessionCheckpoint,
   SessionFilter,
   SessionPersistence,
   SessionRecord,
   SkippedRecoveryEntry,
 } from "@koi/core";
-import {
-  agentId,
-  internal,
-  isProcessState,
-  notFound,
-  sessionId,
-  validateNonEmpty,
-} from "@koi/core";
+import { agentId, internal, notFound, sessionId, validateNonEmpty } from "@koi/core";
 import { extractMessage } from "@koi/errors";
 import { openDb } from "@koi/sqlite-utils";
 import type { SessionStoreConfig } from "./types.js";
-
-// ---------------------------------------------------------------------------
-// Defaults
-// ---------------------------------------------------------------------------
-
-const DEFAULT_MAX_CHECKPOINTS = 3;
 
 // ---------------------------------------------------------------------------
 // Row types
@@ -51,19 +35,9 @@ interface SessionRow {
   readonly seq: number;
   readonly remoteSeq: number;
   readonly connectedAt: number;
-  readonly lastCheckpointAt: number;
+  readonly lastPersistedAt: number;
+  readonly lastEngineState: string | null;
   readonly metadata: string;
-}
-
-interface CheckpointRow {
-  readonly id: string;
-  readonly agentId: string;
-  readonly sessionId: string;
-  readonly engineState: string;
-  readonly processState: string;
-  readonly generation: number;
-  readonly metadata: string;
-  readonly createdAt: number;
 }
 
 interface PendingFrameRow {
@@ -94,36 +68,39 @@ function parseJson(raw: string, label: string): Record<string, unknown> {
   }
 }
 
-function parseManifest(raw: string, sessionId: string): AgentManifest {
+function parseManifest(raw: string, sid: string): AgentManifest {
   const parsed: unknown = JSON.parse(raw);
   if (typeof parsed !== "object" || parsed === null) {
-    throw new Error(`Invalid manifest for session ${sessionId}: not an object`);
+    throw new Error(`Invalid manifest for session ${sid}: not an object`);
   }
   const obj = parsed as Record<string, unknown>;
   if (typeof obj.name !== "string" || typeof obj.version !== "string") {
-    throw new Error(`Invalid manifest for session ${sessionId}: missing name or version`);
+    throw new Error(`Invalid manifest for session ${sid}: missing name or version`);
   }
   return parsed as AgentManifest;
 }
 
-function parseProcessState(raw: string, contextId: string): ProcessState {
-  if (!isProcessState(raw)) {
-    throw new Error(`Invalid processState "${raw}" for checkpoint ${contextId}`);
-  }
-  return raw;
+function parseEngineState(raw: string | null): EngineState | undefined {
+  if (raw === null) return undefined;
+  return JSON.parse(raw) as EngineState;
 }
 
 function rowToSessionRecord(row: SessionRow): SessionRecord {
-  return {
+  const base: SessionRecord = {
     sessionId: sessionId(row.sessionId),
     agentId: agentId(row.agentId),
     manifestSnapshot: parseManifest(row.manifest, row.sessionId),
     seq: row.seq,
     remoteSeq: row.remoteSeq,
     connectedAt: row.connectedAt,
-    lastCheckpointAt: row.lastCheckpointAt,
+    lastPersistedAt: row.lastPersistedAt,
     metadata: parseJson(row.metadata, `session ${row.sessionId}`),
   };
+  const engineState = parseEngineState(row.lastEngineState);
+  if (engineState !== undefined) {
+    return { ...base, lastEngineState: engineState };
+  }
+  return base;
 }
 
 function rowToPendingFrame(row: PendingFrameRow): PendingFrame {
@@ -140,22 +117,6 @@ function rowToPendingFrame(row: PendingFrameRow): PendingFrame {
   };
 }
 
-function rowToCheckpoint(row: CheckpointRow): SessionCheckpoint {
-  const engineState: { readonly engineId: string; readonly data: unknown } = JSON.parse(
-    row.engineState,
-  ) as { engineId: string; data: unknown };
-  return {
-    id: row.id,
-    agentId: agentId(row.agentId),
-    sessionId: sessionId(row.sessionId),
-    engineState,
-    processState: parseProcessState(row.processState, row.id),
-    generation: row.generation,
-    metadata: parseJson(row.metadata, `checkpoint ${row.id}`),
-    createdAt: row.createdAt,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -163,7 +124,6 @@ function rowToCheckpoint(row: CheckpointRow): SessionCheckpoint {
 export function createSqliteSessionPersistence(
   config: SessionStoreConfig,
 ): SessionPersistence & { readonly close: () => void } {
-  const maxCheckpoints = config.maxCheckpointsPerAgent ?? DEFAULT_MAX_CHECKPOINTS;
   const db = openDb(config.dbPath);
 
   // Override synchronous if "os" durability requested
@@ -180,26 +140,26 @@ export function createSqliteSessionPersistence(
       seq              INTEGER NOT NULL DEFAULT 0,
       remoteSeq        INTEGER NOT NULL DEFAULT 0,
       connectedAt      INTEGER NOT NULL,
-      lastCheckpointAt INTEGER NOT NULL,
+      lastPersistedAt  INTEGER NOT NULL,
+      lastEngineState  TEXT,
       metadata         TEXT NOT NULL DEFAULT '{}'
     )
   `);
   db.run("CREATE INDEX IF NOT EXISTS idx_sr_agentId ON session_records(agentId)");
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS checkpoints (
-      id            TEXT PRIMARY KEY,
-      agentId       TEXT NOT NULL,
-      sessionId     TEXT NOT NULL,
-      engineState   TEXT NOT NULL,
-      processState  TEXT NOT NULL,
-      generation    INTEGER NOT NULL,
-      metadata      TEXT NOT NULL DEFAULT '{}',
-      createdAt     INTEGER NOT NULL
-    )
-  `);
-  db.run("CREATE INDEX IF NOT EXISTS idx_cp_agentId ON checkpoints(agentId)");
-  db.run("CREATE INDEX IF NOT EXISTS idx_cp_createdAt ON checkpoints(createdAt)");
+  // Migrate legacy column name if upgrading from older schema
+  try {
+    db.run("ALTER TABLE session_records RENAME COLUMN lastCheckpointAt TO lastPersistedAt");
+  } catch {
+    // Column already renamed or doesn't exist — safe to ignore
+  }
+
+  // Add lastEngineState column if upgrading from older schema
+  try {
+    db.run("ALTER TABLE session_records ADD COLUMN lastEngineState TEXT");
+  } catch {
+    // Column already exists — safe to ignore
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS pending_frames (
@@ -218,14 +178,15 @@ export function createSqliteSessionPersistence(
 
   // -- Prepared statements -------------------------------------------------
   const upsertSessionStmt = db.prepare(`
-    INSERT INTO session_records (sessionId, agentId, manifest, seq, remoteSeq, connectedAt, lastCheckpointAt, metadata)
-    VALUES ($sessionId, $agentId, $manifest, $seq, $remoteSeq, $connectedAt, $lastCheckpointAt, $metadata)
+    INSERT INTO session_records (sessionId, agentId, manifest, seq, remoteSeq, connectedAt, lastPersistedAt, lastEngineState, metadata)
+    VALUES ($sessionId, $agentId, $manifest, $seq, $remoteSeq, $connectedAt, $lastPersistedAt, $lastEngineState, $metadata)
     ON CONFLICT(sessionId) DO UPDATE SET
       agentId = excluded.agentId,
       manifest = excluded.manifest,
       seq = excluded.seq,
       remoteSeq = excluded.remoteSeq,
-      lastCheckpointAt = excluded.lastCheckpointAt,
+      lastPersistedAt = excluded.lastPersistedAt,
+      lastEngineState = excluded.lastEngineState,
       metadata = excluded.metadata
   `);
 
@@ -234,21 +195,6 @@ export function createSqliteSessionPersistence(
   );
 
   const deleteSessionStmt = db.prepare("DELETE FROM session_records WHERE sessionId = ?");
-
-  const deleteCheckpointsByAgentStmt = db.prepare("DELETE FROM checkpoints WHERE agentId = ?");
-
-  const insertCheckpointStmt = db.prepare(`
-    INSERT INTO checkpoints (id, agentId, sessionId, engineState, processState, generation, metadata, createdAt)
-    VALUES ($id, $agentId, $sessionId, $engineState, $processState, $generation, $metadata, $createdAt)
-  `);
-
-  const selectLatestCheckpointStmt = db.query<CheckpointRow, [string]>(
-    "SELECT * FROM checkpoints WHERE agentId = ? ORDER BY createdAt DESC LIMIT 1",
-  );
-
-  const selectCheckpointsByAgentStmt = db.query<CheckpointRow, [string]>(
-    "SELECT * FROM checkpoints WHERE agentId = ? ORDER BY createdAt DESC",
-  );
 
   const selectAllSessionsStmt = db.query<SessionRow, []>("SELECT * FROM session_records");
 
@@ -278,20 +224,6 @@ export function createSqliteSessionPersistence(
 
   const deletePendingFramesByAgentStmt = db.prepare("DELETE FROM pending_frames WHERE agentId = ?");
 
-  const pruneCheckpointsStmt = db.prepare(`
-    DELETE FROM checkpoints WHERE agentId = ? AND id NOT IN (
-      SELECT id FROM checkpoints WHERE agentId = ? ORDER BY createdAt DESC LIMIT ?
-    )
-  `);
-
-  // N+1 fix: batch-fetch latest checkpoint per agent and all pending frames
-  const selectLatestCheckpointsAllStmt = db.query<CheckpointRow, []>(`
-    SELECT c.* FROM checkpoints c
-    INNER JOIN (
-      SELECT agentId, MAX(createdAt) AS maxCreated FROM checkpoints GROUP BY agentId
-    ) latest ON c.agentId = latest.agentId AND c.createdAt = latest.maxCreated
-  `);
-
   const selectAllPendingFramesStmt = db.query<PendingFrameRow, []>(
     "SELECT * FROM pending_frames ORDER BY sessionId, orderIndex ASC",
   );
@@ -312,7 +244,9 @@ export function createSqliteSessionPersistence(
         $seq: record.seq,
         $remoteSeq: record.remoteSeq,
         $connectedAt: record.connectedAt,
-        $lastCheckpointAt: record.lastCheckpointAt,
+        $lastPersistedAt: record.lastPersistedAt,
+        $lastEngineState:
+          record.lastEngineState !== undefined ? JSON.stringify(record.lastEngineState) : null,
         $metadata: JSON.stringify(record.metadata),
       });
       return { ok: true, value: undefined };
@@ -321,14 +255,14 @@ export function createSqliteSessionPersistence(
     }
   };
 
-  const loadSession = (sessionId: string): Result<SessionRecord, KoiError> => {
-    const idCheck = validateNonEmpty(sessionId, "Session ID");
+  const loadSession = (sid: string): Result<SessionRecord, KoiError> => {
+    const idCheck = validateNonEmpty(sid, "Session ID");
     if (!idCheck.ok) return idCheck;
 
     try {
-      const row = selectSessionStmt.get(sessionId);
+      const row = selectSessionStmt.get(sid);
       if (row === null) {
-        return { ok: false, error: notFound(sessionId, `Session not found: ${sessionId}`) };
+        return { ok: false, error: notFound(sid, `Session not found: ${sid}`) };
       }
       return { ok: true, value: rowToSessionRecord(row) };
     } catch (e: unknown) {
@@ -336,21 +270,19 @@ export function createSqliteSessionPersistence(
     }
   };
 
-  const removeSession = (sessionId: string): Result<void, KoiError> => {
-    const idCheck = validateNonEmpty(sessionId, "Session ID");
+  const removeSession = (sid: string): Result<void, KoiError> => {
+    const idCheck = validateNonEmpty(sid, "Session ID");
     if (!idCheck.ok) return idCheck;
 
     try {
-      // Look up agent ID to also remove checkpoints
-      const agentRow = lookupAgentForSessionStmt.get(sessionId);
+      const agentRow = lookupAgentForSessionStmt.get(sid);
       if (agentRow === null) {
-        return { ok: false, error: notFound(sessionId, `Session not found: ${sessionId}`) };
+        return { ok: false, error: notFound(sid, `Session not found: ${sid}`) };
       }
 
       db.transaction(() => {
-        deleteCheckpointsByAgentStmt.run(agentRow.agentId);
         deletePendingFramesByAgentStmt.run(agentRow.agentId);
-        deleteSessionStmt.run(sessionId);
+        deleteSessionStmt.run(sid);
       })();
 
       return { ok: true, value: undefined };
@@ -359,8 +291,6 @@ export function createSqliteSessionPersistence(
     }
   };
 
-  // N+1: processState filter issues one checkpoint query per session row.
-  // Acceptable for small session counts on edge devices; revisit if > 1000 sessions.
   const listSessions = (filter?: SessionFilter): Result<readonly SessionRecord[], KoiError> => {
     try {
       let rows: readonly SessionRow[];
@@ -370,73 +300,10 @@ export function createSqliteSessionPersistence(
         rows = selectAllSessionsStmt.all();
       }
 
-      let records = rows.map(rowToSessionRecord);
-
-      // Post-filter by processState if requested (requires checking checkpoints)
-      if (filter?.processState !== undefined) {
-        const targetState = filter.processState;
-        records = records.filter((r) => {
-          const cpRow = selectLatestCheckpointStmt.get(r.agentId);
-          return cpRow !== null && cpRow.processState === targetState;
-        });
-      }
-
+      const records = rows.map(rowToSessionRecord);
       return { ok: true, value: records };
     } catch (e: unknown) {
       return { ok: false, error: internal("Failed to list sessions", e) };
-    }
-  };
-
-  const saveCheckpoint = (checkpoint: SessionCheckpoint): Result<void, KoiError> => {
-    const idCheck = validateNonEmpty(checkpoint.id, "Checkpoint ID");
-    if (!idCheck.ok) return idCheck;
-    const agentCheck = validateNonEmpty(checkpoint.agentId, "Agent ID");
-    if (!agentCheck.ok) return agentCheck;
-
-    try {
-      db.transaction(() => {
-        insertCheckpointStmt.run({
-          $id: checkpoint.id,
-          $agentId: checkpoint.agentId,
-          $sessionId: checkpoint.sessionId,
-          $engineState: JSON.stringify(checkpoint.engineState),
-          $processState: checkpoint.processState,
-          $generation: checkpoint.generation,
-          $metadata: JSON.stringify(checkpoint.metadata),
-          $createdAt: checkpoint.createdAt,
-        });
-
-        // Prune oldest checkpoints beyond retention limit
-        pruneCheckpointsStmt.run(checkpoint.agentId, checkpoint.agentId, maxCheckpoints);
-      })();
-
-      return { ok: true, value: undefined };
-    } catch (e: unknown) {
-      return { ok: false, error: internal("Failed to save checkpoint", e) };
-    }
-  };
-
-  const loadLatestCheckpoint = (aid: AgentId): Result<SessionCheckpoint | undefined, KoiError> => {
-    const agentCheck = validateNonEmpty(aid, "Agent ID");
-    if (!agentCheck.ok) return agentCheck;
-
-    try {
-      const row = selectLatestCheckpointStmt.get(aid);
-      return { ok: true, value: row !== null ? rowToCheckpoint(row) : undefined };
-    } catch (e: unknown) {
-      return { ok: false, error: internal("Failed to load checkpoint", e) };
-    }
-  };
-
-  const listCheckpoints = (aid: AgentId): Result<readonly SessionCheckpoint[], KoiError> => {
-    const agentCheck = validateNonEmpty(aid, "Agent ID");
-    if (!agentCheck.ok) return agentCheck;
-
-    try {
-      const rows = selectCheckpointsByAgentStmt.all(aid);
-      return { ok: true, value: rows.map(rowToCheckpoint) };
-    } catch (e: unknown) {
-      return { ok: false, error: internal("Failed to list checkpoints", e) };
     }
   };
 
@@ -464,24 +331,24 @@ export function createSqliteSessionPersistence(
     }
   };
 
-  const loadPendingFrames = (sessionId: string): Result<readonly PendingFrame[], KoiError> => {
-    const idCheck = validateNonEmpty(sessionId, "Session ID");
+  const loadPendingFrames = (sid: string): Result<readonly PendingFrame[], KoiError> => {
+    const idCheck = validateNonEmpty(sid, "Session ID");
     if (!idCheck.ok) return idCheck;
 
     try {
-      const rows = selectPendingFramesStmt.all(sessionId);
+      const rows = selectPendingFramesStmt.all(sid);
       return { ok: true, value: rows.map(rowToPendingFrame) };
     } catch (e: unknown) {
       return { ok: false, error: internal("Failed to load pending frames", e) };
     }
   };
 
-  const clearPendingFrames = (sessionId: string): Result<void, KoiError> => {
-    const idCheck = validateNonEmpty(sessionId, "Session ID");
+  const clearPendingFrames = (sid: string): Result<void, KoiError> => {
+    const idCheck = validateNonEmpty(sid, "Session ID");
     if (!idCheck.ok) return idCheck;
 
     try {
-      deletePendingFramesStmt.run(sessionId);
+      deletePendingFramesStmt.run(sid);
       return { ok: true, value: undefined };
     } catch (e: unknown) {
       return { ok: false, error: internal("Failed to clear pending frames", e) };
@@ -520,22 +387,7 @@ export function createSqliteSessionPersistence(
           }
         }
 
-        // Batch-fetch latest checkpoint per agent (N+1 fix)
-        const checkpointMap = new Map<string, SessionCheckpoint>();
-        const cpRows = selectLatestCheckpointsAllStmt.all();
-        for (const row of cpRows) {
-          try {
-            checkpointMap.set(row.agentId, rowToCheckpoint(row));
-          } catch (e: unknown) {
-            skipped.push({
-              source: "checkpoint",
-              id: row.id,
-              error: extractMessage(e),
-            });
-          }
-        }
-
-        // Batch-fetch all pending frames (N+1 fix)
+        // Batch-fetch all pending frames
         const pendingFrames = new Map<string, PendingFrame[]>();
         const allFrameRows = selectAllPendingFramesStmt.all();
         for (const row of allFrameRows) {
@@ -558,7 +410,7 @@ export function createSqliteSessionPersistence(
 
         return {
           ok: true as const,
-          value: { sessions, checkpoints: checkpointMap, pendingFrames, skipped },
+          value: { sessions, pendingFrames, skipped },
         };
       })();
     } catch (e: unknown) {
@@ -575,9 +427,6 @@ export function createSqliteSessionPersistence(
     loadSession,
     removeSession,
     listSessions,
-    saveCheckpoint,
-    loadLatestCheckpoint,
-    listCheckpoints,
     savePendingFrame,
     loadPendingFrames,
     clearPendingFrames,

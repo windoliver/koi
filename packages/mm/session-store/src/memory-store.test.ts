@@ -3,7 +3,5 @@ import { runSessionPersistenceContractTests } from "./__tests__/store-contract.j
 import { createInMemorySessionPersistence } from "./memory-store.js";
 
 describe("InMemorySessionPersistence", () => {
-  runSessionPersistenceContractTests(() =>
-    createInMemorySessionPersistence({ maxCheckpointsPerAgent: 3 }),
-  );
+  runSessionPersistenceContractTests(() => createInMemorySessionPersistence());
 });
