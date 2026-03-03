@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/node API surface . has stable type surface 1`] = `
-"import { AdvertisedTool, SessionPersistence, CapacityReport, SessionCheckpoint, PendingFrame, RecoveryPlan, SessionRecord, Result, KoiError, ProcessId, AgentManifest, EngineAdapter, ComponentProvider, Agent, AgentId, AgentGroupId, Tool, SourceBundle, ScopeChecker, DelegationScope } from '@koi/core';
+"import { AdvertisedTool, SessionPersistence, CapacityReport, SessionCheckpoint, PendingFrame, RecoveryPlan, SessionRecord, Result, KoiError, ProcessId, AgentManifest, EngineAdapter, ComponentProvider, Agent, AgentId, AgentGroupId, Tool, SourceBundle, SessionTranscript, TranscriptEntry, ScopeChecker, DelegationScope, SessionId } from '@koi/core';
 export { AdvertisedTool, CapacityReport, ToolCallPayload, ToolErrorPayload, ToolResultPayload, isToolCallPayload } from '@koi/core';
 import { JsonObject } from '@koi/core/common';
 import { ContentBlock } from '@koi/core/message';
@@ -700,11 +700,15 @@ interface RecoveryResult {
 interface NodeDeps {
     /** Session persistence for crash recovery. When provided, enables checkpointing. */
     readonly sessionStore?: NodeSessionStore;
+    /** Transcript store for durable conversation logging. When provided, enables auto-append. */
+    readonly transcript?: SessionTranscript;
     /**
      * Called once per session during startup recovery.
      * Return a \`RecoveryResult\` to re-dispatch the agent, or \`null\` to skip it.
      */
-    readonly onRecover?: (session: SessionRecord, checkpoint: SessionCheckpoint | undefined) => RecoveryResult | null | Promise<RecoveryResult | null>;
+    readonly onRecover?: (session: SessionRecord, checkpoint: SessionCheckpoint | undefined, 
+    /** Transcript entries for this session, if transcript store is configured. */
+    transcriptEntries?: readonly TranscriptEntry[]) => RecoveryResult | null | Promise<RecoveryResult | null>;
     /**
      * Permission checker for tool_call authorization. When absent, all tool calls
      * are denied by default (fail closed). Inject a ScopeChecker + DelegationScope
@@ -765,6 +769,27 @@ declare function createFilesystemTool(allowedPaths?: readonly string[]): Tool;
 
 declare function createShellTool(): Tool;
 
-export { type AgentHost, type AgentInbox, type AgentInboxOptions, type AgentMessagePayload, type AgentSignalGroupPayload, type AgentSignalPayload, type AgentStatusPayload, type AuthAckPayload, type AuthChallengePayload, type AuthConfig, type AuthHandshake, type AuthHandshakeConfig, type AuthPayload, type AuthResponsePayload, type CapabilitiesPayload, type CheckpointManager, type CheckpointManagerDeps, type CheckpointingEngineConfig, DEFAULT_DELIVERY_CONFIG, DEFAULT_TOOL_CALL_TIMEOUT_MS, type DeliveryManager, type DeliveryManagerConfig, type DeliveryManagerDeps, type DiscoveryConfig, type DiscoveryService, type FrameCounterState, type FrameCounters, type FrameDeduplicator, type FullKoiNode, type GatewayConnectionConfig, type HandshakePayload, type HeartbeatCallbacks, type HeartbeatConfig, type HeartbeatMonitor, type InboxDropEvent, type KoiNode, type LocalResolver, MAX_INBOX_DEPTH, type MemoryMetrics, type MemoryMonitor, type NodeCheckpoint, type NodeConfig, type NodeDeps, type NodeEvent, type NodeEventListener, type NodeEventType, type NodeFrame, type NodeFrameKind, type NodeMode, type NodePendingFrame, type NodeRecoveryPlan, type NodeSessionRecord, type NodeSessionStore, type NodeState, type QueuedAgentMessage, type ReconnectState, type RecoveryResult, type ResourcesConfig, type ServiceInfo, type StatusReporter, type ThinKoiNode, type ToolCallHandlerDeps, type ToolMeta, type ToolResolverConfig, type Transport, type TransportState, type WriteQueue, type WriteQueueConfig, computeReconnectDelay, createAgentHost, createAgentInbox, createAuthHandshake, createAuthPayload, createCheckpointManager, createCheckpointingEngine, createDeliveryManager, createDiscoveryService, createFilesystemTool, createFrameCounters, createFrameDeduplicator, createHeartbeatMonitor, createLocalResolver, createMemoryMonitor, createNode, createReconnectState, createShellTool, createStatusReporter, createTransport, createWriteQueue, decodeFrame, encodeFrame, generateCorrelationId, handleToolCall, isAgentMessagePayload, isCleanClose, nextAttempt, parseNodeConfig, resetReconnectState, signChallenge };
+/**
+ * Transcripting engine decorator — wraps an EngineAdapter to auto-append
+ * transcript entries on \`turn_end\` and \`done\` events.
+ *
+ * Captures user input, assistant text (from text_delta), and tool calls
+ * (from tool_call_start/tool_call_end) as transcript entries.
+ *
+ * The append callback is fire-and-forget: failures are swallowed (logged
+ * via catch) so they never block the event stream.
+ */
+
+interface TranscriptingEngineConfig {
+    readonly sessionId: SessionId;
+    readonly transcript: SessionTranscript;
+}
+/**
+ * Wrap an engine adapter so that user input and assistant output are
+ * automatically appended to a transcript store.
+ */
+declare function createTranscriptingEngine(inner: EngineAdapter, config: TranscriptingEngineConfig): EngineAdapter;
+
+export { type AgentHost, type AgentInbox, type AgentInboxOptions, type AgentMessagePayload, type AgentSignalGroupPayload, type AgentSignalPayload, type AgentStatusPayload, type AuthAckPayload, type AuthChallengePayload, type AuthConfig, type AuthHandshake, type AuthHandshakeConfig, type AuthPayload, type AuthResponsePayload, type CapabilitiesPayload, type CheckpointManager, type CheckpointManagerDeps, type CheckpointingEngineConfig, DEFAULT_DELIVERY_CONFIG, DEFAULT_TOOL_CALL_TIMEOUT_MS, type DeliveryManager, type DeliveryManagerConfig, type DeliveryManagerDeps, type DiscoveryConfig, type DiscoveryService, type FrameCounterState, type FrameCounters, type FrameDeduplicator, type FullKoiNode, type GatewayConnectionConfig, type HandshakePayload, type HeartbeatCallbacks, type HeartbeatConfig, type HeartbeatMonitor, type InboxDropEvent, type KoiNode, type LocalResolver, MAX_INBOX_DEPTH, type MemoryMetrics, type MemoryMonitor, type NodeCheckpoint, type NodeConfig, type NodeDeps, type NodeEvent, type NodeEventListener, type NodeEventType, type NodeFrame, type NodeFrameKind, type NodeMode, type NodePendingFrame, type NodeRecoveryPlan, type NodeSessionRecord, type NodeSessionStore, type NodeState, type QueuedAgentMessage, type ReconnectState, type RecoveryResult, type ResourcesConfig, type ServiceInfo, type StatusReporter, type ThinKoiNode, type ToolCallHandlerDeps, type ToolMeta, type ToolResolverConfig, type TranscriptingEngineConfig, type Transport, type TransportState, type WriteQueue, type WriteQueueConfig, computeReconnectDelay, createAgentHost, createAgentInbox, createAuthHandshake, createAuthPayload, createCheckpointManager, createCheckpointingEngine, createDeliveryManager, createDiscoveryService, createFilesystemTool, createFrameCounters, createFrameDeduplicator, createHeartbeatMonitor, createLocalResolver, createMemoryMonitor, createNode, createReconnectState, createShellTool, createStatusReporter, createTranscriptingEngine, createTransport, createWriteQueue, decodeFrame, encodeFrame, generateCorrelationId, handleToolCall, isAgentMessagePayload, isCleanClose, nextAttempt, parseNodeConfig, resetReconnectState, signChallenge };
 "
 `;
