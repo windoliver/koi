@@ -141,6 +141,7 @@ describe("forge → agent e2e", () => {
 
     const adapter: EngineAdapter = {
       engineId: "forge-e2e-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async (): Promise<ModelResponse> => ({
           content: "ok",
@@ -224,6 +225,7 @@ describe("forge → agent e2e", () => {
 
     const adapter: EngineAdapter = {
       engineId: "not-found-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async (): Promise<ModelResponse> => ({
           content: "ok",
@@ -286,6 +288,7 @@ describe("forge → agent e2e", () => {
     const firstResults: ToolResponse[] = [];
     const firstAdapter: EngineAdapter = {
       engineId: "first-run-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async (): Promise<ModelResponse> => ({
           content: "ok",
@@ -337,6 +340,7 @@ describe("forge → agent e2e", () => {
     const secondResults: ToolResponse[] = [];
     const secondAdapter: EngineAdapter = {
       engineId: "second-run-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async (): Promise<ModelResponse> => ({
           content: "ok",
@@ -456,6 +460,7 @@ describe("forge → callHandlers.tools visibility", () => {
     const discoveredTools: readonly ToolDescriptor[] = [];
     const adapter: EngineAdapter = {
       engineId: "tools-visibility-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async (): Promise<ModelResponse> => ({
           content: "ok",
@@ -530,6 +535,7 @@ describe("forge → reuse: agent self-extends", () => {
 
     const adapter1: EngineAdapter = {
       engineId: "self-extend-run1",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async (): Promise<ModelResponse> => ({
           content: "ok",
@@ -593,6 +599,7 @@ describe("forge → reuse: agent self-extends", () => {
 
     const adapter2: EngineAdapter = {
       engineId: "self-extend-run2",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async (): Promise<ModelResponse> => ({
           content: "ok",
@@ -664,6 +671,7 @@ describe("forge → reuse: agent self-extends", () => {
     // Run 1: Forge adder
     const forgeAdapter: EngineAdapter = {
       engineId: "mw-spy-run1",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async (): Promise<ModelResponse> => ({ content: "ok", model: "test" }),
       },
@@ -704,6 +712,7 @@ describe("forge → reuse: agent self-extends", () => {
 
     const useAdapter: EngineAdapter = {
       engineId: "mw-spy-run2",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async (): Promise<ModelResponse> => ({ content: "ok", model: "test" }),
       },
@@ -768,6 +777,7 @@ describe("forge → hot-attach: mid-session tool visibility", () => {
 
     const adapter: EngineAdapter = {
       engineId: "hot-attach-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async (): Promise<ModelResponse> => ({
           content: "ok",

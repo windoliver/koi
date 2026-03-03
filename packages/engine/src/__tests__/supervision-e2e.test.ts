@@ -111,6 +111,7 @@ function makeChildSpec(name: string, restart: ChildSpec["restart"] = "permanent"
 function createSimpleAdapter(): EngineAdapter {
   return {
     engineId: "e2e-simple",
+    capabilities: { text: true, images: false, files: false, audio: false },
     stream: (_input: EngineInput) => ({
       async *[Symbol.asyncIterator](): AsyncGenerator<EngineEvent> {
         yield {

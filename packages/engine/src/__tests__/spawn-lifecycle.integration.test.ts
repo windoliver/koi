@@ -67,6 +67,7 @@ function createTestAdapter(
 ): EngineAdapter {
   return {
     engineId: "lifecycle-test",
+    capabilities: { text: true, images: false, files: false, audio: false },
     stream: (input: EngineInput) => ({
       async *[Symbol.asyncIterator](): AsyncGenerator<EngineEvent> {
         if (input.callHandlers && toolCalls !== undefined) {

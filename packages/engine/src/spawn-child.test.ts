@@ -53,6 +53,7 @@ function mockOutput(overrides?: Partial<EngineOutput>): EngineOutput {
 function mockAdapter(): EngineAdapter {
   return {
     engineId: "mock",
+    capabilities: { text: true, images: false, files: false, audio: false },
     stream: () => ({
       [Symbol.asyncIterator]() {
         // let justified: mutable iterator state, single-use

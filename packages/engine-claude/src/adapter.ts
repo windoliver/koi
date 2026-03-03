@@ -9,12 +9,14 @@
  */
 
 import type {
+  EngineCapabilities,
   EngineEvent,
   EngineInput,
   EngineOutput,
   EngineState,
   EngineStopReason,
 } from "@koi/core";
+import { mapContentBlocksForEngine } from "@koi/core";
 import type { HitlEventEmitter } from "./approval-bridge.js";
 import { createApprovalBridge } from "./approval-bridge.js";
 import type { SdkMessage } from "./event-map.js";
@@ -32,6 +34,18 @@ import type {
 } from "./types.js";
 
 const ENGINE_ID = "claude" as const;
+
+/**
+ * Claude adapter capabilities — text only for now.
+ * SdkInputMessage currently only accepts string content.
+ * Native multimodal support (images, files) is a follow-up PR.
+ */
+const CLAUDE_CAPABILITIES: EngineCapabilities = {
+  text: true,
+  images: false,
+  files: false,
+  audio: false,
+} as const;
 
 // ---------------------------------------------------------------------------
 // SDK function types — thin wrappers to avoid leaking SDK types
@@ -108,7 +122,8 @@ function inputToSdkInputMessage(input: EngineInput): SdkInputMessage | undefined
     case "messages": {
       const parts: string[] = [];
       for (const msg of input.messages) {
-        for (const block of msg.content) {
+        const mapped = mapContentBlocksForEngine(msg.content, CLAUDE_CAPABILITIES);
+        for (const block of mapped) {
           if (block.kind === "text") {
             parts.push(block.text);
           }
@@ -392,6 +407,7 @@ export function createClaudeAdapter(
 
   const adapter: ClaudeEngineAdapter = {
     engineId: ENGINE_ID,
+    capabilities: CLAUDE_CAPABILITIES,
 
     stream: (input: EngineInput): AsyncIterable<EngineEvent> => {
       return runStream(input);

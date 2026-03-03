@@ -25,7 +25,12 @@ import { createTextDeltaParser } from "./parsers.js";
 import { killProcess, readStream, spawnProcess } from "./process-manager.js";
 import type { PtySharedState } from "./pty-mode.js";
 import { resolvePtyConfig, runPty } from "./pty-mode.js";
-import { createZeroMetrics, extractInputText, trimHistory } from "./shared-helpers.js";
+import {
+  createZeroMetrics,
+  EXTERNAL_CAPABILITIES,
+  extractInputText,
+  trimHistory,
+} from "./shared-helpers.js";
 import { createTurnContext } from "./turn-context.js";
 import type {
   ExternalAdapterConfig,
@@ -426,6 +431,7 @@ export function createExternalAdapter(config: ExternalAdapterConfig): ExternalEn
 
   return {
     engineId: ENGINE_ID,
+    capabilities: EXTERNAL_CAPABILITIES,
 
     stream(input: EngineInput): AsyncIterable<EngineEvent> {
       if (disposed) {

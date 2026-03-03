@@ -45,6 +45,7 @@ function doneOutput(overrides?: Partial<EngineOutput>): EngineOutput {
 function mockAdapter(events: readonly EngineEvent[]): EngineAdapter {
   return {
     engineId: "mock-adapter",
+    capabilities: { text: true, images: false, files: false, audio: false },
     stream: () => {
       let index = 0;
       return {
@@ -68,6 +69,7 @@ function mockAdapter(events: readonly EngineEvent[]): EngineAdapter {
 function crashingAdapter(errorMessage: string): EngineAdapter {
   return {
     engineId: "crashing-adapter",
+    capabilities: { text: true, images: false, files: false, audio: false },
     stream: () => ({
       [Symbol.asyncIterator]() {
         return {
@@ -356,6 +358,7 @@ describe("cooperating adapter lifecycle integration", () => {
   ): EngineAdapter {
     return {
       engineId: "cooperating",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: rawModelCall,
       },
@@ -445,6 +448,7 @@ describe("cooperating adapter lifecycle integration", () => {
     // Adapter that calls modelCall repeatedly until blocked
     const adapter: EngineAdapter = {
       engineId: "greedy-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: { modelCall: rawModelCall },
       stream: (input: EngineInput) => ({
         async *[Symbol.asyncIterator]() {
@@ -495,6 +499,7 @@ describe("streaming lifecycle integration", () => {
   ): EngineAdapter {
     return {
       engineId: "streaming-cooperating",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: rawModelCall,
         modelStream: rawModelStream,
@@ -614,6 +619,7 @@ describe("streaming lifecycle integration", () => {
     // Adapter that calls modelStream repeatedly until blocked
     const adapter: EngineAdapter = {
       engineId: "greedy-stream-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: rawModelCall,
         modelStream: rawModelStream,
@@ -711,6 +717,7 @@ describe("HITL approval lifecycle integration", () => {
 
     const adapter: EngineAdapter = {
       engineId: "hitl-allow-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async () => ({ content: "ok", model: "test" }),
       },
@@ -750,6 +757,7 @@ describe("HITL approval lifecycle integration", () => {
 
     const adapter: EngineAdapter = {
       engineId: "hitl-deny-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async () => ({ content: "ok", model: "test" }),
       },
@@ -792,6 +800,7 @@ describe("HITL approval lifecycle integration", () => {
 
     const adapter: EngineAdapter = {
       engineId: "hitl-modify-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: async () => ({ content: "ok", model: "test" }),
       },

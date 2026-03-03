@@ -11,6 +11,7 @@ import type {
   ComposedCallHandlers,
   ContentBlock,
   EngineAdapter,
+  EngineCapabilities,
   EngineEvent,
   EngineInput,
   EngineMetrics,
@@ -35,6 +36,18 @@ import { toolCallId } from "@koi/core";
 
 const DEFAULT_MAX_TURNS = 25 as const;
 const ENGINE_ID = "koi-loop" as const;
+
+/**
+ * Loop adapter capabilities — passes through to the model call handler.
+ * The model handler's own capabilities determine actual support, so we
+ * declare full content support here.
+ */
+const LOOP_CAPABILITIES: EngineCapabilities = {
+  text: true,
+  images: true,
+  files: true,
+  audio: false,
+} as const;
 
 export interface LoopAdapterConfig {
   /** Raw model call terminal — the actual LLM call function. */
@@ -496,6 +509,7 @@ export function createLoopAdapter(config: LoopAdapterConfig): EngineAdapter {
 
   const adapter: EngineAdapter = {
     engineId: ENGINE_ID,
+    capabilities: LOOP_CAPABILITIES,
 
     terminals: {
       modelCall: config.modelCall,

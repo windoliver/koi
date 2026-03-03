@@ -371,6 +371,7 @@ export type {
   AbortReason,
   ComposedCallHandlers,
   EngineAdapter,
+  EngineCapabilities,
   EngineEvent,
   EngineInput,
   EngineInputBase,
@@ -380,7 +381,7 @@ export type {
   EngineStopReason,
   TerminationOutcome,
 } from "./engine.js";
-export { mapStopReasonToOutcome } from "./engine.js";
+export { mapContentBlocksForEngine, mapStopReasonToOutcome } from "./engine.js";
 // error factories — pure data constructors for KoiError objects
 export {
   conflict,

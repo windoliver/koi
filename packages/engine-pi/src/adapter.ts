@@ -12,7 +12,7 @@ import { Agent as PiAgent } from "@mariozechner/pi-agent-core";
 import type { Message, UserMessage } from "@mariozechner/pi-ai";
 import { getModel, streamSimple } from "@mariozechner/pi-ai";
 import { AsyncQueue, createEventSubscriber } from "./event-bridge.js";
-import { engineInputToPrompt } from "./message-map.js";
+import { engineInputToPrompt, PI_CAPABILITIES } from "./message-map.js";
 import { createMetricsAccumulator } from "./metrics.js";
 import { createModelCallTerminal, createModelStreamTerminal } from "./model-terminal.js";
 import { createBridgeStreamFn } from "./stream-bridge.js";
@@ -85,6 +85,7 @@ export function createPiAdapter(config: PiAdapterConfig): PiEngineAdapter {
 
   return {
     engineId: "pi-agent-core",
+    capabilities: PI_CAPABILITIES,
 
     terminals: {
       modelCall: modelCallTerminal,

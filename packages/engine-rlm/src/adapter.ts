@@ -11,6 +11,7 @@ import type {
   ComposedCallHandlers,
   ContentBlock,
   EngineAdapter,
+  EngineCapabilities,
   EngineEvent,
   EngineInput,
   EngineMetrics,
@@ -55,6 +56,17 @@ import {
 
 const ENGINE_ID = "koi-rlm" as const;
 const DEFAULT_TIME_BUDGET_MS = 300_000 as const; // 5 minutes
+
+/**
+ * RLM adapter capabilities — passes through to the model call handler,
+ * same as engine-loop.
+ */
+const RLM_CAPABILITIES: EngineCapabilities = {
+  text: true,
+  images: true,
+  files: true,
+  audio: false,
+} as const;
 
 // ---------------------------------------------------------------------------
 // Tool call metadata shape (same as engine-loop)
@@ -448,6 +460,7 @@ export function createRlmAdapter(config: RlmConfig): EngineAdapter {
 
   const adapter: EngineAdapter = {
     engineId: ENGINE_ID,
+    capabilities: RLM_CAPABILITIES,
 
     terminals: {
       modelCall: config.modelCall,

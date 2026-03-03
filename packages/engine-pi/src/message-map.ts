@@ -6,7 +6,8 @@
  * EngineInput → pi prompt string: for initiating the agent loop
  */
 
-import type { EngineInput } from "@koi/core/engine";
+import type { EngineCapabilities, EngineInput } from "@koi/core/engine";
+import { mapContentBlocksForEngine } from "@koi/core/engine";
 import type { ContentBlock, InboundMessage } from "@koi/core/message";
 import type {
   AssistantMessage,
@@ -85,7 +86,21 @@ export function inboundToPiMessages(messages: readonly InboundMessage[]): Messag
 }
 
 /**
+ * Pi engine capabilities — images and files supported natively.
+ * The pi-ai SDK passes content arrays through to the Anthropic API
+ * without type validation, so document blocks reach the model at runtime
+ * even though pi-ai's TypeScript types only declare text and image.
+ */
+export const PI_CAPABILITIES: EngineCapabilities = {
+  text: true,
+  images: true,
+  files: true,
+  audio: false,
+} as const;
+
+/**
  * Extract the prompt text from an EngineInput.
+ * Applies mapContentBlocksForEngine defensively before extracting text.
  */
 export function engineInputToPrompt(input: EngineInput): string {
   switch (input.kind) {
@@ -98,7 +113,8 @@ export function engineInputToPrompt(input: EngineInput): string {
       for (let i = input.messages.length - 1; i >= 0; i--) {
         const msg = input.messages[i];
         if (msg && msg.senderId !== "assistant") {
-          const textBlock = msg.content.find((c) => c.kind === "text");
+          const mapped = mapContentBlocksForEngine(msg.content, PI_CAPABILITIES);
+          const textBlock = mapped.find((c) => c.kind === "text");
           if (textBlock?.kind === "text") {
             return textBlock.text;
           }
@@ -110,6 +126,29 @@ export function engineInputToPrompt(input: EngineInput): string {
       return "";
   }
 }
+
+// ---------------------------------------------------------------------------
+// Anthropic document content — passthrough via pi-ai SDK
+// ---------------------------------------------------------------------------
+
+/**
+ * Anthropic document source — base64-encoded or URL-referenced.
+ * Not declared by pi-ai types, but the SDK passes content through
+ * to the Anthropic API without filtering at runtime.
+ */
+type DocumentSource =
+  | { readonly type: "base64"; readonly media_type: string; readonly data: string }
+  | { readonly type: "url"; readonly url: string };
+
+/**
+ * Content part union including Anthropic document blocks.
+ * Wider than pi-ai's declared types — used for the reverse conversion
+ * path (Koi → pi) where document blocks must reach the API.
+ */
+type PiContentPart =
+  | { readonly type: "text"; readonly text: string }
+  | { readonly type: "image"; readonly data: string; readonly mimeType: string }
+  | { readonly type: "document"; readonly source: DocumentSource };
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -173,7 +212,8 @@ function inboundToUserMessage(msg: InboundMessage): UserMessage {
     return { role: "user", content: msg.content[0].text, timestamp: msg.timestamp };
   }
   // Multiple blocks or non-text → array content
-  const content = msg.content.map(blocksToUserContent);
+  const content = msg.content.map(blockToPiContent);
+  // @ts-expect-error — PiContentPart[] includes Anthropic document blocks not in pi-ai types
   return { role: "user", content, timestamp: msg.timestamp };
 }
 
@@ -204,31 +244,45 @@ function inboundToToolResultMessage(msg: InboundMessage): ToolResultMessage {
   const toolCallId = typeof meta?.toolCallId === "string" ? meta.toolCallId : "";
   const toolName = typeof meta?.toolName === "string" ? meta.toolName : "";
   const isError = typeof meta?.isError === "boolean" ? meta.isError : false;
-  const content = msg.content.map(blocksToToolResultContent);
+  const content = msg.content.map(blockToPiContent);
   return {
     role: "toolResult",
     toolCallId,
     toolName,
+    // @ts-expect-error — PiContentPart[] includes Anthropic document blocks not in pi-ai types
     content,
     isError,
     timestamp: msg.timestamp,
   };
 }
 
-function blocksToUserContent(
-  block: ContentBlock,
-):
-  | { readonly type: "text"; readonly text: string }
-  | { readonly type: "image"; readonly data: string; readonly mimeType: string } {
+/**
+ * Map a Koi ContentBlock to a pi-ai content part.
+ * Used for both user messages and tool results — same mapping applies.
+ * FileBlock → Anthropic document block (pi-ai SDK passes through at runtime).
+ */
+function blockToPiContent(block: ContentBlock): PiContentPart {
   if (block.kind === "text") {
     return { type: "text", text: block.text };
   }
   if (block.kind === "image") {
-    // Reverse data:mimeType;base64,data → { data, mimeType }
     const parsed = parseDataUrl(block.url);
     return { type: "image", data: parsed.data, mimeType: parsed.mimeType };
   }
-  // Fallback for custom/other blocks — treat as text
+  if (block.kind === "file") {
+    if (block.url.startsWith("data:")) {
+      const parsed = parseDataUrl(block.url);
+      return {
+        type: "document",
+        source: { type: "base64", media_type: parsed.mimeType, data: parsed.data },
+      };
+    }
+    return {
+      type: "document",
+      source: { type: "url", url: block.url },
+    };
+  }
+  // Fallback for custom/button/other blocks
   return { type: "text", text: "" };
 }
 
@@ -249,21 +303,6 @@ function blockToAssistantContent(block: ContentBlock): AssistantMessage["content
     return { type: "toolCall", id, name, arguments: args };
   }
   // Fallback
-  return { type: "text", text: "" };
-}
-
-function blocksToToolResultContent(
-  block: ContentBlock,
-):
-  | { readonly type: "text"; readonly text: string }
-  | { readonly type: "image"; readonly data: string; readonly mimeType: string } {
-  if (block.kind === "text") {
-    return { type: "text", text: block.text };
-  }
-  if (block.kind === "image") {
-    const parsed = parseDataUrl(block.url);
-    return { type: "image", data: parsed.data, mimeType: parsed.mimeType };
-  }
   return { type: "text", text: "" };
 }
 

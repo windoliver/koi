@@ -51,6 +51,7 @@ function doneOutput(overrides?: Partial<EngineOutput>): EngineOutput {
 function mockAdapter(events: readonly EngineEvent[]): EngineAdapter {
   return {
     engineId: "test-adapter",
+    capabilities: { text: true, images: false, files: false, audio: false },
     stream: () => {
       let index = 0;
       return {
@@ -393,6 +394,7 @@ function cooperatingAdapter(
 ): EngineAdapter & { capturedInput?: EngineInput } {
   const result: EngineAdapter & { capturedInput?: EngineInput } = {
     engineId: "cooperating-adapter",
+    capabilities: { text: true, images: false, files: false, audio: false },
     terminals: {
       modelCall: modelTerminal,
     },
@@ -457,6 +459,7 @@ describe("createKoi terminal injection", () => {
     // Create a cooperating adapter that uses callHandlers.toolCall
     const adapter: EngineAdapter = {
       engineId: "tool-test-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: { modelCall: modelTerminal },
       stream: (input: EngineInput) => {
         let done = false;
@@ -522,6 +525,7 @@ describe("createKoi terminal injection", () => {
 
     const adapter: EngineAdapter = {
       engineId: "signal-thread-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: { modelCall: modelTerminal },
       stream: (input: EngineInput) => {
         let done = false;
@@ -583,6 +587,7 @@ describe("createKoi duration fix", () => {
     const { KoiRuntimeError } = await import("@koi/errors");
     const adapter: EngineAdapter = {
       engineId: "slow-crash",
+      capabilities: { text: true, images: false, files: false, audio: false },
       stream: () => ({
         [Symbol.asyncIterator]() {
           return {
@@ -623,6 +628,7 @@ function streamingAdapter(
 ): EngineAdapter & { capturedInput?: EngineInput } {
   const result: EngineAdapter & { capturedInput?: EngineInput } = {
     engineId: "streaming-adapter",
+    capabilities: { text: true, images: false, files: false, audio: false },
     terminals: {
       modelCall: modelTerminal,
       modelStream: modelStreamTerminal,
@@ -708,6 +714,7 @@ describe("createKoi streaming terminal wiring", () => {
     // Adapter that uses callHandlers.modelStream
     const adapter: EngineAdapter = {
       engineId: "stream-consuming-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: modelTerminal,
         modelStream: modelStreamTerminal,
@@ -754,6 +761,7 @@ describe("createKoi HITL approval handler", () => {
   function cooperatingAdapterWithModelCall(rawModelCall: ModelHandler): EngineAdapter {
     return {
       engineId: "hitl-cooperating",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: { modelCall: rawModelCall },
       stream: (input: EngineInput) => ({
         async *[Symbol.asyncIterator]() {
@@ -857,6 +865,7 @@ describe("createKoi HITL approval handler", () => {
     // Adapter that calls two tools — one safe, one dangerous
     const adapter: EngineAdapter = {
       engineId: "hitl-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: { modelCall: modelTerminal },
       stream: (input: EngineInput) => ({
         async *[Symbol.asyncIterator]() {
@@ -932,6 +941,7 @@ describe("createKoi tool not found", () => {
     let caughtError: unknown;
     const adapter: EngineAdapter = {
       engineId: "tool-not-found-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: { modelCall: modelTerminal },
       stream: (input: EngineInput) => ({
         async *[Symbol.asyncIterator]() {
@@ -974,6 +984,7 @@ describe("createKoi early return", () => {
     // Adapter that yields infinite events
     const adapter: EngineAdapter = {
       engineId: "infinite-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       stream: () => ({
         async *[Symbol.asyncIterator]() {
           let i = 0;
@@ -1004,6 +1015,7 @@ describe("createKoi early return", () => {
     const onSessionEnd = mock(() => Promise.resolve());
     const adapter: EngineAdapter = {
       engineId: "infinite-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       stream: () => ({
         async *[Symbol.asyncIterator]() {
           while (true) {
@@ -1033,6 +1045,7 @@ describe("createKoi early return", () => {
     const onSessionEnd = mock(() => Promise.resolve());
     const adapter: EngineAdapter = {
       engineId: "crash-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       stream: () => ({
         [Symbol.asyncIterator]() {
           return {
@@ -1091,6 +1104,7 @@ function forgeTestAdapter(
   const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
   return {
     engineId: "forge-test-adapter",
+    capabilities: { text: true, images: false, files: false, audio: false },
     terminals: { modelCall: modelTerminal },
     stream: (input: EngineInput) => ({
       [Symbol.asyncIterator]() {
@@ -1411,6 +1425,7 @@ describe("createKoi live forge resolution", () => {
     const toolSnapshots: Array<readonly ToolDescriptor[]> = [];
     const adapter: EngineAdapter = {
       engineId: "turn-boundary-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: mock(() => Promise.resolve({ content: "ok", model: "test" })),
       },
@@ -1471,6 +1486,7 @@ describe("createKoi live forge resolution", () => {
 
     const adapter: EngineAdapter = {
       engineId: "forge-mw-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: mock(() => Promise.resolve({ content: "ok", model: "test" })),
         toolCall: async (req: ToolRequest) => {
@@ -1700,6 +1716,7 @@ describe("createKoi live forge resolution", () => {
     let receivedCallHandlers = false;
     const adapter: EngineAdapter = {
       engineId: "non-cooperating",
+      capabilities: { text: true, images: false, files: false, audio: false },
       stream: (input: EngineInput) => ({
         async *[Symbol.asyncIterator]() {
           receivedCallHandlers = input.callHandlers !== undefined;
@@ -2015,6 +2032,7 @@ describe("createKoi turn_start emission", () => {
     const { KoiRuntimeError } = await import("@koi/errors");
     const adapter: EngineAdapter = {
       engineId: "crash-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       stream: () => ({
         [Symbol.asyncIterator]() {
           return {
@@ -2171,6 +2189,7 @@ describe("createKoi sendStatus threading", () => {
     const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
     const adapter: EngineAdapter = {
       engineId: "status-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: { modelCall: modelTerminal },
       stream: (input: EngineInput) => ({
         async *[Symbol.asyncIterator]() {
@@ -2211,6 +2230,7 @@ describe("createKoi sendStatus threading", () => {
     const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
     const adapter: EngineAdapter = {
       engineId: "no-status-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: { modelCall: modelTerminal },
       stream: (input: EngineInput) => ({
         async *[Symbol.asyncIterator]() {
@@ -2244,6 +2264,7 @@ describe("createKoi concurrent run guard", () => {
   test("second run() call throws while first is active", async () => {
     const adapter: EngineAdapter = {
       engineId: "slow-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       stream: () => ({
         async *[Symbol.asyncIterator]() {
           await new Promise((r) => setTimeout(r, 50));
@@ -2305,6 +2326,7 @@ describe("createKoi onSessionEnd error preservation", () => {
     });
     const adapter: EngineAdapter = {
       engineId: "crash-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       stream: () => ({
         [Symbol.asyncIterator]() {
           return {
@@ -2355,6 +2377,7 @@ describe("createKoi middleware priority sorting", () => {
     // Adapter that triggers model call through callHandlers
     const adapter: EngineAdapter = {
       engineId: "priority-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: { modelCall: modelTerminal },
       stream: (input: EngineInput) => ({
         async *[Symbol.asyncIterator]() {
@@ -2417,6 +2440,7 @@ describe("AbortSignal propagation", () => {
     // Adapter that hangs until aborted
     const hangingAdapter: EngineAdapter = {
       engineId: "hanging",
+      capabilities: { text: true, images: false, files: false, audio: false },
       stream: () => ({
         [Symbol.asyncIterator]() {
           return {
@@ -2701,6 +2725,7 @@ describe("createKoi forge watch", () => {
 
     const adapter: EngineAdapter = {
       engineId: "onchange-descriptor-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: mock(() => Promise.resolve({ content: "ok", model: "test" })),
       },
@@ -2847,6 +2872,7 @@ describe("createKoi forge watch", () => {
 
     const adapter: EngineAdapter = {
       engineId: "abort-forge-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: mock(() => Promise.resolve({ content: "ok", model: "test" })),
       },
@@ -2916,6 +2942,7 @@ describe("createKoi forge watch", () => {
 
     const adapter: EngineAdapter = {
       engineId: "dirty-flag-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: {
         modelCall: mock(() => Promise.resolve({ content: "ok", model: "test" })),
       },
@@ -3055,6 +3082,7 @@ describe("createKoi error paths", () => {
     const modelTerminal = mock(() => Promise.resolve({ content: "ok", model: "test" }));
     const adapter: EngineAdapter = {
       engineId: "forge-fail-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       terminals: { modelCall: modelTerminal },
       stream: (_input: EngineInput) => ({
         async *[Symbol.asyncIterator]() {
@@ -3116,6 +3144,7 @@ describe("createKoi error paths", () => {
     // Adapter that yields infinite events
     const adapter: EngineAdapter = {
       engineId: "infinite-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
       stream: () => ({
         async *[Symbol.asyncIterator]() {
           let i = 0;

@@ -241,4 +241,13 @@ export function testEngineAdapter(options: EngineContractOptions): void {
     const adapter = await createAdapter();
     expect(typeof adapter.stream).toBe("function");
   });
+
+  test("capabilities is a valid EngineCapabilities object", async () => {
+    const adapter = await createAdapter();
+    expect(adapter.capabilities).toBeDefined();
+    expect(typeof adapter.capabilities.text).toBe("boolean");
+    expect(typeof adapter.capabilities.images).toBe("boolean");
+    expect(typeof adapter.capabilities.files).toBe("boolean");
+    expect(typeof adapter.capabilities.audio).toBe("boolean");
+  });
 }
