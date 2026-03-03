@@ -140,7 +140,7 @@ const SUBSYSTEM_MAP: Readonly<Record<string, string>> = {
   "registry-memory": "fs",
   "registry-nexus": "fs",
   "registry-http": "fs",
-  "registry-store": "fs",
+  "registry-sqlite": "fs",
   "events-memory": "fs",
   "events-nexus": "fs",
   "events-sqlite": "fs",

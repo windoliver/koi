@@ -1,4 +1,4 @@
-# @koi/registry-store — Agent-Facing Registry Tools
+# @koi/registry-sqlite — Agent-Facing Registry Tools
 
 An L2 `ComponentProvider` that wraps `BrickRegistryReader`, `SkillRegistryReader`, and `VersionIndexReader` into 4 agent-facing tools. Agents can search bricks via FTS5, inspect details, list versions, and install capabilities — turning the SQLite registry into a self-serve package manager.
 
@@ -6,7 +6,7 @@ An L2 `ComponentProvider` that wraps `BrickRegistryReader`, `SkillRegistryReader
 
 ## Why It Exists
 
-`@koi/registry-store` implements 3 SQLite-backed registries (BrickRegistry, SkillRegistry, VersionIndex) with FTS5 full-text search. But without agent-facing tools, this data is only accessible programmatically. It's like having npm but no `npm search` or `npm install` commands.
+`@koi/registry-sqlite` implements 3 SQLite-backed registries (BrickRegistry, SkillRegistry, VersionIndex) with FTS5 full-text search. But without agent-facing tools, this data is only accessible programmatically. It's like having npm but no `npm search` or `npm install` commands.
 
 `createRegistryProvider` solves this by providing a `ComponentProvider` that:
 
@@ -98,7 +98,7 @@ L0   @koi/core                ─ BrickRegistryReader, SkillRegistryReader,
                                  VersionIndexReader, RegistryComponent,
                                  REGISTRY token, BrickArtifact, BrickKind
 L0u  @koi/sqlite-utils        ─ SQLite helper utilities
-L2   @koi/registry-store      ─ this package (3 SQLite registries +
+L2   @koi/registry-sqlite      ─ this package (3 SQLite registries +
                                  ComponentProvider + 4 tools + 1 skill)
 ```
 
@@ -132,7 +132,7 @@ index.ts                               ← public re-exports
 ┌─────────────────────────────────────────────────────────────────┐
 │                     CAPABILITY DISCOVERY                         │
 │                                                                  │
-│  @koi/catalog                  @koi/registry-store               │
+│  @koi/catalog                  @koi/registry-sqlite               │
 │  ─────────────                 ────────────────────              │
 │  High-level unified            Low-level registry-specific       │
 │  discovery across 4 sources    FTS5 search + version listing     │
@@ -291,7 +291,7 @@ The provider attaches a `SkillComponent` at `skillToken("registry-guide")` with 
 Creates a `ComponentProvider` that attaches 4 registry tools + 1 skill to agents.
 
 ```typescript
-import { createRegistryProvider } from "@koi/registry-store";
+import { createRegistryProvider } from "@koi/registry-sqlite";
 ```
 
 ### RegistryProviderConfig
@@ -334,7 +334,7 @@ interface RegistryComponent {
 ### 1. Minimal Setup (read-only, no install)
 
 ```typescript
-import { createRegistryProvider } from "@koi/registry-store";
+import { createRegistryProvider } from "@koi/registry-sqlite";
 import { createKoi } from "@koi/engine";
 
 const provider = createRegistryProvider({
@@ -354,7 +354,7 @@ const runtime = await createKoi({
 ### 2. Full Setup with ForgeStore Integration
 
 ```typescript
-import { createRegistryProvider } from "@koi/registry-store";
+import { createRegistryProvider } from "@koi/registry-sqlite";
 
 const provider = createRegistryProvider({
   bricks: brickRegistry,
@@ -407,7 +407,7 @@ const page = await registry.bricks.search({ text: "pii" });
 ### Unit Tests (51 tests, mocked backends)
 
 ```
-bun test --cwd packages/registry-store
+bun test --cwd packages/registry-sqlite
 ```
 
 Tests per file:
@@ -463,7 +463,7 @@ E2E_TESTS=1 bun --env-file=../../.env test src/__tests__/e2e-registry-tools
   │         │ import                                    │
   │         │                                           │
   │  ┌──────┴────────────────────────────────────────┐  │
-  │  │  L2  @koi/registry-store  ← this package      │  │
+  │  │  L2  @koi/registry-sqlite  ← this package      │  │
   │  │                                                │  │
   │  │  3 SQLite registries (Brick, Skill, Version)   │  │
   │  │  4 agent-facing tools (search, get, versions,  │  │
@@ -482,7 +482,7 @@ E2E_TESTS=1 bun --env-file=../../.env test src/__tests__/e2e-registry-tools
 
 ## Related
 
-- **Issue**: [#535](https://github.com/windoliver/koi/issues/535) — feat: add ComponentProvider + agent-facing tools to @koi/registry-store
+- **Issue**: [#535](https://github.com/windoliver/koi/issues/535) — feat: add ComponentProvider + agent-facing tools to @koi/registry-sqlite
 - **@koi/catalog** — High-level unified discovery (search_catalog, attach_capability)
 - **@koi/forge** — Self-extension runtime (create, verify, sign bricks)
 - **@koi/scheduler-provider** — Same pattern (ComponentProvider wrapping a backend into tools)

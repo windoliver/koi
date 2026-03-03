@@ -1,5 +1,5 @@
 /**
- * E2E test — Registry-Store through full L1 runtime assembly.
+ * E2E test — Registry-SQLite through full L1 runtime assembly.
  *
  * Validates that SQLite registries (BrickRegistry, SkillRegistry, VersionIndex)
  * work correctly through the full L1 runtime pipeline:
@@ -16,7 +16,7 @@
  * Gated on ANTHROPIC_API_KEY + E2E_TESTS=1 — tests skip when either is missing.
  *
  * Run:
- *   E2E_TESTS=1 ANTHROPIC_API_KEY=... bun test packages/registry-store/src/__tests__/e2e-full-stack.test.ts
+ *   E2E_TESTS=1 ANTHROPIC_API_KEY=... bun test packages/registry-sqlite/src/__tests__/e2e-full-stack.test.ts
  */
 
 import { Database } from "bun:sqlite";
@@ -60,7 +60,7 @@ const E2E_MODEL = "anthropic:claude-haiku-4-5-20251001";
 
 function testManifest(): AgentManifest {
   return {
-    name: "registry-store-e2e",
+    name: "registry-sqlite-e2e",
     version: "0.1.0",
     model: { name: "claude-haiku-4-5-20251001" },
   };
@@ -124,7 +124,7 @@ function createToolProvider(tools: readonly Tool[]): ComponentProvider {
 // Tests
 // ---------------------------------------------------------------------------
 
-describeE2E("e2e: registry-store through full L1 runtime assembly", () => {
+describeE2E("e2e: registry-sqlite through full L1 runtime assembly", () => {
   // -------------------------------------------------------------------------
   // Test 1: BrickRegistry tool → real LLM calls it
   // -------------------------------------------------------------------------

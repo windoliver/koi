@@ -1,5 +1,5 @@
 /**
- * Shared configuration for registry-store factories.
+ * Shared configuration for registry-sqlite factories.
  *
  * Resolves a Database instance from either a file path or an injected Database.
  * Caller owns lifecycle when injecting; factory owns it when creating from path.
@@ -12,21 +12,21 @@ import { openDb } from "@koi/sqlite-utils";
 // Config types
 // ---------------------------------------------------------------------------
 
-export interface RegistryStorePathConfig {
+export interface RegistrySqlitePathConfig {
   readonly dbPath: string;
 }
 
-export interface RegistryStoreDbConfig {
+export interface RegistrySqliteDbConfig {
   readonly db: Database;
 }
 
-export type RegistryStoreConfig = RegistryStorePathConfig | RegistryStoreDbConfig;
+export type RegistrySqliteConfig = RegistrySqlitePathConfig | RegistrySqliteDbConfig;
 
 // ---------------------------------------------------------------------------
 // Resolution
 // ---------------------------------------------------------------------------
 
-function isPathConfig(config: RegistryStoreConfig): config is RegistryStorePathConfig {
+function isPathConfig(config: RegistrySqliteConfig): config is RegistrySqlitePathConfig {
   return "dbPath" in config;
 }
 
@@ -36,7 +36,7 @@ export interface ResolvedDb {
 }
 
 /** Resolve a Database from config. Returns ownership flag for close() logic. */
-export function resolveDb(config: RegistryStoreConfig): ResolvedDb {
+export function resolveDb(config: RegistrySqliteConfig): ResolvedDb {
   if (isPathConfig(config)) {
     return { db: openDb(config.dbPath), ownsDb: true };
   }

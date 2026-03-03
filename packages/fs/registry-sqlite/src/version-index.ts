@@ -17,7 +17,7 @@ import type {
 } from "@koi/core";
 import { conflict, notFound, validation } from "@koi/core";
 import { wrapSqlite } from "@koi/sqlite-utils";
-import type { RegistryStoreConfig } from "./config.js";
+import type { RegistrySqliteConfig } from "./config.js";
 import { resolveDb } from "./config.js";
 import { createListenerSet } from "./listeners.js";
 import { applyRegistryMigrations } from "./schema.js";
@@ -45,7 +45,7 @@ export interface SqliteVersionIndex extends VersionIndexBackend {
   readonly close: () => void;
 }
 
-export function createSqliteVersionIndex(config: RegistryStoreConfig): SqliteVersionIndex {
+export function createSqliteVersionIndex(config: RegistrySqliteConfig): SqliteVersionIndex {
   const { db, ownsDb } = resolveDb(config);
   applyRegistryMigrations(db);
 

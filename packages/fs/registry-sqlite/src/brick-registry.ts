@@ -19,7 +19,7 @@ import type {
 } from "@koi/core";
 import { DEFAULT_BRICK_SEARCH_LIMIT, notFound } from "@koi/core";
 import { wrapSqlite } from "@koi/sqlite-utils";
-import type { RegistryStoreConfig } from "./config.js";
+import type { RegistrySqliteConfig } from "./config.js";
 import { resolveDb } from "./config.js";
 import { decodeCursor, encodeCursor } from "./cursor.js";
 import { sanitizeFtsQuery } from "./fts-sanitize.js";
@@ -93,7 +93,7 @@ export interface SqliteBrickRegistry extends BrickRegistryBackend {
   readonly close: () => void;
 }
 
-export function createSqliteBrickRegistry(config: RegistryStoreConfig): SqliteBrickRegistry {
+export function createSqliteBrickRegistry(config: RegistrySqliteConfig): SqliteBrickRegistry {
   const { db, ownsDb } = resolveDb(config);
   applyRegistryMigrations(db);
 
