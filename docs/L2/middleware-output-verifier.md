@@ -104,8 +104,6 @@ Priority **385** — runs after guardrails (375), before memory (400).
   │  middleware-output-      │  priority: 385
   │  verifier (THIS)        │◄─ two-stage gate
   ├─────────────────────────┤
-  │  middleware-memory       │  priority: 400
-  ├─────────────────────────┤
   │  engine adapter          │
   │  → LLM API call         │
   └─────────────────────────┘

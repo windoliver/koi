@@ -169,7 +169,7 @@ describe("loadManifest (file-based)", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.manifest.middleware).toEqual([
-        { name: "@koi/middleware-memory", options: { scope: "agent" } },
+        { name: "@koi/middleware-audit", options: { scope: "agent" } },
         { name: "@koi/middleware-pay", options: { dailyBudget: 1000 } },
       ]);
     }
@@ -229,7 +229,7 @@ describe("loadManifest (file-based)", () => {
       const mw = result.value.manifest.middleware;
       expect(mw).toHaveLength(3);
       expect(mw?.[0]?.name).toBe("@koi/middleware-log");
-      expect(mw?.[1]?.name).toBe("@koi/middleware-memory");
+      expect(mw?.[1]?.name).toBe("@koi/middleware-audit");
       expect(mw?.[1]?.options).toEqual({ scope: "agent" });
       expect(mw?.[2]?.name).toBe("@koi/middleware-pay");
       expect(mw?.[2]?.options).toEqual({ dailyBudget: 1000, currency: "USD" });

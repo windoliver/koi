@@ -57,7 +57,7 @@ describe("rawManifestSchema — core fields", () => {
   });
 
   test("accepts middleware as key-value array", () => {
-    expect(parse({ middleware: [{ "@koi/middleware-memory": { scope: "agent" } }] }).success).toBe(
+    expect(parse({ middleware: [{ "@koi/middleware-audit": { scope: "agent" } }] }).success).toBe(
       true,
     );
   });

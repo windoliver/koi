@@ -109,13 +109,6 @@ const MIDDLEWARE_ENTRIES: readonly CatalogEntry[] = [
     tags: ["middleware", "integration", "services"],
   },
   {
-    name: "bundled:@koi/middleware-memory",
-    kind: "middleware",
-    source: "bundled",
-    description: "Automatic memory recall and storage for agent conversations",
-    tags: ["middleware", "memory", "recall", "context"],
-  },
-  {
     name: "bundled:@koi/middleware-output-verifier",
     kind: "middleware",
     source: "bundled",

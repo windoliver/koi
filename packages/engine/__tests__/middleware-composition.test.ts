@@ -10,7 +10,6 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { createAuditMiddleware, createInMemoryAuditSink } from "@koi/middleware-audit";
-import { createInMemoryStore, createMemoryMiddleware } from "@koi/middleware-memory";
 import {
   createDefaultCostCalculator,
   createInMemoryBudgetTracker,
@@ -95,7 +94,7 @@ describe("Middleware composition -- execution order", () => {
       budget: 100,
     });
     const audit = createAuditMiddleware({ sink: createInMemoryAuditSink() });
-    const memory = createMemoryMiddleware({ store: createInMemoryStore() });
+    const memory: KoiMiddleware = { name: "memory", priority: 400 };
 
     expect(perm.priority).toBe(100);
     expect(pay.priority).toBe(200);

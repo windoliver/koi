@@ -17,7 +17,7 @@ channels:
     options:
       token: "bot-token-123"
 middleware:
-  - name: "@koi/middleware-memory"
+  - name: "@koi/middleware-audit"
     options:
       scope: agent
   - name: "@koi/middleware-pay"

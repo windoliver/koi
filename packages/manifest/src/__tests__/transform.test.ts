@@ -28,9 +28,9 @@ describe("normalizeConfigItem", () => {
   });
 
   test("converts key-value map to { name, options }", () => {
-    const input = { "@koi/middleware-memory": { scope: "agent" } };
+    const input = { "@koi/middleware-audit": { scope: "agent" } };
     const result = normalizeConfigItem(input);
-    expect(result).toEqual({ name: "@koi/middleware-memory", options: { scope: "agent" } });
+    expect(result).toEqual({ name: "@koi/middleware-audit", options: { scope: "agent" } });
   });
 
   test("converts key-value map with no options to { name }", () => {
@@ -82,9 +82,9 @@ describe("normalizeMiddlewareConfig", () => {
   });
 
   test("handles key-value shorthand (no required support)", () => {
-    const input = { "@koi/middleware-memory": { scope: "agent" } };
+    const input = { "@koi/middleware-audit": { scope: "agent" } };
     const result = normalizeMiddlewareConfig(input);
-    expect(result.name).toBe("@koi/middleware-memory");
+    expect(result.name).toBe("@koi/middleware-audit");
     expect(result.options).toEqual({ scope: "agent" });
     expect("required" in result).toBe(false);
   });
@@ -166,11 +166,11 @@ describe("transformToLoadedManifest", () => {
       name: "my-agent",
       version: "1.0.0",
       model: "anthropic:claude-sonnet-4-5-20250929",
-      middleware: [{ "@koi/middleware-memory": { scope: "agent" } }],
+      middleware: [{ "@koi/middleware-audit": { scope: "agent" } }],
     };
     const result = transformToLoadedManifest(raw);
     expect(result.middleware).toEqual([
-      { name: "@koi/middleware-memory", options: { scope: "agent" } },
+      { name: "@koi/middleware-audit", options: { scope: "agent" } },
     ]);
   });
 

@@ -468,5 +468,5 @@ L2  @koi/middleware-goal-reminder ◄──────────────�
 
 - [Issue #505](https://github.com/windoliver/koi/issues/505) — Original feature request
 - [Issue #507](https://github.com/windoliver/koi/issues/507) — L0u classification update (shipped together)
-- [Issue #562](https://github.com/windoliver/koi/issues/562) — `@koi/middleware-memory-recall` (complementary: proactive memory injection)
+- [Issue #562](https://github.com/windoliver/koi/issues/562) — Proactive memory injection (covered by `@koi/middleware-hot-memory`)
 - `docs/L2/middleware-goal-anchor.md` — Complementary every-call injection middleware

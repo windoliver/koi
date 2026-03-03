@@ -456,7 +456,7 @@ User input → Middleware stack (wrapModelCall, wrapToolCall)
 name: "Research Assistant"
 model: "anthropic:claude-sonnet-4-5-20250929"
 middleware:
-  - "@koi/middleware-memory": { scope: agent }
+  - "@koi/middleware-audit": { scope: agent }
   - "@koi/middleware-pay": { dailyBudget: 1000 }
 channels:
   - "@koi/channel-telegram": { token: ${TELEGRAM_BOT_TOKEN} }
