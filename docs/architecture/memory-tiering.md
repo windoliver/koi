@@ -45,9 +45,9 @@ L0  @koi/core
         MemoryComponent              ← unchanged contract (recall + store)
         MEMORY                       ← unchanged singleton token
 
-L2  @koi/middleware-memory (existing)
-    └── MemoryMiddleware             ← wrapModelCall injection
-    └── createInMemoryStore()        ← ignores tier fields (backward compat)
+L2  @koi/middleware-hot-memory (existing)
+    └── wrapModelCall injection      ← recall("*", tierFilter: "hot")
+    └── turn-interval caching        ← refresh every N turns (default 5)
 
 L2  @koi/memory-nexus (future, #195)
     └── implements MemoryComponent

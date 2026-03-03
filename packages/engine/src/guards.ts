@@ -408,7 +408,7 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
 
   /**
    * Build an InboundMessage from queued warnings and prepend to request.messages.
-   * Follows the same pattern as middleware-memory (senderId: "system:loop-detector").
+   * Uses senderId: "system:loop-detector" for system-injected messages.
    */
   function buildEnrichedRequest(request: ModelRequest): ModelRequest {
     if (pendingWarnings.length === 0) {

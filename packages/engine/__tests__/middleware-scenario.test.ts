@@ -8,7 +8,6 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { createAuditMiddleware, createInMemoryAuditSink } from "@koi/middleware-audit";
-import { createInMemoryStore, createMemoryMiddleware } from "@koi/middleware-memory";
 import {
   createDefaultCostCalculator,
   createInMemoryBudgetTracker,
@@ -24,6 +23,32 @@ import {
 // ---------------------------------------------------------------------------
 // Inline permission middleware stub — avoids L2 cycle (@koi/middleware-permissions -> @koi/engine)
 // ---------------------------------------------------------------------------
+
+interface StubMemoryEntry {
+  readonly content: string;
+  readonly timestamp: number;
+}
+
+function createStubMemoryMiddleware(): {
+  readonly middleware: KoiMiddleware;
+  readonly recall: (query: string, max: number) => readonly StubMemoryEntry[];
+} {
+  const entries: StubMemoryEntry[] = [];
+  return {
+    middleware: {
+      name: "memory",
+      priority: 400,
+      async wrapModelCall(ctx, request, next) {
+        const response = await next(request);
+        if (response.content) {
+          entries.push({ content: response.content, timestamp: Date.now() });
+        }
+        return response;
+      },
+    },
+    recall: (_query, max) => entries.slice(-max),
+  };
+}
 
 function createStubPermissionsMiddleware(options: {
   readonly allow: readonly string[];
@@ -84,11 +109,11 @@ describe("Full pipeline scenario", () => {
     readonly middlewares: readonly KoiMiddleware[];
     readonly sink: ReturnType<typeof createInMemoryAuditSink>;
     readonly tracker: ReturnType<typeof createInMemoryBudgetTracker>;
-    readonly store: ReturnType<typeof createInMemoryStore>;
+    readonly memoryRecall: (query: string, max: number) => readonly StubMemoryEntry[];
   } {
     const sink = createInMemoryAuditSink();
     const tracker = createInMemoryBudgetTracker();
-    const memStore = createInMemoryStore();
+    const { middleware: memory, recall } = createStubMemoryMiddleware();
 
     const perm = createStubPermissionsMiddleware({ allow: ["*"], deny: ["blocked"] });
 
@@ -100,13 +125,11 @@ describe("Full pipeline scenario", () => {
 
     const audit = createAuditMiddleware({ sink });
 
-    const memory = createMemoryMiddleware({ store: memStore });
-
     return {
       middlewares: [perm, pay, audit, memory],
       sink,
       tracker,
-      store: memStore,
+      memoryRecall: recall,
     };
   }
 
@@ -193,7 +216,7 @@ describe("Full pipeline scenario", () => {
   });
 
   test("multi-turn session -- memory accumulates across turns", async () => {
-    const { middlewares, store: memStore } = createFullStack();
+    const { middlewares, memoryRecall } = createFullStack();
 
     // Turn 0
     const ctx0 = createMockTurnContext({ turnIndex: 0 });
@@ -220,7 +243,7 @@ describe("Full pipeline scenario", () => {
     });
 
     // Memory store should have accumulated
-    const recalled = await memStore.recall("test", 4000);
+    const recalled = memoryRecall("test", 4000);
     expect(recalled.length).toBeGreaterThanOrEqual(2);
   });
 

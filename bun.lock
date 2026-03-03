@@ -530,7 +530,6 @@
       "devDependencies": {
         "@koi/engine": "workspace:*",
         "@koi/engine-loop": "workspace:*",
-        "@koi/middleware-memory": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/test-utils": "workspace:*",
       },
@@ -683,7 +682,6 @@
         "@koi/middleware-event-trace": "workspace:*",
         "@koi/middleware-fs-rollback": "workspace:*",
         "@koi/middleware-guided-retry": "workspace:*",
-        "@koi/middleware-memory": "workspace:*",
         "@koi/middleware-pay": "workspace:*",
         "@koi/middleware-sandbox": "workspace:*",
         "@koi/model-router": "workspace:*",
@@ -1417,19 +1415,6 @@
         "@koi/core": "workspace:*",
         "@koi/crypto-utils": "workspace:*",
         "@koi/errors": "workspace:*",
-      },
-    },
-    "packages/middleware-memory": {
-      "name": "@koi/middleware-memory",
-      "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/resolve": "workspace:*",
-        "@koi/token-estimator": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
       },
     },
     "packages/middleware-output-verifier": {
@@ -2242,9 +2227,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@koi/test-utils": "workspace:*",
       },
     },
     "packages/tool-squash": {
@@ -3085,8 +3067,6 @@
     "@koi/middleware-hot-memory": ["@koi/middleware-hot-memory@workspace:packages/middleware-hot-memory"],
 
     "@koi/middleware-intent-capsule": ["@koi/middleware-intent-capsule@workspace:packages/middleware-intent-capsule"],
-
-    "@koi/middleware-memory": ["@koi/middleware-memory@workspace:packages/middleware-memory"],
 
     "@koi/middleware-output-verifier": ["@koi/middleware-output-verifier@workspace:packages/middleware-output-verifier"],
 

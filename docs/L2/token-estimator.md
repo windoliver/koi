@@ -47,8 +47,8 @@ BEFORE: 11 duplicated implementations
   estimator.ts     estimator.ts     estimator.ts
   (COPY #1)        (COPY #2)        (COPY #3)
 
-  file-resolution/ middleware-memory/ middleware-ace/
-  tokens.ts        store.ts           injector.ts
+  file-resolution/ middleware-hot-memory/ middleware-ace/
+  tokens.ts        hot-memory-mw.ts       injector.ts
   (local fn)       (local fn)         (local fn)
 
   long-running/    long-running/    browser-playwright/

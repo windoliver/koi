@@ -227,7 +227,7 @@ All middleware packages implement `describeCapabilities` (required since Issue #
 | `middleware-fs-rollback` | `fs-rollback` | "Filesystem rollback on error enabled" | Static |
 | `middleware-ace` | `playbooks` | "Active playbooks: {count}" | Dynamic |
 | `middleware-guardrails` | `guardrails` | "Output validation: {schema}. Max {n} retries" | Static |
-| `middleware-memory` | `memory` | "Long-term memory active ({strategy} recall)" | Static |
+| `middleware-hot-memory` | `hot-memory` | "{n} hot memories injected ({used}/{max} tokens)" | Dynamic |
 | `middleware-tool-selector` | `tool-filter` | "Tool filtering active" | Static |
 | `middleware-semantic-retry` | `semantic-retry` | "Semantic retry on model errors" | Static |
 | `middleware-guided-retry` | `guided-retry` | "Guided retry with structural repair" | Static |
