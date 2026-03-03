@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { brickId } from "@koi/core";
 import {
   normalizeChannelConfig,
   normalizeConfigItem,
@@ -403,7 +404,7 @@ describe("transformToLoadedManifest", () => {
     };
     const result = transformToLoadedManifest(raw);
     expect(result.skills).toEqual([
-      { name: "forged-review", source: { kind: "forged", brickId: "sha256:abc123" } },
+      { name: "forged-review", source: { kind: "forged", brickId: brickId("sha256:abc123") } },
     ]);
   });
 
