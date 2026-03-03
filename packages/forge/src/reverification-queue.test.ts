@@ -82,6 +82,25 @@ describe("createReverificationQueue", () => {
     expect(queue.pendingCount()).toBe(0);
   });
 
+  test("accepts both verified and promoted bricks", () => {
+    const { handler } = createTrackingHandler();
+    const config = configWith({ maxConcurrency: 3 });
+    const queue = createReverificationQueue(config, handler);
+
+    const verified = createTestToolArtifact({
+      id: brickId("brick_v"),
+      trustTier: "verified",
+    });
+    const promoted = createTestToolArtifact({
+      id: brickId("brick_p"),
+      trustTier: "promoted",
+    });
+
+    expect(queue.enqueue(verified)).toBe(true);
+    expect(queue.enqueue(promoted)).toBe(true);
+    expect(queue.activeCount()).toBe(2);
+  });
+
   test("bounded concurrency: no more than maxConcurrency in-flight", () => {
     const { handler } = createTrackingHandler();
     const config = configWith({ maxConcurrency: 2 });
@@ -99,46 +118,47 @@ describe("createReverificationQueue", () => {
     expect(queue.pendingCount()).toBe(1);
   });
 
-  test("priority: promoted processed before verified", async () => {
+  test("FIFO ordering: bricks processed in enqueue order", async () => {
     const { handler, processed, resolvers } = createTrackingHandler();
     const config = configWith({ maxConcurrency: 1 });
     const queue = createReverificationQueue(config, handler);
 
-    // Enqueue a verified brick first
-    const verified = createTestToolArtifact({
-      id: brickId("brick_v"),
-      trustTier: "verified",
-    });
-    // Enqueue a promoted brick second — should be processed first after current
+    // Enqueue a promoted brick first, then verified — FIFO means promoted first
     const promoted = createTestToolArtifact({
       id: brickId("brick_p"),
       trustTier: "promoted",
     });
-
-    // First enqueue will immediately start processing brick_v (slot open)
-    queue.enqueue(verified);
-    expect(queue.activeCount()).toBe(1);
-    expect(processed).toEqual(["brick_v"]);
-
-    // Now enqueue promoted — goes to pending (slot full)
-    queue.enqueue(promoted);
-
-    // Add another verified brick to pending
+    const verified = createTestToolArtifact({
+      id: brickId("brick_v"),
+      trustTier: "verified",
+    });
     const verified2 = createTestToolArtifact({
       id: brickId("brick_v2"),
       trustTier: "verified",
     });
-    queue.enqueue(verified2);
 
+    // First enqueue immediately starts processing (slot open)
+    queue.enqueue(promoted);
+    expect(queue.activeCount()).toBe(1);
+    expect(processed).toEqual(["brick_p"]);
+
+    // Now enqueue two more — go to pending (FIFO order)
+    queue.enqueue(verified);
+    queue.enqueue(verified2);
     expect(queue.pendingCount()).toBe(2);
 
-    // Complete brick_v — drain fires via .then() microtask
+    // Complete first brick — drain picks next in FIFO order
     resolvers[0]?.(true);
-    // Flush microtask queue so drain() picks next item
     await Promise.resolve();
 
-    // The promoted should be processed next due to priority
-    expect(processed[1]).toBe("brick_p");
+    // verified was enqueued before verified2, so it should be next
+    expect(processed[1]).toBe("brick_v");
+
+    // Complete second
+    resolvers[1]?.(true);
+    await Promise.resolve();
+
+    expect(processed[2]).toBe("brick_v2");
   });
 
   test("dispose clears pending items", () => {

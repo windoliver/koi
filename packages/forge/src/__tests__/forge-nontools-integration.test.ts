@@ -20,7 +20,6 @@ import type {
   ImplementationArtifact,
   ProcessId,
   SandboxExecutor,
-  TieredSandboxExecutor,
 } from "@koi/core";
 import { agentId, channelToken, isAttachResult, middlewareToken } from "@koi/core";
 import { createDefaultForgeConfig } from "../config.js";
@@ -37,17 +36,6 @@ function mockExecutor(): SandboxExecutor {
     execute: async (_code, input, _timeout) => ({
       ok: true,
       value: { output: input, durationMs: 1 },
-    }),
-  };
-}
-
-function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
-  return {
-    forTier: (tier) => ({
-      executor: exec,
-      requestedTier: tier,
-      resolvedTier: tier,
-      fallback: false,
     }),
   };
 }
@@ -81,7 +69,7 @@ function stubAgent(): Agent {
 describe("Forge non-tool bricks — integration", () => {
   test("middleware: forge → promote to promoted → ComponentProvider loads it", async () => {
     const store = createInMemoryForgeStore();
-    const executor = mockTiered(mockExecutor());
+    const executor = mockExecutor();
     const context: ForgeContext = {
       agentId: "agent-int",
       depth: 0,
@@ -129,7 +117,7 @@ describe("Forge non-tool bricks — integration", () => {
 
   test("channel: forge → promote to promoted → ComponentProvider loads it", async () => {
     const store = createInMemoryForgeStore();
-    const executor = mockTiered(mockExecutor());
+    const executor = mockExecutor();
     const context: ForgeContext = {
       agentId: "agent-int",
       depth: 0,
@@ -175,7 +163,7 @@ describe("Forge non-tool bricks — integration", () => {
 
   test("trust enforcement: middleware at 'verified' is skipped by ComponentProvider", async () => {
     const store = createInMemoryForgeStore();
-    const executor = mockTiered(mockExecutor());
+    const executor = mockExecutor();
     const context: ForgeContext = {
       agentId: "agent-int",
       depth: 0,
@@ -214,7 +202,7 @@ describe("Forge non-tool bricks — integration", () => {
 
   test("trust enforcement after promotion: promoted middleware is loaded", async () => {
     const store = createInMemoryForgeStore();
-    const executor = mockTiered(mockExecutor());
+    const executor = mockExecutor();
     const context: ForgeContext = {
       agentId: "agent-int",
       depth: 0,
@@ -254,7 +242,7 @@ describe("Forge non-tool bricks — integration", () => {
 
   test("zone-scoped middleware only visible to matching zone", async () => {
     const store = createInMemoryForgeStore();
-    const executor = mockTiered(mockExecutor());
+    const executor = mockExecutor();
     const context: ForgeContext = {
       agentId: "agent-int",
       depth: 0,
@@ -305,7 +293,7 @@ describe("Forge non-tool bricks — integration", () => {
 
   test("requires enforcement: brick with missing env is skipped by ComponentProvider", async () => {
     const store = createInMemoryForgeStore();
-    const executor = mockTiered(mockExecutor());
+    const executor = mockExecutor();
     const context: ForgeContext = {
       agentId: "agent-int",
       depth: 0,
@@ -345,7 +333,7 @@ describe("Forge non-tool bricks — integration", () => {
 
   test("config schema: forged middleware with configSchema is stored and retrievable", async () => {
     const store = createInMemoryForgeStore();
-    const executor = mockTiered(mockExecutor());
+    const executor = mockExecutor();
     const context: ForgeContext = {
       agentId: "agent-int",
       depth: 0,

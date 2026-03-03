@@ -32,7 +32,7 @@ import { createForgeRuntime } from "../forge-runtime.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import { createForgeToolTool } from "../tools/forge-tool.js";
 import type { ForgeDeps } from "../tools/shared.js";
-import type { ForgeResult, SandboxExecutor, TieredSandboxExecutor } from "../types.js";
+import type { ForgeResult, SandboxExecutor } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Environment gate
@@ -100,17 +100,6 @@ function echoExecutor(): SandboxExecutor {
   };
 }
 
-function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
-  return {
-    forTier: (tier) => ({
-      executor: exec,
-      requestedTier: tier,
-      resolvedTier: tier,
-      fallback: false,
-    }),
-  };
-}
-
 function defaultDeps(
   store: ReturnType<typeof createInMemoryForgeStore>,
   executor: SandboxExecutor,
@@ -118,7 +107,7 @@ function defaultDeps(
 ): ForgeDeps {
   return {
     store,
-    executor: mockTiered(executor),
+    executor: executor,
     verifiers: [],
     config: createDefaultForgeConfig(),
     context: {
@@ -163,7 +152,7 @@ describeE2E("e2e: full L1 runtime assembly with real LLM", () => {
       // Create ForgeComponentProvider
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       // Lifecycle observer middleware — records hook names in order
@@ -279,7 +268,7 @@ describeE2E("e2e: full L1 runtime assembly with real LLM", () => {
       // Create ForgeRuntime for hot-attach
       const forgeRuntime = createForgeRuntime({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       // Full L1 runtime with forge runtime for hot-attach
@@ -370,7 +359,7 @@ describeE2E("e2e: full L1 runtime assembly with real LLM", () => {
       // Create ForgeComponentProvider
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       // 3 middleware with different priorities — intercept order tracked
@@ -473,7 +462,7 @@ describeE2E("e2e: full L1 runtime assembly with real LLM", () => {
       // Create ForgeComponentProvider — reused across both assemblies
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       // First assembly — only tool-alpha should be attached

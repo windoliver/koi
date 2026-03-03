@@ -23,13 +23,11 @@ import type {
   ModelRequest,
   ModelResponse,
   SandboxResult,
-  TieredSandboxExecutor,
   Tool,
 } from "../packages/core/src/index.js";
 import { toolToken } from "../packages/core/src/index.js";
 import { createKoi } from "../packages/engine/src/koi.js";
 import { createLoopAdapter } from "../packages/engine-loop/src/loop-adapter.js";
-import { createTieredExecutor } from "../packages/sandbox-executor/src/tiered-executor.js";
 import { createWasmSandboxExecutor } from "../packages/sandbox-wasm/src/index.js";
 
 // ---------------------------------------------------------------------------
@@ -136,55 +134,40 @@ async function stage1(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Stage 2: Tiered executor integration
+// Stage 2: WASM executor integration (direct usage)
 // ---------------------------------------------------------------------------
 
 async function stage2(): Promise<void> {
-  console.log("\n[stage 2] Tiered executor integration\n");
+  console.log("\n[stage 2] WASM executor integration (direct usage)\n");
 
   const wasmExecutor = createWasmSandboxExecutor();
-  const tieredResult = createTieredExecutor({ sandbox: wasmExecutor });
 
-  assert("createTieredExecutor succeeds", tieredResult.ok);
-  if (!tieredResult.ok) return;
-
-  const tiered: TieredSandboxExecutor = tieredResult.value;
-
-  // 2a. Sandbox tier routes to wasm
-  const sandboxRes = tiered.forTier("sandbox");
-  assert("sandbox tier resolves without fallback", !sandboxRes.fallback);
-  assert("sandbox resolvedTier is sandbox", sandboxRes.resolvedTier === "sandbox");
-
-  // 2b. Execute through sandbox tier
-  const r1 = await sandboxRes.executor.execute(
+  // 2a. Execute template literal expression
+  const r1 = await wasmExecutor.execute(
     // biome-ignore lint/suspicious/noTemplateCurlyInString: QuickJS code string contains template literals
     "({greeting: `Hello ${input.name}!`})",
     { name: "Koi" },
     5_000,
   );
   assert(
-    "sandbox tier execution succeeds",
+    "wasm executor template literal succeeds",
     r1.ok && JSON.stringify(r1.value.output) === '{"greeting":"Hello Koi!"}',
   );
 
-  // 2c. Verified tier falls back to promoted (no verified backend configured)
-  const verifiedRes = tiered.forTier("verified");
-  assert("verified tier falls back", verifiedRes.fallback);
-  assert("verified resolvedTier is promoted", verifiedRes.resolvedTier === "promoted");
+  // 2b. Execute arithmetic
+  const r2 = await wasmExecutor.execute("input.a + input.b", { a: 100, b: 200 }, 5_000);
+  assert("wasm executor arithmetic", r2.ok && r2.value.output === 300);
 
-  // 2d. Promoted tier resolves to built-in
-  const promotedRes = tiered.forTier("promoted");
-  assert("promoted tier resolves without fallback", !promotedRes.fallback);
-
-  // 2e. Full tiered config — wasm for sandbox AND verified
-  const fullTiered = createTieredExecutor({ sandbox: wasmExecutor, verified: wasmExecutor });
-  assert("full tiered config succeeds", fullTiered.ok);
-  if (fullTiered.ok) {
-    const vRes = fullTiered.value.forTier("verified");
-    assert("verified tier resolves without fallback (when configured)", !vRes.fallback);
-    const r2 = await vRes.executor.execute("input.a + input.b", { a: 100, b: 200 }, 5_000);
-    assert("verified tier execution via wasm", r2.ok && r2.value.output === 300);
-  }
+  // 2c. Execute with string manipulation
+  const r3 = await wasmExecutor.execute(
+    "({upper: String(input.text).toUpperCase(), len: String(input.text).length})",
+    { text: "hello" },
+    5_000,
+  );
+  assert(
+    "wasm executor string manipulation",
+    r3.ok && JSON.stringify(r3.value.output) === '{"upper":"HELLO","len":5}',
+  );
 }
 
 // ---------------------------------------------------------------------------

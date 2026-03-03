@@ -6,13 +6,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type {
-  Agent,
-  AgentDescriptor,
-  SkillComponent,
-  SubsystemToken,
-  TieredSandboxExecutor,
-} from "@koi/core";
+import type { Agent, AgentDescriptor, SkillComponent, SubsystemToken } from "@koi/core";
 import { agentId, agentToken, skillToken, toolToken } from "@koi/core";
 import {
   createTestAgentArtifact,
@@ -32,17 +26,6 @@ function echoExecutor(): SandboxExecutor {
     execute: async (_code, input, _timeout) => ({
       ok: true as const,
       value: { output: input, durationMs: 1 },
-    }),
-  };
-}
-
-function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
-  return {
-    forTier: (tier) => ({
-      executor: exec,
-      requestedTier: tier,
-      resolvedTier: tier,
-      fallback: false,
     }),
   };
 }
@@ -94,7 +77,7 @@ describe("brick discovery pipeline", () => {
     // 2. Create provider and attach to agent
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
     const components = await provider.attach(createQueryableAgent(new Map()));
 
@@ -125,7 +108,7 @@ describe("brick discovery pipeline", () => {
     // 2. Create provider and attach to agent
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
     const components = await provider.attach(createQueryableAgent(new Map()));
 
@@ -159,7 +142,7 @@ describe("brick discovery pipeline", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
     const components = await provider.attach(createQueryableAgent(new Map()));
     const agent = createQueryableAgent(components);

@@ -6,17 +6,19 @@
  * Demotion lowers trust tier by one step on sustained error rate.
  */
 
-import type { BrickSnapshot, DemotionCriteria, TrustTier } from "@koi/core";
-import { brickId, DEFAULT_DEMOTION_CRITERIA, snapshotId } from "@koi/core";
+import type { BrickSnapshot, TrustTier } from "@koi/core";
+import { brickId, snapshotId } from "@koi/core";
 import type { ForgeHealthConfig } from "./config.js";
 import { computeMergedFitness, shouldFlush } from "./fitness-flush.js";
 import type {
+  DemotionCriteria,
   ToolFailureRecord,
   ToolHealthMetrics,
   ToolHealthSnapshot,
   ToolHealthState,
   TrustDemotionEvent,
 } from "./types.js";
+import { DEFAULT_DEMOTION_CRITERIA } from "./types.js";
 
 const DEFAULT_QUARANTINE_THRESHOLD = 0.5;
 const DEFAULT_WINDOW_SIZE = 10;

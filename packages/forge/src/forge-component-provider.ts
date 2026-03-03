@@ -20,10 +20,10 @@ import type {
   ComponentProvider,
   ForgeScope,
   ForgeStore,
+  SandboxExecutor,
   SkillComponent,
   SkippedComponent,
   StoreChangeNotifier,
-  TieredSandboxExecutor,
 } from "@koi/core";
 import {
   agentToken,
@@ -50,7 +50,7 @@ interface BrickAttachEntry {
 
 function attachBrick(
   brick: BrickArtifact,
-  executor: TieredSandboxExecutor,
+  executor: SandboxExecutor,
   timeoutMs: number,
 ): BrickAttachEntry | undefined {
   // Trust enforcement (universal — all kinds checked)
@@ -59,10 +59,9 @@ function attachBrick(
 
   switch (brick.kind) {
     case "tool": {
-      const { executor: tierExecutor } = executor.forTier(brick.trustTier);
       return {
         token: toolToken(brick.name) as string,
-        value: brickToTool(brick, tierExecutor, timeoutMs),
+        value: brickToTool(brick, executor, timeoutMs),
       };
     }
     case "skill": {
@@ -100,7 +99,7 @@ function attachBrick(
 
 export interface ForgeComponentProviderConfig {
   readonly store: ForgeStore;
-  readonly executor: TieredSandboxExecutor;
+  readonly executor: SandboxExecutor;
   readonly sandboxTimeoutMs?: number;
   /** Agent's current scope — filters bricks to this scope and broader. */
   readonly scope?: ForgeScope | undefined;

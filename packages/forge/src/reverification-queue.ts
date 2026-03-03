@@ -1,8 +1,8 @@
 /**
- * Bounded concurrency queue for brick re-verification.
+ * Bounded concurrency FIFO queue for brick re-verification.
  *
- * Priority: promoted bricks first, then verified.
- * Dedup: skips bricks already in-flight.
+ * All non-sandbox bricks are accepted. No tier-based priority (Issue #703).
+ * Dedup: skips bricks already in-flight or pending.
  * Bounded: max N concurrent re-verifications.
  */
 
@@ -36,8 +36,7 @@ export function createReverificationQueue(
 ): ReverificationQueue {
   // Mutable state — encapsulated in closure, never leaked
   // Justification: let required for concurrency tracking
-  let promotedPending: readonly BrickArtifact[] = [];
-  let verifiedPending: readonly BrickArtifact[] = [];
+  let pending: readonly BrickArtifact[] = [];
   let inFlight: ReadonlySet<BrickId> = new Set<BrickId>();
   let disposed = false;
 
@@ -45,7 +44,7 @@ export function createReverificationQueue(
     if (disposed) {
       return;
     }
-    while (inFlight.size < config.maxConcurrency && totalPending() > 0) {
+    while (inFlight.size < config.maxConcurrency && pending.length > 0) {
       const next = dequeueNext();
       if (next === undefined) {
         break;
@@ -65,27 +64,11 @@ export function createReverificationQueue(
     }
   }
 
-  function totalPending(): number {
-    return promotedPending.length + verifiedPending.length;
-  }
-
   function dequeueNext(): BrickArtifact | undefined {
-    if (config.promotedFirst && promotedPending.length > 0) {
-      const [first, ...rest] = promotedPending;
-      promotedPending = rest;
-      return first;
-    }
-    if (verifiedPending.length > 0) {
-      const [first, ...rest] = verifiedPending;
-      verifiedPending = rest;
-      return first;
-    }
-    if (promotedPending.length > 0) {
-      const [first, ...rest] = promotedPending;
-      promotedPending = rest;
-      return first;
-    }
-    return undefined;
+    if (pending.length === 0) return undefined;
+    const [first, ...rest] = pending;
+    pending = rest;
+    return first;
   }
 
   return {
@@ -97,23 +80,16 @@ export function createReverificationQueue(
       if (inFlight.has(brick.id)) {
         return false;
       }
-      // Check if already in a pending queue
-      if (
-        promotedPending.some((b) => b.id === brick.id) ||
-        verifiedPending.some((b) => b.id === brick.id)
-      ) {
+      // Check if already in pending queue
+      if (pending.some((b) => b.id === brick.id)) {
+        return false;
+      }
+      // Sandbox bricks are never re-verified
+      if (brick.trustTier === "sandbox") {
         return false;
       }
 
-      if (brick.trustTier === "promoted") {
-        promotedPending = [...promotedPending, brick];
-      } else if (brick.trustTier === "verified") {
-        verifiedPending = [...verifiedPending, brick];
-      } else {
-        // sandbox bricks are never re-verified
-        return false;
-      }
-
+      pending = [...pending, brick];
       drain();
       return true;
     },
@@ -123,13 +99,12 @@ export function createReverificationQueue(
     },
 
     pendingCount(): number {
-      return totalPending();
+      return pending.length;
     },
 
     dispose(): void {
       disposed = true;
-      promotedPending = [];
-      verifiedPending = [];
+      pending = [];
     },
   };
 }

@@ -448,7 +448,6 @@ export { DEFAULT_FORGE_BUDGET } from "./forge-demand.js";
 export type {
   BrickKind,
   BrickLifecycle,
-  DemotionCriteria,
   ForgeScope,
   MutationPressure,
   MutationPressurePolicy,
@@ -456,7 +455,6 @@ export type {
 } from "./forge-types.js";
 export {
   ALL_BRICK_KINDS,
-  DEFAULT_DEMOTION_CRITERIA,
   DEFAULT_MUTATION_PRESSURE_POLICY,
   MAX_PIPELINE_STEPS,
   MIN_TRUST_BY_KIND,
@@ -713,8 +711,6 @@ export type {
   SandboxErrorCode,
   SandboxExecutor,
   SandboxResult,
-  TieredSandboxExecutor,
-  TierResolution,
 } from "./sandbox-executor.js";
 // sandbox profile — platform-agnostic isolation policy
 export type {

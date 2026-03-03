@@ -6,7 +6,7 @@ import { createDefaultForgeConfig } from "./config.js";
 import { createInMemoryForgeStore } from "./memory-store.js";
 import type { ToolArtifact } from "./types.js";
 import type { UsageSignal } from "./usage.js";
-import { computeAutoPromotion, recordBrickUsage } from "./usage.js";
+import { recordBrickUsage } from "./usage.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -31,56 +31,6 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   };
 }
 
-const ENABLED_CONFIG = {
-  enabled: true,
-  sandboxToVerifiedThreshold: 5,
-  verifiedToPromotedThreshold: 20,
-} as const;
-
-const DISABLED_CONFIG = {
-  enabled: false,
-  sandboxToVerifiedThreshold: 5,
-  verifiedToPromotedThreshold: 20,
-} as const;
-
-// ---------------------------------------------------------------------------
-// computeAutoPromotion
-// ---------------------------------------------------------------------------
-
-describe("computeAutoPromotion", () => {
-  test("returns undefined when disabled", () => {
-    expect(computeAutoPromotion("sandbox", 100, DISABLED_CONFIG)).toBeUndefined();
-  });
-
-  test("returns undefined below sandbox→verified threshold", () => {
-    expect(computeAutoPromotion("sandbox", 4, ENABLED_CONFIG)).toBeUndefined();
-  });
-
-  test("returns 'verified' at exactly the sandbox→verified threshold", () => {
-    expect(computeAutoPromotion("sandbox", 5, ENABLED_CONFIG)).toBe("verified");
-  });
-
-  test("returns 'verified' above sandbox→verified threshold", () => {
-    expect(computeAutoPromotion("sandbox", 10, ENABLED_CONFIG)).toBe("verified");
-  });
-
-  test("returns undefined for verified below verified→promoted threshold", () => {
-    expect(computeAutoPromotion("verified", 19, ENABLED_CONFIG)).toBeUndefined();
-  });
-
-  test("returns 'promoted' at exactly the verified→promoted threshold", () => {
-    expect(computeAutoPromotion("verified", 20, ENABLED_CONFIG)).toBe("promoted");
-  });
-
-  test("returns 'promoted' above verified→promoted threshold", () => {
-    expect(computeAutoPromotion("verified", 50, ENABLED_CONFIG)).toBe("promoted");
-  });
-
-  test("returns undefined when already promoted", () => {
-    expect(computeAutoPromotion("promoted", 100, ENABLED_CONFIG)).toBeUndefined();
-  });
-});
-
 // ---------------------------------------------------------------------------
 // recordBrickUsage
 // ---------------------------------------------------------------------------
@@ -103,82 +53,6 @@ describe("recordBrickUsage", () => {
     if (result.ok) {
       expect(result.value.kind).toBe("recorded");
       expect(result.value.newUsageCount).toBe(1);
-    }
-  });
-
-  test("promotes sandbox→verified when threshold crossed", async () => {
-    const store = createInMemoryForgeStore();
-    await store.save(
-      createToolBrick({ id: brickId("brick_1"), usageCount: 4, trustTier: "sandbox" }),
-    );
-
-    const config = createDefaultForgeConfig({
-      autoPromotion: {
-        enabled: true,
-        sandboxToVerifiedThreshold: 5,
-        verifiedToPromotedThreshold: 20,
-      },
-    });
-
-    const result = await recordBrickUsage(store, "brick_1", config);
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.kind).toBe("promoted");
-      if (result.value.kind === "promoted") {
-        expect(result.value.previousTier).toBe("sandbox");
-        expect(result.value.newTier).toBe("verified");
-        expect(result.value.newUsageCount).toBe(5);
-      }
-    }
-  });
-
-  test("promotes verified→promoted when threshold crossed", async () => {
-    const store = createInMemoryForgeStore();
-    await store.save(
-      createToolBrick({ id: brickId("brick_1"), usageCount: 19, trustTier: "verified" }),
-    );
-
-    const config = createDefaultForgeConfig({
-      autoPromotion: {
-        enabled: true,
-        sandboxToVerifiedThreshold: 5,
-        verifiedToPromotedThreshold: 20,
-      },
-    });
-
-    const result = await recordBrickUsage(store, "brick_1", config);
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.kind).toBe("promoted");
-      if (result.value.kind === "promoted") {
-        expect(result.value.previousTier).toBe("verified");
-        expect(result.value.newTier).toBe("promoted");
-        expect(result.value.newUsageCount).toBe(20);
-      }
-    }
-  });
-
-  test("persists both usageCount and trustTier to store", async () => {
-    const store = createInMemoryForgeStore();
-    await store.save(
-      createToolBrick({ id: brickId("brick_1"), usageCount: 4, trustTier: "sandbox" }),
-    );
-
-    const config = createDefaultForgeConfig({
-      autoPromotion: {
-        enabled: true,
-        sandboxToVerifiedThreshold: 5,
-        verifiedToPromotedThreshold: 20,
-      },
-    });
-
-    await recordBrickUsage(store, "brick_1", config);
-
-    const loaded = await store.load(brickId("brick_1"));
-    expect(loaded.ok).toBe(true);
-    if (loaded.ok) {
-      expect(loaded.value.usageCount).toBe(5);
-      expect(loaded.value.trustTier).toBe("verified");
     }
   });
 

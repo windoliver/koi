@@ -26,7 +26,7 @@ import type {
   ForgeStore,
   KoiMiddleware,
   ModelStreamHandler,
-  TieredSandboxExecutor,
+  SandboxExecutor,
   ToolArtifact,
 } from "@koi/core";
 import { createKoi } from "@koi/engine";
@@ -39,11 +39,7 @@ import {
   verifyInstallIntegrity,
 } from "@koi/forge";
 import { computeBrickId } from "@koi/hash";
-import {
-  createSubprocessExecutor,
-  createTieredExecutor,
-  detectSandboxPlatform,
-} from "@koi/sandbox-executor";
+import { createSubprocessExecutor, detectSandboxPlatform } from "@koi/sandbox-executor";
 
 // ---------------------------------------------------------------------------
 // Environment gate
@@ -89,16 +85,10 @@ async function collectEvents(
 }
 
 /**
- * Create a minimal TieredSandboxExecutor backed by createSubprocessExecutor.
- * Uses the promoted tier for all trust levels (simplest valid config).
+ * Create a minimal SandboxExecutor backed by createSubprocessExecutor.
  */
-function createTestTieredExecutor(): TieredSandboxExecutor {
-  const subprocess = createSubprocessExecutor();
-  const result = createTieredExecutor({ promoted: subprocess });
-  if (!result.ok) {
-    throw new Error(`Failed to create tiered executor: ${result.error.message}`);
-  }
-  return result.value;
+function createTestExecutor(): SandboxExecutor {
+  return createSubprocessExecutor();
 }
 
 /**
@@ -194,13 +184,13 @@ describePi("e2e: forge security — full Pi agent stack", () => {
       });
       await seedStore(store, [addTool]);
 
-      // 2. Create tiered executor backed by subprocess executor
-      const tieredExecutor = createTestTieredExecutor();
+      // 2. Create subprocess executor
+      const subprocessExecutor = createTestExecutor();
 
       // 3. Create forge runtime — resolves forged tools from the store
       const forgeRuntime: ForgeRuntimeInstance = createForgeRuntime({
         store,
-        executor: tieredExecutor,
+        executor: subprocessExecutor,
         sandboxTimeoutMs: 10_000,
       });
 
@@ -598,10 +588,10 @@ describe("e2e: createKoi + forge + subprocess (deterministic)", () => {
     await seedStore(store, [multiplyTool]);
 
     // 2. Create forge runtime
-    const tieredExecutor = createTestTieredExecutor();
+    const subprocessExecutor = createTestExecutor();
     const forgeRuntime = createForgeRuntime({
       store,
-      executor: tieredExecutor,
+      executor: subprocessExecutor,
       sandboxTimeoutMs: 10_000,
     });
 
@@ -726,10 +716,10 @@ describePi("e2e: Pi agent + forged tool with network isolation", () => {
       });
       await seedStore(store, [hashTool]);
 
-      const tieredExecutor = createTestTieredExecutor();
+      const subprocessExecutor = createTestExecutor();
       const forgeRuntime = createForgeRuntime({
         store,
-        executor: tieredExecutor,
+        executor: subprocessExecutor,
         sandboxTimeoutMs: 10_000,
       });
 

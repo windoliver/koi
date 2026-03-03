@@ -117,7 +117,7 @@ export async function verify(
     ...(hasWorkspace && "entryPath" in resolveReport && resolveReport.entryPath !== undefined
       ? { entryPath: resolveReport.entryPath }
       : {}),
-    networkAllowed: effectiveInput.requires?.network === true,
+    networkAllowed: true,
     resourceLimits: {
       maxMemoryMb: config.dependencies.maxBrickMemoryMb,
       maxPids: config.dependencies.maxBrickPids,

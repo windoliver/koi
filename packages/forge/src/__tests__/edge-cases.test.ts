@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { SandboxExecutor, TieredSandboxExecutor } from "@koi/core";
+import type { SandboxExecutor } from "@koi/core";
 import { brickId } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "../config.js";
@@ -34,21 +34,10 @@ function mockExecutor(): SandboxExecutor {
   };
 }
 
-function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
-  return {
-    forTier: (tier) => ({
-      executor: exec,
-      requestedTier: tier,
-      resolvedTier: tier,
-      fallback: false,
-    }),
-  };
-}
-
 function createDeps(overrides?: Partial<ForgeDeps>): ForgeDeps {
   return {
     store: createInMemoryForgeStore(),
-    executor: mockTiered(mockExecutor()),
+    executor: mockExecutor(),
     verifiers: [],
     config: createDefaultForgeConfig(),
     context: DEFAULT_CONTEXT,

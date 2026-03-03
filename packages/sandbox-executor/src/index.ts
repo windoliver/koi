@@ -1,12 +1,10 @@
 /**
- * @koi/sandbox-executor — Trust-tiered sandbox executor dispatcher (L2).
+ * @koi/sandbox-executor — Sandbox executor backends (L2).
  *
- * Routes execute() calls to per-tier backends based on brick trust tier.
- * Promoted tier has a built-in `new Function()` executor by default.
+ * Provides subprocess-based executor for sandbox verification and
+ * promoted (in-process) executor for runtime execution.
  */
 
 export { createPromotedExecutor } from "./promoted-executor.js";
-export type { TieredExecutorConfig } from "./resolve.js";
 export type { SandboxPlatform } from "./subprocess-executor.js";
 export { createSubprocessExecutor, detectSandboxPlatform } from "./subprocess-executor.js";
-export { createTieredExecutor } from "./tiered-executor.js";

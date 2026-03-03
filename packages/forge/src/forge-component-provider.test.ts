@@ -5,7 +5,6 @@ import type {
   AttachResult,
   SkillComponent,
   SubsystemToken,
-  TieredSandboxExecutor,
 } from "@koi/core";
 import {
   agentId,
@@ -102,17 +101,6 @@ function failExecutor(): SandboxExecutor {
   };
 }
 
-function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
-  return {
-    forTier: (tier) => ({
-      executor: exec,
-      requestedTier: tier,
-      resolvedTier: tier,
-      fallback: false,
-    }),
-  };
-}
-
 // ---------------------------------------------------------------------------
 // brickToTool
 // ---------------------------------------------------------------------------
@@ -173,7 +161,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     expect(provider.name).toBe("forge");
@@ -191,7 +179,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
     const store = createInMemoryForgeStore();
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     const components = extractMap(await provider.attach(createMockAgent()));
@@ -219,7 +207,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     const components = extractMap(await provider.attach(createMockAgent()));
@@ -237,7 +225,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     const components = extractMap(await provider.attach(createMockAgent()));
@@ -250,7 +238,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       sandboxTimeoutMs: 10_000,
     });
 
@@ -285,7 +273,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
 
     const provider = createForgeComponentProvider({
       store: failingStore,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     await expect(provider.attach(createMockAgent())).rejects.toThrow("store unavailable");
@@ -297,7 +285,7 @@ describe("createForgeComponentProvider — backward-compat attach tests", () => 
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     const components = extractMap(await provider.attach(createMockAgent()));
@@ -328,7 +316,7 @@ describe("createForgeComponentProvider", () => {
 
     const provider = createForgeComponentProvider({
       store: spyStore,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     // Provider is created, store not yet queried
@@ -342,7 +330,7 @@ describe("createForgeComponentProvider", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     const components = extractMap(await provider.attach(createMockAgent()));
@@ -365,7 +353,7 @@ describe("createForgeComponentProvider", () => {
 
     const provider = createForgeComponentProvider({
       store: countingStore,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     const first = extractMap(await provider.attach(createMockAgent()));
@@ -392,7 +380,7 @@ describe("createForgeComponentProvider", () => {
 
     const provider = createForgeComponentProvider({
       store: countingStore,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     // First attach — loads from store
@@ -424,7 +412,7 @@ describe("createForgeComponentProvider", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     // Invalidate before any attach — should not throw
@@ -450,7 +438,7 @@ describe("createForgeComponentProvider", () => {
 
     const provider = createForgeComponentProvider({
       store: countingStore,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     extractMap(await provider.attach(createMockAgent()));
@@ -480,7 +468,7 @@ describe("createForgeComponentProvider — scope filtering", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       scope: "zone",
     });
 
@@ -500,7 +488,7 @@ describe("createForgeComponentProvider — scope filtering", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       scope: "agent",
     });
 
@@ -516,7 +504,7 @@ describe("createForgeComponentProvider — scope filtering", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       scope: "global",
     });
 
@@ -532,7 +520,7 @@ describe("createForgeComponentProvider — scope filtering", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     const components = extractMap(await provider.attach(createMockAgent()));
@@ -561,7 +549,7 @@ describe("createForgeComponentProvider — scope filtering", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       scope: "agent",
       zoneId: "team-alpha",
     });
@@ -596,7 +584,7 @@ describe("createForgeComponentProvider — delta invalidation", () => {
 
     const provider = createForgeComponentProvider({
       store: countingStore,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     extractMap(await provider.attach(createMockAgent()));
@@ -625,7 +613,7 @@ describe("createForgeComponentProvider — delta invalidation", () => {
 
     const provider = createForgeComponentProvider({
       store: countingStore,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     extractMap(await provider.attach(createMockAgent()));
@@ -654,7 +642,7 @@ describe("createForgeComponentProvider — delta invalidation", () => {
 
     const provider = createForgeComponentProvider({
       store: countingStore,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     extractMap(await provider.attach(createMockAgent()));
@@ -681,7 +669,7 @@ describe("createForgeComponentProvider — delta invalidation", () => {
 
     const provider = createForgeComponentProvider({
       store: countingStore,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     extractMap(await provider.attach(createMockAgent()));
@@ -703,7 +691,7 @@ describe("createForgeComponentProvider — lookupBrickId", () => {
     const store = createInMemoryForgeStore();
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     expect(provider.lookupBrickId("calc")).toBeUndefined();
@@ -715,7 +703,7 @@ describe("createForgeComponentProvider — lookupBrickId", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     extractMap(await provider.attach(createMockAgent()));
@@ -728,7 +716,7 @@ describe("createForgeComponentProvider — lookupBrickId", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     extractMap(await provider.attach(createMockAgent()));
@@ -741,7 +729,7 @@ describe("createForgeComponentProvider — lookupBrickId", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     extractMap(await provider.attach(createMockAgent()));
@@ -773,7 +761,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
     const notifier = createMemoryStoreChangeNotifier();
     const provider = createForgeComponentProvider({
       store: countingStore,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       notifier,
     });
 
@@ -804,7 +792,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
     const notifier = createMemoryStoreChangeNotifier();
     const provider = createForgeComponentProvider({
       store: countingStore,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       notifier,
     });
 
@@ -833,7 +821,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
     const notifier = createMemoryStoreChangeNotifier();
     const provider = createForgeComponentProvider({
       store: countingStore,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       notifier,
     });
 
@@ -863,7 +851,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
     const notifier = createMemoryStoreChangeNotifier();
     const provider = createForgeComponentProvider({
       store: countingStore,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       notifier,
     });
 
@@ -893,7 +881,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
     const notifier = createMemoryStoreChangeNotifier();
     const provider = createForgeComponentProvider({
       store: countingStore,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       notifier,
     });
 
@@ -923,7 +911,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
     const notifier = createMemoryStoreChangeNotifier();
     const provider = createForgeComponentProvider({
       store: countingStore,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       notifier,
     });
 
@@ -944,7 +932,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
     const notifier = createMemoryStoreChangeNotifier();
     const provider = createForgeComponentProvider({
       store: createInMemoryForgeStore(),
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       notifier,
     });
 
@@ -955,7 +943,7 @@ describe("createForgeComponentProvider — notifier integration", () => {
   test("dispose without notifier is a no-op", () => {
     const provider = createForgeComponentProvider({
       store: createInMemoryForgeStore(),
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     provider.dispose(); // Should not throw
@@ -996,7 +984,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     const components = extractMap(await provider.attach(createMockAgent()));
@@ -1018,7 +1006,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     const components = extractMap(await provider.attach(createMockAgent()));
@@ -1036,7 +1024,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     const components = extractMap(await provider.attach(createMockAgent()));
@@ -1079,7 +1067,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     const components = extractMap(await provider.attach(createMockAgent()));
@@ -1110,7 +1098,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       scope: "global",
     });
 
@@ -1133,7 +1121,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     extractMap(await provider.attach(createMockAgent()));
@@ -1159,7 +1147,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     const components = extractMap(await provider.attach(createMockAgent()));
@@ -1185,7 +1173,7 @@ describe("createForgeComponentProvider — implementation kinds", () => {
     const notifier = createMemoryStoreChangeNotifier();
     const provider = createForgeComponentProvider({
       store: countingStore,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       notifier,
     });
 
@@ -1216,7 +1204,7 @@ describe("createForgeComponentProvider — priority by scope", () => {
   test("agent scope sets AGENT_FORGED priority", () => {
     const provider = createForgeComponentProvider({
       store: createInMemoryForgeStore(),
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       scope: "agent",
     });
     expect(provider.priority).toBe(COMPONENT_PRIORITY.AGENT_FORGED);
@@ -1225,7 +1213,7 @@ describe("createForgeComponentProvider — priority by scope", () => {
   test("zone scope sets ZONE_FORGED priority", () => {
     const provider = createForgeComponentProvider({
       store: createInMemoryForgeStore(),
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       scope: "zone",
     });
     expect(provider.priority).toBe(COMPONENT_PRIORITY.ZONE_FORGED);
@@ -1234,7 +1222,7 @@ describe("createForgeComponentProvider — priority by scope", () => {
   test("global scope sets GLOBAL_FORGED priority", () => {
     const provider = createForgeComponentProvider({
       store: createInMemoryForgeStore(),
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       scope: "global",
     });
     expect(provider.priority).toBe(COMPONENT_PRIORITY.GLOBAL_FORGED);
@@ -1243,7 +1231,7 @@ describe("createForgeComponentProvider — priority by scope", () => {
   test("undefined scope defaults to AGENT_FORGED priority", () => {
     const provider = createForgeComponentProvider({
       store: createInMemoryForgeStore(),
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
     expect(provider.priority).toBe(COMPONENT_PRIORITY.AGENT_FORGED);
   });
@@ -1273,7 +1261,7 @@ describe.each(NON_TOOL_KINDS)("$kind brick attachment", ({ kind, factory, tokenP
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     const components = extractMap(await provider.attach(createMockAgent()));
@@ -1291,7 +1279,7 @@ describe.each(NON_TOOL_KINDS)("$kind brick attachment", ({ kind, factory, tokenP
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       scope: "global",
     });
 
@@ -1321,7 +1309,7 @@ describe.each(NON_TOOL_KINDS)("$kind brick attachment", ({ kind, factory, tokenP
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       scope: "agent",
       zoneId: "alpha",
     });
@@ -1342,7 +1330,7 @@ describe.each(NON_TOOL_KINDS)("$kind brick attachment", ({ kind, factory, tokenP
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     const components = extractMap(await provider.attach(createMockAgent()));
@@ -1365,7 +1353,7 @@ describe.each(NON_TOOL_KINDS)("$kind brick attachment", ({ kind, factory, tokenP
     const notifier = createMemoryStoreChangeNotifier();
     const provider = createForgeComponentProvider({
       store: countingStore,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
       notifier,
     });
 
@@ -1397,7 +1385,7 @@ describe("createForgeComponentProvider — component shapes", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     const components = extractMap(await provider.attach(createMockAgent()));
@@ -1420,7 +1408,7 @@ describe("createForgeComponentProvider — component shapes", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     const components = extractMap(await provider.attach(createMockAgent()));
@@ -1445,7 +1433,7 @@ describe("createForgeComponentProvider — component shapes", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     const components = extractMap(await provider.attach(createMockAgent()));
@@ -1465,7 +1453,7 @@ describe("createForgeComponentProvider — component shapes", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     const components = extractMap(await provider.attach(createMockAgent()));
@@ -1485,7 +1473,7 @@ describe("createForgeComponentProvider — component shapes", () => {
 
     const provider = createForgeComponentProvider({
       store,
-      executor: mockTiered(echoExecutor()),
+      executor: echoExecutor(),
     });
 
     const components = extractMap(await provider.attach(createMockAgent()));

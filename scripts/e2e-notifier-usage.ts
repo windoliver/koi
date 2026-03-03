@@ -22,7 +22,13 @@
  *   bun scripts/e2e-notifier-usage.ts                             # local mode
  */
 
-import type { StoreChangeEvent, ToolRequest, ToolResponse, TurnContext } from "@koi/core";
+import type {
+  SandboxExecutor,
+  StoreChangeEvent,
+  ToolRequest,
+  ToolResponse,
+  TurnContext,
+} from "@koi/core";
 import { createDefaultForgeConfig } from "../packages/forge/src/config.js";
 import { createForgeComponentProvider } from "../packages/forge/src/forge-component-provider.js";
 import { createForgeUsageMiddleware } from "../packages/forge/src/forge-usage-middleware.js";
@@ -32,11 +38,7 @@ import { createForgeToolTool } from "../packages/forge/src/tools/forge-tool.js";
 import { createPromoteForgeTool } from "../packages/forge/src/tools/promote-forge.js";
 import { createSearchForgeTool } from "../packages/forge/src/tools/search-forge.js";
 import type { ForgeDeps } from "../packages/forge/src/tools/shared.js";
-import type {
-  ForgeResult,
-  SandboxExecutor,
-  TieredSandboxExecutor,
-} from "../packages/forge/src/types.js";
+import type { ForgeResult } from "../packages/forge/src/types.js";
 import { recordBrickUsage } from "../packages/forge/src/usage.js";
 
 // ---------------------------------------------------------------------------
@@ -99,15 +101,6 @@ const executor: SandboxExecutor = {
   },
 };
 
-const tieredExecutor: TieredSandboxExecutor = {
-  forTier: (tier) => ({
-    executor,
-    requestedTier: tier,
-    resolvedTier: tier,
-    fallback: false,
-  }),
-};
-
 const config = createDefaultForgeConfig({
   maxForgesPerSession: 50,
   autoPromotion: {
@@ -122,7 +115,7 @@ let forgesThisSession = 0;
 function makeDeps(overrides?: Partial<ForgeDeps>): ForgeDeps {
   return {
     store,
-    executor: tieredExecutor,
+    executor,
     verifiers: [],
     config,
     context: {
@@ -433,7 +426,7 @@ try {
   // Create provider with notifier subscription
   const provider = createForgeComponentProvider({
     store,
-    executor: tieredExecutor,
+    executor,
     notifier,
   });
 
@@ -489,7 +482,7 @@ try {
   } else {
     const provider = createForgeComponentProvider({
       store,
-      executor: tieredExecutor,
+      executor,
       notifier,
     });
 
@@ -687,7 +680,7 @@ try {
   // Provider A (agent A)
   const providerA = createForgeComponentProvider({
     store,
-    executor: tieredExecutor,
+    executor,
     notifier,
     scope: "agent",
   });
@@ -695,7 +688,7 @@ try {
   // Provider B (agent B)
   const providerB = createForgeComponentProvider({
     store,
-    executor: tieredExecutor,
+    executor,
     notifier,
     scope: "agent",
   });
@@ -763,7 +756,7 @@ console.log("\n[test 7] lookupBrickId resolves tool names after attach");
 try {
   const provider = createForgeComponentProvider({
     store,
-    executor: tieredExecutor,
+    executor,
     notifier,
   });
 
@@ -806,7 +799,7 @@ console.log("\n[test 8] dispose() unsubscribes provider from notifier");
 try {
   const provider = createForgeComponentProvider({
     store,
-    executor: tieredExecutor,
+    executor,
     notifier,
   });
 

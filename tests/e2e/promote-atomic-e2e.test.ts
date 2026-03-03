@@ -17,9 +17,7 @@ import type {
   ComponentProvider,
   EngineEvent,
   KoiMiddleware,
-  SandboxExecutor,
   StoreChangeEvent,
-  TieredSandboxExecutor,
   ToolHandler,
   ToolRequest,
 } from "@koi/core";
@@ -73,23 +71,12 @@ function createTestBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   };
 }
 
-function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
-  return {
-    forTier: (tier) => ({
-      executor: exec,
-      requestedTier: tier,
-      resolvedTier: tier,
-      fallback: false,
-    }),
-  };
-}
-
 function createTestDeps(overrides?: Partial<ForgeDeps>): ForgeDeps {
   return {
     store: createInMemoryForgeStore(),
-    executor: mockTiered({
+    executor: {
       execute: async () => ({ ok: true, value: { output: "ok", durationMs: 1 } }),
-    }),
+    },
     verifiers: [],
     config: createDefaultForgeConfig({
       scopePromotion: {

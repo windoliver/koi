@@ -316,38 +316,11 @@ describe("validateTrustTransition", () => {
     }
   });
 
-  test("system caller allows one-step demotion: promoted → verified", () => {
+  test("blocks demotion for system caller", () => {
     const result = validateTrustTransition("promoted", "verified", "system");
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value).toEqual({ from: "promoted", to: "verified" });
-    }
-  });
-
-  test("system caller allows one-step demotion: verified → sandbox", () => {
-    const result = validateTrustTransition("verified", "sandbox", "system");
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value).toEqual({ from: "verified", to: "sandbox" });
-    }
-  });
-
-  test("system caller blocks skip-demotion: promoted → sandbox", () => {
-    const result = validateTrustTransition("promoted", "sandbox", "system");
     expect(result.ok).toBe(false);
     if (!result.ok && result.error.stage === "governance") {
       expect(result.error.code).toBe("TRUST_DEMOTION_NOT_ALLOWED");
-      expect(result.error.message).toContain("one step");
-    }
-  });
-
-  test("system caller blocks demotion from sandbox (floor)", () => {
-    // sandbox is already at floor, but target would need to be even lower
-    // which doesn't exist — so we test same-tier (returns no change)
-    const result = validateTrustTransition("sandbox", "sandbox", "system");
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value).toBeUndefined();
     }
   });
 

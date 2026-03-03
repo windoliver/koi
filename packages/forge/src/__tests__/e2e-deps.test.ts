@@ -36,7 +36,7 @@ import { createForgeRuntime } from "../forge-runtime.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
 import { createForgeToolTool } from "../tools/forge-tool.js";
 import type { ForgeDeps } from "../tools/shared.js";
-import type { ForgeResult, SandboxExecutor, TieredSandboxExecutor } from "../types.js";
+import type { ForgeResult, SandboxExecutor } from "../types.js";
 import { verify } from "../verify.js";
 import {
   computeDependencyHash,
@@ -114,17 +114,6 @@ function adderExecutor(): SandboxExecutor {
   };
 }
 
-function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
-  return {
-    forTier: (tier) => ({
-      executor: exec,
-      requestedTier: tier,
-      resolvedTier: tier,
-      fallback: false,
-    }),
-  };
-}
-
 function defaultDeps(
   store: ReturnType<typeof createInMemoryForgeStore>,
   executor: SandboxExecutor,
@@ -133,7 +122,7 @@ function defaultDeps(
 ): ForgeDeps {
   return {
     store,
-    executor: mockTiered(executor),
+    executor,
     verifiers: [],
     config: createDefaultForgeConfig(configOverrides),
     context: {
@@ -518,7 +507,7 @@ describe("e2e-deps: ForgeRuntime resolves workspace path", () => {
     // ForgeRuntime should resolve the tool
     const forgeRuntime = createForgeRuntime({
       store,
-      executor: mockTiered(executor),
+      executor,
     });
 
     const tool = await forgeRuntime.resolveTool("runtime-dep-tool");
@@ -868,7 +857,7 @@ describeE2E("e2e-deps: full L1 runtime with LLM + forge + deps + network", () =>
       // Step 2: Create ForgeComponentProvider
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor,
       });
 
       // Step 3: Full L1 runtime with real LLM
@@ -937,7 +926,7 @@ describeE2E("e2e-deps: full L1 runtime with LLM + forge + deps + network", () =>
       // ForgeRuntime for hot-attach
       const forgeRuntime = createForgeRuntime({
         store,
-        executor: mockTiered(executor),
+        executor,
       });
 
       // Full L1 runtime with ForgeRuntime hot-attach
@@ -1042,7 +1031,7 @@ describeE2E("e2e-deps: full L1 runtime with LLM + forge + deps + network", () =>
       // 3. ForgeRuntime resolves the tool
       const forgeRuntime = createForgeRuntime({
         store,
-        executor: mockTiered(executor),
+        executor,
       });
       const resolved = await forgeRuntime.resolveTool("full-pipeline-tool");
       expect(resolved).toBeDefined();
@@ -1051,7 +1040,7 @@ describeE2E("e2e-deps: full L1 runtime with LLM + forge + deps + network", () =>
       // 4. Full L1 runtime with real LLM
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor,
       });
       const modelCall = createModelCall();
       const loopAdapter = createLoopAdapter({ modelCall, maxTurns: 3 });
@@ -1126,7 +1115,7 @@ describeE2E("e2e-deps: full L1 runtime with LLM + forge + deps + network", () =>
       // Step 2: Full L1 runtime
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor,
       });
       const modelCall = createModelCall();
       const loopAdapter = createLoopAdapter({ modelCall, maxTurns: 3 });
@@ -1401,18 +1390,6 @@ describe("e2e-deps: maxTransitiveDependencies limit (Gap 3)", () => {
 // ===========================================================================
 
 describe("e2e-deps: subprocess executor direct resolution (Gap 2)", () => {
-  /** Wire subprocess executor for ALL tiers — forged bricks start at sandbox tier. */
-  function subprocessTiered(subExec: import("../types.js").SandboxExecutor): TieredSandboxExecutor {
-    return {
-      forTier: (tier) => ({
-        executor: subExec,
-        requestedTier: tier,
-        resolvedTier: tier,
-        fallback: false,
-      }),
-    };
-  }
-
   test(
     "subprocess executor resolves and executes tool via ForgeRuntime",
     async () => {
@@ -1442,7 +1419,7 @@ describe("e2e-deps: subprocess executor direct resolution (Gap 2)", () => {
 
       const forgeRuntime = createForgeRuntime({
         store,
-        executor: subprocessTiered(subExec),
+        executor: subExec,
       });
 
       // Directly resolve and execute — no LLM dependency
@@ -1488,7 +1465,7 @@ describe("e2e-deps: subprocess executor direct resolution (Gap 2)", () => {
 
         const forgeRuntime = createForgeRuntime({
           store,
-          executor: subprocessTiered(subExec),
+          executor: subExec,
         });
 
         // Directly resolve and execute
@@ -1545,19 +1522,9 @@ describeE2E("e2e-deps: subprocess executor through L1 runtime (Gap 2)", () => {
       })) as Result<ForgeResult, ForgeError>;
       expect(forgeResult.ok).toBe(true);
 
-      // Wire subprocess executor for ALL tiers (forged bricks start at sandbox)
-      const tieredExec: TieredSandboxExecutor = {
-        forTier: (tier) => ({
-          executor: subExec,
-          requestedTier: tier,
-          resolvedTier: tier,
-          fallback: false,
-        }),
-      };
-
       const forgeRuntime = createForgeRuntime({
         store,
-        executor: tieredExec,
+        executor: subExec,
       });
 
       // Full L1 runtime with real LLM

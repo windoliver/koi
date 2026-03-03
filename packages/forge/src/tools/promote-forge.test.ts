@@ -1,13 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type {
-  BrickId,
-  BrickLifecycle,
-  BrickUpdate,
-  ForgeScope,
-  SandboxExecutor,
-  StoreChangeEvent,
-  TieredSandboxExecutor,
-} from "@koi/core";
+import type { BrickId, BrickLifecycle, BrickUpdate, ForgeScope, StoreChangeEvent } from "@koi/core";
 import { brickId, VALID_LIFECYCLE_TRANSITIONS } from "@koi/core";
 import { DEFAULT_PROVENANCE } from "@koi/test-utils";
 import { createDefaultForgeConfig } from "../config.js";
@@ -36,25 +28,14 @@ function createToolBrick(overrides?: Partial<ToolArtifact>): ToolArtifact {
   };
 }
 
-function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
-  return {
-    forTier: (tier) => ({
-      executor: exec,
-      requestedTier: tier,
-      resolvedTier: tier,
-      fallback: false,
-    }),
-  };
-}
-
 function createDeps(
   overrides?: Partial<ForgeDeps> & { readonly notifier?: ForgeDeps["notifier"] },
 ): ForgeDeps {
   return {
     store: createInMemoryForgeStore(),
-    executor: mockTiered({
+    executor: {
       execute: async () => ({ ok: true, value: { output: "ok", durationMs: 1 } }),
-    }),
+    },
     verifiers: [],
     config: createDefaultForgeConfig(),
     context: { agentId: "agent-1", depth: 0, sessionId: "session-1", forgesThisSession: 0 },

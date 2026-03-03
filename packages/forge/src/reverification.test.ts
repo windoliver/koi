@@ -17,16 +17,22 @@ function configWith(now: () => number): ReverificationConfig {
 // ---------------------------------------------------------------------------
 
 describe("computeTtl", () => {
-  test("returns promotedTtlMs for promoted tier", () => {
+  test("returns ttlMs for promoted tier", () => {
     expect(computeTtl("promoted", DEFAULT_REVERIFICATION_CONFIG)).toBe(24 * 60 * 60 * 1_000);
   });
 
-  test("returns verifiedTtlMs for verified tier", () => {
-    expect(computeTtl("verified", DEFAULT_REVERIFICATION_CONFIG)).toBe(60 * 60 * 1_000);
+  test("returns ttlMs for verified tier", () => {
+    expect(computeTtl("verified", DEFAULT_REVERIFICATION_CONFIG)).toBe(24 * 60 * 60 * 1_000);
   });
 
   test("returns undefined for sandbox tier", () => {
     expect(computeTtl("sandbox", DEFAULT_REVERIFICATION_CONFIG)).toBeUndefined();
+  });
+
+  test("uses custom ttlMs from config", () => {
+    const config: ReverificationConfig = { ...DEFAULT_REVERIFICATION_CONFIG, ttlMs: 5_000 };
+    expect(computeTtl("promoted", config)).toBe(5_000);
+    expect(computeTtl("verified", config)).toBe(5_000);
   });
 });
 
@@ -52,46 +58,46 @@ describe("isStale", () => {
   });
 
   test("returns false when verified brick is fresh", () => {
-    const verifiedTtl = DEFAULT_REVERIFICATION_CONFIG.verifiedTtlMs;
+    const ttl = DEFAULT_REVERIFICATION_CONFIG.ttlMs;
     const result = isStale(
-      { trustTier: "verified", lastVerifiedAt: BASE_TIME - verifiedTtl + 1_000 },
+      { trustTier: "verified", lastVerifiedAt: BASE_TIME - ttl + 1_000 },
       configWith(() => BASE_TIME),
     );
     expect(result).toBe(false);
   });
 
   test("returns true when verified brick is stale", () => {
-    const verifiedTtl = DEFAULT_REVERIFICATION_CONFIG.verifiedTtlMs;
+    const ttl = DEFAULT_REVERIFICATION_CONFIG.ttlMs;
     const result = isStale(
-      { trustTier: "verified", lastVerifiedAt: BASE_TIME - verifiedTtl - 1 },
+      { trustTier: "verified", lastVerifiedAt: BASE_TIME - ttl - 1 },
       configWith(() => BASE_TIME),
     );
     expect(result).toBe(true);
   });
 
   test("returns false when promoted brick is fresh", () => {
-    const promotedTtl = DEFAULT_REVERIFICATION_CONFIG.promotedTtlMs;
+    const ttl = DEFAULT_REVERIFICATION_CONFIG.ttlMs;
     const result = isStale(
-      { trustTier: "promoted", lastVerifiedAt: BASE_TIME - promotedTtl + 1_000 },
+      { trustTier: "promoted", lastVerifiedAt: BASE_TIME - ttl + 1_000 },
       configWith(() => BASE_TIME),
     );
     expect(result).toBe(false);
   });
 
   test("returns true when promoted brick is stale", () => {
-    const promotedTtl = DEFAULT_REVERIFICATION_CONFIG.promotedTtlMs;
+    const ttl = DEFAULT_REVERIFICATION_CONFIG.ttlMs;
     const result = isStale(
-      { trustTier: "promoted", lastVerifiedAt: BASE_TIME - promotedTtl - 1 },
+      { trustTier: "promoted", lastVerifiedAt: BASE_TIME - ttl - 1 },
       configWith(() => BASE_TIME),
     );
     expect(result).toBe(true);
   });
 
-  test("returns true when exactly at TTL boundary (verified)", () => {
-    const verifiedTtl = DEFAULT_REVERIFICATION_CONFIG.verifiedTtlMs;
+  test("returns false when exactly at TTL boundary", () => {
+    const ttl = DEFAULT_REVERIFICATION_CONFIG.ttlMs;
     // elapsed === ttl → not stale (need strictly greater)
     const result = isStale(
-      { trustTier: "verified", lastVerifiedAt: BASE_TIME - verifiedTtl },
+      { trustTier: "verified", lastVerifiedAt: BASE_TIME - ttl },
       configWith(() => BASE_TIME),
     );
     expect(result).toBe(false);
@@ -103,5 +109,12 @@ describe("isStale", () => {
       configWith(() => BASE_TIME),
     );
     expect(result).toBe(false);
+  });
+
+  test("same TTL applies to both verified and promoted tiers", () => {
+    const config = configWith(() => BASE_TIME);
+    const verifiedTtl = computeTtl("verified", config);
+    const promotedTtl = computeTtl("promoted", config);
+    expect(verifiedTtl).toBe(promotedTtl);
   });
 });

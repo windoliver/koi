@@ -5,11 +5,12 @@
  * for runtime interfaces (validators, gates, repair strategies).
  */
 
-import type { DemotionCriteria, ForgeStore, SnapshotStore } from "@koi/core";
+import type { ForgeStore, SnapshotStore } from "@koi/core";
 import type { KoiError, Result } from "@koi/core/errors";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import { z } from "zod";
 import type {
+  DemotionCriteria,
   DiscoveryMissRecord,
   RepairStrategy,
   RetryConfig,

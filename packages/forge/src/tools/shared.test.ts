@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { GovernanceController, SandboxExecutor, TieredSandboxExecutor } from "@koi/core";
+import type { GovernanceController } from "@koi/core";
 import { brickId } from "@koi/core";
 import { createDefaultForgeConfig } from "../config.js";
 import { createInMemoryForgeStore } from "../memory-store.js";
@@ -7,23 +7,12 @@ import type { ForgeContext } from "../types.js";
 import type { ForgeDeps } from "./shared.js";
 import { buildBaseFields, createForgeTool, parseSkillInput, parseToolInput } from "./shared.js";
 
-function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
-  return {
-    forTier: (tier) => ({
-      executor: exec,
-      requestedTier: tier,
-      resolvedTier: tier,
-      fallback: false,
-    }),
-  };
-}
-
 function createDeps(overrides?: Partial<ForgeDeps>): ForgeDeps {
   return {
     store: createInMemoryForgeStore(),
-    executor: mockTiered({
+    executor: {
       execute: async () => ({ ok: true, value: { output: "ok", durationMs: 1 } }),
-    }),
+    },
     verifiers: [],
     config: createDefaultForgeConfig(),
     context: { agentId: "agent-1", depth: 0, sessionId: "session-1", forgesThisSession: 0 },

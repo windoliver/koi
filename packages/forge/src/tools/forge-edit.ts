@@ -162,11 +162,10 @@ async function forgeEditHandler(
   }
 
   // Re-run verification pipeline
-  const { executor: sandboxExecutor } = deps.executor.forTier(brick.trustTier);
   const verifyResult = await verify(
     forgeInput,
     deps.context,
-    sandboxExecutor,
+    deps.executor,
     deps.verifiers,
     deps.config,
   );

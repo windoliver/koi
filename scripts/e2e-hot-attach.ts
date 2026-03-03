@@ -17,6 +17,7 @@
 
 import type { ToolDescriptor } from "../packages/core/src/ecs.js";
 import type { EngineAdapter, EngineEvent, EngineInput } from "../packages/core/src/engine.js";
+import type { SandboxExecutor } from "../packages/core/src/index.js";
 import type {
   ModelHandler,
   ModelStreamHandler,
@@ -29,7 +30,6 @@ import { createForgeRuntime } from "../packages/forge/src/forge-runtime.js";
 import { createInMemoryForgeStore } from "../packages/forge/src/memory-store.js";
 import { createForgeToolTool } from "../packages/forge/src/tools/forge-tool.js";
 import type { ForgeDeps } from "../packages/forge/src/tools/shared.js";
-import type { SandboxExecutor, TieredSandboxExecutor } from "../packages/forge/src/types.js";
 
 // ---------------------------------------------------------------------------
 // Preflight
@@ -109,14 +109,10 @@ const executor: SandboxExecutor = {
   },
 };
 
-const tieredExecutor: TieredSandboxExecutor = {
-  forTier: () => ({ executor, tier: "sandbox" }),
-};
-
 const config = createDefaultForgeConfig({ maxForgesPerSession: 10 });
 const deps: ForgeDeps = {
   store,
-  executor: tieredExecutor,
+  executor,
   verifiers: [],
   config,
   context: {
@@ -131,7 +127,7 @@ const forgeTool = createForgeToolTool(deps);
 
 const forgeRuntime = createForgeRuntime({
   store,
-  executor: tieredExecutor,
+  executor,
 });
 
 // ---------------------------------------------------------------------------

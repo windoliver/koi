@@ -210,13 +210,13 @@ describe("createForgeUsageMiddleware", () => {
     expect(onUsageError.mock.calls[0]?.[1]).toBe("brick_calc");
   });
 
-  test("auto-promotes brick when threshold is crossed", async () => {
+  test("records usage without auto-promoting brick", async () => {
     const store = createInMemoryForgeStore();
     const brick = createToolBrick({
       id: brickId("brick_promo"),
       name: "promo_tool",
       trustTier: "sandbox",
-      usageCount: 4, // One more will cross the threshold
+      usageCount: 4,
       fitness: {
         successCount: 4,
         errorCount: 0,
@@ -226,13 +226,7 @@ describe("createForgeUsageMiddleware", () => {
     });
     await store.save(brick);
 
-    const config = createDefaultForgeConfig({
-      autoPromotion: {
-        enabled: true,
-        sandboxToVerifiedThreshold: 5,
-        verifiedToPromotedThreshold: 20,
-      },
-    });
+    const config = createDefaultForgeConfig();
 
     const mw = createForgeUsageMiddleware({
       store,
@@ -256,7 +250,8 @@ describe("createForgeUsageMiddleware", () => {
     expect(loaded.ok).toBe(true);
     if (loaded.ok) {
       expect(loaded.value.usageCount).toBe(5);
-      expect(loaded.value.trustTier).toBe("verified");
+      // Trust tier stays unchanged — no auto-promotion
+      expect(loaded.value.trustTier).toBe("sandbox");
     }
   });
 

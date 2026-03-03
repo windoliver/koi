@@ -39,7 +39,7 @@ import { mapProvenanceToSlsa, mapProvenanceToStatement } from "../slsa-serialize
 import { createForgeSkillTool } from "../tools/forge-skill.js";
 import { createForgeToolTool } from "../tools/forge-tool.js";
 import type { ForgeDeps } from "../tools/shared.js";
-import type { ForgeResult, SandboxExecutor, TieredSandboxExecutor } from "../types.js";
+import type { ForgeResult, SandboxExecutor } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Environment gate
@@ -125,17 +125,6 @@ function adderExecutor(): SandboxExecutor {
   };
 }
 
-function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
-  return {
-    forTier: (tier) => ({
-      executor: exec,
-      requestedTier: tier,
-      resolvedTier: tier,
-      fallback: false,
-    }),
-  };
-}
-
 function createSignedDeps(
   store: ReturnType<typeof createInMemoryForgeStore>,
   executor: SandboxExecutor,
@@ -144,7 +133,7 @@ function createSignedDeps(
 ): ForgeDeps {
   return {
     store,
-    executor: mockTiered(executor),
+    executor: executor,
     verifiers: [],
     config: createDefaultForgeConfig(),
     context: {
@@ -298,7 +287,7 @@ describeE2E("e2e provenance: signed forge → full L1 runtime with real LLM", ()
       // ---------------------------------------------------------------
       const forgeRuntime = createForgeRuntime({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
         signer,
       });
 
@@ -312,7 +301,7 @@ describeE2E("e2e provenance: signed forge → full L1 runtime with real LLM", ()
       // ---------------------------------------------------------------
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       // Middleware spy: verify the tool call goes through middleware chain
@@ -393,7 +382,7 @@ describeE2E("e2e provenance: signed forge → full L1 runtime with real LLM", ()
       // ForgeRuntime with signer rejects tampered tool at resolve time
       const forgeRuntime = createForgeRuntime({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
         signer,
       });
       const tool = await forgeRuntime.resolveTool("tamper-target");
@@ -491,7 +480,7 @@ describeE2E("e2e provenance: signed forge → full L1 runtime with real LLM", ()
       // ForgeRuntime with signer — fast path should work for cold cache
       const forgeRuntime = createForgeRuntime({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
         signer,
       });
 

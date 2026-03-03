@@ -43,7 +43,7 @@ import {
 import { createForgeComponentProvider } from "../src/forge-component-provider.js";
 import { createForgeRuntime } from "../src/forge-runtime.js";
 import { createInMemoryForgeStore } from "../src/memory-store.js";
-import type { SandboxExecutor, TieredSandboxExecutor } from "../src/types.js";
+import type { SandboxExecutor } from "../src/types.js";
 
 // ---------------------------------------------------------------------------
 // Environment gate
@@ -84,17 +84,6 @@ function echoExecutor(): SandboxExecutor {
     execute: async (_code, input, _timeout) => ({
       ok: true,
       value: { output: input, durationMs: 1 },
-    }),
-  };
-}
-
-function mockTiered(exec: SandboxExecutor): TieredSandboxExecutor {
-  return {
-    forTier: (tier) => ({
-      executor: exec,
-      requestedTier: tier,
-      resolvedTier: tier,
-      fallback: false,
     }),
   };
 }
@@ -151,7 +140,7 @@ describeE2E("e2e: unified brick auto-discovery through createKoi + Pi adapter", 
       // Wire ForgeComponentProvider → createKoi → createPiAdapter
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       const piAdapter = createPiAdapter({
@@ -237,7 +226,7 @@ describeE2E("e2e: unified brick auto-discovery through createKoi + Pi adapter", 
 
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       const piAdapter = createPiAdapter({
@@ -302,7 +291,7 @@ describeE2E("e2e: unified brick auto-discovery through createKoi + Pi adapter", 
 
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       const piAdapter = createPiAdapter({
@@ -407,7 +396,7 @@ describeE2E("e2e: unified brick auto-discovery through createKoi + Pi adapter", 
 
       const forgeRuntime = createForgeRuntime({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       // resolve('skill', 'coding') — no requires, should succeed
@@ -477,7 +466,7 @@ describeE2E("e2e: unified brick auto-discovery through createKoi + Pi adapter", 
       // Start with an empty store
       const forgeRuntime = createForgeRuntime({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       // No tool yet
@@ -575,7 +564,7 @@ describeE2E("e2e: unified brick auto-discovery through createKoi + Pi adapter", 
 
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       // Middleware spy tracks intercepted tool calls
@@ -683,7 +672,7 @@ describeE2E("e2e: unified brick auto-discovery through createKoi + Pi adapter", 
 
       const forgeProvider = createForgeComponentProvider({
         store,
-        executor: mockTiered(executor),
+        executor: executor,
       });
 
       const piAdapter = createPiAdapter({
