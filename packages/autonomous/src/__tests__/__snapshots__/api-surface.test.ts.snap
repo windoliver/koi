@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/autonomous API surface . has stable type surface 1`] = `
-"import { KoiMiddleware } from '@koi/core';
+"import { KoiMiddleware, ComponentProvider, ThreadStore, CheckpointPolicy, InboxPolicy } from '@koi/core';
 import { HarnessScheduler } from '@koi/harness-scheduler';
 import { LongRunningHarness } from '@koi/long-running';
 
@@ -16,21 +16,29 @@ interface AutonomousAgentParts {
     readonly scheduler: HarnessScheduler;
     /** Optional compactor middleware for context compaction. */
     readonly compactorMiddleware?: KoiMiddleware | undefined;
+    /** Optional thread store for persistent checkpoint support. */
+    readonly threadStore?: ThreadStore | undefined;
+    /** Checkpoint policy override. Defaults to DEFAULT_CHECKPOINT_POLICY. */
+    readonly checkpointPolicy?: CheckpointPolicy | undefined;
+    /** Inbox policy override. Defaults to DEFAULT_INBOX_POLICY. */
+    readonly inboxPolicy?: InboxPolicy | undefined;
 }
 interface AutonomousAgent {
     /** The underlying harness. */
     readonly harness: LongRunningHarness;
     /** The scheduler managing auto-resume. */
     readonly scheduler: HarnessScheduler;
-    /** Collect all middleware (harness + optional compactor). */
+    /** Collect all middleware (harness + checkpoint + inbox + optional compactor). */
     readonly middleware: () => readonly KoiMiddleware[];
+    /** Component providers (inbox, plan_autonomous). */
+    readonly providers: () => readonly ComponentProvider[];
     /** Dispose all parts in correct order (scheduler first, then harness). */
     readonly dispose: () => Promise<void>;
 }
 
 /**
  * Autonomous agent factory — composes harness + scheduler + optional compactor
- * into a coordinated autonomous agent.
+ * into a coordinated autonomous agent with checkpoint/inbox support.
  *
  * Disposal order: stop scheduler first (prevents new resumes), then dispose harness.
  */

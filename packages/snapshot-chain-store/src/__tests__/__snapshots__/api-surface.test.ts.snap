@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/snapshot-chain-store API surface . has stable type surface 1`] = `
-"import { SnapshotChainStore } from '@koi/core';
+"import { SnapshotChainStore, ThreadSnapshotStore, ThreadStore } from '@koi/core';
 
 /**
  * InMemorySnapshotChainStore — Map-based store for tests and development.
@@ -12,6 +12,24 @@ exports[`@koi/snapshot-chain-store API surface . has stable type surface 1`] = `
 
 declare function createInMemorySnapshotChainStore<T>(): SnapshotChainStore<T>;
 
-export { createInMemorySnapshotChainStore };
+/**
+ * ThreadStore facade — thin adapter over SnapshotChainStore<ThreadSnapshot>.
+ *
+ * Maps ThreadId → ChainId (identity), provides idempotent append-and-checkpoint,
+ * and deduplicates messages by ThreadMessageId (Decision 6A).
+ */
+
+interface CreateThreadStoreConfig {
+    readonly store: ThreadSnapshotStore;
+}
+/**
+ * Create a ThreadStore backed by a SnapshotChainStore<ThreadSnapshot>.
+ *
+ * Idempotency: duplicate ThreadMessageId values produce a CONFLICT error
+ * (Decision 6A). The idempotency set is maintained in-memory per thread.
+ */
+declare function createThreadStore(config: CreateThreadStoreConfig): ThreadStore;
+
+export { type CreateThreadStoreConfig, createInMemorySnapshotChainStore, createThreadStore };
 "
 `;

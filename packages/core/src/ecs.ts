@@ -20,6 +20,7 @@ import type { FileSystemBackend } from "./filesystem-backend.js";
 import type { GovernanceController } from "./governance.js";
 import type { GovernanceBackend } from "./governance-backend.js";
 import type { HandoffComponent } from "./handoff.js";
+import type { InboxComponent } from "./inbox.js";
 import type { MailboxComponent } from "./mailbox.js";
 import type { NameServiceReader } from "./name-service.js";
 import type { ReputationBackend } from "./reputation-backend.js";
@@ -548,6 +549,7 @@ export const SCRATCHPAD: SubsystemToken<ScratchpadComponent> =
 export const NAME_SERVICE: SubsystemToken<NameServiceReader> =
   token<NameServiceReader>("name-service");
 export const ZONE_REGISTRY: SubsystemToken<ZoneRegistry> = token<ZoneRegistry>("zone-registry");
+export const INBOX: SubsystemToken<InboxComponent> = token<InboxComponent>("inbox");
 
 // ---------------------------------------------------------------------------
 // Agent environment (inheritable key-value env down the spawn tree)

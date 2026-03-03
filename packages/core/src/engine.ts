@@ -158,5 +158,12 @@ export interface EngineAdapter {
    * manual type narrowing inside this method.
    */
   readonly loadState?: (state: EngineState) => Promise<void>;
+  /**
+   * Inject a message into the running engine loop (Decision 3C).
+   * Used by the inbox steer mode to deliver high-priority messages
+   * mid-turn. Adapters that don't support injection simply omit this.
+   * When absent, steer-mode items degrade to followup.
+   */
+  readonly inject?: (message: InboundMessage) => void | Promise<void>;
   readonly dispose?: () => Promise<void>;
 }

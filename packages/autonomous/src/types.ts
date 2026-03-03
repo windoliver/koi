@@ -2,7 +2,13 @@
  * Types for @koi/autonomous — coordinated autonomous agent composition.
  */
 
-import type { KoiMiddleware } from "@koi/core";
+import type {
+  CheckpointPolicy,
+  ComponentProvider,
+  InboxPolicy,
+  KoiMiddleware,
+  ThreadStore,
+} from "@koi/core";
 import type { HarnessScheduler } from "@koi/harness-scheduler";
 import type { LongRunningHarness } from "@koi/long-running";
 
@@ -17,6 +23,12 @@ export interface AutonomousAgentParts {
   readonly scheduler: HarnessScheduler;
   /** Optional compactor middleware for context compaction. */
   readonly compactorMiddleware?: KoiMiddleware | undefined;
+  /** Optional thread store for persistent checkpoint support. */
+  readonly threadStore?: ThreadStore | undefined;
+  /** Checkpoint policy override. Defaults to DEFAULT_CHECKPOINT_POLICY. */
+  readonly checkpointPolicy?: CheckpointPolicy | undefined;
+  /** Inbox policy override. Defaults to DEFAULT_INBOX_POLICY. */
+  readonly inboxPolicy?: InboxPolicy | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -28,8 +40,10 @@ export interface AutonomousAgent {
   readonly harness: LongRunningHarness;
   /** The scheduler managing auto-resume. */
   readonly scheduler: HarnessScheduler;
-  /** Collect all middleware (harness + optional compactor). */
+  /** Collect all middleware (harness + checkpoint + inbox + optional compactor). */
   readonly middleware: () => readonly KoiMiddleware[];
+  /** Component providers (inbox, plan_autonomous). */
+  readonly providers: () => readonly ComponentProvider[];
   /** Dispose all parts in correct order (scheduler first, then harness). */
   readonly dispose: () => Promise<void>;
 }

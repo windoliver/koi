@@ -1,7 +1,57 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/long-running API surface . has stable type surface 1`] = `
-"import { HarnessId, TaskBoardSnapshot, HarnessSnapshot, Result, InboundMessage, KoiError, PruningPolicy, AgentId, HarnessSnapshotStore, SessionPersistence, EngineState, EngineInput, EngineMetrics, TaskItemId, TaskResult, HarnessStatus, KoiMiddleware } from '@koi/core';
+"import { InboxPolicy, InboxComponent, ComponentProvider, CheckpointPolicy, KoiMiddleware, HarnessId, TaskBoardSnapshot, HarnessSnapshot, Result, InboundMessage, KoiError, PruningPolicy, AgentId, HarnessSnapshotStore, SessionPersistence, EngineState, EngineInput, EngineMetrics, TaskItemId, TaskResult, HarnessStatus, MailboxComponent, Tool, ThreadPruningPolicy, ChainCompactor, ThreadSnapshot } from '@koi/core';
+
+/**
+ * Autonomous provider — attaches InboxComponent to agents (Decision 4C).
+ *
+ * A ComponentProvider that attaches an InboxComponent via the INBOX
+ * SubsystemToken at assembly time, enabling message steering for
+ * autonomous agents.
+ */
+
+interface AutonomousProviderConfig {
+    /** Factory to create an InboxComponent. Injected by L1/L3 caller. */
+    readonly createInbox: (policy?: InboxPolicy) => InboxComponent;
+    /** Inbox capacity policy. Uses caller's default if omitted. */
+    readonly inboxPolicy?: InboxPolicy | undefined;
+    /** ComponentProvider priority. Default: BUNDLED (100). */
+    readonly priority?: number | undefined;
+}
+/**
+ * Create a ComponentProvider that attaches an InboxComponent to agents.
+ *
+ * The inbox queue factory is injected to avoid L2 → L1 layer violation.
+ * The inbox is created fresh for each agent attachment, providing
+ * per-agent isolation for message steering.
+ */
+declare function createAutonomousProvider(config: AutonomousProviderConfig): ComponentProvider;
+
+/**
+ * Checkpoint middleware — fires checkpoints at configurable intervals (Decision 15B).
+ *
+ * Priority 55 (after harness at 50). Tracks turn count and fires the
+ * \`onCheckpoint\` callback at \`policy.intervalTurns\`, on session end,
+ * and on suspend.
+ */
+
+interface CheckpointMiddlewareConfig {
+    /** Checkpoint policy. Defaults to DEFAULT_CHECKPOINT_POLICY. */
+    readonly policy?: CheckpointPolicy | undefined;
+    /** Called when a checkpoint should be persisted. */
+    readonly onCheckpoint: (context: {
+        readonly turnIndex: number;
+        readonly trigger: "interval" | "session_end" | "suspend";
+    }) => void | Promise<void>;
+}
+/**
+ * Create middleware that fires checkpoint callbacks at configurable intervals.
+ *
+ * Delegates actual persistence to the \`onCheckpoint\` callback — this middleware
+ * only decides _when_ to checkpoint, not _how_.
+ */
+declare function createCheckpointMiddleware(config: CheckpointMiddlewareConfig): KoiMiddleware;
 
 /**
  * Checkpoint timing policy — pure functions, no I/O.
@@ -119,6 +169,97 @@ declare const DEFAULT_LONG_RUNNING_CONFIG: {
  */
 declare function createLongRunningHarness(config: LongRunningConfig): LongRunningHarness;
 
-export { DEFAULT_LONG_RUNNING_CONFIG, type LongRunningConfig, type LongRunningHarness, type ResumeResult, type SaveStateCallback, type SessionResult, type StartResult, buildInitialPrompt, buildResumeContext, computeCheckpointId, createLongRunningHarness, shouldSoftCheckpoint };
+/**
+ * Inbox middleware — routes MailboxComponent messages to InboxComponent (Phase 4).
+ *
+ * Priority 45 (before harness at 50). On each turn start, drains pending
+ * agent-to-agent messages from the MailboxComponent and pushes them into
+ * the InboxComponent keyed by \`metadata.mode\`. If no mode is specified,
+ * defaults to "followup".
+ */
+
+interface InboxMiddlewareConfig {
+    /** Retrieve the MailboxComponent for the current agent. */
+    readonly getMailbox: () => MailboxComponent | undefined;
+    /** Retrieve the InboxComponent for the current agent. */
+    readonly getInbox: () => InboxComponent | undefined;
+}
+/**
+ * Create middleware that routes MailboxComponent messages into InboxComponent.
+ *
+ * Before each turn, lists pending agent-to-agent messages from the mailbox,
+ * determines the inbox mode from \`metadata.mode\`, and pushes them into the
+ * inbox queue. The engine's turn-boundary logic in koi.ts then drains the
+ * inbox and dispatches items based on mode (steer/collect/followup).
+ */
+declare function createInboxMiddleware(config: InboxMiddlewareConfig): KoiMiddleware;
+
+/**
+ * plan_autonomous tool — self-escalation for autonomous agent workflows (Decision 7B).
+ *
+ * Registered at assembly time via ComponentProvider. When the agent calls
+ * \`plan_autonomous\`, it creates a TaskBoardSnapshot and fires the
+ * \`onPlanCreated\` callback to activate autonomous middleware.
+ */
+
+interface PlanAutonomousConfig {
+    /** Called when the agent creates an autonomous plan. */
+    readonly onPlanCreated: (plan: TaskBoardSnapshot) => void | Promise<void>;
+    /** ComponentProvider priority. Default: BUNDLED (100). */
+    readonly priority?: number | undefined;
+}
+/**
+ * Create a ComponentProvider that registers the \`plan_autonomous\` tool at assembly time.
+ * When called, it creates a TaskBoardSnapshot and fires the onPlanCreated callback.
+ */
+declare function createPlanAutonomousProvider(config: PlanAutonomousConfig): ComponentProvider;
+
+/**
+ * Task tools — dynamic tools for managing autonomous task execution (Decision 7B).
+ *
+ * These tools are registered dynamically via ForgeRuntime when autonomous
+ * mode activates, and unregistered when it deactivates:
+ * - \`task_complete\`: Mark a task as completed
+ * - \`task_update\`: Update a task's description or status
+ * - \`task_status\`: Get current task board summary
+ */
+
+interface TaskToolsConfig {
+    /** Get the current task board snapshot. */
+    readonly getTaskBoard: () => TaskBoardSnapshot;
+    /** Mark a task as completed with output. */
+    readonly completeTask: (taskId: TaskItemId, output: string) => Promise<void>;
+    /** Update a task's description. */
+    readonly updateTask: (taskId: TaskItemId, description: string) => Promise<void>;
+}
+/**
+ * Create task management tools for autonomous execution.
+ * These should be registered dynamically via ForgeRuntime when
+ * autonomous mode activates.
+ */
+declare function createTaskTools(config: TaskToolsConfig): readonly Tool[];
+
+/**
+ * Thread compactor — prunes old message snapshots into context summaries (Decision 13A).
+ *
+ * Implements \`ChainCompactor<ThreadSnapshot>\` for integration with
+ * \`SnapshotChainStore.prune()\`. Keeps the last N message snapshots
+ * and folds older message nodes into a single harness-kind summary snapshot.
+ */
+
+/**
+ * Create a compactor that retains recent message snapshots and
+ * folds older ones into a summary snapshot.
+ *
+ * The compactor processes a sequence of SnapshotNodes:
+ * 1. Identifies message-kind snapshots vs harness-kind snapshots
+ * 2. Keeps the most recent \`retainMessageSnapshots\` message nodes
+ * 3. Summarizes older message nodes into a single HarnessThreadSnapshot
+ *    with aggregated metrics and context summary references
+ * 4. Harness-kind snapshots always pass through unchanged
+ */
+declare function createThreadCompactor(policy?: ThreadPruningPolicy): ChainCompactor<ThreadSnapshot>;
+
+export { type AutonomousProviderConfig, type CheckpointMiddlewareConfig, DEFAULT_LONG_RUNNING_CONFIG, type InboxMiddlewareConfig, type LongRunningConfig, type LongRunningHarness, type PlanAutonomousConfig, type ResumeResult, type SaveStateCallback, type SessionResult, type StartResult, type TaskToolsConfig, buildInitialPrompt, buildResumeContext, computeCheckpointId, createAutonomousProvider, createCheckpointMiddleware, createInboxMiddleware, createLongRunningHarness, createPlanAutonomousProvider, createTaskTools, createThreadCompactor, shouldSoftCheckpoint };
 "
 `;

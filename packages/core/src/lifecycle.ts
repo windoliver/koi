@@ -21,7 +21,13 @@ import type { ZoneId } from "./zone.js";
  * Fine-grained conditions layered beneath ProcessState.
  * Multiple conditions can be active simultaneously.
  */
-export type AgentCondition = "Initialized" | "Ready" | "Healthy" | "Draining";
+export type AgentCondition =
+  | "Initialized"
+  | "Ready"
+  | "Healthy"
+  | "Draining"
+  /** Agent is performing autonomous background work (Decision 2B). */
+  | "BackgroundWork";
 
 // ---------------------------------------------------------------------------
 // Transition reasons
