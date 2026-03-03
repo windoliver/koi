@@ -17,7 +17,14 @@ import type {
   SessionContext,
   TurnContext,
 } from "@koi/core";
-import { agentId, DEFAULT_CIRCUIT_BREAKER_CONFIG, DELEGATION, MAILBOX, messageId } from "@koi/core";
+import {
+  agentId,
+  DEFAULT_CIRCUIT_BREAKER_CONFIG,
+  DELEGATION,
+  isAttachResult,
+  MAILBOX,
+  messageId,
+} from "@koi/core";
 import { createCapabilityRequestBridge } from "./capability-request-bridge.js";
 import {
   CAPABILITY_REQUEST_TYPE,
@@ -117,7 +124,7 @@ function createMockAgent(
     state: "running",
     component: <T>(token: { toString(): string }) =>
       components.get(token as string) as T | undefined,
-    has: (token) => components.has(token as string),
+    has: (token: unknown) => components.has(token as string),
     query: () => new Map(),
     components: () => components,
   } as unknown as Agent;
@@ -131,16 +138,17 @@ function createMockTurnContext(
   currentAgentId: string,
   requestApproval?: (req: ApprovalRequest) => Promise<ApprovalDecision>,
 ): TurnContext {
-  return {
+  const base = {
     session: {
       agentId: agentId(currentAgentId),
-    } as SessionContext,
+    } as unknown as SessionContext,
     turnIndex: 0,
     turnId: "turn-1" as TurnContext["turnId"],
     messages: [],
     metadata: {},
-    requestApproval,
+    ...(requestApproval !== undefined ? { requestApproval } : {}),
   };
+  return base as unknown as TurnContext;
 }
 
 // ---------------------------------------------------------------------------
@@ -474,7 +482,8 @@ describe("createCapabilityRequestBridge", () => {
     } as unknown as Agent;
 
     const result = await bridge.provider.attach(agent);
-    expect(result.size).toBe(0);
+    const attached = isAttachResult(result) ? result.components : result;
+    expect(attached.size).toBe(0);
   });
 
   test("provider skips when DELEGATION not attached", async () => {
@@ -505,7 +514,8 @@ describe("createCapabilityRequestBridge", () => {
     } as unknown as Agent;
 
     const result = await bridge.provider.attach(agent);
-    expect(result.size).toBe(0);
+    const attached = isAttachResult(result) ? result.components : result;
+    expect(attached.size).toBe(0);
   });
 
   test("responds to original requesterId on forwarded requests", async () => {

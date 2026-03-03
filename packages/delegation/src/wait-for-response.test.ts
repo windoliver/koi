@@ -151,19 +151,21 @@ describe("waitForResponse", () => {
     const corrId = messageId("corr-6");
 
     // Deliver response immediately after subscribing (synchronous delivery)
-    const originalOnMessage = mailbox.onMessage;
     let delivered = false;
-    mailbox.onMessage = (handler) => {
-      const unsub = originalOnMessage(handler);
-      if (!delivered) {
-        delivered = true;
-        mailbox.deliver(mockMessage("corr-6"));
-      }
-      return unsub;
+    const wrappedMailbox: MailboxComponent = {
+      ...mailbox,
+      onMessage: (handler: (msg: AgentMessage) => void | Promise<void>) => {
+        const unsub = mailbox.onMessage(handler);
+        if (!delivered) {
+          delivered = true;
+          mailbox.deliver(mockMessage("corr-6"));
+        }
+        return unsub;
+      },
     };
 
     const result = await waitForResponse({
-      mailbox,
+      mailbox: wrappedMailbox,
       correlationId: corrId,
       timeoutMs: 5000,
     });

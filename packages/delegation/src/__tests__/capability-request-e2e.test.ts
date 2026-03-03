@@ -145,14 +145,15 @@ function createMockTurnContext(
   currentAgentId: string,
   requestApproval?: (req: ApprovalRequest) => Promise<ApprovalDecision>,
 ): TurnContext {
-  return {
-    session: { agentId: agentId(currentAgentId) } as SessionContext,
+  const base = {
+    session: { agentId: agentId(currentAgentId) } as unknown as SessionContext,
     turnIndex: 0,
     turnId: "turn-1" as TurnContext["turnId"],
     messages: [],
     metadata: {},
-    requestApproval,
+    ...(requestApproval !== undefined ? { requestApproval } : {}),
   };
+  return base as unknown as TurnContext;
 }
 
 // ---------------------------------------------------------------------------

@@ -109,7 +109,7 @@ describe("DelegationComponent mock for spawn", () => {
       },
 
       verify: async (_id, _toolId): Promise<DelegationVerifyResult> => {
-        return { ok: false, reason: "not_implemented" };
+        return { ok: false, reason: "unknown_grant" };
       },
 
       list: async (): Promise<readonly DelegationGrant[]> => {
@@ -141,7 +141,7 @@ describe("DelegationComponent mock for spawn", () => {
       revoke: async (): Promise<void> => {},
       verify: async (): Promise<DelegationVerifyResult> => ({
         ok: false,
-        reason: "not_implemented",
+        reason: "unknown_grant",
       }),
       list: async (): Promise<readonly DelegationGrant[]> => [],
     };
