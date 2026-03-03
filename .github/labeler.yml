@@ -56,6 +56,7 @@
       - "packages/context-arena/**"
       - "packages/forge/**"
       - "packages/governance/**"
+      - "packages/sandbox-stack/**"
       - "packages/starter/**"
 
 # L2 is the catch-all: any package change that is not L0, L1, L0u, or L3.
@@ -88,6 +89,7 @@
       - "!packages/nexus-client/**"
       - "!packages/resolve/**"
       - "!packages/sandbox-cloud-base/**"
+      - "!packages/sandbox-stack/**"
       - "!packages/sandbox-wasm/**"
       - "!packages/scope/**"
       - "!packages/search-provider/**"
