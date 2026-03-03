@@ -8,6 +8,7 @@
  *   100  koi:permissions
  *   110  koi:exec-approvals  (overridden from default 100)
  *   120  koi:delegation      (overridden from default undefined/500)
+ *   125  koi:capability-request (pull-model delegation requests)
  *   150  koi:governance-backend
  *   200  koi:pay
  *   300  koi:audit
@@ -17,7 +18,11 @@
  */
 
 import type { KoiMiddleware } from "@koi/core/middleware";
-import { createDelegationMiddleware } from "@koi/delegation";
+import {
+  createCapabilityRequestBridge,
+  createDelegationMiddleware,
+  createDelegationProvider,
+} from "@koi/delegation";
 import { createExecApprovalsMiddleware } from "@koi/exec-approvals";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createGovernanceBackendMiddleware } from "@koi/middleware-governance-backend";
@@ -54,6 +59,23 @@ import type { GovernanceBundle, GovernanceStackConfig } from "./types.js";
 export function createGovernanceStack(config: GovernanceStackConfig): GovernanceBundle {
   const resolved = resolveGovernanceConfig(config);
 
+  // Validate: capabilityRequest requires delegationBridge
+  if (config.capabilityRequest !== undefined && config.delegationBridge === undefined) {
+    throw new Error(
+      "GovernanceStack: capabilityRequest requires delegationBridge to also be configured",
+    );
+  }
+
+  // Create capability request bridge when both delegationBridge and capabilityRequest are configured
+  const capabilityRequestBridge =
+    config.delegationBridge !== undefined && config.capabilityRequest !== undefined
+      ? createCapabilityRequestBridge({
+          manager: config.delegationBridge.manager,
+          approvalTimeoutMs: config.capabilityRequest.approvalTimeoutMs,
+          maxForwardDepth: config.capabilityRequest.maxForwardDepth,
+        })
+      : undefined;
+
   const candidates: ReadonlyArray<KoiMiddleware | undefined> = [
     resolved.permissions !== undefined
       ? createPermissionsMiddleware(resolved.permissions) // 100
@@ -64,6 +86,7 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
     resolved.delegation !== undefined
       ? { ...createDelegationMiddleware(resolved.delegation), priority: 120 } // override
       : undefined,
+    capabilityRequestBridge?.middleware, // 125
     resolved.governanceBackend !== undefined
       ? createGovernanceBackendMiddleware(resolved.governanceBackend) // 150
       : undefined,
@@ -87,10 +110,21 @@ export function createGovernanceStack(config: GovernanceStackConfig): Governance
   const middlewares = candidates.filter((mw): mw is KoiMiddleware => mw !== undefined);
 
   // Wire scope providers when scope + backends are present
-  const providers =
+  const scopeProviders =
     resolved.scope !== undefined && resolved.backends !== undefined
       ? wireGovernanceScope(resolved.scope, resolved.backends, resolved.enforcer)
       : [];
+
+  // Wire delegation provider when delegationBridge is configured
+  const delegationProviders =
+    config.delegationBridge !== undefined
+      ? [createDelegationProvider({ manager: config.delegationBridge.manager, enabled: true })]
+      : [];
+
+  const capabilityRequestProviders =
+    capabilityRequestBridge !== undefined ? [capabilityRequestBridge.provider] : [];
+
+  const providers = [...scopeProviders, ...delegationProviders, ...capabilityRequestProviders];
 
   const preset = resolved.preset ?? "open";
 

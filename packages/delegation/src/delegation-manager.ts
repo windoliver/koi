@@ -40,6 +40,10 @@ export interface CreateDelegationManagerParams {
   readonly revocationRegistry?: RevocationRegistry;
   readonly scopeChecker?: ScopeChecker;
   readonly onEvent?: (event: DelegationEvent) => void;
+  /** Called after a grant is stored. Throw to roll back the grant. */
+  readonly onGrant?: (grant: DelegationGrant) => void | Promise<void>;
+  /** Called after a revocation completes. Best-effort — failures are logged, not re-thrown. */
+  readonly onRevoke?: (grantId: DelegationId, cascade: boolean) => void | Promise<void>;
 }
 
 export interface DelegationManager {
@@ -49,13 +53,13 @@ export interface DelegationManager {
     delegateeId: AgentId,
     scope: DelegationScope,
     ttlMs?: number,
-  ) => Result<DelegationGrant, KoiError>;
+  ) => Promise<Result<DelegationGrant, KoiError>>;
   readonly attenuate: (
     parentId: DelegationId,
     delegateeId: AgentId,
     scope: DelegationScope,
     ttlMs?: number,
-  ) => Result<DelegationGrant, KoiError>;
+  ) => Promise<Result<DelegationGrant, KoiError>>;
   readonly revoke: (id: DelegationId, cascade?: boolean) => Promise<readonly DelegationId[]>;
   readonly verify: (grantId: DelegationId, toolId: string) => Promise<DelegationVerifyResult>;
   readonly list: (agentId?: AgentId) => readonly DelegationGrant[];
@@ -76,7 +80,7 @@ export interface DelegationManager {
 // ---------------------------------------------------------------------------
 
 export function createDelegationManager(params: CreateDelegationManagerParams): DelegationManager {
-  const { config, scopeChecker, onEvent } = params;
+  const { config, scopeChecker, onEvent, onGrant: onGrantHook, onRevoke: onRevokeHook } = params;
 
   // Internal state — single source of truth
   const grantStore = new Map<DelegationId, DelegationGrant>();
@@ -126,12 +130,12 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
   // Grant lifecycle
   // ---------------------------------------------------------------------------
 
-  function grant(
+  async function grant(
     issuerId: AgentId,
     delegateeId: AgentId,
     scope: DelegationScope,
     ttlMs?: number,
-  ): Result<DelegationGrant, KoiError> {
+  ): Promise<Result<DelegationGrant, KoiError>> {
     const result = createGrant({
       issuerId,
       delegateeId,
@@ -147,15 +151,27 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
     grantIndex.addGrant(result.value);
 
     emit({ kind: "delegation:granted", grant: result.value });
+
+    // Fire onGrant hook — roll back on failure
+    if (onGrantHook !== undefined) {
+      try {
+        await onGrantHook(result.value);
+      } catch (hookError: unknown) {
+        grantStore.delete(result.value.id);
+        grantIndex.removeGrant(result.value);
+        throw new Error("onGrant hook failed — grant rolled back", { cause: hookError });
+      }
+    }
+
     return result;
   }
 
-  function attenuate(
+  async function attenuate(
     parentId: DelegationId,
     delegateeId: AgentId,
     scope: DelegationScope,
     ttlMs?: number,
-  ): Result<DelegationGrant, KoiError> {
+  ): Promise<Result<DelegationGrant, KoiError>> {
     const parent = grantStore.get(parentId);
     if (parent === undefined) {
       return {
@@ -181,6 +197,18 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
     grantIndex.addGrant(result.value);
 
     emit({ kind: "delegation:granted", grant: result.value });
+
+    // Fire onGrant hook — roll back on failure
+    if (onGrantHook !== undefined) {
+      try {
+        await onGrantHook(result.value);
+      } catch (hookError: unknown) {
+        grantStore.delete(result.value.id);
+        grantIndex.removeGrant(result.value);
+        throw new Error("onGrant hook failed — grant rolled back", { cause: hookError });
+      }
+    }
+
     return result;
   }
 
@@ -206,6 +234,15 @@ export function createDelegationManager(params: CreateDelegationManagerParams): 
       cascade,
       revokedIds,
     });
+
+    // Fire onRevoke hook — best-effort, don't undo revocation on failure
+    if (onRevokeHook !== undefined) {
+      try {
+        await onRevokeHook(id, cascade);
+      } catch (_hookError: unknown) {
+        // Best-effort: revocation is the safety operation, never roll it back
+      }
+    }
 
     return revokedIds;
   }

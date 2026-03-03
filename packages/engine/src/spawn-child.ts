@@ -18,11 +18,14 @@ import type {
   ChildHandle,
   ChildLifecycleEvent,
   ComponentProvider,
+  DelegationComponent,
+  DelegationId,
 } from "@koi/core";
-import { channelToken, DEFAULT_SPAWN_CHANNEL_POLICY, ENV } from "@koi/core";
+import { channelToken, DEFAULT_SPAWN_CHANNEL_POLICY, DELEGATION, ENV } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
 import { createAgentEnvProvider } from "./agent-env-provider.js";
 import { createChildHandle } from "./child-handle.js";
+import { computeChildDelegationScope } from "./compute-delegation-scope.js";
 import { createInheritedChannel } from "./inherited-channel.js";
 import { createInheritedComponentProvider } from "./inherited-component-provider.js";
 import { createKoi } from "./koi.js";
@@ -167,7 +170,29 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     });
   }
 
-  // 6. Create child handle for lifecycle monitoring
+  // 6. Auto-delegation: grant attenuated scope to child if parent has DELEGATION component
+  let childGrantId: DelegationId | undefined; // let justified: mutable for cleanup on failure
+  const parentHasDelegation = options.parentAgent.has(DELEGATION);
+
+  if (parentHasDelegation && options.manifest.delegation?.enabled !== false) {
+    const parentDelegation = options.parentAgent.component<DelegationComponent>(DELEGATION);
+    if (parentDelegation !== undefined) {
+      const parentPermissions = options.parentAgent.manifest.permissions ?? {};
+      const childPermissions = options.manifest.permissions ?? {};
+      const childScope = computeChildDelegationScope(
+        { permissions: parentPermissions },
+        childPermissions,
+      );
+      try {
+        const grant = await parentDelegation.grant(childScope, childPid.id);
+        childGrantId = grant.id;
+      } catch (_e: unknown) {
+        // Graceful degradation: child operates without delegation
+      }
+    }
+  }
+
+  // 7. Create child handle for lifecycle monitoring
   let handle: ChildHandle;
   if (options.registry !== undefined) {
     const reg = options.registry;
@@ -182,7 +207,7 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     // 7. Parent termination → child cascade is handled by CascadingTermination
     //    (centralized, supervision-aware). No per-child watcher needed here.
 
-    // 8. Wire ledger release + runtime disposal to child termination
+    // 8. Wire ledger release + runtime disposal + delegation revoke to child termination
     //    Idempotency guard prevents double release if terminated fires multiple times.
     let released = false; // let justified: mutable idempotency flag for one-shot cleanup
     handle.onEvent((event) => {
@@ -191,6 +216,14 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
         const release = options.spawnLedger.release();
         void (release instanceof Promise ? release : undefined);
         void childRuntime.dispose();
+
+        // Revoke auto-delegation grant on child termination (best-effort)
+        if (childGrantId !== undefined && parentHasDelegation) {
+          const parentDel = options.parentAgent.component<DelegationComponent>(DELEGATION);
+          if (parentDel !== undefined) {
+            void parentDel.revoke(childGrantId, false);
+          }
+        }
       }
     });
   } else {

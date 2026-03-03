@@ -82,7 +82,7 @@ describe("DelegationManager middleware integration", () => {
     const manager = createDelegationManager({ config: DEFAULT_CONFIG });
     cleanups.push(manager.dispose);
 
-    const grantResult = manager.grant(agentId("agent-1"), agentId("agent-2"), {
+    const grantResult = await manager.grant(agentId("agent-1"), agentId("agent-2"), {
       permissions: { allow: ["read_file"] },
     });
     expect(grantResult.ok).toBe(true);
@@ -105,7 +105,7 @@ describe("DelegationManager middleware integration", () => {
     const manager = createDelegationManager({ config: DEFAULT_CONFIG });
     cleanups.push(manager.dispose);
 
-    const grantResult = manager.grant(agentId("agent-1"), agentId("agent-2"), {
+    const grantResult = await manager.grant(agentId("agent-1"), agentId("agent-2"), {
       permissions: { allow: ["read_file"] },
     });
     expect(grantResult.ok).toBe(true);
@@ -147,7 +147,7 @@ describe("DelegationManager middleware integration", () => {
     });
     cleanups.push(manager.dispose);
 
-    const grantResult = manager.grant(agentId("agent-1"), agentId("agent-2"), {
+    const grantResult = await manager.grant(agentId("agent-1"), agentId("agent-2"), {
       permissions: { allow: ["read_file"] },
     });
     expect(grantResult.ok).toBe(true);
@@ -186,7 +186,7 @@ describe("DelegationManager middleware integration", () => {
     }
   });
 
-  test("emits delegation:granted event on new grant", () => {
+  test("emits delegation:granted event on new grant", async () => {
     const events: DelegationEvent[] = [];
     const manager = createDelegationManager({
       config: DEFAULT_CONFIG,
@@ -194,7 +194,7 @@ describe("DelegationManager middleware integration", () => {
     });
     cleanups.push(manager.dispose);
 
-    manager.grant(agentId("agent-1"), agentId("agent-2"), {
+    await manager.grant(agentId("agent-1"), agentId("agent-2"), {
       permissions: { allow: ["read_file"] },
     });
 

@@ -15,7 +15,7 @@ import type {
   Result,
 } from "@koi/core";
 import type { NexusClient } from "@koi/nexus-client";
-import type { NexusCheckBatchResponse, NexusCheckResponse } from "./types.js";
+import type { NexusCheckBatchResponse, NexusCheckResponse, RelationshipTuple } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -26,12 +26,21 @@ export interface NexusPermissionBackendConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Extended return type (superset of PermissionBackend with grant RPC)
+// ---------------------------------------------------------------------------
+
+/** PermissionBackend + ReBAC grant RPC. */
+export interface NexusPermissionBackend extends PermissionBackend {
+  readonly grant: (tuple: RelationshipTuple) => Promise<Result<void, KoiError>>;
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
 export function createNexusPermissionBackend(
   config: NexusPermissionBackendConfig,
-): PermissionBackend {
+): NexusPermissionBackend {
   const check = async (query: PermissionQuery): Promise<PermissionDecision> => {
     const result: Result<NexusCheckResponse, KoiError> =
       await config.client.rpc<NexusCheckResponse>("permissions.check", {
@@ -77,5 +86,19 @@ export function createNexusPermissionBackend(
     );
   };
 
-  return { check, checkBatch };
+  const grant = async (tuple: RelationshipTuple): Promise<Result<void, KoiError>> => {
+    const result = await config.client.rpc<void>("permissions.grant", {
+      subject: tuple.subject,
+      relation: tuple.relation,
+      object: tuple.object,
+    });
+
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
+
+    return { ok: true, value: undefined };
+  };
+
+  return { check, checkBatch, grant };
 }

@@ -16,6 +16,7 @@ import type {
   RevocationRegistry,
   ScopeChecker,
 } from "@koi/core";
+import { parseResourcePattern } from "./resource-pattern.js";
 import { verifySignature } from "./sign.js";
 
 /** Default ScopeChecker backed by glob-style matching. */
@@ -92,8 +93,9 @@ export function matchToolAgainstScope(toolId: string, scope: DelegationScope): b
   const denyList = scope.permissions.deny ?? [];
 
   // Extract tool name (before ':' if present)
-  const colonIndex = toolId.indexOf(":");
-  const toolName = colonIndex >= 0 ? toolId.slice(0, colonIndex) : toolId;
+  const parsed = parseResourcePattern(toolId);
+  const toolName = parsed !== undefined ? parsed.tool : toolId;
+  const hasResourcePath = parsed !== undefined;
 
   // Check deny first (deny overrides allow)
   if (denyList.includes(toolName) || denyList.includes(toolId)) {
@@ -107,7 +109,7 @@ export function matchToolAgainstScope(toolId: string, scope: DelegationScope): b
   }
 
   // If resource patterns are defined and toolId has a resource path, match patterns
-  if (scope.resources !== undefined && scope.resources.length > 0 && colonIndex >= 0) {
+  if (scope.resources !== undefined && scope.resources.length > 0 && hasResourcePath) {
     return scope.resources.some((pattern) => matchGlob(pattern, toolId));
   }
 

@@ -1,8 +1,8 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/governance API surface . has stable type surface 1`] = `
-"import { DelegationMiddlewareConfig } from '@koi/delegation';
-export { DelegationMiddlewareConfig } from '@koi/delegation';
+"import { DelegationMiddlewareConfig, DelegationManager } from '@koi/delegation';
+export { DelegationMiddlewareConfig, DelegationProviderConfig } from '@koi/delegation';
 import { ExecApprovalsConfig } from '@koi/exec-approvals';
 export { ExecApprovalsConfig } from '@koi/exec-approvals';
 import { AuditMiddlewareConfig } from '@koi/middleware-audit';
@@ -96,6 +96,24 @@ interface GovernanceStackConfig {
     readonly sanitize?: SanitizeMiddlewareConfig | undefined;
     /** Output schema validation. Priority 375. */
     readonly guardrails?: GuardrailsConfig | undefined;
+    /**
+     * Delegation bridge: attaches DelegationComponentProvider to agents.
+     * Provides delegation_grant/revoke/list tools + DELEGATION ECS component.
+     * The manager should be pre-configured with onGrant/onRevoke hooks
+     * (e.g., wired to Nexus permissions.grant RPC).
+     */
+    readonly delegationBridge?: {
+        readonly manager: DelegationManager;
+    } | undefined;
+    /**
+     * Capability request bridge: enables pull-model requests between agents.
+     * Requires delegationBridge to also be configured.
+     * Adds a ComponentProvider (priority 101) + KoiMiddleware (priority 125).
+     */
+    readonly capabilityRequest?: {
+        readonly approvalTimeoutMs?: number | undefined;
+        readonly maxForwardDepth?: number | undefined;
+    } | undefined;
 }
 /**
  * Partial config without meta-fields, used for preset definitions.
@@ -143,6 +161,7 @@ declare function resolveGovernanceConfig(config: GovernanceStackConfig): Governa
  *   100  koi:permissions
  *   110  koi:exec-approvals  (overridden from default 100)
  *   120  koi:delegation      (overridden from default undefined/500)
+ *   125  koi:capability-request (pull-model delegation requests)
  *   150  koi:governance-backend
  *   200  koi:pay
  *   300  koi:audit

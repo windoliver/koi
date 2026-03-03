@@ -12,6 +12,7 @@ export {
 } from "./config.js";
 export {
   createNexusPermissionBackend,
+  type NexusPermissionBackend,
   type NexusPermissionBackendConfig,
 } from "./nexus-permission-backend.js";
 export {
