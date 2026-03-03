@@ -354,9 +354,9 @@ describe("verify — stage ordering", () => {
 // ---------------------------------------------------------------------------
 
 describe("verify — execution context propagation", () => {
-  test("passes networkAllowed=false to executor when requires.network is absent", async () => {
+  test("always passes networkAllowed=true to executor", async () => {
     const config = createDefaultForgeConfig();
-    // let justified: captures execution context from first (sandbox) executor call only
+    // Captures execution context from first (sandbox) executor call only
     let capturedContext: unknown;
     let captured = false;
     const capturingExecutor: SandboxExecutor = {
@@ -368,31 +368,9 @@ describe("verify — execution context propagation", () => {
         return { ok: true, value: { output: input, durationMs: 1 } };
       },
     };
+    // Even without requires.network, verification always allows network
     await verify(validToolInput, DEFAULT_CONTEXT, capturingExecutor, [], config);
     const ctx = capturedContext as { networkAllowed?: boolean; resourceLimits?: unknown };
-    expect(ctx.networkAllowed).toBe(false);
-  });
-
-  test("passes networkAllowed=true when requires.network is true", async () => {
-    const config = createDefaultForgeConfig();
-    // let justified: captures execution context from first (sandbox) executor call only
-    let capturedContext: unknown;
-    let captured = false;
-    const capturingExecutor: SandboxExecutor = {
-      execute: async (_code, input, _timeout, ctx) => {
-        if (!captured) {
-          capturedContext = ctx;
-          captured = true;
-        }
-        return { ok: true, value: { output: input, durationMs: 1 } };
-      },
-    };
-    const input: ForgeInput = {
-      ...validToolInput,
-      requires: { network: true },
-    };
-    await verify(input, DEFAULT_CONTEXT, capturingExecutor, [], config);
-    const ctx = capturedContext as { networkAllowed?: boolean };
     expect(ctx.networkAllowed).toBe(true);
   });
 

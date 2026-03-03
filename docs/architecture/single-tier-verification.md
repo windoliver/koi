@@ -39,29 +39,27 @@ Single-tier verification solves this by separating two concerns:
 
 ## How it works
 
-### Forge-time: capability-aware verification
+### Forge-time: verification with full network access
 
-When a brick is forged, it declares capabilities via `BrickRequires`:
+Verification always allows network — the sandbox just checks "does this code crash?":
 
 ```typescript
-// Tool that needs network access
+// Network-dependent tools just work during verification
 const tool = await forge("fetch-weather", {
   code: `const res = await fetch("https://api.weather.com/forecast");
          return await res.json();`,
-  requires: { network: true },
 });
 ```
 
-The verification pipeline reads `requires.network` and passes it to the sandbox:
+The verification pipeline always allows network during the "does it crash?" check:
 
 ```
-  forge("fetch-weather", { requires: { network: true } })
+  forge("fetch-weather", { ... })
     │
     ▼
   verify.ts
-    ├── networkAllowed = requires.network === true
     ├── subprocess-executor.execute(code, input, timeout, {
-    │     networkAllowed: true,      ← network allowed during verification
+    │     networkAllowed: true,      ← always allowed during verification
     │     resourceLimits: { ... },
     │   })
     ├── static analysis (AST checks)
@@ -69,7 +67,8 @@ The verification pipeline reads `requires.network` and passes it to the sandbox:
     └── SandboxResult { ok: true } → BrickArtifact stored
 ```
 
-Without `requires: { network: true }`, network is denied by default (fail-closed).
+Network access is always granted during verification. Runtime governance middleware
+decides whether a specific call should be allowed.
 
 ### Runtime: governance middleware gates every call
 
@@ -126,12 +125,11 @@ What was removed:
 
 ```typescript
 // Before: ❌ Dead on arrival — network denied in sandbox
-// After:  ✅ Passes verification with network access
+// After:  ✅ Passes verification — network always allowed
 await forge("slack-notify", {
   code: `await fetch("https://hooks.slack.com/...", {
            method: "POST", body: JSON.stringify({ text: input.message })
          });`,
-  requires: { network: true },
 });
 ```
 
