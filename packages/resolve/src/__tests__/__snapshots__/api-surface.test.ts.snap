@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/resolve API surface . has stable type surface 1`] = `
-"import { Result, KoiError, BrickKind, CompanionSkillDefinition, JsonObject, AgentManifest, KoiMiddleware, ModelHandler, ChannelAdapter, EngineAdapter, MiddlewareConfig, ModelConfig, PermissionConfig } from '@koi/core';
+"import { Result, KoiError, BrickKind, CompanionSkillDefinition, JsonObject, AgentManifest, KoiMiddleware, ModelHandler, ChannelAdapter, EngineAdapter, ForgeStore, MiddlewareConfig, ModelConfig, PermissionConfig } from '@koi/core';
 import { SearchProvider } from '@koi/search-provider';
 
 /**
@@ -148,6 +148,27 @@ declare function aggregateErrors(failures: readonly ResolutionFailure[]): KoiErr
  * Formats a resolution error for CLI stderr output.
  */
 declare function formatResolutionError(error: KoiError): string;
+
+/**
+ * Auto-registration of companion skills from BrickDescriptors into ForgeStore.
+ *
+ * Two-phase pipeline: discoverDescriptors() remains pure, then
+ * registerCompanionSkills() writes skills to ForgeStore as a separate step.
+ */
+
+/** Summary of companion skill registration. */
+interface CompanionSkillRegistrationResult {
+    readonly registered: number;
+    readonly skipped: number;
+    readonly errors: readonly string[];
+}
+/**
+ * Registers all companion skills from descriptors into a ForgeStore.
+ *
+ * Idempotent: skills whose content-addressed ID already exists are skipped.
+ * Partial failure tolerant: save errors are collected, not thrown.
+ */
+declare function registerCompanionSkills(descriptors: readonly BrickDescriptor<unknown>[], forgeStore: ForgeStore): Promise<Result<CompanionSkillRegistrationResult, KoiError>>;
 
 /**
  * Brick descriptor registry — maps (kind, name) pairs to descriptors.
@@ -355,6 +376,6 @@ interface SoulManifestSlice {
  */
 declare function resolveSoul(manifest: SoulManifestSlice, registry: ResolveRegistry, context: ResolutionContext): Promise<Result<KoiMiddleware | undefined, KoiError>>;
 
-export { type BrickDescriptor, type BrickFactory, type MiddlewareResolutionResult, type OptionsValidator, type ResolutionContext, type ResolutionFailure, type ResolveApprovalHandler, type ResolveKind, type ResolveRegistry, type ResolvedManifest, aggregateErrors, createRegistry, discoverDescriptors, formatResolutionError, parseModelName, resolveChannels, resolveEngine, resolveManifest, resolveMiddleware, resolveModel, resolveOne, resolvePermissions, resolveSearch, resolveSoul, validateOptionalDescriptorOptions, validateRequiredDescriptorOptions };
+export { type BrickDescriptor, type BrickFactory, type CompanionSkillRegistrationResult, type MiddlewareResolutionResult, type OptionsValidator, type ResolutionContext, type ResolutionFailure, type ResolveApprovalHandler, type ResolveKind, type ResolveRegistry, type ResolvedManifest, aggregateErrors, createRegistry, discoverDescriptors, formatResolutionError, parseModelName, registerCompanionSkills, resolveChannels, resolveEngine, resolveManifest, resolveMiddleware, resolveModel, resolveOne, resolvePermissions, resolveSearch, resolveSoul, validateOptionalDescriptorOptions, validateRequiredDescriptorOptions };
 "
 `;

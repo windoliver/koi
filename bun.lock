@@ -1732,6 +1732,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
         "@koi/search-provider": "workspace:*",
         "@koi/validation": "workspace:*",
       },

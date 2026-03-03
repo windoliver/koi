@@ -6,7 +6,7 @@
  */
 
 import { dirname, resolve as pathResolve } from "node:path";
-import type { KoiError, ModelHandler, Result } from "@koi/core";
+import type { ForgeStore, KoiError, ModelHandler, Result } from "@koi/core";
 import { descriptor as externalEngineDescriptor } from "@koi/engine-external";
 import type { LoadedManifest } from "@koi/manifest";
 import { descriptor as aceDescriptor } from "@koi/middleware-ace";
@@ -36,7 +36,12 @@ import type {
   ResolveApprovalHandler,
   ResolvedManifest,
 } from "@koi/resolve";
-import { createRegistry, discoverDescriptors, resolveManifest } from "@koi/resolve";
+import {
+  createRegistry,
+  discoverDescriptors,
+  registerCompanionSkills,
+  resolveManifest,
+} from "@koi/resolve";
 import { descriptor as soulDescriptor } from "@koi/soul";
 
 // ---------------------------------------------------------------------------
@@ -173,6 +178,8 @@ export interface ResolveAgentOptions {
   readonly approvalHandler?: ResolveApprovalHandler | undefined;
   /** Override packages directory for discovery (default: auto-detected). */
   readonly packagesDir?: string | undefined;
+  /** Optional ForgeStore for companion skill auto-registration. */
+  readonly forgeStore?: ForgeStore | undefined;
 }
 
 /**
@@ -199,6 +206,24 @@ export async function resolveAgent(
   }
 
   const allDescriptors: readonly BrickDescriptor<unknown>[] = [...ALL_DESCRIPTORS, ...discovered];
+
+  // Register companion skills if ForgeStore is provided
+  if (options.forgeStore !== undefined) {
+    const skillResult = await registerCompanionSkills(allDescriptors, options.forgeStore);
+    if (skillResult.ok) {
+      const { registered, skipped, errors } = skillResult.value;
+      if (registered > 0 || errors.length > 0) {
+        process.stderr.write(
+          `info: companion skills: ${String(registered)} registered, ${String(skipped)} skipped` +
+            (errors.length > 0 ? `, ${String(errors.length)} errors` : "") +
+            "\n",
+        );
+      }
+      for (const err of errors) {
+        process.stderr.write(`warn: ${err}\n`);
+      }
+    }
+  }
 
   // Create registry
   const registryResult = createRegistry(allDescriptors);
