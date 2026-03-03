@@ -1,18 +1,13 @@
 /**
  * Agent mounter — watches registry and mounts/unmounts procfs entries per agent.
  *
- * On register: mounts 7 entries under /agents/<agentId>/
+ * On register: mounts all entries under /agents/<agentId>/ via data-driven factory.
  * On deregister: unmounts all entries for that agent.
  */
 
 import type { Agent, AgentId, AgentRegistry, ProcFs } from "@koi/core";
-import { createChildrenEntry } from "./entries/children.js";
-import { createConfigEntry } from "./entries/config.js";
-import { createEnvEntry } from "./entries/env.js";
-import { createMetricsEntry } from "./entries/metrics.js";
-import { createMiddlewareEntry } from "./entries/middleware.js";
-import { createStatusEntry } from "./entries/status.js";
-import { createToolsEntry } from "./entries/tools.js";
+import { PROCFS_ENTRIES } from "./entry-definitions.js";
+import { createEntriesFromDefinitions } from "./entry-factory.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,18 +23,8 @@ export interface AgentMounterConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Entry paths per agent
+// Helpers
 // ---------------------------------------------------------------------------
-
-const ENTRY_SUFFIXES = [
-  "status",
-  "metrics",
-  "tools",
-  "middleware",
-  "children",
-  "config",
-  "env",
-] as const;
 
 function agentPath(agentId: AgentId, suffix: string): string {
   return `/agents/${agentId}/${suffix}`;
@@ -61,18 +46,19 @@ export function createAgentMounter(config: AgentMounterConfig): AgentMounter {
     const agent = agentProvider(agentId);
     if (agent === undefined) return;
 
-    procFs.mount(agentPath(agentId, "status"), createStatusEntry(agent));
-    procFs.mount(agentPath(agentId, "metrics"), createMetricsEntry(agentId, registry));
-    procFs.mount(agentPath(agentId, "tools"), createToolsEntry(agent));
-    procFs.mount(agentPath(agentId, "middleware"), createMiddlewareEntry(agent));
-    procFs.mount(agentPath(agentId, "children"), createChildrenEntry(agentId, registry));
-    procFs.mount(agentPath(agentId, "config"), createConfigEntry(agent));
-    procFs.mount(agentPath(agentId, "env"), createEnvEntry(agent));
+    const entries = createEntriesFromDefinitions(PROCFS_ENTRIES, {
+      agent,
+      agentId,
+      registry,
+    });
+    for (const { path, entry } of entries) {
+      procFs.mount(agentPath(agentId, path), entry);
+    }
   }
 
   function unmountAgent(agentId: AgentId): void {
-    for (const suffix of ENTRY_SUFFIXES) {
-      procFs.unmount(agentPath(agentId, suffix));
+    for (const def of PROCFS_ENTRIES) {
+      procFs.unmount(agentPath(agentId, def.path));
     }
   }
 

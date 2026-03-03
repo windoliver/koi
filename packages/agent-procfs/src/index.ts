@@ -9,5 +9,9 @@
 
 export type { AgentMounter, AgentMounterConfig, AgentProvider } from "./agent-mounter.js";
 export { createAgentMounter } from "./agent-mounter.js";
+export type { EntryContext, EntryDefinition } from "./entry-definitions.js";
+export { PROCFS_ENTRIES } from "./entry-definitions.js";
+export type { FactoryEntry } from "./entry-factory.js";
+export { createEntriesFromDefinitions } from "./entry-factory.js";
 export type { ProcFsConfig } from "./procfs-impl.js";
 export { createProcFs } from "./procfs-impl.js";
