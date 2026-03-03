@@ -203,6 +203,9 @@ export async function createOverlayForgeStore(config: OverlayConfig): Promise<Ov
    * Phase 2: dedup by brick ID (priority wins), apply limit, load only winners.
    */
   const search = async (query: ForgeQuery): Promise<Result<readonly BrickArtifact[], KoiError>> => {
+    // Ensure metadata is lazily loaded before searching indexes
+    await Promise.all(sorted.map((entry) => entry.store.ensureAllMetadata()));
+
     // Phase 1: metadata-only index scan across all tiers
     const seen = new Set<string>();
     const winners: readonly { readonly entry: TierEntry; readonly meta: BrickArtifactBase }[] =

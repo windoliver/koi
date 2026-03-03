@@ -1,5 +1,6 @@
 export type { CategoryRule, KeywordCategoryInferrerOptions } from "./category-inferrer.js";
 export { createKeywordCategoryInferrer } from "./category-inferrer.js";
+export { createFsFactBackend } from "./fact-store.js";
 export { createFsMemory } from "./fs-memory.js";
 export type { MemoryOperation } from "./provider/constants.js";
 export { MEMORY_OPERATIONS } from "./provider/constants.js";
@@ -14,6 +15,7 @@ export type { UserScopedMemoryProviderConfig } from "./provider/user-scoped-prov
 export { createUserScopedMemoryProvider } from "./provider/user-scoped-provider.js";
 export type {
   CategoryInferrer,
+  FactPersistenceBackend,
   FsIndexDoc,
   FsMemory,
   FsMemoryConfig,

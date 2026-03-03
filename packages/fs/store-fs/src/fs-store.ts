@@ -142,7 +142,56 @@ function computeIndexDiff(
   return events;
 }
 
-/** Scan all .json files under baseDir and build the metadata index. */
+// ---------------------------------------------------------------------------
+// Lazy index — scan file names only, load metadata on demand
+// ---------------------------------------------------------------------------
+
+const METADATA_CACHE_MAX = 5000;
+
+/**
+ * Scan shard directories for .json file names only (no content reads).
+ * Returns a set of file paths for deferred metadata loading.
+ * Optionally cleans orphaned .tmp files.
+ */
+async function scanFileNames(baseDir: string, cleanTmp: boolean): Promise<Set<string>> {
+  const filePaths = new Set<string>();
+
+  // List shard directories
+  // let justified: mutable array from readdir
+  let shardDirs: string[];
+  try {
+    const entries = await readdir(baseDir, { withFileTypes: true });
+    shardDirs = entries.filter((e) => e.isDirectory()).map((e) => join(baseDir, e.name));
+  } catch {
+    return filePaths;
+  }
+
+  // Process each shard directory in parallel (names only, no content)
+  const shardPromises = shardDirs.map(async (dir) => {
+    const files = await readdir(dir);
+    const tmpFiles = files.filter((f) => f.endsWith(".tmp")).map((f) => join(dir, f));
+    const jsonFiles = files.filter((f) => f.endsWith(".json")).map((f) => join(dir, f));
+
+    if (cleanTmp) {
+      await Promise.all(tmpFiles.map((f) => unlink(f).catch(() => undefined)));
+    }
+
+    return jsonFiles;
+  });
+
+  const results = await Promise.all(shardPromises);
+  for (const jsonFiles of results) {
+    for (const f of jsonFiles) {
+      filePaths.add(f);
+    }
+  }
+  return filePaths;
+}
+
+/**
+ * Legacy full scan — still used for rescan where diff detection needs metadata.
+ * Reads all files and builds a full metadata index.
+ */
 async function scanAndBuildIndex(
   baseDir: string,
   cleanTmp: boolean,
@@ -150,27 +199,24 @@ async function scanAndBuildIndex(
   const index = new Map<BrickId, BrickArtifactBase>();
 
   // List shard directories
+  // let justified: mutable array from readdir
   let shardDirs: string[];
   try {
     const entries = await readdir(baseDir, { withFileTypes: true });
     shardDirs = entries.filter((e) => e.isDirectory()).map((e) => join(baseDir, e.name));
   } catch {
-    // Empty or missing directory — return empty index
     return index;
   }
 
-  // Process each shard directory in parallel
   const shardPromises = shardDirs.map(async (dir) => {
     const files = await readdir(dir);
     const tmpFiles = files.filter((f) => f.endsWith(".tmp")).map((f) => join(dir, f));
     const jsonFiles = files.filter((f) => f.endsWith(".json")).map((f) => join(dir, f));
 
-    // Clean orphaned .tmp files
     if (cleanTmp) {
       await Promise.all(tmpFiles.map((f) => unlink(f).catch(() => undefined)));
     }
 
-    // Load and validate .json files in parallel, skip corrupted
     const loadResults = await Promise.all(jsonFiles.map((filePath) => readBrick(filePath)));
     return loadResults
       .filter((r): r is { ok: true; value: BrickArtifact } => r.ok)
@@ -187,6 +233,12 @@ async function scanAndBuildIndex(
   return index;
 }
 
+/** Extract a BrickId from a file name (e.g., "/base/ab/abc-123.json" → "abc-123"). */
+function fileNameToBrickId(filePath: string): BrickId {
+  const base = filePath.split("/").pop() ?? filePath;
+  return base.replace(/\.json$/, "") as BrickId;
+}
+
 // ---------------------------------------------------------------------------
 // Extended interface (internal — used by overlay store for two-phase search)
 // ---------------------------------------------------------------------------
@@ -200,6 +252,8 @@ export interface FsForgeStoreExtended extends ForgeStore {
   readonly searchIndex: (query: ForgeQuery) => readonly BrickArtifactBase[];
   /** Load a single brick from disk by ID (bypasses index check). */
   readonly loadFromDisk: (id: BrickId) => Promise<Result<BrickArtifact, KoiError>>;
+  /** Ensure all known bricks have their metadata cached (lazy load trigger). */
+  readonly ensureAllMetadata: () => Promise<void>;
   /** Clean up filesystem watcher, timers, and listeners. */
   readonly dispose: () => void;
 }
@@ -223,8 +277,38 @@ export async function createFsForgeStore(
   // Ensure base directory exists
   await ensureDir(baseDir);
 
-  // Build metadata index from existing files
-  const index = await scanAndBuildIndex(baseDir, cleanOrphanedTmp);
+  // Lazy startup: scan file names only (no content reads)
+  const knownFiles = await scanFileNames(baseDir, cleanOrphanedTmp);
+  // Map/Set — mutable set of known BrickIds derived from file names
+  const knownIds = new Set<BrickId>();
+  for (const f of knownFiles) {
+    knownIds.add(fileNameToBrickId(f));
+  }
+
+  // Map/Set — mutable LRU metadata cache, populated on demand
+  const metadataCache = new Map<BrickId, BrickArtifactBase>();
+
+  /** Load and cache metadata for a brick (on-demand). */
+  async function ensureMetadata(id: BrickId): Promise<BrickArtifactBase | undefined> {
+    const cached = metadataCache.get(id);
+    if (cached !== undefined) return cached;
+    if (!knownIds.has(id)) return undefined;
+
+    const result = await readBrick(brickPath(baseDir, id));
+    if (!result.ok) {
+      knownIds.delete(id); // Self-heal: remove broken entries
+      return undefined;
+    }
+    const meta = extractMetadata(result.value);
+    // LRU eviction for metadata cache
+    metadataCache.delete(id); // Ensure fresh insertion at end
+    metadataCache.set(id, meta);
+    while (metadataCache.size > METADATA_CACHE_MAX) {
+      const oldest = metadataCache.keys().next().value;
+      if (oldest !== undefined) metadataCache.delete(oldest);
+    }
+    return meta;
+  }
 
   // --- watch notification (delegated to shared notifier) -------------------
   const notifier = createMemoryStoreChangeNotifier();
@@ -250,13 +334,16 @@ export async function createFsForgeStore(
 
   async function rescanDisk(): Promise<void> {
     try {
-      const snapshot = new Map(index); // shallow copy for comparison
+      const snapshot = new Map(metadataCache); // shallow copy for comparison
       const fresh = await scanAndBuildIndex(baseDir, false); // don't clean .tmp on rescan
       const events = computeIndexDiff(snapshot, fresh);
       if (events.length > 0) {
-        index.clear();
+        // Rebuild knownIds from fresh scan
+        knownIds.clear();
+        metadataCache.clear();
         for (const [k, v] of fresh) {
-          index.set(k, v);
+          knownIds.add(k);
+          metadataCache.set(k, v);
         }
         for (const event of events) {
           notifier.notify(event);
@@ -291,7 +378,8 @@ export async function createFsForgeStore(
       await ensureDir(shard);
       const json = JSON.stringify(brick, null, 2);
       await atomicWrite(final, temp, json);
-      index.set(brick.id, extractMetadata(brick));
+      knownIds.add(brick.id);
+      metadataCache.set(brick.id, extractMetadata(brick));
       notifier.notify({ kind: "saved", brickId: brick.id });
       return { ok: true, value: undefined };
     } catch (err: unknown) {
@@ -300,7 +388,7 @@ export async function createFsForgeStore(
   };
 
   const load = async (id: BrickId): Promise<Result<BrickArtifact, KoiError>> => {
-    if (!index.has(id)) {
+    if (!knownIds.has(id)) {
       return { ok: false, error: notFound(id, `Brick not found: ${id}`) };
     }
     const filePath = brickPath(baseDir, id);
@@ -308,9 +396,12 @@ export async function createFsForgeStore(
   };
 
   const search = async (query: ForgeQuery): Promise<Result<readonly BrickArtifact[], KoiError>> => {
+    // Ensure metadata is loaded for all known IDs (lazy population)
+    await Promise.all([...knownIds].map((id) => ensureMetadata(id)));
+
     // Filter metadata index in memory (no limit here — apply after sort)
     const matchingIds: BrickId[] = [];
-    for (const [id, meta] of index) {
+    for (const [id, meta] of metadataCache) {
       if (matchesBrickQuery(meta, query)) {
         matchingIds.push(id);
       }
@@ -321,11 +412,12 @@ export async function createFsForgeStore(
       matchingIds.map(async (id) => ({ id, result: await readBrick(brickPath(baseDir, id)) })),
     );
 
-    // Collect successful loads; self-heal index for corrupted entries
+    // Collect successful loads; self-heal for corrupted entries
     const loaded = loadResults
       .filter(({ id, result }) => {
         if (!result.ok) {
-          index.delete(id);
+          knownIds.delete(id);
+          metadataCache.delete(id);
           return false;
         }
         return true;
@@ -338,13 +430,14 @@ export async function createFsForgeStore(
   };
 
   const remove = async (id: BrickId): Promise<Result<void, KoiError>> => {
-    if (!index.has(id)) {
+    if (!knownIds.has(id)) {
       return { ok: false, error: notFound(id, `Brick not found: ${id}`) };
     }
     const filePath = brickPath(baseDir, id);
     try {
       await rm(filePath);
-      index.delete(id);
+      knownIds.delete(id);
+      metadataCache.delete(id);
       notifier.notify({ kind: "removed", brickId: id });
       return { ok: true, value: undefined };
     } catch (err: unknown) {
@@ -353,7 +446,7 @@ export async function createFsForgeStore(
   };
 
   const update = async (id: BrickId, updates: BrickUpdate): Promise<Result<void, KoiError>> => {
-    if (!index.has(id)) {
+    if (!knownIds.has(id)) {
       return { ok: false, error: notFound(id, `Brick not found: ${id}`) };
     }
     // Read full artifact from disk
@@ -371,7 +464,7 @@ export async function createFsForgeStore(
     try {
       const json = JSON.stringify(updated, null, 2);
       await atomicWrite(filePath, temp, json);
-      index.set(id, extractMetadata(updated));
+      metadataCache.set(id, extractMetadata(updated));
       notifier.notify({ kind: "updated", brickId: id });
       return { ok: true, value: undefined };
     } catch (err: unknown) {
@@ -380,15 +473,15 @@ export async function createFsForgeStore(
   };
 
   const exists = async (id: BrickId): Promise<Result<boolean, KoiError>> => {
-    return { ok: true, value: index.has(id) };
+    return { ok: true, value: knownIds.has(id) };
   };
 
   // -- Extended methods (internal, used by overlay for two-phase search) -----
 
-  /** Search the in-memory metadata index without touching disk. */
+  /** Search the in-memory metadata cache without touching disk. */
   const searchIndex = (query: ForgeQuery): readonly BrickArtifactBase[] => {
     const results: BrickArtifactBase[] = [];
-    for (const [, meta] of index) {
+    for (const [, meta] of metadataCache) {
       if (matchesBrickQuery(meta, query)) {
         results.push(meta);
         if (query.limit !== undefined && results.length >= query.limit) {
@@ -404,6 +497,11 @@ export async function createFsForgeStore(
     return readBrick(brickPath(baseDir, id));
   };
 
+  /** Ensure all known bricks have their metadata cached. */
+  const ensureAllMetadata = async (): Promise<void> => {
+    await Promise.all([...knownIds].map((id) => ensureMetadata(id)));
+  };
+
   return {
     save,
     load,
@@ -414,6 +512,7 @@ export async function createFsForgeStore(
     watch: notifier.subscribe,
     searchIndex,
     loadFromDisk,
+    ensureAllMetadata,
     dispose,
   };
 }

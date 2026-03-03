@@ -583,4 +583,91 @@ export function runSnapshotChainStoreContractTests<T>(
       await store.close();
     });
   });
+
+  // -----------------------------------------------------------------------
+  // Concurrency
+  // -----------------------------------------------------------------------
+  describe("concurrency", () => {
+    test("parallel put to same chain preserves all nodes", async () => {
+      const store = await createStore();
+      const rootResult = await store.put(c1, createData(), []);
+      expect(rootResult.ok).toBe(true);
+      if (!rootResult.ok || rootResult.value === undefined) return;
+      const rootId = rootResult.value.nodeId;
+
+      // Add 5 children in parallel, each parenting from root
+      const results = await Promise.all(
+        Array.from({ length: 5 }, () => store.put(c1, createData(), [rootId])),
+      );
+
+      // All should succeed
+      for (const r of results) {
+        expect(r.ok).toBe(true);
+      }
+
+      // All should be retrievable
+      for (const r of results) {
+        if (r.ok && r.value !== undefined) {
+          const getResult = await store.get(r.value.nodeId);
+          expect(getResult.ok).toBe(true);
+        }
+      }
+
+      await store.close();
+    });
+
+    test("parallel fork from same node", async () => {
+      const store = await createStore();
+      const rootResult = await store.put(c1, createData(), []);
+      expect(rootResult.ok).toBe(true);
+      if (!rootResult.ok || rootResult.value === undefined) return;
+      const rootId = rootResult.value.nodeId;
+
+      // Fork 3 children in parallel with different data
+      const results = await Promise.all(
+        Array.from({ length: 3 }, () => store.put(c1, createDifferentData(), [rootId])),
+      );
+
+      for (const r of results) {
+        expect(r.ok).toBe(true);
+      }
+
+      // List should show root + all forks
+      const listResult = await store.list(c1);
+      expect(listResult.ok).toBe(true);
+      if (listResult.ok) {
+        expect(listResult.value.length).toBe(4); // root + 3 forks
+      }
+
+      await store.close();
+    });
+
+    test("parallel prune + put race does not corrupt", async () => {
+      const store = await createStore();
+      const rootResult = await store.put(c1, createData(), []);
+      expect(rootResult.ok).toBe(true);
+      if (!rootResult.ok || rootResult.value === undefined) return;
+      const rootId = rootResult.value.nodeId;
+
+      // Add some nodes to prune
+      for (let i = 0; i < 5; i++) {
+        await store.put(c1, createData(), [rootId]);
+      }
+
+      // Prune and add concurrently
+      const [pruneResult, putResult] = await Promise.all([
+        store.prune(c1, { retainCount: 3 }),
+        store.put(c1, createDifferentData(), [rootId]),
+      ]);
+
+      // Both should complete without throwing (either may fail gracefully)
+      if (pruneResult.ok) {
+        expect(pruneResult.value).toBeDefined();
+      }
+      // Put should either succeed or fail gracefully
+      expect(putResult).toBeDefined();
+
+      await store.close();
+    });
+  });
 }

@@ -439,4 +439,64 @@ export function runForgeStoreContractTests(
       expect(events2).toHaveLength(1);
     });
   });
+
+  // -------------------------------------------------------------------
+  // Concurrency
+  // -------------------------------------------------------------------
+
+  describe("concurrency", () => {
+    test("parallel save of same BrickId — last write wins", async () => {
+      const store = await createStore();
+      const id = brickId("conc_same");
+
+      const brickA = createBrick({ id, name: "version-A" });
+      const brickB = createBrick({ id, name: "version-B" });
+
+      await Promise.all([store.save(brickA), store.save(brickB)]);
+
+      const result = await store.load(id);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        // Either A or B wins — both are valid, no corruption
+        expect(["version-A", "version-B"]).toContain(result.value.name);
+      }
+    });
+
+    test("parallel search during concurrent saves", async () => {
+      const store = await createStore();
+
+      // Seed some initial data
+      await store.save(createBrick({ id: brickId("conc_s1") }));
+      await store.save(createBrick({ id: brickId("conc_s2") }));
+
+      // Run saves and searches in parallel
+      const ops = [
+        store.save(createBrick({ id: brickId("conc_s3") })),
+        store.search({}),
+        store.save(createBrick({ id: brickId("conc_s4") })),
+        store.search({}),
+      ];
+
+      const results = await Promise.all(ops);
+      // All operations should succeed without throwing
+      for (const r of results) {
+        expect(r.ok).toBe(true);
+      }
+    });
+
+    test("parallel remove + load race", async () => {
+      const store = await createStore();
+      const id = brickId("conc_rl");
+      await store.save(createBrick({ id }));
+
+      const [removeResult, loadResult] = await Promise.all([store.remove(id), store.load(id)]);
+
+      // Remove should succeed
+      expect(removeResult.ok).toBe(true);
+      // Load may succeed (before remove) or fail (after remove) — both valid
+      if (!loadResult.ok) {
+        expect(loadResult.error.code).toBe("NOT_FOUND");
+      }
+    });
+  });
 }

@@ -78,6 +78,7 @@ export const L0_RUNTIME_ALLOWLIST: ReadonlySet<string> = new Set([
   "workspace.ts",
   "assembly.ts",
   "process-descriptor.ts",
+  "nexus-path.ts",
 ]);
 
 // --- Predicates (exported for testing) ---

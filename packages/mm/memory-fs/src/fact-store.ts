@@ -1,15 +1,15 @@
 /**
- * File I/O layer for MemoryFact persistence.
+ * Fact storage with pluggable persistence backend.
  *
- * - Reads/writes `entities/{slug}/items.json`
- * - Temp-file write + rename for atomic writes
- * - In-memory cache (lazy load, write-through)
+ * Wraps a FactPersistenceBackend with:
+ * - In-memory LRU cache (lazy load, write-through)
  * - Per-entity async write queue (prevents interleaving)
- * - Graceful JSON corruption recovery with structural validation
+ *
+ * Default backend: filesystem via createFsFactBackend().
  */
 import { mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { FactStore, FactUpdates, MemoryFact } from "./types.js";
+import type { FactPersistenceBackend, FactStore, FactUpdates, MemoryFact } from "./types.js";
 
 function isMemoryFact(v: unknown): v is MemoryFact {
   if (typeof v !== "object" || v === null) return false;
@@ -26,11 +26,13 @@ function isMemoryFact(v: unknown): v is MemoryFact {
   );
 }
 
-export function createFactStore(baseDir: string): FactStore {
+// ---------------------------------------------------------------------------
+// Filesystem persistence backend (default)
+// ---------------------------------------------------------------------------
+
+/** Create a filesystem-backed persistence backend for memory facts. */
+export function createFsFactBackend(baseDir: string): FactPersistenceBackend {
   const entitiesDir = join(baseDir, "entities");
-  // Map/Set — internal mutable cache required for write-through file I/O
-  const cache = new Map<string, readonly MemoryFact[]>();
-  const queues = new Map<string, Promise<void>>();
 
   function entityDir(entity: string): string {
     return join(entitiesDir, entity);
@@ -44,7 +46,7 @@ export function createFactStore(baseDir: string): FactStore {
     await mkdir(entityDir(entity), { recursive: true });
   }
 
-  async function readFromDisk(entity: string): Promise<readonly MemoryFact[]> {
+  const readFacts = async (entity: string): Promise<readonly MemoryFact[]> => {
     try {
       const raw = await readFile(itemsPath(entity), "utf-8");
       const parsed: unknown = JSON.parse(raw);
@@ -67,9 +69,9 @@ export function createFactStore(baseDir: string): FactStore {
       }
       throw e;
     }
-  }
+  };
 
-  async function writeToDisk(entity: string, facts: readonly MemoryFact[]): Promise<void> {
+  const writeFacts = async (entity: string, facts: readonly MemoryFact[]): Promise<void> => {
     await ensureDir(entity);
     const target = itemsPath(entity);
     const tmp = `${target}.${Date.now()}.tmp`;
@@ -85,38 +87,7 @@ export function createFactStore(baseDir: string): FactStore {
       }
       throw e;
     }
-  }
-
-  function enqueue(entity: string, op: () => Promise<void>): Promise<void> {
-    const prev = queues.get(entity) ?? Promise.resolve();
-    const next = prev.then(op, op);
-    queues.set(entity, next);
-    return next;
-  }
-
-  const readFacts = async (entity: string): Promise<readonly MemoryFact[]> => {
-    const cached = cache.get(entity);
-    if (cached !== undefined) return cached;
-    const facts = await readFromDisk(entity);
-    cache.set(entity, facts);
-    return facts;
   };
-
-  const appendFact = (entity: string, fact: MemoryFact): Promise<void> =>
-    enqueue(entity, async () => {
-      const existing = await readFacts(entity);
-      const updated = [...existing, fact];
-      cache.set(entity, updated);
-      await writeToDisk(entity, updated);
-    });
-
-  const updateFact = (entity: string, id: string, updates: FactUpdates): Promise<void> =>
-    enqueue(entity, async () => {
-      const existing = await readFacts(entity);
-      const updated = existing.map((f) => (f.id === id ? { ...f, ...updates } : f));
-      cache.set(entity, updated);
-      await writeToDisk(entity, updated);
-    });
 
   const listEntities = async (): Promise<readonly string[]> => {
     try {
@@ -132,9 +103,86 @@ export function createFactStore(baseDir: string): FactStore {
   };
 
   const close = async (): Promise<void> => {
+    // No persistent resources to release for filesystem backend
+  };
+
+  return { readFacts, writeFacts, listEntities, close };
+}
+
+// ---------------------------------------------------------------------------
+// FactStore with caching + write queue
+// ---------------------------------------------------------------------------
+
+const MAX_CACHE_ENTRIES = 100;
+
+/**
+ * Create a FactStore backed by a persistence backend.
+ *
+ * @param baseDirOrBackend - Either a directory path (uses FS backend) or a FactPersistenceBackend
+ */
+export function createFactStore(baseDirOrBackend: string | FactPersistenceBackend): FactStore {
+  const backend: FactPersistenceBackend =
+    typeof baseDirOrBackend === "string" ? createFsFactBackend(baseDirOrBackend) : baseDirOrBackend;
+
+  // Map/Set — internal mutable LRU cache required for write-through I/O.
+  // Map insertion order tracks recency; most-recent entries are re-inserted on access.
+  const cache = new Map<string, readonly MemoryFact[]>();
+  const queues = new Map<string, Promise<void>>();
+
+  /** Touch an entry to mark it as recently used (move to end of Map). */
+  function touchCache(entity: string, facts: readonly MemoryFact[]): void {
+    cache.delete(entity);
+    cache.set(entity, facts);
+    // Evict oldest entries if over limit
+    while (cache.size > MAX_CACHE_ENTRIES) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+  }
+
+  function enqueue(entity: string, op: () => Promise<void>): Promise<void> {
+    const prev = queues.get(entity) ?? Promise.resolve();
+    const next = prev.then(op, op);
+    queues.set(entity, next);
+    return next;
+  }
+
+  const readFacts = async (entity: string): Promise<readonly MemoryFact[]> => {
+    const cached = cache.get(entity);
+    if (cached !== undefined) {
+      touchCache(entity, cached); // Mark as recently used
+      return cached;
+    }
+    const facts = await backend.readFacts(entity);
+    touchCache(entity, facts);
+    return facts;
+  };
+
+  const appendFact = (entity: string, fact: MemoryFact): Promise<void> =>
+    enqueue(entity, async () => {
+      const existing = await readFacts(entity);
+      const updated = [...existing, fact];
+      touchCache(entity, updated);
+      await backend.writeFacts(entity, updated);
+    });
+
+  const updateFact = (entity: string, id: string, updates: FactUpdates): Promise<void> =>
+    enqueue(entity, async () => {
+      const existing = await readFacts(entity);
+      const updated = existing.map((f) => (f.id === id ? { ...f, ...updates } : f));
+      touchCache(entity, updated);
+      await backend.writeFacts(entity, updated);
+    });
+
+  const listEntities = async (): Promise<readonly string[]> => {
+    return backend.listEntities();
+  };
+
+  const close = async (): Promise<void> => {
     await Promise.all([...queues.values()]);
     cache.clear();
     queues.clear();
+    await backend.close();
   };
 
   return { readFacts, appendFact, updateFact, listEntities, close };
