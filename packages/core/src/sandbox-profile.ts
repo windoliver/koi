@@ -33,6 +33,14 @@ export interface ResourceLimits {
   readonly maxOpenFiles?: number;
 }
 
+/** Nexus FUSE mount — mounts Nexus virtual filesystem inside a sandbox. */
+export interface NexusFuseMount {
+  readonly nexusUrl: string;
+  readonly apiKey: string;
+  readonly mountPath: string;
+  readonly agentId?: string;
+}
+
 /** Declarative sandbox profile — platform-agnostic policy. */
 export interface SandboxProfile {
   readonly tier: TrustTier;
@@ -40,4 +48,5 @@ export interface SandboxProfile {
   readonly network: NetworkPolicy;
   readonly resources: ResourceLimits;
   readonly env?: Readonly<Record<string, string>>;
+  readonly nexusMounts?: readonly NexusFuseMount[];
 }

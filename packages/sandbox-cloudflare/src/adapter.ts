@@ -3,6 +3,7 @@
  */
 
 import type { KoiError, Result, SandboxAdapter, SandboxProfile } from "@koi/core";
+import { mountNexusFuse } from "@koi/sandbox-cloud-base";
 import { createCloudflareInstance } from "./instance.js";
 import type { CfCreateOpts, CloudflareAdapterConfig } from "./types.js";
 import { validateCloudflareConfig } from "./validate.js";
@@ -28,9 +29,16 @@ export function createCloudflareAdapter(
             ...(resolvedConfig.accountId !== undefined
               ? { accountId: resolvedConfig.accountId }
               : {}),
+            ...(resolvedConfig.r2Mounts !== undefined && resolvedConfig.r2Mounts.length > 0
+              ? { r2Mounts: resolvedConfig.r2Mounts }
+              : {}),
           };
           const sdkSandbox = await client.createSandbox(opts);
-          return createCloudflareInstance(sdkSandbox);
+          const instance = createCloudflareInstance(sdkSandbox);
+          if (_profile.nexusMounts !== undefined && _profile.nexusMounts.length > 0) {
+            await mountNexusFuse(instance, _profile.nexusMounts);
+          }
+          return instance;
         }
 
         throw new Error(
