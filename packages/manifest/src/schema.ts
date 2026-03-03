@@ -72,10 +72,25 @@ interface RawSoulUserConfig {
   readonly maxTokens?: number | undefined;
 }
 
+/** Filesystem skill source in raw manifest. */
+interface RawFilesystemSkillSource {
+  readonly kind: "filesystem";
+  readonly path: string;
+}
+
+/** Forged skill source in raw manifest. */
+interface RawForgedSkillSource {
+  readonly kind: "forged";
+  readonly brickId: string;
+}
+
+/** Discriminated skill source in raw manifest. */
+type RawSkillSource = RawFilesystemSkillSource | RawForgedSkillSource;
+
 /** Skill config item in the manifest. */
 interface RawSkillConfig {
   readonly name: string;
-  readonly path: string;
+  readonly source: RawSkillSource;
   readonly options?: Readonly<Record<string, unknown>> | undefined;
 }
 
@@ -155,10 +170,25 @@ const namedConfigSchema = z.union([
 
 // ── Skill config schema ──
 
-/** Skill config item: name + path + optional options. */
+const filesystemSkillSourceSchema = z.object({
+  kind: z.literal("filesystem"),
+  path: z.string(),
+});
+
+const forgedSkillSourceSchema = z.object({
+  kind: z.literal("forged"),
+  brickId: z.string(),
+});
+
+const skillSourceSchema = z.discriminatedUnion("kind", [
+  filesystemSkillSourceSchema,
+  forgedSkillSourceSchema,
+]);
+
+/** Skill config item: name + source + optional options. */
 const skillConfigSchema = z.object({
   name: noTemplateExpressions(z.string()),
-  path: z.string(),
+  source: skillSourceSchema,
   options: jsonObjectSchema.optional(),
 });
 

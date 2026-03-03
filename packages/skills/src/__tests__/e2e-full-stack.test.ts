@@ -28,7 +28,7 @@ import type {
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
-import { skillToken, toolToken } from "@koi/core";
+import { fsSkill, skillToken, toolToken } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createLoopAdapter } from "@koi/engine-loop";
 import { createPiAdapter } from "@koi/engine-pi";
@@ -146,8 +146,8 @@ describe("e2e: @koi/skills + createLoopAdapter (deterministic)", () => {
   test("skills provider attaches filesystem skills to agent entity", async () => {
     const skillProvider = createSkillComponentProvider({
       skills: [
-        { name: "code-review", path: "./valid-skill" },
-        { name: "minimal-skill", path: "./minimal-skill" },
+        fsSkill("code-review", "./valid-skill"),
+        fsSkill("minimal-skill", "./minimal-skill"),
       ],
       basePath: FIXTURES,
     });
@@ -190,7 +190,7 @@ describe("e2e: @koi/skills + createLoopAdapter (deterministic)", () => {
 
   test("skills coexist with tools on the same agent", async () => {
     const skillProvider = createSkillComponentProvider({
-      skills: [{ name: "code-review", path: "./valid-skill" }],
+      skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
 
@@ -220,10 +220,10 @@ describe("e2e: @koi/skills + createLoopAdapter (deterministic)", () => {
 
     const skillProvider = createSkillComponentProvider({
       skills: [
-        { name: "code-review", path: "./valid-skill" },
-        { name: "bad-skill", path: "./invalid-name" },
-        { name: "missing", path: "./nonexistent" },
-        { name: "minimal-skill", path: "./minimal-skill" },
+        fsSkill("code-review", "./valid-skill"),
+        fsSkill("bad-skill", "./invalid-name"),
+        fsSkill("missing", "./nonexistent"),
+        fsSkill("minimal-skill", "./minimal-skill"),
       ],
       basePath: FIXTURES,
     });
@@ -252,7 +252,7 @@ describe("e2e: @koi/skills + createLoopAdapter (deterministic)", () => {
 
   test("skills loaded at metadata level produce description-only content", async () => {
     const skillProvider = createSkillComponentProvider({
-      skills: [{ name: "minimal-skill", path: "./minimal-skill" }],
+      skills: [fsSkill("minimal-skill", "./minimal-skill")],
       basePath: FIXTURES,
       loadLevel: "metadata",
     });
@@ -290,7 +290,7 @@ describe("e2e: @koi/skills + createLoopAdapter (deterministic)", () => {
     };
 
     const skillProvider = createSkillComponentProvider({
-      skills: [{ name: "code-review", path: "./valid-skill" }],
+      skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
 
@@ -315,10 +315,7 @@ describe("e2e: @koi/skills + createLoopAdapter (deterministic)", () => {
 
   test("duplicate skill names: first-wins in provider, both attach attempts handled", async () => {
     const skillProvider = createSkillComponentProvider({
-      skills: [
-        { name: "code-review", path: "./valid-skill" },
-        { name: "code-review", path: "./valid-skill" },
-      ],
+      skills: [fsSkill("code-review", "./valid-skill"), fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
 
@@ -339,10 +336,7 @@ describe("e2e: @koi/skills + createLoopAdapter (deterministic)", () => {
 
   test("manifest with skills field passes through to runtime", async () => {
     const manifest = testManifest({
-      skills: [
-        { name: "code-review", path: "./valid-skill" },
-        { name: "deploy", path: "./minimal-skill" },
-      ],
+      skills: [fsSkill("code-review", "./valid-skill"), fsSkill("deploy", "./minimal-skill")],
     });
 
     // Verify the manifest carries skills field
@@ -384,7 +378,7 @@ describeE2E("e2e: @koi/skills + createPiAdapter (real LLM)", () => {
     "skills attach and agent runs with real LLM response",
     async () => {
       const skillProvider = createSkillComponentProvider({
-        skills: [{ name: "code-review", path: "./valid-skill" }],
+        skills: [fsSkill("code-review", "./valid-skill")],
         basePath: FIXTURES,
       });
 
@@ -452,7 +446,7 @@ describeE2E("e2e: @koi/skills + createPiAdapter (real LLM)", () => {
       };
 
       const skillProvider = createSkillComponentProvider({
-        skills: [{ name: "code-review", path: "./valid-skill" }],
+        skills: [fsSkill("code-review", "./valid-skill")],
         basePath: FIXTURES,
       });
 
@@ -504,8 +498,8 @@ describeE2E("e2e: @koi/skills + createPiAdapter (real LLM)", () => {
     async () => {
       const skillProvider = createSkillComponentProvider({
         skills: [
-          { name: "code-review", path: "./valid-skill" },
-          { name: "minimal-skill", path: "./minimal-skill" },
+          fsSkill("code-review", "./valid-skill"),
+          fsSkill("minimal-skill", "./minimal-skill"),
         ],
         basePath: FIXTURES,
         loadLevel: "body",
@@ -561,9 +555,9 @@ describeE2E("e2e: @koi/skills + createPiAdapter (real LLM)", () => {
 
       const skillProvider = createSkillComponentProvider({
         skills: [
-          { name: "code-review", path: "./valid-skill" },
-          { name: "bad-skill", path: "./invalid-name" },
-          { name: "no-fm", path: "./no-frontmatter" },
+          fsSkill("code-review", "./valid-skill"),
+          fsSkill("bad-skill", "./invalid-name"),
+          fsSkill("no-fm", "./no-frontmatter"),
         ],
         basePath: FIXTURES,
       });
@@ -629,8 +623,8 @@ describeE2E("e2e: @koi/skills + createPiAdapter (real LLM)", () => {
       // Use manifest.skills field to configure
       const manifest = testManifest({
         skills: [
-          { name: "code-review", path: "./valid-skill" },
-          { name: "minimal-skill", path: "./minimal-skill" },
+          fsSkill("code-review", "./valid-skill"),
+          fsSkill("minimal-skill", "./minimal-skill"),
         ],
       });
 

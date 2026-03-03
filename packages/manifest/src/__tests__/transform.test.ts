@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { brickId } from "@koi/core";
 import {
   normalizeChannelConfig,
   normalizeConfigItem,
@@ -374,15 +375,37 @@ describe("transformToLoadedManifest", () => {
     });
   });
 
-  test("transforms skills with name and path", () => {
+  test("transforms filesystem skills with source", () => {
     const raw = {
       name: "my-agent",
       version: "1.0.0",
       model: "anthropic:claude-sonnet-4-5-20250929",
-      skills: [{ name: "code-review", path: "./skills/code-review" }],
+      skills: [
+        {
+          name: "code-review",
+          source: { kind: "filesystem" as const, path: "./skills/code-review" },
+        },
+      ],
     };
     const result = transformToLoadedManifest(raw);
-    expect(result.skills).toEqual([{ name: "code-review", path: "./skills/code-review" }]);
+    expect(result.skills).toEqual([
+      { name: "code-review", source: { kind: "filesystem", path: "./skills/code-review" } },
+    ]);
+  });
+
+  test("transforms forged skills with source", () => {
+    const raw = {
+      name: "my-agent",
+      version: "1.0.0",
+      model: "anthropic:claude-sonnet-4-5-20250929",
+      skills: [
+        { name: "forged-review", source: { kind: "forged" as const, brickId: "sha256:abc123" } },
+      ],
+    };
+    const result = transformToLoadedManifest(raw);
+    expect(result.skills).toEqual([
+      { name: "forged-review", source: { kind: "forged", brickId: brickId("sha256:abc123") } },
+    ]);
   });
 
   test("transforms skills with options", () => {
@@ -390,7 +413,13 @@ describe("transformToLoadedManifest", () => {
       name: "my-agent",
       version: "1.0.0",
       model: "anthropic:claude-sonnet-4-5-20250929",
-      skills: [{ name: "code-review", path: "./skills/cr", options: { verbose: true } }],
+      skills: [
+        {
+          name: "code-review",
+          source: { kind: "filesystem" as const, path: "./skills/cr" },
+          options: { verbose: true },
+        },
+      ],
     };
     const result = transformToLoadedManifest(raw);
     expect(result.skills?.[0]?.options).toEqual({ verbose: true });

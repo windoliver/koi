@@ -2,6 +2,7 @@
  * Agent manifest and configuration types.
  */
 
+import type { BrickId } from "./brick-snapshot.js";
 import type { JsonObject } from "./common.js";
 import type { DegeneracyConfig } from "./degeneracy.js";
 import type { DelegationConfig } from "./delegation.js";
@@ -22,11 +23,44 @@ export interface ToolConfig {
   readonly publisher?: string;
 }
 
-export interface SkillConfig {
-  readonly name: string;
+/** Filesystem skill — loaded from SKILL.md on disk. */
+export interface FilesystemSkillSource {
+  readonly kind: "filesystem";
   /** Path to directory containing SKILL.md. Relative to manifest location. */
   readonly path: string;
+}
+
+/** Forged skill — loaded from ForgeStore by content-addressed BrickId. */
+export interface ForgedSkillSource {
+  readonly kind: "forged";
+  readonly brickId: BrickId;
+}
+
+/** Discriminated source for skill loading. */
+export type SkillSource = FilesystemSkillSource | ForgedSkillSource;
+
+export interface SkillConfig {
+  readonly name: string;
+  readonly source: SkillSource;
   readonly options?: JsonObject;
+}
+
+/** Creates a filesystem skill config. */
+export function fsSkill(name: string, path: string, options?: JsonObject): SkillConfig {
+  return {
+    name,
+    source: { kind: "filesystem", path },
+    ...(options !== undefined ? { options } : {}),
+  };
+}
+
+/** Creates a forged skill config. */
+export function forgedSkill(name: string, brickId: BrickId, options?: JsonObject): SkillConfig {
+  return {
+    name,
+    source: { kind: "forged", brickId },
+    ...(options !== undefined ? { options } : {}),
+  };
 }
 
 export interface ChannelIdentity {

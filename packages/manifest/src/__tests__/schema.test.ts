@@ -592,16 +592,31 @@ describe("rawManifestSchema — channel identity", () => {
 // ---------------------------------------------------------------------------
 
 describe("rawManifestSchema — skills", () => {
-  test("accepts skills array with name and path", () => {
+  test("accepts filesystem skill with source.kind and path", () => {
     const result = parse({
-      skills: [{ name: "code-review", path: "./skills/code-review" }],
+      skills: [
+        { name: "code-review", source: { kind: "filesystem", path: "./skills/code-review" } },
+      ],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("accepts forged skill with source.kind and brickId", () => {
+    const result = parse({
+      skills: [{ name: "forged-review", source: { kind: "forged", brickId: "sha256:abc123" } }],
     });
     expect(result.success).toBe(true);
   });
 
   test("accepts skills with options", () => {
     const result = parse({
-      skills: [{ name: "code-review", path: "./skills/code-review", options: { verbose: true } }],
+      skills: [
+        {
+          name: "code-review",
+          source: { kind: "filesystem", path: "./skills/code-review" },
+          options: { verbose: true },
+        },
+      ],
     });
     expect(result.success).toBe(true);
   });
@@ -611,11 +626,23 @@ describe("rawManifestSchema — skills", () => {
   });
 
   test("rejects skill without name", () => {
-    expect(parse({ skills: [{ path: "./skills/foo" }] }).success).toBe(false);
+    expect(
+      parse({ skills: [{ source: { kind: "filesystem", path: "./skills/foo" } }] }).success,
+    ).toBe(false);
   });
 
-  test("rejects skill without path", () => {
+  test("rejects skill without source", () => {
     expect(parse({ skills: [{ name: "foo" }] }).success).toBe(false);
+  });
+
+  test("rejects skill with invalid source kind", () => {
+    expect(
+      parse({ skills: [{ name: "foo", source: { kind: "unknown", path: "./x" } }] }).success,
+    ).toBe(false);
+  });
+
+  test("rejects old format with bare path (no source wrapper)", () => {
+    expect(parse({ skills: [{ name: "foo", path: "./bar" }] }).success).toBe(false);
   });
 
   test("rejects skills as non-array", () => {

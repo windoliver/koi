@@ -27,13 +27,17 @@ export type {
   CapabilityConfig,
   ChannelConfig,
   ChannelIdentity,
+  FilesystemSkillSource,
+  ForgedSkillSource,
   MiddlewareConfig,
   ModelConfig,
   PermissionConfig,
   SearchConfig,
   SkillConfig,
+  SkillSource,
   ToolConfig,
 } from "./assembly.js";
+export { forgedSkill, fsSkill } from "./assembly.js";
 // audit backend — structured audit logging contract
 export type { AuditEntry, AuditSink, RedactionRule } from "./audit-backend.js";
 // brick component map — per-kind ECS type mapping

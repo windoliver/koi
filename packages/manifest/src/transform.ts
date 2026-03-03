@@ -14,9 +14,11 @@ import type {
   OutboundWebhookConfig,
   PermissionConfig,
   SkillConfig,
+  SkillSource,
   ToolConfig,
   WebhookEventKind,
 } from "@koi/core";
+import { brickId } from "@koi/core";
 import type { RawManifest } from "./schema.js";
 import type { DeployConfig, LoadedManifest } from "./types.js";
 
@@ -200,6 +202,22 @@ function normalizePermissions(raw: {
 }
 
 /**
+ * Maps a raw skill source (Zod-inferred) to an L0 SkillSource (branded BrickId).
+ */
+function mapSkillSource(
+  raw:
+    | { readonly kind: "filesystem"; readonly path: string }
+    | { readonly kind: "forged"; readonly brickId: string },
+): SkillSource {
+  switch (raw.kind) {
+    case "filesystem":
+      return { kind: "filesystem", path: raw.path };
+    case "forged":
+      return { kind: "forged", brickId: brickId(raw.brickId) };
+  }
+}
+
+/**
  * Transforms a validated raw manifest into a `LoadedManifest`.
  */
 export function transformToLoadedManifest(raw: RawManifest): LoadedManifest {
@@ -227,11 +245,11 @@ export function transformToLoadedManifest(raw: RawManifest): LoadedManifest {
     (c): ChannelConfig => normalizeChannelConfig(c),
   );
 
-  // Transform skills
+  // Transform skills — map RawSkillSource → L0 SkillSource (branded BrickId)
   const skills: readonly SkillConfig[] | undefined = raw.skills?.map(
     (s): SkillConfig => ({
       name: s.name,
-      path: s.path,
+      source: mapSkillSource(s.source),
       ...(s.options !== undefined ? { options: toJsonObject(s.options) } : {}),
     }),
   );

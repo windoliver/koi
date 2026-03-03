@@ -76,6 +76,7 @@ export const L0_RUNTIME_ALLOWLIST: ReadonlySet<string> = new Set([
   "debug.ts",
   "scratchpad.ts",
   "workspace.ts",
+  "assembly.ts",
 ]);
 
 // --- Predicates (exported for testing) ---

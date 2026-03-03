@@ -32,7 +32,7 @@ import type {
   ToolResponse,
   TurnTrace,
 } from "@koi/core";
-import { sessionId, skillToken, toolToken } from "@koi/core";
+import { fsSkill, sessionId, skillToken, toolToken } from "@koi/core";
 import type { CrystallizationCandidate } from "@koi/crystallize";
 import { createCrystallizeForgeHandler, createCrystallizeMiddleware } from "@koi/crystallize";
 import { createKoi } from "@koi/engine";
@@ -219,7 +219,7 @@ afterEach(() => {
 describe("e2e: progressive loading through createKoi + createLoopAdapter", () => {
   test("skills start at metadata, promote to body, then bundled", async () => {
     const skillProvider = createSkillComponentProvider({
-      skills: [{ name: "code-review", path: "./valid-skill" }],
+      skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
       loadLevel: "metadata",
     });
@@ -273,7 +273,7 @@ describe("e2e: progressive loading through createKoi + createLoopAdapter", () =>
 
   test("watch() fires ComponentEvent on each promotion", async () => {
     const skillProvider = createSkillComponentProvider({
-      skills: [{ name: "code-review", path: "./valid-skill" }],
+      skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
 
@@ -311,7 +311,7 @@ describe("e2e: progressive loading through createKoi + createLoopAdapter", () =>
 
   test("promote no-op when already at or above target level", async () => {
     const skillProvider = createSkillComponentProvider({
-      skills: [{ name: "code-review", path: "./valid-skill" }],
+      skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
 
@@ -359,8 +359,8 @@ describe("e2e: progressive loading through createKoi + createLoopAdapter", () =>
   test("multiple skills: independent levels, parallel attach", async () => {
     const skillProvider = createSkillComponentProvider({
       skills: [
-        { name: "code-review", path: "./valid-skill" },
-        { name: "minimal-skill", path: "./minimal-skill" },
+        fsSkill("code-review", "./valid-skill"),
+        fsSkill("minimal-skill", "./minimal-skill"),
       ],
       basePath: FIXTURES,
     });
@@ -401,7 +401,7 @@ describe("e2e: progressive loading through createKoi + createLoopAdapter", () =>
 describe("e2e: skill-activator middleware through createKoi", () => {
   test("auto-promotes skill referenced in user message", async () => {
     const skillProvider = createSkillComponentProvider({
-      skills: [{ name: "code-review", path: "./valid-skill" }],
+      skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
       loadLevel: "metadata",
     });
@@ -446,8 +446,8 @@ describe("e2e: skill-activator middleware through createKoi", () => {
   test("promotes multiple skills referenced in a single message", async () => {
     const skillProvider = createSkillComponentProvider({
       skills: [
-        { name: "code-review", path: "./valid-skill" },
-        { name: "minimal-skill", path: "./minimal-skill" },
+        fsSkill("code-review", "./valid-skill"),
+        fsSkill("minimal-skill", "./minimal-skill"),
       ],
       basePath: FIXTURES,
       loadLevel: "metadata",
@@ -484,7 +484,7 @@ describe("e2e: skill-activator middleware through createKoi", () => {
 
   test("ignores unknown skill references (does not crash)", async () => {
     const skillProvider = createSkillComponentProvider({
-      skills: [{ name: "code-review", path: "./valid-skill" }],
+      skills: [fsSkill("code-review", "./valid-skill")],
       basePath: FIXTURES,
     });
 
@@ -786,8 +786,8 @@ describe("e2e: full pipeline — skill-activator + crystallize + tools", () => {
 
     const skillProvider = createSkillComponentProvider({
       skills: [
-        { name: "code-review", path: "./valid-skill" },
-        { name: "minimal-skill", path: "./minimal-skill" },
+        fsSkill("code-review", "./valid-skill"),
+        fsSkill("minimal-skill", "./minimal-skill"),
       ],
       basePath: FIXTURES,
       loadLevel: "metadata",
@@ -900,7 +900,7 @@ describeE2E("e2e: progressive loading + middleware + createPiAdapter", () => {
     "progressive loading works with real LLM: metadata -> body promotion",
     async () => {
       const skillProvider = createSkillComponentProvider({
-        skills: [{ name: "code-review", path: "./valid-skill" }],
+        skills: [fsSkill("code-review", "./valid-skill")],
         basePath: FIXTURES,
         loadLevel: "metadata",
       });
@@ -948,8 +948,8 @@ describeE2E("e2e: progressive loading + middleware + createPiAdapter", () => {
     async () => {
       const skillProvider = createSkillComponentProvider({
         skills: [
-          { name: "code-review", path: "./valid-skill" },
-          { name: "minimal-skill", path: "./minimal-skill" },
+          fsSkill("code-review", "./valid-skill"),
+          fsSkill("minimal-skill", "./minimal-skill"),
         ],
         basePath: FIXTURES,
         loadLevel: "metadata",
@@ -1078,7 +1078,7 @@ describeE2E("e2e: progressive loading + middleware + createPiAdapter", () => {
       );
 
       const skillProvider = createSkillComponentProvider({
-        skills: [{ name: "code-review", path: "./valid-skill" }],
+        skills: [fsSkill("code-review", "./valid-skill")],
         basePath: FIXTURES,
         loadLevel: "metadata",
       });

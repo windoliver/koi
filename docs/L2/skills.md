@@ -1,6 +1,6 @@
 # @koi/skills — Progressive Skill Loading
 
-`@koi/skills` is an L2 package that parses SKILL.md files and provides 3-level progressive loading (metadata, body, bundled) to minimize context window usage. Skills start cheap and upgrade on demand when the agent actually needs them.
+`@koi/skills` is an L2 package that provides 3-level progressive loading (metadata, body, bundled) for both filesystem skills (SKILL.md) and forged skills (ForgeStore artifacts). Skills start cheap and upgrade on demand when the agent actually needs them.
 
 ---
 
@@ -32,6 +32,8 @@ AFTER: Only descriptions loaded, full content on demand
 
 Without this package, every agent builder would reimplement skill parsing, security scanning, and context-aware loading.
 
+This applies equally to **predefined skills** (SKILL.md on disk) and **forged skills** (SkillArtifact in ForgeStore, created by agents at runtime). Both sources share the same progressive loading strategy — no second-class citizens.
+
 ---
 
 ## Architecture
@@ -39,14 +41,15 @@ Without this package, every agent builder would reimplement skill parsing, secur
 ### Layer position
 
 ```
-L0  @koi/core              ─ SkillComponent, SkillConfig, ComponentProvider,
-                              ComponentEvent, skillToken() (types only)
+L0  @koi/core              ─ SkillConfig, SkillSource, ForgeStore, BrickId,
+                              SkillComponent, ComponentProvider, ComponentEvent,
+                              skillToken(), fsSkill(), forgedSkill() (types + pure helpers)
 L0u @koi/skill-scanner      ─ security scan for embedded code
 L0u @koi/validation         ─ frontmatter schema validation (Zod)
 L2  @koi/skills             ─ this package (no L1 dependency)
 ```
 
-`@koi/skills` only imports from `@koi/core` (L0) and L0u packages. It never touches `@koi/engine` (L1). Skills can be loaded in any environment — CLI, test harness, CI.
+`@koi/skills` only imports from `@koi/core` (L0) and L0u packages. It never touches `@koi/engine` (L1). ForgeStore is an L0 interface, so importing it is legal. Skills can be loaded in any environment — CLI, test harness, CI.
 
 ### Internal module map
 
@@ -55,8 +58,9 @@ index.ts                         ← public re-exports
 │
 ├── parse.ts                     ← parseSkillMd() — YAML frontmatter + markdown
 ├── validate.ts                  ← validateSkillFrontmatter() — schema checks
-├── loader.ts                    ← loadSkill{Metadata,Body,Bundled}() + cache
-├── provider.ts                  ← createSkillComponentProvider() factory
+├── loader.ts                    ← loadSkill{Metadata,Body,Bundled}() + cache (filesystem)
+├── loader-forge.ts              ← loadForgeSkill{Metadata,Body,Bundled}() + cache (ForgeStore)
+├── provider.ts                  ← createSkillComponentProvider() factory (dual-source)
 ├── skill-activator-middleware.ts ← auto-promote middleware
 ├── catalog.ts                   ← skill catalog integration
 ├── types.ts                     ← ProgressiveSkillProvider, SkillLoadLevel
@@ -96,6 +100,24 @@ Every skill can exist at one of three levels. Each level includes everything fro
 | **body** | metadata + full markdown instructions | ~2-8 KB | Active skill usage |
 | **bundled** | body + embedded scripts + reference files | ~5-20 KB | Skills that need code execution |
 
+### Unified Skill Source
+
+Skills are declared using a discriminated `SkillSource` type in L0:
+
+```typescript
+import { fsSkill, forgedSkill, brickId } from "@koi/core";
+
+// Filesystem skill — loaded from SKILL.md on disk
+fsSkill("code-review", "./skills/code-review")
+// → { name: "code-review", source: { kind: "filesystem", path: "./skills/code-review" } }
+
+// Forged skill — loaded from ForgeStore by content-addressed BrickId
+forgedSkill("custom-review", brickId("sha256:abc123"))
+// → { name: "custom-review", source: { kind: "forged", brickId: "sha256:abc123" } }
+```
+
+The provider dispatches to the correct loader based on `source.kind`. Both sources go through the same progressive loading pipeline.
+
 ### Progressive Loading Flow
 
 ```
@@ -104,7 +126,10 @@ createSkillComponentProvider()
     ▼
   attach(agent)
     │
-    ├── resolve paths (sequential, cheap)
+    ├── resolve paths / validate sources (sequential, cheap)
+    ├── dispatch by source.kind:
+    │     filesystem → resolveSecurePath + loadSkill()
+    │     forged     → loadForgeSkill() via ForgeStore
     ├── Promise.allSettled (parallel load at "metadata")
     ├── build SkillComponent for each skill
     └── return { components, skipped }
@@ -118,7 +143,9 @@ createSkillComponentProvider()
     ├── skill-activator middleware detects "skill:code-review"
     └── fire-and-forget: provider.promote("code-review", "body")
         │
-        ├── load full SKILL.md body from filesystem
+        ├── dispatch by source.kind:
+        │     filesystem → load SKILL.md body from disk
+        │     forged     → parse artifact.content from cache
         ├── update component in internal map
         ├── fire ComponentEvent { kind: "attached" }
         └── getLevel("code-review") returns "body"
@@ -151,6 +178,25 @@ User message: "Use skill:code-review to check my PR"
 ```
 
 Priority 200 ensures it runs before tool-selector (300) and crystallize (950).
+
+### Manifest YAML Format
+
+Skills are declared in the agent manifest with a `source` discriminant:
+
+```yaml
+skills:
+  # Filesystem skill — loaded from SKILL.md in the given directory
+  - name: code-review
+    source:
+      kind: filesystem
+      path: ./skills/code-review
+
+  # Forged skill — loaded from ForgeStore by content-addressed BrickId
+  - name: custom-review
+    source:
+      kind: forged
+      brickId: "sha256:abc123"
+```
 
 ### SKILL.md File Format
 
@@ -189,11 +235,12 @@ Factory function that returns a `ProgressiveSkillProvider`.
 
 ```typescript
 import { createSkillComponentProvider } from "@koi/skills";
+import { fsSkill } from "@koi/core";
 
 const provider = createSkillComponentProvider({
   skills: [
-    { name: "code-review", path: "./skills/code-review" },
-    { name: "testing", path: "./skills/testing" },
+    fsSkill("code-review", "./skills/code-review"),
+    fsSkill("testing", "./skills/testing"),
   ],
   basePath: "/path/to/project",
   loadLevel: "body",  // default target for promote()
@@ -211,6 +258,9 @@ const provider = createSkillComponentProvider({
 | `basePath` | `string` | required | Base path for resolving relative skill paths |
 | `loadLevel` | `SkillLoadLevel` | `"body"` | Default target level for `promote()` |
 | `onSecurityFinding` | `(name, findings) => void` | `undefined` | Callback for security scanner findings |
+| `store` | `ForgeStore` | `undefined` | ForgeStore instance — **required** if any skill has `source.kind === "forged"` |
+
+**Fail-fast:** If any skill has `source.kind === "forged"` but no `store` is provided, `createSkillComponentProvider` throws immediately at creation time.
 
 **Returns:** `ProgressiveSkillProvider`
 
@@ -262,11 +312,33 @@ Loads a skill from a directory at a specific level. Uses an internal cache to av
 
 ### `clearSkillCache()`
 
-Clears the internal frontmatter cache. Useful in tests.
+Clears the internal filesystem frontmatter cache. Useful in tests.
+
+### `loadForgeSkill(brickId, store, level?, onSecurityFinding?)`
+
+Loads a forged skill from ForgeStore at a specific level. Caches the full artifact on first load, then exposes progressively. Dispatcher for the three level-specific loaders below.
+
+### `loadForgeSkillMetadata(brickId, store)`
+
+Trusts artifact fields directly (name, description, tags). No content parsing — cheapest level.
+
+### `loadForgeSkillBody(brickId, store, onSecurityFinding?)`
+
+Parses `artifact.content` via `parseSkillMd()` + validates frontmatter. Always runs security scanner on forged content (defense-in-depth).
+
+### `loadForgeSkillBundled(brickId, store, onSecurityFinding?)`
+
+Body-level + maps `artifact.files` to scripts/references. Convention: file keys starting with `scripts/` become SkillScript, `references/` become SkillReference.
+
+### `clearForgeSkillCache()`
+
+Clears the internal forge artifact cache. Useful in tests.
 
 ---
 
 ## Integration with createKoi
+
+### Filesystem-only (predefined skills)
 
 ```typescript
 import { createKoi } from "@koi/engine";
@@ -298,6 +370,29 @@ const events = await collectEvents(
 );
 ```
 
+### Mixed sources (filesystem + forged)
+
+```typescript
+import { fsSkill, forgedSkill, brickId } from "@koi/core";
+import { createSkillComponentProvider, createSkillActivatorMiddleware } from "@koi/skills";
+
+const provider = createSkillComponentProvider({
+  skills: [
+    // Predefined skill from disk
+    fsSkill("code-review", "./skills/code-review"),
+    // Agent-forged skill from ForgeStore
+    forgedSkill("custom-review", brickId("sha256:abc123")),
+  ],
+  basePath: "./",
+  store: myForgeStore,  // required when forged skills exist
+});
+
+// Both skill types use the same progressive loading:
+// - Start at ~100 bytes (metadata only)
+// - Auto-promote to body on reference
+// - Same security scanning, caching, and deduplication
+```
+
 ---
 
 ## Design Decisions
@@ -308,3 +403,9 @@ const events = await collectEvents(
 4. **Parallel loading** — `Promise.allSettled` loads all skills concurrently during `attach()`. Failed skills go to `skipped`, successful ones proceed.
 5. **First-wins deduplication** — duplicate skill names are resolved by declaration order. The first definition wins; duplicates are reported in `skipped`.
 6. **No L1 dependency** — the provider works anywhere. Only the middleware needs the L1 runtime to intercept model calls.
+7. **Discriminated SkillSource** — `source.kind` ("filesystem" | "forged") enables exhaustive switch dispatch with zero runtime overhead. Factory helpers `fsSkill()` / `forgedSkill()` live in L0 as pure data constructors.
+8. **Separate caches per source** — filesystem cache is keyed by directory path, forge cache is keyed by BrickId. No cross-contamination, independent invalidation.
+9. **Hybrid metadata** — at metadata level, forged skills trust artifact fields directly (no content parsing). Content is only parsed at body level. This avoids redundant work since ForgeStore artifacts already carry validated name/description/tags.
+10. **Defense-in-depth on forge** — security scanner always runs on forged skill content at body level, even though artifacts were presumably scanned during creation. Trust but verify.
+11. **Fail-fast on missing store** — if a manifest declares forged skills but no ForgeStore is provided, `createSkillComponentProvider` throws immediately rather than failing silently at attach time.
+12. **Error isolation** — a forged skill failing to load does not block filesystem skills (and vice versa). Failures are reported in `skipped`.
