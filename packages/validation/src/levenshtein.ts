@@ -70,3 +70,25 @@ export function levenshteinDistance(a: string, b: string, maxDistance: number = 
 
   return prev[aLen] ?? 0;
 }
+
+/**
+ * Finds the closest string match from candidates using Levenshtein distance.
+ *
+ * @param target - The string to find a match for
+ * @param candidates - The list of candidate strings to compare against
+ * @param maxDistance - Maximum distance to consider (default: 3)
+ * @returns The closest match within maxDistance, or undefined
+ */
+export function findClosestMatch(
+  target: string,
+  candidates: readonly string[],
+  maxDistance = 3,
+): string | undefined {
+  return candidates.reduce<{ readonly distance: number; readonly match: string | undefined }>(
+    (best, candidate) => {
+      const distance = levenshteinDistance(target, candidate, maxDistance);
+      return distance < best.distance ? { distance, match: candidate } : best;
+    },
+    { distance: maxDistance + 1, match: undefined },
+  ).match;
+}

@@ -6,29 +6,13 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "@koi/resolve";
+import { validateOptionalDescriptorOptions } from "@koi/resolve";
 import type { SearchProvider } from "@koi/search-provider";
 import { createBraveSearch } from "./brave-search.js";
 
-function validateBraveSearchOptions(input: unknown): Result<unknown, KoiError> {
-  // Options are optional — pass through whatever is provided
-  if (input === null || input === undefined) {
-    return { ok: true, value: {} };
-  }
-
-  if (typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Brave search options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-
-  return { ok: true, value: input };
+function validateBraveSearchOptions(input: unknown): Result<Record<string, unknown>, KoiError> {
+  return validateOptionalDescriptorOptions(input, "Brave search");
 }
 
 /**

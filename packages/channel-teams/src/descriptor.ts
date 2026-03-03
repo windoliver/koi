@@ -5,24 +5,10 @@
  * Reads appId, appPassword, and tenantId from environment.
  */
 
-import type { ChannelAdapter, KoiError, Result } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
+import type { ChannelAdapter } from "@koi/core";
 import type { BrickDescriptor, ResolutionContext } from "@koi/resolve";
+import { validateOptionalDescriptorOptions } from "@koi/resolve";
 import { createTeamsChannel } from "./teams-channel.js";
-
-function validateTeamsChannelOptions(input: unknown): Result<unknown, KoiError> {
-  if (input !== null && input !== undefined && typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Teams channel options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-  return { ok: true, value: input ?? {} };
-}
 
 /**
  * Descriptor for Teams channel adapter.
@@ -32,7 +18,7 @@ export const descriptor: BrickDescriptor<ChannelAdapter> = {
   kind: "channel",
   name: "@koi/channel-teams",
   aliases: ["teams"],
-  optionsValidator: validateTeamsChannelOptions,
+  optionsValidator: (input) => validateOptionalDescriptorOptions(input, "Teams channel"),
   factory(_options, context: ResolutionContext): ChannelAdapter {
     const appId = context.env.TEAMS_APP_ID;
     const appPassword = context.env.TEAMS_APP_PASSWORD;

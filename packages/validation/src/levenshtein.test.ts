@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { levenshteinDistance } from "./levenshtein.js";
+import { findClosestMatch, levenshteinDistance } from "./levenshtein.js";
 
 // ---------------------------------------------------------------------------
 // Basic correctness (backward-compatible — no maxDistance argument)
@@ -86,5 +86,44 @@ describe("levenshteinDistance with maxDistance", () => {
   test("maxDistance = Infinity behaves like no maxDistance", () => {
     expect(levenshteinDistance("kitten", "sitting", Infinity)).toBe(3);
     expect(levenshteinDistance("abc", "xyz", Infinity)).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findClosestMatch — higher-level helper
+// ---------------------------------------------------------------------------
+
+describe("findClosestMatch", () => {
+  test("returns undefined for empty candidates", () => {
+    expect(findClosestMatch("hello", [])).toBeUndefined();
+  });
+
+  test("returns exact match", () => {
+    expect(findClosestMatch("model", ["model", "engine", "channel"])).toBe("model");
+  });
+
+  test("returns close match within default threshold", () => {
+    expect(findClosestMatch("modle", ["model", "engine", "channel"])).toBe("model");
+  });
+
+  test("returns undefined when no match within threshold", () => {
+    expect(findClosestMatch("zzzzz", ["model", "engine", "channel"])).toBeUndefined();
+  });
+
+  test("picks closest among multiple candidates", () => {
+    expect(findClosestMatch("cat", ["bat", "car", "dog"])).toBe("bat");
+  });
+
+  test("respects custom maxDistance parameter", () => {
+    // "cat" -> "bat" = 1, within maxDistance=1
+    expect(findClosestMatch("cat", ["bat", "dog"], 1)).toBe("bat");
+    // "cat" -> "dog" = 3, exceeds maxDistance=1
+    expect(findClosestMatch("cat", ["dog"], 1)).toBeUndefined();
+  });
+
+  test("returns first match when distances are tied", () => {
+    // "bat" -> "cat" = 1, "bat" -> "hat" = 1, first wins (reduce keeps first)
+    const result = findClosestMatch("bat", ["cat", "hat"]);
+    expect(result).toBe("cat");
   });
 });

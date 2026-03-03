@@ -1,8 +1,25 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/resolve API surface . has stable type surface 1`] = `
-"import { BrickKind, CompanionSkillDefinition, Result, KoiError, JsonObject, AgentManifest, KoiMiddleware, ModelHandler, ChannelAdapter, EngineAdapter, MiddlewareConfig, ModelConfig, PermissionConfig } from '@koi/core';
+"import { Result, KoiError, BrickKind, CompanionSkillDefinition, JsonObject, AgentManifest, KoiMiddleware, ModelHandler, ChannelAdapter, EngineAdapter, MiddlewareConfig, ModelConfig, PermissionConfig } from '@koi/core';
 import { SearchProvider } from '@koi/search-provider';
+
+/**
+ * Shared validation helpers for BrickDescriptor optionsValidator functions.
+ *
+ * Centralises the typeof-object boilerplate that every descriptor.ts repeats.
+ */
+
+/**
+ * Validates descriptor options, allowing null/undefined as empty object.
+ * Use for descriptors where options are optional (engines, some channels).
+ */
+declare function validateOptionalDescriptorOptions(input: unknown, label: string): Result<Record<string, unknown>, KoiError>;
+/**
+ * Validates descriptor options, requiring a non-null object.
+ * Use for descriptors where options are required (most middleware).
+ */
+declare function validateRequiredDescriptorOptions(input: unknown, label: string): Result<Record<string, unknown>, KoiError>;
 
 /**
  * Core types for the manifest resolution layer.
@@ -338,6 +355,6 @@ interface SoulManifestSlice {
  */
 declare function resolveSoul(manifest: SoulManifestSlice, registry: ResolveRegistry, context: ResolutionContext): Promise<Result<KoiMiddleware | undefined, KoiError>>;
 
-export { type BrickDescriptor, type BrickFactory, type MiddlewareResolutionResult, type OptionsValidator, type ResolutionContext, type ResolutionFailure, type ResolveApprovalHandler, type ResolveKind, type ResolveRegistry, type ResolvedManifest, aggregateErrors, createRegistry, discoverDescriptors, formatResolutionError, parseModelName, resolveChannels, resolveEngine, resolveManifest, resolveMiddleware, resolveModel, resolveOne, resolvePermissions, resolveSearch, resolveSoul };
+export { type BrickDescriptor, type BrickFactory, type MiddlewareResolutionResult, type OptionsValidator, type ResolutionContext, type ResolutionFailure, type ResolveApprovalHandler, type ResolveKind, type ResolveRegistry, type ResolvedManifest, aggregateErrors, createRegistry, discoverDescriptors, formatResolutionError, parseModelName, resolveChannels, resolveEngine, resolveManifest, resolveMiddleware, resolveModel, resolveOne, resolvePermissions, resolveSearch, resolveSoul, validateOptionalDescriptorOptions, validateRequiredDescriptorOptions };
 "
 `;

@@ -7,7 +7,7 @@
 
 import type { JsonObject, KoiError, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
-import { findClosestName } from "./errors.js";
+import { findClosestMatch } from "@koi/validation";
 import type { BrickDescriptor, ResolutionContext, ResolveKind, ResolveRegistry } from "./types.js";
 
 /**
@@ -28,7 +28,7 @@ export async function resolveOne<T>(
 
   if (descriptor === undefined) {
     const available = registry.list(kind).map((d) => d.name);
-    const suggestion = findClosestName(config.name, available);
+    const suggestion = findClosestMatch(config.name, available);
     const hint = suggestion !== undefined ? ` Did you mean "${suggestion}"?` : "";
 
     return {

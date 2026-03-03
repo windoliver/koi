@@ -6,6 +6,11 @@
  * middleware, soul, permissions, and model resolution.
  */
 
+// descriptor validation
+export {
+  validateOptionalDescriptorOptions,
+  validateRequiredDescriptorOptions,
+} from "./descriptor-validation.js";
 // discovery
 export { discoverDescriptors } from "./discover.js";
 // errors

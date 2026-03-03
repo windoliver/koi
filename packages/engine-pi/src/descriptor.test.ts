@@ -43,3 +43,26 @@ describe("engine-pi descriptor", () => {
     expect(skill.tags).toContain("engine");
   });
 });
+
+describe("optionsValidator", () => {
+  test("accepts valid object with model", () => {
+    const result = descriptor.optionsValidator({ model: "anthropic:claude-sonnet-4-5-20250929" });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects non-object input", () => {
+    const result = descriptor.optionsValidator("invalid");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+    }
+  });
+
+  test("accepts null/undefined but requires model field", () => {
+    const nullResult = descriptor.optionsValidator(null);
+    expect(nullResult.ok).toBe(false);
+
+    const undefResult = descriptor.optionsValidator(undefined);
+    expect(undefResult.ok).toBe(false);
+  });
+});

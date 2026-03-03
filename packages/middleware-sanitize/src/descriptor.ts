@@ -8,6 +8,7 @@
 import type { KoiError, KoiMiddleware, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "@koi/resolve";
+import { validateRequiredDescriptorOptions } from "@koi/resolve";
 import type { SanitizeMiddlewareConfig } from "./config.js";
 import { resolvePresets } from "./rules.js";
 import { createSanitizeMiddleware } from "./sanitize-middleware.js";
@@ -24,19 +25,12 @@ function isStringArray(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
-function validateSanitizeDescriptorOptions(input: unknown): Result<unknown, KoiError> {
-  if (input === null || input === undefined || typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Sanitize options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-
-  const opts = input as Record<string, unknown>;
+function validateSanitizeDescriptorOptions(
+  input: unknown,
+): Result<Record<string, unknown>, KoiError> {
+  const base = validateRequiredDescriptorOptions(input, "Sanitize");
+  if (!base.ok) return base;
+  const opts = base.value;
 
   if (opts.presets !== undefined) {
     if (!isStringArray(opts.presets)) {
@@ -64,7 +58,7 @@ function validateSanitizeDescriptorOptions(input: unknown): Result<unknown, KoiE
     }
   }
 
-  return { ok: true, value: input };
+  return { ok: true, value: opts };
 }
 
 /**

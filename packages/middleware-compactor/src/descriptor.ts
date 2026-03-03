@@ -9,22 +9,16 @@
 import type { KoiError, KoiMiddleware, ModelHandler, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor, ResolutionContext } from "@koi/resolve";
+import { validateRequiredDescriptorOptions } from "@koi/resolve";
 import { createCompactorMiddleware } from "./compactor-middleware.js";
 import { createMemoryCompactionStore } from "./memory-compaction-store.js";
 
-function validateCompactorDescriptorOptions(input: unknown): Result<unknown, KoiError> {
-  if (input === null || input === undefined || typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Compactor options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-
-  const opts = input as Record<string, unknown>;
+function validateCompactorDescriptorOptions(
+  input: unknown,
+): Result<Record<string, unknown>, KoiError> {
+  const base = validateRequiredDescriptorOptions(input, "Compactor");
+  if (!base.ok) return base;
+  const opts = base.value;
 
   if (
     opts.contextWindowSize !== undefined &&
@@ -54,7 +48,7 @@ function validateCompactorDescriptorOptions(input: unknown): Result<unknown, Koi
     };
   }
 
-  return { ok: true, value: input };
+  return { ok: true, value: opts };
 }
 
 /**

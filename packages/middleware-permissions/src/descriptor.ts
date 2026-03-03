@@ -8,6 +8,7 @@
 import type { KoiError, KoiMiddleware, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "@koi/resolve";
+import { validateRequiredDescriptorOptions } from "@koi/resolve";
 import type { PermissionRules } from "./engine.js";
 import { createPatternPermissionBackend } from "./engine.js";
 import { createPermissionsMiddleware } from "./permissions.js";
@@ -18,19 +19,12 @@ import { createPermissionsMiddleware } from "./permissions.js";
  * Accepts { allow?: string[], deny?: string[], ask?: string[] } — the
  * simplified manifest format (not the full PermissionsMiddlewareConfig).
  */
-function validatePermissionsDescriptorOptions(input: unknown): Result<unknown, KoiError> {
-  if (input === null || input === undefined || typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Permissions options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-
-  const opts = input as Record<string, unknown>;
+function validatePermissionsDescriptorOptions(
+  input: unknown,
+): Result<Record<string, unknown>, KoiError> {
+  const base = validateRequiredDescriptorOptions(input, "Permissions");
+  if (!base.ok) return base;
+  const opts = base.value;
 
   // Validate allow
   if (opts.allow !== undefined && !isStringArray(opts.allow)) {
@@ -68,7 +62,7 @@ function validatePermissionsDescriptorOptions(input: unknown): Result<unknown, K
     };
   }
 
-  return { ok: true, value: input };
+  return { ok: true, value: opts };
 }
 
 function isStringArray(value: unknown): value is readonly string[] {

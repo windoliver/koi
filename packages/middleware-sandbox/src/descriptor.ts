@@ -5,27 +5,12 @@
  * then creates the sandbox middleware with default trust tier profiles.
  */
 
-import type { KoiError, KoiMiddleware, Result } from "@koi/core";
+import type { KoiMiddleware } from "@koi/core";
 import type { TrustTier } from "@koi/core/ecs";
-import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { SandboxProfile } from "@koi/core/sandbox-profile";
 import type { BrickDescriptor } from "@koi/resolve";
+import { validateRequiredDescriptorOptions } from "@koi/resolve";
 import { createSandboxMiddleware } from "./sandbox-middleware.js";
-
-function validateSandboxDescriptorOptions(input: unknown): Result<unknown, KoiError> {
-  if (input === null || input === undefined || typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Sandbox options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-
-  return { ok: true, value: input };
-}
 
 /**
  * Default sandbox profiles by trust tier.
@@ -61,7 +46,7 @@ export const descriptor: BrickDescriptor<KoiMiddleware> = {
   kind: "middleware",
   name: "@koi/middleware-sandbox",
   aliases: ["sandbox"],
-  optionsValidator: validateSandboxDescriptorOptions,
+  optionsValidator: (input) => validateRequiredDescriptorOptions(input, "Sandbox"),
   factory(): KoiMiddleware {
     return createSandboxMiddleware({
       profileFor: (tier: TrustTier): SandboxProfile => DEFAULT_PROFILES[tier],

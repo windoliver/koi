@@ -6,28 +6,20 @@
  */
 
 import type { KoiError, Result } from "@koi/core/errors";
-import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { PayLedger } from "@koi/core/pay-ledger";
 import type { BrickDescriptor } from "@koi/resolve";
+import { validateRequiredDescriptorOptions } from "@koi/resolve";
 import { validatePayLedgerConfig } from "./config.js";
 import { createNexusPayLedger } from "./ledger.js";
 
-function validatePayNexusOptions(input: unknown): Result<unknown, KoiError> {
-  if (input === null || input === undefined || typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Pay-nexus options must be an object with baseUrl and apiKey",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
+function validatePayNexusOptions(input: unknown): Result<Record<string, unknown>, KoiError> {
+  const base = validateRequiredDescriptorOptions(input, "Pay Nexus");
+  if (!base.ok) return base;
 
   const result = validatePayLedgerConfig(input);
   if (!result.ok) return result;
 
-  return { ok: true, value: input };
+  return { ok: true, value: base.value };
 }
 
 export const payNexusDescriptor: BrickDescriptor<PayLedger> = {

@@ -5,9 +5,9 @@
  * Requires ANTHROPIC_API_KEY environment variable.
  */
 
-import type { CompanionSkillDefinition, EngineAdapter, KoiError, Result } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
+import type { CompanionSkillDefinition, EngineAdapter } from "@koi/core";
 import type { BrickDescriptor, ResolutionContext } from "@koi/resolve";
+import { validateOptionalDescriptorOptions } from "@koi/resolve";
 
 const CLAUDE_COMPANION_SKILL: CompanionSkillDefinition = {
   name: "engine-claude-guide",
@@ -43,20 +43,6 @@ engine:
 `,
 };
 
-function validateClaudeEngineOptions(input: unknown): Result<unknown, KoiError> {
-  if (input !== null && input !== undefined && typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Claude engine options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-  return { ok: true, value: input ?? {} };
-}
-
 /**
  * Descriptor for Claude engine adapter.
  *
@@ -72,7 +58,7 @@ export const descriptor: BrickDescriptor<EngineAdapter> = {
   description: "Claude Agent SDK engine for Anthropic-native orchestration",
   tags: ["claude", "agent-sdk", "anthropic"],
   companionSkills: [CLAUDE_COMPANION_SKILL],
-  optionsValidator: validateClaudeEngineOptions,
+  optionsValidator: (input) => validateOptionalDescriptorOptions(input, "Claude engine"),
   factory(_options, _context: ResolutionContext): EngineAdapter {
     throw new Error(
       "@koi/engine-claude requires SDK function bindings. " +

@@ -6,25 +6,11 @@
  * Application ID is read from context.env.DISCORD_APPLICATION_ID.
  */
 
-import type { ChannelAdapter, KoiError, Result } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
+import type { ChannelAdapter } from "@koi/core";
 import type { BrickDescriptor, ResolutionContext } from "@koi/resolve";
+import { validateOptionalDescriptorOptions } from "@koi/resolve";
 import type { DiscordFeatures } from "./config.js";
 import { createDiscordChannel } from "./discord-channel.js";
-
-function validateDiscordChannelOptions(input: unknown): Result<unknown, KoiError> {
-  if (input !== null && input !== undefined && typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Discord channel options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-  return { ok: true, value: input ?? {} };
-}
 
 function parseFeatures(options: Readonly<Record<string, unknown>>): DiscordFeatures | undefined {
   const features = options.features;
@@ -49,7 +35,7 @@ export const descriptor: BrickDescriptor<ChannelAdapter> = {
   kind: "channel",
   name: "@koi/channel-discord",
   aliases: ["discord"],
-  optionsValidator: validateDiscordChannelOptions,
+  optionsValidator: (input) => validateOptionalDescriptorOptions(input, "Discord channel"),
   factory(options, context: ResolutionContext): ChannelAdapter {
     const token = context.env.DISCORD_BOT_TOKEN;
     if (token === undefined || token === "") {

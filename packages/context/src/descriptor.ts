@@ -8,6 +8,7 @@
 import type { KoiError, KoiMiddleware, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "@koi/resolve";
+import { validateRequiredDescriptorOptions } from "@koi/resolve";
 import type { ContextSource } from "./types.js";
 
 function isSourceArray(value: unknown): value is readonly ContextSource[] {
@@ -22,19 +23,12 @@ function isSourceArray(value: unknown): value is readonly ContextSource[] {
   );
 }
 
-function validateContextDescriptorOptions(input: unknown): Result<unknown, KoiError> {
-  if (input === null || input === undefined || typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Context options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-
-  const opts = input as Record<string, unknown>;
+function validateContextDescriptorOptions(
+  input: unknown,
+): Result<Record<string, unknown>, KoiError> {
+  const base = validateRequiredDescriptorOptions(input, "Context");
+  if (!base.ok) return base;
+  const opts = base.value;
 
   if (opts.sources !== undefined && !isSourceArray(opts.sources)) {
     return {
@@ -47,7 +41,7 @@ function validateContextDescriptorOptions(input: unknown): Result<unknown, KoiEr
     };
   }
 
-  return { ok: true, value: input };
+  return { ok: true, value: opts };
 }
 
 /**

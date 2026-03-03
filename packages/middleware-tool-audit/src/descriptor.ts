@@ -8,21 +8,15 @@
 import type { KoiError, KoiMiddleware, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "@koi/resolve";
+import { validateRequiredDescriptorOptions } from "@koi/resolve";
 import { createToolAuditMiddleware } from "./tool-audit.js";
 
-function validateToolAuditDescriptorOptions(input: unknown): Result<unknown, KoiError> {
-  if (input === null || input === undefined || typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Tool audit options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-
-  const opts = input as Record<string, unknown>;
+function validateToolAuditDescriptorOptions(
+  input: unknown,
+): Result<Record<string, unknown>, KoiError> {
+  const base = validateRequiredDescriptorOptions(input, "Tool audit");
+  if (!base.ok) return base;
+  const opts = base.value;
 
   if (
     opts.unusedThresholdSessions !== undefined &&
@@ -128,7 +122,7 @@ function validateToolAuditDescriptorOptions(input: unknown): Result<unknown, Koi
     };
   }
 
-  return { ok: true, value: input };
+  return { ok: true, value: opts };
 }
 
 /**

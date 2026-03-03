@@ -4,8 +4,9 @@
  * Enables manifest auto-resolution for the RLM engine adapter.
  */
 
-import type { CompanionSkillDefinition, EngineAdapter, KoiError, Result } from "@koi/core";
+import type { CompanionSkillDefinition, EngineAdapter } from "@koi/core";
 import type { BrickDescriptor } from "@koi/resolve";
+import { validateOptionalDescriptorOptions } from "@koi/resolve";
 
 const RLM_COMPANION_SKILL: CompanionSkillDefinition = {
   name: "engine-rlm-guide",
@@ -40,20 +41,6 @@ engine:
 `,
 };
 
-function validateRlmEngineOptions(input: unknown): Result<unknown, KoiError> {
-  if (input !== null && input !== undefined && typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "RLM engine options must be an object",
-        retryable: false,
-      },
-    };
-  }
-  return { ok: true, value: input ?? {} };
-}
-
 /**
  * Descriptor for RLM engine adapter.
  *
@@ -68,7 +55,7 @@ export const descriptor: BrickDescriptor<EngineAdapter> = {
   description: "Recursive Language Model engine — process unbounded inputs via virtualized REPL",
   tags: ["rlm", "recursive", "unbounded-input"],
   companionSkills: [RLM_COMPANION_SKILL],
-  optionsValidator: validateRlmEngineOptions,
+  optionsValidator: (input) => validateOptionalDescriptorOptions(input, "RLM engine"),
   factory(): EngineAdapter {
     throw new Error(
       "@koi/engine-rlm requires a modelCall handler. " +

@@ -5,23 +5,8 @@
  * Creates a forge runtime that auto-discovers forged artifacts.
  */
 
-import type { KoiError, Result } from "@koi/core";
-import { RETRYABLE_DEFAULTS } from "@koi/core/errors";
 import type { BrickDescriptor } from "@koi/resolve";
-
-function validateForgeDescriptorOptions(input: unknown): Result<unknown, KoiError> {
-  if (input !== null && input !== undefined && typeof input !== "object") {
-    return {
-      ok: false,
-      error: {
-        code: "VALIDATION",
-        message: "Forge options must be an object",
-        retryable: RETRYABLE_DEFAULTS.VALIDATION,
-      },
-    };
-  }
-  return { ok: true, value: input ?? {} };
-}
+import { validateOptionalDescriptorOptions } from "@koi/resolve";
 
 /**
  * Descriptor for forge component provider.
@@ -35,7 +20,7 @@ export const descriptor: BrickDescriptor<unknown> = {
   kind: "forge",
   name: "@koi/forge",
   aliases: ["forge"],
-  optionsValidator: validateForgeDescriptorOptions,
+  optionsValidator: (input) => validateOptionalDescriptorOptions(input, "Forge"),
   factory(): unknown {
     throw new Error(
       "@koi/forge requires a ForgeStore and TieredSandboxExecutor. " +
