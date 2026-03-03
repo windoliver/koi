@@ -279,6 +279,9 @@ describe("mixed-source skill loading", () => {
     await provider.attach(stubAgent);
 
     const events: ComponentEvent[] = [];
+    if (provider.watch === undefined) {
+      throw new Error("Expected provider.watch to be defined");
+    }
     provider.watch((event) => {
       events.push(event);
     });
