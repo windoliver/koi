@@ -44,6 +44,15 @@ describe("createE2bAdapter", () => {
     }
   });
 
+  test("returns error without injected client", () => {
+    const result = createE2bAdapter({ apiKey: "test-key" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("client");
+    }
+  });
+
   test("create returns a working SandboxInstance", async () => {
     const sdk = createMockSdk();
     const client = createMockClient(sdk);
@@ -140,20 +149,5 @@ describe("createE2bAdapter", () => {
     // mkdir, nexus-fuse, ls — 3 calls from mountNexusFuse
     expect(sdk.commands.run).toHaveBeenCalledTimes(3);
     expect(instance).toBeDefined();
-  });
-
-  test("throws without injected client", async () => {
-    const result = createE2bAdapter({ apiKey: "test-key" });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    await expect(
-      result.value.create({
-        tier: "sandbox",
-        filesystem: {},
-        network: { allow: false },
-        resources: {},
-      }),
-    ).rejects.toThrow("E2B SDK client not provided");
   });
 });

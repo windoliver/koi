@@ -31,6 +31,15 @@ describe("createDaytonaAdapter", () => {
     }
   });
 
+  test("returns error without injected client", () => {
+    const result = createDaytonaAdapter({ apiKey: "key" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("client");
+    }
+  });
+
   test("create returns working instance", async () => {
     const sdk = createMockSdk();
     const result = createDaytonaAdapter({ apiKey: "key", client: createMockClient(sdk) });
@@ -122,18 +131,5 @@ describe("createDaytonaAdapter", () => {
     // mkdir, nexus-fuse, ls — 3 calls from mountNexusFuse
     expect(sdk.commands.run).toHaveBeenCalledTimes(3);
     expect(instance).toBeDefined();
-  });
-
-  test("throws without injected client", async () => {
-    const result = createDaytonaAdapter({ apiKey: "key" });
-    if (!result.ok) return;
-    await expect(
-      result.value.create({
-        tier: "sandbox",
-        filesystem: {},
-        network: { allow: false },
-        resources: {},
-      }),
-    ).rejects.toThrow("Daytona SDK client not provided");
   });
 });

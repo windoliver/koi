@@ -31,6 +31,15 @@ describe("createVercelAdapter", () => {
     }
   });
 
+  test("returns error without injected client", () => {
+    const result = createVercelAdapter({ apiToken: "token" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("client");
+    }
+  });
+
   test("create returns working instance", async () => {
     const sdk = createMockSdk();
     const result = createVercelAdapter({ apiToken: "token", client: createMockClient(sdk) });
@@ -43,18 +52,5 @@ describe("createVercelAdapter", () => {
     });
     expect((await instance.exec("echo", ["hi"])).exitCode).toBe(0);
     await instance.destroy();
-  });
-
-  test("throws without injected client", async () => {
-    const result = createVercelAdapter({ apiToken: "token" });
-    if (!result.ok) return;
-    await expect(
-      result.value.create({
-        tier: "sandbox",
-        filesystem: {},
-        network: { allow: false },
-        resources: {},
-      }),
-    ).rejects.toThrow("Vercel SDK client not provided");
   });
 });

@@ -1,9 +1,25 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
+import type { DockerClient } from "./types.js";
 import { validateDockerConfig } from "./validate.js";
 
+const mockClient: DockerClient = {
+  createContainer: mock(() =>
+    Promise.resolve({} as Awaited<ReturnType<DockerClient["createContainer"]>>),
+  ),
+};
+
 describe("validateDockerConfig", () => {
-  test("returns ok with default config", () => {
+  test("returns error when client not provided", () => {
     const result = validateDockerConfig({});
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("client");
+    }
+  });
+
+  test("returns ok with default config and client", () => {
+    const result = validateDockerConfig({ client: mockClient });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.socketPath).toBe("/var/run/docker.sock");
@@ -12,7 +28,10 @@ describe("validateDockerConfig", () => {
   });
 
   test("uses custom socketPath when provided", () => {
-    const result = validateDockerConfig({ socketPath: "/custom/docker.sock" });
+    const result = validateDockerConfig({
+      socketPath: "/custom/docker.sock",
+      client: mockClient,
+    });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.socketPath).toBe("/custom/docker.sock");
@@ -20,7 +39,7 @@ describe("validateDockerConfig", () => {
   });
 
   test("uses custom image when provided", () => {
-    const result = validateDockerConfig({ image: "node:20" });
+    const result = validateDockerConfig({ image: "node:20", client: mockClient });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.image).toBe("node:20");
@@ -28,7 +47,7 @@ describe("validateDockerConfig", () => {
   });
 
   test("returns error for empty socketPath", () => {
-    const result = validateDockerConfig({ socketPath: "" });
+    const result = validateDockerConfig({ socketPath: "", client: mockClient });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
@@ -37,7 +56,7 @@ describe("validateDockerConfig", () => {
   });
 
   test("returns error for empty image", () => {
-    const result = validateDockerConfig({ image: "" });
+    const result = validateDockerConfig({ image: "", client: mockClient });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
@@ -49,6 +68,7 @@ describe("validateDockerConfig", () => {
     const result = validateDockerConfig({
       socketPath: "/tmp/docker.sock",
       image: "alpine:3.19",
+      client: mockClient,
     });
     expect(result.ok).toBe(true);
     if (result.ok) {

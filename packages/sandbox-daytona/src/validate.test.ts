@@ -1,9 +1,25 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
+import type { DaytonaClient } from "./types.js";
 import { validateDaytonaConfig } from "./validate.js";
 
+const mockClient: DaytonaClient = {
+  createSandbox: mock(() =>
+    Promise.resolve({} as Awaited<ReturnType<DaytonaClient["createSandbox"]>>),
+  ),
+};
+
 describe("validateDaytonaConfig", () => {
-  test("returns ok with valid apiKey", () => {
-    const result = validateDaytonaConfig({ apiKey: "test-key" });
+  test("returns error when client not provided", () => {
+    const result = validateDaytonaConfig({ apiKey: "key" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("client");
+    }
+  });
+
+  test("returns ok with valid apiKey and client", () => {
+    const result = validateDaytonaConfig({ apiKey: "test-key", client: mockClient });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.apiKey).toBe("test-key");
@@ -15,7 +31,7 @@ describe("validateDaytonaConfig", () => {
     const original = process.env.DAYTONA_API_KEY;
     process.env.DAYTONA_API_KEY = "env-key";
     try {
-      const result = validateDaytonaConfig({});
+      const result = validateDaytonaConfig({ client: mockClient });
       expect(result.ok).toBe(true);
       if (result.ok) expect(result.value.apiKey).toBe("env-key");
     } finally {
@@ -28,7 +44,7 @@ describe("validateDaytonaConfig", () => {
     const original = process.env.DAYTONA_API_KEY;
     delete process.env.DAYTONA_API_KEY;
     try {
-      const result = validateDaytonaConfig({});
+      const result = validateDaytonaConfig({ client: mockClient });
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.error.code).toBe("VALIDATION");
     } finally {
@@ -40,6 +56,7 @@ describe("validateDaytonaConfig", () => {
     const result = validateDaytonaConfig({
       apiKey: "key",
       apiUrl: "https://custom.daytona.io/api",
+      client: mockClient,
     });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.apiUrl).toBe("https://custom.daytona.io/api");
@@ -49,7 +66,7 @@ describe("validateDaytonaConfig", () => {
     const original = process.env.DAYTONA_API_URL;
     process.env.DAYTONA_API_URL = "https://env.daytona.io/api";
     try {
-      const result = validateDaytonaConfig({ apiKey: "key" });
+      const result = validateDaytonaConfig({ apiKey: "key", client: mockClient });
       expect(result.ok).toBe(true);
       if (result.ok) expect(result.value.apiUrl).toBe("https://env.daytona.io/api");
     } finally {
@@ -62,7 +79,7 @@ describe("validateDaytonaConfig", () => {
     const originalUrl = process.env.DAYTONA_API_URL;
     delete process.env.DAYTONA_API_URL;
     try {
-      const result = validateDaytonaConfig({ apiKey: "key" });
+      const result = validateDaytonaConfig({ apiKey: "key", client: mockClient });
       expect(result.ok).toBe(true);
       if (result.ok) expect(result.value.apiUrl).toBe("https://app.daytona.io/api");
     } finally {
@@ -71,7 +88,7 @@ describe("validateDaytonaConfig", () => {
   });
 
   test("uses custom target", () => {
-    const result = validateDaytonaConfig({ apiKey: "key", target: "eu" });
+    const result = validateDaytonaConfig({ apiKey: "key", target: "eu", client: mockClient });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.target).toBe("eu");
   });
@@ -79,6 +96,7 @@ describe("validateDaytonaConfig", () => {
   test("validates volume mount paths must be absolute", () => {
     const result = validateDaytonaConfig({
       apiKey: "key",
+      client: mockClient,
       volumes: [{ volumeId: "vol-1", mountPath: "relative" }],
     });
     expect(result.ok).toBe(false);
@@ -88,6 +106,7 @@ describe("validateDaytonaConfig", () => {
   test("accepts valid volume mount paths", () => {
     const result = validateDaytonaConfig({
       apiKey: "key",
+      client: mockClient,
       volumes: [{ volumeId: "vol-1", mountPath: "/mnt/data" }],
     });
     expect(result.ok).toBe(true);

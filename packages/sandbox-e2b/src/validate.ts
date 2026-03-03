@@ -3,18 +3,31 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
-import type { E2bAdapterConfig } from "./types.js";
+import type { E2bAdapterConfig, E2bClient } from "./types.js";
 
-/** Validated E2B config with resolved API key. */
+/** Validated E2B config with resolved API key and guaranteed client. */
 export interface ValidatedE2bConfig {
   readonly apiKey: string;
   readonly template?: string;
   readonly mounts?: E2bAdapterConfig["mounts"];
+  readonly client: E2bClient;
 }
 
 /** Validate E2B adapter configuration, resolving env fallbacks. */
 export function validateE2bConfig(config: E2bAdapterConfig): Result<ValidatedE2bConfig, KoiError> {
   const apiKey = config.apiKey ?? process.env.E2B_API_KEY;
+
+  if (config.client === undefined) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message:
+          "E2B SDK client is required: pass a client in E2bAdapterConfig for production use, or use a mock client for testing",
+        retryable: false,
+      },
+    };
+  }
 
   if (apiKey === undefined || apiKey === "") {
     return {
@@ -44,6 +57,7 @@ export function validateE2bConfig(config: E2bAdapterConfig): Result<ValidatedE2b
 
   const result: ValidatedE2bConfig = {
     apiKey,
+    client: config.client,
     ...(config.template !== undefined ? { template: config.template } : {}),
     ...(config.mounts !== undefined ? { mounts: config.mounts } : {}),
   };

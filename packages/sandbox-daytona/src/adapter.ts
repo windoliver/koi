@@ -16,35 +16,26 @@ export function createDaytonaAdapter(
   if (!validated.ok) return validated;
 
   const resolvedConfig = validated.value;
-  const client = config.client;
 
   return {
     ok: true,
     value: {
       name: "daytona",
       create: async (_profile: SandboxProfile) => {
-        if (client !== undefined) {
-          const opts: DaytonaCreateOpts = {
-            apiKey: resolvedConfig.apiKey,
-            apiUrl: resolvedConfig.apiUrl,
-            target: resolvedConfig.target,
-            ...(resolvedConfig.volumes !== undefined && resolvedConfig.volumes.length > 0
-              ? { volumes: resolvedConfig.volumes }
-              : {}),
-          };
-          const sdkSandbox = await client.createSandbox(opts);
-          const instance = createDaytonaInstance(sdkSandbox);
-          if (_profile.nexusMounts !== undefined && _profile.nexusMounts.length > 0) {
-            await mountNexusFuse(instance, _profile.nexusMounts);
-          }
-          return instance;
+        const opts: DaytonaCreateOpts = {
+          apiKey: resolvedConfig.apiKey,
+          apiUrl: resolvedConfig.apiUrl,
+          target: resolvedConfig.target,
+          ...(resolvedConfig.volumes !== undefined && resolvedConfig.volumes.length > 0
+            ? { volumes: resolvedConfig.volumes }
+            : {}),
+        };
+        const sdkSandbox = await resolvedConfig.client.createSandbox(opts);
+        const instance = createDaytonaInstance(sdkSandbox);
+        if (_profile.nexusMounts !== undefined && _profile.nexusMounts.length > 0) {
+          await mountNexusFuse(instance, _profile.nexusMounts);
         }
-
-        throw new Error(
-          "Daytona SDK client not provided. " +
-            "Pass a client in DaytonaAdapterConfig for production use, " +
-            "or use a mock client for testing.",
-        );
+        return instance;
       },
     },
   };

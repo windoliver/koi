@@ -31,6 +31,15 @@ describe("createCloudflareAdapter", () => {
     }
   });
 
+  test("returns error without injected client", () => {
+    const result = createCloudflareAdapter({ apiToken: "token" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("client");
+    }
+  });
+
   test("create returns working instance", async () => {
     const sdk = createMockSdk();
     const result = createCloudflareAdapter({ apiToken: "token", client: createMockClient(sdk) });
@@ -102,18 +111,5 @@ describe("createCloudflareAdapter", () => {
     // mkdir, nexus-fuse, ls — 3 calls from mountNexusFuse
     expect(sdk.commands.run).toHaveBeenCalledTimes(3);
     expect(instance).toBeDefined();
-  });
-
-  test("throws without injected client", async () => {
-    const result = createCloudflareAdapter({ apiToken: "token" });
-    if (!result.ok) return;
-    await expect(
-      result.value.create({
-        tier: "sandbox",
-        filesystem: {},
-        network: { allow: false },
-        resources: {},
-      }),
-    ).rejects.toThrow("Cloudflare SDK client not provided");
   });
 });
