@@ -178,6 +178,7 @@ interface PromoteResult {
 type ManifestParseResult = {
     readonly ok: true;
     readonly warnings: readonly string[];
+    readonly engine?: unknown;
 } | {
     readonly ok: false;
     readonly error: string;
@@ -322,7 +323,7 @@ type ForgeError = {
     readonly message: string;
 } | {
     readonly stage: "resolve";
-    readonly code: "AUDIT_FAILED" | "INSTALL_FAILED" | "INSTALL_TIMEOUT" | "INTEGRITY_MISMATCH" | "WORKSPACE_FAILED";
+    readonly code: "AUDIT_FAILED" | "ENGINE_RESOLVE_FAILED" | "INSTALL_FAILED" | "INSTALL_TIMEOUT" | "INTEGRITY_MISMATCH" | "WORKSPACE_FAILED";
     readonly message: string;
 } | {
     readonly stage: "store";
