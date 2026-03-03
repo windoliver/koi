@@ -2,18 +2,11 @@ import { afterAll, describe, expect, mock, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
+import type { ChainId, NodeId, PutOptions, SnapshotChainStore, SnapshotNode } from "@koi/core";
 import type { MemoryComponent, SessionId } from "@koi/core/ecs";
 import type { KoiError, Result } from "@koi/core/errors";
 import type { InboundMessage } from "@koi/core/message";
 import type { ModelHandler } from "@koi/core/middleware";
-import type {
-  ChainId,
-  NodeId,
-  PutOptions,
-  SnapshotChainStore,
-  SnapshotNode,
-} from "@koi/core/snapshot-chain";
 import type { FsSearchIndexer, FsSearchRetriever } from "@koi/memory-fs";
 import { createContextArena } from "./arena-factory.js";
 import type { ContextArenaConfig } from "./types.js";
