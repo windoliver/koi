@@ -1,0 +1,124 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/middleware-call-dedup API surface . has stable type surface 1`] = `
+"import { ToolResponse, KoiMiddleware } from '@koi/core/middleware';
+import { JsonObject } from '@koi/core/common';
+import { Result, KoiError } from '@koi/core/errors';
+import { KoiMiddleware as KoiMiddleware$1 } from '@koi/core';
+import { BrickDescriptor } from '@koi/resolve';
+
+/**
+ * Call dedup types — cache store interface and cache entry types.
+ */
+
+/** A cached tool response with an expiration timestamp. */
+interface CacheEntry {
+    readonly response: ToolResponse;
+    readonly expiresAt: number;
+}
+/**
+ * Key-value cache store for deduplicating tool call results.
+ * Implementations may be sync (in-memory) or async (network).
+ */
+interface CallDedupStore {
+    readonly get: (key: string) => CacheEntry | undefined | Promise<CacheEntry | undefined>;
+    readonly set: (key: string, entry: CacheEntry) => void | Promise<void>;
+    readonly delete: (key: string) => boolean | Promise<boolean>;
+    readonly size: () => number | Promise<number>;
+    readonly clear: () => void | Promise<void>;
+}
+/** Info passed to onCacheHit callbacks. */
+interface CacheHitInfo {
+    readonly sessionId: string;
+    readonly toolId: string;
+    readonly cacheKey: string;
+}
+
+/**
+ * Call dedup middleware configuration and validation.
+ */
+
+/** Tools excluded from caching by default (mutating / side-effecting). */
+declare const DEFAULT_EXCLUDE: readonly ["shell_exec", "file_write", "file_delete", "file_create", "agent_send", "agent_spawn"];
+interface CallDedupConfig {
+    /** Cache TTL in milliseconds. Default: 300_000 (5 min). */
+    readonly ttlMs?: number | undefined;
+    /** Maximum cache entries before LRU eviction. Default: 100. */
+    readonly maxEntries?: number | undefined;
+    /** Whitelist — only cache these tools. undefined = all non-excluded tools. */
+    readonly include?: readonly string[] | undefined;
+    /** Blacklist — merged with DEFAULT_EXCLUDE. */
+    readonly exclude?: readonly string[] | undefined;
+    /** Custom hash function for cache key generation. Must include sessionId for session isolation. */
+    readonly hashFn?: ((sessionId: string, toolId: string, input: JsonObject) => string) | undefined;
+    /** Clock injection for deterministic TTL tests. */
+    readonly now?: (() => number) | undefined;
+    /** Custom cache store. Default: in-memory LRU store. */
+    readonly store?: CallDedupStore | undefined;
+    /** Callback fired on cache hits. */
+    readonly onCacheHit?: ((info: CacheHitInfo) => void) | undefined;
+}
+/**
+ * Validates raw config input into a typed CallDedupConfig.
+ * Empty \`{}\` is valid (all defaults apply).
+ */
+declare function validateCallDedupConfig(config: unknown): Result<CallDedupConfig, KoiError>;
+
+/**
+ * Call dedup middleware — caches deterministic tool call results.
+ *
+ * Identical tool calls (same sessionId + toolId + input) within the TTL
+ * return the cached response instantly, avoiding redundant execution.
+ *
+ * Priority 185: runs after call-limits (175), before pay (200).
+ */
+
+/**
+ * Creates a call dedup middleware that caches deterministic tool call results.
+ *
+ * Tools in the exclude list (merged with DEFAULT_EXCLUDE) always execute.
+ * If an include list is provided, only listed tools are cached (minus excludes).
+ * Errors, blocked responses, and exceptions are never cached.
+ */
+declare function createCallDedupMiddleware(config?: CallDedupConfig): KoiMiddleware;
+
+/**
+ * BrickDescriptor for @koi/middleware-call-dedup.
+ *
+ * Enables manifest auto-resolution: validates call-dedup options
+ * from koi.yaml, then creates the dedup middleware.
+ *
+ * Usage in koi.yaml:
+ *   middleware:
+ *     - name: call-dedup
+ *       options:
+ *         ttlMs: 60000
+ *         exclude: [my_custom_mutation_tool]
+ */
+
+/**
+ * Descriptor for call-dedup middleware.
+ *
+ * Creates a dedup middleware from validated YAML options.
+ * Uses in-memory LRU store by default.
+ */
+declare const descriptor: BrickDescriptor<KoiMiddleware$1>;
+
+/**
+ * In-memory dedup store — Map-backed, LRU eviction, sync returns.
+ */
+
+/**
+ * Creates a Map-backed dedup store with LRU eviction.
+ *
+ * LRU is implemented via Map insertion order:
+ * - \`get()\` deletes and re-inserts the entry to promote it
+ * - \`set()\` evicts the oldest entry when at capacity
+ *
+ * All operations are synchronous (no async overhead for the common case).
+ */
+declare function createInMemoryDedupStore(maxEntries: number): CallDedupStore;
+
+export { type CacheEntry, type CacheHitInfo, type CallDedupConfig, type CallDedupStore, DEFAULT_EXCLUDE, createCallDedupMiddleware, createInMemoryDedupStore, descriptor, validateCallDedupConfig };
+"
+`;

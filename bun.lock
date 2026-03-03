@@ -1137,6 +1137,18 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/middleware-call-dedup": {
+      "name": "@koi/middleware-call-dedup",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "@koi/resolve": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/middleware-call-limits": {
       "name": "@koi/middleware-call-limits",
       "version": "0.0.0",
@@ -2872,6 +2884,8 @@
     "@koi/middleware-ace": ["@koi/middleware-ace@workspace:packages/middleware-ace"],
 
     "@koi/middleware-audit": ["@koi/middleware-audit@workspace:packages/middleware-audit"],
+
+    "@koi/middleware-call-dedup": ["@koi/middleware-call-dedup@workspace:packages/middleware-call-dedup"],
 
     "@koi/middleware-call-limits": ["@koi/middleware-call-limits@workspace:packages/middleware-call-limits"],
 
