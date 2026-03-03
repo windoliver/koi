@@ -2199,6 +2199,20 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/tool-ask-guide": {
+      "name": "@koi/tool-ask-guide",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/search-provider": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+        "@koi/validation": "workspace:*",
+        "zod": "4.3.6",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/tool-ask-user": {
       "name": "@koi/tool-ask-user",
       "version": "0.0.0",
@@ -3202,6 +3216,8 @@
     "@koi/test-utils": ["@koi/test-utils@workspace:packages/test-utils"],
 
     "@koi/token-estimator": ["@koi/token-estimator@workspace:packages/token-estimator"],
+
+    "@koi/tool-ask-guide": ["@koi/tool-ask-guide@workspace:packages/tool-ask-guide"],
 
     "@koi/tool-ask-user": ["@koi/tool-ask-user@workspace:packages/tool-ask-user"],
 

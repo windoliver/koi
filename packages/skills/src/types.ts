@@ -71,6 +71,28 @@ export function isAtOrAbove(current: SkillLoadLevel, target: SkillLoadLevel): bo
   return LEVEL_ORDER[current] >= LEVEL_ORDER[target];
 }
 
+// ---------------------------------------------------------------------------
+// Include resolution
+// ---------------------------------------------------------------------------
+
+/** A resolved include file with its path and content. */
+export interface ResolvedInclude {
+  readonly path: string;
+  readonly content: string;
+}
+
+/** Options for resolving `includes` directives in SKILL.md frontmatter. */
+export interface IncludeResolutionOptions {
+  /** Root directory for security boundary — resolved paths must stay within this. */
+  readonly skillsRoot: string;
+  /** Maximum recursion depth for nested includes. Default: 3. */
+  readonly maxDepth?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Progressive provider
+// ---------------------------------------------------------------------------
+
 /** Extended ComponentProvider with dynamic level promotion. */
 export interface ProgressiveSkillProvider extends ComponentProvider {
   /** Promote a skill to a higher load level. No-op if already at target level. */
