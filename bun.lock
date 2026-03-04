@@ -1351,6 +1351,18 @@
         "@koi/test-utils": "workspace:*",
       },
     },
+    "packages/mm/middleware-collective-memory": {
+      "name": "@koi/middleware-collective-memory",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
     "packages/mm/middleware-compactor": {
       "name": "@koi/middleware-compactor",
       "version": "0.0.0",
@@ -3092,6 +3104,8 @@
     "@koi/middleware-call-dedup": ["@koi/middleware-call-dedup@workspace:packages/middleware/middleware-call-dedup"],
 
     "@koi/middleware-call-limits": ["@koi/middleware-call-limits@workspace:packages/middleware/middleware-call-limits"],
+
+    "@koi/middleware-collective-memory": ["@koi/middleware-collective-memory@workspace:packages/mm/middleware-collective-memory"],
 
     "@koi/middleware-compactor": ["@koi/middleware-compactor@workspace:packages/mm/middleware-compactor"],
 

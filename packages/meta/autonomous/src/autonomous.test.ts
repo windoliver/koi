@@ -107,6 +107,41 @@ describe("createAutonomousAgent", () => {
     expect(mw[1]?.name).toBe("compactor-mw");
   });
 
+  test("middleware includes collectiveMemoryMiddleware when provided", () => {
+    const harness = createMockHarness({ middlewareName: "lr-mw" });
+    const scheduler = createMockScheduler();
+    const collectiveMemory = createMockMiddleware("collective-memory-mw");
+    const agent = createAutonomousAgent({
+      harness,
+      scheduler,
+      collectiveMemoryMiddleware: collectiveMemory,
+    });
+
+    const mw = agent.middleware();
+    expect(mw).toHaveLength(2);
+    expect(mw[0]?.name).toBe("lr-mw");
+    expect(mw[1]?.name).toBe("collective-memory-mw");
+  });
+
+  test("middleware includes both compactor and collectiveMemory when both provided", () => {
+    const harness = createMockHarness({ middlewareName: "lr-mw" });
+    const scheduler = createMockScheduler();
+    const compactor = createMockMiddleware("compactor-mw");
+    const collectiveMemory = createMockMiddleware("collective-memory-mw");
+    const agent = createAutonomousAgent({
+      harness,
+      scheduler,
+      compactorMiddleware: compactor,
+      collectiveMemoryMiddleware: collectiveMemory,
+    });
+
+    const mw = agent.middleware();
+    expect(mw).toHaveLength(3);
+    expect(mw[0]?.name).toBe("lr-mw");
+    expect(mw[1]?.name).toBe("compactor-mw");
+    expect(mw[2]?.name).toBe("collective-memory-mw");
+  });
+
   test("providers returns plan_autonomous provider by default", () => {
     const harness = createMockHarness();
     const scheduler = createMockScheduler();

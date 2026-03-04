@@ -1,7 +1,7 @@
 /**
  * Types for the context hydration system.
  *
- * Defines a discriminated union of 5 source kinds that can be declared
+ * Defines a discriminated union of 6 source kinds that can be declared
  * in koi.yaml to pre-load context at session start.
  */
 
@@ -24,7 +24,13 @@ export interface SourceBase {
  * Discriminated union of context source kinds.
  * Each source specifies what context to pre-load and how.
  */
-export type ContextSource = TextSource | FileSource | MemorySource | SkillSource | ToolSchemaSource;
+export type ContextSource =
+  | TextSource
+  | FileSource
+  | MemorySource
+  | SkillSource
+  | ToolSchemaSource
+  | CollectiveMemoryContextSource;
 
 export interface TextSource extends SourceBase {
   readonly kind: "text";
@@ -49,6 +55,12 @@ export interface SkillSource extends SourceBase {
 export interface ToolSchemaSource extends SourceBase {
   readonly kind: "tool_schema";
   readonly tools?: readonly string[] | undefined;
+}
+
+export interface CollectiveMemoryContextSource extends SourceBase {
+  readonly kind: "collective_memory";
+  /** Optional override brick ID. Default: resolved from agent's own brick. */
+  readonly brickId?: string | undefined;
 }
 
 /** Per-slot overrides for bootstrap file resolution. */

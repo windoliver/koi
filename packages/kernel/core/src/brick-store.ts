@@ -124,6 +124,70 @@ export const DEFAULT_TRAIL_CONFIG: TrailConfig = Object.freeze({
 });
 
 // ---------------------------------------------------------------------------
+// Collective memory — cross-run learnings attached to brick artifacts
+// ---------------------------------------------------------------------------
+
+/** Category taxonomy for collective memory entries. */
+export type CollectiveMemoryCategory =
+  | "gotcha" // pitfalls, common mistakes
+  | "heuristic" // rules of thumb
+  | "preference" // style/approach preferences
+  | "correction" // corrected misconceptions
+  | "pattern" // discovered reusable patterns
+  | "context"; // general domain context
+
+/** Provenance for a collective memory entry. */
+export interface CollectiveMemorySource {
+  readonly agentId: string;
+  readonly runId: string;
+  readonly timestamp: number; // epoch ms
+}
+
+/** A single learning entry in collective memory. */
+export interface CollectiveMemoryEntry {
+  readonly id: string;
+  readonly content: string;
+  readonly category: CollectiveMemoryCategory;
+  readonly source: CollectiveMemorySource;
+  readonly createdAt: number;
+  readonly accessCount: number;
+  readonly lastAccessedAt: number;
+}
+
+/** Collective memory state attached to a brick artifact. */
+export interface CollectiveMemory {
+  readonly entries: readonly CollectiveMemoryEntry[];
+  readonly totalTokens: number;
+  readonly generation: number;
+  readonly lastCompactedAt?: number | undefined;
+}
+
+/** Config defaults for collective memory thresholds. */
+export interface CollectiveMemoryDefaults {
+  readonly maxEntries: number;
+  readonly maxTokens: number;
+  readonly coldAgeDays: number;
+  readonly injectionBudget: number;
+  readonly dedupThreshold: number;
+}
+
+/** Empty collective memory — immutable singleton for newly created bricks. */
+export const DEFAULT_COLLECTIVE_MEMORY: CollectiveMemory = Object.freeze({
+  entries: Object.freeze([]) as readonly CollectiveMemoryEntry[],
+  totalTokens: 0,
+  generation: 0,
+});
+
+/** Frozen default thresholds for collective memory operations. */
+export const COLLECTIVE_MEMORY_DEFAULTS: CollectiveMemoryDefaults = Object.freeze({
+  maxEntries: 50,
+  maxTokens: 8000,
+  coldAgeDays: 30,
+  injectionBudget: 2000,
+  dedupThreshold: 0.6,
+});
+
+// ---------------------------------------------------------------------------
 // Brick artifact — discriminated union on `kind`
 // ---------------------------------------------------------------------------
 
@@ -160,6 +224,8 @@ export interface BrickArtifactBase {
   readonly driftContext?: BrickDriftContext | undefined;
   /** Composition metadata — how this brick was assembled. Undefined = not composed. */
   readonly composition?: BrickComposition | undefined;
+  /** Cross-run learnings accumulated by workers of this brick type. */
+  readonly collectiveMemory?: CollectiveMemory | undefined;
 }
 
 export interface ToolArtifact extends BrickArtifactBase {
@@ -269,6 +335,8 @@ export interface BrickUpdate {
   readonly trailStrength?: number | undefined;
   /** Updated drift context (replaces entire drift context object). */
   readonly driftContext?: BrickDriftContext | undefined;
+  /** Updated collective memory (replaces entire collective memory object). */
+  readonly collectiveMemory?: CollectiveMemory | undefined;
 }
 
 /** Compile-time check: every key of BrickUpdate must exist on BrickArtifactBase. */

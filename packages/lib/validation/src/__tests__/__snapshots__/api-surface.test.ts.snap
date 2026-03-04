@@ -1,7 +1,7 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/validation API surface . has stable type surface 1`] = `
-"import { BrickArtifactBase, BrickUpdate, Result, BrickArtifact, KoiError, PipelineStep, BrickFitnessMetrics, TrustTier, LatencySampler, MutationPressurePolicy, MutationPressure, ForgeQuery, TrailConfig, StoreChangeNotifier } from '@koi/core';
+"import { BrickArtifactBase, BrickUpdate, Result, BrickArtifact, KoiError, CollectiveMemory, CollectiveMemoryDefaults, CollectiveMemoryEntry, PipelineStep, BrickFitnessMetrics, TrustTier, LatencySampler, MutationPressurePolicy, MutationPressure, ForgeQuery, TrailConfig, StoreChangeNotifier } from '@koi/core';
 import { z } from 'zod';
 
 /**
@@ -34,6 +34,44 @@ declare function applyBrickUpdate<T extends BrickArtifactBase>(existing: T, upda
  * @param source - Backend-agnostic context for error messages (file path, DB row id, etc.)
  */
 declare function validateBrickArtifact(data: unknown, source: string): Result<BrickArtifact, KoiError>;
+
+/**
+ * Collective memory — pure scoring, deduplication, and compaction functions.
+ *
+ * All functions are side-effect-free: they take entries + config, return new arrays.
+ * Used by middleware-collective-memory (L2) for injection ordering and storage compaction.
+ */
+
+/**
+ * Computes a priority score for a memory entry using exponential decay.
+ *
+ * Formula: \`accessCount * e^(-λ * elapsedDays)\` where λ = ln(2) / halfLifeDays.
+ * Higher score → more relevant for injection.
+ */
+declare function computeMemoryPriority(entry: CollectiveMemoryEntry, nowMs: number, halfLifeDays?: number): number;
+/**
+ * Removes near-duplicate entries based on Jaccard similarity.
+ * When two entries are similar above \`threshold\`, keeps the one with higher priority.
+ *
+ * O(n²) — acceptable for ≤50 entries.
+ */
+declare function deduplicateEntries(entries: readonly CollectiveMemoryEntry[], threshold?: number, nowMs?: number): readonly CollectiveMemoryEntry[];
+/**
+ * Selects entries that fit within a token budget, sorted by priority (highest first).
+ * Uses a heuristic \`chars / charsPerToken\` estimate for token counting.
+ */
+declare function selectEntriesWithinBudget(entries: readonly CollectiveMemoryEntry[], maxTokens: number, charsPerToken?: number, nowMs?: number): readonly CollectiveMemoryEntry[];
+/**
+ * Removes entries with \`accessCount === 0\` older than \`coldAgeDays\`.
+ * Entries that have been accessed at least once are never pruned.
+ */
+declare function pruneStaleEntries(entries: readonly CollectiveMemoryEntry[], coldAgeDays: number, nowMs?: number): readonly CollectiveMemoryEntry[];
+/**
+ * Full Phase 1 compaction pipeline: prune → dedup → trim to maxEntries → update generation.
+ *
+ * Returns a new CollectiveMemory object with compacted entries and incremented generation.
+ */
+declare function compactEntries(memory: CollectiveMemory, defaults?: CollectiveMemoryDefaults, nowMs?: number): CollectiveMemory;
 
 /**
  * Pipeline composition validation — structural schema compatibility
@@ -336,6 +374,6 @@ declare function zodToKoiError(zodError: z.core.$ZodError, prefix?: string): Koi
  */
 declare function validateWith<T>(schema: z.ZodType<T>, raw: unknown, prefix?: string): Result<T, KoiError>;
 
-export { DEFAULT_DECAY_THRESHOLDS, DEFAULT_FITNESS_SCORING_CONFIG, type DecayThresholds, type FitnessScoringConfig, type PipelineValidation, SEVERITY_ORDER, type SchemaCompatibility, type Severity, type SortBricksOptions, applyBrickUpdate, checkSchemaCompatibility, computeBrickFitness, computeDrift, computeEffectiveTrailStrength, computeMutationPressure, computePercentile, computeTrailReinforcement, createLatencySampler, createMemoryStoreChangeNotifier, evaluateTrustDecay, findClosestMatch, isTrailEvaporated, levenshteinDistance, matchesBrickQuery, mergeSamplers, recordLatency, severityAtOrAbove, sortBricks, validateBrickArtifact, validatePipeline, validateWith, zodToKoiError };
+export { DEFAULT_DECAY_THRESHOLDS, DEFAULT_FITNESS_SCORING_CONFIG, type DecayThresholds, type FitnessScoringConfig, type PipelineValidation, SEVERITY_ORDER, type SchemaCompatibility, type Severity, type SortBricksOptions, applyBrickUpdate, checkSchemaCompatibility, compactEntries, computeBrickFitness, computeDrift, computeEffectiveTrailStrength, computeMemoryPriority, computeMutationPressure, computePercentile, computeTrailReinforcement, createLatencySampler, createMemoryStoreChangeNotifier, deduplicateEntries, evaluateTrustDecay, findClosestMatch, isTrailEvaporated, levenshteinDistance, matchesBrickQuery, mergeSamplers, pruneStaleEntries, recordLatency, selectEntriesWithinBudget, severityAtOrAbove, sortBricks, validateBrickArtifact, validatePipeline, validateWith, zodToKoiError };
 "
 `;
