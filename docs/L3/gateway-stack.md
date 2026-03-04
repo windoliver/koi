@@ -11,6 +11,7 @@ After splitting the gateway into focused packages (#718), consumers who want the
 - **One-call setup** — `createGatewayStack()` creates and connects all subsystems
 - **Unified lifecycle** — `start()` boots gateway + canvas + webhook; `stop()` tears them all down
 - **Optional subsystems** — Omit `canvas` or `webhook` from config to disable them
+- **HA via Nexus** — Add `nexus` config to persist state across instances with automatic failover
 - **Direct access** — All subsystem handles remain accessible for advanced use
 
 ---
@@ -33,7 +34,9 @@ After splitting the gateway into focused packages (#718), consumers who want the
 │  @koi/gateway        (L2)  core gateway              │
 │  @koi/gateway-canvas (L2)  canvas subsystem          │
 │  @koi/gateway-webhook(L2)  webhook subsystem         │
+│  @koi/gateway-nexus  (L2)  Nexus HA state (optional) │
 │  @koi/gateway-types  (L0u) shared types              │
+│  @koi/nexus-client   (L0u) Nexus JSON-RPC client     │
 │  @koi/core           (L0)  Result, KoiError          │
 └──────────────────────────────────────────────────────┘
 ```
@@ -50,6 +53,10 @@ const stack = createGatewayStack(
     gateway: { maxConnections: 5_000 },
     canvas: { port: 8081 },    // omit to disable canvas
     webhook: { port: 8082 },   // omit to disable webhook
+    nexus: {                    // omit for in-memory (single instance)
+      nexusUrl: "http://nexus:2026",
+      apiKey: "my-key",
+    },
   },
   { transport, auth, canvasAuth, webhookAuth },
 );
@@ -70,6 +77,6 @@ await stack.stop();
 
 | Type | Purpose |
 |------|---------|
-| `GatewayStackConfig` | Combined config: gateway + optional canvas + optional webhook |
+| `GatewayStackConfig` | Combined config: gateway + optional canvas + webhook + nexus |
 | `GatewayStackDeps` | Core gateway deps + optional canvas/webhook authenticators |
 | `GatewayStack` | Return type — gateway + canvas + webhook + start/stop |

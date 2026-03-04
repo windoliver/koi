@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { runNodeRegistryContractTests } from "@koi/test-utils";
 import type { NodeRegistry, RegisteredNode } from "../node-registry.js";
 import { createInMemoryNodeRegistry } from "../node-registry.js";
+
+// Run shared contract suite
+runNodeRegistryContractTests(() => createInMemoryNodeRegistry());
 
 // ---------------------------------------------------------------------------
 // Helpers

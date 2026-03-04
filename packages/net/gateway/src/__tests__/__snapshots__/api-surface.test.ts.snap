@@ -1,29 +1,13 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
 exports[`@koi/gateway API surface . has stable type surface 1`] = `
-"import { Result, KoiError, AdvertisedTool, CapacityReport } from '@koi/core';
+"import * as _koi_gateway_types from '@koi/gateway-types';
+import { ConnectFrame, AuthResult, GatewayCapabilities, HandshakeSnapshot, Session, SessionStore, BackpressureState, GatewayConfig, GatewayFrame, NodeRegistry, NodeRegistryEvent, ScopingMode, RoutingContext, RouteBinding, RoutingConfig, SchedulerDef, ToolAffinity, ToolRoutingConfig } from '@koi/gateway-types';
+export { AuthResult, BackpressureState, ChannelBinding, ConnectClient, ConnectFrame, DEFAULT_GATEWAY_CONFIG, DEFAULT_TOOL_ROUTING_CONFIG, GatewayCapabilities, GatewayConfig, GatewayFrame, GatewayFrameKind, HandshakeAckPayload, HandshakeSnapshot, NodeRegistry, NodeRegistryEvent, RegisteredNode, ResumeRequest, RouteBinding, RoutingConfig, RoutingContext, SchedulerDef, ScopingMode, Session, SessionStore, TOOL_ROUTING_ERROR_CODES, ToolAffinity, ToolRoutingConfig, ToolRoutingErrorCode } from '@koi/gateway-types';
+import { AdvertisedTool, CapacityReport, Result, KoiError } from '@koi/core';
 export { AdvertisedTool, CapacityReport } from '@koi/core';
-import { Session, ConnectFrame, AuthResult, GatewayCapabilities, HandshakeSnapshot, BackpressureState, GatewayConfig, GatewayFrame, ScopingMode, RoutingContext, RouteBinding, RoutingConfig, SchedulerDef, ToolAffinity, ToolRoutingConfig } from '@koi/gateway-types';
-export { AuthResult, BackpressureState, ChannelBinding, ConnectClient, ConnectFrame, DEFAULT_GATEWAY_CONFIG, DEFAULT_TOOL_ROUTING_CONFIG, GatewayCapabilities, GatewayConfig, GatewayFrame, GatewayFrameKind, HandshakeAckPayload, HandshakeSnapshot, ResumeRequest, RouteBinding, RoutingConfig, RoutingContext, SchedulerDef, ScopingMode, Session, TOOL_ROUTING_ERROR_CODES, ToolAffinity, ToolRoutingConfig, ToolRoutingErrorCode } from '@koi/gateway-types';
 
-/**
- * SessionStore: pluggable session persistence.
- * Default in-memory implementation provided.
- *
- * All mutating/querying methods return \`Result<T, KoiError>\` (or a Promise
- * thereof) so implementations can be sync (in-memory) or async (network)
- * without interface changes.
- */
-
-interface SessionStore {
-    readonly get: (id: string) => Result<Session, KoiError> | Promise<Result<Session, KoiError>>;
-    readonly set: (session: Session) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
-    readonly delete: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
-    readonly has: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
-    readonly size: () => number;
-    readonly entries: () => IterableIterator<readonly [string, Session]>;
-}
-declare function createInMemorySessionStore(): SessionStore;
+declare function createInMemorySessionStore(): _koi_gateway_types.SessionStore;
 
 /**
  * Transport abstraction over WebSocket server lifecycle.
@@ -170,56 +154,7 @@ interface AgentStatusBatchPayload {
 declare function validateAgentStatusBatch(payload: unknown): AgentStatusBatchPayload | undefined;
 declare function encodeNodeFrame(frame: NodeFrame): string;
 
-/**
- * Node registration and health tracking for connected compute nodes.
- * Maintains an inverted tool index for O(1) tool-to-node lookups.
- *
- * Internal to @koi/gateway (L2) — not an L0 contract.
- */
-
-interface RegisteredNode {
-    readonly nodeId: string;
-    readonly mode: "full" | "thin";
-    readonly tools: readonly AdvertisedTool[];
-    readonly capacity: CapacityReport;
-    readonly connectedAt: number;
-    readonly lastHeartbeat: number;
-    readonly connId: string;
-}
-type NodeRegistryEvent = {
-    readonly kind: "registered";
-    readonly node: RegisteredNode;
-} | {
-    readonly kind: "deregistered";
-    readonly nodeId: string;
-} | {
-    readonly kind: "heartbeat";
-    readonly nodeId: string;
-} | {
-    readonly kind: "capacity_updated";
-    readonly nodeId: string;
-    readonly capacity: CapacityReport;
-} | {
-    readonly kind: "tools_added";
-    readonly nodeId: string;
-    readonly tools: readonly AdvertisedTool[];
-} | {
-    readonly kind: "tools_removed";
-    readonly nodeId: string;
-    readonly toolNames: readonly string[];
-};
-interface NodeRegistry {
-    readonly register: (node: RegisteredNode) => Result<void, KoiError>;
-    readonly deregister: (nodeId: string) => Result<boolean, KoiError>;
-    readonly lookup: (nodeId: string) => RegisteredNode | undefined;
-    readonly findByTool: (toolName: string) => readonly RegisteredNode[];
-    readonly nodes: () => ReadonlyMap<string, RegisteredNode>;
-    readonly size: () => number;
-    readonly updateHeartbeat: (nodeId: string) => Result<void, KoiError>;
-    readonly updateCapacity: (nodeId: string, capacity: CapacityReport) => Result<void, KoiError>;
-    readonly updateTools: (nodeId: string, added: readonly AdvertisedTool[], removed: readonly string[]) => Result<void, KoiError>;
-}
-declare function createInMemoryNodeRegistry(): NodeRegistry;
+declare function createInMemoryNodeRegistry(): _koi_gateway_types.NodeRegistry;
 
 /**
  * Gateway factory: wires transport, auth, sessions, sequencing,
@@ -486,6 +421,6 @@ declare function matchAffinity(toolName: string, compiled: readonly CompiledAffi
 declare function resolveTargetNode(toolName: string, sourceNodeId: string, registry: NodeRegistry, compiledAffinities: readonly CompiledAffinity[]): RouteResult;
 declare function createToolRouter(config: ToolRoutingConfig, deps: ToolRouterDeps): ToolRouter;
 
-export { type AcceptResult, type AgentSignalGroupPayload, type AgentSignalPayload, type AgentStatusBatchPayload, type AgentStatusEntry, type BackpressureMonitor, type BunTransport, type CapabilitiesPayload, type CompiledAffinity, type FrameIdGenerator, type Gateway, type GatewayAuthenticator, type GatewayDeps, type GatewayScheduler, type HandshakeOptions, type HandshakePayload, type HandshakeResult, type NodeConnectionHandler, type NodeFrame, type NodeFrameKind, type NodeRegistry, type NodeRegistryEvent, type RegisteredNode, type ResolvedRoute, type RouteResult, type SchedulerDispatcher, type SequenceTracker, type SessionEvent, type SessionStore, type SweepError, type ToolRouter, type ToolRouterDeps, type Transport, type TransportConnection, type TransportHandler, type TransportSendResult, compileAffinities, computeDispatchKey, createAckFrame, createBackpressureMonitor, createBunTransport, createErrorFrame, createFrameIdGenerator, createGateway, createInMemoryNodeRegistry, createInMemorySessionStore, createNodeConnectionHandler, createScheduler, createSequenceTracker, createToolRouter, encodeFrame, encodeNodeFrame, handleHandshake, matchAffinity, negotiateProtocol, parseConnectFrame, parseFrame, parseNodeFrame, peekFrameKind, resolveBinding, resolveRoute, resolveTargetNode, startHeartbeatSweep, validateAgentStatusBatch, validateBindingPattern, validateCapabilitiesPayload, validateCapacityPayload, validateHandshakePayload };
+export { type AcceptResult, type AgentSignalGroupPayload, type AgentSignalPayload, type AgentStatusBatchPayload, type AgentStatusEntry, type BackpressureMonitor, type BunTransport, type CapabilitiesPayload, type CompiledAffinity, type FrameIdGenerator, type Gateway, type GatewayAuthenticator, type GatewayDeps, type GatewayScheduler, type HandshakeOptions, type HandshakePayload, type HandshakeResult, type NodeConnectionHandler, type NodeFrame, type NodeFrameKind, type ResolvedRoute, type RouteResult, type SchedulerDispatcher, type SequenceTracker, type SessionEvent, type SweepError, type ToolRouter, type ToolRouterDeps, type Transport, type TransportConnection, type TransportHandler, type TransportSendResult, compileAffinities, computeDispatchKey, createAckFrame, createBackpressureMonitor, createBunTransport, createErrorFrame, createFrameIdGenerator, createGateway, createInMemoryNodeRegistry, createInMemorySessionStore, createNodeConnectionHandler, createScheduler, createSequenceTracker, createToolRouter, encodeFrame, encodeNodeFrame, handleHandshake, matchAffinity, negotiateProtocol, parseConnectFrame, parseFrame, parseNodeFrame, peekFrameKind, resolveBinding, resolveRoute, resolveTargetNode, startHeartbeatSweep, validateAgentStatusBatch, validateBindingPattern, validateCapabilitiesPayload, validateCapacityPayload, validateHandshakePayload };
 "
 `;

@@ -14,8 +14,10 @@
     "@koi/core": "workspace:*",
     "@koi/gateway": "workspace:*",
     "@koi/gateway-canvas": "workspace:*",
+    "@koi/gateway-nexus": "workspace:*",
     "@koi/gateway-types": "workspace:*",
-    "@koi/gateway-webhook": "workspace:*"
+    "@koi/gateway-webhook": "workspace:*",
+    "@koi/nexus-client": "workspace:*"
   },
   "scripts": {
     "build": "tsup",

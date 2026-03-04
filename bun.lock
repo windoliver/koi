@@ -877,6 +877,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/gateway-types": "workspace:*",
       },
     },
     "packages/lib/validation": {
@@ -1758,6 +1759,7 @@
         "@koi/engine-pi": "workspace:*",
         "@koi/gateway-canvas": "workspace:*",
         "@koi/gateway-webhook": "workspace:*",
+        "@koi/test-utils": "workspace:*",
       },
     },
     "packages/net/gateway-canvas": {
@@ -1765,6 +1767,22 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/gateway-types": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
+      },
+    },
+    "packages/net/gateway-nexus": {
+      "name": "@koi/gateway-nexus",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/gateway-types": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/test-utils": "workspace:*",
       },
     },
     "packages/net/gateway-stack": {
@@ -1774,8 +1792,10 @@
         "@koi/core": "workspace:*",
         "@koi/gateway": "workspace:*",
         "@koi/gateway-canvas": "workspace:*",
+        "@koi/gateway-nexus": "workspace:*",
         "@koi/gateway-types": "workspace:*",
         "@koi/gateway-webhook": "workspace:*",
+        "@koi/nexus-client": "workspace:*",
       },
     },
     "packages/net/gateway-types": {
@@ -3048,6 +3068,8 @@
     "@koi/gateway": ["@koi/gateway@workspace:packages/net/gateway"],
 
     "@koi/gateway-canvas": ["@koi/gateway-canvas@workspace:packages/net/gateway-canvas"],
+
+    "@koi/gateway-nexus": ["@koi/gateway-nexus@workspace:packages/net/gateway-nexus"],
 
     "@koi/gateway-stack": ["@koi/gateway-stack@workspace:packages/net/gateway-stack"],
 

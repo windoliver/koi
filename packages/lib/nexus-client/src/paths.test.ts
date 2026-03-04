@@ -16,6 +16,12 @@ import {
   agentSnapshotGlob,
   agentSnapshotPath,
   agentSubscriptionPath,
+  gatewayNodePath,
+  gatewayNodesGlob,
+  gatewaySessionPath,
+  gatewaySessionsGlob,
+  gatewaySurfacePath,
+  gatewaySurfacesGlob,
   globalBrickPath,
   groupScratchGlob,
   groupScratchPath,
@@ -133,6 +139,34 @@ describe("Nexus namespace paths", () => {
       expect(agentDeadLetterGlob(AGENT)).toBe(
         nexusPath("agents/agent-1/events/dead-letters/*.json"),
       );
+    });
+  });
+
+  describe("gateway (global namespace)", () => {
+    test("gatewaySessionPath", () => {
+      expect(gatewaySessionPath("sess-1")).toBe(nexusPath("global/gateway/sessions/sess-1.json"));
+    });
+
+    test("gatewaySessionsGlob", () => {
+      expect(gatewaySessionsGlob()).toBe(nexusPath("global/gateway/sessions/*.json"));
+    });
+
+    test("gatewayNodePath", () => {
+      expect(gatewayNodePath("node-a")).toBe(nexusPath("global/gateway/nodes/node-a.json"));
+    });
+
+    test("gatewayNodesGlob", () => {
+      expect(gatewayNodesGlob()).toBe(nexusPath("global/gateway/nodes/*.json"));
+    });
+
+    test("gatewaySurfacePath", () => {
+      expect(gatewaySurfacePath("surface-x")).toBe(
+        nexusPath("global/gateway/surfaces/surface-x.json"),
+      );
+    });
+
+    test("gatewaySurfacesGlob", () => {
+      expect(gatewaySurfacesGlob()).toBe(nexusPath("global/gateway/surfaces/*.json"));
     });
   });
 });

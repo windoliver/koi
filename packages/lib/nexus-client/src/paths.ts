@@ -128,3 +128,37 @@ export function agentDeadLetterPath(agentId: AgentId, entryId: string): NexusPat
 export function agentDeadLetterGlob(agentId: AgentId): NexusPath {
   return nexusPath(`agents/${agentId}/events/dead-letters/*.json`);
 }
+
+// ---------------------------------------------------------------------------
+// Gateway (global namespace — shared across gateway instances)
+// ---------------------------------------------------------------------------
+
+/** Path to a gateway session record: global/gateway/sessions/{id}.json */
+export function gatewaySessionPath(id: string): NexusPath {
+  return nexusPath(`global/gateway/sessions/${id}.json`);
+}
+
+/** Glob for all gateway sessions: global/gateway/sessions/*.json */
+export function gatewaySessionsGlob(): NexusPath {
+  return nexusPath("global/gateway/sessions/*.json");
+}
+
+/** Path to a gateway node record: global/gateway/nodes/{id}.json */
+export function gatewayNodePath(id: string): NexusPath {
+  return nexusPath(`global/gateway/nodes/${id}.json`);
+}
+
+/** Glob for all gateway nodes: global/gateway/nodes/*.json */
+export function gatewayNodesGlob(): NexusPath {
+  return nexusPath("global/gateway/nodes/*.json");
+}
+
+/** Path to a gateway surface record: global/gateway/surfaces/{id}.json */
+export function gatewaySurfacePath(id: string): NexusPath {
+  return nexusPath(`global/gateway/surfaces/${id}.json`);
+}
+
+/** Glob for all gateway surfaces: global/gateway/surfaces/*.json */
+export function gatewaySurfacesGlob(): NexusPath {
+  return nexusPath("global/gateway/surfaces/*.json");
+}

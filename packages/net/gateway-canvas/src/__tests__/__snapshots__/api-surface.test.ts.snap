@@ -2,6 +2,9 @@
 
 exports[`@koi/gateway-canvas API surface . has stable type surface 1`] = `
 "import { Result, KoiError } from '@koi/core';
+import * as _koi_gateway_types from '@koi/gateway-types';
+import { SurfaceStore } from '@koi/gateway-types';
+export { SurfaceEntry, SurfaceStore, SurfaceStoreConfig } from '@koi/gateway-types';
 
 /**
  * SSE (Server-Sent Events) subscriber registry for canvas surfaces.
@@ -53,45 +56,10 @@ interface CanvasSseConfig {
 declare function formatSseEvent(event: SseEvent): Uint8Array;
 declare function createCanvasSseManager(configOverrides?: Partial<CanvasSseConfig>): CanvasSseManager;
 
-/**
- * SurfaceStore: pluggable surface persistence for canvas rendering.
- *
- * Surfaces are opaque blobs — the store does not understand A2UI structure.
- * Default in-memory implementation with LRU eviction provided.
- */
-
-interface SurfaceEntry {
-    readonly surfaceId: string;
-    /** Opaque serialized surface content. */
-    readonly content: string;
-    /** SHA-256 hex digest of content — used as ETag. */
-    readonly contentHash: string;
-    readonly createdAt: number;
-    readonly updatedAt: number;
-    /** Tracks access time for LRU eviction. */
-    readonly lastAccessedAt: number;
-    readonly metadata?: Readonly<Record<string, unknown>>;
-}
-interface SurfaceStore {
-    readonly get: (id: string) => Result<SurfaceEntry, KoiError> | Promise<Result<SurfaceEntry, KoiError>>;
-    readonly create: (id: string, content: string, metadata?: Readonly<Record<string, unknown>>) => Result<SurfaceEntry, KoiError> | Promise<Result<SurfaceEntry, KoiError>>;
-    /**
-     * Update surface content.
-     * If expectedHash is provided and doesn't match current hash → CONFLICT error (CAS).
-     * If expectedHash is undefined → unconditional update.
-     */
-    readonly update: (id: string, content: string, expectedHash: string | undefined) => Result<SurfaceEntry, KoiError> | Promise<Result<SurfaceEntry, KoiError>>;
-    readonly delete: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
-    readonly has: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
-    readonly size: () => number;
-}
-interface SurfaceStoreConfig {
-    /** Maximum number of surfaces before LRU eviction. Default: 10_000. */
-    readonly maxSurfaces: number;
-}
+type SurfaceStoreConfig = _koi_gateway_types.SurfaceStoreConfig;
 /** Compute SHA-256 hex digest of content using Bun native crypto. */
 declare function computeContentHash(content: string): string;
-declare function createInMemorySurfaceStore(configOverrides?: Partial<SurfaceStoreConfig>): SurfaceStore;
+declare function createInMemorySurfaceStore(configOverrides?: Partial<SurfaceStoreConfig>): _koi_gateway_types.SurfaceStore;
 
 /**
  * HTTP route handler for canvas surface CRUD + SSE streaming.
@@ -152,6 +120,6 @@ interface CanvasWiring {
 }
 declare function createCanvas(config: CanvasConfig, authenticator?: CanvasAuthenticator): CanvasWiring;
 
-export { type CanvasAuthResult, type CanvasAuthenticator, type CanvasConfig, type CanvasRouteConfig, type CanvasServer, type CanvasSseConfig, type CanvasSseManager, type CanvasWiring, type SseEvent, type SseSubscriber, type SurfaceEntry, type SurfaceStore, type SurfaceStoreConfig, computeContentHash, createCanvas, createCanvasServer, createCanvasSseManager, createInMemorySurfaceStore, formatSseEvent };
+export { type CanvasAuthResult, type CanvasAuthenticator, type CanvasConfig, type CanvasRouteConfig, type CanvasServer, type CanvasSseConfig, type CanvasSseManager, type CanvasWiring, type SseEvent, type SseSubscriber, computeContentHash, createCanvas, createCanvasServer, createCanvasSseManager, createInMemorySurfaceStore, formatSseEvent };
 "
 `;

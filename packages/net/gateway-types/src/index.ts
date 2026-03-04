@@ -1,12 +1,14 @@
 /**
- * @koi/gateway-types — Shared wire protocol, session, routing, and config types.
+ * @koi/gateway-types — Shared wire protocol, session, routing, config, and store types.
  *
  * L0u package: depends on @koi/core only. Importable by all L2 gateway packages.
  */
 
 export type {
+  AdvertisedTool,
   AuthResult,
   BackpressureState,
+  CapacityReport,
   ChannelBinding,
   ConnectClient,
   ConnectFrame,
@@ -16,6 +18,9 @@ export type {
   GatewayFrameKind,
   HandshakeAckPayload,
   HandshakeSnapshot,
+  NodeRegistry,
+  NodeRegistryEvent,
+  RegisteredNode,
   ResumeRequest,
   RouteBinding,
   RoutingConfig,
@@ -23,6 +28,10 @@ export type {
   SchedulerDef,
   ScopingMode,
   Session,
+  SessionStore,
+  SurfaceEntry,
+  SurfaceStore,
+  SurfaceStoreConfig,
   ToolAffinity,
   ToolRoutingConfig,
   ToolRoutingErrorCode,

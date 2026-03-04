@@ -3,56 +3,18 @@
  *
  * Surfaces are opaque blobs — the store does not understand A2UI structure.
  * Default in-memory implementation with LRU eviction provided.
+ *
+ * Interfaces re-exported from @koi/gateway-types for backward compatibility.
  */
 
 import type { KoiError, Result } from "@koi/core";
 import { conflict, notFound } from "@koi/core";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+// Re-export interfaces from @koi/gateway-types
+export type { SurfaceEntry, SurfaceStore, SurfaceStoreConfig } from "@koi/gateway-types";
 
-export interface SurfaceEntry {
-  readonly surfaceId: string;
-  /** Opaque serialized surface content. */
-  readonly content: string;
-  /** SHA-256 hex digest of content — used as ETag. */
-  readonly contentHash: string;
-  readonly createdAt: number;
-  readonly updatedAt: number;
-  /** Tracks access time for LRU eviction. */
-  readonly lastAccessedAt: number;
-  readonly metadata?: Readonly<Record<string, unknown>>;
-}
-
-export interface SurfaceStore {
-  readonly get: (
-    id: string,
-  ) => Result<SurfaceEntry, KoiError> | Promise<Result<SurfaceEntry, KoiError>>;
-  readonly create: (
-    id: string,
-    content: string,
-    metadata?: Readonly<Record<string, unknown>>,
-  ) => Result<SurfaceEntry, KoiError> | Promise<Result<SurfaceEntry, KoiError>>;
-  /**
-   * Update surface content.
-   * If expectedHash is provided and doesn't match current hash → CONFLICT error (CAS).
-   * If expectedHash is undefined → unconditional update.
-   */
-  readonly update: (
-    id: string,
-    content: string,
-    expectedHash: string | undefined,
-  ) => Result<SurfaceEntry, KoiError> | Promise<Result<SurfaceEntry, KoiError>>;
-  readonly delete: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
-  readonly has: (id: string) => Result<boolean, KoiError> | Promise<Result<boolean, KoiError>>;
-  readonly size: () => number;
-}
-
-export interface SurfaceStoreConfig {
-  /** Maximum number of surfaces before LRU eviction. Default: 10_000. */
-  readonly maxSurfaces: number;
-}
+type SurfaceEntry = import("@koi/gateway-types").SurfaceEntry;
+type SurfaceStoreConfig = import("@koi/gateway-types").SurfaceStoreConfig;
 
 const DEFAULT_SURFACE_STORE_CONFIG: SurfaceStoreConfig = {
   maxSurfaces: 10_000,
@@ -75,7 +37,7 @@ export function computeContentHash(content: string): string {
 
 export function createInMemorySurfaceStore(
   configOverrides?: Partial<SurfaceStoreConfig>,
-): SurfaceStore {
+): import("@koi/gateway-types").SurfaceStore {
   const config: SurfaceStoreConfig = { ...DEFAULT_SURFACE_STORE_CONFIG, ...configOverrides };
   const map = new Map<string, SurfaceEntry>();
   // Monotonic counter for LRU ordering (Date.now() can repeat within same ms)

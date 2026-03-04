@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { runSessionStoreContractTests } from "@koi/test-utils";
 import { createInMemorySessionStore } from "../session-store.js";
 import { createTestSession } from "./test-utils.js";
+
+// Run shared contract suite
+runSessionStoreContractTests(() => createInMemorySessionStore());
 
 describe("InMemorySessionStore", () => {
   test("stores and retrieves a session", async () => {
